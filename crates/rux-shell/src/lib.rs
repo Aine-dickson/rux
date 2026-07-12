@@ -1,15 +1,16 @@
-//! Rux runtime shell — milestone M1.
+//! Rux runtime shell — milestone M3.
 //!
 //! Opens a native window (winit), manages the GPU via vello's `RenderContext`,
-//! and every frame lays out a hand-built node tree (`rux-layout`) and paints it
-//! as a vello scene (`rux-paint`). This proves the layout → paint → present
-//! pipeline end to end. The demo tree stands in until the parser (M2) feeds
-//! real `.rux` documents.
+//! loads a `.rux` document each frame's tree from `rux-runtime`, and paints it
+//! (`rux-paint`). A `notify` file watcher wakes the event loop through an
+//! `EventLoopProxy` on every save, so edits to the `.rux` file repaint live —
+//! the hot-reload path from `docs/04-architecture.md`.
 
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use notify::{EventKind, RecursiveMode, Watcher};
 use rux_layout::{Node, Style};
 use vello::peniko::Color;
 use vello::util::{RenderContext, RenderSurface};
@@ -19,6 +20,13 @@ use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::{Window, WindowId};
+
+/// Events delivered to the winit loop from outside it — currently just a
+/// file-watcher signal to reload the document.
+#[derive(Debug, Clone)]
+enum RuxEvent {
+    Reload,
+}
 
 /// Rux screen background `#11111b`.
 const BG: Color = Color::rgb8(0x11, 0x11, 0x1b);
@@ -63,6 +71,19 @@ impl App {
         }
     }
 
+    /// Re-load the document after a file change. On a parse/load error we keep
+    /// the last good tree and log the diagnostic, rather than blanking the
+    /// window (a first step toward the dev overlay).
+    fn reload(&mut self) {
+        match rux_runtime::Document::load(&self.path) {
+            Ok(doc) => {
+                self.tree = doc.root;
+                eprintln!("reloaded {}", self.path.display());
+            }
+            Err(err) => eprintln!("reload failed for {}: {err}", self.path.display()),
+        }
+    }
+
     fn render(&mut self) {
         let Some(state) = self.state.as_mut() else {
             return;
@@ -101,7 +122,7 @@ impl App {
     }
 }
 
-impl ApplicationHandler for App {
+impl ApplicationHandler<RuxEvent> for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.state.is_some() {
             return;
@@ -148,6 +169,17 @@ impl ApplicationHandler for App {
         });
     }
 
+    fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: RuxEvent) {
+        match event {
+            RuxEvent::Reload => {
+                self.reload();
+                if let Some(state) = self.state.as_ref() {
+                    state.window.request_redraw();
+                }
+            }
+        }
+    }
+
     fn window_event(
         &mut self,
         event_loop: &ActiveEventLoop,
@@ -177,11 +209,46 @@ impl ApplicationHandler for App {
 }
 
 /// Open the Rux window for the given `.rux` file and run the frame loop until the
-/// window closes.
+/// window closes. Watches the file and repaints on change.
 pub fn run(path: PathBuf) {
-    let event_loop = EventLoop::new().expect("create event loop");
+    let event_loop = EventLoop::<RuxEvent>::with_user_event()
+        .build()
+        .expect("create event loop");
     event_loop.set_control_flow(ControlFlow::Wait);
+
+    // Watch the file's directory (more robust than watching the inode, since
+    // editors often replace the file on save) and filter to our filename.
+    let proxy = event_loop.create_proxy();
+    let watch_dir = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| PathBuf::from("."));
+    let watch_name = path.file_name().map(|n| n.to_os_string());
+
+    let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
+        let Ok(event) = res else { return };
+        if !matches!(event.kind, EventKind::Modify(_) | EventKind::Create(_)) {
+            return;
+        }
+        let touches_file = match &watch_name {
+            Some(name) => event
+                .paths
+                .iter()
+                .any(|p| p.file_name() == Some(name.as_os_str())),
+            None => true,
+        };
+        if touches_file {
+            let _ = proxy.send_event(RuxEvent::Reload);
+        }
+    })
+    .expect("create watcher");
+    watcher
+        .watch(&watch_dir, RecursiveMode::NonRecursive)
+        .expect("watch directory");
 
     let mut app = App::new(path);
     event_loop.run_app(&mut app).expect("run app");
+
+    drop(watcher); // keep the watcher alive for the loop's lifetime
 }

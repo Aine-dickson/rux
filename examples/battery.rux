@@ -1,10 +1,10 @@
 <template>
-  <screen class="screen">
-    <view class="card">
-      <view class="value"></view>
-      <view class="label"></view>
-    </view>
-  </screen>
+    <screen class="screen">
+        <view class="card">
+            <view class="value"></view>
+            <view class="label"></view>
+        </view>
+    </screen>
 </template>
 
 <style>
