@@ -16,14 +16,16 @@ use lightningcss::stylesheet::{ParserOptions, PrinterOptions, StyleSheet};
 use lightningcss::traits::ToCss;
 use rux_layout::{Axis, Node as LayoutNode, Rgba, Style, TextContent};
 use rux_parser::{Element, Node as TplNode, Sfc};
+use rux_reactive::Signals;
 
 /// Default inherited text colour (`#cdd6f4`) and font size, used at the root
 /// before any `color` / `font-size` rule applies. Text properties inherit.
 const DEFAULT_COLOR: Rgba = Rgba::new(0.804, 0.839, 0.957, 1.0);
 const DEFAULT_FONT_SIZE: f32 = 16.0;
 
-/// Build the styled layout tree from a parsed SFC.
-pub fn build_styled_tree(sfc: &Sfc) -> Result<LayoutNode, String> {
+/// Build the styled layout tree from a parsed SFC, interpolating `{{ }}` text
+/// against the current signal values.
+pub fn build_styled_tree(sfc: &Sfc, signals: &Signals) -> Result<LayoutNode, String> {
     let rules = parse_rules(&sfc.style);
     let mut ancestors: Vec<ElemDesc> = Vec::new();
     Ok(build_node(
@@ -31,7 +33,41 @@ pub fn build_styled_tree(sfc: &Sfc) -> Result<LayoutNode, String> {
         &rules,
         &mut ancestors,
         (DEFAULT_COLOR, DEFAULT_FONT_SIZE),
+        signals,
     ))
+}
+
+/// Replace `{{ expr }}` spans in `text` with evaluated signal values.
+fn interpolate(text: &str, signals: &Signals) -> String {
+    let mut out = String::new();
+    let mut rest = text;
+    while let Some(start) = rest.find("{{") {
+        out.push_str(&rest[..start]);
+        let after = &rest[start + 2..];
+        match after.find("}}") {
+            Some(end) => {
+                out.push_str(&eval_expr(after[..end].trim(), signals));
+                rest = &after[end + 2..];
+            }
+            None => {
+                out.push_str("{{");
+                rest = after;
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// M5 expression eval: a bare signal name or a numeric literal. Unknown → empty.
+fn eval_expr(expr: &str, signals: &Signals) -> String {
+    if let Some(v) = signals.get(expr) {
+        v.to_display()
+    } else if let Ok(n) = expr.parse::<f64>() {
+        rux_reactive::Value::Number(n).to_display()
+    } else {
+        String::new()
+    }
 }
 
 // ── Selector model ──────────────────────────────────────────────────────────
@@ -265,12 +301,12 @@ fn matched_props(
     props
 }
 
-/// Concatenate the direct text children of an element.
-fn collect_text(el: &Element) -> String {
+/// Concatenate the direct text children of an element, interpolating `{{ }}`.
+fn collect_text(el: &Element, signals: &Signals) -> String {
     let mut parts = Vec::new();
     for child in &el.children {
         if let TplNode::Text(t) = child {
-            parts.push(t.trim());
+            parts.push(interpolate(t.trim(), signals));
         }
     }
     parts.join(" ")
@@ -283,6 +319,7 @@ fn build_node(
     rules: &[Rule],
     ancestors: &mut Vec<ElemDesc>,
     inherited: (Rgba, f32),
+    signals: &Signals,
 ) -> LayoutNode {
     let desc = ElemDesc::of(el);
     let props = matched_props(&desc, ancestors, rules);
@@ -302,7 +339,7 @@ fn build_node(
         return LayoutNode::text(
             style,
             TextContent {
-                text: collect_text(el),
+                text: collect_text(el, signals),
                 font_size,
                 color,
             },
@@ -314,7 +351,9 @@ fn build_node(
         .children
         .iter()
         .filter_map(|n| match n {
-            TplNode::Element(child) => Some(build_node(child, rules, ancestors, (color, font_size))),
+            TplNode::Element(child) => {
+                Some(build_node(child, rules, ancestors, (color, font_size), signals))
+            }
             TplNode::Text(_) => None,
         })
         .collect();
@@ -417,6 +456,21 @@ fn parse_hex(hex: &str) -> Option<Rgba> {
         b as f32 / 255.0,
         a as f32 / 255.0,
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::interpolate;
+    use rux_reactive::Signals;
+
+    #[test]
+    fn interpolates_signal_bindings() {
+        let signals = Signals::from_script(r#"let level = signal(82); let who = signal("Cam");"#);
+        assert_eq!(interpolate("{{ level }}%", &signals), "82%");
+        assert_eq!(interpolate("Hi {{ who }}!", &signals), "Hi Cam!");
+        assert_eq!(interpolate("plain text", &signals), "plain text");
+        assert_eq!(interpolate("{{ missing }}!", &signals), "!"); // unknown → empty
+    }
 }
 
 fn parse_rgb(s: &str) -> Option<Rgba> {

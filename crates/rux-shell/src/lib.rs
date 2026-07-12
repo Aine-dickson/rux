@@ -9,9 +9,10 @@
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use notify::{EventKind, RecursiveMode, Watcher};
-use rux_layout::{Node, Style};
+use rux_runtime::Document;
 use vello::peniko::Color;
 use vello::util::{RenderContext, RenderSurface};
 use vello::wgpu;
@@ -21,25 +22,28 @@ use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::{Window, WindowId};
 
-/// Events delivered to the winit loop from outside it — currently just a
-/// file-watcher signal to reload the document.
+/// Events delivered to the winit loop from outside it.
 #[derive(Debug, Clone)]
 enum RuxEvent {
+    /// The `.rux` file changed on disk.
     Reload,
+    /// The demo timer fired (M5 stand-in for signal mutation; real mutations
+    /// come from `@tap` handlers in M6).
+    Tick,
 }
 
 /// Rux screen background `#11111b`.
 const BG: Color = Color::rgb8(0x11, 0x11, 0x1b);
 
-/// Load a `.rux` document into a layout tree. On failure, log the diagnostic and
-/// fall back to an empty screen so the window still opens (M2's stand-in for the
-/// dev overlay described in the architecture doc).
-fn load_tree(path: &PathBuf) -> Node {
-    match rux_runtime::Document::load(path) {
-        Ok(doc) => doc.root,
+/// Load a `.rux` document. On failure, log the diagnostic and fall back to an
+/// empty screen so the window still opens (stand-in for the dev overlay).
+fn load_document(path: &PathBuf) -> Document {
+    match Document::load(path) {
+        Ok(doc) => doc,
         Err(err) => {
             eprintln!("failed to load {}: {err}", path.display());
-            Node::new(Style::default())
+            Document::from_source("<template><screen></screen></template>")
+                .expect("empty document")
         }
     }
 }
@@ -52,38 +56,58 @@ struct RenderState {
     scene: Scene,
 }
 
-/// The application: owns the vello render context, the text engine, and (once
-/// resumed) one window.
+/// The application: owns the vello render context, the document, the text
+/// engine, and (once resumed) one window.
 struct App {
     context: RenderContext,
     state: Option<RenderState>,
     path: PathBuf,
-    tree: Node,
+    document: Document,
     text: rux_text::TextEngine,
 }
 
 impl App {
     fn new(path: PathBuf) -> Self {
-        let tree = load_tree(&path);
+        let document = load_document(&path);
         Self {
             context: RenderContext::new(),
             state: None,
             path,
-            tree,
+            document,
             text: rux_text::TextEngine::new(),
         }
     }
 
     /// Re-load the document after a file change. On a parse/load error we keep
-    /// the last good tree and log the diagnostic, rather than blanking the
+    /// the last good document and log the diagnostic, rather than blanking the
     /// window (a first step toward the dev overlay).
     fn reload(&mut self) {
-        match rux_runtime::Document::load(&self.path) {
+        match Document::load(&self.path) {
             Ok(doc) => {
-                self.tree = doc.root;
+                self.document = doc;
                 eprintln!("reloaded {}", self.path.display());
             }
             Err(err) => eprintln!("reload failed for {}: {err}", self.path.display()),
+        }
+    }
+
+    /// M5 demo driver: drain `level` by 1 each tick, wrapping at 0 back to 82,
+    /// so reactivity is visible without input. Replaced by real handlers in M6.
+    fn tick(&mut self) {
+        let signals = self.document.signals_mut();
+        let drained = signals
+            .get("level")
+            .and_then(|v| v.as_number())
+            .map(|n| if n <= 0.0 { 82.0 } else { n - 1.0 });
+        if let Some(next) = drained {
+            signals.set("level", rux_reactive::Value::Number(next));
+            self.document.rebuild();
+        }
+    }
+
+    fn request_redraw(&self) {
+        if let Some(state) = self.state.as_ref() {
+            state.window.request_redraw();
         }
     }
 
@@ -93,7 +117,7 @@ impl App {
         let App {
             context,
             state,
-            tree,
+            document,
             text,
             ..
         } = self;
@@ -106,7 +130,7 @@ impl App {
         // Layout (text sized via the engine's measure), then paint.
         let paints = {
             let mut measure = |t: &str, fs: f32, mw: Option<f32>| text.measure(t, fs, mw);
-            rux_layout::layout(tree, width as f32, height as f32, &mut measure)
+            rux_layout::layout(&document.root, width as f32, height as f32, &mut measure)
         };
         state.scene = rux_paint::build_scene(&paints, text);
 
@@ -182,17 +206,16 @@ impl ApplicationHandler<RuxEvent> for App {
             renderer,
             scene: Scene::new(),
         });
+        self.request_redraw();
     }
 
     fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: RuxEvent) {
         match event {
-            RuxEvent::Reload => {
-                self.reload();
-                if let Some(state) = self.state.as_ref() {
-                    state.window.request_redraw();
-                }
-            }
+            RuxEvent::Reload => self.reload(),
+            RuxEvent::Tick => self.tick(),
         }
+        // Both events change what should be on screen; repaint once.
+        self.request_redraw();
     }
 
     fn window_event(
@@ -211,13 +234,11 @@ impl ApplicationHandler<RuxEvent> for App {
                         size.height.max(1),
                     );
                 }
+                self.request_redraw();
             }
-            WindowEvent::RedrawRequested => {
-                self.render();
-                if let Some(state) = self.state.as_ref() {
-                    state.window.request_redraw();
-                }
-            }
+            // Event-driven: we only paint in response to a redraw request, which
+            // is issued on resume, resize, reload, and tick — not every frame.
+            WindowEvent::RedrawRequested => self.render(),
             _ => {}
         }
     }
@@ -261,6 +282,16 @@ pub fn run(path: PathBuf) {
     watcher
         .watch(&watch_dir, RecursiveMode::NonRecursive)
         .expect("watch directory");
+
+    // M5 demo timer: fire a Tick each second so signal reactivity is visible
+    // without input. Removed once real handlers drive mutations (M6).
+    let tick_proxy = event_loop.create_proxy();
+    std::thread::spawn(move || loop {
+        std::thread::sleep(Duration::from_secs(1));
+        if tick_proxy.send_event(RuxEvent::Tick).is_err() {
+            break; // event loop gone
+        }
+    });
 
     let mut app = App::new(path);
     event_loop.run_app(&mut app).expect("run app");

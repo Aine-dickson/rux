@@ -2,7 +2,7 @@
     <screen class="screen">
         <view class="card">
             <text class="title">Battery</text>
-            <text class="value">82%</text>
+            <text class="value">{{ level }}%</text>
         </view>
     </screen>
 </template>
@@ -17,12 +17,12 @@
     flex-direction: column;
     gap: 8px;
     padding: 16px;
-    background: #1e1e2e;
+    background: #3f2710;
     border-radius: 12px;
   }
   .title {
-    color: #9399b2;
-    font-size: 14px;
+    color: #14aa2d;
+    font-size: 34px;
   }
   .value {
     color: #a6e3a1;

@@ -2255,11 +2255,16 @@ name = "rux-parser"
 version = "0.1.0"
 
 [[package]]
+name = "rux-reactive"
+version = "0.1.0"
+
+[[package]]
 name = "rux-runtime"
 version = "0.1.0"
 dependencies = [
  "rux-layout",
  "rux-parser",
+ "rux-reactive",
  "rux-style",
 ]
 
@@ -2271,6 +2276,7 @@ dependencies = [
  "pollster",
  "rux-layout",
  "rux-paint",
+ "rux-reactive",
  "rux-runtime",
  "rux-text",
  "vello",
@@ -2284,6 +2290,7 @@ dependencies = [
  "lightningcss",
  "rux-layout",
  "rux-parser",
+ "rux-reactive",
 ]
 
 [[package]]

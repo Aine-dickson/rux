@@ -9,6 +9,7 @@ members = [
     "crates/rux-style",
     "crates/rux-runtime",
     "crates/rux-text",
+    "crates/rux-reactive",
 ]
 
 [workspace.package]
