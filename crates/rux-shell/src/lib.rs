@@ -9,16 +9,16 @@
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
 
 use notify::{EventKind, RecursiveMode, Watcher};
+use rux_layout::HitRegion;
 use rux_runtime::Document;
 use vello::peniko::Color;
 use vello::util::{RenderContext, RenderSurface};
 use vello::wgpu;
 use vello::{AaConfig, AaSupport, Renderer, RendererOptions, RenderParams, Scene};
 use winit::application::ApplicationHandler;
-use winit::event::WindowEvent;
+use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::{Window, WindowId};
 
@@ -27,10 +27,11 @@ use winit::window::{Window, WindowId};
 enum RuxEvent {
     /// The `.rux` file changed on disk.
     Reload,
-    /// The demo timer fired (M5 stand-in for signal mutation; real mutations
-    /// come from `@tap` handlers in M6).
-    Tick,
 }
+
+/// Taps closer than this (in physical pixels) between press and release still
+/// count as a tap rather than a drag.
+const TAP_SLOP: f64 = 6.0;
 
 /// Rux screen background `#11111b`.
 const BG: Color = Color::rgb8(0x11, 0x11, 0x1b);
@@ -57,13 +58,19 @@ struct RenderState {
 }
 
 /// The application: owns the vello render context, the document, the text
-/// engine, and (once resumed) one window.
+/// engine, input state, and (once resumed) one window.
 struct App {
     context: RenderContext,
     state: Option<RenderState>,
     path: PathBuf,
     document: Document,
     text: rux_text::TextEngine,
+    /// Hit regions from the most recent layout, for tap dispatch.
+    hits: Vec<HitRegion>,
+    /// Current pointer position (physical pixels).
+    pointer: (f64, f64),
+    /// Where the left button was pressed, if it is currently down.
+    press: Option<(f64, f64)>,
 }
 
 impl App {
@@ -75,6 +82,9 @@ impl App {
             path,
             document,
             text: rux_text::TextEngine::new(),
+            hits: Vec::new(),
+            pointer: (0.0, 0.0),
+            press: None,
         }
     }
 
@@ -91,17 +101,22 @@ impl App {
         }
     }
 
-    /// M5 demo driver: drain `level` by 1 each tick, wrapping at 0 back to 82,
-    /// so reactivity is visible without input. Replaced by real handlers in M6.
-    fn tick(&mut self) {
-        let signals = self.document.signals_mut();
-        let drained = signals
-            .get("level")
-            .and_then(|v| v.as_number())
-            .map(|n| if n <= 0.0 { 82.0 } else { n - 1.0 });
-        if let Some(next) = drained {
-            signals.set("level", rux_reactive::Value::Number(next));
-            self.document.rebuild();
+    /// Handle a completed tap at `(px, py)`: run the topmost hit region's `@tap`
+    /// handler, rebuild if it changed anything, and repaint.
+    fn dispatch_tap(&mut self, px: f64, py: f64) {
+        // Topmost region wins (later in list = drawn on top).
+        let handler = self
+            .hits
+            .iter()
+            .rev()
+            .find(|h| h.contains(px as f32, py as f32))
+            .map(|h| h.on_tap.clone());
+
+        if let Some(src) = handler {
+            if self.document.signals_mut().run_handler(&src) {
+                self.document.rebuild();
+                self.request_redraw();
+            }
         }
     }
 
@@ -119,6 +134,7 @@ impl App {
             state,
             document,
             text,
+            hits,
             ..
         } = self;
         let Some(state) = state.as_mut() else {
@@ -127,12 +143,14 @@ impl App {
         let width = state.surface.config.width;
         let height = state.surface.config.height;
 
-        // Layout (text sized via the engine's measure), then paint.
-        let paints = {
+        // Layout (text sized via the engine's measure), then paint. Cache the
+        // hit regions for tap dispatch.
+        let layout = {
             let mut measure = |t: &str, fs: f32, mw: Option<f32>| text.measure(t, fs, mw);
             rux_layout::layout(&document.root, width as f32, height as f32, &mut measure)
         };
-        state.scene = rux_paint::build_scene(&paints, text);
+        state.scene = rux_paint::build_scene(&layout.paints, text);
+        *hits = layout.hits;
 
         let device_handle = &context.devices[state.surface.dev_id];
         let surface_texture = state
@@ -212,9 +230,7 @@ impl ApplicationHandler<RuxEvent> for App {
     fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: RuxEvent) {
         match event {
             RuxEvent::Reload => self.reload(),
-            RuxEvent::Tick => self.tick(),
         }
-        // Both events change what should be on screen; repaint once.
         self.request_redraw();
     }
 
@@ -236,8 +252,30 @@ impl ApplicationHandler<RuxEvent> for App {
                 }
                 self.request_redraw();
             }
+            WindowEvent::CursorMoved { position, .. } => {
+                self.pointer = (position.x, position.y);
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } => {
+                self.press = Some(self.pointer);
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                button: MouseButton::Left,
+                ..
+            } => {
+                if let Some((sx, sy)) = self.press.take() {
+                    let (px, py) = self.pointer;
+                    if (px - sx).hypot(py - sy) <= TAP_SLOP {
+                        self.dispatch_tap(px, py);
+                    }
+                }
+            }
             // Event-driven: we only paint in response to a redraw request, which
-            // is issued on resume, resize, reload, and tick — not every frame.
+            // is issued on resume, resize, reload, and tap — not every frame.
             WindowEvent::RedrawRequested => self.render(),
             _ => {}
         }
@@ -282,16 +320,6 @@ pub fn run(path: PathBuf) {
     watcher
         .watch(&watch_dir, RecursiveMode::NonRecursive)
         .expect("watch directory");
-
-    // M5 demo timer: fire a Tick each second so signal reactivity is visible
-    // without input. Removed once real handlers drive mutations (M6).
-    let tick_proxy = event_loop.create_proxy();
-    std::thread::spawn(move || loop {
-        std::thread::sleep(Duration::from_secs(1));
-        if tick_proxy.send_event(RuxEvent::Tick).is_err() {
-            break; // event loop gone
-        }
-    });
 
     let mut app = App::new(path);
     event_loop.run_app(&mut app).expect("run app");

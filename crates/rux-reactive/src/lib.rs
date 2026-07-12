@@ -110,6 +110,142 @@ impl Signals {
             self.revision += 1;
         }
     }
+
+    /// Read a signal as a number, treating absent/non-numeric as 0.0.
+    fn number(&self, name: &str) -> f64 {
+        self.get(name).and_then(Value::as_number).unwrap_or(0.0)
+    }
+
+    /// Run an inline `@tap` handler. M6 supports a single assignment statement:
+    /// `name = expr`, `name += expr`, or `name -= expr`, where `expr` is
+    /// arithmetic over numbers and signal names. Returns whether it applied.
+    ///
+    /// A deliberately tiny interpreter — the real script tier (rhai, M8)
+    /// replaces it and adds function calls, conditionals, etc.
+    pub fn run_handler(&mut self, src: &str) -> bool {
+        let src = src.trim().trim_end_matches(';').trim();
+
+        let (name, op, rhs) = if let Some((l, r)) = src.split_once("+=") {
+            (l.trim(), '+', r)
+        } else if let Some((l, r)) = src.split_once("-=") {
+            (l.trim(), '-', r)
+        } else if let Some((l, r)) = src.split_once('=') {
+            (l.trim(), '=', r)
+        } else {
+            return false;
+        };
+
+        let value = eval(rhs, self);
+        let next = match op {
+            '+' => self.number(name) + value,
+            '-' => self.number(name) - value,
+            _ => value,
+        };
+        self.set(name, Value::Number(next));
+        true
+    }
+}
+
+/// Evaluate an arithmetic expression over numbers and signal names.
+fn eval(expr: &str, signals: &Signals) -> f64 {
+    let tokens: Vec<char> = expr.chars().collect();
+    let mut parser = Expr {
+        tokens: &tokens,
+        pos: 0,
+        signals,
+    };
+    parser.expr()
+}
+
+/// A tiny recursive-descent arithmetic parser: `+ - * /`, parens, numbers, names.
+struct Expr<'a> {
+    tokens: &'a [char],
+    pos: usize,
+    signals: &'a Signals,
+}
+
+impl Expr<'_> {
+    fn skip_ws(&mut self) {
+        while matches!(self.tokens.get(self.pos), Some(c) if c.is_whitespace()) {
+            self.pos += 1;
+        }
+    }
+
+    fn peek(&mut self) -> Option<char> {
+        self.skip_ws();
+        self.tokens.get(self.pos).copied()
+    }
+
+    fn expr(&mut self) -> f64 {
+        let mut acc = self.term();
+        while let Some(op) = self.peek() {
+            if op == '+' || op == '-' {
+                self.pos += 1;
+                let rhs = self.term();
+                acc = if op == '+' { acc + rhs } else { acc - rhs };
+            } else {
+                break;
+            }
+        }
+        acc
+    }
+
+    fn term(&mut self) -> f64 {
+        let mut acc = self.factor();
+        while let Some(op) = self.peek() {
+            if op == '*' || op == '/' {
+                self.pos += 1;
+                let rhs = self.factor();
+                acc = if op == '*' { acc * rhs } else { acc / rhs };
+            } else {
+                break;
+            }
+        }
+        acc
+    }
+
+    fn factor(&mut self) -> f64 {
+        match self.peek() {
+            Some('(') => {
+                self.pos += 1;
+                let v = self.expr();
+                if self.peek() == Some(')') {
+                    self.pos += 1;
+                }
+                v
+            }
+            Some('-') => {
+                self.pos += 1;
+                -self.factor()
+            }
+            Some(c) if c.is_ascii_digit() || c == '.' => self.number_literal(),
+            Some(c) if c.is_alphabetic() || c == '_' => {
+                let name = self.identifier();
+                self.signals.number(&name)
+            }
+            _ => 0.0,
+        }
+    }
+
+    fn number_literal(&mut self) -> f64 {
+        let start = self.pos;
+        while matches!(self.tokens.get(self.pos), Some(c) if c.is_ascii_digit() || *c == '.') {
+            self.pos += 1;
+        }
+        self.tokens[start..self.pos]
+            .iter()
+            .collect::<String>()
+            .parse()
+            .unwrap_or(0.0)
+    }
+
+    fn identifier(&mut self) -> String {
+        let start = self.pos;
+        while matches!(self.tokens.get(self.pos), Some(c) if c.is_alphanumeric() || *c == '_') {
+            self.pos += 1;
+        }
+        self.tokens[start..self.pos].iter().collect()
+    }
 }
 
 /// Parse a signal's initial literal: string, bool, number, else text.
@@ -146,5 +282,25 @@ mod tests {
         s.update_number("level", |v| v - 1.0);
         assert_eq!(s.get("level"), Some(&Value::Number(9.0)));
         assert!(s.revision() > r0);
+    }
+
+    #[test]
+    fn runs_inline_handlers() {
+        let mut s = Signals::from_script("let level = signal(50);");
+
+        assert!(s.run_handler("level = level - 1"));
+        assert_eq!(s.get("level"), Some(&Value::Number(49.0)));
+
+        s.run_handler("level += 10");
+        assert_eq!(s.get("level"), Some(&Value::Number(59.0)));
+
+        s.run_handler("level -= 9");
+        assert_eq!(s.get("level"), Some(&Value::Number(50.0)));
+
+        // Precedence and parens.
+        s.run_handler("level = 2 + 3 * 4");
+        assert_eq!(s.get("level"), Some(&Value::Number(14.0)));
+        s.run_handler("level = (2 + 3) * 4");
+        assert_eq!(s.get("level"), Some(&Value::Number(20.0)));
     }
 }

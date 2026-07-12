@@ -67,12 +67,14 @@ pub struct TextContent {
     pub color: Rgba,
 }
 
-/// A node in the view tree: a style, optional text, and children.
+/// A node in the view tree: a style, optional text, children, and an optional
+/// `@tap` handler (raw handler source, run by the shell on tap).
 #[derive(Clone, Debug)]
 pub struct Node {
     pub style: Style,
     pub text: Option<TextContent>,
     pub children: Vec<Node>,
+    pub on_tap: Option<String>,
 }
 
 impl Node {
@@ -81,6 +83,7 @@ impl Node {
             style,
             text: None,
             children: Vec::new(),
+            on_tap: None,
         }
     }
 
@@ -89,6 +92,7 @@ impl Node {
             style,
             text: Some(text),
             children: Vec::new(),
+            on_tap: None,
         }
     }
 
@@ -126,6 +130,30 @@ pub enum Paint {
     Text(PaintText),
 }
 
+/// An absolutely-positioned tappable region, carrying its `@tap` handler source.
+#[derive(Clone, Debug)]
+pub struct HitRegion {
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+    pub on_tap: String,
+}
+
+impl HitRegion {
+    pub fn contains(&self, px: f32, py: f32) -> bool {
+        px >= self.x && px <= self.x + self.width && py >= self.y && py <= self.y + self.height
+    }
+}
+
+/// The result of laying out a tree: paint items and hit regions, both in
+/// painter's/topmost-last order.
+#[derive(Clone, Debug, Default)]
+pub struct Layout {
+    pub paints: Vec<Paint>,
+    pub hits: Vec<HitRegion>,
+}
+
 /// Callback that measures a text block: `(text, font_size, max_width) -> (w, h)`.
 pub type Measure<'a> = dyn FnMut(&str, f32, Option<f32>) -> (f32, f32) + 'a;
 
@@ -160,8 +188,9 @@ fn build(
     tree: &mut TaffyTree<TextContent>,
     node: &Node,
     paint: &mut Vec<(NodeId, PaintKind)>,
+    handlers: &mut Vec<(NodeId, String)>,
 ) -> NodeId {
-    if let Some(tc) = &node.text {
+    let id = if let Some(tc) = &node.text {
         // Text leaves carry their content as taffy context, so the measure hook
         // can shape them.
         let id = tree
@@ -170,7 +199,11 @@ fn build(
         paint.push((id, PaintKind::Text(tc.clone())));
         id
     } else {
-        let children: Vec<NodeId> = node.children.iter().map(|c| build(tree, c, paint)).collect();
+        let children: Vec<NodeId> = node
+            .children
+            .iter()
+            .map(|c| build(tree, c, paint, handlers))
+            .collect();
         let id = if children.is_empty() {
             tree.new_leaf(to_taffy(&node.style)).expect("taffy leaf")
         } else {
@@ -185,7 +218,11 @@ fn build(
             },
         ));
         id
+    };
+    if let Some(handler) = &node.on_tap {
+        handlers.push((id, handler.clone()));
     }
+    id
 }
 
 fn collect(
@@ -194,7 +231,8 @@ fn collect(
     origin_x: f32,
     origin_y: f32,
     paint: &[(NodeId, PaintKind)],
-    out: &mut Vec<Paint>,
+    handlers: &[(NodeId, String)],
+    out: &mut Layout,
 ) {
     let layout = tree.layout(id).expect("layout");
     let x = origin_x + layout.location.x;
@@ -204,7 +242,7 @@ fn collect(
         match kind {
             PaintKind::Box { bg, radius } => {
                 if let Some(color) = bg {
-                    out.push(Paint::Rect(PaintRect {
+                    out.paints.push(Paint::Rect(PaintRect {
                         x,
                         y,
                         width: layout.size.width,
@@ -214,7 +252,7 @@ fn collect(
                     }));
                 }
             }
-            PaintKind::Text(tc) => out.push(Paint::Text(PaintText {
+            PaintKind::Text(tc) => out.paints.push(Paint::Text(PaintText {
                 x,
                 y,
                 width: layout.size.width,
@@ -224,17 +262,28 @@ fn collect(
         }
     }
 
+    if let Some((_, handler)) = handlers.iter().find(|(nid, _)| *nid == id) {
+        out.hits.push(HitRegion {
+            x,
+            y,
+            width: layout.size.width,
+            height: layout.size.height,
+            on_tap: handler.clone(),
+        });
+    }
+
     for child in tree.children(id).expect("children") {
-        collect(tree, child, x, y, paint, out);
+        collect(tree, child, x, y, paint, handlers, out);
     }
 }
 
-/// Lay out `root` into an `avail_w` x `avail_h` viewport and return paint items.
-/// Text leaves are sized via `measure`.
-pub fn layout(root: &Node, avail_w: f32, avail_h: f32, measure: &mut Measure) -> Vec<Paint> {
+/// Lay out `root` into an `avail_w` x `avail_h` viewport, returning paint items
+/// and hit regions. Text leaves are sized via `measure`.
+pub fn layout(root: &Node, avail_w: f32, avail_h: f32, measure: &mut Measure) -> Layout {
     let mut tree: TaffyTree<TextContent> = TaffyTree::new();
     let mut paint = Vec::new();
-    let root_id = build(&mut tree, root, &mut paint);
+    let mut handlers = Vec::new();
+    let root_id = build(&mut tree, root, &mut paint, &mut handlers);
 
     // Force the root to fill the viewport so a `screen` always covers the window.
     let mut root_style = to_taffy(&root.style);
@@ -275,7 +324,7 @@ pub fn layout(root: &Node, avail_w: f32, avail_h: f32, measure: &mut Measure) ->
     )
     .expect("compute layout");
 
-    let mut out = Vec::new();
-    collect(&tree, root_id, 0.0, 0.0, &paint, &mut out);
+    let mut out = Layout::default();
+    collect(&tree, root_id, 0.0, 0.0, &paint, &handlers, &mut out);
     out
 }

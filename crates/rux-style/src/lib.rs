@@ -324,6 +324,7 @@ fn build_node(
     let desc = ElemDesc::of(el);
     let props = matched_props(&desc, ancestors, rules);
     let style = interpret(&props);
+    let on_tap = el.attr("@tap").map(str::to_string);
 
     // Resolve inheritable text properties (own value, else inherited).
     let color = props
@@ -336,7 +337,7 @@ fn build_node(
         .unwrap_or(inherited.1);
 
     if el.tag == "text" {
-        return LayoutNode::text(
+        let mut node = LayoutNode::text(
             style,
             TextContent {
                 text: collect_text(el, signals),
@@ -344,6 +345,8 @@ fn build_node(
                 color,
             },
         );
+        node.on_tap = on_tap;
+        return node;
     }
 
     ancestors.push(desc);
@@ -363,6 +366,7 @@ fn build_node(
         style,
         text: None,
         children,
+        on_tap,
     }
 }
 

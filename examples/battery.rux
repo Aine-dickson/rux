@@ -3,6 +3,14 @@
         <view class="card">
             <text class="title">Battery</text>
             <text class="value">{{ level }}%</text>
+            <view class="row">
+                <button class="btn" @tap="level = level - 1">
+                    <text class="btnlabel">-</text>
+                </button>
+                <button class="btn" @tap="level = level + 1">
+                    <text class="btnlabel">+</text>
+                </button>
+            </view>
         </view>
     </screen>
 </template>
@@ -15,22 +23,37 @@
   .card {
     width: 320px;
     flex-direction: column;
-    gap: 8px;
+    gap: 12px;
     padding: 16px;
-    background: #3f2710;
+    background: #1e1e2e;
     border-radius: 12px;
   }
   .title {
-    color: #14aa2d;
-    font-size: 34px;
+    color: #9399b2;
+    font-size: 14px;
   }
   .value {
     color: #a6e3a1;
     font-size: 28px;
   }
+  .row {
+    flex-direction: row;
+    gap: 8px;
+  }
+  .btn {
+    width: 44px;
+    height: 44px;
+    background: #313244;
+    border-radius: 8px;
+  }
+  .btnlabel {
+    color: #cdd6f4;
+    font-size: 24px;
+  }
 </style>
 
 <script>
-  // Reactivity arrives in M5; for now the values are static text.
+  // Tap the buttons to change level. Inline handlers (M6); named functions
+  // arrive with the rhai script tier (M8).
   let level = signal(82);
 </script>
