@@ -1,0 +1,39 @@
+<template>
+  <screen class="screen">
+    <view class="card">
+      <view class="value"></view>
+      <view class="label"></view>
+    </view>
+  </screen>
+</template>
+
+<style>
+  .screen {
+    flex-grow: 1;
+    padding: 24px;
+  }
+  .card {
+    width: 320px;
+    flex-direction: column;
+    gap: 12px;
+    padding: 16px;
+    background: #1e1e2e;
+    border-radius: 12px;
+  }
+  .value {
+    height: 28px;
+    background: #a6e3a1;
+    border-radius: 6px;
+  }
+  .label {
+    width: 180px;
+    height: 16px;
+    background: #9399b2;
+    border-radius: 6px;
+  }
+</style>
+
+<script>
+  // M2 ignores the script section; reactivity arrives in M5.
+  let level = signal(82);
+</script>

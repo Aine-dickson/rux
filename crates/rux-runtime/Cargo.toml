@@ -1,0 +1,12 @@
+[package]
+name = "rux-runtime"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Rux runtime document model: loads a .rux file into a renderable tree."
+
+[dependencies]
+rux-parser = { path = "../rux-parser" }
+rux-style = { path = "../rux-style" }
+rux-layout = { path = "../rux-layout" }

@@ -7,9 +7,10 @@
 //! real `.rux` documents.
 
 use std::num::NonZeroUsize;
+use std::path::PathBuf;
 use std::sync::Arc;
 
-use rux_layout::{Axis, Node, Rgba, Style};
+use rux_layout::{Node, Style};
 use vello::peniko::Color;
 use vello::util::{RenderContext, RenderSurface};
 use vello::wgpu;
@@ -22,44 +23,17 @@ use winit::window::{Window, WindowId};
 /// Rux screen background `#11111b`.
 const BG: Color = Color::rgb8(0x11, 0x11, 0x1b);
 
-/// Build the M1 demo tree: a screen containing a rounded card with two rows.
-/// Roughly the guide's battery card, expressed directly in `rux-layout` terms.
-fn demo_tree() -> Node {
-    let card = Node::new(Style {
-        grow: 0.0,
-        width: Some(320.0),
-        padding: 16.0,
-        gap: 12.0,
-        axis: Axis::Column,
-        background: Some(Rgba::new(0.118, 0.118, 0.180, 1.0)), // #1e1e2e
-        radius: 12.0,
-        ..Default::default()
-    })
-    .with(Node::new(Style {
-        height: Some(28.0),
-        background: Some(Rgba::new(0.651, 0.890, 0.631, 1.0)), // #a6e3a1
-        radius: 6.0,
-        ..Default::default()
-    }))
-    .with(Node::new(Style {
-        height: Some(16.0),
-        width: Some(180.0),
-        background: Some(Rgba::new(0.576, 0.600, 0.729, 1.0)), // #9399b2
-        radius: 6.0,
-        ..Default::default()
-    }));
-
-    // The screen: fills the window, centres nothing yet (M1 is top-left flow),
-    // just pads and holds the card.
-    Node::new(Style {
-        grow: 1.0,
-        padding: 24.0,
-        gap: 0.0,
-        axis: Axis::Column,
-        background: None, // the window clear colour is the screen background
-        ..Default::default()
-    })
-    .with(card)
+/// Load a `.rux` document into a layout tree. On failure, log the diagnostic and
+/// fall back to an empty screen so the window still opens (M2's stand-in for the
+/// dev overlay described in the architecture doc).
+fn load_tree(path: &PathBuf) -> Node {
+    match rux_runtime::Document::load(path) {
+        Ok(doc) => doc.root,
+        Err(err) => {
+            eprintln!("failed to load {}: {err}", path.display());
+            Node::new(Style::default())
+        }
+    }
 }
 
 /// Per-window render state.
@@ -74,15 +48,18 @@ struct RenderState {
 struct App {
     context: RenderContext,
     state: Option<RenderState>,
+    path: PathBuf,
     tree: Node,
 }
 
 impl App {
-    fn new() -> Self {
+    fn new(path: PathBuf) -> Self {
+        let tree = load_tree(&path);
         Self {
             context: RenderContext::new(),
             state: None,
-            tree: demo_tree(),
+            path,
+            tree,
         }
     }
 
@@ -130,8 +107,15 @@ impl ApplicationHandler for App {
             return;
         }
 
+        let title = format!(
+            "Rux — {}",
+            self.path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "M2".into())
+        );
         let attributes = Window::default_attributes()
-            .with_title("Rux — M1")
+            .with_title(title)
             .with_inner_size(winit::dpi::LogicalSize::new(420.0, 640.0));
         let window = Arc::new(event_loop.create_window(attributes).expect("create window"));
 
@@ -192,11 +176,12 @@ impl ApplicationHandler for App {
     }
 }
 
-/// Open the Rux window and run the frame loop until the window closes.
-pub fn run() {
+/// Open the Rux window for the given `.rux` file and run the frame loop until the
+/// window closes.
+pub fn run(path: PathBuf) {
     let event_loop = EventLoop::new().expect("create event loop");
     event_loop.set_control_flow(ControlFlow::Wait);
 
-    let mut app = App::new();
+    let mut app = App::new(path);
     event_loop.run_app(&mut app).expect("run app");
 }

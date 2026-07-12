@@ -1,0 +1,9 @@
+[package]
+name = "rux-parser"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Rux template parser: splits the SFC and parses the XML-shaped template."
+
+[dependencies]

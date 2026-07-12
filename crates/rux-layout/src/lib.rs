@@ -165,6 +165,15 @@ pub fn layout(root: &Node, avail_w: f32, avail_h: f32) -> Vec<PaintRect> {
     let mut paint = Vec::new();
     let root_id = build(&mut tree, root, &mut paint);
 
+    // Force the root to fill the viewport regardless of its own size style, so a
+    // `screen` always covers the window.
+    let mut root_style = to_taffy(&root.style);
+    root_style.size = Size {
+        width: length(avail_w),
+        height: length(avail_h),
+    };
+    tree.set_style(root_id, root_style).expect("set root style");
+
     tree.compute_layout(
         root_id,
         Size {

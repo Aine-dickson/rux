@@ -12,3 +12,4 @@ vello.workspace = true
 pollster.workspace = true
 rux-layout = { path = "../rux-layout" }
 rux-paint = { path = "../rux-paint" }
+rux-runtime = { path = "../rux-runtime" }

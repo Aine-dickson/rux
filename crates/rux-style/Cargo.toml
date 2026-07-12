@@ -1,0 +1,13 @@
+[package]
+name = "rux-style"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Rux styling: literal CSS (lightningcss) cascaded onto the template tree."
+
+[dependencies]
+rux-parser = { path = "../rux-parser" }
+rux-layout = { path = "../rux-layout" }
+lightningcss = "1.0.0-alpha.71"
+# lightningcss added via `cargo add` so the exact published version is pinned.

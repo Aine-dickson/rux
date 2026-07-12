@@ -1,8 +1,15 @@
 //! `rux` — the Rux command-line entry point.
 //!
-//! Milestone M0: no arguments yet; just opens the shell window. The
-//! `rux run <app.rux>` interface arrives once there's a document to load.
+//! Usage: `rux [path/to/app.rux]`. With no argument it loads the bundled
+//! `examples/battery.rux`, so `cargo run` shows something immediately.
+
+use std::path::PathBuf;
 
 fn main() {
-    rux_shell::run();
+    let path = std::env::args()
+        .nth(1)
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("examples/battery.rux"));
+
+    rux_shell::run(path);
 }

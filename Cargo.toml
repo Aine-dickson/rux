@@ -1,6 +1,14 @@
 [workspace]
 resolver = "2"
-members = ["crates/rux-shell", "crates/rux-cli", "crates/rux-layout", "crates/rux-paint"]
+members = [
+    "crates/rux-shell",
+    "crates/rux-cli",
+    "crates/rux-layout",
+    "crates/rux-paint",
+    "crates/rux-parser",
+    "crates/rux-style",
+    "crates/rux-runtime",
+]
 
 [workspace.package]
 edition = "2021"
