@@ -18,6 +18,7 @@ pub enum Value {
     Number(f64),
     Text(String),
     Bool(bool),
+    List(Vec<Value>),
 }
 
 impl Value {
@@ -33,6 +34,11 @@ impl Value {
             }
             Value::Text(s) => s.clone(),
             Value::Bool(b) => b.to_string(),
+            Value::List(items) => items
+                .iter()
+                .map(Value::to_display)
+                .collect::<Vec<_>>()
+                .join(", "),
         }
     }
 
@@ -40,6 +46,23 @@ impl Value {
         match self {
             Value::Number(n) => Some(*n),
             _ => None,
+        }
+    }
+
+    pub fn as_list(&self) -> Option<&[Value]> {
+        match self {
+            Value::List(items) => Some(items),
+            _ => None,
+        }
+    }
+
+    /// Truthiness for conditions: non-zero / non-empty / true.
+    pub fn is_truthy(&self) -> bool {
+        match self {
+            Value::Number(n) => *n != 0.0,
+            Value::Text(s) => !s.is_empty(),
+            Value::Bool(b) => *b,
+            Value::List(items) => !items.is_empty(),
         }
     }
 }
@@ -135,7 +158,10 @@ impl Signals {
             return false;
         };
 
-        let value = eval(rhs, self);
+        let value = {
+            let lookup = |n: &str| self.number(n);
+            eval_number(rhs, &lookup)
+        };
         let next = match op {
             '+' => self.number(name) + value,
             '-' => self.number(name) - value,
@@ -146,22 +172,49 @@ impl Signals {
     }
 }
 
-/// Evaluate an arithmetic expression over numbers and signal names.
-fn eval(expr: &str, signals: &Signals) -> f64 {
+/// Evaluate an arithmetic expression; identifiers resolved via `lookup`.
+pub fn eval_number(expr: &str, lookup: &dyn Fn(&str) -> f64) -> f64 {
+    let tokens: Vec<char> = expr.chars().collect();
+    Expr {
+        tokens: &tokens,
+        pos: 0,
+        lookup,
+    }
+    .expr()
+}
+
+/// Evaluate a condition: a comparison (`a < b`, `a == b`, …) or, absent an
+/// operator, the truthiness (`!= 0`) of an arithmetic expression.
+pub fn eval_condition(expr: &str, lookup: &dyn Fn(&str) -> f64) -> bool {
     let tokens: Vec<char> = expr.chars().collect();
     let mut parser = Expr {
         tokens: &tokens,
         pos: 0,
-        signals,
+        lookup,
     };
-    parser.expr()
+    let lhs = parser.expr();
+    match parser.read_comparator() {
+        Some(op) => {
+            let rhs = parser.expr();
+            match op.as_str() {
+                "<" => lhs < rhs,
+                ">" => lhs > rhs,
+                "<=" => lhs <= rhs,
+                ">=" => lhs >= rhs,
+                "==" => lhs == rhs,
+                "!=" => lhs != rhs,
+                _ => false,
+            }
+        }
+        None => lhs != 0.0,
+    }
 }
 
-/// A tiny recursive-descent arithmetic parser: `+ - * /`, parens, numbers, names.
+/// A tiny recursive-descent parser: `+ - * /`, comparisons, parens, numbers, names.
 struct Expr<'a> {
     tokens: &'a [char],
     pos: usize,
-    signals: &'a Signals,
+    lookup: &'a dyn Fn(&str) -> f64,
 }
 
 impl Expr<'_> {
@@ -174,6 +227,24 @@ impl Expr<'_> {
     fn peek(&mut self) -> Option<char> {
         self.skip_ws();
         self.tokens.get(self.pos).copied()
+    }
+
+    /// Consume a comparison operator if present.
+    fn read_comparator(&mut self) -> Option<String> {
+        self.skip_ws();
+        let c = self.tokens.get(self.pos).copied()?;
+        let c2 = self.tokens.get(self.pos + 1).copied();
+        let op = match (c, c2) {
+            ('<', Some('=')) => "<=",
+            ('>', Some('=')) => ">=",
+            ('=', Some('=')) => "==",
+            ('!', Some('=')) => "!=",
+            ('<', _) => "<",
+            ('>', _) => ">",
+            _ => return None,
+        };
+        self.pos += op.len();
+        Some(op.to_string())
     }
 
     fn expr(&mut self) -> f64 {
@@ -221,7 +292,7 @@ impl Expr<'_> {
             Some(c) if c.is_ascii_digit() || c == '.' => self.number_literal(),
             Some(c) if c.is_alphabetic() || c == '_' => {
                 let name = self.identifier();
-                self.signals.number(&name)
+                (self.lookup)(&name)
             }
             _ => 0.0,
         }
@@ -248,8 +319,17 @@ impl Expr<'_> {
     }
 }
 
-/// Parse a signal's initial literal: string, bool, number, else text.
+/// Parse a signal's initial literal: list, string, bool, number, else text.
 fn parse_literal(arg: &str) -> Value {
+    let arg = arg.trim();
+    if let Some(inner) = arg.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
+        let items = split_top_level(inner)
+            .into_iter()
+            .filter(|s| !s.trim().is_empty())
+            .map(|s| parse_literal(s.trim()))
+            .collect();
+        return Value::List(items);
+    }
     if let Some(inner) = arg.strip_prefix('"').and_then(|s| s.strip_suffix('"')) {
         return Value::Text(inner.to_string());
     }
@@ -262,6 +342,36 @@ fn parse_literal(arg: &str) -> Value {
         return Value::Number(n);
     }
     Value::Text(arg.to_string())
+}
+
+/// Split on top-level commas (not inside quotes or nested brackets).
+fn split_top_level(s: &str) -> Vec<String> {
+    let mut parts = Vec::new();
+    let mut buf = String::new();
+    let mut depth = 0;
+    let mut in_str = false;
+    for c in s.chars() {
+        match c {
+            '"' => {
+                in_str = !in_str;
+                buf.push(c);
+            }
+            '[' if !in_str => {
+                depth += 1;
+                buf.push(c);
+            }
+            ']' if !in_str => {
+                depth -= 1;
+                buf.push(c);
+            }
+            ',' if !in_str && depth == 0 => {
+                parts.push(std::mem::take(&mut buf));
+            }
+            _ => buf.push(c),
+        }
+    }
+    parts.push(buf);
+    parts
 }
 
 #[cfg(test)]
@@ -302,5 +412,24 @@ mod tests {
         assert_eq!(s.get("level"), Some(&Value::Number(14.0)));
         s.run_handler("level = (2 + 3) * 4");
         assert_eq!(s.get("level"), Some(&Value::Number(20.0)));
+    }
+
+    #[test]
+    fn parses_list_signal() {
+        let s = Signals::from_script(r#"let items = signal([1, 2, 3]);"#);
+        let items = s.get("items").unwrap().as_list().unwrap();
+        assert_eq!(items.len(), 3);
+        assert_eq!(items[0], Value::Number(1.0));
+    }
+
+    #[test]
+    fn evaluates_conditions() {
+        let s = Signals::from_script("let level = signal(15);");
+        let lookup = |n: &str| s.get(n).and_then(Value::as_number).unwrap_or(0.0);
+        assert!(eval_condition("level < 20", &lookup));
+        assert!(!eval_condition("level > 20", &lookup));
+        assert!(eval_condition("level == 15", &lookup));
+        assert!(!eval_condition("level != 15", &lookup));
+        assert!(eval_condition("level", &lookup)); // non-zero => truthy
     }
 }

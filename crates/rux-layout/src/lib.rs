@@ -31,9 +31,21 @@ pub enum Axis {
     Row,
 }
 
+/// CSS `display`. Defaults to `Block` (strict-CSS fidelity): flex layout,
+/// `gap`, and `flex-direction` only apply under `Flex`.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum Display {
+    #[default]
+    Block,
+    Flex,
+    /// Removed from layout entirely (no space reserved).
+    None,
+}
+
 /// The style subset M-series understands (a stand-in for the CSS `ComputedStyle`).
 #[derive(Clone, Debug)]
 pub struct Style {
+    pub display: Display,
     pub width: Option<f32>,
     pub height: Option<f32>,
     pub grow: f32,
@@ -47,6 +59,7 @@ pub struct Style {
 impl Default for Style {
     fn default() -> Self {
         Self {
+            display: Display::Block,
             width: None,
             height: None,
             grow: 0.0,
@@ -75,6 +88,8 @@ pub struct Node {
     pub text: Option<TextContent>,
     pub children: Vec<Node>,
     pub on_tap: Option<String>,
+    /// `r-show="false"`: laid out (space reserved) but not painted.
+    pub hidden: bool,
 }
 
 impl Node {
@@ -84,6 +99,7 @@ impl Node {
             text: None,
             children: Vec::new(),
             on_tap: None,
+            hidden: false,
         }
     }
 
@@ -93,6 +109,7 @@ impl Node {
             text: Some(text),
             children: Vec::new(),
             on_tap: None,
+            hidden: false,
         }
     }
 
@@ -165,7 +182,11 @@ enum PaintKind {
 
 fn to_taffy(style: &Style) -> taffy::Style {
     taffy::Style {
-        display: Display::Flex,
+        display: match style.display {
+            Display::Block => taffy::Display::Block,
+            Display::Flex => taffy::Display::Flex,
+            Display::None => taffy::Display::None,
+        },
         flex_direction: match style.axis {
             Axis::Column => FlexDirection::Column,
             Axis::Row => FlexDirection::Row,
@@ -189,6 +210,7 @@ fn build(
     node: &Node,
     paint: &mut Vec<(NodeId, PaintKind)>,
     handlers: &mut Vec<(NodeId, String)>,
+    hidden: &mut Vec<NodeId>,
 ) -> NodeId {
     let id = if let Some(tc) = &node.text {
         // Text leaves carry their content as taffy context, so the measure hook
@@ -202,7 +224,7 @@ fn build(
         let children: Vec<NodeId> = node
             .children
             .iter()
-            .map(|c| build(tree, c, paint, handlers))
+            .map(|c| build(tree, c, paint, handlers, hidden))
             .collect();
         let id = if children.is_empty() {
             tree.new_leaf(to_taffy(&node.style)).expect("taffy leaf")
@@ -222,9 +244,13 @@ fn build(
     if let Some(handler) = &node.on_tap {
         handlers.push((id, handler.clone()));
     }
+    if node.hidden {
+        hidden.push(id);
+    }
     id
 }
 
+#[allow(clippy::too_many_arguments)]
 fn collect(
     tree: &TaffyTree<TextContent>,
     id: NodeId,
@@ -232,11 +258,18 @@ fn collect(
     origin_y: f32,
     paint: &[(NodeId, PaintKind)],
     handlers: &[(NodeId, String)],
+    hidden: &[NodeId],
     out: &mut Layout,
 ) {
     let layout = tree.layout(id).expect("layout");
     let x = origin_x + layout.location.x;
     let y = origin_y + layout.location.y;
+
+    // r-show=false: the node kept its layout slot but paints nothing (nor its
+    // subtree, nor its hit regions).
+    if hidden.contains(&id) {
+        return;
+    }
 
     if let Some((_, kind)) = paint.iter().find(|(nid, _)| *nid == id) {
         match kind {
@@ -273,7 +306,7 @@ fn collect(
     }
 
     for child in tree.children(id).expect("children") {
-        collect(tree, child, x, y, paint, handlers, out);
+        collect(tree, child, x, y, paint, handlers, hidden, out);
     }
 }
 
@@ -283,7 +316,8 @@ pub fn layout(root: &Node, avail_w: f32, avail_h: f32, measure: &mut Measure) ->
     let mut tree: TaffyTree<TextContent> = TaffyTree::new();
     let mut paint = Vec::new();
     let mut handlers = Vec::new();
-    let root_id = build(&mut tree, root, &mut paint, &mut handlers);
+    let mut hidden = Vec::new();
+    let root_id = build(&mut tree, root, &mut paint, &mut handlers, &mut hidden);
 
     // Force the root to fill the viewport so a `screen` always covers the window.
     let mut root_style = to_taffy(&root.style);
@@ -325,6 +359,6 @@ pub fn layout(root: &Node, avail_w: f32, avail_h: f32, measure: &mut Measure) ->
     .expect("compute layout");
 
     let mut out = Layout::default();
-    collect(&tree, root_id, 0.0, 0.0, &paint, &handlers, &mut out);
+    collect(&tree, root_id, 0.0, 0.0, &paint, &handlers, &hidden, &mut out);
     out
 }

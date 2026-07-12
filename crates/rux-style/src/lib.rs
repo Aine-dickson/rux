@@ -14,9 +14,12 @@ use std::collections::HashMap;
 use lightningcss::rules::CssRule;
 use lightningcss::stylesheet::{ParserOptions, PrinterOptions, StyleSheet};
 use lightningcss::traits::ToCss;
-use rux_layout::{Axis, Node as LayoutNode, Rgba, Style, TextContent};
+use rux_layout::{Axis, Display, Node as LayoutNode, Rgba, Style, TextContent};
 use rux_parser::{Element, Node as TplNode, Sfc};
-use rux_reactive::Signals;
+use rux_reactive::{Signals, Value};
+
+/// Loop-variable bindings introduced by `r-for`, shadowing signals by name.
+type Locals = HashMap<String, Value>;
 
 /// Default inherited text colour (`#cdd6f4`) and font size, used at the root
 /// before any `color` / `font-size` rule applies. Text properties inherit.
@@ -28,17 +31,41 @@ const DEFAULT_FONT_SIZE: f32 = 16.0;
 pub fn build_styled_tree(sfc: &Sfc, signals: &Signals) -> Result<LayoutNode, String> {
     let rules = parse_rules(&sfc.style);
     let mut ancestors: Vec<ElemDesc> = Vec::new();
+    let locals = Locals::new();
     Ok(build_node(
         &sfc.template,
         &rules,
         &mut ancestors,
         (DEFAULT_COLOR, DEFAULT_FONT_SIZE),
         signals,
+        &locals,
     ))
 }
 
-/// Replace `{{ expr }}` spans in `text` with evaluated signal values.
-fn interpolate(text: &str, signals: &Signals) -> String {
+/// Look up a name in the loop-local scope first, then in signals.
+fn lookup<'a>(name: &str, signals: &'a Signals, locals: &'a Locals) -> Option<&'a Value> {
+    locals.get(name).or_else(|| signals.get(name))
+}
+
+/// A numeric lookup closure for the arithmetic/condition evaluator.
+fn num_lookup<'a>(
+    signals: &'a Signals,
+    locals: &'a Locals,
+) -> impl Fn(&str) -> f64 + 'a {
+    move |name: &str| {
+        lookup(name, signals, locals)
+            .and_then(Value::as_number)
+            .unwrap_or(0.0)
+    }
+}
+
+/// Evaluate a `r-if` / `r-elif` / `r-show` condition.
+fn eval_cond(expr: &str, signals: &Signals, locals: &Locals) -> bool {
+    rux_reactive::eval_condition(expr, &num_lookup(signals, locals))
+}
+
+/// Replace `{{ expr }}` spans in `text` with evaluated values.
+fn interpolate(text: &str, signals: &Signals, locals: &Locals) -> String {
     let mut out = String::new();
     let mut rest = text;
     while let Some(start) = rest.find("{{") {
@@ -46,7 +73,7 @@ fn interpolate(text: &str, signals: &Signals) -> String {
         let after = &rest[start + 2..];
         match after.find("}}") {
             Some(end) => {
-                out.push_str(&eval_expr(after[..end].trim(), signals));
+                out.push_str(&eval_expr(after[..end].trim(), signals, locals));
                 rest = &after[end + 2..];
             }
             None => {
@@ -59,12 +86,13 @@ fn interpolate(text: &str, signals: &Signals) -> String {
     out
 }
 
-/// M5 expression eval: a bare signal name or a numeric literal. Unknown → empty.
-fn eval_expr(expr: &str, signals: &Signals) -> String {
-    if let Some(v) = signals.get(expr) {
+/// Expression eval for interpolation: a signal/local name or a numeric literal.
+/// Unknown → empty.
+fn eval_expr(expr: &str, signals: &Signals, locals: &Locals) -> String {
+    if let Some(v) = lookup(expr, signals, locals) {
         v.to_display()
     } else if let Ok(n) = expr.parse::<f64>() {
-        rux_reactive::Value::Number(n).to_display()
+        Value::Number(n).to_display()
     } else {
         String::new()
     }
@@ -302,29 +330,37 @@ fn matched_props(
 }
 
 /// Concatenate the direct text children of an element, interpolating `{{ }}`.
-fn collect_text(el: &Element, signals: &Signals) -> String {
+fn collect_text(el: &Element, signals: &Signals, locals: &Locals) -> String {
     let mut parts = Vec::new();
     for child in &el.children {
         if let TplNode::Text(t) = child {
-            parts.push(interpolate(t.trim(), signals));
+            parts.push(interpolate(t.trim(), signals, locals));
         }
     }
     parts.join(" ")
 }
 
-/// `inherited` carries the resolved `(color, font_size)` down the tree, since
-/// text properties inherit in CSS.
+/// Build one element into a layout node. Structural directives on the element
+/// itself (`r-for`, `r-if`, `r-elif`, `r-else`) are handled by the parent in
+/// [`build_children`]; this function handles per-node concerns (`r-show`) and
+/// recurses into children.
+///
+/// `inherited` carries the resolved `(color, font_size)` (text properties
+/// inherit); `locals` carries `r-for` loop bindings.
 fn build_node(
     el: &Element,
     rules: &[Rule],
     ancestors: &mut Vec<ElemDesc>,
     inherited: (Rgba, f32),
     signals: &Signals,
+    locals: &Locals,
 ) -> LayoutNode {
     let desc = ElemDesc::of(el);
     let props = matched_props(&desc, ancestors, rules);
     let style = interpret(&props);
     let on_tap = el.attr("@tap").map(str::to_string);
+    // r-show="false" keeps the layout slot but paints nothing.
+    let hidden = el.attr("r-show").is_some_and(|e| !eval_cond(e, signals, locals));
 
     // Resolve inheritable text properties (own value, else inherited).
     let color = props
@@ -340,26 +376,33 @@ fn build_node(
         let mut node = LayoutNode::text(
             style,
             TextContent {
-                text: collect_text(el, signals),
+                text: collect_text(el, signals, locals),
                 font_size,
                 color,
             },
         );
         node.on_tap = on_tap;
+        node.hidden = hidden;
         return node;
     }
 
     ancestors.push(desc);
-    let children = el
+    let element_children: Vec<&Element> = el
         .children
         .iter()
         .filter_map(|n| match n {
-            TplNode::Element(child) => {
-                Some(build_node(child, rules, ancestors, (color, font_size), signals))
-            }
+            TplNode::Element(child) => Some(child),
             TplNode::Text(_) => None,
         })
         .collect();
+    let children = build_children(
+        &element_children,
+        rules,
+        ancestors,
+        (color, font_size),
+        signals,
+        locals,
+    );
     ancestors.pop();
 
     LayoutNode {
@@ -367,13 +410,89 @@ fn build_node(
         text: None,
         children,
         on_tap,
+        hidden,
     }
+}
+
+/// Parse `r-for="item in items"` into `(binding, collection_expr)`.
+fn parse_for(expr: &str) -> Option<(&str, &str)> {
+    let (var, coll) = expr.split_once(" in ")?;
+    Some((var.trim(), coll.trim()))
+}
+
+/// Build a sequence of element children, applying the structural directives
+/// `r-for` (repeat) and `r-if`/`r-elif`/`r-else` (conditional chains).
+#[allow(clippy::too_many_arguments)]
+fn build_children(
+    elements: &[&Element],
+    rules: &[Rule],
+    ancestors: &mut Vec<ElemDesc>,
+    inherited: (Rgba, f32),
+    signals: &Signals,
+    locals: &Locals,
+) -> Vec<LayoutNode> {
+    let mut out = Vec::new();
+    // Tracks an active r-if/r-elif/r-else chain and whether a branch was taken.
+    let mut in_chain = false;
+    let mut chain_satisfied = false;
+
+    for el in elements {
+        // r-for expands the element once per collection item; it ends any chain.
+        if let Some(for_expr) = el.attr("r-for") {
+            in_chain = false;
+            if let Some((var, coll)) = parse_for(for_expr) {
+                if let Some(items) = lookup(coll, signals, locals).and_then(Value::as_list) {
+                    for item in items {
+                        let mut child_locals = locals.clone();
+                        child_locals.insert(var.to_string(), item.clone());
+                        out.push(build_node(el, rules, ancestors, inherited, signals, &child_locals));
+                    }
+                }
+            }
+            continue;
+        }
+
+        if let Some(cond) = el.attr("r-if") {
+            in_chain = true;
+            chain_satisfied = eval_cond(cond, signals, locals);
+            if chain_satisfied {
+                out.push(build_node(el, rules, ancestors, inherited, signals, locals));
+            }
+            continue;
+        }
+        if let Some(cond) = el.attr("r-elif") {
+            if in_chain && !chain_satisfied && eval_cond(cond, signals, locals) {
+                chain_satisfied = true;
+                out.push(build_node(el, rules, ancestors, inherited, signals, locals));
+            }
+            continue;
+        }
+        if el.attr("r-else").is_some() {
+            if in_chain && !chain_satisfied {
+                out.push(build_node(el, rules, ancestors, inherited, signals, locals));
+            }
+            in_chain = false;
+            continue;
+        }
+
+        // A plain element ends any active chain.
+        in_chain = false;
+        out.push(build_node(el, rules, ancestors, inherited, signals, locals));
+    }
+    out
 }
 
 // ── Value interpretation (honored subset) ───────────────────────────────────
 
 fn interpret(p: &HashMap<String, String>) -> Style {
     let mut st = Style::default();
+    if let Some(v) = p.get("display") {
+        st.display = match v.trim() {
+            "flex" => Display::Flex,
+            "none" => Display::None,
+            _ => Display::Block,
+        };
+    }
     if let Some(v) = p.get("width") {
         st.width = parse_px(first(v));
     }
@@ -464,16 +583,40 @@ fn parse_hex(hex: &str) -> Option<Rgba> {
 
 #[cfg(test)]
 mod tests {
-    use super::interpolate;
+    use super::{build_styled_tree, interpolate, Locals};
     use rux_reactive::Signals;
 
     #[test]
     fn interpolates_signal_bindings() {
         let signals = Signals::from_script(r#"let level = signal(82); let who = signal("Cam");"#);
-        assert_eq!(interpolate("{{ level }}%", &signals), "82%");
-        assert_eq!(interpolate("Hi {{ who }}!", &signals), "Hi Cam!");
-        assert_eq!(interpolate("plain text", &signals), "plain text");
-        assert_eq!(interpolate("{{ missing }}!", &signals), "!"); // unknown → empty
+        let locals = Locals::new();
+        assert_eq!(interpolate("{{ level }}%", &signals, &locals), "82%");
+        assert_eq!(interpolate("Hi {{ who }}!", &signals, &locals), "Hi Cam!");
+        assert_eq!(interpolate("plain text", &signals, &locals), "plain text");
+        assert_eq!(interpolate("{{ missing }}!", &signals, &locals), "!"); // unknown → empty
+    }
+
+    #[test]
+    fn expands_r_for_and_r_if_chain() {
+        let src = r#"
+            <template>
+              <screen>
+                <view r-for="n in nums"><text>{{ n }}</text></view>
+                <text r-if="level < 5">low</text>
+                <text r-elif="level < 50">mid</text>
+                <text r-else>high</text>
+              </screen>
+            </template>
+            <script> let nums = signal([1, 2, 3]); let level = signal(10); </script>
+        "#;
+        let sfc = rux_parser::parse_sfc(src).unwrap();
+        let signals = Signals::from_script(&sfc.script);
+        let root = build_styled_tree(&sfc, &signals).unwrap();
+
+        // 3 views from r-for + exactly one branch (level=10 → the r-elif "mid").
+        assert_eq!(root.children.len(), 4);
+        let mid = root.children[3].text.as_ref().unwrap();
+        assert_eq!(mid.text, "mid");
     }
 }
 

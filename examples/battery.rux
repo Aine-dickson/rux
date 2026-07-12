@@ -3,6 +3,8 @@
         <view class="card">
             <text class="title">Battery</text>
             <text class="value">{{ level }}%</text>
+            <text class="warn" r-if="level < 20">Low battery</text>
+
             <view class="row">
                 <button class="btn" @tap="level = level - 1">
                     <text class="btnlabel">-</text>
@@ -11,18 +13,25 @@
                     <text class="btnlabel">+</text>
                 </button>
             </view>
+
+            <view class="row">
+                <text class="tick" r-for="t in ticks">{{ t }}</text>
+            </view>
         </view>
     </screen>
 </template>
 
 <style>
   .screen {
+    display: flex;
+    flex-direction: column;
     flex-grow: 1;
     padding: 24px;
   }
   .card {
-    width: 320px;
+    display: flex;
     flex-direction: column;
+    width: 320px;
     gap: 12px;
     padding: 16px;
     background: #1e1e2e;
@@ -36,11 +45,17 @@
     color: #a6e3a1;
     font-size: 28px;
   }
+  .warn {
+    color: #f38ba8;
+    font-size: 16px;
+  }
   .row {
+    display: flex;
     flex-direction: row;
     gap: 8px;
   }
   .btn {
+    display: flex;
     width: 44px;
     height: 44px;
     background: #313244;
@@ -50,10 +65,15 @@
     color: #cdd6f4;
     font-size: 24px;
   }
+  .tick {
+    color: #6c7086;
+    font-size: 14px;
+  }
 </style>
 
 <script>
-  // Tap the buttons to change level. Inline handlers (M6); named functions
-  // arrive with the rhai script tier (M8).
+  // Tap -/+ to change level; the warning appears when level < 20.
+  // `ticks` drives the r-for row. Named handlers arrive with rhai (M8).
   let level = signal(82);
+  let ticks = signal(["one", "two", "three"]);
 </script>
