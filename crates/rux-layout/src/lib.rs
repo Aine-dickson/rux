@@ -1,14 +1,14 @@
-//! Rux layout — milestone M1.
+//! Rux layout — milestones M1–M4.
 //!
-//! A minimal styled node tree fed through `taffy` (a flexbox engine) to produce
-//! absolute, painted rectangles. This is a deliberately small slice of Stage 4
-//! in `docs/04-architecture.md`: no CSS parsing yet (that's M2), no text (M4).
-//! The node tree here is built in Rust by hand; later it comes from the parser.
+//! A styled node tree fed through `taffy` (flexbox) to produce absolute paint
+//! items. Boxes come straight from taffy; text leaves are sized through a
+//! caller-supplied `measure` callback (so this crate stays free of any font
+//! dependency — the shell owns the text engine). See `docs/04-architecture.md`,
+//! Stage 4.
 
 use taffy::prelude::*;
 
-/// Straight RGBA in the 0..=1 range. Kept renderer-agnostic so this crate has no
-/// dependency on the paint backend; `rux-paint` converts to its own colour type.
+/// Straight RGBA in the 0..=1 range. Renderer-agnostic.
 #[derive(Clone, Copy, Debug)]
 pub struct Rgba {
     pub r: f32,
@@ -31,11 +31,9 @@ pub enum Axis {
     Row,
 }
 
-/// The subset of style M1 understands. A hand-built stand-in for the
-/// `ComputedStyle` that the CSS cascade will produce in M2.
+/// The style subset M-series understands (a stand-in for the CSS `ComputedStyle`).
 #[derive(Clone, Debug)]
 pub struct Style {
-    /// `None` = auto (fill/according to content); `Some(px)` = fixed length.
     pub width: Option<f32>,
     pub height: Option<f32>,
     pub grow: f32,
@@ -61,10 +59,19 @@ impl Default for Style {
     }
 }
 
-/// A node in the view tree: a style plus children.
+/// Text carried by a leaf node.
+#[derive(Clone, Debug)]
+pub struct TextContent {
+    pub text: String,
+    pub font_size: f32,
+    pub color: Rgba,
+}
+
+/// A node in the view tree: a style, optional text, and children.
 #[derive(Clone, Debug)]
 pub struct Node {
     pub style: Style,
+    pub text: Option<TextContent>,
     pub children: Vec<Node>,
 }
 
@@ -72,6 +79,15 @@ impl Node {
     pub fn new(style: Style) -> Self {
         Self {
             style,
+            text: None,
+            children: Vec::new(),
+        }
+    }
+
+    pub fn text(style: Style, text: TextContent) -> Self {
+        Self {
+            style,
+            text: Some(text),
             children: Vec::new(),
         }
     }
@@ -82,7 +98,7 @@ impl Node {
     }
 }
 
-/// A resolved rectangle in absolute window coordinates, ready to paint.
+/// A resolved, absolutely-positioned filled rectangle.
 #[derive(Clone, Copy, Debug)]
 pub struct PaintRect {
     pub x: f32,
@@ -93,7 +109,32 @@ pub struct PaintRect {
     pub radius: f32,
 }
 
-/// Translate our `Style` into a taffy `Style`.
+/// A resolved, absolutely-positioned text block.
+#[derive(Clone, Debug)]
+pub struct PaintText {
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+    pub content: TextContent,
+}
+
+/// A drawable item in painter's order (parents before children).
+#[derive(Clone, Debug)]
+pub enum Paint {
+    Rect(PaintRect),
+    Text(PaintText),
+}
+
+/// Callback that measures a text block: `(text, font_size, max_width) -> (w, h)`.
+pub type Measure<'a> = dyn FnMut(&str, f32, Option<f32>) -> (f32, f32) + 'a;
+
+/// What each taffy node paints.
+enum PaintKind {
+    Box { bg: Option<Rgba>, radius: f32 },
+    Text(TextContent),
+}
+
 fn to_taffy(style: &Style) -> taffy::Style {
     taffy::Style {
         display: Display::Flex,
@@ -115,42 +156,72 @@ fn to_taffy(style: &Style) -> taffy::Style {
     }
 }
 
-/// Build the taffy tree recursively, recording paint info alongside each node id.
 fn build(
-    tree: &mut TaffyTree<()>,
+    tree: &mut TaffyTree<TextContent>,
     node: &Node,
-    paint: &mut Vec<(NodeId, Option<Rgba>, f32)>,
+    paint: &mut Vec<(NodeId, PaintKind)>,
 ) -> NodeId {
-    let child_ids: Vec<NodeId> = node.children.iter().map(|c| build(tree, c, paint)).collect();
-    let id = tree
-        .new_with_children(to_taffy(&node.style), &child_ids)
-        .expect("taffy node");
-    paint.push((id, node.style.background, node.style.radius));
-    id
+    if let Some(tc) = &node.text {
+        // Text leaves carry their content as taffy context, so the measure hook
+        // can shape them.
+        let id = tree
+            .new_leaf_with_context(to_taffy(&node.style), tc.clone())
+            .expect("taffy text leaf");
+        paint.push((id, PaintKind::Text(tc.clone())));
+        id
+    } else {
+        let children: Vec<NodeId> = node.children.iter().map(|c| build(tree, c, paint)).collect();
+        let id = if children.is_empty() {
+            tree.new_leaf(to_taffy(&node.style)).expect("taffy leaf")
+        } else {
+            tree.new_with_children(to_taffy(&node.style), &children)
+                .expect("taffy node")
+        };
+        paint.push((
+            id,
+            PaintKind::Box {
+                bg: node.style.background,
+                radius: node.style.radius,
+            },
+        ));
+        id
+    }
 }
 
-/// Walk the computed layout, accumulating parent offsets into absolute rects.
 fn collect(
-    tree: &TaffyTree<()>,
+    tree: &TaffyTree<TextContent>,
     id: NodeId,
     origin_x: f32,
     origin_y: f32,
-    paint: &[(NodeId, Option<Rgba>, f32)],
-    out: &mut Vec<PaintRect>,
+    paint: &[(NodeId, PaintKind)],
+    out: &mut Vec<Paint>,
 ) {
     let layout = tree.layout(id).expect("layout");
     let x = origin_x + layout.location.x;
     let y = origin_y + layout.location.y;
 
-    if let Some((_, Some(color), radius)) = paint.iter().find(|(nid, _, _)| *nid == id).copied() {
-        out.push(PaintRect {
-            x,
-            y,
-            width: layout.size.width,
-            height: layout.size.height,
-            color,
-            radius,
-        });
+    if let Some((_, kind)) = paint.iter().find(|(nid, _)| *nid == id) {
+        match kind {
+            PaintKind::Box { bg, radius } => {
+                if let Some(color) = bg {
+                    out.push(Paint::Rect(PaintRect {
+                        x,
+                        y,
+                        width: layout.size.width,
+                        height: layout.size.height,
+                        color: *color,
+                        radius: *radius,
+                    }));
+                }
+            }
+            PaintKind::Text(tc) => out.push(Paint::Text(PaintText {
+                x,
+                y,
+                width: layout.size.width,
+                height: layout.size.height,
+                content: tc.clone(),
+            })),
+        }
     }
 
     for child in tree.children(id).expect("children") {
@@ -158,15 +229,14 @@ fn collect(
     }
 }
 
-/// Lay out `root` into an `avail_w` x `avail_h` viewport and return the
-/// absolute rectangles to paint, parents before children (painter's order).
-pub fn layout(root: &Node, avail_w: f32, avail_h: f32) -> Vec<PaintRect> {
-    let mut tree: TaffyTree<()> = TaffyTree::new();
+/// Lay out `root` into an `avail_w` x `avail_h` viewport and return paint items.
+/// Text leaves are sized via `measure`.
+pub fn layout(root: &Node, avail_w: f32, avail_h: f32, measure: &mut Measure) -> Vec<Paint> {
+    let mut tree: TaffyTree<TextContent> = TaffyTree::new();
     let mut paint = Vec::new();
     let root_id = build(&mut tree, root, &mut paint);
 
-    // Force the root to fill the viewport regardless of its own size style, so a
-    // `screen` always covers the window.
+    // Force the root to fill the viewport so a `screen` always covers the window.
     let mut root_style = to_taffy(&root.style);
     root_style.size = Size {
         width: length(avail_w),
@@ -174,11 +244,33 @@ pub fn layout(root: &Node, avail_w: f32, avail_h: f32) -> Vec<PaintRect> {
     };
     tree.set_style(root_id, root_style).expect("set root style");
 
-    tree.compute_layout(
+    tree.compute_layout_with_measure(
         root_id,
         Size {
             width: AvailableSpace::Definite(avail_w),
             height: AvailableSpace::Definite(avail_h),
+        },
+        |known, available, _id, ctx, _style| {
+            if let (Some(w), Some(h)) = (known.width, known.height) {
+                return Size { width: w, height: h };
+            }
+            match ctx {
+                Some(tc) => {
+                    let max = known.width.or(match available.width {
+                        AvailableSpace::Definite(w) => Some(w),
+                        _ => None,
+                    });
+                    let (w, h) = measure(&tc.text, tc.font_size, max);
+                    Size {
+                        width: known.width.unwrap_or(w),
+                        height: known.height.unwrap_or(h),
+                    }
+                }
+                None => Size {
+                    width: 0.0,
+                    height: 0.0,
+                },
+            }
         },
     )
     .expect("compute layout");

@@ -1,8 +1,8 @@
 <template>
     <screen class="screen">
         <view class="card">
-            <view class="value"></view>
-            <view class="label"></view>
+            <text class="title">Battery</text>
+            <text class="value">82%</text>
         </view>
     </screen>
 </template>
@@ -15,25 +15,22 @@
   .card {
     width: 320px;
     flex-direction: column;
-    gap: 12px;
+    gap: 8px;
     padding: 16px;
     background: #1e1e2e;
     border-radius: 12px;
   }
-  .value {
-    height: 28px;
-    background: #a6e3a1;
-    border-radius: 6px;
+  .title {
+    color: #9399b2;
+    font-size: 14px;
   }
-  .label {
-    width: 180px;
-    height: 16px;
-    background: #9399b2;
-    border-radius: 6px;
+  .value {
+    color: #a6e3a1;
+    font-size: 28px;
   }
 </style>
 
 <script>
-  // M2 ignores the script section; reactivity arrives in M5.
+  // Reactivity arrives in M5; for now the values are static text.
   let level = signal(82);
 </script>

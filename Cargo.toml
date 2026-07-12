@@ -8,6 +8,7 @@ members = [
     "crates/rux-parser",
     "crates/rux-style",
     "crates/rux-runtime",
+    "crates/rux-text",
 ]
 
 [workspace.package]

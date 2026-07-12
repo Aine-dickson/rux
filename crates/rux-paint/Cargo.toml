@@ -4,8 +4,9 @@ edition.workspace = true
 version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Rux painter: turns resolved paint rects into a vello Scene."
+description = "Rux painter: turns resolved paint items into a vello Scene."
 
 [dependencies]
 vello.workspace = true
 rux-layout = { path = "../rux-layout" }
+rux-text = { path = "../rux-text" }

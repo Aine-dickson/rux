@@ -14,14 +14,24 @@ use std::collections::HashMap;
 use lightningcss::rules::CssRule;
 use lightningcss::stylesheet::{ParserOptions, PrinterOptions, StyleSheet};
 use lightningcss::traits::ToCss;
-use rux_layout::{Axis, Node as LayoutNode, Rgba, Style};
+use rux_layout::{Axis, Node as LayoutNode, Rgba, Style, TextContent};
 use rux_parser::{Element, Node as TplNode, Sfc};
+
+/// Default inherited text colour (`#cdd6f4`) and font size, used at the root
+/// before any `color` / `font-size` rule applies. Text properties inherit.
+const DEFAULT_COLOR: Rgba = Rgba::new(0.804, 0.839, 0.957, 1.0);
+const DEFAULT_FONT_SIZE: f32 = 16.0;
 
 /// Build the styled layout tree from a parsed SFC.
 pub fn build_styled_tree(sfc: &Sfc) -> Result<LayoutNode, String> {
     let rules = parse_rules(&sfc.style);
     let mut ancestors: Vec<ElemDesc> = Vec::new();
-    Ok(build_node(&sfc.template, &rules, &mut ancestors))
+    Ok(build_node(
+        &sfc.template,
+        &rules,
+        &mut ancestors,
+        (DEFAULT_COLOR, DEFAULT_FONT_SIZE),
+    ))
 }
 
 // ── Selector model ──────────────────────────────────────────────────────────
@@ -234,7 +244,12 @@ fn matches(chain: &[Compound], ancestors: &[ElemDesc], el: &ElemDesc) -> bool {
     remaining == 0
 }
 
-fn cascade(desc: &ElemDesc, ancestors: &[ElemDesc], rules: &[Rule]) -> Style {
+/// Collect the matching rules' declarations for an element, in cascade order.
+fn matched_props(
+    desc: &ElemDesc,
+    ancestors: &[ElemDesc],
+    rules: &[Rule],
+) -> HashMap<String, String> {
     let mut matched: Vec<&Rule> = rules
         .iter()
         .filter(|r| matches(&r.chain, ancestors, desc))
@@ -247,25 +262,69 @@ fn cascade(desc: &ElemDesc, ancestors: &[ElemDesc], rules: &[Rule]) -> Style {
             props.insert(k.clone(), v.clone());
         }
     }
-    interpret(&props)
+    props
 }
 
-fn build_node(el: &Element, rules: &[Rule], ancestors: &mut Vec<ElemDesc>) -> LayoutNode {
+/// Concatenate the direct text children of an element.
+fn collect_text(el: &Element) -> String {
+    let mut parts = Vec::new();
+    for child in &el.children {
+        if let TplNode::Text(t) = child {
+            parts.push(t.trim());
+        }
+    }
+    parts.join(" ")
+}
+
+/// `inherited` carries the resolved `(color, font_size)` down the tree, since
+/// text properties inherit in CSS.
+fn build_node(
+    el: &Element,
+    rules: &[Rule],
+    ancestors: &mut Vec<ElemDesc>,
+    inherited: (Rgba, f32),
+) -> LayoutNode {
     let desc = ElemDesc::of(el);
-    let style = cascade(&desc, ancestors, rules);
+    let props = matched_props(&desc, ancestors, rules);
+    let style = interpret(&props);
+
+    // Resolve inheritable text properties (own value, else inherited).
+    let color = props
+        .get("color")
+        .and_then(|v| parse_color(v))
+        .unwrap_or(inherited.0);
+    let font_size = props
+        .get("font-size")
+        .and_then(|v| parse_px(first(v)))
+        .unwrap_or(inherited.1);
+
+    if el.tag == "text" {
+        return LayoutNode::text(
+            style,
+            TextContent {
+                text: collect_text(el),
+                font_size,
+                color,
+            },
+        );
+    }
 
     ancestors.push(desc);
     let children = el
         .children
         .iter()
         .filter_map(|n| match n {
-            TplNode::Element(child) => Some(build_node(child, rules, ancestors)),
-            TplNode::Text(_) => None, // text is painted in M4
+            TplNode::Element(child) => Some(build_node(child, rules, ancestors, (color, font_size))),
+            TplNode::Text(_) => None,
         })
         .collect();
     ancestors.pop();
 
-    LayoutNode { style, children }
+    LayoutNode {
+        style,
+        text: None,
+        children,
+    }
 }
 
 // ── Value interpretation (honored subset) ───────────────────────────────────

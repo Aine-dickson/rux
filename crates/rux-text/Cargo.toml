@@ -1,0 +1,12 @@
+[package]
+name = "rux-text"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Rux text engine: parley shaping/layout + vello glyph drawing."
+
+[dependencies]
+parley = "0.2"
+vello.workspace = true
+# parley added via `cargo add` so the version compatible with vello is pinned.

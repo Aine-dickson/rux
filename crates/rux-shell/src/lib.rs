@@ -52,12 +52,14 @@ struct RenderState {
     scene: Scene,
 }
 
-/// The application: owns the vello render context and (once resumed) one window.
+/// The application: owns the vello render context, the text engine, and (once
+/// resumed) one window.
 struct App {
     context: RenderContext,
     state: Option<RenderState>,
     path: PathBuf,
     tree: Node,
+    text: rux_text::TextEngine,
 }
 
 impl App {
@@ -68,6 +70,7 @@ impl App {
             state: None,
             path,
             tree,
+            text: rux_text::TextEngine::new(),
         }
     }
 
@@ -85,17 +88,29 @@ impl App {
     }
 
     fn render(&mut self) {
-        let Some(state) = self.state.as_mut() else {
+        // Split borrows so the text engine (used both to measure during layout
+        // and to draw during paint) doesn't conflict with the render state.
+        let App {
+            context,
+            state,
+            tree,
+            text,
+            ..
+        } = self;
+        let Some(state) = state.as_mut() else {
             return;
         };
         let width = state.surface.config.width;
         let height = state.surface.config.height;
 
-        // Layout the tree into the current viewport, then paint it.
-        let rects = rux_layout::layout(&self.tree, width as f32, height as f32);
-        state.scene = rux_paint::build_scene(&rects);
+        // Layout (text sized via the engine's measure), then paint.
+        let paints = {
+            let mut measure = |t: &str, fs: f32, mw: Option<f32>| text.measure(t, fs, mw);
+            rux_layout::layout(tree, width as f32, height as f32, &mut measure)
+        };
+        state.scene = rux_paint::build_scene(&paints, text);
 
-        let device_handle = &self.context.devices[state.surface.dev_id];
+        let device_handle = &context.devices[state.surface.dev_id];
         let surface_texture = state
             .surface
             .surface

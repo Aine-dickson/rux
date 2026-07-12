@@ -1,10 +1,11 @@
-//! Rux painter — milestone M1.
+//! Rux painter — milestones M1–M4.
 //!
-//! Turns the absolute `PaintRect`s from `rux-layout` into a `vello::Scene`:
-//! one filled, rounded rectangle per rect. This is the smallest slice of
-//! Stage 5 in `docs/04-architecture.md` — no text, gradients, or shadows yet.
+//! Turns the `Paint` items from `rux-layout` into a `vello::Scene`: filled
+//! rounded rectangles for boxes, glyph runs (via `rux-text`) for text. Stage 5
+//! of `docs/04-architecture.md`.
 
-use rux_layout::{PaintRect, Rgba};
+use rux_layout::{Paint, Rgba};
+use rux_text::TextEngine;
 use vello::kurbo::{Affine, RoundedRect};
 use vello::peniko::{Color, Fill};
 use vello::Scene;
@@ -13,25 +14,33 @@ fn to_color(c: Rgba) -> Color {
     Color::rgba(c.r as f64, c.g as f64, c.b as f64, c.a as f64)
 }
 
-/// Build a fresh scene containing every rect, painted in list order (parents
-/// first, so children draw on top).
-pub fn build_scene(rects: &[PaintRect]) -> Scene {
+/// Build a fresh scene from paint items, in list order (parents first).
+pub fn build_scene(items: &[Paint], text: &mut TextEngine) -> Scene {
     let mut scene = Scene::new();
-    for r in rects {
-        let shape = RoundedRect::new(
-            r.x as f64,
-            r.y as f64,
-            (r.x + r.width) as f64,
-            (r.y + r.height) as f64,
-            r.radius as f64,
-        );
-        scene.fill(
-            Fill::NonZero,
-            Affine::IDENTITY,
-            to_color(r.color),
-            None,
-            &shape,
-        );
+    for item in items {
+        match item {
+            Paint::Rect(r) => {
+                let shape = RoundedRect::new(
+                    r.x as f64,
+                    r.y as f64,
+                    (r.x + r.width) as f64,
+                    (r.y + r.height) as f64,
+                    r.radius as f64,
+                );
+                scene.fill(Fill::NonZero, Affine::IDENTITY, to_color(r.color), None, &shape);
+            }
+            Paint::Text(t) => {
+                text.draw(
+                    &mut scene,
+                    t.x,
+                    t.y,
+                    &t.content.text,
+                    t.content.font_size,
+                    to_color(t.content.color),
+                    Some(t.width),
+                );
+            }
+        }
     }
     scene
 }
