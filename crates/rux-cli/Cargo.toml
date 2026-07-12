@@ -1,0 +1,14 @@
+[package]
+name = "rux-cli"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Rux command-line entry point (`rux run app.rux`)."
+
+[[bin]]
+name = "rux"
+path = "src/main.rs"
+
+[dependencies]
+rux-shell = { path = "../rux-shell" }

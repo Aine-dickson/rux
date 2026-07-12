@@ -1,0 +1,18 @@
+[workspace]
+resolver = "2"
+members = ["crates/rux-shell", "crates/rux-cli", "crates/rux-layout", "crates/rux-paint"]
+
+[workspace.package]
+edition = "2021"
+version = "0.1.0"
+license = "MIT"
+repository = "https://github.com/Aine-dickson/rux"
+
+# Shared dependency versions. `vello` re-exports the matching `wgpu`, `kurbo`,
+# and `peniko`, so the shell uses `vello::wgpu` rather than pinning wgpu itself
+# (avoids a version split between the renderer and the surface).
+[workspace.dependencies]
+winit = "0.30"
+pollster = "0.4"
+vello = "0.3"
+taffy = "0.7"

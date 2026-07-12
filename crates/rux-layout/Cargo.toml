@@ -1,0 +1,10 @@
+[package]
+name = "rux-layout"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Rux layout: a styled node tree resolved to absolute paint rects via taffy."
+
+[dependencies]
+taffy.workspace = true
