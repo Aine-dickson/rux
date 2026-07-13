@@ -15,13 +15,21 @@
             </view>
 
             <view class="row">
-                <text class="tick" r-for="t in ticks">{{ t }}</text>
+                <view class="v1" r-for="tick in ticks">
+                    <text class="texk">{{tick}}</text>
+                </view>
             </view>
         </view>
     </screen>
 </template>
 
 <style>
+    .v1{
+        background: #193822;
+        height: 29px;
+        width: 320px;
+        border-radius: 10;
+    }
   .screen {
     display: flex;
     flex-direction: column;
@@ -60,6 +68,8 @@
     height: 44px;
     background: #313244;
     border-radius: 8px;
+    justify-content:center;
+    align-items: center;
   }
   .btnlabel {
     color: #cdd6f4;

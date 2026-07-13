@@ -14,7 +14,7 @@ use std::collections::HashMap;
 use lightningcss::rules::CssRule;
 use lightningcss::stylesheet::{ParserOptions, PrinterOptions, StyleSheet};
 use lightningcss::traits::ToCss;
-use rux_layout::{Axis, Display, Node as LayoutNode, Rgba, Style, TextContent};
+use rux_layout::{Align, Axis, Display, Justify, Node as LayoutNode, Rgba, Style, TextContent};
 use rux_parser::{Element, Node as TplNode, Sfc};
 use rux_reactive::{Signals, Value};
 
@@ -515,7 +515,26 @@ fn interpret(p: &HashMap<String, String>) -> Style {
         }
     }
     if let Some(v) = p.get("flex-direction") {
-        st.axis = if v.trim() == "row" { Axis::Row } else { Axis::Column };
+        st.axis = if v.trim() == "column" { Axis::Column } else { Axis::Row };
+    }
+    if let Some(v) = p.get("justify-content") {
+        st.justify = match v.trim() {
+            "center" => Some(Justify::Center),
+            "flex-end" | "end" => Some(Justify::End),
+            "space-between" => Some(Justify::SpaceBetween),
+            "space-around" => Some(Justify::SpaceAround),
+            "flex-start" | "start" => Some(Justify::Start),
+            _ => None,
+        };
+    }
+    if let Some(v) = p.get("align-items") {
+        st.align = match v.trim() {
+            "center" => Some(Align::Center),
+            "flex-end" | "end" => Some(Align::End),
+            "stretch" => Some(Align::Stretch),
+            "flex-start" | "start" => Some(Align::Start),
+            _ => None,
+        };
     }
     if let Some(v) = p.get("background").or_else(|| p.get("background-color")) {
         st.background = parse_color(v);

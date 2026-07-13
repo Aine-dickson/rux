@@ -23,12 +23,32 @@ impl Rgba {
     }
 }
 
-/// How a node lays out its children.
+/// How a node lays out its children. Defaults to `Row` to match CSS's
+/// `flex-direction` initial value.
 #[derive(Clone, Copy, Debug, Default)]
 pub enum Axis {
     #[default]
-    Column,
     Row,
+    Column,
+}
+
+/// Main-axis distribution (`justify-content`).
+#[derive(Clone, Copy, Debug)]
+pub enum Justify {
+    Start,
+    Center,
+    End,
+    SpaceBetween,
+    SpaceAround,
+}
+
+/// Cross-axis alignment (`align-items`).
+#[derive(Clone, Copy, Debug)]
+pub enum Align {
+    Start,
+    Center,
+    End,
+    Stretch,
 }
 
 /// CSS `display`. Defaults to `Block` (strict-CSS fidelity): flex layout,
@@ -52,6 +72,8 @@ pub struct Style {
     pub padding: f32,
     pub gap: f32,
     pub axis: Axis,
+    pub justify: Option<Justify>,
+    pub align: Option<Align>,
     pub background: Option<Rgba>,
     pub radius: f32,
 }
@@ -65,7 +87,9 @@ impl Default for Style {
             grow: 0.0,
             padding: 0.0,
             gap: 0.0,
-            axis: Axis::Column,
+            axis: Axis::Row,
+            justify: None,
+            align: None,
             background: None,
             radius: 0.0,
         }
@@ -191,6 +215,19 @@ fn to_taffy(style: &Style) -> taffy::Style {
             Axis::Column => FlexDirection::Column,
             Axis::Row => FlexDirection::Row,
         },
+        justify_content: style.justify.map(|j| match j {
+            Justify::Start => JustifyContent::FlexStart,
+            Justify::Center => JustifyContent::Center,
+            Justify::End => JustifyContent::FlexEnd,
+            Justify::SpaceBetween => JustifyContent::SpaceBetween,
+            Justify::SpaceAround => JustifyContent::SpaceAround,
+        }),
+        align_items: style.align.map(|a| match a {
+            Align::Start => AlignItems::FlexStart,
+            Align::Center => AlignItems::Center,
+            Align::End => AlignItems::FlexEnd,
+            Align::Stretch => AlignItems::Stretch,
+        }),
         flex_grow: style.grow,
         size: Size {
             width: style.width.map(length).unwrap_or(auto()),
