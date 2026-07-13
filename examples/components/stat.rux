@@ -1,0 +1,19 @@
+<template>
+  <view class="stat">
+    <text class="stat-label">{{ label }}</text>
+    <text class="stat-value">{{ value }}</text>
+  </view>
+</template>
+
+<style>
+  .stat {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 12px;
+    background: #313244;
+    border-radius: 10px;
+  }
+  .stat-label { color: #9399b2; font-size: 12px; }
+  .stat-value { color: #cdd6f4; font-size: 22px; }
+</style>

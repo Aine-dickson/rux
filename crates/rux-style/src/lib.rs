@@ -23,20 +23,49 @@ use rux_script::Engine;
 /// injected into the script engine for each evaluation.
 type Locals = Vec<(String, Value)>;
 
+/// A compiled component: its template root and its own CSS rules.
+struct Component {
+    template: Element,
+    rules: Vec<Rule>,
+}
+
+/// Registered components, keyed by custom-element tag.
+type Components = HashMap<String, Component>;
+
 /// Default inherited text colour (`#cdd6f4`) and font size, used at the root
 /// before any `color` / `font-size` rule applies. Text properties inherit.
 const DEFAULT_COLOR: Rgba = Rgba::new(0.804, 0.839, 0.957, 1.0);
 const DEFAULT_FONT_SIZE: f32 = 16.0;
 
-/// Build the styled layout tree from a parsed SFC, interpolating `{{ }}` text
-/// and directive expressions against the script engine's current state.
-pub fn build_styled_tree(sfc: &Sfc, engine: &mut Engine) -> Result<LayoutNode, String> {
+/// Build the styled layout tree from a parsed SFC. `components` maps a custom
+/// element tag to the imported component's source; those are compiled and
+/// expanded in place with their props bound. `{{ }}` and directive expressions
+/// evaluate against the script engine's current state.
+pub fn build_styled_tree(
+    sfc: &Sfc,
+    components: &HashMap<String, Sfc>,
+    engine: &mut Engine,
+) -> Result<LayoutNode, String> {
     let rules = parse_rules(&sfc.style);
+    let comps: Components = components
+        .iter()
+        .map(|(tag, c)| {
+            (
+                tag.clone(),
+                Component {
+                    template: c.template.clone(),
+                    rules: parse_rules(&c.style),
+                },
+            )
+        })
+        .collect();
+
     let mut ancestors: Vec<ElemDesc> = Vec::new();
     let locals = Locals::new();
     Ok(build_node(
         &sfc.template,
         &rules,
+        &comps,
         &mut ancestors,
         (DEFAULT_COLOR, DEFAULT_FONT_SIZE),
         engine,
@@ -315,14 +344,21 @@ fn collect_text(el: &Element, engine: &mut Engine, locals: &Locals) -> String {
 ///
 /// `inherited` carries the resolved `(color, font_size)` (text properties
 /// inherit); `locals` carries `r-for` loop bindings.
+#[allow(clippy::too_many_arguments)]
 fn build_node(
     el: &Element,
     rules: &[Rule],
+    comps: &Components,
     ancestors: &mut Vec<ElemDesc>,
     inherited: (Rgba, f32),
     engine: &mut Engine,
     locals: &Locals,
 ) -> LayoutNode {
+    // A custom-element tag expands its imported component in place.
+    if let Some(component) = comps.get(&el.tag) {
+        return expand_component(el, component, comps, inherited, engine, locals);
+    }
+
     let desc = ElemDesc::of(el);
     let props = matched_props(&desc, ancestors, rules);
     let style = interpret(&props);
@@ -368,6 +404,7 @@ fn build_node(
     let children = build_children(
         &element_children,
         rules,
+        comps,
         ancestors,
         (color, font_size),
         engine,
@@ -384,6 +421,38 @@ fn build_node(
     }
 }
 
+/// Expand a `<custom-element :prop="expr" …>` into its component's tree. Props
+/// (attributes prefixed `:`) are evaluated in the caller's scope and become the
+/// only locals visible inside the component (component instances are isolated).
+fn expand_component(
+    el: &Element,
+    component: &Component,
+    comps: &Components,
+    inherited: (Rgba, f32),
+    engine: &mut Engine,
+    parent_locals: &Locals,
+) -> LayoutNode {
+    let mut props: Locals = Vec::new();
+    for (key, expr) in &el.attrs {
+        if let Some(name) = key.strip_prefix(':') {
+            if let Some(value) = engine.eval_value(expr, parent_locals) {
+                props.push((name.to_string(), value));
+            }
+        }
+    }
+
+    let mut ancestors: Vec<ElemDesc> = Vec::new();
+    build_node(
+        &component.template,
+        &component.rules,
+        comps,
+        &mut ancestors,
+        inherited,
+        engine,
+        &props,
+    )
+}
+
 /// Parse `r-for="item in items"` into `(binding, collection_expr)`.
 fn parse_for(expr: &str) -> Option<(&str, &str)> {
     let (var, coll) = expr.split_once(" in ")?;
@@ -396,6 +465,7 @@ fn parse_for(expr: &str) -> Option<(&str, &str)> {
 fn build_children(
     elements: &[&Element],
     rules: &[Rule],
+    comps: &Components,
     ancestors: &mut Vec<ElemDesc>,
     inherited: (Rgba, f32),
     engine: &mut Engine,
@@ -418,7 +488,7 @@ fn build_children(
                     for item in items {
                         let mut child_locals = locals.clone();
                         child_locals.push((var.to_string(), item));
-                        out.push(build_node(el, rules, ancestors, inherited, engine, &child_locals));
+                        out.push(build_node(el, rules, comps, ancestors, inherited, engine, &child_locals));
                     }
                 }
             }
@@ -429,20 +499,20 @@ fn build_children(
             in_chain = true;
             chain_satisfied = engine.eval_bool(cond, locals);
             if chain_satisfied {
-                out.push(build_node(el, rules, ancestors, inherited, engine, locals));
+                out.push(build_node(el, rules, comps, ancestors, inherited, engine, locals));
             }
             continue;
         }
         if let Some(cond) = el.attr("r-elif") {
             if in_chain && !chain_satisfied && engine.eval_bool(cond, locals) {
                 chain_satisfied = true;
-                out.push(build_node(el, rules, ancestors, inherited, engine, locals));
+                out.push(build_node(el, rules, comps, ancestors, inherited, engine, locals));
             }
             continue;
         }
         if el.attr("r-else").is_some() {
             if in_chain && !chain_satisfied {
-                out.push(build_node(el, rules, ancestors, inherited, engine, locals));
+                out.push(build_node(el, rules, comps, ancestors, inherited, engine, locals));
             }
             in_chain = false;
             continue;
@@ -450,7 +520,7 @@ fn build_children(
 
         // A plain element ends any active chain.
         in_chain = false;
-        out.push(build_node(el, rules, ancestors, inherited, engine, locals));
+        out.push(build_node(el, rules, comps, ancestors, inherited, engine, locals));
     }
     out
 }
@@ -577,6 +647,7 @@ fn parse_hex(hex: &str) -> Option<Rgba> {
 mod tests {
     use super::{build_styled_tree, interpolate, Locals};
     use rux_script::Builder;
+    use std::collections::HashMap;
 
     #[test]
     fn interpolates_bindings() {
@@ -605,12 +676,40 @@ mod tests {
         "#;
         let sfc = rux_parser::parse_sfc(src).unwrap();
         let mut engine = Builder::new().build(&sfc.script).unwrap();
-        let root = build_styled_tree(&sfc, &mut engine).unwrap();
+        let root = build_styled_tree(&sfc, &HashMap::new(), &mut engine).unwrap();
 
         // 3 views from r-for + exactly one branch (level=10 → the r-elif "mid").
         assert_eq!(root.children.len(), 4);
         let mid = root.children[3].text.as_ref().unwrap();
         assert_eq!(mid.text, "mid");
+    }
+
+    #[test]
+    fn expands_component_with_props() {
+        let main = rux_parser::parse_sfc(
+            r#"<template>
+                 <screen><stat :label="title" :value="level" /></screen>
+               </template>
+               <script> let level = signal(82); let title = signal("Battery"); </script>"#,
+        )
+        .unwrap();
+        let stat = rux_parser::parse_sfc(
+            r#"<template>
+                 <view><text>{{ label }}: {{ value }}</text></view>
+               </template>"#,
+        )
+        .unwrap();
+
+        let mut components = HashMap::new();
+        components.insert("stat".to_string(), stat);
+
+        let mut engine = Builder::new().build(&main.script).unwrap();
+        let root = build_styled_tree(&main, &components, &mut engine).unwrap();
+
+        // screen → (expanded stat) view → text "Battery: 82"
+        let view = &root.children[0];
+        let text = view.children[0].text.as_ref().unwrap();
+        assert_eq!(text.text, "Battery: 82");
     }
 }
 

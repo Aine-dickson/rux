@@ -1,0 +1,55 @@
+<template>
+  <screen class="screen">
+    <text class="heading">Device</text>
+
+    <!-- Each <stat> is the imported component, expanded with its props. -->
+    <view class="row">
+      <stat :label="battery_label" :value="level" />
+      <stat :label="signal_label" :value="bars" />
+    </view>
+
+    <view class="row">
+      <button class="btn" @tap="level = level - 5">
+        <text class="btnlabel">drain</text>
+      </button>
+      <button class="btn" @tap="level = host::full()">
+        <text class="btnlabel">charge</text>
+      </button>
+    </view>
+  </screen>
+</template>
+
+<style>
+  .screen {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    flex-grow: 1;
+    padding: 24px;
+    background: #11111b;
+  }
+  .heading { color: #cdd6f4; font-size: 20px; }
+  .row {
+    display: flex;
+    flex-direction: row;
+    gap: 12px;
+  }
+  .btn {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    padding: 12px;
+    background: #45475a;
+    border-radius: 8px;
+  }
+  .btnlabel { color: #cdd6f4; font-size: 16px; }
+</style>
+
+<script>
+  use components::stat;
+
+  let level = signal(82);
+  let bars  = signal(4);
+  let battery_label = signal("Battery");
+  let signal_label  = signal("Signal");
+</script>
