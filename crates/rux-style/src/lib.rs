@@ -15,7 +15,8 @@ use lightningcss::rules::CssRule;
 use lightningcss::stylesheet::{ParserOptions, PrinterOptions, StyleSheet};
 use lightningcss::traits::ToCss;
 use rux_layout::{
-    Align, Axis, Display, Justify, Node as LayoutNode, Rgba, Sides, Style, TextAlign, TextContent,
+    Align, Axis, Display, Justify, Node as LayoutNode, Overflow, Rgba, Sides, Style, TextAlign,
+    TextContent,
 };
 use rux_parser::{Element, Node as TplNode, Sfc};
 use rux_reactive::Value;
@@ -363,7 +364,21 @@ fn build_node(
 
     let desc = ElemDesc::of(el);
     let props = matched_props(&desc, ancestors, rules);
-    let style = interpret(&props);
+    let mut style = interpret(&props);
+
+    // Default display follows the element/role (like HTML) unless CSS set it.
+    if !props.contains_key("display") {
+        style.display = default_display(&el.tag, el.role());
+    }
+    // Block boxes clip overflowing content by default (CSS overflow overrides).
+    if style.display == Display::Block
+        && !["overflow", "overflow-x", "overflow-y"]
+            .iter()
+            .any(|k| props.contains_key(*k))
+    {
+        style.overflow = Overflow::Clip;
+    }
+
     let on_tap = el.attr("@tap").map(str::to_string);
     // r-show="false" keeps the layout slot but paints nothing.
     let hidden = el
@@ -386,6 +401,7 @@ fn build_node(
             .get("text-align")
             .map(|v| parse_text_align(v))
             .unwrap_or_default();
+        let inline = style.display == Display::Inline;
         let mut node = LayoutNode::text(
             style,
             TextContent {
@@ -394,6 +410,7 @@ fn build_node(
                 weight,
                 color,
                 align,
+                inline,
             },
         );
         node.on_tap = on_tap;
@@ -606,6 +623,15 @@ fn interpret(p: &HashMap<String, String>) -> Style {
             st.radius = px;
         }
     }
+    // Any clipping overflow value on any axis marks the box as clipped.
+    let clips = |v: &&String| matches!(v.trim(), "hidden" | "clip" | "auto" | "scroll");
+    if ["overflow", "overflow-x", "overflow-y"]
+        .iter()
+        .filter_map(|k| p.get(*k))
+        .any(|v| clips(&v))
+    {
+        st.overflow = Overflow::Clip;
+    }
     st
 }
 
@@ -742,6 +768,21 @@ fn parse_text_align(s: &str) -> TextAlign {
         "right" | "end" => TextAlign::End,
         "justify" => TextAlign::Justify,
         _ => TextAlign::Start,
+    }
+}
+
+/// The default `display` for an element, following the HTML inline/block split
+/// (a bare `<text>` is inline like a `<span>`; a `<view>` is block like a
+/// `<div>`). `role` promotes text to block (a paragraph/heading).
+fn default_display(tag: &str, role: Option<&str>) -> Display {
+    match tag {
+        "text" => match role {
+            Some("paragraph") | Some("heading") => Display::Block,
+            _ => Display::Inline,
+        },
+        "button" | "input" | "image" => Display::Inline,
+        // view, screen, and custom components are block.
+        _ => Display::Block,
     }
 }
 

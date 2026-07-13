@@ -1,6 +1,7 @@
 <template>
   <screen class="screen">
-    <text class="heading">Device</text>
+    <!-- role="heading" makes this block, so text-align:center has width to center in. -->
+    <text class="heading" role="heading">Device</text>
 
     <!-- Each <stat> is the imported component, expanded with its props. -->
     <text>Hello world</text>
@@ -10,7 +11,7 @@
     </view>
 
     <button class="test_b">
-        <text>What goes arounf</text>
+        <text class="tes">What goes arounf</text>
     </button>
 
     <view class="row">
@@ -28,6 +29,10 @@
     .test_b{
         background: rgb(168, 11, 11);
         width:150px;
+    }
+    .test_b text {
+        
+        padding: 4px;
     }
   .screen {
     display: flex;

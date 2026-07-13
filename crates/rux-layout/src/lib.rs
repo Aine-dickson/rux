@@ -87,9 +87,21 @@ pub enum TextAlign {
 pub enum Display {
     #[default]
     Block,
+    /// Hugs its content and does not stretch to fill (approximated via
+    /// `align-self: flex-start` — taffy has no true inline text flow).
+    Inline,
     Flex,
     /// Removed from layout entirely (no space reserved).
     None,
+}
+
+/// Overflow behaviour for content exceeding a box.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum Overflow {
+    #[default]
+    Visible,
+    /// Clip the subtree to this box (covers hidden/auto/scroll for now).
+    Clip,
 }
 
 /// The style subset M-series understands (a stand-in for the CSS `ComputedStyle`).
@@ -111,6 +123,7 @@ pub struct Style {
     pub axis: Axis,
     pub justify: Option<Justify>,
     pub align: Option<Align>,
+    pub overflow: Overflow,
     pub background: Option<Rgba>,
     pub radius: f32,
 }
@@ -134,6 +147,7 @@ impl Default for Style {
             axis: Axis::Row,
             justify: None,
             align: None,
+            overflow: Overflow::Visible,
             background: None,
             radius: 0.0,
         }
@@ -148,6 +162,8 @@ pub struct TextContent {
     pub weight: u16,
     pub color: Rgba,
     pub align: TextAlign,
+    /// Inline text hugs and does not wrap; block text fills its box and wraps.
+    pub inline: bool,
 }
 
 /// A node in the view tree: a style, optional text, children, and an optional
@@ -219,6 +235,16 @@ pub struct PaintText {
 pub enum Paint {
     Rect(PaintRect),
     Text(PaintText),
+    /// Begin clipping subsequent items to this rounded rect (overflow: clip).
+    PushClip {
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+        radius: f32,
+    },
+    /// End the most recent clip.
+    PopClip,
 }
 
 /// An absolutely-positioned tappable region, carrying its `@tap` handler source.
@@ -255,6 +281,7 @@ enum PaintKind {
         radius: f32,
         border_width: f32,
         border_color: Option<Rgba>,
+        clip: bool,
     },
     Text(TextContent),
 }
@@ -262,7 +289,9 @@ enum PaintKind {
 fn to_taffy(style: &Style) -> taffy::Style {
     taffy::Style {
         display: match style.display {
-            Display::Block => taffy::Display::Block,
+            // Inline is a normal (block) box; the hug comes from width:auto plus
+            // not stretching (taffy has no true inline flow).
+            Display::Block | Display::Inline => taffy::Display::Block,
             Display::Flex => taffy::Display::Flex,
             Display::None => taffy::Display::None,
         },
@@ -277,15 +306,30 @@ fn to_taffy(style: &Style) -> taffy::Style {
             Justify::SpaceBetween => JustifyContent::SpaceBetween,
             Justify::SpaceAround => JustifyContent::SpaceAround,
         }),
-        align_items: style.align.map(|a| match a {
-            Align::Start => AlignItems::FlexStart,
-            Align::Center => AlignItems::Center,
-            Align::End => AlignItems::FlexEnd,
-            Align::Stretch => AlignItems::Stretch,
-        }),
+        // Default flex cross-alignment is flex-start (hug), not taffy's stretch,
+        // so children keep their own width unless the author asks to stretch.
+        align_items: style
+            .align
+            .map(|a| match a {
+                Align::Start => AlignItems::FlexStart,
+                Align::Center => AlignItems::Center,
+                Align::End => AlignItems::FlexEnd,
+                Align::Stretch => AlignItems::Stretch,
+            })
+            .or(if style.display == Display::Flex {
+                Some(AlignItems::FlexStart)
+            } else {
+                None
+            }),
         flex_grow: style.grow,
         size: Size {
-            width: style.width.map(length).unwrap_or(auto()),
+            // Explicit width wins; otherwise inline hugs (auto) and block/flex
+            // fill their container (100%).
+            width: match (style.width, style.display) {
+                (Some(w), _) => length(w),
+                (None, Display::Inline) => auto(),
+                (None, _) => percent(1.0),
+            },
             height: style.height.map(length).unwrap_or(auto()),
         },
         min_size: Size {
@@ -331,7 +375,8 @@ fn build(
 ) -> NodeId {
     let id = if let Some(tc) = &node.text {
         // Text leaves carry their content as taffy context, so the measure hook
-        // can shape them.
+        // can shape them. Width follows display (inline hugs, block fills) via
+        // to_taffy; the measure hook wraps block text and single-lines inline.
         let id = tree
             .new_leaf_with_context(to_taffy(&node.style), tc.clone())
             .expect("taffy text leaf");
@@ -357,6 +402,7 @@ fn build(
                 // Uniform border for rendering (top width is representative).
                 border_width: node.style.border.top,
                 border_color: node.style.border_color,
+                clip: node.style.overflow == Overflow::Clip,
             },
         ));
         id
@@ -391,6 +437,7 @@ fn collect(
         return;
     }
 
+    let mut clip = false;
     if let Some((_, kind)) = paint.iter().find(|(nid, _)| *nid == id) {
         match kind {
             PaintKind::Box {
@@ -398,7 +445,9 @@ fn collect(
                 radius,
                 border_width,
                 border_color,
+                clip: c,
             } => {
+                clip = *c;
                 let has_border = *border_width > 0.0 && border_color.is_some();
                 if bg.is_some() || has_border {
                     out.paints.push(Paint::Rect(PaintRect {
@@ -433,8 +482,21 @@ fn collect(
         });
     }
 
+    // overflow: clip — bound the subtree to this box.
+    if clip {
+        out.paints.push(Paint::PushClip {
+            x,
+            y,
+            width: layout.size.width,
+            height: layout.size.height,
+            radius: 0.0,
+        });
+    }
     for child in tree.children(id).expect("children") {
         collect(tree, child, x, y, paint, handlers, hidden, out);
+    }
+    if clip {
+        out.paints.push(Paint::PopClip);
     }
 }
 
@@ -467,10 +529,16 @@ pub fn layout(root: &Node, avail_w: f32, avail_h: f32, measure: &mut Measure) ->
             }
             match ctx {
                 Some(tc) => {
-                    let max = known.width.or(match available.width {
-                        AvailableSpace::Definite(w) => Some(w),
-                        _ => None,
-                    });
+                    // Inline text hugs on one line (no wrap); block text wraps
+                    // to its resolved width.
+                    let max = if tc.inline {
+                        None
+                    } else {
+                        known.width.or(match available.width {
+                            AvailableSpace::Definite(w) => Some(w),
+                            _ => None,
+                        })
+                    };
                     let (w, h) = measure(&tc.text, tc.font_size, tc.weight, max);
                     Size {
                         width: known.width.unwrap_or(w),

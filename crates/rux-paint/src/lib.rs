@@ -6,8 +6,8 @@
 
 use rux_layout::{Paint, Rgba, TextAlign};
 use rux_text::{Align, TextEngine};
-use vello::kurbo::{Affine, RoundedRect, Stroke};
-use vello::peniko::{Color, Fill};
+use vello::kurbo::{Affine, Rect, RoundedRect, Stroke};
+use vello::peniko::{Color, Fill, Mix};
 use vello::Scene;
 
 fn to_color(c: Rgba) -> Color {
@@ -73,6 +73,22 @@ pub fn build_scene(items: &[Paint], text: &mut TextEngine) -> Scene {
                     Some(t.width),
                 );
             }
+            Paint::PushClip {
+                x,
+                y,
+                width,
+                height,
+                ..
+            } => {
+                let rect = Rect::new(
+                    *x as f64,
+                    *y as f64,
+                    (*x + *width) as f64,
+                    (*y + *height) as f64,
+                );
+                scene.push_layer(Mix::Clip, 1.0, Affine::IDENTITY, &rect);
+            }
+            Paint::PopClip => scene.pop_layer(),
         }
     }
     scene
