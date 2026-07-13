@@ -23,6 +23,26 @@ impl Rgba {
     }
 }
 
+/// Per-side box-model lengths (padding / margin / border widths).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Sides {
+    pub top: f32,
+    pub right: f32,
+    pub bottom: f32,
+    pub left: f32,
+}
+
+impl Sides {
+    pub const fn uniform(v: f32) -> Self {
+        Self {
+            top: v,
+            right: v,
+            bottom: v,
+            left: v,
+        }
+    }
+}
+
 /// How a node lays out its children. Defaults to `Row` to match CSS's
 /// `flex-direction` initial value.
 #[derive(Clone, Copy, Debug, Default)]
@@ -83,8 +103,10 @@ pub struct Style {
     pub min_height: Option<f32>,
     pub max_height: Option<f32>,
     pub grow: f32,
-    pub padding: f32,
-    pub margin: f32,
+    pub padding: Sides,
+    pub margin: Sides,
+    pub border: Sides,
+    pub border_color: Option<Rgba>,
     pub gap: f32,
     pub axis: Axis,
     pub justify: Option<Justify>,
@@ -104,8 +126,10 @@ impl Default for Style {
             min_height: None,
             max_height: None,
             grow: 0.0,
-            padding: 0.0,
-            margin: 0.0,
+            padding: Sides::default(),
+            margin: Sides::default(),
+            border: Sides::default(),
+            border_color: None,
             gap: 0.0,
             axis: Axis::Row,
             justify: None,
@@ -165,15 +189,19 @@ impl Node {
     }
 }
 
-/// A resolved, absolutely-positioned filled rectangle.
+/// A resolved, absolutely-positioned box: an optional fill and an optional
+/// border, sharing one rounded-rect geometry.
 #[derive(Clone, Copy, Debug)]
 pub struct PaintRect {
     pub x: f32,
     pub y: f32,
     pub width: f32,
     pub height: f32,
-    pub color: Rgba,
+    pub background: Option<Rgba>,
     pub radius: f32,
+    /// Uniform border width for rendering (0 = none).
+    pub border_width: f32,
+    pub border_color: Option<Rgba>,
 }
 
 /// A resolved, absolutely-positioned text block.
@@ -222,7 +250,12 @@ pub type Measure<'a> = dyn FnMut(&str, f32, u16, Option<f32>) -> (f32, f32) + 'a
 
 /// What each taffy node paints.
 enum PaintKind {
-    Box { bg: Option<Rgba>, radius: f32 },
+    Box {
+        bg: Option<Rgba>,
+        radius: f32,
+        border_width: f32,
+        border_color: Option<Rgba>,
+    },
     Text(TextContent),
 }
 
@@ -263,8 +296,24 @@ fn to_taffy(style: &Style) -> taffy::Style {
             width: style.max_width.map(length).unwrap_or(auto()),
             height: style.max_height.map(length).unwrap_or(auto()),
         },
-        padding: length(style.padding),
-        margin: length(style.margin),
+        padding: Rect {
+            left: length(style.padding.left),
+            right: length(style.padding.right),
+            top: length(style.padding.top),
+            bottom: length(style.padding.bottom),
+        },
+        margin: Rect {
+            left: length(style.margin.left),
+            right: length(style.margin.right),
+            top: length(style.margin.top),
+            bottom: length(style.margin.bottom),
+        },
+        border: Rect {
+            left: length(style.border.left),
+            right: length(style.border.right),
+            top: length(style.border.top),
+            bottom: length(style.border.bottom),
+        },
         gap: Size {
             width: length(style.gap),
             height: length(style.gap),
@@ -305,6 +354,9 @@ fn build(
             PaintKind::Box {
                 bg: node.style.background,
                 radius: node.style.radius,
+                // Uniform border for rendering (top width is representative).
+                border_width: node.style.border.top,
+                border_color: node.style.border_color,
             },
         ));
         id
@@ -341,15 +393,23 @@ fn collect(
 
     if let Some((_, kind)) = paint.iter().find(|(nid, _)| *nid == id) {
         match kind {
-            PaintKind::Box { bg, radius } => {
-                if let Some(color) = bg {
+            PaintKind::Box {
+                bg,
+                radius,
+                border_width,
+                border_color,
+            } => {
+                let has_border = *border_width > 0.0 && border_color.is_some();
+                if bg.is_some() || has_border {
                     out.paints.push(Paint::Rect(PaintRect {
                         x,
                         y,
                         width: layout.size.width,
                         height: layout.size.height,
-                        color: *color,
+                        background: *bg,
                         radius: *radius,
+                        border_width: *border_width,
+                        border_color: *border_color,
                     }));
                 }
             }

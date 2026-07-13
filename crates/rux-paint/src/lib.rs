@@ -6,7 +6,7 @@
 
 use rux_layout::{Paint, Rgba, TextAlign};
 use rux_text::{Align, TextEngine};
-use vello::kurbo::{Affine, RoundedRect};
+use vello::kurbo::{Affine, RoundedRect, Stroke};
 use vello::peniko::{Color, Fill};
 use vello::Scene;
 
@@ -29,14 +29,36 @@ pub fn build_scene(items: &[Paint], text: &mut TextEngine) -> Scene {
     for item in items {
         match item {
             Paint::Rect(r) => {
-                let shape = RoundedRect::new(
-                    r.x as f64,
-                    r.y as f64,
-                    (r.x + r.width) as f64,
-                    (r.y + r.height) as f64,
-                    r.radius as f64,
-                );
-                scene.fill(Fill::NonZero, Affine::IDENTITY, to_color(r.color), None, &shape);
+                if let Some(bg) = r.background {
+                    let shape = RoundedRect::new(
+                        r.x as f64,
+                        r.y as f64,
+                        (r.x + r.width) as f64,
+                        (r.y + r.height) as f64,
+                        r.radius as f64,
+                    );
+                    scene.fill(Fill::NonZero, Affine::IDENTITY, to_color(bg), None, &shape);
+                }
+                // Border: stroke inset by half its width so it sits inside the box.
+                if let Some(bc) = r.border_color {
+                    if r.border_width > 0.0 {
+                        let half = (r.border_width / 2.0) as f64;
+                        let inner = RoundedRect::new(
+                            r.x as f64 + half,
+                            r.y as f64 + half,
+                            (r.x + r.width) as f64 - half,
+                            (r.y + r.height) as f64 - half,
+                            (r.radius as f64 - half).max(0.0),
+                        );
+                        scene.stroke(
+                            &Stroke::new(r.border_width as f64),
+                            Affine::IDENTITY,
+                            to_color(bc),
+                            None,
+                            &inner,
+                        );
+                    }
+                }
             }
             Paint::Text(t) => {
                 text.draw(

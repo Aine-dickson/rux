@@ -15,7 +15,7 @@ use lightningcss::rules::CssRule;
 use lightningcss::stylesheet::{ParserOptions, PrinterOptions, StyleSheet};
 use lightningcss::traits::ToCss;
 use rux_layout::{
-    Align, Axis, Display, Justify, Node as LayoutNode, Rgba, Style, TextAlign, TextContent,
+    Align, Axis, Display, Justify, Node as LayoutNode, Rgba, Sides, Style, TextAlign, TextContent,
 };
 use rux_parser::{Element, Node as TplNode, Sfc};
 use rux_reactive::Value;
@@ -551,19 +551,12 @@ fn interpret(p: &HashMap<String, String>) -> Style {
     if let Some(v) = p.get("height") {
         st.height = parse_px(first(v));
     }
-    if let Some(v) = p.get("padding") {
-        if let Some(px) = parse_px(first(v)) {
-            st.padding = px;
-        }
-    }
+    st.padding = box_sides(p, "padding");
+    st.margin = box_sides(p, "margin");
+    interpret_border(p, &mut st);
     if let Some(v) = p.get("gap") {
         if let Some(px) = parse_px(first(v)) {
             st.gap = px;
-        }
-    }
-    if let Some(v) = p.get("margin") {
-        if let Some(px) = parse_px(first(v)) {
-            st.margin = px;
         }
     }
     if let Some(v) = p.get("min-width") {
@@ -624,6 +617,111 @@ fn parse_px(s: &str) -> Option<f32> {
     let s = s.trim();
     let s = s.strip_suffix("px").unwrap_or(s);
     s.parse::<f32>().ok()
+}
+
+/// Expand a 1–4 value shorthand (`5px`, `5px 10px`, `1 2 3`, `1 2 3 4`) into
+/// per-side lengths, CSS order (top, right, bottom, left).
+fn parse_shorthand_sides(value: &str) -> Sides {
+    let v: Vec<f32> = value
+        .split_whitespace()
+        .filter_map(parse_px)
+        .collect();
+    match v.len() {
+        1 => Sides::uniform(v[0]),
+        2 => Sides {
+            top: v[0],
+            right: v[1],
+            bottom: v[0],
+            left: v[1],
+        },
+        3 => Sides {
+            top: v[0],
+            right: v[1],
+            bottom: v[2],
+            left: v[1],
+        },
+        n if n >= 4 => Sides {
+            top: v[0],
+            right: v[1],
+            bottom: v[2],
+            left: v[3],
+        },
+        _ => Sides::default(),
+    }
+}
+
+/// Resolve `padding`/`margin` from the shorthand plus any `-top/-right/-bottom/
+/// -left` longhand overrides.
+fn box_sides(p: &HashMap<String, String>, prop: &str) -> Sides {
+    let mut sides = p
+        .get(prop)
+        .map(|v| parse_shorthand_sides(v))
+        .unwrap_or_default();
+    for side in ["top", "right", "bottom", "left"] {
+        if let Some(v) = p.get(&format!("{prop}-{side}")) {
+            if let Some(px) = parse_px(first(v)) {
+                set_side(&mut sides, side, px);
+            }
+        }
+    }
+    sides
+}
+
+/// Parse `border` box-model props: `border`, `border-width`, `border-color`,
+/// `border-<side>`, `border-<side>-width`.
+fn interpret_border(p: &HashMap<String, String>, st: &mut Style) {
+    // `border: <width> <style> <color>` shorthand.
+    if let Some(v) = p.get("border") {
+        let (w, c) = parse_border(v);
+        st.border = Sides::uniform(w);
+        if c.is_some() {
+            st.border_color = c;
+        }
+    }
+    if let Some(v) = p.get("border-width") {
+        st.border = parse_shorthand_sides(v);
+    }
+    if let Some(v) = p.get("border-color") {
+        st.border_color = parse_color(v);
+    }
+    for side in ["top", "right", "bottom", "left"] {
+        if let Some(v) = p.get(&format!("border-{side}")) {
+            let (w, c) = parse_border(v);
+            set_side(&mut st.border, side, w);
+            if c.is_some() {
+                st.border_color = c;
+            }
+        }
+        if let Some(v) = p.get(&format!("border-{side}-width")) {
+            if let Some(px) = parse_px(first(v)) {
+                set_side(&mut st.border, side, px);
+            }
+        }
+    }
+}
+
+fn set_side(sides: &mut Sides, side: &str, value: f32) {
+    match side {
+        "top" => sides.top = value,
+        "right" => sides.right = value,
+        "bottom" => sides.bottom = value,
+        "left" => sides.left = value,
+        _ => {}
+    }
+}
+
+/// Parse a `border` value into `(width, color)`; the line style token is ignored.
+fn parse_border(value: &str) -> (f32, Option<Rgba>) {
+    let mut width = 0.0;
+    let mut color = None;
+    for token in value.split_whitespace() {
+        if let Some(px) = parse_px(token) {
+            width = px;
+        } else if let Some(c) = parse_color(token) {
+            color = Some(c);
+        }
+    }
+    (width, color)
 }
 
 /// Parse `font-weight`: keywords or a numeric 100–900.
@@ -692,9 +790,26 @@ fn parse_hex(hex: &str) -> Option<Rgba> {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_styled_tree, interpolate, Locals};
+    use super::{build_styled_tree, interpolate, interpret, Locals};
     use rux_script::Builder;
     use std::collections::HashMap;
+
+    #[test]
+    fn box_model_shorthand_sides_and_border() {
+        let mut p = HashMap::new();
+        p.insert("padding".to_string(), "4px 8px".to_string()); // vertical | horizontal
+        p.insert("padding-left".to_string(), "20px".to_string()); // longhand override
+        p.insert("margin".to_string(), "10px".to_string());
+        p.insert("border".to_string(), "2px solid #ff0000".to_string());
+        p.insert("border-bottom-width".to_string(), "5px".to_string());
+
+        let st = interpret(&p);
+        assert_eq!((st.padding.top, st.padding.right, st.padding.bottom, st.padding.left), (4.0, 8.0, 4.0, 20.0));
+        assert_eq!(st.margin.top, 10.0);
+        assert_eq!(st.border.top, 2.0);
+        assert_eq!(st.border.bottom, 5.0); // per-side width override
+        assert_eq!(st.border_color.map(|c| c.r), Some(1.0)); // #ff0000 → red
+    }
 
     #[test]
     fn interpolates_bindings() {

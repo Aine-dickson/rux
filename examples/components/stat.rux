@@ -11,9 +11,9 @@
     flex-direction: column;
     gap: 4px;
     padding: 12px;
-    background: #313244;
+    background: #0b9c4c;
     border-radius: 10px;
   }
-  .stat-label { color: #9399b2; font-size: 12px; }
+  .stat-label { color: #cacedb; font-size: 12px; }
   .stat-value { color: #cdd6f4; font-size: 22px; }
 </style>

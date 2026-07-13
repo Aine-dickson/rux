@@ -3,10 +3,15 @@
     <text class="heading">Device</text>
 
     <!-- Each <stat> is the imported component, expanded with its props. -->
+    <text>Hello world</text>
     <view class="row">
       <stat :label="battery_label" :value="level" />
       <stat :label="signal_label" :value="bars" />
     </view>
+
+    <button class="test_b">
+        <text>What goes arounf</text>
+    </button>
 
     <view class="row">
       <button class="btn" @tap="level = level - 5">
@@ -20,13 +25,17 @@
 </template>
 
 <style>
+    .test_b{
+        background: rgb(168, 11, 11);
+        width:150px;
+    }
   .screen {
     display: flex;
     flex-direction: column;
     gap: 16px;
     flex-grow: 1;
     padding: 24px;
-    background: #11111b;
+    background: #0c8383;
   }
   .heading {
     color: #cdd6f4;
@@ -45,7 +54,7 @@
     justify-content: center;
     align-items: center;
     padding: 12px;
-    background: #45475a;
+    background: #131e83;
     border-radius: 8px;
   }
   .btnlabel { color: #cdd6f4; font-size: 16px; }
