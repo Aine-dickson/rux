@@ -100,8 +100,12 @@ fn extract_imports(script: &str) -> (String, Vec<Import>) {
     for line in script.lines() {
         let trimmed = line.trim();
         if let Some(rest) = trimmed.strip_prefix("use ") {
-            if let Some(path) = rest.strip_suffix(';') {
-                let segments: Vec<&str> = path.trim().split("::").collect();
+            // A `use` must be its own statement on its own line; a path with
+            // spaces or extra `;` is malformed — leave it for rhai to reject.
+            if let Some(path) = rest.strip_suffix(';').map(str::trim).filter(|p| {
+                !p.is_empty() && !p.contains(char::is_whitespace) && !p.contains(';')
+            }) {
+                let segments: Vec<&str> = path.split("::").collect();
                 let file = format!("{}.rux", segments.join("/"));
                 let tag = segments
                     .last()
@@ -139,14 +143,33 @@ mod tests {
     }
 
     #[test]
-    fn loads_dashboard_and_expands_component() {
-        // Exercises the real path: import resolution, component file loading,
-        // engine merge, and component expansion with props.
-        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/dashboard.rux");
-        let doc = Document::load(path).expect("load dashboard");
+    fn loads_document_and_expands_imported_component() {
+        // Self-contained fixtures (not the mutable examples): exercises import
+        // resolution, component file loading, engine merge, and expansion.
+        use std::fs;
+        let dir = std::env::temp_dir().join(format!("rux_test_{}", std::process::id()));
+        let comp_dir = dir.join("components");
+        fs::create_dir_all(&comp_dir).unwrap();
+        fs::write(
+            comp_dir.join("stat.rux"),
+            r#"<template><view><text>{{ label }}: {{ value }}</text></view></template>"#,
+        )
+        .unwrap();
+        fs::write(
+            dir.join("app.rux"),
+            "<template><screen><stat :label=\"title\" :value=\"n\" /></screen></template>\n\
+             <script>\n\
+             use components::stat;\n\
+             let title = signal(\"Battery\");\n\
+             let n = signal(82);\n\
+             </script>",
+        )
+        .unwrap();
 
-        // The <stat> component expanded and interpolated its label/value props.
+        let doc = Document::load(dir.join("app.rux")).expect("load app");
         assert!(find_text(&doc.root, "Battery"), "component label prop rendered");
         assert!(find_text(&doc.root, "82"), "component value prop rendered");
+
+        let _ = fs::remove_dir_all(&dir);
     }
 }

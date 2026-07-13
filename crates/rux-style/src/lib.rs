@@ -15,8 +15,8 @@ use lightningcss::rules::CssRule;
 use lightningcss::stylesheet::{ParserOptions, PrinterOptions, StyleSheet};
 use lightningcss::traits::ToCss;
 use rux_layout::{
-    Align, Axis, Display, Justify, Node as LayoutNode, Overflow, Rgba, Sides, Style, TextAlign,
-    TextContent,
+    Align, Axis, Display, Justify, Len, Node as LayoutNode, Overflow, Rgba, Sides, Style, TextAlign,
+    TextContent, Track,
 };
 use rux_parser::{Element, Node as TplNode, Sfc};
 use rux_reactive::Value;
@@ -281,7 +281,8 @@ fn matches_compound(c: &Compound, el: &ElemDesc) -> bool {
         }
     }
     if let Some(r) = &c.role {
-        if Some(r.as_str()) != el.role.as_deref() {
+        // Roles match case-insensitively (role="Heading" ~ [role="heading"]).
+        if !el.role.as_deref().is_some_and(|er| er.eq_ignore_ascii_case(r)) {
             return false;
         }
     }
@@ -364,21 +365,7 @@ fn build_node(
 
     let desc = ElemDesc::of(el);
     let props = matched_props(&desc, ancestors, rules);
-    let mut style = interpret(&props);
-
-    // Default display follows the element/role (like HTML) unless CSS set it.
-    if !props.contains_key("display") {
-        style.display = default_display(&el.tag, el.role());
-    }
-    // Block boxes clip overflowing content by default (CSS overflow overrides).
-    if style.display == Display::Block
-        && !["overflow", "overflow-x", "overflow-y"]
-            .iter()
-            .any(|k| props.contains_key(*k))
-    {
-        style.overflow = Overflow::Clip;
-    }
-
+    let style = interpret(&props);
     let on_tap = el.attr("@tap").map(str::to_string);
     // r-show="false" keeps the layout slot but paints nothing.
     let hidden = el
@@ -401,7 +388,6 @@ fn build_node(
             .get("text-align")
             .map(|v| parse_text_align(v))
             .unwrap_or_default();
-        let inline = style.display == Display::Inline;
         let mut node = LayoutNode::text(
             style,
             TextContent {
@@ -410,7 +396,6 @@ fn build_node(
                 weight,
                 color,
                 align,
-                inline,
             },
         );
         node.on_tap = on_tap;
@@ -558,15 +543,17 @@ fn interpret(p: &HashMap<String, String>) -> Style {
     if let Some(v) = p.get("display") {
         st.display = match v.trim() {
             "flex" => Display::Flex,
+            "grid" => Display::Grid,
+            "inline" => Display::Inline,
             "none" => Display::None,
             _ => Display::Block,
         };
     }
     if let Some(v) = p.get("width") {
-        st.width = parse_px(first(v));
+        st.width = parse_len(first(v));
     }
     if let Some(v) = p.get("height") {
-        st.height = parse_px(first(v));
+        st.height = parse_len(first(v));
     }
     st.padding = box_sides(p, "padding");
     st.margin = box_sides(p, "margin");
@@ -577,16 +564,22 @@ fn interpret(p: &HashMap<String, String>) -> Style {
         }
     }
     if let Some(v) = p.get("min-width") {
-        st.min_width = parse_px(first(v));
+        st.min_width = parse_len(first(v));
     }
     if let Some(v) = p.get("max-width") {
-        st.max_width = parse_px(first(v));
+        st.max_width = parse_len(first(v));
     }
     if let Some(v) = p.get("min-height") {
-        st.min_height = parse_px(first(v));
+        st.min_height = parse_len(first(v));
     }
     if let Some(v) = p.get("max-height") {
-        st.max_height = parse_px(first(v));
+        st.max_height = parse_len(first(v));
+    }
+    if let Some(v) = p.get("grid-template-columns") {
+        st.grid_columns = parse_tracks(v);
+    }
+    if let Some(v) = p.get("grid-template-rows") {
+        st.grid_rows = parse_tracks(v);
     }
     if let Some(v) = p.get("flex-grow") {
         if let Ok(g) = first(v).parse::<f32>() {
@@ -643,6 +636,45 @@ fn parse_px(s: &str) -> Option<f32> {
     let s = s.trim();
     let s = s.strip_suffix("px").unwrap_or(s);
     s.parse::<f32>().ok()
+}
+
+/// One `rem` in pixels (root font size).
+const REM_PX: f32 = 16.0;
+
+/// Parse a length: `px`, `%`, `rem`, `vw`, `vh`/`dvh`. (`rem` resolves to px;
+/// `dvh` is treated as `vh` since we have no dynamic browser chrome.)
+fn parse_len(s: &str) -> Option<Len> {
+    let s = s.trim();
+    if let Some(pct) = s.strip_suffix('%') {
+        return pct.trim().parse::<f32>().ok().map(|v| Len::Pct(v / 100.0));
+    }
+    if let Some(n) = s.strip_suffix("dvh").or_else(|| s.strip_suffix("vh")) {
+        return n.trim().parse::<f32>().ok().map(Len::Vh);
+    }
+    if let Some(n) = s.strip_suffix("vw") {
+        return n.trim().parse::<f32>().ok().map(Len::Vw);
+    }
+    if let Some(n) = s.strip_suffix("rem") {
+        return n.trim().parse::<f32>().ok().map(|v| Len::Px(v * REM_PX));
+    }
+    let n = s.strip_suffix("px").unwrap_or(s);
+    n.parse::<f32>().ok().map(Len::Px)
+}
+
+/// Parse a `grid-template-columns`/`-rows` value into tracks (`1fr`, `100px`, `auto`).
+fn parse_tracks(value: &str) -> Vec<Track> {
+    value
+        .split_whitespace()
+        .map(|tok| {
+            if let Some(fr) = tok.strip_suffix("fr") {
+                Track::Fr(fr.parse().unwrap_or(1.0))
+            } else if tok == "auto" {
+                Track::Auto
+            } else {
+                parse_px(tok).map(Track::Px).unwrap_or(Track::Auto)
+            }
+        })
+        .collect()
 }
 
 /// Expand a 1–4 value shorthand (`5px`, `5px 10px`, `1 2 3`, `1 2 3 4`) into
@@ -768,21 +800,6 @@ fn parse_text_align(s: &str) -> TextAlign {
         "right" | "end" => TextAlign::End,
         "justify" => TextAlign::Justify,
         _ => TextAlign::Start,
-    }
-}
-
-/// The default `display` for an element, following the HTML inline/block split
-/// (a bare `<text>` is inline like a `<span>`; a `<view>` is block like a
-/// `<div>`). `role` promotes text to block (a paragraph/heading).
-fn default_display(tag: &str, role: Option<&str>) -> Display {
-    match tag {
-        "text" => match role {
-            Some("paragraph") | Some("heading") => Display::Block,
-            _ => Display::Inline,
-        },
-        "button" | "input" | "image" => Display::Inline,
-        // view, screen, and custom components are block.
-        _ => Display::Block,
     }
 }
 

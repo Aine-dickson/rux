@@ -43,6 +43,25 @@ impl Sides {
     }
 }
 
+/// A CSS length. Percentages are stored as a fraction (`0.0..=1.0`); `vh`/`vw`
+/// hold the raw viewport-percentage number (e.g. `100vh` → `Vh(100.0)`). `rem`
+/// is resolved to pixels at parse time.
+#[derive(Clone, Copy, Debug)]
+pub enum Len {
+    Px(f32),
+    Pct(f32),
+    Vw(f32),
+    Vh(f32),
+}
+
+/// A grid track size (`grid-template-columns`/`-rows`).
+#[derive(Clone, Copy, Debug)]
+pub enum Track {
+    Px(f32),
+    Fr(f32),
+    Auto,
+}
+
 /// How a node lays out its children. Defaults to `Row` to match CSS's
 /// `flex-direction` initial value.
 #[derive(Clone, Copy, Debug, Default)]
@@ -87,10 +106,11 @@ pub enum TextAlign {
 pub enum Display {
     #[default]
     Block,
-    /// Hugs its content and does not stretch to fill (approximated via
-    /// `align-self: flex-start` — taffy has no true inline text flow).
+    /// Hugs its content and does not stretch to fill (works inside flex parents;
+    /// taffy has no true inline text flow).
     Inline,
     Flex,
+    Grid,
     /// Removed from layout entirely (no space reserved).
     None,
 }
@@ -108,12 +128,14 @@ pub enum Overflow {
 #[derive(Clone, Debug)]
 pub struct Style {
     pub display: Display,
-    pub width: Option<f32>,
-    pub height: Option<f32>,
-    pub min_width: Option<f32>,
-    pub max_width: Option<f32>,
-    pub min_height: Option<f32>,
-    pub max_height: Option<f32>,
+    pub width: Option<Len>,
+    pub height: Option<Len>,
+    pub min_width: Option<Len>,
+    pub max_width: Option<Len>,
+    pub min_height: Option<Len>,
+    pub max_height: Option<Len>,
+    pub grid_columns: Vec<Track>,
+    pub grid_rows: Vec<Track>,
     pub grow: f32,
     pub padding: Sides,
     pub margin: Sides,
@@ -138,6 +160,8 @@ impl Default for Style {
             max_width: None,
             min_height: None,
             max_height: None,
+            grid_columns: Vec::new(),
+            grid_rows: Vec::new(),
             grow: 0.0,
             padding: Sides::default(),
             margin: Sides::default(),
@@ -162,8 +186,6 @@ pub struct TextContent {
     pub weight: u16,
     pub color: Rgba,
     pub align: TextAlign,
-    /// Inline text hugs and does not wrap; block text fills its box and wraps.
-    pub inline: bool,
 }
 
 /// A node in the view tree: a style, optional text, children, and an optional
@@ -286,15 +308,36 @@ enum PaintKind {
     Text(TextContent),
 }
 
-fn to_taffy(style: &Style) -> taffy::Style {
+fn to_dim(l: Len, vp: (f32, f32)) -> Dimension {
+    match l {
+        Len::Px(v) => length(v),
+        Len::Pct(p) => percent(p),
+        Len::Vw(v) => length(vp.0 * v / 100.0),
+        Len::Vh(v) => length(vp.1 * v / 100.0),
+    }
+}
+
+fn to_track(t: Track) -> TrackSizingFunction {
+    match t {
+        Track::Px(v) => length(v),
+        Track::Fr(f) => fr(f),
+        Track::Auto => auto(),
+    }
+}
+
+/// `vp` is the viewport `(width, height)` in physical pixels, for `vw`/`vh`.
+fn to_taffy(style: &Style, vp: (f32, f32)) -> taffy::Style {
     taffy::Style {
         display: match style.display {
             // Inline is a normal (block) box; the hug comes from width:auto plus
             // not stretching (taffy has no true inline flow).
             Display::Block | Display::Inline => taffy::Display::Block,
             Display::Flex => taffy::Display::Flex,
+            Display::Grid => taffy::Display::Grid,
             Display::None => taffy::Display::None,
         },
+        grid_template_columns: style.grid_columns.iter().copied().map(to_track).collect(),
+        grid_template_rows: style.grid_rows.iter().copied().map(to_track).collect(),
         flex_direction: match style.axis {
             Axis::Column => FlexDirection::Column,
             Axis::Row => FlexDirection::Row,
@@ -323,22 +366,16 @@ fn to_taffy(style: &Style) -> taffy::Style {
             }),
         flex_grow: style.grow,
         size: Size {
-            // Explicit width wins; otherwise inline hugs (auto) and block/flex
-            // fill their container (100%).
-            width: match (style.width, style.display) {
-                (Some(w), _) => length(w),
-                (None, Display::Inline) => auto(),
-                (None, _) => percent(1.0),
-            },
-            height: style.height.map(length).unwrap_or(auto()),
+            width: style.width.map(|l| to_dim(l, vp)).unwrap_or(auto()),
+            height: style.height.map(|l| to_dim(l, vp)).unwrap_or(auto()),
         },
         min_size: Size {
-            width: style.min_width.map(length).unwrap_or(auto()),
-            height: style.min_height.map(length).unwrap_or(auto()),
+            width: style.min_width.map(|l| to_dim(l, vp)).unwrap_or(auto()),
+            height: style.min_height.map(|l| to_dim(l, vp)).unwrap_or(auto()),
         },
         max_size: Size {
-            width: style.max_width.map(length).unwrap_or(auto()),
-            height: style.max_height.map(length).unwrap_or(auto()),
+            width: style.max_width.map(|l| to_dim(l, vp)).unwrap_or(auto()),
+            height: style.max_height.map(|l| to_dim(l, vp)).unwrap_or(auto()),
         },
         padding: Rect {
             left: length(style.padding.left),
@@ -372,13 +409,13 @@ fn build(
     paint: &mut Vec<(NodeId, PaintKind)>,
     handlers: &mut Vec<(NodeId, String)>,
     hidden: &mut Vec<NodeId>,
+    vp: (f32, f32),
 ) -> NodeId {
     let id = if let Some(tc) = &node.text {
-        // Text leaves carry their content as taffy context, so the measure hook
-        // can shape them. Width follows display (inline hugs, block fills) via
-        // to_taffy; the measure hook wraps block text and single-lines inline.
+        // Text leaves carry their content as taffy context so the measure hook
+        // can shape them.
         let id = tree
-            .new_leaf_with_context(to_taffy(&node.style), tc.clone())
+            .new_leaf_with_context(to_taffy(&node.style, vp), tc.clone())
             .expect("taffy text leaf");
         paint.push((id, PaintKind::Text(tc.clone())));
         id
@@ -386,12 +423,12 @@ fn build(
         let children: Vec<NodeId> = node
             .children
             .iter()
-            .map(|c| build(tree, c, paint, handlers, hidden))
+            .map(|c| build(tree, c, paint, handlers, hidden, vp))
             .collect();
         let id = if children.is_empty() {
-            tree.new_leaf(to_taffy(&node.style)).expect("taffy leaf")
+            tree.new_leaf(to_taffy(&node.style, vp)).expect("taffy leaf")
         } else {
-            tree.new_with_children(to_taffy(&node.style), &children)
+            tree.new_with_children(to_taffy(&node.style, vp), &children)
                 .expect("taffy node")
         };
         paint.push((
@@ -507,10 +544,11 @@ pub fn layout(root: &Node, avail_w: f32, avail_h: f32, measure: &mut Measure) ->
     let mut paint = Vec::new();
     let mut handlers = Vec::new();
     let mut hidden = Vec::new();
-    let root_id = build(&mut tree, root, &mut paint, &mut handlers, &mut hidden);
+    let vp = (avail_w, avail_h);
+    let root_id = build(&mut tree, root, &mut paint, &mut handlers, &mut hidden, vp);
 
     // Force the root to fill the viewport so a `screen` always covers the window.
-    let mut root_style = to_taffy(&root.style);
+    let mut root_style = to_taffy(&root.style, vp);
     root_style.size = Size {
         width: length(avail_w),
         height: length(avail_h),
@@ -529,16 +567,12 @@ pub fn layout(root: &Node, avail_w: f32, avail_h: f32, measure: &mut Measure) ->
             }
             match ctx {
                 Some(tc) => {
-                    // Inline text hugs on one line (no wrap); block text wraps
-                    // to its resolved width.
-                    let max = if tc.inline {
-                        None
-                    } else {
-                        known.width.or(match available.width {
-                            AvailableSpace::Definite(w) => Some(w),
-                            _ => None,
-                        })
-                    };
+                    // Wrap to a definite width; otherwise (content sizing) let
+                    // the text take its natural single-line width.
+                    let max = known.width.or(match available.width {
+                        AvailableSpace::Definite(w) => Some(w),
+                        _ => None,
+                    });
                     let (w, h) = measure(&tc.text, tc.font_size, tc.weight, max);
                     Size {
                         width: known.width.unwrap_or(w),

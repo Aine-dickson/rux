@@ -1,75 +1,50 @@
 <template>
-  <screen class="screen">
-    <!-- role="heading" makes this block, so text-align:center has width to center in. -->
-    <text class="heading" role="heading">Device</text>
-
-    <!-- Each <stat> is the imported component, expanded with its props. -->
-    <text>Hello world</text>
-    <view class="row">
-      <stat :label="battery_label" :value="level" />
-      <stat :label="signal_label" :value="bars" />
-    </view>
-
-    <button class="test_b">
-        <text class="tes">What goes arounf</text>
-    </button>
-
-    <view class="row">
-      <button class="btn" @tap="level = level - 5">
-        <text class="btnlabel">drain</text>
-      </button>
-      <button class="btn" @tap="level = host::full()">
-        <text class="btnlabel">charge</text>
-      </button>
-    </view>
-  </screen>
-</template>
-
-<style>
-    .test_b{
-        background: rgb(168, 11, 11);
-        width:150px;
-    }
-    .test_b text {
+    <screen>
+        <text role="heading">This is a Rux app</text>
+        <view role="header">
+            <text>This is a span</text>
+            <text>This is another span</text>
+            <button></button>
+            <button>
+                <text>A text inside button</text>
+            </button>
         
+        </view>
+        <view class="last"></view>
+    </screen>
+</template>
+<style>
+    *{
+        color: #000000;
+    }
+    screen {
+        background: #ffffff;
+        display: grid;
+        grid-template-columns: 1fr 1fr 1fr;
+    }
+    [role="heading"] {
+        text-align: center;
+    }
+    [role="header"] {
+        margin-top: 4px;
+        background: #150242;
         padding: 4px;
     }
-  .screen {
-    display: flex;
-    flex-direction: column;
-    gap: 16px;
-    flex-grow: 1;
-    padding: 24px;
-    background: #0c8383;
-  }
-  .heading {
-    color: #cdd6f4;
-    font-size: 20px;
-    font-weight: 700;
-    text-align: center;
-    margin: 4px;
-  }
-  .row {
-    display: flex;
-    flex-direction: row;
-    gap: 12px;
-  }
-  .btn {
-    display: flex;
-    justify-content: center;
-    align-items: center;
-    padding: 12px;
-    background: #131e83;
-    border-radius: 8px;
-  }
-  .btnlabel { color: #cdd6f4; font-size: 16px; }
+
+    [role="header"] text {
+        color: #fff;
+    }
+
+    button {
+        background: #0000ff;
+        padding: 10px;
+        border-radius: 5px;
+        margin: 10px;
+    }
+
+    .last {
+        margin: 4px;
+        height: 30px;
+        border: 2px #000000 solid;
+    }
 </style>
-
-<script>
-  use components::stat;
-
-  let level = signal(82);
-  let bars  = signal(4);
-  let battery_label = signal("Battery");
-  let signal_label  = signal("Signal");
-</script>

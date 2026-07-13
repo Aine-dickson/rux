@@ -290,35 +290,32 @@ pub fn run(path: PathBuf) {
         .expect("create event loop");
     event_loop.set_control_flow(ControlFlow::Wait);
 
-    // Watch the file's directory (more robust than watching the inode, since
-    // editors often replace the file on save) and filter to our filename.
+    // Watch the file's directory *recursively* so edits to imported components
+    // (which live in subdirectories) also trigger a reload. Reload on any `.rux`
+    // change — `Document::load` re-reads the main file and its components.
     let proxy = event_loop.create_proxy();
     let watch_dir = path
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
         .map(|p| p.to_path_buf())
         .unwrap_or_else(|| PathBuf::from("."));
-    let watch_name = path.file_name().map(|n| n.to_os_string());
 
     let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
         let Ok(event) = res else { return };
         if !matches!(event.kind, EventKind::Modify(_) | EventKind::Create(_)) {
             return;
         }
-        let touches_file = match &watch_name {
-            Some(name) => event
-                .paths
-                .iter()
-                .any(|p| p.file_name() == Some(name.as_os_str())),
-            None => true,
-        };
-        if touches_file {
+        let touches_rux = event
+            .paths
+            .iter()
+            .any(|p| p.extension().is_some_and(|e| e == "rux"));
+        if touches_rux {
             let _ = proxy.send_event(RuxEvent::Reload);
         }
     })
     .expect("create watcher");
     watcher
-        .watch(&watch_dir, RecursiveMode::NonRecursive)
+        .watch(&watch_dir, RecursiveMode::Recursive)
         .expect("watch directory");
 
     let mut app = App::new(path);
