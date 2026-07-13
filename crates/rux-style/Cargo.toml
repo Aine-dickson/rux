@@ -10,5 +10,6 @@ description = "Rux styling: literal CSS (lightningcss) cascaded onto the templat
 rux-parser = { path = "../rux-parser" }
 rux-layout = { path = "../rux-layout" }
 rux-reactive = { path = "../rux-reactive" }
+rux-script = { path = "../rux-script" }
 lightningcss = "1.0.0-alpha.71"
 # lightningcss added via `cargo add` so the exact published version is pinned.

@@ -113,7 +113,7 @@ impl App {
             .map(|h| h.on_tap.clone());
 
         if let Some(src) = handler {
-            if self.document.signals_mut().run_handler(&src) {
+            if self.document.engine_mut().run_handler(&src) {
                 self.document.rebuild();
                 self.request_redraw();
             }

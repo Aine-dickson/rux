@@ -1,0 +1,12 @@
+[package]
+name = "rux-script"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Rux script tier: a rhai engine holding state, plus the host registry."
+
+[dependencies]
+rhai = "1.25.1"
+rux-reactive = { path = "../rux-reactive" }
+# rhai added via `cargo add`.

@@ -16,10 +16,12 @@ use lightningcss::stylesheet::{ParserOptions, PrinterOptions, StyleSheet};
 use lightningcss::traits::ToCss;
 use rux_layout::{Align, Axis, Display, Justify, Node as LayoutNode, Rgba, Style, TextContent};
 use rux_parser::{Element, Node as TplNode, Sfc};
-use rux_reactive::{Signals, Value};
+use rux_reactive::Value;
+use rux_script::Engine;
 
-/// Loop-variable bindings introduced by `r-for`, shadowing signals by name.
-type Locals = HashMap<String, Value>;
+/// Loop-variable bindings introduced by `r-for`, layered as a scope stack and
+/// injected into the script engine for each evaluation.
+type Locals = Vec<(String, Value)>;
 
 /// Default inherited text colour (`#cdd6f4`) and font size, used at the root
 /// before any `color` / `font-size` rule applies. Text properties inherit.
@@ -27,8 +29,8 @@ const DEFAULT_COLOR: Rgba = Rgba::new(0.804, 0.839, 0.957, 1.0);
 const DEFAULT_FONT_SIZE: f32 = 16.0;
 
 /// Build the styled layout tree from a parsed SFC, interpolating `{{ }}` text
-/// against the current signal values.
-pub fn build_styled_tree(sfc: &Sfc, signals: &Signals) -> Result<LayoutNode, String> {
+/// and directive expressions against the script engine's current state.
+pub fn build_styled_tree(sfc: &Sfc, engine: &mut Engine) -> Result<LayoutNode, String> {
     let rules = parse_rules(&sfc.style);
     let mut ancestors: Vec<ElemDesc> = Vec::new();
     let locals = Locals::new();
@@ -37,35 +39,13 @@ pub fn build_styled_tree(sfc: &Sfc, signals: &Signals) -> Result<LayoutNode, Str
         &rules,
         &mut ancestors,
         (DEFAULT_COLOR, DEFAULT_FONT_SIZE),
-        signals,
+        engine,
         &locals,
     ))
 }
 
-/// Look up a name in the loop-local scope first, then in signals.
-fn lookup<'a>(name: &str, signals: &'a Signals, locals: &'a Locals) -> Option<&'a Value> {
-    locals.get(name).or_else(|| signals.get(name))
-}
-
-/// A numeric lookup closure for the arithmetic/condition evaluator.
-fn num_lookup<'a>(
-    signals: &'a Signals,
-    locals: &'a Locals,
-) -> impl Fn(&str) -> f64 + 'a {
-    move |name: &str| {
-        lookup(name, signals, locals)
-            .and_then(Value::as_number)
-            .unwrap_or(0.0)
-    }
-}
-
-/// Evaluate a `r-if` / `r-elif` / `r-show` condition.
-fn eval_cond(expr: &str, signals: &Signals, locals: &Locals) -> bool {
-    rux_reactive::eval_condition(expr, &num_lookup(signals, locals))
-}
-
-/// Replace `{{ expr }}` spans in `text` with evaluated values.
-fn interpolate(text: &str, signals: &Signals, locals: &Locals) -> String {
+/// Replace `{{ expr }}` spans in `text` with values evaluated by the engine.
+fn interpolate(text: &str, engine: &mut Engine, locals: &Locals) -> String {
     let mut out = String::new();
     let mut rest = text;
     while let Some(start) = rest.find("{{") {
@@ -73,7 +53,7 @@ fn interpolate(text: &str, signals: &Signals, locals: &Locals) -> String {
         let after = &rest[start + 2..];
         match after.find("}}") {
             Some(end) => {
-                out.push_str(&eval_expr(after[..end].trim(), signals, locals));
+                out.push_str(&engine.eval_display(after[..end].trim(), locals));
                 rest = &after[end + 2..];
             }
             None => {
@@ -84,18 +64,6 @@ fn interpolate(text: &str, signals: &Signals, locals: &Locals) -> String {
     }
     out.push_str(rest);
     out
-}
-
-/// Expression eval for interpolation: a signal/local name or a numeric literal.
-/// Unknown → empty.
-fn eval_expr(expr: &str, signals: &Signals, locals: &Locals) -> String {
-    if let Some(v) = lookup(expr, signals, locals) {
-        v.to_display()
-    } else if let Ok(n) = expr.parse::<f64>() {
-        Value::Number(n).to_display()
-    } else {
-        String::new()
-    }
 }
 
 // ── Selector model ──────────────────────────────────────────────────────────
@@ -330,11 +298,11 @@ fn matched_props(
 }
 
 /// Concatenate the direct text children of an element, interpolating `{{ }}`.
-fn collect_text(el: &Element, signals: &Signals, locals: &Locals) -> String {
+fn collect_text(el: &Element, engine: &mut Engine, locals: &Locals) -> String {
     let mut parts = Vec::new();
     for child in &el.children {
         if let TplNode::Text(t) = child {
-            parts.push(interpolate(t.trim(), signals, locals));
+            parts.push(interpolate(t.trim(), engine, locals));
         }
     }
     parts.join(" ")
@@ -352,7 +320,7 @@ fn build_node(
     rules: &[Rule],
     ancestors: &mut Vec<ElemDesc>,
     inherited: (Rgba, f32),
-    signals: &Signals,
+    engine: &mut Engine,
     locals: &Locals,
 ) -> LayoutNode {
     let desc = ElemDesc::of(el);
@@ -360,7 +328,9 @@ fn build_node(
     let style = interpret(&props);
     let on_tap = el.attr("@tap").map(str::to_string);
     // r-show="false" keeps the layout slot but paints nothing.
-    let hidden = el.attr("r-show").is_some_and(|e| !eval_cond(e, signals, locals));
+    let hidden = el
+        .attr("r-show")
+        .is_some_and(|e| !engine.eval_bool(e, locals));
 
     // Resolve inheritable text properties (own value, else inherited).
     let color = props
@@ -376,7 +346,7 @@ fn build_node(
         let mut node = LayoutNode::text(
             style,
             TextContent {
-                text: collect_text(el, signals, locals),
+                text: collect_text(el, engine, locals),
                 font_size,
                 color,
             },
@@ -400,7 +370,7 @@ fn build_node(
         rules,
         ancestors,
         (color, font_size),
-        signals,
+        engine,
         locals,
     );
     ancestors.pop();
@@ -428,7 +398,7 @@ fn build_children(
     rules: &[Rule],
     ancestors: &mut Vec<ElemDesc>,
     inherited: (Rgba, f32),
-    signals: &Signals,
+    engine: &mut Engine,
     locals: &Locals,
 ) -> Vec<LayoutNode> {
     let mut out = Vec::new();
@@ -441,11 +411,14 @@ fn build_children(
         if let Some(for_expr) = el.attr("r-for") {
             in_chain = false;
             if let Some((var, coll)) = parse_for(for_expr) {
-                if let Some(items) = lookup(coll, signals, locals).and_then(Value::as_list) {
+                let items = engine
+                    .eval_value(coll, locals)
+                    .and_then(|v| v.as_list().map(<[Value]>::to_vec));
+                if let Some(items) = items {
                     for item in items {
                         let mut child_locals = locals.clone();
-                        child_locals.insert(var.to_string(), item.clone());
-                        out.push(build_node(el, rules, ancestors, inherited, signals, &child_locals));
+                        child_locals.push((var.to_string(), item));
+                        out.push(build_node(el, rules, ancestors, inherited, engine, &child_locals));
                     }
                 }
             }
@@ -454,22 +427,22 @@ fn build_children(
 
         if let Some(cond) = el.attr("r-if") {
             in_chain = true;
-            chain_satisfied = eval_cond(cond, signals, locals);
+            chain_satisfied = engine.eval_bool(cond, locals);
             if chain_satisfied {
-                out.push(build_node(el, rules, ancestors, inherited, signals, locals));
+                out.push(build_node(el, rules, ancestors, inherited, engine, locals));
             }
             continue;
         }
         if let Some(cond) = el.attr("r-elif") {
-            if in_chain && !chain_satisfied && eval_cond(cond, signals, locals) {
+            if in_chain && !chain_satisfied && engine.eval_bool(cond, locals) {
                 chain_satisfied = true;
-                out.push(build_node(el, rules, ancestors, inherited, signals, locals));
+                out.push(build_node(el, rules, ancestors, inherited, engine, locals));
             }
             continue;
         }
         if el.attr("r-else").is_some() {
             if in_chain && !chain_satisfied {
-                out.push(build_node(el, rules, ancestors, inherited, signals, locals));
+                out.push(build_node(el, rules, ancestors, inherited, engine, locals));
             }
             in_chain = false;
             continue;
@@ -477,7 +450,7 @@ fn build_children(
 
         // A plain element ends any active chain.
         in_chain = false;
-        out.push(build_node(el, rules, ancestors, inherited, signals, locals));
+        out.push(build_node(el, rules, ancestors, inherited, engine, locals));
     }
     out
 }
@@ -603,16 +576,18 @@ fn parse_hex(hex: &str) -> Option<Rgba> {
 #[cfg(test)]
 mod tests {
     use super::{build_styled_tree, interpolate, Locals};
-    use rux_reactive::Signals;
+    use rux_script::Builder;
 
     #[test]
-    fn interpolates_signal_bindings() {
-        let signals = Signals::from_script(r#"let level = signal(82); let who = signal("Cam");"#);
+    fn interpolates_bindings() {
+        let mut e = Builder::new()
+            .build(r#"let level = signal(82); let who = signal("Cam");"#)
+            .unwrap();
         let locals = Locals::new();
-        assert_eq!(interpolate("{{ level }}%", &signals, &locals), "82%");
-        assert_eq!(interpolate("Hi {{ who }}!", &signals, &locals), "Hi Cam!");
-        assert_eq!(interpolate("plain text", &signals, &locals), "plain text");
-        assert_eq!(interpolate("{{ missing }}!", &signals, &locals), "!"); // unknown → empty
+        assert_eq!(interpolate("{{ level }}%", &mut e, &locals), "82%");
+        assert_eq!(interpolate("Hi {{ who }}!", &mut e, &locals), "Hi Cam!");
+        assert_eq!(interpolate("plain text", &mut e, &locals), "plain text");
+        assert_eq!(interpolate("{{ missing }}!", &mut e, &locals), "!"); // unknown → empty
     }
 
     #[test]
@@ -629,8 +604,8 @@ mod tests {
             <script> let nums = signal([1, 2, 3]); let level = signal(10); </script>
         "#;
         let sfc = rux_parser::parse_sfc(src).unwrap();
-        let signals = Signals::from_script(&sfc.script);
-        let root = build_styled_tree(&sfc, &signals).unwrap();
+        let mut engine = Builder::new().build(&sfc.script).unwrap();
+        let root = build_styled_tree(&sfc, &mut engine).unwrap();
 
         // 3 views from r-for + exactly one branch (level=10 → the r-elif "mid").
         assert_eq!(root.children.len(), 4);

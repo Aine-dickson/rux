@@ -10,4 +10,4 @@ description = "Rux runtime document model: loads a .rux file into a renderable t
 rux-parser = { path = "../rux-parser" }
 rux-style = { path = "../rux-style" }
 rux-layout = { path = "../rux-layout" }
-rux-reactive = { path = "../rux-reactive" }
+rux-script = { path = "../rux-script" }

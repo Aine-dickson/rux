@@ -3,6 +3,7 @@
         <view class="card">
             <text class="title">Battery</text>
             <text class="value">{{ level }}%</text>
+            <text class="est">~ {{ hours(level) }}h remaining</text>
             <text class="warn" r-if="level < 20">Low battery</text>
 
             <view class="row">
@@ -12,11 +13,14 @@
                 <button class="btn" @tap="level = level + 1">
                     <text class="btnlabel">+</text>
                 </button>
+                <button class="btn wide" @tap="level = host::full()">
+                    <text class="btnlabel">Full</text>
+                </button>
             </view>
 
             <view class="row">
                 <view class="v1" r-for="tick in ticks">
-                    <text class="texk">{{tick}}</text>
+                    <text class="tick">{{tick}}</text>
                 </view>
             </view>
         </view>
@@ -26,9 +30,9 @@
 <style>
     .v1{
         background: #193822;
-        height: 29px;
         width: 320px;
         border-radius: 10;
+        padding: 14px;
     }
   .screen {
     display: flex;
@@ -53,6 +57,13 @@
     color: #a6e3a1;
     font-size: 28px;
   }
+  .est {
+    color: #7f849c;
+    font-size: 13px;
+  }
+  .btn.wide {
+    width: 88px;
+  }
   .warn {
     color: #f38ba8;
     font-size: 16px;
@@ -70,6 +81,7 @@
     border-radius: 8px;
     justify-content:center;
     align-items: center;
+    cursor: pointer; 
   }
   .btnlabel {
     color: #cdd6f4;
@@ -77,13 +89,16 @@
   }
   .tick {
     color: #6c7086;
-    font-size: 14px;
+    font-size: 24px;
+    text-align: center;
   }
 </style>
 
 <script>
-  // Tap -/+ to change level; the warning appears when level < 20.
-  // `ticks` drives the r-for row. Named handlers arrive with rhai (M8).
+  // Tap -/+ to change level; "Full" calls the native host::full() capability.
+  // `hours()` is a pure helper used in a binding. `ticks` drives the r-for row.
+  // (rhai functions can't mutate shared state, so state changes stay inline.)
   let level = signal(82);
   let ticks = signal(["one", "two", "three"]);
+  fn hours(n) { n / 10 }
 </script>
