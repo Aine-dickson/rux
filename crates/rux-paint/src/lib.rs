@@ -4,14 +4,23 @@
 //! rounded rectangles for boxes, glyph runs (via `rux-text`) for text. Stage 5
 //! of `docs/04-architecture.md`.
 
-use rux_layout::{Paint, Rgba};
-use rux_text::TextEngine;
+use rux_layout::{Paint, Rgba, TextAlign};
+use rux_text::{Align, TextEngine};
 use vello::kurbo::{Affine, RoundedRect};
 use vello::peniko::{Color, Fill};
 use vello::Scene;
 
 fn to_color(c: Rgba) -> Color {
     Color::rgba(c.r as f64, c.g as f64, c.b as f64, c.a as f64)
+}
+
+fn to_align(a: TextAlign) -> Align {
+    match a {
+        TextAlign::Start => Align::Start,
+        TextAlign::Center => Align::Center,
+        TextAlign::End => Align::End,
+        TextAlign::Justify => Align::Justify,
+    }
 }
 
 /// Build a fresh scene from paint items, in list order (parents first).
@@ -36,7 +45,9 @@ pub fn build_scene(items: &[Paint], text: &mut TextEngine) -> Scene {
                     t.y,
                     &t.content.text,
                     t.content.font_size,
+                    t.content.weight,
                     to_color(t.content.color),
+                    to_align(t.content.align),
                     Some(t.width),
                 );
             }

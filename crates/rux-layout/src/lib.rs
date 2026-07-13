@@ -51,6 +51,16 @@ pub enum Align {
     Stretch,
 }
 
+/// Horizontal text alignment within a text box (`text-align`).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum TextAlign {
+    #[default]
+    Start,
+    Center,
+    End,
+    Justify,
+}
+
 /// CSS `display`. Defaults to `Block` (strict-CSS fidelity): flex layout,
 /// `gap`, and `flex-direction` only apply under `Flex`.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -68,8 +78,13 @@ pub struct Style {
     pub display: Display,
     pub width: Option<f32>,
     pub height: Option<f32>,
+    pub min_width: Option<f32>,
+    pub max_width: Option<f32>,
+    pub min_height: Option<f32>,
+    pub max_height: Option<f32>,
     pub grow: f32,
     pub padding: f32,
+    pub margin: f32,
     pub gap: f32,
     pub axis: Axis,
     pub justify: Option<Justify>,
@@ -84,8 +99,13 @@ impl Default for Style {
             display: Display::Block,
             width: None,
             height: None,
+            min_width: None,
+            max_width: None,
+            min_height: None,
+            max_height: None,
             grow: 0.0,
             padding: 0.0,
+            margin: 0.0,
             gap: 0.0,
             axis: Axis::Row,
             justify: None,
@@ -101,7 +121,9 @@ impl Default for Style {
 pub struct TextContent {
     pub text: String,
     pub font_size: f32,
+    pub weight: u16,
     pub color: Rgba,
+    pub align: TextAlign,
 }
 
 /// A node in the view tree: a style, optional text, children, and an optional
@@ -195,8 +217,8 @@ pub struct Layout {
     pub hits: Vec<HitRegion>,
 }
 
-/// Callback that measures a text block: `(text, font_size, max_width) -> (w, h)`.
-pub type Measure<'a> = dyn FnMut(&str, f32, Option<f32>) -> (f32, f32) + 'a;
+/// Callback that measures a text block: `(text, font_size, weight, max_width) -> (w, h)`.
+pub type Measure<'a> = dyn FnMut(&str, f32, u16, Option<f32>) -> (f32, f32) + 'a;
 
 /// What each taffy node paints.
 enum PaintKind {
@@ -233,7 +255,16 @@ fn to_taffy(style: &Style) -> taffy::Style {
             width: style.width.map(length).unwrap_or(auto()),
             height: style.height.map(length).unwrap_or(auto()),
         },
+        min_size: Size {
+            width: style.min_width.map(length).unwrap_or(auto()),
+            height: style.min_height.map(length).unwrap_or(auto()),
+        },
+        max_size: Size {
+            width: style.max_width.map(length).unwrap_or(auto()),
+            height: style.max_height.map(length).unwrap_or(auto()),
+        },
         padding: length(style.padding),
+        margin: length(style.margin),
         gap: Size {
             width: length(style.gap),
             height: length(style.gap),
@@ -380,7 +411,7 @@ pub fn layout(root: &Node, avail_w: f32, avail_h: f32, measure: &mut Measure) ->
                         AvailableSpace::Definite(w) => Some(w),
                         _ => None,
                     });
-                    let (w, h) = measure(&tc.text, tc.font_size, max);
+                    let (w, h) = measure(&tc.text, tc.font_size, tc.weight, max);
                     Size {
                         width: known.width.unwrap_or(w),
                         height: known.height.unwrap_or(h),

@@ -14,7 +14,9 @@ use std::collections::HashMap;
 use lightningcss::rules::CssRule;
 use lightningcss::stylesheet::{ParserOptions, PrinterOptions, StyleSheet};
 use lightningcss::traits::ToCss;
-use rux_layout::{Align, Axis, Display, Justify, Node as LayoutNode, Rgba, Style, TextContent};
+use rux_layout::{
+    Align, Axis, Display, Justify, Node as LayoutNode, Rgba, Style, TextAlign, TextContent,
+};
 use rux_parser::{Element, Node as TplNode, Sfc};
 use rux_reactive::Value;
 use rux_script::Engine;
@@ -379,12 +381,19 @@ fn build_node(
         .unwrap_or(inherited.1);
 
     if el.tag == "text" {
+        let weight = props.get("font-weight").and_then(|v| parse_weight(v)).unwrap_or(400);
+        let align = props
+            .get("text-align")
+            .map(|v| parse_text_align(v))
+            .unwrap_or_default();
         let mut node = LayoutNode::text(
             style,
             TextContent {
                 text: collect_text(el, engine, locals),
                 font_size,
+                weight,
                 color,
+                align,
             },
         );
         node.on_tap = on_tap;
@@ -552,6 +561,23 @@ fn interpret(p: &HashMap<String, String>) -> Style {
             st.gap = px;
         }
     }
+    if let Some(v) = p.get("margin") {
+        if let Some(px) = parse_px(first(v)) {
+            st.margin = px;
+        }
+    }
+    if let Some(v) = p.get("min-width") {
+        st.min_width = parse_px(first(v));
+    }
+    if let Some(v) = p.get("max-width") {
+        st.max_width = parse_px(first(v));
+    }
+    if let Some(v) = p.get("min-height") {
+        st.min_height = parse_px(first(v));
+    }
+    if let Some(v) = p.get("max-height") {
+        st.max_height = parse_px(first(v));
+    }
     if let Some(v) = p.get("flex-grow") {
         if let Ok(g) = first(v).parse::<f32>() {
             st.grow = g;
@@ -598,6 +624,27 @@ fn parse_px(s: &str) -> Option<f32> {
     let s = s.trim();
     let s = s.strip_suffix("px").unwrap_or(s);
     s.parse::<f32>().ok()
+}
+
+/// Parse `font-weight`: keywords or a numeric 100–900.
+fn parse_weight(s: &str) -> Option<u16> {
+    match s.trim() {
+        "normal" => Some(400),
+        "bold" => Some(700),
+        "lighter" => Some(300),
+        "bolder" => Some(800),
+        other => other.parse::<u16>().ok(),
+    }
+}
+
+/// Parse `text-align`.
+fn parse_text_align(s: &str) -> TextAlign {
+    match s.trim() {
+        "center" => TextAlign::Center,
+        "right" | "end" => TextAlign::End,
+        "justify" => TextAlign::Justify,
+        _ => TextAlign::Start,
+    }
 }
 
 fn parse_color(s: &str) -> Option<Rgba> {

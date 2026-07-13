@@ -146,7 +146,7 @@ impl App {
         // Layout (text sized via the engine's measure), then paint. Cache the
         // hit regions for tap dispatch.
         let layout = {
-            let mut measure = |t: &str, fs: f32, mw: Option<f32>| text.measure(t, fs, mw);
+            let mut measure = |t: &str, fs: f32, w: u16, mw: Option<f32>| text.measure(t, fs, w, mw);
             rux_layout::layout(&document.root, width as f32, height as f32, &mut measure)
         };
         state.scene = rux_paint::build_scene(&layout.paints, text);
