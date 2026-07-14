@@ -42,11 +42,14 @@ rebuild. Only changing the compiled Rust host requires `cargo run` again.
 ## What works
 
 ### Elements
-`<screen>` `<view>` `<text>` `<image>`* `<button>` `<input>` + imported
+`<screen>` `<view>` `<text>` `<image>` `<button>` `<input>` + imported
 components as custom tags. `role=` is honored for **selectors and semantics**
 (and matches **case-insensitively**: `role="Heading"` matches `[role="heading"]`).
 
-\* `<image>` is parsed/styled but does not load or draw an image yet.
+`<image src="assets/logo.png">` — `src` resolves **relative to the .rux file**
+(not the working directory), and `:src` binds an expression. With no CSS size it
+lays out at the file's intrinsic pixel size; a `width`/`height` scales it to fit.
+Formats: PNG, JPEG, GIF, WebP. A missing file logs to stderr and paints nothing.
 
 ### Layout — **use `display: flex`**
 > **DIVERGENCE from docs 01–04.** The inline/block-by-role model was **built and
@@ -57,21 +60,31 @@ components as custom tags. `role=` is honored for **selectors and semantics**
 - **Everything defaults to `display: block`.** Block containers make children fill.
 - **Use `display: flex` for layout.** Flex cross-axis defaults to **flex-start**
   (children hug), not CSS's `stretch` — a deliberate divergence for ergonomics.
+- **Hug means `fit-content`**: a box with no `width` is clamped to its parent's
+  inner width, so it can't burst out of a narrower parent. An explicit `width` (or
+  `flex-shrink: 0`) is your call and *will* overflow — clip it with `overflow: hidden`.
 - `display: grid` works (`grid-template-columns` / `-rows`: `1fr`, `px`, `auto`).
 - No inline text flow: two `<text>` siblings **stack**, they don't share a line.
+- **Lengths are logical pixels.** Layout and taps run in logical space and the
+  scene is scaled to the display's DPI, so `16px` is the same physical size on a
+  1x and a 2x screen.
 
 ### Honored CSS
 ```
 display (block|flex|grid|inline|none)
-flex-direction, justify-content, align-items, flex-grow, gap
+flex-direction, justify-content, align-items, gap
+flex-grow, flex-shrink, flex-basis, flex-wrap, flex (shorthand)
 grid-template-columns, grid-template-rows
 width, height, min/max-width, min/max-height
 padding, margin        (shorthand 1–4 values + -top/-right/-bottom/-left)
 border, border-width, border-color, border-<side>, border-<side>-width
-background / background-color, border-radius
+background / background-color, border-radius, opacity
 color, font-size, font-weight, text-align
-overflow / overflow-x / overflow-y   (clips; no scrolling yet)
+overflow / overflow-x / overflow-y   (clips, following border-radius; no scrolling yet)
 ```
+`flex: 1` means `1 1 0%` (CSS's shorthand defaults), not `1 1 auto`.
+`opacity` fades the node **and its subtree** as one layer.
+`background`/`border` work on `<text>` nodes, not just containers.
 **Units:** `px`, `%`, `rem` (=16px), `vw`, `vh`/`dvh`.
 
 Anything else is **parsed but silently ignored** (no error).
@@ -119,21 +132,24 @@ their own subtree. Editing a component hot-reloads.
 4. **`text-align` needs a box wider than the text** (set a width, or the element
    must fill) — otherwise there's nothing to align within.
 5. `overflow` **clips but does not scroll**.
+6. **A word longer than its box still overflows.** Nothing can shrink below
+   min-content — the browser does this too. We have no `overflow-wrap`/
+   `word-break` (parley 0.2 can't break inside a word), so clip the box.
 
 ---
 
 ## Known gaps / backlog
 
-- Input caret, selection, cursor positioning; non-text input types.
+- Input caret, selection, cursor positioning; non-text input types
+  (checkbox/select/radio/textarea — only `type=text` exists).
 - Real **scrolling** (overflow only clips).
-- CSS: `opacity`, `box-shadow`, `position`/`top`/`left`, per-corner radius,
-  per-side border *colors*; background/border on `<text>` nodes.
+- CSS: `box-shadow`, `position`/`top`/`left`, per-corner radius, per-side border
+  *colors*; `overflow-wrap` / `word-break`.
 - True inline text-flow (taffy can't; would need our own line-breaker).
 - **Fine-grained reactivity** — a signal change currently rebuilds the *whole
   tree* (architecture doc's per-binding subscription model is not implemented).
-- HiDPI/display-scale handling.
-- Trim the dead `rux-reactive` code.
-- `<image>` doesn't render.
+- Trim the dead `rux-reactive` code (its `Value` is still used; the Signals and
+  evaluator are superseded by `rux-script`).
 
 ---
 

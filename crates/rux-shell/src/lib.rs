@@ -13,6 +13,7 @@ use std::sync::Arc;
 use notify::{EventKind, RecursiveMode, Watcher};
 use rux_layout::{FocusRegion, HitRegion};
 use rux_runtime::Document;
+use vello::kurbo::Affine;
 use vello::peniko::Color;
 use vello::util::{RenderContext, RenderSurface};
 use vello::wgpu;
@@ -110,9 +111,20 @@ impl App {
         }
     }
 
-    /// Handle a completed tap at `(px, py)`: focus an input if one is under the
-    /// pointer, otherwise run the topmost `@tap` handler.
+    /// The window's DPI scale. Layout and hit regions are in logical pixels; the
+    /// surface is physical, so the scene is scaled up at paint time.
+    fn scale(&self) -> f64 {
+        self.state
+            .as_ref()
+            .map(|s| s.window.scale_factor())
+            .unwrap_or(1.0)
+    }
+
+    /// Handle a completed tap at `(px, py)`, in physical pixels: focus an input
+    /// if one is under the pointer, otherwise run the topmost `@tap` handler.
     fn dispatch_tap(&mut self, px: f64, py: f64) {
+        let scale = self.scale();
+        let (px, py) = (px / scale, py / scale);
         // Focus takes precedence: an input under the pointer becomes focused.
         if let Some(model) = self
             .focuses
@@ -198,13 +210,23 @@ impl App {
         let width = state.surface.config.width;
         let height = state.surface.config.height;
 
+        // Lay out in *logical* pixels so a `16px` font is the same physical size
+        // on every display, then scale the scene up to the physical surface.
+        // Without this, everything renders half-size on a 2x screen.
+        let scale = state.window.scale_factor();
+        let logical = (width as f64 / scale, height as f64 / scale);
+
         // Layout (text sized via the engine's measure), then paint. Cache the
         // hit regions for tap dispatch.
         let layout = {
             let mut measure = |t: &str, fs: f32, w: u16, mw: Option<f32>| text.measure(t, fs, w, mw);
-            rux_layout::layout(&document.root, width as f32, height as f32, &mut measure)
+            rux_layout::layout(&document.root, logical.0 as f32, logical.1 as f32, &mut measure)
         };
-        state.scene = rux_paint::build_scene(&layout.paints, text, images);
+        let content = rux_paint::build_scene(&layout.paints, text, images);
+        state.scene.reset();
+        state
+            .scene
+            .append(&content, Some(Affine::scale(scale)));
         *hits = layout.hits;
         *focuses = layout.focuses;
 
