@@ -44,9 +44,6 @@ const DEFAULT_FONT_SIZE: f32 = 16.0;
 /// which makes the box a circle/pill whatever its size.
 const CIRCLE: f32 = 9999.0;
 
-/// The checkbox tick.
-const TICK: &str = "\u{2713}";
-
 /// An `<input type=checkbox|radio>` and whether it is currently checked.
 #[derive(Clone, Copy)]
 struct Toggle {
@@ -504,21 +501,17 @@ fn build_node(
                     ..Default::default()
                 })
             } else {
-                // A tick glyph, in the box's text colour. Style the checked box
-                // itself with `.yourclass.checked { … }`.
-                LayoutNode::text(
-                    Style::default(),
-                    TextContent {
-                        text: TICK.to_string(),
-                        font_size,
-                        weight: 700,
-                        color,
-                        align: TextAlign::Center,
-                        wrap: TextWrap::Normal,
-                        caret: None,
-                    },
-                )
-            });
+                // A stroked checkmark, in the box's text colour. Style the checked
+                // box itself with `.yourclass.checked { … }`.
+                let mut mark = LayoutNode::new(Style {
+                    display: Display::Flex,
+                    width: Some(Len::Pct(0.68)),
+                    height: Some(Len::Pct(0.68)),
+                    ..Default::default()
+                });
+                mark.tick = Some(color);
+                mark
+                        });
         }
         node.on_tap = on_tap.or_else(|| {
             if model.is_empty() {
@@ -591,6 +584,7 @@ fn build_node(
         style,
         text: None,
         image: None,
+        tick: None,
         children,
         on_tap,
         model: None,

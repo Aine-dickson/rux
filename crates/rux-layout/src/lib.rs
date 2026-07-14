@@ -241,6 +241,10 @@ pub struct Node {
     pub text: Option<TextContent>,
     /// `<image src=…>`.
     pub image: Option<ImageContent>,
+    /// A checkmark stroked to fill this box, in the given colour. Drawn as a
+    /// path rather than a font glyph — ✓ is whatever the system font happens to
+    /// ship, which is not a control mark.
+    pub tick: Option<Rgba>,
     pub children: Vec<Node>,
     pub on_tap: Option<String>,
     /// `r-model` signal name for `<input>` nodes (focus target + edit binding).
@@ -255,6 +259,7 @@ impl Node {
             style,
             text: None,
             image: None,
+            tick: None,
             children: Vec::new(),
             on_tap: None,
             model: None,
@@ -267,6 +272,7 @@ impl Node {
             style,
             text: Some(text),
             image: None,
+            tick: None,
             children: Vec::new(),
             on_tap: None,
             model: None,
@@ -279,6 +285,7 @@ impl Node {
             style,
             text: None,
             image: Some(image),
+            tick: None,
             children: Vec::new(),
             on_tap: None,
             model: None,
@@ -317,6 +324,16 @@ pub struct PaintText {
     pub content: TextContent,
 }
 
+/// A checkmark stroked inside its laid-out box.
+#[derive(Clone, Copy, Debug)]
+pub struct PaintTick {
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+    pub color: Rgba,
+}
+
 /// An image scaled to fill its laid-out box.
 #[derive(Clone, Debug)]
 pub struct PaintImage {
@@ -333,6 +350,7 @@ pub enum Paint {
     Rect(PaintRect),
     Text(PaintText),
     Image(PaintImage),
+    Tick(PaintTick),
     /// Begin clipping subsequent items to this rounded rect (overflow: clip).
     PushClip {
         x: f32,
@@ -434,6 +452,7 @@ enum PaintKind {
     },
     Text(TextContent),
     Image(ImageContent),
+    Tick(Rgba),
 }
 
 fn to_dim(l: Len, vp: (f32, f32)) -> Dimension {
@@ -594,6 +613,10 @@ fn build(
         ));
         paint.push((id, PaintKind::Text(tc.clone())));
         id
+    } else if let Some(color) = node.tick {
+        let id = tree.new_leaf(to_taffy(&node.style, vp)).expect("taffy tick");
+        paint.push((id, PaintKind::Tick(color)));
+        id
     } else if let Some(ic) = &node.image {
         // An image with no CSS size falls back to its intrinsic pixel size, the
         // way a browser sizes an <img>.
@@ -736,6 +759,13 @@ fn collect(
                 width: layout.size.width,
                 height: layout.size.height,
                 content: tc.clone(),
+            })),
+            PaintKind::Tick(color) => out.paints.push(Paint::Tick(PaintTick {
+                x,
+                y,
+                width: layout.size.width,
+                height: layout.size.height,
+                color: *color,
             })),
             PaintKind::Image(ic) => out.paints.push(Paint::Image(PaintImage {
                 x,

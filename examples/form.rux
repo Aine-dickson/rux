@@ -81,9 +81,10 @@
     font-size: 14px;
   }
   /* A checked box carries a synthetic `checked` class — so the checked look is
-     ordinary CSS. White tick on green. */
+     ordinary CSS. Keep the ring a shade apart from the fill, or the box loses
+     its outline and reads as a blob. */
   .box.checked {
-    background: #a6e3a1;
+    background: #40a02b;
     border: 2px #a6e3a1 solid;
     color: #ffffff;
   }
@@ -97,6 +98,7 @@
     border: 2px #a6e3a1 solid;
     color: #a6e3a1;
   }
+
   .optlabel { color: #cdd6f4; font-size: 15px; }
   .legend   { color: #9399b2; font-size: 13px; }
 

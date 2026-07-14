@@ -8,7 +8,7 @@ use std::collections::HashMap;
 
 use rux_layout::{Paint, Rgba, TextAlign, TextWrap};
 use rux_text::{Align, TextEngine, Wrap};
-use vello::kurbo::{Affine, Rect, RoundedRect, Stroke, Vec2};
+use vello::kurbo::{Affine, BezPath, Cap, Join, Rect, RoundedRect, Stroke, Vec2};
 use vello::peniko::{Blob, Color, Fill, ImageAlphaType, ImageBrush, ImageData, ImageFormat, Mix};
 use vello::Scene;
 
@@ -143,6 +143,26 @@ pub fn build_scene(items: &[Paint], text: &mut TextEngine, images: &mut ImageCac
                         &caret,
                     );
                 }
+            }
+            // A checkmark: two strokes, round caps and joins, proportioned to the
+            // box. A stroked path rather than a ✓ glyph — the glyph is whatever
+            // the system font ships and reads as text, not as a control mark.
+            Paint::Tick(t) => {
+                let (x, y, w, h) = (t.x as f64, t.y as f64, t.width as f64, t.height as f64);
+                let mut path = BezPath::new();
+                path.move_to((x + 0.14 * w, y + 0.53 * h));
+                path.line_to((x + 0.40 * w, y + 0.78 * h));
+                path.line_to((x + 0.86 * w, y + 0.24 * h));
+                let stroke = Stroke::new((h * 0.16).max(1.5))
+                    .with_caps(Cap::Round)
+                    .with_join(Join::Round);
+                scene.stroke(
+                    &stroke,
+                    Affine::IDENTITY,
+                    to_color(t.color),
+                    None,
+                    &path,
+                );
             }
             // Scale the decoded pixels to fill the box layout gave the element.
             Paint::Image(img) => {
