@@ -396,7 +396,16 @@ fn to_taffy(style: &Style, vp: (f32, f32)) -> taffy::Style {
             height: style.min_height.map(|l| to_dim(l, vp)).unwrap_or(auto()),
         },
         max_size: Size {
-            width: style.max_width.map(|l| to_dim(l, vp)).unwrap_or(auto()),
+            // A box with no width hugs its content. Hug means CSS `fit-content`
+            // — min(max-content, available) — so clamp it to the parent's inner
+            // width. Without this, taffy hands a hugging box its full max-content
+            // size and it bursts out of a narrower parent. An explicit width or
+            // max-width is the author's call and is left alone.
+            width: match (style.max_width, style.width) {
+                (Some(l), _) => to_dim(l, vp),
+                (None, None) => percent(1.0),
+                (None, Some(_)) => auto(),
+            },
             height: style.max_height.map(|l| to_dim(l, vp)).unwrap_or(auto()),
         },
         padding: Rect {
@@ -579,6 +588,10 @@ fn collect(
 /// and hit regions. Text leaves are sized via `measure`.
 pub fn layout(root: &Node, avail_w: f32, avail_h: f32, measure: &mut Measure) -> Layout {
     let mut tree: TaffyTree<TextContent> = TaffyTree::new();
+    // Taffy rounds boxes to whole pixels by default, which can shave a fraction
+    // off a text box and make paint re-wrap the last word into a line the box
+    // has no height for. Keep the exact sizes measure asked for.
+    tree.disable_rounding();
     let mut paint = Vec::new();
     let mut handlers = Vec::new();
     let mut models = Vec::new();

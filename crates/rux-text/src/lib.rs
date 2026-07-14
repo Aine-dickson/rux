@@ -77,6 +77,10 @@ impl TextEngine {
 
     /// Measure the text block with leading trimmed: `(width, height)` where
     /// height sums each line's `ascent + descent`.
+    ///
+    /// The width is rounded **up**. Paint re-wraps the text at the box width
+    /// layout gave it, so a box even a fraction of a pixel narrower than the
+    /// text would break the last word onto a line the box has no height for.
     pub fn measure(
         &mut self,
         text: &str,
@@ -92,7 +96,7 @@ impl TextEngine {
                 m.ascent + m.descent
             })
             .sum();
-        (layout.width(), height)
+        (layout.width().ceil(), height.ceil())
     }
 
     /// Draw the text with its top-left at `(x, y)`, leading trimmed and aligned
