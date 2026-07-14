@@ -80,7 +80,8 @@ padding, margin        (shorthand 1–4 values + -top/-right/-bottom/-left)
 border, border-width, border-color, border-<side>, border-<side>-width
 background / background-color, border-radius, opacity
 color, font-size, font-weight, text-align
-overflow / overflow-x / overflow-y   (clips, following border-radius; no scrolling yet)
+overflow / overflow-x / overflow-y   (hidden|clip = clip; auto|scroll = scroll)
+overflow-wrap (break-word), word-break (break-all)
 ```
 `flex: 1` means `1 1 0%` (CSS's shorthand defaults), not `1 1 auto`.
 `opacity` fades the node **and its subtree** as one layer.
@@ -131,10 +132,13 @@ their own subtree. Editing a component hot-reloads.
 3. **rhai `fn`s can't touch globals** (see above) — the single biggest trap.
 4. **`text-align` needs a box wider than the text** (set a width, or the element
    must fill) — otherwise there's nothing to align within.
-5. `overflow` **clips but does not scroll**.
-6. **A word longer than its box still overflows.** Nothing can shrink below
-   min-content — the browser does this too. We have no `overflow-wrap`/
-   `word-break` (parley 0.2 can't break inside a word), so clip the box.
+5. **A scroll container needs a bounded height** (`height`, `max-height`, or a
+   `flex-grow` slot). Without one it just grows and there is nothing to scroll.
+6. **Rows inside a scrolling flex column need `flex-shrink: 0`.** Otherwise the
+   column squeezes them all in to fit and, again, nothing scrolls. CSS does this
+   too — it is the single most common "why won't it scroll" trap.
+7. **A word longer than its box overflows** unless you set `overflow-wrap:
+   break-word` — nothing can shrink below min-content. The browser does this too.
 
 ---
 
@@ -142,9 +146,10 @@ their own subtree. Editing a component hot-reloads.
 
 - Input caret, selection, cursor positioning; non-text input types
   (checkbox/select/radio/textarea — only `type=text` exists).
-- Real **scrolling** (overflow only clips).
+- Scrolling is **wheel-only**: no scrollbars, no drag/touch, no keyboard, no
+  horizontal scrolling (the offset is vertical), no scroll-into-view.
 - CSS: `box-shadow`, `position`/`top`/`left`, per-corner radius, per-side border
-  *colors*; `overflow-wrap` / `word-break`.
+  *colors*.
 - True inline text-flow (taffy can't; would need our own line-breaker).
 - **Fine-grained reactivity** — a signal change currently rebuilds the *whole
   tree* (architecture doc's per-binding subscription model is not implemented).

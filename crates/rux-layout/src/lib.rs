@@ -7,6 +7,7 @@
 //! Stage 4.
 
 use taffy::prelude::*;
+use taffy::geometry::Point;
 
 /// Straight RGBA in the 0..=1 range. Renderer-agnostic.
 #[derive(Clone, Copy, Debug)]
@@ -132,8 +133,11 @@ pub enum Display {
 pub enum Overflow {
     #[default]
     Visible,
-    /// Clip the subtree to this box (covers hidden/auto/scroll for now).
+    /// Clip the subtree to this box (`hidden` / `clip`).
     Clip,
+    /// Clip, and let the wheel move the content (`auto` / `scroll`). The box
+    /// keeps its own size; taffy reports how tall the content actually is.
+    Scroll,
 }
 
 /// The style subset M-series understands (a stand-in for the CSS `ComputedStyle`).
@@ -348,6 +352,25 @@ pub enum Paint {
     PopOpacity,
 }
 
+/// A scrollable box. `id` is its index in tree order — stable across rebuilds
+/// as long as the tree's shape is, which is what the shell keys offsets by.
+#[derive(Clone, Debug)]
+pub struct ScrollRegion {
+    pub id: usize,
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+    /// How far the content can travel: content height - visible height (>= 0).
+    pub max_offset: f32,
+}
+
+impl ScrollRegion {
+    pub fn contains(&self, px: f32, py: f32) -> bool {
+        px >= self.x && px <= self.x + self.width && py >= self.y && py <= self.y + self.height
+    }
+}
+
 /// An absolutely-positioned tappable region, carrying its `@tap` handler source.
 #[derive(Clone, Debug)]
 pub struct HitRegion {
@@ -388,6 +411,7 @@ pub struct Layout {
     pub paints: Vec<Paint>,
     pub hits: Vec<HitRegion>,
     pub focuses: Vec<FocusRegion>,
+    pub scrolls: Vec<ScrollRegion>,
 }
 
 /// Callback that measures a text block:
@@ -463,6 +487,19 @@ fn to_taffy(style: &Style, vp: (f32, f32)) -> taffy::Style {
             } else {
                 None
             }),
+        // taffy needs to know the box scrolls: it then sizes the box from its own
+        // width/height (not its content) and reports `content_size`, which is how
+        // far we can scroll.
+        overflow: match style.overflow {
+            Overflow::Scroll => Point {
+                x: taffy::Overflow::Scroll,
+                y: taffy::Overflow::Scroll,
+            },
+            _ => Point {
+                x: taffy::Overflow::Visible,
+                y: taffy::Overflow::Visible,
+            },
+        },
         flex_grow: style.grow,
         flex_shrink: style.shrink,
         flex_basis: style.basis.map(|l| to_dim(l, vp)).unwrap_or(auto()),
@@ -529,6 +566,7 @@ fn build(
     models: &mut Vec<(NodeId, String)>,
     hidden: &mut Vec<NodeId>,
     opacities: &mut Vec<(NodeId, f32)>,
+    scrolls: &mut Vec<NodeId>,
     vp: (f32, f32),
 ) -> NodeId {
     let id = if let Some(tc) = &node.text {
@@ -546,7 +584,7 @@ fn build(
                 radius: node.style.radius,
                 border_width: node.style.border.top,
                 border_color: node.style.border_color,
-                clip: node.style.overflow == Overflow::Clip,
+                clip: node.style.overflow != Overflow::Visible,
             },
         ));
         paint.push((id, PaintKind::Text(tc.clone())));
@@ -569,7 +607,7 @@ fn build(
                 radius: node.style.radius,
                 border_width: node.style.border.top,
                 border_color: node.style.border_color,
-                clip: node.style.overflow == Overflow::Clip,
+                clip: node.style.overflow != Overflow::Visible,
             },
         ));
         paint.push((id, PaintKind::Image(ic.clone())));
@@ -578,7 +616,7 @@ fn build(
         let children: Vec<NodeId> = node
             .children
             .iter()
-            .map(|c| build(tree, c, paint, handlers, models, hidden, opacities, vp))
+            .map(|c| build(tree, c, paint, handlers, models, hidden, opacities, scrolls, vp))
             .collect();
         let id = if children.is_empty() {
             tree.new_leaf(to_taffy(&node.style, vp)).expect("taffy leaf")
@@ -594,7 +632,7 @@ fn build(
                 // Uniform border for rendering (top width is representative).
                 border_width: node.style.border.top,
                 border_color: node.style.border_color,
-                clip: node.style.overflow == Overflow::Clip,
+                clip: node.style.overflow != Overflow::Visible,
             },
         ));
         id
@@ -611,6 +649,9 @@ fn build(
     if node.style.opacity < 1.0 {
         opacities.push((id, node.style.opacity.max(0.0)));
     }
+    if node.style.overflow == Overflow::Scroll {
+        scrolls.push(id);
+    }
     id
 }
 
@@ -625,6 +666,8 @@ fn collect(
     models: &[(NodeId, String)],
     hidden: &[NodeId],
     opacities: &[(NodeId, f32)],
+    scrolls: &[NodeId],
+    offsets: &[f32],
     vp: (f32, f32),
     out: &mut Layout,
 ) {
@@ -719,7 +762,7 @@ fn collect(
         });
     }
 
-    // overflow: clip — bound the subtree to this box (following its corners).
+    // overflow: clip/scroll — bound the subtree to this box (following its corners).
     if clip {
         out.paints.push(Paint::PushClip {
             x,
@@ -729,9 +772,40 @@ fn collect(
             radius: clip_radius,
         });
     }
+
+    // A scroller shifts its children up by the current offset and registers
+    // itself so the wheel can find it.
+    let mut shift = 0.0;
+    if scrolls.contains(&id) {
+        let sid = out.scrolls.len();
+        let max_offset = (layout.content_size.height - layout.size.height).max(0.0);
+        let offset = offsets.get(sid).copied().unwrap_or(0.0).clamp(0.0, max_offset);
+        shift = offset;
+        out.scrolls.push(ScrollRegion {
+            id: sid,
+            x,
+            y,
+            width: layout.size.width,
+            height: layout.size.height,
+            max_offset,
+        });
+    }
+
     for child in tree.children(id).expect("children") {
         collect(
-            tree, child, x, y, paint, handlers, models, hidden, opacities, vp, out,
+            tree,
+            child,
+            x,
+            y - shift,
+            paint,
+            handlers,
+            models,
+            hidden,
+            opacities,
+            scrolls,
+            offsets,
+            vp,
+            out,
         );
     }
     if clip {
@@ -745,6 +819,18 @@ fn collect(
 /// Lay out `root` into an `avail_w` x `avail_h` viewport, returning paint items
 /// and hit regions. Text leaves are sized via `measure`.
 pub fn layout(root: &Node, avail_w: f32, avail_h: f32, measure: &mut Measure) -> Layout {
+    layout_scrolled(root, avail_w, avail_h, &[], measure)
+}
+
+/// Lay out with the shell's current scroll offsets (one per scrollable box, in
+/// tree order). A missing entry is 0.
+pub fn layout_scrolled(
+    root: &Node,
+    avail_w: f32,
+    avail_h: f32,
+    offsets: &[f32],
+    measure: &mut Measure,
+) -> Layout {
     let mut tree: TaffyTree<TextContent> = TaffyTree::new();
     // Taffy rounds boxes to whole pixels by default, which can shave a fraction
     // off a text box and make paint re-wrap the last word into a line the box
@@ -755,6 +841,7 @@ pub fn layout(root: &Node, avail_w: f32, avail_h: f32, measure: &mut Measure) ->
     let mut models = Vec::new();
     let mut hidden = Vec::new();
     let mut opacities = Vec::new();
+    let mut scrolls = Vec::new();
     let vp = (avail_w, avail_h);
     let root_id = build(
         &mut tree,
@@ -764,6 +851,7 @@ pub fn layout(root: &Node, avail_w: f32, avail_h: f32, measure: &mut Measure) ->
         &mut models,
         &mut hidden,
         &mut opacities,
+        &mut scrolls,
         vp,
     );
 
@@ -810,7 +898,8 @@ pub fn layout(root: &Node, avail_w: f32, avail_h: f32, measure: &mut Measure) ->
 
     let mut out = Layout::default();
     collect(
-        &tree, root_id, 0.0, 0.0, &paint, &handlers, &models, &hidden, &opacities, vp, &mut out,
+        &tree, root_id, 0.0, 0.0, &paint, &handlers, &models, &hidden, &opacities, &scrolls,
+        offsets, vp, &mut out,
     );
     out
 }

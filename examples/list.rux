@@ -1,0 +1,62 @@
+<template>
+  <screen class="screen">
+    <text class="title">Scrollable list</text>
+    <text class="hint">Wheel over the list. Tapping a row still works, and the
+      list keeps its place across the rebuild.</text>
+
+    <view class="list">
+      <view class="row" r-for="item in items" @tap="picked = item">
+        <text class="label">{{ item }}</text>
+      </view>
+    </view>
+
+    <text class="picked" r-if='picked != ""'>Picked: {{ picked }}</text>
+  </screen>
+</template>
+
+<style>
+  .screen {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    padding: 24px;
+    background: #1e1e2e;
+  }
+  .title { color: #cdd6f4; font-size: 22px; font-weight: 700; }
+  .hint  { color: #6c7086; font-size: 13px; width: 320px; }
+
+  /* A scroll container needs a bounded height — otherwise it just grows. */
+  .list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    width: 320px;
+    height: 240px;
+    padding: 8px;
+    background: #313244;
+    border-radius: 10px;
+    overflow: auto;
+  }
+  /* Without flex-shrink: 0 the column squeezes every row in to fit and there
+     is nothing left to scroll. CSS behaves the same way. */
+  .row {
+    display: flex;
+    flex-shrink: 0;
+    height: 48px;
+    padding: 12px;
+    background: #45475a;
+    border-radius: 6px;
+    align-items: center;
+    cursor: pointer;
+  }
+  .label  { color: #cdd6f4; font-size: 16px; }
+  .picked { color: #a6e3a1; font-size: 16px; }
+</style>
+
+<script>
+  let picked = signal("");
+  let items = signal([
+    "Alpha", "Bravo", "Charlie", "Delta", "Echo", "Foxtrot", "Golf", "Hotel",
+    "India", "Juliett", "Kilo", "Lima", "Mike", "November", "Oscar", "Papa",
+  ]);
+</script>

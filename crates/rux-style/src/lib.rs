@@ -711,14 +711,18 @@ fn interpret(p: &HashMap<String, String>) -> Style {
             st.radius = px;
         }
     }
-    // Any clipping overflow value on any axis marks the box as clipped.
-    let clips = |v: &&String| matches!(v.trim(), "hidden" | "clip" | "auto" | "scroll");
-    if ["overflow", "overflow-x", "overflow-y"]
+    // `auto`/`scroll` scroll (and clip); `hidden`/`clip` only clip. Any axis
+    // saying so is enough — we have no per-axis overflow yet.
+    let values = ["overflow", "overflow-x", "overflow-y"]
         .iter()
         .filter_map(|k| p.get(*k))
-        .any(|v| clips(&v))
-    {
-        st.overflow = Overflow::Clip;
+        .map(|v| v.trim());
+    for v in values {
+        match v {
+            "auto" | "scroll" => st.overflow = Overflow::Scroll,
+            "hidden" | "clip" if st.overflow != Overflow::Scroll => st.overflow = Overflow::Clip,
+            _ => {}
+        }
     }
     st
 }

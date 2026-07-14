@@ -11,7 +11,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use notify::{EventKind, RecursiveMode, Watcher};
-use rux_layout::{FocusRegion, HitRegion};
+use rux_layout::{FocusRegion, HitRegion, ScrollRegion};
 use rux_runtime::Document;
 use vello::kurbo::Affine;
 use vello::peniko::Color;
@@ -20,7 +20,7 @@ use vello::wgpu;
 use vello::wgpu::CurrentSurfaceTexture;
 use vello::{AaConfig, AaSupport, Renderer, RendererOptions, RenderParams, Scene};
 use winit::application::ApplicationHandler;
-use winit::event::{ElementState, MouseButton, WindowEvent};
+use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{Key, NamedKey};
 use winit::window::{Window, WindowId};
@@ -73,6 +73,12 @@ struct App {
     hits: Vec<HitRegion>,
     /// Focusable input regions from the most recent layout.
     focuses: Vec<FocusRegion>,
+    /// Scrollable regions from the most recent layout.
+    scrolls: Vec<ScrollRegion>,
+    /// Scroll offset per scrollable box, in tree order. Survives the rebuild
+    /// that follows every state change, so a list doesn't jump back to the top
+    /// when you tap something in it.
+    offsets: Vec<f32>,
     /// The `r-model` of the currently focused input, if any.
     focused: Option<String>,
     /// Current pointer position (physical pixels).
@@ -93,6 +99,8 @@ impl App {
             images: rux_paint::ImageCache::new(),
             hits: Vec::new(),
             focuses: Vec::new(),
+            scrolls: Vec::new(),
+            offsets: Vec::new(),
             focused: None,
             pointer: (0.0, 0.0),
             press: None,
@@ -119,6 +127,32 @@ impl App {
             .as_ref()
             .map(|s| s.window.scale_factor())
             .unwrap_or(1.0)
+    }
+
+    /// Scroll the innermost scrollable box under the pointer by `dy` logical
+    /// pixels. Nothing under the pointer scrolls (or it's already at the end) →
+    /// nothing happens, and no repaint is queued.
+    fn scroll_at(&mut self, pointer: (f64, f64), dy: f32) {
+        let scale = self.scale();
+        let (px, py) = ((pointer.0 / scale) as f32, (pointer.1 / scale) as f32);
+
+        // Innermost wins: scrollers are pushed parent-first, so search backwards.
+        let Some(region) = self
+            .scrolls
+            .iter()
+            .rev()
+            .find(|s| s.contains(px, py) && s.max_offset > 0.0)
+        else {
+            return;
+        };
+        let (id, max) = (region.id, region.max_offset);
+
+        let current = self.offsets[id];
+        let next = (current + dy).clamp(0.0, max);
+        if next != current {
+            self.offsets[id] = next;
+            self.request_redraw();
+        }
     }
 
     /// Handle a completed tap at `(px, py)`, in physical pixels: focus an input
@@ -203,6 +237,8 @@ impl App {
             images,
             hits,
             focuses,
+            scrolls,
+            offsets,
             ..
         } = self;
         let Some(state) = state.as_mut() else {
@@ -223,7 +259,13 @@ impl App {
             let mut measure = |t: &str, fs: f32, w: u16, wr: rux_layout::TextWrap, mw: Option<f32>| {
                 text.measure(t, fs, w, rux_paint::to_wrap(wr), mw)
             };
-            rux_layout::layout(&document.root, logical.0 as f32, logical.1 as f32, &mut measure)
+            rux_layout::layout_scrolled(
+                &document.root,
+                logical.0 as f32,
+                logical.1 as f32,
+                offsets,
+                &mut measure,
+            )
         };
         let content = rux_paint::build_scene(&layout.paints, text, images);
         state.scene.reset();
@@ -232,6 +274,13 @@ impl App {
             .append(&content, Some(Affine::scale(scale)));
         *hits = layout.hits;
         *focuses = layout.focuses;
+        // Keep offsets in step with the scrollers the new layout actually has,
+        // and re-clamp them (the content may have shrunk under us).
+        offsets.resize(layout.scrolls.len(), 0.0);
+        for region in &layout.scrolls {
+            offsets[region.id] = offsets[region.id].clamp(0.0, region.max_offset);
+        }
+        *scrolls = layout.scrolls;
 
         let device_handle = &context.devices[state.surface.dev_id];
         // wgpu 29 reports acquisition as a status enum. A timeout/occluded frame
@@ -354,6 +403,15 @@ impl ApplicationHandler<RuxEvent> for App {
                     );
                 }
                 self.request_redraw();
+            }
+            WindowEvent::MouseWheel { delta, .. } => {
+                // A line of wheel travel is ~ one line of text.
+                const LINE: f32 = 24.0;
+                let dy = match delta {
+                    MouseScrollDelta::LineDelta(_, y) => y * LINE,
+                    MouseScrollDelta::PixelDelta(p) => (p.y / self.scale()) as f32,
+                };
+                self.scroll_at(self.pointer, -dy);
             }
             WindowEvent::CursorMoved { position, .. } => {
                 self.pointer = (position.x, position.y);
