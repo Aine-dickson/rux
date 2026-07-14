@@ -1,5 +1,12 @@
 # 03 — Guide
 
+> ⚠️ **Parts of this guide do not work as written.** It was authored before the
+> runtime existed. Most notably, the `fn drain() { level.update(...) }` pattern
+> **cannot work** — rhai functions can't read or mutate global state; state
+> changes go inline (`@tap="level = level - 1"`) or into a `host::` function.
+> `<input type="select">` isn't built either. See **[05 — As Built](./05-as-built.md)**
+> for what actually runs.
+
 Learn Rux by building a small screen: a **device dashboard** that lists devices, shows a battery card, filters with a search box, and adds a device through a form. By the end you'll have touched every part of the language.
 
 This is a design-stage tutorial — the runtime isn't built yet, so treat the code as the *authoring experience we're committing to*. If something here feels awkward to write, that's a signal to fix the [spec](./02-spec.md) before we build.

@@ -1,5 +1,11 @@
 # 02 — Spec
 
+> ⚠️ **This is the v0.1 design surface, not the built surface.** Several things
+> here were never implemented (non-text `<input>` types, `<image>` rendering,
+> real scrolling) and some were implemented differently (the inline/block model
+> was removed; grid was added; rhai functions can't mutate state). See
+> **[05 — As Built](./05-as-built.md)** for the current reality.
+
 The formal reference for Rux v0.1. This is the source of truth we architect and build against. It describes the language surface, not the runtime implementation
 (that comes later). Every rule here traces to a law in the
 [rationale](./01-rationale.md).
