@@ -91,7 +91,18 @@ overflow-wrap (break-word), word-break (break-all)
 `background`/`border` work on `<text>` nodes, not just containers.
 **Units:** `px`, `%`, `rem` (=16px), `vw`, `vh`/`dvh`.
 
-Anything else is **parsed but silently ignored** (no error).
+Anything else is **parsed but silently ignored** (no error). Notably absent:
+`font-family` (everything renders in the system default font), `line-height`,
+`position`, `box-shadow`, gradients, `transform`, and CSS variables.
+
+> ⚠️ **Two known-wrong behaviours, not just gaps:**
+> - **`>`, `+` and `~` are matched as descendant combinators.** `.card > text`
+>   matches *any* descendant `text`, not just direct children — it selects the
+>   **wrong elements**, silently.
+> - **`cursor` is ignored.** `cursor: pointer` appears in the examples and does
+>   nothing; the pointer never changes over a button.
+>
+> Both are scheduled in [06 — Roadmap](./06-roadmap.md) (v0.2, CSS).
 
 ### Reactivity & script
 - `<script>` is **rhai**. `let x = signal(v)` declares state (numbers coerce to float).

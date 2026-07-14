@@ -66,7 +66,7 @@ Only once the above is clean.
 
 ---
 
-## v0.2 — inputs and polish
+## v0.2 — inputs, polish, and CSS
 
 ### 1. Text selection + clipboard
 Shift-arrows, drag-select, copy/paste/cut. parley 0.11 already models selection
@@ -81,10 +81,66 @@ they are tap-only).
 Scrollbars, drag/touch, keyboard (arrows/PageUp/Home), horizontal scrolling, and
 scroll-into-view. Today it is wheel-only and vertical-only.
 
-### 4. The CSS long tail
-`box-shadow`, `position`/`top`/`left`, per-corner radius, per-side border
-*colours*, and CSS variables (which would let the checked-state palette be
-themeable rather than hard-coded per class).
+### 4. CSS: close the gap
+
+The honored set is listed in [05 — As Built](./05-as-built.md). Everything else is
+**parsed and silently ignored** — which is the worst failure mode we have: you
+write valid CSS, nothing happens, and nothing tells you why. This is the item most
+likely to make Rux feel like a toy, so it gets real scope.
+
+**First, two things that are bugs, not gaps:**
+
+- **`>`, `+`, `~` are treated as descendant combinators.** `parse_selector` skips
+  the token and matches as if it were a space, so `.card > text` matches *any*
+  descendant `text`. This doesn't fail to work — **it matches the wrong
+  elements**, silently. Fix before adding any more selector surface.
+- **`cursor` is ignored.** `cursor: pointer` is already in `battery.rux` and
+  `list.rux`, doing nothing. Needs `window.set_cursor()` driven off the hit
+  regions we already compute.
+
+**Cheap — the engine already supports it, we just don't map it:**
+
+| Property | Backed by |
+|---|---|
+| `align-self`, `justify-self`, `align-content`, `justify-items` | taffy |
+| `row-gap` / `column-gap`, `flex-flow` | taffy |
+| `grid-column` / `grid-row`, `grid-auto-flow`, `grid-auto-rows/columns` | taffy |
+| `aspect-ratio` | taffy |
+| `position: relative\|absolute` + `top`/`right`/`bottom`/`left` | taffy (`Position`, `inset`) |
+| per-corner `border-radius` | kurbo (`RoundedRectRadii`) |
+| `line-height`, `letter-spacing`, `word-spacing` | parley |
+| `font-style: italic`, `text-decoration` (underline/strikethrough) | parley |
+| `white-space: nowrap\|pre` | parley (`TextWrapMode`) |
+| `box-shadow` | vello (`draw_blurred_rounded_rect`) |
+| `transform` (translate/scale/rotate) | kurbo `Affine` |
+| linear/radial `gradient` backgrounds | peniko `Gradient` |
+| `background-image: url(…)` | our `ImageCache` |
+
+**`font-family` deserves its own line: today you cannot choose a font at all.**
+Everything renders in the system default. parley/fontique handle family
+resolution and fallback — this is arguably the single most visible gap in the
+list.
+
+**Real work (new machinery, not just mapping):**
+
+- **CSS custom properties + `var()`** — would let the checked-state palette (and
+  any theme) live in one place instead of being hard-coded per class. Wants a
+  resolution pass in the cascade.
+- **`@media` queries** — the honest way to make examples responsive, rather than
+  hand-tuning `max-width` per screen.
+- **Pseudo-classes** (`:hover`, `:active`, `:focus`, `:checked`) — needs
+  interaction state threaded into matching. `:hover`/`:active` also need pointer
+  tracking to invalidate. This retires the synthetic `checked` class hack.
+- **`!important`, `inherit`/`initial`** — cascade completeness.
+- **`text-overflow: ellipsis`** — needs measure-and-truncate; parley won't do it
+  for us.
+- **Per-side border *colours*** — we store per-side widths but stroke one uniform
+  rounded rect, so four different colours means four paths.
+- **`box-sizing`** — taffy sizes border-box; `content-box` needs real work.
+
+**Also worth doing while in here:** *say something* when a declaration is ignored.
+A single `eprintln!` per unknown property, once, would have saved every "why isn't
+this doing anything" moment on this list. See the error-surfacing ceiling below.
 
 ---
 
