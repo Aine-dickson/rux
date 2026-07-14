@@ -27,3 +27,4 @@ winit = "0.30"
 pollster = "0.4"
 vello = "0.3"
 taffy = "0.7"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }

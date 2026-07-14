@@ -46,7 +46,7 @@ impl Sides {
 /// A CSS length. Percentages are stored as a fraction (`0.0..=1.0`); `vh`/`vw`
 /// hold the raw viewport-percentage number (e.g. `100vh` → `Vh(100.0)`). `rem`
 /// is resolved to pixels at parse time.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Len {
     Px(f32),
     Pct(f32),
@@ -137,6 +137,16 @@ pub struct Style {
     pub grid_columns: Vec<Track>,
     pub grid_rows: Vec<Track>,
     pub grow: f32,
+    /// `flex-shrink`. CSS defaults to 1: a flex item gives up space to fit its
+    /// container. `0` keeps the item's size and lets it overflow — which is the
+    /// author's call, and what `overflow: clip` is for.
+    pub shrink: f32,
+    /// `flex-basis`. `None` = `auto` (size from width/content).
+    pub basis: Option<Len>,
+    /// `flex-wrap: wrap` — items that don't fit start a new line.
+    pub wrap: bool,
+    /// `opacity`, 0.0–1.0. Applies to the whole subtree.
+    pub opacity: f32,
     pub padding: Sides,
     pub margin: Sides,
     pub border: Sides,
@@ -163,6 +173,10 @@ impl Default for Style {
             grid_columns: Vec::new(),
             grid_rows: Vec::new(),
             grow: 0.0,
+            shrink: 1.0,
+            basis: None,
+            wrap: false,
+            opacity: 1.0,
             padding: Sides::default(),
             margin: Sides::default(),
             border: Sides::default(),
@@ -176,6 +190,15 @@ impl Default for Style {
             radius: 0.0,
         }
     }
+}
+
+/// An image carried by a leaf node. `src` is resolved to a path the painter can
+/// open; the intrinsic size is filled in by the runtime (it reads the file's
+/// header) and sizes the box when CSS gives no width/height.
+#[derive(Clone, Debug)]
+pub struct ImageContent {
+    pub src: String,
+    pub intrinsic: (f32, f32),
 }
 
 /// Text carried by a leaf node.
@@ -194,6 +217,8 @@ pub struct TextContent {
 pub struct Node {
     pub style: Style,
     pub text: Option<TextContent>,
+    /// `<image src=…>`.
+    pub image: Option<ImageContent>,
     pub children: Vec<Node>,
     pub on_tap: Option<String>,
     /// `r-model` signal name for `<input>` nodes (focus target + edit binding).
@@ -207,6 +232,7 @@ impl Node {
         Self {
             style,
             text: None,
+            image: None,
             children: Vec::new(),
             on_tap: None,
             model: None,
@@ -218,6 +244,19 @@ impl Node {
         Self {
             style,
             text: Some(text),
+            image: None,
+            children: Vec::new(),
+            on_tap: None,
+            model: None,
+            hidden: false,
+        }
+    }
+
+    pub fn image(style: Style, image: ImageContent) -> Self {
+        Self {
+            style,
+            text: None,
+            image: Some(image),
             children: Vec::new(),
             on_tap: None,
             model: None,
@@ -256,11 +295,22 @@ pub struct PaintText {
     pub content: TextContent,
 }
 
+/// An image scaled to fill its laid-out box.
+#[derive(Clone, Debug)]
+pub struct PaintImage {
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+    pub content: ImageContent,
+}
+
 /// A drawable item in painter's order (parents before children).
 #[derive(Clone, Debug)]
 pub enum Paint {
     Rect(PaintRect),
     Text(PaintText),
+    Image(PaintImage),
     /// Begin clipping subsequent items to this rounded rect (overflow: clip).
     PushClip {
         x: f32,
@@ -271,6 +321,15 @@ pub enum Paint {
     },
     /// End the most recent clip.
     PopClip,
+    /// Begin a translucent layer over the subtree (`opacity`). The shape is the
+    /// whole viewport, so the layer fades without also clipping.
+    PushOpacity {
+        alpha: f32,
+        width: f32,
+        height: f32,
+    },
+    /// End the most recent opacity layer.
+    PopOpacity,
 }
 
 /// An absolutely-positioned tappable region, carrying its `@tap` handler source.
@@ -328,6 +387,7 @@ enum PaintKind {
         clip: bool,
     },
     Text(TextContent),
+    Image(ImageContent),
 }
 
 fn to_dim(l: Len, vp: (f32, f32)) -> Dimension {
@@ -387,6 +447,13 @@ fn to_taffy(style: &Style, vp: (f32, f32)) -> taffy::Style {
                 None
             }),
         flex_grow: style.grow,
+        flex_shrink: style.shrink,
+        flex_basis: style.basis.map(|l| to_dim(l, vp)).unwrap_or(auto()),
+        flex_wrap: if style.wrap {
+            FlexWrap::Wrap
+        } else {
+            FlexWrap::NoWrap
+        },
         size: Size {
             width: style.width.map(|l| to_dim(l, vp)).unwrap_or(auto()),
             height: style.height.map(|l| to_dim(l, vp)).unwrap_or(auto()),
@@ -403,8 +470,10 @@ fn to_taffy(style: &Style, vp: (f32, f32)) -> taffy::Style {
             // max-width is the author's call and is left alone.
             width: match (style.max_width, style.width) {
                 (Some(l), _) => to_dim(l, vp),
-                (None, None) => percent(1.0),
-                (None, Some(_)) => auto(),
+                // `flex-shrink: 0` says "keep my size" — don't clamp behind the
+                // author's back; let it overflow and let the parent clip it.
+                (None, None) if style.shrink != 0.0 => percent(1.0),
+                (None, _) => auto(),
             },
             height: style.max_height.map(|l| to_dim(l, vp)).unwrap_or(auto()),
         },
@@ -442,6 +511,7 @@ fn build(
     handlers: &mut Vec<(NodeId, String)>,
     models: &mut Vec<(NodeId, String)>,
     hidden: &mut Vec<NodeId>,
+    opacities: &mut Vec<(NodeId, f32)>,
     vp: (f32, f32),
 ) -> NodeId {
     let id = if let Some(tc) = &node.text {
@@ -450,13 +520,48 @@ fn build(
         let id = tree
             .new_leaf_with_context(to_taffy(&node.style, vp), tc.clone())
             .expect("taffy text leaf");
+        // A text node is a box too: its background and border paint under the
+        // glyphs. (collect() walks every paint entry for a node, in order.)
+        paint.push((
+            id,
+            PaintKind::Box {
+                bg: node.style.background,
+                radius: node.style.radius,
+                border_width: node.style.border.top,
+                border_color: node.style.border_color,
+                clip: node.style.overflow == Overflow::Clip,
+            },
+        ));
         paint.push((id, PaintKind::Text(tc.clone())));
+        id
+    } else if let Some(ic) = &node.image {
+        // An image with no CSS size falls back to its intrinsic pixel size, the
+        // way a browser sizes an <img>.
+        let mut ts = to_taffy(&node.style, vp);
+        if node.style.width.is_none() {
+            ts.size.width = length(ic.intrinsic.0);
+        }
+        if node.style.height.is_none() {
+            ts.size.height = length(ic.intrinsic.1);
+        }
+        let id = tree.new_leaf(ts).expect("taffy image leaf");
+        paint.push((
+            id,
+            PaintKind::Box {
+                bg: node.style.background,
+                radius: node.style.radius,
+                border_width: node.style.border.top,
+                border_color: node.style.border_color,
+                clip: node.style.overflow == Overflow::Clip,
+            },
+        ));
+        paint.push((id, PaintKind::Image(ic.clone())));
         id
     } else {
         let children: Vec<NodeId> = node
             .children
             .iter()
-            .map(|c| build(tree, c, paint, handlers, models, hidden, vp))
+            .map(|c| build(tree, c, paint, handlers, models, hidden, opacities, vp))
             .collect();
         let id = if children.is_empty() {
             tree.new_leaf(to_taffy(&node.style, vp)).expect("taffy leaf")
@@ -486,6 +591,9 @@ fn build(
     if node.hidden {
         hidden.push(id);
     }
+    if node.style.opacity < 1.0 {
+        opacities.push((id, node.style.opacity.max(0.0)));
+    }
     id
 }
 
@@ -499,6 +607,8 @@ fn collect(
     handlers: &[(NodeId, String)],
     models: &[(NodeId, String)],
     hidden: &[NodeId],
+    opacities: &[(NodeId, f32)],
+    vp: (f32, f32),
     out: &mut Layout,
 ) {
     let layout = tree.layout(id).expect("layout");
@@ -511,8 +621,26 @@ fn collect(
         return;
     }
 
+    // opacity fades this node and everything under it, so the layer opens
+    // before the node paints its own background.
+    let alpha = opacities
+        .iter()
+        .find(|(nid, _)| *nid == id)
+        .map(|(_, a)| *a)
+        .unwrap_or(1.0);
+    if alpha < 1.0 {
+        out.paints.push(Paint::PushOpacity {
+            alpha,
+            width: vp.0,
+            height: vp.1,
+        });
+    }
+
     let mut clip = false;
-    if let Some((_, kind)) = paint.iter().find(|(nid, _)| *nid == id) {
+    let mut clip_radius = 0.0;
+    // A node can emit more than one paint (a text node paints its box, then its
+    // glyphs), so walk every entry it owns, in order.
+    for (_, kind) in paint.iter().filter(|(nid, _)| *nid == id) {
         match kind {
             PaintKind::Box {
                 bg,
@@ -522,6 +650,7 @@ fn collect(
                 clip: c,
             } => {
                 clip = *c;
+                clip_radius = *radius;
                 let has_border = *border_width > 0.0 && border_color.is_some();
                 if bg.is_some() || has_border {
                     out.paints.push(Paint::Rect(PaintRect {
@@ -542,6 +671,13 @@ fn collect(
                 width: layout.size.width,
                 height: layout.size.height,
                 content: tc.clone(),
+            })),
+            PaintKind::Image(ic) => out.paints.push(Paint::Image(PaintImage {
+                x,
+                y,
+                width: layout.size.width,
+                height: layout.size.height,
+                content: ic.clone(),
             })),
         }
     }
@@ -566,21 +702,26 @@ fn collect(
         });
     }
 
-    // overflow: clip — bound the subtree to this box.
+    // overflow: clip — bound the subtree to this box (following its corners).
     if clip {
         out.paints.push(Paint::PushClip {
             x,
             y,
             width: layout.size.width,
             height: layout.size.height,
-            radius: 0.0,
+            radius: clip_radius,
         });
     }
     for child in tree.children(id).expect("children") {
-        collect(tree, child, x, y, paint, handlers, models, hidden, out);
+        collect(
+            tree, child, x, y, paint, handlers, models, hidden, opacities, vp, out,
+        );
     }
     if clip {
         out.paints.push(Paint::PopClip);
+    }
+    if alpha < 1.0 {
+        out.paints.push(Paint::PopOpacity);
     }
 }
 
@@ -596,6 +737,7 @@ pub fn layout(root: &Node, avail_w: f32, avail_h: f32, measure: &mut Measure) ->
     let mut handlers = Vec::new();
     let mut models = Vec::new();
     let mut hidden = Vec::new();
+    let mut opacities = Vec::new();
     let vp = (avail_w, avail_h);
     let root_id = build(
         &mut tree,
@@ -604,6 +746,7 @@ pub fn layout(root: &Node, avail_w: f32, avail_h: f32, measure: &mut Measure) ->
         &mut handlers,
         &mut models,
         &mut hidden,
+        &mut opacities,
         vp,
     );
 
@@ -650,7 +793,7 @@ pub fn layout(root: &Node, avail_w: f32, avail_h: f32, measure: &mut Measure) ->
 
     let mut out = Layout::default();
     collect(
-        &tree, root_id, 0.0, 0.0, &paint, &handlers, &models, &hidden, &mut out,
+        &tree, root_id, 0.0, 0.0, &paint, &handlers, &models, &hidden, &opacities, vp, &mut out,
     );
     out
 }

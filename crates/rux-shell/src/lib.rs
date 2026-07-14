@@ -66,6 +66,7 @@ struct App {
     path: PathBuf,
     document: Document,
     text: rux_text::TextEngine,
+    images: rux_paint::ImageCache,
     /// Hit regions from the most recent layout, for tap dispatch.
     hits: Vec<HitRegion>,
     /// Focusable input regions from the most recent layout.
@@ -87,6 +88,7 @@ impl App {
             path,
             document,
             text: rux_text::TextEngine::new(),
+            images: rux_paint::ImageCache::new(),
             hits: Vec::new(),
             focuses: Vec::new(),
             focused: None,
@@ -185,6 +187,7 @@ impl App {
             state,
             document,
             text,
+            images,
             hits,
             focuses,
             ..
@@ -201,7 +204,7 @@ impl App {
             let mut measure = |t: &str, fs: f32, w: u16, mw: Option<f32>| text.measure(t, fs, w, mw);
             rux_layout::layout(&document.root, width as f32, height as f32, &mut measure)
         };
-        state.scene = rux_paint::build_scene(&layout.paints, text);
+        state.scene = rux_paint::build_scene(&layout.paints, text, images);
         *hits = layout.hits;
         *focuses = layout.focuses;
 

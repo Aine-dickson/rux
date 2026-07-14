@@ -75,13 +75,14 @@
   }
   .btn {
     display: flex;
-    width: 44px;
+    width: 84px;
     height: 44px;
     background: #313244;
     border-radius: 8px;
     justify-content:center;
     align-items: center;
     cursor: pointer; 
+    shrink: 0;
   }
   .btnlabel {
     color: #cdd6f4;

@@ -15,8 +15,8 @@ use lightningcss::rules::CssRule;
 use lightningcss::stylesheet::{ParserOptions, PrinterOptions, StyleSheet};
 use lightningcss::traits::ToCss;
 use rux_layout::{
-    Align, Axis, Display, Justify, Len, Node as LayoutNode, Overflow, Rgba, Sides, Style, TextAlign,
-    TextContent, Track,
+    Align, Axis, Display, ImageContent, Justify, Len, Node as LayoutNode, Overflow, Rgba, Sides,
+    Style, TextAlign, TextContent, Track,
 };
 use rux_parser::{Element, Node as TplNode, Sfc};
 use rux_reactive::Value;
@@ -403,6 +403,27 @@ fn build_node(
         return node;
     }
 
+    // <image src=…>: a leaf that paints its pixels. The `src` here is still the
+    // author's string; the runtime resolves it against the .rux file's directory
+    // and fills in the intrinsic size.
+    if el.tag == "image" {
+        let src = el
+            .attr(":src")
+            .map(|e| engine.eval_display(e, locals))
+            .or_else(|| el.attr("src").map(str::to_string))
+            .unwrap_or_default();
+        let mut node = LayoutNode::image(
+            style,
+            ImageContent {
+                src,
+                intrinsic: (0.0, 0.0),
+            },
+        );
+        node.on_tap = on_tap;
+        node.hidden = hidden;
+        return node;
+    }
+
     // <input>: a box bound to a signal via r-model, showing the current value
     // (or a dim placeholder when empty). The shell focuses it on tap and edits
     // the bound signal on keystrokes.
@@ -459,6 +480,7 @@ fn build_node(
     LayoutNode {
         style,
         text: None,
+        image: None,
         children,
         on_tap,
         model: None,
@@ -615,9 +637,32 @@ fn interpret(p: &HashMap<String, String>) -> Style {
     if let Some(v) = p.get("grid-template-rows") {
         st.grid_rows = parse_tracks(v);
     }
+    // `flex: grow [shrink [basis]]` first, so the longhands can override it.
+    if let Some(v) = p.get("flex") {
+        interpret_flex_shorthand(v.trim(), &mut st);
+    }
     if let Some(v) = p.get("flex-grow") {
         if let Ok(g) = first(v).parse::<f32>() {
             st.grow = g;
+        }
+    }
+    if let Some(v) = p.get("flex-shrink") {
+        if let Ok(s) = first(v).parse::<f32>() {
+            st.shrink = s.max(0.0);
+        }
+    }
+    if let Some(v) = p.get("flex-basis") {
+        st.basis = match first(v) {
+            "auto" | "content" => None,
+            l => parse_len(l),
+        };
+    }
+    if let Some(v) = p.get("flex-wrap") {
+        st.wrap = matches!(v.trim(), "wrap" | "wrap-reverse");
+    }
+    if let Some(v) = p.get("opacity") {
+        if let Ok(o) = first(v).parse::<f32>() {
+            st.opacity = o.clamp(0.0, 1.0);
         }
     }
     if let Some(v) = p.get("flex-direction") {
@@ -660,6 +705,50 @@ fn interpret(p: &HashMap<String, String>) -> Style {
         st.overflow = Overflow::Clip;
     }
     st
+}
+
+/// `flex: <grow> [<shrink> [<basis>]]`, plus the CSS keywords. Note the
+/// shorthand's defaults differ from the initial values: `flex: 1` means
+/// `1 1 0%`, not `1 1 auto`.
+fn interpret_flex_shorthand(v: &str, st: &mut Style) {
+    match v {
+        "none" => {
+            st.grow = 0.0;
+            st.shrink = 0.0;
+            st.basis = None;
+            return;
+        }
+        "auto" => {
+            st.grow = 1.0;
+            st.shrink = 1.0;
+            st.basis = None;
+            return;
+        }
+        "initial" => {
+            st.grow = 0.0;
+            st.shrink = 1.0;
+            st.basis = None;
+            return;
+        }
+        _ => {}
+    }
+
+    let parts: Vec<&str> = v.split_whitespace().collect();
+    let Some(grow) = parts.first().and_then(|g| g.parse::<f32>().ok()) else {
+        return;
+    };
+    st.grow = grow;
+    st.shrink = parts
+        .get(1)
+        .and_then(|s| s.parse::<f32>().ok())
+        .unwrap_or(1.0)
+        .max(0.0);
+    st.basis = match parts.get(2) {
+        Some(&"auto") | Some(&"content") => None,
+        Some(b) => parse_len(b),
+        // A bare `flex: 1` sizes purely from the free space.
+        None => Some(Len::Px(0.0)),
+    };
 }
 
 fn first(s: &str) -> &str {
@@ -882,7 +971,7 @@ fn parse_hex(hex: &str) -> Option<Rgba> {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_styled_tree, interpolate, interpret, Locals};
+    use super::{build_styled_tree, interpolate, interpret, Len, Locals};
     use rux_script::Builder;
     use std::collections::HashMap;
 
@@ -901,6 +990,42 @@ mod tests {
         assert_eq!(st.border.top, 2.0);
         assert_eq!(st.border.bottom, 5.0); // per-side width override
         assert_eq!(st.border_color.map(|c| c.r), Some(1.0)); // #ff0000 → red
+    }
+
+    #[test]
+    fn flex_longhands_and_shorthand() {
+        let flex = |v: &str| {
+            let mut p = HashMap::new();
+            p.insert("flex".to_string(), v.to_string());
+            let st = interpret(&p);
+            (st.grow, st.shrink, st.basis)
+        };
+        // The shorthand's omitted basis is 0, not auto — a bare `flex: 1` sizes
+        // purely from the free space.
+        assert_eq!(flex("1"), (1.0, 1.0, Some(Len::Px(0.0))));
+        assert_eq!(flex("1 0 auto"), (1.0, 0.0, None));
+        assert_eq!(flex("2 3 120px"), (2.0, 3.0, Some(Len::Px(120.0))));
+        assert_eq!(flex("none"), (0.0, 0.0, None));
+
+        let mut p = HashMap::new();
+        p.insert("flex".to_string(), "1".to_string());
+        p.insert("flex-shrink".to_string(), "0".to_string()); // longhand wins
+        p.insert("flex-wrap".to_string(), "wrap".to_string());
+        p.insert("opacity".to_string(), "0.45".to_string());
+        let st = interpret(&p);
+        assert_eq!(st.shrink, 0.0);
+        assert!(st.wrap);
+        assert_eq!(st.opacity, 0.45);
+    }
+
+    #[test]
+    fn image_element_carries_its_src() {
+        let src = r#"<template><screen><image src="assets/logo.png" /></screen></template>"#;
+        let sfc = rux_parser::parse_sfc(src).unwrap();
+        let mut e = Builder::new().build("").unwrap();
+        let root = build_styled_tree(&sfc, &HashMap::new(), &mut e).unwrap();
+        let img = root.children[0].image.as_ref().expect("image node");
+        assert_eq!(img.src, "assets/logo.png");
     }
 
     #[test]

@@ -4,11 +4,48 @@
 //! rounded rectangles for boxes, glyph runs (via `rux-text`) for text. Stage 5
 //! of `docs/04-architecture.md`.
 
+use std::collections::HashMap;
+
 use rux_layout::{Paint, Rgba, TextAlign};
 use rux_text::{Align, TextEngine};
-use vello::kurbo::{Affine, Rect, RoundedRect, Stroke};
-use vello::peniko::{Color, Fill, Mix};
+use vello::kurbo::{Affine, Rect, RoundedRect, Stroke, Vec2};
+use vello::peniko::{Blob, Color, Fill, Format, Image, Mix};
 use vello::Scene;
+
+/// Decoded images, keyed by the `src` path. Decoding is the expensive part, and
+/// we repaint on every event, so an image is read from disk at most once. A src
+/// that fails to decode is remembered as a miss and not retried.
+#[derive(Default)]
+pub struct ImageCache {
+    images: HashMap<String, Option<Image>>,
+}
+
+impl ImageCache {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    fn get(&mut self, src: &str) -> Option<&Image> {
+        self.images
+            .entry(src.to_string())
+            .or_insert_with(|| decode(src))
+            .as_ref()
+    }
+}
+
+fn decode(src: &str) -> Option<Image> {
+    let decoded = image::open(src)
+        .map_err(|e| eprintln!("rux: cannot load image {src}: {e}"))
+        .ok()?
+        .into_rgba8();
+    let (w, h) = decoded.dimensions();
+    Some(Image::new(
+        Blob::new(std::sync::Arc::new(decoded.into_raw())),
+        Format::Rgba8,
+        w,
+        h,
+    ))
+}
 
 fn to_color(c: Rgba) -> Color {
     Color::rgba(c.r as f64, c.g as f64, c.b as f64, c.a as f64)
@@ -24,7 +61,7 @@ fn to_align(a: TextAlign) -> Align {
 }
 
 /// Build a fresh scene from paint items, in list order (parents first).
-pub fn build_scene(items: &[Paint], text: &mut TextEngine) -> Scene {
+pub fn build_scene(items: &[Paint], text: &mut TextEngine, images: &mut ImageCache) -> Scene {
     let mut scene = Scene::new();
     for item in items {
         match item {
@@ -73,22 +110,47 @@ pub fn build_scene(items: &[Paint], text: &mut TextEngine) -> Scene {
                     Some(t.width),
                 );
             }
+            // Scale the decoded pixels to fill the box layout gave the element.
+            Paint::Image(img) => {
+                let Some(decoded) = images.get(&img.content.src) else {
+                    continue;
+                };
+                let (iw, ih) = (decoded.width as f64, decoded.height as f64);
+                if iw <= 0.0 || ih <= 0.0 {
+                    continue;
+                }
+                let transform = Affine::scale_non_uniform(img.width as f64 / iw, img.height as f64 / ih)
+                    .then_translate(Vec2::new(img.x as f64, img.y as f64));
+                scene.draw_image(decoded, transform);
+            }
             Paint::PushClip {
                 x,
                 y,
                 width,
                 height,
-                ..
+                radius,
             } => {
-                let rect = Rect::new(
+                let shape = RoundedRect::new(
                     *x as f64,
                     *y as f64,
                     (*x + *width) as f64,
                     (*y + *height) as f64,
+                    *radius as f64,
                 );
-                scene.push_layer(Mix::Clip, 1.0, Affine::IDENTITY, &rect);
+                scene.push_layer(Mix::Clip, 1.0, Affine::IDENTITY, &shape);
             }
             Paint::PopClip => scene.pop_layer(),
+            // Fade the subtree. The layer covers the viewport so it only blends,
+            // never clips — an overflowing child still shows through.
+            Paint::PushOpacity {
+                alpha,
+                width,
+                height,
+            } => {
+                let shape = Rect::new(0.0, 0.0, *width as f64, *height as f64);
+                scene.push_layer(Mix::Normal, *alpha, Affine::IDENTITY, &shape);
+            }
+            Paint::PopOpacity => scene.pop_layer(),
         }
     }
     scene

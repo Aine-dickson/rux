@@ -7,6 +7,7 @@ repository.workspace = true
 description = "Rux runtime document model: loads a .rux file into a renderable tree."
 
 [dependencies]
+image.workspace = true
 rux-parser = { path = "../rux-parser" }
 rux-style = { path = "../rux-style" }
 rux-layout = { path = "../rux-layout" }

@@ -14,9 +14,21 @@ fn flex(axis: Axis) -> Style {
     }
 }
 
+/// Lay the tree out under a full-viewport screen. (`layout()` stretches its
+/// root to fill the window, so a fixed-width box has to be a child to stay
+/// fixed-width.)
+fn on_screen(node: Node) -> Node {
+    boxed(flex(Axis::Column), vec![node])
+}
+
+fn paints(root: &Node) -> Vec<Paint> {
+    let mut measure = |_: &str, _: f32, _: u16, _: Option<f32>| (0.0, 0.0);
+    layout(&on_screen(root.clone()), 1260.0, 790.0, &mut measure).paints
+}
+
 fn rects(root: &Node) -> Vec<(f32, f32)> {
     let mut measure = |_: &str, _: f32, _: u16, _: Option<f32>| (0.0, 0.0);
-    layout(root, 1260.0, 790.0, &mut measure)
+    layout(&on_screen(root.clone()), 1260.0, 790.0, &mut measure)
         .paints
         .iter()
         .filter_map(|p| match p {
@@ -105,4 +117,99 @@ fn explicit_width_is_left_alone() {
 
     let rects = rects(&card);
     assert_eq!(rects[1].1, 900.0, "explicit width was clamped");
+}
+
+/// `flex-shrink: 0` means "keep my size". The item must overflow rather than be
+/// quietly shrunk -- and must not be clamped by the fit-content default either.
+#[test]
+fn shrink_zero_keeps_its_width_and_overflows() {
+    let stiff = |w: f32| {
+        boxed(
+            Style {
+                width: Some(Len::Px(w)),
+                shrink: 0.0,
+                background: Some(Rgba::new(0.0, 0.0, 0.0, 1.0)),
+                ..flex(Axis::Row)
+            },
+            vec![],
+        )
+    };
+    let card = boxed(
+        Style {
+            width: Some(Len::Px(300.0)),
+            background: Some(Rgba::new(0.2, 0.2, 0.2, 1.0)),
+            ..flex(Axis::Row)
+        },
+        vec![stiff(200.0), stiff(200.0)],
+    );
+
+    let rects = rects(&card);
+    assert_eq!(rects[1].1, 200.0, "shrink:0 item was shrunk anyway");
+    assert_eq!(rects[2].1, 200.0, "shrink:0 item was shrunk anyway");
+    assert!(
+        rects[2].0 + rects[2].1 > 300.0,
+        "shrink:0 items should overflow the 300px card"
+    );
+}
+
+/// The default is still CSS's shrink: 1 -- items give up space to fit.
+#[test]
+fn default_items_shrink_to_fit() {
+    let item = || {
+        boxed(
+            Style {
+                width: Some(Len::Px(200.0)),
+                background: Some(Rgba::new(0.0, 0.0, 0.0, 1.0)),
+                ..flex(Axis::Row)
+            },
+            vec![],
+        )
+    };
+    let card = boxed(
+        Style {
+            width: Some(Len::Px(300.0)),
+            background: Some(Rgba::new(0.2, 0.2, 0.2, 1.0)),
+            ..flex(Axis::Row)
+        },
+        vec![item(), item()],
+    );
+
+    let rects = rects(&card);
+    assert_eq!(rects[1].1, 150.0);
+    assert_eq!(rects[2].1, 150.0);
+}
+
+/// `flex-wrap: wrap` sends the overflowing item to a second line.
+#[test]
+fn flex_wrap_starts_a_new_line() {
+    let item = || {
+        boxed(
+            Style {
+                width: Some(Len::Px(200.0)),
+                shrink: 0.0,
+                height: Some(Len::Px(20.0)),
+                background: Some(Rgba::new(0.0, 0.0, 0.0, 1.0)),
+                ..flex(Axis::Row)
+            },
+            vec![],
+        )
+    };
+    let card = boxed(
+        Style {
+            width: Some(Len::Px(300.0)),
+            wrap: true,
+            background: Some(Rgba::new(0.2, 0.2, 0.2, 1.0)),
+            ..flex(Axis::Row)
+        },
+        vec![item(), item()],
+    );
+
+    let ys: Vec<f32> = paints(&card)
+        .iter()
+        .filter_map(|p| match p {
+            Paint::Rect(r) => Some(r.y),
+            _ => None,
+        })
+        .collect();
+    assert!(ys[2] > ys[1], "second item should wrap onto a new line");
 }

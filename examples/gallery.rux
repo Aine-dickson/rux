@@ -1,0 +1,94 @@
+<template>
+  <screen class="screen">
+    <text class="title">Gallery</text>
+
+    <!-- No CSS size: the image lays out at its intrinsic 160x160. -->
+    <image src="assets/logo.png" class="raw" />
+
+    <!-- Sized by CSS: the pixels scale to fill the box. -->
+    <view class="row">
+      <image src="assets/logo.png" class="thumb" />
+      <image src="assets/logo.png" class="thumb" />
+      <image src="assets/logo.png" class="thumb" />
+    </view>
+
+    <!-- opacity fades a whole subtree; flex-shrink:0 keeps these wide bars at
+         their size, and the strip clips what overflows instead of spilling. -->
+    <view class="strip">
+      <view class="bar">
+        <text class="barlabel">shrink: 0</text>
+      </view>
+      <view class="bar">
+        <text class="barlabel">stays 240px</text>
+      </view>
+      <view class="bar">
+        <text class="barlabel">clipped</text>
+      </view>
+    </view>
+
+    <text class="ghost">opacity: 0.45</text>
+  </screen>
+</template>
+
+<style>
+  .screen {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    padding: 24px;
+    background: #1e1e2e;
+  }
+  .title {
+    color: #cdd6f4;
+    font-size: 22px;
+    font-weight: 700;
+  }
+  .raw {
+    border-radius: 12px;
+  }
+  .row {
+    display: flex;
+    flex-direction: row;
+    gap: 8px;
+  }
+  .thumb {
+    width: 64px;
+    height: 64px;
+    border-radius: 8px;
+    border: 2px #a6e3a1 solid;
+  }
+  .strip {
+    display: flex;
+    flex-direction: row;
+    gap: 8px;
+    width: 320px;
+    padding: 8px;
+    background: #313244;
+    border-radius: 8px;
+    overflow: hidden;
+  }
+  .bar {
+    display: flex;
+    flex-shrink: 0;
+    width: 240px;
+    padding: 10px;
+    background: #45475a;
+    border-radius: 6px;
+  }
+  .barlabel {
+    color: #cdd6f4;
+    font-size: 14px;
+  }
+  .ghost {
+    color: #f38ba8;
+    font-size: 18px;
+    opacity: 0.45;
+    background: #313244;
+    padding: 8px;
+    border-radius: 6px;
+  }
+</style>
+
+<script>
+  // Images, opacity, flex-shrink and overflow clipping in one screen.
+</script>

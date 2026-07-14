@@ -8,5 +8,6 @@ description = "Rux painter: turns resolved paint items into a vello Scene."
 
 [dependencies]
 vello.workspace = true
+image.workspace = true
 rux-layout = { path = "../rux-layout" }
 rux-text = { path = "../rux-text" }
