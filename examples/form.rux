@@ -1,0 +1,62 @@
+<template>
+  <screen class="screen">
+    <text role="heading" class="title">Sign in</text>
+
+    <!-- Tap an input to focus it, then type. r-model binds it to a signal. -->
+    <input class="field" r-model="name" placeholder="Your name" />
+    <input class="field" r-model="city" placeholder="Your city" />
+
+    <!-- Live: these update as you type, because they read the same signals.
+         Note: single-quoted attributes so rhai sees real "" string literals. -->
+    <text class="greet">Hello, {{ name }}!</text>
+    <text class="sub" r-if='city != ""'>Greetings from {{ city }}.</text>
+
+    <view class="row">
+      <button class="btn" @tap='name = ""'>
+        <text class="btnlabel">Clear name</text>
+      </button>
+    </view>
+  </screen>
+</template>
+
+<style>
+  .screen {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    padding: 24px;
+    background: #1e1e2e;
+  }
+  .title {
+    color: #cdd6f4;
+    font-size: 22px;
+    font-weight: 700;
+  }
+  .field {
+    display: flex;
+    width: 320px;
+    padding: 10px;
+    background: #313244;
+    border: 2px #45475a solid;
+    border-radius: 8px;
+    color: #cdd6f4;
+    font-size: 16px;
+  }
+  .greet { color: #a6e3a1; font-size: 18px; }
+  .sub   { color: #9399b2; font-size: 14px; }
+  .row   { display: flex; flex-direction: row; gap: 8px; }
+  .btn {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    padding: 10px;
+    background: #45475a;
+    border-radius: 8px;
+  }
+  .btnlabel { color: #cdd6f4; font-size: 14px; }
+</style>
+
+<script>
+  let name = signal("");
+  let city = signal("");
+</script>

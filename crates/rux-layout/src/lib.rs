@@ -196,6 +196,8 @@ pub struct Node {
     pub text: Option<TextContent>,
     pub children: Vec<Node>,
     pub on_tap: Option<String>,
+    /// `r-model` signal name for `<input>` nodes (focus target + edit binding).
+    pub model: Option<String>,
     /// `r-show="false"`: laid out (space reserved) but not painted.
     pub hidden: bool,
 }
@@ -207,6 +209,7 @@ impl Node {
             text: None,
             children: Vec::new(),
             on_tap: None,
+            model: None,
             hidden: false,
         }
     }
@@ -217,6 +220,7 @@ impl Node {
             text: Some(text),
             children: Vec::new(),
             on_tap: None,
+            model: None,
             hidden: false,
         }
     }
@@ -285,12 +289,30 @@ impl HitRegion {
     }
 }
 
-/// The result of laying out a tree: paint items and hit regions, both in
-/// painter's/topmost-last order.
+/// An absolutely-positioned focusable region for an `<input>`, carrying its
+/// `r-model` signal name.
+#[derive(Clone, Debug)]
+pub struct FocusRegion {
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+    pub model: String,
+}
+
+impl FocusRegion {
+    pub fn contains(&self, px: f32, py: f32) -> bool {
+        px >= self.x && px <= self.x + self.width && py >= self.y && py <= self.y + self.height
+    }
+}
+
+/// The result of laying out a tree: paint items, hit regions, and focus regions,
+/// all in painter's/topmost-last order.
 #[derive(Clone, Debug, Default)]
 pub struct Layout {
     pub paints: Vec<Paint>,
     pub hits: Vec<HitRegion>,
+    pub focuses: Vec<FocusRegion>,
 }
 
 /// Callback that measures a text block: `(text, font_size, weight, max_width) -> (w, h)`.
@@ -403,11 +425,13 @@ fn to_taffy(style: &Style, vp: (f32, f32)) -> taffy::Style {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build(
     tree: &mut TaffyTree<TextContent>,
     node: &Node,
     paint: &mut Vec<(NodeId, PaintKind)>,
     handlers: &mut Vec<(NodeId, String)>,
+    models: &mut Vec<(NodeId, String)>,
     hidden: &mut Vec<NodeId>,
     vp: (f32, f32),
 ) -> NodeId {
@@ -423,7 +447,7 @@ fn build(
         let children: Vec<NodeId> = node
             .children
             .iter()
-            .map(|c| build(tree, c, paint, handlers, hidden, vp))
+            .map(|c| build(tree, c, paint, handlers, models, hidden, vp))
             .collect();
         let id = if children.is_empty() {
             tree.new_leaf(to_taffy(&node.style, vp)).expect("taffy leaf")
@@ -447,6 +471,9 @@ fn build(
     if let Some(handler) = &node.on_tap {
         handlers.push((id, handler.clone()));
     }
+    if let Some(model) = &node.model {
+        models.push((id, model.clone()));
+    }
     if node.hidden {
         hidden.push(id);
     }
@@ -461,6 +488,7 @@ fn collect(
     origin_y: f32,
     paint: &[(NodeId, PaintKind)],
     handlers: &[(NodeId, String)],
+    models: &[(NodeId, String)],
     hidden: &[NodeId],
     out: &mut Layout,
 ) {
@@ -519,6 +547,16 @@ fn collect(
         });
     }
 
+    if let Some((_, model)) = models.iter().find(|(nid, _)| *nid == id) {
+        out.focuses.push(FocusRegion {
+            x,
+            y,
+            width: layout.size.width,
+            height: layout.size.height,
+            model: model.clone(),
+        });
+    }
+
     // overflow: clip — bound the subtree to this box.
     if clip {
         out.paints.push(Paint::PushClip {
@@ -530,7 +568,7 @@ fn collect(
         });
     }
     for child in tree.children(id).expect("children") {
-        collect(tree, child, x, y, paint, handlers, hidden, out);
+        collect(tree, child, x, y, paint, handlers, models, hidden, out);
     }
     if clip {
         out.paints.push(Paint::PopClip);
@@ -543,9 +581,18 @@ pub fn layout(root: &Node, avail_w: f32, avail_h: f32, measure: &mut Measure) ->
     let mut tree: TaffyTree<TextContent> = TaffyTree::new();
     let mut paint = Vec::new();
     let mut handlers = Vec::new();
+    let mut models = Vec::new();
     let mut hidden = Vec::new();
     let vp = (avail_w, avail_h);
-    let root_id = build(&mut tree, root, &mut paint, &mut handlers, &mut hidden, vp);
+    let root_id = build(
+        &mut tree,
+        root,
+        &mut paint,
+        &mut handlers,
+        &mut models,
+        &mut hidden,
+        vp,
+    );
 
     // Force the root to fill the viewport so a `screen` always covers the window.
     let mut root_style = to_taffy(&root.style, vp);
@@ -589,6 +636,8 @@ pub fn layout(root: &Node, avail_w: f32, avail_h: f32, measure: &mut Measure) ->
     .expect("compute layout");
 
     let mut out = Layout::default();
-    collect(&tree, root_id, 0.0, 0.0, &paint, &handlers, &hidden, &mut out);
+    collect(
+        &tree, root_id, 0.0, 0.0, &paint, &handlers, &models, &hidden, &mut out,
+    );
     out
 }

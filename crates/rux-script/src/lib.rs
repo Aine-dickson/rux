@@ -122,6 +122,16 @@ impl Engine {
     pub fn run_handler(&mut self, src: &str) -> bool {
         self.eval(src, &[]).is_some()
     }
+
+    /// Read a signal's current value as a display string (for input `r-model`).
+    pub fn get_string(&mut self, name: &str) -> String {
+        self.eval_value(name, &[]).map(|v| v.to_display()).unwrap_or_default()
+    }
+
+    /// Set a signal to a string value (from input editing).
+    pub fn set_string(&mut self, name: &str, value: &str) {
+        self.scope.set_or_push(name, value.to_string());
+    }
 }
 
 fn to_dynamic(v: &Value) -> Dynamic {

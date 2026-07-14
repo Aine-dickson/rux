@@ -11,7 +11,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use notify::{EventKind, RecursiveMode, Watcher};
-use rux_layout::HitRegion;
+use rux_layout::{FocusRegion, HitRegion};
 use rux_runtime::Document;
 use vello::peniko::Color;
 use vello::util::{RenderContext, RenderSurface};
@@ -20,6 +20,7 @@ use vello::{AaConfig, AaSupport, Renderer, RendererOptions, RenderParams, Scene}
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
+use winit::keyboard::{Key, NamedKey};
 use winit::window::{Window, WindowId};
 
 /// Events delivered to the winit loop from outside it.
@@ -67,6 +68,10 @@ struct App {
     text: rux_text::TextEngine,
     /// Hit regions from the most recent layout, for tap dispatch.
     hits: Vec<HitRegion>,
+    /// Focusable input regions from the most recent layout.
+    focuses: Vec<FocusRegion>,
+    /// The `r-model` of the currently focused input, if any.
+    focused: Option<String>,
     /// Current pointer position (physical pixels).
     pointer: (f64, f64),
     /// Where the left button was pressed, if it is currently down.
@@ -83,6 +88,8 @@ impl App {
             document,
             text: rux_text::TextEngine::new(),
             hits: Vec::new(),
+            focuses: Vec::new(),
+            focused: None,
             pointer: (0.0, 0.0),
             press: None,
         }
@@ -101,10 +108,25 @@ impl App {
         }
     }
 
-    /// Handle a completed tap at `(px, py)`: run the topmost hit region's `@tap`
-    /// handler, rebuild if it changed anything, and repaint.
+    /// Handle a completed tap at `(px, py)`: focus an input if one is under the
+    /// pointer, otherwise run the topmost `@tap` handler.
     fn dispatch_tap(&mut self, px: f64, py: f64) {
-        // Topmost region wins (later in list = drawn on top).
+        // Focus takes precedence: an input under the pointer becomes focused.
+        if let Some(model) = self
+            .focuses
+            .iter()
+            .rev()
+            .find(|f| f.contains(px as f32, py as f32))
+            .map(|f| f.model.clone())
+        {
+            self.focused = Some(model);
+            self.request_redraw();
+            return;
+        }
+        // Tapping elsewhere drops focus.
+        self.focused = None;
+
+        // Topmost hit region wins (later in list = drawn on top).
         let handler = self
             .hits
             .iter()
@@ -117,6 +139,35 @@ impl App {
                 self.document.rebuild();
                 self.request_redraw();
             }
+        }
+    }
+
+    /// Apply a key to the focused input's bound signal, then rebuild + repaint.
+    fn edit_focused(&mut self, key: &Key) {
+        let Some(model) = self.focused.clone() else {
+            return;
+        };
+        let mut value = self.document.engine_mut().get_string(&model);
+        let changed = match key {
+            Key::Named(NamedKey::Backspace) => value.pop().is_some(),
+            Key::Named(NamedKey::Space) => {
+                value.push(' ');
+                true
+            }
+            Key::Character(s) => {
+                let mut any = false;
+                for c in s.chars().filter(|c| !c.is_control()) {
+                    value.push(c);
+                    any = true;
+                }
+                any
+            }
+            _ => false,
+        };
+        if changed {
+            self.document.engine_mut().set_string(&model, &value);
+            self.document.rebuild();
+            self.request_redraw();
         }
     }
 
@@ -135,6 +186,7 @@ impl App {
             document,
             text,
             hits,
+            focuses,
             ..
         } = self;
         let Some(state) = state.as_mut() else {
@@ -151,6 +203,7 @@ impl App {
         };
         state.scene = rux_paint::build_scene(&layout.paints, text);
         *hits = layout.hits;
+        *focuses = layout.focuses;
 
         let device_handle = &context.devices[state.surface.dev_id];
         let surface_texture = state
@@ -254,6 +307,11 @@ impl ApplicationHandler<RuxEvent> for App {
             }
             WindowEvent::CursorMoved { position, .. } => {
                 self.pointer = (position.x, position.y);
+            }
+            WindowEvent::KeyboardInput { event, .. } => {
+                if event.state == ElementState::Pressed && self.focused.is_some() {
+                    self.edit_focused(&event.logical_key);
+                }
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,

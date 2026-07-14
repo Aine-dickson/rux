@@ -403,6 +403,39 @@ fn build_node(
         return node;
     }
 
+    // <input>: a box bound to a signal via r-model, showing the current value
+    // (or a dim placeholder when empty). The shell focuses it on tap and edits
+    // the bound signal on keystrokes.
+    if el.tag == "input" {
+        let model = el.attr("r-model").map(str::to_string);
+        let value = model
+            .as_deref()
+            .map(|m| engine.eval_display(m, locals))
+            .unwrap_or_default();
+        let (shown, shown_color) = if value.is_empty() {
+            let placeholder = el.attr("placeholder").unwrap_or_default().to_string();
+            (placeholder, Rgba::new(0.42, 0.44, 0.52, 1.0)) // #6c7086
+        } else {
+            (value, color)
+        };
+        let text_child = LayoutNode::text(
+            Style::default(),
+            TextContent {
+                text: shown,
+                font_size,
+                weight: 400,
+                color: shown_color,
+                align: TextAlign::Start,
+            },
+        );
+        let mut node = LayoutNode::new(style);
+        node.children.push(text_child);
+        node.model = model;
+        node.on_tap = on_tap;
+        node.hidden = hidden;
+        return node;
+    }
+
     ancestors.push(desc);
     let element_children: Vec<&Element> = el
         .children
@@ -428,6 +461,7 @@ fn build_node(
         text: None,
         children,
         on_tap,
+        model: None,
         hidden,
     }
 }
@@ -902,6 +936,28 @@ mod tests {
         assert_eq!(root.children.len(), 4);
         let mid = root.children[3].text.as_ref().unwrap();
         assert_eq!(mid.text, "mid");
+    }
+
+    #[test]
+    fn input_binds_model_and_shows_placeholder_then_value() {
+        let src = r#"<template><screen>
+                       <input r-model="name" placeholder="Type here" />
+                     </screen></template>
+                     <script> let name = signal(""); </script>"#;
+        let sfc = rux_parser::parse_sfc(src).unwrap();
+        let mut engine = Builder::new().build(&sfc.script).unwrap();
+
+        let root = build_styled_tree(&sfc, &HashMap::new(), &mut engine).unwrap();
+        let input = &root.children[0];
+        assert_eq!(input.model.as_deref(), Some("name"), "r-model bound");
+        // Empty signal → the placeholder is shown.
+        assert_eq!(input.children[0].text.as_ref().unwrap().text, "Type here");
+
+        // Simulate the shell editing the focused input, then rebuild.
+        engine.set_string("name", "Cam");
+        let root = build_styled_tree(&sfc, &HashMap::new(), &mut engine).unwrap();
+        let input = &root.children[0];
+        assert_eq!(input.children[0].text.as_ref().unwrap().text, "Cam");
     }
 
     #[test]
