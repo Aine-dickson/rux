@@ -1,4 +1,4 @@
-use rux_text::TextEngine;
+use rux_text::{TextEngine, Wrap};
 
 /// Paint re-wraps text at the box width layout gave it, so the box must never
 /// be narrower than the text measured. It used to come back fractional
@@ -16,14 +16,37 @@ fn measured_width_never_re_wraps_the_text() {
         ("Greetings from jllo.", 14.0),
         ("Greetings from jllojk.", 14.0),
     ] {
-        let (w, h) = te.measure(text, size, 400, None);
+        let (w, h) = te.measure(text, size, 400, Wrap::Normal, None);
         assert_eq!(w, w.trunc(), "{text}: width {w} is not whole-pixel");
 
         // Lay the text out again in exactly the box it asked for.
-        let (_, h_in_box) = te.measure(text, size, 400, Some(w));
+        let (_, h_in_box) = te.measure(text, size, 400, Wrap::Normal, Some(w));
         assert_eq!(
             h_in_box, h,
             "{text}: wrapped to {h_in_box}px inside its own {w}px box (wanted {h}px)"
         );
     }
+}
+
+/// The reason we moved to parley 0.11: it can break *inside* a word. A word
+/// wider than its box used to overflow with no way to stop it (parley 0.2 had
+/// no overflow-wrap at all).
+#[test]
+fn break_word_breaks_inside_a_long_word() {
+    let mut te = TextEngine::new();
+    let long = "eknfenfenenelenlenlrenfennrelneflnlenflrenfelflnlefelnfelfnlnflenfelnfenlenlenelnlernlene";
+    let box_width = 200.0;
+
+    let (natural, _) = te.measure(long, 16.0, 400, Wrap::Normal, None);
+    assert!(natural > box_width, "test needs a word wider than the box");
+
+    // Normal: nothing can break it, so it overflows the box (as CSS does).
+    let (w, h) = te.measure(long, 16.0, 400, Wrap::Normal, Some(box_width));
+    assert!(w > box_width, "a lone long word has nowhere to break");
+    let one_line = h;
+
+    // break-word: it breaks inside the word and stays inside the box.
+    let (w, h) = te.measure(long, 16.0, 400, Wrap::BreakWord, Some(box_width));
+    assert!(w <= box_width, "break-word should fit the box, got {w}");
+    assert!(h > one_line, "break-word should take multiple lines");
 }

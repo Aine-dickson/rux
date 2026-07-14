@@ -6,10 +6,10 @@
 
 use std::collections::HashMap;
 
-use rux_layout::{Paint, Rgba, TextAlign};
-use rux_text::{Align, TextEngine};
+use rux_layout::{Paint, Rgba, TextAlign, TextWrap};
+use rux_text::{Align, TextEngine, Wrap};
 use vello::kurbo::{Affine, Rect, RoundedRect, Stroke, Vec2};
-use vello::peniko::{Blob, Color, Fill, Format, Image, Mix};
+use vello::peniko::{Blob, Color, Fill, ImageAlphaType, ImageBrush, ImageData, ImageFormat, Mix};
 use vello::Scene;
 
 /// Decoded images, keyed by the `src` path. Decoding is the expensive part, and
@@ -17,7 +17,7 @@ use vello::Scene;
 /// that fails to decode is remembered as a miss and not retried.
 #[derive(Default)]
 pub struct ImageCache {
-    images: HashMap<String, Option<Image>>,
+    images: HashMap<String, Option<ImageBrush>>,
 }
 
 impl ImageCache {
@@ -25,7 +25,7 @@ impl ImageCache {
         Self::default()
     }
 
-    fn get(&mut self, src: &str) -> Option<&Image> {
+    fn get(&mut self, src: &str) -> Option<&ImageBrush> {
         self.images
             .entry(src.to_string())
             .or_insert_with(|| decode(src))
@@ -33,22 +33,31 @@ impl ImageCache {
     }
 }
 
-fn decode(src: &str) -> Option<Image> {
+fn decode(src: &str) -> Option<ImageBrush> {
     let decoded = image::open(src)
         .map_err(|e| eprintln!("rux: cannot load image {src}: {e}"))
         .ok()?
         .into_rgba8();
-    let (w, h) = decoded.dimensions();
-    Some(Image::new(
-        Blob::new(std::sync::Arc::new(decoded.into_raw())),
-        Format::Rgba8,
-        w,
-        h,
-    ))
+    let (width, height) = decoded.dimensions();
+    Some(ImageBrush::new(ImageData {
+        data: Blob::new(std::sync::Arc::new(decoded.into_raw())),
+        format: ImageFormat::Rgba8,
+        alpha_type: ImageAlphaType::Alpha,
+        width,
+        height,
+    }))
 }
 
 fn to_color(c: Rgba) -> Color {
-    Color::rgba(c.r as f64, c.g as f64, c.b as f64, c.a as f64)
+    Color::new([c.r, c.g, c.b, c.a])
+}
+
+pub fn to_wrap(w: TextWrap) -> Wrap {
+    match w {
+        TextWrap::Normal => Wrap::Normal,
+        TextWrap::BreakWord => Wrap::BreakWord,
+        TextWrap::Anywhere => Wrap::Anywhere,
+    }
 }
 
 fn to_align(a: TextAlign) -> Align {
@@ -107,6 +116,7 @@ pub fn build_scene(items: &[Paint], text: &mut TextEngine, images: &mut ImageCac
                     t.content.weight,
                     to_color(t.content.color),
                     to_align(t.content.align),
+                    to_wrap(t.content.wrap),
                     Some(t.width),
                 );
             }
@@ -115,7 +125,7 @@ pub fn build_scene(items: &[Paint], text: &mut TextEngine, images: &mut ImageCac
                 let Some(decoded) = images.get(&img.content.src) else {
                     continue;
                 };
-                let (iw, ih) = (decoded.width as f64, decoded.height as f64);
+                let (iw, ih) = (decoded.image.width as f64, decoded.image.height as f64);
                 if iw <= 0.0 || ih <= 0.0 {
                     continue;
                 }
@@ -137,7 +147,7 @@ pub fn build_scene(items: &[Paint], text: &mut TextEngine, images: &mut ImageCac
                     (*y + *height) as f64,
                     *radius as f64,
                 );
-                scene.push_layer(Mix::Clip, 1.0, Affine::IDENTITY, &shape);
+                scene.push_clip_layer(Fill::NonZero, Affine::IDENTITY, &shape);
             }
             Paint::PopClip => scene.pop_layer(),
             // Fade the subtree. The layer covers the viewport so it only blends,
@@ -148,7 +158,7 @@ pub fn build_scene(items: &[Paint], text: &mut TextEngine, images: &mut ImageCac
                 height,
             } => {
                 let shape = Rect::new(0.0, 0.0, *width as f64, *height as f64);
-                scene.push_layer(Mix::Normal, *alpha, Affine::IDENTITY, &shape);
+                scene.push_layer(Fill::NonZero, Mix::Normal, *alpha, Affine::IDENTITY, &shape);
             }
             Paint::PopOpacity => scene.pop_layer(),
         }

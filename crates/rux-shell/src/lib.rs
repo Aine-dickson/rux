@@ -17,6 +17,7 @@ use vello::kurbo::Affine;
 use vello::peniko::Color;
 use vello::util::{RenderContext, RenderSurface};
 use vello::wgpu;
+use vello::wgpu::CurrentSurfaceTexture;
 use vello::{AaConfig, AaSupport, Renderer, RendererOptions, RenderParams, Scene};
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, MouseButton, WindowEvent};
@@ -36,7 +37,7 @@ enum RuxEvent {
 const TAP_SLOP: f64 = 6.0;
 
 /// Rux screen background `#11111b`.
-const BG: Color = Color::rgb8(0x11, 0x11, 0x1b);
+const BG: Color = Color::from_rgb8(0x11, 0x11, 0x1b);
 
 /// Load a `.rux` document. On failure, log the diagnostic and fall back to an
 /// empty screen so the window still opens (stand-in for the dev overlay).
@@ -219,7 +220,9 @@ impl App {
         // Layout (text sized via the engine's measure), then paint. Cache the
         // hit regions for tap dispatch.
         let layout = {
-            let mut measure = |t: &str, fs: f32, w: u16, mw: Option<f32>| text.measure(t, fs, w, mw);
+            let mut measure = |t: &str, fs: f32, w: u16, wr: rux_layout::TextWrap, mw: Option<f32>| {
+                text.measure(t, fs, w, rux_paint::to_wrap(wr), mw)
+            };
             rux_layout::layout(&document.root, logical.0 as f32, logical.1 as f32, &mut measure)
         };
         let content = rux_paint::build_scene(&layout.paints, text, images);
@@ -231,19 +234,27 @@ impl App {
         *focuses = layout.focuses;
 
         let device_handle = &context.devices[state.surface.dev_id];
-        let surface_texture = state
-            .surface
-            .surface
-            .get_current_texture()
-            .expect("get surface texture");
-
+        // wgpu 29 reports acquisition as a status enum. A timeout/occluded frame
+        // is normal (minimized window, compositor hiccup) — skip it and repaint
+        // on the next event rather than tearing the app down.
+        let surface_texture = match state.surface.surface.get_current_texture() {
+            CurrentSurfaceTexture::Success(t) | CurrentSurfaceTexture::Suboptimal(t) => t,
+            other => {
+                eprintln!("rux: skipping frame ({other:?})");
+                return;
+            }
+        };
+        // vello renders with a compute shader, so it can't write the surface
+        // texture directly (the surface is Bgra8, the storage target Rgba8).
+        // render_to_surface used to hide this; in 0.9 we render into the
+        // RenderSurface's intermediate target and blit that onto the surface.
         state
             .renderer
-            .render_to_surface(
+            .render_to_texture(
                 &device_handle.device,
                 &device_handle.queue,
                 &state.scene,
-                &surface_texture,
+                &state.surface.target_view,
                 &RenderParams {
                     base_color: BG,
                     width,
@@ -251,7 +262,21 @@ impl App {
                     antialiasing_method: AaConfig::Area,
                 },
             )
-            .expect("render to surface");
+            .expect("render to texture");
+
+        let mut encoder = device_handle
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("rux: blit to surface"),
+            });
+        let view = surface_texture
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
+        state
+            .surface
+            .blitter
+            .copy(&device_handle.device, &mut encoder, &state.surface.target_view, &view);
+        device_handle.queue.submit([encoder.finish()]);
 
         surface_texture.present();
     }
@@ -288,10 +313,10 @@ impl ApplicationHandler<RuxEvent> for App {
         let renderer = Renderer::new(
             &device_handle.device,
             RendererOptions {
-                surface_format: Some(surface.format),
                 use_cpu: false,
                 antialiasing_support: AaSupport::area_only(),
                 num_init_threads: NonZeroUsize::new(1),
+                pipeline_cache: None,
             },
         )
         .expect("create renderer");

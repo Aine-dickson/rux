@@ -100,6 +100,18 @@ pub enum TextAlign {
     Justify,
 }
 
+/// How a line may break when a word is wider than its box (`overflow-wrap` /
+/// `word-break`). CSS's default lets a long word overflow rather than break.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum TextWrap {
+    #[default]
+    Normal,
+    /// `overflow-wrap: break-word` — break inside a word rather than overflow.
+    BreakWord,
+    /// `word-break: break-all` — break anywhere.
+    Anywhere,
+}
+
 /// CSS `display`. Defaults to `Block` (strict-CSS fidelity): flex layout,
 /// `gap`, and `flex-direction` only apply under `Flex`.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -147,6 +159,8 @@ pub struct Style {
     pub wrap: bool,
     /// `opacity`, 0.0–1.0. Applies to the whole subtree.
     pub opacity: f32,
+    /// `overflow-wrap` / `word-break`, applied to a text node's own content.
+    pub text_wrap: TextWrap,
     pub padding: Sides,
     pub margin: Sides,
     pub border: Sides,
@@ -177,6 +191,7 @@ impl Default for Style {
             basis: None,
             wrap: false,
             opacity: 1.0,
+            text_wrap: TextWrap::Normal,
             padding: Sides::default(),
             margin: Sides::default(),
             border: Sides::default(),
@@ -209,6 +224,7 @@ pub struct TextContent {
     pub weight: u16,
     pub color: Rgba,
     pub align: TextAlign,
+    pub wrap: TextWrap,
 }
 
 /// A node in the view tree: a style, optional text, children, and an optional
@@ -374,8 +390,9 @@ pub struct Layout {
     pub focuses: Vec<FocusRegion>,
 }
 
-/// Callback that measures a text block: `(text, font_size, weight, max_width) -> (w, h)`.
-pub type Measure<'a> = dyn FnMut(&str, f32, u16, Option<f32>) -> (f32, f32) + 'a;
+/// Callback that measures a text block:
+/// `(text, font_size, weight, wrap, max_width) -> (w, h)`.
+pub type Measure<'a> = dyn FnMut(&str, f32, u16, TextWrap, Option<f32>) -> (f32, f32) + 'a;
 
 /// What each taffy node paints.
 enum PaintKind {
@@ -776,7 +793,7 @@ pub fn layout(root: &Node, avail_w: f32, avail_h: f32, measure: &mut Measure) ->
                         AvailableSpace::Definite(w) => Some(w),
                         _ => None,
                     });
-                    let (w, h) = measure(&tc.text, tc.font_size, tc.weight, max);
+                    let (w, h) = measure(&tc.text, tc.font_size, tc.weight, tc.wrap, max);
                     Size {
                         width: known.width.unwrap_or(w),
                         height: known.height.unwrap_or(h),

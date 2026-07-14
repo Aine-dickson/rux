@@ -11,7 +11,7 @@ fn on_screen(node: Node) -> Node {
 }
 
 fn paints(root: Node) -> Vec<Paint> {
-    let mut measure = |_: &str, _: f32, _: u16, _: Option<f32>| (50.0, 20.0);
+    let mut measure = |_: &str, _: f32, _: u16, _: TextWrap, _: Option<f32>| (50.0, 20.0);
     layout(&on_screen(root), 1000.0, 800.0, &mut measure).paints
 }
 
@@ -31,6 +31,7 @@ fn text_node_paints_its_background_then_its_glyphs() {
             weight: 400,
             color: Rgba::new(1.0, 1.0, 1.0, 1.0),
             align: TextAlign::Start,
+            wrap: TextWrap::Normal,
         },
     );
 

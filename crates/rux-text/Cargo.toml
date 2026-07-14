@@ -7,6 +7,6 @@ repository.workspace = true
 description = "Rux text engine: parley shaping/layout + vello glyph drawing."
 
 [dependencies]
-parley = "0.2"
+parley = "0.11"
 vello.workspace = true
 # parley added via `cargo add` so the version compatible with vello is pinned.

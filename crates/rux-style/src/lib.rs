@@ -16,7 +16,7 @@ use lightningcss::stylesheet::{ParserOptions, PrinterOptions, StyleSheet};
 use lightningcss::traits::ToCss;
 use rux_layout::{
     Align, Axis, Display, ImageContent, Justify, Len, Node as LayoutNode, Overflow, Rgba, Sides,
-    Style, TextAlign, TextContent, Track,
+    Style, TextAlign, TextContent, TextWrap, Track,
 };
 use rux_parser::{Element, Node as TplNode, Sfc};
 use rux_reactive::Value;
@@ -388,6 +388,7 @@ fn build_node(
             .get("text-align")
             .map(|v| parse_text_align(v))
             .unwrap_or_default();
+        let wrap = style.text_wrap;
         let mut node = LayoutNode::text(
             style,
             TextContent {
@@ -396,6 +397,7 @@ fn build_node(
                 weight,
                 color,
                 align,
+                wrap,
             },
         );
         node.on_tap = on_tap;
@@ -447,6 +449,7 @@ fn build_node(
                 weight: 400,
                 color: shown_color,
                 align: TextAlign::Start,
+                wrap: style.text_wrap,
             },
         );
         let mut node = LayoutNode::new(style);
@@ -659,6 +662,19 @@ fn interpret(p: &HashMap<String, String>) -> Style {
     }
     if let Some(v) = p.get("flex-wrap") {
         st.wrap = matches!(v.trim(), "wrap" | "wrap-reverse");
+    }
+    if let Some(v) = p.get("overflow-wrap").or_else(|| p.get("word-wrap")) {
+        st.text_wrap = match v.trim() {
+            "break-word" | "anywhere" => TextWrap::BreakWord,
+            _ => TextWrap::Normal,
+        };
+    }
+    // word-break: break-all is stronger — it breaks anywhere, not just to avoid
+    // an overflow.
+    if let Some(v) = p.get("word-break") {
+        if v.trim() == "break-all" {
+            st.text_wrap = TextWrap::Anywhere;
+        }
     }
     if let Some(v) = p.get("opacity") {
         if let Ok(o) = first(v).parse::<f32>() {
