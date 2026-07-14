@@ -2,14 +2,32 @@
   <screen class="screen">
     <text role="heading" class="title">Sign in</text>
 
-    <!-- Tap an input to focus it, then type. r-model binds it to a signal. -->
+    <!-- Tap to focus, then type. The caret lands where you tapped; arrow keys,
+         Home/End, Backspace and Delete work around it. Esc unfocuses. -->
     <input class="field" r-model="name" placeholder="Your name" />
     <input class="field" r-model="city" placeholder="Your city" />
+
+    <!-- Tap-toggles: no focus, no keyboard. They just write their signal. -->
+    <view class="opt" @tap="remember = !remember">
+      <input type="checkbox" class="check" r-model="remember" />
+      <text class="optlabel">Remember me</text>
+    </view>
+
+    <text class="legend">Plan</text>
+    <view class="opt" @tap='plan = "free"'>
+      <input type="radio" class="check" r-model="plan" value="free" />
+      <text class="optlabel">Free</text>
+    </view>
+    <view class="opt" @tap='plan = "pro"'>
+      <input type="radio" class="check" r-model="plan" value="pro" />
+      <text class="optlabel">Pro</text>
+    </view>
 
     <!-- Live: these update as you type, because they read the same signals.
          Note: single-quoted attributes so rhai sees real "" string literals. -->
     <text class="greet">Hello, {{ name }}!</text>
     <text class="sub" r-if='city != ""'>Greetings from {{ city }}.</text>
+    <text class="sub">Plan: {{ plan }} · remember: {{ remember }}</text>
 
     <view class="row">
       <button class="btn" @tap='name = ""'>
@@ -45,6 +63,25 @@
        this it would hang out over the edge. */
     overflow-wrap: break-word;
   }
+  .opt {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    gap: 8px;
+    cursor: pointer;
+  }
+  /* The mark inside is drawn in `color`, at 60% of the box. */
+  .check {
+    width: 20px;
+    height: 20px;
+    background: #313244;
+    border: 2px #45475a solid;
+    border-radius: 4px;
+    color: #a6e3a1;
+  }
+  .optlabel { color: #cdd6f4; font-size: 15px; }
+  .legend   { color: #9399b2; font-size: 13px; }
+
   .greet { color: #a6e3a1; font-size: 18px; }
   .sub   { color: #9399b2; font-size: 14px; }
   .row   { display: flex; flex-direction: row; gap: 8px; }
@@ -62,4 +99,6 @@
 <script>
   let name = signal("");
   let city = signal("");
+  let remember = signal(false);
+  let plan = signal("free");
 </script>

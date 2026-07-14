@@ -50,3 +50,28 @@ fn break_word_breaks_inside_a_long_word() {
     assert!(w <= box_width, "break-word should fit the box, got {w}");
     assert!(h > one_line, "break-word should take multiple lines");
 }
+
+/// The caret: a byte index maps to an x position, and a click maps back to the
+/// nearest index. Inputs used to only append/backspace at the end because we had
+/// neither direction.
+#[test]
+fn caret_maps_between_index_and_point() {
+    let mut te = TextEngine::new();
+    let text = "hello world";
+    let (size, weight, wrap) = (16.0f32, 400u16, Wrap::Normal);
+
+    let (x0, _, h) = te.caret_geometry(text, size, weight, wrap, None, 0);
+    let (x5, _, _) = te.caret_geometry(text, size, weight, wrap, None, 5);
+    let (xend, _, _) = te.caret_geometry(text, size, weight, wrap, None, text.len());
+    assert_eq!(x0, 0.0, "caret at the start sits at the left edge");
+    assert!(x5 > x0 && xend > x5, "the caret advances through the text");
+    assert!(h > 0.0, "the caret has the line's height");
+
+    // Clicking where the caret would be for index 5 comes back as index 5.
+    let hit = te.index_at_point(text, size, weight, wrap, None, x5 + 0.5, h / 2.0);
+    assert_eq!(hit, 5);
+
+    // Clicking past the end lands at the end, not out of bounds.
+    let hit = te.index_at_point(text, size, weight, wrap, None, xend + 500.0, h / 2.0);
+    assert_eq!(hit, text.len());
+}

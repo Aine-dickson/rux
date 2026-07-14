@@ -6,7 +6,7 @@ Docs [01–04](./README.md) describe the *design intent* and are still worth rea
 for the *why* — but the implementation has diverged from them in places. Where
 they disagree, **this document wins**. Divergences are called out below.
 
-Last updated: 2026-07-14. All milestones **M0–M9 are complete**, plus several
+Last updated: 2026-07-15. All milestones **M0–M9 are complete**, plus several
 follow-up passes. Branch: `build/m0-window`.
 
 ---
@@ -15,7 +15,9 @@ follow-up passes. Branch: `build/m0-window`.
 
 ```bash
 cargo run                          # examples/battery.rux (default)
-cargo run -- examples/form.rux     # inputs + two-way binding
+cargo run -- examples/form.rux     # inputs + two-way binding + overflow-wrap
+cargo run -- examples/list.rux     # scrolling (wheel over the list)
+cargo run -- examples/gallery.rux  # images, opacity, flex-shrink, clipping
 cargo run -- examples/dashboard.rux
 ```
 
@@ -30,12 +32,12 @@ rebuild. Only changing the compiled Rust host requires `cargo run` again.
 | `rux-style` | lightningcss → our cascade → `Style`; directives; component expansion |
 | `rux-script` | rhai engine (state + handlers) + `host::` registry |
 | `rux-layout` | `Style` → taffy (flex/grid/block) → paint items, hit + focus regions |
-| `rux-text` | parley shaping/measure + vello glyph drawing |
+| `rux-text` | parley 0.11 shaping/measure/wrapping + vello 0.9 glyph drawing |
 | `rux-paint` | paint items → vello scene (fills, borders, clips, text) |
 | `rux-runtime` | `Document`: load, resolve imports, build engine, rebuild tree |
 | `rux-shell` | winit window, wgpu/vello, input, focus, file watcher |
 | `rux-cli` | `rux [file.rux]` |
-| `rux-reactive` | **mostly dead** — only `Value` is used; its `Signals`/evaluator were superseded by `rux-script`. Worth trimming. |
+| `rux-reactive` | just `Value`, the untyped value `rux-script` and `rux-style` pass around |
 
 ---
 
@@ -103,13 +105,21 @@ Anything else is **parsed but silently ignored** (no error).
 > - Anything heavier belongs in a **`host::`** function.
 
 ### Inputs
-`<input r-model="sig" placeholder="…">` — tap to focus, type to edit. Characters
-and space append, Backspace deletes. Each keystroke writes the signal, so `{{ }}`
-updates live. Placeholder shows when empty.
+`<input r-model="sig" placeholder="…">` — tap to focus, type to edit. There is a
+real **caret**: tapping puts it where you tapped, ←/→ move it, Home/End jump,
+Backspace/Delete cut either side of it, and typing inserts at it. Esc unfocuses.
+Every edit writes the signal, so `{{ }}` updates live. Placeholder shows when
+empty. The caret survives the rebuild that follows each keystroke.
 
-**Limits:** no caret, arrow keys, selection, or click-to-position (append/backspace
-at the end only). **Only text inputs** — `type="checkbox|select|radio|textarea"`
-from the spec is **not built**.
+`<input type="checkbox" r-model="flag">` and
+`<input type="radio" r-model="choice" value="pro">` are **tap-toggles**: no focus,
+no keyboard. They write the bound signal through the ordinary handler path
+(`flag = !flag`, `choice = "pro"`), so an authored `@tap` overrides them. The mark
+is drawn in the box's `color`, at 60% of its size; a radio is round unless you
+give it a `border-radius`.
+
+**Limits:** no selection (no shift-arrow, no drag-select), no clipboard, no
+`type="select|textarea"`, and checkboxes/radios can't be reached by keyboard.
 
 ### Components
 ```rust
@@ -144,8 +154,8 @@ their own subtree. Editing a component hot-reloads.
 
 ## Known gaps / backlog
 
-- Input caret, selection, cursor positioning; non-text input types
-  (checkbox/select/radio/textarea — only `type=text` exists).
+- Input **selection** (shift-arrow, drag-select) and clipboard; `type=select`
+  and `type=textarea`; keyboard reachability for checkbox/radio.
 - Scrolling is **wheel-only**: no scrollbars, no drag/touch, no keyboard, no
   horizontal scrolling (the offset is vertical), no scroll-into-view.
 - CSS: `box-shadow`, `position`/`top`/`left`, per-corner radius, per-side border
@@ -153,8 +163,8 @@ their own subtree. Editing a component hot-reloads.
 - True inline text-flow (taffy can't; would need our own line-breaker).
 - **Fine-grained reactivity** — a signal change currently rebuilds the *whole
   tree* (architecture doc's per-binding subscription model is not implemented).
-- Trim the dead `rux-reactive` code (its `Value` is still used; the Signals and
-  evaluator are superseded by `rux-script`).
+- Fine-grained reactivity is the largest remaining gap between the architecture
+  doc and the code.
 
 ---
 

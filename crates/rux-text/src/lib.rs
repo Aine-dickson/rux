@@ -14,12 +14,15 @@
 //! layout brush is `()`.
 
 use parley::{
-    Alignment, AlignmentOptions, FontContext, FontWeight, Layout, LayoutContext, OverflowWrap,
-    PositionedLayoutItem, StyleProperty,
+    Affinity, Alignment, AlignmentOptions, Cursor, FontContext, FontWeight, Layout, LayoutContext,
+    OverflowWrap, PositionedLayoutItem, StyleProperty,
 };
 use vello::kurbo::Affine;
 use vello::peniko::{Color, Fill};
 use vello::{Glyph, Scene};
+
+/// Caret thickness, in logical pixels.
+pub const CARET_WIDTH: f32 = 1.5;
 
 /// Horizontal text alignment within the text box (`text-align`).
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -124,6 +127,41 @@ impl TextEngine {
             })
             .sum();
         (layout.width().ceil(), height.ceil())
+    }
+
+    /// Where the caret sits for a byte index into `text`: `(x, y, height)`
+    /// relative to the text's top-left. Used to draw the caret in an input.
+    #[allow(clippy::too_many_arguments)]
+    pub fn caret_geometry(
+        &mut self,
+        text: &str,
+        font_size: f32,
+        weight: u16,
+        wrap: Wrap,
+        max_width: Option<f32>,
+        index: usize,
+    ) -> (f32, f32, f32) {
+        let layout = self.build(text, font_size, weight, wrap, max_width);
+        let cursor = Cursor::from_byte_index(&layout, index.min(text.len()), Affinity::Downstream);
+        let bounds = cursor.geometry(&layout, CARET_WIDTH);
+        (bounds.x0 as f32, bounds.y0 as f32, (bounds.y1 - bounds.y0) as f32)
+    }
+
+    /// The byte index nearest a point, for click-to-position. `(x, y)` is
+    /// relative to the text's top-left.
+    #[allow(clippy::too_many_arguments)]
+    pub fn index_at_point(
+        &mut self,
+        text: &str,
+        font_size: f32,
+        weight: u16,
+        wrap: Wrap,
+        max_width: Option<f32>,
+        x: f32,
+        y: f32,
+    ) -> usize {
+        let layout = self.build(text, font_size, weight, wrap, max_width);
+        Cursor::from_point(&layout, x, y).index()
     }
 
     /// Draw the text with its top-left at `(x, y)`, leading trimmed and aligned

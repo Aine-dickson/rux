@@ -81,6 +81,8 @@ struct App {
     offsets: Vec<f32>,
     /// The `r-model` of the currently focused input, if any.
     focused: Option<String>,
+    /// Caret position in the focused input, as a byte index into its value.
+    caret: usize,
     /// Current pointer position (physical pixels).
     pointer: (f64, f64),
     /// Where the left button was pressed, if it is currently down.
@@ -102,6 +104,7 @@ impl App {
             scrolls: Vec::new(),
             offsets: Vec::new(),
             focused: None,
+            caret: 0,
             pointer: (0.0, 0.0),
             press: None,
         }
@@ -160,20 +163,36 @@ impl App {
     fn dispatch_tap(&mut self, px: f64, py: f64) {
         let scale = self.scale();
         let (px, py) = (px / scale, py / scale);
-        // Focus takes precedence: an input under the pointer becomes focused.
-        if let Some(model) = self
+        // Focus takes precedence: an input under the pointer becomes focused,
+        // with the caret at the character you tapped.
+        if let Some(region) = self
             .focuses
             .iter()
             .rev()
             .find(|f| f.contains(px as f32, py as f32))
-            .map(|f| f.model.clone())
+            .cloned()
         {
-            self.focused = Some(model);
-            self.request_redraw();
+            // Map the tap into the text box's own coordinates to find the
+            // character. An empty input is showing its placeholder, not a value,
+            // so its caret belongs at 0.
+            let value = self.document.engine_mut().get_string(&region.model);
+            let caret = match &region.text {
+                Some(t) if !value.is_empty() => self.text.index_at_point(
+                    &value,
+                    t.content.font_size,
+                    t.content.weight,
+                    rux_paint::to_wrap(t.content.wrap),
+                    Some(t.width),
+                    px as f32 - t.x,
+                    py as f32 - t.y,
+                ),
+                _ => 0,
+            };
+            self.set_focus(Some((region.model, caret)));
             return;
         }
         // Tapping elsewhere drops focus.
-        self.focused = None;
+        self.set_focus(None);
 
         // Topmost hit region wins (later in list = drawn on top).
         let handler = self
@@ -192,32 +211,97 @@ impl App {
     }
 
     /// Apply a key to the focused input's bound signal, then rebuild + repaint.
+    /// Edit the focused input at the caret. Returns whether anything changed.
+    ///
+    /// Indices are byte offsets into the value, always on a char boundary (we
+    /// only ever step by whole characters), so slicing is safe.
     fn edit_focused(&mut self, key: &Key) {
         let Some(model) = self.focused.clone() else {
             return;
         };
         let mut value = self.document.engine_mut().get_string(&model);
-        let changed = match key {
-            Key::Named(NamedKey::Backspace) => value.pop().is_some(),
+        let caret = self.caret.min(value.len());
+
+        // How far the previous / next character is, in bytes.
+        let prev = value[..caret].chars().next_back().map(char::len_utf8);
+        let next = value[caret..].chars().next().map(char::len_utf8);
+
+        let mut edited = false;
+        let mut moved = false;
+        let mut new_caret = caret;
+
+        match key {
+            Key::Named(NamedKey::Backspace) => {
+                if let Some(len) = prev {
+                    value.replace_range(caret - len..caret, "");
+                    new_caret = caret - len;
+                    edited = true;
+                }
+            }
+            Key::Named(NamedKey::Delete) => {
+                if let Some(len) = next {
+                    value.replace_range(caret..caret + len, "");
+                    edited = true;
+                }
+            }
+            Key::Named(NamedKey::ArrowLeft) => {
+                if let Some(len) = prev {
+                    new_caret = caret - len;
+                    moved = true;
+                }
+            }
+            Key::Named(NamedKey::ArrowRight) => {
+                if let Some(len) = next {
+                    new_caret = caret + len;
+                    moved = true;
+                }
+            }
+            Key::Named(NamedKey::Home) => {
+                new_caret = 0;
+                moved = true;
+            }
+            Key::Named(NamedKey::End) => {
+                new_caret = value.len();
+                moved = true;
+            }
+            Key::Named(NamedKey::Escape) => {
+                self.set_focus(None);
+                return;
+            }
             Key::Named(NamedKey::Space) => {
-                value.push(' ');
-                true
+                value.insert(caret, ' ');
+                new_caret = caret + 1;
+                edited = true;
             }
             Key::Character(s) => {
-                let mut any = false;
                 for c in s.chars().filter(|c| !c.is_control()) {
-                    value.push(c);
-                    any = true;
+                    value.insert(new_caret, c);
+                    new_caret += c.len_utf8();
+                    edited = true;
                 }
-                any
             }
-            _ => false,
-        };
-        if changed {
+            _ => {}
+        }
+
+        if edited {
+            self.caret = new_caret;
             self.document.engine_mut().set_string(&model, &value);
+            self.document.set_focus(Some((model, new_caret)));
             self.document.rebuild();
             self.request_redraw();
+        } else if moved {
+            self.caret = new_caret;
+            self.document.set_focus(Some((model, new_caret)));
+            self.request_redraw();
         }
+    }
+
+    /// Focus an input (or clear focus) and tell the document, so the caret paints.
+    fn set_focus(&mut self, focus: Option<(String, usize)>) {
+        self.focused = focus.as_ref().map(|(m, _)| m.clone());
+        self.caret = focus.as_ref().map(|(_, c)| *c).unwrap_or(0);
+        self.document.set_focus(focus);
+        self.request_redraw();
     }
 
     fn request_redraw(&self) {

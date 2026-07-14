@@ -1,8 +1,9 @@
 <template>
   <screen class="screen">
     <text class="title">Scrollable list</text>
-    <text class="hint">Wheel over the list. Tapping a row still works, and the
-      list keeps its place across the rebuild.</text>
+    <text class="hint">
+        Wheel over the list. Tapping a row still works, and the list keeps its place across the rebuild.
+    </text>
 
     <view class="list">
       <view class="row" r-for="item in items" @tap="picked = item">

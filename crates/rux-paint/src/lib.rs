@@ -119,6 +119,30 @@ pub fn build_scene(items: &[Paint], text: &mut TextEngine, images: &mut ImageCac
                     to_wrap(t.content.wrap),
                     Some(t.width),
                 );
+                // The focused input's caret, drawn on top of its own text.
+                if let Some(index) = t.content.caret {
+                    let (cx, cy, ch) = text.caret_geometry(
+                        &t.content.text,
+                        t.content.font_size,
+                        t.content.weight,
+                        to_wrap(t.content.wrap),
+                        Some(t.width),
+                        index,
+                    );
+                    let caret = Rect::new(
+                        (t.x + cx) as f64,
+                        (t.y + cy) as f64,
+                        (t.x + cx + rux_text::CARET_WIDTH) as f64,
+                        (t.y + cy + ch) as f64,
+                    );
+                    scene.fill(
+                        Fill::NonZero,
+                        Affine::IDENTITY,
+                        to_color(t.content.color),
+                        None,
+                        &caret,
+                    );
+                }
             }
             // Scale the decoded pixels to fill the box layout gave the element.
             Paint::Image(img) => {

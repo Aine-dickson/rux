@@ -40,6 +40,10 @@ type Components = HashMap<String, Component>;
 const DEFAULT_COLOR: Rgba = Rgba::new(0.804, 0.839, 0.957, 1.0);
 const DEFAULT_FONT_SIZE: f32 = 16.0;
 
+/// A radius larger than any sane box; kurbo clamps it to half the shorter side,
+/// which makes the box a circle/pill whatever its size.
+const CIRCLE: f32 = 9999.0;
+
 /// Build the styled layout tree from a parsed SFC. `components` maps a custom
 /// element tag to the imported component's source; those are compiled and
 /// expanded in place with their props bound. `{{ }}` and directive expressions
@@ -398,6 +402,7 @@ fn build_node(
                 color,
                 align,
                 wrap,
+                caret: None,
             },
         );
         node.on_tap = on_tap;
@@ -426,9 +431,63 @@ fn build_node(
         return node;
     }
 
-    // <input>: a box bound to a signal via r-model, showing the current value
-    // (or a dim placeholder when empty). The shell focuses it on tap and edits
-    // the bound signal on keystrokes.
+    // <input>: a box bound to a signal via r-model.
+    //
+    // `type=checkbox|radio` are tap-toggles, not text fields: they get no focus
+    // and no keyboard, they just write the bound signal through the ordinary
+    // handler path (`sig = !sig` / `sig = "value"`). An authored @tap wins.
+    if el.tag == "input" && matches!(el.attr("type"), Some("checkbox") | Some("radio")) {
+        let radio = el.attr("type") == Some("radio");
+        let model = el.attr("r-model").unwrap_or_default().to_string();
+        let value = el.attr("value").unwrap_or_default().to_string();
+
+        let checked = if model.is_empty() {
+            false
+        } else if radio {
+            engine.eval_display(&model, locals) == value
+        } else {
+            engine.eval_bool(&model, locals)
+        };
+
+        let mut style = style;
+        // Centre the indicator inside the box unless the author says otherwise.
+        if style.display == Display::Block {
+            style.display = Display::Flex;
+        }
+        style.justify.get_or_insert(Justify::Center);
+        style.align.get_or_insert(Align::Center);
+        // A radio is round unless it was given its own radius.
+        if radio && style.radius == 0.0 {
+            style.radius = CIRCLE;
+        }
+
+        let mut node = LayoutNode::new(style);
+        if checked {
+            // The mark: a smaller box in the text colour (a dot for a radio).
+            node.children.push(LayoutNode::new(Style {
+                display: Display::Flex,
+                width: Some(Len::Pct(0.6)),
+                height: Some(Len::Pct(0.6)),
+                background: Some(color),
+                radius: if radio { CIRCLE } else { 2.0 },
+                ..Default::default()
+            }));
+        }
+        node.on_tap = on_tap.or_else(|| {
+            if model.is_empty() {
+                None
+            } else if radio {
+                Some(format!("{model} = \"{value}\""))
+            } else {
+                Some(format!("{model} = !{model}"))
+            }
+        });
+        node.hidden = hidden;
+        return node;
+    }
+
+    // A text input: shows the bound value (or a dim placeholder when empty). The
+    // shell focuses it on tap and edits the bound signal on keystrokes.
     if el.tag == "input" {
         let model = el.attr("r-model").map(str::to_string);
         let value = model
@@ -450,6 +509,7 @@ fn build_node(
                 color: shown_color,
                 align: TextAlign::Start,
                 wrap: style.text_wrap,
+                caret: None, // the runtime marks the focused input's caret
             },
         );
         let mut node = LayoutNode::new(style);

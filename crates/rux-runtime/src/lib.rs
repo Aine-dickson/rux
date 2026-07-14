@@ -21,7 +21,25 @@ pub struct Document {
     engine: Engine,
     /// Directory the document was loaded from — `<image src>` resolves against it.
     base: PathBuf,
+    /// The focused input's `r-model` and caret byte index, if any. Re-applied on
+    /// every rebuild so the caret survives a state change.
+    focus: Option<(String, usize)>,
     pub root: LayoutNode,
+}
+
+/// Mark the focused input's text child with the caret position, so it paints one.
+fn apply_focus(node: &mut LayoutNode, focus: Option<&(String, usize)>) {
+    if let Some((model, caret)) = focus {
+        if node.model.as_deref() == Some(model.as_str()) {
+            if let Some(text) = node.children.first_mut().and_then(|c| c.text.as_mut()) {
+                // An empty input shows its placeholder; the caret still sits at 0.
+                text.caret = Some((*caret).min(text.text.len()));
+            }
+        }
+    }
+    for child in &mut node.children {
+        apply_focus(child, focus);
+    }
 }
 
 /// Resolve every `<image src>` in the tree against `base` and read its intrinsic
@@ -76,6 +94,7 @@ impl Document {
             components,
             engine,
             base: base.to_path_buf(),
+            focus: None,
             root,
         })
     }
@@ -93,6 +112,7 @@ impl Document {
             components: HashMap::new(),
             engine,
             base,
+            focus: None,
             root,
         })
     }
@@ -102,10 +122,17 @@ impl Document {
         &mut self.engine
     }
 
+    /// Focus an input (by `r-model`) and put its caret at `caret`. `None` clears.
+    pub fn set_focus(&mut self, focus: Option<(String, usize)>) {
+        self.focus = focus;
+        apply_focus(&mut self.root, self.focus.as_ref());
+    }
+
     /// Rebuild the layout tree from the engine's current state.
     pub fn rebuild(&mut self) {
         if let Ok(mut root) = rux_style::build_styled_tree(&self.sfc, &self.components, &mut self.engine) {
             resolve_images(&mut root, &self.base);
+            apply_focus(&mut root, self.focus.as_ref());
             self.root = root;
         }
     }

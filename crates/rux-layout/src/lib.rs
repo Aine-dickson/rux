@@ -229,6 +229,8 @@ pub struct TextContent {
     pub color: Rgba,
     pub align: TextAlign,
     pub wrap: TextWrap,
+    /// Byte index of the caret, when this text is inside the focused input.
+    pub caret: Option<usize>,
 }
 
 /// A node in the view tree: a style, optional text, children, and an optional
@@ -396,6 +398,9 @@ pub struct FocusRegion {
     pub width: f32,
     pub height: f32,
     pub model: String,
+    /// The input's text box (its laid-out child). The shell needs it to turn a
+    /// click into a caret position.
+    pub text: Option<PaintText>,
 }
 
 impl FocusRegion {
@@ -753,12 +758,33 @@ fn collect(
     }
 
     if let Some((_, model)) = models.iter().find(|(nid, _)| *nid == id) {
+        // An input's value is rendered by its single text child; find that
+        // child's box so a tap can be resolved to a caret index.
+        let text = tree
+            .children(id)
+            .ok()
+            .and_then(|kids| kids.first().copied())
+            .and_then(|kid| {
+                let child = tree.layout(kid).ok()?;
+                let content = paint.iter().find_map(|(nid, k)| match k {
+                    PaintKind::Text(tc) if *nid == kid => Some(tc.clone()),
+                    _ => None,
+                })?;
+                Some(PaintText {
+                    x: x + child.location.x,
+                    y: y + child.location.y,
+                    width: child.size.width,
+                    height: child.size.height,
+                    content,
+                })
+            });
         out.focuses.push(FocusRegion {
             x,
             y,
             width: layout.size.width,
             height: layout.size.height,
             model: model.clone(),
+            text,
         });
     }
 

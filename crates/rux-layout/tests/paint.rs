@@ -32,6 +32,7 @@ fn text_node_paints_its_background_then_its_glyphs() {
             color: Rgba::new(1.0, 1.0, 1.0, 1.0),
             align: TextAlign::Start,
             wrap: TextWrap::Normal,
+            caret: None,
         },
     );
 
