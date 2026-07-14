@@ -66,45 +66,63 @@ Only once the above is clean.
 
 ---
 
-## v0.2 — the spine
+## v0.2 — inputs and polish
 
-### 1. Fine-grained reactivity  ← *start here*
-A signal write currently **rebuilds the whole tree**. It is correct, and at these
-screen sizes you cannot perceive the cost — so it is tempting to file this as a
-performance nicety and do it last. **That would be a mistake.**
-
-The real cost is structural. Because we throw the tree away on every change, every
-piece of *ephemeral UI state* has to be manually restored afterwards. We already
-have two such hand-written passes:
-
-- `apply_focus` in `rux-runtime` — puts the caret back.
-- scroll offsets in `rux-shell` — keyed by the scroller's index in tree order.
-
-**The stale-caret bug was one instance of this category, not a one-off.** Each new
-piece of interactive state (selection, hover, drag, animation) adds another
-restore-me-after-the-rebuild pass and another chance to get it wrong. Per-binding
-subscriptions — which is what [04 — Architecture](./04-architecture.md) always
-described — delete the *category*.
-
-This is the only real divergence left between the architecture doc and the code.
-
-### 2. Text selection + clipboard
+### 1. Text selection + clipboard
 Shift-arrows, drag-select, copy/paste/cut. parley 0.11 already models selection
 (`PlainEditor`, `Selection`), so this is mostly wiring now that the upgrade is in.
 
-### 3. The last two input types
+### 2. The last two input types
 `type="select"` and `type="textarea"` — the only elements the spec promises and
 the runtime does not have. Also: make checkbox/radio keyboard-reachable (today
 they are tap-only).
 
-### 4. Scrolling polish
+### 3. Scrolling polish
 Scrollbars, drag/touch, keyboard (arrows/PageUp/Home), horizontal scrolling, and
 scroll-into-view. Today it is wheel-only and vertical-only.
 
-### 5. The CSS long tail
+### 4. The CSS long tail
 `box-shadow`, `position`/`top`/`left`, per-corner radius, per-side border
 *colours*, and CSS variables (which would let the checked-state palette be
 themeable rather than hard-coded per class).
+
+---
+
+## v0.3 — fine-grained reactivity
+
+A signal write **rebuilds the whole tree**. It is correct, and at these screen
+sizes the cost is imperceptible, so this is deliberately *not* v0.2.
+
+**But the cost is not really performance — it is structural, and it compounds
+through v0.2.** Because the tree is thrown away on every change, every piece of
+*ephemeral UI state* must be restored by hand afterwards. Two such passes exist
+already:
+
+- `apply_focus` in `rux-runtime` — puts the caret back.
+- scroll offsets in `rux-shell` — keyed by the scroller's index in tree order.
+
+The stale-caret bug (the caret stayed in the input you had just left) was **one
+instance of that category, not a one-off**: `apply_focus` set a caret but never
+cleared one. Per-binding subscriptions — what
+[04 — Architecture](./04-architecture.md) always described — delete the category.
+This is the last real divergence between the architecture doc and the code.
+
+### What that means for v0.2 — the standing debt
+Selection, hover, drag and scroll-into-view are all ephemeral UI state. **Each one
+shipped before v0.3 must add its own restore-after-rebuild pass, and each is a
+chance to reproduce the caret bug.** So, while building v0.2:
+
+1. **Keep the restore passes together and named.** When you add one, add it beside
+   `apply_focus` — do not scatter them through the shell.
+2. **Test the negative case.** The caret bug slipped through because the test
+   asserted the caret *appeared* in the focused input and never that it
+   *disappeared* from the other. For every piece of ephemeral state, assert it is
+   cleared where it should be, not just set where it should be.
+3. **Keep a list here** of every restore pass added, so v0.3 knows exactly what it
+   is deleting:
+   - `apply_focus` (caret) — `rux-runtime`
+   - scroll offsets — `rux-shell`
+   - *(add new ones as they land)*
 
 ---
 

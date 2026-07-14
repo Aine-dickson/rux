@@ -47,7 +47,7 @@ Three sections, six element types, real CSS, gesture events, signals. No layout 
 | [03 — Guide](./03-guide.md) | *How* to build with Rux — a tutorial that assembles a small app screen by screen and validates the developer experience. |
 | [04 — Architecture](./04-architecture.md) | *How the runtime works* — the parse→cascade→reactive→layout→paint pipeline, crate layout, the milestone plan, and open questions. The plan for building it. |
 | **[05 — As Built](./05-as-built.md)** | **What actually works today** — running it, honored CSS, gotchas, and gaps. Authoritative where it contradicts 01–04. Start here if you're writing `.rux` code. |
-| [06 — Roadmap](./06-roadmap.md) | *What's next* — the v0.1 shake-down, then the v0.2 spine (fine-grained reactivity first, and why). Start here if you're picking the work up. |
+| [06 — Roadmap](./06-roadmap.md) | *What's next* — the v0.1 shake-down, v0.2 (inputs and polish), v0.3 (fine-grained reactivity). Start here if you're picking the work up. |
 
 ## Status
 
