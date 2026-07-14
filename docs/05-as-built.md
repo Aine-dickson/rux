@@ -4,7 +4,8 @@
 
 Docs [01–04](./README.md) describe the *design intent* and are still worth reading
 for the *why* — but the implementation has diverged from them in places. Where
-they disagree, **this document wins**. Divergences are called out below.
+they disagree, **this document wins**. Divergences are called out below. For what
+is *not* built yet and in what order, see [06 — Roadmap](./06-roadmap.md).
 
 Last updated: 2026-07-15. All milestones **M0–M9 are complete**, plus several
 follow-up passes. Branch: `build/m0-window`.
@@ -122,8 +123,10 @@ ordinary CSS — there is no `:checked` pseudo-class:
 .box         { background: #313244; border: 2px #45475a solid; color: #cdd6f4; }
 .box.checked { background: #a6e3a1; color: #ffffff; }   /* white tick on green */
 ```
-The mark is drawn in the box's own `color`: a **tick glyph** (✓) for a checkbox, a
-dot for a radio. A radio is **round** unless you give it a `border-radius` (and a
+The mark is drawn in the box's own `color`: a **stroked checkmark** for a checkbox
+(a path, not a ✓ glyph — a glyph is whatever the system font ships and reads as a
+letter), a dot for a radio. Keep the checked `border` a shade apart from the
+checked `background`, or the ring dissolves into the fill. A radio is **round** unless you give it a `border-radius` (and a
 huge radius like `9999px` is clamped to a circle, so that's how you re-round one
 that inherited a radius from another class).
 

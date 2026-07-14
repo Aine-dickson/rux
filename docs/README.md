@@ -12,7 +12,7 @@ Rux exists because of one frustration: in widget-tree toolkits like Flutter, spa
   <view role="section" class="card">
     <text role="paragraph" class="label">Battery</text>
     <text class="value">{{ level }}%</text>
-    <button class="btn" @tap="refresh()">Refresh</button>
+    <button class="btn" @tap="level = host::read_battery()">Refresh</button>
   </view>
 </template>
 
@@ -30,8 +30,9 @@ Rux exists because of one frustration: in widget-tree toolkits like Flutter, spa
 </style>
 
 <script>
+  // State changes go inline in the handler: rhai `fn`s cannot mutate globals.
+  // Script `fn`s are pure; heavy work lives behind `host::`. See 05 — As Built.
   let level = signal(82);
-  fn refresh() { level.set(host::read_battery()); }
 </script>
 ```
 
@@ -46,14 +47,20 @@ Three sections, six element types, real CSS, gesture events, signals. No layout 
 | [03 — Guide](./03-guide.md) | *How* to build with Rux — a tutorial that assembles a small app screen by screen and validates the developer experience. |
 | [04 — Architecture](./04-architecture.md) | *How the runtime works* — the parse→cascade→reactive→layout→paint pipeline, crate layout, the milestone plan, and open questions. The plan for building it. |
 | **[05 — As Built](./05-as-built.md)** | **What actually works today** — running it, honored CSS, gotchas, and gaps. Authoritative where it contradicts 01–04. Start here if you're writing `.rux` code. |
+| [06 — Roadmap](./06-roadmap.md) | *What's next* — the v0.1 shake-down, then the v0.2 spine (fine-grained reactivity first, and why). Start here if you're picking the work up. |
 
 ## Status
 
-> ⚠️ **The runtime is BUILT (M0–M9 complete).** Docs 01–04 below describe the
-> original *design intent* and have **drifted from the implementation** in places
-> (notably: rhai functions can't mutate state, the inline/block model was removed,
-> grid was added). For **what actually works today**, read
-> **[05 — As Built](./05-as-built.md)** — where they disagree, it wins.
+> ⚠️ **The runtime is BUILT (M0–M9 complete), plus scrolling, images, a real
+> input caret, checkbox/radio, opacity, and the full flex model.** Docs 01–04
+> below describe the original *design intent* and have **drifted from the
+> implementation** in places (notably: rhai functions can't mutate state, the
+> inline/block model was removed, grid was added). For **what actually works
+> today**, read **[05 — As Built](./05-as-built.md)** — where they disagree, it
+> wins. For **what's next**, read **[06 — Roadmap](./06-roadmap.md)**.
+>
+> Renderer: **vello 0.9** / **parley 0.11** / **taffy 0.7** / **rhai** /
+> **lightningcss**.
 
 The intended pipeline (this is what got built):
 
