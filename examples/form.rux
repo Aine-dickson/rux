@@ -9,17 +9,17 @@
 
     <!-- Tap-toggles: no focus, no keyboard. They just write their signal. -->
     <view class="opt" @tap="remember = !remember">
-      <input type="checkbox" class="check" r-model="remember" />
+      <input type="checkbox" class="box" r-model="remember" />
       <text class="optlabel">Remember me</text>
     </view>
 
     <text class="legend">Plan</text>
     <view class="opt" @tap='plan = "free"'>
-      <input type="radio" class="check" r-model="plan" value="free" />
+      <input type="radio" class="box ring" r-model="plan" value="free" />
       <text class="optlabel">Free</text>
     </view>
     <view class="opt" @tap='plan = "pro"'>
-      <input type="radio" class="check" r-model="plan" value="pro" />
+      <input type="radio" class="box ring" r-model="plan" value="pro" />
       <text class="optlabel">Pro</text>
     </view>
 
@@ -70,13 +70,31 @@
     gap: 8px;
     cursor: pointer;
   }
-  /* The mark inside is drawn in `color`, at 60% of the box. */
-  .check {
+  /* The mark inside is drawn in the box's own `color`. */
+  .box {
     width: 20px;
     height: 20px;
     background: #313244;
     border: 2px #45475a solid;
     border-radius: 4px;
+    color: #cdd6f4;
+    font-size: 14px;
+  }
+  /* A checked box carries a synthetic `checked` class — so the checked look is
+     ordinary CSS. White tick on green. */
+  .box.checked {
+    background: #a6e3a1;
+    border: 2px #a6e3a1 solid;
+    color: #ffffff;
+  }
+  /* Fully round ring. (A radio with no border-radius at all is round anyway —
+     this class only has to undo the 4px it inherits from .box.) */
+  .ring {
+    border-radius: 9999px;
+  }
+  .ring.checked {
+    background: #313244;
+    border: 2px #a6e3a1 solid;
     color: #a6e3a1;
   }
   .optlabel { color: #cdd6f4; font-size: 15px; }

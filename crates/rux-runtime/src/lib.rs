@@ -27,14 +27,22 @@ pub struct Document {
     pub root: LayoutNode,
 }
 
-/// Mark the focused input's text child with the caret position, so it paints one.
+/// Mark the focused input's text child with the caret position, so it paints one
+/// — and clear every other input's.
+///
+/// Clearing matters: this runs against the *existing* tree when focus moves, not
+/// only against a freshly built one. Setting without clearing left the caret
+/// showing in the input you just left, until some unrelated rebuild wiped it.
 fn apply_focus(node: &mut LayoutNode, focus: Option<&(String, usize)>) {
-    if let Some((model, caret)) = focus {
-        if node.model.as_deref() == Some(model.as_str()) {
-            if let Some(text) = node.children.first_mut().and_then(|c| c.text.as_mut()) {
+    if node.model.is_some() {
+        if let Some(text) = node.children.first_mut().and_then(|c| c.text.as_mut()) {
+            text.caret = match focus {
                 // An empty input shows its placeholder; the caret still sits at 0.
-                text.caret = Some((*caret).min(text.text.len()));
-            }
+                Some((model, caret)) if node.model.as_deref() == Some(model.as_str()) => {
+                    Some((*caret).min(text.text.len()))
+                }
+                _ => None,
+            };
         }
     }
     for child in &mut node.children {
@@ -254,5 +262,62 @@ mod tests {
         assert_eq!(Path::new(&img.src), png, "src resolved against the .rux dir");
 
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    fn caret_of(node: &LayoutNode, model: &str) -> Option<usize> {
+        if node.model.as_deref() == Some(model) {
+            return node.children.first()?.text.as_ref()?.caret;
+        }
+        node.children.iter().find_map(|c| caret_of(c, model))
+    }
+
+    /// Moving focus must clear the caret in the input you left. It used to only
+    /// ever *set* one, so the old input kept painting a caret until some
+    /// unrelated rebuild happened to wipe it.
+    #[test]
+    fn focus_moves_the_caret_out_of_the_old_input() {
+        let mut doc = Document::from_source(
+            "<template><screen>             <input r-model=\"name\" /><input r-model=\"city\" />             </screen></template>
+             <script>let name = signal(\"abc\"); let city = signal(\"xyz\");</script>",
+        )
+        .expect("load");
+
+        doc.set_focus(Some(("name".into(), 2)));
+        assert_eq!(caret_of(&doc.root, "name"), Some(2));
+        assert_eq!(caret_of(&doc.root, "city"), None);
+
+        // Focus the other field: the first one must lose its caret immediately,
+        // with no rebuild in between.
+        doc.set_focus(Some(("city".into(), 1)));
+        assert_eq!(caret_of(&doc.root, "name"), None, "old input kept its caret");
+        assert_eq!(caret_of(&doc.root, "city"), Some(1));
+
+        // Tapping outside clears both.
+        doc.set_focus(None);
+        assert_eq!(caret_of(&doc.root, "name"), None);
+        assert_eq!(caret_of(&doc.root, "city"), None);
+    }
+
+    /// A checked box gets a synthetic `checked` class, so its checked look is
+    /// plain CSS. A radio matches on its `value`.
+    #[test]
+    fn checked_toggles_get_a_checked_class() {
+        let doc = Document::from_source(
+            "<template><screen>             <input type=\"checkbox\" class=\"box\" r-model=\"on\" />             <input type=\"radio\" class=\"box\" r-model=\"plan\" value=\"pro\" />             <input type=\"radio\" class=\"box\" r-model=\"plan\" value=\"free\" />             </screen></template>
+             <style>.box { background: #000000; } .box.checked { background: #00ff00; }</style>
+             <script>let on = signal(true); let plan = signal(\"pro\");</script>",
+        )
+        .expect("load");
+
+        let green = |n: &LayoutNode| n.style.background.map(|c| c.g) == Some(1.0);
+        let boxes = &doc.root.children;
+        assert!(green(&boxes[0]), "checked checkbox should match .checked");
+        assert!(green(&boxes[1]), "radio whose value == signal is checked");
+        assert!(!green(&boxes[2]), "the other radio is not checked");
+
+        // ...and the checked ones carry a mark, the unchecked one doesn't.
+        assert_eq!(boxes[0].children.len(), 1);
+        assert_eq!(boxes[1].children.len(), 1);
+        assert_eq!(boxes[2].children.len(), 0);
     }
 }

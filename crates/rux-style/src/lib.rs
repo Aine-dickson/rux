@@ -44,6 +44,38 @@ const DEFAULT_FONT_SIZE: f32 = 16.0;
 /// which makes the box a circle/pill whatever its size.
 const CIRCLE: f32 = 9999.0;
 
+/// The checkbox tick.
+const TICK: &str = "\u{2713}";
+
+/// An `<input type=checkbox|radio>` and whether it is currently checked.
+#[derive(Clone, Copy)]
+struct Toggle {
+    radio: bool,
+    checked: bool,
+}
+
+impl Toggle {
+    fn of(el: &Element, engine: &mut Engine, locals: &Locals) -> Option<Self> {
+        if el.tag != "input" {
+            return None;
+        }
+        let radio = match el.attr("type") {
+            Some("radio") => true,
+            Some("checkbox") => false,
+            _ => return None,
+        };
+        let model = el.attr("r-model").unwrap_or_default();
+        let checked = if model.is_empty() {
+            false
+        } else if radio {
+            engine.eval_display(model, locals) == el.attr("value").unwrap_or_default()
+        } else {
+            engine.eval_bool(model, locals)
+        };
+        Some(Self { radio, checked })
+    }
+}
+
 /// Build the styled layout tree from a parsed SFC. `components` maps a custom
 /// element tag to the imported component's source; those are compiled and
 /// expanded in place with their props bound. `{{ }}` and directive expressions
@@ -367,7 +399,14 @@ fn build_node(
         return expand_component(el, component, comps, inherited, engine, locals);
     }
 
-    let desc = ElemDesc::of(el);
+    let mut desc = ElemDesc::of(el);
+    // A ticked checkbox / selected radio carries a synthetic `checked` class, so
+    // its checked look is plain CSS (`.box.checked { background: … }`) — we have
+    // no `:checked` pseudo-class and this needs no new selector machinery.
+    let toggle = Toggle::of(el, engine, locals);
+    if toggle.is_some_and(|t| t.checked) {
+        desc.classes.push("checked".to_string());
+    }
     let props = matched_props(&desc, ancestors, rules);
     let style = interpret(&props);
     let on_tap = el.attr("@tap").map(str::to_string);
@@ -436,21 +475,12 @@ fn build_node(
     // `type=checkbox|radio` are tap-toggles, not text fields: they get no focus
     // and no keyboard, they just write the bound signal through the ordinary
     // handler path (`sig = !sig` / `sig = "value"`). An authored @tap wins.
-    if el.tag == "input" && matches!(el.attr("type"), Some("checkbox") | Some("radio")) {
-        let radio = el.attr("type") == Some("radio");
+    if let Some(Toggle { radio, checked }) = toggle {
         let model = el.attr("r-model").unwrap_or_default().to_string();
         let value = el.attr("value").unwrap_or_default().to_string();
 
-        let checked = if model.is_empty() {
-            false
-        } else if radio {
-            engine.eval_display(&model, locals) == value
-        } else {
-            engine.eval_bool(&model, locals)
-        };
-
         let mut style = style;
-        // Centre the indicator inside the box unless the author says otherwise.
+        // Centre the mark inside the box unless the author says otherwise.
         if style.display == Display::Block {
             style.display = Display::Flex;
         }
@@ -463,15 +493,32 @@ fn build_node(
 
         let mut node = LayoutNode::new(style);
         if checked {
-            // The mark: a smaller box in the text colour (a dot for a radio).
-            node.children.push(LayoutNode::new(Style {
-                display: Display::Flex,
-                width: Some(Len::Pct(0.6)),
-                height: Some(Len::Pct(0.6)),
-                background: Some(color),
-                radius: if radio { CIRCLE } else { 2.0 },
-                ..Default::default()
-            }));
+            node.children.push(if radio {
+                // A dot, in the box's text colour.
+                LayoutNode::new(Style {
+                    display: Display::Flex,
+                    width: Some(Len::Pct(0.5)),
+                    height: Some(Len::Pct(0.5)),
+                    background: Some(color),
+                    radius: CIRCLE,
+                    ..Default::default()
+                })
+            } else {
+                // A tick glyph, in the box's text colour. Style the checked box
+                // itself with `.yourclass.checked { … }`.
+                LayoutNode::text(
+                    Style::default(),
+                    TextContent {
+                        text: TICK.to_string(),
+                        font_size,
+                        weight: 700,
+                        color,
+                        align: TextAlign::Center,
+                        wrap: TextWrap::Normal,
+                        caret: None,
+                    },
+                )
+            });
         }
         node.on_tap = on_tap.or_else(|| {
             if model.is_empty() {

@@ -114,9 +114,18 @@ empty. The caret survives the rebuild that follows each keystroke.
 `<input type="checkbox" r-model="flag">` and
 `<input type="radio" r-model="choice" value="pro">` are **tap-toggles**: no focus,
 no keyboard. They write the bound signal through the ordinary handler path
-(`flag = !flag`, `choice = "pro"`), so an authored `@tap` overrides them. The mark
-is drawn in the box's `color`, at 60% of its size; a radio is round unless you
-give it a `border-radius`.
+(`flag = !flag`, `choice = "pro"`), so an authored `@tap` overrides them.
+
+A checked box carries a synthetic **`checked` class**, so its checked look is
+ordinary CSS — there is no `:checked` pseudo-class:
+```css
+.box         { background: #313244; border: 2px #45475a solid; color: #cdd6f4; }
+.box.checked { background: #a6e3a1; color: #ffffff; }   /* white tick on green */
+```
+The mark is drawn in the box's own `color`: a **tick glyph** (✓) for a checkbox, a
+dot for a radio. A radio is **round** unless you give it a `border-radius` (and a
+huge radius like `9999px` is clamped to a circle, so that's how you re-round one
+that inherited a radius from another class).
 
 **Limits:** no selection (no shift-arrow, no drag-select), no clipboard, no
 `type="select|textarea"`, and checkboxes/radios can't be reached by keyboard.
