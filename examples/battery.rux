@@ -31,7 +31,7 @@
     .v1{
         background: #193822;
         width: 320px;
-        border-radius: 10;
+        border-radius: 10px;
         padding: 14px;
     }
   .screen {
@@ -82,7 +82,7 @@
     justify-content:center;
     align-items: center;
     cursor: pointer; 
-    shrink: 0;
+    flex-shrink: 0;
   }
   .btnlabel {
     color: #cdd6f4;

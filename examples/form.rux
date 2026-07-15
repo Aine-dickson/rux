@@ -52,7 +52,8 @@
   }
   .field {
     display: flex;
-    width: 320px;
+    width: 100%;
+    max-width: 360px;
     padding: 10px;
     background: #313244;
     border: 2px #45475a solid;

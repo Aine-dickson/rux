@@ -16,7 +16,7 @@ use lightningcss::stylesheet::{ParserOptions, PrinterOptions, StyleSheet};
 use lightningcss::traits::ToCss;
 use rux_layout::{
     Align, Axis, Display, ImageContent, Justify, Len, Node as LayoutNode, Overflow, Rgba, Sides,
-    Style, TextAlign, TextContent, TextWrap, Track,
+    Style, TextAlign, TextContent, TextWrap, Track, TrackSide,
 };
 use rux_parser::{Element, Node as TplNode, Sfc};
 use rux_reactive::Value;
@@ -25,6 +25,25 @@ use rux_script::Engine;
 /// Loop-variable bindings introduced by `r-for`, layered as a scope stack and
 /// injected into the script engine for each evaluation.
 type Locals = Vec<(String, Value)>;
+
+/// Bake the active `r-for` loop bindings into a handler as a `let` prelude, so it
+/// still resolves them when it runs later in global scope (the loop variables are
+/// gone by then). With no locals the handler is returned unchanged.
+fn bind_locals(src: &str, locals: &Locals) -> String {
+    if locals.is_empty() {
+        return src.to_string();
+    }
+    let mut out = String::new();
+    for (name, value) in locals {
+        out.push_str("let ");
+        out.push_str(name);
+        out.push_str(" = ");
+        out.push_str(&value.to_rhai_literal());
+        out.push_str("; ");
+    }
+    out.push_str(src);
+    out
+}
 
 /// A compiled component: its template root and its own CSS rules.
 struct Component {
@@ -406,7 +425,11 @@ fn build_node(
     }
     let props = matched_props(&desc, ancestors, rules);
     let style = interpret(&props);
-    let on_tap = el.attr("@tap").map(str::to_string);
+    // A `@tap` handler runs later, in global scope, where the `r-for` loop
+    // variable no longer exists — so `@tap="picked = item"` would see `item`
+    // undefined and silently do nothing. Bake the current loop bindings into the
+    // handler as a `let` prelude so it reproduces them when it runs.
+    let on_tap = el.attr("@tap").map(|h| bind_locals(h, locals));
     // r-show="false" keeps the layout slot but paints nothing.
     let hidden = el
         .attr("r-show")
@@ -905,20 +928,68 @@ fn parse_len(s: &str) -> Option<Len> {
     n.parse::<f32>().ok().map(Len::Px)
 }
 
-/// Parse a `grid-template-columns`/`-rows` value into tracks (`1fr`, `100px`, `auto`).
+/// Parse a `grid-template-columns`/`-rows` value into tracks: `1fr`, `100px`,
+/// `auto`, and `minmax(min, max)` (e.g. `minmax(0, 1fr)`, which lets a track
+/// shrink below its content instead of overflowing the grid).
 fn parse_tracks(value: &str) -> Vec<Track> {
-    value
-        .split_whitespace()
+    split_top_level(value)
+        .into_iter()
         .map(|tok| {
-            if let Some(fr) = tok.strip_suffix("fr") {
-                Track::Fr(fr.parse().unwrap_or(1.0))
-            } else if tok == "auto" {
-                Track::Auto
+            if let Some(args) = tok
+                .strip_prefix("minmax(")
+                .and_then(|s| s.strip_suffix(')'))
+            {
+                let mut parts = args.split(',');
+                let lo = parts.next().map(parse_track_side).unwrap_or(TrackSide::Auto);
+                let hi = parts.next().map(parse_track_side).unwrap_or(TrackSide::Auto);
+                Track::MinMax(lo, hi)
             } else {
-                parse_px(tok).map(Track::Px).unwrap_or(Track::Auto)
+                match parse_track_side(tok) {
+                    TrackSide::Px(v) => Track::Px(v),
+                    TrackSide::Fr(f) => Track::Fr(f),
+                    TrackSide::Auto => Track::Auto,
+                }
             }
         })
         .collect()
+}
+
+/// A single track value: `Nfr`, `auto`, or a length (default `auto`).
+fn parse_track_side(tok: &str) -> TrackSide {
+    let tok = tok.trim();
+    if let Some(fr) = tok.strip_suffix("fr") {
+        TrackSide::Fr(fr.trim().parse().unwrap_or(1.0))
+    } else if tok == "auto" {
+        TrackSide::Auto
+    } else {
+        parse_px(tok).map(TrackSide::Px).unwrap_or(TrackSide::Auto)
+    }
+}
+
+/// Split a track list on whitespace, but keep a `minmax( … )` group — which
+/// contains its own spaces and comma — together as one token.
+fn split_top_level(value: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut depth = 0i32;
+    let mut start: Option<usize> = None;
+    for (i, c) in value.char_indices() {
+        if c == '(' {
+            depth += 1;
+        } else if c == ')' {
+            depth -= 1;
+        }
+        if c.is_whitespace() && depth == 0 {
+            if let Some(s) = start.take() {
+                out.push(value[s..i].trim());
+            }
+        } else if start.is_none() {
+            start = Some(i);
+        }
+    }
+    if let Some(s) = start {
+        out.push(value[s..].trim());
+    }
+    out.into_iter().filter(|t| !t.is_empty()).collect()
 }
 
 /// Expand a 1–4 value shorthand (`5px`, `5px 10px`, `1 2 3`, `1 2 3 4`) into
@@ -1140,6 +1211,23 @@ mod tests {
     }
 
     #[test]
+    fn parses_grid_tracks_including_minmax() {
+        use super::{parse_tracks, Track, TrackSide};
+        let tracks = parse_tracks("minmax(0, 1fr) 100px auto minmax(120px, 1fr)");
+        assert_eq!(tracks.len(), 4);
+        assert!(matches!(
+            tracks[0],
+            Track::MinMax(TrackSide::Px(0.0), TrackSide::Fr(f)) if f == 1.0
+        ));
+        assert!(matches!(tracks[1], Track::Px(v) if v == 100.0));
+        assert!(matches!(tracks[2], Track::Auto));
+        assert!(matches!(
+            tracks[3],
+            Track::MinMax(TrackSide::Px(v), TrackSide::Fr(_)) if v == 120.0
+        ));
+    }
+
+    #[test]
     fn image_element_carries_its_src() {
         let src = r#"<template><screen><image src="assets/logo.png" /></screen></template>"#;
         let sfc = rux_parser::parse_sfc(src).unwrap();
@@ -1182,6 +1270,38 @@ mod tests {
         assert_eq!(root.children.len(), 4);
         let mid = root.children[3].text.as_ref().unwrap();
         assert_eq!(mid.text, "mid");
+    }
+
+    #[test]
+    fn r_for_tap_handler_captures_the_loop_variable() {
+        let src = r#"
+            <template>
+              <screen>
+                <view r-for="item in items" @tap="picked = item">
+                  <text>{{ item }}</text>
+                </view>
+              </screen>
+            </template>
+            <script> let items = signal(["Alpha", "Bravo", "Charlie"]); let picked = signal(""); </script>
+        "#;
+        let sfc = rux_parser::parse_sfc(src).unwrap();
+        let mut engine = Builder::new().build(&sfc.script).unwrap();
+        let root = build_styled_tree(&sfc, &HashMap::new(), &mut engine).unwrap();
+
+        // The second row's handler must carry its own loop value baked in, not a
+        // bare `item` that resolves to nothing when it runs in global scope.
+        let handler = root.children[1].on_tap.clone().expect("row has @tap");
+        assert!(
+            handler.contains("let item = \"Bravo\""),
+            "loop value not baked into handler: {handler}"
+        );
+
+        // End to end: picked starts empty, running the third row's handler sets
+        // it to that row's item (the bug was that it stayed empty forever).
+        assert_eq!(engine.get_string("picked"), "");
+        let third = root.children[2].on_tap.clone().unwrap();
+        assert!(engine.run_handler(&third), "handler ran");
+        assert_eq!(engine.get_string("picked"), "Charlie");
     }
 
     #[test]

@@ -1,50 +1,79 @@
 <template>
-    <screen>
-        <text role="heading">This is a Rux app</text>
-        <view role="header">
-            <text>This is a span</text>
-            <text>This is another span</text>
-            <button></button>
-            <button>
-                <text>A text inside button</text>
-            </button>
-        
-        </view>
-        <view class="last"></view>
-    </screen>
+  <screen class="screen">
+    <text class="title">Dashboard</text>
+    <text class="hint">A three-column grid using minmax(0, 1fr). Resize the window — the columns shrink evenly and the cards stay inside, instead of overflowing at narrow widths.</text>
+
+    <!-- grid-template-columns: 1fr 1fr 1fr → three equal, fluid columns. Six
+         cards fall into two rows. -->
+    <view class="grid">
+      <view class="card">
+        <text class="label">Revenue</text>
+        <text class="stat">$48.2k</text>
+        <text class="delta up">▲ 12.4%</text>
+      </view>
+      <view class="card">
+        <text class="label">Active users</text>
+        <text class="stat">9,310</text>
+        <text class="delta up">▲ 3.1%</text>
+      </view>
+      <view class="card">
+        <text class="label">Churn</text>
+        <text class="stat">1.8%</text>
+        <text class="delta down">▼ 0.4%</text>
+      </view>
+      <view class="card">
+        <text class="label">Sessions</text>
+        <text class="stat">27.6k</text>
+        <text class="delta up">▲ 8.9%</text>
+      </view>
+      <view class="card">
+        <text class="label">Avg. latency</text>
+        <text class="stat">142ms</text>
+        <text class="delta down">▼ 11ms</text>
+      </view>
+      <view class="card">
+        <text class="label">Errors</text>
+        <text class="stat">0.03%</text>
+        <text class="delta up">▲ 0.01%</text>
+      </view>
+    </view>
+  </screen>
 </template>
+
 <style>
-    *{
-        color: #000000;
-    }
-    screen {
-        background: #ffffff;
-        display: grid;
-        grid-template-columns: 1fr 1fr 1fr;
-    }
-    [role="heading"] {
-        text-align: center;
-    }
-    [role="header"] {
-        margin-top: 4px;
-        background: #150242;
-        padding: 4px;
-    }
+  .screen {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    padding: 24px;
+    background: #1e1e2e;
+  }
+  .title { color: #cdd6f4; font-size: 22px; font-weight: 700; }
+  .hint  { color: #6c7086; font-size: 13px; max-width: 560px; }
 
-    [role="header"] text {
-        color: #fff;
-    }
-
-    button {
-        background: #0000ff;
-        padding: 10px;
-        border-radius: 5px;
-        margin: 10px;
-    }
-
-    .last {
-        margin: 4px;
-        height: 30px;
-        border: 2px #000000 solid;
-    }
+  .grid {
+    display: grid;
+    /* minmax(0, 1fr) lets the tracks shrink below the cards' content, so a
+       narrow window squeezes them evenly instead of overflowing the grid. */
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr);
+    gap: 12px;
+  }
+  .card {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 16px;
+    background: #313244;
+    border-radius: 10px;
+    overflow: hidden;   /* clip a stat that can't fit rather than spill the card */
+  }
+  .label { color: #9399b2; font-size: 13px; }
+  .stat  { color: #cdd6f4; font-size: 26px; font-weight: 700; }
+  .delta { font-size: 13px; }
+  .up    { color: #a6e3a1; }
+  .down  { color: #f38ba8; }
 </style>
+
+<script>
+  // A static grid — the point is the 1fr columns reflowing on resize.
+</script>

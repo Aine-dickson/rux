@@ -61,8 +61,26 @@ monitors of different DPI, if available.
   scale factor every frame so it *should* be fine. Unverified.
 - **Any ephemeral UI state that does not survive a rebuild** (see below).
 
+### Shake-down progress (2026-07-15)
+- ✅ `list.rux`, `gallery.rux` made responsive; `gallery` is now a `flex-wrap`
+  grid. `dashboard.rux` cleaned up into a dark-themed `1fr 1fr 1fr` grid demo.
+- ✅ Driven on screen: `gallery`, `list`, `form`, `dashboard`. Three
+  test-invisible bugs found and fixed (see the CSS section below for the two
+  layout ones; the `r-for` `@tap` one is there too).
+- ✅ **Minimize/restore: verified clean** — no panic when the surface goes to
+  zero, editing/caret resume correctly on restore.
+- ✅ Blinking caret added (user request): 530ms, solid while typing.
+- ✅ `minmax(0, 1fr)` grid tracks added (user request, after the dashboard's
+  `1fr` columns overflowed a narrow window — expected CSS, but ungraceful):
+  `Track::MinMax` → taffy `minmax()`, a paren-aware `parse_tracks`. Lets tracks
+  shrink below content instead of overflowing. `dashboard.rux` now uses it.
+- ⏳ **`ScaleFactorChanged` / cross-DPI drag: still unverified** — needs a
+  second monitor (deferred to the week of 2026-07-20).
+- ⏳ `battery.rux` (the fixed-width control) not re-driven yet.
+
 ### 4. Then tag `v0.1`
-Only once the above is clean.
+Only once the above is clean — specifically, **do not tag until the cross-DPI
+drag is verified**, since `ScaleFactorChanged` is the last untested surface path.
 
 ---
 
@@ -87,6 +105,29 @@ The honored set is listed in [05 — As Built](./05-as-built.md). Everything els
 **parsed and silently ignored** — which is the worst failure mode we have: you
 write valid CSS, nothing happens, and nothing tells you why. This is the item most
 likely to make Rux feel like a toy, so it gets real scope.
+
+**Already fixed during the v0.1 shake-down** (kept here as a landmine map):
+
+- **`@tap` inside `r-for` couldn't see the loop variable.** `@tap="picked = item"`
+  silently did nothing: handlers run later in *global* scope (`run_handler` →
+  `eval(src, &[])`), where the `r-for` `item` no longer exists, so the assignment
+  failed and the bound `r-if` never fired. `form.rux` worked only because its
+  handlers reference no loop var — nothing tested this path. Fixed by baking the
+  active loop bindings into the handler as a `let` prelude at build time
+  (`bind_locals` in `rux-style`, `Value::to_rhai_literal` in `rux-reactive`), so
+  the handler is self-contained; the `let`s are dropped by `eval`'s existing
+  `rewind`, so nothing leaks. Guarded by an end-to-end test in `rux-style`.
+- **`flex-wrap` + percentage width + `max-width` mis-measured its own height.**
+  A wrapping container written `width: 100%; max-width: 520px` reserved height
+  for *one* row while painting *two*, so the following sibling rode up over the
+  wrapped last item. Root cause is a **taffy bug still present in 0.12**: it
+  measures wrap content at the full percentage width (ignoring the cap), sizes
+  the cross-axis for one row, then clamps the width and wraps without revisiting
+  the height. Fixed in `rux-layout` `to_taffy`: for that exact combination the
+  width maps to taffy `auto` (fit-content, still capped by the same `max-width`,
+  so it fills up to the cap for any overflowing content — i.e. the wrap case).
+  Guarded by `crates/rux-layout/tests/wrap.rs`. A version bump does **not** fix
+  it, so don't reach for one.
 
 **First, two things that are bugs, not gaps:**
 

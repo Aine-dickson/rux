@@ -63,6 +63,44 @@ impl Value {
             Value::List(items) => !items.is_empty(),
         }
     }
+
+    /// Serialize the value as rhai source — a literal that re-creates it. Used to
+    /// bake an `r-for` loop binding into a `@tap` handler, which runs later in
+    /// global scope where the loop variable no longer exists.
+    pub fn to_rhai_literal(&self) -> String {
+        match self {
+            // Whole numbers become int literals (rhai's default numeric type, and
+            // what collection indices/counters are), fractions stay floats.
+            Value::Number(n) => {
+                if n.fract() == 0.0 {
+                    format!("{}", *n as i64)
+                } else {
+                    format!("{n}")
+                }
+            }
+            Value::Text(s) => {
+                let mut out = String::with_capacity(s.len() + 2);
+                out.push('"');
+                for c in s.chars() {
+                    match c {
+                        '\\' => out.push_str("\\\\"),
+                        '"' => out.push_str("\\\""),
+                        '\n' => out.push_str("\\n"),
+                        '\r' => out.push_str("\\r"),
+                        '\t' => out.push_str("\\t"),
+                        _ => out.push(c),
+                    }
+                }
+                out.push('"');
+                out
+            }
+            Value::Bool(b) => b.to_string(),
+            Value::List(items) => {
+                let inner: Vec<_> = items.iter().map(Value::to_rhai_literal).collect();
+                format!("[{}]", inner.join(", "))
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -82,5 +120,22 @@ mod tests {
         assert!(!Value::Number(0.0).is_truthy());
         assert!(!Value::Text(String::new()).is_truthy());
         assert!(!Value::List(Vec::new()).is_truthy());
+    }
+
+    #[test]
+    fn serializes_rhai_literals() {
+        assert_eq!(Value::Number(3.0).to_rhai_literal(), "3");
+        assert_eq!(Value::Number(2.5).to_rhai_literal(), "2.5");
+        assert_eq!(Value::Bool(true).to_rhai_literal(), "true");
+        assert_eq!(Value::Text("Charlie".into()).to_rhai_literal(), "\"Charlie\"");
+        // Quotes and backslashes must be escaped so the handler still parses.
+        assert_eq!(
+            Value::Text("say \"hi\"\\n".into()).to_rhai_literal(),
+            "\"say \\\"hi\\\"\\\\n\""
+        );
+        assert_eq!(
+            Value::List(vec![Value::Number(1.0), Value::Text("a".into())]).to_rhai_literal(),
+            "[1, \"a\"]"
+        );
     }
 }

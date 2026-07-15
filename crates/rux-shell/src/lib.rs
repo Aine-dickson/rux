@@ -9,6 +9,7 @@
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use notify::{EventKind, RecursiveMode, Watcher};
 use rux_layout::{FocusRegion, HitRegion, ScrollRegion};
@@ -35,6 +36,10 @@ enum RuxEvent {
 /// Taps closer than this (in physical pixels) between press and release still
 /// count as a tap rather than a drag.
 const TAP_SLOP: f64 = 6.0;
+
+/// Half the caret blink period: the caret is shown for this long, then hidden
+/// for this long. ~530ms matches the platform norm.
+const BLINK: Duration = Duration::from_millis(530);
 
 /// Rux screen background `#11111b`.
 const BG: Color = Color::from_rgb8(0x11, 0x11, 0x1b);
@@ -83,6 +88,11 @@ struct App {
     focused: Option<String>,
     /// Caret position in the focused input, as a byte index into its value.
     caret: usize,
+    /// Whether the caret is in the visible half of its blink cycle.
+    caret_visible: bool,
+    /// When the caret next toggles. `None` when no input is focused, so an idle
+    /// window stays fully event-driven with no timer.
+    blink_deadline: Option<Instant>,
     /// Current pointer position (physical pixels).
     pointer: (f64, f64),
     /// Where the left button was pressed, if it is currently down.
@@ -105,6 +115,8 @@ impl App {
             offsets: Vec::new(),
             focused: None,
             caret: 0,
+            caret_visible: true,
+            blink_deadline: None,
             pointer: (0.0, 0.0),
             press: None,
         }
@@ -288,10 +300,12 @@ impl App {
             self.document.engine_mut().set_string(&model, &value);
             self.document.set_focus(Some((model, new_caret)));
             self.document.rebuild();
+            self.reset_blink();
             self.request_redraw();
         } else if moved {
             self.caret = new_caret;
             self.document.set_focus(Some((model, new_caret)));
+            self.reset_blink();
             self.request_redraw();
         }
     }
@@ -301,7 +315,16 @@ impl App {
         self.focused = focus.as_ref().map(|(m, _)| m.clone());
         self.caret = focus.as_ref().map(|(_, c)| *c).unwrap_or(0);
         self.document.set_focus(focus);
+        self.reset_blink();
         self.request_redraw();
+    }
+
+    /// Show the caret solid and (re)start the blink cycle. Called on focus and on
+    /// every edit, so the caret is steady while you type and only blinks at rest.
+    /// Clearing focus stops the timer entirely — an idle window stays event-driven.
+    fn reset_blink(&mut self) {
+        self.caret_visible = true;
+        self.blink_deadline = self.focused.is_some().then(|| Instant::now() + BLINK);
     }
 
     fn request_redraw(&self) {
@@ -311,6 +334,7 @@ impl App {
     }
 
     fn render(&mut self) {
+        let caret_visible = self.caret_visible;
         // Split borrows so the text engine (used both to measure during layout
         // and to draw during paint) doesn't conflict with the render state.
         let App {
@@ -351,7 +375,7 @@ impl App {
                 &mut measure,
             )
         };
-        let content = rux_paint::build_scene(&layout.paints, text, images);
+        let content = rux_paint::build_scene(&layout.paints, text, images, caret_visible);
         state.scene.reset();
         state
             .scene
@@ -528,6 +552,23 @@ impl ApplicationHandler<RuxEvent> for App {
             // is issued on resume, resize, reload, and tap — not every frame.
             WindowEvent::RedrawRequested => self.render(),
             _ => {}
+        }
+    }
+
+    /// The only clock in an otherwise event-driven loop: while an input is
+    /// focused, wake every `BLINK` to toggle the caret. With no focus the
+    /// deadline is `None`, so we wait indefinitely for the next real event.
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        match self.blink_deadline {
+            Some(deadline) => {
+                if Instant::now() >= deadline {
+                    self.caret_visible = !self.caret_visible;
+                    self.blink_deadline = Some(Instant::now() + BLINK);
+                    self.request_redraw();
+                }
+                event_loop.set_control_flow(ControlFlow::WaitUntil(self.blink_deadline.unwrap()));
+            }
+            None => event_loop.set_control_flow(ControlFlow::Wait),
         }
     }
 }

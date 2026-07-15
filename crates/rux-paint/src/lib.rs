@@ -70,7 +70,14 @@ fn to_align(a: TextAlign) -> Align {
 }
 
 /// Build a fresh scene from paint items, in list order (parents first).
-pub fn build_scene(items: &[Paint], text: &mut TextEngine, images: &mut ImageCache) -> Scene {
+/// `caret_visible` gates the focused input's caret: the shell toggles it on a
+/// timer so the caret blinks, without rebuilding or re-laying-out the tree.
+pub fn build_scene(
+    items: &[Paint],
+    text: &mut TextEngine,
+    images: &mut ImageCache,
+    caret_visible: bool,
+) -> Scene {
     let mut scene = Scene::new();
     for item in items {
         match item {
@@ -119,8 +126,9 @@ pub fn build_scene(items: &[Paint], text: &mut TextEngine, images: &mut ImageCac
                     to_wrap(t.content.wrap),
                     Some(t.width),
                 );
-                // The focused input's caret, drawn on top of its own text.
-                if let Some(index) = t.content.caret {
+                // The focused input's caret, drawn on top of its own text —
+                // only in the visible half of the blink cycle.
+                if let (true, Some(index)) = (caret_visible, t.content.caret) {
                     let (cx, cy, ch) = text.caret_geometry(
                         &t.content.text,
                         t.content.font_size,

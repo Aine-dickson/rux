@@ -5,8 +5,14 @@
     <!-- No CSS size: the image lays out at its intrinsic 160x160. -->
     <image src="assets/logo.png" class="raw" />
 
-    <!-- Sized by CSS: the pixels scale to fill the box. -->
-    <view class="row">
+    <!-- A flex-wrap grid: thumbnails re-flow onto more or fewer rows as the
+         window resizes. Sized by CSS, so the pixels scale to fill each box. -->
+    <view class="grid">
+      <image src="assets/logo.png" class="thumb" />
+      <image src="assets/logo.png" class="thumb" />
+      <image src="assets/logo.png" class="thumb" />
+      <image src="assets/logo.png" class="thumb" />
+      <image src="assets/logo.png" class="thumb" />
       <image src="assets/logo.png" class="thumb" />
       <image src="assets/logo.png" class="thumb" />
       <image src="assets/logo.png" class="thumb" />
@@ -46,10 +52,13 @@
   .raw {
     border-radius: 12px;
   }
-  .row {
+  .grid {
     display: flex;
     flex-direction: row;
+    flex-wrap: wrap;
     gap: 8px;
+    width: 100%;
+    max-width: 520px;
   }
   .thumb {
     width: 64px;

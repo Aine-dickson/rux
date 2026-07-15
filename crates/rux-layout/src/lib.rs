@@ -61,6 +61,20 @@ pub enum Track {
     Px(f32),
     Fr(f32),
     Auto,
+    /// `minmax(min, max)`. Its whole point over a bare `1fr` is a `0` (or `px`)
+    /// minimum, which lets the track shrink *below* its content's min-content —
+    /// so a grid of fixed-size cards squeezes to fit instead of overflowing.
+    MinMax(TrackSide, TrackSide),
+}
+
+/// One side of a `minmax()` — never itself a `minmax`. A `Fr` is only valid on
+/// the max side (a flex minimum is meaningless), and degrades to `auto` if used
+/// as a minimum.
+#[derive(Clone, Copy, Debug)]
+pub enum TrackSide {
+    Px(f32),
+    Fr(f32),
+    Auto,
 }
 
 /// How a node lays out its children. Defaults to `Row` to match CSS's
@@ -469,6 +483,18 @@ fn to_track(t: Track) -> TrackSizingFunction {
         Track::Px(v) => length(v),
         Track::Fr(f) => fr(f),
         Track::Auto => auto(),
+        Track::MinMax(lo, hi) => minmax(
+            // A flex minimum is invalid; fall back to `auto` (min-content).
+            match lo {
+                TrackSide::Px(v) => length(v),
+                TrackSide::Fr(_) | TrackSide::Auto => auto(),
+            },
+            match hi {
+                TrackSide::Px(v) => length(v),
+                TrackSide::Fr(f) => fr(f),
+                TrackSide::Auto => auto(),
+            },
+        ),
     }
 }
 
@@ -533,7 +559,21 @@ fn to_taffy(style: &Style, vp: (f32, f32)) -> taffy::Style {
             FlexWrap::NoWrap
         },
         size: Size {
-            width: style.width.map(|l| to_dim(l, vp)).unwrap_or(auto()),
+            // `flex-wrap` + a *percentage* width + a `max-width` trips a taffy
+            // bug (still present in 0.12): it measures the container's content
+            // at the full percentage width, ignoring the cap, so it sees one
+            // row and sizes the cross-axis for one row — then clamps the width
+            // to `max-width`, wraps to two rows, and never revisits the height.
+            // The wrapped rows then paint *under* the following sibling. Both a
+            // definite width and `auto` measure correctly, so for this exact
+            // combination we drop the percentage to `auto` (fit-content, capped
+            // by the same `max-width`), which fills available width up to the
+            // cap for any content that overflows it — i.e. the wrap case.
+            width: match style.width {
+                Some(Len::Pct(_)) if style.wrap && style.max_width.is_some() => auto(),
+                Some(l) => to_dim(l, vp),
+                None => auto(),
+            },
             height: style.height.map(|l| to_dim(l, vp)).unwrap_or(auto()),
         },
         min_size: Size {

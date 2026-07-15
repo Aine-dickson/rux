@@ -24,14 +24,17 @@
     background: #1e1e2e;
   }
   .title { color: #cdd6f4; font-size: 22px; font-weight: 700; }
-  .hint  { color: #6c7086; font-size: 13px; width: 320px; }
+  .hint  { color: #6c7086; font-size: 13px; max-width: 520px; }
 
-  /* A scroll container needs a bounded height — otherwise it just grows. */
+  /* Responsive: fills the screen up to a readable cap, so resizing the window
+     actually re-flows the rows instead of leaving dead space. */
   .list {
     display: flex;
     flex-direction: column;
+    align-items: stretch;   /* rows fill the list width instead of hugging labels */
     gap: 8px;
-    width: 320px;
+    width: 100%;
+    max-width: 520px;
     height: 240px;
     padding: 8px;
     background: #313244;
