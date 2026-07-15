@@ -10,9 +10,9 @@ Rux exists because of one frustration: in widget-tree toolkits like Flutter, spa
 <!-- battery.rux -->
 <template>
   <view role="section" class="card">
-    <text role="paragraph" class="label">Battery</text>
-    <text class="value">{{ level }}%</text>
-    <button class="btn" @tap="level = host::read_battery()">Refresh</button>
+        <text role="paragraph" class="label">Battery</text>
+        <text class="value">{{ level }}%</text>
+        <button class="btn" @tap="level = host::read_battery()">Refresh</button>
   </view>
 </template>
 
