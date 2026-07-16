@@ -13,10 +13,13 @@
 //! Colour is applied by vello at draw time, not carried through parley, so the
 //! layout brush is `()`.
 
+use std::borrow::Cow;
+
 use parley::{
     Affinity, Alignment, AlignmentOptions, Cursor, FontContext, FontWeight, Layout, LayoutContext,
-    OverflowWrap, PositionedLayoutItem, StyleProperty,
+    OverflowWrap, PositionedLayoutItem, StyleProperty, TextWrapMode,
 };
+use parley::style::{FontFamily, FontStyle};
 use vello::kurbo::Affine;
 use vello::peniko::{Color, Fill};
 use vello::{Glyph, Scene};
@@ -67,6 +70,41 @@ impl Wrap {
     }
 }
 
+/// The shaping inputs for a run of text, gathered into one struct so the engine
+/// methods don't take a dozen positional arguments. Everything except
+/// `font_size`/`weight` is optional and off by default. Lengths are logical px.
+#[derive(Clone, Copy, Debug)]
+pub struct TextStyle<'a> {
+    pub font_size: f32,
+    pub weight: u16,
+    pub wrap: Wrap,
+    /// `font-family` as a raw CSS list; `None` uses the system default.
+    pub family: Option<&'a str>,
+    /// `letter-spacing` / `word-spacing`, extra px between letters / words.
+    pub letter_spacing: Option<f32>,
+    pub word_spacing: Option<f32>,
+    /// `font-style: italic`.
+    pub italic: bool,
+    /// `white-space: nowrap` — never break lines, even past `max_width`.
+    pub nowrap: bool,
+}
+
+impl<'a> TextStyle<'a> {
+    /// A plain run at the given size/weight, no family and no extras.
+    pub fn new(font_size: f32, weight: u16, wrap: Wrap) -> Self {
+        Self {
+            font_size,
+            weight,
+            wrap,
+            family: None,
+            letter_spacing: None,
+            word_spacing: None,
+            italic: false,
+            nowrap: false,
+        }
+    }
+}
+
 /// Owns the reusable font/layout contexts. One per app is plenty.
 pub struct TextEngine {
     font_cx: FontContext,
@@ -87,18 +125,28 @@ impl TextEngine {
         }
     }
 
-    fn build(
-        &mut self,
-        text: &str,
-        font_size: f32,
-        weight: u16,
-        wrap: Wrap,
-        max_width: Option<f32>,
-    ) -> Layout<()> {
+    fn build(&mut self, text: &str, style: &TextStyle, max_width: Option<f32>) -> Layout<()> {
         let mut builder = self.layout_cx.ranged_builder(&mut self.font_cx, text, 1.0, true);
-        builder.push_default(StyleProperty::FontSize(font_size));
-        builder.push_default(StyleProperty::FontWeight(FontWeight::new(weight as f32)));
-        builder.push_default(StyleProperty::OverflowWrap(wrap.to_parley()));
+        builder.push_default(StyleProperty::FontSize(style.font_size));
+        builder.push_default(StyleProperty::FontWeight(FontWeight::new(style.weight as f32)));
+        builder.push_default(StyleProperty::OverflowWrap(style.wrap.to_parley()));
+        // `font-family` is a raw CSS list; `FontFamily::Source` lets parley parse
+        // it and run the usual name-matching + fallback. Absent → system default.
+        if let Some(family) = style.family.filter(|f| !f.trim().is_empty()) {
+            builder.push_default(StyleProperty::FontFamily(FontFamily::Source(Cow::Borrowed(family))));
+        }
+        if let Some(px) = style.letter_spacing {
+            builder.push_default(StyleProperty::LetterSpacing(px));
+        }
+        if let Some(px) = style.word_spacing {
+            builder.push_default(StyleProperty::WordSpacing(px));
+        }
+        if style.italic {
+            builder.push_default(StyleProperty::FontStyle(FontStyle::Italic));
+        }
+        if style.nowrap {
+            builder.push_default(StyleProperty::TextWrapMode(TextWrapMode::NoWrap));
+        }
         let mut layout: Layout<()> = builder.build(text);
         layout.break_all_lines(max_width);
         layout
@@ -110,15 +158,8 @@ impl TextEngine {
     /// The width is rounded **up**. Paint re-wraps the text at the box width
     /// layout gave it, so a box even a fraction of a pixel narrower than the
     /// text would break the last word onto a line the box has no height for.
-    pub fn measure(
-        &mut self,
-        text: &str,
-        font_size: f32,
-        weight: u16,
-        wrap: Wrap,
-        max_width: Option<f32>,
-    ) -> (f32, f32) {
-        let layout = self.build(text, font_size, weight, wrap, max_width);
+    pub fn measure(&mut self, text: &str, style: &TextStyle, max_width: Option<f32>) -> (f32, f32) {
+        let layout = self.build(text, style, max_width);
         let height: f32 = layout
             .lines()
             .map(|l| {
@@ -131,17 +172,14 @@ impl TextEngine {
 
     /// Where the caret sits for a byte index into `text`: `(x, y, height)`
     /// relative to the text's top-left. Used to draw the caret in an input.
-    #[allow(clippy::too_many_arguments)]
     pub fn caret_geometry(
         &mut self,
         text: &str,
-        font_size: f32,
-        weight: u16,
-        wrap: Wrap,
+        style: &TextStyle,
         max_width: Option<f32>,
         index: usize,
     ) -> (f32, f32, f32) {
-        let layout = self.build(text, font_size, weight, wrap, max_width);
+        let layout = self.build(text, style, max_width);
         let cursor = Cursor::from_byte_index(&layout, index.min(text.len()), Affinity::Downstream);
         let bounds = cursor.geometry(&layout, CARET_WIDTH);
         (bounds.x0 as f32, bounds.y0 as f32, (bounds.y1 - bounds.y0) as f32)
@@ -149,18 +187,15 @@ impl TextEngine {
 
     /// The byte index nearest a point, for click-to-position. `(x, y)` is
     /// relative to the text's top-left.
-    #[allow(clippy::too_many_arguments)]
     pub fn index_at_point(
         &mut self,
         text: &str,
-        font_size: f32,
-        weight: u16,
-        wrap: Wrap,
+        style: &TextStyle,
         max_width: Option<f32>,
         x: f32,
         y: f32,
     ) -> usize {
-        let layout = self.build(text, font_size, weight, wrap, max_width);
+        let layout = self.build(text, style, max_width);
         Cursor::from_point(&layout, x, y).index()
     }
 
@@ -173,14 +208,12 @@ impl TextEngine {
         x: f32,
         y: f32,
         text: &str,
-        font_size: f32,
-        weight: u16,
+        style: &TextStyle,
         color: Color,
         align: Align,
-        wrap: Wrap,
         max_width: Option<f32>,
     ) {
-        let mut layout = self.build(text, font_size, weight, wrap, max_width);
+        let mut layout = self.build(text, style, max_width);
         layout.align(align.to_parley(), AlignmentOptions::default());
 
         let mut line_top = y;

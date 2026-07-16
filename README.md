@@ -44,7 +44,7 @@ You write a single `.rux` file with familiar `<template>` / `<style>` / `<script
 
 <!-- TODO: replace with a real screenshot of the above running.
      Run `cargo run -p rux-cli -- examples/counter.rux`, screenshot the window,
-     save it to docs/assets/counter.png, and it will render here. -->
+     save it to examples/assets/counter.png, and it will render here. -->
 <p align="center">
   <img src="examples/assets/counter.png" alt="The counter above, running in a native Rux window" width="360">
 </p>

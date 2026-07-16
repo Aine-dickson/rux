@@ -41,7 +41,7 @@ fn scroller() -> Node {
 /// The scroller must be a child, not the root: `layout()` force-sizes its root
 /// to the viewport.
 fn run(offsets: &[f32]) -> Layout {
-    let mut measure = |_: &str, _: f32, _: u16, _: TextWrap, _: Option<f32>| (0.0, 0.0);
+    let mut measure = |_: &rux_layout::TextContent, _: Option<f32>| (0.0, 0.0);
     let screen = boxed(
         Style {
             display: Display::Flex,
@@ -107,7 +107,7 @@ fn offset_is_clamped_to_the_content() {
 fn clip_alone_does_not_scroll() {
     let mut node = scroller();
     node.style.overflow = Overflow::Clip;
-    let mut measure = |_: &str, _: f32, _: u16, _: TextWrap, _: Option<f32>| (0.0, 0.0);
+    let mut measure = |_: &rux_layout::TextContent, _: Option<f32>| (0.0, 0.0);
     let screen = boxed(
         Style {
             display: Display::Flex,

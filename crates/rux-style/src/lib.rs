@@ -5,9 +5,10 @@
 //! the cascade, and produces a styled `rux_layout::Node` tree. This is Stage 2
 //! of `docs/04-architecture.md`, narrowed to the honored subset.
 //!
-//! Selector support (M2): tag, `.class`, `#id`, `[role="…"]`, compound
-//! (`view.card`), and descendant combinators (`.a .b`). Specificity and source
-//! order resolve conflicts, as in CSS.
+//! Selector support: tag, `.class`, `#id`, `[role="…"]`, compound
+//! (`view.card`), and all four combinators — descendant (`.a .b`), child
+//! (`.a > .b`), next-sibling (`.a + .b`) and subsequent-sibling (`.a ~ .b`).
+//! Specificity and source order resolve conflicts, as in CSS.
 
 use std::collections::HashMap;
 
@@ -15,8 +16,8 @@ use lightningcss::rules::CssRule;
 use lightningcss::stylesheet::{ParserOptions, PrinterOptions, StyleSheet};
 use lightningcss::traits::ToCss;
 use rux_layout::{
-    Align, Axis, Display, ImageContent, Justify, Len, Node as LayoutNode, Overflow, Rgba, Sides,
-    Style, TextAlign, TextContent, TextWrap, Track, TrackSide,
+    Align, Axis, Cursor, Display, ImageContent, Justify, Len, Node as LayoutNode, Overflow,
+    Position, Rgba, Sides, Style, TextAlign, TextContent, TextWrap, Track, TrackSide,
 };
 use rux_parser::{Element, Node as TplNode, Sfc};
 use rux_reactive::Value;
@@ -58,6 +59,15 @@ type Components = HashMap<String, Component>;
 /// before any `color` / `font-size` rule applies. Text properties inherit.
 const DEFAULT_COLOR: Rgba = Rgba::new(0.804, 0.839, 0.957, 1.0);
 const DEFAULT_FONT_SIZE: f32 = 16.0;
+
+/// The text properties that inherit down the tree: an element uses its own
+/// `color`/`font-size`/`font-family` if set, else its parent's resolved value.
+#[derive(Clone)]
+struct Inherited {
+    color: Rgba,
+    font_size: f32,
+    font_family: Option<String>,
+}
 
 /// A radius larger than any sane box; kurbo clamps it to half the shorter side,
 /// which makes the box a circle/pill whatever its size.
@@ -115,14 +125,15 @@ pub fn build_styled_tree(
         })
         .collect();
 
-    let mut ancestors: Vec<ElemDesc> = Vec::new();
+    let mut ancestors: Vec<AncNode> = Vec::new();
     let locals = Locals::new();
     Ok(build_node(
         &sfc.template,
         &rules,
         &comps,
         &mut ancestors,
-        (DEFAULT_COLOR, DEFAULT_FONT_SIZE),
+        &[],
+        &Inherited { color: DEFAULT_COLOR, font_size: DEFAULT_FONT_SIZE, font_family: None },
         engine,
         &locals,
     ))
@@ -161,10 +172,26 @@ struct Compound {
     role: Option<String>,
 }
 
-/// A full selector: a descendant chain of compounds, plus its specificity.
+/// How one compound relates to the compound on its left in a selector.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Combinator {
+    /// `a b` — b is any descendant of a.
+    Descendant,
+    /// `a > b` — b is a direct child of a.
+    Child,
+    /// `a + b` — b is the element immediately following sibling a.
+    NextSibling,
+    /// `a ~ b` — b is any following sibling of a.
+    SubsequentSibling,
+}
+
+/// A full selector: a chain of compounds joined by combinators, plus its
+/// specificity. `combs[i]` links `chain[i]` to `chain[i + 1]`, so it always has
+/// one fewer entry than `chain`.
 #[derive(Debug, Clone)]
 struct Rule {
     chain: Vec<Compound>,
+    combs: Vec<Combinator>,
     specificity: (u32, u32, u32),
     order: usize,
     decls: Vec<(String, String)>,
@@ -177,6 +204,16 @@ struct ElemDesc {
     id: Option<String>,
     classes: Vec<String>,
     role: Option<String>,
+}
+
+/// An ancestor in the match context: its identity plus the identities of the
+/// rendered siblings that precede it. The preceding siblings are needed so a
+/// sibling combinator (`+`/`~`) sitting above a descendant/child hop
+/// (e.g. `.a ~ .b .c`) can still be resolved correctly.
+#[derive(Debug, Clone)]
+struct AncNode {
+    desc: ElemDesc,
+    prev: Vec<ElemDesc>,
 }
 
 impl ElemDesc {
@@ -209,8 +246,12 @@ fn parse_rules(css: &str) -> Vec<Rule> {
         for prop in &style.declarations.declarations {
             if let Ok(text) = prop.to_css_string(false, PrinterOptions::default()) {
                 if let Some((k, v)) = text.split_once(':') {
+                    let key = k.trim().to_lowercase();
+                    // Silent ignoring is the worst failure mode we have: valid CSS
+                    // that does nothing with no explanation. Say so, once per name.
+                    warn_if_unhonored(&key);
                     decls.push((
-                        k.trim().to_lowercase(),
+                        key,
                         v.trim().trim_end_matches(';').trim().to_string(),
                     ));
                 }
@@ -220,9 +261,10 @@ fn parse_rules(css: &str) -> Vec<Rule> {
         // One Rule per selector in the list (they share the declarations).
         for selector in &style.selectors.0 {
             if let Ok(text) = selector.to_css_string(PrinterOptions::default()) {
-                if let Some((chain, specificity)) = parse_selector(&text) {
+                if let Some((chain, combs, specificity)) = parse_selector(&text) {
                     rules.push(Rule {
                         chain,
+                        combs,
                         specificity,
                         order,
                         decls: decls.clone(),
@@ -235,22 +277,121 @@ fn parse_rules(css: &str) -> Vec<Rule> {
     rules
 }
 
-/// Parse a selector string into a descendant chain and compute specificity.
-fn parse_selector(text: &str) -> Option<(Vec<Compound>, (u32, u32, u32))> {
-    let mut chain = Vec::new();
-    let mut spec = (0u32, 0u32, 0u32);
+/// The CSS properties the runtime actually interprets today. Anything outside
+/// this set is parsed and then dropped, so [`warn_if_unhonored`] flags it. When
+/// a new property is honored in `interpret` (or the text/border helpers), add it
+/// here too, or authors will be told a working property does nothing.
+const HONORED_PROPERTIES: &[&str] = &[
+    // Box / display
+    "display", "width", "height", "gap",
+    "min-width", "max-width", "min-height", "max-height",
+    "padding", "padding-top", "padding-right", "padding-bottom", "padding-left",
+    "margin", "margin-top", "margin-right", "margin-bottom", "margin-left",
+    "border", "border-width", "border-color", "border-radius",
+    "border-top", "border-right", "border-bottom", "border-left",
+    "border-top-width", "border-right-width", "border-bottom-width", "border-left-width",
+    "overflow", "overflow-x", "overflow-y", "opacity", "cursor",
+    // Flex / grid
+    "flex", "flex-grow", "flex-shrink", "flex-basis", "flex-wrap", "flex-direction",
+    "justify-content", "align-items", "align-self", "justify-self", "justify-items",
+    "align-content", "row-gap", "column-gap",
+    "grid-template-columns", "grid-template-rows",
+    // Positioning
+    "position", "top", "right", "bottom", "left", "aspect-ratio",
+    // Background
+    "background", "background-color",
+    // Text
+    "color", "font-size", "font-weight", "font-family", "font-style", "text-align",
+    "letter-spacing", "word-spacing", "white-space",
+    "overflow-wrap", "word-wrap", "word-break",
+];
 
-    for token in text.split_whitespace() {
-        if token == ">" || token == "+" || token == "~" {
-            continue; // M2 treats all combinators as descendant
+fn is_honored(property: &str) -> bool {
+    HONORED_PROPERTIES.contains(&property)
+}
+
+/// Warn — once per property name, for the life of the process — that a parsed
+/// declaration is not honored. Deduped so a whole-tree rebuild (which reparses
+/// every sheet) doesn't repeat the same line on every keystroke.
+fn warn_if_unhonored(property: &str) {
+    use std::collections::HashSet;
+    use std::sync::{Mutex, OnceLock};
+    static SEEN: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+
+    if is_honored(property) {
+        return;
+    }
+    let seen = SEEN.get_or_init(|| Mutex::new(HashSet::new()));
+    let Ok(mut seen) = seen.lock() else { return };
+    if seen.insert(property.to_string()) {
+        eprintln!(
+            "rux: CSS property `{property}` is parsed but not yet honored — it will have no effect"
+        );
+    }
+}
+
+/// Parse a selector string into a chain of compounds, the combinators joining
+/// them, and its specificity. Combinator tokens (`>`, `+`, `~`) are recognised
+/// with or without surrounding whitespace; a bare space is the descendant
+/// combinator. `[…]` attribute segments are skipped so a `~=` inside one is not
+/// mistaken for a combinator.
+fn parse_selector(text: &str) -> Option<(Vec<Compound>, Vec<Combinator>, (u32, u32, u32))> {
+    let chars: Vec<char> = text.chars().collect();
+    let mut i = 0;
+    let mut chain = Vec::new();
+    let mut combs = Vec::new();
+    let mut spec = (0u32, 0u32, 0u32);
+    // A combinator waiting to be attached to the next compound we read.
+    let mut pending: Option<Combinator> = None;
+
+    while i < chars.len() {
+        let c = chars[i];
+        if c.is_whitespace() {
+            i += 1;
+            continue;
         }
-        let compound = parse_compound(token, &mut spec)?;
+        if let Some(comb) = combinator_of(c) {
+            pending = Some(comb);
+            i += 1;
+            continue;
+        }
+        // Read one compound: everything up to the next top-level whitespace or
+        // combinator, treating `[…]` as opaque.
+        let start = i;
+        let mut depth = 0i32;
+        while i < chars.len() {
+            let d = chars[i];
+            if d == '[' {
+                depth += 1;
+            } else if d == ']' {
+                depth -= 1;
+            } else if depth == 0 && (d.is_whitespace() || combinator_of(d).is_some()) {
+                break;
+            }
+            i += 1;
+        }
+        let token: String = chars[start..i].iter().collect();
+        let compound = parse_compound(&token, &mut spec)?;
+        if !chain.is_empty() {
+            // A space with no explicit combinator is the descendant combinator.
+            combs.push(pending.take().unwrap_or(Combinator::Descendant));
+        }
+        pending = None;
         chain.push(compound);
     }
     if chain.is_empty() {
         return None;
     }
-    Some((chain, spec))
+    Some((chain, combs, spec))
+}
+
+fn combinator_of(c: char) -> Option<Combinator> {
+    match c {
+        '>' => Some(Combinator::Child),
+        '+' => Some(Combinator::NextSibling),
+        '~' => Some(Combinator::SubsequentSibling),
+        _ => None,
+    }
 }
 
 fn parse_compound(token: &str, spec: &mut (u32, u32, u32)) -> Option<Compound> {
@@ -341,35 +482,67 @@ fn matches_compound(c: &Compound, el: &ElemDesc) -> bool {
     true
 }
 
-/// Rightmost compound must match `el`; the rest must match ancestors in order.
-fn matches(chain: &[Compound], ancestors: &[ElemDesc], el: &ElemDesc) -> bool {
+/// Does the selector `chain` (joined by `combs`) match the element `el`, whose
+/// ancestors are `ancestors` (root-first) and whose preceding rendered siblings
+/// are `prev` (document order)?
+///
+/// Matches right-to-left with backtracking: the rightmost compound must match
+/// `el`, then the combinator to its left dictates where the remaining prefix is
+/// sought — up the ancestor chain (descendant/child) or across the preceding
+/// siblings (`+`/`~`). Siblings share `el`'s ancestors; an ancestor's own
+/// preceding siblings ride along in [`AncNode::prev`], so a sibling combinator
+/// above a descendant hop still resolves.
+fn matches_chain(
+    chain: &[Compound],
+    combs: &[Combinator],
+    el: &ElemDesc,
+    ancestors: &[AncNode],
+    prev: &[ElemDesc],
+) -> bool {
     let Some((last, rest)) = chain.split_last() else {
         return false;
     };
     if !matches_compound(last, el) {
         return false;
     }
-    // Walk ancestors nearest→root, consuming `rest` right→left as a subsequence.
-    let mut remaining = rest.len();
-    let mut a = ancestors.len();
-    while remaining > 0 && a > 0 {
-        a -= 1;
-        if matches_compound(&rest[remaining - 1], &ancestors[a]) {
-            remaining -= 1;
-        }
+    if rest.is_empty() {
+        return true;
     }
-    remaining == 0
+    // `combs` has one fewer entry than `chain`; the last one links `last` to the
+    // compound now at the end of `rest`.
+    let (comb, rest_combs) = combs.split_last().expect("combs matches chain length");
+    match comb {
+        Combinator::Descendant => (0..ancestors.len()).rev().any(|i| {
+            matches_chain(rest, rest_combs, &ancestors[i].desc, &ancestors[..i], &ancestors[i].prev)
+        }),
+        Combinator::Child => {
+            let Some((parent, up)) = ancestors.split_last() else {
+                return false;
+            };
+            matches_chain(rest, rest_combs, &parent.desc, up, &parent.prev)
+        }
+        Combinator::NextSibling => {
+            let Some((sib, earlier)) = prev.split_last() else {
+                return false;
+            };
+            matches_chain(rest, rest_combs, sib, ancestors, earlier)
+        }
+        Combinator::SubsequentSibling => (0..prev.len())
+            .rev()
+            .any(|i| matches_chain(rest, rest_combs, &prev[i], ancestors, &prev[..i])),
+    }
 }
 
 /// Collect the matching rules' declarations for an element, in cascade order.
 fn matched_props(
     desc: &ElemDesc,
-    ancestors: &[ElemDesc],
+    ancestors: &[AncNode],
+    prev: &[ElemDesc],
     rules: &[Rule],
 ) -> HashMap<String, String> {
     let mut matched: Vec<&Rule> = rules
         .iter()
-        .filter(|r| matches(&r.chain, ancestors, desc))
+        .filter(|r| matches_chain(&r.chain, &r.combs, desc, ancestors, prev))
         .collect();
     matched.sort_by(|a, b| a.specificity.cmp(&b.specificity).then(a.order.cmp(&b.order)));
 
@@ -398,15 +571,16 @@ fn collect_text(el: &Element, engine: &mut Engine, locals: &Locals) -> String {
 /// [`build_children`]; this function handles per-node concerns (`r-show`) and
 /// recurses into children.
 ///
-/// `inherited` carries the resolved `(color, font_size)` (text properties
-/// inherit); `locals` carries `r-for` loop bindings.
+/// `inherited` carries the resolved text properties (`color`/`font-size`/
+/// `font-family`, which inherit); `locals` carries `r-for` loop bindings.
 #[allow(clippy::too_many_arguments)]
 fn build_node(
     el: &Element,
     rules: &[Rule],
     comps: &Components,
-    ancestors: &mut Vec<ElemDesc>,
-    inherited: (Rgba, f32),
+    ancestors: &mut Vec<AncNode>,
+    prev: &[ElemDesc],
+    inherited: &Inherited,
     engine: &mut Engine,
     locals: &Locals,
 ) -> LayoutNode {
@@ -423,7 +597,7 @@ fn build_node(
     if toggle.is_some_and(|t| t.checked) {
         desc.classes.push("checked".to_string());
     }
-    let props = matched_props(&desc, ancestors, rules);
+    let props = matched_props(&desc, ancestors, prev, rules);
     let style = interpret(&props);
     // A `@tap` handler runs later, in global scope, where the `r-for` loop
     // variable no longer exists — so `@tap="picked = item"` would see `item`
@@ -439,11 +613,30 @@ fn build_node(
     let color = props
         .get("color")
         .and_then(|v| parse_color(v))
-        .unwrap_or(inherited.0);
+        .unwrap_or(inherited.color);
     let font_size = props
         .get("font-size")
         .and_then(|v| parse_px(first(v)))
-        .unwrap_or(inherited.1);
+        .unwrap_or(inherited.font_size);
+    // `font-family` is stored as the raw CSS list; parley parses it and does the
+    // fallback. An empty/`inherit` value falls back to the inherited family.
+    let font_family = props
+        .get("font-family")
+        .filter(|v| !v.trim().is_empty() && v.trim() != "inherit")
+        .map(|v| v.trim().to_string())
+        .or_else(|| inherited.font_family.clone());
+    // Non-inheriting shaping props, resolved from this node's own rules (as
+    // `font-weight`/`text-align` already are).
+    let letter_spacing = props.get("letter-spacing").and_then(|v| parse_spacing(v));
+    let word_spacing = props.get("word-spacing").and_then(|v| parse_spacing(v));
+    let italic = props
+        .get("font-style")
+        .is_some_and(|v| matches!(v.trim(), "italic" | "oblique"));
+    // `white-space: nowrap|pre` stops line breaking. (We don't preserve `pre`
+    // whitespace runs yet; the no-wrap half is what matters for layout.)
+    let nowrap = props
+        .get("white-space")
+        .is_some_and(|v| matches!(v.trim(), "nowrap" | "pre"));
 
     if el.tag == "text" {
         let weight = props.get("font-weight").and_then(|v| parse_weight(v)).unwrap_or(400);
@@ -461,6 +654,11 @@ fn build_node(
                 color,
                 align,
                 wrap,
+                font_family: font_family.clone(),
+                letter_spacing,
+                word_spacing,
+                italic,
+                nowrap,
                 caret: None,
             },
         );
@@ -572,6 +770,11 @@ fn build_node(
                 color: shown_color,
                 align: TextAlign::Start,
                 wrap: style.text_wrap,
+                font_family: font_family.clone(),
+                letter_spacing,
+                word_spacing,
+                italic,
+                nowrap,
                 caret: None, // the runtime marks the focused input's caret
             },
         );
@@ -583,7 +786,7 @@ fn build_node(
         return node;
     }
 
-    ancestors.push(desc);
+    ancestors.push(AncNode { desc, prev: prev.to_vec() });
     let element_children: Vec<&Element> = el
         .children
         .iter()
@@ -597,7 +800,7 @@ fn build_node(
         rules,
         comps,
         ancestors,
-        (color, font_size),
+        &Inherited { color, font_size, font_family },
         engine,
         locals,
     );
@@ -622,7 +825,7 @@ fn expand_component(
     el: &Element,
     component: &Component,
     comps: &Components,
-    inherited: (Rgba, f32),
+    inherited: &Inherited,
     engine: &mut Engine,
     parent_locals: &Locals,
 ) -> LayoutNode {
@@ -635,12 +838,13 @@ fn expand_component(
         }
     }
 
-    let mut ancestors: Vec<ElemDesc> = Vec::new();
+    let mut ancestors: Vec<AncNode> = Vec::new();
     build_node(
         &component.template,
         &component.rules,
         comps,
         &mut ancestors,
+        &[],
         inherited,
         engine,
         &props,
@@ -660,12 +864,16 @@ fn build_children(
     elements: &[&Element],
     rules: &[Rule],
     comps: &Components,
-    ancestors: &mut Vec<ElemDesc>,
-    inherited: (Rgba, f32),
+    ancestors: &mut Vec<AncNode>,
+    inherited: &Inherited,
     engine: &mut Engine,
     locals: &Locals,
 ) -> Vec<LayoutNode> {
     let mut out = Vec::new();
+    // The identities of the rendered siblings so far, so `+`/`~` combinators can
+    // see the elements preceding the one being built. (The synthetic `checked`
+    // class is not reflected here — sibling combinators don't see checked state.)
+    let mut prev: Vec<ElemDesc> = Vec::new();
     // Tracks an active r-if/r-elif/r-else chain and whether a branch was taken.
     let mut in_chain = false;
     let mut chain_satisfied = false;
@@ -682,7 +890,8 @@ fn build_children(
                     for item in items {
                         let mut child_locals = locals.clone();
                         child_locals.push((var.to_string(), item));
-                        out.push(build_node(el, rules, comps, ancestors, inherited, engine, &child_locals));
+                        out.push(build_node(el, rules, comps, ancestors, &prev, inherited, engine, &child_locals));
+                        prev.push(ElemDesc::of(el));
                     }
                 }
             }
@@ -693,20 +902,23 @@ fn build_children(
             in_chain = true;
             chain_satisfied = engine.eval_bool(cond, locals);
             if chain_satisfied {
-                out.push(build_node(el, rules, comps, ancestors, inherited, engine, locals));
+                out.push(build_node(el, rules, comps, ancestors, &prev, inherited, engine, locals));
+                prev.push(ElemDesc::of(el));
             }
             continue;
         }
         if let Some(cond) = el.attr("r-elif") {
             if in_chain && !chain_satisfied && engine.eval_bool(cond, locals) {
                 chain_satisfied = true;
-                out.push(build_node(el, rules, comps, ancestors, inherited, engine, locals));
+                out.push(build_node(el, rules, comps, ancestors, &prev, inherited, engine, locals));
+                prev.push(ElemDesc::of(el));
             }
             continue;
         }
         if el.attr("r-else").is_some() {
             if in_chain && !chain_satisfied {
-                out.push(build_node(el, rules, comps, ancestors, inherited, engine, locals));
+                out.push(build_node(el, rules, comps, ancestors, &prev, inherited, engine, locals));
+                prev.push(ElemDesc::of(el));
             }
             in_chain = false;
             continue;
@@ -714,7 +926,8 @@ fn build_children(
 
         // A plain element ends any active chain.
         in_chain = false;
-        out.push(build_node(el, rules, comps, ancestors, inherited, engine, locals));
+        out.push(build_node(el, rules, comps, ancestors, &prev, inherited, engine, locals));
+        prev.push(ElemDesc::of(el));
     }
     out
 }
@@ -809,23 +1022,44 @@ fn interpret(p: &HashMap<String, String>) -> Style {
         st.axis = if v.trim() == "column" { Axis::Column } else { Axis::Row };
     }
     if let Some(v) = p.get("justify-content") {
-        st.justify = match v.trim() {
-            "center" => Some(Justify::Center),
-            "flex-end" | "end" => Some(Justify::End),
-            "space-between" => Some(Justify::SpaceBetween),
-            "space-around" => Some(Justify::SpaceAround),
-            "flex-start" | "start" => Some(Justify::Start),
-            _ => None,
-        };
+        st.justify = parse_justify(v);
     }
     if let Some(v) = p.get("align-items") {
-        st.align = match v.trim() {
-            "center" => Some(Align::Center),
-            "flex-end" | "end" => Some(Align::End),
-            "stretch" => Some(Align::Stretch),
-            "flex-start" | "start" => Some(Align::Start),
-            _ => None,
+        st.align = parse_align(v);
+    }
+    // Cross-/inline-axis self and content alignment (flex + grid).
+    if let Some(v) = p.get("align-self") {
+        st.align_self = parse_align(v);
+    }
+    if let Some(v) = p.get("justify-self") {
+        st.justify_self = parse_align(v);
+    }
+    if let Some(v) = p.get("justify-items") {
+        st.justify_items = parse_align(v);
+    }
+    if let Some(v) = p.get("align-content") {
+        st.align_content = parse_justify(v);
+    }
+    // `row-gap` / `column-gap` override the `gap` shorthand per axis.
+    if let Some(px) = p.get("row-gap").and_then(|v| parse_px(first(v))) {
+        st.row_gap = Some(px);
+    }
+    if let Some(px) = p.get("column-gap").and_then(|v| parse_px(first(v))) {
+        st.column_gap = Some(px);
+    }
+    if let Some(v) = p.get("position") {
+        st.position = match v.trim() {
+            "absolute" | "fixed" => Position::Absolute,
+            _ => Position::Relative,
         };
+    }
+    for (i, side) in ["top", "right", "bottom", "left"].iter().enumerate() {
+        if let Some(v) = p.get(*side) {
+            st.inset[i] = if first(v) == "auto" { None } else { parse_len(first(v)) };
+        }
+    }
+    if let Some(v) = p.get("aspect-ratio") {
+        st.aspect_ratio = parse_aspect_ratio(v);
     }
     if let Some(v) = p.get("background").or_else(|| p.get("background-color")) {
         st.background = parse_color(v);
@@ -847,6 +1081,14 @@ fn interpret(p: &HashMap<String, String>) -> Style {
             "hidden" | "clip" if st.overflow != Overflow::Scroll => st.overflow = Overflow::Clip,
             _ => {}
         }
+    }
+    if let Some(v) = p.get("cursor") {
+        // Only `pointer` maps to a distinct shape today; everything else keeps
+        // the default arrow. The shell applies this on hover for tappable boxes.
+        st.cursor = match v.trim() {
+            "pointer" => Cursor::Pointer,
+            _ => Cursor::Default,
+        };
     }
     st
 }
@@ -893,6 +1135,46 @@ fn interpret_flex_shorthand(v: &str, st: &mut Style) {
         // A bare `flex: 1` sizes purely from the free space.
         None => Some(Len::Px(0.0)),
     };
+}
+
+/// `align-items` / `align-self` / `justify-self` / `justify-items` keyword.
+fn parse_align(v: &str) -> Option<Align> {
+    match v.trim() {
+        "center" => Some(Align::Center),
+        "flex-end" | "end" => Some(Align::End),
+        "stretch" => Some(Align::Stretch),
+        "flex-start" | "start" => Some(Align::Start),
+        _ => None,
+    }
+}
+
+/// `justify-content` / `align-content` keyword.
+fn parse_justify(v: &str) -> Option<Justify> {
+    match v.trim() {
+        "center" => Some(Justify::Center),
+        "flex-end" | "end" => Some(Justify::End),
+        "space-between" => Some(Justify::SpaceBetween),
+        "space-around" => Some(Justify::SpaceAround),
+        "flex-start" | "start" => Some(Justify::Start),
+        _ => None,
+    }
+}
+
+/// `letter-spacing` / `word-spacing`: a px length, or `normal` (→ no extra).
+fn parse_spacing(v: &str) -> Option<f32> {
+    match first(v) {
+        "normal" => None,
+        s => parse_px(s),
+    }
+}
+
+/// `aspect-ratio`: a plain number, or a `<w> / <h>` ratio.
+fn parse_aspect_ratio(v: &str) -> Option<f32> {
+    if let Some((w, h)) = v.split_once('/') {
+        let (w, h) = (w.trim().parse::<f32>().ok()?, h.trim().parse::<f32>().ok()?);
+        return (h != 0.0).then_some(w / h);
+    }
+    v.trim().parse::<f32>().ok().filter(|r| *r > 0.0)
 }
 
 fn first(s: &str) -> &str {
@@ -1126,12 +1408,71 @@ fn parse_color(s: &str) -> Option<Rgba> {
     if s.starts_with("rgb") {
         return parse_rgb(s);
     }
-    match s {
-        "transparent" => Some(Rgba::new(0.0, 0.0, 0.0, 0.0)),
-        "white" => Some(Rgba::new(1.0, 1.0, 1.0, 1.0)),
-        "black" => Some(Rgba::new(0.0, 0.0, 0.0, 1.0)),
-        _ => None,
+    if s.eq_ignore_ascii_case("transparent") {
+        return Some(Rgba::new(0.0, 0.0, 0.0, 0.0));
     }
+    // Named colors. This matters more than it looks: lightningcss *minifies* hex
+    // to the shorter keyword (`#ff0000` → `red`), so without this table a plain
+    // `color: #ff0000` would silently fall back to the default.
+    named_color(&s.to_ascii_lowercase()).and_then(parse_hex)
+}
+
+/// The CSS named colors, as their hex value (without `#`). Covers the full CSS
+/// Color Level 4 keyword list so any keyword lightningcss emits round-trips.
+fn named_color(name: &str) -> Option<&'static str> {
+    let hex = match name {
+        "aliceblue" => "f0f8ff", "antiquewhite" => "faebd7", "aqua" => "00ffff",
+        "aquamarine" => "7fffd4", "azure" => "f0ffff", "beige" => "f5f5dc",
+        "bisque" => "ffe4c4", "black" => "000000", "blanchedalmond" => "ffebcd",
+        "blue" => "0000ff", "blueviolet" => "8a2be2", "brown" => "a52a2a",
+        "burlywood" => "deb887", "cadetblue" => "5f9ea0", "chartreuse" => "7fff00",
+        "chocolate" => "d2691e", "coral" => "ff7f50", "cornflowerblue" => "6495ed",
+        "cornsilk" => "fff8dc", "crimson" => "dc143c", "cyan" => "00ffff",
+        "darkblue" => "00008b", "darkcyan" => "008b8b", "darkgoldenrod" => "b8860b",
+        "darkgray" | "darkgrey" => "a9a9a9", "darkgreen" => "006400",
+        "darkkhaki" => "bdb76b", "darkmagenta" => "8b008b", "darkolivegreen" => "556b2f",
+        "darkorange" => "ff8c00", "darkorchid" => "9932cc", "darkred" => "8b0000",
+        "darksalmon" => "e9967a", "darkseagreen" => "8fbc8f", "darkslateblue" => "483d8b",
+        "darkslategray" | "darkslategrey" => "2f4f4f", "darkturquoise" => "00ced1",
+        "darkviolet" => "9400d3", "deeppink" => "ff1493", "deepskyblue" => "00bfff",
+        "dimgray" | "dimgrey" => "696969", "dodgerblue" => "1e90ff",
+        "firebrick" => "b22222", "floralwhite" => "fffaf0", "forestgreen" => "228b22",
+        "fuchsia" => "ff00ff", "gainsboro" => "dcdcdc", "ghostwhite" => "f8f8ff",
+        "gold" => "ffd700", "goldenrod" => "daa520", "gray" | "grey" => "808080",
+        "green" => "008000", "greenyellow" => "adff2f", "honeydew" => "f0fff0",
+        "hotpink" => "ff69b4", "indianred" => "cd5c5c", "indigo" => "4b0082",
+        "ivory" => "fffff0", "khaki" => "f0e68c", "lavender" => "e6e6fa",
+        "lavenderblush" => "fff0f5", "lawngreen" => "7cfc00", "lemonchiffon" => "fffacd",
+        "lightblue" => "add8e6", "lightcoral" => "f08080", "lightcyan" => "e0ffff",
+        "lightgoldenrodyellow" => "fafad2", "lightgray" | "lightgrey" => "d3d3d3",
+        "lightgreen" => "90ee90", "lightpink" => "ffb6c1", "lightsalmon" => "ffa07a",
+        "lightseagreen" => "20b2aa", "lightskyblue" => "87cefa", "lightslategray" | "lightslategrey" => "778899",
+        "lightsteelblue" => "b0c4de", "lightyellow" => "ffffe0", "lime" => "00ff00",
+        "limegreen" => "32cd32", "linen" => "faf0e6", "magenta" => "ff00ff",
+        "maroon" => "800000", "mediumaquamarine" => "66cdaa", "mediumblue" => "0000cd",
+        "mediumorchid" => "ba55d3", "mediumpurple" => "9370db", "mediumseagreen" => "3cb371",
+        "mediumslateblue" => "7b68ee", "mediumspringgreen" => "00fa9a", "mediumturquoise" => "48d1cc",
+        "mediumvioletred" => "c71585", "midnightblue" => "191970", "mintcream" => "f5fffa",
+        "mistyrose" => "ffe4e1", "moccasin" => "ffe4b5", "navajowhite" => "ffdead",
+        "navy" => "000080", "oldlace" => "fdf5e6", "olive" => "808000",
+        "olivedrab" => "6b8e23", "orange" => "ffa500", "orangered" => "ff4500",
+        "orchid" => "da70d6", "palegoldenrod" => "eee8aa", "palegreen" => "98fb98",
+        "paleturquoise" => "afeeee", "palevioletred" => "db7093", "papayawhip" => "ffefd5",
+        "peachpuff" => "ffdab9", "peru" => "cd853f", "pink" => "ffc0cb",
+        "plum" => "dda0dd", "powderblue" => "b0e0e6", "purple" => "800080",
+        "rebeccapurple" => "663399", "red" => "ff0000", "rosybrown" => "bc8f8f",
+        "royalblue" => "4169e1", "saddlebrown" => "8b4513", "salmon" => "fa8072",
+        "sandybrown" => "f4a460", "seagreen" => "2e8b57", "seashell" => "fff5ee",
+        "sienna" => "a0522d", "silver" => "c0c0c0", "skyblue" => "87ceeb",
+        "slateblue" => "6a5acd", "slategray" | "slategrey" => "708090", "snow" => "fffafa",
+        "springgreen" => "00ff7f", "steelblue" => "4682b4", "tan" => "d2b48c",
+        "teal" => "008080", "thistle" => "d8bfd8", "tomato" => "ff6347",
+        "turquoise" => "40e0d0", "violet" => "ee82ee", "wheat" => "f5deb3",
+        "white" => "ffffff", "whitesmoke" => "f5f5f5", "yellow" => "ffff00",
+        "yellowgreen" => "9acd32",
+        _ => return None,
+    };
+    Some(hex)
 }
 
 fn parse_hex(hex: &str) -> Option<Rgba> {
@@ -1208,6 +1549,44 @@ mod tests {
         assert_eq!(st.shrink, 0.0);
         assert!(st.wrap);
         assert_eq!(st.opacity, 0.45);
+    }
+
+    #[test]
+    fn named_and_hex_colors_resolve() {
+        use super::parse_color;
+        // The landmine: lightningcss minifies `#ff0000` to `red`, so the keyword
+        // path has to work or a plain red silently falls back to the default.
+        assert_eq!(parse_color("red").map(|c| (c.r, c.g, c.b)), Some((1.0, 0.0, 0.0)));
+        assert!(parse_color("REBECCApurple").is_some()); // case-insensitive
+        assert_eq!(parse_color("#000000").map(|c| c.r), Some(0.0));
+        assert_eq!(parse_color("transparent").map(|c| c.a), Some(0.0));
+        assert!(parse_color("notacolor").is_none());
+    }
+
+    #[test]
+    fn maps_alignment_gap_position_and_aspect_ratio() {
+        use super::{Align, Justify, Len, Position};
+        let mut p = HashMap::new();
+        p.insert("align-self".to_string(), "center".to_string());
+        p.insert("justify-self".to_string(), "end".to_string());
+        p.insert("align-content".to_string(), "space-between".to_string());
+        p.insert("row-gap".to_string(), "8px".to_string());
+        p.insert("column-gap".to_string(), "12px".to_string());
+        p.insert("position".to_string(), "absolute".to_string());
+        p.insert("top".to_string(), "10px".to_string());
+        p.insert("left".to_string(), "auto".to_string());
+        p.insert("aspect-ratio".to_string(), "16 / 9".to_string());
+
+        let st = interpret(&p);
+        assert!(matches!(st.align_self, Some(Align::Center)));
+        assert!(matches!(st.justify_self, Some(Align::End)));
+        assert!(matches!(st.align_content, Some(Justify::SpaceBetween)));
+        assert_eq!(st.row_gap, Some(8.0));
+        assert_eq!(st.column_gap, Some(12.0));
+        assert!(matches!(st.position, Position::Absolute));
+        assert!(matches!(st.inset[0], Some(Len::Px(v)) if v == 10.0)); // top
+        assert!(st.inset[3].is_none()); // left: auto
+        assert!(st.aspect_ratio.is_some_and(|r| (r - 16.0 / 9.0).abs() < 1e-4));
     }
 
     #[test]
@@ -1352,6 +1731,144 @@ mod tests {
         let view = &root.children[0];
         let text = view.children[0].text.as_ref().unwrap();
         assert_eq!(text.text, "Battery: 82");
+    }
+
+    // ── Combinators ─────────────────────────────────────────────────────────
+    //
+    // These test `matches_chain` directly so both the positive and the negative
+    // case are asserted: the bug being fixed here made `>`, `+` and `~` behave
+    // as descendant, i.e. match elements they must NOT match.
+    use super::{matches_chain, parse_selector, AncNode, ElemDesc};
+
+    fn el(spec: &str) -> ElemDesc {
+        // "tag.class.class#id" — tag optional, order flexible enough for tests.
+        let mut d = ElemDesc { tag: String::new(), id: None, classes: Vec::new(), role: None };
+        let mut rest = spec;
+        while let Some(pos) = rest.find(['.', '#']) {
+            if pos > 0 {
+                d.tag = rest[..pos].to_string();
+            }
+            let marker = rest.as_bytes()[pos];
+            let after = &rest[pos + 1..];
+            let end = after.find(['.', '#']).unwrap_or(after.len());
+            let name = after[..end].to_string();
+            if marker == b'.' {
+                d.classes.push(name);
+            } else {
+                d.id = Some(name);
+            }
+            rest = &after[end..];
+        }
+        if !rest.is_empty() && d.tag.is_empty() {
+            d.tag = rest.to_string();
+        }
+        d
+    }
+
+    fn anc(spec: &str, prev: &[&str]) -> AncNode {
+        AncNode { desc: el(spec), prev: prev.iter().map(|s| el(s)).collect() }
+    }
+
+    /// `selector` against element `target` with the given ancestor chain
+    /// (root-first) and preceding siblings (document order).
+    fn hits(selector: &str, target: &str, ancestors: &[AncNode], prev: &[&str]) -> bool {
+        let (chain, combs, _) = parse_selector(selector).expect("selector parses");
+        let prev: Vec<ElemDesc> = prev.iter().map(|s| el(s)).collect();
+        matches_chain(&chain, &combs, &el(target), ancestors, &prev)
+    }
+
+    #[test]
+    fn lightningcss_serialization_round_trips_to_our_combinators() {
+        // Guards the seam between lightningcss's selector serialization and our
+        // `parse_selector`: if that serialization ever changes shape, this catches
+        // it before it silently degrades matching back to descendant-only.
+        use super::{parse_rules, Combinator};
+        let css = ".card > text { color: #111 } .a + .b { color: #222 } .a ~ .b { color: #333 }";
+        let rules = parse_rules(css);
+        let combs: Vec<&[Combinator]> = rules.iter().map(|r| r.combs.as_slice()).collect();
+        assert_eq!(combs[0], &[Combinator::Child]);
+        assert_eq!(combs[1], &[Combinator::NextSibling]);
+        assert_eq!(combs[2], &[Combinator::SubsequentSibling]);
+    }
+
+    #[test]
+    fn child_combinator_styles_the_right_element_end_to_end() {
+        // `> text` must reach the direct child, not the grandchild. Before the
+        // fix both were colored; now only the direct child is.
+        // `#080808` is used because lightningcss minifies e.g. `#ff0000` to the
+        // keyword `red`, which `parse_color` doesn't (yet) resolve; this hex has
+        // no shorter form and survives serialization unchanged.
+        let src = r#"
+            <template>
+              <screen>
+                <text>direct</text>
+                <view><text>nested</text></view>
+              </screen>
+            </template>
+            <style>
+              screen > text { color: #080808 }
+            </style>
+        "#;
+        let sfc = rux_parser::parse_sfc(src).unwrap();
+        let mut engine = Builder::new().build("").unwrap();
+        let root = build_styled_tree(&sfc, &HashMap::new(), &mut engine).unwrap();
+
+        let direct = root.children[0].text.as_ref().unwrap();
+        let nested = root.children[1].children[0].text.as_ref().unwrap();
+        assert!(direct.color.r < 0.1, "direct child of screen got the #080808 color");
+        assert!(nested.color.r > 0.5, "grandchild is NOT matched by `screen > text`");
+    }
+
+    #[test]
+    fn child_combinator_only_matches_direct_children() {
+        // The bug's own example: `.card > text` must select a text that is a
+        // direct child of `.card`, and must NOT select one nested a level deeper.
+        assert!(hits("*.card > text", "text", &[anc("view.card", &[])], &[]));
+        assert!(!hits(
+            "*.card > text",
+            "text",
+            &[anc("view.card", &[]), anc("view.inner", &[])],
+            &[],
+        ));
+        // Descendant (`.card text`) still matches the nested one — the control.
+        assert!(hits(
+            "*.card text",
+            "text",
+            &[anc("view.card", &[]), anc("view.inner", &[])],
+            &[],
+        ));
+    }
+
+    #[test]
+    fn next_sibling_combinator_needs_immediate_predecessor() {
+        // `.a + .b`: matches only when `.a` is the element right before `.b`.
+        assert!(hits("*.a + *.b", "view.b", &[], &["view.a"]));
+        assert!(hits("*.a + *.b", "view.b", &[], &["view.x", "view.a"]));
+        // `.a` present but not immediately before → no match (was matched by bug).
+        assert!(!hits("*.a + *.b", "view.b", &[], &["view.a", "view.x"]));
+        assert!(!hits("*.a + *.b", "view.b", &[], &[]));
+    }
+
+    #[test]
+    fn subsequent_sibling_combinator_matches_any_earlier_sibling() {
+        // `.a ~ .b`: any preceding sibling `.a`, not just the immediate one.
+        assert!(hits("*.a ~ *.b", "view.b", &[], &["view.a", "view.x"]));
+        assert!(hits("*.a ~ *.b", "view.b", &[], &["view.a"]));
+        assert!(!hits("*.a ~ *.b", "view.b", &[], &["view.x"]));
+    }
+
+    #[test]
+    fn combinators_compose() {
+        // `.card > .a + .b`: `.b` is a child of `.card`, right after sibling `.a`.
+        let ancestors = [anc("view.card", &[])];
+        assert!(hits("*.card > *.a + *.b", "view.b", &ancestors, &["view.a"]));
+        // A sibling combinator sitting above a descendant hop resolves via the
+        // ancestor's own preceding siblings: `.a ~ .b .c`.
+        let ancestors = [anc("view.b", &["view.a"])];
+        assert!(hits("*.a ~ *.b *.c", "view.c", &ancestors, &[]));
+        // …and fails when that ancestor has no preceding `.a`.
+        let ancestors = [anc("view.b", &["view.x"])];
+        assert!(!hits("*.a ~ *.b *.c", "view.c", &ancestors, &[]));
     }
 }
 

@@ -12,7 +12,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use notify::{EventKind, RecursiveMode, Watcher};
-use rux_layout::{FocusRegion, HitRegion, ScrollRegion};
+use rux_layout::{Cursor, FocusRegion, HitRegion, ScrollRegion};
 use rux_runtime::Document;
 use vello::kurbo::Affine;
 use vello::peniko::Color;
@@ -24,7 +24,7 @@ use winit::application::ApplicationHandler;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{Key, NamedKey};
-use winit::window::{Window, WindowId};
+use winit::window::{CursorIcon, Window, WindowId};
 
 /// Events delivered to the winit loop from outside it.
 #[derive(Debug, Clone)]
@@ -97,6 +97,9 @@ struct App {
     pointer: (f64, f64),
     /// Where the left button was pressed, if it is currently down.
     press: Option<(f64, f64)>,
+    /// The cursor icon currently set on the window, so a mouse-move only calls
+    /// `set_cursor` when the shape actually changes.
+    cursor: CursorIcon,
 }
 
 impl App {
@@ -119,6 +122,7 @@ impl App {
             blink_deadline: None,
             pointer: (0.0, 0.0),
             press: None,
+            cursor: CursorIcon::Default,
         }
     }
 
@@ -170,6 +174,30 @@ impl App {
         }
     }
 
+    /// Set the window's cursor from whatever tappable region is under the
+    /// pointer (topmost wins, as with tap dispatch). Only touches the window when
+    /// the shape changes, so it's cheap to call on every mouse move.
+    fn update_cursor(&mut self) {
+        let scale = self.scale();
+        let (px, py) = ((self.pointer.0 / scale) as f32, (self.pointer.1 / scale) as f32);
+        let want = self
+            .hits
+            .iter()
+            .rev()
+            .find(|h| h.contains(px, py))
+            .map(|h| match h.cursor {
+                Cursor::Pointer => CursorIcon::Pointer,
+                Cursor::Default => CursorIcon::Default,
+            })
+            .unwrap_or(CursorIcon::Default);
+        if want != self.cursor {
+            self.cursor = want;
+            if let Some(state) = &self.state {
+                state.window.set_cursor(want);
+            }
+        }
+    }
+
     /// Handle a completed tap at `(px, py)`, in physical pixels: focus an input
     /// if one is under the pointer, otherwise run the topmost `@tap` handler.
     fn dispatch_tap(&mut self, px: f64, py: f64) {
@@ -191,9 +219,7 @@ impl App {
             let caret = match &region.text {
                 Some(t) if !value.is_empty() => self.text.index_at_point(
                     &value,
-                    t.content.font_size,
-                    t.content.weight,
-                    rux_paint::to_wrap(t.content.wrap),
+                    &rux_paint::text_style(&t.content),
                     Some(t.width),
                     px as f32 - t.x,
                     py as f32 - t.y,
@@ -364,8 +390,8 @@ impl App {
         // Layout (text sized via the engine's measure), then paint. Cache the
         // hit regions for tap dispatch.
         let layout = {
-            let mut measure = |t: &str, fs: f32, w: u16, wr: rux_layout::TextWrap, mw: Option<f32>| {
-                text.measure(t, fs, w, rux_paint::to_wrap(wr), mw)
+            let mut measure = |tc: &rux_layout::TextContent, mw: Option<f32>| {
+                text.measure(&tc.text, &rux_paint::text_style(tc), mw)
             };
             rux_layout::layout_scrolled(
                 &document.root,
@@ -523,6 +549,7 @@ impl ApplicationHandler<RuxEvent> for App {
             }
             WindowEvent::CursorMoved { position, .. } => {
                 self.pointer = (position.x, position.y);
+                self.update_cursor();
             }
             WindowEvent::KeyboardInput { event, .. } => {
                 if event.state == ElementState::Pressed && self.focused.is_some() {

@@ -1,0 +1,62 @@
+<template>
+  <screen class="app">
+    <text class="row sans">sans-serif — the quick brown fox</text>
+    <text class="row serif">serif — the quick brown fox</text>
+    <text class="row mono">monospace — the quick brown fox</text>
+    <text class="row named">Georgia — the quick brown fox</text>
+    <text class="row stack">Consolas, monospace — 0O1lI</text>
+
+    <!-- font-style, letter-spacing, white-space -->
+    <text class="row italic">italic — the quick brown fox</text>
+    <text class="row tracked">letter-spacing — T R A C K E D O U T</text>
+    <view class="clip">
+      <text class="nowrap">white-space: nowrap keeps this on one line even when the box is too narrow to hold it</text>
+    </view>
+
+    <!-- font-family inherits: this group sets it once on the container -->
+    <view class="card">
+      <text class="cardtitle">Inherited family</text>
+      <text>Both lines inherit the card's serif family,</text>
+      <text>because font-family cascades like color.</text>
+    </view>
+  </screen>
+</template>
+
+<style>
+  .app {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    padding: 28px;
+    background: #1e1e2e;
+  }
+  .row { color: #cdd6f4; font-size: 22px; }
+  .sans  { font-family: sans-serif; }
+  .serif { font-family: serif; }
+  .mono  { font-family: monospace; }
+  .named { font-family: Georgia; }
+  .stack { font-family: "Consolas", monospace; }
+  .italic { font-style: italic; }
+  .tracked { letter-spacing: 3px; }
+
+  .clip { width: 260px; overflow: hidden; border-radius: 6px; background: #313244; padding: 8px; }
+  .nowrap { white-space: nowrap; color: #f9e2af; }
+
+  .card {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-top: 12px;
+    padding: 16px;
+    background: #313244;
+    border-radius: 10px;
+    color: #cdd6f4;
+    font-size: 18px;
+    font-family: serif;            /* inherited by every text inside */
+  }
+  .cardtitle { font-weight: 700; font-size: 20px; }
+</style>
+
+<script>
+  let ready = signal(true);
+</script>

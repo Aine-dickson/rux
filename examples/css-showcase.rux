@@ -1,0 +1,93 @@
+<template>
+    <screen class="app">
+        <text class="title">CSS showcase</text>
+
+        <!-- row-gap / column-gap on a wrapping grid of chips -->
+        <view class="chips">
+            <view class="chip" r-for="c in colors">
+                <text class="chiplabel">{{ c }}</text>
+            </view>
+        </view>
+
+        <!-- position: absolute + inset, pinned inside a relative box -->
+        <view class="stage">
+            <view class="badge">
+                <text>{{ n }}</text>
+            </view>
+            <button class="tap" @tap="n = n + 1">
+                <text>tap to count</text>
+            </button>
+        </view>
+    </screen>
+</template>
+
+<style>
+  .app {
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+    padding: 24px;
+    background: navy;                 /* named color (was silently ignored) */
+  }
+  .title {
+    color: white;
+    font-size: 24px;
+    font-weight: 700;
+  }
+
+  .chips {
+    display: flex;
+    flex-wrap: wrap;
+    row-gap: 8px;                     /* per-axis gaps */
+    column-gap: 16px;
+  }
+  .chip {
+    display: flex;
+    align-items: center;
+    padding: 6px 12px;
+    background: royalblue;            /* named color */
+    border-radius: 9999px;
+  }
+  .chiplabel { color: white; font-size: 14px; }
+
+  .stage {
+    position: relative;
+    /* Width is required: this box's only children are position:absolute (out of
+       flow), so with the flex cross-axis defaulting to hug it would collapse to
+       0px and the inset-positioned children would pin to the wrong edge. */
+    width: 100%;
+    height: 120px;
+    background: #1e1e2e;
+    border-radius: 12px;
+  }
+  /* Pinned to the top-right corner by inset, out of normal flow. */
+  .badge {
+    position: absolute;
+    top: 10px;
+    right: 10px;
+    padding: 4px 10px;
+    background: gold;
+    color: black;
+    border-radius: 8px;
+    font-weight: 700;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+  }
+  .tap {
+    position: absolute;
+    bottom: 12px;
+    left: 12px;
+    padding: 10px 16px;
+    background: mediumseagreen;
+    color: white;
+    border-radius: 8px;
+    cursor: pointer;
+    align-self: flex-start;
+  }
+</style>
+
+<script>
+  let n = signal(0);
+  let colors = signal(["crimson", "teal", "orange", "orchid", "tomato", "slateblue"]);
+</script>

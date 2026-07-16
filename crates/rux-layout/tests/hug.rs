@@ -22,12 +22,12 @@ fn on_screen(node: Node) -> Node {
 }
 
 fn paints(root: &Node) -> Vec<Paint> {
-    let mut measure = |_: &str, _: f32, _: u16, _: TextWrap, _: Option<f32>| (0.0, 0.0);
+    let mut measure = |_: &rux_layout::TextContent, _: Option<f32>| (0.0, 0.0);
     layout(&on_screen(root.clone()), 1260.0, 790.0, &mut measure).paints
 }
 
 fn rects(root: &Node) -> Vec<(f32, f32)> {
-    let mut measure = |_: &str, _: f32, _: u16, _: TextWrap, _: Option<f32>| (0.0, 0.0);
+    let mut measure = |_: &rux_layout::TextContent, _: Option<f32>| (0.0, 0.0);
     layout(&on_screen(root.clone()), 1260.0, 790.0, &mut measure)
         .paints
         .iter()

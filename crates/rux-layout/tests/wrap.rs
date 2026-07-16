@@ -7,7 +7,7 @@ fn boxed(style: Style, children: Vec<Node>) -> Node {
 }
 
 fn all_rects(root: &Node, w: f32, h: f32) -> Vec<(f32, f32, f32, f32)> {
-    let mut measure = |_: &str, _: f32, _: u16, _: TextWrap, _: Option<f32>| (0.0, 0.0);
+    let mut measure = |_: &rux_layout::TextContent, _: Option<f32>| (0.0, 0.0);
     layout(root, w, h, &mut measure)
         .paints
         .iter()

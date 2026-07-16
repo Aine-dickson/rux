@@ -75,34 +75,45 @@ Formats: PNG, JPEG, GIF, WebP. A missing file logs to stderr and paints nothing.
 ### Honored CSS
 ```
 display (block|flex|grid|inline|none)
-flex-direction, justify-content, align-items, gap
+flex-direction, justify-content, align-items, gap, row-gap, column-gap
+align-self, justify-self, justify-items, align-content
 flex-grow, flex-shrink, flex-basis, flex-wrap, flex (shorthand)
 grid-template-columns, grid-template-rows
+position (relative|absolute) + top/right/bottom/left, aspect-ratio
 width, height, min/max-width, min/max-height
 padding, margin        (shorthand 1–4 values + -top/-right/-bottom/-left)
 border, border-width, border-color, border-<side>, border-<side>-width
 background / background-color, border-radius, opacity
-color, font-size, font-weight, text-align
+color, font-size, font-weight, font-family, font-style (italic), text-align
+letter-spacing, word-spacing, white-space (nowrap|pre)     (color: hex, rgb()/rgba(), CSS names)
 overflow / overflow-x / overflow-y   (hidden|clip = clip; auto|scroll = scroll)
 overflow-wrap (break-word), word-break (break-all)
+cursor (pointer, on @tap boxes only)
 ```
+**Selectors:** tag, `.class`, `#id`, `[role="…"]`, compounds, and all four
+combinators — descendant (`.a .b`), child (`.a > .b`), next-sibling (`.a + .b`),
+subsequent-sibling (`.a ~ .b`).
 `flex: 1` means `1 1 0%` (CSS's shorthand defaults), not `1 1 auto`.
 `opacity` fades the node **and its subtree** as one layer.
 `background`/`border` work on `<text>` nodes, not just containers.
 **Units:** `px`, `%`, `rem` (=16px), `vw`, `vh`/`dvh`.
 
-Anything else is **parsed but silently ignored** (no error). Notably absent:
-`font-family` (everything renders in the system default font), `line-height`,
-`position`, `box-shadow`, gradients, `transform`, and CSS variables.
+`font-family` takes a CSS list (`font-family: "Inter", sans-serif`) — parley
+parses it and does name-matching + fallback; the generic families (`serif`,
+`sans-serif`, `monospace`, …) always resolve. It **inherits**, like `color` and
+`font-size`. `color`/`font-size`/`font-family` are the three inheriting text
+properties.
 
-> ⚠️ **Two known-wrong behaviours, not just gaps:**
-> - **`>`, `+` and `~` are matched as descendant combinators.** `.card > text`
->   matches *any* descendant `text`, not just direct children — it selects the
->   **wrong elements**, silently.
-> - **`cursor` is ignored.** `cursor: pointer` appears in the examples and does
->   nothing; the pointer never changes over a button.
->
-> Both are scheduled in [06 — Roadmap](./06-roadmap.md) (v0.2, CSS).
+Anything else is **parsed but not honored** — but no longer *silently*: the
+runtime now prints one line per unhonored property (`rux: CSS property
+\`box-shadow\` is parsed but not yet honored …`), once each. Notably absent:
+`line-height`, `position` (relative/absolute *is* honored; `sticky`/`fixed` are
+not), `box-shadow`, gradients, `transform`, and CSS variables.
+
+Colours accept `#hex` (3/6/8-digit), `rgb()`/`rgba()`, and the full CSS named-
+colour list (`red`, `rebeccapurple`, …). The named list matters because
+lightningcss *minifies* hex to keywords (`#ff0000` → `red`), so without it a
+plain `color: #ff0000` would fall back to the default.
 
 ### Reactivity & script
 - `<script>` is **rhai**. `let x = signal(v)` declares state (numbers coerce to float).

@@ -154,6 +154,27 @@ pub enum Overflow {
     Scroll,
 }
 
+/// The mouse cursor shown while the pointer is over a box (`cursor`). Only the
+/// values the shell maps to a winit `CursorIcon` are modelled; the default is
+/// the arrow.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum Cursor {
+    #[default]
+    Default,
+    /// `cursor: pointer` — the hand, for tappable things.
+    Pointer,
+}
+
+/// `position`. `Relative` is the normal in-flow box (the default); `Absolute`
+/// takes the box out of flow and positions it by its `inset` against the
+/// nearest positioned ancestor.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum Position {
+    #[default]
+    Relative,
+    Absolute,
+}
+
 /// The style subset M-series understands (a stand-in for the CSS `ComputedStyle`).
 #[derive(Clone, Debug)]
 pub struct Style {
@@ -184,12 +205,31 @@ pub struct Style {
     pub border: Sides,
     pub border_color: Option<Rgba>,
     pub gap: f32,
+    /// `row-gap` / `column-gap` overrides for the shorthand `gap`. `None` keeps
+    /// the shorthand (`gap`) value on that axis.
+    pub row_gap: Option<f32>,
+    pub column_gap: Option<f32>,
     pub axis: Axis,
     pub justify: Option<Justify>,
     pub align: Option<Align>,
+    /// `align-self` (flex/grid cross-axis) and `justify-self` (grid inline-axis)
+    /// for this item, overriding the parent's `align-items`/`justify-items`.
+    pub align_self: Option<Align>,
+    pub justify_self: Option<Align>,
+    /// `justify-items` (grid) and `align-content` (multi-line flex / grid).
+    pub justify_items: Option<Align>,
+    pub align_content: Option<Justify>,
     pub overflow: Overflow,
     pub background: Option<Rgba>,
     pub radius: f32,
+    /// `cursor` — the pointer shape over this box.
+    pub cursor: Cursor,
+    /// `position` and its `inset` (top, right, bottom, left). `None` per side =
+    /// `auto`. Only meaningful when `position: absolute`.
+    pub position: Position,
+    pub inset: [Option<Len>; 4],
+    /// `aspect-ratio` (width / height).
+    pub aspect_ratio: Option<f32>,
 }
 
 impl Default for Style {
@@ -215,12 +255,22 @@ impl Default for Style {
             border: Sides::default(),
             border_color: None,
             gap: 0.0,
+            row_gap: None,
+            column_gap: None,
             axis: Axis::Row,
             justify: None,
             align: None,
+            align_self: None,
+            justify_self: None,
+            justify_items: None,
+            align_content: None,
             overflow: Overflow::Visible,
             background: None,
             radius: 0.0,
+            cursor: Cursor::Default,
+            position: Position::Relative,
+            inset: [None; 4],
+            aspect_ratio: None,
         }
     }
 }
@@ -243,6 +293,16 @@ pub struct TextContent {
     pub color: Rgba,
     pub align: TextAlign,
     pub wrap: TextWrap,
+    /// `font-family` as a raw CSS list (e.g. `"Inter, sans-serif"`). `None` uses
+    /// the system default. Inherits, like `color` and `font-size`.
+    pub font_family: Option<String>,
+    /// `letter-spacing` / `word-spacing`, extra px between letters / words.
+    pub letter_spacing: Option<f32>,
+    pub word_spacing: Option<f32>,
+    /// `font-style: italic`.
+    pub italic: bool,
+    /// `white-space: nowrap` — never wrap, even past the box width.
+    pub nowrap: bool,
     /// Byte index of the caret, when this text is inside the focused input.
     pub caret: Option<usize>,
 }
@@ -413,6 +473,10 @@ pub struct HitRegion {
     pub width: f32,
     pub height: f32,
     pub on_tap: String,
+    /// The `cursor` for this region, so the shell can set the pointer shape when
+    /// it hovers here. Carried on the hit region because that is the geometry the
+    /// shell already hit-tests; a `cursor` on a non-tappable box is not honored.
+    pub cursor: Cursor,
 }
 
 impl HitRegion {
@@ -453,7 +517,10 @@ pub struct Layout {
 
 /// Callback that measures a text block:
 /// `(text, font_size, weight, wrap, max_width) -> (w, h)`.
-pub type Measure<'a> = dyn FnMut(&str, f32, u16, TextWrap, Option<f32>) -> (f32, f32) + 'a;
+/// Measures a text node to `(width, height)` given an optional max width. Takes
+/// the whole [`TextContent`] so new text properties (family, spacing, style…)
+/// don't each widen this signature.
+pub type Measure<'a> = dyn FnMut(&TextContent, Option<f32>) -> (f32, f32) + 'a;
 
 /// What each taffy node paints.
 enum PaintKind {
@@ -526,17 +593,27 @@ fn to_taffy(style: &Style, vp: (f32, f32)) -> taffy::Style {
         // so children keep their own width unless the author asks to stretch.
         align_items: style
             .align
-            .map(|a| match a {
-                Align::Start => AlignItems::FlexStart,
-                Align::Center => AlignItems::Center,
-                Align::End => AlignItems::FlexEnd,
-                Align::Stretch => AlignItems::Stretch,
-            })
+            .map(to_align_items)
             .or(if style.display == Display::Flex {
                 Some(AlignItems::FlexStart)
             } else {
                 None
             }),
+        align_self: style.align_self.map(to_align_items),
+        justify_self: style.justify_self.map(to_align_items),
+        justify_items: style.justify_items.map(to_align_items),
+        align_content: style.align_content.map(to_align_content),
+        position: match style.position {
+            Position::Relative => taffy::Position::Relative,
+            Position::Absolute => taffy::Position::Absolute,
+        },
+        inset: Rect {
+            left: to_inset(style.inset[3], vp),
+            right: to_inset(style.inset[1], vp),
+            top: to_inset(style.inset[0], vp),
+            bottom: to_inset(style.inset[2], vp),
+        },
+        aspect_ratio: style.aspect_ratio,
         // taffy needs to know the box scrolls: it then sizes the box from its own
         // width/height (not its content) and reports `content_size`, which is how
         // far we can scroll.
@@ -613,11 +690,42 @@ fn to_taffy(style: &Style, vp: (f32, f32)) -> taffy::Style {
             top: length(style.border.top),
             bottom: length(style.border.bottom),
         },
+        // taffy's gap is (column, row): width is the inline gap, height the block
+        // gap. `column-gap`/`row-gap` override the `gap` shorthand per axis.
         gap: Size {
-            width: length(style.gap),
-            height: length(style.gap),
+            width: length(style.column_gap.unwrap_or(style.gap)),
+            height: length(style.row_gap.unwrap_or(style.gap)),
         },
         ..Default::default()
+    }
+}
+
+fn to_align_items(a: Align) -> AlignItems {
+    match a {
+        Align::Start => AlignItems::FlexStart,
+        Align::Center => AlignItems::Center,
+        Align::End => AlignItems::FlexEnd,
+        Align::Stretch => AlignItems::Stretch,
+    }
+}
+
+fn to_align_content(j: Justify) -> AlignContent {
+    match j {
+        Justify::Start => AlignContent::FlexStart,
+        Justify::Center => AlignContent::Center,
+        Justify::End => AlignContent::FlexEnd,
+        Justify::SpaceBetween => AlignContent::SpaceBetween,
+        Justify::SpaceAround => AlignContent::SpaceAround,
+    }
+}
+
+fn to_inset(l: Option<Len>, vp: (f32, f32)) -> LengthPercentageAuto {
+    match l {
+        None => auto(),
+        Some(Len::Px(v)) => length(v),
+        Some(Len::Pct(p)) => percent(p),
+        Some(Len::Vw(v)) => length(vp.0 * v / 100.0),
+        Some(Len::Vh(v)) => length(vp.1 * v / 100.0),
     }
 }
 
@@ -626,7 +734,7 @@ fn build(
     tree: &mut TaffyTree<TextContent>,
     node: &Node,
     paint: &mut Vec<(NodeId, PaintKind)>,
-    handlers: &mut Vec<(NodeId, String)>,
+    handlers: &mut Vec<(NodeId, String, Cursor)>,
     models: &mut Vec<(NodeId, String)>,
     hidden: &mut Vec<NodeId>,
     opacities: &mut Vec<(NodeId, f32)>,
@@ -706,7 +814,7 @@ fn build(
         id
     };
     if let Some(handler) = &node.on_tap {
-        handlers.push((id, handler.clone()));
+        handlers.push((id, handler.clone(), node.style.cursor));
     }
     if let Some(model) = &node.model {
         models.push((id, model.clone()));
@@ -730,7 +838,7 @@ fn collect(
     origin_x: f32,
     origin_y: f32,
     paint: &[(NodeId, PaintKind)],
-    handlers: &[(NodeId, String)],
+    handlers: &[(NodeId, String, Cursor)],
     models: &[(NodeId, String)],
     hidden: &[NodeId],
     opacities: &[(NodeId, f32)],
@@ -817,13 +925,14 @@ fn collect(
         }
     }
 
-    if let Some((_, handler)) = handlers.iter().find(|(nid, _)| *nid == id) {
+    if let Some((_, handler, cursor)) = handlers.iter().find(|(nid, ..)| *nid == id) {
         out.hits.push(HitRegion {
             x,
             y,
             width: layout.size.width,
             height: layout.size.height,
             on_tap: handler.clone(),
+            cursor: *cursor,
         });
     }
 
@@ -977,7 +1086,7 @@ pub fn layout_scrolled(
                         AvailableSpace::Definite(w) => Some(w),
                         _ => None,
                     });
-                    let (w, h) = measure(&tc.text, tc.font_size, tc.weight, tc.wrap, max);
+                    let (w, h) = measure(tc, max);
                     Size {
                         width: known.width.unwrap_or(w),
                         height: known.height.unwrap_or(h),

@@ -129,38 +129,76 @@ likely to make Rux feel like a toy, so it gets real scope.
   Guarded by `crates/rux-layout/tests/wrap.rs`. A version bump does **not** fix
   it, so don't reach for one.
 
-**First, two things that are bugs, not gaps:**
+**First, two things that are bugs, not gaps** — both now **fixed** (2026-07-15):
 
-- **`>`, `+`, `~` are treated as descendant combinators.** `parse_selector` skips
-  the token and matches as if it were a space, so `.card > text` matches *any*
-  descendant `text`. This doesn't fail to work — **it matches the wrong
-  elements**, silently. Fix before adding any more selector surface.
-- **`cursor` is ignored.** `cursor: pointer` is already in `battery.rux` and
-  `list.rux`, doing nothing. Needs `window.set_cursor()` driven off the hit
-  regions we already compute.
+- ✅ **`>`, `+`, `~` were treated as descendant combinators.** `parse_selector`
+  skipped the token, so `.card > text` matched *any* descendant `text` — the
+  wrong elements, silently. Fixed: `parse_selector` now records a `Combinator`
+  between each pair of compounds (a bare space is descendant), and a recursive
+  `matches_chain` honors all four — descendant, child (`>`), next-sibling (`+`)
+  and subsequent-sibling (`~`). Sibling combinators needed preceding-sibling
+  context, so the ancestor chain is now `AncNode { desc, prev }` (each ancestor
+  carries its own preceding siblings), which resolves even `.a ~ .b .c`. Guarded
+  by unit tests that assert the *negative* case (the combinator must NOT match
+  where descendant would) plus an end-to-end test and a lightningcss
+  serialization round-trip. Known limitation: sibling combinators don't see the
+  synthetic `checked` class on a preceding sibling.
+- ✅ **`cursor` was ignored.** Now honored: `Style.cursor` (`rux-layout`), mapped
+  from `cursor: pointer` in `interpret`, carried on `HitRegion`, and applied by
+  the shell's `update_cursor` on `CursorMoved` (topmost region under the pointer
+  wins; the window is only touched when the shape changes). Because it rides on
+  the hit regions we already compute, `cursor` is honored **only on tappable
+  (`@tap`) boxes** — a `cursor` on a plain box still does nothing. Widen to a
+  dedicated cursor-region pass if that bites.
 
 **Cheap — the engine already supports it, we just don't map it:**
 
-| Property | Backed by |
-|---|---|
-| `align-self`, `justify-self`, `align-content`, `justify-items` | taffy |
-| `row-gap` / `column-gap`, `flex-flow` | taffy |
-| `grid-column` / `grid-row`, `grid-auto-flow`, `grid-auto-rows/columns` | taffy |
-| `aspect-ratio` | taffy |
-| `position: relative\|absolute` + `top`/`right`/`bottom`/`left` | taffy (`Position`, `inset`) |
-| per-corner `border-radius` | kurbo (`RoundedRectRadii`) |
-| `line-height`, `letter-spacing`, `word-spacing` | parley |
-| `font-style: italic`, `text-decoration` (underline/strikethrough) | parley |
-| `white-space: nowrap\|pre` | parley (`TextWrapMode`) |
-| `box-shadow` | vello (`draw_blurred_rounded_rect`) |
-| `transform` (translate/scale/rotate) | kurbo `Affine` |
-| linear/radial `gradient` backgrounds | peniko `Gradient` |
-| `background-image: url(…)` | our `ImageCache` |
+| Property | Backed by | Status |
+|---|---|---|
+| `align-self`, `justify-self`, `align-content`, `justify-items` | taffy | ✅ done 2026-07-16 |
+| `row-gap` / `column-gap` | taffy | ✅ done 2026-07-16 |
+| `aspect-ratio` | taffy | ✅ done 2026-07-16 |
+| `position: relative\|absolute` + `top`/`right`/`bottom`/`left` | taffy (`Position`, `inset`) | ✅ done 2026-07-16 |
+| CSS named colours (`red`, `teal`, …) | our `parse_color` | ✅ done 2026-07-16 |
+| `flex-flow` | taffy | — |
+| `grid-column` / `grid-row`, `grid-auto-flow`, `grid-auto-rows/columns` | taffy (`GridPlacement`) | — (needs `1 / 3`, `span n` parsing) |
+| per-corner `border-radius` | kurbo (`RoundedRectRadii`) | — (touches painter + the radio-circle `radius == 0` shortcut) |
+| `letter-spacing`, `word-spacing` | parley | ✅ done 2026-07-16 |
+| `font-style: italic` | parley | ✅ done 2026-07-16 |
+| `white-space: nowrap\|pre` | parley (`TextWrapMode`) | ✅ done 2026-07-16 |
+| `line-height` | parley (`LineHeight`) | — (fights the deliberate leading-trim in `measure`; needs care) |
+| `text-decoration` (underline/strikethrough) | parley `Decoration` + our own line-drawing | — (our glyph loop draws no decorations; needs manual rects from `RunMetrics`) |
+| `box-shadow` | vello (`draw_blurred_rounded_rect`) | — |
+| `transform` (translate/scale/rotate) | kurbo `Affine` | — |
+| linear/radial `gradient` backgrounds | peniko `Gradient` | — |
+| `background-image: url(…)` | our `ImageCache` | — |
 
-**`font-family` deserves its own line: today you cannot choose a font at all.**
-Everything renders in the system default. parley/fontique handle family
-resolution and fallback — this is arguably the single most visible gap in the
-list.
+Mapped this round: the four alignment self/content properties, per-axis gaps,
+`aspect-ratio`, `position`+inset (absolute rides taffy's resolved location, so
+the painter needed no change), and the full CSS named-colour table (killing the
+`#ff0000`→`red` landmine). Driven clean in `examples/css-showcase.rux`.
+
+Text-shaping props followed (`font-style: italic`, `letter-spacing`,
+`word-spacing`, `white-space: nowrap`). While wiring them, the text engine's
+methods (which had grown to 6+ positional args after `font-family`) were
+refactored to take a single `rux_text::TextStyle` struct, and `rux-layout`'s
+`Measure` closure now takes the whole `&TextContent` instead of unpacking fields
+— so the *next* text property is a one-line struct field, not another signature
+change everywhere. `rux_paint::text_style(&TextContent)` builds the struct and is
+shared by the painter and the shell. Proven headless (letter-spacing widens a
+run; nowrap keeps one line) and driven in `examples/fonts.rux`.
+
+**`font-family` — ✅ done 2026-07-16.** Was the single most visible gap (you
+could not choose a font at all). Now a raw CSS list flows as
+`TextContent.font_family` (a new inheriting text property, alongside
+`color`/`font-size`) and reaches parley as `FontFamily::Source`, which parses the
+list and does name-matching + fallback. Threaded through every text path:
+`rux-text`'s `build`/`measure`/`draw`/`caret_geometry`/`index_at_point` gained a
+`family: Option<&str>` arg; the `Measure` closure type gained the same. Inherits
+down the tree via a new `Inherited { color, font_size, font_family }` struct
+(replacing the old `(color, font_size)` tuple). Verified headless by a shaping
+test (`monospace` vs default gives different measured widths, blank falls back)
+and driven in `examples/fonts.rux`.
 
 **Real work (new machinery, not just mapping):**
 
@@ -180,8 +218,17 @@ list.
 - **`box-sizing`** — taffy sizes border-box; `content-box` needs real work.
 
 **Also worth doing while in here:** *say something* when a declaration is ignored.
-A single `eprintln!` per unknown property, once, would have saved every "why isn't
-this doing anything" moment on this list. See the error-surfacing ceiling below.
+✅ **Done (2026-07-15):** `warn_if_unhonored` prints one line per unhonored
+property (`rux: CSS property \`box-shadow\` is parsed but not yet honored — it
+will have no effect`), deduped for the life of the process via a `static` set so
+the whole-tree rebuild doesn't repeat it every keystroke. The honored set is the
+`HONORED_PROPERTIES` list in `rux-style` — **when you honor a new property below,
+add it there too**, or authors get told a working property does nothing.
+
+**Landmine found doing this (2026-07-15):** named colors beyond
+`black`/`white`/`transparent` are not resolved, and lightningcss *minifies* hex
+to keywords (`#ff0000` → `red`), so a plain `color: #ff0000` silently falls back
+to the default. Add a named-color table (it's cheap) as part of the color work.
 
 ---
 

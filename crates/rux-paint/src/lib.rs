@@ -6,8 +6,8 @@
 
 use std::collections::HashMap;
 
-use rux_layout::{Paint, Rgba, TextAlign, TextWrap};
-use rux_text::{Align, TextEngine, Wrap};
+use rux_layout::{Paint, Rgba, TextAlign, TextContent, TextWrap};
+use rux_text::{Align, TextEngine, TextStyle, Wrap};
 use vello::kurbo::{Affine, BezPath, Cap, Join, Rect, RoundedRect, Stroke, Vec2};
 use vello::peniko::{Blob, Color, Fill, ImageAlphaType, ImageBrush, ImageData, ImageFormat, Mix};
 use vello::Scene;
@@ -57,6 +57,22 @@ pub fn to_wrap(w: TextWrap) -> Wrap {
         TextWrap::Normal => Wrap::Normal,
         TextWrap::BreakWord => Wrap::BreakWord,
         TextWrap::Anywhere => Wrap::Anywhere,
+    }
+}
+
+/// Gather a text node's shaping inputs into a [`TextStyle`] for the text engine.
+/// Shared by the painter and the shell (measure + hit-testing) so they always
+/// shape text the same way.
+pub fn text_style(tc: &TextContent) -> TextStyle<'_> {
+    TextStyle {
+        font_size: tc.font_size,
+        weight: tc.weight,
+        wrap: to_wrap(tc.wrap),
+        family: tc.font_family.as_deref(),
+        letter_spacing: tc.letter_spacing,
+        word_spacing: tc.word_spacing,
+        italic: tc.italic,
+        nowrap: tc.nowrap,
     }
 }
 
@@ -119,11 +135,9 @@ pub fn build_scene(
                     t.x,
                     t.y,
                     &t.content.text,
-                    t.content.font_size,
-                    t.content.weight,
+                    &text_style(&t.content),
                     to_color(t.content.color),
                     to_align(t.content.align),
-                    to_wrap(t.content.wrap),
                     Some(t.width),
                 );
                 // The focused input's caret, drawn on top of its own text —
@@ -131,9 +145,7 @@ pub fn build_scene(
                 if let (true, Some(index)) = (caret_visible, t.content.caret) {
                     let (cx, cy, ch) = text.caret_geometry(
                         &t.content.text,
-                        t.content.font_size,
-                        t.content.weight,
-                        to_wrap(t.content.wrap),
+                        &text_style(&t.content),
                         Some(t.width),
                         index,
                     );
