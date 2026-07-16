@@ -90,10 +90,28 @@ drag is verified**, since `ScaleFactorChanged` is the last untested surface path
 Shift-arrows, drag-select, copy/paste/cut. parley 0.11 already models selection
 (`PlainEditor`, `Selection`), so this is mostly wiring now that the upgrade is in.
 
-### 2. The last two input types
-`type="select"` and `type="textarea"` — the only elements the spec promises and
-the runtime does not have. Also: make checkbox/radio keyboard-reachable (today
-they are tap-only).
+### 2. The last two input types — ✅ mostly done (2026-07-16)
+- ✅ **`type="textarea"`** — a multi-line text input. It's the ordinary text
+  input plus a `multiline` flag on the node → `FocusRegion`; the shell inserts a
+  newline on Enter (single-line inputs still ignore it), and the value wraps.
+- ✅ **`type="select"`** — evaluates `:options` to strings at build time
+  (`Node.options`), exposed as a `SelectRegion`. The shell owns the open state
+  (`open_select`, survives rebuilds), draws the dropdown as an overlay appended
+  on top of the scene, hit-tests the rows itself (`dropdown_row`), writes the
+  chosen value back to the model, and closes on any other tap. Guarded by a
+  `rux-style` test; driven in `examples/form-controls.rux`.
+- ✅ **checkbox/radio keyboard-reachability (2026-07-17)** — the layout now emits
+  `Layout.focusables` (a document-ordered `FocusItem` list: text inputs, buttons,
+  toggles, selects). The shell keeps a `focus_index`; **Tab**/**Shift+Tab** move a
+  focus ring through them (tapping syncs it too), a focused text input edits, and
+  a focused button/checkbox/radio activates on **Space/Enter** (select opens).
+- ✅ **Input polish (2026-07-17, from testing):** inputs default to `width:100%`
+  (they were hugging their text and shrinking as you typed); single-line inputs
+  are `nowrap` + clip; textarea gets Up/Down caret movement; the dropdown is
+  restyled as one floating panel (shadow, selected pill, separators).
+- ⏳ **Still open:** select has no keyboard list navigation or native mobile
+  picker; a select's `cursor: pointer` doesn't apply (selects aren't `@tap` hit
+  regions); text inputs don't scroll horizontally (long single lines clip).
 
 ### 3. Scrolling polish
 Scrollbars, drag/touch, keyboard (arrows/PageUp/Home), horizontal scrolling, and

@@ -418,6 +418,10 @@ pub struct Node {
     pub on_tap: Option<String>,
     /// `r-model` signal name for `<input>` nodes (focus target + edit binding).
     pub model: Option<String>,
+    /// `type="textarea"`: a multi-line text input — `Enter` inserts a newline.
+    pub multiline: bool,
+    /// `type="select"`: the bound `:options`, so the shell can open a dropdown.
+    pub options: Option<Vec<String>>,
     /// `r-show="false"`: laid out (space reserved) but not painted.
     pub hidden: bool,
 }
@@ -432,6 +436,8 @@ impl Node {
             children: Vec::new(),
             on_tap: None,
             model: None,
+            multiline: false,
+            options: None,
             hidden: false,
         }
     }
@@ -445,6 +451,8 @@ impl Node {
             children: Vec::new(),
             on_tap: None,
             model: None,
+            multiline: false,
+            options: None,
             hidden: false,
         }
     }
@@ -458,6 +466,8 @@ impl Node {
             children: Vec::new(),
             on_tap: None,
             model: None,
+            multiline: false,
+            options: None,
             hidden: false,
         }
     }
@@ -608,12 +618,62 @@ pub struct FocusRegion {
     /// The input's text box (its laid-out child). The shell needs it to turn a
     /// click into a caret position.
     pub text: Option<PaintText>,
+    /// `type="textarea"`: `Enter` inserts a newline instead of being ignored.
+    pub multiline: bool,
+    /// If this input scrolls (a textarea), the index of its `ScrollRegion` in
+    /// `Layout.scrolls`, so the shell can scroll the caret into view.
+    pub scroll_id: Option<usize>,
 }
 
 impl FocusRegion {
     pub fn contains(&self, px: f32, py: f32) -> bool {
         px >= self.x && px <= self.x + self.width && py >= self.y && py <= self.y + self.height
     }
+}
+
+/// An absolutely-positioned `type="select"`, carrying its bound options so the
+/// shell can open a dropdown and write the chosen value back to `model`.
+#[derive(Clone, Debug)]
+pub struct SelectRegion {
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+    pub model: String,
+    pub options: Vec<String>,
+}
+
+impl SelectRegion {
+    pub fn contains(&self, px: f32, py: f32) -> bool {
+        px >= self.x && px <= self.x + self.width && py >= self.y && py <= self.y + self.height
+    }
+}
+
+/// One keyboard-focusable element, in document (Tab) order. Carries the geometry
+/// (for the focus ring) plus how the shell should act on it.
+#[derive(Clone, Debug)]
+pub struct FocusItem {
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+    pub kind: FocusKind,
+}
+
+impl FocusItem {
+    pub fn contains(&self, px: f32, py: f32) -> bool {
+        px >= self.x && px <= self.x + self.width && py >= self.y && py <= self.y + self.height
+    }
+}
+
+#[derive(Clone, Debug)]
+pub enum FocusKind {
+    /// A text / textarea input: focusing it starts caret editing.
+    Text { model: String, multiline: bool, text: Option<PaintText> },
+    /// A button / checkbox / radio: Space or Enter runs its handler.
+    Activate { on_tap: String },
+    /// A select: Space or Enter opens its dropdown.
+    Select { model: String, options: Vec<String> },
 }
 
 /// The result of laying out a tree: paint items, hit regions, and focus regions,
@@ -623,6 +683,9 @@ pub struct Layout {
     pub paints: Vec<Paint>,
     pub hits: Vec<HitRegion>,
     pub focuses: Vec<FocusRegion>,
+    pub selects: Vec<SelectRegion>,
+    /// Keyboard-focusable elements in document (Tab) order.
+    pub focusables: Vec<FocusItem>,
     pub scrolls: Vec<ScrollRegion>,
 }
 
@@ -886,13 +949,22 @@ fn to_inset(l: Option<Len>, vp: (f32, f32)) -> LengthPercentageAuto {
     }
 }
 
+/// A laid-out `<input>`: its model plus what kind it is. Becomes either a
+/// `FocusRegion` (text/textarea) or a `SelectRegion` (select) in `collect`.
+struct Bound {
+    id: NodeId,
+    model: String,
+    multiline: bool,
+    options: Option<Vec<String>>,
+}
+
 #[allow(clippy::too_many_arguments)]
 fn build(
     tree: &mut TaffyTree<TextContent>,
     node: &Node,
     paint: &mut Vec<(NodeId, PaintKind)>,
     handlers: &mut Vec<(NodeId, String, Cursor)>,
-    models: &mut Vec<(NodeId, String)>,
+    models: &mut Vec<Bound>,
     hidden: &mut Vec<NodeId>,
     opacities: &mut Vec<(NodeId, f32)>,
     scrolls: &mut Vec<NodeId>,
@@ -978,7 +1050,12 @@ fn build(
         handlers.push((id, handler.clone(), node.style.cursor));
     }
     if let Some(model) = &node.model {
-        models.push((id, model.clone()));
+        models.push(Bound {
+            id,
+            model: model.clone(),
+            multiline: node.multiline,
+            options: node.options.clone(),
+        });
     }
     if node.hidden {
         hidden.push(id);
@@ -1003,7 +1080,7 @@ fn collect(
     origin_y: f32,
     paint: &[(NodeId, PaintKind)],
     handlers: &[(NodeId, String, Cursor)],
-    models: &[(NodeId, String)],
+    models: &[Bound],
     hidden: &[NodeId],
     opacities: &[(NodeId, f32)],
     scrolls: &[NodeId],
@@ -1126,34 +1203,75 @@ fn collect(
         });
     }
 
-    if let Some((_, model)) = models.iter().find(|(nid, _)| *nid == id) {
-        // An input's value is rendered by its single text child; find that
-        // child's box so a tap can be resolved to a caret index.
-        let text = tree
-            .children(id)
-            .ok()
-            .and_then(|kids| kids.first().copied())
-            .and_then(|kid| {
-                let child = tree.layout(kid).ok()?;
-                let content = paint.iter().find_map(|(nid, k)| match k {
-                    PaintKind::Text(tc) if *nid == kid => Some(tc.clone()),
-                    _ => None,
-                })?;
-                Some(PaintText {
-                    x: x + child.location.x,
-                    y: y + child.location.y,
-                    width: child.size.width,
-                    height: child.size.height,
-                    content,
-                })
+    let (fw, fh) = (layout.size.width, layout.size.height);
+    if let Some(bound) = models.iter().find(|b| b.id == id) {
+        if let Some(options) = &bound.options {
+            // A select: no caret, just a tappable box that opens a dropdown.
+            out.selects.push(SelectRegion {
+                x,
+                y,
+                width: fw,
+                height: fh,
+                model: bound.model.clone(),
+                options: options.clone(),
             });
-        out.focuses.push(FocusRegion {
+            out.focusables.push(FocusItem {
+                x,
+                y,
+                width: fw,
+                height: fh,
+                kind: FocusKind::Select { model: bound.model.clone(), options: options.clone() },
+            });
+        } else {
+            // A text/textarea input: its value is rendered by its single text
+            // child; find that child's box so a tap resolves to a caret index.
+            let text = tree
+                .children(id)
+                .ok()
+                .and_then(|kids| kids.first().copied())
+                .and_then(|kid| {
+                    let child = tree.layout(kid).ok()?;
+                    let content = paint.iter().find_map(|(nid, k)| match k {
+                        PaintKind::Text(tc) if *nid == kid => Some(tc.clone()),
+                        _ => None,
+                    })?;
+                    Some(PaintText {
+                        x: x + child.location.x,
+                        y: y + child.location.y,
+                        width: child.size.width,
+                        height: child.size.height,
+                        content,
+                    })
+                });
+            out.focuses.push(FocusRegion {
+                x,
+                y,
+                width: fw,
+                height: fh,
+                model: bound.model.clone(),
+                text: text.clone(),
+                multiline: bound.multiline,
+                // The scroll block below assigns ids as `out.scrolls.len()`, so if
+                // this node scrolls it will get the current length as its id.
+                scroll_id: scrolls.contains(&id).then(|| out.scrolls.len()),
+            });
+            out.focusables.push(FocusItem {
+                x,
+                y,
+                width: fw,
+                height: fh,
+                kind: FocusKind::Text { model: bound.model.clone(), multiline: bound.multiline, text },
+            });
+        }
+    } else if let Some((_, handler, _)) = handlers.iter().find(|(nid, ..)| *nid == id) {
+        // A button / checkbox / radio (anything with a `@tap` handler) is
+        // keyboard-reachable: Space or Enter runs the same handler as a tap.
+        out.focusables.push(FocusItem {
             x,
             y,
-            width: layout.size.width,
-            height: layout.size.height,
-            model: model.clone(),
-            text,
+            width: fw,
+            height: fh,
+            kind: FocusKind::Activate { on_tap: handler.clone() },
         });
     }
 

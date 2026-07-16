@@ -12,7 +12,10 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use notify::{EventKind, RecursiveMode, Watcher};
-use rux_layout::{Cursor, FocusRegion, HitRegion, ScrollRegion};
+use rux_layout::{
+    Background, Cursor, FocusItem, FocusKind, FocusRegion, HitRegion, Paint, PaintRect, PaintText,
+    Rgba, ScrollRegion, SelectRegion, TextAlign, TextContent, TextWrap,
+};
 use rux_runtime::Document;
 use vello::kurbo::Affine;
 use vello::peniko::Color;
@@ -43,6 +46,125 @@ const BLINK: Duration = Duration::from_millis(530);
 
 /// Rux screen background `#11111b`.
 const BG: Color = Color::from_rgb8(0x11, 0x11, 0x1b);
+
+/// Height of one option row in an open `select` dropdown, in logical px.
+const DROPDOWN_ROW_H: f32 = 30.0;
+/// Gap between the select box and the top of its dropdown panel, in logical px.
+const DROPDOWN_GAP: f32 = 4.0;
+
+/// The nth option row of an open dropdown as `(x, y, w, h)` in logical px. Rows
+/// stack below the select box (after a small gap). Shared by paint and
+/// hit-testing so the dropdown looks and behaves consistently.
+fn dropdown_row(sel: &SelectRegion, i: usize) -> (f32, f32, f32, f32) {
+    (
+        sel.x,
+        sel.y + sel.height + DROPDOWN_GAP + i as f32 * DROPDOWN_ROW_H,
+        sel.width,
+        DROPDOWN_ROW_H,
+    )
+}
+
+/// A 2px focus ring just outside the focused element's box.
+fn focus_ring(item: &FocusItem) -> Vec<Paint> {
+    vec![Paint::Rect(PaintRect {
+        x: item.x - 2.0,
+        y: item.y - 2.0,
+        width: item.width + 4.0,
+        height: item.height + 4.0,
+        background: None,
+        radius: [7.0; 4],
+        border_width: 2.0,
+        border_color: Some(Rgba::new(0.54, 0.71, 0.98, 1.0)), // #89b4fa
+    })]
+}
+
+/// Paint items for an open dropdown: a single floating panel with a shadow, the
+/// selected value picked out as a pill, and thin separators between options.
+fn dropdown_paints(sel: &SelectRegion, value: &str) -> Vec<Paint> {
+    let panel_bg = Rgba::new(0.19, 0.20, 0.27, 1.0); // #313244
+    let border = Rgba::new(0.27, 0.28, 0.35, 1.0); // #45475a
+    let selected = Rgba::new(0.35, 0.36, 0.44, 1.0); // #585b70
+    let ink = Rgba::new(0.80, 0.84, 0.96, 1.0); // #cdd6f4
+
+    let (px, py, pw, _) = dropdown_row(sel, 0);
+    let ph = sel.options.len() as f32 * DROPDOWN_ROW_H;
+
+    let mut out = Vec::with_capacity(sel.options.len() * 2 + 2);
+    // A soft shadow so the panel reads as floating above the page.
+    out.push(Paint::Shadow {
+        x: px,
+        y: py + 3.0,
+        width: pw,
+        height: ph,
+        radius: 8.0,
+        blur: 16.0,
+        color: Rgba::new(0.0, 0.0, 0.0, 0.45),
+    });
+    // The panel itself: one rounded rect behind all the rows.
+    out.push(Paint::Rect(PaintRect {
+        x: px,
+        y: py,
+        width: pw,
+        height: ph,
+        background: Some(Background::Color(panel_bg)),
+        radius: [8.0; 4],
+        border_width: 1.0,
+        border_color: Some(border),
+    }));
+
+    for (i, option) in sel.options.iter().enumerate() {
+        let y = py + i as f32 * DROPDOWN_ROW_H;
+        if option == value {
+            // A rounded pill marks the current choice, inset from the panel edge.
+            out.push(Paint::Rect(PaintRect {
+                x: px + 4.0,
+                y: y + 3.0,
+                width: pw - 8.0,
+                height: DROPDOWN_ROW_H - 6.0,
+                background: Some(Background::Color(selected)),
+                radius: [5.0; 4],
+                border_width: 0.0,
+                border_color: None,
+            }));
+        } else if i > 0 {
+            // A hairline separator between unselected rows.
+            out.push(Paint::Rect(PaintRect {
+                x: px + 10.0,
+                y,
+                width: pw - 20.0,
+                height: 1.0,
+                background: Some(Background::Color(border)),
+                radius: [0.0; 4],
+                border_width: 0.0,
+                border_color: None,
+            }));
+        }
+        out.push(Paint::Text(PaintText {
+            x: px + 12.0,
+            y: y + (DROPDOWN_ROW_H - 15.0) / 2.0,
+            width: pw - 24.0,
+            height: DROPDOWN_ROW_H,
+            content: TextContent {
+                text: option.clone(),
+                font_size: 15.0,
+                weight: 400,
+                color: ink,
+                align: TextAlign::Start,
+                wrap: TextWrap::Normal,
+                font_family: None,
+                letter_spacing: None,
+                word_spacing: None,
+                line_height: None,
+                italic: false,
+                underline: false,
+                strikethrough: false,
+                nowrap: true,
+                caret: None,
+            },
+        }));
+    }
+    out
+}
 
 /// Load a `.rux` document. On failure, log the diagnostic and fall back to an
 /// empty screen so the window still opens (stand-in for the dev overlay).
@@ -78,6 +200,14 @@ struct App {
     hits: Vec<HitRegion>,
     /// Focusable input regions from the most recent layout.
     focuses: Vec<FocusRegion>,
+    /// `type="select"` regions from the most recent layout.
+    selects: Vec<SelectRegion>,
+    /// Keyboard-focusable elements in Tab order, from the most recent layout.
+    focusables: Vec<FocusItem>,
+    /// Index into `focusables` of the keyboard-focused element, if any.
+    focus_index: Option<usize>,
+    /// Whether Shift is held (for Shift+Tab reverse traversal).
+    shift_held: bool,
     /// Scrollable regions from the most recent layout.
     scrolls: Vec<ScrollRegion>,
     /// Scroll offset per scrollable box, in tree order. Survives the rebuild
@@ -86,6 +216,11 @@ struct App {
     offsets: Vec<f32>,
     /// The `r-model` of the currently focused input, if any.
     focused: Option<String>,
+    /// Whether the focused input is a `type="textarea"` (Enter → newline).
+    focused_multiline: bool,
+    /// The `r-model` of the currently open `select` dropdown, if any. Survives
+    /// the rebuild after a state change, like scroll offsets.
+    open_select: Option<String>,
     /// Caret position in the focused input, as a byte index into its value.
     caret: usize,
     /// Whether the caret is in the visible half of its blink cycle.
@@ -114,9 +249,15 @@ impl App {
             images: rux_paint::ImageCache::new(),
             hits: Vec::new(),
             focuses: Vec::new(),
+            selects: Vec::new(),
+            focusables: Vec::new(),
+            focus_index: None,
+            shift_held: false,
             scrolls: Vec::new(),
             offsets: Vec::new(),
             focused: None,
+            focused_multiline: false,
+            open_select: None,
             caret: 0,
             caret_visible: true,
             blink_deadline: None,
@@ -203,13 +344,46 @@ impl App {
     fn dispatch_tap(&mut self, px: f64, py: f64) {
         let scale = self.scale();
         let (px, py) = (px / scale, py / scale);
+        let (fx, fy) = (px as f32, py as f32);
+
+        // An open dropdown is on top of everything, so it intercepts taps first:
+        // a tap on an option selects it; any other tap just closes the dropdown.
+        if let Some(model) = self.open_select.take() {
+            if let Some(sel) = self.selects.iter().find(|s| s.model == model).cloned() {
+                for (i, option) in sel.options.iter().enumerate() {
+                    let (rx, ry, rw, rh) = dropdown_row(&sel, i);
+                    if fx >= rx && fx <= rx + rw && fy >= ry && fy <= ry + rh {
+                        self.document.engine_mut().set_string(&model, option);
+                        self.document.rebuild();
+                        self.request_redraw();
+                        return;
+                    }
+                }
+            }
+            // Closed by taking `open_select`; repaint without the dropdown.
+            self.request_redraw();
+            return;
+        }
+
+        // A tap also moves keyboard focus, so Tab continues from what you clicked
+        // (topmost focusable under the pointer, or nothing on empty space).
+        self.focus_index = self.focusables.iter().rposition(|f| f.contains(fx, fy));
+
+        // A tap on a closed select opens its dropdown.
+        if let Some(sel) = self.selects.iter().find(|s| s.contains(fx, fy)) {
+            self.open_select = Some(sel.model.clone());
+            self.set_focus(None);
+            self.request_redraw();
+            return;
+        }
+
         // Focus takes precedence: an input under the pointer becomes focused,
         // with the caret at the character you tapped.
         if let Some(region) = self
             .focuses
             .iter()
             .rev()
-            .find(|f| f.contains(px as f32, py as f32))
+            .find(|f| f.contains(fx, fy))
             .cloned()
         {
             // Map the tap into the text box's own coordinates to find the
@@ -221,11 +395,12 @@ impl App {
                     &value,
                     &rux_paint::text_style(&t.content),
                     Some(t.width),
-                    px as f32 - t.x,
-                    py as f32 - t.y,
+                    fx - t.x,
+                    fy - t.y,
                 ),
                 _ => 0,
             };
+            self.focused_multiline = region.multiline;
             self.set_focus(Some((region.model, caret)));
             return;
         }
@@ -294,6 +469,23 @@ impl App {
                     moved = true;
                 }
             }
+            // Up/Down move the caret between lines of a textarea: find the byte
+            // index at the same x on the line above/below the current caret.
+            Key::Named(NamedKey::ArrowUp | NamedKey::ArrowDown) if self.focused_multiline => {
+                if let Some(t) = self
+                    .focuses
+                    .iter()
+                    .find(|f| f.model == model)
+                    .and_then(|f| f.text.clone())
+                {
+                    let style = rux_paint::text_style(&t.content);
+                    let (cx, cy, ch) = self.text.caret_geometry(&value, &style, Some(t.width), caret);
+                    let dir = if matches!(key, Key::Named(NamedKey::ArrowUp)) { -1.0 } else { 1.0 };
+                    let target_y = cy + ch / 2.0 + dir * ch;
+                    new_caret = self.text.index_at_point(&value, &style, Some(t.width), cx, target_y);
+                    moved = new_caret != caret;
+                }
+            }
             Key::Named(NamedKey::Home) => {
                 new_caret = 0;
                 moved = true;
@@ -311,6 +503,12 @@ impl App {
                 new_caret = caret + 1;
                 edited = true;
             }
+            // Enter inserts a newline in a textarea; single-line inputs ignore it.
+            Key::Named(NamedKey::Enter) if self.focused_multiline => {
+                value.insert(caret, '\n');
+                new_caret = caret + 1;
+                edited = true;
+            }
             Key::Character(s) => {
                 for c in s.chars().filter(|c| !c.is_control()) {
                     value.insert(new_caret, c);
@@ -324,15 +522,112 @@ impl App {
         if edited {
             self.caret = new_caret;
             self.document.engine_mut().set_string(&model, &value);
+            self.scroll_caret_into_view(&model, &value, new_caret);
             self.document.set_focus(Some((model, new_caret)));
             self.document.rebuild();
             self.reset_blink();
             self.request_redraw();
         } else if moved {
             self.caret = new_caret;
+            self.scroll_caret_into_view(&model, &value, new_caret);
             self.document.set_focus(Some((model, new_caret)));
             self.reset_blink();
             self.request_redraw();
+        }
+    }
+
+    /// Keep the caret visible in a scrolling textarea: adjust its scroll offset so
+    /// the caret line sits inside the box. No-op for non-scrolling inputs.
+    fn scroll_caret_into_view(&mut self, model: &str, value: &str, caret: usize) {
+        let Some(region) = self.focuses.iter().find(|f| f.model == model).cloned() else {
+            return;
+        };
+        let (Some(sid), Some(t)) = (region.scroll_id, &region.text) else {
+            return;
+        };
+        let style = rux_paint::text_style(&t.content);
+        let (_, cy, ch) = self.text.caret_geometry(value, &style, Some(t.width), caret);
+        let visible = region.height;
+        let mut off = self.offsets.get(sid).copied().unwrap_or(0.0);
+        if cy < off {
+            off = cy;
+        } else if cy + ch > off + visible {
+            off = cy + ch - visible;
+        }
+        // The next layout re-clamps this to the content's real max offset.
+        if let Some(slot) = self.offsets.get_mut(sid) {
+            *slot = off.max(0.0);
+        }
+    }
+
+    /// Route a key press. Tab always moves keyboard focus; otherwise a focused
+    /// text input edits, and a focused button/checkbox/radio/select activates on
+    /// Space/Enter.
+    fn on_key(&mut self, key: &Key) {
+        if let Key::Named(NamedKey::Tab) = key {
+            self.move_focus(self.shift_held);
+            return;
+        }
+        if self.focused.is_some() {
+            self.edit_focused(key);
+            return;
+        }
+        let Some(idx) = self.focus_index else { return };
+        match key {
+            Key::Named(NamedKey::Space | NamedKey::Enter) => self.activate_focused(idx),
+            Key::Named(NamedKey::Escape) => {
+                self.focus_index = None;
+                self.request_redraw();
+            }
+            _ => {}
+        }
+    }
+
+    /// Move keyboard focus to the next (or previous) focusable, wrapping around.
+    fn move_focus(&mut self, backward: bool) {
+        let n = self.focusables.len();
+        if n == 0 {
+            return;
+        }
+        let next = match self.focus_index {
+            Some(i) if backward => (i + n - 1) % n,
+            Some(i) => (i + 1) % n,
+            None if backward => n - 1,
+            None => 0,
+        };
+        self.set_keyboard_focus(Some(next));
+    }
+
+    /// Point keyboard focus at `index`. A text input also gets caret editing (with
+    /// the caret at the end); anything else just gets the focus ring.
+    fn set_keyboard_focus(&mut self, index: Option<usize>) {
+        self.focus_index = index;
+        match index.and_then(|i| self.focusables.get(i)).map(|f| f.kind.clone()) {
+            Some(FocusKind::Text { model, multiline, .. }) => {
+                let caret = self.document.engine_mut().get_string(&model).len();
+                self.focused_multiline = multiline;
+                self.set_focus(Some((model, caret)));
+            }
+            _ => self.set_focus(None),
+        }
+        self.request_redraw();
+    }
+
+    /// Activate the focused element by keyboard: run a button/toggle's handler, or
+    /// open a select's dropdown.
+    fn activate_focused(&mut self, index: usize) {
+        match self.focusables.get(index).map(|f| f.kind.clone()) {
+            Some(FocusKind::Activate { on_tap }) => {
+                if self.document.engine_mut().run_handler(&on_tap) {
+                    self.document.rebuild();
+                }
+                self.request_redraw();
+            }
+            Some(FocusKind::Select { model, .. }) => {
+                self.open_select = Some(model);
+                self.request_redraw();
+            }
+            _ => {}
         }
     }
 
@@ -371,6 +666,10 @@ impl App {
             images,
             hits,
             focuses,
+            selects,
+            focusables,
+            focus_index,
+            open_select,
             scrolls,
             offsets,
             ..
@@ -406,8 +705,31 @@ impl App {
         state
             .scene
             .append(&content, Some(Affine::scale(scale)));
+
+        // A keyboard focus ring, drawn over the content (but under a dropdown).
+        if let Some(item) = focus_index.and_then(|i| layout.focusables.get(i)) {
+            let ring = rux_paint::build_scene(&focus_ring(item), text, images, false);
+            state.scene.append(&ring, Some(Affine::scale(scale)));
+        }
+
+        // An open `select` draws its dropdown on top of everything else.
+        if let Some(model) = open_select.clone() {
+            if let Some(sel) = layout.selects.iter().find(|s| s.model == model) {
+                let value = document.engine_mut().get_string(&model);
+                let overlay = dropdown_paints(sel, &value);
+                let scene = rux_paint::build_scene(&overlay, text, images, false);
+                state.scene.append(&scene, Some(Affine::scale(scale)));
+            }
+        }
+
         *hits = layout.hits;
         *focuses = layout.focuses;
+        *selects = layout.selects;
+        // Keep the focus index in range if the new layout has fewer focusables.
+        if focus_index.map(|i| i >= layout.focusables.len()).unwrap_or(false) {
+            *focus_index = None;
+        }
+        *focusables = layout.focusables;
         // Keep offsets in step with the scrollers the new layout actually has,
         // and re-clamp them (the content may have shrunk under us).
         offsets.resize(layout.scrolls.len(), 0.0);
@@ -551,9 +873,12 @@ impl ApplicationHandler<RuxEvent> for App {
                 self.pointer = (position.x, position.y);
                 self.update_cursor();
             }
+            WindowEvent::ModifiersChanged(mods) => {
+                self.shift_held = mods.state().shift_key();
+            }
             WindowEvent::KeyboardInput { event, .. } => {
-                if event.state == ElementState::Pressed && self.focused.is_some() {
-                    self.edit_focused(&event.logical_key);
+                if event.state == ElementState::Pressed {
+                    self.on_key(&event.logical_key);
                 }
             }
             WindowEvent::MouseInput {

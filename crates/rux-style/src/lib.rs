@@ -817,7 +817,28 @@ fn build_node(
 
     // A text input: shows the bound value (or a dim placeholder when empty). The
     // shell focuses it on tap and edits the bound signal on keystrokes.
+    // `type="textarea"` is the same, but `Enter` inserts a newline.
     if el.tag == "input" {
+        let mut style = style;
+        let multiline = el.attr("type") == Some("textarea");
+        // Inputs are form controls: they fill their slot rather than hug their
+        // text (else the box would shrink as you type). A single line clips; a
+        // textarea scrolls, so text past the bottom stays reachable.
+        if style.width.is_none() {
+            style.width = Some(Len::Pct(1.0));
+        }
+        if style.overflow == Overflow::Visible {
+            style.overflow = if multiline { Overflow::Scroll } else { Overflow::Clip };
+        }
+        // `type="select"`: evaluate the bound `:options` collection to strings so
+        // the shell can render a dropdown.
+        let options = (el.attr("type") == Some("select"))
+            .then(|| {
+                el.attr(":options")
+                    .and_then(|e| engine.eval_value(e, locals))
+                    .and_then(|v| v.as_list().map(|items| items.iter().map(Value::to_display).collect()))
+                    .unwrap_or_default()
+            });
         let model = el.attr("r-model").map(str::to_string);
         let value = model
             .as_deref()
@@ -845,13 +866,16 @@ fn build_node(
                 italic,
                 underline,
                 strikethrough,
-                nowrap,
+                // A single-line input never wraps; a textarea does.
+                nowrap: !multiline,
                 caret: None, // the runtime marks the focused input's caret
             },
         );
         let mut node = LayoutNode::new(style);
         node.children.push(text_child);
         node.model = model;
+        node.multiline = multiline;
+        node.options = options;
         node.on_tap = on_tap;
         node.hidden = hidden;
         return node;
@@ -885,6 +909,8 @@ fn build_node(
         children,
         on_tap,
         model: None,
+        multiline: false,
+        options: None,
         hidden,
     }
 }
@@ -2284,6 +2310,37 @@ mod tests {
         let root = build_styled_tree(&sfc, &HashMap::new(), &mut engine).unwrap();
         let input = &root.children[0];
         assert_eq!(input.children[0].text.as_ref().unwrap().text, "Cam");
+    }
+
+    #[test]
+    fn select_carries_options_and_textarea_is_multiline() {
+        let src = r#"<template><screen>
+                       <input type="select" r-model="fruit" :options="fruits" />
+                       <input type="textarea" r-model="notes" />
+                     </screen></template>
+                     <script>
+                       let fruit = signal("pear");
+                       let fruits = signal(["apple", "pear", "plum"]);
+                       let notes = signal("");
+                     </script>"#;
+        let sfc = rux_parser::parse_sfc(src).unwrap();
+        let mut engine = Builder::new().build(&sfc.script).unwrap();
+        let root = build_styled_tree(&sfc, &HashMap::new(), &mut engine).unwrap();
+
+        // The select evaluates :options to strings and shows the bound value.
+        let select = &root.children[0];
+        assert_eq!(select.model.as_deref(), Some("fruit"));
+        assert_eq!(
+            select.options.as_ref().expect("select has options"),
+            &vec!["apple".to_string(), "pear".to_string(), "plum".to_string()]
+        );
+        assert!(!select.multiline);
+        assert_eq!(select.children[0].text.as_ref().unwrap().text, "pear");
+
+        // The textarea is a multiline input (Enter → newline in the shell).
+        let textarea = &root.children[1];
+        assert!(textarea.multiline);
+        assert!(textarea.options.is_none());
     }
 
     #[test]

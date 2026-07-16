@@ -1,0 +1,84 @@
+<template>
+  <screen class="app">
+    <text class="title">select, textarea &amp; keyboard focus</text>
+    <text class="hint">Tab / Shift+Tab to move focus · Space/Enter to toggle · type in the fields</text>
+
+    <view class="field">
+      <text class="label">Fruit</text>
+      <input class="select" type="select" r-model="fruit" :options="fruits" />
+      <text class="echo">chosen: {{ fruit }}</text>
+    </view>
+
+    <view class="field">
+      <text class="label">Notes (Enter for a new line)</text>
+      <input class="area" type="textarea" r-model="notes" placeholder="Type a few lines…" />
+    </view>
+
+    <view class="row">
+      <input class="check" type="checkbox" r-model="agree" />
+      <text class="label">I agree {{ agree }}</text>
+    </view>
+
+    <view class="row">
+      <input class="radio" type="radio" r-model="plan" value="free" />
+      <text class="label">Free</text>
+      <input class="radio" type="radio" r-model="plan" value="pro" />
+      <text class="label">Pro — {{ plan }}</text>
+    </view>
+  </screen>
+</template>
+
+<style>
+  .app {
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+    padding: 32px;
+    background: #1e1e2e;
+  }
+  .title { color: #cdd6f4; font-size: 22px; font-weight: 700; }
+  .hint { color: #6c7086; font-size: 13px; }
+  .field { display: flex; flex-direction: column; gap: 8px; width: 100%; max-width: 320px; }
+  .label { color: #a6adc8; font-size: 14px; }
+
+  .select {
+    display: flex;
+    align-items: center;
+    height: 38px;
+    padding: 0 12px;
+    background: #313244;
+    border-radius: 8px;
+    color: #cdd6f4;
+    cursor: pointer;
+  }
+  .echo { color: #a6e3a1; font-size: 14px; }
+
+  .area {
+    height: 120px;
+    padding: 10px 12px;
+    background: #313244;
+    border-radius: 8px;
+    color: #cdd6f4;
+  }
+
+  .row { display: flex; align-items: center; gap: 10px; }
+  .check, .radio {
+    width: 22px;
+    height: 22px;
+    background: #313244;
+    border: 2px solid #585b70;
+    border-radius: 6px;
+    color: #89b4fa;
+    flex-shrink: 0;
+  }
+  .radio { border-radius: 9999px; }
+  .check.checked, .radio.checked { background: #89b4fa; border-color: #89b4fa; color: #11111b; }
+</style>
+
+<script>
+  let fruit = signal("pear");
+  let fruits = signal(["apple", "pear", "plum", "cherry", "mango"]);
+  let notes = signal("");
+  let agree = signal(false);
+  let plan = signal("free");
+</script>
