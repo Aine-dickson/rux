@@ -17,10 +17,10 @@ use std::borrow::Cow;
 
 use parley::{
     Affinity, Alignment, AlignmentOptions, Cursor, FontContext, FontWeight, Layout, LayoutContext,
-    OverflowWrap, PositionedLayoutItem, StyleProperty, TextWrapMode,
+    LineHeight, OverflowWrap, PositionedLayoutItem, StyleProperty, TextWrapMode,
 };
 use parley::style::{FontFamily, FontStyle};
-use vello::kurbo::Affine;
+use vello::kurbo::{Affine, Rect};
 use vello::peniko::{Color, Fill};
 use vello::{Glyph, Scene};
 
@@ -83,8 +83,14 @@ pub struct TextStyle<'a> {
     /// `letter-spacing` / `word-spacing`, extra px between letters / words.
     pub letter_spacing: Option<f32>,
     pub word_spacing: Option<f32>,
+    /// `line-height`, as an absolute pixel value. `None` uses the font's metrics
+    /// (leading trimmed, so text hugs its box).
+    pub line_height: Option<f32>,
     /// `font-style: italic`.
     pub italic: bool,
+    /// `text-decoration: underline` / `line-through`.
+    pub underline: bool,
+    pub strikethrough: bool,
     /// `white-space: nowrap` — never break lines, even past `max_width`.
     pub nowrap: bool,
 }
@@ -99,7 +105,10 @@ impl<'a> TextStyle<'a> {
             family: None,
             letter_spacing: None,
             word_spacing: None,
+            line_height: None,
             italic: false,
+            underline: false,
+            strikethrough: false,
             nowrap: false,
         }
     }
@@ -141,6 +150,9 @@ impl TextEngine {
         if let Some(px) = style.word_spacing {
             builder.push_default(StyleProperty::WordSpacing(px));
         }
+        if let Some(px) = style.line_height {
+            builder.push_default(StyleProperty::LineHeight(LineHeight::Absolute(px)));
+        }
         if style.italic {
             builder.push_default(StyleProperty::FontStyle(FontStyle::Italic));
         }
@@ -160,11 +172,13 @@ impl TextEngine {
     /// text would break the last word onto a line the box has no height for.
     pub fn measure(&mut self, text: &str, style: &TextStyle, max_width: Option<f32>) -> (f32, f32) {
         let layout = self.build(text, style, max_width);
+        // Each line is `line-height` tall when set, else its own leading-trimmed
+        // height (ascent + descent) so text hugs its box by default.
         let height: f32 = layout
             .lines()
             .map(|l| {
                 let m = l.metrics();
-                m.ascent + m.descent
+                style.line_height.unwrap_or(m.ascent + m.descent)
             })
             .sum();
         (layout.width().ceil(), height.ceil())
@@ -212,6 +226,7 @@ impl TextEngine {
         color: Color,
         align: Align,
         max_width: Option<f32>,
+        transform: Affine,
     ) {
         let mut layout = self.build(text, style, max_width);
         layout.align(align.to_parley(), AlignmentOptions::default());
@@ -219,18 +234,23 @@ impl TextEngine {
         let mut line_top = y;
         for line in layout.lines() {
             let m = line.metrics();
-            let baseline = line_top + m.ascent;
+            // With `line-height`, the line box is that tall and the text sits
+            // centred in it (half the extra leading above the ascent).
+            let line_h = style.line_height.unwrap_or(m.ascent + m.descent);
+            let half_leading = (line_h - (m.ascent + m.descent)) / 2.0;
+            let baseline = line_top + half_leading + m.ascent;
             for item in line.items() {
                 let PositionedLayoutItem::GlyphRun(glyph_run) = item else {
                     continue;
                 };
-                let mut pen_x = x + glyph_run.offset();
+                let run_x0 = x + glyph_run.offset();
+                let mut pen_x = run_x0;
                 let run = glyph_run.run();
 
                 scene
                     .draw_glyphs(run.font())
                     .brush(color)
-                    .transform(Affine::IDENTITY)
+                    .transform(transform)
                     .font_size(run.font_size())
                     .normalized_coords(run.normalized_coords())
                     .draw(
@@ -246,8 +266,23 @@ impl TextEngine {
                             }
                         }),
                     );
+
+                // Decorations are drawn as filled rects across the run — parley
+                // doesn't draw them, but its `RunMetrics` give us the placement
+                // (offset is the top of the line, from the baseline, in px).
+                let rm = run.metrics();
+                if style.underline {
+                    let top = baseline - rm.underline_offset;
+                    let rect = Rect::new(run_x0 as f64, top as f64, pen_x as f64, (top + rm.underline_size) as f64);
+                    scene.fill(Fill::NonZero, transform, color, None, &rect);
+                }
+                if style.strikethrough {
+                    let top = baseline - rm.strikethrough_offset;
+                    let rect = Rect::new(run_x0 as f64, top as f64, pen_x as f64, (top + rm.strikethrough_size) as f64);
+                    scene.fill(Fill::NonZero, transform, color, None, &rect);
+                }
             }
-            line_top += m.ascent + m.descent;
+            line_top += line_h;
         }
     }
 }

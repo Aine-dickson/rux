@@ -21,8 +21,8 @@ fn paints(root: Node) -> Vec<Paint> {
 fn text_node_paints_its_background_then_its_glyphs() {
     let node = Node::text(
         Style {
-            background: Some(Rgba::new(0.2, 0.2, 0.2, 1.0)),
-            radius: 6.0,
+            background: Some(Background::Color(Rgba::new(0.2, 0.2, 0.2, 1.0))),
+            radius: [6.0; 4],
             ..Default::default()
         },
         TextContent {
@@ -35,7 +35,10 @@ fn text_node_paints_its_background_then_its_glyphs() {
             font_family: None,
             letter_spacing: None,
             word_spacing: None,
+            line_height: None,
             italic: false,
+            underline: false,
+            strikethrough: false,
             nowrap: false,
             caret: None,
         },
@@ -90,11 +93,11 @@ fn image_sizes_from_intrinsic_then_css() {
 fn opacity_wraps_the_subtree() {
     let mut faded = Node::new(Style {
         opacity: 0.5,
-        background: Some(Rgba::new(0.2, 0.2, 0.2, 1.0)),
+        background: Some(Background::Color(Rgba::new(0.2, 0.2, 0.2, 1.0))),
         ..Default::default()
     });
     faded.children.push(Node::new(Style {
-        background: Some(Rgba::new(1.0, 0.0, 0.0, 1.0)),
+        background: Some(Background::Color(Rgba::new(1.0, 0.0, 0.0, 1.0))),
         ..Default::default()
     }));
 

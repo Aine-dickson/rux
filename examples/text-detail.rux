@@ -1,0 +1,40 @@
+<template>
+  <screen class="app">
+    <text class="title">line-height &amp; text-decoration</text>
+
+    <view class="col">
+      <text class="lh tight">line-height 1.0 — the quick brown fox jumps over the lazy dog again and again</text>
+      <text class="lh loose">line-height 2.0 — the quick brown fox jumps over the lazy dog again and again</text>
+    </view>
+
+    <view class="col">
+      <text class="u">underline — visit the docs</text>
+      <text class="s">line-through — old price 99</text>
+      <text class="us">both at once</text>
+    </view>
+  </screen>
+</template>
+
+<style>
+  .app {
+    display: flex;
+    flex-direction: column;
+    gap: 24px;
+    padding: 32px;
+    background: #1e1e2e;
+  }
+  .title { color: #cdd6f4; font-size: 22px; font-weight: 700; }
+  .col { display: flex; flex-direction: column; gap: 16px; width: 100%; max-width: 420px; }
+
+  .lh { color: #cdd6f4; font-size: 18px; background: #313244; border-radius: 8px; padding: 8px 12px; }
+  .tight { line-height: 1.0; }
+  .loose { line-height: 2.0; }
+
+  .u  { color: #89b4fa; font-size: 20px; text-decoration: underline; }
+  .s  { color: #f38ba8; font-size: 20px; text-decoration: line-through; }
+  .us { color: #a6e3a1; font-size: 20px; text-decoration: underline line-through; }
+</style>
+
+<script>
+  let ready = signal(true);
+</script>

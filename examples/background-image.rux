@@ -1,0 +1,53 @@
+<template>
+  <screen class="app">
+    <text class="title">background-image (cover, clipped)</text>
+    <view class="row">
+      <view class="tile logo"><text class="cap">rounded</text></view>
+      <view class="tile counter"><text class="cap">wide box</text></view>
+      <view class="circle logo"></view>
+    </view>
+  </screen>
+</template>
+
+<style>
+  .app {
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+    padding: 32px;
+    background: #11111b;
+  }
+  .title { color: #cdd6f4; font-size: 22px; font-weight: 700; }
+  .row { display: flex; gap: 24px; align-items: center; }
+
+  .tile {
+    display: flex;
+    align-items: flex-end;
+    width: 150px;
+    height: 110px;
+    border-radius: 16px;
+    overflow: hidden;
+  }
+  .logo    { background-image: url(assets/logo.png); }
+  .counter { background-image: url(assets/counter.png); }
+
+  .cap {
+    padding: 4px 8px;
+    margin: 8px;
+    background: rgba(17, 17, 27, 0.6);
+    color: #cdd6f4;
+    border-radius: 6px;
+    font-size: 13px;
+  }
+
+  /* Same image cover-filling a circle — proves the corner clip. */
+  .circle {
+    width: 110px;
+    height: 110px;
+    border-radius: 9999px;
+  }
+</style>
+
+<script>
+  let ready = signal(true);
+</script>

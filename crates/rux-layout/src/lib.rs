@@ -175,6 +175,76 @@ pub enum Position {
     Absolute,
 }
 
+/// Corner radii in CSS order — top-left, top-right, bottom-right, bottom-left.
+/// A single `border-radius` fills all four; the per-corner longhands override.
+pub type Corners = [f32; 4];
+
+/// A 2-D affine `transform`, as the six coefficients `[a, b, c, d, e, f]` (kurbo
+/// `Affine` order: `x' = a·x + c·y + e`, `y' = b·x + d·y + f`). Translations are
+/// in logical px; the origin is applied at paint time (CSS default: box centre).
+pub type Transform = [f32; 6];
+
+/// `grid-auto-flow` — how auto-placed items fill the implicit grid.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum GridFlow {
+    #[default]
+    Row,
+    Column,
+    RowDense,
+    ColumnDense,
+}
+
+/// One endpoint of a `grid-column` / `grid-row` placement.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum GridPlace {
+    /// Auto-placed by the grid algorithm.
+    #[default]
+    Auto,
+    /// A specific grid line (1-based; negative counts back from the end).
+    Line(i16),
+    /// Span this many tracks from the other endpoint.
+    Span(u16),
+}
+
+/// A box background: a flat colour, a gradient, or an image.
+#[derive(Clone, Debug)]
+pub enum Background {
+    Color(Rgba),
+    Gradient(Gradient),
+    /// `background-image: url(…)`. The runtime resolves this to an absolute path
+    /// (like `<image src>`); the painter decodes it and draws it `cover`-sized.
+    Image(String),
+}
+
+/// A CSS gradient reduced to what the painter needs: a shape and colour stops.
+#[derive(Clone, Debug)]
+pub struct Gradient {
+    pub kind: GradientKind,
+    /// Colour stops as `(colour, offset)` with offset in 0..=1, in order.
+    pub stops: Vec<(Rgba, f32)>,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum GradientKind {
+    /// `linear-gradient(<angle>, …)` — angle in radians, CSS convention (0 = to
+    /// top, increasing clockwise).
+    Linear { angle: f32 },
+    /// `radial-gradient(…)` — a centred circle out to the nearest edge.
+    Radial,
+}
+
+/// A single (outer) `box-shadow`. Offsets, blur and spread are logical px.
+#[derive(Clone, Copy, Debug)]
+pub struct BoxShadow {
+    pub dx: f32,
+    pub dy: f32,
+    pub blur: f32,
+    pub spread: f32,
+    pub color: Rgba,
+    /// `inset` shadows are parsed but not yet drawn.
+    pub inset: bool,
+}
+
 /// The style subset M-series understands (a stand-in for the CSS `ComputedStyle`).
 #[derive(Clone, Debug)]
 pub struct Style {
@@ -187,6 +257,13 @@ pub struct Style {
     pub max_height: Option<Len>,
     pub grid_columns: Vec<Track>,
     pub grid_rows: Vec<Track>,
+    /// `grid-column` / `grid-row` placement for a grid item: `(start, end)`.
+    pub grid_column: (GridPlace, GridPlace),
+    pub grid_row: (GridPlace, GridPlace),
+    /// `grid-auto-flow` and the implicit-track sizes `grid-auto-rows`/`-columns`.
+    pub grid_auto_flow: GridFlow,
+    pub grid_auto_rows: Vec<Track>,
+    pub grid_auto_columns: Vec<Track>,
     pub grow: f32,
     /// `flex-shrink`. CSS defaults to 1: a flex item gives up space to fit its
     /// container. `0` keeps the item's size and lets it overflow — which is the
@@ -220,8 +297,14 @@ pub struct Style {
     pub justify_items: Option<Align>,
     pub align_content: Option<Justify>,
     pub overflow: Overflow,
-    pub background: Option<Rgba>,
-    pub radius: f32,
+    pub background: Option<Background>,
+    /// `border-radius`, per corner (top-left, top-right, bottom-right, bottom-left).
+    pub radius: Corners,
+    /// `box-shadow` (single, outer). Drawn behind the box's own background.
+    pub box_shadow: Option<BoxShadow>,
+    /// `transform` — an affine applied to this box and its subtree at paint time.
+    /// Visual only: hit regions are not transformed.
+    pub transform: Option<Transform>,
     /// `cursor` — the pointer shape over this box.
     pub cursor: Cursor,
     /// `position` and its `inset` (top, right, bottom, left). `None` per side =
@@ -244,6 +327,11 @@ impl Default for Style {
             max_height: None,
             grid_columns: Vec::new(),
             grid_rows: Vec::new(),
+            grid_column: (GridPlace::Auto, GridPlace::Auto),
+            grid_row: (GridPlace::Auto, GridPlace::Auto),
+            grid_auto_flow: GridFlow::Row,
+            grid_auto_rows: Vec::new(),
+            grid_auto_columns: Vec::new(),
             grow: 0.0,
             shrink: 1.0,
             basis: None,
@@ -266,7 +354,9 @@ impl Default for Style {
             align_content: None,
             overflow: Overflow::Visible,
             background: None,
-            radius: 0.0,
+            radius: [0.0; 4],
+            box_shadow: None,
+            transform: None,
             cursor: Cursor::Default,
             position: Position::Relative,
             inset: [None; 4],
@@ -299,8 +389,13 @@ pub struct TextContent {
     /// `letter-spacing` / `word-spacing`, extra px between letters / words.
     pub letter_spacing: Option<f32>,
     pub word_spacing: Option<f32>,
+    /// `line-height` as an absolute pixel value; `None` uses the font metrics.
+    pub line_height: Option<f32>,
     /// `font-style: italic`.
     pub italic: bool,
+    /// `text-decoration: underline` / `line-through`.
+    pub underline: bool,
+    pub strikethrough: bool,
     /// `white-space: nowrap` — never wrap, even past the box width.
     pub nowrap: bool,
     /// Byte index of the caret, when this text is inside the focused input.
@@ -375,14 +470,14 @@ impl Node {
 
 /// A resolved, absolutely-positioned box: an optional fill and an optional
 /// border, sharing one rounded-rect geometry.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct PaintRect {
     pub x: f32,
     pub y: f32,
     pub width: f32,
     pub height: f32,
-    pub background: Option<Rgba>,
-    pub radius: f32,
+    pub background: Option<Background>,
+    pub radius: Corners,
     /// Uniform border width for rendering (0 = none).
     pub border_width: f32,
     pub border_color: Option<Rgba>,
@@ -425,16 +520,32 @@ pub enum Paint {
     Text(PaintText),
     Image(PaintImage),
     Tick(PaintTick),
+    /// A blurred `box-shadow`, drawn behind its box. Geometry already has the
+    /// offset and spread applied.
+    Shadow {
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+        radius: f32,
+        blur: f32,
+        color: Rgba,
+    },
     /// Begin clipping subsequent items to this rounded rect (overflow: clip).
     PushClip {
         x: f32,
         y: f32,
         width: f32,
         height: f32,
-        radius: f32,
+        radius: Corners,
     },
     /// End the most recent clip.
     PopClip,
+    /// Begin an affine `transform` on the subtree. The matrix already has the
+    /// transform-origin baked in, so it applies directly to absolute coords.
+    PushTransform(Transform),
+    /// End the most recent transform.
+    PopTransform,
     /// Begin a translucent layer over the subtree (`opacity`). The shape is the
     /// whole viewport, so the layer fades without also clipping.
     PushOpacity {
@@ -525,11 +636,12 @@ pub type Measure<'a> = dyn FnMut(&TextContent, Option<f32>) -> (f32, f32) + 'a;
 /// What each taffy node paints.
 enum PaintKind {
     Box {
-        bg: Option<Rgba>,
-        radius: f32,
+        bg: Option<Background>,
+        radius: Corners,
         border_width: f32,
         border_color: Option<Rgba>,
         clip: bool,
+        shadow: Option<BoxShadow>,
     },
     Text(TextContent),
     Image(ImageContent),
@@ -545,6 +657,14 @@ fn to_dim(l: Len, vp: (f32, f32)) -> Dimension {
     }
 }
 
+fn to_placement(p: GridPlace) -> GridPlacement {
+    match p {
+        GridPlace::Auto => auto(),
+        GridPlace::Line(i) => line(i),
+        GridPlace::Span(n) => span(n),
+    }
+}
+
 fn to_track(t: Track) -> TrackSizingFunction {
     match t {
         Track::Px(v) => length(v),
@@ -552,6 +672,27 @@ fn to_track(t: Track) -> TrackSizingFunction {
         Track::Auto => auto(),
         Track::MinMax(lo, hi) => minmax(
             // A flex minimum is invalid; fall back to `auto` (min-content).
+            match lo {
+                TrackSide::Px(v) => length(v),
+                TrackSide::Fr(_) | TrackSide::Auto => auto(),
+            },
+            match hi {
+                TrackSide::Px(v) => length(v),
+                TrackSide::Fr(f) => fr(f),
+                TrackSide::Auto => auto(),
+            },
+        ),
+    }
+}
+
+/// Like [`to_track`] but for `grid-auto-rows`/`-columns`, whose tracks can't hold
+/// a `repeat(…)` and so use taffy's non-repeated track type.
+fn to_auto_track(t: Track) -> taffy::NonRepeatedTrackSizingFunction {
+    match t {
+        Track::Px(v) => length(v),
+        Track::Fr(f) => fr(f),
+        Track::Auto => auto(),
+        Track::MinMax(lo, hi) => minmax(
             match lo {
                 TrackSide::Px(v) => length(v),
                 TrackSide::Fr(_) | TrackSide::Auto => auto(),
@@ -578,6 +719,22 @@ fn to_taffy(style: &Style, vp: (f32, f32)) -> taffy::Style {
         },
         grid_template_columns: style.grid_columns.iter().copied().map(to_track).collect(),
         grid_template_rows: style.grid_rows.iter().copied().map(to_track).collect(),
+        grid_column: Line {
+            start: to_placement(style.grid_column.0),
+            end: to_placement(style.grid_column.1),
+        },
+        grid_row: Line {
+            start: to_placement(style.grid_row.0),
+            end: to_placement(style.grid_row.1),
+        },
+        grid_auto_flow: match style.grid_auto_flow {
+            GridFlow::Row => taffy::GridAutoFlow::Row,
+            GridFlow::Column => taffy::GridAutoFlow::Column,
+            GridFlow::RowDense => taffy::GridAutoFlow::RowDense,
+            GridFlow::ColumnDense => taffy::GridAutoFlow::ColumnDense,
+        },
+        grid_auto_rows: style.grid_auto_rows.iter().copied().map(to_auto_track).collect(),
+        grid_auto_columns: style.grid_auto_columns.iter().copied().map(to_auto_track).collect(),
         flex_direction: match style.axis {
             Axis::Column => FlexDirection::Column,
             Axis::Row => FlexDirection::Row,
@@ -739,6 +896,7 @@ fn build(
     hidden: &mut Vec<NodeId>,
     opacities: &mut Vec<(NodeId, f32)>,
     scrolls: &mut Vec<NodeId>,
+    transforms: &mut Vec<(NodeId, Transform)>,
     vp: (f32, f32),
 ) -> NodeId {
     let id = if let Some(tc) = &node.text {
@@ -752,11 +910,12 @@ fn build(
         paint.push((
             id,
             PaintKind::Box {
-                bg: node.style.background,
+                bg: node.style.background.clone(),
                 radius: node.style.radius,
                 border_width: node.style.border.top,
                 border_color: node.style.border_color,
                 clip: node.style.overflow != Overflow::Visible,
+                shadow: node.style.box_shadow,
             },
         ));
         paint.push((id, PaintKind::Text(tc.clone())));
@@ -779,11 +938,12 @@ fn build(
         paint.push((
             id,
             PaintKind::Box {
-                bg: node.style.background,
+                bg: node.style.background.clone(),
                 radius: node.style.radius,
                 border_width: node.style.border.top,
                 border_color: node.style.border_color,
                 clip: node.style.overflow != Overflow::Visible,
+                shadow: node.style.box_shadow,
             },
         ));
         paint.push((id, PaintKind::Image(ic.clone())));
@@ -792,7 +952,7 @@ fn build(
         let children: Vec<NodeId> = node
             .children
             .iter()
-            .map(|c| build(tree, c, paint, handlers, models, hidden, opacities, scrolls, vp))
+            .map(|c| build(tree, c, paint, handlers, models, hidden, opacities, scrolls, transforms, vp))
             .collect();
         let id = if children.is_empty() {
             tree.new_leaf(to_taffy(&node.style, vp)).expect("taffy leaf")
@@ -803,12 +963,13 @@ fn build(
         paint.push((
             id,
             PaintKind::Box {
-                bg: node.style.background,
+                bg: node.style.background.clone(),
                 radius: node.style.radius,
                 // Uniform border for rendering (top width is representative).
                 border_width: node.style.border.top,
                 border_color: node.style.border_color,
                 clip: node.style.overflow != Overflow::Visible,
+                shadow: node.style.box_shadow,
             },
         ));
         id
@@ -824,6 +985,9 @@ fn build(
     }
     if node.style.opacity < 1.0 {
         opacities.push((id, node.style.opacity.max(0.0)));
+    }
+    if let Some(tf) = node.style.transform {
+        transforms.push((id, tf));
     }
     if node.style.overflow == Overflow::Scroll {
         scrolls.push(id);
@@ -843,6 +1007,7 @@ fn collect(
     hidden: &[NodeId],
     opacities: &[(NodeId, f32)],
     scrolls: &[NodeId],
+    transforms: &[(NodeId, Transform)],
     offsets: &[f32],
     vp: (f32, f32),
     out: &mut Layout,
@@ -872,8 +1037,17 @@ fn collect(
         });
     }
 
+    // `transform` wraps the box and its subtree. The parsed matrix is in local
+    // coords; bake in the origin (CSS default: the box centre) so it applies to
+    // absolute coordinates directly.
+    let transform = transforms.iter().find(|(nid, _)| *nid == id).map(|(_, m)| *m);
+    if let Some(m) = transform {
+        let (ox, oy) = (x + layout.size.width / 2.0, y + layout.size.height / 2.0);
+        out.paints.push(Paint::PushTransform(centre_transform(m, ox, oy)));
+    }
+
     let mut clip = false;
-    let mut clip_radius = 0.0;
+    let mut clip_radius = [0.0; 4];
     // A node can emit more than one paint (a text node paints its box, then its
     // glyphs), so walk every entry it owns, in order.
     for (_, kind) in paint.iter().filter(|(nid, _)| *nid == id) {
@@ -884,9 +1058,25 @@ fn collect(
                 border_width,
                 border_color,
                 clip: c,
+                shadow,
             } => {
                 clip = *c;
                 clip_radius = *radius;
+                // The shadow goes down first, so the box's own fill sits on top.
+                // Outer shadows only for now; inset is parsed but not drawn.
+                if let Some(sh) = shadow.filter(|s| !s.inset) {
+                    out.paints.push(Paint::Shadow {
+                        x: x + sh.dx - sh.spread,
+                        y: y + sh.dy - sh.spread,
+                        width: layout.size.width + 2.0 * sh.spread,
+                        height: layout.size.height + 2.0 * sh.spread,
+                        // vello's blurred rect takes one radius; use the largest
+                        // corner as a stand-in (per-corner blur isn't supported).
+                        radius: radius.iter().copied().fold(0.0, f32::max),
+                        blur: sh.blur,
+                        color: sh.color,
+                    });
+                }
                 let has_border = *border_width > 0.0 && border_color.is_some();
                 if bg.is_some() || has_border {
                     out.paints.push(Paint::Rect(PaintRect {
@@ -894,7 +1084,7 @@ fn collect(
                         y,
                         width: layout.size.width,
                         height: layout.size.height,
-                        background: *bg,
+                        background: bg.clone(),
                         radius: *radius,
                         border_width: *border_width,
                         border_color: *border_color,
@@ -1008,6 +1198,7 @@ fn collect(
             hidden,
             opacities,
             scrolls,
+            transforms,
             offsets,
             vp,
             out,
@@ -1016,9 +1207,26 @@ fn collect(
     if clip {
         out.paints.push(Paint::PopClip);
     }
+    if transform.is_some() {
+        out.paints.push(Paint::PopTransform);
+    }
     if alpha < 1.0 {
         out.paints.push(Paint::PopOpacity);
     }
+}
+
+/// Bake a transform-origin at `(ox, oy)` into a local transform matrix `m`, so
+/// the result maps absolute coordinates: `p ↦ M·(p − o) + o`.
+fn centre_transform(m: Transform, ox: f32, oy: f32) -> Transform {
+    let [a, b, c, d, e, f] = m;
+    [
+        a,
+        b,
+        c,
+        d,
+        e + ox - a * ox - c * oy,
+        f + oy - b * ox - d * oy,
+    ]
 }
 
 /// Lay out `root` into an `avail_w` x `avail_h` viewport, returning paint items
@@ -1047,6 +1255,7 @@ pub fn layout_scrolled(
     let mut hidden = Vec::new();
     let mut opacities = Vec::new();
     let mut scrolls = Vec::new();
+    let mut transforms = Vec::new();
     let vp = (avail_w, avail_h);
     let root_id = build(
         &mut tree,
@@ -1057,6 +1266,7 @@ pub fn layout_scrolled(
         &mut hidden,
         &mut opacities,
         &mut scrolls,
+        &mut transforms,
         vp,
     );
 
@@ -1104,7 +1314,7 @@ pub fn layout_scrolled(
     let mut out = Layout::default();
     collect(
         &tree, root_id, 0.0, 0.0, &paint, &handlers, &models, &hidden, &opacities, &scrolls,
-        offsets, vp, &mut out,
+        &transforms, offsets, vp, &mut out,
     );
     out
 }

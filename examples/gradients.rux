@@ -1,0 +1,55 @@
+<template>
+  <screen class="app">
+    <text class="title">gradients</text>
+    <view class="row">
+      <view class="tile g1"><text>to right</text></view>
+      <view class="tile g2"><text>135deg</text></view>
+      <view class="tile g3"><text>3 stops</text></view>
+      <view class="tile g4"><text>radial</text></view>
+    </view>
+    <view class="bar">
+      <text>positioned stops (10% → 80%)</text>
+    </view>
+  </screen>
+</template>
+
+<style>
+  .app {
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+    padding: 32px;
+    background: #11111b;
+  }
+  .title { color: #cdd6f4; font-size: 22px; font-weight: 700; }
+  .row { display: flex; gap: 20px; }
+  .tile {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 130px;
+    height: 100px;
+    border-radius: 12px;
+    color: #11111b;
+    font-weight: 700;
+  }
+  .g1 { background: linear-gradient(to right, #f38ba8, #89b4fa); }
+  .g2 { background: linear-gradient(135deg, #a6e3a1, #f9e2af); }
+  .g3 { background: linear-gradient(#f38ba8, #cba6f7, #89b4fa); }
+  .g4 { background: radial-gradient(circle, #f9e2af, #fab387); }
+
+  .bar {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 60px;
+    border-radius: 10px;
+    color: #11111b;
+    font-weight: 700;
+    background: linear-gradient(to right, #94e2d5 10%, #89b4fa 80%);
+  }
+</style>
+
+<script>
+  let ready = signal(true);
+</script>

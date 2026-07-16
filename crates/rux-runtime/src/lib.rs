@@ -65,6 +65,13 @@ fn resolve_images(node: &mut LayoutNode, base: &Path) {
             img.src = path.to_string_lossy().into_owned();
         }
     }
+    // `background-image: url(…)` resolves against the .rux file too. The painter
+    // sizes it to the box, so no intrinsic size is needed here.
+    if let Some(rux_layout::Background::Image(src)) = &mut node.style.background {
+        if !src.is_empty() {
+            *src = base.join(&*src).to_string_lossy().into_owned();
+        }
+    }
     for child in &mut node.children {
         resolve_images(child, base);
     }
@@ -309,7 +316,9 @@ mod tests {
         )
         .expect("load");
 
-        let green = |n: &LayoutNode| n.style.background.map(|c| c.g) == Some(1.0);
+        let green = |n: &LayoutNode| {
+            matches!(&n.style.background, Some(rux_layout::Background::Color(c)) if c.g == 1.0)
+        };
         let boxes = &doc.root.children;
         assert!(green(&boxes[0]), "checked checkbox should match .checked");
         assert!(green(&boxes[1]), "radio whose value == signal is checked");

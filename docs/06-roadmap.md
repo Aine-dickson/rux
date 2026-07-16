@@ -161,24 +161,73 @@ likely to make Rux feel like a toy, so it gets real scope.
 | `position: relative\|absolute` + `top`/`right`/`bottom`/`left` | taffy (`Position`, `inset`) | ✅ done 2026-07-16 |
 | CSS named colours (`red`, `teal`, …) | our `parse_color` | ✅ done 2026-07-16 |
 | `flex-flow` | taffy | — |
-| `grid-column` / `grid-row`, `grid-auto-flow`, `grid-auto-rows/columns` | taffy (`GridPlacement`) | — (needs `1 / 3`, `span n` parsing) |
-| per-corner `border-radius` | kurbo (`RoundedRectRadii`) | — (touches painter + the radio-circle `radius == 0` shortcut) |
+| `grid-column` / `grid-row` (+ `-start`/`-end`) | taffy (`GridPlacement`) | ✅ done 2026-07-16 (`1 / 3`, `span n`, `-1`; no named lines) |
+| `grid-auto-flow`, `grid-auto-rows/columns` | taffy | ✅ done 2026-07-16 |
+| per-corner `border-radius` | kurbo (`RoundedRectRadii`) | ✅ done 2026-07-16 |
 | `letter-spacing`, `word-spacing` | parley | ✅ done 2026-07-16 |
 | `font-style: italic` | parley | ✅ done 2026-07-16 |
 | `white-space: nowrap\|pre` | parley (`TextWrapMode`) | ✅ done 2026-07-16 |
-| `line-height` | parley (`LineHeight`) | — (fights the deliberate leading-trim in `measure`; needs care) |
-| `text-decoration` (underline/strikethrough) | parley `Decoration` + our own line-drawing | — (our glyph loop draws no decorations; needs manual rects from `RunMetrics`) |
-| `box-shadow` | vello (`draw_blurred_rounded_rect`) | — |
-| `transform` (translate/scale/rotate) | kurbo `Affine` | — |
-| linear/radial `gradient` backgrounds | peniko `Gradient` | — |
-| `background-image: url(…)` | our `ImageCache` | — |
+| `line-height` | parley (`LineHeight`) | ✅ done 2026-07-16 |
+| `text-decoration` (underline/strikethrough) | our own line-drawing off `RunMetrics` | ✅ done 2026-07-16 |
+| `box-shadow` | vello (`draw_blurred_rounded_rect`) | ✅ done 2026-07-16 (single outer; inset parsed, not drawn) |
+| linear/radial `gradient` backgrounds | peniko `Gradient` | ✅ done 2026-07-16 |
+| `transform` (translate/scale/rotate) | kurbo `Affine` | ✅ done 2026-07-16 (visual only — hit regions not transformed) |
+| `background-image: url(…)` | our `ImageCache` | ✅ done 2026-07-16 (cover-sized, clipped; no repeat/size/position) |
 
 Mapped this round: the four alignment self/content properties, per-axis gaps,
 `aspect-ratio`, `position`+inset (absolute rides taffy's resolved location, so
 the painter needed no change), and the full CSS named-colour table (killing the
 `#ff0000`→`red` landmine). Driven clean in `examples/css-showcase.rux`.
 
-Text-shaping props followed (`font-style: italic`, `letter-spacing`,
+Then per-corner `border-radius` and grid placement. `Style.radius` became a
+`Corners` (`[f32; 4]`, CSS order TL/TR/BR/BL) threaded to `PaintRect`/`PushClip`;
+the painter builds a `RoundedRectRadii` (`rux_paint::rounded_rect`, which also
+insets for the border stroke), and the radio-circle `radius == 0` shortcut became
+`== [0.0; 4]`. `border-radius` parses the diagonal 1–4 shorthand plus the four
+`-corner` longhands. Grid items get `grid-column`/`grid-row` (`GridPlace` →
+taffy `line()`/`span()`), including the `-start`/`-end` longhands; named lines
+are not supported. Driven in `examples/grid.rux`.
+
+Then the first paint-heavy pair. **`box-shadow`** (single outer shadow) parses
+`<dx> <dy> <blur>? <spread>? <color>?` into `Style.box_shadow`, and `collect`
+emits a `Paint::Shadow` behind the box that the painter draws with vello's
+`draw_blurred_rounded_rect` (blur ≈ 2σ). **Gradients**: `Style.background` grew
+from `Option<Rgba>` to `Option<Background>` (`Color` | `Gradient`), so the fill
+site now brushes with a peniko `Gradient` for linear/radial. Linear endpoints use
+the CSS gradient-line formula for the angle (`<n>deg`/`turn` or `to <side>`);
+stops without a position spread evenly. Driven in `examples/shadows.rux` and
+`examples/gradients.rux`.
+
+Then `transform` and `grid-auto-*`. `grid-auto-flow`/`-rows`/`-columns` are a
+plain taffy mapping (auto tracks use the non-repeated track type, so a second
+`to_auto_track` sits beside `to_track`). **`transform`** threads a transform
+*stack* through the painter: `Style.transform` is the six affine coefficients,
+`collect` bakes the transform-origin (box centre) into the matrix and brackets
+the subtree with `Paint::PushTransform`/`PopTransform`, and `build_scene` keeps a
+`Vec<Affine>` so every draw — fills, strokes, shadows, images, clips, and
+`TextEngine::draw` (which gained a transform arg) — uses the accumulated matrix.
+**Caveat, by design:** hit/focus/scroll regions are computed untransformed, so a
+transformed element still responds to taps at its *original* position. Driven in
+`examples/transform.rux`.
+
+That closes the paint-heavy set. `background-image: url(…)` reuses the
+`Background` enum (`Image(src)`); the runtime resolves the path against the .rux
+file in `resolve_images` (beside `<image>`), and the painter decodes via
+`ImageCache` and draws it `cover`-sized, clipped to the box's rounded corners.
+`background-size`/`-position`/`-repeat` are not honored (so they still warn).
+Finally the two text props that had been deferred: **`line-height`** (unitless ×
+font-size, or a length) now sets the line box in both `measure` and `draw` — when
+unset, the leading-trim hug is unchanged, so the old text-hug guard still holds;
+and **`text-decoration`** (`underline` / `line-through`) is drawn as filled rects
+across each glyph run, placed from parley `RunMetrics`. Driven in
+`examples/background-image.rux` and `examples/text-detail.rux`.
+
+**The v0.2 CSS list is now complete.** Remaining CSS work is genuinely long-tail
+(CSS variables, `@media`, pseudo-classes, `!important`/`inherit`, per-side border
+*colours*, `box-sizing`, `text-overflow: ellipsis`), tracked with the ceilings
+below and in the "real work" section above.
+
+Text-shaping props came before those (`font-style: italic`, `letter-spacing`,
 `word-spacing`, `white-space: nowrap`). While wiring them, the text engine's
 methods (which had grown to 6+ positional args after `font-family`) were
 refactored to take a single `rux_text::TextStyle` struct, and `rux-layout`'s

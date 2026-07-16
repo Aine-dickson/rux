@@ -1,0 +1,71 @@
+<template>
+  <screen class="app">
+    <text class="title">Grid placement &amp; per-corner radius</text>
+
+    <!-- Explicit placement: header spans all columns, sidebar spans two rows -->
+    <view class="grid">
+      <view class="cell header"><text>header — grid-column: 1 / -1</text></view>
+      <view class="cell side"><text>sidebar — grid-row: span 2</text></view>
+      <view class="cell a"><text>a</text></view>
+      <view class="cell b"><text>b</text></view>
+      <view class="cell c"><text>grid-column: span 2</text></view>
+    </view>
+
+    <!-- Per-corner border-radius -->
+    <view class="chips">
+      <view class="chip r1"><text>one corner</text></view>
+      <view class="chip r2"><text>two corners</text></view>
+      <view class="chip r3"><text>pill</text></view>
+    </view>
+  </screen>
+</template>
+
+<style>
+  .app {
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+    padding: 24px;
+    background: #1e1e2e;
+  }
+  .title { color: #cdd6f4; font-size: 22px; font-weight: 700; }
+
+  .grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 10px;
+  }
+  .cell {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 16px;
+    background: #313244;
+    border-radius: 8px;
+    color: #cdd6f4;
+    font-size: 15px;
+  }
+  .header { grid-column: 1 / -1; background: #89b4fa; color: #11111b; }
+  .side   { grid-row: span 2; background: #a6e3a1; color: #11111b; }
+  .c      { grid-column: span 2; background: #f9e2af; color: #11111b; }
+
+  .chips { display: flex; gap: 14px; }
+  .chip {
+    display: flex;
+    align-items: center;
+    padding: 12px 18px;
+    background: #cba6f7;
+    color: #11111b;
+    font-size: 15px;
+  }
+  /* One rounded corner (top-left), rest square. */
+  .r1 { border-top-left-radius: 18px; }
+  /* Two opposite corners via the diagonal shorthand. */
+  .r2 { border-radius: 18px 0; }
+  /* Fully rounded pill. */
+  .r3 { border-radius: 9999px; }
+</style>
+
+<script>
+  let ready = signal(true);
+</script>

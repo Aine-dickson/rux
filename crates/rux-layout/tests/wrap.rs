@@ -33,7 +33,7 @@ fn wrapped_grid_reserves_height_for_every_row() {
                 width: Some(Len::Px(64.0)),
                 height: Some(Len::Px(64.0)),
                 shrink: 0.0,
-                background: Some(Rgba::new(0.5, 0.5, 0.5, 1.0)),
+                background: Some(Background::Color(Rgba::new(0.5, 0.5, 0.5, 1.0))),
                 ..Default::default()
             },
             vec![],
@@ -56,7 +56,7 @@ fn wrapped_grid_reserves_height_for_every_row() {
         Style {
             width: Some(Len::Px(200.0)),
             height: Some(Len::Px(20.0)),
-            background: Some(Rgba::new(1.0, 0.0, 0.0, 1.0)),
+            background: Some(Background::Color(Rgba::new(1.0, 0.0, 0.0, 1.0))),
             ..Default::default()
         },
         vec![],

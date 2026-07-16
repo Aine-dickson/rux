@@ -49,7 +49,7 @@ fn hugging_box_clamps_to_parent_inner_width() {
         boxed(
             Style {
                 width: Some(Len::Px(320.0)),
-                background: Some(Rgba::new(0.0, 0.0, 0.0, 1.0)),
+                background: Some(Background::Color(Rgba::new(0.0, 0.0, 0.0, 1.0))),
                 ..flex(Axis::Row)
             },
             vec![],
@@ -58,7 +58,7 @@ fn hugging_box_clamps_to_parent_inner_width() {
     let row = boxed(
         Style {
             gap: 8.0,
-            background: Some(Rgba::new(0.1, 0.1, 0.1, 1.0)),
+            background: Some(Background::Color(Rgba::new(0.1, 0.1, 0.1, 1.0))),
             ..flex(Axis::Row)
         },
         vec![child(), child(), child()],
@@ -67,7 +67,7 @@ fn hugging_box_clamps_to_parent_inner_width() {
         Style {
             width: Some(Len::Px(320.0)),
             padding: Sides::uniform(16.0),
-            background: Some(Rgba::new(0.2, 0.2, 0.2, 1.0)),
+            background: Some(Background::Color(Rgba::new(0.2, 0.2, 0.2, 1.0))),
             ..flex(Axis::Column)
         },
         vec![row],
@@ -101,7 +101,7 @@ fn explicit_width_is_left_alone() {
     let wide = boxed(
         Style {
             width: Some(Len::Px(900.0)),
-            background: Some(Rgba::new(0.0, 0.0, 0.0, 1.0)),
+            background: Some(Background::Color(Rgba::new(0.0, 0.0, 0.0, 1.0))),
             ..flex(Axis::Column)
         },
         vec![],
@@ -109,7 +109,7 @@ fn explicit_width_is_left_alone() {
     let card = boxed(
         Style {
             width: Some(Len::Px(320.0)),
-            background: Some(Rgba::new(0.2, 0.2, 0.2, 1.0)),
+            background: Some(Background::Color(Rgba::new(0.2, 0.2, 0.2, 1.0))),
             ..flex(Axis::Column)
         },
         vec![wide],
@@ -128,7 +128,7 @@ fn shrink_zero_keeps_its_width_and_overflows() {
             Style {
                 width: Some(Len::Px(w)),
                 shrink: 0.0,
-                background: Some(Rgba::new(0.0, 0.0, 0.0, 1.0)),
+                background: Some(Background::Color(Rgba::new(0.0, 0.0, 0.0, 1.0))),
                 ..flex(Axis::Row)
             },
             vec![],
@@ -137,7 +137,7 @@ fn shrink_zero_keeps_its_width_and_overflows() {
     let card = boxed(
         Style {
             width: Some(Len::Px(300.0)),
-            background: Some(Rgba::new(0.2, 0.2, 0.2, 1.0)),
+            background: Some(Background::Color(Rgba::new(0.2, 0.2, 0.2, 1.0))),
             ..flex(Axis::Row)
         },
         vec![stiff(200.0), stiff(200.0)],
@@ -159,7 +159,7 @@ fn default_items_shrink_to_fit() {
         boxed(
             Style {
                 width: Some(Len::Px(200.0)),
-                background: Some(Rgba::new(0.0, 0.0, 0.0, 1.0)),
+                background: Some(Background::Color(Rgba::new(0.0, 0.0, 0.0, 1.0))),
                 ..flex(Axis::Row)
             },
             vec![],
@@ -168,7 +168,7 @@ fn default_items_shrink_to_fit() {
     let card = boxed(
         Style {
             width: Some(Len::Px(300.0)),
-            background: Some(Rgba::new(0.2, 0.2, 0.2, 1.0)),
+            background: Some(Background::Color(Rgba::new(0.2, 0.2, 0.2, 1.0))),
             ..flex(Axis::Row)
         },
         vec![item(), item()],
@@ -188,7 +188,7 @@ fn flex_wrap_starts_a_new_line() {
                 width: Some(Len::Px(200.0)),
                 shrink: 0.0,
                 height: Some(Len::Px(20.0)),
-                background: Some(Rgba::new(0.0, 0.0, 0.0, 1.0)),
+                background: Some(Background::Color(Rgba::new(0.0, 0.0, 0.0, 1.0))),
                 ..flex(Axis::Row)
             },
             vec![],
@@ -198,7 +198,7 @@ fn flex_wrap_starts_a_new_line() {
         Style {
             width: Some(Len::Px(300.0)),
             wrap: true,
-            background: Some(Rgba::new(0.2, 0.2, 0.2, 1.0)),
+            background: Some(Background::Color(Rgba::new(0.2, 0.2, 0.2, 1.0))),
             ..flex(Axis::Row)
         },
         vec![item(), item()],

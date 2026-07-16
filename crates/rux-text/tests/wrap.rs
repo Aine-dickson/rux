@@ -113,6 +113,19 @@ fn letter_spacing_widens_the_run() {
     assert!(loose > tight + 20.0, "letter-spacing had no effect: {tight} → {loose}");
 }
 
+/// `line-height` sets each line box's height, so a taller line-height makes the
+/// same wrapped text measure taller (and `None` keeps the leading-trimmed hug).
+#[test]
+fn line_height_grows_total_height() {
+    let mut te = TextEngine::new();
+    let text = "one two three four five six seven eight nine ten";
+    let (size, box_w) = (20.0, 120.0);
+    let (_, natural) = te.measure(text, &TextStyle::new(size, 400, Wrap::Normal), Some(box_w));
+    let tall = TextStyle { line_height: Some(40.0), ..TextStyle::new(size, 400, Wrap::Normal) };
+    let (_, tall_h) = te.measure(text, &tall, Some(box_w));
+    assert!(tall_h > natural, "line-height:40 should exceed the natural height {natural}");
+}
+
 /// `white-space: nowrap` keeps everything on one line even in a narrow box,
 /// where the same text otherwise wraps to several.
 #[test]

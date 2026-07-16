@@ -79,13 +79,20 @@ flex-direction, justify-content, align-items, gap, row-gap, column-gap
 align-self, justify-self, justify-items, align-content
 flex-grow, flex-shrink, flex-basis, flex-wrap, flex (shorthand)
 grid-template-columns, grid-template-rows
+grid-column, grid-row (+ -start/-end)   (1 / 3, span 2, -1; no named lines)
+grid-auto-flow, grid-auto-rows, grid-auto-columns
+transform (translate/scale/rotate; visual only — hit regions aren't transformed)
 position (relative|absolute) + top/right/bottom/left, aspect-ratio
 width, height, min/max-width, min/max-height
 padding, margin        (shorthand 1–4 values + -top/-right/-bottom/-left)
 border, border-width, border-color, border-<side>, border-<side>-width
-background / background-color, border-radius, opacity
+background / background-color / background-image, opacity
+  (colour, linear-/radial-gradient, or url(…) image — cover-sized, clipped to corners)
+box-shadow (single, outer; inset parsed but not drawn)
+border-radius (1–4 diagonal shorthand + per-corner -top-left/-top-right/…)
 color, font-size, font-weight, font-family, font-style (italic), text-align
-letter-spacing, word-spacing, white-space (nowrap|pre)     (color: hex, rgb()/rgba(), CSS names)
+letter-spacing, word-spacing, line-height, white-space (nowrap|pre)
+text-decoration (underline / line-through)                (color: hex, rgb()/rgba(), CSS names)
 overflow / overflow-x / overflow-y   (hidden|clip = clip; auto|scroll = scroll)
 overflow-wrap (break-word), word-break (break-all)
 cursor (pointer, on @tap boxes only)

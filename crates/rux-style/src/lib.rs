@@ -16,9 +16,11 @@ use lightningcss::rules::CssRule;
 use lightningcss::stylesheet::{ParserOptions, PrinterOptions, StyleSheet};
 use lightningcss::traits::ToCss;
 use rux_layout::{
-    Align, Axis, Cursor, Display, ImageContent, Justify, Len, Node as LayoutNode, Overflow,
-    Position, Rgba, Sides, Style, TextAlign, TextContent, TextWrap, Track, TrackSide,
+    Align, Axis, Background, BoxShadow, Cursor, Display, Gradient, GridPlace, ImageContent, Justify,
+    Len, Node as LayoutNode, Overflow, Position, Rgba, Sides, Style, TextAlign, TextContent,
+    TextWrap, Track, TrackSide,
 };
+use rux_layout::{GradientKind, GridFlow, Transform};
 use rux_parser::{Element, Node as TplNode, Sfc};
 use rux_reactive::Value;
 use rux_script::Engine;
@@ -140,11 +142,13 @@ pub fn build_styled_tree(
 }
 
 /// Replace `{{ expr }}` spans in `text` with values evaluated by the engine.
+/// Literal text has its HTML entities (`&amp;`, `&lt;`, …) decoded; interpolated
+/// values are inserted verbatim (they're already runtime strings).
 fn interpolate(text: &str, engine: &mut Engine, locals: &Locals) -> String {
     let mut out = String::new();
     let mut rest = text;
     while let Some(start) = rest.find("{{") {
-        out.push_str(&rest[..start]);
+        out.push_str(&decode_entities(&rest[..start]));
         let after = &rest[start + 2..];
         match after.find("}}") {
             Some(end) => {
@@ -157,8 +161,56 @@ fn interpolate(text: &str, engine: &mut Engine, locals: &Locals) -> String {
             }
         }
     }
+    out.push_str(&decode_entities(rest));
+    out
+}
+
+/// Decode the HTML entities an author might write in text: the named ones
+/// (`&amp;`, `&lt;`, `&gt;`, `&quot;`, `&apos;`, `&nbsp;`) and numeric
+/// (`&#38;`, `&#x26;`). An unrecognised `&…;` is left as written.
+fn decode_entities(s: &str) -> String {
+    if !s.contains('&') {
+        return s.to_string();
+    }
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(amp) = rest.find('&') {
+        out.push_str(&rest[..amp]);
+        let after = &rest[amp..];
+        // An entity is short and has no spaces; only look at the next few chars.
+        if let Some(semi) = after[1..].find(';').map(|i| i + 1) {
+            if semi <= 12 {
+                if let Some(ch) = entity_char(&after[1..semi]) {
+                    out.push(ch);
+                    rest = &after[semi + 1..];
+                    continue;
+                }
+            }
+        }
+        out.push('&');
+        rest = &after[1..];
+    }
     out.push_str(rest);
     out
+}
+
+fn entity_char(entity: &str) -> Option<char> {
+    match entity {
+        "amp" => Some('&'),
+        "lt" => Some('<'),
+        "gt" => Some('>'),
+        "quot" => Some('"'),
+        "apos" => Some('\''),
+        "nbsp" => Some('\u{00A0}'),
+        _ => {
+            let num = entity.strip_prefix('#')?;
+            let code = match num.strip_prefix(['x', 'X']) {
+                Some(hex) => u32::from_str_radix(hex, 16).ok()?,
+                None => num.parse::<u32>().ok()?,
+            };
+            char::from_u32(code)
+        }
+    }
 }
 
 // ── Selector model ──────────────────────────────────────────────────────────
@@ -288,21 +340,27 @@ const HONORED_PROPERTIES: &[&str] = &[
     "padding", "padding-top", "padding-right", "padding-bottom", "padding-left",
     "margin", "margin-top", "margin-right", "margin-bottom", "margin-left",
     "border", "border-width", "border-color", "border-radius",
+    "border-top-left-radius", "border-top-right-radius",
+    "border-bottom-right-radius", "border-bottom-left-radius",
     "border-top", "border-right", "border-bottom", "border-left",
     "border-top-width", "border-right-width", "border-bottom-width", "border-left-width",
-    "overflow", "overflow-x", "overflow-y", "opacity", "cursor",
+    "overflow", "overflow-x", "overflow-y", "opacity", "cursor", "box-shadow", "transform",
     // Flex / grid
     "flex", "flex-grow", "flex-shrink", "flex-basis", "flex-wrap", "flex-direction",
     "justify-content", "align-items", "align-self", "justify-self", "justify-items",
     "align-content", "row-gap", "column-gap",
     "grid-template-columns", "grid-template-rows",
+    "grid-column", "grid-row",
+    "grid-column-start", "grid-column-end", "grid-row-start", "grid-row-end",
+    "grid-auto-flow", "grid-auto-rows", "grid-auto-columns",
     // Positioning
     "position", "top", "right", "bottom", "left", "aspect-ratio",
     // Background
-    "background", "background-color",
+    "background", "background-color", "background-image",
     // Text
     "color", "font-size", "font-weight", "font-family", "font-style", "text-align",
-    "letter-spacing", "word-spacing", "white-space",
+    "letter-spacing", "word-spacing", "line-height", "white-space",
+    "text-decoration", "text-decoration-line",
     "overflow-wrap", "word-wrap", "word-break",
 ];
 
@@ -629,9 +687,16 @@ fn build_node(
     // `font-weight`/`text-align` already are).
     let letter_spacing = props.get("letter-spacing").and_then(|v| parse_spacing(v));
     let word_spacing = props.get("word-spacing").and_then(|v| parse_spacing(v));
+    // `line-height`: a unitless number multiplies the font size; a length is
+    // absolute; `normal` keeps the font metrics.
+    let line_height = props.get("line-height").and_then(|v| parse_line_height(v, font_size));
     let italic = props
         .get("font-style")
         .is_some_and(|v| matches!(v.trim(), "italic" | "oblique"));
+    // `text-decoration[-line]`: underline / line-through (space-separated list).
+    let decoration = props.get("text-decoration-line").or_else(|| props.get("text-decoration"));
+    let underline = decoration.is_some_and(|v| v.split_whitespace().any(|t| t == "underline"));
+    let strikethrough = decoration.is_some_and(|v| v.split_whitespace().any(|t| t == "line-through"));
     // `white-space: nowrap|pre` stops line breaking. (We don't preserve `pre`
     // whitespace runs yet; the no-wrap half is what matters for layout.)
     let nowrap = props
@@ -657,7 +722,10 @@ fn build_node(
                 font_family: font_family.clone(),
                 letter_spacing,
                 word_spacing,
+                line_height,
                 italic,
+                underline,
+                strikethrough,
                 nowrap,
                 caret: None,
             },
@@ -705,8 +773,8 @@ fn build_node(
         style.justify.get_or_insert(Justify::Center);
         style.align.get_or_insert(Align::Center);
         // A radio is round unless it was given its own radius.
-        if radio && style.radius == 0.0 {
-            style.radius = CIRCLE;
+        if radio && style.radius == [0.0; 4] {
+            style.radius = [CIRCLE; 4];
         }
 
         let mut node = LayoutNode::new(style);
@@ -717,8 +785,8 @@ fn build_node(
                     display: Display::Flex,
                     width: Some(Len::Pct(0.5)),
                     height: Some(Len::Pct(0.5)),
-                    background: Some(color),
-                    radius: CIRCLE,
+                    background: Some(Background::Color(color)),
+                    radius: [CIRCLE; 4],
                     ..Default::default()
                 })
             } else {
@@ -773,7 +841,10 @@ fn build_node(
                 font_family: font_family.clone(),
                 letter_spacing,
                 word_spacing,
+                line_height,
                 italic,
+                underline,
+                strikethrough,
                 nowrap,
                 caret: None, // the runtime marks the focused input's caret
             },
@@ -977,6 +1048,43 @@ fn interpret(p: &HashMap<String, String>) -> Style {
     if let Some(v) = p.get("grid-template-rows") {
         st.grid_rows = parse_tracks(v);
     }
+    // Grid item placement: `grid-column: 1 / 3`, `grid-row: span 2`, and the
+    // -start/-end longhands.
+    if let Some(v) = p.get("grid-column") {
+        st.grid_column = parse_grid_shorthand(v);
+    }
+    if let Some(v) = p.get("grid-row") {
+        st.grid_row = parse_grid_shorthand(v);
+    }
+    if let Some(v) = p.get("grid-column-start") {
+        st.grid_column.0 = parse_grid_place(v);
+    }
+    if let Some(v) = p.get("grid-column-end") {
+        st.grid_column.1 = parse_grid_place(v);
+    }
+    if let Some(v) = p.get("grid-row-start") {
+        st.grid_row.0 = parse_grid_place(v);
+    }
+    if let Some(v) = p.get("grid-row-end") {
+        st.grid_row.1 = parse_grid_place(v);
+    }
+    if let Some(v) = p.get("grid-auto-flow") {
+        let v = v.trim();
+        let dense = v.contains("dense");
+        st.grid_auto_flow = if v.contains("column") {
+            if dense { GridFlow::ColumnDense } else { GridFlow::Column }
+        } else if dense {
+            GridFlow::RowDense
+        } else {
+            GridFlow::Row
+        };
+    }
+    if let Some(v) = p.get("grid-auto-rows") {
+        st.grid_auto_rows = parse_tracks(v);
+    }
+    if let Some(v) = p.get("grid-auto-columns") {
+        st.grid_auto_columns = parse_tracks(v);
+    }
     // `flex: grow [shrink [basis]]` first, so the longhands can override it.
     if let Some(v) = p.get("flex") {
         interpret_flex_shorthand(v.trim(), &mut st);
@@ -1061,12 +1169,37 @@ fn interpret(p: &HashMap<String, String>) -> Style {
     if let Some(v) = p.get("aspect-ratio") {
         st.aspect_ratio = parse_aspect_ratio(v);
     }
-    if let Some(v) = p.get("background").or_else(|| p.get("background-color")) {
-        st.background = parse_color(v);
+    // `background` (shorthand, may be a gradient) → `background-image` (gradient
+    // or url, url not yet supported) → `background-color` (colour only).
+    if let Some(v) = p
+        .get("background")
+        .or_else(|| p.get("background-image"))
+        .or_else(|| p.get("background-color"))
+    {
+        st.background = parse_background(v);
     }
+    if let Some(v) = p.get("transform") {
+        st.transform = parse_transform(v);
+    }
+    if let Some(v) = p.get("box-shadow") {
+        st.box_shadow = parse_box_shadow(v);
+    }
+    // `border-radius` shorthand (1–4 values, CSS diagonal grouping), then the
+    // per-corner longhands override.
     if let Some(v) = p.get("border-radius") {
-        if let Some(px) = parse_px(first(v)) {
-            st.radius = px;
+        st.radius = parse_border_radius(v);
+    }
+    for (i, corner) in [
+        "border-top-left-radius",
+        "border-top-right-radius",
+        "border-bottom-right-radius",
+        "border-bottom-left-radius",
+    ]
+    .iter()
+    .enumerate()
+    {
+        if let Some(px) = p.get(*corner).and_then(|v| parse_px(first(v))) {
+            st.radius[i] = px;
         }
     }
     // `auto`/`scroll` scroll (and clip); `hidden`/`clip` only clip. Any axis
@@ -1160,6 +1293,302 @@ fn parse_justify(v: &str) -> Option<Justify> {
     }
 }
 
+/// Parse a `background` / `background-image` / `background-color` value into a
+/// solid colour or a gradient. `url(…)` and other image sources aren't handled.
+fn parse_background(value: &str) -> Option<Background> {
+    let v = value.trim();
+    if let Some(inner) = gradient_args(v, "linear-gradient") {
+        return parse_linear_gradient(inner).map(Background::Gradient);
+    }
+    if let Some(inner) = gradient_args(v, "radial-gradient") {
+        return parse_radial_gradient(inner).map(Background::Gradient);
+    }
+    if let Some(inner) = gradient_args(v, "url") {
+        // Strip surrounding quotes from the url; the runtime resolves the path.
+        let src = inner.trim().trim_matches(|c| c == '"' || c == '\'');
+        if !src.is_empty() {
+            return Some(Background::Image(src.to_string()));
+        }
+    }
+    parse_color(v).map(Background::Color)
+}
+
+/// The comma-separated argument text inside `<name>( … )`, if `v` is that call.
+fn gradient_args<'a>(v: &'a str, name: &str) -> Option<&'a str> {
+    v.strip_prefix(name)?.trim_start().strip_prefix('(')?.strip_suffix(')')
+}
+
+/// `linear-gradient([<angle> | to <side>,]? <stop>, <stop> …)`. Defaults to
+/// `to bottom` (180°). Stops without a position are spread evenly.
+fn parse_linear_gradient(inner: &str) -> Option<Gradient> {
+    let mut parts = split_top_level_commas(inner);
+    if parts.is_empty() {
+        return None;
+    }
+    // A leading angle / `to <side>` sets the direction; otherwise it's a stop.
+    let angle = parse_gradient_angle(parts[0].trim());
+    if angle.is_some() {
+        parts.remove(0);
+    }
+    let stops = parse_stops(&parts)?;
+    Some(Gradient {
+        kind: GradientKind::Linear {
+            angle: angle.unwrap_or(std::f32::consts::PI), // default: to bottom
+        },
+        stops,
+    })
+}
+
+/// `radial-gradient([shape/size/at …,]? <stop>, <stop> …)`. The prelude before
+/// the first stop (shape, `at …`) is accepted and ignored — we always draw a
+/// centred circle to the nearest edge.
+fn parse_radial_gradient(inner: &str) -> Option<Gradient> {
+    let mut parts = split_top_level_commas(inner);
+    if parts.is_empty() {
+        return None;
+    }
+    // If the first segment isn't a colour stop, treat it as the (ignored) config.
+    if parse_color(first(parts[0].trim())).is_none() && !parts[0].trim().is_empty() {
+        parts.remove(0);
+    }
+    let stops = parse_stops(&parts)?;
+    Some(Gradient { kind: GradientKind::Radial, stops })
+}
+
+/// Parse the direction of a linear gradient: `<n>deg` (CSS: 0 = to top,
+/// clockwise) or `to <side>`. Returns radians, or `None` if it's not a direction.
+fn parse_gradient_angle(tok: &str) -> Option<f32> {
+    if let Some(deg) = tok.strip_suffix("deg") {
+        return deg.trim().parse::<f32>().ok().map(f32::to_radians);
+    }
+    if tok == "turn" {
+        return None;
+    }
+    if let Some(rest) = tok.strip_suffix("turn") {
+        return rest.trim().parse::<f32>().ok().map(|t| t * std::f32::consts::TAU);
+    }
+    let side = tok.strip_prefix("to ")?.trim();
+    // CSS angles: to top = 0, to right = 90, to bottom = 180, to left = 270.
+    let deg = match side {
+        "top" => 0.0,
+        "right" => 90.0,
+        "bottom" => 180.0,
+        "left" => 270.0,
+        "top right" | "right top" => 45.0,
+        "bottom right" | "right bottom" => 135.0,
+        "bottom left" | "left bottom" => 225.0,
+        "top left" | "left top" => 315.0,
+        _ => return None,
+    };
+    Some(f32::to_radians(deg))
+}
+
+/// Parse `<color> [<pos>%]` stops. Missing positions are filled by spreading the
+/// unspecified stops evenly between their specified neighbours (ends default to
+/// 0% and 100%).
+fn parse_stops(parts: &[&str]) -> Option<Vec<(Rgba, f32)>> {
+    let mut colors = Vec::new();
+    let mut positions: Vec<Option<f32>> = Vec::new();
+    for part in parts {
+        let part = part.trim();
+        let mut toks = part.split_whitespace();
+        let color = parse_color(toks.next()?)?;
+        let pos = toks
+            .next()
+            .and_then(|p| p.strip_suffix('%'))
+            .and_then(|p| p.trim().parse::<f32>().ok())
+            .map(|p| (p / 100.0).clamp(0.0, 1.0));
+        colors.push(color);
+        positions.push(pos);
+    }
+    if colors.len() < 2 {
+        return None;
+    }
+    // Fill missing positions: ends anchor to 0 and 1, interior gaps interpolate.
+    let n = positions.len();
+    positions[0].get_or_insert(0.0);
+    positions[n - 1].get_or_insert(1.0);
+    let mut i = 0;
+    while i < n {
+        if positions[i].is_some() {
+            i += 1;
+            continue;
+        }
+        let start = i - 1;
+        let mut j = i;
+        while j < n && positions[j].is_none() {
+            j += 1;
+        }
+        let p0 = positions[start].unwrap();
+        let p1 = positions[j].unwrap();
+        let gap = j - start;
+        for (k, slot) in (start + 1..j).enumerate() {
+            positions[slot] = Some(p0 + (p1 - p0) * (k as f32 + 1.0) / gap as f32);
+        }
+        i = j;
+    }
+    Some(colors.into_iter().zip(positions.into_iter().map(Option::unwrap)).collect())
+}
+
+/// Split on top-level commas (ignoring commas inside `rgb( … )` etc.).
+fn split_top_level_commas(value: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut depth = 0i32;
+    let mut start = 0;
+    for (i, c) in value.char_indices() {
+        match c {
+            '(' => depth += 1,
+            ')' => depth -= 1,
+            ',' if depth == 0 => {
+                out.push(value[start..i].trim());
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    let last = value[start..].trim();
+    if !last.is_empty() {
+        out.push(last);
+    }
+    out
+}
+
+/// Parse a `transform` function list (`rotate(15deg) translate(4px, 0)`) into a
+/// single affine `[a, b, c, d, e, f]`. Functions compose left-to-right (the
+/// leftmost is outermost). `translate` percentages aren't supported. `None` if
+/// nothing parsed.
+fn parse_transform(value: &str) -> Option<Transform> {
+    let mut m = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0]; // identity
+    let mut any = false;
+    let mut rest = value.trim();
+    while let Some(open) = rest.find('(') {
+        let name = rest[..open].trim().to_ascii_lowercase();
+        let close = rest[open..].find(')')? + open;
+        let args = &rest[open + 1..close];
+        if let Some(f) = transform_fn(&name, args) {
+            m = mat_mul(m, f);
+            any = true;
+        }
+        rest = rest[close + 1..].trim_start();
+    }
+    any.then_some(m)
+}
+
+/// One `transform` function to an affine, or `None` if unrecognised.
+fn transform_fn(name: &str, args: &str) -> Option<Transform> {
+    let nums: Vec<&str> = args.split(',').map(str::trim).filter(|s| !s.is_empty()).collect();
+    let num = |i: usize| nums.get(i).and_then(|s| s.parse::<f32>().ok());
+    match name {
+        "translate" => {
+            let tx = parse_px(nums.first()?)?;
+            let ty = nums.get(1).and_then(|s| parse_px(s)).unwrap_or(0.0);
+            Some([1.0, 0.0, 0.0, 1.0, tx, ty])
+        }
+        "translatex" => Some([1.0, 0.0, 0.0, 1.0, parse_px(nums.first()?)?, 0.0]),
+        "translatey" => Some([1.0, 0.0, 0.0, 1.0, 0.0, parse_px(nums.first()?)?]),
+        "scale" => {
+            let sx = num(0)?;
+            let sy = num(1).unwrap_or(sx);
+            Some([sx, 0.0, 0.0, sy, 0.0, 0.0])
+        }
+        "scalex" => Some([num(0)?, 0.0, 0.0, 1.0, 0.0, 0.0]),
+        "scaley" => Some([1.0, 0.0, 0.0, num(0)?, 0.0, 0.0]),
+        "rotate" => {
+            let (sin, cos) = parse_angle(nums.first()?)?.sin_cos();
+            Some([cos, sin, -sin, cos, 0.0, 0.0])
+        }
+        _ => None,
+    }
+}
+
+/// Multiply two affines (`a` applied after `b`): `mat_mul(a, b)(p) = a(b(p))`.
+fn mat_mul(a: Transform, b: Transform) -> Transform {
+    let [a1, b1, c1, d1, e1, f1] = a;
+    let [a2, b2, c2, d2, e2, f2] = b;
+    [
+        a1 * a2 + c1 * b2,
+        b1 * a2 + d1 * b2,
+        a1 * c2 + c1 * d2,
+        b1 * c2 + d1 * d2,
+        a1 * e2 + c1 * f2 + e1,
+        b1 * e2 + d1 * f2 + f1,
+    ]
+}
+
+/// An angle in `deg` (default), `rad`, `turn`, or `grad`, returned in radians.
+fn parse_angle(s: &str) -> Option<f32> {
+    let s = s.trim();
+    if let Some(v) = s.strip_suffix("deg") {
+        return v.trim().parse::<f32>().ok().map(f32::to_radians);
+    }
+    if let Some(v) = s.strip_suffix("grad") {
+        return v.trim().parse::<f32>().ok().map(|g| g * std::f32::consts::PI / 200.0);
+    }
+    if let Some(v) = s.strip_suffix("turn") {
+        return v.trim().parse::<f32>().ok().map(|t| t * std::f32::consts::TAU);
+    }
+    if let Some(v) = s.strip_suffix("rad") {
+        return v.trim().parse::<f32>().ok();
+    }
+    s.parse::<f32>().ok().map(f32::to_radians)
+}
+
+/// `box-shadow: <dx> <dy> <blur>? <spread>? <color>?`, optionally `inset`.
+/// A single shadow only; multiple comma-separated shadows take the first.
+/// `none` yields no shadow.
+fn parse_box_shadow(value: &str) -> Option<BoxShadow> {
+    let first = value.split(',').next().unwrap_or(value).trim();
+    if first.is_empty() || first == "none" {
+        return None;
+    }
+    let mut lengths = Vec::new();
+    let mut color_parts = Vec::new();
+    let mut inset = false;
+    for tok in first.split_whitespace() {
+        if tok == "inset" {
+            inset = true;
+        } else if let Some(px) = parse_px(tok) {
+            lengths.push(px);
+        } else {
+            color_parts.push(tok);
+        }
+    }
+    // Offsets are required; blur and spread default to 0, colour to black.
+    if lengths.len() < 2 {
+        return None;
+    }
+    let color = parse_color(&color_parts.join(" ")).unwrap_or(Rgba::new(0.0, 0.0, 0.0, 1.0));
+    Some(BoxShadow {
+        dx: lengths[0],
+        dy: lengths[1],
+        blur: lengths.get(2).copied().unwrap_or(0.0),
+        spread: lengths.get(3).copied().unwrap_or(0.0),
+        color,
+        inset,
+    })
+}
+
+/// `line-height`: a unitless number (× font size), a length, or `normal` (→
+/// `None`, keep the font's own metrics).
+fn parse_line_height(v: &str, font_size: f32) -> Option<f32> {
+    let s = first(v);
+    if s == "normal" {
+        return None;
+    }
+    if s.ends_with("px") || s.ends_with("rem") || s.ends_with("em") {
+        // `em` is relative to font size; `parse_len` handles px/rem.
+        if let Some(em) = s.strip_suffix("em").filter(|e| !e.ends_with('r')) {
+            return em.parse::<f32>().ok().map(|n| n * font_size);
+        }
+        return parse_len(s).and_then(|l| match l {
+            Len::Px(px) => Some(px),
+            _ => None,
+        });
+    }
+    // A bare number multiplies the font size (the usual CSS form).
+    s.parse::<f32>().ok().map(|n| n * font_size)
+}
+
 /// `letter-spacing` / `word-spacing`: a px length, or `normal` (→ no extra).
 fn parse_spacing(v: &str) -> Option<f32> {
     match first(v) {
@@ -1213,6 +1642,28 @@ fn parse_len(s: &str) -> Option<Len> {
 /// Parse a `grid-template-columns`/`-rows` value into tracks: `1fr`, `100px`,
 /// `auto`, and `minmax(min, max)` (e.g. `minmax(0, 1fr)`, which lets a track
 /// shrink below its content instead of overflowing the grid).
+/// `grid-column` / `grid-row` shorthand: `<start> [/ <end>]`. A missing end is
+/// `auto` (span 1). Each side is a line index, `span <n>`, or `auto`.
+fn parse_grid_shorthand(value: &str) -> (GridPlace, GridPlace) {
+    let mut parts = value.splitn(2, '/');
+    let start = parts.next().map(parse_grid_place).unwrap_or_default();
+    let end = parts.next().map(parse_grid_place).unwrap_or_default();
+    (start, end)
+}
+
+/// One placement endpoint: `auto`, a (possibly negative) line index, or
+/// `span <n>`. Named lines aren't supported.
+fn parse_grid_place(side: &str) -> GridPlace {
+    let s = side.trim();
+    if let Some(rest) = s.strip_prefix("span") {
+        return rest.trim().parse::<u16>().ok().map_or(GridPlace::Auto, GridPlace::Span);
+    }
+    match s.parse::<i16>() {
+        Ok(i) if i != 0 => GridPlace::Line(i),
+        _ => GridPlace::Auto,
+    }
+}
+
 fn parse_tracks(value: &str) -> Vec<Track> {
     split_top_level(value)
         .into_iter()
@@ -1302,6 +1753,22 @@ fn parse_shorthand_sides(value: &str) -> Sides {
             left: v[3],
         },
         _ => Sides::default(),
+    }
+}
+
+/// Parse the `border-radius` shorthand into `[TL, TR, BR, BL]`. Unlike the box
+/// shorthands, border-radius groups by diagonal: 1 value = all; 2 = TL/BR, TR/BL;
+/// 3 = TL, TR/BL, BR; 4 = TL, TR, BR, BL. An elliptical `h / v` form is reduced
+/// to its horizontal radii (we only draw circular corners).
+fn parse_border_radius(value: &str) -> [f32; 4] {
+    let horizontal = value.split('/').next().unwrap_or(value);
+    let v: Vec<f32> = horizontal.split_whitespace().filter_map(parse_px).collect();
+    match v.len() {
+        1 => [v[0]; 4],
+        2 => [v[0], v[1], v[0], v[1]],
+        3 => [v[0], v[1], v[2], v[1]],
+        n if n >= 4 => [v[0], v[1], v[2], v[3]],
+        _ => [0.0; 4],
     }
 }
 
@@ -1552,6 +2019,45 @@ mod tests {
     }
 
     #[test]
+    fn border_radius_shorthand_diagonal_grouping_and_longhands() {
+        // border-radius groups by diagonal, unlike padding/margin: 2 values are
+        // TL/BR then TR/BL; 3 are TL, TR/BL, BR.
+        assert_eq!(super::parse_border_radius("8px"), [8.0, 8.0, 8.0, 8.0]);
+        assert_eq!(super::parse_border_radius("8px 4px"), [8.0, 4.0, 8.0, 4.0]);
+        assert_eq!(super::parse_border_radius("1px 2px 3px"), [1.0, 2.0, 3.0, 2.0]);
+        assert_eq!(super::parse_border_radius("1px 2px 3px 4px"), [1.0, 2.0, 3.0, 4.0]);
+        // Elliptical `h / v` reduces to the horizontal radii.
+        assert_eq!(super::parse_border_radius("10px / 20px"), [10.0, 10.0, 10.0, 10.0]);
+
+        // A per-corner longhand overrides just its corner (index 1 = top-right).
+        let mut p = HashMap::new();
+        p.insert("border-radius".to_string(), "5px".to_string());
+        p.insert("border-top-right-radius".to_string(), "12px".to_string());
+        assert_eq!(interpret(&p).radius, [5.0, 12.0, 5.0, 5.0]);
+    }
+
+    #[test]
+    fn grid_placement_parses_lines_and_spans() {
+        use super::GridPlace;
+        let place = |css: &str| {
+            let mut p = HashMap::new();
+            p.insert("grid-column".to_string(), css.to_string());
+            interpret(&p).grid_column
+        };
+        assert_eq!(place("1 / 3"), (GridPlace::Line(1), GridPlace::Line(3)));
+        assert_eq!(place("2"), (GridPlace::Line(2), GridPlace::Auto));
+        assert_eq!(place("span 2"), (GridPlace::Span(2), GridPlace::Auto));
+        assert_eq!(place("1 / span 2"), (GridPlace::Line(1), GridPlace::Span(2)));
+        assert_eq!(place("-1"), (GridPlace::Line(-1), GridPlace::Auto));
+
+        // The -end longhand overrides just the end of the shorthand.
+        let mut p = HashMap::new();
+        p.insert("grid-row".to_string(), "1 / 2".to_string());
+        p.insert("grid-row-end".to_string(), "span 3".to_string());
+        assert_eq!(interpret(&p).grid_row, (GridPlace::Line(1), GridPlace::Span(3)));
+    }
+
+    #[test]
     fn named_and_hex_colors_resolve() {
         use super::parse_color;
         // The landmine: lightningcss minifies `#ff0000` to `red`, so the keyword
@@ -1561,6 +2067,81 @@ mod tests {
         assert_eq!(parse_color("#000000").map(|c| c.r), Some(0.0));
         assert_eq!(parse_color("transparent").map(|c| c.a), Some(0.0));
         assert!(parse_color("notacolor").is_none());
+    }
+
+    #[test]
+    fn decodes_html_entities_in_text() {
+        use super::decode_entities;
+        assert_eq!(decode_entities("A &amp; B"), "A & B");
+        assert_eq!(decode_entities("&lt;tag&gt; &quot;q&quot;"), "<tag> \"q\"");
+        assert_eq!(decode_entities("&#38; &#x26;"), "& &");
+        assert_eq!(decode_entities("plain text"), "plain text");
+        // An unrecognised or malformed entity is left as written.
+        assert_eq!(decode_entities("R&D, AT&T"), "R&D, AT&T");
+        assert_eq!(decode_entities("&notanentity;"), "&notanentity;");
+    }
+
+    #[test]
+    fn parses_and_composes_transforms() {
+        use super::parse_transform;
+        assert_eq!(parse_transform("translate(10px, 20px)").unwrap(), [1.0, 0.0, 0.0, 1.0, 10.0, 20.0]);
+        assert_eq!(parse_transform("scale(2, 3)").unwrap(), [2.0, 0.0, 0.0, 3.0, 0.0, 0.0]);
+
+        // rotate(90deg) maps (x, y) → (-y, x): a≈0, b≈1, c≈-1, d≈0.
+        let r = parse_transform("rotate(90deg)").unwrap();
+        assert!(r[0].abs() < 1e-4 && (r[1] - 1.0).abs() < 1e-4);
+        assert!((r[2] + 1.0).abs() < 1e-4 && r[3].abs() < 1e-4);
+
+        // Left-to-right composition: rotate(90) ∘ translate(10,0) moves the
+        // translation into the rotated frame, so it ends up as (0, 10).
+        let c = parse_transform("rotate(90deg) translate(10px, 0)").unwrap();
+        assert!(c[4].abs() < 1e-3 && (c[5] - 10.0).abs() < 1e-3);
+
+        assert!(parse_transform("none").is_none());
+    }
+
+    #[test]
+    fn parses_gradients_direction_and_stops() {
+        use super::parse_background;
+        use rux_layout::{Background, GradientKind};
+        use std::f32::consts::{FRAC_PI_2, PI};
+
+        let grad = |css: &str| match parse_background(css) {
+            Some(Background::Gradient(g)) => g,
+            other => panic!("expected a gradient, got {other:?}"),
+        };
+
+        // 90deg → to the right; two stops anchor to 0 and 1.
+        let g = grad("linear-gradient(90deg, red, blue)");
+        assert!(matches!(g.kind, GradientKind::Linear { angle } if (angle - FRAC_PI_2).abs() < 1e-4));
+        assert_eq!(g.stops.len(), 2);
+        assert_eq!(g.stops[0].1, 0.0);
+        assert_eq!(g.stops[1].1, 1.0);
+        assert_eq!(g.stops[0].0.r, 1.0); // red
+        assert_eq!(g.stops[1].0.b, 1.0); // blue
+
+        // No direction → default `to bottom` (π); the middle stop spreads to 50%.
+        let g = grad("linear-gradient(red, lime, blue)");
+        assert!(matches!(g.kind, GradientKind::Linear { angle } if (angle - PI).abs() < 1e-4));
+        assert!((g.stops[1].1 - 0.5).abs() < 1e-4);
+
+        // Explicit positions are honoured; `to right` is 90°.
+        let g = grad("linear-gradient(to right, red 10%, blue 80%)");
+        assert!(matches!(g.kind, GradientKind::Linear { angle } if (angle - FRAC_PI_2).abs() < 1e-4));
+        assert!((g.stops[0].1 - 0.1).abs() < 1e-4);
+        assert!((g.stops[1].1 - 0.8).abs() < 1e-4);
+
+        // Radial: the shape prelude is ignored; stops still parse.
+        let g = grad("radial-gradient(circle, red, blue)");
+        assert!(matches!(g.kind, GradientKind::Radial));
+        assert_eq!(g.stops.len(), 2);
+
+        // A plain colour is still a colour, not a gradient.
+        assert!(matches!(parse_background("#123456"), Some(Background::Color(_))));
+
+        // `url(…)` is an image background; quotes are stripped.
+        assert!(matches!(parse_background("url(assets/logo.png)"), Some(Background::Image(s)) if s == "assets/logo.png"));
+        assert!(matches!(parse_background("url('a b.png')"), Some(Background::Image(s)) if s == "a b.png"));
     }
 
     #[test]

@@ -19,7 +19,7 @@ fn scroller() -> Node {
                 width: Some(Len::Px(300.0)),
                 height: Some(Len::Px(100.0)),
                 shrink: 0.0,
-                background: Some(Rgba::new(0.0, 0.0, 0.0, 1.0)),
+                background: Some(Background::Color(Rgba::new(0.0, 0.0, 0.0, 1.0))),
                 ..Default::default()
             },
             vec![],

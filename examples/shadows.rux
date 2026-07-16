@@ -1,0 +1,39 @@
+<template>
+  <screen class="app">
+    <text class="title">box-shadow</text>
+    <view class="row">
+      <view class="card s1"><text>soft</text></view>
+      <view class="card s2"><text>tight</text></view>
+      <view class="card s3"><text>spread</text></view>
+    </view>
+  </screen>
+</template>
+
+<style>
+  .app {
+    display: flex;
+    flex-direction: column;
+    gap: 24px;
+    padding: 40px;
+    background: #cdd6f4;
+  }
+  .title { color: #1e1e2e; font-size: 22px; font-weight: 700; }
+  .row { display: flex; gap: 40px; }
+  .card {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 120px;
+    height: 90px;
+    background: #ffffff;
+    border-radius: 12px;
+    color: #1e1e2e;
+  }
+  .s1 { box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35); }
+  .s2 { box-shadow: 0 2px 4px rgba(0, 0, 0, 0.5); }
+  .s3 { box-shadow: 0 10px 20px 6px rgba(30, 30, 46, 0.4); }
+</style>
+
+<script>
+  let ready = signal(true);
+</script>
