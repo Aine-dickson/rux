@@ -567,6 +567,23 @@ pub enum Paint {
     PopOpacity,
 }
 
+/// How far a scroller's content has travelled, in logical pixels. Positive
+/// moves the content up / left, i.e. `y` is "how far down the content we are".
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Offset {
+    pub x: f32,
+    pub y: f32,
+}
+
+impl Offset {
+    pub fn clamp_to(self, max: Offset) -> Offset {
+        Offset {
+            x: self.x.clamp(0.0, max.x),
+            y: self.y.clamp(0.0, max.y),
+        }
+    }
+}
+
 /// A scrollable box. `id` is its index in tree order — stable across rebuilds
 /// as long as the tree's shape is, which is what the shell keys offsets by.
 #[derive(Clone, Debug)]
@@ -576,13 +593,21 @@ pub struct ScrollRegion {
     pub y: f32,
     pub width: f32,
     pub height: f32,
-    /// How far the content can travel: content height - visible height (>= 0).
-    pub max_offset: f32,
+    /// The size of the content inside, which may exceed the box on either axis.
+    pub content_width: f32,
+    pub content_height: f32,
+    /// How far the content can travel on each axis: content - visible (>= 0).
+    pub max: Offset,
 }
 
 impl ScrollRegion {
     pub fn contains(&self, px: f32, py: f32) -> bool {
         px >= self.x && px <= self.x + self.width && py >= self.y && py <= self.y + self.height
+    }
+
+    /// Whether this box scrolls at all on either axis.
+    pub fn scrollable(&self) -> bool {
+        self.max.x > 0.0 || self.max.y > 0.0
     }
 }
 
@@ -1085,7 +1110,7 @@ fn collect(
     opacities: &[(NodeId, f32)],
     scrolls: &[NodeId],
     transforms: &[(NodeId, Transform)],
-    offsets: &[f32],
+    offsets: &[Offset],
     vp: (f32, f32),
     out: &mut Layout,
 ) {
@@ -1286,21 +1311,25 @@ fn collect(
         });
     }
 
-    // A scroller shifts its children up by the current offset and registers
-    // itself so the wheel can find it.
-    let mut shift = 0.0;
+    // A scroller shifts its children by the current offset and registers itself
+    // so the wheel, the scrollbars and the keyboard can find it.
+    let mut shift = Offset::default();
     if scrolls.contains(&id) {
         let sid = out.scrolls.len();
-        let max_offset = (layout.content_size.height - layout.size.height).max(0.0);
-        let offset = offsets.get(sid).copied().unwrap_or(0.0).clamp(0.0, max_offset);
-        shift = offset;
+        let max = Offset {
+            x: (layout.content_size.width - layout.size.width).max(0.0),
+            y: (layout.content_size.height - layout.size.height).max(0.0),
+        };
+        shift = offsets.get(sid).copied().unwrap_or_default().clamp_to(max);
         out.scrolls.push(ScrollRegion {
             id: sid,
             x,
             y,
             width: layout.size.width,
             height: layout.size.height,
-            max_offset,
+            content_width: layout.content_size.width,
+            content_height: layout.content_size.height,
+            max,
         });
     }
 
@@ -1308,8 +1337,8 @@ fn collect(
         collect(
             tree,
             child,
-            x,
-            y - shift,
+            x - shift.x,
+            y - shift.y,
             paint,
             handlers,
             models,
@@ -1359,7 +1388,7 @@ pub fn layout_scrolled(
     root: &Node,
     avail_w: f32,
     avail_h: f32,
-    offsets: &[f32],
+    offsets: &[Offset],
     measure: &mut Measure,
 ) -> Layout {
     let mut tree: TaffyTree<TextContent> = TaffyTree::new();

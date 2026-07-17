@@ -17,7 +17,8 @@ follow-up passes. Branch: `build/m0-window`.
 ```bash
 cargo run                          # examples/battery.rux (default)
 cargo run -- examples/form.rux     # inputs + two-way binding + overflow-wrap
-cargo run -- examples/list.rux     # scrolling (wheel over the list)
+cargo run -- examples/list.rux     # a scrolling list (wheel, drag the bar, Tab)
+cargo run -- examples/scroll.rux   # horizontal + both-axes scrolling, scrollbars
 cargo run -- examples/gallery.rux  # images, opacity, flex-shrink, clipping
 cargo run -- examples/dashboard.rux
 ```
@@ -93,7 +94,8 @@ border-radius (1–4 diagonal shorthand + per-corner -top-left/-top-right/…)
 color, font-size, font-weight, font-family, font-style (italic), text-align
 letter-spacing, word-spacing, line-height, white-space (nowrap|pre)
 text-decoration (underline / line-through)                (color: hex, rgb()/rgba(), CSS names)
-overflow / overflow-x / overflow-y   (hidden|clip = clip; auto|scroll = scroll)
+overflow / overflow-x / overflow-y   (hidden|clip = clip; auto|scroll = scroll;
+                                      both axes together — x and y can't differ)
 overflow-wrap (break-word), word-break (break-all)
 cursor (pointer, on @tap boxes only)
 ```
@@ -182,8 +184,37 @@ checked `background`, or the ring dissolves into the fill. A radio is **round** 
 huge radius like `9999px` is clamped to a circle, so that's how you re-round one
 that inherited a radius from another class).
 
-**Limits:** no selection (no shift-arrow, no drag-select), no clipboard, no
-`type="select|textarea"`, and checkboxes/radios can't be reached by keyboard.
+**Limits:** no selection (no shift-arrow, no drag-select) and no clipboard; a
+`select` has no arrow-key list navigation and no native mobile picker.
+
+### Scrolling
+`overflow: auto | scroll` makes a box scroll **on whichever axis its content
+overflows** — vertical, horizontal, or both. It scrolls by:
+
+- **wheel** (Shift+wheel, or a horizontal wheel, scrolls sideways),
+- **dragging a scrollbar thumb**,
+- **touch** — a finger drags the content itself (untested: no touch hardware here),
+- **keyboard** — arrows, PageUp/PageDown, Home/End scroll the box **under the
+  pointer**, when no input has focus.
+
+**Scrollbars** are an overlay on the box's trailing edge: they appear only on an
+axis that actually has travel, the thumb is the box's fraction of the content (to
+a grabbable floor), and when both axes scroll the tracks stop short of the corner.
+They are drawn *over* the content — a scroller clips its children, so they can't
+be part of the subtree — and drawn from the same geometry the drag hit-tests, so
+they can't disagree.
+
+**Scroll-into-view** runs on Tab: focusing something below the fold scrolls its
+box far enough to show it (typing in a textarea does the same for the caret).
+
+Offsets live in the shell keyed by the scroller's index in tree order, so they
+survive the whole-tree rebuild — tapping a row doesn't scroll the list to the top.
+A press on a thumb never becomes a tap on the content beneath it.
+
+**Not done:** no click-on-track paging, no kinetic/inertial touch fling, no
+scrollbar hover/fade states, no `scrollbar-width`/`scrollbar-color`, no
+`overscroll-behavior`, and `overflow-x`/`overflow-y` can't yet differ (one
+`overflow` governs both axes).
 
 ### Components
 ```rust
@@ -218,10 +249,9 @@ their own subtree. Editing a component hot-reloads.
 
 ## Known gaps / backlog
 
-- Input **selection** (shift-arrow, drag-select) and clipboard; `type=select`
-  and `type=textarea`; keyboard reachability for checkbox/radio.
-- Scrolling is **wheel-only**: no scrollbars, no drag/touch, no keyboard, no
-  horizontal scrolling (the offset is vertical), no scroll-into-view.
+- Input **selection** (shift-arrow, drag-select) and clipboard.
+- Scrolling: no track-click paging, no kinetic touch fling, no scrollbar
+  hover/fade, and `overflow-x` / `overflow-y` can't differ from each other.
 - CSS: `box-shadow`, `position`/`top`/`left`, per-corner radius, per-side border
   *colors*.
 - True inline text-flow (taffy can't; would need our own line-breaker).

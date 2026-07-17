@@ -1,0 +1,105 @@
+<template>
+  <screen class="screen">
+    <text class="title">Scrolling</text>
+    <text class="hint">Wheel, drag a scrollbar thumb, or point at a box and use the arrows, PageUp/PageDown, Home/End. Shift+wheel scrolls sideways.</text>
+
+    <text class="label">A row of cards — scrolls sideways</text>
+    <view class="strip">
+      <view class="card" r-for="item in items" @tap="picked = item">
+        <text class="name">{{ item }}</text>
+      </view>
+    </view>
+
+    <text class="label">Wide and tall — scrolls both ways</text>
+    <view class="grid">
+      <view class="band" r-for="row in rows">
+        <view class="cell" r-for="n in cells">
+          <text class="name">{{ row }}{{ n }}</text>
+        </view>
+      </view>
+    </view>
+
+    <text class="picked" r-if='picked != ""'>Picked: {{ picked }}</text>
+  </screen>
+</template>
+
+<style>
+  .screen {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 24px;
+    background: #1e1e2e;
+  }
+  .title { color: #cdd6f4; font-size: 22px; font-weight: 700; }
+  .hint  { color: #6c7086; font-size: 13px; max-width: 520px; }
+  .label { color: #a6adc8; font-size: 13px; font-weight: 700; }
+
+  /* A horizontal scroller: a flex row whose children refuse to shrink, so the
+     content is wider than the box and `overflow: auto` gives it a bar. */
+  .strip {
+    display: flex;
+    flex-direction: row;
+    gap: 8px;
+    width: 100%;
+    max-width: 520px;
+    height: 96px;
+    padding: 8px;
+    background: #313244;
+    border-radius: 10px;
+    overflow: auto;
+  }
+  .card {
+    display: flex;
+    flex-shrink: 0;
+    width: 120px;
+    align-items: center;
+    justify-content: center;
+    background: #45475a;
+    border-radius: 6px;
+    cursor: pointer;
+  }
+
+  /* Both axes at once: a column of bands, each band wider than the box. */
+  .grid {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    width: 100%;
+    max-width: 520px;
+    height: 180px;
+    padding: 8px;
+    background: #313244;
+    border-radius: 10px;
+    overflow: auto;
+  }
+  .band {
+    display: flex;
+    flex-direction: row;
+    flex-shrink: 0;
+    gap: 8px;
+  }
+  .cell {
+    display: flex;
+    flex-shrink: 0;
+    width: 90px;
+    height: 64px;
+    align-items: center;
+    justify-content: center;
+    background: #45475a;
+    border-radius: 6px;
+  }
+
+  .name   { color: #cdd6f4; font-size: 15px; }
+  .picked { color: #a6e3a1; font-size: 16px; }
+</style>
+
+<script>
+  let picked = signal("");
+  let items = signal([
+    "Alpha", "Bravo", "Charlie", "Delta", "Echo", "Foxtrot", "Golf", "Hotel",
+    "India", "Juliett", "Kilo", "Lima",
+  ]);
+  let rows = signal(["A", "B", "C", "D", "E"]);
+  let cells = signal(["1", "2", "3", "4", "5", "6", "7", "8"]);
+</script>

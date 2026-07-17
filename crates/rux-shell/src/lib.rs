@@ -13,8 +13,8 @@ use std::time::{Duration, Instant};
 
 use notify::{EventKind, RecursiveMode, Watcher};
 use rux_layout::{
-    Background, Cursor, FocusItem, FocusKind, FocusRegion, HitRegion, Paint, PaintRect, PaintText,
-    Rgba, ScrollRegion, SelectRegion, TextAlign, TextContent, TextWrap,
+    Background, Cursor, FocusItem, FocusKind, FocusRegion, HitRegion, Offset, Paint, PaintRect,
+    PaintText, Rgba, ScrollRegion, SelectRegion, TextAlign, TextContent, TextWrap,
 };
 use rux_runtime::Document;
 use vello::kurbo::Affine;
@@ -24,7 +24,7 @@ use vello::wgpu;
 use vello::wgpu::CurrentSurfaceTexture;
 use vello::{AaConfig, AaSupport, Renderer, RendererOptions, RenderParams, Scene};
 use winit::application::ApplicationHandler;
-use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
+use winit::event::{ElementState, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{Key, NamedKey};
 use winit::window::{CursorIcon, Window, WindowId};
@@ -62,6 +62,110 @@ fn dropdown_row(sel: &SelectRegion, i: usize) -> (f32, f32, f32, f32) {
         sel.width,
         DROPDOWN_ROW_H,
     )
+}
+
+/// Thickness of a scrollbar, in logical px.
+const BAR_W: f32 = 8.0;
+/// Shortest a thumb may get, however long the content is.
+const BAR_MIN_THUMB: f32 = 24.0;
+/// One line of scroll travel — the wheel's unit, and the arrow keys'.
+const LINE: f32 = 24.0;
+
+/// Which axis a scrollbar (or a drag on one) belongs to.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Axis2 {
+    X,
+    Y,
+}
+
+/// An in-progress drag of a scrollbar thumb.
+#[derive(Clone, Copy, Debug)]
+struct BarDrag {
+    /// The `ScrollRegion::id` being dragged.
+    id: usize,
+    axis: Axis2,
+    /// Pointer position (logical px, on `axis`) when the thumb was grabbed.
+    grab: f32,
+    /// The region's scroll offset (on `axis`) when the thumb was grabbed.
+    start: f32,
+}
+
+/// The track a scrollbar runs in, as `(x, y, w, h)` in logical px — an overlay
+/// inset along the box's trailing edge. When a box scrolls both ways the tracks
+/// stop short of the corner so they never overlap.
+fn bar_track(r: &ScrollRegion, axis: Axis2) -> (f32, f32, f32, f32) {
+    let corner = if r.max.x > 0.0 && r.max.y > 0.0 { BAR_W } else { 0.0 };
+    match axis {
+        Axis2::Y => (r.x + r.width - BAR_W, r.y, BAR_W, r.height - corner),
+        Axis2::X => (r.x, r.y + r.height - BAR_W, r.width - corner, BAR_W),
+    }
+}
+
+/// The thumb inside `bar_track`, as `(x, y, w, h)`. `None` when the box doesn't
+/// scroll on this axis, so there's nothing to show or grab.
+fn bar_thumb(r: &ScrollRegion, offset: Offset, axis: Axis2) -> Option<(f32, f32, f32, f32)> {
+    let (max, visible, content) = match axis {
+        Axis2::Y => (r.max.y, r.height, r.content_height),
+        Axis2::X => (r.max.x, r.width, r.content_width),
+    };
+    if max <= 0.0 {
+        return None;
+    }
+    let (tx, ty, tw, th) = bar_track(r, axis);
+    let track_len = if axis == Axis2::Y { th } else { tw };
+    // The thumb is as long a fraction of the track as the box is of the content
+    // — the standard proportion — but never so short it can't be grabbed.
+    let thumb_len = (track_len * visible / content.max(1.0)).clamp(BAR_MIN_THUMB.min(track_len), track_len);
+    let travel = (track_len - thumb_len).max(0.0);
+    let pos = match axis {
+        Axis2::Y => offset.y,
+        Axis2::X => offset.x,
+    };
+    let along = travel * (pos / max).clamp(0.0, 1.0);
+    // The track tuple is (x, y, w, h): its thickness is `tw` on the vertical bar
+    // and `th` on the horizontal one — the length is the other component.
+    Some(match axis {
+        Axis2::Y => (tx, ty + along, tw, thumb_len),
+        Axis2::X => (tx + along, ty, thumb_len, th),
+    })
+}
+
+/// Paint items for every visible scrollbar: a faint track with a lighter thumb,
+/// drawn over the content so a scroller's own clip can't eat them.
+fn scrollbar_paints(scrolls: &[ScrollRegion], offsets: &[Offset]) -> Vec<Paint> {
+    let track_bg = Rgba::new(1.0, 1.0, 1.0, 0.05);
+    let thumb_bg = Rgba::new(0.80, 0.84, 0.96, 0.35); // #cdd6f4 at 35%
+    let mut out = Vec::new();
+    for r in scrolls {
+        let offset = offsets.get(r.id).copied().unwrap_or_default();
+        for axis in [Axis2::Y, Axis2::X] {
+            let Some((thx, thy, thw, thh)) = bar_thumb(r, offset, axis) else {
+                continue;
+            };
+            let (tx, ty, tw, th) = bar_track(r, axis);
+            out.push(Paint::Rect(PaintRect {
+                x: tx,
+                y: ty,
+                width: tw,
+                height: th,
+                background: Some(Background::Color(track_bg)),
+                radius: [BAR_W / 2.0; 4],
+                border_width: 0.0,
+                border_color: None,
+            }));
+            out.push(Paint::Rect(PaintRect {
+                x: thx,
+                y: thy,
+                width: thw,
+                height: thh,
+                background: Some(Background::Color(thumb_bg)),
+                radius: [BAR_W / 2.0; 4],
+                border_width: 0.0,
+                border_color: None,
+            }));
+        }
+    }
+    out
 }
 
 /// A 2px focus ring just outside the focused element's box.
@@ -213,7 +317,11 @@ struct App {
     /// Scroll offset per scrollable box, in tree order. Survives the rebuild
     /// that follows every state change, so a list doesn't jump back to the top
     /// when you tap something in it.
-    offsets: Vec<f32>,
+    offsets: Vec<Offset>,
+    /// The scrollbar thumb being dragged, if any.
+    bar_drag: Option<BarDrag>,
+    /// Where the finger last was during a touch drag, in logical px.
+    touch: Option<(f32, f32)>,
     /// The `r-model` of the currently focused input, if any.
     focused: Option<String>,
     /// Whether the focused input is a `type="textarea"` (Enter → newline).
@@ -255,6 +363,8 @@ impl App {
             shift_held: false,
             scrolls: Vec::new(),
             offsets: Vec::new(),
+            bar_drag: None,
+            touch: None,
             focused: None,
             focused_multiline: false,
             open_select: None,
@@ -289,29 +399,166 @@ impl App {
             .unwrap_or(1.0)
     }
 
-    /// Scroll the innermost scrollable box under the pointer by `dy` logical
-    /// pixels. Nothing under the pointer scrolls (or it's already at the end) →
-    /// nothing happens, and no repaint is queued.
-    fn scroll_at(&mut self, pointer: (f64, f64), dy: f32) {
+    /// The pointer in logical pixels (layout, hit regions and scrollbars all live
+    /// in logical space; winit reports physical).
+    fn logical(&self, p: (f64, f64)) -> (f32, f32) {
         let scale = self.scale();
-        let (px, py) = ((pointer.0 / scale) as f32, (pointer.1 / scale) as f32);
+        ((p.0 / scale) as f32, (p.1 / scale) as f32)
+    }
 
+    /// Scroll the innermost scrollable box under the pointer by `(dx, dy)`
+    /// logical pixels. Nothing under the pointer scrolls (or it's already at the
+    /// end) → nothing happens, and no repaint is queued.
+    fn scroll_at(&mut self, pointer: (f64, f64), dx: f32, dy: f32) {
+        let (px, py) = self.logical(pointer);
         // Innermost wins: scrollers are pushed parent-first, so search backwards.
         let Some(region) = self
             .scrolls
             .iter()
             .rev()
-            .find(|s| s.contains(px, py) && s.max_offset > 0.0)
+            .find(|s| s.contains(px, py) && s.scrollable())
         else {
             return;
         };
-        let (id, max) = (region.id, region.max_offset);
+        let (id, max) = (region.id, region.max);
+        self.scroll_to(
+            id,
+            Offset {
+                x: self.offsets[id].x + dx,
+                y: self.offsets[id].y + dy,
+            }
+            .clamp_to(max),
+        );
+    }
 
-        let current = self.offsets[id];
-        let next = (current + dy).clamp(0.0, max);
-        if next != current {
-            self.offsets[id] = next;
-            self.request_redraw();
+    /// Move scroller `id` to `next`, repainting only if it actually moved.
+    fn scroll_to(&mut self, id: usize, next: Offset) {
+        if self.offsets.get(id) != Some(&next) {
+            if let Some(slot) = self.offsets.get_mut(id) {
+                *slot = next;
+                self.request_redraw();
+            }
+        }
+    }
+
+    /// Start a scrollbar drag if the press landed on a thumb. Returns whether it
+    /// did — in which case the press is the bar's, not a tap's.
+    fn press_scrollbar(&mut self, pointer: (f64, f64)) -> bool {
+        let (px, py) = self.logical(pointer);
+        // Topmost (innermost) bar wins, as with the wheel.
+        for r in self.scrolls.iter().rev() {
+            let offset = self.offsets.get(r.id).copied().unwrap_or_default();
+            for axis in [Axis2::Y, Axis2::X] {
+                let Some((tx, ty, tw, th)) = bar_thumb(r, offset, axis) else {
+                    continue;
+                };
+                if px >= tx && px <= tx + tw && py >= ty && py <= ty + th {
+                    self.bar_drag = Some(BarDrag {
+                        id: r.id,
+                        axis,
+                        grab: if axis == Axis2::Y { py } else { px },
+                        start: if axis == Axis2::Y { offset.y } else { offset.x },
+                    });
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// Follow a scrollbar thumb drag: the pointer's travel down the *track* maps
+    /// to the content's travel through its full scroll range.
+    fn drag_scrollbar(&mut self, pointer: (f64, f64)) {
+        let Some(drag) = self.bar_drag else { return };
+        let Some(r) = self.scrolls.iter().find(|s| s.id == drag.id).cloned() else {
+            return;
+        };
+        let Some((_, _, tw, th)) = bar_thumb(&r, self.offsets[drag.id], drag.axis) else {
+            return;
+        };
+        let (_, _, track_w, track_h) = bar_track(&r, drag.axis);
+        let (px, py) = self.logical(pointer);
+        let (pos, track_len, thumb_len, max) = match drag.axis {
+            Axis2::Y => (py, track_h, th, r.max.y),
+            Axis2::X => (px, track_w, tw, r.max.x),
+        };
+        let travel = (track_len - thumb_len).max(0.0);
+        if travel <= 0.0 {
+            return;
+        }
+        let moved = drag.start + (pos - drag.grab) * max / travel;
+        let next = match drag.axis {
+            Axis2::Y => Offset { x: self.offsets[drag.id].x, y: moved },
+            Axis2::X => Offset { x: moved, y: self.offsets[drag.id].y },
+        };
+        self.scroll_to(drag.id, next.clamp_to(r.max));
+    }
+
+    /// Scroll the box under the pointer with the keyboard. Only reached when no
+    /// input has focus, so it can't steal a caret key. Returns whether it acted.
+    fn scroll_key(&mut self, key: &Key) -> bool {
+        let (px, py) = self.logical(self.pointer);
+        let Some(r) = self
+            .scrolls
+            .iter()
+            .rev()
+            .find(|s| s.contains(px, py) && s.scrollable())
+            .cloned()
+        else {
+            return false;
+        };
+        // A page is just short of the box, so a landmark stays on screen.
+        let page = (r.height * 0.9).max(LINE);
+        let here = self.offsets[r.id];
+        let next = match key {
+            Key::Named(NamedKey::ArrowDown) => Offset { y: here.y + LINE, ..here },
+            Key::Named(NamedKey::ArrowUp) => Offset { y: here.y - LINE, ..here },
+            Key::Named(NamedKey::ArrowRight) => Offset { x: here.x + LINE, ..here },
+            Key::Named(NamedKey::ArrowLeft) => Offset { x: here.x - LINE, ..here },
+            Key::Named(NamedKey::PageDown) => Offset { y: here.y + page, ..here },
+            Key::Named(NamedKey::PageUp) => Offset { y: here.y - page, ..here },
+            Key::Named(NamedKey::Home) => Offset { y: 0.0, ..here },
+            Key::Named(NamedKey::End) => Offset { y: r.max.y, ..here },
+            _ => return false,
+        };
+        self.scroll_to(r.id, next.clamp_to(r.max));
+        true
+    }
+
+    /// Bring the keyboard-focused element into view: if it sits outside a
+    /// scroller it belongs to, nudge that scroller just far enough. Tabbing to
+    /// something below the fold is otherwise a focus ring you can't see.
+    ///
+    /// Geometry here is the *painted* (already-shifted) position from the last
+    /// layout, so the adjustment is a plain delta; the next layout re-clamps it.
+    fn scroll_focus_into_view(&mut self) {
+        let Some(item) = self.focus_index.and_then(|i| self.focusables.get(i)).cloned() else {
+            return;
+        };
+        // Outermost first: scrolling an ancestor moves the box inside it, so the
+        // inner scroller's own correction must be computed after.
+        for r in self.scrolls.clone() {
+            if !r.scrollable() {
+                continue;
+            }
+            // Only a scroller the item is horizontally within can own it — a
+            // cheap stand-in for a real ancestor test (we don't carry parentage).
+            if item.x + item.width < r.x || item.x > r.x + r.width {
+                continue;
+            }
+            let here = self.offsets[r.id];
+            let mut next = here;
+            if item.y < r.y {
+                next.y = here.y - (r.y - item.y);
+            } else if item.y + item.height > r.y + r.height {
+                next.y = here.y + (item.y + item.height - (r.y + r.height));
+            }
+            if item.x < r.x {
+                next.x = here.x - (r.x - item.x);
+            } else if item.x + item.width > r.x + r.width {
+                next.x = here.x + (item.x + item.width - (r.x + r.width));
+            }
+            self.scroll_to(r.id, next.clamp_to(r.max));
         }
     }
 
@@ -548,15 +795,15 @@ impl App {
         let style = rux_paint::text_style(&t.content);
         let (_, cy, ch) = self.text.caret_geometry(value, &style, Some(t.width), caret);
         let visible = region.height;
-        let mut off = self.offsets.get(sid).copied().unwrap_or(0.0);
-        if cy < off {
-            off = cy;
-        } else if cy + ch > off + visible {
-            off = cy + ch - visible;
+        let mut off = self.offsets.get(sid).copied().unwrap_or_default();
+        if cy < off.y {
+            off.y = cy;
+        } else if cy + ch > off.y + visible {
+            off.y = cy + ch - visible;
         }
         // The next layout re-clamps this to the content's real max offset.
         if let Some(slot) = self.offsets.get_mut(sid) {
-            *slot = off.max(0.0);
+            slot.y = off.y.max(0.0);
         }
     }
 
@@ -572,15 +819,22 @@ impl App {
             self.edit_focused(key);
             return;
         }
-        let Some(idx) = self.focus_index else { return };
-        match key {
-            Key::Named(NamedKey::Space | NamedKey::Enter) => self.activate_focused(idx),
-            Key::Named(NamedKey::Escape) => {
-                self.focus_index = None;
-                self.request_redraw();
+        if let Some(idx) = self.focus_index {
+            match key {
+                Key::Named(NamedKey::Space | NamedKey::Enter) => {
+                    self.activate_focused(idx);
+                    return;
+                }
+                Key::Named(NamedKey::Escape) => {
+                    self.focus_index = None;
+                    self.request_redraw();
+                    return;
+                }
+                _ => {}
             }
-            _ => {}
         }
+        // Nothing focused wants this key: let it scroll the box under the pointer.
+        self.scroll_key(key);
     }
 
     /// Move keyboard focus to the next (or previous) focusable, wrapping around.
@@ -610,6 +864,8 @@ impl App {
             }
             _ => self.set_focus(None),
         }
+        // Tabbing to something below the fold must bring it into view.
+        self.scroll_focus_into_view();
         self.request_redraw();
     }
 
@@ -700,11 +956,29 @@ impl App {
                 &mut measure,
             )
         };
+        // Keep offsets in step with the scrollers the new layout actually has, and
+        // re-clamp them (the content may have shrunk under us). `collect` clamps
+        // the shift it applies the same way, so doing this before the scrollbars
+        // are drawn is what keeps a thumb where its content actually is.
+        offsets.resize(layout.scrolls.len(), Offset::default());
+        for region in &layout.scrolls {
+            offsets[region.id] = offsets[region.id].clamp_to(region.max);
+        }
+
         let content = rux_paint::build_scene(&layout.paints, text, images, caret_visible);
         state.scene.reset();
         state
             .scene
             .append(&content, Some(Affine::scale(scale)));
+
+        // Scrollbars go over the content: they're an overlay on the box's own
+        // trailing edge, and a scroller clips its children, so they can't be
+        // painted as part of the subtree.
+        let bars = scrollbar_paints(&layout.scrolls, offsets);
+        if !bars.is_empty() {
+            let scene = rux_paint::build_scene(&bars, text, images, false);
+            state.scene.append(&scene, Some(Affine::scale(scale)));
+        }
 
         // A keyboard focus ring, drawn over the content (but under a dropdown).
         if let Some(item) = focus_index.and_then(|i| layout.focusables.get(i)) {
@@ -730,12 +1004,6 @@ impl App {
             *focus_index = None;
         }
         *focusables = layout.focusables;
-        // Keep offsets in step with the scrollers the new layout actually has,
-        // and re-clamp them (the content may have shrunk under us).
-        offsets.resize(layout.scrolls.len(), 0.0);
-        for region in &layout.scrolls {
-            offsets[region.id] = offsets[region.id].clamp(0.0, region.max_offset);
-        }
         *scrolls = layout.scrolls;
 
         let device_handle = &context.devices[state.surface.dev_id];
@@ -862,16 +1130,41 @@ impl ApplicationHandler<RuxEvent> for App {
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 // A line of wheel travel is ~ one line of text.
-                const LINE: f32 = 24.0;
-                let dy = match delta {
-                    MouseScrollDelta::LineDelta(_, y) => y * LINE,
-                    MouseScrollDelta::PixelDelta(p) => (p.y / self.scale()) as f32,
+                let (dx, dy) = match delta {
+                    MouseScrollDelta::LineDelta(x, y) => (x * LINE, y * LINE),
+                    MouseScrollDelta::PixelDelta(p) => {
+                        let scale = self.scale();
+                        ((p.x / scale) as f32, (p.y / scale) as f32)
+                    }
                 };
-                self.scroll_at(self.pointer, -dy);
+                // Shift+wheel scrolls horizontally — the platform convention for a
+                // wheel with only one axis.
+                let (dx, dy) = if self.shift_held && dx == 0.0 { (dy, 0.0) } else { (dx, dy) };
+                self.scroll_at(self.pointer, -dx, -dy);
             }
             WindowEvent::CursorMoved { position, .. } => {
                 self.pointer = (position.x, position.y);
-                self.update_cursor();
+                if self.bar_drag.is_some() {
+                    self.drag_scrollbar(self.pointer);
+                } else {
+                    self.update_cursor();
+                }
+            }
+            // Touch drags the content itself: the finger stays on the pixel it
+            // grabbed, so the content follows it and the offset moves the other way.
+            WindowEvent::Touch(touch) => {
+                let scale = self.scale();
+                let here = ((touch.location.x / scale) as f32, (touch.location.y / scale) as f32);
+                match touch.phase {
+                    TouchPhase::Started => self.touch = Some(here),
+                    TouchPhase::Moved => {
+                        if let Some((lx, ly)) = self.touch.replace(here) {
+                            let at = (touch.location.x, touch.location.y);
+                            self.scroll_at(at, lx - here.0, ly - here.1);
+                        }
+                    }
+                    TouchPhase::Ended | TouchPhase::Cancelled => self.touch = None,
+                }
             }
             WindowEvent::ModifiersChanged(mods) => {
                 self.shift_held = mods.state().shift_key();
@@ -886,13 +1179,21 @@ impl ApplicationHandler<RuxEvent> for App {
                 button: MouseButton::Left,
                 ..
             } => {
-                self.press = Some(self.pointer);
+                // A press on a scrollbar thumb belongs to the bar, not the content
+                // under it: it starts a drag and never becomes a tap.
+                if !self.press_scrollbar(self.pointer) {
+                    self.press = Some(self.pointer);
+                }
             }
             WindowEvent::MouseInput {
                 state: ElementState::Released,
                 button: MouseButton::Left,
                 ..
             } => {
+                if self.bar_drag.take().is_some() {
+                    self.update_cursor();
+                    return;
+                }
                 if let Some((sx, sy)) = self.press.take() {
                     let (px, py) = self.pointer;
                     if (px - sx).hypot(py - sy) <= TAP_SLOP {
@@ -965,4 +1266,103 @@ pub fn run(path: PathBuf) {
     event_loop.run_app(&mut app).expect("run app");
 
     drop(watcher); // keep the watcher alive for the loop's lifetime
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A 200x200 box holding 500px-tall content: it scrolls down, not sideways.
+    fn tall() -> ScrollRegion {
+        ScrollRegion {
+            id: 0,
+            x: 0.0,
+            y: 0.0,
+            width: 200.0,
+            height: 200.0,
+            content_width: 200.0,
+            content_height: 500.0,
+            max: Offset { x: 0.0, y: 300.0 },
+        }
+    }
+
+    /// The thumb is the box's fraction of the content, and sits at the top when
+    /// unscrolled.
+    #[test]
+    fn thumb_is_proportional_to_the_content() {
+        let (x, y, w, h) = bar_thumb(&tall(), Offset::default(), Axis2::Y).expect("a thumb");
+        assert_eq!(h, 80.0, "200/500 of a 200px track");
+        assert_eq!(y, 0.0, "unscrolled thumb starts at the top of the track");
+        assert_eq!(w, BAR_W);
+        assert_eq!(x, 200.0 - BAR_W, "the bar hugs the box's right edge");
+    }
+
+    /// The horizontal thumb is the mirror of the vertical one: it runs *along* the
+    /// bottom edge and is only `BAR_W` thick. (Getting the track tuple's length
+    /// and thickness the wrong way round here painted a thumb as tall as the whole
+    /// box — invisible to every test that only looked at the vertical bar.)
+    #[test]
+    fn horizontal_thumb_lies_along_the_bottom_edge() {
+        let mut wide = tall();
+        wide.content_height = 200.0;
+        wide.content_width = 500.0;
+        wide.max = Offset { x: 300.0, y: 0.0 };
+
+        let (x, y, w, h) = bar_thumb(&wide, Offset::default(), Axis2::X).expect("a thumb");
+        assert_eq!(h, BAR_W, "a horizontal thumb is BAR_W *thick*, not BAR_W long");
+        assert_eq!(w, 80.0, "200/500 of a 200px track");
+        assert_eq!(x, 0.0);
+        assert_eq!(y, 200.0 - BAR_W, "it sits on the box's bottom edge");
+    }
+
+    /// At the end of the content the thumb is at the end of its track — the
+    /// bottom of the thumb meets the bottom of the box.
+    #[test]
+    fn thumb_reaches_the_end_of_the_track() {
+        let r = tall();
+        let (_, y, _, h) = bar_thumb(&r, Offset { x: 0.0, y: 300.0 }, Axis2::Y).expect("a thumb");
+        assert_eq!(y + h, r.height);
+    }
+
+    /// The negative case: an axis with no travel has no thumb — nothing to draw,
+    /// and nothing to grab. (A bar you can drag on a box that can't scroll was the
+    /// easy bug here.)
+    #[test]
+    fn no_thumb_on_an_axis_that_does_not_scroll() {
+        assert!(bar_thumb(&tall(), Offset::default(), Axis2::X).is_none());
+
+        let mut fits = tall();
+        fits.content_height = 200.0;
+        fits.max = Offset::default();
+        assert!(bar_thumb(&fits, Offset::default(), Axis2::Y).is_none());
+        assert!(!fits.scrollable());
+    }
+
+    /// However long the content, the thumb stays big enough to grab.
+    #[test]
+    fn thumb_has_a_floor() {
+        let mut huge = tall();
+        huge.content_height = 100_000.0;
+        huge.max = Offset { x: 0.0, y: 99_800.0 };
+        let (_, _, _, h) = bar_thumb(&huge, Offset::default(), Axis2::Y).expect("a thumb");
+        assert_eq!(h, BAR_MIN_THUMB);
+    }
+
+    /// When both axes scroll, the tracks stop short of the corner so they don't
+    /// cross each other.
+    #[test]
+    fn tracks_leave_the_corner_free() {
+        let mut both = tall();
+        both.content_width = 500.0;
+        both.max.x = 300.0;
+
+        let (_, _, _, vh) = bar_track(&both, Axis2::Y);
+        let (_, _, hw, _) = bar_track(&both, Axis2::X);
+        assert_eq!(vh, both.height - BAR_W);
+        assert_eq!(hw, both.width - BAR_W);
+
+        // …and with one axis only, the track runs the full length.
+        let (_, _, _, full) = bar_track(&tall(), Axis2::Y);
+        assert_eq!(full, 200.0);
+    }
 }

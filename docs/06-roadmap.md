@@ -113,9 +113,41 @@ Shift-arrows, drag-select, copy/paste/cut. parley 0.11 already models selection
   picker; a select's `cursor: pointer` doesn't apply (selects aren't `@tap` hit
   regions); text inputs don't scroll horizontally (long single lines clip).
 
-### 3. Scrolling polish
-Scrollbars, drag/touch, keyboard (arrows/PageUp/Home), horizontal scrolling, and
-scroll-into-view. Today it is wheel-only and vertical-only.
+### 3. Scrolling polish — **done (2026-07-17)**
+
+Scrolling was wheel-only and vertical-only. Now:
+
+- ✅ **Horizontal scrolling.** The offset is a two-axis `rux_layout::Offset`, and a
+  scroller reports `content_width`/`content_height` and a `max` on each axis, so a
+  box scrolls whichever way its content actually overflows. Shift+wheel (and a
+  horizontal wheel) scroll sideways.
+- ✅ **Scrollbars.** An overlay on the box's trailing edge, drawn *over* the
+  content (a scroller clips its children, so a bar inside the subtree would be
+  clipped away). A bar only exists on an axis with travel; the thumb is the box's
+  fraction of the content, floored so it stays grabbable; with both axes live the
+  tracks stop short of the corner. Paint and hit-testing share `bar_track` /
+  `bar_thumb`, so what you see is what you can grab.
+- ✅ **Drag.** A press on a thumb starts a drag and never becomes a tap on the
+  content beneath it; pointer travel down the *track* maps to the content's travel
+  through its full range.
+- ✅ **Touch.** A finger drags the content itself. **Unverified — no touch
+  hardware here**; it is the one part of this item nobody has driven.
+- ✅ **Keyboard.** Arrows, PageUp/PageDown, Home/End scroll the box under the
+  pointer, reached only after a focused input has declined the key, so it can't
+  steal a caret key.
+- ✅ **Scroll-into-view.** Tab to something below the fold and its box scrolls to
+  show it (`scroll_focus_into_view`, beside the other restore passes).
+
+**Found by driving it, invisible to the tests:** the horizontal thumb was painted
+with the *track's length* as its thickness — a pale slab across the whole box —
+because `bar_thumb`'s X arm took the wrong component out of the track tuple. Every
+test only looked at the vertical bar. The lesson is the standing one: the axis you
+didn't test is the axis that's broken.
+
+**Not done:** track-click paging, kinetic touch fling, scrollbar hover/fade,
+`scrollbar-width`/`-color`, `overscroll-behavior`, and `overflow-x`/`overflow-y`
+differing from each other (one `overflow` still governs both axes). Single-line
+text inputs still clip rather than scroll horizontally.
 
 ### 4. CSS: close the gap
 
@@ -332,7 +364,12 @@ chance to reproduce the caret bug.** So, while building v0.2:
 3. **Keep a list here** of every restore pass added, so v0.3 knows exactly what it
    is deleting:
    - `apply_focus` (caret) — `rux-runtime`
-   - scroll offsets — `rux-shell`
+   - scroll offsets — `rux-shell` (now two-axis; re-clamped per layout, since the
+     content can shrink under them)
+   - `scroll_caret_into_view` (textarea caret) — `rux-shell`
+   - `scroll_focus_into_view` (Tab target) — `rux-shell`
+   - `open_select` (open dropdown) — `rux-shell`
+   - `focus_index` (keyboard focus ring; re-ranged after each rebuild) — `rux-shell`
    - *(add new ones as they land)*
 
 ---
