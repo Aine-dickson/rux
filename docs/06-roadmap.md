@@ -459,6 +459,13 @@ Giallo regardless of what either host bundles (Giallo's bundled set was the
 unknown). The `@media (...)` condition interior is left uncolored; documented in
 `editors/vscode/README.md`.
 
+**Not to be confused** with the *language* feature of authors including an
+external stylesheet (see Further out). That is a runtime/parser feature; the only
+grammar impact when it lands is coloring the include statement itself
+(`src=` / `@import "…"`), a few lines. It does **not** push us toward the TextMate
+`source.css` include — an external file is colored by the editor's own CSS grammar,
+and our self-contained patterns keep handling inline `<style>`.
+
 ### The work
 
 1. **Write `rux.tmLanguage.json`** — this is the real task; the wiring is trivial.
@@ -532,6 +539,13 @@ first item.
 
 Deliberately **not** in the v0.4 pool: true inline text flow — flagged below as
 "a real project, not a patch," too big for a weekly slot.
+
+**Also expected (not yet scheduled):** **external CSS include** — let authors pull
+in a stylesheet from a separate file (e.g. `<style src="…">` or an `@import`)
+instead of only inline `<style>`. A runtime/parser feature; the syntax-coloring
+grammar needs only a small addition to color the include statement when this lands
+(see the syntax-coloring design note — this is unrelated to the grammar's
+self-contained-vs-`source.css` decision).
 
 ---
 
