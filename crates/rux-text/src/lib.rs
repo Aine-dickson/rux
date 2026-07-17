@@ -17,7 +17,7 @@ use std::borrow::Cow;
 
 use parley::{
     Affinity, Alignment, AlignmentOptions, Cursor, FontContext, FontWeight, Layout, LayoutContext,
-    LineHeight, OverflowWrap, PositionedLayoutItem, StyleProperty, TextWrapMode,
+    LineHeight, OverflowWrap, PositionedLayoutItem, Selection, StyleProperty, TextWrapMode,
 };
 use parley::style::{FontFamily, FontStyle};
 use vello::kurbo::{Affine, Rect};
@@ -174,13 +174,7 @@ impl TextEngine {
         let layout = self.build(text, style, max_width);
         // Each line is `line-height` tall when set, else its own leading-trimmed
         // height (ascent + descent) so text hugs its box by default.
-        let height: f32 = layout
-            .lines()
-            .map(|l| {
-                let m = l.metrics();
-                style.line_height.unwrap_or(m.ascent + m.descent)
-            })
-            .sum();
+        let height: f32 = Self::line_heights(&layout, style).iter().sum();
         (layout.width().ceil(), height.ceil())
     }
 
@@ -197,6 +191,81 @@ impl TextEngine {
         let cursor = Cursor::from_byte_index(&layout, index.min(text.len()), Affinity::Downstream);
         let bounds = cursor.geometry(&layout, CARET_WIDTH);
         (bounds.x0 as f32, bounds.y0 as f32, (bounds.y1 - bounds.y0) as f32)
+    }
+
+    /// The height of each line, in order, under our leading-trim convention:
+    /// `line-height` when set, else the line's own `ascent + descent`. `draw` and
+    /// `measure` step by exactly this, so anything positioning itself against the
+    /// drawn glyphs must too.
+    fn line_heights(layout: &Layout<()>, style: &TextStyle) -> Vec<f32> {
+        layout
+            .lines()
+            .map(|l| {
+                let m = l.metrics();
+                style.line_height.unwrap_or(m.ascent + m.descent)
+            })
+            .collect()
+    }
+
+    /// The rectangles covering the byte range `start..end`, as `(x, y, w, h)`
+    /// relative to the text's top-left — one per line the selection spans.
+    ///
+    /// parley reports each rect's line index alongside it, and we take only the
+    /// **horizontal** extent from parley: its vertical coords come from its own
+    /// line pitch, but we step lines with the leading trimmed (see `draw`). Taking
+    /// parley's `y` would drift a line further out of place with every wrapped
+    /// line. So the `y` is recomputed from our own stepping, by line index.
+    pub fn selection_rects(
+        &mut self,
+        text: &str,
+        style: &TextStyle,
+        max_width: Option<f32>,
+        start: usize,
+        end: usize,
+    ) -> Vec<(f32, f32, f32, f32)> {
+        if start == end {
+            return Vec::new();
+        }
+        let layout = self.build(text, style, max_width);
+        let (from, to) = (start.min(end), start.max(end));
+        let selection = Selection::new(
+            Cursor::from_byte_index(&layout, from.min(text.len()), Affinity::Downstream),
+            Cursor::from_byte_index(&layout, to.min(text.len()), Affinity::Downstream),
+        );
+
+        let heights = Self::line_heights(&layout, style);
+        // The top of each line under our stepping: the sum of the ones above it.
+        let mut tops = Vec::with_capacity(heights.len());
+        let mut acc = 0.0;
+        for h in &heights {
+            tops.push(acc);
+            acc += h;
+        }
+
+        selection
+            .geometry(&layout)
+            .into_iter()
+            .filter_map(|(rect, line)| {
+                let top = *tops.get(line)?;
+                let height = *heights.get(line)?;
+                Some((rect.x0 as f32, top, (rect.x1 - rect.x0) as f32, height))
+            })
+            .collect()
+    }
+
+    /// The byte range of the word under a point, for double-click-to-select.
+    /// `(x, y)` is relative to the text's top-left.
+    pub fn word_at_point(
+        &mut self,
+        text: &str,
+        style: &TextStyle,
+        max_width: Option<f32>,
+        x: f32,
+        y: f32,
+    ) -> (usize, usize) {
+        let layout = self.build(text, style, max_width);
+        let range = Selection::word_from_point(&layout, x, y).text_range();
+        (range.start, range.end)
     }
 
     /// The byte index nearest a point, for click-to-position. `(x, y)` is

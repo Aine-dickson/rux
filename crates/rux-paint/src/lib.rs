@@ -15,6 +15,10 @@ use vello::peniko::{
 };
 use vello::Scene;
 
+/// The selection highlight, `#89b4fa` at 45% — the focus-ring blue. Not
+/// author-controlled: Rux has no `::selection` yet.
+const SELECTION: Color = Color::from_rgba8(0x89, 0xb4, 0xfa, 0x73);
+
 /// Decoded images, keyed by the `src` path. Decoding is the expensive part, and
 /// we repaint on every event, so an image is read from disk at most once. A src
 /// that fails to decode is remembered as a miss and not retried.
@@ -219,6 +223,27 @@ pub fn build_scene(
                 scene.draw_blurred_rounded_rect(cur, rect, to_color(*color), *radius as f64, std_dev);
             }
             Paint::Text(t) => {
+                // The selection highlight goes behind the glyphs. There is no
+                // `::selection` in Rux yet, so the colour is ours, not the
+                // author's — the focus-ring blue, faded enough to read through.
+                if let Some((start, end)) = t.content.selection {
+                    let rects = text.selection_rects(
+                        &t.content.text,
+                        &text_style(&t.content),
+                        Some(t.width),
+                        start,
+                        end,
+                    );
+                    for (sx, sy, sw, sh) in rects {
+                        let rect = Rect::new(
+                            (t.x + sx) as f64,
+                            (t.y + sy) as f64,
+                            (t.x + sx + sw) as f64,
+                            (t.y + sy + sh) as f64,
+                        );
+                        scene.fill(Fill::NonZero, cur, SELECTION, None, &rect);
+                    }
+                }
                 text.draw(
                     &mut scene,
                     t.x,

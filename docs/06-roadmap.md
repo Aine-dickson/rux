@@ -86,9 +86,42 @@ drag is verified**, since `ScaleFactorChanged` is the last untested surface path
 
 ## v0.2 — inputs, polish, and CSS
 
-### 1. Text selection + clipboard
-Shift-arrows, drag-select, copy/paste/cut. parley 0.11 already models selection
-(`PlainEditor`, `Selection`), so this is mostly wiring now that the upgrade is in.
+**All four items are done (2026-07-17).** What's left under each is listed there
+as *Not done* — long-tail CSS (variables, `@media`, pseudo-classes) is the
+biggest of it, and fine-grained reactivity (below) is still the largest gap
+between this code and [04 — Architecture](./04-architecture.md).
+
+### 1. Text selection + clipboard — **done (2026-07-17)**
+
+A focused input now has a **selection, not just a caret**. `rux_runtime::Focus`
+carries `model` + `caret` + `anchor`; the range between them is the selection, and
+`apply_focus` re-applies both after every rebuild — one restore pass, not two.
+
+- ✅ **Drag-select** (press anchors, drag extends), **double-click** selects a
+  word (`DOUBLE_CLICK` window + `TAP_SLOP`).
+- ✅ **Shift+movement** extends from the anchor; a movement without Shift
+  collapses. Typing/pasting/Backspace/Delete replace the selection.
+- ✅ **Ctrl+A / C / X / V** against the real system clipboard (`arboard`, with
+  `image-data` off). A multi-line paste into a single-line input keeps the first
+  line only. No clipboard → a warning at startup and copy/paste no-ops, rather
+  than a crash.
+- ✅ **The highlight** is painted behind the glyphs in the focus-ring blue (no
+  `::selection` yet, so it isn't author-controlled).
+
+**The trap worth remembering:** parley's `Selection::geometry` returns rects laid
+out on *parley's* line pitch, but we draw lines with the leading trimmed
+(`ascent + descent`, or `line-height`). Taking its rects wholesale would drift the
+highlight further off the glyphs with every wrapped line. `selection_rects` takes
+only the **horizontal** extent from parley and recomputes `y` from our own
+stepping, keyed by the line index parley hands back. Guarded by
+`rects_line_up_with_our_own_line_stepping` and `rects_follow_line_height`.
+
+Also: `press_text` runs before tap dispatch (a selection drag has to start on
+press), but declines while a dropdown is open — otherwise an option floating over
+a textarea would focus the textarea instead of picking the option.
+
+**Not done:** word-wise movement (Ctrl+arrows), triple-click line-select,
+drag-and-drop of selected text, `::selection` styling, middle-click paste on X11.
 
 ### 2. The last two input types — ✅ mostly done (2026-07-16)
 - ✅ **`type="textarea"`** — a multi-line text input. It's the ordinary text
@@ -363,7 +396,7 @@ chance to reproduce the caret bug.** So, while building v0.2:
    cleared where it should be, not just set where it should be.
 3. **Keep a list here** of every restore pass added, so v0.3 knows exactly what it
    is deleting:
-   - `apply_focus` (caret) — `rux-runtime`
+   - `apply_focus` (caret **and selection**) — `rux-runtime`
    - scroll offsets — `rux-shell` (now two-axis; re-clamped per layout, since the
      content can shrink under them)
    - `scroll_caret_into_view` (textarea caret) — `rux-shell`

@@ -21,28 +21,59 @@ pub struct Document {
     engine: Engine,
     /// Directory the document was loaded from — `<image src>` resolves against it.
     base: PathBuf,
-    /// The focused input's `r-model` and caret byte index, if any. Re-applied on
-    /// every rebuild so the caret survives a state change.
-    focus: Option<(String, usize)>,
+    /// The focused input, with its caret and selection, if any. Re-applied on
+    /// every rebuild so both survive a state change.
+    focus: Option<Focus>,
     pub root: LayoutNode,
 }
 
-/// Mark the focused input's text child with the caret position, so it paints one
-/// — and clear every other input's.
+/// Which input has keyboard focus, and where its caret and selection are.
+///
+/// The selection is the range between `anchor` (where it started) and `caret`
+/// (where it has been dragged/extended to); `anchor == caret` means no selection,
+/// just a caret. Either may be the smaller — dragging leftwards puts the caret
+/// before the anchor — so consumers normalize with [`Focus::range`].
+#[derive(Clone, Debug, PartialEq)]
+pub struct Focus {
+    pub model: String,
+    pub caret: usize,
+    pub anchor: usize,
+}
+
+impl Focus {
+    /// A plain caret with nothing selected.
+    pub fn at(model: impl Into<String>, caret: usize) -> Self {
+        let model = model.into();
+        Self { model, caret, anchor: caret }
+    }
+
+    /// The selected range, low to high.
+    pub fn range(&self) -> (usize, usize) {
+        (self.caret.min(self.anchor), self.caret.max(self.anchor))
+    }
+
+    pub fn is_collapsed(&self) -> bool {
+        self.caret == self.anchor
+    }
+}
+
+/// Mark the focused input's text child with the caret position and selection, so
+/// it paints them — and clear every other input's.
 ///
 /// Clearing matters: this runs against the *existing* tree when focus moves, not
 /// only against a freshly built one. Setting without clearing left the caret
 /// showing in the input you just left, until some unrelated rebuild wiped it.
-fn apply_focus(node: &mut LayoutNode, focus: Option<&(String, usize)>) {
+/// The selection is one more thing that can be left behind the same way.
+fn apply_focus(node: &mut LayoutNode, focus: Option<&Focus>) {
     if node.model.is_some() {
         if let Some(text) = node.children.first_mut().and_then(|c| c.text.as_mut()) {
-            text.caret = match focus {
-                // An empty input shows its placeholder; the caret still sits at 0.
-                Some((model, caret)) if node.model.as_deref() == Some(model.as_str()) => {
-                    Some((*caret).min(text.text.len()))
-                }
-                _ => None,
-            };
+            let mine = focus.filter(|f| node.model.as_deref() == Some(f.model.as_str()));
+            // An empty input shows its placeholder; the caret still sits at 0.
+            text.caret = mine.map(|f| f.caret.min(text.text.len()));
+            text.selection = mine.filter(|f| !f.is_collapsed()).map(|f| {
+                let (start, end) = f.range();
+                (start.min(text.text.len()), end.min(text.text.len()))
+            });
         }
     }
     for child in &mut node.children {
@@ -137,8 +168,8 @@ impl Document {
         &mut self.engine
     }
 
-    /// Focus an input (by `r-model`) and put its caret at `caret`. `None` clears.
-    pub fn set_focus(&mut self, focus: Option<(String, usize)>) {
+    /// Focus an input (by `r-model`), with its caret and selection. `None` clears.
+    pub fn set_focus(&mut self, focus: Option<Focus>) {
         self.focus = focus;
         apply_focus(&mut self.root, self.focus.as_ref());
     }
@@ -289,13 +320,13 @@ mod tests {
         )
         .expect("load");
 
-        doc.set_focus(Some(("name".into(), 2)));
+        doc.set_focus(Some(Focus::at("name", 2)));
         assert_eq!(caret_of(&doc.root, "name"), Some(2));
         assert_eq!(caret_of(&doc.root, "city"), None);
 
         // Focus the other field: the first one must lose its caret immediately,
         // with no rebuild in between.
-        doc.set_focus(Some(("city".into(), 1)));
+        doc.set_focus(Some(Focus::at("city", 1)));
         assert_eq!(caret_of(&doc.root, "name"), None, "old input kept its caret");
         assert_eq!(caret_of(&doc.root, "city"), Some(1));
 
@@ -303,6 +334,77 @@ mod tests {
         doc.set_focus(None);
         assert_eq!(caret_of(&doc.root, "name"), None);
         assert_eq!(caret_of(&doc.root, "city"), None);
+    }
+
+    fn selection_of(node: &LayoutNode, model: &str) -> Option<(usize, usize)> {
+        if node.model.as_deref() == Some(model) {
+            return node.children.first()?.text.as_ref()?.selection;
+        }
+        node.children.iter().find_map(|c| selection_of(c, model))
+    }
+
+    fn two_inputs() -> Document {
+        Document::from_source(
+            "<template><screen>             <input r-model=\"name\" /><input r-model=\"city\" />             </screen></template>
+             <script>let name = signal(\"abc\"); let city = signal(\"xyz\");</script>",
+        )
+        .expect("load")
+    }
+
+    /// The selection is the range between anchor and caret, either way round, and
+    /// only the focused input has one.
+    #[test]
+    fn selection_paints_only_in_the_focused_input() {
+        let mut doc = two_inputs();
+
+        doc.set_focus(Some(Focus { model: "name".into(), caret: 3, anchor: 1 }));
+        assert_eq!(selection_of(&doc.root, "name"), Some((1, 3)));
+        assert_eq!(selection_of(&doc.root, "city"), None);
+
+        // Dragging leftwards puts the caret *before* the anchor; same range.
+        doc.set_focus(Some(Focus { model: "name".into(), caret: 1, anchor: 3 }));
+        assert_eq!(selection_of(&doc.root, "name"), Some((1, 3)));
+    }
+
+    /// The negative case, which is where the caret bug lived: moving focus must
+    /// *clear* the old input's selection, not just set the new one's. A rebuild
+    /// isn't required to notice.
+    #[test]
+    fn focus_moves_the_selection_out_of_the_old_input() {
+        let mut doc = two_inputs();
+
+        doc.set_focus(Some(Focus { model: "name".into(), caret: 3, anchor: 0 }));
+        assert_eq!(selection_of(&doc.root, "name"), Some((0, 3)));
+
+        doc.set_focus(Some(Focus { model: "city".into(), caret: 2, anchor: 0 }));
+        assert_eq!(selection_of(&doc.root, "name"), None, "old input kept its selection");
+        assert_eq!(selection_of(&doc.root, "city"), Some((0, 2)));
+
+        doc.set_focus(None);
+        assert_eq!(selection_of(&doc.root, "name"), None);
+        assert_eq!(selection_of(&doc.root, "city"), None);
+    }
+
+    /// A collapsed selection is no selection: a plain caret must not paint a
+    /// zero-width highlight.
+    #[test]
+    fn a_collapsed_selection_is_none() {
+        let mut doc = two_inputs();
+        doc.set_focus(Some(Focus::at("name", 2)));
+        assert_eq!(caret_of(&doc.root, "name"), Some(2));
+        assert_eq!(selection_of(&doc.root, "name"), None);
+    }
+
+    /// Both caret and selection are re-applied after a rebuild — the whole-tree
+    /// rebuild throws the tree away, so anything ephemeral must be put back.
+    #[test]
+    fn selection_survives_a_rebuild() {
+        let mut doc = two_inputs();
+        doc.set_focus(Some(Focus { model: "name".into(), caret: 3, anchor: 1 }));
+        doc.rebuild();
+        assert_eq!(selection_of(&doc.root, "name"), Some((1, 3)));
+        assert_eq!(caret_of(&doc.root, "name"), Some(3));
+        assert_eq!(selection_of(&doc.root, "city"), None);
     }
 
     /// A checked box gets a synthetic `checked` class, so its checked look is

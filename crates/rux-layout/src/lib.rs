@@ -400,6 +400,10 @@ pub struct TextContent {
     pub nowrap: bool,
     /// Byte index of the caret, when this text is inside the focused input.
     pub caret: Option<usize>,
+    /// The selected byte range (start < end, normalized), when this text is
+    /// inside the focused input and its selection isn't collapsed. The painter
+    /// highlights it behind the glyphs.
+    pub selection: Option<(usize, usize)>,
 }
 
 /// A node in the view tree: a style, optional text, children, and an optional

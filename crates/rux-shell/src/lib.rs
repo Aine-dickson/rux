@@ -16,7 +16,7 @@ use rux_layout::{
     Background, Cursor, FocusItem, FocusKind, FocusRegion, HitRegion, Offset, Paint, PaintRect,
     PaintText, Rgba, ScrollRegion, SelectRegion, TextAlign, TextContent, TextWrap,
 };
-use rux_runtime::Document;
+use rux_runtime::{Document, Focus};
 use vello::kurbo::Affine;
 use vello::peniko::Color;
 use vello::util::{RenderContext, RenderSurface};
@@ -43,6 +43,10 @@ const TAP_SLOP: f64 = 6.0;
 /// Half the caret blink period: the caret is shown for this long, then hidden
 /// for this long. ~530ms matches the platform norm.
 const BLINK: Duration = Duration::from_millis(530);
+
+/// Two clicks closer together than this (and within `TAP_SLOP`) are a
+/// double-click, which selects a word.
+const DOUBLE_CLICK: Duration = Duration::from_millis(500);
 
 /// Rux screen background `#11111b`.
 const BG: Color = Color::from_rgb8(0x11, 0x11, 0x1b);
@@ -264,6 +268,7 @@ fn dropdown_paints(sel: &SelectRegion, value: &str) -> Vec<Paint> {
                 strikethrough: false,
                 nowrap: true,
                 caret: None,
+                selection: None,
             },
         }));
     }
@@ -310,8 +315,11 @@ struct App {
     focusables: Vec<FocusItem>,
     /// Index into `focusables` of the keyboard-focused element, if any.
     focus_index: Option<usize>,
-    /// Whether Shift is held (for Shift+Tab reverse traversal).
+    /// Whether Shift is held (Shift+Tab reverse traversal; Shift+arrows extend a
+    /// selection; Shift+wheel scrolls sideways).
     shift_held: bool,
+    /// Whether Ctrl is held (Ctrl+A/C/X/V).
+    ctrl_held: bool,
     /// Scrollable regions from the most recent layout.
     scrolls: Vec<ScrollRegion>,
     /// Scroll offset per scrollable box, in tree order. Survives the rebuild
@@ -331,6 +339,16 @@ struct App {
     open_select: Option<String>,
     /// Caret position in the focused input, as a byte index into its value.
     caret: usize,
+    /// Where the current selection started, as a byte index. Equal to `caret`
+    /// when nothing is selected — the selection is the range between them.
+    anchor: usize,
+    /// Whether the pointer is selecting text by dragging inside an input.
+    text_drag: bool,
+    /// When and where the last click landed, for double-click word-select.
+    last_click: Option<(Instant, f64, f64)>,
+    /// The system clipboard. `None` if the platform wouldn't give us one — the
+    /// app still runs, copy/paste just does nothing.
+    clipboard: Option<arboard::Clipboard>,
     /// Whether the caret is in the visible half of its blink cycle.
     caret_visible: bool,
     /// When the caret next toggles. `None` when no input is focused, so an idle
@@ -361,6 +379,7 @@ impl App {
             focusables: Vec::new(),
             focus_index: None,
             shift_held: false,
+            ctrl_held: false,
             scrolls: Vec::new(),
             offsets: Vec::new(),
             bar_drag: None,
@@ -369,6 +388,12 @@ impl App {
             focused_multiline: false,
             open_select: None,
             caret: 0,
+            anchor: 0,
+            text_drag: false,
+            last_click: None,
+            clipboard: arboard::Clipboard::new()
+                .map_err(|e| eprintln!("rux: no clipboard ({e}) — copy/paste disabled"))
+                .ok(),
             caret_visible: true,
             blink_deadline: None,
             pointer: (0.0, 0.0),
@@ -562,6 +587,86 @@ impl App {
         }
     }
 
+    /// The byte index in `region`'s text nearest a point, in logical px. An empty
+    /// input is showing its placeholder, not a value, so its caret belongs at 0.
+    fn index_in(&mut self, region: &FocusRegion, px: f32, py: f32) -> usize {
+        let value = self.document.engine_mut().get_string(&region.model);
+        match &region.text {
+            Some(t) if !value.is_empty() => self.text.index_at_point(
+                &value,
+                &rux_paint::text_style(&t.content),
+                Some(t.width),
+                px - t.x,
+                py - t.y,
+            ),
+            _ => 0,
+        }
+    }
+
+    /// A press inside an input starts a text selection: it drops the caret (and
+    /// the anchor) where you clicked, and a drag from there extends it. A second
+    /// click in the same spot selects the word instead.
+    ///
+    /// Returns whether the press was ours — if so it is *not* also dispatched as a
+    /// tap on release, since focusing already happened here.
+    fn press_text(&mut self, pointer: (f64, f64)) -> bool {
+        // An open dropdown floats over everything and gets first refusal.
+        if self.open_select.is_some() {
+            return false;
+        }
+        let (fx, fy) = self.logical(pointer);
+        let Some(region) = self.focuses.iter().rev().find(|f| f.contains(fx, fy)).cloned() else {
+            return false;
+        };
+
+        // A tap also moves keyboard focus, so Tab continues from what you clicked.
+        self.focus_index = self.focusables.iter().rposition(|f| f.contains(fx, fy));
+        self.focused_multiline = region.multiline;
+
+        let double = self
+            .last_click
+            .is_some_and(|(at, x, y)| {
+                at.elapsed() < DOUBLE_CLICK && (pointer.0 - x).hypot(pointer.1 - y) <= TAP_SLOP
+            });
+        self.last_click = Some((Instant::now(), pointer.0, pointer.1));
+
+        if double {
+            // Double-click selects the word under the pointer.
+            let value = self.document.engine_mut().get_string(&region.model);
+            if let (Some(t), false) = (&region.text, value.is_empty()) {
+                let (start, end) = self.text.word_at_point(
+                    &value,
+                    &rux_paint::text_style(&t.content),
+                    Some(t.width),
+                    fx - t.x,
+                    fy - t.y,
+                );
+                self.set_focus_range(Some(Focus { model: region.model, caret: end, anchor: start }));
+                return true;
+            }
+        }
+
+        let caret = self.index_in(&region, fx, fy);
+        self.text_drag = true;
+        self.set_focus(Some((region.model, caret)));
+        true
+    }
+
+    /// Extend the selection to the pointer while dragging inside an input: the
+    /// anchor stays where the press landed, the caret follows the pointer.
+    fn drag_text(&mut self, pointer: (f64, f64)) {
+        let Some(model) = self.focused.clone() else { return };
+        let Some(region) = self.focuses.iter().find(|f| f.model == model).cloned() else {
+            return;
+        };
+        let (fx, fy) = self.logical(pointer);
+        let caret = self.index_in(&region, fx, fy);
+        if caret != self.caret {
+            let anchor = self.anchor;
+            self.set_focus_range(Some(Focus { model, caret, anchor }));
+        }
+    }
+
     /// Set the window's cursor from whatever tappable region is under the
     /// pointer (topmost wins, as with tap dispatch). Only touches the window when
     /// the shape changes, so it's cheap to call on every mouse move.
@@ -624,33 +729,8 @@ impl App {
             return;
         }
 
-        // Focus takes precedence: an input under the pointer becomes focused,
-        // with the caret at the character you tapped.
-        if let Some(region) = self
-            .focuses
-            .iter()
-            .rev()
-            .find(|f| f.contains(fx, fy))
-            .cloned()
-        {
-            // Map the tap into the text box's own coordinates to find the
-            // character. An empty input is showing its placeholder, not a value,
-            // so its caret belongs at 0.
-            let value = self.document.engine_mut().get_string(&region.model);
-            let caret = match &region.text {
-                Some(t) if !value.is_empty() => self.text.index_at_point(
-                    &value,
-                    &rux_paint::text_style(&t.content),
-                    Some(t.width),
-                    fx - t.x,
-                    fy - t.y,
-                ),
-                _ => 0,
-            };
-            self.focused_multiline = region.multiline;
-            self.set_focus(Some((region.model, caret)));
-            return;
-        }
+        // Inputs are handled at press time (`press_text`), which is where a
+        // selection drag has to start — so by here the tap is on something else.
         // Tapping elsewhere drops focus.
         self.set_focus(None);
 
@@ -671,16 +751,31 @@ impl App {
     }
 
     /// Apply a key to the focused input's bound signal, then rebuild + repaint.
-    /// Edit the focused input at the caret. Returns whether anything changed.
     ///
     /// Indices are byte offsets into the value, always on a char boundary (we
-    /// only ever step by whole characters), so slicing is safe.
+    /// only ever step by whole characters, and parley returns boundaries), so
+    /// slicing is safe.
+    ///
+    /// Selection rules, which are the platform's everywhere: **Shift** + a
+    /// movement extends (the anchor stays put); a movement without it collapses;
+    /// and anything that inserts or deletes replaces the selection first.
     fn edit_focused(&mut self, key: &Key) {
         let Some(model) = self.focused.clone() else {
             return;
         };
+        // Ctrl chords are select-all / copy / cut / paste, not text.
+        if self.ctrl_held && self.text_shortcut(key, &model) {
+            return;
+        }
+
         let mut value = self.document.engine_mut().get_string(&model);
         let caret = self.caret.min(value.len());
+        let (sel_start, sel_end) = {
+            let (s, e) = self.selection();
+            (s.min(value.len()), e.min(value.len()))
+        };
+        let has_selection = sel_start != sel_end;
+        let extend = self.shift_held;
 
         // How far the previous / next character is, in bytes.
         let prev = value[..caret].chars().next_back().map(char::len_utf8);
@@ -689,29 +784,48 @@ impl App {
         let mut edited = false;
         let mut moved = false;
         let mut new_caret = caret;
+        // Replace whatever is selected with `text`, leaving the caret after it.
+        let replace_selection = |value: &mut String, text: &str| {
+            value.replace_range(sel_start..sel_end, text);
+            sel_start + text.len()
+        };
 
         match key {
             Key::Named(NamedKey::Backspace) => {
-                if let Some(len) = prev {
+                if has_selection {
+                    new_caret = replace_selection(&mut value, "");
+                    edited = true;
+                } else if let Some(len) = prev {
                     value.replace_range(caret - len..caret, "");
                     new_caret = caret - len;
                     edited = true;
                 }
             }
             Key::Named(NamedKey::Delete) => {
-                if let Some(len) = next {
+                if has_selection {
+                    new_caret = replace_selection(&mut value, "");
+                    edited = true;
+                } else if let Some(len) = next {
                     value.replace_range(caret..caret + len, "");
                     edited = true;
                 }
             }
+            // A plain arrow with a selection collapses to its near edge rather
+            // than moving — that's what every text field does.
             Key::Named(NamedKey::ArrowLeft) => {
-                if let Some(len) = prev {
+                if has_selection && !extend {
+                    new_caret = sel_start;
+                    moved = true;
+                } else if let Some(len) = prev {
                     new_caret = caret - len;
                     moved = true;
                 }
             }
             Key::Named(NamedKey::ArrowRight) => {
-                if let Some(len) = next {
+                if has_selection && !extend {
+                    new_caret = sel_end;
+                    moved = true;
+                } else if let Some(len) = next {
                     new_caret = caret + len;
                     moved = true;
                 }
@@ -746,41 +860,97 @@ impl App {
                 return;
             }
             Key::Named(NamedKey::Space) => {
-                value.insert(caret, ' ');
-                new_caret = caret + 1;
+                new_caret = replace_selection(&mut value, " ");
                 edited = true;
             }
             // Enter inserts a newline in a textarea; single-line inputs ignore it.
             Key::Named(NamedKey::Enter) if self.focused_multiline => {
-                value.insert(caret, '\n');
-                new_caret = caret + 1;
+                new_caret = replace_selection(&mut value, "\n");
                 edited = true;
             }
             Key::Character(s) => {
-                for c in s.chars().filter(|c| !c.is_control()) {
-                    value.insert(new_caret, c);
-                    new_caret += c.len_utf8();
+                let typed: String = s.chars().filter(|c| !c.is_control()).collect();
+                if !typed.is_empty() {
+                    new_caret = replace_selection(&mut value, &typed);
                     edited = true;
                 }
             }
             _ => {}
         }
 
-        if edited {
-            self.caret = new_caret;
-            self.document.engine_mut().set_string(&model, &value);
+        if edited || moved {
+            // Shift+movement keeps the anchor, extending the selection; anything
+            // else collapses it to the caret.
+            let new_anchor = if moved && extend { self.anchor } else { new_caret };
             self.scroll_caret_into_view(&model, &value, new_caret);
-            self.document.set_focus(Some((model, new_caret)));
-            self.document.rebuild();
-            self.reset_blink();
-            self.request_redraw();
-        } else if moved {
-            self.caret = new_caret;
-            self.scroll_caret_into_view(&model, &value, new_caret);
-            self.document.set_focus(Some((model, new_caret)));
-            self.reset_blink();
-            self.request_redraw();
+            if edited {
+                self.document.engine_mut().set_string(&model, &value);
+            }
+            self.set_focus_range(Some(Focus {
+                model,
+                caret: new_caret,
+                anchor: new_anchor,
+            }));
+            if edited {
+                self.document.rebuild();
+            }
         }
+    }
+
+    /// Ctrl chords inside a focused input: select all, copy, cut, paste. Returns
+    /// whether the key was one of them (so it isn't also typed as a character —
+    /// Ctrl+V arrives as `Key::Character("v")`).
+    fn text_shortcut(&mut self, key: &Key, model: &str) -> bool {
+        let Key::Character(s) = key else { return false };
+        let value = self.document.engine_mut().get_string(model);
+        match s.to_lowercase().as_str() {
+            "a" => {
+                self.set_focus_range(Some(Focus {
+                    model: model.to_string(),
+                    caret: value.len(),
+                    anchor: 0,
+                }));
+            }
+            "c" => {
+                if let Some(text) = self.selected_text() {
+                    self.clipboard_write(&text);
+                }
+            }
+            "x" => {
+                if let Some(text) = self.selected_text() {
+                    self.clipboard_write(&text);
+                    let (start, end) = self.selection();
+                    let mut value = value;
+                    value.replace_range(start.min(value.len())..end.min(value.len()), "");
+                    self.document.engine_mut().set_string(model, &value);
+                    self.set_focus_range(Some(Focus::at(model, start)));
+                    self.document.rebuild();
+                }
+            }
+            "v" => {
+                let Some(pasted) = self.clipboard_read() else {
+                    return true;
+                };
+                // A single-line input takes the first line only — pasting a block
+                // of text into a one-line field shouldn't smuggle newlines in.
+                let pasted = if self.focused_multiline {
+                    pasted.replace("\r\n", "\n")
+                } else {
+                    pasted.lines().next().unwrap_or("").to_string()
+                };
+                let (start, end) = self.selection();
+                let mut value = value;
+                let (start, end) = (start.min(value.len()), end.min(value.len()));
+                value.replace_range(start..end, &pasted);
+                let caret = start + pasted.len();
+                self.document.engine_mut().set_string(model, &value);
+                self.scroll_caret_into_view(model, &value, caret);
+                self.set_focus_range(Some(Focus::at(model, caret)));
+                self.document.rebuild();
+            }
+            _ => return false,
+        }
+        true
     }
 
     /// Keep the caret visible in a scrolling textarea: adjust its scroll offset so
@@ -887,13 +1057,55 @@ impl App {
         }
     }
 
-    /// Focus an input (or clear focus) and tell the document, so the caret paints.
+    /// Focus an input (or clear focus) and tell the document, so the caret and
+    /// selection paint. Collapses the selection to the caret.
     fn set_focus(&mut self, focus: Option<(String, usize)>) {
-        self.focused = focus.as_ref().map(|(m, _)| m.clone());
-        self.caret = focus.as_ref().map(|(_, c)| *c).unwrap_or(0);
+        match focus {
+            Some((model, caret)) => self.set_focus_range(Some(Focus::at(model, caret))),
+            None => self.set_focus_range(None),
+        }
+    }
+
+    /// The full-fidelity focus setter: caret *and* selection anchor.
+    fn set_focus_range(&mut self, focus: Option<Focus>) {
+        self.focused = focus.as_ref().map(|f| f.model.clone());
+        self.caret = focus.as_ref().map(|f| f.caret).unwrap_or(0);
+        self.anchor = focus.as_ref().map(|f| f.anchor).unwrap_or(0);
         self.document.set_focus(focus);
         self.reset_blink();
         self.request_redraw();
+    }
+
+    /// The focused input's selected byte range, low to high. Empty when there's
+    /// no selection (`start == end`).
+    fn selection(&self) -> (usize, usize) {
+        (self.caret.min(self.anchor), self.caret.max(self.anchor))
+    }
+
+    /// The focused input's selected text, if any.
+    fn selected_text(&mut self) -> Option<String> {
+        let model = self.focused.clone()?;
+        let (start, end) = self.selection();
+        if start == end {
+            return None;
+        }
+        let value = self.document.engine_mut().get_string(&model);
+        value.get(start.min(value.len())..end.min(value.len())).map(str::to_string)
+    }
+
+    /// Put `text` on the system clipboard.
+    fn clipboard_write(&mut self, text: &str) {
+        if let Some(cb) = self.clipboard.as_mut() {
+            if let Err(e) = cb.set_text(text.to_string()) {
+                eprintln!("rux: clipboard copy failed: {e}");
+            }
+        }
+    }
+
+    /// Read the system clipboard. `None` when it's empty, holds non-text, or
+    /// there's no clipboard at all.
+    fn clipboard_read(&mut self) -> Option<String> {
+        self.clipboard.as_mut()?.get_text().ok()
     }
 
     /// Show the caret solid and (re)start the blink cycle. Called on focus and on
@@ -1146,6 +1358,8 @@ impl ApplicationHandler<RuxEvent> for App {
                 self.pointer = (position.x, position.y);
                 if self.bar_drag.is_some() {
                     self.drag_scrollbar(self.pointer);
+                } else if self.text_drag {
+                    self.drag_text(self.pointer);
                 } else {
                     self.update_cursor();
                 }
@@ -1168,6 +1382,7 @@ impl ApplicationHandler<RuxEvent> for App {
             }
             WindowEvent::ModifiersChanged(mods) => {
                 self.shift_held = mods.state().shift_key();
+                self.ctrl_held = mods.state().control_key();
             }
             WindowEvent::KeyboardInput { event, .. } => {
                 if event.state == ElementState::Pressed {
@@ -1179,9 +1394,10 @@ impl ApplicationHandler<RuxEvent> for App {
                 button: MouseButton::Left,
                 ..
             } => {
-                // A press on a scrollbar thumb belongs to the bar, not the content
-                // under it: it starts a drag and never becomes a tap.
-                if !self.press_scrollbar(self.pointer) {
+                // A press on a scrollbar thumb belongs to the bar, and a press in
+                // an input starts a text selection: neither becomes a tap on the
+                // content under it.
+                if !self.press_scrollbar(self.pointer) && !self.press_text(self.pointer) {
                     self.press = Some(self.pointer);
                 }
             }
@@ -1192,6 +1408,9 @@ impl ApplicationHandler<RuxEvent> for App {
             } => {
                 if self.bar_drag.take().is_some() {
                     self.update_cursor();
+                    return;
+                }
+                if std::mem::take(&mut self.text_drag) {
                     return;
                 }
                 if let Some((sx, sy)) = self.press.take() {

@@ -1,0 +1,60 @@
+<template>
+  <screen class="app">
+    <text class="title">Text selection &amp; clipboard</text>
+    <text class="hint">Drag across the text · double-click a word · Shift+arrows · Ctrl+A / C / X / V</text>
+
+    <view class="field">
+      <text class="label">A single line</text>
+      <input class="line" r-model="name" placeholder="Type here…" />
+      <text class="echo">value: {{ name }}</text>
+    </view>
+
+    <view class="field">
+      <text class="label">Several lines (Enter for a new one)</text>
+      <input class="area" type="textarea" r-model="notes" />
+    </view>
+
+    <view class="field">
+      <text class="label">Paste target</text>
+      <input class="line" r-model="paste" placeholder="Ctrl+V here…" />
+    </view>
+  </screen>
+</template>
+
+<style>
+  .app {
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+    padding: 28px;
+    background: #1e1e2e;
+  }
+  .title { color: #cdd6f4; font-size: 22px; font-weight: 700; }
+  .hint  { color: #6c7086; font-size: 13px; max-width: 380px; }
+  .field { display: flex; flex-direction: column; gap: 8px; width: 100%; max-width: 360px; }
+  .label { color: #a6adc8; font-size: 14px; }
+  .echo  { color: #a6e3a1; font-size: 13px; }
+
+  .line {
+    height: 38px;
+    padding: 8px 12px;
+    background: #313244;
+    border-radius: 8px;
+    color: #cdd6f4;
+    font-size: 16px;
+  }
+  .area {
+    height: 110px;
+    padding: 10px 12px;
+    background: #313244;
+    border-radius: 8px;
+    color: #cdd6f4;
+    font-size: 16px;
+  }
+</style>
+
+<script>
+  let name = signal("select some of this text");
+  let notes = signal("Drag across these words.\nA second line to select down through.\nAnd a third.");
+  let paste = signal("");
+</script>

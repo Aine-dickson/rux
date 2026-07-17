@@ -28,3 +28,6 @@ pollster = "0.4"
 vello = "0.9"
 taffy = "0.7"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
+# System clipboard. `image-data` is off: we only ever move text, and it would
+# pull a second copy of the `image` stack in.
+arboard = { version = "3", default-features = false }

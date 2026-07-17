@@ -19,6 +19,7 @@ cargo run                          # examples/battery.rux (default)
 cargo run -- examples/form.rux     # inputs + two-way binding + overflow-wrap
 cargo run -- examples/list.rux     # a scrolling list (wheel, drag the bar, Tab)
 cargo run -- examples/scroll.rux   # horizontal + both-axes scrolling, scrollbars
+cargo run -- examples/selection.rux # drag-select, double-click, Ctrl+A/C/X/V
 cargo run -- examples/gallery.rux  # images, opacity, flex-shrink, clipping
 cargo run -- examples/dashboard.rux
 ```
@@ -37,7 +38,7 @@ rebuild. Only changing the compiled Rust host requires `cargo run` again.
 | `rux-text` | parley 0.11 shaping/measure/wrapping + vello 0.9 glyph drawing |
 | `rux-paint` | paint items → vello scene (fills, borders, clips, text) |
 | `rux-runtime` | `Document`: load, resolve imports, build engine, rebuild tree |
-| `rux-shell` | winit window, wgpu/vello, input, focus, file watcher |
+| `rux-shell` | winit window, wgpu/vello, input, focus, clipboard, file watcher |
 | `rux-cli` | `rux [file.rux]` |
 | `rux-reactive` | just `Value`, the untyped value `rux-script` and `rux-style` pass around |
 
@@ -184,8 +185,29 @@ checked `background`, or the ring dissolves into the fill. A radio is **round** 
 huge radius like `9999px` is clamped to a circle, so that's how you re-round one
 that inherited a radius from another class).
 
-**Limits:** no selection (no shift-arrow, no drag-select) and no clipboard; a
-`select` has no arrow-key list navigation and no native mobile picker.
+### Selection & clipboard
+A focused input has a **selection**, not just a caret: `Focus` carries a `caret`
+and an `anchor`, and the range between them is selected (`anchor == caret` means
+nothing is). Both are re-applied after every rebuild, like the caret.
+
+- **Drag** across text to select; **double-click** selects a word.
+- **Shift** + a movement (arrows, Home/End, Up/Down in a textarea) extends from
+  the anchor; the same movement without Shift collapses the selection.
+- Typing, pasting, Backspace and Delete **replace** the selection.
+- **Ctrl+A** select all · **Ctrl+C** copy · **Ctrl+X** cut · **Ctrl+V** paste
+  (via `arboard`, the real system clipboard). Pasting several lines into a
+  single-line input keeps only the first.
+
+The highlight is painted behind the glyphs in the focus-ring blue — **not
+author-controlled**: there is no `::selection` yet. Its rectangles come from
+parley, but only their *horizontal* extent: the vertical position is recomputed
+from our own leading-trimmed line stepping, since parley's line pitch isn't ours
+(see `rux-text::selection_rects`).
+
+**Limits:** no word-wise movement (Ctrl+arrows moves by character), no
+triple-click line-select, no drag-and-drop of selected text, no middle-click
+paste on X11, and a `select` has no arrow-key list navigation or native mobile
+picker.
 
 ### Scrolling
 `overflow: auto | scroll` makes a box scroll **on whichever axis its content
@@ -249,7 +271,8 @@ their own subtree. Editing a component hot-reloads.
 
 ## Known gaps / backlog
 
-- Input **selection** (shift-arrow, drag-select) and clipboard.
+- Text editing: no word-wise movement (Ctrl+arrows), no triple-click line-select,
+  no drag-and-drop of selected text, no `::selection` styling.
 - Scrolling: no track-click paging, no kinetic touch fling, no scrollbar
   hover/fade, and `overflow-x` / `overflow-y` can't differ from each other.
 - CSS: `box-shadow`, `position`/`top`/`left`, per-corner radius, per-side border

@@ -728,6 +728,7 @@ fn build_node(
                 strikethrough,
                 nowrap,
                 caret: None,
+                selection: None,
             },
         );
         node.on_tap = on_tap;
@@ -868,7 +869,9 @@ fn build_node(
                 strikethrough,
                 // A single-line input never wraps; a textarea does.
                 nowrap: !multiline,
-                caret: None, // the runtime marks the focused input's caret
+                // The runtime marks the focused input's caret and selection.
+                caret: None,
+                selection: None,
             },
         );
         let mut node = LayoutNode::new(style);
