@@ -407,6 +407,67 @@ chance to reproduce the caret bug.** So, while building v0.2:
 
 ---
 
+## v0.3 (also) — `.rux` syntax coloring
+
+Scheduled alongside reactivity; independent of it. Today a `.rux` code block on
+the [site](../site/) renders as flat text, and editing a `.rux` file in an editor
+gives no coloring at all. Both are fixable with **one artifact**.
+
+**The key finding (verified 2026-07-18):** Zola 0.22's highlighter,
+[Giallo][giallo], consumes **TextMate JSON grammars** — the *same format VS Code
+uses*. So a single `rux.tmLanguage.json` serves both consumers. No fork, no second
+grammar in a second format.
+
+### The work
+
+1. **Write `rux.tmLanguage.json`** — this is the real task; the wiring is trivial.
+   A `.rux` file is a multi-language SFC (like Vue), so the grammar scopes the
+   three sections and colors what's inside each:
+   - `<template>` — HTML-like tags, plus the Rux-specific bits: `{{ }}`
+     interpolation, `r-for` / `r-if` / `r-model` directives, `@tap` handlers,
+     `:prop` bindings.
+   - `<style>` — CSS.
+   - `<script>` — rhai (Rust-like: `let`, `fn`, `//`, strings, `signal(...)`).
+
+   **Design decision to make first:** embed sub-grammars via `include`
+   (`source.css`, `source.rust`, `text.html.basic`) or write **self-contained**
+   inline patterns. Include is less code but depends on each host bundling those
+   sub-grammars (VS Code does; Giallo's bundled set needs checking). Self-contained
+   is more work but fully portable and predictable. Lean self-contained for the
+   Rux-specific tokens (`{{ }}`, `r-`, `@`, `signal`) regardless, since no stock
+   grammar knows them.
+
+   **Known imprecision:** rhai has no standard TextMate grammar. `<script>` will
+   lean on Rust's, which is close (keywords, comments, strings line up) but not
+   exact — rhai-only constructs won't be perfect. Acceptable; document it.
+
+2. **Wire into Zola** — drop the grammar in `site/syntaxes/`, add to
+   `site/config.toml`:
+   ```toml
+   [markdown.highlighting]
+   extra_grammars = ["syntaxes/rux.tmLanguage.json"]
+   ```
+   The site's fences are already ```` ```rux ````, so they light up once the
+   grammar registers `rux` as a language. Pin the Giallo/Zola version note in the
+   config comment.
+
+3. **VS Code extension** — scaffold `editors/vscode/`: `package.json`
+   (`contributes.languages` + `contributes.grammars`), `language-configuration.json`
+   (comments, brackets, auto-close), and the **same** `rux.tmLanguage.json` (copy
+   or symlink — one source of truth). Ship a `.vsix` in the repo for local install;
+   publishing to the Marketplace is optional and needs a publisher account.
+
+### Verification (the standing rule applies to tooling too)
+
+- `cd site && zola build` warning-clean, then **open the site and look** at a
+  `.rux` block — real colors, not flat text.
+- Install the extension locally and **open a `.rux` file** — template, style and
+  script sections all colored, `{{ }}` / `r-` / `@tap` picked out.
+
+[giallo]: https://github.com/getzola/giallo
+
+---
+
 ## Known ceilings (not scheduled — they need a decision first)
 
 - **True inline text flow.** Two `<text>` siblings stack; they cannot share a
