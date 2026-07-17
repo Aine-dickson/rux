@@ -63,6 +63,16 @@ cargo run -p rux-cli -- examples/form.rux
 
 The examples — `form`, `list`, `gallery`, `dashboard`, `battery` — cover inputs, scrolling, images, a responsive grid, and a fixed-width card. Edit any of them with the window open and it hot-reloads.
 
+## Editor support (VS Code)
+
+A `.rux` VS Code extension ships in this repo — **syntax highlighting** for all three sections, **snippets**, **folding**, a basic **Format Document** re-indenter (`Shift+Alt+F`), and a **file icon**. Install the prebuilt package (no build step):
+
+```bash
+code --install-extension editors/vscode/rux-0.1.0.vsix
+```
+
+Then open any `.rux` file. Details and the tooling roadmap (a parser-backed `rux fmt`, `rux check` diagnostics, and a language server are next) are in [`editors/vscode/README.md`](editors/vscode/README.md). The same highlighting powers the ` ```rux ` code blocks on the [website](https://aine-dickson.github.io/rux).
+
 ## What works today
 
 Flexbox **and** CSS grid layout (via [`taffy`]) · the full box model · sizing in `px` / `%` / `rem` / `vw` / `vh` · `minmax(0, 1fr)` grid tracks · gradients, `box-shadow`, `transform`, per-corner radius · fonts + text shaping (via [`parley`]) · text `<input>` with a real caret, **selection and clipboard** · `select` / `textarea` · checkbox / radio · **keyboard focus + Tab** · **scrolling with scrollbars, drag, keyboard, and horizontal** · images · opacity · HiDPI · signals driving `{{ }}` bindings and `r-for` / `r-if` / `r-model` · live hot-reload.

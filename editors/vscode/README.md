@@ -10,10 +10,28 @@ Editor support for `.rux` files:
   tags (`text`, `view`, `button`).
 - **Folding** of the three sections, HTML-style tag indentation, and bracket/quote
   auto-close.
+- **Format Document** (`Shift+Alt+F`) — a basic re-indenter. It fixes nesting
+  indentation across tags, braces, brackets and parens, and unifies mixed indent
+  widths to your editor's `tab_size`. It does **not** touch spacing inside a line,
+  wrap, or reorder — that's the job of the planned `rux fmt`.
+- **File icon** — `.rux` files show the Rux mark, when your active file-icon theme
+  falls back to language icons (VS Code's default "Seti" does; some themes override
+  it).
 
-Deeper tooling (a `rux fmt` formatter, `rux check` inline diagnostics, and a
-language server) is planned as CLI subcommands the extension shells out to — see
-the "Dev tooling" section of `docs/06-roadmap.md`.
+> **Note:** `Shift+Ctrl+F` is VS Code's *Search across files*, not format. Format
+> Document is **`Shift+Alt+F`** (or right-click → Format Document, or enable
+> `"editor.formatOnSave": true`).
+
+### Formatter limitations (deliberate — it's an indenter, not `rux fmt`)
+
+- Multi-line continuations of a single statement — a wrapped attribute, text
+  content on its own lines, or a multi-line array literal — are indented to
+  structural depth, not hand-aligned to the opener.
+- Lines inside a multi-line comment are left exactly as written.
+- The real formatter (`rux fmt`: parse → pretty-print via the actual Rux parser)
+  will supersede this and handle alignment properly. See the "Dev tooling" section
+  of `docs/06-roadmap.md`; `rux check` diagnostics and a language server are on the
+  same track.
 
 ## Install locally
 

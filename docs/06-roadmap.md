@@ -528,14 +528,24 @@ subcommand** first (serving CLI users), then have a thin VS Code extension shell
 to it. Today `rux` only runs an app (`rux [path]`, `crates/rux-cli`); these add
 subcommands.
 
-### Tier 0 — declarative, no runtime (✅ done 2026-07-18)
+### Tier 0 — declarative + a stopgap formatter (✅ done 2026-07-18)
 
-Ships with coloring; pure static config, so the extension stays build-free.
+Ships with coloring.
 - ✅ **Snippets** (`snippets/rux.json`) — component scaffold, section blocks,
   `r-for`/`r-if`/`r-model`, `signal`, `@tap`, interpolation, common elements.
 - ✅ **Folding** of the three sections + **HTML-style tag indentation**
   (`indentationRules`, `onEnterRules`) and bracket/quote auto-close, in
   `language-configuration.json`.
+- ✅ **File icon** — `.rux` files show the Rux mark via `contributes.languages.icon`
+  (shown when the active file-icon theme falls back to language icons; Seti does).
+- ✅ **Basic Format Document** (`Shift+Alt+F`) — a bracket/tag-aware **re-indenter**
+  in a plain-JS `extension.js` (no build toolchain). Tracks nesting across tags,
+  braces, brackets, parens; preserves multi-line comment prose; idempotent; matches
+  14/18 hand-written examples byte-for-byte, normalizes the rest. **This is a
+  stopgap, not `rux fmt`** — it only fixes indentation, never intra-line spacing,
+  wrap, or alignment of multi-line continuations. Registering it made the extension
+  a *runtime* extension (a `main`), but still no compiler/bundler — the parser-backed
+  formatter below is the real one.
 
 ### Tier 1 — Rust CLI subcommand + thin extension glue
 
@@ -545,9 +555,10 @@ but it's a real step up — plan it deliberately.
 
 - **`rux fmt`** — parse with the real parser, pretty-print, reuse in a VS Code
   `DocumentFormattingEditProvider`. Also a standalone CLI formatter (`rux fmt
-  app.rux`) and a pre-commit hook. The formatter people asked for; do it via the
-  parser, not a naive indenter — SFC formatting is exactly where naive indenters
-  break.
+  app.rux`) and a pre-commit hook. **Supersedes the Tier-0 stopgap re-indenter** —
+  do it via the parser, not a naive indenter, since intra-line spacing, wrap, and
+  multi-line-continuation alignment (exactly what the stopgap punts on) need the
+  real tree.
 - **`rux check`** — parse + report parse errors *and* the unhonored-CSS warnings the
   runtime already computes (`warn_if_unhonored`), emitted in a machine-readable form
   the extension turns into inline **diagnostics** (squiggles). **This retires the

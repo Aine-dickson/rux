@@ -15,13 +15,18 @@
   "categories": [
     "Programming Languages"
   ],
+  "main": "./extension.js",
   "contributes": {
     "languages": [
       {
         "id": "rux",
         "aliases": ["Rux", "rux"],
         "extensions": [".rux"],
-        "configuration": "./language-configuration.json"
+        "configuration": "./language-configuration.json",
+        "icon": {
+          "light": "./icons/rux-mark.svg",
+          "dark": "./icons/rux-mark.svg"
+        }
       }
     ],
     "grammars": [
