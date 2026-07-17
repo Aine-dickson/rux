@@ -6,6 +6,24 @@ ahead of the last docs commit, **not pushed**).
 For *what works today*, read [05 — As Built](./05-as-built.md). This document is
 only about what is **not done yet**, and in what order.
 
+## Release cadence (set 2026-07-18)
+
+**v0.2.0 ships Monday 2026-07-20** (off-cycle, frozen at tag `v0.2.0-rc1`).
+**After that, one release every Friday.** Every release is a git tag *and* a blog
+post — no post, no tag.
+
+A milestone (v0.3, v0.4, …) can span several Friday **point-releases**; each Friday
+must still ship something coherent and demoable on its own. A new *minor* (v0.4.0)
+opens only once the previous milestone's whole scope is done.
+
+- **v0.3** — two tracks, both under this banner. Ships across Fridays as v0.3.x:
+  - `v0.3.0` — `.rux` syntax coloring (self-contained; ships first).
+  - `v0.3.1` — reactivity groundwork (subscriptions + delete the `apply_focus`
+    restore pass).
+  - `v0.3.2` — reactivity complete (remaining restore passes deleted).
+- **v0.4.0** — opens once v0.3 is done; first item is pseudo-classes, unblocked by
+  reactivity. See the [v0.4 section](#v04--drawn-from-the-known-ceilings) below.
+
 ---
 
 ## Where we are
@@ -468,6 +486,32 @@ grammar in a second format.
 
 ---
 
+## v0.4 — drawn from the Known ceilings
+
+**Opens once the whole v0.3 milestone (syntax coloring + reactivity) has shipped.**
+Nothing here is committed to a specific Friday yet; this is the ordered pool the
+v0.4.x point-releases draw from. Reactivity landing in v0.3 is what unblocks the
+first item.
+
+1. **Pseudo-classes** (`:hover`, `:focus`, `:active`, `:checked`) — *the intended
+   first v0.4 item.* Needs interaction state threaded into selector matching, which
+   fine-grained reactivity (v0.3) makes tractable: `:hover`/`:active` need pointer
+   tracking to invalidate, and per-binding subscriptions are how that invalidation
+   stays cheap. Retires the synthetic `checked`-class hack.
+2. **CSS custom properties + `var()`** — one place for the theme palette instead of
+   hard-coded per class. Wants a resolution pass in the cascade.
+3. **`@media` queries** — the honest way to make examples responsive.
+4. **Error surfacing / dev overlay** — today unknown CSS is silently ignored and a
+   bad `.rux` file falls back to an empty screen. The biggest gap before this is in
+   anyone else's hands. (Also listed under Known ceilings.)
+5. **Accessibility** — parley 0.11 already pulls in `accesskit`; `role=` is honored
+   for selectors but wired to nothing. That door is open.
+
+Deliberately **not** in the v0.4 pool: true inline text flow — flagged below as
+"a real project, not a patch," too big for a weekly slot.
+
+---
+
 ## Known ceilings (not scheduled — they need a decision first)
 
 - **True inline text flow.** Two `<text>` siblings stack; they cannot share a
@@ -482,3 +526,32 @@ grammar in a second format.
   with them.
 - **Accessibility.** `role=` is honored for selectors and semantics but is wired
   to nothing. parley 0.11 pulls in `accesskit`; that door is open.
+
+---
+
+## Further out (post-v0.4, sequenced but not versioned yet)
+
+Bigger themes queued after the v0.4 Known-ceilings pool drains. Ordered; each is a
+milestone in its own right, not a Friday slice. Recorded 2026-07-18.
+
+1. **TailwindCSS integration.** A utility-class layer over the CSS engine. Only
+   sane *after* the "real work" CSS lands in v0.4 — Tailwind leans hard on custom
+   properties (`var()`), `@media`, and pseudo-classes (`:hover`/`:focus`), so it
+   depends on items 1–3 of the v0.4 pool existing first. Open question to settle up
+   front: ship a curated utility set generated into Rux CSS, or run an actual
+   Tailwind pass over `.rux` files — the former is self-contained, the latter pulls
+   in the Node/Tailwind toolchain we've so far avoided.
+
+2. **Element access + manipulation from script.** A DOM-like handle so `<script>`
+   can read and mutate the tree directly (query a node, set a property, add/remove
+   children) instead of only driving it through signals. This is a large surface
+   and interacts with fine-grained reactivity (v0.3): script mutations must feed the
+   same subscription graph, or they desync from the declarative tree. Sequence it
+   *after* reactivity is solid for exactly that reason.
+
+3. **Script documentation.** Rux's script layer needs its own docs, *beyond*
+   upstream rhai's — because the intent is to **modify the rhai version Rux adopts**
+   (Rux-specific builtins like `signal(...)`, the element-access API from item 2,
+   and whatever language changes the fork carries). Once we diverge from stock rhai,
+   pointing users at rhai's docs is no longer correct. This depends on item 2's API
+   being settled, so it comes last of the three.
