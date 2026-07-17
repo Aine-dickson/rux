@@ -1,8 +1,19 @@
 # Rux — VS Code syntax highlighting
 
-Colors `.rux` files: the `<template>`, `<style>` and `<script>` sections and the
-Rux-specific tokens inside them (`{{ }}` interpolation, `r-for` / `r-if` /
-`r-model` directives, `@tap` handlers, `:prop` bindings, `signal(...)`).
+Editor support for `.rux` files:
+
+- **Syntax coloring** — the `<template>`, `<style>` and `<script>` sections and the
+  Rux-specific tokens inside them (`{{ }}` interpolation, `r-for` / `r-if` /
+  `r-model` directives, `@tap` handlers, `:prop` bindings, `signal(...)`).
+- **Snippets** — type `rux` for a full component scaffold; also `template`, `style`,
+  `script`, `signal`, `fn`, `rfor`, `rif`, `rmodel`, `tap`, `interp`, and element
+  tags (`text`, `view`, `button`).
+- **Folding** of the three sections, HTML-style tag indentation, and bracket/quote
+  auto-close.
+
+Deeper tooling (a `rux fmt` formatter, `rux check` inline diagnostics, and a
+language server) is planned as CLI subcommands the extension shells out to — see
+the "Dev tooling" section of `docs/06-roadmap.md`.
 
 ## Install locally
 

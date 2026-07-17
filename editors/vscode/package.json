@@ -30,6 +30,12 @@
         "scopeName": "source.rux",
         "path": "./syntaxes/rux.tmLanguage.json"
       }
+    ],
+    "snippets": [
+      {
+        "language": "rux",
+        "path": "./snippets/rux.json"
+      }
     ]
   }
 }

@@ -23,5 +23,27 @@
     ["<", ">"],
     ["\"", "\""],
     ["'", "'"]
+  ],
+  "folding": {
+    "markers": {
+      "start": "^\\s*<(template|style|script)\\b",
+      "end": "^\\s*</(template|style|script)>"
+    }
+  },
+  "wordPattern": "(-?\\d*\\.\\d\\w*)|([^\\`\\~\\!\\@\\#\\%\\^\\&\\*\\(\\)\\-\\=\\+\\[\\{\\]\\}\\\\\\|\\;\\:\\'\\\"\\,\\.\\<\\>\\/\\?\\s]+)",
+  "indentationRules": {
+    "increaseIndentPattern": "<(?!template|style|script|area|base|br|col|embed|hr|img|input|link|meta|param|source|track|wbr)([a-zA-Z][\\w.-]*)(\\s[^>]*[^/])?>(?!.*</\\1>)[^<]*$",
+    "decreaseIndentPattern": "^\\s*</[a-zA-Z][\\w.-]*\\s*>"
+  },
+  "onEnterRules": [
+    {
+      "beforeText": "<([a-zA-Z][\\w.-]*)(?:\\s[^>]*)?>[^<]*$",
+      "afterText": "^</([a-zA-Z][\\w.-]*)\\s*>",
+      "action": { "indent": "indentOutdent" }
+    },
+    {
+      "beforeText": "<([a-zA-Z][\\w.-]*)(?:\\s[^>]*[^/])?>\\s*$",
+      "action": { "indent": "indent" }
+    }
   ]
 }

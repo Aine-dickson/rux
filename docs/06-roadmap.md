@@ -516,6 +516,59 @@ and our self-contained patterns keep handling inline `<style>`.
 
 ---
 
+## Dev tooling — the editor extension beyond coloring
+
+Syntax coloring is the first slice of a real editor experience, not the whole of
+it. The rest is sequenced below. **The governing principle:** anything that needs
+to *understand* a `.rux` file (format it, find its errors, complete a name) must
+reuse the **real parser** in `rux-parser` / `rux-style` / `rux-script` — never a
+second, drifting reimplementation in TypeScript. The pattern mirrors the grammar's
+"one source of truth, two consumers": build the capability as a **`rux` CLI
+subcommand** first (serving CLI users), then have a thin VS Code extension shell out
+to it. Today `rux` only runs an app (`rux [path]`, `crates/rux-cli`); these add
+subcommands.
+
+### Tier 0 — declarative, no runtime (✅ done 2026-07-18)
+
+Ships with coloring; pure static config, so the extension stays build-free.
+- ✅ **Snippets** (`snippets/rux.json`) — component scaffold, section blocks,
+  `r-for`/`r-if`/`r-model`, `signal`, `@tap`, interpolation, common elements.
+- ✅ **Folding** of the three sections + **HTML-style tag indentation**
+  (`indentationRules`, `onEnterRules`) and bracket/quote auto-close, in
+  `language-configuration.json`.
+
+### Tier 1 — Rust CLI subcommand + thin extension glue
+
+**This is the threshold** where the extension stops being static config and becomes
+a **compiled TypeScript extension** (an activation entry, a node build). Worth it,
+but it's a real step up — plan it deliberately.
+
+- **`rux fmt`** — parse with the real parser, pretty-print, reuse in a VS Code
+  `DocumentFormattingEditProvider`. Also a standalone CLI formatter (`rux fmt
+  app.rux`) and a pre-commit hook. The formatter people asked for; do it via the
+  parser, not a naive indenter — SFC formatting is exactly where naive indenters
+  break.
+- **`rux check`** — parse + report parse errors *and* the unhonored-CSS warnings the
+  runtime already computes (`warn_if_unhonored`), emitted in a machine-readable form
+  the extension turns into inline **diagnostics** (squiggles). **This retires the
+  "Error surfacing" known ceiling** — arguably the highest-value tool here, since
+  today a bad `.rux` file just falls back to an empty screen with nothing said.
+
+### Tier 2 — a language server (`rux-lsp`)
+
+A real project (weeks), once Tier 1 proves the parser-reuse path. A `tower-lsp`
+server over the same crates, giving live diagnostics, **hover** (a class → its
+`.style` rule; a signal → its declaration), **go-to-definition**, **completion**
+(CSS property names, declared class names, in-scope signals), and **rename**. The
+LSP subsumes `rux check`'s diagnostics and is editor-agnostic (VS Code, Neovim,
+Zed) — the same portability win the self-contained grammar bought.
+
+**Sequencing note:** none of Tier 1–2 blocks the v0.3 reactivity work; it's a
+parallel track. But `rux check` / the LSP pair naturally with the pseudo-class and
+`var()` CSS work in v0.4, since both add things the checker should know about.
+
+---
+
 ## v0.4 — drawn from the Known ceilings
 
 **Opens once the whole v0.3 milestone (syntax coloring + reactivity) has shipped.**
