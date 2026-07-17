@@ -387,6 +387,31 @@ to the default. Add a named-color table (it's cheap) as part of the color work.
 A signal write **rebuilds the whole tree**. It is correct, and at these screen
 sizes the cost is imperceptible, so this is deliberately *not* v0.2.
 
+### Approach + progress (2026-07-18)
+
+**Signals stay transparent** (`n`, `n = n + 1`, `{{ n }}` — no `.get()/.set()`),
+so no example changes. The dependency graph comes from **instrumentation**, not an
+authoring-model change:
+- **Reads** — rhai's `on_var` callback records which signal names a binding touches
+  as it evaluates. That is the binding's subscription set.
+- **Writes** — a handler's changed signals are found by diffing signal values
+  across the run (`run_handler_tracked`); input edits already name their signal.
+
+Phasing: **v0.3.1** = this tracking + a binding registry so `{{ }}`/attribute
+updates *patch in place* (structural directives still fall back to full rebuild);
+**v0.3.2** = structural (`r-if`/`r-for`) in place, then delete the restore passes
+one at a time, each with its negative-case test.
+
+- ✅ **Tracking primitives (`rux-script`)** — `eval_value_tracked` returns a
+  binding's value *and* its signal deps (locals/params filtered out);
+  `run_handler_tracked` returns the signals a handler changed. Headless-tested
+  (`tracks_binding_dependencies`, `tracks_handler_writes`). Purely additive — the
+  rebuild path is untouched, so nothing regresses. No UI surface yet; that arrives
+  when it drives in-place patching (next step).
+- ⏳ **Binding registry + in-place patch** — next: build records where each binding
+  lives in the tree, and a dirty signal re-evaluates only its bindings and patches
+  those nodes, instead of `rebuild()`.
+
 **But the cost is not really performance — it is structural, and it compounds
 through v0.2.** Because the tree is thrown away on every change, every piece of
 *ephemeral UI state* must be restored by hand afterwards. Two such passes exist

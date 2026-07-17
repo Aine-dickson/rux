@@ -9,8 +9,20 @@
 //! with a real scripting language: named `fn` handlers, full expressions, and
 //! the compiled-Rust boundary (`docs/04-architecture.md`, script/host tiers).
 
+use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
+
 use rhai::{Dynamic, Engine as RhaiEngine, Module, Scope, AST};
 use rux_reactive::Value;
+
+thread_local! {
+    /// While `Some`, every signal read during evaluation is recorded here. This is
+    /// how a binding discovers which signals it depends on (fine-grained
+    /// reactivity groundwork): we switch it on around one binding's evaluation,
+    /// evaluate, then take the set. `None` means "not tracking", so ordinary
+    /// evaluation (and the build-time script run) records nothing.
+    static READS: RefCell<Option<HashSet<String>>> = const { RefCell::new(None) };
+}
 
 /// Builds an [`Engine`]: register host functions, then `build` with the script.
 /// Host functions must be registered before the script runs, since the script
@@ -36,6 +48,18 @@ impl Builder {
                 Ok(i) => Dynamic::from(i as f64),
                 Err(_) => x,
             }
+        });
+        // Record every variable read while dependency-tracking is active, then
+        // fall through (`Ok(None)`) to normal scope resolution. `on_var` is
+        // flagged volatile upstream, not deprecated — hence the allow.
+        #[allow(deprecated)]
+        engine.on_var(|name, _index, _context| {
+            READS.with(|r| {
+                if let Some(set) = r.borrow_mut().as_mut() {
+                    set.insert(name.to_string());
+                }
+            });
+            Ok(None)
         });
         Self {
             engine,
@@ -67,10 +91,16 @@ impl Builder {
             .map_err(|e| e.to_string())?;
         let funcs = ast.clone_functions_only();
 
+        // The top-level `let` bindings are the app's signals. The set is fixed
+        // after init (no runtime `let` at top level), so capture it once here;
+        // dependency tracking filters reads down to these names.
+        let signals = scope.iter().map(|(name, _, _)| name.to_string()).collect();
+
         Ok(Engine {
             engine: self.engine,
             scope,
             funcs,
+            signals,
         })
     }
 }
@@ -80,6 +110,8 @@ pub struct Engine {
     engine: RhaiEngine,
     scope: Scope<'static>,
     funcs: AST,
+    /// Names of the top-level signals — the universe of reactive dependencies.
+    signals: HashSet<String>,
 }
 
 impl Engine {
@@ -121,6 +153,44 @@ impl Engine {
     /// ran without error (assumed to have changed state).
     pub fn run_handler(&mut self, src: &str) -> bool {
         self.eval(src, &[]).is_some()
+    }
+
+    /// Evaluate an expression *and* report which signals it read — the binding's
+    /// dependency set. Only top-level signal names are returned; loop-locals and
+    /// function parameters are filtered out. This is the read half of fine-grained
+    /// reactivity: a binding subscribes to exactly the signals it touches.
+    pub fn eval_value_tracked(
+        &mut self,
+        src: &str,
+        locals: &[(String, Value)],
+    ) -> (Option<Value>, HashSet<String>) {
+        READS.with(|r| *r.borrow_mut() = Some(HashSet::new()));
+        let value = self.eval_value(src, locals);
+        let mut reads = READS.with(|r| r.borrow_mut().take()).unwrap_or_default();
+        reads.retain(|n| self.signals.contains(n));
+        (value, reads)
+    }
+
+    /// Run an `@tap` handler and report which signals it *changed* — the write
+    /// half. Detected by diffing the signal values across the run, so it needs no
+    /// cooperation from the handler source (which is arbitrary rhai). Returns an
+    /// empty set if the handler errored or changed nothing.
+    pub fn run_handler_tracked(&mut self, src: &str) -> HashSet<String> {
+        let names: Vec<String> = self.signals.iter().cloned().collect();
+        let before: HashMap<String, Option<Value>> =
+            names.iter().map(|n| (n.clone(), self.read_signal(n))).collect();
+        if !self.run_handler(src) {
+            return HashSet::new();
+        }
+        names
+            .into_iter()
+            .filter(|n| self.read_signal(n) != before[n])
+            .collect()
+    }
+
+    /// A signal's current value, read straight from the scope (no evaluation).
+    fn read_signal(&self, name: &str) -> Option<Value> {
+        self.scope.get_value::<Dynamic>(name).map(|d| from_dynamic(&d))
     }
 
     /// Read a signal's current value as a display string (for input `r-model`).
@@ -214,5 +284,47 @@ mod tests {
         assert_eq!(items.as_list().unwrap().len(), 3);
         // A loop-local shadows for one evaluation.
         assert_eq!(e.eval_display("x + 1", &[("x".into(), Value::Number(4.0))]), "5");
+    }
+
+    fn deps(e: &mut Engine, src: &str, locals: &[(String, Value)]) -> Vec<String> {
+        let (_, set) = e.eval_value_tracked(src, locals);
+        let mut v: Vec<String> = set.into_iter().collect();
+        v.sort();
+        v
+    }
+
+    /// A binding reports exactly the signals it read — the subscription set.
+    #[test]
+    fn tracks_binding_dependencies() {
+        let mut e = engine();
+        assert_eq!(deps(&mut e, "level", &[]), ["level"]);
+        assert_eq!(deps(&mut e, "level > 20", &[]), ["level"]);
+        // A pure function reads its argument, not a phantom signal: `double`'s
+        // parameter `x` is a local and must be filtered out, leaving just `level`.
+        assert_eq!(deps(&mut e, "double(level)", &[]), ["level"]);
+        // A loop-local is not a signal, so it contributes no dependency.
+        assert_eq!(deps(&mut e, "x + 1", &[("x".into(), Value::Number(4.0))]), Vec::<String>::new());
+        assert_eq!(deps(&mut e, "x + level", &[("x".into(), Value::Number(4.0))]), ["level"]);
+        // Reading two signals subscribes to both.
+        assert_eq!(deps(&mut e, "level + items[0]", &[]), ["items", "level"]);
+    }
+
+    /// A handler reports exactly the signals it changed — and nothing it left
+    /// alone. This is what lets a write dirty only the affected bindings.
+    #[test]
+    fn tracks_handler_writes() {
+        let mut e = engine();
+        let changed = |e: &mut Engine, src: &str| {
+            let mut v: Vec<String> = e.run_handler_tracked(src).into_iter().collect();
+            v.sort();
+            v
+        };
+        assert_eq!(changed(&mut e, "level = level - 5"), ["level"]);
+        assert_eq!(e.eval_display("level", &[]), "77");
+        // Writing a signal back to its own value is not a change.
+        assert_eq!(changed(&mut e, "level = level"), Vec::<String>::new());
+        // Touching one signal does not report the others.
+        assert_eq!(changed(&mut e, "items = [9]"), ["items"]);
+        assert_eq!(changed(&mut e, "level"), Vec::<String>::new()); // a bare read changes nothing
     }
 }
