@@ -436,6 +436,29 @@ gives no coloring at all. Both are fixable with **one artifact**.
 uses*. So a single `rux.tmLanguage.json` serves both consumers. No fork, no second
 grammar in a second format.
 
+### Progress (2026-07-18) — grammar + wiring done, `zola build` verify pending
+
+- ✅ **Grammar written**, self-contained (design decision below resolved that way):
+  `editors/vscode/syntaxes/rux.tmLanguage.json`, copied to `site/syntaxes/`. Scopes
+  all three sections and the Rux tokens (`{{ }}`, `r-for`/`r-if`/`r-model`, `@tap`,
+  `:prop`, `signal`).
+- ✅ **Wired**: `extra_grammars` added to `site/config.toml`; VS Code extension
+  scaffolded (`package.json`, `language-configuration.json`, `README.md`).
+- ✅ **Verified via the real tokenizer** — ran all 18 examples through
+  `vscode-textmate` + `vscode-oniguruma` (the engine VS Code uses) and inspected
+  scopes: every section and Rux token colors correctly; combinators / `@media` /
+  `:hover` / `var()` confirmed on a synthetic case. No exceptions across the sweep.
+- ⏳ **Still to do before tagging v0.3.0:** `cd site && zola build` (no `zola`
+  binary in the dev env used — must run where Zola 0.22.1 is installed) and **look**
+  at a rendered `.rux` block; then install the `.vsix` and open a `.rux` file. The
+  standing rule: not done until driven.
+
+**Design decision (resolved): self-contained**, no `source.css`/`source.rust`/
+`text.html.basic` includes — chosen for identical rendering in both VS Code and
+Giallo regardless of what either host bundles (Giallo's bundled set was the
+unknown). The `@media (...)` condition interior is left uncolored; documented in
+`editors/vscode/README.md`.
+
 ### The work
 
 1. **Write `rux.tmLanguage.json`** — this is the real task; the wiring is trivial.
