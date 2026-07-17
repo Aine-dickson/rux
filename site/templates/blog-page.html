@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+
+{% block title %}{{ page.title }} · {{ config.title }}{% endblock %}
+{% block description %}{{ page.description | default(value=config.description) }}{% endblock %}
+{% block og_title %}{{ page.title }} · {{ config.title }}{% endblock %}
+{% block og_description %}{{ page.description | default(value=config.description) }}{% endblock %}
+
+{% block content %}
+<article class="prose">
+  <p class="back"><a href="{{ get_url(path='@/blog/_index.md') }}">← All posts</a></p>
+  <h1>{{ page.title }}</h1>
+  <p class="post-meta">
+    <time datetime="{{ page.date }}">{{ page.date | date(format='%e %B %Y') }}</time>
+    {%- if page.extra.version %} · <code>{{ page.extra.version }}</code>{% endif %}
+  </p>
+  {% if page.description %}<p class="lede">{{ page.description }}</p>{% endif %}
+  {{ page.content | safe }}
+</article>
+{% endblock %}

@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}{{ config.title }}{% endblock %}</title>
+  <meta name="description" content="{% block description %}{{ config.description }}{% endblock %}">
+
+  <meta property="og:title" content="{% block og_title %}{{ config.title }}{% endblock %}">
+  <meta property="og:description" content="{% block og_description %}{{ config.description }}{% endblock %}">
+  <meta property="og:type" content="website">
+  <meta property="og:image" content="{{ get_url(path='showcase.png') }}">
+  <meta name="twitter:card" content="summary_large_image">
+
+  <link rel="icon" href="{{ get_url(path='rux-mark.svg') }}" type="image/svg+xml">
+  <link rel="stylesheet" href="{{ get_url(path='style.css') }}">
+  {% if config.generate_feeds %}
+  <link rel="alternate" type="application/atom+xml" title="{{ config.title }}" href="{{ get_url(path='atom.xml') }}">
+  {% endif %}
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+
+  <header class="site-head">
+    <nav class="nav">
+      <a class="brand" href="{{ get_url(path='@/_index.md') }}">
+        <img src="{{ get_url(path='rux-wordmark.svg') }}" alt="Rux" height="22">
+      </a>
+      <div class="nav-links">
+        <a href="{{ get_url(path='@/why.md') }}">Why</a>
+        <a href="{{ get_url(path='@/how-it-works.md') }}">How it works</a>
+        <a href="{{ get_url(path='@/blog/_index.md') }}">Blog</a>
+        <a href="{{ config.extra.repo }}">GitHub</a>
+      </div>
+    </nav>
+  </header>
+
+  <main id="main">
+    {% block content %}{% endblock %}
+  </main>
+
+  <footer class="site-foot">
+    <p>
+      Rux is early and experimental (<code>0.x</code>) — expect rough edges.
+      MIT licensed · <a href="{{ config.extra.repo }}">source on GitHub</a>
+    </p>
+  </footer>
+</body>
+</html>

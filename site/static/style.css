@@ -1,0 +1,279 @@
+/* Rux site styles.
+ *
+ * Dark-only and deliberately: the palette is the one the examples ship
+ * (Catppuccin Mocha-ish), so the site looks like the thing it documents.
+ * Hand-written, no framework — it's a five-page site.
+ */
+
+:root {
+  --bg: #11111b;
+  --surface: #181825;
+  --surface-2: #1e1e2e;
+  --raised: #313244;
+  --line: #313244;
+  --ink: #cdd6f4;
+  --ink-dim: #a6adc8;
+  --ink-faint: #6c7086;
+  --accent: #89b4fa;
+  --accent-ink: #11111b;
+  --green: #a6e3a1;
+
+  --measure: 68ch;
+  --radius: 12px;
+}
+
+* { box-sizing: border-box; }
+
+html { -webkit-text-size-adjust: 100%; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Inter, Roboto, sans-serif;
+  font-size: 17px;
+  line-height: 1.65;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Keyboard-only skip link: visible when focused, out of the way otherwise. */
+.skip {
+  position: absolute;
+  left: -9999px;
+  top: 0;
+  padding: 10px 16px;
+  background: var(--accent);
+  color: var(--accent-ink);
+  z-index: 10;
+}
+.skip:focus { left: 8px; top: 8px; }
+
+a { color: var(--accent); text-decoration-thickness: 1px; text-underline-offset: 2px; }
+a:hover { text-decoration-thickness: 2px; }
+
+code, pre, kbd {
+  font-family: ui-monospace, SFMono-Regular, "Cascadia Code", Consolas, monospace;
+}
+
+code {
+  font-size: 0.88em;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  padding: 0.1em 0.35em;
+}
+
+pre {
+  background: var(--surface-2) !important;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 16px 18px;
+  overflow-x: auto;          /* long lines scroll here, never the page */
+  font-size: 14px;
+  line-height: 1.55;
+}
+pre code {
+  background: none;
+  border: 0;
+  padding: 0;
+  font-size: inherit;
+}
+
+/* ---- chrome ---------------------------------------------------------- */
+
+.site-head {
+  border-bottom: 1px solid var(--line);
+  background: var(--surface);
+}
+
+.nav {
+  max-width: 1080px;
+  margin: 0 auto;
+  padding: 14px 24px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.brand { display: flex; align-items: center; }
+.brand img { display: block; }
+
+.nav-links { display: flex; gap: 20px; flex-wrap: wrap; }
+.nav-links a {
+  color: var(--ink-dim);
+  text-decoration: none;
+  font-size: 15px;
+}
+.nav-links a:hover { color: var(--ink); }
+
+.site-foot {
+  border-top: 1px solid var(--line);
+  margin-top: 72px;
+  padding: 24px;
+  color: var(--ink-faint);
+  font-size: 14px;
+  text-align: center;
+}
+.site-foot p { max-width: var(--measure); margin: 0 auto; }
+
+/* ---- hero ------------------------------------------------------------ */
+
+.hero {
+  max-width: 1080px;
+  margin: 0 auto;
+  padding: 64px 24px 40px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 48px;
+  align-items: center;
+}
+
+.hero-copy h1 {
+  margin: 0 0 16px;
+  font-size: clamp(2rem, 5vw, 3rem);
+  line-height: 1.1;
+  letter-spacing: -0.02em;
+}
+
+.lede {
+  color: var(--ink-dim);
+  font-size: 1.15rem;
+  margin: 0 0 24px;
+}
+
+.cta { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 16px; }
+
+.btn {
+  display: inline-block;
+  padding: 10px 18px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: var(--raised);
+  color: var(--ink);
+  text-decoration: none;
+  font-weight: 600;
+  font-size: 15px;
+}
+.btn:hover { border-color: var(--accent); }
+.btn-primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-ink);
+}
+
+.hero-note { color: var(--ink-faint); font-size: 14px; margin: 0; }
+
+.hero-shot img {
+  max-width: 100%;
+  height: auto;
+  border-radius: var(--radius);
+  border: 1px solid var(--line);
+}
+
+.caption {
+  color: var(--ink-faint);
+  font-size: 13px;
+  margin: 10px 0 0;
+  text-align: center;
+}
+
+@media (max-width: 860px) {
+  .hero { grid-template-columns: 1fr; gap: 32px; padding-top: 40px; }
+}
+
+/* ---- prose ----------------------------------------------------------- */
+
+.prose {
+  max-width: var(--measure);
+  margin: 0 auto;
+  padding: 8px 24px;
+}
+
+.prose h1 {
+  font-size: clamp(1.8rem, 4vw, 2.4rem);
+  line-height: 1.15;
+  letter-spacing: -0.02em;
+  margin: 32px 0 12px;
+}
+.prose h2 {
+  font-size: 1.45rem;
+  margin: 44px 0 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+  letter-spacing: -0.01em;
+}
+.prose h3 { font-size: 1.15rem; margin: 28px 0 8px; }
+
+.prose blockquote {
+  margin: 24px 0;
+  padding: 2px 20px;
+  border-left: 3px solid var(--accent);
+  color: var(--ink-dim);
+}
+
+.prose img { max-width: 100%; height: auto; border-radius: var(--radius); }
+
+.prose hr { border: 0; border-top: 1px solid var(--line); margin: 40px 0; }
+
+/* Tables can be wide; let them scroll rather than the page. */
+.table-wrap { overflow-x: auto; }
+.prose table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 15px;
+  margin: 20px 0;
+}
+.prose th, .prose td {
+  border: 1px solid var(--line);
+  padding: 8px 12px;
+  text-align: left;
+  vertical-align: top;
+}
+.prose th { background: var(--surface-2); }
+
+/* ---- blog ------------------------------------------------------------ */
+
+.post-meta { color: var(--ink-faint); font-size: 14px; margin: 0 0 4px; }
+.back { font-size: 14px; margin: 24px 0 0; }
+.back a { color: var(--ink-dim); text-decoration: none; }
+.back a:hover { color: var(--ink); }
+
+.post-list { list-style: none; padding: 0; margin: 32px 0 0; }
+.post-list li {
+  padding: 20px 0;
+  border-top: 1px solid var(--line);
+}
+.post-list h2 {
+  border: 0;
+  margin: 0 0 6px;
+  padding: 0;
+  font-size: 1.3rem;
+}
+.post-list h2 a { text-decoration: none; }
+.post-list h2 a:hover { text-decoration: underline; }
+.post-list p:last-child { color: var(--ink-dim); margin: 0; }
+
+/* ---- little bits ----------------------------------------------------- */
+
+/* A row of "what works" chips, mirroring the app's own tag pills. */
+.chips { display: flex; flex-wrap: wrap; gap: 8px; padding: 0; list-style: none; margin: 20px 0; }
+.chips li {
+  background: var(--raised);
+  color: var(--ink-dim);
+  border-radius: 999px;
+  padding: 5px 12px;
+  font-size: 13px;
+}
+
+.note {
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--green);
+  border-radius: 8px;
+  padding: 12px 16px;
+  margin: 24px 0;
+  font-size: 15px;
+  color: var(--ink-dim);
+}

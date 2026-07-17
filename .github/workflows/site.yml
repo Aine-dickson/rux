@@ -1,0 +1,62 @@
+# Build the Zola site in `site/` and publish it to GitHub Pages.
+#
+# Fires on any push to `main` that touches the site (or this workflow), and can
+# be run by hand from the Actions tab. One-time setup in the repo: Settings →
+# Pages → Build and deployment → Source = "GitHub Actions".
+#
+# The Zola version is pinned; keep it in step with `site/config.toml`'s comment
+# and with whatever you build locally.
+name: Deploy site
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "site/**"
+      - ".github/workflows/site.yml"
+  workflow_dispatch:
+
+# Let the deploy push to Pages; read the repo.
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One live deploy at a time; don't cancel an in-flight one mid-publish.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      ZOLA_VERSION: "0.22.1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Zola
+        run: |
+          curl -sSL "https://github.com/getzola/zola/releases/download/v${ZOLA_VERSION}/zola-v${ZOLA_VERSION}-x86_64-unknown-linux-gnu.tar.gz" \
+            | tar xz -C /usr/local/bin
+
+      - name: Build
+        working-directory: site
+        # --drafts is off, so posts with `draft = true` stay unpublished.
+        run: zola build
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site/public
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - id: deploy
+        uses: actions/deploy-pages@v4

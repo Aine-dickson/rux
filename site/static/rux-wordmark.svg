@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 168 72" width="168" height="72" role="img" aria-label="rux">
+  <style>
+    .brk { fill: none; stroke: #40a02b; stroke-width: 7; stroke-linecap: round; stroke-linejoin: round; }
+    .txt { fill: #1e1e2e; font-family: ui-monospace, "JetBrains Mono", "Cascadia Code", "SF Mono", Menlo, Consolas, monospace; font-size: 46px; font-weight: 700; letter-spacing: 1px; }
+    @media (prefers-color-scheme: dark) {
+      .brk { stroke: #a6e3a1; }
+      .txt { fill: #cdd6f4; }
+    }
+  </style>
+  <path class="brk" d="M30 18 L18 36 L30 54" />
+  <text class="txt" x="84" y="52" text-anchor="middle">rux</text>
+  <path class="brk" d="M138 18 L150 36 L138 54" />
+</svg>

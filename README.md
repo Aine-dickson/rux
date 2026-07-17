@@ -44,11 +44,14 @@ You write a single `.rux` file with familiar `<template>` / `<style>` / `<script
 </script>
 ```
 
-<!-- TODO: replace with a real screenshot of the above running.
-     Run `cargo run -p rux-cli -- examples/counter.rux`, screenshot the window, 
-     save it to examples/assets/counter.png, and it will render here. -->
 <p align="center">
   <img src="examples/assets/counter.png" alt="The counter above, running in a native Rux window" width="360">
+</p>
+
+<p align="center">
+  <strong><a href="https://aine-dickson.github.io/rux">rux website</a></strong>
+  · <a href="https://aine-dickson.github.io/rux/why/">why Rux?</a>
+  · <a href="https://aine-dickson.github.io/rux/blog/">release blog</a>
 </p>
 
 ## Run it
@@ -62,7 +65,7 @@ The examples — `form`, `list`, `gallery`, `dashboard`, `battery` — cover inp
 
 ## What works today
 
-Flexbox **and** CSS grid layout (via [`taffy`]) · the full box model · sizing in `px` / `%` / `rem` / `vw` / `vh` · `minmax(0, 1fr)` grid tracks · text shaping (via [`parley`]) · text `<input>` with a real blinking caret · checkbox / radio · scrolling · images · opacity · HiDPI · signals driving `{{ }}` bindings and `r-for` / `r-if` / `r-model` · live hot-reload.
+Flexbox **and** CSS grid layout (via [`taffy`]) · the full box model · sizing in `px` / `%` / `rem` / `vw` / `vh` · `minmax(0, 1fr)` grid tracks · gradients, `box-shadow`, `transform`, per-corner radius · fonts + text shaping (via [`parley`]) · text `<input>` with a real caret, **selection and clipboard** · `select` / `textarea` · checkbox / radio · **keyboard focus + Tab** · **scrolling with scrollbars, drag, keyboard, and horizontal** · images · opacity · HiDPI · signals driving `{{ }}` bindings and `r-for` / `r-if` / `r-model` · live hot-reload.
 
 See [`docs/05-as-built.md`](docs/05-as-built.md) for the exact honored-CSS set and [`docs/06-roadmap.md`](docs/06-roadmap.md) for what's next.
 

@@ -1,0 +1,69 @@
+<template>
+  <screen class="app">
+    <view class="card">
+      <text class="eyebrow">RUX</text>
+      <text class="title">Hello, {{ name }}</text>
+
+      <input class="field" r-model="name" placeholder="your name" />
+
+      <view class="row">
+        <button class="btn" @tap="taps = taps + 1">
+          <text class="btn-label">Tap me</text>
+        </button>
+        <text class="count">{{ taps }}</text>
+      </view>
+
+      <view class="tags">
+        <view class="tag" r-for="t in tags">
+          <text class="tag-label">{{ t }}</text>
+        </view>
+      </view>
+    </view>
+  </screen>
+</template>
+
+<style>
+  .app {
+    display: flex;
+    justify-content: center;
+    padding: 28px;
+    background: #181825;
+  }
+  .card {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    width: 100%;
+    padding: 24px;
+    background: linear-gradient(160deg, #313244, #1e1e2e);
+    border-radius: 16px;
+    box-shadow: 0 18px 40px rgba(0, 0, 0, 0.45);
+  }
+  .eyebrow { color: #89b4fa; font-size: 12px; font-weight: 700; letter-spacing: 2px; }
+  .title   { color: #cdd6f4; font-size: 28px; font-weight: 700; }
+  .field {
+    padding: 10px 14px;
+    background: #11111b;
+    border-radius: 10px;
+    color: #cdd6f4;
+    font-size: 16px;
+  }
+  .row { display: flex; align-items: center; gap: 14px; }
+  .btn {
+    padding: 10px 18px;
+    background: #89b4fa;
+    border-radius: 10px;
+    cursor: pointer;
+  }
+  .btn-label { color: #11111b; font-size: 15px; font-weight: 700; }
+  .count { color: #a6e3a1; font-size: 28px; font-weight: 700; }
+  .tags { display: flex; flex-wrap: wrap; gap: 8px; }
+  .tag { padding: 5px 11px; background: #45475a; border-radius: 999px; }
+  .tag-label { color: #bac2de; font-size: 13px; }
+</style>
+
+<script>
+  let name = signal("world");
+  let taps = signal(0);
+  let tags = signal(["no browser", "no JS", "literal CSS", "hot reload"]);
+</script>

@@ -1,0 +1,27 @@
+# Zola config for the Rux site (https://aine-dickson.github.io/rux).
+#
+# Zola is a single Rust binary, which is the point: the site of a pure-Rust
+# project shouldn't need a JS toolchain to build. `.github/workflows/site.yml`
+# pins the version — bump it in both places together.
+#
+# base_url must carry the /rux path: this is a GitHub *project* page, not a user
+# page, so the site is served from a subdirectory and every internal link is
+# resolved against it.
+base_url = "https://aine-dickson.github.io/rux"
+title = "Rux"
+description = "A pure-Rust, web-flavored UI language that renders natively on the GPU — no browser, no webview."
+
+compile_sass = false
+build_search_index = false
+generate_feeds = true
+feed_filenames = ["atom.xml"]
+
+# The site is dark-only, on purpose: it should look like the thing it documents
+# (the examples all ship the same Catppuccin-ish palette). One theme also means
+# no second syntax stylesheet to keep in sync.
+[markdown.highlighting]
+enabled = true
+theme = "ayu-dark"
+
+[extra]
+repo = "https://github.com/Aine-dickson/rux"

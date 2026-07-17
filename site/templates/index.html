@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="hero">
+  <div class="hero-copy">
+    <h1>{{ section.extra.headline }}</h1>
+    <p class="lede">{{ section.extra.lede }}</p>
+    <div class="cta">
+      <a class="btn btn-primary" href="{{ get_url(path='@/why.md') }}">Why Rux?</a>
+      <a class="btn" href="{{ config.extra.repo }}">Get the code</a>
+    </div>
+    <p class="hero-note">{{ section.extra.note }}</p>
+  </div>
+  <div class="hero-shot">
+    <img src="{{ get_url(path='showcase.png') }}"
+         alt="A Rux window: a gradient card with a heading, a text field bound to it, a button with a live counter, and a row of pill-shaped tags."
+         width="590" height="470">
+    <p class="caption">{{ section.extra.shot_caption }}</p>
+  </div>
+</section>
+
+<div class="prose">
+  {{ section.content | safe }}
+</div>
+{% endblock %}
