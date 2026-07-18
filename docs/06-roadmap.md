@@ -430,11 +430,33 @@ rationale](./01-rationale.md#ephemeral-ui-state-automatic-by-default-controllabl
   rebuild** unless the signal is also read structurally (e.g. by an `r-if`).
   `RUX_TRACE=1` prints `patched` vs `rebuilt` per change. Headless tests cover
   value-in-place, placeholder fallback, and the structural decline.
-- ⏳ **`apply_focus` can't be deleted yet** — it is no longer coupled to a
-  per-keystroke rebuild (typing patches), but structural changes still rebuild, and
-  a fresh tree needs the caret/selection restored. Full deletion waits for **v0.3.2**
-  (structural `r-if`/`r-for` patched in place → no rebuild mid-session). `apply_focus`
-  also remains the *set-caret* mechanism `set_focus` uses, which stays regardless.
+- ✅ **`r-show` in place (structural slice 1)** — flips `hidden` only, no shape
+  change, no path invalidation: a `ShowBinding` re-evaluates the condition and
+  rewrites the bool. Headless-tested both ways.
+- ⏳ **`r-if` / `r-for` in place — the reconciliation engine (slice 2, the big one).**
+  These change tree *shape*, which the positional-path registry can't survive
+  (an insert/remove shifts every later node's path). Worked-out design, to be built
+  as a focused effort (high bug risk, invisible to tests → must be driven):
+  1. **Thread a template-path** (AST element-child indices) alongside the tree-path
+     through `build_node`/`build_children`, so a structural site can be re-found in
+     `sfc.template`.
+  2. **Record a `StructuralParent`** per parent that has structural children,
+     capturing its tree-path, template-path, ancestor chain, inherited text props,
+     and `r-for` locals — the context a cascade needs. `build_children` returns the
+     structural deps it saw; `build_node` records the parent with them. (Store the
+     parsed `rules`/`comps` on the `Document` so a reconcile has them.)
+  3. **Reconcile on change:** re-run `build_children` for that parent, `resolve_images`
+     the new subtree, splice it into the live tree, then fix the registry — drop
+     every entry under the parent, merge the freshly-built ones (incl. nested
+     structural parents), collecting the work before mutating so the patch loop
+     isn't invalidated. `structural` (the force-rebuild set) keeps only the truly
+     non-reconcilable cases (component props, `:src`/`:options`, toggle `checked`
+     class).
+- ⏳ **Then delete `apply_focus`** — once no structural change rebuilds, a fresh
+  tree is never made mid-session, so caret/selection live on the persistent tree
+  and the restore pass drops. (`apply_focus` stays only as the *set-caret*
+  mechanism `set_focus` calls on focus moves.) Toggle `checked`-class in place is a
+  separate small slice (no shape change) that can land alongside.
 
 **But the cost is not really performance — it is structural, and it compounds
 through v0.2.** Because the tree is thrown away on every change, every piece of
