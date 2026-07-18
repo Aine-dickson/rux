@@ -235,6 +235,16 @@ impl Document {
                 }
             }
         }
+        // `r-show` only flips paint on/off — rewrite the `hidden` bool in place.
+        for binding in &self.registry.show {
+            if binding.deps.is_disjoint(changed) {
+                continue;
+            }
+            let visible = self.engine.eval_bool(&binding.cond, &binding.locals);
+            if let Some(node) = node_at_mut(&mut self.root, &binding.path) {
+                node.hidden = !visible;
+            }
+        }
         true
     }
 
@@ -588,6 +598,26 @@ mod tests {
         doc.engine_mut().set_string("name", "abc");
         let changed: HashSet<String> = std::iter::once("name".to_string()).collect();
         assert!(!doc.patch(&changed), "a structurally-read input signal needs a rebuild");
+    }
+
+    /// `r-show` flips the node's `hidden` flag in place — no shape change, no
+    /// rebuild — both ways.
+    #[test]
+    fn r_show_toggles_hidden_in_place() {
+        let mut doc = Document::from_source(
+            "<template><screen><text r-show=\"on\">hi</text></screen></template>
+             <script>let on = signal(true);</script>",
+        )
+        .expect("load");
+        assert!(!doc.root.children[0].hidden, "on=true → visible");
+
+        let changed = doc.engine_mut().run_handler_tracked("on = false");
+        assert!(doc.patch(&changed), "r-show change patches in place");
+        assert!(doc.root.children[0].hidden, "on=false → hidden");
+
+        let changed = doc.engine_mut().run_handler_tracked("on = true");
+        assert!(doc.patch(&changed));
+        assert!(!doc.root.children[0].hidden, "on=true → visible again");
     }
 
     /// A checked box gets a synthetic `checked` class, so its checked look is

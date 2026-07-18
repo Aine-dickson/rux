@@ -68,13 +68,30 @@ pub struct ValueBinding {
     pub deps: HashSet<String>,
 }
 
-/// What a build discovered about reactivity: the patchable bindings (text `{{ }}`
-/// and input values), and the signals whose change can *not* be patched (they
-/// drive structure, attributes, or component props) and so require a full rebuild.
+/// An `r-show` condition, patchable in place: it only flips the node's `hidden`
+/// flag (paint on/off), never the tree shape, so a change rewrites one bool with
+/// no rebuild and no path invalidation.
+#[derive(Clone, Debug)]
+pub struct ShowBinding {
+    /// Path to the node whose `hidden` flag this controls.
+    pub path: Vec<usize>,
+    /// The `r-show` condition expression; the node is hidden when it is falsy.
+    pub cond: String,
+    /// `r-for` locals captured at build.
+    pub locals: Vec<(String, Value)>,
+    /// Signals the condition reads.
+    pub deps: HashSet<String>,
+}
+
+/// What a build discovered about reactivity: the patchable bindings (text `{{ }}`,
+/// input values, `r-show` visibility), and the signals whose change can *not* be
+/// patched (they drive tree shape, attributes, or component props) and so require
+/// a full rebuild.
 #[derive(Clone, Debug, Default)]
 pub struct BindingRegistry {
     pub text: Vec<TextBinding>,
     pub value: Vec<ValueBinding>,
+    pub show: Vec<ShowBinding>,
     /// Signals read by any non-patchable site. A change touching one of these
     /// means the runtime must rebuild rather than patch.
     pub structural: HashSet<String>,
@@ -772,11 +789,17 @@ fn build_node(
     // undefined and silently do nothing. Bake the current loop bindings into the
     // handler as a `let` prelude so it reproduces them when it runs.
     let on_tap = el.attr("@tap").map(|h| bind_locals(h, locals));
-    // r-show="false" keeps the layout slot but paints nothing. Its condition is a
-    // structural read — a change toggles paint, so it forces a rebuild.
+    // r-show="false" keeps the layout slot but paints nothing. It only flips
+    // `hidden`, never the shape, so it's patchable: record it and a change rewrites
+    // the bool in place.
     let hidden = el.attr("r-show").is_some_and(|e| {
         let (v, deps) = engine.eval_bool_tracked(e, locals);
-        reg.note_structural(deps);
+        reg.show.push(ShowBinding {
+            path: path.to_vec(),
+            cond: e.to_string(),
+            locals: locals.clone(),
+            deps,
+        });
         !v
     });
 
