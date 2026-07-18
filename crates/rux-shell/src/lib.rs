@@ -743,8 +743,9 @@ impl App {
             .map(|h| h.on_tap.clone());
 
         if let Some(src) = handler {
-            if self.document.engine_mut().run_handler(&src) {
-                self.document.rebuild();
+            // Patch in place when the change is display-only; rebuild only when it
+            // touches structure/attributes/input values. Either way, repaint.
+            if self.document.apply_handler(&src) {
                 self.request_redraw();
             }
         }
@@ -1044,9 +1045,7 @@ impl App {
     fn activate_focused(&mut self, index: usize) {
         match self.focusables.get(index).map(|f| f.kind.clone()) {
             Some(FocusKind::Activate { on_tap }) => {
-                if self.document.engine_mut().run_handler(&on_tap) {
-                    self.document.rebuild();
-                }
+                self.document.apply_handler(&on_tap);
                 self.request_redraw();
             }
             Some(FocusKind::Select { model, .. }) => {

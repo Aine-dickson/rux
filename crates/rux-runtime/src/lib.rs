@@ -222,6 +222,32 @@ impl Document {
         }
         true
     }
+
+    /// Run an `@tap` handler and reflect its effect the cheapest correct way:
+    /// patch the changed text bindings in place, falling back to a full rebuild
+    /// only when the change is structural. Returns whether anything changed, so
+    /// the shell knows whether to repaint.
+    pub fn apply_handler(&mut self, src: &str) -> bool {
+        let changed = self.engine.run_handler_tracked(src);
+        if changed.is_empty() {
+            return false;
+        }
+        let patched = self.patch(&changed);
+        if !patched {
+            self.rebuild();
+        }
+        // `RUX_TRACE=1` prints how each change was applied, so the reactivity path
+        // is observable while driving the app (the pixels are identical either way).
+        if std::env::var_os("RUX_TRACE").is_some() {
+            let mut names: Vec<&str> = changed.iter().map(String::as_str).collect();
+            names.sort_unstable();
+            eprintln!(
+                "rux: change {names:?} → {}",
+                if patched { "patched in place (no rebuild)" } else { "rebuilt (structural)" }
+            );
+        }
+        true
+    }
 }
 
 /// Follow a child-index path from the root to a node, mutably.
