@@ -1218,9 +1218,11 @@ fn build_children(
         if let Some(for_expr) = el.attr("r-for") {
             in_chain = false;
             if let Some((var, coll)) = parse_for(for_expr) {
+                // The collection is a reconcilable read, not a force-rebuild one:
+                // it flows to the parent's structural deps (via the return), not to
+                // `reg.structural`.
                 let (value, deps) = engine.eval_value_tracked(coll, locals);
-                structural_deps.extend(deps.iter().cloned());
-                reg.note_structural(deps);
+                structural_deps.extend(deps);
                 let items = value.and_then(|v| v.as_list().map(<[Value]>::to_vec));
                 if let Some(items) = items {
                     for item in items {
@@ -1239,8 +1241,7 @@ fn build_children(
         if let Some(cond) = el.attr("r-if") {
             in_chain = true;
             let (v, deps) = engine.eval_bool_tracked(cond, locals);
-            structural_deps.extend(deps.iter().cloned());
-            reg.note_structural(deps);
+            structural_deps.extend(deps);
             chain_satisfied = v;
             if chain_satisfied {
                 let cp = child_path(&out);
@@ -1252,8 +1253,7 @@ fn build_children(
         if let Some(cond) = el.attr("r-elif") {
             let taken = if in_chain && !chain_satisfied {
                 let (v, deps) = engine.eval_bool_tracked(cond, locals);
-                structural_deps.extend(deps.iter().cloned());
-                reg.note_structural(deps);
+                structural_deps.extend(deps);
                 v
             } else {
                 false
