@@ -98,16 +98,29 @@ pub struct StructuralParent {
     pub deps: HashSet<String>,
 }
 
+/// A checkbox/radio `<input>` node, reconcilable in place: toggling its bound
+/// signal changes only this node (its `checked`-class style + mark child), never
+/// the tree shape, so the node is re-built and spliced at `path` on a change.
+#[derive(Clone, Debug)]
+pub struct ToggleBinding {
+    /// Path to the toggle `<input>` node.
+    pub path: Vec<usize>,
+    /// Signals the checked state reads — normally just the `r-model` signal.
+    pub deps: HashSet<String>,
+}
+
 /// What a build discovered about reactivity: the patchable bindings (text `{{ }}`,
 /// input values, `r-show` visibility), the parents that hold structural directives
-/// (for reconciliation), and the signals whose change can *not* be patched at all
-/// (attributes, component props) and so require a full rebuild.
+/// and the toggle nodes (for reconciliation), and the signals whose change can
+/// *not* be handled in place at all (attributes, component props) and so require a
+/// full rebuild.
 #[derive(Clone, Debug, Default)]
 pub struct BindingRegistry {
     pub text: Vec<TextBinding>,
     pub value: Vec<ValueBinding>,
     pub show: Vec<ShowBinding>,
     pub structural_parents: Vec<StructuralParent>,
+    pub toggles: Vec<ToggleBinding>,
     /// Signals read by any non-patchable, non-reconcilable site. A change touching
     /// one of these means the runtime must rebuild rather than patch.
     pub structural: HashSet<String>,
@@ -167,15 +180,17 @@ struct Inherited {
 /// which makes the box a circle/pill whatever its size.
 const CIRCLE: f32 = 9999.0;
 
-/// An `<input type=checkbox|radio>` and whether it is currently checked.
-#[derive(Clone, Copy)]
+/// An `<input type=checkbox|radio>`: whether it is currently checked, and the
+/// signals its checked state reads (so a change can reconcile just this node).
+#[derive(Clone)]
 struct Toggle {
     radio: bool,
     checked: bool,
+    deps: HashSet<String>,
 }
 
 impl Toggle {
-    fn of(el: &Element, engine: &mut Engine, locals: &Locals, reg: &mut BindingRegistry) -> Option<Self> {
+    fn of(el: &Element, engine: &mut Engine, locals: &Locals) -> Option<Self> {
         if el.tag != "input" {
             return None;
         }
@@ -185,20 +200,17 @@ impl Toggle {
             _ => return None,
         };
         let model = el.attr("r-model").unwrap_or_default();
-        // The checked state reads the model signal; a change to it must rebuild
-        // (it flips the synthetic `checked` class, a structural/style change).
-        let checked = if model.is_empty() {
-            false
+        // The checked state reads the model signal; a change to it reconciles this
+        // toggle node in place (the `checked` class flips its style + mark).
+        let (checked, deps) = if model.is_empty() {
+            (false, HashSet::new())
         } else if radio {
             let (v, deps) = engine.eval_display_tracked(model, locals);
-            reg.note_structural(deps);
-            v == el.attr("value").unwrap_or_default()
+            (v == el.attr("value").unwrap_or_default(), deps)
         } else {
-            let (v, deps) = engine.eval_bool_tracked(model, locals);
-            reg.note_structural(deps);
-            v
+            engine.eval_bool_tracked(model, locals)
         };
-        Some(Self { radio, checked })
+        Some(Self { radio, checked, deps })
     }
 }
 
@@ -796,8 +808,8 @@ fn build_node(
     // A ticked checkbox / selected radio carries a synthetic `checked` class, so
     // its checked look is plain CSS (`.box.checked { background: … }`) — we have
     // no `:checked` pseudo-class and this needs no new selector machinery.
-    let toggle = Toggle::of(el, engine, locals, reg);
-    if toggle.is_some_and(|t| t.checked) {
+    let toggle = Toggle::of(el, engine, locals);
+    if toggle.as_ref().is_some_and(|t| t.checked) {
         desc.classes.push("checked".to_string());
     }
     let props = matched_props(&desc, ancestors, prev, rules);
@@ -933,7 +945,9 @@ fn build_node(
     // `type=checkbox|radio` are tap-toggles, not text fields: they get no focus
     // and no keyboard, they just write the bound signal through the ordinary
     // handler path (`sig = !sig` / `sig = "value"`). An authored @tap wins.
-    if let Some(Toggle { radio, checked }) = toggle {
+    if let Some(Toggle { radio, checked, deps }) = toggle {
+        // Recorded so a change to the bound signal reconciles just this node.
+        reg.toggles.push(ToggleBinding { path: path.to_vec(), deps });
         let model = el.attr("r-model").unwrap_or_default().to_string();
         let value = el.attr("value").unwrap_or_default().to_string();
 
