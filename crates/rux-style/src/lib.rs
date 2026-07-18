@@ -46,14 +46,37 @@ pub struct TextBinding {
     pub deps: HashSet<String>,
 }
 
-/// What a build discovered about reactivity: the patchable text bindings, and the
-/// signals whose change can *not* be patched (they drive structure, attributes,
-/// input values, or component props) and so require a full rebuild.
+/// An `<input>`'s displayed value, patchable in place: the input node's path, the
+/// bound signal, and the placeholder/colors needed to render an empty vs filled
+/// field. The shown text lives in the input's first child; a change to `model`
+/// rewrites it without a rebuild, so keystrokes don't throw the tree away.
+#[derive(Clone, Debug)]
+pub struct ValueBinding {
+    /// Path to the `<input>` node; its first child holds the shown text.
+    pub path: Vec<usize>,
+    /// The `r-model` signal expression.
+    pub model: String,
+    /// Shown (dim) when the value is empty.
+    pub placeholder: String,
+    /// Text colour when the field has a value.
+    pub color: Rgba,
+    /// Text colour for the placeholder.
+    pub placeholder_color: Rgba,
+    /// `r-for` locals captured at build (empty for ordinary inputs).
+    pub locals: Vec<(String, Value)>,
+    /// Signals the value reads — normally just `model`.
+    pub deps: HashSet<String>,
+}
+
+/// What a build discovered about reactivity: the patchable bindings (text `{{ }}`
+/// and input values), and the signals whose change can *not* be patched (they
+/// drive structure, attributes, or component props) and so require a full rebuild.
 #[derive(Clone, Debug, Default)]
 pub struct BindingRegistry {
     pub text: Vec<TextBinding>,
-    /// Signals read by any non-text site. A change touching one of these means the
-    /// runtime must rebuild rather than patch.
+    pub value: Vec<ValueBinding>,
+    /// Signals read by any non-patchable site. A change touching one of these
+    /// means the runtime must rebuild rather than patch.
     pub structural: HashSet<String>,
 }
 
@@ -162,6 +185,17 @@ pub fn build_styled_tree(
 /// the runtime writes into the node at `binding.path` when a dependency changes.
 pub fn eval_text_binding(binding: &TextBinding, engine: &mut Engine) -> String {
     interpolate_tracked(&binding.template, engine, &binding.locals).0
+}
+
+/// Recompute an input's shown text and colour against the engine's current state:
+/// the value in the normal colour, or the placeholder in the dim colour when empty.
+pub fn eval_value_binding(binding: &ValueBinding, engine: &mut Engine) -> (String, Rgba) {
+    let value = engine.eval_display(&binding.model, &binding.locals);
+    if value.is_empty() {
+        (binding.placeholder.clone(), binding.placeholder_color)
+    } else {
+        (value, binding.color)
+    }
 }
 
 /// Like [`build_styled_tree`], but also returns the [`BindingRegistry`] — where
@@ -941,19 +975,30 @@ fn build_node(
                     .unwrap_or_default()
             });
         let model = el.attr("r-model").map(str::to_string);
-        // An input's displayed value is a structural read for now: patching it in
-        // place (and dropping `apply_focus`) is the next reactivity sub-step.
+        let placeholder = el.attr("placeholder").unwrap_or_default().to_string();
+        const PLACEHOLDER_COLOR: Rgba = Rgba::new(0.42, 0.44, 0.52, 1.0); // #6c7086
+        // The value display is patchable: record where it lives and how to render
+        // it, so a keystroke rewrites this input's text in place instead of
+        // rebuilding. (If `model` is *also* read structurally — e.g. by an `r-if` —
+        // that read marks it structural elsewhere, and the change rebuilds anyway.)
         let value = model
             .as_deref()
             .map(|m| {
                 let (v, deps) = engine.eval_display_tracked(m, locals);
-                reg.note_structural(deps);
+                reg.value.push(ValueBinding {
+                    path: path.to_vec(),
+                    model: m.to_string(),
+                    placeholder: placeholder.clone(),
+                    color,
+                    placeholder_color: PLACEHOLDER_COLOR,
+                    locals: locals.clone(),
+                    deps,
+                });
                 v
             })
             .unwrap_or_default();
         let (shown, shown_color) = if value.is_empty() {
-            let placeholder = el.attr("placeholder").unwrap_or_default().to_string();
-            (placeholder, Rgba::new(0.42, 0.44, 0.52, 1.0)) // #6c7086
+            (placeholder.clone(), PLACEHOLDER_COLOR)
         } else {
             (value, color)
         };

@@ -423,11 +423,18 @@ rationale](./01-rationale.md#ephemeral-ui-state-automatic-by-default-controllabl
   `structural`, leaving the caller to `rebuild()`. Kept `LayoutNode` reactivity-free
   — the registry lives in `rux-style`/`rux-runtime`. Headless-tested
   (`patch_updates_text_and_preserves_caret`, `patch_declines_on_structural_change`).
-- ⏳ **Wire the shell + drive it** — next: the shell runs handlers via
-  `run_handler_tracked` and calls `patch` (falling back to `rebuild` on `false`),
-  then this is driven in the window. Deleting `apply_focus` also needs input-value
-  bindings patched in place (currently structural → rebuild); that's the sub-step
-  after wiring.
+- ✅ **Shell wired + input values patch in place** — `@tap` handlers
+  (`apply_handler`) and input edits (`apply_edit`) run tracked and patch in place,
+  rebuilding only on a structural change. Input *values* are now a patchable
+  `ValueBinding` (path + model + placeholder/colors), so **keystrokes no longer
+  rebuild** unless the signal is also read structurally (e.g. by an `r-if`).
+  `RUX_TRACE=1` prints `patched` vs `rebuilt` per change. Headless tests cover
+  value-in-place, placeholder fallback, and the structural decline.
+- ⏳ **`apply_focus` can't be deleted yet** — it is no longer coupled to a
+  per-keystroke rebuild (typing patches), but structural changes still rebuild, and
+  a fresh tree needs the caret/selection restored. Full deletion waits for **v0.3.2**
+  (structural `r-if`/`r-for` patched in place → no rebuild mid-session). `apply_focus`
+  also remains the *set-caret* mechanism `set_focus` uses, which stays regardless.
 
 **But the cost is not really performance — it is structural, and it compounds
 through v0.2.** Because the tree is thrown away on every change, every piece of

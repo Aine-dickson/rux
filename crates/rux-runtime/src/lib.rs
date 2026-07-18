@@ -220,24 +220,55 @@ impl Document {
                 }
             }
         }
+        // Input values live in the input's first child; patch their text + colour
+        // so a keystroke doesn't rebuild. The caret/selection on that child are
+        // left untouched (the shell sets them via `set_focus`).
+        for binding in &self.registry.value {
+            if binding.deps.is_disjoint(changed) {
+                continue;
+            }
+            let (text, color) = rux_style::eval_value_binding(binding, &mut self.engine);
+            if let Some(node) = node_at_mut(&mut self.root, &binding.path) {
+                if let Some(content) = node.children.first_mut().and_then(|c| c.text.as_mut()) {
+                    content.text = text;
+                    content.color = color;
+                }
+            }
+        }
         true
     }
 
+    /// Apply an input edit (a keystroke's new value for `model`) and reflect it the
+    /// cheapest correct way: patch the input's shown value in place, falling back
+    /// to a rebuild only when `model` is also read structurally. The caller sets
+    /// the caret afterward via [`set_focus`](Self::set_focus).
+    pub fn apply_edit(&mut self, model: &str, value: &str) {
+        self.engine.set_string(model, value);
+        let changed: HashSet<String> = std::iter::once(model.to_string()).collect();
+        self.apply_change(&changed);
+    }
+
     /// Run an `@tap` handler and reflect its effect the cheapest correct way:
-    /// patch the changed text bindings in place, falling back to a full rebuild
-    /// only when the change is structural. Returns whether anything changed, so
-    /// the shell knows whether to repaint.
+    /// patch the changed bindings in place, falling back to a full rebuild only
+    /// when the change is structural. Returns whether anything changed, so the
+    /// shell knows whether to repaint.
     pub fn apply_handler(&mut self, src: &str) -> bool {
         let changed = self.engine.run_handler_tracked(src);
         if changed.is_empty() {
             return false;
         }
-        let patched = self.patch(&changed);
+        self.apply_change(&changed);
+        true
+    }
+
+    /// Reflect a set of changed signals: patch in place, or rebuild when the change
+    /// is structural. `RUX_TRACE=1` prints which path was taken, so the reactivity
+    /// behavior is observable while driving (the pixels are identical either way).
+    fn apply_change(&mut self, changed: &HashSet<String>) {
+        let patched = self.patch(changed);
         if !patched {
             self.rebuild();
         }
-        // `RUX_TRACE=1` prints how each change was applied, so the reactivity path
-        // is observable while driving the app (the pixels are identical either way).
         if std::env::var_os("RUX_TRACE").is_some() {
             let mut names: Vec<&str> = changed.iter().map(String::as_str).collect();
             names.sort_unstable();
@@ -246,7 +277,6 @@ impl Document {
                 if patched { "patched in place (no rebuild)" } else { "rebuilt (structural)" }
             );
         }
-        true
     }
 }
 
@@ -506,16 +536,58 @@ mod tests {
         assert_eq!(caret_of(&doc.root, "name"), Some(1));
     }
 
-    /// Changing a signal that a non-text site read (here an input value) can't be
-    /// patched: `patch` declines and leaves the tree untouched for the caller to
-    /// rebuild.
+    /// Changing an input-bound signal patches the input's value in place (it is a
+    /// patchable value binding, not structural), leaving the sibling display alone.
     #[test]
-    fn patch_declines_on_structural_change() {
+    fn patch_updates_input_value_in_place() {
         let mut doc = patch_doc();
         let changed = doc.engine_mut().run_handler_tracked("name = \"yo\"");
-        assert!(!doc.patch(&changed), "an input-bound signal change needs a rebuild");
-        // The decline path mutates nothing.
+        assert!(doc.patch(&changed), "an input value change patches in place");
+        // The input (child 1) shows the new value; the `{{ n }}` display is untouched.
+        assert_eq!(doc.root.children[1].children[0].text.as_ref().unwrap().text, "yo");
         assert_eq!(doc.root.children[0].text.as_ref().unwrap().text, "0");
+    }
+
+    fn input_text(doc: &Document) -> &str {
+        // screen → input → text child.
+        &doc.root.children[0].children[0].text.as_ref().unwrap().text
+    }
+
+    /// A keystroke patches the input's shown value in place — `patch` returns true
+    /// (no rebuild needed) and the text updates — and the caret survives.
+    #[test]
+    fn typing_patches_the_input_value_in_place() {
+        let mut doc = Document::from_source(
+            "<template><screen><input r-model=\"name\" placeholder=\"type…\" /></screen></template>
+             <script>let name = signal(\"ab\");</script>",
+        )
+        .expect("load");
+        doc.set_focus(Some(Focus::at("name", 2)));
+        assert_eq!(input_text(&doc), "ab");
+
+        doc.engine_mut().set_string("name", "abc");
+        let changed: HashSet<String> = std::iter::once("name".to_string()).collect();
+        assert!(doc.patch(&changed), "value-only input edit patches in place");
+        assert_eq!(input_text(&doc), "abc");
+
+        // Emptying the field falls back to the placeholder (patched, not rebuilt).
+        doc.engine_mut().set_string("name", "");
+        assert!(doc.patch(&changed));
+        assert_eq!(input_text(&doc), "type…");
+    }
+
+    /// When the input's signal is *also* read structurally (here by an `r-if`),
+    /// the edit can't be patched — `patch` declines so the caller rebuilds.
+    #[test]
+    fn input_value_declines_when_signal_is_structural() {
+        let mut doc = Document::from_source(
+            "<template><screen><input r-model=\"name\" /><text r-if='name != \"\"'>x</text></screen></template>
+             <script>let name = signal(\"ab\");</script>",
+        )
+        .expect("load");
+        doc.engine_mut().set_string("name", "abc");
+        let changed: HashSet<String> = std::iter::once("name".to_string()).collect();
+        assert!(!doc.patch(&changed), "a structurally-read input signal needs a rebuild");
     }
 
     /// A checked box gets a synthetic `checked` class, so its checked look is
