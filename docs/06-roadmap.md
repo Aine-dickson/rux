@@ -456,10 +456,23 @@ rationale](./01-rationale.md#ephemeral-ui-state-automatic-by-default-controllabl
      (cheap at these sizes) rather than rebuilding just the slot — but it preserves
      ephemeral state, which is the point. Inputs that are *siblings* of an r-if (same
      parent) are still restored by the scoped `apply_focus`, not persistence.
-  3. ⏳ **Drive it, then delete `apply_focus`.** Drive `form.rux`/`list.rux`: an r-if
-     toggle / list change should reconcile (RUX_TRACE: `patched in place`) without
-     disturbing a caret in another subtree. Full `apply_focus` deletion still waits
-     on toggles/`:src`/props reconciling too (so nothing wholesale-rebuilds).
+  3. ✅ **Toggles reconcile (checkbox/radio).** A toggle changes only its own node
+     (the synthetic `checked` class → style + mark), no shape change: `Toggle::of`
+     carries the checked state's deps, the toggle branch records a `ToggleBinding`
+     (node path + deps), and `reconcile` splices just that node from the fresh
+     build. Siblings are untouched, so a neighbouring caret persists by identity.
+     Tested. (Radios group by their shared `r-model` signal — no `name` attribute;
+     a radio is checked when `signal == value`, and selecting one un-checks the
+     rest.)
+  4. ⏳ **Remaining force-rebuild cases → then delete `apply_focus`.** Only `:src`
+     (image), `:options` (select data), and component props still wholesale-rebuild.
+     The first two are *value-like* (patch the node's `src`/`options` field in
+     place, no shape change); component props re-expand a component subtree
+     (reconcile). Once those are handled, no interaction wholesale-rebuilds, so a
+     fresh tree is never made mid-session and `apply_focus`'s restore role can be
+     deleted (it stays only as the *set-caret* mechanism `set_focus` calls).
+  5. ⏳ **Drive it.** `RUX_TRACE=1` — checkbox/radio taps and r-if/r-for changes now
+     read `patched in place`; confirm a caret in another field is undisturbed.
 - ⏳ **Then delete `apply_focus`** — once no structural change rebuilds, a fresh
   tree is never made mid-session, so caret/selection live on the persistent tree
   and the restore pass drops. (`apply_focus` stays only as the *set-caret*
