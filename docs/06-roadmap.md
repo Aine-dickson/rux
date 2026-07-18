@@ -433,25 +433,25 @@ rationale](./01-rationale.md#ephemeral-ui-state-automatic-by-default-controllabl
 - ✅ **`r-show` in place (structural slice 1)** — flips `hidden` only, no shape
   change, no path invalidation: a `ShowBinding` re-evaluates the condition and
   rewrites the bool. Headless-tested both ways.
-- ⏳ **`r-if` / `r-for` in place — the reconciliation engine (slice 2, the big one).**
+- **`r-if` / `r-for` in place — the reconciliation engine (slice 2, the big one).**
   These change tree *shape*, which the positional-path registry can't survive
-  (an insert/remove shifts every later node's path). Worked-out design, to be built
-  as a focused effort (high bug risk, invisible to tests → must be driven):
-  1. **Thread a template-path** (AST element-child indices) alongside the tree-path
-     through `build_node`/`build_children`, so a structural site can be re-found in
-     `sfc.template`.
-  2. **Record a `StructuralParent`** per parent that has structural children,
-     capturing its tree-path, template-path, ancestor chain, inherited text props,
-     and `r-for` locals — the context a cascade needs. `build_children` returns the
-     structural deps it saw; `build_node` records the parent with them. (Store the
-     parsed `rules`/`comps` on the `Document` so a reconcile has them.)
-  3. **Reconcile on change:** re-run `build_children` for that parent, `resolve_images`
-     the new subtree, splice it into the live tree, then fix the registry — drop
-     every entry under the parent, merge the freshly-built ones (incl. nested
-     structural parents), collecting the work before mutating so the patch loop
-     isn't invalidated. `structural` (the force-rebuild set) keeps only the truly
-     non-reconcilable cases (component props, `:src`/`:options`, toggle `checked`
-     class).
+  (an insert/remove shifts every later node's path).
+  1. ✅ **Slice 2a — capture (done, additive).** A template-path (AST element-child
+     indices) is threaded alongside the tree-path through
+     `build_node`/`build_children`/`expand_component`; `build_children` returns the
+     structural deps it saw, and `build_node` records a `StructuralParent`
+     (tree-path + template-path + deps) for any parent holding structural children.
+     Structural changes still full-rebuild — no behavior change yet. Tested.
+  2. ⏳ **Slice 2b — reconcile-and-splice (the risky part; must be driven).** On a
+     change to a `StructuralParent`'s deps: re-navigate `sfc.template` to the parent
+     (via template-path), re-run `build_children` for it (needs the ancestor chain /
+     inherited props / `r-for` locals — capture these on the `StructuralParent`, and
+     store parsed `rules`/`comps` on the `Document`), `resolve_images` the new
+     subtree, splice it into the live tree, then fix the registry — drop every entry
+     under the parent, merge the freshly-built ones (incl. nested parents),
+     collecting the work before mutating so the patch loop isn't invalidated.
+     `structural` (force-rebuild) then keeps only the non-reconcilable cases
+     (component props, `:src`/`:options`, toggle `checked` class).
 - ⏳ **Then delete `apply_focus`** — once no structural change rebuilds, a fresh
   tree is never made mid-session, so caret/selection live on the persistent tree
   and the restore pass drops. (`apply_focus` stays only as the *set-caret*
