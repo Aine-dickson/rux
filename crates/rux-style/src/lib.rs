@@ -83,17 +83,33 @@ pub struct ShowBinding {
     pub deps: HashSet<String>,
 }
 
+/// A parent element that holds structural directives (`r-if`/`r-elif`/`r-else`/
+/// `r-for`) among its children. Recorded so a change to one of `deps` can rebuild
+/// just this parent's children and splice them in, instead of rebuilding the whole
+/// tree (the reconciliation engine — slice 2b). `tpl_path` re-finds the parent
+/// element in the template; `tree_path` locates its node in the built tree.
+#[derive(Clone, Debug)]
+pub struct StructuralParent {
+    /// Child-index path from the tree root to the parent node.
+    pub tree_path: Vec<usize>,
+    /// Element-child index path from the template root to the parent element.
+    pub tpl_path: Vec<usize>,
+    /// Signals read by the structural directives directly under this parent.
+    pub deps: HashSet<String>,
+}
+
 /// What a build discovered about reactivity: the patchable bindings (text `{{ }}`,
-/// input values, `r-show` visibility), and the signals whose change can *not* be
-/// patched (they drive tree shape, attributes, or component props) and so require
-/// a full rebuild.
+/// input values, `r-show` visibility), the parents that hold structural directives
+/// (for reconciliation), and the signals whose change can *not* be patched at all
+/// (attributes, component props) and so require a full rebuild.
 #[derive(Clone, Debug, Default)]
 pub struct BindingRegistry {
     pub text: Vec<TextBinding>,
     pub value: Vec<ValueBinding>,
     pub show: Vec<ShowBinding>,
-    /// Signals read by any non-patchable site. A change touching one of these
-    /// means the runtime must rebuild rather than patch.
+    pub structural_parents: Vec<StructuralParent>,
+    /// Signals read by any non-patchable, non-reconcilable site. A change touching
+    /// one of these means the runtime must rebuild rather than patch.
     pub structural: HashSet<String>,
 }
 
@@ -249,6 +265,7 @@ pub fn build_styled_tree_tracked(
         &Inherited { color: DEFAULT_COLOR, font_size: DEFAULT_FONT_SIZE, font_family: None },
         engine,
         &locals,
+        &[],
         &[],
         &mut reg,
     );
@@ -767,11 +784,12 @@ fn build_node(
     engine: &mut Engine,
     locals: &Locals,
     path: &[usize],
+    tpl_path: &[usize],
     reg: &mut BindingRegistry,
 ) -> LayoutNode {
     // A custom-element tag expands its imported component in place.
     if let Some(component) = comps.get(&el.tag) {
-        return expand_component(el, component, comps, inherited, engine, locals, path, reg);
+        return expand_component(el, component, comps, inherited, engine, locals, path, tpl_path, reg);
     }
 
     let mut desc = ElemDesc::of(el);
@@ -1067,7 +1085,7 @@ fn build_node(
             TplNode::Text(_) => None,
         })
         .collect();
-    let children = build_children(
+    let (children, structural_deps) = build_children(
         &element_children,
         rules,
         comps,
@@ -1076,9 +1094,19 @@ fn build_node(
         engine,
         locals,
         path,
+        tpl_path,
         reg,
     );
     ancestors.pop();
+    // If any child carried a structural directive, this parent can be reconciled
+    // in place (rebuild just its children) on a change to those signals.
+    if !structural_deps.is_empty() {
+        reg.structural_parents.push(StructuralParent {
+            tree_path: path.to_vec(),
+            tpl_path: tpl_path.to_vec(),
+            deps: structural_deps,
+        });
+    }
 
     LayoutNode {
         style,
@@ -1106,6 +1134,7 @@ fn expand_component(
     engine: &mut Engine,
     parent_locals: &Locals,
     path: &[usize],
+    tpl_path: &[usize],
     reg: &mut BindingRegistry,
 ) -> LayoutNode {
     let mut props: Locals = Vec::new();
@@ -1135,6 +1164,7 @@ fn expand_component(
         engine,
         &props,
         path,
+        tpl_path,
         reg,
     )
 }
@@ -1157,9 +1187,13 @@ fn build_children(
     engine: &mut Engine,
     locals: &Locals,
     path: &[usize],
+    tpl_path: &[usize],
     reg: &mut BindingRegistry,
-) -> Vec<LayoutNode> {
+) -> (Vec<LayoutNode>, HashSet<String>) {
     let mut out = Vec::new();
+    // Signals read by structural directives at this level — returned so the parent
+    // can register itself as reconcilable.
+    let mut structural_deps: HashSet<String> = HashSet::new();
     // The identities of the rendered siblings so far, so `+`/`~` combinators can
     // see the elements preceding the one being built. (The synthetic `checked`
     // class is not reflected here — sibling combinators don't see checked state.)
@@ -1168,18 +1202,24 @@ fn build_children(
     let mut in_chain = false;
     let mut chain_satisfied = false;
 
-    // The path to the child about to be pushed — its index is its position in `out`.
+    // The tree path to the child about to be pushed — its index is its position in
+    // `out`. The template path uses the element's index `ti`, shared by r-for items.
     let child_path = |out: &Vec<LayoutNode>| -> Vec<usize> {
         path.iter().copied().chain(std::iter::once(out.len())).collect()
     };
+    let child_tpl = |ti: usize| -> Vec<usize> {
+        tpl_path.iter().copied().chain(std::iter::once(ti)).collect()
+    };
 
-    for el in elements {
+    for (ti, el) in elements.iter().enumerate() {
+        let ctp = child_tpl(ti);
         // r-for expands the element once per collection item; it ends any chain.
         // The collection is a structural read — a change re-diffs the list.
         if let Some(for_expr) = el.attr("r-for") {
             in_chain = false;
             if let Some((var, coll)) = parse_for(for_expr) {
                 let (value, deps) = engine.eval_value_tracked(coll, locals);
+                structural_deps.extend(deps.iter().cloned());
                 reg.note_structural(deps);
                 let items = value.and_then(|v| v.as_list().map(<[Value]>::to_vec));
                 if let Some(items) = items {
@@ -1187,7 +1227,7 @@ fn build_children(
                         let mut child_locals = locals.clone();
                         child_locals.push((var.to_string(), item));
                         let cp = child_path(&out);
-                        out.push(build_node(el, rules, comps, ancestors, &prev, inherited, engine, &child_locals, &cp, reg));
+                        out.push(build_node(el, rules, comps, ancestors, &prev, inherited, engine, &child_locals, &cp, &ctp, reg));
                         prev.push(ElemDesc::of(el));
                     }
                 }
@@ -1199,11 +1239,12 @@ fn build_children(
         if let Some(cond) = el.attr("r-if") {
             in_chain = true;
             let (v, deps) = engine.eval_bool_tracked(cond, locals);
+            structural_deps.extend(deps.iter().cloned());
             reg.note_structural(deps);
             chain_satisfied = v;
             if chain_satisfied {
                 let cp = child_path(&out);
-                out.push(build_node(el, rules, comps, ancestors, &prev, inherited, engine, locals, &cp, reg));
+                out.push(build_node(el, rules, comps, ancestors, &prev, inherited, engine, locals, &cp, &ctp, reg));
                 prev.push(ElemDesc::of(el));
             }
             continue;
@@ -1211,6 +1252,7 @@ fn build_children(
         if let Some(cond) = el.attr("r-elif") {
             let taken = if in_chain && !chain_satisfied {
                 let (v, deps) = engine.eval_bool_tracked(cond, locals);
+                structural_deps.extend(deps.iter().cloned());
                 reg.note_structural(deps);
                 v
             } else {
@@ -1219,7 +1261,7 @@ fn build_children(
             if taken {
                 chain_satisfied = true;
                 let cp = child_path(&out);
-                out.push(build_node(el, rules, comps, ancestors, &prev, inherited, engine, locals, &cp, reg));
+                out.push(build_node(el, rules, comps, ancestors, &prev, inherited, engine, locals, &cp, &ctp, reg));
                 prev.push(ElemDesc::of(el));
             }
             continue;
@@ -1227,7 +1269,7 @@ fn build_children(
         if el.attr("r-else").is_some() {
             if in_chain && !chain_satisfied {
                 let cp = child_path(&out);
-                out.push(build_node(el, rules, comps, ancestors, &prev, inherited, engine, locals, &cp, reg));
+                out.push(build_node(el, rules, comps, ancestors, &prev, inherited, engine, locals, &cp, &ctp, reg));
                 prev.push(ElemDesc::of(el));
             }
             in_chain = false;
@@ -1237,10 +1279,10 @@ fn build_children(
         // A plain element ends any active chain.
         in_chain = false;
         let cp = child_path(&out);
-        out.push(build_node(el, rules, comps, ancestors, &prev, inherited, engine, locals, &cp, reg));
+        out.push(build_node(el, rules, comps, ancestors, &prev, inherited, engine, locals, &cp, &ctp, reg));
         prev.push(ElemDesc::of(el));
     }
-    out
+    (out, structural_deps)
 }
 
 // ── Value interpretation (honored subset) ───────────────────────────────────
@@ -2211,7 +2253,7 @@ fn parse_hex(hex: &str) -> Option<Rgba> {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_styled_tree, interpolate_tracked, interpret, Len, Locals};
+    use super::{build_styled_tree, build_styled_tree_tracked, interpolate_tracked, interpret, Len, Locals};
     use rux_script::{Builder, Engine};
     use std::collections::HashMap;
 
@@ -2338,6 +2380,34 @@ mod tests {
         assert!(c[4].abs() < 1e-3 && (c[5] - 10.0).abs() < 1e-3);
 
         assert!(parse_transform("none").is_none());
+    }
+
+    /// A parent holding structural directives is recorded (with its tree path,
+    /// template path, and the signals its directives read) so the runtime can
+    /// reconcile just that parent instead of rebuilding the whole tree.
+    #[test]
+    fn records_structural_parent_for_reconcile() {
+        let src = r#"
+            <template>
+              <screen>
+                <text>title</text>
+                <view r-for="n in nums"><text>{{ n }}</text></view>
+                <text r-if="level < 5">low</text>
+              </screen>
+            </template>
+            <script> let nums = signal([1, 2, 3]); let level = signal(10); </script>
+        "#;
+        let sfc = rux_parser::parse_sfc(src).unwrap();
+        let mut engine = Builder::new().build(&sfc.script).unwrap();
+        let (_root, reg) = build_styled_tree_tracked(&sfc, &HashMap::new(), &mut engine).unwrap();
+
+        assert_eq!(reg.structural_parents.len(), 1, "the screen is the one structural parent");
+        let sp = &reg.structural_parents[0];
+        assert_eq!(sp.tree_path, Vec::<usize>::new(), "screen is the root");
+        assert_eq!(sp.tpl_path, Vec::<usize>::new());
+        let mut deps: Vec<&str> = sp.deps.iter().map(String::as_str).collect();
+        deps.sort_unstable();
+        assert_eq!(deps, ["level", "nums"], "both directive signals are captured");
     }
 
     #[test]
