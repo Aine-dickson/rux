@@ -426,6 +426,16 @@ cleared one. Per-binding subscriptions — what
 [04 — Architecture](./04-architecture.md) always described — delete the category.
 This is the last real divergence between the architecture doc and the code.
 
+**A second answer worth weighing here: controlled state.** Vercel's `native`
+makes ephemeral state *model-owned* — `<scroll value="{off}" on-scroll="…">` — so
+it survives a rebuild because it lives in the model, not because the shell
+restored it. That deletes the same category from the other direction, and it also
+lets author logic *drive* the value (scroll-to-top on submit, persist a position).
+The two aren't exclusive: fine-grained reactivity removes the *need* to restore
+most of it, and controlled state becomes an opt-in for values the author wants to
+own. See
+[01 — Rationale → Ideas under consideration](./01-rationale.md#ideas-under-consideration-not-yet-decided).
+
 ### What that means for v0.2 — the standing debt
 Selection, hover, drag and scroll-into-view are all ephemeral UI state. **Each one
 shipped before v0.3 must add its own restore-after-rebuild pass, and each is a

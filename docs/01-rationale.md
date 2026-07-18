@@ -109,6 +109,68 @@ The table that proves Law 3. Every commonly-requested "missing element" and wher
 
 The only case still open is rich tables and custom-templated option lists — both explicitly deferred, not because they're impossible but because building them now would pop the balloon (Law 4).
 
+## Ideas under consideration (not yet decided)
+
+### Controlled state — the model owns ephemeral UI state
+
+**The problem it addresses.** A signal write rebuilds the whole tree (see
+[04 — Architecture](./04-architecture.md) and the v0.3 plan in
+[06 — Roadmap](./06-roadmap.md)). Because the tree is thrown away, every piece of
+*ephemeral* UI state — caret position, scroll offset, selection, which panel is
+open — has to be stashed somewhere durable and re-applied by hand after each
+rebuild. Rux keeps that state in the **shell** today (`apply_focus` for the
+caret, scroll offsets keyed by scroller index), and each such pass is a chance to
+reproduce the stale-caret bug, where a value was set but never cleared.
+
+**The idea (prior art: Vercel's `native`).** Make that state *model-owned* and
+explicit — a control reads its value from a binding and reports changes back
+through a handler:
+
+```
+<scroll value="{note_list_scroll}" on-scroll="note_list_scrolled">
+<split value="{sidebar_split}" on-resize="sidebar_resized">
+```
+
+This is React's "controlled component" pattern: the runtime applies the wheel or
+the drag, dispatches the handler with the new value, and the model echoes it back
+through the binding.
+
+**Advantages — why it's tempting:**
+
+1. **It survives a rebuild for free.** The value lives in the model, so a
+   whole-tree rebuild cannot lose it. No restore-after-rebuild pass, and the
+   entire stale-caret *category* of bug disappears — you can't forget to restore
+   state that was never shell-owned in the first place.
+2. **Single source of truth.** The UI becomes a pure function of the model. There
+   is no second copy of "where the scroll is" living in the shell that can drift
+   out of sync with what's painted.
+3. **The author can drive it.** Because it's an ordinary signal, script/host can
+   *read and set* it: scroll a list back to the top on submit, reset a form, sync
+   two panes to the same offset, restore a saved position on load. Shell-owned
+   state is invisible to author logic — you can only ever react to it, never set
+   it.
+4. **It serializes.** The full UI state sits in the model, so it can be snapshotted
+   and restored — session persistence, deep links, undo/redo — none of which is
+   reachable while the state hides in the shell.
+5. **One mental model.** Scroll, caret, selection, open/closed, split fraction all
+   use the same `value` + handler shape as any other binding. Nothing is special
+   "runtime magic"; there's one pattern to learn.
+
+**Costs — why it isn't already the answer:** it trades Rux's *automatic-ness* for
+*ceremony*. Today you write `overflow: auto` and it just scrolls — no signal, no
+handler. Controlled state asks the author to declare a signal and a handler for
+every scroller and input whose state must persist, and (until fine-grained
+reactivity) every controlled change still flows through a whole-tree rebuild.
+That's more explicit and more predictable, but it is a tax on the common case
+where nobody cares about owning the value.
+
+**Likely resolution.** A middle path: **fine-grained reactivity (v0.3) removes the
+whole-tree rebuild**, which removes the *need* to restore most ephemeral state at
+all — and then controlled state becomes an *opt-in* for the cases where the
+author genuinely wants advantages 3 and 4 (persist a scroll position, sync two
+panes, restore on load), rather than a tax on every input. Worth holding both in
+view when v0.3 is designed.
+
 ## What would make us revisit a law
 
 - If runtime parse errors prove too costly in practice, we add an *optional* compile/validation step — without removing hot-reload.
