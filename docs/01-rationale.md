@@ -109,7 +109,10 @@ The table that proves Law 3. Every commonly-requested "missing element" and wher
 
 The only case still open is rich tables and custom-templated option lists — both explicitly deferred, not because they're impossible but because building them now would pop the balloon (Law 4).
 
-## Ideas under consideration (not yet decided)
+## Ephemeral UI state: automatic by default, controllable by opt-in
+
+**Decided 2026-07-18.** See the full argument below; the short version is the
+resolution at the end of it.
 
 ### Controlled state — the model owns ephemeral UI state
 
@@ -164,12 +167,27 @@ reactivity) every controlled change still flows through a whole-tree rebuild.
 That's more explicit and more predictable, but it is a tax on the common case
 where nobody cares about owning the value.
 
-**Likely resolution.** A middle path: **fine-grained reactivity (v0.3) removes the
-whole-tree rebuild**, which removes the *need* to restore most ephemeral state at
-all — and then controlled state becomes an *opt-in* for the cases where the
-author genuinely wants advantages 3 and 4 (persist a scroll position, sync two
-panes, restore on load), rather than a tax on every input. Worth holding both in
-view when v0.3 is designed.
+**Decision (2026-07-18): the middle path — automatic by default, controlled by
+opt-in.** **Fine-grained reactivity (v0.3) removes the whole-tree rebuild**, which
+removes the *need* to restore most ephemeral state at all: the common case stays
+automatic (`overflow: auto` just scrolls, an `<input>` just remembers its caret —
+no signal, no handler). **Controlled state is then an opt-in** — an author binds a
+signal (the `r-model` pattern, extended to scroll/caret/selection/open) only for
+the cases that want advantages 3 and 4: persist a scroll position, sync two panes,
+reset a form, restore on load. So the ceremony is paid only where it buys
+something, never as a tax on every input.
+
+This keeps automatic-ness (Law 4, effortless common case) *and* single-source-of-
+truth where it matters, and it fits the [core-primitive / ecosystem-patterns
+split](#reactivity-is-a-core-primitive-state-management-is-ecosystem): the runtime
+owns the `value`+handler binding primitive; managing that state is userland.
+
+**What it means for v0.3.** Reactivity is *not* reordered by this. Fine-grained
+reactivity remains the mechanism that makes the uncontrolled defaults survive a
+change; the controlled-state opt-in is an additive binding layered on afterward
+(extend the input's `r-model` idea to a `value`/`on-*` pair on scrollers and other
+stateful controls). Build the reactivity core first; add the opt-in where a real
+example needs it.
 
 ## What would make us revisit a law
 

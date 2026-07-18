@@ -400,7 +400,12 @@ authoring-model change:
 Phasing: **v0.3.1** = this tracking + a binding registry so `{{ }}`/attribute
 updates *patch in place* (structural directives still fall back to full rebuild);
 **v0.3.2** = structural (`r-if`/`r-for`) in place, then delete the restore passes
-one at a time, each with its negative-case test.
+one at a time, each with its negative-case test. **Then (v0.3.2+ or a follow-on):
+the controlled-state opt-in** — a `value`/`on-*` binding on scrollers and stateful
+controls (the `r-model` idea, extended), added where a real example wants to own
+the value. Decided 2026-07-18 as the middle path; it does *not* reorder the
+reactivity core, only layers on top. See [Ephemeral UI state in the
+rationale](./01-rationale.md#ephemeral-ui-state-automatic-by-default-controllable-by-opt-in).
 
 - ✅ **Tracking primitives (`rux-script`)** — `eval_value_tracked` returns a
   binding's value *and* its signal deps (locals/params filtered out);
@@ -426,15 +431,16 @@ cleared one. Per-binding subscriptions — what
 [04 — Architecture](./04-architecture.md) always described — delete the category.
 This is the last real divergence between the architecture doc and the code.
 
-**A second answer worth weighing here: controlled state.** Vercel's `native`
-makes ephemeral state *model-owned* — `<scroll value="{off}" on-scroll="…">` — so
-it survives a rebuild because it lives in the model, not because the shell
-restored it. That deletes the same category from the other direction, and it also
-lets author logic *drive* the value (scroll-to-top on submit, persist a position).
-The two aren't exclusive: fine-grained reactivity removes the *need* to restore
-most of it, and controlled state becomes an opt-in for values the author wants to
-own. See
-[01 — Rationale → Ideas under consideration](./01-rationale.md#ideas-under-consideration-not-yet-decided).
+**A second answer, now decided: controlled state — opt-in.** Controlled state makes
+ephemeral state *model-owned* (`<scroll value="{off}" on-scroll="…">`), so it
+survives a rebuild because it lives in the model, and author logic can *drive* it
+(scroll-to-top on submit, persist a position). The **decision (2026-07-18)** is the
+middle path: fine-grained reactivity keeps the uncontrolled defaults automatic and
+surviving, and controlled state is an **opt-in** for values the author wants to own.
+**This does not reorder the reactivity work** — build the reactivity core first
+(below); add the controlled-state opt-in as an additive binding afterward, where a
+real example needs it. Full argument:
+[01 — Rationale → Ephemeral UI state](./01-rationale.md#ephemeral-ui-state-automatic-by-default-controllable-by-opt-in).
 
 ### What that means for v0.2 — the standing debt
 Selection, hover, drag and scroll-into-view are all ephemeral UI state. **Each one
