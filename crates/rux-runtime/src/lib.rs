@@ -6,12 +6,13 @@
 //! tree with bindings, directives, and component expansions resolved. Running an
 //! `@tap` handler mutates engine state; `rebuild` refreshes the tree.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use rux_layout::Node as LayoutNode;
 use rux_parser::Sfc;
 use rux_script::{Builder, Engine};
+use rux_style::BindingRegistry;
 
 /// A loaded `.rux` document: parsed source, imported components (by tag), the
 /// script engine, and the current tree.
@@ -24,6 +25,10 @@ pub struct Document {
     /// The focused input, with its caret and selection, if any. Re-applied on
     /// every rebuild so both survive a state change.
     focus: Option<Focus>,
+    /// Where each patchable text binding lives and which signals force a rebuild —
+    /// refreshed on every full build. Lets [`Document::patch`] update value
+    /// bindings in place instead of throwing the tree away.
+    registry: BindingRegistry,
     pub root: LayoutNode,
 }
 
@@ -133,7 +138,7 @@ impl Document {
         }
 
         let mut engine = build_engine(&combined_script)?;
-        let mut root = rux_style::build_styled_tree(&sfc, &components, &mut engine)?;
+        let (mut root, registry) = rux_style::build_styled_tree_tracked(&sfc, &components, &mut engine)?;
         resolve_images(&mut root, base);
         Ok(Self {
             sfc,
@@ -141,6 +146,7 @@ impl Document {
             engine,
             base: base.to_path_buf(),
             focus: None,
+            registry,
             root,
         })
     }
@@ -150,7 +156,7 @@ impl Document {
         let sfc = rux_parser::parse_sfc(src).map_err(|e| e.to_string())?;
         let (main_script, _imports) = extract_imports(&sfc.script);
         let mut engine = build_engine(&main_script)?;
-        let mut root = rux_style::build_styled_tree(&sfc, &HashMap::new(), &mut engine)?;
+        let (mut root, registry) = rux_style::build_styled_tree_tracked(&sfc, &HashMap::new(), &mut engine)?;
         let base = PathBuf::from(".");
         resolve_images(&mut root, &base);
         Ok(Self {
@@ -159,6 +165,7 @@ impl Document {
             engine,
             base,
             focus: None,
+            registry,
             root,
         })
     }
@@ -176,12 +183,54 @@ impl Document {
 
     /// Rebuild the layout tree from the engine's current state.
     pub fn rebuild(&mut self) {
-        if let Ok(mut root) = rux_style::build_styled_tree(&self.sfc, &self.components, &mut self.engine) {
+        if let Ok((mut root, registry)) =
+            rux_style::build_styled_tree_tracked(&self.sfc, &self.components, &mut self.engine)
+        {
             resolve_images(&mut root, &self.base);
             apply_focus(&mut root, self.focus.as_ref());
+            self.registry = registry;
             self.root = root;
         }
     }
+
+    /// Apply a set of changed signals *in place* where possible: re-evaluate the
+    /// text bindings that read them and write the new strings into their nodes,
+    /// without rebuilding the tree (so ephemeral state — caret, scroll — survives
+    /// untouched). Returns `false` when the change can't be patched — it touched a
+    /// signal that drives structure, an attribute, an input value, or a component
+    /// prop — in which case the caller must [`rebuild`](Self::rebuild). Nothing is
+    /// mutated on the `false` path.
+    #[must_use]
+    pub fn patch(&mut self, changed: &HashSet<String>) -> bool {
+        if changed.is_empty() {
+            return true; // nothing changed → nothing to do, and no rebuild needed
+        }
+        // Any changed signal that a non-text site read means a rebuild.
+        if !self.registry.structural.is_disjoint(changed) {
+            return false;
+        }
+        for binding in &self.registry.text {
+            if binding.deps.is_disjoint(changed) {
+                continue;
+            }
+            let text = rux_style::eval_text_binding(binding, &mut self.engine);
+            if let Some(node) = node_at_mut(&mut self.root, &binding.path) {
+                if let Some(content) = node.text.as_mut() {
+                    content.text = text;
+                }
+            }
+        }
+        true
+    }
+}
+
+/// Follow a child-index path from the root to a node, mutably.
+fn node_at_mut<'a>(root: &'a mut LayoutNode, path: &[usize]) -> Option<&'a mut LayoutNode> {
+    let mut node = root;
+    for &i in path {
+        node = node.children.get_mut(i)?;
+    }
+    Some(node)
 }
 
 /// A resolved component import.
@@ -405,6 +454,42 @@ mod tests {
         assert_eq!(selection_of(&doc.root, "name"), Some((1, 3)));
         assert_eq!(caret_of(&doc.root, "name"), Some(3));
         assert_eq!(selection_of(&doc.root, "city"), None);
+    }
+
+    fn patch_doc() -> Document {
+        // `n` is displayed only in a `{{ }}` text binding (patchable); `name` is
+        // read by an input's r-model value (structural → forces a rebuild).
+        Document::from_source(
+            "<template><screen><text class=\"c\">{{ n }}</text><input r-model=\"name\" /></screen></template>
+             <script>let n = signal(0); let name = signal(\"hi\");</script>",
+        )
+        .expect("load")
+    }
+
+    /// A display-only change patches the text node in place — no rebuild — so the
+    /// caret in an unrelated input survives without any restore pass running.
+    #[test]
+    fn patch_updates_text_and_preserves_caret() {
+        let mut doc = patch_doc();
+        doc.set_focus(Some(Focus::at("name", 1)));
+
+        let changed = doc.engine_mut().run_handler_tracked("n = n + 1");
+        assert!(doc.patch(&changed), "a display-only change patches in place");
+        assert_eq!(doc.root.children[0].text.as_ref().unwrap().text, "1");
+        // The caret survived: patch never touched focus, and no rebuild happened.
+        assert_eq!(caret_of(&doc.root, "name"), Some(1));
+    }
+
+    /// Changing a signal that a non-text site read (here an input value) can't be
+    /// patched: `patch` declines and leaves the tree untouched for the caller to
+    /// rebuild.
+    #[test]
+    fn patch_declines_on_structural_change() {
+        let mut doc = patch_doc();
+        let changed = doc.engine_mut().run_handler_tracked("name = \"yo\"");
+        assert!(!doc.patch(&changed), "an input-bound signal change needs a rebuild");
+        // The decline path mutates nothing.
+        assert_eq!(doc.root.children[0].text.as_ref().unwrap().text, "0");
     }
 
     /// A checked box gets a synthetic `checked` class, so its checked look is

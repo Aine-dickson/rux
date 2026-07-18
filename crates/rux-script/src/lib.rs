@@ -171,6 +171,28 @@ impl Engine {
         (value, reads)
     }
 
+    /// Evaluate a `{{ }}` binding to its display string *and* report its signal
+    /// deps (the tracked twin of `eval_display`).
+    pub fn eval_display_tracked(
+        &mut self,
+        src: &str,
+        locals: &[(String, Value)],
+    ) -> (String, HashSet<String>) {
+        let (value, deps) = self.eval_value_tracked(src, locals);
+        (value.map(|v| v.to_display()).unwrap_or_default(), deps)
+    }
+
+    /// Evaluate a condition *and* report its signal deps (the tracked twin of
+    /// `eval_bool`).
+    pub fn eval_bool_tracked(
+        &mut self,
+        src: &str,
+        locals: &[(String, Value)],
+    ) -> (bool, HashSet<String>) {
+        let (value, deps) = self.eval_value_tracked(src, locals);
+        (value.map(|v| v.is_truthy()).unwrap_or(false), deps)
+    }
+
     /// Run an `@tap` handler and report which signals it *changed* — the write
     /// half. Detected by diffing the signal values across the run, so it needs no
     /// cooperation from the handler source (which is arbitrary rhai). Returns an

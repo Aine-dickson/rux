@@ -413,9 +413,21 @@ rationale](./01-rationale.md#ephemeral-ui-state-automatic-by-default-controllabl
   (`tracks_binding_dependencies`, `tracks_handler_writes`). Purely additive — the
   rebuild path is untouched, so nothing regresses. No UI surface yet; that arrives
   when it drives in-place patching (next step).
-- ⏳ **Binding registry + in-place patch** — next: build records where each binding
-  lives in the tree, and a dirty signal re-evaluates only its bindings and patches
-  those nodes, instead of `rebuild()`.
+- ✅ **Binding registry + in-place patch (mechanism)** — `build_styled_tree_tracked`
+  threads a child-index *path* through the builder and returns a `BindingRegistry`:
+  the patchable `{{ }}` text bindings (path + raw template + `r-for` locals + signal
+  deps) and the `structural` set (signals read by any non-text site — directives,
+  attributes, input values, component props). `Document::patch(changed)` re-evaluates
+  only the text bindings whose deps changed and writes their nodes in place; it
+  declines (returns `false`, mutating nothing) when a changed signal is in
+  `structural`, leaving the caller to `rebuild()`. Kept `LayoutNode` reactivity-free
+  — the registry lives in `rux-style`/`rux-runtime`. Headless-tested
+  (`patch_updates_text_and_preserves_caret`, `patch_declines_on_structural_change`).
+- ⏳ **Wire the shell + drive it** — next: the shell runs handlers via
+  `run_handler_tracked` and calls `patch` (falling back to `rebuild` on `false`),
+  then this is driven in the window. Deleting `apply_focus` also needs input-value
+  bindings patched in place (currently structural → rebuild); that's the sub-step
+  after wiring.
 
 **But the cost is not really performance — it is structural, and it compounds
 through v0.2.** Because the tree is thrown away on every change, every piece of
