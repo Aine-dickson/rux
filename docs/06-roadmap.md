@@ -442,16 +442,24 @@ rationale](./01-rationale.md#ephemeral-ui-state-automatic-by-default-controllabl
      structural deps it saw, and `build_node` records a `StructuralParent`
      (tree-path + template-path + deps) for any parent holding structural children.
      Structural changes still full-rebuild — no behavior change yet. Tested.
-  2. ⏳ **Slice 2b — reconcile-and-splice (the risky part; must be driven).** On a
-     change to a `StructuralParent`'s deps: re-navigate `sfc.template` to the parent
-     (via template-path), re-run `build_children` for it (needs the ancestor chain /
-     inherited props / `r-for` locals — capture these on the `StructuralParent`, and
-     store parsed `rules`/`comps` on the `Document`), `resolve_images` the new
-     subtree, splice it into the live tree, then fix the registry — drop every entry
-     under the parent, merge the freshly-built ones (incl. nested parents),
-     collecting the work before mutating so the patch loop isn't invalidated.
-     `structural` (force-rebuild) then keeps only the non-reconcilable cases
-     (component props, `:src`/`:options`, toggle `checked` class).
+  2. ✅ **Slice 2b — reconcile-and-splice (done, headless-tested; still to be driven).**
+     Took the lower-risk route: `Document::reconcile` builds a fresh tree (reusing
+     `build_styled_tree_tracked`), splices only the affected structural subtrees into
+     the live one, and re-applies focus *scoped* to those subtrees; `resolve_images`
+     runs on the fresh tree. Unaffected subtrees keep their live node identity, so a
+     caret elsewhere survives with no whole-tree restore. The registry refreshes to
+     the fresh build (live and fresh shapes match, so paths stay valid). `patch()`
+     declines only on the non-reconcilable `structural` cases (component props,
+     `:src`/`:options`, toggle `checked` class). Tests: r-if reveal/hide preserves an
+     outside caret; r-for grows its rows; a toggle still declines.
+     *Trade-off vs. the surgical design:* a reconcile still builds a full fresh tree
+     (cheap at these sizes) rather than rebuilding just the slot — but it preserves
+     ephemeral state, which is the point. Inputs that are *siblings* of an r-if (same
+     parent) are still restored by the scoped `apply_focus`, not persistence.
+  3. ⏳ **Drive it, then delete `apply_focus`.** Drive `form.rux`/`list.rux`: an r-if
+     toggle / list change should reconcile (RUX_TRACE: `patched in place`) without
+     disturbing a caret in another subtree. Full `apply_focus` deletion still waits
+     on toggles/`:src`/props reconciling too (so nothing wholesale-rebuilds).
 - ⏳ **Then delete `apply_focus`** — once no structural change rebuilds, a fresh
   tree is never made mid-session, so caret/selection live on the persistent tree
   and the restore pass drops. (`apply_focus` stays only as the *set-caret*
