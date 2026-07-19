@@ -2,9 +2,11 @@
     <screen class="app">
         <text class="title">CSS showcase</text>
 
-        <!-- row-gap / column-gap on a wrapping grid of chips -->
+        <!-- Dynamic bindings: :style sets each chip's background from the loop
+             value (interpolated), and :class="c" adds the colour name as a class
+             (see `.teal` below). row-gap / column-gap on the wrapping row. -->
         <view class="chips">
-            <view class="chip" r-for="c in colors">
+            <view class="chip" r-for="c in colors" :class="c" :style="`background: ${c}`">
                 <text class="chiplabel">{{ c }}</text>
             </view>
         </view>
@@ -45,7 +47,7 @@
     display: flex;
     align-items: center;
     padding: 6px 12px;
-    background: royalblue;            /* named color */
+    /* No static background — :style provides each chip's colour. */
     border-radius: 9999px;
   }
   .chiplabel { color: white; font-size: 14px; }
@@ -85,6 +87,10 @@
     cursor: pointer;
     align-self: flex-start;
   }
+  /* `:class="c"` adds the colour name as a class. `:style` owns the background
+     (inline wins), so a class rule is free to add something orthogonal — here a
+     ring on the teal chip, proving both bindings apply. */
+  .teal { border: 3px white solid; }
 </style>
 
 <script>

@@ -987,6 +987,15 @@ mod tests {
         assert_eq!(bg_rgb(&doc.root.children[0]), Some((0.0, 0.0, 1.0)), "!warm → .cool");
     }
 
+    /// The shipped `css-showcase.rux` (the `:class`/`:style` chip demo) loads and
+    /// builds — a smoke test that the example stays valid.
+    #[test]
+    fn css_showcase_example_builds() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/css-showcase.rux");
+        let doc = Document::load(path).expect("css-showcase.rux builds");
+        assert!(find_text(&doc.root, "teal"), "a :style-coloured chip rendered");
+    }
+
     /// `:style` object form (`#{ background: c }`) — each entry a declaration.
     #[test]
     fn style_object_form() {
