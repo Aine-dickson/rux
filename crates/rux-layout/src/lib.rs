@@ -434,6 +434,10 @@ pub struct Node {
     /// time (the label inherits its target's `@tap`), so tapping the label toggles
     /// the target the same way tapping the target would.
     pub label_for: Option<String>,
+    /// A label whose `for=` targets a *text* input: the target input's `r-model`.
+    /// The layout emits a `FocusRegion` here so tapping the label focuses that input
+    /// (the caret lands in the input itself, matched by model).
+    pub focus_model: Option<String>,
 }
 
 impl Node {
@@ -451,6 +455,7 @@ impl Node {
             hidden: false,
             id: None,
             label_for: None,
+            focus_model: None,
         }
     }
 
@@ -468,6 +473,7 @@ impl Node {
             hidden: false,
             id: None,
             label_for: None,
+            focus_model: None,
         }
     }
 
@@ -485,6 +491,7 @@ impl Node {
             hidden: false,
             id: None,
             label_for: None,
+            focus_model: None,
         }
     }
 
@@ -1006,6 +1013,7 @@ fn build(
     paint: &mut Vec<(NodeId, PaintKind)>,
     handlers: &mut Vec<(NodeId, String, Cursor)>,
     models: &mut Vec<Bound>,
+    focus_labels: &mut Vec<(NodeId, String)>,
     hidden: &mut Vec<NodeId>,
     opacities: &mut Vec<(NodeId, f32)>,
     scrolls: &mut Vec<NodeId>,
@@ -1065,7 +1073,7 @@ fn build(
         let children: Vec<NodeId> = node
             .children
             .iter()
-            .map(|c| build(tree, c, paint, handlers, models, hidden, opacities, scrolls, transforms, vp))
+            .map(|c| build(tree, c, paint, handlers, models, focus_labels, hidden, opacities, scrolls, transforms, vp))
             .collect();
         let id = if children.is_empty() {
             tree.new_leaf(to_taffy(&node.style, vp)).expect("taffy leaf")
@@ -1098,6 +1106,9 @@ fn build(
             options: node.options.clone(),
         });
     }
+    if let Some(fm) = &node.focus_model {
+        focus_labels.push((id, fm.clone()));
+    }
     if node.hidden {
         hidden.push(id);
     }
@@ -1122,6 +1133,7 @@ fn collect(
     paint: &[(NodeId, PaintKind)],
     handlers: &[(NodeId, String, Cursor)],
     models: &[Bound],
+    focus_labels: &[(NodeId, String)],
     hidden: &[NodeId],
     opacities: &[(NodeId, f32)],
     scrolls: &[NodeId],
@@ -1231,6 +1243,21 @@ fn collect(
                 content: ic.clone(),
             })),
         }
+    }
+
+    // A `for=` label targeting a text input: a focus region at the label's box,
+    // carrying the *target's* model, so tapping the label focuses that input.
+    if let Some((_, model)) = focus_labels.iter().find(|(nid, _)| *nid == id) {
+        out.focuses.push(FocusRegion {
+            x,
+            y,
+            width: layout.size.width,
+            height: layout.size.height,
+            model: model.clone(),
+            text: None,
+            multiline: false,
+            scroll_id: None,
+        });
     }
 
     if let Some((_, handler, cursor)) = handlers.iter().find(|(nid, ..)| *nid == id) {
@@ -1358,6 +1385,7 @@ fn collect(
             paint,
             handlers,
             models,
+            focus_labels,
             hidden,
             opacities,
             scrolls,
@@ -1415,6 +1443,7 @@ pub fn layout_scrolled(
     let mut paint = Vec::new();
     let mut handlers = Vec::new();
     let mut models = Vec::new();
+    let mut focus_labels = Vec::new();
     let mut hidden = Vec::new();
     let mut opacities = Vec::new();
     let mut scrolls = Vec::new();
@@ -1426,6 +1455,7 @@ pub fn layout_scrolled(
         &mut paint,
         &mut handlers,
         &mut models,
+        &mut focus_labels,
         &mut hidden,
         &mut opacities,
         &mut scrolls,
@@ -1476,8 +1506,8 @@ pub fn layout_scrolled(
 
     let mut out = Layout::default();
     collect(
-        &tree, root_id, 0.0, 0.0, &paint, &handlers, &models, &hidden, &opacities, &scrolls,
-        &transforms, offsets, vp, &mut out,
+        &tree, root_id, 0.0, 0.0, &paint, &handlers, &models, &focus_labels, &hidden, &opacities,
+        &scrolls, &transforms, offsets, vp, &mut out,
     );
     out
 }

@@ -862,6 +862,27 @@ mod tests {
         assert_eq!(doc2.root.children[1].on_tap.as_deref(), Some("on = true"));
     }
 
+    /// A label whose `for=` targets a *text* input (no `@tap`) gets a `focus_model`
+    /// instead, so the shell focuses that input when the label is tapped.
+    #[test]
+    fn label_for_focuses_a_text_input() {
+        let doc = Document::from_source(
+            "<template><screen>\
+               <input id=\"nm\" r-model=\"name\" />\
+               <text for=\"nm\">Name</text>\
+             </screen></template>
+             <script>let name = signal(\"\");</script>",
+        )
+        .expect("load");
+        let label = &doc.root.children[1];
+        assert_eq!(label.on_tap, None, "a text-input label has no tap handler");
+        assert_eq!(
+            label.focus_model.as_deref(),
+            Some("name"),
+            "label focuses the text input's model"
+        );
+    }
+
     /// A checked box gets a synthetic `checked` class, so its checked look is
     /// plain CSS. A radio matches on its `value`.
     #[test]

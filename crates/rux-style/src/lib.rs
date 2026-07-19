@@ -254,28 +254,37 @@ pub fn eval_text_binding(binding: &TextBinding, engine: &mut Engine) -> String {
 /// the `@tap` of the input whose `id` it targets, so tapping the label activates
 /// that input (toggles a checkbox/radio) exactly as tapping the input would. A
 /// build-time link — no shell plumbing, and it survives a reconcile (which rebuilds).
+/// A `for=` target's tap handler (toggles/buttons) or bound model (text inputs).
+type LabelTarget = (Option<String>, Option<String>);
+
 fn link_labels(root: &mut LayoutNode) {
-    let mut targets: HashMap<String, String> = HashMap::new();
+    let mut targets: HashMap<String, LabelTarget> = HashMap::new();
     collect_label_targets(root, &mut targets);
     if !targets.is_empty() {
         apply_label_targets(root, &targets);
     }
 }
 
-fn collect_label_targets(node: &LayoutNode, targets: &mut HashMap<String, String>) {
-    if let (Some(id), Some(tap)) = (&node.id, &node.on_tap) {
-        targets.entry(id.clone()).or_insert_with(|| tap.clone());
+fn collect_label_targets(node: &LayoutNode, targets: &mut HashMap<String, LabelTarget>) {
+    if let Some(id) = &node.id {
+        targets
+            .entry(id.clone())
+            .or_insert_with(|| (node.on_tap.clone(), node.model.clone()));
     }
     for child in &node.children {
         collect_label_targets(child, targets);
     }
 }
 
-fn apply_label_targets(node: &mut LayoutNode, targets: &HashMap<String, String>) {
-    if node.on_tap.is_none() {
-        if let Some(target) = &node.label_for {
-            if let Some(tap) = targets.get(target) {
+fn apply_label_targets(node: &mut LayoutNode, targets: &HashMap<String, LabelTarget>) {
+    if node.on_tap.is_none() && node.focus_model.is_none() {
+        if let Some((tap, model)) = node.label_for.as_ref().and_then(|t| targets.get(t)) {
+            if let Some(tap) = tap {
+                // A tappable target (checkbox/radio/button): tap the label to run it.
                 node.on_tap = Some(tap.clone());
+            } else if let Some(model) = model {
+                // A text input: tap the label to focus it.
+                node.focus_model = Some(model.clone());
             }
         }
     }
@@ -1222,6 +1231,7 @@ fn build_node(
         hidden,
         id: el.attr("id").map(str::to_string),
         label_for: el.attr("for").map(str::to_string),
+        focus_model: None,
     }
 }
 
