@@ -304,7 +304,14 @@ impl Document {
             .filter(|t| !t.deps.is_disjoint(changed))
             .map(|t| t.path.clone())
             .collect();
-        if affected.is_empty() && toggles.is_empty() {
+        let components: Vec<Vec<usize>> = self
+            .registry
+            .components
+            .iter()
+            .filter(|c| !c.deps.is_disjoint(changed))
+            .map(|c| c.path.clone())
+            .collect();
+        if affected.is_empty() && toggles.is_empty() && components.is_empty() {
             return;
         }
         affected.sort_by_key(Vec::len);
@@ -341,6 +348,20 @@ impl Document {
                 let fresh_node = fresh.clone();
                 if let Some(live) = node_at_mut(&mut self.root, p) {
                     *live = fresh_node;
+                }
+            }
+        }
+        // Components: replace the whole instance subtree, re-applying focus scoped
+        // to it (a component may hold inputs whose caret must be restored).
+        for p in &components {
+            if roots.iter().any(|r| p.starts_with(r.as_slice())) {
+                continue;
+            }
+            if let Some(fresh) = node_at(&fresh_root, p) {
+                let fresh_node = fresh.clone();
+                if let Some(live) = node_at_mut(&mut self.root, p) {
+                    *live = fresh_node;
+                    apply_focus(live, self.focus.as_ref());
                 }
             }
         }
@@ -709,11 +730,10 @@ mod tests {
         assert_eq!(doc.root.children[0].options.as_ref().unwrap().len(), 3, "list grew in place");
     }
 
-    /// A component prop is the last case that still declines to a full rebuild: a
-    /// prop change re-expands the component subtree, which the in-place path
-    /// doesn't do yet.
+    /// A component prop change reconciles the instance subtree in place: the
+    /// re-expanded component shows the new prop value, no wholesale rebuild.
     #[test]
-    fn patch_declines_on_component_prop() {
+    fn component_prop_reconciles_in_place() {
         use std::fs;
         let dir = std::env::temp_dir().join(format!("rux_prop_{}", std::process::id()));
         let comp_dir = dir.join("components");
@@ -731,8 +751,10 @@ mod tests {
         .unwrap();
 
         let mut doc = Document::load(dir.join("app.rux")).expect("load app");
+        assert!(find_text(&doc.root, "1"), "prop starts at 1");
         let changed = doc.engine_mut().run_handler_tracked("n = 2");
-        assert!(!doc.patch(&changed), "a component prop change still needs a rebuild");
+        assert!(doc.patch(&changed), "a component prop change reconciles in place");
+        assert!(find_text(&doc.root, "2"), "component re-expanded with the new prop");
 
         let _ = fs::remove_dir_all(&dir);
     }

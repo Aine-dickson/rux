@@ -109,6 +109,17 @@ pub struct ToggleBinding {
     pub deps: HashSet<String>,
 }
 
+/// An expanded component instance, reconcilable in place: a change to a prop's
+/// signals re-expands this subtree. The node's whole subtree is re-built and
+/// spliced at `path` (with focus re-applied, since a component may hold inputs).
+#[derive(Clone, Debug)]
+pub struct ComponentBinding {
+    /// Path to the component's root node.
+    pub path: Vec<usize>,
+    /// Signals its props read.
+    pub deps: HashSet<String>,
+}
+
 /// A reactive attribute whose change rewrites one field of a node in place, with
 /// no shape change: `:src` on an `<image>` or `:options` on a `<select>`.
 #[derive(Clone, Debug)]
@@ -139,18 +150,13 @@ pub struct BindingRegistry {
     pub options: Vec<AttrBinding>,
     pub structural_parents: Vec<StructuralParent>,
     pub toggles: Vec<ToggleBinding>,
+    pub components: Vec<ComponentBinding>,
     /// Signals read by any non-patchable, non-reconcilable site. A change touching
-    /// one of these means the runtime must rebuild rather than patch.
+    /// one of these means the runtime must rebuild rather than patch. (Empty now —
+    /// kept as a safety net for any future non-reconcilable binding.)
     pub structural: HashSet<String>,
 }
 
-impl BindingRegistry {
-    /// Record signals read by a non-text site (structural directive, attribute
-    /// binding, input value, component prop) — a change to any forces a rebuild.
-    fn note_structural(&mut self, deps: HashSet<String>) {
-        self.structural.extend(deps);
-    }
-}
 
 /// Bake the active `r-for` loop bindings into a handler as a `let` prelude, so it
 /// still resolves them when it runs later in global scope (the loop variables are
@@ -1251,17 +1257,24 @@ fn expand_component(
     reg: &mut BindingRegistry,
 ) -> LayoutNode {
     let mut props: Locals = Vec::new();
+    let mut prop_deps: HashSet<String> = HashSet::new();
     for (key, expr) in &el.attrs {
         if let Some(name) = key.strip_prefix(':') {
             // Props are evaluated in the caller's scope and become the component's
-            // only locals — a prop change re-expands the component, so it's a
-            // structural read.
+            // only locals — a prop change re-expands this subtree (a reconcile).
             let (value, deps) = engine.eval_value_tracked(expr, parent_locals);
-            reg.note_structural(deps);
+            prop_deps.extend(deps);
             if let Some(value) = value {
                 props.push((name.to_string(), value));
             }
         }
+    }
+    // Reconcile this component instance in place when a prop's signals change.
+    if !prop_deps.is_empty() {
+        reg.components.push(ComponentBinding {
+            path: path.to_vec(),
+            deps: prop_deps,
+        });
     }
 
     // The component expands in place at this element's path, so its root node
