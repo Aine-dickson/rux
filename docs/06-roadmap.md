@@ -842,3 +842,17 @@ milestone in its own right, not a Friday slice. Recorded 2026-07-18.
    and whatever language changes the fork carries). Once we diverge from stock rhai,
    pointing users at rhai's docs is no longer correct. This depends on item 2's API
    being settled, so it comes last of the three.
+
+   A concrete fork motivator, established by probing the engine directly: **no
+   stock-rhai callable can mutate a top-level signal.** A named `fn` errors (signals
+   aren't in a function's scope — rhai functions are pure/scopeless); a closure's
+   `taps = taps + 1` rebinds the captured name rather than writing back; and even a
+   pre-shared `Dynamic` cell with `+=` fails to propagate. Only a statement run
+   *directly in the top scope* mutates a signal, which is why inline
+   `@tap="taps = taps + 1"` works but a reusable handler function does not. So
+   JS-style arrow functions that mutate signals — `const inc = () => taps++` — cannot
+   be real functions over stock rhai. Two paths: inline them as named statement
+   templates expanded at the handler call site (no engine change, but they stay
+   compile-time macros, not first-class values), or make signals shared cells the
+   fork can write through (true first-class functions, but a reactivity-core change).
+   The second is the language change this fork would carry.
