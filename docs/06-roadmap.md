@@ -501,6 +501,48 @@ Both are follow-ups. (Radios still group by shared `r-model`, not `name`.)
   mechanism `set_focus` calls on focus moves.) Toggle `checked`-class in place is a
   separate small slice (no shape change) that can land alongside.
 
+### Vue-style `:` attribute bindings — `:class`, `:style`, `:attr` (planned, v0.3.x)
+
+**Goal: inherit Vue's `:whatever` model.** `:` uniformly means "bind this attribute
+to a script expression." Already partly true (`:src`, `:options`, component `:props`);
+this makes it general and adds the two the examples keep reaching for. **String
+interpolation is already free** — `:` values evaluate as rhai, and rhai has backtick
+template literals (`:style="\`background: ${c}\`"`), so no template-layer work is
+needed.
+
+- **`:class`** — dynamic classes fed into the cascade. This is the synthetic
+  `checked`-class pattern generalized: evaluate and push into `desc.classes` right
+  beside the `checked` push in `build_node` (`rux-style`), then the cascade matches
+  them. Forms to support (Vue parity):
+  - string — `:class="c"` → those classes;
+  - array — `:class="[a, b]"` → each item a class;
+  - object (conditional) — `:class="#{ active: is_active }"` → keys whose value is
+    truthy. **Note:** rhai object maps are `#{ … }`, not Vue's `{ … }`, and `Value`
+    has no `Map` variant today — the object form needs a `Value::Map` (or
+    Dynamic-level handling). String/array forms need neither.
+- **`:style`** — dynamic inline CSS, applied at **highest priority** (inline wins
+  over the cascade). Forms: string (`:style="\`background: ${c}\`"`) and object
+  (`#{ background: c }`). **Also honor static `style="…"`** while here (not honored
+  today). Needs an **inline-declaration parser** (`"a: b; c: d"` → pairs; reuse
+  `lightningcss`) merged into `props` before `interpret`.
+- **`:attr` (general)** — bind any attribute to an expression, uniformly (today only
+  a hand-picked set is dynamic).
+- **Reactivity — already built.** A `:class`/`:style` change re-cascades/re-interprets
+  *one node* — exactly the **node-splice reconcile** toggles and components already
+  use. Record a `{path, deps}` binding and add it to `reconcile`'s node-splice list;
+  no new reconcile logic. Inside an `r-for`, a change to the *collection* signal
+  reconciles the parent (re-evaluating `:style` per item), which is why the chip
+  example "just works" once the binding is wired.
+
+**Note on the example:** for *data-driven* colours, `:style` is the workhorse;
+`:class="c"` only does something if a matching CSS rule exists (`.red { … }`) — a raw
+hex like `#a1b2c3` isn't a usable class. Use `:class` for values that map to
+predefined classes (themes/states), `:style` for computed values.
+
+**Effort:** `:class` string/array small; `:style` string medium (inline parser); the
+object forms gate on the `Value::Map` decision. Slots with the "real work" CSS bucket
+(`var()`, `@media`) below.
+
 **But the cost is not really performance — it is structural, and it compounds
 through v0.2.** Because the tree is thrown away on every change, every piece of
 *ephemeral UI state* must be restored by hand afterwards. Two such passes exist
