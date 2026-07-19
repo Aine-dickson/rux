@@ -503,15 +503,24 @@ Both are follow-ups. (Radios still group by shared `r-model`, not `name`.)
 
 ### Vue-style `:` attribute bindings — `:class`, `:style`, `:attr`
 
-**✅ First slice done (2026-07-19):** string/array **`:class`** fed into the cascade,
-string **`:style`** as highest-priority inline CSS, **static `style=`** honored, and
-**rhai backtick interpolation** (`:style="\`background: ${c}\`"`) confirmed working.
-Reactivity reuses the node-splice reconcile (a `StyledBinding` reconciles the node
-when a signal it reads changes; an `r-for`-local-only `:style` rides the loop's
-reconcile — the chip example works). **Deferred:** object/conditional forms
-(`:class="#{ active: cond }"`, `:style="#{ background: c }"`) — they need a
-`Value::Map`. Tested (`dynamic_class_reconciles`,
-`dynamic_inline_style_interpolates_and_reconciles`, `r_for_chip_styles`).
+**✅ Done — full Vue parity (2026-07-19):**
+- **`:class`** — string, array, and **object/conditional** (`#{ active: cond }` →
+  keys whose value is truthy), fed into the cascade.
+- **`:style`** — string and **object** (`#{ background: c }`) inline CSS at highest
+  priority; **static `style=`** honored too.
+- **Interpolation** — rhai backtick template literals (`:style="\`background:
+  ${c}\`"`), confirmed working — no template-layer code.
+- **`Value::Map`** added (rux-reactive) with rhai `#{…}` ↔ `Value` conversion, the
+  foundation for the object forms.
+- **Reactivity** reuses the node-splice reconcile (a `StyledBinding` reconciles the
+  node when a signal it reads changes; an `r-for`-local-only `:style` rides the
+  loop's reconcile). The chip demo is `examples/css-showcase.rux`.
+- Tested: `dynamic_class_reconciles`, `dynamic_inline_style_interpolates_and_reconciles`,
+  `r_for_chip_styles`, `conditional_class_object_form`, `style_object_form`,
+  `css_showcase_example_builds`.
+
+**Still open:** general `:attr` for *arbitrary* attributes (only the styling/data
+ones are dynamic today); rhai's object syntax is `#{…}`, not Vue's `{…}`.
 
 **Goal: inherit Vue's `:whatever` model.** `:` uniformly means "bind this attribute
 to a script expression." Already partly true (`:src`, `:options`, component `:props`);
