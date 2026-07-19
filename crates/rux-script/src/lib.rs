@@ -302,6 +302,26 @@ mod tests {
         assert_eq!(e.eval_display("double(level)", &[]), "160");
     }
 
+    /// rhai backtick template literals interpolate `${…}` — this is what makes
+    /// `:style="`background: ${c}`"` work (no template-layer code in Rux).
+    #[test]
+    fn evaluates_backtick_string_interpolation() {
+        let mut e = engine(); // has `level = 82`
+        // Strings interpolate exactly — the common `:style`/`:class` case.
+        assert_eq!(
+            e.eval_display("`background: ${c}`", &[("c".into(), Value::Text("teal".into()))]),
+            "background: teal"
+        );
+        // WRINKLE: a whole-number signal renders through rhai's float default
+        // (`82.0`), NOT Rux's `to_display` (`82`), inside a backtick string — signals
+        // are stored as f64. Valid CSS (`82.0px` works) but not pretty; interpolate
+        // strings, or convert (`${level.to_int()}`), when you need `82`.
+        assert_eq!(e.eval_display("`level is ${level}`", &[]), "level is 82.0");
+        // The read is tracked, so a `:style` reading a signal reconciles on change.
+        let (_, deps) = e.eval_value_tracked("`level: ${level}`", &[]);
+        assert!(deps.contains("level"));
+    }
+
     #[test]
     fn calls_host_functions() {
         let mut e = engine();
@@ -360,3 +380,4 @@ mod tests {
         assert_eq!(changed(&mut e, "level"), Vec::<String>::new()); // a bare read changes nothing
     }
 }
+

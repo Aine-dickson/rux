@@ -2,98 +2,115 @@
     <screen class="app">
         <text class="title">CSS showcase</text>
 
-        <!-- Dynamic bindings: :style sets each chip's background from the loop
-             value (interpolated), and :class="c" adds the colour name as a class
-             (see `.teal` below). row-gap / column-gap on the wrapping row. -->
         <view class="chips">
             <view class="chip" r-for="c in colors" :class="c" :style="`background: ${c}`">
-                <text class="chiplabel">{{ c }}</text>
+                <text class="chiplabel" @tap='stage_color = c'>{{ c }}</text>
             </view>
         </view>
 
         <!-- position: absolute + inset, pinned inside a relative box -->
-        <view class="stage">
+        <view class="stage" :style="`background: ${stage_color}`">
             <view class="badge">
-                <text>{{ n }}</text>
+                <text>{{ colors.len() }}</text>
             </view>
-            <button class="tap" @tap="n = n + 1">
-                <text>tap to count</text>
+            <button class="tap" @tap='colors.push(new_color); new_color = "";'>
+                <text>Tap to add {{new_color}}</text>
             </button>
         </view>
+
+        <view>
+            <input class="field" r-model="new_color" placeholder="Add new color" />
+        </view>
+
     </screen>
 </template>
 
 <style>
-  .app {
-    display: flex;
-    flex-direction: column;
-    gap: 20px;
-    padding: 24px;
-    background: navy;                 /* named color (was silently ignored) */
-  }
-  .title {
-    color: white;
-    font-size: 24px;
-    font-weight: 700;
-  }
+    /* `:class="c"` adds the colour name as a class. `:style` owns the background
+     (inline wins)*/
+    .teal { border: 2px white solid; }
 
-  .chips {
-    display: flex;
-    flex-wrap: wrap;
-    row-gap: 8px;                     /* per-axis gaps */
-    column-gap: 16px;
-  }
-  .chip {
-    display: flex;
-    align-items: center;
-    padding: 6px 12px;
-    /* No static background — :style provides each chip's colour. */
-    border-radius: 9999px;
-  }
-  .chiplabel { color: white; font-size: 14px; }
+    .field {
+        display: flex;
+        width: 20rem;
+        padding: 10px;
+        background: #313244;
+        border: 2px #45475a solid;
+        border-radius: 8px;
+        color: #cdd6f4;
+        font-size: 16px;
+        /* A word longer than the field can't shrink below min-content, so without
+       this it would hang out over the edge. */
+        overflow-wrap: break-word;
+    }
 
-  .stage {
-    position: relative;
-    /* Width is required: this box's only children are position:absolute (out of
+    .app {
+        display: flex;
+        flex-direction: column;
+        gap: 20px;
+        padding: 24px;
+        background: navy;                 /* named color (was silently ignored) */
+    }
+    .title {
+        color: white;
+        font-size: 24px;
+        font-weight: 700;
+    }
+
+    .chips {
+        display: flex;
+        flex-wrap: wrap;
+        row-gap: 8px;                     /* per-axis gaps */
+        column-gap: 16px;
+    }
+    .chip {
+        display: flex;
+        align-items: center;
+        padding: 6px 12px;
+        background: #23a8e6;
+        border-radius: 9999px;
+    }
+    .chiplabel { color: white; font-size: 14px; cursor: pointer; }
+
+    .stage {
+        position: relative;
+        /* Width is required: this box's only children are position:absolute (out of
        flow), so with the flex cross-axis defaulting to hug it would collapse to
        0px and the inset-positioned children would pin to the wrong edge. */
-    width: 100%;
-    height: 120px;
-    background: #1e1e2e;
-    border-radius: 12px;
-  }
-  /* Pinned to the top-right corner by inset, out of normal flow. */
-  .badge {
-    position: absolute;
-    top: 10px;
-    right: 10px;
-    padding: 4px 10px;
-    background: gold;
-    color: black;
-    border-radius: 8px;
-    font-weight: 700;
-    display: flex;
-    justify-content: center;
-    align-items: center;
-  }
-  .tap {
-    position: absolute;
-    bottom: 12px;
-    left: 12px;
-    padding: 10px 16px;
-    background: mediumseagreen;
-    color: white;
-    border-radius: 8px;
-    cursor: pointer;
-    align-self: flex-start;
-  }
-  /* `:class="c"` adds the colour name as a class. `:style` owns the background
-     (inline wins), so a class rule is free to add something orthogonal — here a
-     ring on the teal chip, proving both bindings apply. */
-  .teal { border: 3px white solid; }
+        width: 100%;
+        height: 120px;
+        background: #1e1e2e;
+        border-radius: 12px;
+    }
+    /* Pinned to the top-right corner by inset, out of normal flow. */
+    .badge {
+        position: absolute;
+        top: 10px;
+        right: 10px;
+        padding: 4px 10px;
+        background: gold;
+        color: black;
+        border-radius: 8px;
+        font-weight: 700;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+    }
+    .tap {
+        position: absolute;
+        bottom: 12px;
+        left: 12px;
+        padding: 10px 16px;
+        background: mediumseagreen;
+        color: white;
+        border-radius: 8px;
+        cursor: pointer;
+        align-self: flex-start;
+    }
 </style>
 
 <script>
-  let n = signal(0);
-  let colors = signal(["crimson", "teal", "orange", "orchid", "tomato", "slateblue"]);
+    let colors = signal(["crimson", "teal", "orange", "orchid", "tomato", "slateblue"]);
+    let new_color = signal("");
+    let stage_color = signal("");
 </script>
