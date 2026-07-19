@@ -467,15 +467,24 @@ rationale](./01-rationale.md#ephemeral-ui-state-automatic-by-default-controllabl
   4. ✅ **`:src` / `:options` patch in place.** Value-like: an `AttrBinding` (path +
      expr + deps) rewrites `node.image.src` (then `resolve_images`) or
      `node.options` — no shape change, out of `reg.structural`. Tested.
-  5. ⏳ **Component props → then delete `apply_focus`.** The *sole* remaining
-     force-rebuild case: a prop change re-expands a component subtree. Handle it as a
-     node-reconcile (splice the component node's subtree + scoped focus, like a
-     toggle but a whole subtree). Once done, **no interaction wholesale-rebuilds**, a
-     fresh tree is never made mid-session, and `apply_focus`'s restore role deletes
-     (it stays only as the *set-caret* mechanism `set_focus` calls).
-  6. ⏳ **Drive it.** `RUX_TRACE=1` — checkbox/radio taps, r-if/r-for changes, and
-     `:src`/`:options` now read `patched in place`; confirm a caret elsewhere is
-     undisturbed.
+  5. ✅ **Component props reconcile — the restore-pass category is closed.** A prop
+     change re-expands the instance subtree: `expand_component` records a
+     `ComponentBinding` (path + prop deps), and `reconcile` splices the whole subtree
+     + scoped focus. `note_structural` is removed — **`reg.structural` is now always
+     empty, so no interaction wholesale-rebuilds.** A fresh tree is only ever made on
+     hot-reload (`reload` → `Document::load`, focus legitimately reset), never on an
+     interaction.
+     - **`apply_focus` is not deleted, and shouldn't be** — the honest resolution.
+       It is (a) the *set-caret* mechanism `set_focus` calls, and (b) the *scoped*
+       restore `reconcile` runs after splicing a subtree that may hold the focused
+       input. What is gone is its role as a **per-interaction whole-tree restore
+       pass** — the stale-caret *category*. The whole-tree `apply_focus` in
+       `rebuild()` is now unreachable from interactions (kept as a safety fallback,
+       `patch` never returns false).
+  6. ⏳ **Drive it (the standing rule).** `RUX_TRACE=1` — every interaction now reads
+     `patched in place`; confirm across `form`/`list`/`scroll` that a caret, a
+     selection, and a scroll position are all undisturbed when something elsewhere
+     changes. This is the "not done until driven" gate for v0.3.2.
 
 ### Labels — `for=` (2026-07-19)
 

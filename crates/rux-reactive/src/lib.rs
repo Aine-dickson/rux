@@ -6,8 +6,11 @@
 //! — the untyped representation that `rux-script` and `rux-style` pass between
 //! each other for bindings, `r-for` locals, and props.
 //!
-//! The per-binding subscription model in `docs/04-architecture.md` is still
-//! unbuilt: a signal change rebuilds the whole tree.
+//! The per-binding subscription model in `docs/04-architecture.md` is now built
+//! (v0.3): `rux-script` tracks which signals each binding reads and which a
+//! handler writes, and `rux-runtime` patches/reconciles just the affected nodes
+//! in place instead of rebuilding the whole tree. This crate stays the shared
+//! `Value` type those layers pass around.
 
 /// A dynamically-typed signal value. Untyped so template interpolation and the
 /// future script tier can share one representation.
