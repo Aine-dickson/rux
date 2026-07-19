@@ -279,6 +279,12 @@ fn class_list(value: &Value) -> Vec<String> {
             .iter()
             .flat_map(|i| i.to_display().split_whitespace().map(str::to_string).collect::<Vec<_>>())
             .collect(),
+        // Object/conditional form: keys whose value is truthy.
+        Value::Map(entries) => entries
+            .iter()
+            .filter(|(_, v)| v.is_truthy())
+            .flat_map(|(k, _)| k.split_whitespace().map(str::to_string).collect::<Vec<_>>())
+            .collect(),
         _ => Vec::new(),
     }
 }
@@ -955,8 +961,16 @@ fn build_node(
     if let Some(expr) = el.attr(":style") {
         let (value, deps) = engine.eval_value_tracked(expr, locals);
         dyn_deps.extend(deps);
-        if let Some(v) = value {
-            merge_inline_style(&mut props, &v.to_display());
+        match value {
+            // Object form: `#{ background: c }` → each entry a declaration.
+            Some(Value::Map(entries)) => {
+                for (k, v) in entries {
+                    props.insert(k.to_ascii_lowercase(), v.to_display());
+                }
+            }
+            // String form: `"background: red"` (possibly interpolated).
+            Some(v) => merge_inline_style(&mut props, &v.to_display()),
+            None => {}
         }
     }
     // A `:class`/`:style` that reads a signal reconciles this node on change.

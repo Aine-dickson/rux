@@ -970,6 +970,34 @@ mod tests {
         assert_eq!(bg_rgb(&chips.children[1]), Some((0.0, 1.0, 0.0)), "second chip green");
     }
 
+    /// `:class` object/conditional form (`#{ hot: cond }`) — keys whose value is
+    /// truthy become classes; a change flips them and reconciles.
+    #[test]
+    fn conditional_class_object_form() {
+        let mut doc = Document::from_source(
+            "<template><screen><view class=\"chip\" :class=\"#{ hot: warm, cool: !warm }\" /></screen></template>
+             <style>.hot { background: #ff0000; } .cool { background: #0000ff; }</style>
+             <script>let warm = signal(true);</script>",
+        )
+        .expect("load");
+        assert_eq!(bg_rgb(&doc.root.children[0]), Some((1.0, 0.0, 0.0)), "warm → .hot");
+
+        let changed = doc.engine_mut().run_handler_tracked("warm = false");
+        assert!(doc.patch(&changed), "conditional class change reconciles");
+        assert_eq!(bg_rgb(&doc.root.children[0]), Some((0.0, 0.0, 1.0)), "!warm → .cool");
+    }
+
+    /// `:style` object form (`#{ background: c }`) — each entry a declaration.
+    #[test]
+    fn style_object_form() {
+        let doc = Document::from_source(
+            "<template><screen><view :style=\"#{ background: col }\" /></screen></template>
+             <script>let col = signal(\"#00ff00\");</script>",
+        )
+        .expect("load");
+        assert_eq!(bg_rgb(&doc.root.children[0]), Some((0.0, 1.0, 0.0)), ":style object → green");
+    }
+
     /// A checked box gets a synthetic `checked` class, so its checked look is
     /// plain CSS. A radio matches on its `value`.
     #[test]

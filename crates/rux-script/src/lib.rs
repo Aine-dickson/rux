@@ -235,6 +235,11 @@ fn to_dynamic(v: &Value) -> Dynamic {
             let arr: rhai::Array = items.iter().map(to_dynamic).collect();
             Dynamic::from(arr)
         }
+        Value::Map(entries) => {
+            let map: rhai::Map =
+                entries.iter().map(|(k, v)| (k.as_str().into(), to_dynamic(v))).collect();
+            Dynamic::from(map)
+        }
     }
 }
 
@@ -253,6 +258,11 @@ fn from_dynamic(d: &Dynamic) -> Value {
     }
     if let Some(arr) = d.clone().try_cast::<rhai::Array>() {
         return Value::List(arr.iter().map(from_dynamic).collect());
+    }
+    if let Some(map) = d.clone().try_cast::<rhai::Map>() {
+        return Value::Map(
+            map.iter().map(|(k, v)| (k.to_string(), from_dynamic(v))).collect(),
+        );
     }
     Value::Text(d.to_string())
 }
