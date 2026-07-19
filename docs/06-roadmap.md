@@ -464,15 +464,28 @@ rationale](./01-rationale.md#ephemeral-ui-state-automatic-by-default-controllabl
      Tested. (Radios group by their shared `r-model` signal — no `name` attribute;
      a radio is checked when `signal == value`, and selecting one un-checks the
      rest.)
-  4. ⏳ **Remaining force-rebuild cases → then delete `apply_focus`.** Only `:src`
-     (image), `:options` (select data), and component props still wholesale-rebuild.
-     The first two are *value-like* (patch the node's `src`/`options` field in
-     place, no shape change); component props re-expand a component subtree
-     (reconcile). Once those are handled, no interaction wholesale-rebuilds, so a
-     fresh tree is never made mid-session and `apply_focus`'s restore role can be
-     deleted (it stays only as the *set-caret* mechanism `set_focus` calls).
-  5. ⏳ **Drive it.** `RUX_TRACE=1` — checkbox/radio taps and r-if/r-for changes now
-     read `patched in place`; confirm a caret in another field is undisturbed.
+  4. ✅ **`:src` / `:options` patch in place.** Value-like: an `AttrBinding` (path +
+     expr + deps) rewrites `node.image.src` (then `resolve_images`) or
+     `node.options` — no shape change, out of `reg.structural`. Tested.
+  5. ⏳ **Component props → then delete `apply_focus`.** The *sole* remaining
+     force-rebuild case: a prop change re-expands a component subtree. Handle it as a
+     node-reconcile (splice the component node's subtree + scoped focus, like a
+     toggle but a whole subtree). Once done, **no interaction wholesale-rebuilds**, a
+     fresh tree is never made mid-session, and `apply_focus`'s restore role deletes
+     (it stays only as the *set-caret* mechanism `set_focus` calls).
+  6. ⏳ **Drive it.** `RUX_TRACE=1` — checkbox/radio taps, r-if/r-for changes, and
+     `:src`/`:options` now read `patched in place`; confirm a caret elsewhere is
+     undisturbed.
+
+### Labels — `for=` (2026-07-19)
+
+Closed the "label without `for`" gap for **toggle targets**: `id`/`label_for` on the
+layout `Node`, and a build-time `link_labels` pass gives a `for=` label (with no
+`@tap` of its own) the `@tap` of the input whose `id` it targets — so tapping the
+label toggles the checkbox/radio. Runs inside the build, so it survives a reconcile.
+**Not covered:** focusing a *text* input from its label (a text input has no `@tap`;
+needs a shell focus-by-id path) — and `role="label"` semantics for accessibility.
+Both are follow-ups. (Radios still group by shared `r-model`, not `name`.)
 - ⏳ **Then delete `apply_focus`** — once no structural change rebuilds, a fresh
   tree is never made mid-session, so caret/selection live on the persistent tree
   and the restore pass drops. (`apply_focus` stays only as the *set-caret*
