@@ -109,16 +109,34 @@ pub struct ToggleBinding {
     pub deps: HashSet<String>,
 }
 
+/// A reactive attribute whose change rewrites one field of a node in place, with
+/// no shape change: `:src` on an `<image>` or `:options` on a `<select>`.
+#[derive(Clone, Debug)]
+pub struct AttrBinding {
+    /// Path to the node the attribute is on.
+    pub path: Vec<usize>,
+    /// The attribute expression.
+    pub expr: String,
+    /// `r-for` locals captured at build.
+    pub locals: Vec<(String, Value)>,
+    /// Signals the expression reads.
+    pub deps: HashSet<String>,
+}
+
 /// What a build discovered about reactivity: the patchable bindings (text `{{ }}`,
-/// input values, `r-show` visibility), the parents that hold structural directives
-/// and the toggle nodes (for reconciliation), and the signals whose change can
-/// *not* be handled in place at all (attributes, component props) and so require a
-/// full rebuild.
+/// input values, `r-show` visibility, `:src`/`:options` attributes), the parents
+/// that hold structural directives and the toggle nodes (for reconciliation), and
+/// the signals whose change can *not* be handled in place at all (component props)
+/// and so require a full rebuild.
 #[derive(Clone, Debug, Default)]
 pub struct BindingRegistry {
     pub text: Vec<TextBinding>,
     pub value: Vec<ValueBinding>,
     pub show: Vec<ShowBinding>,
+    /// `:src` on `<image>` — rewrites the image source.
+    pub src: Vec<AttrBinding>,
+    /// `:options` on `<select>` — rewrites the option list.
+    pub options: Vec<AttrBinding>,
     pub structural_parents: Vec<StructuralParent>,
     pub toggles: Vec<ToggleBinding>,
     /// Signals read by any non-patchable, non-reconcilable site. A change touching
@@ -230,6 +248,19 @@ pub fn build_styled_tree(
 /// the runtime writes into the node at `binding.path` when a dependency changes.
 pub fn eval_text_binding(binding: &TextBinding, engine: &mut Engine) -> String {
     interpolate_tracked(&binding.template, engine, &binding.locals).0
+}
+
+/// Recompute a `:src` attribute to the (unresolved) image source string.
+pub fn eval_src_binding(binding: &AttrBinding, engine: &mut Engine) -> String {
+    engine.eval_display(&binding.expr, &binding.locals)
+}
+
+/// Recompute a `:options` attribute to the option strings.
+pub fn eval_options_binding(binding: &AttrBinding, engine: &mut Engine) -> Vec<String> {
+    engine
+        .eval_value(&binding.expr, &binding.locals)
+        .and_then(|v| v.as_list().map(|items| items.iter().map(Value::to_display).collect()))
+        .unwrap_or_default()
 }
 
 /// Recompute an input's shown text and colour against the engine's current state:
@@ -922,8 +953,15 @@ fn build_node(
         let src = el
             .attr(":src")
             .map(|e| {
+                // `:src` rewrites the image source in place on change — no shape
+                // change, so it's patchable rather than a rebuild.
                 let (v, deps) = engine.eval_display_tracked(e, locals);
-                reg.note_structural(deps);
+                reg.src.push(AttrBinding {
+                    path: path.to_vec(),
+                    expr: e.to_string(),
+                    locals: locals.clone(),
+                    deps,
+                });
                 v
             })
             .or_else(|| el.attr("src").map(str::to_string))
@@ -1022,8 +1060,14 @@ fn build_node(
             .then(|| {
                 el.attr(":options")
                     .and_then(|e| {
+                        // `:options` rewrites the option list in place on change.
                         let (v, deps) = engine.eval_value_tracked(e, locals);
-                        reg.note_structural(deps);
+                        reg.options.push(AttrBinding {
+                            path: path.to_vec(),
+                            expr: e.to_string(),
+                            locals: locals.clone(),
+                            deps,
+                        });
                         v
                     })
                     .and_then(|v| v.as_list().map(|items| items.iter().map(Value::to_display).collect()))

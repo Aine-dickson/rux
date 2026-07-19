@@ -256,6 +256,29 @@ impl Document {
                 node.hidden = !visible;
             }
         }
+        // `:src` — rewrite the image source and re-resolve it (path + intrinsic size).
+        for binding in &self.registry.src {
+            if binding.deps.is_disjoint(changed) {
+                continue;
+            }
+            let raw = rux_style::eval_src_binding(binding, &mut self.engine);
+            if let Some(node) = node_at_mut(&mut self.root, &binding.path) {
+                if let Some(img) = node.image.as_mut() {
+                    img.src = raw;
+                }
+                resolve_images(node, &self.base);
+            }
+        }
+        // `:options` — rewrite a select's option list in place.
+        for binding in &self.registry.options {
+            if binding.deps.is_disjoint(changed) {
+                continue;
+            }
+            let opts = rux_style::eval_options_binding(binding, &mut self.engine);
+            if let Some(node) = node_at_mut(&mut self.root, &binding.path) {
+                node.options = Some(opts);
+            }
+        }
     }
 
     /// Reconcile the `r-if`/`r-for` parents whose deps changed: build a fresh tree,
@@ -671,17 +694,47 @@ mod tests {
         assert_eq!(input_text(&doc), "type…");
     }
 
-    /// A signal read by a *non-reconcilable* structural site still declines to a
-    /// full rebuild — here a `<select>`'s `:options` list.
+    /// `:options` rewrites a select's option list in place — no rebuild.
     #[test]
-    fn patch_declines_on_non_reconcilable_structural() {
+    fn options_patch_in_place() {
         let mut doc = Document::from_source(
             "<template><screen><input type=\"select\" r-model=\"fruit\" :options=\"fruits\" /></screen></template>
              <script>let fruit = signal(\"a\"); let fruits = signal([\"a\", \"b\"]);</script>",
         )
         .expect("load");
+        assert_eq!(doc.root.children[0].options.as_ref().unwrap().len(), 2);
+
         let changed = doc.engine_mut().run_handler_tracked("fruits = [\"a\", \"b\", \"c\"]");
-        assert!(!doc.patch(&changed), "an :options change still needs a rebuild");
+        assert!(doc.patch(&changed), "an :options change patches in place");
+        assert_eq!(doc.root.children[0].options.as_ref().unwrap().len(), 3, "list grew in place");
+    }
+
+    /// A component prop is the last case that still declines to a full rebuild: a
+    /// prop change re-expands the component subtree, which the in-place path
+    /// doesn't do yet.
+    #[test]
+    fn patch_declines_on_component_prop() {
+        use std::fs;
+        let dir = std::env::temp_dir().join(format!("rux_prop_{}", std::process::id()));
+        let comp_dir = dir.join("components");
+        fs::create_dir_all(&comp_dir).unwrap();
+        fs::write(
+            comp_dir.join("stat.rux"),
+            r#"<template><view><text>{{ value }}</text></view></template>"#,
+        )
+        .unwrap();
+        fs::write(
+            dir.join("app.rux"),
+            "<template><screen><stat :value=\"n\" /></screen></template>\n\
+             <script>\nuse components::stat;\nlet n = signal(1);\n</script>",
+        )
+        .unwrap();
+
+        let mut doc = Document::load(dir.join("app.rux")).expect("load app");
+        let changed = doc.engine_mut().run_handler_tracked("n = 2");
+        assert!(!doc.patch(&changed), "a component prop change still needs a rebuild");
+
+        let _ = fs::remove_dir_all(&dir);
     }
 
     /// Toggling a checkbox reconciles just that node (its checked style + mark) in
