@@ -832,6 +832,36 @@ mod tests {
         assert!(find_text(&doc.root, "4"), "new row content present");
     }
 
+    /// A label with `for="id"` inherits the `@tap` of the input with that `id`, so
+    /// tapping the label toggles the input — even though the label doesn't wrap it.
+    #[test]
+    fn label_for_inherits_the_targets_tap() {
+        let doc = Document::from_source(
+            "<template><screen>\
+               <input type=\"checkbox\" id=\"chk\" r-model=\"on\" />\
+               <text for=\"chk\">Remember me</text>\
+             </screen></template>
+             <script>let on = signal(false);</script>",
+        )
+        .expect("load");
+        // The label (child 1) picks up the checkbox's auto-generated toggle handler.
+        assert_eq!(
+            doc.root.children[1].on_tap.as_deref(),
+            Some("on = !on"),
+            "label with for= inherits the checkbox's @tap"
+        );
+        // An authored @tap on a label is not overridden.
+        let doc2 = Document::from_source(
+            "<template><screen>\
+               <input type=\"checkbox\" id=\"chk\" r-model=\"on\" />\
+               <text for=\"chk\" @tap=\"on = true\">Set</text>\
+             </screen></template>
+             <script>let on = signal(false);</script>",
+        )
+        .expect("load");
+        assert_eq!(doc2.root.children[1].on_tap.as_deref(), Some("on = true"));
+    }
+
     /// A checked box gets a synthetic `checked` class, so its checked look is
     /// plain CSS. A radio matches on its `value`.
     #[test]

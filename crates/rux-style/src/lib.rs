@@ -250,6 +250,40 @@ pub fn eval_text_binding(binding: &TextBinding, engine: &mut Engine) -> String {
     interpolate_tracked(&binding.template, engine, &binding.locals).0
 }
 
+/// Resolve `for=` labels: a node with `label_for` and no `@tap` of its own inherits
+/// the `@tap` of the input whose `id` it targets, so tapping the label activates
+/// that input (toggles a checkbox/radio) exactly as tapping the input would. A
+/// build-time link — no shell plumbing, and it survives a reconcile (which rebuilds).
+fn link_labels(root: &mut LayoutNode) {
+    let mut targets: HashMap<String, String> = HashMap::new();
+    collect_label_targets(root, &mut targets);
+    if !targets.is_empty() {
+        apply_label_targets(root, &targets);
+    }
+}
+
+fn collect_label_targets(node: &LayoutNode, targets: &mut HashMap<String, String>) {
+    if let (Some(id), Some(tap)) = (&node.id, &node.on_tap) {
+        targets.entry(id.clone()).or_insert_with(|| tap.clone());
+    }
+    for child in &node.children {
+        collect_label_targets(child, targets);
+    }
+}
+
+fn apply_label_targets(node: &mut LayoutNode, targets: &HashMap<String, String>) {
+    if node.on_tap.is_none() {
+        if let Some(target) = &node.label_for {
+            if let Some(tap) = targets.get(target) {
+                node.on_tap = Some(tap.clone());
+            }
+        }
+    }
+    for child in &mut node.children {
+        apply_label_targets(child, targets);
+    }
+}
+
 /// Recompute a `:src` attribute to the (unresolved) image source string.
 pub fn eval_src_binding(binding: &AttrBinding, engine: &mut Engine) -> String {
     engine.eval_display(&binding.expr, &binding.locals)
@@ -299,7 +333,7 @@ pub fn build_styled_tree_tracked(
     let mut ancestors: Vec<AncNode> = Vec::new();
     let locals = Locals::new();
     let mut reg = BindingRegistry::default();
-    let node = build_node(
+    let mut node = build_node(
         &sfc.template,
         &rules,
         &comps,
@@ -312,6 +346,7 @@ pub fn build_styled_tree_tracked(
         &[],
         &mut reg,
     );
+    link_labels(&mut node);
     Ok((node, reg))
 }
 
@@ -943,6 +978,8 @@ fn build_node(
         );
         node.on_tap = on_tap;
         node.hidden = hidden;
+        node.id = el.attr("id").map(str::to_string);
+        node.label_for = el.attr("for").map(str::to_string);
         return node;
     }
 
@@ -975,6 +1012,8 @@ fn build_node(
         );
         node.on_tap = on_tap;
         node.hidden = hidden;
+        node.id = el.attr("id").map(str::to_string);
+        node.label_for = el.attr("for").map(str::to_string);
         return node;
     }
 
@@ -1036,6 +1075,8 @@ fn build_node(
             }
         });
         node.hidden = hidden;
+        node.id = el.attr("id").map(str::to_string);
+        node.label_for = el.attr("for").map(str::to_string);
         return node;
     }
 
@@ -1131,6 +1172,8 @@ fn build_node(
         node.options = options;
         node.on_tap = on_tap;
         node.hidden = hidden;
+        node.id = el.attr("id").map(str::to_string);
+        node.label_for = el.attr("for").map(str::to_string);
         return node;
     }
 
@@ -1177,6 +1220,8 @@ fn build_node(
         multiline: false,
         options: None,
         hidden,
+        id: el.attr("id").map(str::to_string),
+        label_for: el.attr("for").map(str::to_string),
     }
 }
 

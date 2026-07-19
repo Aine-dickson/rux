@@ -428,6 +428,12 @@ pub struct Node {
     pub options: Option<Vec<String>>,
     /// `r-show="false"`: laid out (space reserved) but not painted.
     pub hidden: bool,
+    /// `id="…"` — a stable identifier a label's `for=` can target.
+    pub id: Option<String>,
+    /// `for="…"` on a label — the `id` of the input it labels. Resolved at build
+    /// time (the label inherits its target's `@tap`), so tapping the label toggles
+    /// the target the same way tapping the target would.
+    pub label_for: Option<String>,
 }
 
 impl Node {
@@ -443,6 +449,8 @@ impl Node {
             multiline: false,
             options: None,
             hidden: false,
+            id: None,
+            label_for: None,
         }
     }
 
@@ -458,6 +466,8 @@ impl Node {
             multiline: false,
             options: None,
             hidden: false,
+            id: None,
+            label_for: None,
         }
     }
 
@@ -473,6 +483,8 @@ impl Node {
             multiline: false,
             options: None,
             hidden: false,
+            id: None,
+            label_for: None,
         }
     }
 
