@@ -304,14 +304,23 @@ impl Document {
             .filter(|t| !t.deps.is_disjoint(changed))
             .map(|t| t.path.clone())
             .collect();
-        let components: Vec<Vec<usize>> = self
+        // Components and `:class`/`:style` nodes both reconcile by node-splice with
+        // scoped focus (their subtrees may hold inputs).
+        let mut node_splices: Vec<Vec<usize>> = self
             .registry
             .components
             .iter()
             .filter(|c| !c.deps.is_disjoint(changed))
             .map(|c| c.path.clone())
             .collect();
-        if affected.is_empty() && toggles.is_empty() && components.is_empty() {
+        node_splices.extend(
+            self.registry
+                .styled
+                .iter()
+                .filter(|s| !s.deps.is_disjoint(changed))
+                .map(|s| s.path.clone()),
+        );
+        if affected.is_empty() && toggles.is_empty() && node_splices.is_empty() {
             return;
         }
         affected.sort_by_key(Vec::len);
@@ -351,9 +360,9 @@ impl Document {
                 }
             }
         }
-        // Components: replace the whole instance subtree, re-applying focus scoped
-        // to it (a component may hold inputs whose caret must be restored).
-        for p in &components {
+        // Components and :class/:style nodes: replace the whole node subtree,
+        // re-applying focus scoped to it (the subtree may hold inputs).
+        for p in &node_splices {
             if roots.iter().any(|r| p.starts_with(r.as_slice())) {
                 continue;
             }
@@ -903,6 +912,62 @@ mod tests {
             Some("name"),
             "label focuses the text input's model"
         );
+    }
+
+    fn bg_rgb(n: &LayoutNode) -> Option<(f32, f32, f32)> {
+        match &n.style.background {
+            Some(rux_layout::Background::Color(c)) => Some((c.r, c.g, c.b)),
+            _ => None,
+        }
+    }
+
+    /// `:class` feeds a signal-driven class into the cascade, and a change to that
+    /// signal reconciles the node's style in place.
+    #[test]
+    fn dynamic_class_reconciles() {
+        let mut doc = Document::from_source(
+            "<template><screen><view class=\"chip\" :class=\"tone\" /></screen></template>
+             <style>.hot { background: #ff0000; } .cool { background: #0000ff; }</style>
+             <script>let tone = signal(\"hot\");</script>",
+        )
+        .expect("load");
+        assert_eq!(bg_rgb(&doc.root.children[0]), Some((1.0, 0.0, 0.0)), ":class=hot → .hot");
+
+        let changed = doc.engine_mut().run_handler_tracked("tone = \"cool\"");
+        assert!(doc.patch(&changed), ":class change reconciles in place");
+        assert_eq!(bg_rgb(&doc.root.children[0]), Some((0.0, 0.0, 1.0)), "reconciled to .cool");
+    }
+
+    /// `:style` with a rhai backtick template literal (string interpolation) sets an
+    /// inline style, overriding the cascade, and reconciles on change.
+    #[test]
+    fn dynamic_inline_style_interpolates_and_reconciles() {
+        let mut doc = Document::from_source(
+            "<template><screen><view :style=\"`background: ${col}`\" /></screen></template>
+             <script>let col = signal(\"#00ff00\");</script>",
+        )
+        .expect("load");
+        assert_eq!(bg_rgb(&doc.root.children[0]), Some((0.0, 1.0, 0.0)), ":style set green");
+
+        let changed = doc.engine_mut().run_handler_tracked("col = \"#ff0000\"");
+        assert!(doc.patch(&changed));
+        assert_eq!(bg_rgb(&doc.root.children[0]), Some((1.0, 0.0, 0.0)), "reconciled to red");
+    }
+
+    /// The chip example: `:style` reads the `r-for` loop variable, so each item gets
+    /// its own colour; the `r-for` drives it (no per-node binding needed).
+    #[test]
+    fn r_for_chip_styles() {
+        let doc = Document::from_source(
+            "<template><screen><view class=\"chips\">\
+               <view class=\"chip\" r-for=\"c in colors\" :style=\"`background: ${c}`\"><text>{{ c }}</text></view>\
+             </view></screen></template>
+             <script>let colors = signal([\"#ff0000\", \"#00ff00\"]);</script>",
+        )
+        .expect("load");
+        let chips = &doc.root.children[0];
+        assert_eq!(bg_rgb(&chips.children[0]), Some((1.0, 0.0, 0.0)), "first chip red");
+        assert_eq!(bg_rgb(&chips.children[1]), Some((0.0, 1.0, 0.0)), "second chip green");
     }
 
     /// A checked box gets a synthetic `checked` class, so its checked look is

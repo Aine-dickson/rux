@@ -120,6 +120,18 @@ pub struct ComponentBinding {
     pub deps: HashSet<String>,
 }
 
+/// A node with a dynamic `:class` / `:style` that reads signals: a change
+/// re-cascades/re-interprets it, so it reconciles in place (node splice) like a
+/// component. (A `:style` that reads only an `r-for` local has no signal deps and
+/// is handled by the loop's own reconcile — so it isn't recorded here.)
+#[derive(Clone, Debug)]
+pub struct StyledBinding {
+    /// Path to the node.
+    pub path: Vec<usize>,
+    /// Signals `:class` / `:style` read.
+    pub deps: HashSet<String>,
+}
+
 /// A reactive attribute whose change rewrites one field of a node in place, with
 /// no shape change: `:src` on an `<image>` or `:options` on a `<select>`.
 #[derive(Clone, Debug)]
@@ -151,6 +163,7 @@ pub struct BindingRegistry {
     pub structural_parents: Vec<StructuralParent>,
     pub toggles: Vec<ToggleBinding>,
     pub components: Vec<ComponentBinding>,
+    pub styled: Vec<StyledBinding>,
     /// Signals read by any non-patchable, non-reconcilable site. A change touching
     /// one of these means the runtime must rebuild rather than patch. (Empty now —
     /// kept as a safety net for any future non-reconcilable binding.)
@@ -254,6 +267,35 @@ pub fn build_styled_tree(
 /// the runtime writes into the node at `binding.path` when a dependency changes.
 pub fn eval_text_binding(binding: &TextBinding, engine: &mut Engine) -> String {
     interpolate_tracked(&binding.template, engine, &binding.locals).0
+}
+
+/// The class names a `:class` value contributes: a string splits on whitespace; a
+/// list contributes each item (also whitespace-split). Object/conditional form
+/// (`#{ active: cond }`) needs a `Value::Map` and isn't handled yet.
+fn class_list(value: &Value) -> Vec<String> {
+    match value {
+        Value::Text(s) => s.split_whitespace().map(str::to_string).collect(),
+        Value::List(items) => items
+            .iter()
+            .flat_map(|i| i.to_display().split_whitespace().map(str::to_string).collect::<Vec<_>>())
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// Merge an inline CSS declaration string (`"background: red; color: white"`) into
+/// the resolved props at highest priority (inline wins over the cascade). A simple
+/// `;`/`:` split — enough for the flat declaration lists inline styles carry.
+fn merge_inline_style(props: &mut HashMap<String, String>, css: &str) {
+    for decl in css.split(';') {
+        if let Some((name, value)) = decl.split_once(':') {
+            let name = name.trim().to_ascii_lowercase();
+            let value = value.trim();
+            if !name.is_empty() && !value.is_empty() {
+                props.insert(name, value.to_string());
+            }
+        }
+    }
 }
 
 /// Resolve `for=` labels: a node with `label_for` and no `@tap` of its own inherits
@@ -893,7 +935,34 @@ fn build_node(
     if toggle.as_ref().is_some_and(|t| t.checked) {
         desc.classes.push("checked".to_string());
     }
-    let props = matched_props(&desc, ancestors, prev, rules);
+    // `:class` — dynamic classes fed into the cascade (the `checked` pattern,
+    // generalized). Signals it reads are collected for reconcile.
+    let mut dyn_deps: HashSet<String> = HashSet::new();
+    if let Some(expr) = el.attr(":class") {
+        let (value, deps) = engine.eval_value_tracked(expr, locals);
+        dyn_deps.extend(deps);
+        if let Some(v) = value {
+            desc.classes.extend(class_list(&v));
+        }
+    }
+
+    let mut props = matched_props(&desc, ancestors, prev, rules);
+    // Inline styles override the cascade: static `style=` first, then dynamic
+    // `:style` (which may interpolate — rhai backtick strings evaluate here).
+    if let Some(s) = el.attr("style") {
+        merge_inline_style(&mut props, s);
+    }
+    if let Some(expr) = el.attr(":style") {
+        let (value, deps) = engine.eval_value_tracked(expr, locals);
+        dyn_deps.extend(deps);
+        if let Some(v) = value {
+            merge_inline_style(&mut props, &v.to_display());
+        }
+    }
+    // A `:class`/`:style` that reads a signal reconciles this node on change.
+    if !dyn_deps.is_empty() {
+        reg.styled.push(StyledBinding { path: path.to_vec(), deps: dyn_deps });
+    }
     let style = interpret(&props);
     // A `@tap` handler runs later, in global scope, where the `r-for` loop
     // variable no longer exists — so `@tap="picked = item"` would see `item`
