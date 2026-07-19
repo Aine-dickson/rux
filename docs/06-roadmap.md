@@ -481,10 +481,10 @@ rationale](./01-rationale.md#ephemeral-ui-state-automatic-by-default-controllabl
        pass** — the stale-caret *category*. The whole-tree `apply_focus` in
        `rebuild()` is now unreachable from interactions (kept as a safety fallback,
        `patch` never returns false).
-  6. ⏳ **Drive it (the standing rule).** `RUX_TRACE=1` — every interaction now reads
-     `patched in place`; confirm across `form`/`list`/`scroll` that a caret, a
-     selection, and a scroll position are all undisturbed when something elsewhere
-     changes. This is the "not done until driven" gate for v0.3.2.
+  6. ✅ **Driven & verified (2026-07-19).** Reactivity driven in the window and
+     confirmed working — caret/selection/scroll undisturbed when something elsewhere
+     changes. The "not done until driven" gate for v0.3.2 is cleared, so the
+     reactivity work is genuinely done, not just headless-green.
 
 ### Labels — `for=` (2026-07-19)
 
