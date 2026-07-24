@@ -1,0 +1,46 @@
+{
+  "name": "rux",
+  "displayName": "Rux",
+  "description": "Syntax highlighting for the Rux UI language (.rux files).",
+  "version": "0.1.0",
+  "publisher": "aine-dickson",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Aine-dickson/rux"
+  },
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "main": "./extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "rux",
+        "aliases": ["Rux", "rux"],
+        "extensions": [".rux"],
+        "configuration": "./language-configuration.json",
+        "icon": {
+          "light": "./icons/rux-mark.svg",
+          "dark": "./icons/rux-mark.svg"
+        }
+      }
+    ],
+    "grammars": [
+      {
+        "language": "rux",
+        "scopeName": "source.rux",
+        "path": "./syntaxes/rux.tmLanguage.json"
+      }
+    ],
+    "snippets": [
+      {
+        "language": "rux",
+        "path": "./snippets/rux.json"
+      }
+    ]
+  }
+}

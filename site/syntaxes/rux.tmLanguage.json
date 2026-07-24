@@ -1,0 +1,290 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Rux",
+  "scopeName": "source.rux",
+  "fileTypes": ["rux"],
+  "patterns": [
+    { "include": "#section-template" },
+    { "include": "#section-style" },
+    { "include": "#section-script" }
+  ],
+  "repository": {
+
+    "section-template": {
+      "begin": "(<)(template)\\s*(>)",
+      "beginCaptures": {
+        "1": { "name": "punctuation.definition.tag.begin.rux" },
+        "2": { "name": "entity.name.tag.section.rux" },
+        "3": { "name": "punctuation.definition.tag.end.rux" }
+      },
+      "end": "(</)(template)\\s*(>)",
+      "endCaptures": {
+        "1": { "name": "punctuation.definition.tag.begin.rux" },
+        "2": { "name": "entity.name.tag.section.rux" },
+        "3": { "name": "punctuation.definition.tag.end.rux" }
+      },
+      "patterns": [{ "include": "#template-content" }]
+    },
+
+    "section-style": {
+      "begin": "(<)(style)\\s*(>)",
+      "beginCaptures": {
+        "1": { "name": "punctuation.definition.tag.begin.rux" },
+        "2": { "name": "entity.name.tag.section.rux" },
+        "3": { "name": "punctuation.definition.tag.end.rux" }
+      },
+      "end": "(</)(style)\\s*(>)",
+      "endCaptures": {
+        "1": { "name": "punctuation.definition.tag.begin.rux" },
+        "2": { "name": "entity.name.tag.section.rux" },
+        "3": { "name": "punctuation.definition.tag.end.rux" }
+      },
+      "patterns": [{ "include": "#css" }]
+    },
+
+    "section-script": {
+      "begin": "(<)(script)\\s*(>)",
+      "beginCaptures": {
+        "1": { "name": "punctuation.definition.tag.begin.rux" },
+        "2": { "name": "entity.name.tag.section.rux" },
+        "3": { "name": "punctuation.definition.tag.end.rux" }
+      },
+      "end": "(</)(script)\\s*(>)",
+      "endCaptures": {
+        "1": { "name": "punctuation.definition.tag.begin.rux" },
+        "2": { "name": "entity.name.tag.section.rux" },
+        "3": { "name": "punctuation.definition.tag.end.rux" }
+      },
+      "patterns": [{ "include": "#script-body" }]
+    },
+
+    "template-content": {
+      "patterns": [
+        { "include": "#html-comment" },
+        { "include": "#interpolation" },
+        { "include": "#tag" }
+      ]
+    },
+
+    "html-comment": {
+      "name": "comment.block.html.rux",
+      "begin": "<!--",
+      "beginCaptures": { "0": { "name": "punctuation.definition.comment.rux" } },
+      "end": "-->",
+      "endCaptures": { "0": { "name": "punctuation.definition.comment.rux" } }
+    },
+
+    "interpolation": {
+      "name": "meta.interpolation.rux",
+      "begin": "\\{\\{",
+      "beginCaptures": { "0": { "name": "punctuation.section.interpolation.begin.rux" } },
+      "end": "\\}\\}",
+      "endCaptures": { "0": { "name": "punctuation.section.interpolation.end.rux" } },
+      "contentName": "meta.embedded.expression.rux",
+      "patterns": [{ "include": "#script-expression" }]
+    },
+
+    "tag": {
+      "begin": "(</?)([a-zA-Z][\\w.-]*)",
+      "beginCaptures": {
+        "1": { "name": "punctuation.definition.tag.begin.rux" },
+        "2": { "name": "entity.name.tag.rux" }
+      },
+      "end": "(/?>)",
+      "endCaptures": { "1": { "name": "punctuation.definition.tag.end.rux" } },
+      "patterns": [{ "include": "#tag-attributes" }]
+    },
+
+    "tag-attributes": {
+      "patterns": [
+        { "include": "#directive-attribute" },
+        { "include": "#plain-attribute" }
+      ]
+    },
+
+    "directive-attribute": {
+      "comment": "r-for / r-if / r-model, @event handlers, and :prop bindings — value is a Rux script expression.",
+      "patterns": [
+        {
+          "begin": "(@[\\w-]+|:[\\w-]+|r-[\\w-]+)(=)(\")",
+          "beginCaptures": {
+            "1": { "name": "entity.other.attribute-name.directive.rux" },
+            "2": { "name": "punctuation.separator.key-value.rux" },
+            "3": { "name": "punctuation.definition.string.begin.rux" }
+          },
+          "end": "(\")",
+          "endCaptures": { "1": { "name": "punctuation.definition.string.end.rux" } },
+          "contentName": "meta.embedded.expression.rux",
+          "patterns": [{ "include": "#script-expression" }]
+        },
+        {
+          "begin": "(@[\\w-]+|:[\\w-]+|r-[\\w-]+)(=)(')",
+          "beginCaptures": {
+            "1": { "name": "entity.other.attribute-name.directive.rux" },
+            "2": { "name": "punctuation.separator.key-value.rux" },
+            "3": { "name": "punctuation.definition.string.begin.rux" }
+          },
+          "end": "(')",
+          "endCaptures": { "1": { "name": "punctuation.definition.string.end.rux" } },
+          "contentName": "meta.embedded.expression.rux",
+          "patterns": [{ "include": "#script-expression" }]
+        }
+      ]
+    },
+
+    "plain-attribute": {
+      "patterns": [
+        { "match": "\\b([a-zA-Z][\\w-]*)(?=\\s*=)", "name": "entity.other.attribute-name.rux" },
+        { "match": "\\b([a-zA-Z][\\w-]*)\\b", "name": "entity.other.attribute-name.rux" },
+        { "name": "string.quoted.double.rux", "begin": "\"", "beginCaptures": { "0": { "name": "punctuation.definition.string.begin.rux" } }, "end": "\"", "endCaptures": { "0": { "name": "punctuation.definition.string.end.rux" } } },
+        { "name": "string.quoted.single.rux", "begin": "'", "beginCaptures": { "0": { "name": "punctuation.definition.string.begin.rux" } }, "end": "'", "endCaptures": { "0": { "name": "punctuation.definition.string.end.rux" } } }
+      ]
+    },
+
+    "css": {
+      "patterns": [
+        { "include": "#css-comment" },
+        { "include": "#css-at-rule" },
+        { "include": "#css-selector" },
+        { "include": "#css-block" }
+      ]
+    },
+
+    "css-block": {
+      "begin": "\\{",
+      "beginCaptures": { "0": { "name": "punctuation.section.property-list.begin.css.rux" } },
+      "end": "\\}",
+      "endCaptures": { "0": { "name": "punctuation.section.property-list.end.css.rux" } },
+      "patterns": [
+        { "include": "#css-comment" },
+        { "include": "#css-declaration" },
+        { "include": "#css-selector" },
+        { "include": "#css-block" }
+      ]
+    },
+
+    "css-comment": {
+      "name": "comment.block.css.rux",
+      "begin": "/\\*",
+      "end": "\\*/"
+    },
+
+    "css-at-rule": {
+      "match": "(@)([a-zA-Z-]+)",
+      "name": "keyword.control.at-rule.css.rux"
+    },
+
+    "css-selector": {
+      "patterns": [
+        { "match": "\\.[a-zA-Z_][\\w-]*", "name": "entity.other.attribute-name.class.css.rux" },
+        { "match": "#[a-zA-Z_][\\w-]*", "name": "entity.other.attribute-name.id.css.rux" },
+        { "match": "(::?)([a-zA-Z-]+)", "name": "entity.other.attribute-name.pseudo-class.css.rux" },
+        { "match": "[>+~]", "name": "keyword.operator.combinator.css.rux" }
+      ]
+    },
+
+    "css-declaration": {
+      "begin": "([a-zA-Z-]+)(\\s*)(:)",
+      "beginCaptures": {
+        "1": { "name": "support.type.property-name.css.rux" },
+        "3": { "name": "punctuation.separator.key-value.css.rux" }
+      },
+      "end": "(;)|(?=\\})",
+      "endCaptures": { "1": { "name": "punctuation.terminator.rule.css.rux" } },
+      "patterns": [{ "include": "#css-value" }]
+    },
+
+    "css-value": {
+      "patterns": [
+        { "include": "#css-comment" },
+        { "match": "#[0-9a-fA-F]{3,8}\\b", "name": "constant.other.color.rgb-value.css.rux" },
+        { "match": "\\b([a-zA-Z-]+)(?=\\()", "name": "support.function.css.rux" },
+        { "match": "!important\\b", "name": "keyword.other.important.css.rux" },
+        { "match": "(-?\\d+(?:\\.\\d+)?)(px|em|rem|%|vh|vw|vmin|vmax|deg|turn|rad|fr|s|ms|pt)?\\b", "name": "constant.numeric.css.rux" },
+        { "name": "string.quoted.double.css.rux", "begin": "\"", "end": "\"" },
+        { "name": "string.quoted.single.css.rux", "begin": "'", "end": "'" },
+        { "match": "\\b(solid|dashed|dotted|none|auto|flex|grid|block|inline|row|column|center|start|end|wrap|nowrap|pointer|relative|absolute|fixed|hidden|visible|scroll|bold|italic|underline|cover|contain|transparent)\\b", "name": "support.constant.property-value.css.rux" }
+      ]
+    },
+
+    "script-body": {
+      "patterns": [
+        { "include": "#script-comment" },
+        { "include": "#script-storage" },
+        { "include": "#script-keyword" },
+        { "include": "#script-boolean" },
+        { "include": "#script-signal" },
+        { "include": "#script-string" },
+        { "include": "#script-number" },
+        { "include": "#script-function-call" },
+        { "include": "#script-operator" }
+      ]
+    },
+
+    "script-expression": {
+      "patterns": [
+        { "include": "#script-comment" },
+        { "include": "#script-keyword" },
+        { "include": "#script-boolean" },
+        { "include": "#script-signal" },
+        { "include": "#script-string" },
+        { "include": "#script-number" },
+        { "include": "#script-function-call" },
+        { "include": "#script-operator" }
+      ]
+    },
+
+    "script-comment": {
+      "patterns": [
+        { "name": "comment.line.double-slash.rux", "begin": "//", "end": "$" },
+        { "name": "comment.block.rux", "begin": "/\\*", "end": "\\*/" }
+      ]
+    },
+
+    "script-string": {
+      "patterns": [
+        {
+          "name": "string.quoted.double.rux",
+          "begin": "\"",
+          "end": "\"",
+          "patterns": [{ "match": "\\\\.", "name": "constant.character.escape.rux" }]
+        }
+      ]
+    },
+
+    "script-number": {
+      "match": "\\b(-?\\d+(?:\\.\\d+)?)\\b",
+      "name": "constant.numeric.rux"
+    },
+
+    "script-boolean": {
+      "match": "\\b(true|false)\\b",
+      "name": "constant.language.rux"
+    },
+
+    "script-keyword": {
+      "match": "\\b(if|else|for|in|while|loop|return|break|continue|switch|throw|try|catch|import|as|private)\\b",
+      "name": "keyword.control.rux"
+    },
+
+    "script-storage": {
+      "match": "\\b(let|const|fn)\\b",
+      "name": "storage.type.rux"
+    },
+
+    "script-signal": {
+      "match": "\\b(signal)\\b(?=\\s*\\()",
+      "name": "support.function.builtin.rux"
+    },
+
+    "script-function-call": {
+      "match": "\\b([a-zA-Z_]\\w*)\\s*(?=\\()",
+      "name": "entity.name.function.rux"
+    },
+
+    "script-operator": {
+      "match": "(==|!=|<=|>=|&&|\\|\\||[-+*/%=<>!])",
+      "name": "keyword.operator.rux"
+    }
+  }
+}

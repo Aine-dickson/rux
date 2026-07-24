@@ -705,8 +705,7 @@ impl App {
                 for (i, option) in sel.options.iter().enumerate() {
                     let (rx, ry, rw, rh) = dropdown_row(&sel, i);
                     if fx >= rx && fx <= rx + rw && fy >= ry && fy <= ry + rh {
-                        self.document.engine_mut().set_string(&model, option);
-                        self.document.rebuild();
+                        self.document.apply_edit(&model, option);
                         self.request_redraw();
                         return;
                     }
@@ -743,8 +742,9 @@ impl App {
             .map(|h| h.on_tap.clone());
 
         if let Some(src) = handler {
-            if self.document.engine_mut().run_handler(&src) {
-                self.document.rebuild();
+            // Patch in place when the change is display-only; rebuild only when it
+            // touches structure/attributes/input values. Either way, repaint.
+            if self.document.apply_handler(&src) {
                 self.request_redraw();
             }
         }
@@ -883,17 +883,16 @@ impl App {
             // else collapses it to the caret.
             let new_anchor = if moved && extend { self.anchor } else { new_caret };
             self.scroll_caret_into_view(&model, &value, new_caret);
+            // Patch the input's value in place (no rebuild) unless `model` is also
+            // structural; then set the caret on the resulting tree.
             if edited {
-                self.document.engine_mut().set_string(&model, &value);
+                self.document.apply_edit(&model, &value);
             }
             self.set_focus_range(Some(Focus {
                 model,
                 caret: new_caret,
                 anchor: new_anchor,
             }));
-            if edited {
-                self.document.rebuild();
-            }
         }
     }
 
@@ -922,9 +921,8 @@ impl App {
                     let (start, end) = self.selection();
                     let mut value = value;
                     value.replace_range(start.min(value.len())..end.min(value.len()), "");
-                    self.document.engine_mut().set_string(model, &value);
+                    self.document.apply_edit(model, &value);
                     self.set_focus_range(Some(Focus::at(model, start)));
-                    self.document.rebuild();
                 }
             }
             "v" => {
@@ -943,10 +941,9 @@ impl App {
                 let (start, end) = (start.min(value.len()), end.min(value.len()));
                 value.replace_range(start..end, &pasted);
                 let caret = start + pasted.len();
-                self.document.engine_mut().set_string(model, &value);
+                self.document.apply_edit(model, &value);
                 self.scroll_caret_into_view(model, &value, caret);
                 self.set_focus_range(Some(Focus::at(model, caret)));
-                self.document.rebuild();
             }
             _ => return false,
         }
@@ -1044,9 +1041,7 @@ impl App {
     fn activate_focused(&mut self, index: usize) {
         match self.focusables.get(index).map(|f| f.kind.clone()) {
             Some(FocusKind::Activate { on_tap }) => {
-                if self.document.engine_mut().run_handler(&on_tap) {
-                    self.document.rebuild();
-                }
+                self.document.apply_handler(&on_tap);
                 self.request_redraw();
             }
             Some(FocusKind::Select { model, .. }) => {

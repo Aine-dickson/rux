@@ -1,0 +1,90 @@
+{
+  "Rux component scaffold": {
+    "prefix": "rux",
+    "body": [
+      "<template>",
+      "  <screen class=\"${1:app}\">",
+      "    $0",
+      "  </screen>",
+      "</template>",
+      "",
+      "<style>",
+      "  .${1:app} {",
+      "    display: flex;",
+      "    flex-direction: column;",
+      "  }",
+      "</style>",
+      "",
+      "<script>",
+      "  ",
+      "</script>",
+      ""
+    ],
+    "description": "A full .rux component: template + style + script."
+  },
+  "template section": {
+    "prefix": "template",
+    "body": ["<template>", "  $0", "</template>"],
+    "description": "A <template> section."
+  },
+  "style section": {
+    "prefix": "style",
+    "body": ["<style>", "  $0", "</style>"],
+    "description": "A <style> section."
+  },
+  "script section": {
+    "prefix": "script",
+    "body": ["<script>", "  $0", "</script>"],
+    "description": "A <script> section."
+  },
+  "signal": {
+    "prefix": "signal",
+    "body": "let ${1:name} = signal(${2:0});",
+    "description": "A reactive signal binding."
+  },
+  "fn helper": {
+    "prefix": "fn",
+    "body": ["fn ${1:name}(${2:arg}) {", "  $0", "}"],
+    "description": "A script helper function."
+  },
+  "r-for loop": {
+    "prefix": "rfor",
+    "body": "<${1:view} class=\"${2:item}\" r-for=\"${3:item} in ${4:items}\">$0</${1:view}>",
+    "description": "An element repeated over a list."
+  },
+  "r-if conditional": {
+    "prefix": "rif",
+    "body": "<${1:text} r-if=\"${2:condition}\">$0</${1:text}>",
+    "description": "An element shown only when a condition holds."
+  },
+  "r-model input": {
+    "prefix": "rmodel",
+    "body": "<input class=\"${1:field}\" r-model=\"${2:value}\" placeholder=\"${3:...}\" />",
+    "description": "A text input two-way bound to a signal."
+  },
+  "tap handler": {
+    "prefix": "tap",
+    "body": "@tap=\"${1:expr}\"",
+    "description": "A tap event handler."
+  },
+  "interpolation": {
+    "prefix": "interp",
+    "body": "{{ ${1:expr} }}",
+    "description": "Interpolate a script expression into text."
+  },
+  "text element": {
+    "prefix": "text",
+    "body": "<text class=\"${1:label}\">$0</text>",
+    "description": "A text element."
+  },
+  "view element": {
+    "prefix": "view",
+    "body": ["<view class=\"${1:row}\">", "  $0", "</view>"],
+    "description": "A layout container."
+  },
+  "button element": {
+    "prefix": "button",
+    "body": ["<button class=\"${1:btn}\" @tap=\"${2:expr}\">", "  <text>${3:Label}</text>", "</button>"],
+    "description": "A tappable button."
+  }
+}

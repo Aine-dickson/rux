@@ -6,8 +6,11 @@
 //! — the untyped representation that `rux-script` and `rux-style` pass between
 //! each other for bindings, `r-for` locals, and props.
 //!
-//! The per-binding subscription model in `docs/04-architecture.md` is still
-//! unbuilt: a signal change rebuilds the whole tree.
+//! The per-binding subscription model in `docs/04-architecture.md` is now built
+//! (v0.3): `rux-script` tracks which signals each binding reads and which a
+//! handler writes, and `rux-runtime` patches/reconciles just the affected nodes
+//! in place instead of rebuilding the whole tree. This crate stays the shared
+//! `Value` type those layers pass around.
 
 /// A dynamically-typed signal value. Untyped so template interpolation and the
 /// future script tier can share one representation.
@@ -17,6 +20,9 @@ pub enum Value {
     Text(String),
     Bool(bool),
     List(Vec<Value>),
+    /// A rhai object map (`#{ key: value }`), key order as rhai yields it. Backs the
+    /// object forms of `:class` (`#{ active: cond }`) and `:style` (`#{ bg: c }`).
+    Map(Vec<(String, Value)>),
 }
 
 impl Value {
@@ -35,6 +41,11 @@ impl Value {
             Value::List(items) => items
                 .iter()
                 .map(Value::to_display)
+                .collect::<Vec<_>>()
+                .join(", "),
+            Value::Map(entries) => entries
+                .iter()
+                .map(|(k, v)| format!("{k}: {}", v.to_display()))
                 .collect::<Vec<_>>()
                 .join(", "),
         }
@@ -61,6 +72,15 @@ impl Value {
             Value::Text(s) => !s.is_empty(),
             Value::Bool(b) => *b,
             Value::List(items) => !items.is_empty(),
+            Value::Map(entries) => !entries.is_empty(),
+        }
+    }
+
+    /// The entries of a `Map`, for the object forms of `:class` / `:style`.
+    pub fn as_map(&self) -> Option<&[(String, Value)]> {
+        match self {
+            Value::Map(entries) => Some(entries),
+            _ => None,
         }
     }
 
@@ -98,6 +118,13 @@ impl Value {
             Value::List(items) => {
                 let inner: Vec<_> = items.iter().map(Value::to_rhai_literal).collect();
                 format!("[{}]", inner.join(", "))
+            }
+            Value::Map(entries) => {
+                let inner: Vec<_> = entries
+                    .iter()
+                    .map(|(k, v)| format!("{k}: {}", v.to_rhai_literal()))
+                    .collect();
+                format!("#{{{}}}", inner.join(", "))
             }
         }
     }

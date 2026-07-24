@@ -109,6 +109,86 @@ The table that proves Law 3. Every commonly-requested "missing element" and wher
 
 The only case still open is rich tables and custom-templated option lists — both explicitly deferred, not because they're impossible but because building them now would pop the balloon (Law 4).
 
+## Ephemeral UI state: automatic by default, controllable by opt-in
+
+**Decided 2026-07-18.** See the full argument below; the short version is the
+resolution at the end of it.
+
+### Controlled state — the model owns ephemeral UI state
+
+**The problem it addresses.** A signal write rebuilds the whole tree (see
+[04 — Architecture](./04-architecture.md) and the v0.3 plan in
+[06 — Roadmap](./06-roadmap.md)). Because the tree is thrown away, every piece of
+*ephemeral* UI state — caret position, scroll offset, selection, which panel is
+open — has to be stashed somewhere durable and re-applied by hand after each
+rebuild. Rux keeps that state in the **shell** today (`apply_focus` for the
+caret, scroll offsets keyed by scroller index), and each such pass is a chance to
+reproduce the stale-caret bug, where a value was set but never cleared.
+
+**The idea (prior art: Vercel's `native`).** Make that state *model-owned* and
+explicit — a control reads its value from a binding and reports changes back
+through a handler:
+
+```
+<scroll value="{note_list_scroll}" on-scroll="note_list_scrolled">
+<split value="{sidebar_split}" on-resize="sidebar_resized">
+```
+
+This is React's "controlled component" pattern: the runtime applies the wheel or
+the drag, dispatches the handler with the new value, and the model echoes it back
+through the binding.
+
+**Advantages — why it's tempting:**
+
+1. **It survives a rebuild for free.** The value lives in the model, so a
+   whole-tree rebuild cannot lose it. No restore-after-rebuild pass, and the
+   entire stale-caret *category* of bug disappears — you can't forget to restore
+   state that was never shell-owned in the first place.
+2. **Single source of truth.** The UI becomes a pure function of the model. There
+   is no second copy of "where the scroll is" living in the shell that can drift
+   out of sync with what's painted.
+3. **The author can drive it.** Because it's an ordinary signal, script/host can
+   *read and set* it: scroll a list back to the top on submit, reset a form, sync
+   two panes to the same offset, restore a saved position on load. Shell-owned
+   state is invisible to author logic — you can only ever react to it, never set
+   it.
+4. **It serializes.** The full UI state sits in the model, so it can be snapshotted
+   and restored — session persistence, deep links, undo/redo — none of which is
+   reachable while the state hides in the shell.
+5. **One mental model.** Scroll, caret, selection, open/closed, split fraction all
+   use the same `value` + handler shape as any other binding. Nothing is special
+   "runtime magic"; there's one pattern to learn.
+
+**Costs — why it isn't already the answer:** it trades Rux's *automatic-ness* for
+*ceremony*. Today you write `overflow: auto` and it just scrolls — no signal, no
+handler. Controlled state asks the author to declare a signal and a handler for
+every scroller and input whose state must persist, and (until fine-grained
+reactivity) every controlled change still flows through a whole-tree rebuild.
+That's more explicit and more predictable, but it is a tax on the common case
+where nobody cares about owning the value.
+
+**Decision (2026-07-18): the middle path — automatic by default, controlled by
+opt-in.** **Fine-grained reactivity (v0.3) removes the whole-tree rebuild**, which
+removes the *need* to restore most ephemeral state at all: the common case stays
+automatic (`overflow: auto` just scrolls, an `<input>` just remembers its caret —
+no signal, no handler). **Controlled state is then an opt-in** — an author binds a
+signal (the `r-model` pattern, extended to scroll/caret/selection/open) only for
+the cases that want advantages 3 and 4: persist a scroll position, sync two panes,
+reset a form, restore on load. So the ceremony is paid only where it buys
+something, never as a tax on every input.
+
+This keeps automatic-ness (Law 4, effortless common case) *and* single-source-of-
+truth where it matters, and it fits the [core-primitive / ecosystem-patterns
+split](#reactivity-is-a-core-primitive-state-management-is-ecosystem): the runtime
+owns the `value`+handler binding primitive; managing that state is userland.
+
+**What it means for v0.3.** Reactivity is *not* reordered by this. Fine-grained
+reactivity remains the mechanism that makes the uncontrolled defaults survive a
+change; the controlled-state opt-in is an additive binding layered on afterward
+(extend the input's `r-model` idea to a `value`/`on-*` pair on scrollers and other
+stateful controls). Build the reactivity core first; add the opt-in where a real
+example needs it.
+
 ## What would make us revisit a law
 
 - If runtime parse errors prove too costly in practice, we add an *optional* compile/validation step — without removing hot-reload.

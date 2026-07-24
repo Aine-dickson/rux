@@ -22,6 +22,12 @@ feed_filenames = ["atom.xml"]
 [markdown.highlighting]
 enabled = true
 theme = "ayu-dark"
+# `.rux` code fences light up via our own TextMate grammar. Zola 0.22's
+# highlighter (Giallo) consumes TextMate JSON grammars — the same format VS Code
+# uses — so this one file at `site/syntaxes/` is shared with `editors/vscode/`;
+# keep the two copies in sync (see editors/vscode/README.md). Verified on Zola
+# 0.22.1 (the version pinned in .github/workflows/site.yml).
+extra_grammars = ["syntaxes/rux.tmLanguage.json"]
 
 [extra]
 repo = "https://github.com/Aine-dickson/rux"
