@@ -11,6 +11,7 @@
 //! Specificity and source order resolve conflicts, as in CSS.
 
 use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
 
 use lightningcss::rules::CssRule;
 use lightningcss::stylesheet::{ParserOptions, PrinterOptions, StyleSheet};
@@ -211,6 +212,126 @@ struct Inherited {
     color: Rgba,
     font_size: f32,
     font_family: Option<String>,
+    /// Custom properties (`--name`) in scope. They inherit like the text
+    /// properties above — see [`Vars`].
+    vars: Vars,
+}
+
+/// CSS custom properties (`--name: value`) in scope for an element: its own
+/// declarations layered over everything it inherited. Custom properties inherit
+/// like `color` does, which is what lets a palette be declared once on the root
+/// and read by `var()` anywhere below.
+///
+/// Shared by `Rc` because the overwhelmingly common case is a subtree that
+/// declares none of its own — those nodes hand the very same map to their
+/// children instead of copying it.
+type Vars = Rc<HashMap<String, String>>;
+
+/// How many `var()` hops to follow before giving up. A custom property may be
+/// defined in terms of another (`--accent: var(--blue)`), so resolution
+/// recurses; this is what stops `--a: var(--b); --b: var(--a)` from hanging.
+const MAX_VAR_DEPTH: usize = 16;
+
+/// Substitute every `var(--name[, fallback])` in `value`.
+///
+/// An undefined variable with no fallback leaves the reference in place, which
+/// makes the declaration unparseable and so ignored — CSS's own "invalid at
+/// computed-value time" behaviour. [`warn_undefined_var`] says so out loud,
+/// because a silently dropped declaration is the failure mode this project keeps
+/// trying to design away.
+fn resolve_vars(value: &str, vars: &HashMap<String, String>, depth: usize) -> String {
+    if depth >= MAX_VAR_DEPTH || !value.contains("var(") {
+        return value.to_string();
+    }
+    let mut out = String::with_capacity(value.len());
+    let mut rest = value;
+    while let Some(start) = rest.find("var(") {
+        out.push_str(&rest[..start]);
+        let after = &rest[start + 4..];
+        // Find this var()'s closing paren, allowing nested parens in a fallback
+        // (`var(--x, rgb(0, 0, 0))`).
+        let mut depth_parens = 1i32;
+        let mut end = None;
+        for (i, c) in after.char_indices() {
+            match c {
+                '(' => depth_parens += 1,
+                ')' => {
+                    depth_parens -= 1;
+                    if depth_parens == 0 {
+                        end = Some(i);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let Some(end) = end else {
+            // Unclosed `var(` — emit the rest verbatim rather than looping.
+            out.push_str("var(");
+            out.push_str(after);
+            return out;
+        };
+        let inner = &after[..end];
+        let (name, fallback) = match inner.split_once(',') {
+            Some((n, f)) => (n.trim(), Some(f.trim())),
+            None => (inner.trim(), None),
+        };
+        match vars.get(name) {
+            // The substituted value may itself contain var().
+            Some(v) => out.push_str(&resolve_vars(v, vars, depth + 1)),
+            None => match fallback {
+                Some(f) => out.push_str(&resolve_vars(f, vars, depth + 1)),
+                None => {
+                    warn_undefined_var(name);
+                    out.push_str("var(");
+                    out.push_str(inner);
+                    out.push(')');
+                }
+            },
+        }
+        rest = &after[end + 1..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Pull this element's `--name` declarations out of `props` and layer them over
+/// the inherited ones, returning what `var()` resolves against here and in the
+/// subtree below.
+///
+/// Declaring none — the common case — returns the inherited map by `Rc` clone, so
+/// only elements that actually define a variable pay for a copy. A custom
+/// property's own value may reference other variables, so it is resolved as it is
+/// inserted; that also means a `--x: var(--x)` self-reference resolves against
+/// the *outer* scope, as in CSS.
+fn take_vars(props: &mut HashMap<String, String>, inherited: &Vars) -> Vars {
+    let declared: Vec<String> = props.keys().filter(|k| k.starts_with("--")).cloned().collect();
+    if declared.is_empty() {
+        return Rc::clone(inherited);
+    }
+    let mut vars = (**inherited).clone();
+    for name in declared {
+        // Remove it: a custom property is not a real property, and leaving it in
+        // would only be fed to `interpret` (which ignores it) as noise.
+        let Some(value) = props.remove(&name) else { continue };
+        let value = resolve_vars(&value, &vars, 0);
+        vars.insert(name, value);
+    }
+    Rc::new(vars)
+}
+
+/// Warn once per name that a `var()` referenced an undefined custom property.
+fn warn_undefined_var(name: &str) {
+    use std::sync::{Mutex, OnceLock};
+    static SEEN: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    let seen = SEEN.get_or_init(|| Mutex::new(HashSet::new()));
+    let Ok(mut seen) = seen.lock() else { return };
+    if seen.insert(name.to_string()) {
+        eprintln!(
+            "rux: custom property `{name}` is not defined — the declaration using \
+             var({name}) is ignored (give it a fallback: `var({name}, …)`)"
+        );
+    }
 }
 
 /// A radius larger than any sane box; kurbo clamps it to half the shorter side,
@@ -415,7 +536,12 @@ pub fn build_styled_tree_stateful(
         &comps,
         &mut ancestors,
         &[],
-        &Inherited { color: DEFAULT_COLOR, font_size: DEFAULT_FONT_SIZE, font_family: None },
+        &Inherited {
+            color: DEFAULT_COLOR,
+            font_size: DEFAULT_FONT_SIZE,
+            font_family: None,
+            vars: Vars::default(),
+        },
         engine,
         &locals,
         &[],
@@ -473,53 +599,10 @@ fn text_template(el: &Element) -> String {
         .join(" ")
 }
 
-/// Decode the HTML entities an author might write in text: the named ones
-/// (`&amp;`, `&lt;`, `&gt;`, `&quot;`, `&apos;`, `&nbsp;`) and numeric
-/// (`&#38;`, `&#x26;`). An unrecognised `&…;` is left as written.
-fn decode_entities(s: &str) -> String {
-    if !s.contains('&') {
-        return s.to_string();
-    }
-    let mut out = String::with_capacity(s.len());
-    let mut rest = s;
-    while let Some(amp) = rest.find('&') {
-        out.push_str(&rest[..amp]);
-        let after = &rest[amp..];
-        // An entity is short and has no spaces; only look at the next few chars.
-        if let Some(semi) = after[1..].find(';').map(|i| i + 1) {
-            if semi <= 12 {
-                if let Some(ch) = entity_char(&after[1..semi]) {
-                    out.push(ch);
-                    rest = &after[semi + 1..];
-                    continue;
-                }
-            }
-        }
-        out.push('&');
-        rest = &after[1..];
-    }
-    out.push_str(rest);
-    out
-}
-
-fn entity_char(entity: &str) -> Option<char> {
-    match entity {
-        "amp" => Some('&'),
-        "lt" => Some('<'),
-        "gt" => Some('>'),
-        "quot" => Some('"'),
-        "apos" => Some('\''),
-        "nbsp" => Some('\u{00A0}'),
-        _ => {
-            let num = entity.strip_prefix('#')?;
-            let code = match num.strip_prefix(['x', 'X']) {
-                Some(hex) => u32::from_str_radix(hex, 16).ok()?,
-                None => num.parse::<u32>().ok()?,
-            };
-            char::from_u32(code)
-        }
-    }
-}
+// Entity decoding for text lives in `rux_parser::decode_entities` — the parser
+// applies it to attribute values as it reads them, and text goes through the same
+// function, so there is one table, not two.
+use rux_parser::decode_entities;
 
 // ── Selector model ──────────────────────────────────────────────────────────
 
@@ -778,7 +861,9 @@ fn warn_if_unhonored(property: &str) {
     use std::sync::{Mutex, OnceLock};
     static SEEN: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 
-    if is_honored(property) {
+    // A custom property is not a property we could fail to honor — it is storage
+    // for `var()`, and any name is legal.
+    if property.starts_with("--") || is_honored(property) {
         return;
     }
     let seen = SEEN.get_or_init(|| Mutex::new(HashSet::new()));
@@ -1196,6 +1281,22 @@ fn build_node(
     if !dyn_deps.is_empty() {
         reg.styled.push(StyledBinding { path: path.to_vec(), deps: dyn_deps });
     }
+
+    // Custom properties: this element's own `--name` declarations (from the
+    // cascade and from inline styles alike) layer over what it inherited, and the
+    // result is what `var()` sees here *and* below. A node that declares none —
+    // most of them — passes the inherited map straight down without copying it.
+    let vars = take_vars(&mut props, &inherited.vars);
+    // Substitute var() everywhere before interpreting, so every property gets it
+    // for free rather than each parser learning about variables. Runs even with no
+    // variables in scope: `var(--x, 12px)` is a legitimate way to write a default,
+    // and skipping the pass would leave the fallback unresolved.
+    for value in props.values_mut() {
+        if value.contains("var(") {
+            *value = resolve_vars(value, &vars, 0);
+        }
+    }
+
     let style = interpret(&props);
     // A `@tap` handler runs later, in global scope, where the `r-for` loop
     // variable no longer exists — so `@tap="picked = item"` would see `item`
@@ -1512,7 +1613,7 @@ fn build_node(
         rules,
         comps,
         ancestors,
-        &Inherited { color, font_size, font_family },
+        &Inherited { color, font_size, font_family, vars: Rc::clone(&vars) },
         engine,
         locals,
         path,
@@ -3129,6 +3230,145 @@ mod tests {
             d.tag = rest.to_string();
         }
         d
+    }
+
+    // ── Custom properties + var() ───────────────────────────────────────────
+
+    use super::{Background, Vars};
+
+    /// Build a document and return the background of the node at `path`.
+    fn bg_at(src: &str, path: &[usize]) -> Option<Background> {
+        let sfc = rux_parser::parse_sfc(src).unwrap();
+        let mut engine = Builder::new().build(&sfc.script).unwrap();
+        let root = build_styled_tree(&sfc, &HashMap::new(), &mut engine).unwrap();
+        let mut node = &root;
+        for i in path {
+            node = &node.children[*i];
+        }
+        node.style.background.clone()
+    }
+
+    fn is_red(bg: &Option<Background>) -> bool {
+        matches!(bg, Some(Background::Color(c)) if c.r == 1.0 && c.g == 0.0 && c.b == 0.0)
+    }
+
+    /// A variable declared on an ancestor is visible to `var()` far below it —
+    /// the whole point of a palette declared once at the root.
+    #[test]
+    fn custom_property_inherits_down_the_tree() {
+        let bg = bg_at(
+            r#"<template><screen class="app"><view><view class="target" /></view></screen></template>
+               <style>
+                 .app { --brand: #ff0000; }
+                 .target { background: var(--brand); }
+               </style>"#,
+            &[0, 0],
+        );
+        assert!(is_red(&bg), "var() resolved from an ancestor's declaration");
+    }
+
+    /// A nearer declaration wins over a farther one, and only within its subtree.
+    #[test]
+    fn nearer_declaration_shadows_the_inherited_one() {
+        let src = r#"<template><screen class="app">
+                       <view class="panel"><view class="target" /></view>
+                       <view><view class="target" /></view>
+                     </screen></template>
+                     <style>
+                       .app { --brand: #00ff00; }
+                       .panel { --brand: #ff0000; }
+                       .target { background: var(--brand); }
+                     </style>"#;
+        assert!(is_red(&bg_at(src, &[0, 0])), "inside .panel the nearer value wins");
+        let outside = bg_at(src, &[1, 0]);
+        assert!(
+            matches!(&outside, Some(Background::Color(c)) if c.g == 1.0),
+            "outside .panel the root value still applies — the override didn't leak"
+        );
+    }
+
+    /// A variable may be defined in terms of another.
+    #[test]
+    fn custom_property_can_reference_another() {
+        let bg = bg_at(
+            r#"<template><screen class="app"><view class="target" /></screen></template>
+               <style>
+                 .app { --red: #ff0000; --brand: var(--red); }
+                 .target { background: var(--brand); }
+               </style>"#,
+            &[0],
+        );
+        assert!(is_red(&bg));
+    }
+
+    /// An undefined variable falls back when given one, including a fallback that
+    /// itself contains parentheses.
+    #[test]
+    fn var_falls_back_when_undefined() {
+        let bg = bg_at(
+            r#"<template><screen><view class="target" /></screen></template>
+               <style>.target { background: var(--nope, #ff0000); }</style>"#,
+            &[0],
+        );
+        assert!(is_red(&bg), "the fallback is used");
+
+        let bg = bg_at(
+            r#"<template><screen><view class="target" /></screen></template>
+               <style>.target { background: var(--nope, rgb(255, 0, 0)); }</style>"#,
+            &[0],
+        );
+        assert!(is_red(&bg), "a fallback with its own parens survives");
+    }
+
+    /// An undefined variable with no fallback leaves the declaration invalid, so
+    /// it is dropped — it must not paint something arbitrary.
+    #[test]
+    fn undefined_var_without_fallback_drops_the_declaration() {
+        let bg = bg_at(
+            r#"<template><screen><view class="target" /></screen></template>
+               <style>.target { background: var(--nope); }</style>"#,
+            &[0],
+        );
+        assert!(bg.is_none(), "no background, rather than a wrong one");
+    }
+
+    /// A cycle must terminate rather than hang.
+    #[test]
+    fn circular_variables_terminate() {
+        let bg = bg_at(
+            r#"<template><screen class="app"><view class="target" /></screen></template>
+               <style>
+                 .app { --a: var(--b); --b: var(--a); }
+                 .target { background: var(--a); }
+               </style>"#,
+            &[0],
+        );
+        assert!(bg.is_none(), "a cycle resolves to nothing, and returns");
+    }
+
+    /// `var()` works in inline `style=` too, since substitution happens after the
+    /// cascade and inline styles are merged.
+    #[test]
+    fn var_resolves_in_inline_style() {
+        let bg = bg_at(
+            r#"<template><screen class="app"><view style="background: var(--brand)" /></screen></template>
+               <style>.app { --brand: #ff0000; }</style>"#,
+            &[0],
+        );
+        assert!(is_red(&bg));
+    }
+
+    /// A custom property is not a real property: it must not reach `interpret`,
+    /// and must not be reported as an unhonored one.
+    #[test]
+    fn custom_property_is_not_treated_as_a_property() {
+        assert!(!super::is_honored("--brand"));
+        let mut props: HashMap<String, String> = HashMap::new();
+        props.insert("--brand".into(), "#ff0000".into());
+        props.insert("background".into(), "var(--brand)".into());
+        let vars = super::take_vars(&mut props, &Vars::default());
+        assert!(!props.contains_key("--brand"), "stripped out of the property map");
+        assert_eq!(vars.get("--brand").map(String::as_str), Some("#ff0000"));
     }
 
     // ── Pseudo-classes ──────────────────────────────────────────────────────

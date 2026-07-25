@@ -13,6 +13,61 @@
 
 use std::fmt;
 
+/// Decode the HTML entities an author might write: the named ones (`&amp;`,
+/// `&lt;`, `&gt;`, `&quot;`, `&apos;`, `&nbsp;`) and numeric (`&#38;`, `&#x26;`).
+/// An unrecognised `&…;` is left as written.
+///
+/// Applied to **attribute values as they are parsed**, and by later stages to
+/// text. Attributes need it because an attribute is delimited by the same `"` a
+/// script expression uses for its string literals — so
+/// `:class="if dark { &quot;dark&quot; } else { &quot;light&quot; } "` is the only
+/// way to write one, and without decoding the engine would see the raw `&quot;`
+/// and fail to parse.
+pub fn decode_entities(s: &str) -> String {
+    if !s.contains('&') {
+        return s.to_string();
+    }
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(amp) = rest.find('&') {
+        out.push_str(&rest[..amp]);
+        let after = &rest[amp..];
+        // An entity is short and has no spaces; only look at the next few chars.
+        if let Some(semi) = after[1..].find(';').map(|i| i + 1) {
+            if semi <= 12 {
+                if let Some(ch) = entity_char(&after[1..semi]) {
+                    out.push(ch);
+                    rest = &after[semi + 1..];
+                    continue;
+                }
+            }
+        }
+        out.push('&');
+        rest = &after[1..];
+    }
+    out.push_str(rest);
+    out
+}
+
+fn entity_char(entity: &str) -> Option<char> {
+    match entity {
+        "amp" => Some('&'),
+        "lt" => Some('<'),
+        "gt" => Some('>'),
+        "quot" => Some('"'),
+        "apos" => Some('\''),
+        "nbsp" => Some('\u{00A0}'),
+        _ => {
+            let num = entity.strip_prefix('#')?;
+            let code = match num.strip_prefix(['x', 'X']) {
+                Some(hex) => u32::from_str_radix(hex, 16).ok()?,
+                None => num.parse::<u32>().ok()?,
+            };
+            char::from_u32(code)
+        }
+    }
+}
+
 /// A parsed single-file component. `style`/`script` are raw source for later
 /// stages; `template` is the parsed root element.
 #[derive(Debug, Clone)]
@@ -261,7 +316,10 @@ impl Parser {
                     let value = if self.peek() == Some('=') {
                         self.bump();
                         self.skip_ws();
-                        self.read_attr_value()
+                        // Decoded here: an attribute is quoted with the same `"`
+                        // a script expression needs for its own string literals,
+                        // so `&quot;` is how you write one.
+                        decode_entities(&self.read_attr_value())
                     } else {
                         String::new() // valueless attribute, e.g. `disabled`
                     };
