@@ -115,6 +115,41 @@ Any *other* pseudo-class (`:disabled`, `:nth-child(…)`, `::selection`) **never
 matches**, and says so once on stderr. Before this existed the `:` was silently
 dropped, so `.box:hover` parsed as `.box` and applied *unconditionally* — failing
 closed is the safer half of that trade.
+
+**Custom properties + `var()`:** `--name: value` declarations **inherit** down the
+tree (like `color`), so a palette declared once is readable anywhere below:
+```css
+.app        { --brand: #89b4fa; --radius: 10px; }
+.btn        { background: var(--brand); border-radius: var(--radius); }
+.app.light  { --brand: #1e66f5; }   /* same sheet, different values */
+```
+Substitution happens after the cascade *and* inline styles merge, so `var()` works
+in every property, in `style=` and in `:style`. Supported: fallbacks
+(`var(--x, 12px)`, including fallbacks with their own parens), variables defined
+in terms of other variables, and overriding a variable on any element to retheme
+its subtree. A cycle terminates rather than hanging.
+
+An **undefined** variable with no fallback makes the declaration invalid, so it is
+dropped (as in CSS) and warned about once. Driven in `examples/theme.rux`, which
+swaps a whole palette with one `:class`.
+
+**`@media` queries:** evaluated against the window's **logical** size.
+```css
+@media (max-width: 600px) { .row { flex-direction: column; } }
+@media screen and (min-width: 400px) and (max-width: 600px) { … }
+@media (max-width: 400px), (min-width: 1000px) { … }   /* alternatives */
+@media (orientation: portrait) { … }
+```
+Supported features: `min-`/`max-width`, `min-`/`max-height`, `orientation`, the
+`screen`/`all` types, `and` chains and comma alternatives. A block adds **no
+specificity** — rules inside it cascade by ordinary source order, so a later
+`@media` rule beats an earlier plain one, and `#id` still beats a `.class` in a
+media block. Anything else (`min-resolution`, `not …`, `(hover)`) warns once and
+never applies.
+
+Resizing re-cascades **only when a query changes answer** — dragging a window
+edge within a breakpoint costs nothing, and a document with no `@media` never
+re-cascades at all. Driven in `examples/responsive.rux`.
 `flex: 1` means `1 1 0%` (CSS's shorthand defaults), not `1 1 auto`.
 `opacity` fades the node **and its subtree** as one layer.
 `background`/`border` work on `<text>` nodes, not just containers.

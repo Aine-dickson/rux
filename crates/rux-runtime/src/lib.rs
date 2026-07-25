@@ -13,9 +13,9 @@ use rux_layout::Node as LayoutNode;
 use rux_parser::Sfc;
 use rux_script::{Builder, Engine};
 use rux_style::BindingRegistry;
-/// Re-exported so the shell can hand pointer/focus state in without depending on
-/// `rux-style` directly.
-pub use rux_style::InteractionState;
+/// Re-exported so the shell can hand pointer/focus state and the window size in
+/// without depending on `rux-style` directly.
+pub use rux_style::{InteractionState, Viewport};
 
 /// A loaded `.rux` document: parsed source, imported components (by tag), the
 /// script engine, and the current tree.
@@ -36,6 +36,8 @@ pub struct Document {
     /// `:hover`, `:active` and `:focus` match against. Owned here so every build
     /// (rebuild, reconcile, hot-reload) reproduces the same styling.
     state: InteractionState,
+    /// The window size `@media` queries are evaluated against.
+    viewport: Viewport,
     pub root: LayoutNode,
 }
 
@@ -172,6 +174,7 @@ impl Document {
             focus: None,
             registry,
             state: InteractionState::default(),
+            viewport: Viewport::default(),
             root,
         })
     }
@@ -192,6 +195,7 @@ impl Document {
             focus: None,
             registry,
             state: InteractionState::default(),
+            viewport: Viewport::default(),
             root,
         })
     }
@@ -241,6 +245,44 @@ impl Document {
         true
     }
 
+    /// Tell the document the window size, for `@media`. Returns whether any query
+    /// changed answer — i.e. whether the rule set moved and the tree had to be
+    /// re-cascaded.
+    ///
+    /// A resize fires continuously, and almost every one crosses no breakpoint, so
+    /// the common case must be free: the media conditions are evaluated at the old
+    /// and new size and compared, and the tree is only rebuilt when that vector
+    /// actually differs. A document with no `@media` at all compares two empty
+    /// vectors and never rebuilds.
+    pub fn set_viewport(&mut self, viewport: Viewport) -> bool {
+        if viewport == self.viewport {
+            return false;
+        }
+        let before = self.media_state(self.viewport);
+        let after = self.media_state(viewport);
+        self.viewport = viewport;
+        if before == after {
+            return false;
+        }
+        // A breakpoint was crossed: re-cascade everything. Focus is re-applied by
+        // `rebuild`, and scroll offsets live in the shell, so nothing is lost.
+        self.rebuild();
+        true
+    }
+
+    /// Whether each `@media` block — in the document and in every component —
+    /// applies at `viewport`.
+    fn media_state(&self, viewport: Viewport) -> Vec<bool> {
+        let mut out = rux_style::media_matches(&self.sfc.style, viewport);
+        // Components are keyed by tag in a HashMap, so sort for a stable order.
+        let mut tags: Vec<&String> = self.components.keys().collect();
+        tags.sort();
+        for tag in tags {
+            out.extend(rux_style::media_matches(&self.components[tag].style, viewport));
+        }
+        out
+    }
+
     /// Rebuild the given subtrees against the current interaction state and splice
     /// them into the live tree, re-applying focus scoped to each.
     fn restyle(&mut self, roots: &[Vec<usize>]) {
@@ -249,6 +291,7 @@ impl Document {
             &self.components,
             &mut self.engine,
             &self.state,
+            self.viewport,
         ) else {
             return;
         };
@@ -271,6 +314,7 @@ impl Document {
             &self.components,
             &mut self.engine,
             &self.state,
+            self.viewport,
         ) {
             resolve_images(&mut root, &self.base);
             apply_focus(&mut root, self.focus.as_ref());
@@ -422,6 +466,7 @@ impl Document {
             &self.components,
             &mut self.engine,
             &self.state,
+            self.viewport,
         ) else {
             return;
         };
@@ -886,6 +931,61 @@ mod tests {
 
     // ── Pointer state (`:hover` / `:active`) ────────────────────────────────
 
+    // ── @media / viewport ───────────────────────────────────────────────────
+
+    fn media_doc() -> Document {
+        Document::from_source(
+            "<template><screen><view class=\"card\" /></screen></template>
+             <style>
+               .card { background: #00ff00; }
+               @media (max-width: 600px) { .card { background: #ff0000; } }
+             </style>",
+        )
+        .expect("load")
+    }
+
+    fn is_red(n: &LayoutNode) -> bool {
+        matches!(&n.style.background, Some(rux_layout::Background::Color(c)) if c.r == 1.0 && c.g == 0.0)
+    }
+
+    /// Crossing a breakpoint re-cascades; crossing back restores.
+    #[test]
+    fn resize_across_a_breakpoint_restyles() {
+        let mut doc = media_doc();
+        assert!(!is_red(&doc.root.children[0]), "the default viewport is wide");
+
+        assert!(doc.set_viewport(Viewport { width: 480.0, height: 800.0 }), "breakpoint crossed");
+        assert!(is_red(&doc.root.children[0]), "narrow → the @media rule applies");
+
+        assert!(doc.set_viewport(Viewport { width: 1000.0, height: 800.0 }), "crossed back");
+        assert!(!is_red(&doc.root.children[0]), "wide again → the base rule");
+    }
+
+    /// The case that has to stay free: a resize crossing no breakpoint reports no
+    /// change, so dragging a window edge doesn't re-cascade on every pixel.
+    #[test]
+    fn resize_within_a_breakpoint_is_not_a_change() {
+        let mut doc = media_doc();
+        doc.set_viewport(Viewport { width: 400.0, height: 800.0 });
+        assert!(
+            !doc.set_viewport(Viewport { width: 500.0, height: 800.0 }),
+            "still under 600px — nothing to redo"
+        );
+        assert!(is_red(&doc.root.children[0]), "and the styling is still correct");
+    }
+
+    /// A document with no `@media` at all never re-cascades on resize.
+    #[test]
+    fn resize_does_nothing_without_media_queries() {
+        let mut doc = Document::from_source(
+            "<template><screen><view class=\"card\" /></screen></template>
+             <style>.card { background: #00ff00; }</style>",
+        )
+        .expect("load");
+        assert!(!doc.set_viewport(Viewport { width: 320.0, height: 480.0 }));
+        assert!(!doc.set_viewport(Viewport { width: 1600.0, height: 900.0 }));
+    }
+
     /// Two sibling cards, only the second of which holds an input, plus a
     /// `:hover` rule that repaints a card green.
     fn hover_doc() -> Document {
@@ -1252,3 +1352,4 @@ mod tests {
         assert_eq!(boxes[2].children.len(), 0);
     }
 }
+

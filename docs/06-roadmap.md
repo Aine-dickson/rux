@@ -801,9 +801,37 @@ first item.
      compatibility (examples and docs are migrated to `:checked`); entering or
      leaving *all* interactive boxes re-cascades from the root rather than a
      sub-path, which is correct but coarser than the sibling-to-sibling case.
-2. **CSS custom properties + `var()`** — one place for the theme palette instead of
-   hard-coded per class. Wants a resolution pass in the cascade.
-3. **`@media` queries** — the honest way to make examples responsive.
+2. **CSS custom properties + `var()`** — ✅ **done 2026-07-25, driven & verified.**
+   `--name` declarations inherit like `color`; `var()` is substituted into every
+   declaration *after* the cascade and inline styles merge, so every property gets
+   variables without its parser knowing they exist. Fallbacks, variables defined in
+   terms of variables, per-subtree overrides, and a depth cap for cycles. Undefined
+   + no fallback = the declaration is dropped (CSS's rule) and warned once. The
+   var map is shared by `Rc`, so a subtree declaring none copies nothing.
+   `examples/theme.rux` swaps a whole palette with one `:class`.
+
+   **Gap this surfaced:** attribute values were never entity-decoded, so there was
+   no way to write a script string literal inside a `:` binding or `@tap` — the
+   attribute and the expression share the `"` delimiter. `decode_entities` moved to
+   `rux-parser` and now runs as attributes are read (`&quot;` works), with
+   `rux-style` reusing it rather than keeping a second table.
+3. **`@media` queries** — ✅ **done 2026-07-26, driven & verified.** Rules inside a
+   non-matching block are simply never emitted, so matching, cascade and
+   specificity are untouched: a block adds no specificity, and the order counter
+   runs across blocks so a later `@media` rule beats an earlier plain one.
+   `min-`/`max-width`/`-height`, `orientation`, `screen`/`all`, `and` chains and
+   comma alternatives; unsupported conditions warn once and never apply.
+
+   **Landmine:** lightningcss *normalizes* `(min-width: 600px)` into the Media
+   Queries Level 4 range form `(width >= 600px)` before we see it, so the range
+   spelling is the one that actually arrives — the `min-`/`max-` arm is the
+   compatibility path, not the main one. Both are parsed, including double-ended
+   `(400px <= width <= 600px)`.
+
+   **Cost control:** `Document::set_viewport` evaluates every media condition at
+   the old and new size and re-cascades only if that vector differs — so a resize
+   crossing no breakpoint does nothing, and a document without `@media` never
+   re-cascades. `examples/responsive.rux` drives it.
 4. **Error surfacing / dev overlay** — today unknown CSS is silently ignored and a
    bad `.rux` file falls back to an empty screen. The biggest gap before this is in
    anyone else's hands. (Also listed under Known ceilings.)

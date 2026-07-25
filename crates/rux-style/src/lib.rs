@@ -500,20 +500,27 @@ pub fn build_styled_tree_tracked(
     components: &HashMap<String, Sfc>,
     engine: &mut Engine,
 ) -> Result<(LayoutNode, BindingRegistry), String> {
-    build_styled_tree_stateful(sfc, components, engine, &InteractionState::default())
+    build_styled_tree_stateful(
+        sfc,
+        components,
+        engine,
+        &InteractionState::default(),
+        Viewport::default(),
+    )
 }
 
 /// Like [`build_styled_tree_tracked`], but matches pseudo-class selectors against
-/// the shell's current [`InteractionState`] — what is hovered, pressed, focused.
-/// The runtime passes its live state on every build so a reconcile reproduces the
-/// same styling.
+/// the shell's current [`InteractionState`] — what is hovered, pressed, focused —
+/// and `@media` queries against the current [`Viewport`]. The runtime passes its
+/// live state on every build so a reconcile reproduces the same styling.
 pub fn build_styled_tree_stateful(
     sfc: &Sfc,
     components: &HashMap<String, Sfc>,
     engine: &mut Engine,
     state: &InteractionState,
+    viewport: Viewport,
 ) -> Result<(LayoutNode, BindingRegistry), String> {
-    let rules = parse_rules(&sfc.style);
+    let rules = parse_rules(&sfc.style, viewport);
     let comps: Components = components
         .iter()
         .map(|(tag, c)| {
@@ -521,7 +528,7 @@ pub fn build_styled_tree_stateful(
                 tag.clone(),
                 Component {
                     template: c.template.clone(),
-                    rules: parse_rules(&c.style),
+                    rules: parse_rules(&c.style, viewport),
                 },
             )
         })
@@ -764,9 +771,317 @@ impl ElemDesc {
     }
 }
 
+// ── Media queries ───────────────────────────────────────────────────────────
+
+/// The viewport `@media` queries are evaluated against — the window's logical
+/// size. It reaches the build the same way interaction state does, because a
+/// resize can change which rules apply, not just where boxes land.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Viewport {
+    pub width: f32,
+    pub height: f32,
+}
+
+impl Default for Viewport {
+    /// A desktop-ish window, so headless builds evaluate `@media` the way the
+    /// default window would.
+    fn default() -> Self {
+        Self { width: 1280.0, height: 800.0 }
+    }
+}
+
+/// A comparison in a media feature. `min-width: 600px` is `Ge(600)`, and the
+/// Level-4 range spelling `(width < 600px)` is `Lt(600)`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Cmp {
+    Le,
+    Lt,
+    Ge,
+    Gt,
+    Eq,
+}
+
+impl Cmp {
+    fn holds(self, actual: f32, bound: f32) -> bool {
+        match self {
+            Self::Le => actual <= bound,
+            Self::Lt => actual < bound,
+            Self::Ge => actual >= bound,
+            Self::Gt => actual > bound,
+            Self::Eq => (actual - bound).abs() < f32::EPSILON,
+        }
+    }
+
+    /// The same comparison read right-to-left, for `(600px >= width)`.
+    fn flipped(self) -> Self {
+        match self {
+            Self::Le => Self::Ge,
+            Self::Lt => Self::Gt,
+            Self::Ge => Self::Le,
+            Self::Gt => Self::Lt,
+            Self::Eq => Self::Eq,
+        }
+    }
+}
+
+/// One media feature we understand. Anything else parses to [`Feature::Never`],
+/// so an unsupported query hides its rules rather than applying them
+/// unconditionally — the same fail-closed choice as an unknown pseudo-class.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Feature {
+    Width(Cmp, f32),
+    Height(Cmp, f32),
+    Portrait,
+    Landscape,
+    /// A media *type* we're always in (`screen`, `all`).
+    Always,
+    /// Unsupported — never matches.
+    Never,
+}
+
+impl Feature {
+    fn holds(&self, vp: Viewport) -> bool {
+        match *self {
+            Self::Width(cmp, v) => cmp.holds(vp.width, v),
+            Self::Height(cmp, v) => cmp.holds(vp.height, v),
+            Self::Portrait => vp.height >= vp.width,
+            Self::Landscape => vp.width > vp.height,
+            Self::Always => true,
+            Self::Never => false,
+        }
+    }
+}
+
+/// A parsed media condition: a comma-separated list of alternatives (OR), each a
+/// chain of `and`-ed features.
+#[derive(Debug, Clone, Default)]
+struct MediaCond {
+    any: Vec<Vec<Feature>>,
+}
+
+impl MediaCond {
+    fn holds(&self, vp: Viewport) -> bool {
+        self.any.iter().any(|all| all.iter().all(|f| f.holds(vp)))
+    }
+
+    /// Parse a serialized media query list, e.g.
+    /// `screen and (width <= 600px), (orientation: portrait)`.
+    fn parse(text: &str) -> Self {
+        let any = text
+            .split(',')
+            .map(|alternative| {
+                alternative
+                    .split(" and ")
+                    .flat_map(|token| parse_media_feature(token.trim()))
+                    .collect()
+            })
+            .collect();
+        Self { any }
+    }
+}
+
+/// Parse one media feature. Returns several when the source is a double-ended
+/// range (`(400px <= width <= 600px)` is two bounds `and`-ed).
+///
+/// **Both spellings have to work.** An author writes `(min-width: 600px)`, but
+/// lightningcss normalizes it to the Media Queries Level 4 range form
+/// `(width >= 600px)` before we ever see it — so the range form is in fact the
+/// one that arrives in practice, and the `min-`/`max-` arm is the compatibility
+/// path, not the other way round.
+fn parse_media_feature(token: &str) -> Vec<Feature> {
+    let inner = token.trim();
+    // A bare media type.
+    if !inner.starts_with('(') {
+        return vec![match inner.to_ascii_lowercase().as_str() {
+            "screen" | "all" => Feature::Always,
+            // `print`/`speech` never apply to a window; `not …` and `only …` are
+            // unsupported rather than wrong.
+            other => {
+                warn_unsupported_media(other);
+                Feature::Never
+            }
+        }];
+    }
+    let body = inner.trim_start_matches('(').trim_end_matches(')').trim();
+
+    // Range syntax: `width <= 600px`, `600px >= width`, `400px <= width <= 600px`.
+    let parts = split_on_comparators(body);
+    if parts.len() >= 3 {
+        return parse_range(&parts);
+    }
+
+    let Some((name, value)) = body.split_once(':') else {
+        // A boolean feature like `(hover)` — not something we can answer.
+        warn_unsupported_media(body);
+        return vec![Feature::Never];
+    };
+    let name = name.trim().to_ascii_lowercase();
+    let value = value.trim();
+    vec![match name.as_str() {
+        "orientation" => match value.to_ascii_lowercase().as_str() {
+            "portrait" => Feature::Portrait,
+            "landscape" => Feature::Landscape,
+            _ => Feature::Never,
+        },
+        "min-width" | "max-width" | "min-height" | "max-height" => {
+            // Media lengths are absolute; the viewport-relative units a
+            // stylesheet can use elsewhere would be circular here.
+            let Some(px) = parse_px(value) else {
+                warn_unsupported_media(&format!("{name}: {value}"));
+                return vec![Feature::Never];
+            };
+            match name.as_str() {
+                "min-width" => Feature::Width(Cmp::Ge, px),
+                "max-width" => Feature::Width(Cmp::Le, px),
+                "min-height" => Feature::Height(Cmp::Ge, px),
+                _ => Feature::Height(Cmp::Le, px),
+            }
+        }
+        other => {
+            warn_unsupported_media(other);
+            Feature::Never
+        }
+    }]
+}
+
+/// One token of a range-syntax feature: an operand or a comparator.
+enum RangePart {
+    Operand(String),
+    Op(Cmp),
+}
+
+/// Split `width <= 600px` into operands and comparators. Returns an empty vec
+/// when there is no comparator, so the caller falls through to `name: value`.
+fn split_on_comparators(body: &str) -> Vec<RangePart> {
+    let mut parts = Vec::new();
+    let mut current = String::new();
+    let mut chars = body.chars().peekable();
+    let mut saw_op = false;
+    while let Some(c) = chars.next() {
+        let op = match c {
+            '<' if chars.peek() == Some(&'=') => {
+                chars.next();
+                Some(Cmp::Le)
+            }
+            '>' if chars.peek() == Some(&'=') => {
+                chars.next();
+                Some(Cmp::Ge)
+            }
+            '<' => Some(Cmp::Lt),
+            '>' => Some(Cmp::Gt),
+            '=' => Some(Cmp::Eq),
+            _ => None,
+        };
+        match op {
+            Some(op) => {
+                parts.push(RangePart::Operand(current.trim().to_string()));
+                parts.push(RangePart::Op(op));
+                current = String::new();
+                saw_op = true;
+            }
+            None => current.push(c),
+        }
+    }
+    if !saw_op {
+        return Vec::new();
+    }
+    parts.push(RangePart::Operand(current.trim().to_string()));
+    parts
+}
+
+/// Turn a split range into features: `[operand, op, operand]` or the double-ended
+/// `[operand, op, operand, op, operand]`.
+fn parse_range(parts: &[RangePart]) -> Vec<Feature> {
+    // Which side is the axis name decides how the comparison reads.
+    let feature = |axis: &str, cmp: Cmp, value: &str| -> Feature {
+        let Some(px) = parse_px(value) else {
+            warn_unsupported_media(value);
+            return Feature::Never;
+        };
+        match axis {
+            "width" => Feature::Width(cmp, px),
+            "height" => Feature::Height(cmp, px),
+            other => {
+                warn_unsupported_media(other);
+                Feature::Never
+            }
+        }
+    };
+    let operand = |i: usize| match &parts[i] {
+        RangePart::Operand(s) => s.to_ascii_lowercase(),
+        RangePart::Op(_) => String::new(),
+    };
+    let op = |i: usize| match &parts[i] {
+        RangePart::Op(c) => *c,
+        RangePart::Operand(_) => Cmp::Eq,
+    };
+
+    match parts.len() {
+        3 => {
+            let (left, right) = (operand(0), operand(2));
+            if left == "width" || left == "height" {
+                vec![feature(&left, op(1), &right)]
+            } else {
+                // `600px >= width` — same relation, read the other way.
+                vec![feature(&right, op(1).flipped(), &left)]
+            }
+        }
+        // `400px <= width <= 600px`: both bounds, `and`-ed.
+        5 => {
+            let axis = operand(2);
+            vec![
+                feature(&axis, op(1).flipped(), &operand(0)),
+                feature(&axis, op(3), &operand(4)),
+            ]
+        }
+        _ => vec![Feature::Never],
+    }
+}
+
+/// Warn once per unsupported media feature — an `@media` block that silently
+/// never applies is exactly the failure mode the unhonored-property warning
+/// exists to prevent.
+fn warn_unsupported_media(what: &str) {
+    use std::sync::{Mutex, OnceLock};
+    static SEEN: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    let seen = SEEN.get_or_init(|| Mutex::new(HashSet::new()));
+    let Ok(mut seen) = seen.lock() else { return };
+    if seen.insert(what.to_string()) {
+        eprintln!(
+            "rux: `@media` condition `{what}` is not supported — its rules will never \
+             apply (supported: screen/all, min-/max-width, min-/max-height, orientation)"
+        );
+    }
+}
+
+/// Whether each `@media` block in `css` applies at `vp`, in source order. The
+/// runtime compares this across a resize: if it is unchanged, no rule set changed
+/// and the tree does not need re-cascading.
+pub fn media_matches(css: &str, vp: Viewport) -> Vec<bool> {
+    let Ok(sheet) = StyleSheet::parse(css, ParserOptions::default()) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    collect_media_matches(&sheet.rules.0, vp, &mut out);
+    out
+}
+
+fn collect_media_matches(rules: &[CssRule], vp: Viewport, out: &mut Vec<bool>) {
+    for rule in rules {
+        if let CssRule::Media(media) = rule {
+            let text = media
+                .query
+                .to_css_string(PrinterOptions::default())
+                .unwrap_or_default();
+            out.push(MediaCond::parse(&text).holds(vp));
+            collect_media_matches(&media.rules.0, vp, out);
+        }
+    }
+}
+
 // ── Parsing the stylesheet ──────────────────────────────────────────────────
 
-fn parse_rules(css: &str) -> Vec<Rule> {
+fn parse_rules(css: &str, vp: Viewport) -> Vec<Rule> {
     let sheet = match StyleSheet::parse(css, ParserOptions::default()) {
         Ok(s) => s,
         Err(_) => return Vec::new(),
@@ -774,10 +1089,39 @@ fn parse_rules(css: &str) -> Vec<Rule> {
 
     let mut rules = Vec::new();
     let mut order = 0usize;
+    collect_rules(&sheet.rules.0, vp, &mut rules, &mut order);
+    rules
+}
 
-    for rule in &sheet.rules.0 {
-        let CssRule::Style(style) = rule else { continue };
+/// Walk the rule list, descending into `@media` blocks whose condition holds at
+/// `vp`. A block that doesn't hold contributes nothing — so everything
+/// downstream (matching, cascade, specificity) is untouched by media queries.
+/// `order` keeps counting across blocks, which is what makes a later `@media`
+/// rule win over an earlier plain rule of equal specificity, as in CSS.
+fn collect_rules(rules: &[CssRule], vp: Viewport, out: &mut Vec<Rule>, order: &mut usize) {
+    for rule in rules {
+        match rule {
+            CssRule::Media(media) => {
+                let text = media
+                    .query
+                    .to_css_string(PrinterOptions::default())
+                    .unwrap_or_default();
+                if MediaCond::parse(&text).holds(vp) {
+                    collect_rules(&media.rules.0, vp, out, order);
+                }
+            }
+            CssRule::Style(style) => collect_style_rule(style, out, order),
+            _ => {}
+        }
+    }
+}
 
+fn collect_style_rule(
+    style: &lightningcss::rules::style::StyleRule,
+    out: &mut Vec<Rule>,
+    order: &mut usize,
+) {
+    {
         // Serialize each declaration to "prop: value" and split it.
         let mut decls = Vec::new();
         for prop in &style.declarations.declarations {
@@ -799,19 +1143,18 @@ fn parse_rules(css: &str) -> Vec<Rule> {
         for selector in &style.selectors.0 {
             if let Ok(text) = selector.to_css_string(PrinterOptions::default()) {
                 if let Some((chain, combs, specificity)) = parse_selector(&text) {
-                    rules.push(Rule {
+                    out.push(Rule {
                         chain,
                         combs,
                         specificity,
-                        order,
+                        order: *order,
                         decls: decls.clone(),
                     });
                 }
             }
-            order += 1;
+            *order += 1;
         }
     }
-    rules
 }
 
 /// The CSS properties the runtime actually interprets today. Anything outside
@@ -3232,6 +3575,115 @@ mod tests {
         d
     }
 
+    // ── @media ──────────────────────────────────────────────────────────────
+
+    use super::{media_matches, parse_rules, InteractionState, Viewport};
+
+    fn vp(width: f32, height: f32) -> Viewport {
+        Viewport { width, height }
+    }
+
+    /// Build at a given viewport and report the target's background.
+    fn bg_at_vp(src: &str, viewport: Viewport) -> Option<Background> {
+        let sfc = rux_parser::parse_sfc(src).unwrap();
+        let mut engine = Builder::new().build(&sfc.script).unwrap();
+        let root = super::build_styled_tree_stateful(
+            &sfc,
+            &HashMap::new(),
+            &mut engine,
+            &InteractionState::default(),
+            viewport,
+        )
+        .unwrap();
+        root.0.children[0].style.background.clone()
+    }
+
+    const MEDIA_DOC: &str = r#"<template><screen><view class="target" /></screen></template>
+        <style>
+          .target { background: #00ff00; }
+          @media (max-width: 600px) { .target { background: #ff0000; } }
+        </style>"#;
+
+    /// The rules inside a matching `@media` apply; outside it they don't exist.
+    #[test]
+    fn media_query_gates_its_rules_on_the_viewport() {
+        assert!(is_red(&bg_at_vp(MEDIA_DOC, vp(480.0, 800.0))), "narrow → the @media rule");
+        let wide = bg_at_vp(MEDIA_DOC, vp(1200.0, 800.0));
+        assert!(
+            matches!(&wide, Some(Background::Color(c)) if c.g == 1.0),
+            "wide → the base rule, as if the block weren't there"
+        );
+    }
+
+    /// A media rule beats an equally-specific earlier rule by source order, and
+    /// loses to a more specific one — media adds no specificity, as in CSS.
+    #[test]
+    fn media_rules_cascade_by_order_not_by_being_in_a_block() {
+        let src = r#"<template><screen><view class="target" id="t" /></screen></template>
+            <style>
+              #t { background: #00ff00; }
+              @media (max-width: 600px) { .target { background: #ff0000; } }
+            </style>"#;
+        let narrow = bg_at_vp(src, vp(480.0, 800.0));
+        assert!(
+            matches!(&narrow, Some(Background::Color(c)) if c.g == 1.0),
+            "#id still beats a .class inside @media"
+        );
+    }
+
+    /// `and`, comma alternatives, orientation, and a media type all evaluate.
+    #[test]
+    fn media_conditions_evaluate() {
+        let and = r#"<template><screen><view class="target" /></screen></template>
+            <style>@media screen and (min-width: 400px) and (max-width: 600px) {
+              .target { background: #ff0000; } }</style>"#;
+        assert!(is_red(&bg_at_vp(and, vp(500.0, 800.0))), "inside the band");
+        assert!(bg_at_vp(and, vp(700.0, 800.0)).is_none(), "outside the band");
+
+        let either = r#"<template><screen><view class="target" /></screen></template>
+            <style>@media (max-width: 400px), (min-width: 1000px) {
+              .target { background: #ff0000; } }</style>"#;
+        assert!(is_red(&bg_at_vp(either, vp(300.0, 800.0))), "first alternative");
+        assert!(is_red(&bg_at_vp(either, vp(1200.0, 800.0))), "second alternative");
+        assert!(bg_at_vp(either, vp(600.0, 800.0)).is_none(), "neither");
+
+        let portrait = r#"<template><screen><view class="target" /></screen></template>
+            <style>@media (orientation: portrait) { .target { background: #ff0000; } }</style>"#;
+        assert!(is_red(&bg_at_vp(portrait, vp(400.0, 800.0))), "taller than wide");
+        assert!(bg_at_vp(portrait, vp(800.0, 400.0)).is_none(), "wider than tall");
+    }
+
+    /// An unsupported condition hides its rules rather than applying them — the
+    /// same fail-closed rule as an unknown pseudo-class.
+    #[test]
+    fn unsupported_media_condition_never_applies() {
+        let src = r#"<template><screen><view class="target" /></screen></template>
+            <style>@media (min-resolution: 2dppx) { .target { background: #ff0000; } }</style>"#;
+        assert!(bg_at_vp(src, vp(800.0, 600.0)).is_none());
+    }
+
+    /// `media_matches` is what lets the runtime skip work on a resize that crosses
+    /// no breakpoint: same answers, no re-cascade.
+    #[test]
+    fn media_matches_reports_each_block() {
+        let css = "@media (max-width: 600px) { .a { color: red } } \
+                   @media (min-width: 1000px) { .b { color: red } }";
+        assert_eq!(media_matches(css, vp(500.0, 800.0)), vec![true, false]);
+        assert_eq!(media_matches(css, vp(800.0, 800.0)), vec![false, false]);
+        assert_eq!(media_matches(css, vp(1200.0, 800.0)), vec![false, true]);
+        // Two sizes on the same side of every breakpoint look identical, which is
+        // exactly the "don't rebuild" signal.
+        assert_eq!(media_matches(css, vp(700.0, 800.0)), media_matches(css, vp(900.0, 800.0)));
+        assert!(media_matches(".a { color: red }", vp(800.0, 600.0)).is_empty());
+    }
+
+    /// A rule outside any block is unaffected by the viewport.
+    #[test]
+    fn plain_rules_are_viewport_independent() {
+        let css = ".a { color: red }";
+        assert_eq!(parse_rules(css, vp(320.0, 480.0)).len(), parse_rules(css, vp(1600.0, 900.0)).len());
+    }
+
     // ── Custom properties + var() ───────────────────────────────────────────
 
     use super::{Background, Vars};
@@ -3503,7 +3955,7 @@ mod tests {
         // it before it silently degrades matching back to descendant-only.
         use super::{parse_rules, Combinator};
         let css = ".card > text { color: #111 } .a + .b { color: #222 } .a ~ .b { color: #333 }";
-        let rules = parse_rules(css);
+        let rules = parse_rules(css, Viewport::default());
         let combs: Vec<&[Combinator]> = rules.iter().map(|r| r.combs.as_slice()).collect();
         assert_eq!(combs[0], &[Combinator::Child]);
         assert_eq!(combs[1], &[Combinator::NextSibling]);

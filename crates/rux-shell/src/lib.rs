@@ -16,7 +16,7 @@ use rux_layout::{
     Background, Cursor, FocusItem, FocusKind, FocusRegion, HitRegion, Offset, Paint, PaintRect,
     PaintText, Rgba, ScrollRegion, SelectRegion, StateRegion, TextAlign, TextContent, TextWrap,
 };
-use rux_runtime::{Document, Focus, InteractionState};
+use rux_runtime::{Document, Focus, InteractionState, Viewport};
 use vello::kurbo::Affine;
 use vello::peniko::Color;
 use vello::util::{RenderContext, RenderSurface};
@@ -727,6 +727,22 @@ impl App {
         }
     }
 
+    /// Tell the document the window's *logical* size, so `@media` queries are
+    /// evaluated against the same units the stylesheet is written in. The document
+    /// only re-cascades if a query actually changed answer, so calling this on
+    /// every resize event is cheap.
+    fn update_viewport(&mut self) {
+        let Some(state) = self.state.as_ref() else { return };
+        let scale = state.window.scale_factor();
+        let viewport = Viewport {
+            width: (state.surface.config.width as f64 / scale) as f32,
+            height: (state.surface.config.height as f64 / scale) as f32,
+        };
+        if self.document.set_viewport(viewport) {
+            self.request_redraw();
+        }
+    }
+
     /// The pointer left the window: nothing is hovered or pressed any more.
     ///
     /// This needs its own event because the pointer leaving produces `CursorLeft`,
@@ -1186,6 +1202,9 @@ impl App {
     }
 
     fn render(&mut self) {
+        // Catches the first frame and any resize that arrived without an event
+        // (hot-reload, scale change); a no-op unless a breakpoint moved.
+        self.update_viewport();
         let caret_visible = self.caret_visible;
         // Split borrows so the text engine (used both to measure during layout
         // and to draw during paint) doesn't conflict with the render state.
@@ -1403,6 +1422,7 @@ impl ApplicationHandler<RuxEvent> for App {
                         size.height.max(1),
                     );
                 }
+                self.update_viewport();
                 self.request_redraw();
             }
             WindowEvent::MouseWheel { delta, .. } => {
