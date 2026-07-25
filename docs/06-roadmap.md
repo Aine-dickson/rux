@@ -357,9 +357,8 @@ and driven in `examples/fonts.rux`.
   resolution pass in the cascade.
 - **`@media` queries** — the honest way to make examples responsive, rather than
   hand-tuning `max-width` per screen.
-- **Pseudo-classes** (`:hover`, `:active`, `:focus`, `:checked`) — needs
-  interaction state threaded into matching. `:hover`/`:active` also need pointer
-  tracking to invalidate. This retires the synthetic `checked` class hack.
+- ~~**Pseudo-classes** (`:hover`, `:active`, `:focus`, `:checked`)~~ — ✅ done
+  2026-07-25; see the v0.4 section.
 - **`!important`, `inherit`/`initial`** — cascade completeness.
 - **`text-overflow: ellipsis`** — needs measure-and-truncate; parley won't do it
   for us.
@@ -773,11 +772,35 @@ Nothing here is committed to a specific Friday yet; this is the ordered pool the
 v0.4.x point-releases draw from. Reactivity landing in v0.3 is what unblocks the
 first item.
 
-1. **Pseudo-classes** (`:hover`, `:focus`, `:active`, `:checked`) — *the intended
-   first v0.4 item.* Needs interaction state threaded into selector matching, which
-   fine-grained reactivity (v0.3) makes tractable: `:hover`/`:active` need pointer
-   tracking to invalidate, and per-binding subscriptions are how that invalidation
-   stays cheap. Retires the synthetic `checked`-class hack.
+1. **Pseudo-classes** (`:hover`, `:focus`, `:active`, `:checked`) — ✅ **done
+   2026-07-25, driven & verified in the window.** All four match; they stack, carry
+   class-level specificity, and work anywhere in a chain (`.card:hover .title`).
+
+   - **How the state gets in.** `rux_style::InteractionState` (hovered path, active
+     path, focused `r-model`) is threaded through the build; `ElemDesc` carries an
+     `ElemStates` the pseudo-classes test. `:checked` resolves from the toggle's
+     `r-model` at build time; the other three come from the shell.
+   - **How the shell knows what to report.** A node any `:hover`/`:active` rule
+     could match is marked with its tree path (`Node.state_path`), and the layout
+     emits a `StateRegion` for it — so a document with no pointer-state rules emits
+     none and pays nothing. Deliberately an over-approximation (only the
+     pseudo-carrying compound is tested): over-flagging costs a region,
+     under-flagging would be a rule that silently never fires.
+   - **How it stays cheap.** `Document::set_interaction` re-cascades only the
+     subtree where the old and new pointer chains **diverge**, reusing the v0.3
+     node-splice reconcile — so a caret or selection elsewhere survives by node
+     identity. Moving within one element is not a state change and does no work.
+   - **Two bugs this surfaced.** (a) `parse_compound` used to stop at the `:` and
+     drop it, so `.box:hover` parsed as plain `.box` and applied *unconditionally*;
+     an unknown pseudo-class now fails closed and warns once. (b) Found only by
+     driving it: the pointer leaving the window fires `CursorLeft`, not a
+     `CursorMoved`, so a hovered element stayed lit after the pointer was gone —
+     the "set but never cleared" category again, now covered by a test that asserts
+     the *clearing*.
+   - **Still open:** the synthetic `checked` class is kept one release for
+     compatibility (examples and docs are migrated to `:checked`); entering or
+     leaving *all* interactive boxes re-cascades from the root rather than a
+     sub-path, which is correct but coarser than the sibling-to-sibling case.
 2. **CSS custom properties + `var()`** — one place for the theme palette instead of
    hard-coded per class. Wants a resolution pass in the cascade.
 3. **`@media` queries** — the honest way to make examples responsive.
@@ -807,10 +830,9 @@ self-contained-vs-`source.css` decision).
 - **Error surfacing.** Unknown CSS is silently ignored; a bad `.rux` file falls
   back to an empty screen. There is no dev overlay. Fine for a prototype, not for
   anyone else's hands.
-- **`:checked` and other pseudo-classes.** Today a checked box gets a synthetic
-  `checked` *class* — deliberately, to avoid new selector machinery. If pseudo-
-  classes arrive (`:hover`, `:focus`, `:disabled`), that hack should be retired
-  with them.
+- ~~**`:checked` and other pseudo-classes.**~~ ✅ Resolved 2026-07-25: `:hover`,
+  `:focus`, `:active` and `:checked` all match. The synthetic `checked` class
+  survives one more release for compatibility, then goes.
 - **Accessibility.** `role=` is honored for selectors and semantics but is wired
   to nothing. parley 0.11 pulls in `accesskit`; that door is open.
 

@@ -103,6 +103,18 @@ cursor (pointer, on @tap boxes only)
 **Selectors:** tag, `.class`, `#id`, `[role="…"]`, compounds, and all four
 combinators — descendant (`.a .b`), child (`.a > .b`), next-sibling (`.a + .b`),
 subsequent-sibling (`.a ~ .b`).
+
+**Pseudo-classes:** `:hover`, `:focus`, `:active`, `:checked`. They stack
+(`.btn:hover:active`), count as class-level specificity, and work anywhere in a
+chain — `.card:hover .title` recolours the title while the pointer is over the
+card. `:hover`/`:active` hold for the whole chain under the pointer, as in CSS;
+`:active` is press-to-release and drops if you drag off the element; `:focus`
+matches the input holding the caret. Driven in `examples/pseudo.rux`.
+
+Any *other* pseudo-class (`:disabled`, `:nth-child(…)`, `::selection`) **never
+matches**, and says so once on stderr. Before this existed the `:` was silently
+dropped, so `.box:hover` parsed as `.box` and applied *unconditionally* — failing
+closed is the safer half of that trade.
 `flex: 1` means `1 1 0%` (CSS's shorthand defaults), not `1 1 auto`.
 `opacity` fades the node **and its subtree** as one layer.
 `background`/`border` work on `<text>` nodes, not just containers.
@@ -172,12 +184,14 @@ radios are now keyboard-reachable, not tap-only.
 no keyboard. They write the bound signal through the ordinary handler path
 (`flag = !flag`, `choice = "pro"`), so an authored `@tap` overrides them.
 
-A checked box carries a synthetic **`checked` class**, so its checked look is
-ordinary CSS — there is no `:checked` pseudo-class:
+A ticked box matches **`:checked`**:
 ```css
-.box         { background: #313244; border: 2px #45475a solid; color: #cdd6f4; }
-.box.checked { background: #a6e3a1; color: #ffffff; }   /* white tick on green */
+.box          { background: #313244; border: 2px #45475a solid; color: #cdd6f4; }
+.box:checked  { background: #a6e3a1; color: #ffffff; }   /* white tick on green */
 ```
+It *also* still carries the synthetic **`checked` class** that predated the
+pseudo-class, so stylesheets written against `.box.checked` keep working. That is
+deprecated and goes away in a later release — write `:checked`.
 The mark is drawn in the box's own `color`: a **stroked checkmark** for a checkbox
 (a path, not a ✓ glyph — a glyph is whatever the system font ships and reads as a
 letter), a dot for a radio. Keep the checked `border` a shade apart from the

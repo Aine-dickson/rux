@@ -727,6 +727,23 @@ impl App {
         }
     }
 
+    /// The pointer left the window: nothing is hovered or pressed any more.
+    ///
+    /// This needs its own event because the pointer leaving produces `CursorLeft`,
+    /// not a `CursorMoved` to somewhere outside — so without it a `:hover` style
+    /// stays lit after the pointer is long gone.
+    fn clear_pointer_state(&mut self) {
+        let mut next = self.document.interaction().clone();
+        if next.hovered.is_none() && next.active.is_none() {
+            return;
+        }
+        next.hovered = None;
+        next.active = None;
+        if self.document.set_interaction(next) {
+            self.request_redraw();
+        }
+    }
+
     /// Tell the document which input has focus, so `:focus` rules match it.
     fn update_focus_state(&mut self, model: Option<String>) {
         let mut next = self.document.interaction().clone();
@@ -1413,6 +1430,9 @@ impl ApplicationHandler<RuxEvent> for App {
                     self.update_pointer_state();
                 }
             }
+            // The pointer left the window entirely — no CursorMoved follows, so
+            // hover/active have to be dropped here or they stay lit.
+            WindowEvent::CursorLeft { .. } => self.clear_pointer_state(),
             // Touch drags the content itself: the finger stays on the pixel it
             // grabbed, so the content follows it and the offset moves the other way.
             WindowEvent::Touch(touch) => {

@@ -81,10 +81,9 @@
         color: #cdd6f4;
         font-size: 14px;
     }
-    /* A checked box carries a synthetic `checked` class — so the checked look is
-     ordinary CSS. Keep the ring a shade apart from the fill, or the box loses
-     its outline and reads as a blob. */
-    .box.checked {
+    /* A ticked box matches `:checked`. Keep the ring a shade apart from the fill,
+     or the box loses its outline and reads as a blob. */
+    .box:checked {
         background: #40a02b;
         border: 2px #a6e3a1 solid;
         color: #ffffff;
@@ -94,7 +93,7 @@
     .ring {
         border-radius: 9999px;
     }
-    .ring.checked {
+    .ring:checked {
         background: #313244;
         border: 2px #a6e3a1 solid;
         color: #a6e3a1;

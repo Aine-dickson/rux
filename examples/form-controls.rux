@@ -72,7 +72,7 @@
         flex-shrink: 0;
     }
     .radio { border-radius: 9999px; }
-    .check.checked, .radio.checked { background: #89b4fa; border-color: #89b4fa; color: #11111b; }
+    .check:checked, .radio:checked { background: #89b4fa; border-color: #89b4fa; color: #11111b; }
 </style>
 
 <script>

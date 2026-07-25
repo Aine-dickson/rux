@@ -948,6 +948,24 @@ mod tests {
         assert!(is_green(&doc.root.children[0]));
     }
 
+    /// Clearing the pointer state (the pointer left the window) un-styles what was
+    /// hovered or pressed. Found by driving it: leaving the window fires
+    /// `CursorLeft`, not a `CursorMoved`, so a hovered button stayed lit after the
+    /// pointer was gone. This is the "assert it is *cleared*" half of the rule.
+    #[test]
+    fn clearing_pointer_state_unstyles_the_hovered_element() {
+        let mut doc = hover_doc();
+        doc.set_interaction(InteractionState {
+            hovered: Some(vec![0]),
+            active: Some(vec![0]),
+            ..InteractionState::default()
+        });
+        assert!(is_green(&doc.root.children[0]));
+
+        assert!(doc.set_interaction(InteractionState::default()), "clearing restyles");
+        assert!(!is_green(&doc.root.children[0]), "nothing is hovered any more");
+    }
+
     /// `:hover` holds for the whole chain under the pointer, as in CSS: hovering a
     /// child leaves its ancestor hovered too.
     #[test]
