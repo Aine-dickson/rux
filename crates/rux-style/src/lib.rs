@@ -379,6 +379,19 @@ pub fn build_styled_tree_tracked(
     components: &HashMap<String, Sfc>,
     engine: &mut Engine,
 ) -> Result<(LayoutNode, BindingRegistry), String> {
+    build_styled_tree_stateful(sfc, components, engine, &InteractionState::default())
+}
+
+/// Like [`build_styled_tree_tracked`], but matches pseudo-class selectors against
+/// the shell's current [`InteractionState`] — what is hovered, pressed, focused.
+/// The runtime passes its live state on every build so a reconcile reproduces the
+/// same styling.
+pub fn build_styled_tree_stateful(
+    sfc: &Sfc,
+    components: &HashMap<String, Sfc>,
+    engine: &mut Engine,
+    state: &InteractionState,
+) -> Result<(LayoutNode, BindingRegistry), String> {
     let rules = parse_rules(&sfc.style);
     let comps: Components = components
         .iter()
@@ -408,6 +421,7 @@ pub fn build_styled_tree_tracked(
         &[],
         &[],
         &mut reg,
+        state,
     );
     link_labels(&mut node);
     Ok((node, reg))
@@ -548,7 +562,46 @@ pub struct ElemStates {
     pub checked: bool,
 }
 
+/// The interaction state the *shell* owns, handed to the build so pseudo-class
+/// selectors can match against it. Elements are identified by their tree path —
+/// the same child-index path the [`BindingRegistry`] uses — because that is what
+/// survives a reconcile and what the layout's state regions report back.
+///
+/// `checked` is not here: it is resolved from the toggle's `r-model` during the
+/// build, not tracked by the shell.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct InteractionState {
+    /// Path of the innermost element under the pointer.
+    pub hovered: Option<Vec<usize>>,
+    /// Path of the element currently pressed (pointer down on it).
+    pub active: Option<Vec<usize>>,
+    /// `r-model` of the focused input — the shell tracks focus by model, not path.
+    pub focused_model: Option<String>,
+}
+
+impl InteractionState {
+    /// Does `path` name the hovered element or one of its ancestors? CSS `:hover`
+    /// matches the whole chain from the root down to the pointer, not just the
+    /// innermost element — a hovered button inside a hovered card leaves both
+    /// hovered.
+    fn hovers(&self, path: &[usize]) -> bool {
+        self.hovered.as_ref().is_some_and(|h| h.starts_with(path))
+    }
+
+    /// Same containment rule as [`Self::hovers`], for `:active`.
+    fn activates(&self, path: &[usize]) -> bool {
+        self.active.as_ref().is_some_and(|a| a.starts_with(path))
+    }
+}
+
 impl Pseudo {
+    /// Is this a state the *shell* supplies (as opposed to `:checked`, resolved
+    /// during the build)? Such an element needs a layout region so the shell can
+    /// tell when the pointer enters or leaves it.
+    fn is_pointer_state(&self) -> bool {
+        matches!(self, Self::Hover | Self::Active)
+    }
+
     fn parse(name: &str) -> Self {
         match name.to_ascii_lowercase().as_str() {
             "hover" => Self::Hover,
@@ -1004,6 +1057,34 @@ fn matches_chain(
     }
 }
 
+/// Could any `:hover` / `:active` rule apply to this element? If so the layout
+/// emits a [`rux_layout::StateRegion`] for it, which is how the shell learns the
+/// pointer entered or left it.
+///
+/// Only the *pseudo-carrying compound* is tested, and only against this element —
+/// the rest of the chain is ignored, so this over-approximates (a `.card:hover`
+/// rule flags every `.card`, even one no full selector reaches). Over-flagging
+/// costs one region; under-flagging would mean a `:hover` rule that silently never
+/// fires, so the bias is deliberate.
+///
+/// Note `.card:hover .icon` flags the **card**, not the icon: the card is what the
+/// pointer is over, and its subtree — icon included — is re-cascaded when its hover
+/// state flips.
+fn pointer_state_sensitive(desc: &ElemDesc, rules: &[Rule]) -> bool {
+    // Probe with both pointer states on: we're asking "could this ever match",
+    // not "does it match now".
+    let probe = ElemDesc {
+        states: ElemStates { hover: true, active: true, ..desc.states },
+        ..desc.clone()
+    };
+    rules.iter().any(|rule| {
+        rule.chain.iter().any(|compound| {
+            compound.pseudos.iter().any(Pseudo::is_pointer_state)
+                && matches_compound(compound, &probe)
+        })
+    })
+}
+
 /// Collect the matching rules' declarations for an element, in cascade order.
 fn matched_props(
     desc: &ElemDesc,
@@ -1046,10 +1127,13 @@ fn build_node(
     path: &[usize],
     tpl_path: &[usize],
     reg: &mut BindingRegistry,
+    state: &InteractionState,
 ) -> LayoutNode {
     // A custom-element tag expands its imported component in place.
     if let Some(component) = comps.get(&el.tag) {
-        return expand_component(el, component, comps, inherited, engine, locals, path, tpl_path, reg);
+        return expand_component(
+            el, component, comps, inherited, engine, locals, path, tpl_path, reg, state,
+        );
     }
 
     let mut desc = ElemDesc::of(el);
@@ -1062,6 +1146,15 @@ fn build_node(
         desc.states.checked = true;
         desc.classes.push("checked".to_string());
     }
+    // Pointer state comes from the shell, keyed by this node's tree path. Focus is
+    // keyed by `r-model` instead — that is how the shell tracks it, and it is what
+    // survives a reconcile that moves nodes around.
+    desc.states.hover = state.hovers(path);
+    desc.states.active = state.activates(path);
+    desc.states.focus = match (&state.focused_model, el.attr("r-model")) {
+        (Some(focused), Some(model)) => focused == model,
+        _ => false,
+    };
     // `:class` — dynamic classes fed into the cascade (the `checked` pattern,
     // generalized). Signals it reads are collected for reconcile.
     let mut dyn_deps: HashSet<String> = HashSet::new();
@@ -1072,6 +1165,11 @@ fn build_node(
             desc.classes.extend(class_list(&v));
         }
     }
+
+    // Set on every node this build produces, so the shell gets a region to hit-test
+    // (see `pointer_state_sensitive`). Computed after `:class`, so dynamically
+    // applied classes count too.
+    let state_path = pointer_state_sensitive(&desc, rules).then(|| path.to_vec());
 
     let mut props = matched_props(&desc, ancestors, prev, rules);
     // Inline styles override the cascade: static `style=` first, then dynamic
@@ -1199,6 +1297,7 @@ fn build_node(
         node.hidden = hidden;
         node.id = el.attr("id").map(str::to_string);
         node.label_for = el.attr("for").map(str::to_string);
+        node.state_path = state_path.clone();
         return node;
     }
 
@@ -1233,6 +1332,7 @@ fn build_node(
         node.hidden = hidden;
         node.id = el.attr("id").map(str::to_string);
         node.label_for = el.attr("for").map(str::to_string);
+        node.state_path = state_path.clone();
         return node;
     }
 
@@ -1296,6 +1396,7 @@ fn build_node(
         node.hidden = hidden;
         node.id = el.attr("id").map(str::to_string);
         node.label_for = el.attr("for").map(str::to_string);
+        node.state_path = state_path.clone();
         return node;
     }
 
@@ -1393,6 +1494,7 @@ fn build_node(
         node.hidden = hidden;
         node.id = el.attr("id").map(str::to_string);
         node.label_for = el.attr("for").map(str::to_string);
+        node.state_path = state_path.clone();
         return node;
     }
 
@@ -1416,6 +1518,7 @@ fn build_node(
         path,
         tpl_path,
         reg,
+        state,
     );
     ancestors.pop();
     // If any child carried a structural directive, this parent can be reconciled
@@ -1442,6 +1545,7 @@ fn build_node(
         id: el.attr("id").map(str::to_string),
         label_for: el.attr("for").map(str::to_string),
         focus_model: None,
+        state_path,
     }
 }
 
@@ -1459,6 +1563,7 @@ fn expand_component(
     path: &[usize],
     tpl_path: &[usize],
     reg: &mut BindingRegistry,
+    state: &InteractionState,
 ) -> LayoutNode {
     let mut props: Locals = Vec::new();
     let mut prop_deps: HashSet<String> = HashSet::new();
@@ -1496,6 +1601,7 @@ fn expand_component(
         path,
         tpl_path,
         reg,
+        state,
     )
 }
 
@@ -1519,6 +1625,7 @@ fn build_children(
     path: &[usize],
     tpl_path: &[usize],
     reg: &mut BindingRegistry,
+    state: &InteractionState,
 ) -> (Vec<LayoutNode>, HashSet<String>) {
     let mut out = Vec::new();
     // Signals read by structural directives at this level — returned so the parent
@@ -1559,7 +1666,7 @@ fn build_children(
                         let mut child_locals = locals.clone();
                         child_locals.push((var.to_string(), item));
                         let cp = child_path(&out);
-                        out.push(build_node(el, rules, comps, ancestors, &prev, inherited, engine, &child_locals, &cp, &ctp, reg));
+                        out.push(build_node(el, rules, comps, ancestors, &prev, inherited, engine, &child_locals, &cp, &ctp, reg, state));
                         prev.push(ElemDesc::of(el));
                     }
                 }
@@ -1575,7 +1682,7 @@ fn build_children(
             chain_satisfied = v;
             if chain_satisfied {
                 let cp = child_path(&out);
-                out.push(build_node(el, rules, comps, ancestors, &prev, inherited, engine, locals, &cp, &ctp, reg));
+                out.push(build_node(el, rules, comps, ancestors, &prev, inherited, engine, locals, &cp, &ctp, reg, state));
                 prev.push(ElemDesc::of(el));
             }
             continue;
@@ -1591,7 +1698,7 @@ fn build_children(
             if taken {
                 chain_satisfied = true;
                 let cp = child_path(&out);
-                out.push(build_node(el, rules, comps, ancestors, &prev, inherited, engine, locals, &cp, &ctp, reg));
+                out.push(build_node(el, rules, comps, ancestors, &prev, inherited, engine, locals, &cp, &ctp, reg, state));
                 prev.push(ElemDesc::of(el));
             }
             continue;
@@ -1599,7 +1706,7 @@ fn build_children(
         if el.attr("r-else").is_some() {
             if in_chain && !chain_satisfied {
                 let cp = child_path(&out);
-                out.push(build_node(el, rules, comps, ancestors, &prev, inherited, engine, locals, &cp, &ctp, reg));
+                out.push(build_node(el, rules, comps, ancestors, &prev, inherited, engine, locals, &cp, &ctp, reg, state));
                 prev.push(ElemDesc::of(el));
             }
             in_chain = false;
@@ -1609,7 +1716,7 @@ fn build_children(
         // A plain element ends any active chain.
         in_chain = false;
         let cp = child_path(&out);
-        out.push(build_node(el, rules, comps, ancestors, &prev, inherited, engine, locals, &cp, &ctp, reg));
+        out.push(build_node(el, rules, comps, ancestors, &prev, inherited, engine, locals, &cp, &ctp, reg, state));
         prev.push(ElemDesc::of(el));
     }
     (out, structural_deps)

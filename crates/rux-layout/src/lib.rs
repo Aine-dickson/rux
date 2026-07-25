@@ -438,6 +438,11 @@ pub struct Node {
     /// The layout emits a `FocusRegion` here so tapping the label focuses that input
     /// (the caret lands in the input itself, matched by model).
     pub focus_model: Option<String>,
+    /// This node's tree path, set only when some `:hover`/`:active` rule could
+    /// match it. The layout emits a [`StateRegion`] for such nodes so the shell can
+    /// tell what the pointer is over and hand the path back as interaction state.
+    /// `None` — the common case — costs nothing.
+    pub state_path: Option<Vec<usize>>,
 }
 
 impl Node {
@@ -456,6 +461,7 @@ impl Node {
             id: None,
             label_for: None,
             focus_model: None,
+            state_path: None,
         }
     }
 
@@ -474,6 +480,7 @@ impl Node {
             id: None,
             label_for: None,
             focus_model: None,
+            state_path: None,
         }
     }
 
@@ -492,6 +499,7 @@ impl Node {
             id: None,
             label_for: None,
             focus_model: None,
+            state_path: None,
         }
     }
 
@@ -697,6 +705,27 @@ impl SelectRegion {
     }
 }
 
+/// An absolutely-positioned box whose styling depends on pointer state
+/// (`:hover` / `:active`), carrying the tree path that identifies it to the
+/// builder. Emitted only for nodes some pointer-state rule could match, so a
+/// document with no such rules produces none.
+#[derive(Clone, Debug)]
+pub struct StateRegion {
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+    /// The node's child-index path from the root — the same identity the binding
+    /// registry uses.
+    pub path: Vec<usize>,
+}
+
+impl StateRegion {
+    pub fn contains(&self, px: f32, py: f32) -> bool {
+        px >= self.x && px <= self.x + self.width && py >= self.y && py <= self.y + self.height
+    }
+}
+
 /// One keyboard-focusable element, in document (Tab) order. Carries the geometry
 /// (for the focus ring) plus how the shell should act on it.
 #[derive(Clone, Debug)]
@@ -735,6 +764,8 @@ pub struct Layout {
     /// Keyboard-focusable elements in document (Tab) order.
     pub focusables: Vec<FocusItem>,
     pub scrolls: Vec<ScrollRegion>,
+    /// Boxes with `:hover`/`:active` styling, in painter's order (topmost last).
+    pub states: Vec<StateRegion>,
 }
 
 /// Callback that measures a text block:
@@ -1018,6 +1049,7 @@ fn build(
     opacities: &mut Vec<(NodeId, f32)>,
     scrolls: &mut Vec<NodeId>,
     transforms: &mut Vec<(NodeId, Transform)>,
+    states: &mut Vec<(NodeId, Vec<usize>)>,
     vp: (f32, f32),
 ) -> NodeId {
     let id = if let Some(tc) = &node.text {
@@ -1073,7 +1105,7 @@ fn build(
         let children: Vec<NodeId> = node
             .children
             .iter()
-            .map(|c| build(tree, c, paint, handlers, models, focus_labels, hidden, opacities, scrolls, transforms, vp))
+            .map(|c| build(tree, c, paint, handlers, models, focus_labels, hidden, opacities, scrolls, transforms, states, vp))
             .collect();
         let id = if children.is_empty() {
             tree.new_leaf(to_taffy(&node.style, vp)).expect("taffy leaf")
@@ -1121,6 +1153,9 @@ fn build(
     if node.style.overflow == Overflow::Scroll {
         scrolls.push(id);
     }
+    if let Some(path) = &node.state_path {
+        states.push((id, path.clone()));
+    }
     id
 }
 
@@ -1138,6 +1173,7 @@ fn collect(
     opacities: &[(NodeId, f32)],
     scrolls: &[NodeId],
     transforms: &[(NodeId, Transform)],
+    states: &[(NodeId, Vec<usize>)],
     offsets: &[Offset],
     vp: (f32, f32),
     out: &mut Layout,
@@ -1257,6 +1293,18 @@ fn collect(
             text: None,
             multiline: false,
             scroll_id: None,
+        });
+    }
+
+    // Emitted for any box a `:hover`/`:active` rule could style, tappable or not —
+    // unlike `cursor`, pointer-state styling is not limited to `@tap` boxes.
+    if let Some((_, path)) = states.iter().find(|(nid, _)| *nid == id) {
+        out.states.push(StateRegion {
+            x,
+            y,
+            width: layout.size.width,
+            height: layout.size.height,
+            path: path.clone(),
         });
     }
 
@@ -1390,6 +1438,7 @@ fn collect(
             opacities,
             scrolls,
             transforms,
+            states,
             offsets,
             vp,
             out,
@@ -1448,6 +1497,7 @@ pub fn layout_scrolled(
     let mut opacities = Vec::new();
     let mut scrolls = Vec::new();
     let mut transforms = Vec::new();
+    let mut states = Vec::new();
     let vp = (avail_w, avail_h);
     let root_id = build(
         &mut tree,
@@ -1460,6 +1510,7 @@ pub fn layout_scrolled(
         &mut opacities,
         &mut scrolls,
         &mut transforms,
+        &mut states,
         vp,
     );
 
@@ -1507,7 +1558,7 @@ pub fn layout_scrolled(
     let mut out = Layout::default();
     collect(
         &tree, root_id, 0.0, 0.0, &paint, &handlers, &models, &focus_labels, &hidden, &opacities,
-        &scrolls, &transforms, offsets, vp, &mut out,
+        &scrolls, &transforms, &states, offsets, vp, &mut out,
     );
     out
 }

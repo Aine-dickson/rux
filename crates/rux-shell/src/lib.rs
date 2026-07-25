@@ -14,9 +14,9 @@ use std::time::{Duration, Instant};
 use notify::{EventKind, RecursiveMode, Watcher};
 use rux_layout::{
     Background, Cursor, FocusItem, FocusKind, FocusRegion, HitRegion, Offset, Paint, PaintRect,
-    PaintText, Rgba, ScrollRegion, SelectRegion, TextAlign, TextContent, TextWrap,
+    PaintText, Rgba, ScrollRegion, SelectRegion, StateRegion, TextAlign, TextContent, TextWrap,
 };
-use rux_runtime::{Document, Focus};
+use rux_runtime::{Document, Focus, InteractionState};
 use vello::kurbo::Affine;
 use vello::peniko::Color;
 use vello::util::{RenderContext, RenderSurface};
@@ -322,6 +322,9 @@ struct App {
     ctrl_held: bool,
     /// Scrollable regions from the most recent layout.
     scrolls: Vec<ScrollRegion>,
+    /// Boxes styled by `:hover`/`:active`, from the most recent layout. Empty
+    /// unless the document actually uses a pointer-state rule.
+    states: Vec<StateRegion>,
     /// Scroll offset per scrollable box, in tree order. Survives the rebuild
     /// that follows every state change, so a list doesn't jump back to the top
     /// when you tap something in it.
@@ -399,6 +402,7 @@ impl App {
             pointer: (0.0, 0.0),
             press: None,
             cursor: CursorIcon::Default,
+            states: Vec::new(),
         }
     }
 
@@ -688,6 +692,50 @@ impl App {
             if let Some(state) = &self.state {
                 state.window.set_cursor(want);
             }
+        }
+    }
+
+    /// Push the current pointer state into the document so `:hover` and `:active`
+    /// restyle. The topmost state region under the pointer wins, as with tap
+    /// dispatch; `:active` additionally requires the button to be down on it.
+    ///
+    /// Cheap to call on every mouse move: with no pointer-state rules in the
+    /// document there are no regions, and the document declines any state it is
+    /// already in without touching the tree.
+    fn update_pointer_state(&mut self) {
+        if self.states.is_empty() && self.document.interaction().hovered.is_none() {
+            return;
+        }
+        let scale = self.scale();
+        let (px, py) = ((self.pointer.0 / scale) as f32, (self.pointer.1 / scale) as f32);
+        let hovered = self
+            .states
+            .iter()
+            .rev()
+            .find(|r| r.contains(px, py))
+            .map(|r| r.path.clone());
+        // Pressing and then dragging off the element drops `:active`, the way a
+        // button un-presses when the pointer leaves it.
+        let active = self.press.is_some().then(|| hovered.clone()).flatten();
+        let next = InteractionState {
+            hovered,
+            active,
+            focused_model: self.document.interaction().focused_model.clone(),
+        };
+        if self.document.set_interaction(next) {
+            self.request_redraw();
+        }
+    }
+
+    /// Tell the document which input has focus, so `:focus` rules match it.
+    fn update_focus_state(&mut self, model: Option<String>) {
+        let mut next = self.document.interaction().clone();
+        if next.focused_model == model {
+            return;
+        }
+        next.focused_model = model;
+        if self.document.set_interaction(next) {
+            self.request_redraw();
         }
     }
 
@@ -1067,6 +1115,9 @@ impl App {
         self.caret = focus.as_ref().map(|f| f.caret).unwrap_or(0);
         self.anchor = focus.as_ref().map(|f| f.anchor).unwrap_or(0);
         self.document.set_focus(focus);
+        // `:focus` matches on the focused model, so the document needs it too.
+        let model = self.focused.clone();
+        self.update_focus_state(model);
         self.reset_blink();
         self.request_redraw();
     }
@@ -1135,6 +1186,7 @@ impl App {
             open_select,
             scrolls,
             offsets,
+            states,
             ..
         } = self;
         let Some(state) = state.as_mut() else {
@@ -1212,6 +1264,7 @@ impl App {
         }
         *focusables = layout.focusables;
         *scrolls = layout.scrolls;
+        *states = layout.states;
 
         let device_handle = &context.devices[state.surface.dev_id];
         // wgpu 29 reports acquisition as a status enum. A timeout/occluded frame
@@ -1357,6 +1410,7 @@ impl ApplicationHandler<RuxEvent> for App {
                     self.drag_text(self.pointer);
                 } else {
                     self.update_cursor();
+                    self.update_pointer_state();
                 }
             }
             // Touch drags the content itself: the finger stays on the pixel it
@@ -1394,6 +1448,8 @@ impl ApplicationHandler<RuxEvent> for App {
                 // content under it.
                 if !self.press_scrollbar(self.pointer) && !self.press_text(self.pointer) {
                     self.press = Some(self.pointer);
+                    // `:active` holds from press to release.
+                    self.update_pointer_state();
                 }
             }
             WindowEvent::MouseInput {
@@ -1409,6 +1465,9 @@ impl ApplicationHandler<RuxEvent> for App {
                     return;
                 }
                 if let Some((sx, sy)) = self.press.take() {
+                    // Release ends `:active` — before the tap runs, so a handler
+                    // that restructures the tree doesn't leave a pressed node behind.
+                    self.update_pointer_state();
                     let (px, py) = self.pointer;
                     if (px - sx).hypot(py - sy) <= TAP_SLOP {
                         self.dispatch_tap(px, py);

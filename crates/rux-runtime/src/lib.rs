@@ -13,6 +13,9 @@ use rux_layout::Node as LayoutNode;
 use rux_parser::Sfc;
 use rux_script::{Builder, Engine};
 use rux_style::BindingRegistry;
+/// Re-exported so the shell can hand pointer/focus state in without depending on
+/// `rux-style` directly.
+pub use rux_style::InteractionState;
 
 /// A loaded `.rux` document: parsed source, imported components (by tag), the
 /// script engine, and the current tree.
@@ -29,6 +32,10 @@ pub struct Document {
     /// refreshed on every full build. Lets [`Document::patch`] update value
     /// bindings in place instead of throwing the tree away.
     registry: BindingRegistry,
+    /// What the pointer is over / pressing, and which input has focus — the state
+    /// `:hover`, `:active` and `:focus` match against. Owned here so every build
+    /// (rebuild, reconcile, hot-reload) reproduces the same styling.
+    state: InteractionState,
     pub root: LayoutNode,
 }
 
@@ -83,6 +90,23 @@ fn apply_focus(node: &mut LayoutNode, focus: Option<&Focus>) {
     }
     for child in &mut node.children {
         apply_focus(child, focus);
+    }
+}
+
+/// The deepest node whose subtree covers both paths — where the old and new
+/// pointer targets diverge. Re-cascading from here restyles every element that
+/// gained or lost the state and nothing else, because `:hover`/`:active` hold for
+/// the whole chain from the root down to the pointer, and the two chains are
+/// identical above the divergence.
+///
+/// When one side is `None` the pointer entered from (or left to) nothing, and the
+/// entire chain changed state — including ancestors — so the splice starts at the
+/// root. That is a full re-cascade, but only on entering/leaving all interactive
+/// boxes, and only in documents that use pointer-state rules at all.
+fn divergence(a: Option<&[usize]>, b: Option<&[usize]>) -> Vec<usize> {
+    match (a, b) {
+        (Some(a), Some(b)) => a.iter().zip(b).take_while(|(x, y)| x == y).map(|(x, _)| *x).collect(),
+        _ => Vec::new(),
     }
 }
 
@@ -147,6 +171,7 @@ impl Document {
             base: base.to_path_buf(),
             focus: None,
             registry,
+            state: InteractionState::default(),
             root,
         })
     }
@@ -166,6 +191,7 @@ impl Document {
             base,
             focus: None,
             registry,
+            state: InteractionState::default(),
             root,
         })
     }
@@ -181,11 +207,71 @@ impl Document {
         apply_focus(&mut self.root, self.focus.as_ref());
     }
 
+    /// The pointer/focus state pseudo-class selectors match against.
+    pub fn interaction(&self) -> &InteractionState {
+        &self.state
+    }
+
+    /// Update the interaction state (`:hover` / `:active` / `:focus`) and restyle
+    /// what it affects. Returns whether anything was restyled, so the shell knows
+    /// whether to repaint — `false` for the overwhelmingly common case of the
+    /// pointer moving within the same element.
+    ///
+    /// Only the affected subtree is spliced, not the whole tree: hover moving
+    /// between two siblings re-cascades their common parent's subtree, so a caret
+    /// or selection anywhere else survives by node identity — the same reconcile
+    /// discipline signal changes use.
+    pub fn set_interaction(&mut self, next: InteractionState) -> bool {
+        if next == self.state {
+            return false;
+        }
+        // A focus move can restyle anything (`:focus` is matched by model, not by
+        // path, and `.field:focus .hint` reaches elsewhere), so it re-cascades from
+        // the root. It is rare — one click or Tab — and the caret is being moved
+        // anyway, so there is no ephemeral state left to preserve.
+        let mut roots: Vec<Vec<usize>> = Vec::new();
+        if next.focused_model == self.state.focused_model {
+            roots.push(divergence(self.state.hovered.as_deref(), next.hovered.as_deref()));
+            roots.push(divergence(self.state.active.as_deref(), next.active.as_deref()));
+        } else {
+            roots.push(Vec::new());
+        }
+        self.state = next;
+        self.restyle(&roots);
+        true
+    }
+
+    /// Rebuild the given subtrees against the current interaction state and splice
+    /// them into the live tree, re-applying focus scoped to each.
+    fn restyle(&mut self, roots: &[Vec<usize>]) {
+        let Ok((mut fresh_root, fresh_reg)) = rux_style::build_styled_tree_stateful(
+            &self.sfc,
+            &self.components,
+            &mut self.engine,
+            &self.state,
+        ) else {
+            return;
+        };
+        resolve_images(&mut fresh_root, &self.base);
+        for path in roots {
+            let Some(fresh) = node_at(&fresh_root, path) else { continue };
+            let fresh_node = fresh.clone();
+            if let Some(live) = node_at_mut(&mut self.root, path) {
+                *live = fresh_node;
+                apply_focus(live, self.focus.as_ref());
+            }
+        }
+        self.registry = fresh_reg;
+    }
+
     /// Rebuild the layout tree from the engine's current state.
     pub fn rebuild(&mut self) {
-        if let Ok((mut root, registry)) =
-            rux_style::build_styled_tree_tracked(&self.sfc, &self.components, &mut self.engine)
-        {
+        if let Ok((mut root, registry)) = rux_style::build_styled_tree_stateful(
+            &self.sfc,
+            &self.components,
+            &mut self.engine,
+            &self.state,
+        ) {
             resolve_images(&mut root, &self.base);
             apply_focus(&mut root, self.focus.as_ref());
             self.registry = registry;
@@ -331,9 +417,12 @@ impl Document {
             }
         }
 
-        let Ok((mut fresh_root, fresh_reg)) =
-            rux_style::build_styled_tree_tracked(&self.sfc, &self.components, &mut self.engine)
-        else {
+        let Ok((mut fresh_root, fresh_reg)) = rux_style::build_styled_tree_stateful(
+            &self.sfc,
+            &self.components,
+            &mut self.engine,
+            &self.state,
+        ) else {
             return;
         };
         resolve_images(&mut fresh_root, &self.base);
@@ -793,6 +882,119 @@ mod tests {
         // Only the toggle node was spliced; the sibling input node is untouched, so
         // its caret persists by identity.
         assert_eq!(caret_of(&doc.root, "name"), Some(1));
+    }
+
+    // ── Pointer state (`:hover` / `:active`) ────────────────────────────────
+
+    /// Two sibling cards, only the second of which holds an input, plus a
+    /// `:hover` rule that repaints a card green.
+    fn hover_doc() -> Document {
+        Document::from_source(
+            "<template><screen>\
+               <view class=\"card\"><text>one</text></view>\
+               <view class=\"card\"><input r-model=\"name\" /></view>\
+             </screen></template>
+             <style>.card { background: #000000; } .card:hover { background: #00ff00; }</style>
+             <script>let name = signal(\"ab\");</script>",
+        )
+        .expect("load")
+    }
+
+    fn hovering(path: &[usize]) -> InteractionState {
+        InteractionState { hovered: Some(path.to_vec()), ..InteractionState::default() }
+    }
+
+    fn is_green(n: &LayoutNode) -> bool {
+        matches!(&n.style.background, Some(rux_layout::Background::Color(c)) if c.g == 1.0)
+    }
+
+    /// The hovered element restyles, its unhovered sibling does not, and leaving
+    /// puts it back — the negative case is the point.
+    #[test]
+    fn hover_restyles_only_the_hovered_element() {
+        let mut doc = hover_doc();
+        assert!(!is_green(&doc.root.children[0]), "nothing hovered → no green");
+
+        assert!(doc.set_interaction(hovering(&[0])), "entering a card restyles");
+        assert!(is_green(&doc.root.children[0]), "hovered card is green");
+        assert!(!is_green(&doc.root.children[1]), "its sibling is NOT");
+
+        assert!(doc.set_interaction(InteractionState::default()), "leaving restyles");
+        assert!(!is_green(&doc.root.children[0]), "hover ends → back to black");
+    }
+
+    /// The pointer moving *within* the same element is not a state change, so it
+    /// must not restyle anything — this is the every-mouse-move path.
+    #[test]
+    fn same_hover_target_is_not_a_change() {
+        let mut doc = hover_doc();
+        assert!(doc.set_interaction(hovering(&[0])));
+        assert!(
+            !doc.set_interaction(hovering(&[0])),
+            "re-reporting the same target does no work"
+        );
+    }
+
+    /// Hover moves between siblings while a caret sits in an input elsewhere: the
+    /// caret survives, because only the diverging subtree is spliced.
+    #[test]
+    fn hover_change_preserves_a_caret_elsewhere() {
+        let mut doc = hover_doc();
+        doc.set_focus(Some(Focus::at("name", 1)));
+        assert_eq!(caret_of(&doc.root, "name"), Some(1));
+
+        assert!(doc.set_interaction(hovering(&[0])));
+        assert_eq!(caret_of(&doc.root, "name"), Some(1), "caret survives a hover change");
+        assert!(is_green(&doc.root.children[0]));
+    }
+
+    /// `:hover` holds for the whole chain under the pointer, as in CSS: hovering a
+    /// child leaves its ancestor hovered too.
+    #[test]
+    fn hover_applies_to_the_ancestor_chain() {
+        let mut doc = Document::from_source(
+            "<template><screen>\
+               <view class=\"card\"><view class=\"inner\"><text>x</text></view></view>\
+             </screen></template>
+             <style>\
+               .card { background: #000000; } .card:hover { background: #00ff00; }\
+               .inner:hover { background: #0000ff; }\
+             </style>",
+        )
+        .expect("load");
+        // Pointer over the inner box (path [0, 0]).
+        assert!(doc.set_interaction(hovering(&[0, 0])));
+        assert!(is_green(&doc.root.children[0]), "the ancestor card is hovered too");
+        let inner = &doc.root.children[0].children[0];
+        assert!(
+            matches!(&inner.style.background, Some(rux_layout::Background::Color(c)) if c.b == 1.0),
+            "the inner box is hovered"
+        );
+    }
+
+    /// A document with no pointer-state rules emits no state regions, so hover
+    /// costs nothing at all.
+    #[test]
+    fn no_pointer_rules_means_no_state_regions() {
+        let doc = Document::from_source(
+            "<template><screen><view class=\"card\"><text>x</text></view></screen></template>
+             <style>.card { background: #000000; }</style>",
+        )
+        .expect("load");
+        fn any_marked(n: &LayoutNode) -> bool {
+            n.state_path.is_some() || n.children.iter().any(any_marked)
+        }
+        assert!(!any_marked(&doc.root), "no :hover/:active rule → nothing to track");
+    }
+
+    /// The element a `:hover` rule could match carries a path, so the layout emits
+    /// a region the shell can hit-test.
+    #[test]
+    fn hoverable_elements_are_marked_for_the_shell() {
+        let doc = hover_doc();
+        assert_eq!(doc.root.children[0].state_path.as_deref(), Some(&[0][..]));
+        assert_eq!(doc.root.children[1].state_path.as_deref(), Some(&[1][..]));
+        assert!(doc.root.state_path.is_none(), "the screen has no :hover rule");
     }
 
     /// `r-show` flips the node's `hidden` flag in place — no shape change, no
