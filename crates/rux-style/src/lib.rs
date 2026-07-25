@@ -509,13 +509,66 @@ fn entity_char(entity: &str) -> Option<char> {
 
 // ── Selector model ──────────────────────────────────────────────────────────
 
-/// One compound selector, e.g. `view.card#main[role="section"]`.
+/// One compound selector, e.g. `view.card#main[role="section"]:hover`.
 #[derive(Debug, Clone, Default)]
 struct Compound {
     tag: Option<String>,
     id: Option<String>,
     classes: Vec<String>,
     role: Option<String>,
+    pseudos: Vec<Pseudo>,
+}
+
+/// A pseudo-class in a compound selector. Each one tests a bit of interaction
+/// state carried on [`ElemStates`], *not* the element's markup.
+///
+/// An unrecognised pseudo-class becomes [`Pseudo::Unknown`], which **never
+/// matches**. That is deliberate: before pseudo-classes existed, `parse_compound`
+/// stopped at the `:` and dropped it, so `.box:hover` parsed as plain `.box` and
+/// the rule applied *unconditionally*. Failing closed means an unsupported
+/// pseudo-class does nothing instead of styling everything.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Pseudo {
+    Hover,
+    Focus,
+    Active,
+    Checked,
+    Unknown(String),
+}
+
+/// Interaction state for one element, tested by the pseudo-classes above. It is
+/// not part of the element's markup: `checked` is resolved at build time from the
+/// toggle's `r-model`, while `hover`/`focus`/`active` are threaded in from the
+/// shell (see [`InteractionState`]).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ElemStates {
+    pub hover: bool,
+    pub focus: bool,
+    pub active: bool,
+    pub checked: bool,
+}
+
+impl Pseudo {
+    fn parse(name: &str) -> Self {
+        match name.to_ascii_lowercase().as_str() {
+            "hover" => Self::Hover,
+            "focus" => Self::Focus,
+            "active" => Self::Active,
+            "checked" => Self::Checked,
+            other => Self::Unknown(other.to_string()),
+        }
+    }
+
+    fn holds(&self, s: &ElemStates) -> bool {
+        match self {
+            Self::Hover => s.hover,
+            Self::Focus => s.focus,
+            Self::Active => s.active,
+            Self::Checked => s.checked,
+            // Fails closed — see the type docs.
+            Self::Unknown(_) => false,
+        }
+    }
 }
 
 /// How one compound relates to the compound on its left in a selector.
@@ -550,6 +603,7 @@ struct ElemDesc {
     id: Option<String>,
     classes: Vec<String>,
     role: Option<String>,
+    states: ElemStates,
 }
 
 /// An ancestor in the match context: its identity plus the identities of the
@@ -569,6 +623,7 @@ impl ElemDesc {
             id: el.id().map(str::to_string),
             classes: el.classes().into_iter().map(str::to_string).collect(),
             role: el.role().map(str::to_string),
+            states: ElemStates::default(),
         }
     }
 }
@@ -713,9 +768,9 @@ fn parse_selector(text: &str) -> Option<(Vec<Compound>, Vec<Combinator>, (u32, u
         let mut depth = 0i32;
         while i < chars.len() {
             let d = chars[i];
-            if d == '[' {
+            if d == '[' || d == '(' {
                 depth += 1;
-            } else if d == ']' {
+            } else if d == ']' || d == ')' {
                 depth -= 1;
             } else if depth == 0 && (d.is_whitespace() || combinator_of(d).is_some()) {
                 break;
@@ -801,10 +856,70 @@ fn parse_compound(token: &str, spec: &mut (u32, u32, u32)) -> Option<Compound> {
                 }
                 i = end + 1;
             }
+            ':' => {
+                // `:hover` — and `::selection`, whose second colon just falls into
+                // the name and makes it an Unknown (never-matching) pseudo, which
+                // is the right answer for a pseudo-*element* we don't support.
+                i += 1;
+                let mut name = String::new();
+                // A second colon means a pseudo-*element* (`::selection`). Keep it
+                // in the name so it stays Unknown rather than colliding with the
+                // same-named pseudo-class.
+                if i < chars.len() && chars[i] == ':' {
+                    name.push(':');
+                    i += 1;
+                }
+                while i < chars.len() && (chars[i].is_alphanumeric() || chars[i] == '-') {
+                    name.push(chars[i]);
+                    i += 1;
+                }
+                // A functional pseudo (`:not(…)`) keeps its argument in the name so
+                // it stays Unknown rather than matching as a bare `:not`.
+                if i < chars.len() && chars[i] == '(' {
+                    let mut depth = 0i32;
+                    while i < chars.len() {
+                        if chars[i] == '(' {
+                            depth += 1;
+                        } else if chars[i] == ')' {
+                            depth -= 1;
+                        }
+                        name.push(chars[i]);
+                        i += 1;
+                        if depth == 0 {
+                            break;
+                        }
+                    }
+                }
+                if !name.is_empty() {
+                    let pseudo = Pseudo::parse(&name);
+                    if let Pseudo::Unknown(n) = &pseudo {
+                        warn_unknown_pseudo(n);
+                    }
+                    c.pseudos.push(pseudo);
+                    // A pseudo-class has class-level specificity.
+                    spec.1 += 1;
+                }
+            }
             _ => break,
         }
     }
     Some(c)
+}
+
+/// Warn once per unknown pseudo-class. Same reasoning as `warn_if_unhonored`:
+/// valid CSS that quietly does nothing is the worst failure mode we have — and
+/// since an unknown pseudo now *fails closed*, the rule disappears entirely.
+fn warn_unknown_pseudo(name: &str) {
+    use std::sync::{Mutex, OnceLock};
+    static SEEN: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    let seen = SEEN.get_or_init(|| Mutex::new(HashSet::new()));
+    let Ok(mut seen) = seen.lock() else { return };
+    if seen.insert(name.to_string()) {
+        eprintln!(
+            "rux: pseudo-class `:{name}` is not supported — rules using it will never match \
+             (supported: :hover, :focus, :active, :checked)"
+        );
+    }
 }
 
 // ── Matching & cascade ──────────────────────────────────────────────────────
@@ -830,6 +945,10 @@ fn matches_compound(c: &Compound, el: &ElemDesc) -> bool {
         if !el.role.as_deref().is_some_and(|er| er.eq_ignore_ascii_case(r)) {
             return false;
         }
+    }
+    // Every pseudo-class in the compound must hold (`.btn:hover:active`).
+    if !c.pseudos.iter().all(|p| p.holds(&el.states)) {
+        return false;
     }
     true
 }
@@ -934,11 +1053,13 @@ fn build_node(
     }
 
     let mut desc = ElemDesc::of(el);
-    // A ticked checkbox / selected radio carries a synthetic `checked` class, so
-    // its checked look is plain CSS (`.box.checked { background: … }`) — we have
-    // no `:checked` pseudo-class and this needs no new selector machinery.
+    // A ticked checkbox / selected radio is matched by `:checked`. It *also* still
+    // carries the synthetic `checked` class — the pre-pseudo-class hack — so
+    // stylesheets written against `.box.checked` keep working for one release.
+    // Deprecated: prefer `.box:checked`.
     let toggle = Toggle::of(el, engine, locals);
     if toggle.as_ref().is_some_and(|t| t.checked) {
+        desc.states.checked = true;
         desc.classes.push("checked".to_string());
     }
     // `:class` — dynamic classes fed into the cascade (the `checked` pattern,
@@ -2870,11 +2991,17 @@ mod tests {
     // These test `matches_chain` directly so both the positive and the negative
     // case are asserted: the bug being fixed here made `>`, `+` and `~` behave
     // as descendant, i.e. match elements they must NOT match.
-    use super::{matches_chain, parse_selector, AncNode, ElemDesc};
+    use super::{matches_chain, parse_selector, AncNode, ElemDesc, ElemStates};
 
     fn el(spec: &str) -> ElemDesc {
         // "tag.class.class#id" — tag optional, order flexible enough for tests.
-        let mut d = ElemDesc { tag: String::new(), id: None, classes: Vec::new(), role: None };
+        let mut d = ElemDesc {
+            tag: String::new(),
+            id: None,
+            classes: Vec::new(),
+            role: None,
+            states: ElemStates::default(),
+        };
         let mut rest = spec;
         while let Some(pos) = rest.find(['.', '#']) {
             if pos > 0 {
@@ -2895,6 +3022,119 @@ mod tests {
             d.tag = rest.to_string();
         }
         d
+    }
+
+    // ── Pseudo-classes ──────────────────────────────────────────────────────
+    //
+    // The negative case matters most here. Before pseudo-classes existed,
+    // `parse_compound` stopped at the `:` and threw it away, so `.box:hover`
+    // parsed as `.box` and matched *always*. Every test below that asserts a
+    // rule does NOT match is guarding that regression.
+
+    /// `selector` against an element with the given states and no ancestors.
+    fn hits_state(selector: &str, target: &str, states: ElemStates) -> bool {
+        let (chain, combs, _) = parse_selector(selector).expect("selector parses");
+        let mut d = el(target);
+        d.states = states;
+        matches_chain(&chain, &combs, &d, &[], &[])
+    }
+
+    fn hovered() -> ElemStates {
+        ElemStates { hover: true, ..ElemStates::default() }
+    }
+
+    #[test]
+    fn pseudo_class_matches_only_in_that_state() {
+        assert!(hits_state(".box:hover", ".box", hovered()));
+        assert!(
+            !hits_state(".box:hover", ".box", ElemStates::default()),
+            "an unhovered element must NOT match :hover (it used to match always)"
+        );
+        // The un-suffixed rule still matches in either state.
+        assert!(hits_state(".box", ".box", hovered()));
+    }
+
+    #[test]
+    fn each_pseudo_reads_its_own_state() {
+        let s = ElemStates { hover: false, focus: true, active: false, checked: true };
+        assert!(hits_state("input:focus", "input", s));
+        assert!(hits_state("input:checked", "input", s));
+        assert!(!hits_state("input:hover", "input", s));
+        assert!(!hits_state("input:active", "input", s));
+    }
+
+    #[test]
+    fn stacked_pseudos_all_have_to_hold() {
+        let hover_only = hovered();
+        let both = ElemStates { hover: true, active: true, ..ElemStates::default() };
+        assert!(!hits_state(".btn:hover:active", ".btn", hover_only));
+        assert!(hits_state(".btn:hover:active", ".btn", both));
+    }
+
+    /// An unsupported pseudo-class fails *closed* — the rule never matches —
+    /// rather than being dropped and matching everything.
+    #[test]
+    fn unknown_pseudo_never_matches() {
+        let all_on = ElemStates { hover: true, focus: true, active: true, checked: true };
+        assert!(!hits_state(".box:disabled", ".box", all_on));
+        assert!(!hits_state(".box:nth-child(2)", ".box", all_on));
+        assert!(!hits_state(".box::selection", ".box", all_on));
+    }
+
+    /// A pseudo-class carries class-level specificity, so `.box:hover` beats
+    /// `.box` regardless of source order.
+    #[test]
+    fn pseudo_class_adds_class_specificity() {
+        let (_, _, plain) = parse_selector(".box").unwrap();
+        let (_, _, with_pseudo) = parse_selector(".box:hover").unwrap();
+        assert_eq!(plain, (0, 1, 0));
+        assert_eq!(with_pseudo, (0, 2, 0));
+        assert!(with_pseudo > plain);
+    }
+
+    /// A pseudo-class sits inside one compound — it must not be mistaken for a
+    /// new compound or split the selector.
+    #[test]
+    fn pseudo_class_stays_within_its_compound() {
+        let (chain, combs, _) = parse_selector(".card > .btn:hover").unwrap();
+        assert_eq!(chain.len(), 2, "two compounds, not three");
+        assert_eq!(combs.len(), 1);
+        // The state is on the *right* compound: a hovered .btn inside .card.
+        let hover = hovered();
+        let mut btn = el(".btn");
+        btn.states = hover;
+        let card = anc(".card", &[]);
+        assert!(matches_chain(&chain, &combs, &btn, &[card.clone()], &[]));
+        let plain_btn = el(".btn");
+        assert!(!matches_chain(&chain, &combs, &plain_btn, &[card], &[]));
+    }
+
+    /// End-to-end: a ticked checkbox is styled by `:checked` through the real
+    /// cascade, and an unticked one is not.
+    #[test]
+    fn checked_pseudo_styles_a_ticked_toggle() {
+        let src = r#"
+            <template>
+              <screen>
+                <input type="checkbox" class="box" r-model="on" />
+                <input type="checkbox" class="box" r-model="off" />
+              </screen>
+            </template>
+            <style>
+              .box { background: #000000; }
+              .box:checked { background: #00ff00; }
+            </style>
+            <script> let on = signal(true); let off = signal(false); </script>
+        "#;
+        let sfc = rux_parser::parse_sfc(src).unwrap();
+        let mut engine = Builder::new().build(&sfc.script).unwrap();
+        let root = build_styled_tree(&sfc, &HashMap::new(), &mut engine).unwrap();
+
+        let green = |n: &rux_layout::Node| {
+            matches!(&n.style.background, Some(rux_layout::Background::Color(c)) if c.g == 1.0)
+        };
+        assert!(green(&root.children[0]), "ticked box matches .box:checked");
+        assert!(!green(&root.children[1]), "unticked box does not");
     }
 
     fn anc(spec: &str, prev: &[&str]) -> AncNode {
