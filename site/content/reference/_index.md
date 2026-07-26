@@ -1,11 +1,21 @@
-# 05 — As Built (current state of the runtime)
++++
+title = "Reference"
+description = "What Rux actually does today — the authoritative honored-CSS set, elements, and directives."
+weight = 1
+sort_by = "weight"
+template = "docs-section.html"
+page_template = "docs.html"
++++
+
+<!-- GENERATED FROM docs/05-as-built.md BY site/sync-docs.sh — DO NOT EDIT HERE. -->
+
 
 **This is the authoritative description of what Rux actually does today.**
 
-Docs [01–04](./README.md) describe the *design intent* and are still worth reading
+Docs [01–04](https://github.com/Aine-dickson/rux/tree/main/docs) describe the *design intent* and are still worth reading
 for the *why* — but the implementation has diverged from them in places. Where
 they disagree, **this document wins**. Divergences are called out below. For what
-is *not* built yet and in what order, see [06 — Roadmap](./06-roadmap.md).
+is *not* built yet and in what order, see [06 — Roadmap](/roadmap/).
 
 Last updated: 2026-07-15. All milestones **M0–M9 are complete**, plus several
 follow-up passes. Branch: `build/m0-window`.
@@ -291,8 +301,8 @@ their own subtree. Editing a component hot-reloads.
 
 ## Where the design docs are still right
 
-The [rationale](./01-rationale.md)'s core laws still hold and still guide changes:
+The [rationale](/why/)'s core laws still hold and still guide changes:
 **layout lives in CSS, not markup** (no `<Padding>`/`<Center>` widgets); **reuse
-mature crates**; **keep the element set tiny**. The [architecture](./04-architecture.md)
+mature crates**; **keep the element set tiny**. The [architecture](/contribute/)
 pipeline (parse → cascade → layout → paint → present, with a file watcher) is
 exactly what got built — only the *reactive graph* stage is simpler than described.

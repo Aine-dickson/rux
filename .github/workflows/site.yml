@@ -13,6 +13,9 @@ on:
     branches: [main]
     paths:
       - "site/**"
+      # `docs/` is the source of truth for the reference, roadmap, and
+      # contribute sections, so a docs-only edit has to redeploy too.
+      - "docs/**"
       - ".github/workflows/site.yml"
   workflow_dispatch:
 
@@ -39,6 +42,13 @@ jobs:
         run: |
           curl -sSL "https://github.com/getzola/zola/releases/download/v${ZOLA_VERSION}/zola-v${ZOLA_VERSION}-x86_64-unknown-linux-gnu.tar.gz" \
             | tar xz -C /usr/local/bin
+
+      # docs/ is canonical; site/content/{reference,roadmap,contribute} is
+      # generated from it and committed. If someone edits docs/ without
+      # re-running the sync, the committed copies go stale silently — so fail
+      # here instead of publishing yesterday's text.
+      - name: Check generated docs are in sync
+        run: ./site/sync-docs.sh --check
 
       - name: Build
         working-directory: site

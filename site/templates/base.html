@@ -27,8 +27,9 @@
         <img src="{{ get_url(path='rux-wordmark.svg') }}" alt="Rux" height="22">
       </a>
       <div class="nav-links">
+        <a href="{{ get_url(path='@/reference/_index.md') }}">Docs</a>
         <a href="{{ get_url(path='@/why.md') }}">Why</a>
-        <a href="{{ get_url(path='@/how-it-works.md') }}">How it works</a>
+        <a href="{{ get_url(path='@/roadmap/_index.md') }}">Roadmap</a>
         <a href="{{ get_url(path='@/blog/_index.md') }}">Blog</a>
         <a href="{{ config.extra.repo }}">GitHub</a>
       </div>
@@ -38,6 +39,10 @@
   <main id="main">
     {% block content %}{% endblock %}
   </main>
+
+  {# Only the docs pages carry a search box; the script no-ops elsewhere. #}
+  <script defer src="{{ get_url(path='search.js') }}"
+          data-search-index="{{ get_url(path='search_index.en.json') }}"></script>
 
   <footer class="site-foot">
     <p>

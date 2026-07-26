@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% import "docs-nav.html" as nav %}
+
+{% block title %}{{ page.title }} · {{ config.title }}{% endblock %}
+{% block description %}{{ page.description | default(value=config.description) }}{% endblock %}
+{% block og_title %}{{ page.title }} · {{ config.title }}{% endblock %}
+{% block og_description %}{{ page.description | default(value=config.description) }}{% endblock %}
+
+{% block content %}
+<div class="docs-layout">
+  {{ nav::sidebar(current=page.permalink) }}
+
+  <article class="prose docs-body">
+    <h1>{{ page.title }}</h1>
+    {% if page.description %}<p class="lede">{{ page.description }}</p>{% endif %}
+    {{ page.content | safe }}
+
+    {% if page.earlier or page.later %}
+    <nav class="docs-seq" aria-label="Section pages">
+      {% if page.earlier %}
+        <a class="prev" href="{{ page.earlier.permalink }}">← {{ page.earlier.title }}</a>
+      {% endif %}
+      {% if page.later %}
+        <a class="next" href="{{ page.later.permalink }}">{{ page.later.title }} →</a>
+      {% endif %}
+    </nav>
+    {% endif %}
+  </article>
+</div>
+{% endblock %}

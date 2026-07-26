@@ -49,9 +49,9 @@ You write a single `.rux` file with familiar `<template>` / `<style>` / `<script
 </p>
 
 <p align="center">
-  <strong><a href="https://aine-dickson.github.io/rux">rux website</a></strong>
-  · <a href="https://aine-dickson.github.io/rux/why/">why Rux?</a>
-  · <a href="https://aine-dickson.github.io/rux/blog/">release blog</a>
+  <strong><a href="https://ruxlang.dev">rux website</a></strong>
+  · <a href="https://ruxlang.dev/why/">why Rux?</a>
+  · <a href="https://ruxlang.dev/blog/">release blog</a>
 </p>
 
 ## Run it
@@ -71,7 +71,7 @@ A `.rux` VS Code extension ships in this repo — **syntax highlighting** for al
 code --install-extension editors/vscode/rux-0.1.0.vsix
 ```
 
-Then open any `.rux` file. Details and the tooling roadmap (a parser-backed `rux fmt`, `rux check` diagnostics, and a language server are next) are in [`editors/vscode/README.md`](editors/vscode/README.md). The same highlighting powers the ` ```rux ` code blocks on the [website](https://aine-dickson.github.io/rux).
+Then open any `.rux` file. Details and the tooling roadmap (a parser-backed `rux fmt`, `rux check` diagnostics, and a language server are next) are in [`editors/vscode/README.md`](editors/vscode/README.md). The same highlighting powers the ` ```rux ` code blocks on the [website](https://ruxlang.dev).
 
 ## What works today
 
