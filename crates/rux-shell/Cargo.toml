@@ -9,11 +9,24 @@ description = "Rux runtime shell: window, GPU surface, input, and frame loop."
 [dependencies]
 winit.workspace = true
 vello.workspace = true
-pollster.workspace = true
 rux-layout = { path = "../rux-layout" }
 rux-paint = { path = "../rux-paint" }
 rux-runtime = { path = "../rux-runtime" }
 rux-text = { path = "../rux-text" }
+rux-reactive = { version = "0.1.0", path = "../rux-reactive" }
+# `std::time::Instant` panics on wasm; web-time swaps in the browser clock there
+# and re-exports std everywhere else. winit already depends on it, so this adds
+# no weight — it just lets our code name the same type winit's API expects.
+web-time = "1.1"
+
+# Native-only platform services. None of the three exist in a browser:
+#   pollster  blocks on a future — a wasm main thread must not block, so the
+#             web build awaits the same futures instead.
+#   notify    watches the filesystem for hot reload; there is no filesystem,
+#             and the playground editor supplies new source directly.
+#   arboard   talks to the OS clipboard; the browser's is async and permissioned.
+# Everything above this line — window, input, focus, layout, paint — is shared.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+pollster.workspace = true
 notify = "8.2.0"
 arboard.workspace = true
-rux-reactive = { version = "0.1.0", path = "../rux-reactive" }

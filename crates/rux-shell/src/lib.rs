@@ -9,8 +9,13 @@
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+// `web_time` re-exports `std::time` verbatim on native, so this is the std type
+// everywhere except wasm — where `std::time::Instant` panics on construction and
+// `ControlFlow::WaitUntil` wants the browser clock's instant instead. One import
+// covers both; there is no cfg and no behavioural difference off the web.
+use web_time::{Duration, Instant};
 
+#[cfg(not(target_arch = "wasm32"))]
 use notify::{EventKind, RecursiveMode, Watcher};
 use rux_layout::{
     Background, Cursor, FocusItem, FocusKind, FocusRegion, HitRegion, Offset, Paint, PaintRect,
@@ -347,7 +352,10 @@ struct App {
     /// When and where the last click landed, for double-click word-select.
     last_click: Option<(Instant, f64, f64)>,
     /// The system clipboard. `None` if the platform wouldn't give us one — the
-    /// app still runs, copy/paste just does nothing.
+    /// app still runs, copy/paste just does nothing. Absent on the web, where
+    /// the clipboard is async and permission-gated; same "copy/paste does
+    /// nothing" outcome, reached without a field.
+    #[cfg(not(target_arch = "wasm32"))]
     clipboard: Option<arboard::Clipboard>,
     /// Whether the caret is in the visible half of its blink cycle.
     caret_visible: bool,
@@ -391,6 +399,7 @@ impl App {
             anchor: 0,
             text_drag: false,
             last_click: None,
+            #[cfg(not(target_arch = "wasm32"))]
             clipboard: arboard::Clipboard::new()
                 .map_err(|e| eprintln!("rux: no clipboard ({e}) — copy/paste disabled"))
                 .ok(),
@@ -1089,6 +1098,7 @@ impl App {
     }
 
     /// Put `text` on the system clipboard.
+    #[cfg(not(target_arch = "wasm32"))]
     fn clipboard_write(&mut self, text: &str) {
         if let Some(cb) = self.clipboard.as_mut() {
             if let Err(e) = cb.set_text(text.to_string()) {
@@ -1099,8 +1109,22 @@ impl App {
 
     /// Read the system clipboard. `None` when it's empty, holds non-text, or
     /// there's no clipboard at all.
+    #[cfg(not(target_arch = "wasm32"))]
     fn clipboard_read(&mut self) -> Option<String> {
         self.clipboard.as_mut()?.get_text().ok()
+    }
+
+    // On the web the clipboard is asynchronous and permission-gated, so it can't
+    // be read inside a synchronous key handler. Ctrl+C/X/V therefore do nothing
+    // for now — the same graceful no-op as a native platform that denies us a
+    // clipboard. Wiring the async Clipboard API through the event loop is
+    // tracked as playground work, not shell work.
+    #[cfg(target_arch = "wasm32")]
+    fn clipboard_write(&mut self, _text: &str) {}
+
+    #[cfg(target_arch = "wasm32")]
+    fn clipboard_read(&mut self) -> Option<String> {
+        None
     }
 
     /// Show the caret solid and (re)start the blink cycle. Called on focus and on
@@ -1442,6 +1466,11 @@ impl ApplicationHandler<RuxEvent> for App {
 
 /// Open the Rux window for the given `.rux` file and run the frame loop until the
 /// window closes. Watches the file and repaints on change.
+///
+/// Native only: it takes a filesystem path and installs a file watcher, neither
+/// of which a browser has. The web build drives the same `App` from source text
+/// supplied by the playground editor.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn run(path: PathBuf) {
     let event_loop = EventLoop::<RuxEvent>::with_user_event()
         .build()

@@ -858,9 +858,11 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "899def5c37c4fd7b2664648c28120ecec138e4d395b459e5ca34f9cce2dd77fd"
 dependencies = [
  "cfg-if",
+ "js-sys",
  "libc",
  "r-efi 5.3.0",
  "wasip2",
+ "wasm-bindgen",
 ]
 
 [[package]]
@@ -2672,6 +2674,7 @@ version = "0.1.0"
 name = "rux-runtime"
 version = "0.1.0"
 dependencies = [
+ "getrandom 0.3.4",
  "image",
  "rux-layout",
  "rux-parser",
@@ -2700,6 +2703,7 @@ dependencies = [
  "rux-runtime",
  "rux-text",
  "vello",
+ "web-time",
  "winit",
 ]
 
