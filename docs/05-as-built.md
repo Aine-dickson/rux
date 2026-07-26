@@ -320,9 +320,12 @@ app is watching.
 Every shipped example is checked to load **warning-free**, so a noisy overlay in
 `examples/` is a test failure.
 
-**Known limit:** rhai returns `()` for a missing *map property*, rather than
-erroring, so `{{ user.nmae }}` still renders empty with nothing reported. A
-missing *function* or variable does report.
+**Known limits:** rhai returns `()` for a missing *map property*, rather than
+erroring, so `{{ user.nmae }}` still renders empty with nothing reported (a
+missing *function* or variable does report). That one is rhai's semantics, not
+ours — it is tracked as a motivator for the planned rhai fork in
+[06 — Roadmap](./06-roadmap.md) (Further out → *Script documentation*). CSS
+warnings also carry no line numbers yet, and the overlay can't be dismissed.
 
 ---
 

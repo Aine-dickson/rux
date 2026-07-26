@@ -853,11 +853,15 @@ first item.
    - `crates/rux-runtime/tests/examples.rs` asserts every shipped example loads
      **warning-free** — a noisy overlay in `examples/` is now a test failure.
 
-   **Still open:** rhai returns `()` for a missing map property instead of an
-   error, so `{{ user.nmae }}` is still silently empty. The overlay is not
-   dismissable, and warnings are not yet clickable/located (no line numbers for
-   CSS). The machine-readable `rux check` subcommand in the Dev-tooling section
-   below is the natural next step — it can reuse these same sinks.
+   **Still open:** the overlay is not dismissable, and warnings are not yet
+   located (no line numbers for CSS). The machine-readable `rux check` subcommand
+   in the Dev-tooling section below is the natural next step — it can reuse these
+   same sinks.
+
+   **Not fixable from outside the engine:** rhai returns `()` for a missing map
+   property instead of erroring, so `{{ user.nmae }}` is still silently empty.
+   That is now recorded as the **second motivator for the rhai fork** (Further out
+   → item 3), beside the signal-mutation constraint.
 5. **Accessibility** — parley 0.11 already pulls in `accesskit`; `role=` is honored
    for selectors but wired to nothing. That door is open.
 
@@ -930,3 +934,21 @@ milestone in its own right, not a Friday slice. Recorded 2026-07-18.
    compile-time macros, not first-class values), or make signals shared cells the
    fork can write through (true first-class functions, but a reactivity-core change).
    The second is the language change this fork would carry.
+
+   **A second fork motivator, found building the dev overlay (2026-07-26):
+   stock rhai fails *silently* on a missing map property.** `user.nmae` on an
+   object map evaluates to `()` rather than raising an error, so a typo in a
+   `{{ }}` binding renders empty and the overlay has nothing to report — the exact
+   failure mode the error-surfacing work exists to kill. A missing *function* or
+   *variable* does error, and those are reported; the map hole is rhai's semantics,
+   not ours, so it cannot be closed from outside the engine.
+
+   Options, in the order they'd be tried: (a) evaluate bindings under a stricter
+   engine option if one lands upstream; (b) have the fork raise on unknown-property
+   access, at least in a "strict bindings" mode Rux turns on for `{{ }}` and `:`
+   expressions; (c) leave it and document it. (c) is what ships today. This is
+   *cheaper* than the signal-mutation change — it's a lookup-failure path, not a
+   reactivity-core change — so it's a good first divergence to attempt, and a good
+   test of how painful carrying a fork actually is. Both motivators point the same
+   way: the strict-bindings mode and shared-cell signals are the two changes the
+   fork exists to carry.
