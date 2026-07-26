@@ -62,12 +62,19 @@ keeps learning:
 
 ### 4. Version
 
-- [ ] Bump `version` in `[workspace.package]` (root `Cargo.toml`) to `X.Y.Z`.
-- [ ] Bump the intra-workspace path dependencies that carry an explicit version
-      to match — today that's `rux-reactive` in `crates/rux-shell/Cargo.toml`.
-      A path dep without a version won't publish; one with a *stale* version
-      won't build. Grep: `grep -rn 'version = "0\.' crates/*/Cargo.toml`.
-- [ ] `cargo build` still passes after the bump.
+Between releases the workspace version carries a `-dev` suffix — `0.4.0-dev` is
+the *line being built*, not a release. Releasing is what drops the suffix.
+
+- [ ] Drop `-dev` from `version` in `[workspace.package]` (root `Cargo.toml`),
+      so `X.Y.Z-dev` becomes `X.Y.Z`.
+- [ ] Drop it from every intra-workspace path dependency that carries an explicit
+      version too — today just `rux-reactive` in `crates/rux-shell/Cargo.toml`.
+      These must match the workspace version **exactly**: a plain `X.Y.Z`
+      requirement does not match the prerelease `X.Y.Z-dev`, so changing one
+      without the other breaks the build.
+      Grep: `grep -rn 'version = "0\.' crates/*/Cargo.toml`.
+- [ ] `cargo build` passes after the change.
+- [ ] After tagging, open the next line: set both back to `X.Y.(Z+1)-dev`.
 
 ### 5. Tag and publish
 
@@ -84,8 +91,20 @@ The CLI publishes as **`ruxlang`**, not `rux` — the bare name is held by an
 unrelated abandoned crate. The binary is still `rux`, so `cargo install ruxlang`
 gives you a `rux` command.
 
-- [ ] Publish dependencies before dependents: the leaf crates (`rux-parser`,
-      `rux-reactive`, …) before `rux-shell`, and `ruxlang` last.
+**The workspace cannot publish as it stands.** `cargo publish` rejects any path
+dependency without a version, and 13 of them are bare `path = "../…"` — across
+`rux-paint`, `rux-runtime`, `rux-script`, `rux-style`, `rux-shell`, and
+`ruxlang`. Only `rux-shell`'s `rux-reactive` carries one today. All 13 need
+versions before the first publish, and all 13 then have to track the workspace
+version at every release.
+
+- [ ] Add versions to the remaining bare path deps.
+- [ ] Publish in dependency order, one at a time:
+      `rux-parser`, `rux-reactive`, `rux-text`, `rux-layout` → `rux-script` →
+      `rux-style`, `rux-paint` → `rux-runtime` → `rux-shell` → `ruxlang`.
+- [ ] `cargo publish --dry-run -p <crate>` on each before the real thing.
+- [ ] Expect throttling: crates.io rate-limits new crate names, so ten in one
+      sitting will stall partway.
 - [ ] Double-check the version. **crates.io is a one-way door** — yanking hides a
       version, it does not remove or free it, and you cannot re-publish over it.
 
