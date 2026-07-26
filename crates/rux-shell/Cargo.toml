@@ -30,3 +30,9 @@ web-time = "1.1"
 pollster.workspace = true
 notify = "8.2.0"
 arboard.workspace = true
+
+# The browser's stand-ins for the three above: a task spawner instead of
+# blocking, and the canvas/console bindings winit and the loader need.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen-futures = "0.4"
+web-sys = { version = "0.3", features = ["HtmlCanvasElement", "console"] }

@@ -398,3 +398,100 @@ pre code {
     border-bottom: 1px solid var(--line);
   }
 }
+
+/* ── Playground ─────────────────────────────────────────────────────────── */
+/* Two panes: source on the left, the wasm canvas on the right. Below 860px
+   they stack, matching the docs breakpoint. */
+
+.pg {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 40px 24px 64px;
+}
+.pg-head { margin-bottom: 24px; }
+.pg-head h1 { margin: 0 0 8px; }
+.pg-head .lede { max-width: var(--measure); color: var(--ink-dim); margin: 0; }
+
+.pg-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.pg-pane {
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.pg-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 12px;
+  background: var(--surface-2);
+  border-bottom: 1px solid var(--line);
+}
+.pg-label {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  color: var(--ink-faint);
+}
+.pg-status { font-size: 12px; color: var(--ink-faint); }
+.pg-status.is-error { color: #f38ba8; }
+
+.pg-btn {
+  padding: 5px 14px;
+  background: var(--accent);
+  color: var(--accent-ink);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  border: 0;
+  border-radius: 7px;
+  cursor: pointer;
+}
+.pg-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+
+.pg-editor {
+  min-height: 640px;
+  padding: 14px;
+  background: transparent;
+  color: var(--ink);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 13px;
+  line-height: 1.55;
+  tab-size: 2;
+  border: 0;
+  resize: vertical;
+}
+.pg-editor:focus { outline: 2px solid var(--accent); outline-offset: -2px; }
+
+/* The canvas is a fixed logical size (a phone-ish 420x640), centred rather than
+   stretched — scaling it would lie about the layout being demonstrated. */
+.pg-stage {
+  display: flex;
+  justify-content: center;
+  padding: 14px;
+  background: var(--bg);
+}
+.pg-stage canvas {
+  max-width: 100%;
+  border-radius: 8px;
+}
+
+.pg-note {
+  margin-top: 20px;
+  color: var(--ink-dim);
+}
+
+@media (max-width: 860px) {
+  .pg { padding: 24px 20px 56px; }
+  .pg-grid { grid-template-columns: minmax(0, 1fr); }
+  .pg-editor { min-height: 340px; }
+}

@@ -7,6 +7,7 @@
 //! the hot-reload path from `docs/04-architecture.md`.
 
 use std::num::NonZeroUsize;
+#[cfg(not(target_arch = "wasm32"))]
 use std::path::PathBuf;
 use std::sync::Arc;
 // `web_time` re-exports `std::time` verbatim on native, so this is the std type
@@ -14,6 +15,11 @@ use std::sync::Arc;
 // `ControlFlow::WaitUntil` wants the browser clock's instant instead. One import
 // covers both; there is no cfg and no behavioural difference off the web.
 use web_time::{Duration, Instant};
+
+#[cfg(target_arch = "wasm32")]
+use std::cell::RefCell;
+#[cfg(target_arch = "wasm32")]
+use std::rc::Rc;
 
 #[cfg(not(target_arch = "wasm32"))]
 use notify::{EventKind, RecursiveMode, Watcher};
@@ -38,7 +44,19 @@ use winit::window::{CursorIcon, Window, WindowId};
 #[derive(Debug, Clone)]
 enum RuxEvent {
     /// The `.rux` file changed on disk.
+    #[cfg(not(target_arch = "wasm32"))]
     Reload,
+    /// The GPU surface finished initialising. Web only: `create_surface` is
+    /// async and `resumed` is not, so setup runs as a task and wakes the loop
+    /// here. The payload is parked in `App::pending` rather than carried in the
+    /// event, because wgpu's types are not `Send` on wasm and the proxy requires
+    /// that they be.
+    #[cfg(target_arch = "wasm32")]
+    SurfaceReady,
+    /// New source text from the host page — the playground's replacement for a
+    /// file watcher. `String` is `Send`, so this one can travel in the event.
+    #[cfg(target_arch = "wasm32")]
+    SetSource(String),
 }
 
 /// Taps closer than this (in physical pixels) between press and release still
@@ -282,6 +300,7 @@ fn dropdown_paints(sel: &SelectRegion, value: &str) -> Vec<Paint> {
 
 /// Load a `.rux` document. On failure, log the diagnostic and fall back to an
 /// empty screen so the window still opens (stand-in for the dev overlay).
+#[cfg(not(target_arch = "wasm32"))]
 fn load_document(path: &PathBuf) -> Document {
     match Document::load(path) {
         Ok(doc) => doc,
@@ -303,9 +322,25 @@ struct RenderState {
 
 /// The application: owns the vello render context, the document, the text
 /// engine, input state, and (once resumed) one window.
+/// Where the surface-setup task leaves its result for `user_event` to collect.
+/// A shared cell rather than an event payload because wgpu's handles are `!Send`
+/// on wasm while `EventLoopProxy` requires `Send`.
+#[cfg(target_arch = "wasm32")]
+type Pending = Rc<RefCell<Option<(RenderContext, RenderState)>>>;
+
 struct App {
     context: RenderContext,
     state: Option<RenderState>,
+    /// Set while the async surface setup is in flight, so `resumed` firing twice
+    /// doesn't start a second one.
+    #[cfg(target_arch = "wasm32")]
+    pending: Pending,
+    #[cfg(target_arch = "wasm32")]
+    starting: bool,
+    /// The file behind the document. Native only — it titles the window and is
+    /// what the watcher re-reads; on the web there is no file, and new source
+    /// arrives as text.
+    #[cfg(not(target_arch = "wasm32"))]
     path: PathBuf,
     document: Document,
     text: rux_text::TextEngine,
@@ -372,11 +407,19 @@ struct App {
 }
 
 impl App {
-    fn new(path: PathBuf) -> Self {
-        let document = load_document(&path);
+    /// Build the app around an already-loaded document.
+    fn new(
+        #[cfg(not(target_arch = "wasm32"))] path: PathBuf,
+        document: Document,
+    ) -> Self {
         Self {
             context: RenderContext::new(),
             state: None,
+            #[cfg(target_arch = "wasm32")]
+            pending: Rc::new(RefCell::new(None)),
+            #[cfg(target_arch = "wasm32")]
+            starting: false,
+            #[cfg(not(target_arch = "wasm32"))]
             path,
             document,
             text: rux_text::TextEngine::new(),
@@ -414,6 +457,7 @@ impl App {
     /// Re-load the document after a file change. On a parse/load error we keep
     /// the last good document and log the diagnostic, rather than blanking the
     /// window (a first step toward the dev overlay).
+    #[cfg(not(target_arch = "wasm32"))]
     fn reload(&mut self) {
         match Document::load(&self.path) {
             Ok(doc) => {
@@ -421,6 +465,25 @@ impl App {
                 eprintln!("reloaded {}", self.path.display());
             }
             Err(err) => eprintln!("reload failed for {}: {err}", self.path.display()),
+        }
+    }
+
+    /// Rebuild from new source text — the web's equivalent of a file save.
+    ///
+    /// A parse error keeps the previous document on screen rather than blanking
+    /// the canvas, which matters in a playground where the source is mid-edit
+    /// most of the time. The error goes to the console for now; surfacing it in
+    /// the page is what v0.4's dev overlay is for.
+    #[cfg(target_arch = "wasm32")]
+    fn set_source(&mut self, source: String) {
+        match Document::from_source(&source) {
+            Ok(doc) => {
+                self.document = doc;
+                self.focused = None;
+                self.focus_index = None;
+                self.open_select = None;
+            }
+            Err(err) => web_sys::console::error_1(&format!("rux: {err}").into()),
         }
     }
 
@@ -1286,7 +1349,23 @@ impl App {
     }
 }
 
+/// Build the vello renderer for a freshly created surface. Shared by both
+/// platforms so they cannot drift in their renderer options.
+fn make_renderer(context: &RenderContext, surface: &RenderSurface<'static>) -> Renderer {
+    Renderer::new(
+        &context.devices[surface.dev_id].device,
+        RendererOptions {
+            use_cpu: false,
+            antialiasing_support: AaSupport::area_only(),
+            num_init_threads: NonZeroUsize::new(1),
+            pipeline_cache: None,
+        },
+    )
+    .expect("create renderer")
+}
+
 impl ApplicationHandler<RuxEvent> for App {
+    #[cfg(not(target_arch = "wasm32"))]
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.state.is_some() {
             return;
@@ -1313,18 +1392,7 @@ impl ApplicationHandler<RuxEvent> for App {
         ))
         .expect("create surface");
 
-        let device_handle = &self.context.devices[surface.dev_id];
-        let renderer = Renderer::new(
-            &device_handle.device,
-            RendererOptions {
-                use_cpu: false,
-                antialiasing_support: AaSupport::area_only(),
-                num_init_threads: NonZeroUsize::new(1),
-                pipeline_cache: None,
-            },
-        )
-        .expect("create renderer");
-
+        let renderer = make_renderer(&self.context, &surface);
         self.state = Some(RenderState {
             window,
             surface,
@@ -1334,9 +1402,67 @@ impl ApplicationHandler<RuxEvent> for App {
         self.request_redraw();
     }
 
+    /// The web version of the same thing. `create_surface` is async and there is
+    /// no blocking on a browser's main thread, so setup runs as a task: it builds
+    /// its own `RenderContext` (cheap, and sidesteps borrowing `self` across an
+    /// await), parks the result in `self.pending`, and wakes the loop with
+    /// `SurfaceReady`.
+    #[cfg(target_arch = "wasm32")]
+    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        use winit::platform::web::WindowAttributesExtWebSys;
+
+        if self.state.is_some() || self.starting {
+            return;
+        }
+        self.starting = true;
+
+        let canvas = WEB_CANVAS.with(|c| c.borrow().clone());
+        let attributes = Window::default_attributes().with_canvas(canvas);
+        let window = Arc::new(event_loop.create_window(attributes).expect("create window"));
+
+        let pending = self.pending.clone();
+        let proxy = WEB_PROXY.with(|p| p.borrow().clone()).expect("event loop proxy");
+        let size = window.inner_size();
+
+        wasm_bindgen_futures::spawn_local(async move {
+            let mut context = RenderContext::new();
+            let surface = context
+                .create_surface(
+                    window.clone(),
+                    size.width.max(1),
+                    size.height.max(1),
+                    wgpu::PresentMode::AutoVsync,
+                )
+                .await
+                .expect("create surface");
+            let renderer = make_renderer(&context, &surface);
+
+            *pending.borrow_mut() = Some((
+                context,
+                RenderState { window, surface, renderer, scene: Scene::new() },
+            ));
+            let _ = proxy.send_event(RuxEvent::SurfaceReady);
+        });
+    }
+
     fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: RuxEvent) {
         match event {
+            #[cfg(not(target_arch = "wasm32"))]
             RuxEvent::Reload => self.reload(),
+
+            // The device that owns the surface lives in the context the task
+            // built, so that context replaces the placeholder one here.
+            #[cfg(target_arch = "wasm32")]
+            RuxEvent::SurfaceReady => {
+                if let Some((context, state)) = self.pending.borrow_mut().take() {
+                    self.context = context;
+                    self.state = Some(state);
+                    self.starting = false;
+                }
+            }
+
+            #[cfg(target_arch = "wasm32")]
+            RuxEvent::SetSource(source) => self.set_source(source),
         }
         self.request_redraw();
     }
@@ -1464,6 +1590,74 @@ impl ApplicationHandler<RuxEvent> for App {
     }
 }
 
+// ── Web entry point ──────────────────────────────────────────────────────────
+//
+// The browser drives the same `App` as the desktop: same input handling, same
+// focus and caret logic, same painter. Only the three things a browser does not
+// have are different — no file watcher (the host page pushes source instead), no
+// blocking on the main thread (surface setup is a task), and no OS clipboard.
+//
+// Two values have to outlive the call that creates them and be reachable from
+// inside `resumed` and from later JS calls, so they live in thread-locals. That
+// is sound here in a way it would not be natively: wasm is single-threaded, and
+// `spawn_app` hands the loop to the browser rather than returning.
+
+#[cfg(target_arch = "wasm32")]
+thread_local! {
+    /// The canvas the host page gave us, taken by `resumed`.
+    static WEB_CANVAS: RefCell<Option<web_sys::HtmlCanvasElement>> = const { RefCell::new(None) };
+    /// Kept so the surface task — and `set_source` — can wake the event loop.
+    static WEB_PROXY: RefCell<Option<winit::event_loop::EventLoopProxy<RuxEvent>>> =
+        const { RefCell::new(None) };
+}
+
+/// Boot Rux onto an existing `<canvas>`, rendering `source`.
+///
+/// `font` is a font file's bytes, and is not optional in practice: a browser
+/// exposes no system font source, so without it every family query misses and
+/// the app renders as silent blank boxes. See `TextEngine::register_font`.
+///
+/// Returns immediately: `spawn_app` gives the event loop to the browser instead
+/// of blocking, so the caller keeps running. Errors in `source` are reported and
+/// replaced with an empty document, matching what the native loader does with an
+/// unreadable file.
+#[cfg(target_arch = "wasm32")]
+pub fn start_web(canvas: web_sys::HtmlCanvasElement, source: String, font: Vec<u8>) {
+    use winit::platform::web::EventLoopExtWebSys;
+
+    let document = match Document::from_source(&source) {
+        Ok(doc) => doc,
+        Err(err) => {
+            web_sys::console::error_1(&format!("rux: {err}").into());
+            Document::from_source("<template><screen></screen></template>").expect("empty document")
+        }
+    };
+
+    let event_loop = EventLoop::<RuxEvent>::with_user_event()
+        .build()
+        .expect("create event loop");
+    event_loop.set_control_flow(ControlFlow::Wait);
+
+    WEB_CANVAS.with(|c| *c.borrow_mut() = Some(canvas));
+    WEB_PROXY.with(|p| *p.borrow_mut() = Some(event_loop.create_proxy()));
+
+    let mut app = App::new(document);
+    if !app.text.register_font(font) {
+        web_sys::console::error_1(&"rux: the supplied font had no usable faces — text will not render".into());
+    }
+    event_loop.spawn_app(app);
+}
+
+/// Replace the running document's source. No-op before `start_web`.
+#[cfg(target_arch = "wasm32")]
+pub fn set_web_source(source: String) {
+    WEB_PROXY.with(|p| {
+        if let Some(proxy) = p.borrow().as_ref() {
+            let _ = proxy.send_event(RuxEvent::SetSource(source));
+        }
+    });
+}
+
 /// Open the Rux window for the given `.rux` file and run the frame loop until the
 /// window closes. Watches the file and repaints on change.
 ///
@@ -1505,7 +1699,8 @@ pub fn run(path: PathBuf) {
         .watch(&watch_dir, RecursiveMode::Recursive)
         .expect("watch directory");
 
-    let mut app = App::new(path);
+    let document = load_document(&path);
+    let mut app = App::new(path, document);
     event_loop.run_app(&mut app).expect("run app");
 
     drop(watcher); // keep the watcher alive for the loop's lifetime

@@ -1,0 +1,126 @@
+{% extends "base.html" %}
+
+{% block title %}{{ page.title }} · {{ config.title }}{% endblock %}
+{% block description %}{{ page.description | default(value=config.description) }}{% endblock %}
+{% block og_title %}{{ page.title }} · {{ config.title }}{% endblock %}
+{% block og_description %}{{ page.description | default(value=config.description) }}{% endblock %}
+
+{% block content %}
+<div class="pg">
+  <div class="pg-head">
+    <h1>{{ page.title }}</h1>
+    <p class="lede">{{ page.description }}</p>
+  </div>
+
+  {# Progressive disclosure: the panel starts in a "loading" state and JS clears
+     it. With JS off, or on a browser without WebGPU, the message stays and says
+     why — rather than leaving a blank rectangle. #}
+  <div class="pg-grid">
+    <section class="pg-pane" aria-label="Editor">
+      <div class="pg-bar">
+        <span class="pg-label">app.rux</span>
+        <button id="pg-run" class="pg-btn" type="button">Run</button>
+      </div>
+      <textarea id="pg-src" class="pg-editor" spellcheck="false" autocomplete="off"
+                aria-label="Rux source"></textarea>
+    </section>
+
+    <section class="pg-pane" aria-label="Output">
+      <div class="pg-bar">
+        <span class="pg-label">output</span>
+        <span id="pg-status" class="pg-status">loading…</span>
+      </div>
+      <div class="pg-stage">
+        <canvas id="pg-canvas" width="420" height="640"></canvas>
+      </div>
+    </section>
+  </div>
+
+  <noscript>
+    <p class="pg-note">The playground needs JavaScript to load the WebAssembly
+    build. The same code runs natively with
+    <code>cargo run -p rux-cli -- app.rux</code>.</p>
+  </noscript>
+</div>
+
+<script type="module">
+  import init, { start, setSource } from "{{ get_url(path='wasm/rux_web.js') }}";
+
+  const status = document.getElementById("pg-status");
+  const editor = document.getElementById("pg-src");
+  const canvas = document.getElementById("pg-canvas");
+  const runBtn = document.getElementById("pg-run");
+
+  const DEFAULT_SOURCE = `<template>
+  <screen class="app">
+    <text class="title">Hello, {{ '{{' }} name {{ '}}' }}</text>
+    <input class="field" r-model="name" placeholder="your name" />
+    <button class="btn" @tap="taps = taps + 1">
+      <text class="btnlabel">Tapped {{ '{{' }} taps {{ '}}' }} times</text>
+    </button>
+  </screen>
+</template>
+
+<style>
+  .app   { display: flex; flex-direction: column; gap: 14px; padding: 28px; background: #1e1e2e; }
+  .title { color: #cdd6f4; font-size: 26px; font-weight: 700; }
+  .field {
+    display: flex; padding: 10px; background: #313244;
+    border: 2px #45475a solid; border-radius: 8px; color: #cdd6f4; font-size: 15px;
+  }
+  .btn      { display: flex; justify-content: center; padding: 12px; background: #89b4fa; border-radius: 8px; cursor: pointer; }
+  .btnlabel { color: #11111b; font-size: 15px; font-weight: 700; }
+</style>
+
+<script>
+  let name = signal("world");
+  let taps = signal(0);
+</` + `script>
+`;
+
+  // A lesson can deep-link its checkpoint in: /playground/#<base64 of source>.
+  // Base64 rather than percent-encoding because .rux is mostly punctuation, and
+  // an escaped URL would be unreadable and enormous.
+  function sourceFromHash() {
+    if (location.hash.length <= 1) return null;
+    try {
+      return new TextDecoder().decode(
+        Uint8Array.from(atob(location.hash.slice(1)), (c) => c.charCodeAt(0))
+      );
+    } catch {
+      return null;
+    }
+  }
+
+  editor.value = sourceFromHash() ?? DEFAULT_SOURCE;
+
+  if (!navigator.gpu) {
+    status.textContent = "needs WebGPU";
+    status.classList.add("is-error");
+    runBtn.disabled = true;
+  } else {
+    init()
+      .then(() => {
+        start(canvas, editor.value);
+        status.textContent = "running";
+        runBtn.addEventListener("click", () => {
+          setSource(editor.value);
+          status.textContent = "running";
+        });
+        // Ctrl/Cmd+Enter re-runs, the shortcut every editor has trained people
+        // to expect.
+        editor.addEventListener("keydown", (e) => {
+          if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+            e.preventDefault();
+            runBtn.click();
+          }
+        });
+      })
+      .catch((err) => {
+        status.textContent = "failed to load";
+        status.classList.add("is-error");
+        console.error(err);
+      });
+  }
+</script>
+{% endblock %}

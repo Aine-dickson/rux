@@ -16,6 +16,11 @@ on:
       # `docs/` is the source of truth for the reference, roadmap, and
       # contribute sections, so a docs-only edit has to redeploy too.
       - "docs/**"
+      # The playground ships the runtime itself, compiled to wasm, so a change
+      # to any crate changes the deployed site.
+      - "crates/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
       - ".github/workflows/site.yml"
   workflow_dispatch:
 
@@ -35,8 +40,43 @@ jobs:
     runs-on: ubuntu-latest
     env:
       ZOLA_VERSION: "0.22.1"
+      # Must match the `wasm-bindgen` version cargo resolves, or the CLI refuses
+      # to process the binary. If a dependency bump changes it, this fails loudly
+      # with both versions printed — bump it here to match.
+      WASM_BINDGEN_VERSION: "0.2.126"
     steps:
       - uses: actions/checkout@v4
+
+      # ── The playground bundle ──────────────────────────────────────────────
+      # crates/rux-web compiled to wasm, emitted into site/static/wasm/ so Zola
+      # copies it like any other static asset. It is built here rather than
+      # committed: ~7 MB of binary does not belong in the history.
+      #
+      # Note this needs no node and no npm. wasm-bindgen is a Rust tool, which is
+      # what keeps the "no JS toolchain" rule in site/config.toml intact.
+      - name: Install Rust wasm target
+        run: rustup target add wasm32-unknown-unknown
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # The wasm build has its own profile and target dir; without this key
+          # it would fight the native cache from the CI workflow.
+          key: wasm-release
+
+      - name: Install wasm-bindgen-cli
+        run: |
+          curl -sSL "https://github.com/wasm-bindgen/wasm-bindgen/releases/download/${WASM_BINDGEN_VERSION}/wasm-bindgen-${WASM_BINDGEN_VERSION}-x86_64-unknown-linux-musl.tar.gz" \
+            | tar xz --strip-components=1 -C /usr/local/bin \
+              "wasm-bindgen-${WASM_BINDGEN_VERSION}-x86_64-unknown-linux-musl/wasm-bindgen"
+          wasm-bindgen --version
+
+      - name: Build the playground
+        run: |
+          cargo build -p rux-web --target wasm32-unknown-unknown --profile wasm-release
+          wasm-bindgen --target web --no-typescript \
+            --out-dir site/static/wasm \
+            target/wasm32-unknown-unknown/wasm-release/rux_web.wasm
+          ls -lh site/static/wasm
 
       - name: Install Zola
         run: |

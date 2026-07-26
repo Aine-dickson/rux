@@ -2703,6 +2703,8 @@ dependencies = [
  "rux-runtime",
  "rux-text",
  "vello",
+ "wasm-bindgen-futures",
+ "web-sys",
  "web-time",
  "winit",
 ]
@@ -2724,6 +2726,17 @@ version = "0.1.0"
 dependencies = [
  "parley",
  "vello",
+]
+
+[[package]]
+name = "rux-web"
+version = "0.1.0"
+dependencies = [
+ "rux-runtime",
+ "rux-shell",
+ "rux-text",
+ "wasm-bindgen",
+ "web-sys",
 ]
 
 [[package]]

@@ -1,0 +1,25 @@
+[package]
+name = "rux-web"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Rux in the browser: the runtime and shell compiled to WebAssembly, rendering to a canvas."
+
+[lib]
+# `cdylib` is what wasm-bindgen links; `rlib` keeps the crate testable natively,
+# which is how the embedded font is checked without a browser.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+rux-shell = { path = "../rux-shell" }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "0.2"
+web-sys = { version = "0.3", features = ["HtmlCanvasElement", "console"] }
+
+# Native-only, and only for tests: proves the vendored font actually parses and
+# shapes before it is baked into a wasm bundle nobody can debug.
+[dev-dependencies]
+rux-text = { path = "../rux-text" }
+rux-runtime = { path = "../rux-runtime" }
