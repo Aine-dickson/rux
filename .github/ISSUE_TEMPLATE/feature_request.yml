@@ -1,0 +1,37 @@
+name: Feature request
+description: Something Rux should be able to express or do.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please check the [roadmap](https://ruxlang.dev/roadmap/) first — it lists
+        what's planned *and* what is deliberately not being built, with reasons.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to build?
+      description: >
+        The screen or behaviour you're after, not the API you'd like. Rux's
+        design laws rule out many obvious-looking additions, and knowing the
+        underlying goal is what makes an alternative findable.
+    validations:
+      required: true
+
+  - type: textarea
+    id: today
+    attributes:
+      label: What happens today
+      description: What you tried, and where it fell short.
+    validations:
+      required: true
+
+  - type: textarea
+    id: web-equivalent
+    attributes:
+      label: How does the web do this?
+      description: >
+        Optional but valuable. Rux is web-flavoured on purpose — if CSS or HTML
+        already has a name and a semantic for this, that is usually the strongest
+        argument for a particular shape.

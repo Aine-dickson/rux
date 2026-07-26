@@ -1,0 +1,59 @@
+name: Bug report
+description: Something rendered, behaved, or crashed wrongly.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. The **`.rux` file** is the most useful thing you
+        can give us — a layout bug is rarely reproducible from a description,
+        and almost always reproducible from twenty lines of markup.
+
+  - type: textarea
+    id: rux-file
+    attributes:
+      label: The .rux file
+      description: The smallest file that still shows the problem.
+      render: html
+      placeholder: |
+        <template>
+          <screen class="app">…</screen>
+        </template>
+        <style>
+          .app { display: flex; }
+        </style>
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected, and what you got
+      description: A screenshot of the window is worth more than a paragraph about it.
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: A release tag, or the commit you built from.
+      placeholder: "v0.3.0, or 6c22e74"
+    validations:
+      required: true
+
+  - type: input
+    id: platform
+    attributes:
+      label: OS and GPU
+      description: Rendering is wgpu-backed, so driver and adapter differences are real bugs.
+      placeholder: "Windows 11, RTX 3060 / macOS 15, M2 / Ubuntu 24.04, Intel UHD"
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Output from RUX_TRACE=1
+      description: Optional, but it usually says which pipeline stage went wrong.
+      render: shell

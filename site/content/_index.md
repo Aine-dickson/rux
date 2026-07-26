@@ -106,17 +106,23 @@ GPU, [winit] holds the window.
   <li>scrolling + scrollbars</li>
   <li>images</li>
   <li>signals &amp; bindings</li>
+  <li>fine-grained updates</li>
   <li>r-for / r-if / r-model</li>
+  <li>:class / :style bindings</li>
+  <li>CSS custom properties + var()</li>
+  <li>@media queries</li>
+  <li>:hover / :active / :focus / :checked</li>
+  <li>screen-reader tree</li>
   <li>components</li>
   <li>hot reload</li>
   <li>HiDPI</li>
 </ul>
 
-The exact honored-CSS set lives in [`05-as-built.md`][as-built] — the
+The exact honored-CSS set lives in [the reference](@/reference/_index.md) — the
 authoritative "what actually works" doc. What's missing is written down just as
-plainly: CSS variables, `@media`, and pseudo-classes (`:hover`, `:focus`,
-`:checked`) are the biggest gaps, and a signal change still rebuilds the whole
-tree.
+plainly: there's no true inline text-flow, text editing lacks word-wise movement
+and triple-click selection, `overflow-x` and `overflow-y` can't differ, and the
+reactive tier has no effects or computed values.
 
 > **Rux is 0.x and experimental.** It is not trying to replace Flutter, React
 > Native, or Slint — those are mature, and if you need to ship an app this
@@ -127,9 +133,15 @@ tree.
 
 ## Read on
 
+- [**Reference**](@/reference/_index.md) — the authoritative list of what works:
+  honored CSS, elements, directives, and the honest gaps.
 - [**Why Rux?**](@/why.md) — the thesis, the four laws, and where Rux genuinely
   isn't novel.
 - [**How it works**](@/how-it-works.md) — the pipeline from `.rux` file to pixels.
+- [**Roadmap**](@/roadmap/_index.md) — what's next, and what is deliberately not
+  being built.
+- [**Contribute**](@/contribute/_index.md) — the architecture tour, for anyone
+  who wants to work on the runtime itself.
 - [**Blog**](@/blog/_index.md) — release notes, written every release.
 
 [taffy]: https://github.com/DioxusLabs/taffy

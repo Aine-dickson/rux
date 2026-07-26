@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Documentation
+    url: https://ruxlang.dev/reference/
+    about: The authoritative account of what Rux currently does — including the honest gaps.
+  - name: Roadmap
+    url: https://ruxlang.dev/roadmap/
+    about: What's planned, and what is deliberately not being built.

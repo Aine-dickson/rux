@@ -1,0 +1,43 @@
+{# Sidebar shared by every docs page. Sections are listed in `weight` order,
+   with their child pages nested underneath. `current` is the permalink of the
+   page being rendered, so the active entry can be marked for both styling and
+   screen readers (aria-current). #}
+{% macro sidebar(current) %}
+<nav class="docs-nav" aria-label="Documentation">
+  <form class="docs-search" role="search" onsubmit="return false;">
+    <label class="visually-hidden" for="docs-search-input">Search the docs</label>
+    <input id="docs-search-input" type="search" placeholder="Search docs…"
+           autocomplete="off" spellcheck="false">
+    <ul id="docs-search-results" class="docs-search-results" hidden></ul>
+  </form>
+
+  {% for path in ["reference/_index.md", "roadmap/_index.md", "contribute/_index.md"] %}
+    {% set section = get_section(path=path) %}
+    <p class="docs-nav-group">
+      <a href="{{ section.permalink }}"
+         {% if section.permalink == current %}aria-current="page" class="is-current"{% endif %}>
+        {{ section.title }}
+      </a>
+    </p>
+    {% if section.pages %}
+    <ul>
+      {% for p in section.pages %}
+      <li>
+        <a href="{{ p.permalink }}"
+           {% if p.permalink == current %}aria-current="page" class="is-current"{% endif %}>
+          {{ p.title }}
+        </a>
+      </li>
+      {% endfor %}
+    </ul>
+    {% endif %}
+  {% endfor %}
+
+  <p class="docs-nav-group">
+    <a href="{{ get_url(path='@/why.md') }}">Why Rux?</a>
+  </p>
+  <p class="docs-nav-group">
+    <a href="{{ get_url(path='@/how-it-works.md') }}">How it works</a>
+  </p>
+</nav>
+{% endmacro sidebar %}

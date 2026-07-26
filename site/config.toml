@@ -18,7 +18,16 @@ title = "Rux"
 description = "A pure-Rust, web-flavored UI language that renders natively on the GPU — no browser, no webview."
 
 compile_sass = false
-build_search_index = false
+
+# Powers the docs sidebar search. `elasticlunr_json` emits a plain JSON index
+# rather than the default JS-wrapped elasticlunr one, so `static/search.js` can
+# read it directly — no search library to vendor, which keeps the "no JS
+# toolchain" rule intact. The index is built from the docs sections only
+# (see `in_search_index` on the other pages).
+build_search_index = true
+
+[search]
+index_format = "elasticlunr_json"
 generate_feeds = true
 feed_filenames = ["atom.xml"]
 
