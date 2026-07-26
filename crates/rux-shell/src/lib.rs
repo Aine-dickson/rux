@@ -1417,12 +1417,31 @@ impl ApplicationHandler<RuxEvent> for App {
         self.starting = true;
 
         let canvas = WEB_CANVAS.with(|c| c.borrow().clone());
-        let attributes = Window::default_attributes().with_canvas(canvas);
+        let (lw, lh) = WEB_SIZE.with(|s| *s.borrow());
+        let attributes = Window::default_attributes()
+            .with_canvas(canvas)
+            .with_inner_size(winit::dpi::LogicalSize::new(lw, lh));
         let window = Arc::new(event_loop.create_window(attributes).expect("create window"));
 
         let pending = self.pending.clone();
         let proxy = WEB_PROXY.with(|p| p.borrow().clone()).expect("event loop proxy");
-        let size = window.inner_size();
+
+        // `inner_size()` is 0×0 until the resize observer has fired at least
+        // once, which has usually not happened yet. Fall back to the size we
+        // just asked for rather than configuring a 1×1 surface.
+        let mut size = window.inner_size();
+        if size.width == 0 || size.height == 0 {
+            size = winit::dpi::LogicalSize::new(lw, lh).to_physical(window.scale_factor());
+        }
+        web_sys::console::log_1(
+            &format!(
+                "rux: canvas {lw}x{lh} css, surface {}x{} physical, dpr {}",
+                size.width,
+                size.height,
+                window.scale_factor()
+            )
+            .into(),
+        );
 
         wasm_bindgen_futures::spawn_local(async move {
             let mut context = RenderContext::new();
@@ -1609,6 +1628,17 @@ thread_local! {
     /// Kept so the surface task — and `set_source` — can wake the event loop.
     static WEB_PROXY: RefCell<Option<winit::event_loop::EventLoopProxy<RuxEvent>>> =
         const { RefCell::new(None) };
+    /// The canvas's CSS size at boot, in logical pixels.
+    ///
+    /// Not a convenience — it is load-bearing. winit's web backend leaves a
+    /// window's `current_size` at **zero** until a `ResizeObserver` fires, and it
+    /// only styles the canvas at all when `inner_size` was requested. Ask a
+    /// freshly created window for its size and you get 0×0, configure a surface
+    /// at that, and wgpu sets the canvas backing store to 1×1 — which collapses
+    /// the element to a one-pixel strip that then never resizes, because there is
+    /// no longer any size change to observe. So the size is captured from the DOM
+    /// up front and used for both the window attributes and the first surface.
+    static WEB_SIZE: RefCell<(f64, f64)> = const { RefCell::new((420.0, 640.0)) };
 }
 
 /// Boot Rux onto an existing `<canvas>`, rendering `source`.
@@ -1637,6 +1667,18 @@ pub fn start_web(canvas: web_sys::HtmlCanvasElement, source: String, font: Vec<u
         .build()
         .expect("create event loop");
     event_loop.set_control_flow(ControlFlow::Wait);
+
+    // Prefer the laid-out CSS size; fall back to the element's width/height
+    // attributes, then to a phone-ish default. See WEB_SIZE for why this cannot
+    // be left to winit.
+    let (mut lw, mut lh) = (canvas.client_width() as f64, canvas.client_height() as f64);
+    if lw <= 0.0 || lh <= 0.0 {
+        lw = canvas.width() as f64;
+        lh = canvas.height() as f64;
+    }
+    if lw > 0.0 && lh > 0.0 {
+        WEB_SIZE.with(|s| *s.borrow_mut() = (lw, lh));
+    }
 
     WEB_CANVAS.with(|c| *c.borrow_mut() = Some(canvas));
     WEB_PROXY.with(|p| *p.borrow_mut() = Some(event_loop.create_proxy()));

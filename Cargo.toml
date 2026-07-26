@@ -10,6 +10,7 @@ members = [
     "crates/rux-runtime",
     "crates/rux-text",
     "crates/rux-web",
+    "crates/rux-highlight",
     "crates/rux-reactive",
     "crates/rux-script",
 ]

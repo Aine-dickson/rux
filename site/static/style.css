@@ -458,19 +458,75 @@ pre code {
 }
 .pg-btn:disabled { opacity: 0.45; cursor: not-allowed; }
 
-.pg-editor {
+/* The editor is a transparent <textarea> over a highlighted <pre>. Every text
+   metric below is shared by both layers — change one, change the other, or the
+   colouring slides out from under the caret. */
+.pg-editwrap {
+  position: relative;
   min-height: 640px;
+  /* ayu-dark's background, so the editor matches the code blocks elsewhere on
+     the site (config.toml pins the same theme for fences). */
+  background: #0d1017;
+}
+.pg-code,
+.pg-editor {
+  margin: 0;
   padding: 14px;
-  background: transparent;
-  color: var(--ink);
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 13px;
   line-height: 1.55;
   tab-size: 2;
+  white-space: pre;
+  overflow-wrap: normal;
   border: 0;
-  resize: vertical;
 }
+.pg-code {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  color: #bfbdb6;
+  pointer-events: none;
+  /* The global `pre` rule sets a background with !important, which would paint
+     over the editor; its border would also shift this layer a pixel out of step
+     with the textarea. Both are undone here. */
+  background: none !important;
+  border-radius: 0;
+}
+.pg-editor {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  min-height: 640px;
+  overflow: auto;
+  background: transparent;
+  /* The glyphs come from the <pre> underneath; only the caret and the selection
+     highlight are the textarea's own. */
+  color: transparent;
+  caret-color: #bfbdb6;
+  resize: none;
+}
+.pg-editor::selection { background: #409fff40; color: transparent; }
 .pg-editor:focus { outline: 2px solid var(--accent); outline-offset: -2px; }
+
+/* Token colours: ayu-dark, matching the site's code fences. The class set is
+   deliberately small — see the SCOPES table in crates/rux-highlight. */
+.hl-comment   { color: #acb6bf8c; font-style: italic; }
+.hl-string    { color: #aad94c; }
+.hl-escape    { color: #d2a6ff; }
+.hl-number    { color: #d2a6ff; }
+.hl-const     { color: #d2a6ff; }
+.hl-keyword   { color: #ff8f40; }
+.hl-operator  { color: #f29668; }
+.hl-tag       { color: #39bae6; }
+.hl-function  { color: #ffb454; }
+.hl-attr      { color: #ffb454; }
+.hl-directive { color: #ff8f40; }
+.hl-selector  { color: #39bae6; }
+.hl-property  { color: #59c2ff; }
+.hl-value     { color: #aad94c; }
+.hl-interp    { color: #f29668; }
+.hl-punct     { color: #bfbdb699; }
+.hl-var       { color: #bfbdb6; }
 
 /* The canvas is a fixed logical size (a phone-ish 420x640), centred rather than
    stretched — scaling it would lie about the layout being demonstrated. */
@@ -479,9 +535,14 @@ pre code {
   justify-content: center;
   padding: 14px;
   background: var(--bg);
+  /* Scroll rather than scale on a narrow viewport. winit drives the canvas's
+     CSS width/height to match the surface, and taps are hit-tested against that
+     same geometry — so shrinking it with `max-width` would misalign every tap
+     by the scale factor. Overflow is the honest option. */
+  overflow: auto;
 }
 .pg-stage canvas {
-  max-width: 100%;
+  flex: none;
   border-radius: 8px;
 }
 
@@ -493,5 +554,5 @@ pre code {
 @media (max-width: 860px) {
   .pg { padding: 24px 20px 56px; }
   .pg-grid { grid-template-columns: minmax(0, 1fr); }
-  .pg-editor { min-height: 340px; }
+  .pg-editwrap, .pg-editor { min-height: 340px; }
 }

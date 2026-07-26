@@ -28,6 +28,11 @@
 /// needing a static face per weight.
 pub const DEFAULT_FONT: &[u8] = include_bytes!("../assets/Inter-Variable.ttf");
 
+/// The TextMate grammar, embedded from the file the site and the VS Code
+/// extension both read. Including it by path rather than copying it is the whole
+/// point: three consumers, one grammar, nothing to keep in sync.
+pub const GRAMMAR: &str = include_str!("../../../site/syntaxes/rux.tmLanguage.json");
+
 /// The document shown before the host page supplies anything of its own.
 pub const PLACEHOLDER: &str = r#"<template>
   <screen class="app">
@@ -44,7 +49,44 @@ pub const PLACEHOLDER: &str = r#"<template>
 
 #[cfg(target_arch = "wasm32")]
 mod web {
+    use std::cell::RefCell;
+
     use wasm_bindgen::prelude::*;
+
+    thread_local! {
+        /// Compiled once. Building the Oniguruma scanners is the expensive part,
+        /// and the editor re-highlights on every keystroke.
+        static GRAMMAR: RefCell<Option<rux_highlight::Grammar>> = const { RefCell::new(None) };
+    }
+
+    /// Highlight Rux source, returning HTML with one `<span class="hl-…">` per
+    /// coloured run. The caller renders it underneath a transparent textarea.
+    ///
+    /// The output always reproduces the input text exactly, so the overlay stays
+    /// aligned with the textarea character for character — that invariant is
+    /// enforced by tests in `rux-highlight`.
+    #[wasm_bindgen]
+    pub fn highlight(source: &str) -> String {
+        GRAMMAR.with(|cell| {
+            let mut slot = cell.borrow_mut();
+            if slot.is_none() {
+                match rux_highlight::Grammar::from_json(super::GRAMMAR) {
+                    Ok(g) => *slot = Some(g),
+                    Err(e) => {
+                        web_sys::console::error_1(&format!("rux: grammar: {e}").into());
+                        return escape(source);
+                    }
+                }
+            }
+            rux_highlight::to_html(slot.as_mut().expect("just built"), source)
+        })
+    }
+
+    /// Fallback when the grammar will not compile: uncoloured, but still correct
+    /// and still escaped.
+    fn escape(s: &str) -> String {
+        s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
+    }
 
     /// Boot Rux onto a canvas and start rendering `source`.
     ///

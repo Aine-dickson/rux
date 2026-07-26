@@ -21,8 +21,16 @@
         <span class="pg-label">app.rux</span>
         <button id="pg-run" class="pg-btn" type="button">Run</button>
       </div>
-      <textarea id="pg-src" class="pg-editor" spellcheck="false" autocomplete="off"
-                aria-label="Rux source"></textarea>
+      {# The editor is a transparent textarea over a highlighted <pre>. The two
+         must share every text metric or the overlay drifts from the caret, so
+         `.pg-code` and `.pg-editor` set font, size, line-height, padding and
+         tab-size identically — see style.css. #}
+      <div class="pg-editwrap">
+        <pre class="pg-code" id="pg-code" aria-hidden="true"><code></code></pre>
+        <textarea id="pg-src" class="pg-editor" spellcheck="false" autocomplete="off"
+                  autocapitalize="off" autocorrect="off" wrap="off"
+                  aria-label="Rux source"></textarea>
+      </div>
     </section>
 
     <section class="pg-pane" aria-label="Output">
@@ -44,12 +52,13 @@
 </div>
 
 <script type="module">
-  import init, { start, setSource } from "{{ get_url(path='wasm/rux_web.js') }}";
+  import init, { start, setSource, highlight } from "{{ get_url(path='wasm/rux_web.js') }}";
 
   const status = document.getElementById("pg-status");
   const editor = document.getElementById("pg-src");
   const canvas = document.getElementById("pg-canvas");
   const runBtn = document.getElementById("pg-run");
+  const code = document.getElementById("pg-code").firstElementChild;
 
   const DEFAULT_SOURCE = `<template>
   <screen class="app">
@@ -103,6 +112,20 @@
       .then(() => {
         start(canvas, editor.value);
         status.textContent = "running";
+
+        // A trailing newline would let the <pre> collapse its last line and
+        // drift out of step with the textarea, so pad it.
+        const repaint = () => {
+          code.innerHTML = highlight(editor.value + "\n");
+        };
+        repaint();
+        editor.addEventListener("input", repaint);
+        // The overlay does not scroll itself; it follows the textarea.
+        editor.addEventListener("scroll", () => {
+          code.parentElement.scrollTop = editor.scrollTop;
+          code.parentElement.scrollLeft = editor.scrollLeft;
+        });
+
         runBtn.addEventListener("click", () => {
           setSource(editor.value);
           status.textContent = "running";
