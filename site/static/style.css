@@ -458,6 +458,15 @@ pre code {
 }
 .pg-btn:disabled { opacity: 0.45; cursor: not-allowed; }
 
+.pg-actions { display: flex; align-items: center; gap: 8px; }
+/* Format is the secondary action — present, but not competing with Run. */
+.pg-btn-quiet {
+  background: transparent;
+  color: var(--ink-dim);
+  border: 1px solid var(--line);
+}
+.pg-btn-quiet:hover { color: var(--ink); border-color: var(--ink-faint); }
+
 /* The editor is a transparent <textarea> over a highlighted <pre>. Every text
    metric below is shared by both layers — change one, change the other, or the
    colouring slides out from under the caret. */
@@ -491,6 +500,18 @@ pre code {
      with the textarea. Both are undone here. */
   background: none !important;
   border-radius: 0;
+}
+/* The textarea never wraps (wrap="off"), so this layer must not either, or the
+   two drift a line apart on every long line. `white-space: pre` alone was not
+   enough in practice — sizing the content to `max-content` removes the
+   constraint that made a wrap possible at all. */
+.pg-code code {
+  display: block;
+  width: max-content;
+  min-width: 100%;
+  white-space: pre;
+  word-break: normal;
+  overflow-wrap: normal;
 }
 .pg-editor {
   position: relative;

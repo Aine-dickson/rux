@@ -19,7 +19,11 @@
     <section class="pg-pane" aria-label="Editor">
       <div class="pg-bar">
         <span class="pg-label">app.rux</span>
-        <button id="pg-run" class="pg-btn" type="button">Run</button>
+        <span class="pg-actions">
+          <button id="pg-fmt" class="pg-btn pg-btn-quiet" type="button"
+                  title="Re-indent (Shift+Alt+F)">Format</button>
+          <button id="pg-run" class="pg-btn" type="button" title="Run (Ctrl+Enter)">Run</button>
+        </span>
       </div>
       {# The editor is a transparent textarea over a highlighted <pre>. The two
          must share every text metric or the overlay drifts from the caret, so
@@ -52,13 +56,17 @@
 </div>
 
 <script type="module">
-  import init, { start, setSource, highlight } from "{{ get_url(path='wasm/rux_web.js') }}";
+  import init, { start, setSource, highlight, format, indentAfter }
+    from "{{ get_url(path='wasm/rux_web.js') }}";
 
   const status = document.getElementById("pg-status");
   const editor = document.getElementById("pg-src");
   const canvas = document.getElementById("pg-canvas");
   const runBtn = document.getElementById("pg-run");
+  const fmtBtn = document.getElementById("pg-fmt");
   const code = document.getElementById("pg-code").firstElementChild;
+
+  const INDENT = "  ";
 
   const DEFAULT_SOURCE = `<template>
   <screen class="app">
@@ -130,13 +138,117 @@
           setSource(editor.value);
           status.textContent = "running";
         });
-        // Ctrl/Cmd+Enter re-runs, the shortcut every editor has trained people
-        // to expect.
+
+        // ── Editing behaviour ────────────────────────────────────────────
+        // A textarea gives us none of this, so it is hand-rolled. `replace`
+        // goes through execCommand where available purely to keep the native
+        // undo stack intact — losing Ctrl+Z in a code editor is worse than the
+        // deprecation.
+        const replace = (text, selStart, selEnd, caret, caretEnd) => {
+          editor.setSelectionRange(selStart, selEnd);
+          let ok = false;
+          try {
+            ok = document.execCommand("insertText", false, text);
+          } catch {
+            ok = false;
+          }
+          if (!ok) {
+            editor.setRangeText(text, selStart, selEnd, "end");
+          }
+          editor.setSelectionRange(caret, caretEnd ?? caret);
+          repaint();
+        };
+
+        const lineStartAt = (pos) => editor.value.lastIndexOf("\n", pos - 1) + 1;
+
+        // Tab is a focus key for everyone navigating by keyboard, so it cannot
+        // simply be swallowed: Escape first, then Tab, leaves the editor. That
+        // is the same escape hatch CodeMirror and Monaco use.
+        let tabEscapes = false;
+
         editor.addEventListener("keydown", (e) => {
           if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
             e.preventDefault();
             runBtn.click();
+            return;
           }
+          if (e.shiftKey && e.altKey && (e.key === "F" || e.key === "f")) {
+            e.preventDefault();
+            fmtBtn.click();
+            return;
+          }
+          if (e.key === "Escape") {
+            tabEscapes = true;
+            return;
+          }
+
+          if (e.key === "Tab") {
+            if (tabEscapes) return;   // let it move focus
+            e.preventDefault();
+
+            const { selectionStart: s, selectionEnd: end, value } = editor;
+            const multiline = value.slice(s, end).includes("\n");
+
+            if (!multiline && !e.shiftKey) {
+              replace(INDENT, s, end, s + INDENT.length);
+              return;
+            }
+
+            // Indent or outdent whole lines, keeping the selection over them.
+            const from = lineStartAt(s);
+            const to = value.indexOf("\n", end) === -1 ? value.length : value.indexOf("\n", end);
+            const block = value.slice(from, to);
+            const shifted = block
+              .split("\n")
+              .map((line) => {
+                if (!e.shiftKey) return INDENT + line;
+                if (line.startsWith(INDENT)) return line.slice(INDENT.length);
+                return line.replace(/^[ \t]+/, "");
+              })
+              .join("\n");
+            replace(shifted, from, to, from, from + shifted.length);
+            return;
+          }
+
+          if (e.key === "Enter" && !e.shiftKey) {
+            e.preventDefault();
+            const { selectionStart: s, selectionEnd: end, value } = editor;
+            const line = value.slice(lineStartAt(s), s);
+            const pad = " ".repeat(indentAfter(line));
+            // Typing `>` then Enter between a tag pair should open a body:
+            // put the closer on its own line, one level back.
+            const closerFollows = /^\s*<\//.test(value.slice(end));
+            const opened = pad.length > line.match(/^[ \t]*/)[0].length;
+            if (closerFollows && opened) {
+              const back = pad.slice(INDENT.length);
+              replace("\n" + pad + "\n" + back, s, end, s + 1 + pad.length);
+            } else {
+              replace("\n" + pad, s, end, s + 1 + pad.length);
+            }
+            return;
+          }
+
+          // Any other key means the Escape was not about leaving.
+          if (e.key !== "Shift" && e.key !== "Control" && e.key !== "Alt" && e.key !== "Meta") {
+            tabEscapes = false;
+          }
+        });
+
+        fmtBtn.addEventListener("click", () => {
+          const before = editor.value;
+          const formatted = format(before);
+          if (formatted === before) return;
+          // Anchor the caret to its line rather than its offset: indentation
+          // changes shift every offset after it, so a raw offset would drift.
+          const line = before.slice(0, editor.selectionStart).split("\n").length - 1;
+          const col = editor.selectionStart - lineStartAt(editor.selectionStart);
+          editor.value = formatted;
+          const lines = formatted.split("\n");
+          let at = 0;
+          for (let i = 0; i < line && i < lines.length; i++) at += lines[i].length + 1;
+          const indent = (lines[line] ?? "").match(/^[ \t]*/)[0].length;
+          editor.setSelectionRange(at + Math.max(col, indent), at + Math.max(col, indent));
+          repaint();
         });
       })
       .catch((err) => {

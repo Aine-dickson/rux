@@ -1,0 +1,9 @@
+[package]
+name = "rux-fmt"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Tag- and bracket-aware re-indentation for .rux files."
+
+[dependencies]

@@ -88,6 +88,27 @@ mod web {
         s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
     }
 
+    /// One indent level in the playground.
+    const UNIT: &str = "  ";
+
+    /// Re-indent a whole document — the Format button.
+    ///
+    /// Indentation only: nothing on a line is rewritten, so this can never eat
+    /// what someone was in the middle of typing.
+    #[wasm_bindgen]
+    pub fn format(source: &str) -> String {
+        rux_fmt::reindent(source, UNIT)
+    }
+
+    /// How many spaces a new line should start with, given the line it follows.
+    /// Used for auto-indent on Enter, where re-formatting the whole document
+    /// would throw the caret around.
+    #[wasm_bindgen(js_name = indentAfter)]
+    pub fn indent_after(line: &str) -> usize {
+        let current = rux_fmt::indent_of(line, UNIT);
+        rux_fmt::indent_after(line, current) * UNIT.len()
+    }
+
     /// Boot Rux onto a canvas and start rendering `source`.
     ///
     /// Returns immediately — the event loop is handed to the browser, not

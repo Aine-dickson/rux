@@ -2667,6 +2667,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "rux-fmt"
+version = "0.1.0"
+
+[[package]]
 name = "rux-highlight"
 version = "0.1.0"
 dependencies = [
@@ -2762,6 +2766,7 @@ dependencies = [
 name = "rux-web"
 version = "0.1.0"
 dependencies = [
+ "rux-fmt",
  "rux-highlight",
  "rux-runtime",
  "rux-shell",
