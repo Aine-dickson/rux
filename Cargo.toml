@@ -15,9 +15,15 @@ members = [
 
 [workspace.package]
 edition = "2021"
-version = "0.1.0"
+# Tracks the release line, not the crate's own history: every crate in the
+# workspace ships together under one version, so this is what the next tag will
+# be. It sat at 0.1.0 through the v0.2 and v0.3 tags — reconciled here, because
+# a wrong version is unfixable once it's on crates.io (yank ≠ unpublish).
+version = "0.4.0"
 license = "MIT"
 repository = "https://github.com/Aine-dickson/rux"
+homepage = "https://ruxlang.dev"
+documentation = "https://ruxlang.dev"
 
 # Shared dependency versions. `vello` re-exports the matching `wgpu`, `kurbo`,
 # and `peniko`, so the shell uses `vello::wgpu` rather than pinning wgpu itself

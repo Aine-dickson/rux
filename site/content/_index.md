@@ -81,7 +81,7 @@ the file with the window open and it reloads live.
 ```bash
 git clone https://github.com/Aine-dickson/rux
 cd rux
-cargo run -p rux-cli -- examples/showcase.rux
+cargo run -p ruxlang -- examples/showcase.rux
 ```
 
 That opens a real native window. There is no browser and no webview anywhere in

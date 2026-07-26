@@ -1,5 +1,10 @@
 [package]
-name = "rux-cli"
+# Published as `ruxlang`, not `rux`: the bare `rux` name on crates.io is held by
+# an unrelated, long-abandoned Linux I/O library. crates.io namespaces *package*
+# names, not binary names, so `[[bin]] name = "rux"` below is unaffected —
+# `cargo install ruxlang` still puts a `rux` command on your PATH. Same pattern
+# as ripgrep (package `ripgrep`, binary `rg`), and it matches the domain.
+name = "ruxlang"
 edition.workspace = true
 version.workspace = true
 license.workspace = true

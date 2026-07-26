@@ -1,13 +1,19 @@
-# Zola config for the Rux site (https://aine-dickson.github.io/rux).
+# Zola config for the Rux site (https://ruxlang.dev).
 #
 # Zola is a single Rust binary, which is the point: the site of a pure-Rust
 # project shouldn't need a JS toolchain to build. `.github/workflows/site.yml`
 # pins the version — bump it in both places together.
 #
-# base_url must carry the /rux path: this is a GitHub *project* page, not a user
-# page, so the site is served from a subdirectory and every internal link is
-# resolved against it.
-base_url = "https://aine-dickson.github.io/rux"
+# Served from the apex domain, via `static/CNAME` (registrar: Cloudflare; host:
+# GitHub Pages). There is no `/rux` path segment any more — every internal link
+# resolves against the bare domain. GitHub redirects the old
+# `aine-dickson.github.io/rux` URLs here once the custom domain is set, so the
+# links in the v0.1–v0.3 posts keep working.
+#
+# DO NOT merge a base_url change to `main` before DNS resolves: site.yml deploys
+# on any push to `main` touching `site/**`, and the live site would rebuild every
+# link against a host that isn't serving yet.
+base_url = "https://ruxlang.dev"
 title = "Rux"
 description = "A pure-Rust, web-flavored UI language that renders natively on the GPU — no browser, no webview."
 
