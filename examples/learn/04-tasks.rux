@@ -1,0 +1,121 @@
+<!-- /learn, step 4 — the task list: r-model, r-for, r-if, and :class.
+     cargo run -p rux-cli -- examples/learn/04-tasks.rux -->
+<template>
+  <screen class="app">
+    <view class="head">
+      <text class="title">Tasks</text>
+      <!-- No second signal for the count: a closure over the list does it. -->
+      <text class="tally">{{ items.filter(|t| t.done).len() }} / {{ items.len() }}</text>
+    </view>
+
+    <view class="composer">
+      <input class="field" r-model="draft" placeholder="add a task…" />
+      <!-- Single-quoted attribute, so rhai sees a real "" string literal.
+           A double-quoted attribute would need HTML entities, which we do not
+           decode, and rhai reads '' as a char rather than a string. -->
+      <button class="add" @tap='if draft != "" { items.push(#{ label: draft, done: false }); draft = ""; }'>
+        <text class="addlabel">Add</text>
+      </button>
+    </view>
+
+    <text class="empty" r-if="items.len() == 0">Nothing yet — add your first task.</text>
+
+    <view class="list">
+      <!-- `t` is a SNAPSHOT of the item, baked into the handler as a literal.
+           Writing `t.done = !t.done` would mutate that copy and change nothing;
+           the write has to go through `items` itself, by index. -->
+      <view class="row" r-for="t in items" :class='#{ done: t.done }'
+            @tap='for i in 0..items.len() { if items[i].label == t.label { items[i].done = !items[i].done; } }'>
+        <view class="box" />
+        <text class="label">{{ t.label }}</text>
+      </view>
+    </view>
+  </screen>
+</template>
+
+<style>
+  .app {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    padding: 24px;
+    background: #1e1e2e;
+  }
+  .head {
+    display: flex;
+    flex-direction: row;
+    justify-content: space-between;
+    align-items: center;
+  }
+  .title { color: #cdd6f4; font-size: 24px; font-weight: 700; }
+  .tally { color: #9399b2; font-size: 15px; }
+
+  .composer { display: flex; flex-direction: row; gap: 8px; align-items: center; }
+  .field {
+    display: flex;
+    flex-grow: 1;
+    padding: 10px;
+    background: #313244;
+    border: 2px #45475a solid;
+    border-radius: 8px;
+    color: #cdd6f4;
+    font-size: 15px;
+  }
+  .add {
+    display: flex;
+    justify-content: center;
+    flex-shrink: 0;
+    padding: 10px 16px;
+    background: #89b4fa;
+    border-radius: 8px;
+    cursor: pointer;
+  }
+  .addlabel { color: #11111b; font-size: 15px; font-weight: 700; }
+  .empty    { color: #6c7086; font-size: 14px; }
+
+  /* A scroll container needs a bounded height, or it just grows and there is
+     nothing to scroll. */
+  .list {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+    height: 320px;
+    overflow: auto;
+  }
+  /* And its rows need `flex-shrink: 0`, or the column squeezes them all in to
+     fit — the most common "why won't it scroll". CSS behaves the same way. */
+  .row {
+    display: flex;
+    flex-direction: row;
+    flex-shrink: 0;
+    align-items: center;
+    gap: 10px;
+    padding: 12px;
+    background: #313244;
+    border-radius: 8px;
+    cursor: pointer;
+  }
+  .box {
+    width: 18px;
+    height: 18px;
+    flex-shrink: 0;
+    background: #1e1e2e;
+    border: 2px #585b70 solid;
+    border-radius: 4px;
+  }
+  .label { color: #cdd6f4; font-size: 15px; }
+
+  /* `:class` merged `done` into the row's classes, so the finished look is
+     ordinary CSS — the same cascade a written class gets. */
+  .row.done .box   { background: #a6e3a1; border: 2px #a6e3a1 solid; }
+  .row.done .label { color: #6c7086; text-decoration: line-through; }
+</style>
+
+<script>
+  let draft = signal("");
+  let items = signal([
+    #{ label: "read the reference", done: true },
+    #{ label: "build a task list", done: false },
+  ]);
+</script>
