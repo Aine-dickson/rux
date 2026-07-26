@@ -862,8 +862,35 @@ first item.
    property instead of erroring, so `{{ user.nmae }}` is still silently empty.
    That is now recorded as the **second motivator for the rhai fork** (Further out
    → item 3), beside the signal-mutation constraint.
-5. **Accessibility** — parley 0.11 already pulls in `accesskit`; `role=` is honored
-   for selectors but wired to nothing. That door is open.
+5. **Accessibility** — ✅ **done 2026-07-26, driven & verified.** `role=` now means
+   something to assistive technology, not just to selectors: Rux publishes a real
+   accessibility tree via `accesskit` + `accesskit_winit` (0.24 / 0.33, which share
+   our exact winit 0.30 — no duplicate winit).
+
+   - **Roles resolved at build time** in `rux-style` into a small `AccessRole` enum
+     owned by `rux-layout`, so neither crate depends on `accesskit` — only the
+     shell translates. Text→Label, `@tap` box→Button, inputs→TextInput/
+     MultilineTextInput/ComboBox, toggles→CheckBox/RadioButton with live checked
+     state, images→Image, scrollers→ScrollView; `role=` overrides.
+   - **Names** come from authored `label=`/`alt=`, else a `<text for="…">` linked
+     by the existing `link_labels` pass, else (inputs only) the placeholder. A
+     button is named by the text inside it.
+   - **Geometry** rides the existing `collect` walk, so every exposed node carries
+     real on-screen bounds; `r-show="false"` nodes are absent, not just invisible.
+   - Republished per frame, but only while an AT is attached (`update_if_active`).
+
+   **Two things only driving it could have caught:** the adapter must be created
+   *before* the window is first shown (it panics otherwise — the window is now
+   created hidden and revealed after), and accesskit takes a `Role::Label`'s name
+   from its **value**, not its label, so every static text was nameless until that
+   was special-cased. Verified end-to-end by querying the live UI Automation tree
+   from PowerShell: correct control types, names, values, toggle state and bounds,
+   updating live when a checkbox is ticked.
+
+   **Not done:** action requests (an AT asking to click/focus) are received but not
+   dispatched; the tree is flat under the window (no landmarks/nesting); no live
+   regions. `examples/form-controls.rux` gained `id`/`for=` pairs so its controls
+   are actually named — the old adjacent-label pattern left them anonymous.
 
 Deliberately **not** in the v0.4 pool: true inline text flow — flagged below as
 "a real project, not a patch," too big for a weekly slot.
@@ -889,8 +916,10 @@ self-contained-vs-`source.css` decision).
 - ~~**`:checked` and other pseudo-classes.**~~ ✅ Resolved 2026-07-25: `:hover`,
   `:focus`, `:active` and `:checked` all match. The synthetic `checked` class
   survives one more release for compatibility, then goes.
-- **Accessibility.** `role=` is honored for selectors and semantics but is wired
-  to nothing. parley 0.11 pulls in `accesskit`; that door is open.
+- ~~**Accessibility.**~~ ✅ Resolved 2026-07-26: a real `accesskit` tree is
+  published (roles, names, values, checked state, bounds), verified through UI
+  Automation. Remaining: action requests aren't dispatched, the tree is flat, and
+  there are no live regions.
 
 ---
 

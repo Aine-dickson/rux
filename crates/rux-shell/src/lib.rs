@@ -13,8 +13,9 @@ use std::time::{Duration, Instant};
 
 use notify::{EventKind, RecursiveMode, Watcher};
 use rux_layout::{
-    Background, Cursor, FocusItem, FocusKind, FocusRegion, HitRegion, Offset, Paint, PaintRect,
-    PaintText, Rgba, ScrollRegion, SelectRegion, StateRegion, TextAlign, TextContent, TextWrap,
+    AccessNode, AccessRole, Background, Cursor, FocusItem, FocusKind, FocusRegion, HitRegion,
+    Offset, Paint, PaintRect, PaintText, Rgba, ScrollRegion, SelectRegion, StateRegion, TextAlign,
+    TextContent, TextWrap,
 };
 use rux_runtime::{Document, Focus, InteractionState, Viewport};
 use vello::kurbo::Affine;
@@ -23,6 +24,7 @@ use vello::util::{RenderContext, RenderSurface};
 use vello::wgpu;
 use vello::wgpu::CurrentSurfaceTexture;
 use vello::{AaConfig, AaSupport, Renderer, RendererOptions, RenderParams, Scene};
+use accesskit::{Node as AccessKitNode, NodeId, Role, Toggled, Tree, TreeUpdate};
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
@@ -30,10 +32,19 @@ use winit::keyboard::{Key, NamedKey};
 use winit::window::{CursorIcon, Window, WindowId};
 
 /// Events delivered to the winit loop from outside it.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 enum RuxEvent {
     /// The `.rux` file changed on disk.
     Reload,
+    /// Assistive technology asked us something (it attached, it wants the tree,
+    /// it moved focus). Delivered through the same proxy as hot-reload.
+    Access(accesskit_winit::Event),
+}
+
+impl From<accesskit_winit::Event> for RuxEvent {
+    fn from(event: accesskit_winit::Event) -> Self {
+        Self::Access(event)
+    }
 }
 
 /// Taps closer than this (in physical pixels) between press and release still
@@ -275,6 +286,112 @@ fn dropdown_paints(sel: &SelectRegion, value: &str) -> Vec<Paint> {
     out
 }
 
+// ── Accessibility ───────────────────────────────────────────────────────────
+
+/// The accessibility tree's root. Element ids follow it, offset by one, so an
+/// element's id is stable for a given position in document order.
+const ACCESS_ROOT: NodeId = NodeId(0);
+
+fn to_accesskit_role(role: AccessRole) -> Role {
+    match role {
+        AccessRole::Label => Role::Label,
+        AccessRole::Heading => Role::Heading,
+        AccessRole::Button => Role::Button,
+        AccessRole::CheckBox => Role::CheckBox,
+        AccessRole::RadioButton => Role::RadioButton,
+        AccessRole::TextInput => Role::TextInput,
+        AccessRole::MultilineTextInput => Role::MultilineTextInput,
+        AccessRole::ComboBox => Role::ComboBox,
+        AccessRole::Image => Role::Image,
+        AccessRole::ScrollView => Role::ScrollView,
+        // A grouping the author marked with `role=`, and the unreachable None.
+        AccessRole::Group | AccessRole::None => Role::Group,
+    }
+}
+
+/// Build the accessibility tree for the current frame: a window root with one
+/// child per meaningful element, carrying its role, name, value, checked state
+/// and on-screen bounds.
+///
+/// Rebuilt per frame rather than diffed — at these tree sizes it is cheap, and
+/// the alternative (tracking node identity across reconciles) is exactly the kind
+/// of parallel bookkeeping that goes stale. Geometry is in *physical* pixels,
+/// which is what the platform expects.
+fn access_tree(nodes: &[AccessNode], focused_model: Option<&str>, scale: f64, title: &str) -> TreeUpdate {
+    let mut root = AccessKitNode::new(Role::Window);
+    root.set_label(title.to_string());
+
+    let mut updates = Vec::with_capacity(nodes.len() + 1);
+    let mut children = Vec::with_capacity(nodes.len());
+    let mut focus = ACCESS_ROOT;
+
+    for (i, node) in nodes.iter().enumerate() {
+        let id = NodeId(i as u64 + 1);
+        children.push(id);
+
+        let mut ak = AccessKitNode::new(to_accesskit_role(node.access.role));
+        if let Some(label) = node.access.name() {
+            // Static text is the exception: accesskit reads a `Role::Label`'s
+            // name from its *value* (`label_comes_from_value`), so setting the
+            // label there leaves it nameless — which is what a UIA client saw
+            // before this line existed.
+            if node.access.role == AccessRole::Label {
+                ak.set_value(label.to_string());
+            } else {
+                ak.set_label(label.to_string());
+            }
+        }
+        if let Some(value) = &node.access.value {
+            ak.set_value(value.clone());
+        }
+        if let Some(checked) = node.access.checked {
+            ak.set_toggled(if checked { Toggled::True } else { Toggled::False });
+        }
+        // Bounds let a screen reader's cursor track the element on screen.
+        ak.set_bounds(accesskit::Rect {
+            x0: node.x as f64 * scale,
+            y0: node.y as f64 * scale,
+            x1: (node.x + node.width) as f64 * scale,
+            y1: (node.y + node.height) as f64 * scale,
+        });
+        // Anything a user can operate is reachable; static text is not a stop.
+        if matches!(
+            node.access.role,
+            AccessRole::Button
+                | AccessRole::CheckBox
+                | AccessRole::RadioButton
+                | AccessRole::TextInput
+                | AccessRole::MultilineTextInput
+                | AccessRole::ComboBox
+        ) {
+            ak.add_action(accesskit::Action::Focus);
+            ak.add_action(accesskit::Action::Click);
+        }
+        // Keep the platform's focus in step with ours, so a screen reader follows
+        // the caret instead of announcing a stale element.
+        if let (Some(model), Some(focused)) = (&node.model, focused_model) {
+            if model == focused {
+                focus = id;
+            }
+        }
+        updates.push((id, ak));
+    }
+
+    root.set_children(children);
+    let mut tree = Tree::new(ACCESS_ROOT);
+    tree.toolkit_name = Some("Rux".into());
+    tree.toolkit_version = Some(env!("CARGO_PKG_VERSION").into());
+    let mut tree_update = TreeUpdate {
+        nodes: vec![(ACCESS_ROOT, root)],
+        tree: Some(tree),
+        // We publish one window-level tree, never a subtree graft.
+        tree_id: accesskit::TreeId::ROOT,
+        focus,
+    };
+    tree_update.nodes.extend(updates);
+    tree_update
+}
+
 // ── Dev overlay ─────────────────────────────────────────────────────────────
 
 const OVERLAY_PAD: f32 = 16.0;
@@ -459,6 +576,11 @@ struct RenderState {
     surface: RenderSurface<'static>,
     renderer: Renderer,
     scene: Scene,
+    /// Publishes the accessibility tree to the platform (UI Automation on
+    /// Windows, AT-SPI on Linux, NSAccessibility on macOS). It only does work
+    /// while assistive technology is actually attached, so this costs nothing in
+    /// the common case.
+    access: accesskit_winit::Adapter,
 }
 
 /// The application: owns the vello render context, the document, the text
@@ -466,6 +588,9 @@ struct RenderState {
 struct App {
     context: RenderContext,
     state: Option<RenderState>,
+    /// Proxy for events raised outside the loop — the file watcher and the
+    /// accessibility adapter both deliver through it.
+    proxy: winit::event_loop::EventLoopProxy<RuxEvent>,
     path: PathBuf,
     document: Document,
     text: rux_text::TextEngine,
@@ -532,11 +657,12 @@ struct App {
 }
 
 impl App {
-    fn new(path: PathBuf) -> Self {
+    fn new(path: PathBuf, proxy: winit::event_loop::EventLoopProxy<RuxEvent>) -> Self {
         let document = load_document(&path);
         Self {
             context: RenderContext::new(),
             state: None,
+            proxy,
             path,
             document,
             text: rux_text::TextEngine::new(),
@@ -1396,6 +1522,7 @@ impl App {
             offsets,
             states,
             path,
+            focused,
             ..
         } = self;
         let Some(state) = state.as_mut() else {
@@ -1473,6 +1600,14 @@ impl App {
             state.scene.append(&scene, Some(Affine::scale(scale)));
         }
 
+        // Publish the accessibility tree for this frame. `update_if_active` skips
+        // the work entirely unless assistive technology is attached, so the common
+        // case pays only for the (already computed) node list.
+        let window_title = state.window.title();
+        state.access.update_if_active(|| {
+            access_tree(&layout.access, focused.as_deref(), scale, &window_title)
+        });
+
         *hits = layout.hits;
         *focuses = layout.focuses;
         *selects = layout.selects;
@@ -1546,10 +1681,19 @@ impl ApplicationHandler<RuxEvent> for App {
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_else(|| "M2".into())
         );
+        // Created hidden: the accessibility adapter must exist before the window
+        // is first shown, or it panics. Revealed again once the adapter is up.
         let attributes = Window::default_attributes()
             .with_title(title)
+            .with_visible(false)
             .with_inner_size(winit::dpi::LogicalSize::new(420.0, 640.0));
         let window = Arc::new(event_loop.create_window(attributes).expect("create window"));
+        let access = accesskit_winit::Adapter::with_event_loop_proxy(
+            event_loop,
+            &window,
+            self.proxy.clone(),
+        );
+        window.set_visible(true);
 
         let size = window.inner_size();
         let surface = pollster::block_on(self.context.create_surface(
@@ -1577,6 +1721,7 @@ impl ApplicationHandler<RuxEvent> for App {
             surface,
             renderer,
             scene: Scene::new(),
+            access,
         });
         self.request_redraw();
     }
@@ -1584,6 +1729,20 @@ impl ApplicationHandler<RuxEvent> for App {
     fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: RuxEvent) {
         match event {
             RuxEvent::Reload => self.reload(),
+            RuxEvent::Access(event) => {
+                match event.window_event {
+                    // Assistive technology just attached: it needs the whole tree,
+                    // which the next frame publishes.
+                    accesskit_winit::WindowEvent::InitialTreeRequested => {}
+                    // It asked to focus or activate something. Our own focus model
+                    // drives the app, so the tree is simply re-published; wiring
+                    // these to real actions is the next slice.
+                    accesskit_winit::WindowEvent::ActionRequested(_) => {}
+                    accesskit_winit::WindowEvent::AccessibilityDeactivated => {}
+                }
+                self.request_redraw();
+                return;
+            }
         }
         self.request_redraw();
     }
@@ -1594,6 +1753,12 @@ impl ApplicationHandler<RuxEvent> for App {
         _id: WindowId,
         event: WindowEvent,
     ) {
+        // The adapter needs to see window events (focus, resize) to keep the
+        // platform's view of the window in step. It observes; we still handle
+        // every event ourselves below.
+        if let Some(state) = self.state.as_mut() {
+            state.access.process_event(&state.window, &event);
+        }
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::Resized(size) => {
@@ -1757,7 +1922,7 @@ pub fn run(path: PathBuf) {
         .watch(&watch_dir, RecursiveMode::Recursive)
         .expect("watch directory");
 
-    let mut app = App::new(path);
+    let mut app = App::new(path, event_loop.create_proxy());
     event_loop.run_app(&mut app).expect("run app");
 
     drop(watcher); // keep the watcher alive for the loop's lifetime

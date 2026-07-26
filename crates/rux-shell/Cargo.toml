@@ -17,3 +17,5 @@ rux-text = { path = "../rux-text" }
 notify = "8.2.0"
 arboard.workspace = true
 rux-reactive = { version = "0.1.0", path = "../rux-reactive" }
+accesskit = "0.24.1"
+accesskit_winit = "0.33.2"

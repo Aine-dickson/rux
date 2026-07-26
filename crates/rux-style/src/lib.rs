@@ -17,7 +17,7 @@ use lightningcss::rules::CssRule;
 use lightningcss::stylesheet::{ParserOptions, PrinterOptions, StyleSheet};
 use lightningcss::traits::ToCss;
 use rux_layout::{
-    Align, Axis, Background, BoxShadow, Cursor, Display, Gradient, GridPlace, ImageContent, Justify,
+    Access, AccessRole, Align, Axis, Background, BoxShadow, Cursor, Display, Gradient, GridPlace, ImageContent, Justify,
     Len, Node as LayoutNode, Overflow, Position, Rgba, Sides, Style, TextAlign, TextContent,
     TextWrap, Track, TrackSide,
 };
@@ -462,11 +462,99 @@ fn merge_inline_style(props: &mut HashMap<String, String>, css: &str) {
 /// A `for=` target's tap handler (toggles/buttons) or bound model (text inputs).
 type LabelTarget = (Option<String>, Option<String>);
 
+/// An explicit `role="…"` mapped to an accessibility role. `role=` already drives
+/// selector matching (`[role="heading"]`); this makes it mean something to a
+/// screen reader too, which is what it was always for.
+///
+/// An unrecognised role still counts as a meaningful grouping rather than being
+/// dropped — the author said this element *is* something.
+fn explicit_access_role(el: &Element) -> Option<AccessRole> {
+    let role = el.role()?.to_ascii_lowercase();
+    Some(match role.as_str() {
+        "heading" => AccessRole::Heading,
+        "button" => AccessRole::Button,
+        "label" | "text" | "paragraph" => AccessRole::Label,
+        "checkbox" => AccessRole::CheckBox,
+        "radio" => AccessRole::RadioButton,
+        "textbox" | "textfield" => AccessRole::TextInput,
+        "combobox" | "listbox" | "select" => AccessRole::ComboBox,
+        "image" | "img" => AccessRole::Image,
+        _ => AccessRole::Group,
+    })
+}
+
+/// The author-supplied accessible name, if any: `label="…"` (or `alt="…"` on an
+/// image). When absent the name comes from the element's own text, or from a
+/// `<text for="…">` label pointing at it (see [`link_labels`]).
+fn authored_label(el: &Element) -> Option<String> {
+    el.attr("label")
+        .or_else(|| el.attr("alt"))
+        .filter(|v| !v.trim().is_empty())
+        .map(str::to_string)
+}
+
+/// All the text under a node, joined — the accessible name for a control whose
+/// label is its own content, like a `<view @tap>` acting as a button.
+fn subtree_text(node: &LayoutNode) -> String {
+    let mut out = String::new();
+    collect_subtree_text(node, &mut out);
+    out
+}
+
+fn collect_subtree_text(node: &LayoutNode, out: &mut String) {
+    if let Some(text) = &node.text {
+        if !text.text.trim().is_empty() {
+            if !out.is_empty() {
+                out.push(' ');
+            }
+            out.push_str(text.text.trim());
+        }
+    }
+    for child in &node.children {
+        collect_subtree_text(child, out);
+    }
+}
+
 fn link_labels(root: &mut LayoutNode) {
     let mut targets: HashMap<String, LabelTarget> = HashMap::new();
     collect_label_targets(root, &mut targets);
     if !targets.is_empty() {
         apply_label_targets(root, &targets);
+    }
+    // A `<text for="email">Email</text>` names the control it points at, which is
+    // the accessible name a screen reader announces for it. Collected in the same
+    // pass that makes such a label tappable, so the two can't drift apart.
+    let mut names: HashMap<String, String> = HashMap::new();
+    collect_label_names(root, &mut names);
+    if !names.is_empty() {
+        apply_label_names(root, &names);
+    }
+}
+
+/// Map each `for=` target id to the labelling element's text.
+fn collect_label_names(node: &LayoutNode, names: &mut HashMap<String, String>) {
+    if let Some(target) = &node.label_for {
+        let text = subtree_text(node);
+        if !text.is_empty() {
+            names.entry(target.clone()).or_insert(text);
+        }
+    }
+    for child in &node.children {
+        collect_label_names(child, names);
+    }
+}
+
+/// Give each labelled control its label's text as an accessible name. An
+/// authored `label=` on the control itself wins — it is the more specific
+/// statement of intent.
+fn apply_label_names(node: &mut LayoutNode, names: &HashMap<String, String>) {
+    if node.access.label.is_none() {
+        if let Some(name) = node.id.as_ref().and_then(|id| names.get(id)) {
+            node.access.label = Some(name.clone());
+        }
+    }
+    for child in &mut node.children {
+        apply_label_names(child, names);
     }
 }
 
@@ -1777,6 +1865,19 @@ fn build_node(
         node.id = el.attr("id").map(str::to_string);
         node.label_for = el.attr("for").map(str::to_string);
         node.state_path = state_path.clone();
+        // Static text reads as a label; `role="heading"` promotes it. Text that is
+        // itself tappable is a button whose name is its own words.
+        node.access = Access {
+            role: explicit_access_role(el).unwrap_or(if node.on_tap.is_some() {
+                AccessRole::Button
+            } else {
+                AccessRole::Label
+            }),
+            label: authored_label(el).or_else(|| {
+                node.text.as_ref().map(|t| t.text.trim().to_string()).filter(|t| !t.is_empty())
+            }),
+            ..Access::default()
+        };
         return node;
     }
 
@@ -1812,6 +1913,13 @@ fn build_node(
         node.id = el.attr("id").map(str::to_string);
         node.label_for = el.attr("for").map(str::to_string);
         node.state_path = state_path.clone();
+        // An image with no `alt` has no accessible name — deliberately left None
+        // rather than announcing a file path, which is noise, not information.
+        node.access = Access {
+            role: explicit_access_role(el).unwrap_or(AccessRole::Image),
+            label: authored_label(el),
+            ..Access::default()
+        };
         return node;
     }
 
@@ -1876,6 +1984,15 @@ fn build_node(
         node.id = el.attr("id").map(str::to_string);
         node.label_for = el.attr("for").map(str::to_string);
         node.state_path = state_path.clone();
+        // The checked state is what a screen reader announces alongside the name,
+        // so it has to be the resolved boolean, not the class hack.
+        node.access = Access {
+            role: if radio { AccessRole::RadioButton } else { AccessRole::CheckBox },
+            label: authored_label(el),
+            placeholder: None,
+            checked: Some(checked),
+            value: None,
+        };
         return node;
     }
 
@@ -1974,6 +2091,28 @@ fn build_node(
         node.id = el.attr("id").map(str::to_string);
         node.label_for = el.attr("for").map(str::to_string);
         node.state_path = state_path.clone();
+        // The *value* is the signal's text, never the placeholder — a placeholder
+        // is a hint, and announcing it as the content would be a lie. It becomes
+        // the fallback *name* instead, when nothing else labels the field.
+        node.access = Access {
+            role: explicit_access_role(el).unwrap_or(if node.options.is_some() {
+                AccessRole::ComboBox
+            } else if multiline {
+                AccessRole::MultilineTextInput
+            } else {
+                AccessRole::TextInput
+            }),
+            label: authored_label(el),
+            // Only a fallback name — a `<text for="…">` label linked after the
+            // build must outrank it.
+            placeholder: (!placeholder.is_empty()).then(|| placeholder.clone()),
+            value: node
+                .model
+                .as_deref()
+                .map(|m| engine.eval_display(m, locals))
+                .filter(|v| !v.is_empty()),
+            checked: None,
+        };
         return node;
     }
 
@@ -2010,7 +2149,7 @@ fn build_node(
         });
     }
 
-    LayoutNode {
+    let mut node = LayoutNode {
         style,
         text: None,
         image: None,
@@ -2025,7 +2164,27 @@ fn build_node(
         label_for: el.attr("for").map(str::to_string),
         focus_model: None,
         state_path,
+        access: Access::default(),
+    };
+    // A tappable box is a button, named by the text inside it — that is how
+    // `<view @tap><text>Save</text></view>` announces as "Save, button". A
+    // scroller is worth exposing so its content can be reached; anything else is
+    // structure, and only appears if the author gave it a `role=`.
+    let role = explicit_access_role(el).unwrap_or(if node.on_tap.is_some() {
+        AccessRole::Button
+    } else if node.style.overflow == Overflow::Scroll {
+        AccessRole::ScrollView
+    } else {
+        AccessRole::None
+    });
+    if role.is_meaningful() {
+        let label = authored_label(el).or_else(|| {
+            let text = subtree_text(&node);
+            (!text.is_empty()).then_some(text)
+        });
+        node.access = Access { role, label, ..Access::default() };
     }
+    node
 }
 
 /// Expand a `<custom-element :prop="expr" …>` into its component's tree. Props
@@ -3608,6 +3767,163 @@ mod tests {
             d.tag = rest.to_string();
         }
         d
+    }
+
+    // ── Accessibility ───────────────────────────────────────────────────────
+
+    use super::AccessRole;
+
+    fn built(src: &str) -> rux_layout::Node {
+        let sfc = rux_parser::parse_sfc(src).unwrap();
+        let mut engine = Builder::new().build(&sfc.script).unwrap();
+        build_styled_tree(&sfc, &HashMap::new(), &mut engine).unwrap()
+    }
+
+    /// Every control gets a role a screen reader can announce, derived from what
+    /// it is rather than guessed from how it paints.
+    #[test]
+    fn controls_get_their_implicit_roles() {
+        let root = built(
+            r#"<template><screen>
+                 <text>a heading</text>
+                 <input r-model="name" />
+                 <input type="textarea" r-model="notes" />
+                 <input type="checkbox" r-model="agree" />
+                 <input type="radio" r-model="plan" value="pro" />
+                 <view @tap="n = n + 1"><text>Save</text></view>
+                 <image src="logo.png" alt="the logo" />
+               </screen></template>
+               <script>let name = signal(""); let notes = signal(""); let agree = signal(false);
+                       let plan = signal("free"); let n = signal(0);</script>"#,
+        );
+        let roles: Vec<AccessRole> = root.children.iter().map(|c| c.access.role).collect();
+        assert_eq!(
+            roles,
+            vec![
+                AccessRole::Label,
+                AccessRole::TextInput,
+                AccessRole::MultilineTextInput,
+                AccessRole::CheckBox,
+                AccessRole::RadioButton,
+                AccessRole::Button,
+                AccessRole::Image,
+            ]
+        );
+    }
+
+    /// A tappable box is named by the text inside it, so it announces as
+    /// "Save, button" rather than as an anonymous control.
+    #[test]
+    fn a_tappable_box_is_named_by_its_content() {
+        let root = built(
+            r#"<template><screen><view @tap="n = n + 1"><text>Save</text></view></screen></template>
+               <script>let n = signal(0);</script>"#,
+        );
+        let button = &root.children[0];
+        assert_eq!(button.access.role, AccessRole::Button);
+        assert_eq!(button.access.label.as_deref(), Some("Save"));
+    }
+
+    /// A `for=` label names the control it points at — the same link that already
+    /// makes the label tappable.
+    #[test]
+    fn a_for_label_names_its_control() {
+        let root = built(
+            r#"<template><screen>
+                 <text for="email">Email address</text>
+                 <input id="email" r-model="email" />
+               </screen></template>
+               <script>let email = signal("");</script>"#,
+        );
+        let input = &root.children[1];
+        assert_eq!(input.access.role, AccessRole::TextInput);
+        assert_eq!(input.access.label.as_deref(), Some("Email address"));
+    }
+
+    /// An explicit `role=` wins over the implicit one, and an authored `label=`
+    /// wins over content — both are the author being specific.
+    #[test]
+    fn explicit_role_and_label_win() {
+        let root = built(
+            r#"<template><screen>
+                 <text role="heading">Dashboard</text>
+                 <view @tap="n = n + 1" label="Save changes"><text>OK</text></view>
+               </screen></template>
+               <script>let n = signal(0);</script>"#,
+        );
+        assert_eq!(root.children[0].access.role, AccessRole::Heading);
+        assert_eq!(root.children[1].access.label.as_deref(), Some("Save changes"));
+    }
+
+    /// A toggle reports its checked state, and reports it *live* — that is what a
+    /// screen reader announces alongside the name.
+    #[test]
+    fn a_toggle_reports_its_checked_state() {
+        let root = built(
+            r#"<template><screen>
+                 <input type="checkbox" r-model="on" />
+                 <input type="checkbox" r-model="off" />
+               </screen></template>
+               <script>let on = signal(true); let off = signal(false);</script>"#,
+        );
+        assert_eq!(root.children[0].access.checked, Some(true));
+        assert_eq!(root.children[1].access.checked, Some(false));
+    }
+
+    /// An input exposes its value — but a placeholder is a hint, not content, so
+    /// it names the field instead of pretending to be what's typed in it.
+    #[test]
+    fn an_input_exposes_value_but_not_its_placeholder_as_value() {
+        let root = built(
+            r#"<template><screen>
+                 <input r-model="name" placeholder="Your name" />
+                 <input r-model="city" placeholder="Your city" />
+               </screen></template>
+               <script>let name = signal("Ada"); let city = signal("");</script>"#,
+        );
+        let filled = &root.children[0];
+        assert_eq!(filled.access.value.as_deref(), Some("Ada"));
+        assert_eq!(
+            filled.access.name(),
+            Some("Your name"),
+            "an unlabelled field falls back to its placeholder for a name"
+        );
+
+        let empty = &root.children[1];
+        assert_eq!(empty.access.value, None, "an empty field has no value");
+        assert_eq!(empty.access.name(), Some("Your city"));
+    }
+
+    /// A real label outranks a placeholder: the placeholder is only the fallback
+    /// name for a field nobody labelled.
+    #[test]
+    fn a_for_label_outranks_a_placeholder() {
+        let root = built(
+            r#"<template><screen>
+                 <text for="notes">Notes</text>
+                 <input id="notes" r-model="notes" placeholder="Type a few lines…" />
+               </screen></template>
+               <script>let notes = signal("");</script>"#,
+        );
+        let input = &root.children[1];
+        assert_eq!(input.access.name(), Some("Notes"), "the label wins");
+        assert_eq!(
+            input.access.placeholder.as_deref(),
+            Some("Type a few lines…"),
+            "the placeholder is still available as a hint"
+        );
+    }
+
+    /// Plain layout boxes stay out of the tree — an assistive tree full of
+    /// anonymous groups is worse than a short one.
+    #[test]
+    fn plain_boxes_are_not_exposed() {
+        let root = built(
+            r#"<template><screen><view class="row"><view class="col" /></view></screen></template>"#,
+        );
+        assert_eq!(root.children[0].access.role, AccessRole::None);
+        assert_eq!(root.children[0].children[0].access.role, AccessRole::None);
+        assert!(!AccessRole::None.is_meaningful());
     }
 
     // ── @media ──────────────────────────────────────────────────────────────
