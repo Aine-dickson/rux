@@ -8,17 +8,30 @@ use rux_fmt::{indent_after, indent_of, reindent};
 
 const UNIT: &str = "  ";
 
-/// The one that matters most: formatting must only ever move leading
-/// whitespace. If any line's trimmed content changes, the button ate the user's
-/// code.
+/// Outside `<style>`, formatting must only ever move leading whitespace. If a
+/// line's trimmed content changes, the button ate someone's code.
 #[test]
-fn only_leading_whitespace_changes() {
-    let src = "<template>\n<view class=\"a\">\n<text>hi</text>\n</view>\n</template>\n";
+fn template_and_script_keep_their_lines() {
+    let src = "<template>\n<view class=\"a\">\n<text>hi</text>\n</view>\n</template>\n\n<script>\nlet n = signal(0);\n</script>\n";
     let out = reindent(src, UNIT);
 
     let before: Vec<&str> = src.lines().map(str::trim).collect();
     let after: Vec<&str> = out.lines().map(str::trim).collect();
     assert_eq!(before, after, "content changed, not just indentation");
+}
+
+/// The CSS formatter *does* rewrite lines, so line equality no longer holds. The
+/// invariant that replaces it: ignoring whitespace and semicolons, the document
+/// is unchanged. Semicolons are excluded because the formatter adds the optional
+/// one to a block's last declaration; nothing else may appear or vanish.
+fn skeleton(s: &str) -> String {
+    s.chars().filter(|c| !c.is_whitespace() && *c != ';').collect()
+}
+
+#[test]
+fn formatting_never_adds_or_loses_content() {
+    let src = "<template>\n<view>x</view>\n</template>\n<style>\n.a{color:red;background:blue;gap:1px;padding:2px}\n.b { color : green }\n</style>\n";
+    assert_eq!(skeleton(&reindent(src, UNIT)), skeleton(src));
 }
 
 #[test]
@@ -121,9 +134,7 @@ fn examples_survive_reindenting() {
         let src = std::fs::read_to_string(&path).expect("read");
         let out = reindent(&src, UNIT);
 
-        let before: Vec<&str> = src.lines().map(str::trim).collect();
-        let after: Vec<&str> = out.lines().map(str::trim).collect();
-        assert_eq!(before, after, "{} lost content", path.display());
+        assert_eq!(skeleton(&out), skeleton(&src), "{} lost content", path.display());
         assert_eq!(reindent(&out, UNIT), out, "{} is not idempotent", path.display());
         checked += 1;
     }

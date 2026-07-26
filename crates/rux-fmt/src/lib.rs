@@ -1,21 +1,32 @@
-//! Tag- and bracket-aware re-indentation for `.rux` files.
+//! Formatting for `.rux` files.
 //!
-//! This is **not** a formatter. It fixes leading whitespace and nothing else: it
-//! never changes what is on a line, never wraps, never reorders, and never
-//! touches spacing inside a line. The real `rux fmt` — parse to a tree and
-//! pretty-print it, through `rux-parser` / `rux-style` / `rux-script` — is the
-//! planned replacement (see `docs/06-roadmap.md`, "Dev tooling"). Until then
-//! this is what the playground's Format button and the editor's auto-indent run.
+//! Two different jobs, deliberately:
 //!
-//! Ported from the re-indenter in `editors/vscode/extension.js`, which is still
-//! the one VS Code uses. The two are intended to behave identically; when
-//! `rux fmt` exists as a CLI the extension should shell out to it and the JS
-//! copy should go. **Until then, a change here needs the same change there.**
+//! - **`<template>` and `<script>` are only re-indented.** Leading whitespace is
+//!   corrected; nothing on a line is rewritten, wrapped or reordered. A `@tap`
+//!   handler is rhai, and rearranging someone's expressions is not this tool's
+//!   business.
+//! - **`<style>` is genuinely formatted**, by [`css`] — one space before `{`,
+//!   long rules broken one declaration per line, short ones kept inline. CSS has
+//!   a conventional shape worth enforcing.
 //!
-//! Where this differs from the JS: the JS blanks strings and comments with a
-//! chain of regexes and then re-scans. This walks the line once as a small state
-//! machine, which gets multi-line comments right as a side effect rather than as
-//! a separate pass.
+//! The real `rux fmt` — parse to a tree and pretty-print it through
+//! `rux-parser` / `rux-style` / `rux-script` — is still the planned replacement
+//! (see `docs/06-roadmap.md`, "Dev tooling"). Until then this is what the
+//! playground's Format button and the editor's auto-indent run.
+//!
+//! The indenter began as a port of `editors/vscode/extension.js`, which VS Code
+//! still uses; the CSS formatter has no JS counterpart. When `rux fmt` exists as
+//! a CLI the extension should shell out to it and the JS copy should go. **Until
+//! then, an indenting change here needs the same change there** — and note the
+//! JS still has the `<image>` bug described on [`VOID_TAGS`].
+//!
+//! Where the indenter differs from the JS: the JS blanks strings and comments
+//! with a chain of regexes and then re-scans. This walks each line once as a
+//! small state machine, which gets multi-line comments right as a consequence
+//! rather than as a separate pass.
+
+pub mod css;
 
 /// What a line does to the indent level.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -50,16 +61,47 @@ const VOID_TAGS: &[&str] = &[
     "wbr",
 ];
 
-/// Re-indent `text`, using `unit` for one level (`"  "`, `"    "`, `"\t"`…).
+/// Format `text`, using `unit` for one indent level (`"  "`, `"    "`, `"\t"`…).
+///
+/// The `<template>` and `<script>` sections are only re-indented — nothing on a
+/// line is rewritten. The `<style>` section goes through the CSS pretty-printer
+/// in [`css`], which does reflow declarations. That split is deliberate: CSS has
+/// a shape worth enforcing, while a `@tap` handler is rhai that only its author
+/// should be rearranging.
 ///
 /// Line endings are preserved: CRLF in, CRLF out.
 pub fn reindent(text: &str, unit: &str) -> String {
     let eol = if text.contains("\r\n") { "\r\n" } else { "\n" };
+    let normalised = text.replace("\r\n", "\n");
+    let formatted = match style_span(&normalised) {
+        Some((open_end, close_start)) => {
+            let head = reindent_lines(&normalised[..open_end], unit);
+            let body = css::format(&normalised[open_end..close_start], unit, 1);
+            let tail = reindent_lines(&normalised[close_start..], unit);
+            format!("{}\n{}{}", head.trim_end(), body, tail.trim_start_matches('\n'))
+        }
+        None => reindent_lines(&normalised, unit),
+    };
+    if eol == "\r\n" {
+        formatted.replace('\n', "\r\n")
+    } else {
+        formatted
+    }
+}
+
+/// Byte range *between* `<style>` and `</style>`, if the document has one.
+fn style_span(text: &str) -> Option<(usize, usize)> {
+    let open = text.find("<style>")? + "<style>".len();
+    let close = text[open..].find("</style>")? + open;
+    Some((open, close))
+}
+
+fn reindent_lines(text: &str, unit: &str) -> String {
     let mut out: Vec<String> = Vec::new();
     let mut depth: i32 = 0;
     let mut pending = Pending::None;
 
-    for raw in text.split('\n').map(|l| l.strip_suffix('\r').unwrap_or(l)) {
+    for raw in text.split('\n') {
         // Inside a multi-line comment the author's alignment is theirs to keep —
         // re-indenting ASCII art or a wrapped sentence would be vandalism.
         if pending != Pending::None {
@@ -81,7 +123,7 @@ pub fn reindent(text: &str, unit: &str) -> String {
         pending = next_pending;
     }
 
-    out.join(eol)
+    out.join("\n")
 }
 
 /// The indent level a new line should get, given the line it follows and the
@@ -214,7 +256,7 @@ fn scan(line: &str) -> (Delta, Pending) {
 }
 
 /// Byte-substring search from `from`.
-fn find(haystack: &[u8], from: usize, needle: &[u8]) -> Option<usize> {
+pub(crate) fn find(haystack: &[u8], from: usize, needle: &[u8]) -> Option<usize> {
     if from > haystack.len() {
         return None;
     }
