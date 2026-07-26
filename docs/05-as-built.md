@@ -297,6 +297,33 @@ scrollbar hover/fade states, no `scrollbar-width`/`scrollbar-color`, no
 Component instances are isolated (only props are visible inside). Their CSS styles
 their own subtree. Editing a component hot-reloads.
 
+### Errors & the dev overlay
+
+Mistakes are shown **in the window**, not only on a stderr nobody running a GUI
+app is watching.
+
+- **A file that won't load** opens the window with a red panel naming the file and
+  the failure. Parse errors carry a **line and column**, numbered against the whole
+  `.rux` file (not the `<template>` section), so they line up with the editor
+  gutter: `parse error at line 6, column 16: mismatched closing tag: expected
+  </view>, found </vieww>`.
+- **A hot-reload that fails keeps the last good UI on screen** and says so
+  (*"showing the last version that loaded"*), so a typo mid-edit neither blanks
+  the window nor passes unnoticed. Fixing the file clears the overlay; the window
+  keeps its size and pointer state across the reload.
+- **A document that builds but has dead CSS** gets a quieter amber panel listing
+  what does nothing: unhonored properties, unknown pseudo-classes, undefined
+  `var()`s, unsupported `@media` conditions, and **expressions that failed** —
+  `expression \`dubble(n)\` failed: Function not found: dubble`. Long lists are
+  capped at six with a count of the rest; everything still goes to stderr.
+
+Every shipped example is checked to load **warning-free**, so a noisy overlay in
+`examples/` is a test failure.
+
+**Known limit:** rhai returns `()` for a missing *map property*, rather than
+erroring, so `{{ user.nmae }}` still renders empty with nothing reported. A
+missing *function* or variable does report.
+
 ---
 
 ## Gotchas (these will bite)

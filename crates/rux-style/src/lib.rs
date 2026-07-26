@@ -30,6 +30,34 @@ use rux_script::Engine;
 /// injected into the script engine for each evaluation.
 type Locals = Vec<(String, Value)>;
 
+// ── Warning collection ──────────────────────────────────────────────────────
+
+thread_local! {
+    /// Warnings raised while building the current tree — unhonored properties,
+    /// unknown pseudo-classes, undefined `var()`s, unsupported `@media`.
+    ///
+    /// Collected per build so the runtime can show them *in the window*. The
+    /// stderr lines keep their own process-wide dedupe (a rebuild shouldn't spam
+    /// the terminal on every keystroke), but the overlay must list everything the
+    /// current document has wrong, every build — so this sink dedupes only within
+    /// itself and is drained by [`take_warnings`].
+    static WARNINGS: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+fn warn(message: String) {
+    WARNINGS.with(|w| {
+        let mut w = w.borrow_mut();
+        if !w.iter().any(|existing| *existing == message) {
+            w.push(message);
+        }
+    });
+}
+
+/// Take the warnings raised since the last call, emptying the sink.
+pub fn take_warnings() -> Vec<String> {
+    WARNINGS.with(|w| std::mem::take(&mut *w.borrow_mut()))
+}
+
 /// A text `{{ }}` binding recorded during build: where its node lives in the
 /// final tree, the raw text (with `{{ }}` intact) to re-interpolate, the
 /// `r-for` locals in scope when it was built, and the signals it reads. Lets the
@@ -324,13 +352,15 @@ fn take_vars(props: &mut HashMap<String, String>, inherited: &Vars) -> Vars {
 fn warn_undefined_var(name: &str) {
     use std::sync::{Mutex, OnceLock};
     static SEEN: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    let message = format!(
+        "custom property `{name}` is not defined — the declaration using var({name}) is \
+         ignored (give it a fallback: `var({name}, …)`)"
+    );
+    warn(message.clone());
     let seen = SEEN.get_or_init(|| Mutex::new(HashSet::new()));
     let Ok(mut seen) = seen.lock() else { return };
     if seen.insert(name.to_string()) {
-        eprintln!(
-            "rux: custom property `{name}` is not defined — the declaration using \
-             var({name}) is ignored (give it a fallback: `var({name}, …)`)"
-        );
+        eprintln!("rux: {message}");
     }
 }
 
@@ -1044,13 +1074,15 @@ fn parse_range(parts: &[RangePart]) -> Vec<Feature> {
 fn warn_unsupported_media(what: &str) {
     use std::sync::{Mutex, OnceLock};
     static SEEN: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    let message = format!(
+        "`@media` condition `{what}` is not supported — its rules will never apply \
+         (supported: screen/all, min-/max-width, min-/max-height, orientation)"
+    );
+    warn(message.clone());
     let seen = SEEN.get_or_init(|| Mutex::new(HashSet::new()));
     let Ok(mut seen) = seen.lock() else { return };
     if seen.insert(what.to_string()) {
-        eprintln!(
-            "rux: `@media` condition `{what}` is not supported — its rules will never \
-             apply (supported: screen/all, min-/max-width, min-/max-height, orientation)"
-        );
+        eprintln!("rux: {message}");
     }
 }
 
@@ -1209,12 +1241,13 @@ fn warn_if_unhonored(property: &str) {
     if property.starts_with("--") || is_honored(property) {
         return;
     }
+    let message =
+        format!("CSS property `{property}` is parsed but not yet honored — it will have no effect");
+    warn(message.clone());
     let seen = SEEN.get_or_init(|| Mutex::new(HashSet::new()));
     let Ok(mut seen) = seen.lock() else { return };
     if seen.insert(property.to_string()) {
-        eprintln!(
-            "rux: CSS property `{property}` is parsed but not yet honored — it will have no effect"
-        );
+        eprintln!("rux: {message}");
     }
 }
 
@@ -1393,13 +1426,15 @@ fn parse_compound(token: &str, spec: &mut (u32, u32, u32)) -> Option<Compound> {
 fn warn_unknown_pseudo(name: &str) {
     use std::sync::{Mutex, OnceLock};
     static SEEN: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    let message = format!(
+        "pseudo-class `:{name}` is not supported — rules using it will never match \
+         (supported: :hover, :focus, :active, :checked)"
+    );
+    warn(message.clone());
     let seen = SEEN.get_or_init(|| Mutex::new(HashSet::new()));
     let Ok(mut seen) = seen.lock() else { return };
     if seen.insert(name.to_string()) {
-        eprintln!(
-            "rux: pseudo-class `:{name}` is not supported — rules using it will never match \
-             (supported: :hover, :focus, :active, :checked)"
-        );
+        eprintln!("rux: {message}");
     }
 }
 

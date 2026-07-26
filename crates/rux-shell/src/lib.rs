@@ -7,7 +7,7 @@
 //! the hot-reload path from `docs/04-architecture.md`.
 
 use std::num::NonZeroUsize;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -275,15 +275,180 @@ fn dropdown_paints(sel: &SelectRegion, value: &str) -> Vec<Paint> {
     out
 }
 
-/// Load a `.rux` document. On failure, log the diagnostic and fall back to an
-/// empty screen so the window still opens (stand-in for the dev overlay).
+// ── Dev overlay ─────────────────────────────────────────────────────────────
+
+const OVERLAY_PAD: f32 = 16.0;
+const OVERLAY_LINE_H: f32 = 20.0;
+const OVERLAY_TITLE_H: f32 = 26.0;
+/// Warnings listed before the panel stops and says how many are left.
+const OVERLAY_MAX_WARNINGS: usize = 6;
+
+/// Paint items for the dev overlay: what is wrong with the document, drawn over
+/// the app.
+///
+/// This is the whole point of the feature — a broken `.rux` file used to show an
+/// empty window with one line on a stderr nobody running a GUI is watching. An
+/// error takes a red panel and says the screen is stale; warnings take a quieter
+/// amber one, since the app underneath is fine.
+fn overlay_paints(diag: &rux_runtime::Diagnostics, path: &Path, width: f32) -> Vec<Paint> {
+    if diag.is_empty() {
+        return Vec::new();
+    }
+    let error_bg = Rgba::new(0.24, 0.09, 0.13, 0.97); // deep red
+    let error_edge = Rgba::new(0.95, 0.35, 0.42, 1.0); // #f38ba8-ish
+    let warn_bg = Rgba::new(0.20, 0.17, 0.10, 0.97); // deep amber
+    let warn_edge = Rgba::new(0.98, 0.70, 0.35, 1.0); // #fab387-ish
+    let ink = Rgba::new(0.95, 0.95, 0.97, 1.0);
+    let muted = Rgba::new(0.78, 0.78, 0.84, 1.0);
+
+    let is_error = diag.error.is_some();
+    let (bg, edge) = if is_error { (error_bg, error_edge) } else { (warn_bg, warn_edge) };
+
+    // Wrap the message text to the panel width so a long error is readable
+    // rather than clipped at the edge.
+    let panel_w = (width - OVERLAY_PAD * 2.0).max(120.0);
+    let text_w = panel_w - OVERLAY_PAD * 2.0;
+    let mut lines: Vec<(String, Rgba)> = Vec::new();
+    if let Some(error) = &diag.error {
+        lines.extend(wrap_overlay(error, text_w).into_iter().map(|l| (l, ink)));
+        if diag.stale {
+            lines.push((
+                "showing the last version that loaded — fix the file and save".to_string(),
+                muted,
+            ));
+        }
+    }
+    // A document can easily have a dozen unhonored properties; an unbounded panel
+    // would grow past the window and hide the app it is describing.
+    let shown = diag.warnings.len().min(OVERLAY_MAX_WARNINGS);
+    for warning in &diag.warnings[..shown] {
+        lines.extend(
+            wrap_overlay(&format!("• {warning}"), text_w)
+                .into_iter()
+                .map(|l| (l, if is_error { muted } else { ink })),
+        );
+    }
+    if diag.warnings.len() > shown {
+        lines.push((
+            format!("… and {} more (full list on stderr)", diag.warnings.len() - shown),
+            muted,
+        ));
+    }
+
+    let title = match (&diag.error, diag.warnings.len()) {
+        (Some(_), 0) => format!("rux — {} failed to load", file_name(path)),
+        (Some(_), n) => format!("rux — {} failed to load  ·  {n} warning(s)", file_name(path)),
+        (None, n) => format!("rux — {n} warning(s) in {}", file_name(path)),
+    };
+
+    let panel_h = OVERLAY_TITLE_H + lines.len() as f32 * OVERLAY_LINE_H + OVERLAY_PAD * 1.5;
+    let x = OVERLAY_PAD;
+    let y = OVERLAY_PAD;
+
+    let mut out = Vec::with_capacity(lines.len() + 3);
+    out.push(Paint::Shadow {
+        x,
+        y: y + 3.0,
+        width: panel_w,
+        height: panel_h,
+        radius: 10.0,
+        blur: 20.0,
+        color: Rgba::new(0.0, 0.0, 0.0, 0.5),
+    });
+    out.push(Paint::Rect(PaintRect {
+        x,
+        y,
+        width: panel_w,
+        height: panel_h,
+        background: Some(Background::Color(bg)),
+        radius: [10.0; 4],
+        border_width: 2.0,
+        border_color: Some(edge),
+    }));
+    out.push(Paint::Text(PaintText {
+        x: x + OVERLAY_PAD,
+        y: y + OVERLAY_PAD * 0.6,
+        width: text_w,
+        height: OVERLAY_TITLE_H,
+        content: overlay_text(title, 15.0, 700, edge),
+    }));
+    for (i, (line, color)) in lines.into_iter().enumerate() {
+        out.push(Paint::Text(PaintText {
+            x: x + OVERLAY_PAD,
+            y: y + OVERLAY_TITLE_H + OVERLAY_PAD * 0.4 + i as f32 * OVERLAY_LINE_H,
+            width: text_w,
+            height: OVERLAY_LINE_H,
+            content: overlay_text(line, 14.0, 400, color),
+        }));
+    }
+    out
+}
+
+fn file_name(path: &Path) -> String {
+    path.file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.display().to_string())
+}
+
+/// Break `text` into lines that fit `width`, by character estimate. The overlay
+/// paints each line itself (rather than handing one block to the text engine)
+/// so the panel's height is known before it is drawn.
+fn wrap_overlay(text: &str, width: f32) -> Vec<String> {
+    // ~0.52em per character at this size — a deliberate under-estimate, since a
+    // slightly short line is invisible and an overlong one is clipped.
+    let max_chars = ((width / 7.3) as usize).max(20);
+    let mut lines = Vec::new();
+    for paragraph in text.split('\n') {
+        let mut line = String::new();
+        for word in paragraph.split_whitespace() {
+            if !line.is_empty() && line.chars().count() + 1 + word.chars().count() > max_chars {
+                lines.push(std::mem::take(&mut line));
+            }
+            if !line.is_empty() {
+                line.push(' ');
+            }
+            line.push_str(word);
+        }
+        lines.push(line);
+    }
+    lines
+}
+
+fn overlay_text(text: String, font_size: f32, weight: u16, color: Rgba) -> TextContent {
+    TextContent {
+        text,
+        font_size,
+        weight,
+        color,
+        align: TextAlign::Start,
+        wrap: TextWrap::Normal,
+        font_family: None,
+        letter_spacing: None,
+        word_spacing: None,
+        line_height: None,
+        italic: false,
+        underline: false,
+        strikethrough: false,
+        nowrap: true,
+        caret: None,
+        selection: None,
+    }
+}
+
+/// Load a `.rux` document. On failure the window still opens — but now it opens
+/// showing the error, instead of a blank screen with a line on stderr.
 fn load_document(path: &PathBuf) -> Document {
     match Document::load(path) {
         Ok(doc) => doc,
         Err(err) => {
-            eprintln!("failed to load {}: {err}", path.display());
-            Document::from_source("<template><screen></screen></template>")
-                .expect("empty document")
+            eprintln!("rux: failed to load {}: {err}", path.display());
+            let mut doc = Document::from_source("<template><screen></screen></template>")
+                .expect("empty document");
+            doc.set_load_error(err);
+            // Nothing was ever shown, so the empty screen isn't "stale" — it is
+            // simply all there is.
+            doc.clear_stale();
+            doc
         }
     }
 }
@@ -406,16 +571,23 @@ impl App {
         }
     }
 
-    /// Re-load the document after a file change. On a parse/load error we keep
-    /// the last good document and log the diagnostic, rather than blanking the
-    /// window (a first step toward the dev overlay).
+    /// Re-load the document after a file change. On a parse/load error the last
+    /// good tree stays on screen and the dev overlay reports the error, so a typo
+    /// mid-edit neither blanks the window nor passes unnoticed.
     fn reload(&mut self) {
         match Document::load(&self.path) {
             Ok(doc) => {
-                self.document = doc;
+                // Keeps the window's own state (viewport, hover) and drops the
+                // previous error, so fixing the file clears the overlay.
+                self.document.replace_with(doc);
                 eprintln!("reloaded {}", self.path.display());
             }
-            Err(err) => eprintln!("reload failed for {}: {err}", self.path.display()),
+            Err(err) => {
+                eprintln!("rux: reload failed for {}: {err}", self.path.display());
+                // The last good tree stays on screen; the overlay explains why it
+                // is no longer what the file says.
+                self.document.set_load_error(err);
+            }
         }
     }
 
@@ -1223,6 +1395,7 @@ impl App {
             scrolls,
             offsets,
             states,
+            path,
             ..
         } = self;
         let Some(state) = state.as_mut() else {
@@ -1289,6 +1462,15 @@ impl App {
                 let scene = rux_paint::build_scene(&overlay, text, images, false);
                 state.scene.append(&scene, Some(Affine::scale(scale)));
             }
+        }
+
+        // The dev overlay goes last, above everything including a dropdown: if the
+        // document is broken, that is the most important thing on screen.
+        let diagnostics = document.diagnostics();
+        if !diagnostics.is_empty() {
+            let panel = overlay_paints(diagnostics, path, logical.0 as f32);
+            let scene = rux_paint::build_scene(&panel, text, images, false);
+            state.scene.append(&scene, Some(Affine::scale(scale)));
         }
 
         *hits = layout.hits;

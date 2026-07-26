@@ -117,13 +117,40 @@ impl Element {
     }
 }
 
-/// A parse failure with a human-readable reason.
+/// A parse failure: what went wrong and, when known, where.
+///
+/// The position is 1-based and relative to the **whole `.rux` file**, not the
+/// `<template>` section it was found in, so it can be read straight off against
+/// an editor's gutter.
 #[derive(Debug, Clone)]
-pub struct ParseError(pub String);
+pub struct ParseError {
+    pub message: String,
+    pub line: Option<usize>,
+    pub column: Option<usize>,
+}
+
+impl ParseError {
+    pub fn new(message: impl Into<String>) -> Self {
+        Self { message: message.into(), line: None, column: None }
+    }
+
+    pub fn at(message: impl Into<String>, line: usize, column: usize) -> Self {
+        Self { message: message.into(), line: Some(line), column: Some(column) }
+    }
+
+    /// Shift a template-relative position onto the file's own line numbering.
+    fn offset_lines(mut self, by: usize) -> Self {
+        self.line = self.line.map(|l| l + by);
+        self
+    }
+}
 
 impl fmt::Display for ParseError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "parse error: {}", self.0)
+        match (self.line, self.column) {
+            (Some(l), Some(c)) => write!(f, "parse error at line {l}, column {c}: {}", self.message),
+            _ => write!(f, "parse error: {}", self.message),
+        }
     }
 }
 
@@ -131,20 +158,24 @@ impl std::error::Error for ParseError {}
 
 /// Parse a full `.rux` source into an [`Sfc`].
 pub fn parse_sfc(src: &str) -> Result<Sfc, ParseError> {
-    let template_src = section(src, "template")
-        .ok_or_else(|| ParseError("missing <template> section".into()))?;
-    let style = section(src, "style").unwrap_or_default();
-    let script = section(src, "script").unwrap_or_default();
+    let (template_src, template_start) =
+        section(src, "template").ok_or_else(|| ParseError::new("missing <template> section"))?;
+    let style = section(src, "style").map(|(s, _)| s).unwrap_or_default();
+    let script = section(src, "script").map(|(s, _)| s).unwrap_or_default();
+
+    // Positions inside the template are relative to the section; shift them onto
+    // the file's lines so a reported line matches the editor's gutter.
+    let lines_before = src[..template_start].matches('\n').count();
 
     let mut parser = Parser::new(&template_src);
-    let nodes = parser.parse_nodes(None)?;
+    let nodes = parser.parse_nodes(None).map_err(|e| e.offset_lines(lines_before))?;
     let template = nodes
         .into_iter()
         .find_map(|n| match n {
             Node::Element(e) => Some(e),
             Node::Text(_) => None,
         })
-        .ok_or_else(|| ParseError("<template> has no root element".into()))?;
+        .ok_or_else(|| ParseError::new("<template> has no root element"))?;
 
     Ok(Sfc {
         template,
@@ -153,15 +184,17 @@ pub fn parse_sfc(src: &str) -> Result<Sfc, ParseError> {
     })
 }
 
-/// Extract the inner text of a top-level `<name> … </name>` section.
-fn section(src: &str, name: &str) -> Option<String> {
+/// Extract the inner text of a top-level `<name> … </name>` section, with the
+/// byte offset it starts at (so errors inside it can be reported against the
+/// file's own line numbers).
+fn section(src: &str, name: &str) -> Option<(String, usize)> {
     let open = format!("<{name}");
     let start = src.find(&open)?;
     // Advance past the opening tag's closing `>`.
     let after_open = start + src[start..].find('>')? + 1;
     let close = format!("</{name}>");
     let end = src[after_open..].find(&close)? + after_open;
-    Some(src[after_open..end].to_string())
+    Some((src[after_open..end].to_string(), after_open))
 }
 
 /// A small recursive-descent parser over the template characters.
@@ -180,6 +213,28 @@ impl Parser {
 
     fn peek(&self) -> Option<char> {
         self.chars.get(self.pos).copied()
+    }
+
+    /// 1-based line and column of `pos` within the template section.
+    fn line_col(&self, pos: usize) -> (usize, usize) {
+        let mut line = 1;
+        let mut col = 1;
+        for &c in &self.chars[..pos.min(self.chars.len())] {
+            if c == '\n' {
+                line += 1;
+                col = 1;
+            } else {
+                col += 1;
+            }
+        }
+        (line, col)
+    }
+
+    /// An error carrying the position the parser has reached — which is where the
+    /// author needs to look, and the whole point of surfacing errors at all.
+    fn err(&self, message: impl Into<String>) -> ParseError {
+        let (line, col) = self.line_col(self.pos);
+        ParseError::at(message, line, col)
     }
 
     fn bump(&mut self) -> Option<char> {
@@ -286,14 +341,14 @@ impl Parser {
         self.bump(); // consume '<'
         let tag = self.read_name();
         if tag.is_empty() {
-            return Err(ParseError(format!("expected tag name at position {}", self.pos)));
+            return Err(self.err("expected a tag name after `<`"));
         }
 
         let mut attrs = Vec::new();
         loop {
             self.skip_ws();
             match self.peek() {
-                None => return Err(ParseError(format!("unclosed tag <{tag}>"))),
+                None => return Err(self.err(format!("unclosed tag <{tag}>"))),
                 Some('>') => {
                     self.bump();
                     let children = self.parse_nodes(Some(&tag))?;
@@ -307,10 +362,7 @@ impl Parser {
                 _ => {
                     let name = self.read_attr_name();
                     if name.is_empty() {
-                        return Err(ParseError(format!(
-                            "malformed attribute in <{tag}> at position {}",
-                            self.pos
-                        )));
+                        return Err(self.err(format!("malformed attribute in <{tag}>")));
                     }
                     self.skip_ws();
                     let value = if self.peek() == Some('=') {
@@ -362,18 +414,18 @@ impl Parser {
     fn expect_closing(&mut self, tag: &str) -> Result<(), ParseError> {
         self.skip_ws();
         if !self.starts_with("</") {
-            return Err(ParseError(format!("expected </{tag}>")));
+            return Err(self.err(format!("expected </{tag}>")));
         }
         self.pos += 2;
         let close = self.read_name();
         if close != tag {
-            return Err(ParseError(format!(
+            return Err(self.err(format!(
                 "mismatched closing tag: expected </{tag}>, found </{close}>"
             )));
         }
         self.skip_ws();
         if self.peek() != Some('>') {
-            return Err(ParseError(format!("unterminated </{tag}>")));
+            return Err(self.err(format!("unterminated </{tag}>")));
         }
         self.bump();
         Ok(())

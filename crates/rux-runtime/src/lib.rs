@@ -38,7 +38,34 @@ pub struct Document {
     state: InteractionState,
     /// The window size `@media` queries are evaluated against.
     viewport: Viewport,
+    /// What is currently wrong with this document, for the dev overlay.
+    diagnostics: Diagnostics,
     pub root: LayoutNode,
+}
+
+/// What is wrong with the document right now — the model behind the dev overlay.
+///
+/// An **error** means the file could not be loaded at all: there is no tree to
+/// show, so the window would otherwise be blank (or, on hot-reload, silently
+/// stale). A **warning** means the document built, but something in it does
+/// nothing — an unhonored property, an unknown pseudo-class, an undefined
+/// `var()`, an unsupported `@media`.
+///
+/// Both used to go only to stderr, which nobody running a GUI app is watching.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Diagnostics {
+    /// The load/parse failure, if the document is currently broken.
+    pub error: Option<String>,
+    /// Whether the tree on screen predates that error (a failed hot-reload keeps
+    /// the last good UI rather than blanking the window).
+    pub stale: bool,
+    pub warnings: Vec<String>,
+}
+
+impl Diagnostics {
+    pub fn is_empty(&self) -> bool {
+        self.error.is_none() && self.warnings.is_empty()
+    }
 }
 
 /// Which input has keyboard focus, and where its caret and selection are.
@@ -112,6 +139,15 @@ fn divergence(a: Option<&[usize]>, b: Option<&[usize]>) -> Vec<usize> {
     }
 }
 
+/// Drain both warning sinks — the cascade's (unhonored properties, unknown
+/// pseudo-classes, undefined `var()`s, unsupported `@media`) and the script's
+/// (expressions that failed to compile or evaluate).
+fn collect_warnings() -> Vec<String> {
+    let mut warnings = rux_style::take_warnings();
+    warnings.extend(rux_script::take_warnings());
+    warnings
+}
+
 /// Resolve every `<image src>` in the tree against `base` and read its intrinsic
 /// size, so a sizeless `<image>` lays out at its natural pixel dimensions. Only
 /// the file header is read, not the pixels; the painter decodes and caches those.
@@ -175,6 +211,11 @@ impl Document {
             registry,
             state: InteractionState::default(),
             viewport: Viewport::default(),
+            // Whatever the build just complained about, ready for the overlay.
+            diagnostics: Diagnostics {
+                warnings: collect_warnings(),
+                ..Diagnostics::default()
+            },
             root,
         })
     }
@@ -196,6 +237,10 @@ impl Document {
             registry,
             state: InteractionState::default(),
             viewport: Viewport::default(),
+            diagnostics: Diagnostics {
+                warnings: collect_warnings(),
+                ..Diagnostics::default()
+            },
             root,
         })
     }
@@ -203,6 +248,36 @@ impl Document {
     /// The script engine, for running `@tap` handlers.
     pub fn engine_mut(&mut self) -> &mut Engine {
         &mut self.engine
+    }
+
+    /// What is currently wrong with this document — for the dev overlay.
+    pub fn diagnostics(&self) -> &Diagnostics {
+        &self.diagnostics
+    }
+
+    /// Record that a re-load failed. The tree on screen stays as it was, so the
+    /// app keeps working while the file is broken; the overlay says so, and marks
+    /// what you're looking at as stale.
+    pub fn set_load_error(&mut self, error: impl Into<String>) {
+        self.diagnostics.error = Some(error.into());
+        self.diagnostics.stale = true;
+    }
+
+    /// Mark the visible tree as *not* a leftover from before the error — used when
+    /// the very first load failed, so there is no earlier version being shown.
+    pub fn clear_stale(&mut self) {
+        self.diagnostics.stale = false;
+    }
+
+    /// Adopt a freshly loaded document's tree and state, keeping this one's
+    /// identity. Used by hot-reload so a successful load clears the error.
+    pub fn replace_with(&mut self, mut fresh: Document) {
+        // A reload rebuilds from scratch, so focus is legitimately reset — but the
+        // viewport and pointer state belong to the window, not the file.
+        fresh.viewport = self.viewport;
+        fresh.state = self.state.clone();
+        fresh.rebuild();
+        *self = fresh;
     }
 
     /// Focus an input (by `r-model`), with its caret and selection. `None` clears.
@@ -320,6 +395,10 @@ impl Document {
             apply_focus(&mut root, self.focus.as_ref());
             self.registry = registry;
             self.root = root;
+            // Refresh what the overlay lists: a rebuild re-runs the cascade and
+            // every binding, so it re-raises exactly what this document still has
+            // wrong.
+            self.diagnostics.warnings = collect_warnings();
         }
     }
 
@@ -930,6 +1009,94 @@ mod tests {
     }
 
     // ── Pointer state (`:hover` / `:active`) ────────────────────────────────
+
+    // ── Diagnostics / dev overlay ───────────────────────────────────────────
+
+    /// A document that builds but whose CSS partly does nothing reports it,
+    /// instead of the silence that made unknown CSS the worst failure mode here.
+    #[test]
+    fn warnings_are_collected_for_the_overlay() {
+        let doc = Document::from_source(
+            "<template><screen><view class=\"card\" /></screen></template>
+             <style>.card { filter: blur(2px); background: var(--nope); }</style>",
+        )
+        .expect("load");
+        let warnings = &doc.diagnostics().warnings;
+        assert!(
+            warnings.iter().any(|w| w.contains("filter")),
+            "unhonored property reported: {warnings:?}"
+        );
+        assert!(
+            warnings.iter().any(|w| w.contains("--nope")),
+            "undefined var reported: {warnings:?}"
+        );
+        assert!(doc.diagnostics().error.is_none(), "the document still built");
+    }
+
+    /// A clean document reports nothing, so the overlay stays out of the way.
+    #[test]
+    fn a_clean_document_has_no_diagnostics() {
+        let doc = Document::from_source(
+            "<template><screen><view class=\"card\" /></screen></template>
+             <style>.card { background: #313244; }</style>",
+        )
+        .expect("load");
+        assert!(doc.diagnostics().is_empty(), "{:?}", doc.diagnostics());
+    }
+
+    /// A failed reload keeps the tree that is on screen and marks it stale —
+    /// a typo mid-edit must not blank the window.
+    #[test]
+    fn a_failed_reload_keeps_the_last_good_tree() {
+        let mut doc = Document::from_source(
+            "<template><screen><text>hello</text></screen></template>",
+        )
+        .expect("load");
+        let before = doc.root.children.len();
+
+        doc.set_load_error("parse error at line 6, column 13: mismatched closing tag");
+        assert_eq!(doc.root.children.len(), before, "the tree is untouched");
+        assert!(doc.diagnostics().error.is_some());
+        assert!(doc.diagnostics().stale, "what's on screen predates the error");
+    }
+
+    /// Loading a good document over a broken one clears the error.
+    #[test]
+    fn a_successful_reload_clears_the_error() {
+        let mut doc = Document::from_source("<template><screen><text>old</text></screen></template>")
+            .expect("load");
+        doc.set_load_error("something was wrong");
+
+        let fresh = Document::from_source("<template><screen><text>new</text></screen></template>")
+            .expect("load");
+        doc.replace_with(fresh);
+        assert!(doc.diagnostics().error.is_none(), "error cleared");
+        assert!(!doc.diagnostics().stale);
+        assert_eq!(doc.root.children[0].text.as_ref().unwrap().text, "new");
+    }
+
+    /// The window owns the viewport, not the file — a reload must not reset it,
+    /// or a hot-reload in a narrow window would come back with desktop styling.
+    #[test]
+    fn a_reload_keeps_the_window_viewport() {
+        let mut doc = media_doc();
+        doc.set_viewport(Viewport { width: 480.0, height: 800.0 });
+        assert!(is_red(&doc.root.children[0]));
+
+        let fresh = Document::from_source(
+            "<template><screen><view class=\"card\" /></screen></template>
+             <style>
+               .card { background: #00ff00; }
+               @media (max-width: 600px) { .card { background: #ff0000; } }
+             </style>",
+        )
+        .expect("load");
+        doc.replace_with(fresh);
+        assert!(
+            is_red(&doc.root.children[0]),
+            "still narrow after the reload, so the @media rule still applies"
+        );
+    }
 
     // ── @media / viewport ───────────────────────────────────────────────────
 

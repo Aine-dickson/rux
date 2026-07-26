@@ -832,9 +832,32 @@ first item.
    the old and new size and re-cascades only if that vector differs — so a resize
    crossing no breakpoint does nothing, and a document without `@media` never
    re-cascades. `examples/responsive.rux` drives it.
-4. **Error surfacing / dev overlay** — today unknown CSS is silently ignored and a
-   bad `.rux` file falls back to an empty screen. The biggest gap before this is in
-   anyone else's hands. (Also listed under Known ceilings.)
+4. **Error surfacing / dev overlay** — ✅ **done 2026-07-26, driven & verified.**
+   A broken file no longer opens an empty window: the shell paints a dev overlay
+   above everything (including a dropdown) with the failure, and a **failed
+   hot-reload keeps the last good tree on screen** and marks it stale, so a typo
+   mid-edit neither blanks the window nor passes unnoticed. Fixing the file clears
+   it; `Document::replace_with` carries the window's own state (viewport, pointer)
+   across the reload so a narrow window doesn't come back with desktop styling.
+
+   - **Parse errors carry line and column**, offset onto the *file's* numbering
+     rather than the `<template>` section's, so they match an editor's gutter.
+   - **Warnings are collected, not just printed.** Thread-local sinks in
+     `rux-style` (unhonored property, unknown pseudo-class, undefined `var()`,
+     unsupported `@media`) and `rux-script` (expressions that failed to compile or
+     evaluate), drained per build by the runtime. stderr keeps its process-wide
+     dedupe so a rebuild doesn't spam the terminal; the sinks dedupe only within a
+     build so the overlay always lists everything currently wrong.
+   - **The silent-expression hole is closed**: `eval` used to swallow every error
+     with `.ok()?`, so a typo in `{{ }}` or `@tap` rendered empty and said nothing.
+   - `crates/rux-runtime/tests/examples.rs` asserts every shipped example loads
+     **warning-free** — a noisy overlay in `examples/` is now a test failure.
+
+   **Still open:** rhai returns `()` for a missing map property instead of an
+   error, so `{{ user.nmae }}` is still silently empty. The overlay is not
+   dismissable, and warnings are not yet clickable/located (no line numbers for
+   CSS). The machine-readable `rux check` subcommand in the Dev-tooling section
+   below is the natural next step — it can reuse these same sinks.
 5. **Accessibility** — parley 0.11 already pulls in `accesskit`; `role=` is honored
    for selectors but wired to nothing. That door is open.
 
@@ -855,9 +878,10 @@ self-contained-vs-`source.css` decision).
 - **True inline text flow.** Two `<text>` siblings stack; they cannot share a
   line. taffy has no inline formatting context, so this needs our own line-breaker
   over parley — a real project, not a patch.
-- **Error surfacing.** Unknown CSS is silently ignored; a bad `.rux` file falls
-  back to an empty screen. There is no dev overlay. Fine for a prototype, not for
-  anyone else's hands.
+- ~~**Error surfacing.**~~ ✅ Resolved 2026-07-26: there is a dev overlay. A bad
+  `.rux` file shows the error (with line/column) instead of an empty screen, a
+  failed hot-reload keeps the last good UI, and dead CSS / failed expressions are
+  listed in-window. Remaining: no line numbers on CSS warnings, no `rux check`.
 - ~~**`:checked` and other pseudo-classes.**~~ ✅ Resolved 2026-07-25: `:hover`,
   `:focus`, `:active` and `:checked` all match. The synthetic `checked` class
   survives one more release for compatibility, then goes.
