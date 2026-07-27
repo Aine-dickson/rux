@@ -4,8 +4,8 @@
 
     <!-- Explicit placement: header spans all columns, sidebar spans two rows -->
     <view class="grid">
-      <view class="cell header"><text>header — grid-column: 1 / -1</text></view>
-      <view class="cell side"><text>sidebar — grid-row: span 2</text></view>
+      <view class="cell header"><text>header, grid-column: 1 / -1</text></view>
+      <view class="cell side"><text>sidebar, grid-row: span 2</text></view>
       <view class="cell a"><text>a</text></view>
       <view class="cell b"><text>b</text></view>
       <view class="cell c"><text>grid-column: span 2</text></view>

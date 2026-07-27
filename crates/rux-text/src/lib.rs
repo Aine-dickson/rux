@@ -14,6 +14,7 @@
 //! layout brush is `()`.
 
 use std::borrow::Cow;
+use std::sync::Arc;
 
 use parley::{
     Affinity, Alignment, AlignmentOptions, Cursor, FontContext, FontWeight, Layout, LayoutContext,
@@ -132,6 +133,40 @@ impl TextEngine {
             font_cx: FontContext::new(),
             layout_cx: LayoutContext::new(),
         }
+    }
+
+    /// Register an in-memory font file and point the generic families at it.
+    ///
+    /// Needed on the web, where there is no system font source at all: fontique
+    /// discovers nothing, every family query misses, and text measures to zero —
+    /// a blank window rather than an error. Registering one font gives the
+    /// cascade something to land on.
+    ///
+    /// The generic families are all aimed at it, `serif` and `monospace`
+    /// included. That is deliberately wrong typographically and deliberately
+    /// right in practice: an example asking for `monospace` should render in
+    /// *something* rather than vanish. Registering a mono font afterwards
+    /// overrides that mapping for `monospace` alone.
+    ///
+    /// Returns false if the data held no usable font.
+    pub fn register_font(&mut self, data: Vec<u8>) -> bool {
+        use parley::fontique::{Blob, GenericFamily};
+
+        let registered = self.font_cx.collection.register_fonts(Blob::new(Arc::new(data)), None);
+        let Some((family, _)) = registered.first() else {
+            return false;
+        };
+
+        for generic in [
+            GenericFamily::SansSerif,
+            GenericFamily::Serif,
+            GenericFamily::Monospace,
+            GenericFamily::SystemUi,
+            GenericFamily::UiSansSerif,
+        ] {
+            self.font_cx.collection.set_generic_families(generic, [*family].into_iter());
+        }
+        true
     }
 
     fn build(&mut self, text: &str, style: &TextStyle, max_width: Option<f32>) -> Layout<()> {

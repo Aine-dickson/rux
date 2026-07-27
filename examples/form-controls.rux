@@ -23,7 +23,7 @@
             <input class="radio" type="radio" r-model="plan" value="free" />
             <text class="label">Free</text>
             <input class="radio" type="radio" r-model="plan" value="pro" />
-            <text class="label">Pro — {{ plan }}</text>
+            <text class="label">Pro: {{ plan }}</text>
         </view>
     </screen>
 </template>

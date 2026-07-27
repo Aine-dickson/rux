@@ -1,21 +1,21 @@
 +++
 title = "Reference"
-description = "What Rux actually does today — the authoritative honored-CSS set, elements, and directives."
+description = "What Rux actually does today: the authoritative honored-CSS set, elements, and directives."
 weight = 1
 sort_by = "weight"
 template = "docs-section.html"
 page_template = "docs.html"
 +++
 
-<!-- GENERATED FROM docs/05-as-built.md BY site/sync-docs.sh — DO NOT EDIT HERE. -->
+<!-- GENERATED FROM docs/05-as-built.md BY site/sync-docs.sh. DO NOT EDIT HERE. -->
 
 
 **This is the authoritative description of what Rux actually does today.**
 
 Docs [01–04](https://github.com/Aine-dickson/rux/tree/main/docs) describe the *design intent* and are still worth reading
-for the *why* — but the implementation has diverged from them in places. Where
+for the *why*, but the implementation has diverged from them in places. Where
 they disagree, **this document wins**. Divergences are called out below. For what
-is *not* built yet and in what order, see [06 — Roadmap](/roadmap/).
+is *not* built yet and in what order, see [Roadmap](/roadmap/).
 
 Last updated: 2026-07-15. All milestones **M0–M9 are complete**, plus several
 follow-up passes. Branch: `build/m0-window`.
@@ -34,7 +34,7 @@ cargo run -- examples/gallery.rux  # images, opacity, flex-shrink, clipping
 cargo run -- examples/dashboard.rux
 ```
 
-Edit any `.rux` file (including imported components) and it **hot-reloads** — no
+Edit any `.rux` file (including imported components) and it **hot-reloads**: no
 rebuild. Only changing the compiled Rust host requires `cargo run` again.
 
 ## Crates
@@ -61,23 +61,23 @@ rebuild. Only changing the compiled Rust host requires `cargo run` again.
 components as custom tags. `role=` is honored for **selectors and semantics**
 (and matches **case-insensitively**: `role="Heading"` matches `[role="heading"]`).
 
-`<image src="assets/logo.png">` — `src` resolves **relative to the .rux file**
+`<image src="assets/logo.png">`: `src` resolves **relative to the .rux file**
 (not the working directory), and `:src` binds an expression. With no CSS size it
 lays out at the file's intrinsic pixel size; a `width`/`height` scales it to fit.
 Formats: PNG, JPEG, GIF, WebP. A missing file logs to stderr and paints nothing.
 
-### Layout — **use `display: flex`**
+### Layout: **use `display: flex`**
 > **DIVERGENCE from docs 01–04.** The inline/block-by-role model was **built and
 > then deliberately removed**. taffy has no inline text-flow, so inline elements
-> hugged inside flex parents but filled inside block ones (full-width buttons) —
+> hugged inside flex parents but filled inside block ones (full-width buttons),
 > confusing. It's gone.
 
 - **Everything defaults to `display: block`.** Block containers make children fill.
 - **Use `display: flex` for layout.** Flex cross-axis defaults to **flex-start**
-  (children hug), not CSS's `stretch` — a deliberate divergence for ergonomics.
+  (children hug), not CSS's `stretch`, which is a deliberate divergence for ergonomics.
 - **Hug means `fit-content`**: a box with no `width` is clamped to its parent's
   inner width, so it can't burst out of a narrower parent. An explicit `width` (or
-  `flex-shrink: 0`) is your call and *will* overflow — clip it with `overflow: hidden`.
+  `flex-shrink: 0`) is your call and *will* overflow, so clip it with `overflow: hidden`.
 - `display: grid` works (`grid-template-columns` / `-rows`: `1fr`, `px`, `auto`).
 - No inline text flow: two `<text>` siblings **stack**, they don't share a line.
 - **Lengths are logical pixels.** Layout and taps run in logical space and the
@@ -93,38 +93,38 @@ flex-grow, flex-shrink, flex-basis, flex-wrap, flex (shorthand)
 grid-template-columns, grid-template-rows
 grid-column, grid-row (+ -start/-end)   (1 / 3, span 2, -1; no named lines)
 grid-auto-flow, grid-auto-rows, grid-auto-columns
-transform (translate/scale/rotate; visual only — hit regions aren't transformed)
+transform (translate/scale/rotate; visual only; hit regions aren't transformed)
 position (relative|absolute) + top/right/bottom/left, aspect-ratio
 width, height, min/max-width, min/max-height
 padding, margin        (shorthand 1–4 values + -top/-right/-bottom/-left)
 border, border-width, border-color, border-<side>, border-<side>-width
 background / background-color / background-image, opacity
-  (colour, linear-/radial-gradient, or url(…) image — cover-sized, clipped to corners)
+  (colour, linear-/radial-gradient, or url(…) image, cover-sized, clipped to corners)
 box-shadow (single, outer; inset parsed but not drawn)
 border-radius (1–4 diagonal shorthand + per-corner -top-left/-top-right/…)
 color, font-size, font-weight, font-family, font-style (italic), text-align
 letter-spacing, word-spacing, line-height, white-space (nowrap|pre)
 text-decoration (underline / line-through)                (color: hex, rgb()/rgba(), CSS names)
 overflow / overflow-x / overflow-y   (hidden|clip = clip; auto|scroll = scroll;
-                                      both axes together — x and y can't differ)
+                                      both axes together; x and y can't differ)
 overflow-wrap (break-word), word-break (break-all)
 cursor (pointer, on @tap boxes only)
 ```
 **Selectors:** tag, `.class`, `#id`, `[role="…"]`, compounds, and all four
-combinators — descendant (`.a .b`), child (`.a > .b`), next-sibling (`.a + .b`),
+combinators: descendant (`.a .b`), child (`.a > .b`), next-sibling (`.a + .b`),
 subsequent-sibling (`.a ~ .b`).
 `flex: 1` means `1 1 0%` (CSS's shorthand defaults), not `1 1 auto`.
 `opacity` fades the node **and its subtree** as one layer.
 `background`/`border` work on `<text>` nodes, not just containers.
 **Units:** `px`, `%`, `rem` (=16px), `vw`, `vh`/`dvh`.
 
-`font-family` takes a CSS list (`font-family: "Inter", sans-serif`) — parley
+`font-family` takes a CSS list (`font-family: "Inter", sans-serif`), and parley
 parses it and does name-matching + fallback; the generic families (`serif`,
 `sans-serif`, `monospace`, …) always resolve. It **inherits**, like `color` and
 `font-size`. `color`/`font-size`/`font-family` are the three inheriting text
 properties.
 
-Anything else is **parsed but not honored** — but no longer *silently*: the
+Anything else is **parsed but not honored**: but no longer *silently*: the
 runtime now prints one line per unhonored property (`rux: CSS property
 \`box-shadow\` is parsed but not yet honored …`), once each. Notably absent:
 `line-height`, `position` (relative/absolute *is* honored; `sticky`/`fixed` are
@@ -148,7 +148,7 @@ plain `color: #ff0000` would fall back to the default.
 > - Anything heavier belongs in a **`host::`** function.
 
 ### Inputs
-`<input r-model="sig" placeholder="…">` — tap to focus, type to edit. There is a
+`<input r-model="sig" placeholder="…">`: tap to focus, type to edit. There is a
 real **caret**: tapping puts it where you tapped, ←/→ move it, Home/End jump,
 Backspace/Delete cut either side of it, and typing inserts at it. Esc unfocuses.
 Every edit writes the signal, so `{{ }}` updates live. Placeholder shows when
@@ -160,11 +160,11 @@ a field doesn't shrink as you type, and single-line inputs **never wrap** and
 
 `<input type="textarea" r-model="sig">` is the same, but **Enter inserts a
 newline** (single-line inputs ignore it), the value wraps across lines,
-**Up/Down move the caret between lines**, and it **scrolls vertically** — the
+**Up/Down move the caret between lines**, and it **scrolls vertically**: the
 wheel scrolls it and typing keeps the caret in view.
 
 `<input type="select" r-model="sig" :options="list">` shows the bound value and,
-on tap, opens a **dropdown** of the `:options` (evaluated to strings) — a floating
+on tap, opens a **dropdown** of the `:options` (evaluated to strings), a floating
 panel with a shadow, the current value picked out as a pill, and separators.
 Tapping a row writes it back to the signal; any other tap closes it. The open
 state lives in the shell and survives rebuilds (like scroll offsets).
@@ -183,13 +183,13 @@ no keyboard. They write the bound signal through the ordinary handler path
 (`flag = !flag`, `choice = "pro"`), so an authored `@tap` overrides them.
 
 A checked box carries a synthetic **`checked` class**, so its checked look is
-ordinary CSS — there is no `:checked` pseudo-class:
+ordinary CSS. There is no `:checked` pseudo-class:
 ```css
 .box         { background: #313244; border: 2px #45475a solid; color: #cdd6f4; }
 .box.checked { background: #a6e3a1; color: #ffffff; }   /* white tick on green */
 ```
 The mark is drawn in the box's own `color`: a **stroked checkmark** for a checkbox
-(a path, not a ✓ glyph — a glyph is whatever the system font ships and reads as a
+(a path, not a ✓ glyph, since a glyph is whatever the system font ships and reads as a
 letter), a dot for a radio. Keep the checked `border` a shade apart from the
 checked `background`, or the ring dissolves into the fill. A radio is **round** unless you give it a `border-radius` (and a
 huge radius like `9999px` is clamped to a circle, so that's how you re-round one
@@ -208,7 +208,7 @@ nothing is). Both are re-applied after every rebuild, like the caret.
   (via `arboard`, the real system clipboard). Pasting several lines into a
   single-line input keeps only the first.
 
-The highlight is painted behind the glyphs in the focus-ring blue — **not
+The highlight is painted behind the glyphs in the focus-ring blue: **not
 author-controlled**: there is no `::selection` yet. Its rectangles come from
 parley, but only their *horizontal* extent: the vertical position is recomputed
 from our own leading-trimmed line stepping, since parley's line pitch isn't ours
@@ -221,26 +221,26 @@ picker.
 
 ### Scrolling
 `overflow: auto | scroll` makes a box scroll **on whichever axis its content
-overflows** — vertical, horizontal, or both. It scrolls by:
+overflows**: vertical, horizontal, or both. It scrolls by:
 
 - **wheel** (Shift+wheel, or a horizontal wheel, scrolls sideways),
 - **dragging a scrollbar thumb**,
-- **touch** — a finger drags the content itself (untested: no touch hardware here),
-- **keyboard** — arrows, PageUp/PageDown, Home/End scroll the box **under the
+- **touch**: a finger drags the content itself (untested: no touch hardware here),
+- **keyboard**: arrows, PageUp/PageDown, Home/End scroll the box **under the
   pointer**, when no input has focus.
 
 **Scrollbars** are an overlay on the box's trailing edge: they appear only on an
 axis that actually has travel, the thumb is the box's fraction of the content (to
 a grabbable floor), and when both axes scroll the tracks stop short of the corner.
-They are drawn *over* the content — a scroller clips its children, so they can't
-be part of the subtree — and drawn from the same geometry the drag hit-tests, so
+They are drawn *over* the content, because a scroller clips its children so they can't
+be part of the subtree, and drawn from the same geometry the drag hit-tests, so
 they can't disagree.
 
 **Scroll-into-view** runs on Tab: focusing something below the fold scrolls its
 box far enough to show it (typing in a textarea does the same for the caret).
 
 Offsets live in the shell keyed by the scroller's index in tree order, so they
-survive the whole-tree rebuild — tapping a row doesn't scroll the list to the top.
+survive the whole-tree rebuild, so tapping a row doesn't scroll the list to the top.
 A press on a thumb never becomes a tap on the content beneath it.
 
 **Not done:** no click-on-track paging, no kinetic/inertial touch fling, no
@@ -266,16 +266,16 @@ their own subtree. Editing a component hot-reloads.
    `@tap='name = ""'`, `r-if='city != ""'`. We do **not** decode HTML entities,
    and rhai treats `'x'` as a *char*, not a string.
 2. **`use` must be alone on its own line** in `<script>`.
-3. **rhai `fn`s can't touch globals** (see above) — the single biggest trap.
+3. **rhai `fn`s can't touch globals** (see above). The single biggest trap.
 4. **`text-align` needs a box wider than the text** (set a width, or the element
-   must fill) — otherwise there's nothing to align within.
+   must fill), or there's nothing to align within.
 5. **A scroll container needs a bounded height** (`height`, `max-height`, or a
    `flex-grow` slot). Without one it just grows and there is nothing to scroll.
 6. **Rows inside a scrolling flex column need `flex-shrink: 0`.** Otherwise the
    column squeezes them all in to fit and, again, nothing scrolls. CSS does this
-   too — it is the single most common "why won't it scroll" trap.
+   too. It is the single most common "why won't it scroll" trap.
 7. **A word longer than its box overflows** unless you set `overflow-wrap:
-   break-word` — nothing can shrink below min-content. The browser does this too.
+   break-word`, since nothing can shrink below min-content. The browser does this too.
 
 ---
 
@@ -291,7 +291,7 @@ their own subtree. Editing a component hot-reloads.
 - `r-for` rebuilds more rows than a keyed diff would; effects and computed
   values are still absent from the reactive tier.
 
-> Fine-grained reactivity **shipped in v0.3** — a signal change now patches only
+> Fine-grained reactivity **shipped in v0.3**: a signal change now patches only
 > the bindings that read it, and the wholesale rebuild no longer fires. This list
 > claimed otherwise until 2026-07-26. If a gap here reads as more pessimistic
 > than the [release blog](https://ruxlang.dev/blog/), trust the blog and fix this
@@ -305,4 +305,4 @@ The [rationale](/why/)'s core laws still hold and still guide changes:
 **layout lives in CSS, not markup** (no `<Padding>`/`<Center>` widgets); **reuse
 mature crates**; **keep the element set tiny**. The [architecture](/contribute/)
 pipeline (parse → cascade → layout → paint → present, with a file watcher) is
-exactly what got built — only the *reactive graph* stage is simpler than described.
+exactly what got built. Only the *reactive graph* stage is simpler than described.

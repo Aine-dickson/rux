@@ -1,0 +1,275 @@
+{% extends "base.html" %}
+
+{% block title %}{{ page.title }} · {{ config.title }}{% endblock %}
+{% block description %}{{ page.description | default(value=config.description) }}{% endblock %}
+{% block og_title %}{{ page.title }} · {{ config.title }}{% endblock %}
+{% block og_description %}{{ page.description | default(value=config.description) }}{% endblock %}
+
+{% block content %}
+<div class="pg">
+  <div class="pg-head">
+    <h1>{{ page.title }}</h1>
+    <p class="lede">{{ page.description }}</p>
+  </div>
+
+  {# Progressive disclosure: the panel starts in a "loading" state and JS clears
+     it. With JS off, or on a browser without WebGPU, the message stays and says
+     why, rather than leaving a blank rectangle. #}
+  <div class="pg-grid">
+    <section class="pg-pane" aria-label="Editor">
+      <div class="pg-bar">
+        <span class="pg-label">app.rux</span>
+        <span class="pg-actions">
+          <button id="pg-fmt" class="pg-btn pg-btn-quiet" type="button"
+                  title="Re-indent (Shift+Alt+F)">Format</button>
+          <button id="pg-run" class="pg-btn" type="button" title="Run (Ctrl+Enter)">Run</button>
+        </span>
+      </div>
+      {# The editor is a transparent textarea over a highlighted <pre>. The two
+         must share every text metric or the overlay drifts from the caret, so
+         `.pg-code` and `.pg-editor` set font, size, line-height, padding and
+         tab-size identically. See style.css. #}
+      <div class="pg-editwrap">
+        <pre class="pg-code" id="pg-code" aria-hidden="true"><code></code></pre>
+        <textarea id="pg-src" class="pg-editor" spellcheck="false" autocomplete="off"
+                  autocapitalize="off" autocorrect="off" wrap="off"
+                  aria-label="Rux source"></textarea>
+      </div>
+    </section>
+
+    <section class="pg-pane" aria-label="Output">
+      <div class="pg-bar">
+        <span class="pg-label">output</span>
+        <span id="pg-status" class="pg-status">loading…</span>
+      </div>
+      <div class="pg-stage">
+        <canvas id="pg-canvas" width="420" height="640"></canvas>
+      </div>
+      {# Parse errors land here. `role="alert"` so a screen reader announces one
+         instead of it only being a colour change. #}
+      <p id="pg-error" class="pg-error" role="alert" hidden></p>
+    </section>
+  </div>
+
+  <noscript>
+    <p class="pg-note">The playground needs JavaScript to load the WebAssembly
+    build. The same code runs natively with
+    <code>cargo run -p rux-cli -- app.rux</code>.</p>
+  </noscript>
+</div>
+
+<script type="module">
+  import init, { start, setSource, highlight, format, indentAfter }
+    from "{{ get_url(path='wasm/rux_web.js') }}";
+
+  const status = document.getElementById("pg-status");
+  const editor = document.getElementById("pg-src");
+  const canvas = document.getElementById("pg-canvas");
+  const runBtn = document.getElementById("pg-run");
+  const fmtBtn = document.getElementById("pg-fmt");
+  const code = document.getElementById("pg-code").firstElementChild;
+
+  const INDENT = "  ";
+
+  const DEFAULT_SOURCE = `<template>
+  <screen class="app">
+    <text class="title">Hello, {{ '{{' }} name {{ '}}' }}</text>
+    <input class="field" r-model="name" placeholder="your name" />
+    <button class="btn" @tap="taps = taps + 1">
+      <text class="btnlabel">Tapped {{ '{{' }} taps {{ '}}' }} times</text>
+    </button>
+  </screen>
+</template>
+
+<style>
+  .app   { display: flex; flex-direction: column; gap: 14px; padding: 28px; background: #1e1e2e; }
+  .title { color: #cdd6f4; font-size: 26px; font-weight: 700; }
+  .field {
+    display: flex; padding: 10px; background: #313244;
+    border: 2px #45475a solid; border-radius: 8px; color: #cdd6f4; font-size: 15px;
+  }
+  .btn      { display: flex; justify-content: center; padding: 12px; background: #89b4fa; border-radius: 8px; cursor: pointer; }
+  .btnlabel { color: #11111b; font-size: 15px; font-weight: 700; }
+</style>
+
+<script>
+  let name = signal("world");
+  let taps = signal(0);
+</` + `script>
+`;
+
+  // A lesson can deep-link its checkpoint in: /playground/#<base64 of source>.
+  // Base64 rather than percent-encoding because .rux is mostly punctuation, and
+  // an escaped URL would be unreadable and enormous.
+  function sourceFromHash() {
+    if (location.hash.length <= 1) return null;
+    try {
+      return new TextDecoder().decode(
+        Uint8Array.from(atob(location.hash.slice(1)), (c) => c.charCodeAt(0))
+      );
+    } catch {
+      return null;
+    }
+  }
+
+  editor.value = sourceFromHash() ?? DEFAULT_SOURCE;
+
+  if (!navigator.gpu) {
+    status.textContent = "needs WebGPU";
+    status.classList.add("is-error");
+    runBtn.disabled = true;
+  } else {
+    init()
+      .then(() => {
+        start(canvas, editor.value);
+        status.textContent = "running";
+
+        // A trailing newline would let the <pre> collapse its last line and
+        // drift out of step with the textarea, so pad it.
+        const repaint = () => {
+          code.innerHTML = highlight(editor.value + "\n");
+        };
+        repaint();
+        editor.addEventListener("input", repaint);
+        // The overlay does not scroll itself; it follows the textarea.
+        editor.addEventListener("scroll", () => {
+          code.parentElement.scrollTop = editor.scrollTop;
+          code.parentElement.scrollLeft = editor.scrollLeft;
+        });
+
+        const errorBox = document.getElementById("pg-error");
+        const run = () => {
+          const err = setSource(editor.value);
+          if (err) {
+            errorBox.textContent = err;
+            errorBox.hidden = false;
+            status.textContent = "error";
+            status.classList.add("is-error");
+          } else {
+            errorBox.hidden = true;
+            status.textContent = "running";
+            status.classList.remove("is-error");
+          }
+        };
+        runBtn.addEventListener("click", run);
+
+        // ── Editing behaviour ────────────────────────────────────────────
+        // A textarea gives us none of this, so it is hand-rolled. `replace`
+        // goes through execCommand where available purely to keep the native
+        // undo stack intact, since losing Ctrl+Z in a code editor is worse than the
+        // deprecation.
+        const replace = (text, selStart, selEnd, caret, caretEnd) => {
+          editor.setSelectionRange(selStart, selEnd);
+          let ok = false;
+          try {
+            ok = document.execCommand("insertText", false, text);
+          } catch {
+            ok = false;
+          }
+          if (!ok) {
+            editor.setRangeText(text, selStart, selEnd, "end");
+          }
+          editor.setSelectionRange(caret, caretEnd ?? caret);
+          repaint();
+        };
+
+        const lineStartAt = (pos) => editor.value.lastIndexOf("\n", pos - 1) + 1;
+
+        // Tab is a focus key for everyone navigating by keyboard, so it cannot
+        // simply be swallowed: Escape first, then Tab, leaves the editor. That
+        // is the same escape hatch CodeMirror and Monaco use.
+        let tabEscapes = false;
+
+        editor.addEventListener("keydown", (e) => {
+          if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+            e.preventDefault();
+            run();
+            return;
+          }
+          if (e.shiftKey && e.altKey && (e.key === "F" || e.key === "f")) {
+            e.preventDefault();
+            fmtBtn.click();
+            return;
+          }
+          if (e.key === "Escape") {
+            tabEscapes = true;
+            return;
+          }
+
+          if (e.key === "Tab") {
+            if (tabEscapes) return;   // let it move focus
+            e.preventDefault();
+
+            const { selectionStart: s, selectionEnd: end, value } = editor;
+            const multiline = value.slice(s, end).includes("\n");
+
+            if (!multiline && !e.shiftKey) {
+              replace(INDENT, s, end, s + INDENT.length);
+              return;
+            }
+
+            // Indent or outdent whole lines, keeping the selection over them.
+            const from = lineStartAt(s);
+            const to = value.indexOf("\n", end) === -1 ? value.length : value.indexOf("\n", end);
+            const block = value.slice(from, to);
+            const shifted = block
+              .split("\n")
+              .map((line) => {
+                if (!e.shiftKey) return INDENT + line;
+                if (line.startsWith(INDENT)) return line.slice(INDENT.length);
+                return line.replace(/^[ \t]+/, "");
+              })
+              .join("\n");
+            replace(shifted, from, to, from, from + shifted.length);
+            return;
+          }
+
+          if (e.key === "Enter" && !e.shiftKey) {
+            e.preventDefault();
+            const { selectionStart: s, selectionEnd: end, value } = editor;
+            const line = value.slice(lineStartAt(s), s);
+            const pad = " ".repeat(indentAfter(line));
+            // Typing `>` then Enter between a tag pair should open a body:
+            // put the closer on its own line, one level back.
+            const closerFollows = /^\s*<\//.test(value.slice(end));
+            const opened = pad.length > line.match(/^[ \t]*/)[0].length;
+            if (closerFollows && opened) {
+              const back = pad.slice(INDENT.length);
+              replace("\n" + pad + "\n" + back, s, end, s + 1 + pad.length);
+            } else {
+              replace("\n" + pad, s, end, s + 1 + pad.length);
+            }
+            return;
+          }
+
+          // Any other key means the Escape was not about leaving.
+          if (e.key !== "Shift" && e.key !== "Control" && e.key !== "Alt" && e.key !== "Meta") {
+            tabEscapes = false;
+          }
+        });
+
+        fmtBtn.addEventListener("click", () => {
+          const before = editor.value;
+          const formatted = format(before);
+          if (formatted === before) return;
+          // Anchor the caret to its line rather than its offset: indentation
+          // changes shift every offset after it, so a raw offset would drift.
+          const line = before.slice(0, editor.selectionStart).split("\n").length - 1;
+          const col = editor.selectionStart - lineStartAt(editor.selectionStart);
+          editor.value = formatted;
+          const lines = formatted.split("\n");
+          let at = 0;
+          for (let i = 0; i < line && i < lines.length; i++) at += lines[i].length + 1;
+          const indent = (lines[line] ?? "").match(/^[ \t]*/)[0].length;
+          editor.setSelectionRange(at + Math.max(col, indent), at + Math.max(col, indent));
+          repaint();
+        });
+      })
+      .catch((err) => {
+        status.textContent = "failed to load";
+        status.classList.add("is-error");
+        console.error(err);
+      });
+  }
+</script>
+{% endblock %}

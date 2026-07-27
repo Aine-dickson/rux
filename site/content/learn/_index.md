@@ -1,6 +1,6 @@
 +++
 title = "Learn"
-description = "Build a real Rux app from an empty file — layout, state, lists, and components, in about half an hour."
+description = "Build a real Rux app from an empty file: layout, state, lists, and components, in about half an hour."
 weight = 0
 sort_by = "weight"
 template = "docs-section.html"
@@ -8,9 +8,9 @@ page_template = "docs.html"
 +++
 
 The [reference](@/reference/_index.md) tells you what Rux does. This tells you how
-to use it. By the end you will have built a working task list — typing into a
-real text input, adding rows, ticking them off, and scrolling — and you will have
-met every idea Rux has.
+to use it. By the end you will have built a working task list. You will have typed
+into a real text input, added rows, ticked them off and scrolled it, and met
+every idea Rux has.
 
 There are five of them, and that is the whole language:
 
@@ -25,7 +25,7 @@ are short and each one ends with a file you can run.
 
 ## What you need
 
-Rust, and about half an hour. No Node, no npm, no browser — Rux opens a native
+Rust, and about half an hour. No Node, no npm, no browser. Rux opens a native
 window and paints it on the GPU.
 
 ```bash
@@ -36,6 +36,12 @@ cargo run -p rux-cli -- examples/learn/01-hello.rux
 
 The first build takes a few minutes. After that, edits to a `.rux` file reload
 in the open window without rebuilding anything.
+
+If you would rather not install anything yet, the
+[playground](@/playground.md) runs the same runtime in your browser. Every
+complete example in these chapters has a **Try it** button that opens it there,
+so you can follow along and change things without cloning a thing. It needs a
+browser with WebGPU, which means a recent Chrome, Edge, Firefox or Safari.
 
 ## The finished app
 
@@ -51,7 +57,7 @@ looks wrong. The last chapter's version is `05-components.rux`.
 </view>
 ```
 
-That is the heart of it — a repeated row, a class bound to state, and a handler
+That is the heart of it: a repeated row, a class bound to state, and a handler
 that writes back to the list. If that line looks slightly unusual, chapter 5
 explains exactly why it is written that way, and what happens if you write the
 obvious thing instead.
@@ -61,5 +67,5 @@ obvious thing instead.
 This guide is written against **Rux v0.3.0**, the current release, and every
 snippet in it is checked by the test suite on each commit. Rux is `0.x` and
 moves weekly, so a feature you read about elsewhere may be newer than this
-guide — the [reference](@/reference/_index.md) is always the authority on what
+guide. The [reference](@/reference/_index.md) is always the authority on what
 the current release honors, and the [blog](@/blog/_index.md) tracks what changed.

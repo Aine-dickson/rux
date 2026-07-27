@@ -1,6 +1,6 @@
 +++
 title = "Lists and input"
-description = "r-model, r-for, and the snapshot rule — why writing to the loop variable silently does nothing."
+description = "r-model, r-for, and the snapshot rule, and why writing to the loop variable silently does nothing."
 weight = 4
 +++
 
@@ -31,7 +31,7 @@ you.
 
 ## Adding an item
 
-Make `items` a list of maps — rhai's map literal is `#{ … }`:
+Make `items` a list of maps, using rhai's map literal `#{ … }`:
 
 ```rux
 <script>
@@ -55,7 +55,7 @@ Single-quoted attribute, because of the `""`. The guard means an empty field
 adds nothing.
 
 Rux notices `items` changed by comparing its value before and after the handler,
-so **mutating methods like `push` count as a change** — you do not have to
+so **mutating methods like `push` count as a change**: you do not have to
 reassign the whole list.
 
 ## Repeating a row
@@ -79,7 +79,7 @@ second signal to keep in sync:
 And the empty state gets a real condition:
 
 ```rux
-<text class="empty" r-if="items.len() == 0">Nothing yet — add your first task.</text>
+<text class="empty" r-if="items.len() == 0">Nothing yet. Add your first task.</text>
 ```
 
 ## The snapshot rule
@@ -94,7 +94,7 @@ It does nothing at all. No error, no change.
 
 `t` is a **snapshot**. When Rux compiles the handler it bakes the loop variable
 in as a literal value, because by the time you tap, the loop is long over. So
-`t.done = !t.done` flips a copy that is discarded a moment later — and since
+`t.done = !t.done` flips a copy that is discarded a moment later, and since
 `items` never changed, nothing re-renders.
 
 The same is true of rhai's own `for` loop, for the same reason:
@@ -111,7 +111,7 @@ The same is true of rhai's own `for` loop, for the same reason:
 ```
 
 `items[i]` reaches into the signal itself, so the change is real and detected.
-Reading `t` is still fine — that is what `t.label` is doing, matching the
+Reading `t` is still fine, and that is what `t.label` is doing, matching the
 snapshot against the live list to find the right row.
 
 It is more verbose than it should be. `r-for` has no index variable yet, which
@@ -123,7 +123,7 @@ design.
 ## Styling by state
 
 `:class` binds a class from an expression, and it merges into the classes the
-cascade matches — so a bound class styles exactly like a written one:
+cascade matches, so a bound class styles exactly like a written one:
 
 ```rux
 <view class="row" r-for="t in items" :class='#{ done: t.done }' @tap='…'>
@@ -139,8 +139,8 @@ A plain string or an array works too.
 
 > **Watch out:** rhai has **no ternary operator**. `:class='t.done ? "done" : ""'`
 > does not parse, and the class silently never appears. Use an `if` expression
-> instead — `:class='if t.done { "done" } else { "" }'` — or the object form
-> above.
+> instead, either `:class='if t.done { "done" } else { "" }'` or the object
+> form above.
 
 There is also `:style`, which takes a declaration string and overlays it like an
 inline style, and `:src` / `:options` for images and selects. Any attribute
@@ -164,19 +164,19 @@ prefixed with `:` is a rhai expression, and rhai has backtick templates, so
 Two lines there are load-bearing, and leaving either out is the most common
 "why won't it scroll":
 
-- **`height`** — a scroll container needs a bounded height (or `max-height`, or
+- **`height`**: a scroll container needs a bounded height (or `max-height`, or
   a `flex-grow` slot). Without one it just grows, and there is nothing to
   scroll.
-- **`flex-shrink: 0` on the rows** — otherwise the column squeezes every row
+- **`flex-shrink: 0` on the rows**: otherwise the column squeezes every row
   in to fit, and again nothing overflows. A browser does this too.
 
 `align-items: stretch` is the divergence from [chapter 2](@/learn/02-layout.md):
 without it the rows hug their labels instead of filling the list.
 
 Scrolling then works by wheel, by dragging the scrollbar, by touch, and by
-keyboard — and the offset survives re-renders, so ticking a row off doesn't
+keyboard. The offset survives re-renders, so ticking a row off doesn't
 jump you back to the top.
 
 ## Checkpoint
 
-`examples/learn/04-tasks.rux` — a complete, working app.
+`examples/learn/04-tasks.rux`, a complete working app.

@@ -1,4 +1,4 @@
-<!-- /learn, step 5 — a component. It sees only its props (`label`, `done`);
+<!-- /learn, step 5: a component. It sees only its props (`label`, `done`);
      the caller's signals are not in scope here, and its CSS styles only this
      subtree. That isolation is why the finished look lives in this file. -->
 <template>

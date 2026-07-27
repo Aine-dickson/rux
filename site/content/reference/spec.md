@@ -4,14 +4,14 @@ description = "The original v0.1 spec, kept as design history. Not a description
 weight = 2
 +++
 
-<!-- GENERATED FROM docs/02-spec.md BY site/sync-docs.sh — DO NOT EDIT HERE. -->
+<!-- GENERATED FROM docs/02-spec.md BY site/sync-docs.sh. DO NOT EDIT HERE. -->
 
 
 > ⚠️ **This is the v0.1 design surface, not the built surface.** Several things
 > here were never implemented (non-text `<input>` types, `<image>` rendering,
 > real scrolling) and some were implemented differently (the inline/block model
 > was removed; grid was added; rhai functions can't mutate state). See
-> **[05 — As Built](/reference/)** for the current reality.
+> **[As Built](/reference/)** for the current reality.
 
 The formal reference for Rux v0.1. This is the source of truth we architect and build against. It describes the language surface, not the runtime implementation
 (that comes later). Every rule here traces to a law in the
@@ -22,7 +22,7 @@ The formal reference for Rux v0.1. This is the source of truth we architect and 
 
 ## Contents
 
-- [File format — the SFC](#file-format-the-sfc)
+- [File format: the SFC](#file-format-the-sfc)
 - [Elements](#elements)
 - [Roles](#roles)
 - [Directives & bindings](#directives-bindings)
@@ -35,16 +35,16 @@ The formal reference for Rux v0.1. This is the source of truth we architect and 
 
 ---
 
-## File format — the SFC
+## File format: the SFC
 
 A Rux program is one or more **single-file components** with the extension
 `.rux`. Each file has up to three top-level sections, in any order, each at most
 once:
 
 ```xml
-<template>  <!-- semantic markup — the view tree --> </template>
-<style>     /* literal CSS — how it looks and lays out */ </style>
-<script>    // rhai (Rust-shaped) — logic, signals, handlers </script>
+<template>  <!-- semantic markup, the view tree --> </template>
+<style>     /* literal CSS, how it looks and lays out */ </style>
+<script>    // rhai (Rust-shaped): logic, signals, handlers </script>
 ```
 
 - `<template>` is **required** and must contain exactly one root element.
@@ -63,7 +63,7 @@ an [`<input type=>`](#input-types), a [directive](#directives-bindings), or CSS.
 
 | Element | Is | Web analogue | Notable attributes |
 |---|---|---|---|
-| `<screen>` | root of one view | `<body>` | — |
+| `<screen>` | root of one view | `<body>` | n/a |
 | `<view>` | generic container / box | `<div>` | `role` |
 | `<text>` | text run | `<span>` / `<p>` | `role`, `for` |
 | `<image>` | bitmap or vector image | `<img>` | `src`, `alt` |
@@ -99,10 +99,10 @@ options from a bound collection:
 ```
 
 On platforms with a native picker (mobile), `select` and `date` should invoke
-the platform control rather than a rendered dropdown — a
+the platform control rather than a rendered dropdown, a
 [host](#scripting-and-the-host) capability, not a browser emulation.
 
-_Deferred:_ options that need custom per-item markup (icon + multiline) — a
+_Deferred:_ options that need custom per-item markup (icon + multiline), a
 "templated input" feature for a later version.
 
 ---
@@ -124,9 +124,9 @@ Recognized roles (extensible):
 
 Role-specific attributes:
 
-- `role="link"` → `to="/path"` — a navigation intent handled by the router
+- `role="link"` → `to="/path"`: a navigation intent handled by the router
   (ecosystem), not a URL fetch.
-- `role="label"` → `for="<input id>"` — associates the label with an input;
+- `role="label"` → `for="<input id>"`: associates the label with an input;
   tapping the label focuses the input.
 - `role="form"` → pairs with `@submit`.
 
@@ -141,7 +141,7 @@ Role-specific attributes:
 ## Directives & bindings
 
 Structural and binding features are attributes. Interpolation uses `{{ }}`;
-everything structural is prefixed `r-` (one prefix, no collisions — this is what
+everything structural is prefixed `r-` (one prefix, no collisions, which is what
 lets loop-`r-for` and label-`for=` coexist).
 
 | Syntax | Meaning | Vue analogue |
@@ -162,7 +162,7 @@ Notes:
 - Elements in an `r-for` should carry a stable `:key` where identity matters
   (reordering, animation).
 - `r-if` removes the element from the tree; `r-show` keeps it and toggles
-  visibility — the same distinction Vue draws.
+  visibility, the same distinction Vue draws.
 
 ```xml
 <view role="list" class="feed">
@@ -179,7 +179,7 @@ Notes:
 
 ## Events
 
-Each element publishes a fixed **capability set** — the events it can emit
+Each element publishes a fixed **capability set**: the events it can emit
 (Law 2). Bind with `@event`. The vocabulary is gesture-first (device-honest);
 `hover` is pointer-only and never fires on touch.
 
@@ -192,7 +192,7 @@ Each element publishes a fixed **capability set** — the events it can emit
 | `<button>` | `tap`, `press`, `release`, `longpress`, `focus` |
 | `<input>` | `input`, `change`, `focus`, `blur`, `submit` |
 
-¹ `scroll` only fires if CSS gave the element `overflow: auto`/`scroll` —
+¹ `scroll` only fires if CSS gave the element `overflow: auto`/`scroll`,
 capability follows style.
 ² `hover` is pointer-only; binding it on a touch device is legal but silent.
 
@@ -243,7 +243,7 @@ Styles may be inline in `<style>` or imported (see [modules](#modules-reuse)).
 Logic lives in two tiers (Law 4, and the
 [decision](/why/#two-tier-logic-rhai-script-over-a-compiled-rust-host)):
 
-### Script tier — `<script>`, interpreted `rhai`
+### Script tier: `<script>`, interpreted `rhai`
 
 Rust-shaped syntax (`let`, `fn`, closures, `if`/`for`). Hot-reloads. Holds the
 component's signals, handlers, and glue. Everything declared at the top level of
@@ -266,7 +266,7 @@ fn select(d) {
 </script>
 ```
 
-### Host tier — compiled Rust, exposed as `host::…`
+### Host tier: compiled Rust, exposed as `host::…`
 
 The **registry contract** between file and binary. The compiled app registers
 named capabilities; the script calls them by name. This is the boundary where
@@ -276,7 +276,7 @@ requires a rebuild.
 Conceptually, the host registers functions into the script's `host` namespace:
 
 ```rust
-// compiled Rust (illustrative — final API defined in runtime design)
+// compiled Rust (illustrative; final API defined in runtime design)
 registry.function("read_battery", || sysinfo::battery_percent());
 registry.function("load_devices", || db::all_devices());
 registry.function("open", |id: Id| navigator::open(id));
@@ -295,7 +295,7 @@ Rules of the contract:
 
 ## Reactivity
 
-Reactivity is a **core primitive** (not ecosystem — see the
+Reactivity is a **core primitive** (not ecosystem; see the
 [decision](/why/#reactivity-is-a-core-primitive-state-management-is-ecosystem)).
 The model is fine-grained signals (Leptos/Solid style): a binding *is* a
 subscription; there is no virtual-DOM diffing.
@@ -325,7 +325,7 @@ node** re-lays-out and repaints:
 Derived values are computed from other signals and cache until a dependency
 changes (a `computed`/memo primitive; exact spelling finalized in runtime
 design). **Stores, routing, and persistence are ecosystem crates** built on
-`signal` — not part of this spec.
+`signal`, and not part of this spec.
 
 ---
 
@@ -357,13 +357,13 @@ use components::device_tile;   // ./components/device_tile.rux
   directory rules as Rust modules.
 
 _Deferred:_ slots/children projection (passing template fragments into a
-component) — a later version.
+component), a later version.
 
 ---
 
 ## Hot-reload boundary
 
-What reloads live vs. what needs a rebuild — the practical contract for authors:
+What reloads live vs. what needs a rebuild. The practical contract for authors:
 
 | You edit… | Result |
 |---|---|
@@ -371,10 +371,10 @@ What reloads live vs. what needs a rebuild — the practical contract for author
 | `<style>` CSS | ✅ live repaint |
 | `<script>` logic (rhai) | ✅ live, state re-initialized |
 | Which host fn a handler calls | ✅ live |
-| The **host** (compiled Rust) — new capability, changed native fn | ❌ rebuild |
+| The **host** (compiled Rust), new capability or changed native fn | ❌ rebuild |
 
 Parse/eval errors in any live section surface as a **dev overlay** in the window,
-not a crash (the accepted cost of runtime documents — see the
+not a crash (the accepted cost of runtime documents; see the
 [rationale](/why/#runtime-documents-over-compile-time-components)).
 
 ---

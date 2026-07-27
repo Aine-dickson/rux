@@ -9,6 +9,9 @@ members = [
     "crates/rux-style",
     "crates/rux-runtime",
     "crates/rux-text",
+    "crates/rux-web",
+    "crates/rux-highlight",
+    "crates/rux-fmt",
     "crates/rux-reactive",
     "crates/rux-script",
 ]
@@ -18,6 +21,21 @@ edition = "2021"
 version = "0.1.0"
 license = "MIT"
 repository = "https://github.com/Aine-dickson/rux"
+
+# The browser bundle is downloaded before anything renders, so it is tuned for
+# size where the native build is tuned for speed. Kept as its own profile rather
+# than folded into `release`: `opt-level = "z"` and a single codegen unit would
+# make the desktop app slower to build and slower to run, for a size nobody
+# downloads. Build with `--profile wasm-release`.
+[profile.wasm-release]
+inherits = "release"
+opt-level = "z"
+lto = true
+codegen-units = 1
+# There is no unwinding on wasm anyway, and the panic hook still reports to the
+# console before aborting.
+panic = "abort"
+strip = true
 
 # Shared dependency versions. `vello` re-exports the matching `wgpu`, `kurbo`,
 # and `peniko`, so the shell uses `vello::wgpu` rather than pinning wgpu itself

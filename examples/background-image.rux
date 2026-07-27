@@ -40,7 +40,7 @@
     font-size: 13px;
   }
 
-  /* Same image cover-filling a circle — proves the corner clip. */
+  /* Same image cover-filling a circle, which proves the corner clip. */
   .circle {
     width: 110px;
     height: 110px;

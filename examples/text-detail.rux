@@ -3,13 +3,13 @@
         <text class="title">line-height &amp; text-decoration</text>
 
         <view class="col">
-            <text class="lh tight">line-height 1.0 — the quick brown fox jumps over the lazy dog again and again</text>
-            <text class="lh loose">line-height 2.0 — the quick brown fox jumps over the lazy dog again and again</text>
+            <text class="lh tight">line-height 1.0: the quick brown fox jumps over the lazy dog again and again</text>
+            <text class="lh loose">line-height 2.0: the quick brown fox jumps over the lazy dog again and again</text>
         </view>
 
         <view class="col">
-            <text class="u">underline — visit the docs</text>
-            <text class="s">line-through — old price 99</text>
+            <text class="u">underline: visit the docs</text>
+            <text class="s">line-through: old price 99</text>
             <text class="us">both at once</text>
         </view>
     </screen>

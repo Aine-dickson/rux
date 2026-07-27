@@ -20,7 +20,7 @@
     <p class="docs-more">More in this section:</p>
     <ul>
       {% for p in section.pages %}
-      <li><a href="{{ p.permalink }}">{{ p.title }}</a>{% if p.description %} — {{ p.description }}{% endif %}</li>
+      <li><a href="{{ p.permalink }}">{{ p.title }}</a>{% if p.description %}: {{ p.description }}{% endif %}</li>
       {% endfor %}
     </ul>
     {% endif %}

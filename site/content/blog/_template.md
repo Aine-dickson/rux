@@ -1,7 +1,7 @@
 +++
 # Copy this file to `vX-Y-Z.md` (dashes, not dots) for a new release post.
 # Delete these comments once you've filled it in.
-title = "Rux vX.Y.Z — the one-line story of the release"
+title = "Rux vX.Y.Z: the one-line story of the release"
 description = "A sentence or two for the post list and social cards: what landed, concretely."
 date = 2026-01-01                       # the real release date
 draft = true                            # flip to false to publish
@@ -11,15 +11,15 @@ version = "vX.Y.Z"
 +++
 
 <!--
-  The shape of a Rux release post — see v0-1-0.md and v0-2-0.md for the tone.
+  The shape of a Rux release post. See v0-1-0.md and v0-2-0.md for the tone.
   It is NOT a changelog. Order: what landed → what it cost → what's still broken.
 
   Two paragraphs are mandatory (see RELEASING.md):
     · the bug you only found by *looking* (every release has had one)
-    · what this release is NOT — the honest limits, as plainly as the wins
+    · what this release is NOT, the honest limits, as plainly as the wins
 -->
 
-One or two sentences that say what this release is about — the theme, not a list.
+One or two sentences that say what this release is about: the theme, not a list.
 
 ## What landed
 

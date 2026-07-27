@@ -1,14 +1,14 @@
 <template>
     <screen class="app">
-        <text class="row sans">sans-serif — the quick brown fox</text>
-        <text class="row serif">serif — the quick brown fox</text>
-        <text class="row mono">monospace — the quick brown fox</text>
-        <text class="row named">Georgia — the quick brown fox</text>
-        <text class="row stack">Consolas, monospace — 0O1lI</text>
+        <text class="row sans">sans-serif: the quick brown fox</text>
+        <text class="row serif">serif: the quick brown fox</text>
+        <text class="row mono">monospace: the quick brown fox</text>
+        <text class="row named">Georgia: the quick brown fox</text>
+        <text class="row stack">Consolas, monospace: 0O1lI</text>
 
         <!-- font-style, letter-spacing, white-space -->
-        <text class="row italic">italic — the quick brown fox</text>
-        <text class="row tracked">letter-spacing — T R A C K E D O U T</text>
+        <text class="row italic">italic: the quick brown fox</text>
+        <text class="row tracked">letter-spacing: T R A C K E D O U T</text>
         <view class="clip">
             <text class="nowrap">white-space: nowrap keeps this on one line even when the box is too narrow to hold it</text>
         </view>

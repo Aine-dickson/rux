@@ -45,7 +45,7 @@
 
   // Sections that are documentation rather than narrative. A search box in the
   // docs sidebar should answer "where is this documented", not "which release
-  // post mentioned it" — without the boost, long blog posts outrank the
+  // post mentioned it". Without the boost, long blog posts outrank the
   // reference on its own terms (verified: "pseudo" and "grid" both did).
   var DOCS_SECTIONS = ["/reference/", "/roadmap/", "/contribute/"];
 
@@ -135,7 +135,7 @@
       input.blur();
     }
   });
-  // A click anywhere else dismisses the results, but not a click *on* them —
+  // A click anywhere else dismisses the results, but not a click *on* them,
   // that would cancel the navigation before it happened.
   document.addEventListener("click", function (e) {
     if (!list.contains(e.target) && e.target !== input) list.hidden = true;

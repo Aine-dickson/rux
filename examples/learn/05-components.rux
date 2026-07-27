@@ -1,4 +1,4 @@
-<!-- /learn, step 5 — the same app, with the row extracted into a component.
+<!-- /learn, step 5: the same app, with the row extracted into a component.
      cargo run -p rux-cli -- examples/learn/05-components.rux -->
 <template>
   <screen class="app">
@@ -14,7 +14,7 @@
       </button>
     </view>
 
-    <text class="empty" r-if="items.len() == 0">Nothing yet — add your first task.</text>
+    <text class="empty" r-if="items.len() == 0">Nothing yet. Add your first task.</text>
 
     <view class="list">
       <!-- The tap stays out here, because the handler needs `items`, and a

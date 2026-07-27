@@ -1,4 +1,4 @@
-// Rux VS Code extension — a basic, bracket/tag-aware re-indenter.
+// Rux VS Code extension: a basic, bracket/tag-aware re-indenter.
 //
 // This is deliberately NOT the real formatter. It only fixes *indentation* by
 // tracking nesting depth across tags (<x> / </x>), braces, brackets and parens.
@@ -7,8 +7,15 @@
 // planned Tier-1 replacement; see docs/06-roadmap.md "Dev tooling".
 
 // Tags that never nest, so they must not increase indent.
+//
+// `image` is the one that matters: this list started as HTML's, which has `img`,
+// but Rux's element is `<image>`. Without it, an `<image src="...">` written
+// without a self-closing slash over-indents everything after it. Keep in step
+// with VOID_TAGS in crates/rux-fmt/src/lib.rs, which is what the web playground
+// uses.
 const VOID_TAGS = new Set([
-  'area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input',
+  'image', 'input',
+  'area', 'base', 'br', 'col', 'embed', 'hr', 'img',
   'link', 'meta', 'param', 'source', 'track', 'wbr',
 ]);
 

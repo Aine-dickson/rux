@@ -29,6 +29,7 @@
       <div class="nav-links">
         <a href="{{ get_url(path='@/learn/_index.md') }}">Learn</a>
         <a href="{{ get_url(path='@/reference/_index.md') }}">Docs</a>
+        <a href="{{ get_url(path='@/playground.md') }}">Playground</a>
         <a href="{{ get_url(path='@/why.md') }}">Why</a>
         <a href="{{ get_url(path='@/roadmap/_index.md') }}">Roadmap</a>
         <a href="{{ get_url(path='@/blog/_index.md') }}">Blog</a>
@@ -45,9 +46,41 @@
   <script defer src="{{ get_url(path='search.js') }}"
           data-search-index="{{ get_url(path='search_index.en.json') }}"></script>
 
+  {# Put a "Try it" link on every runnable Rux block, carrying the code to the
+     playground in the URL hash.
+
+     Done here from the rendered block rather than at build time on purpose:
+     the code shown is then provably the code that runs, with no second copy to
+     fall out of step. Blocks without a <template> are fragments that would only
+     produce a parse error, so they are skipped. #}
+  <script>
+    (function () {
+      var PLAYGROUND = "{{ get_url(path='@/playground.md') }}";
+      document.querySelectorAll("pre > code[data-lang]").forEach(function (code) {
+        if ((code.dataset.lang || "").toLowerCase() !== "rux") return;
+        var src = code.textContent;
+        if (src.indexOf("<template>") === -1) return;
+
+        var link = document.createElement("a");
+        link.className = "tryit";
+        link.textContent = "Try it";
+        link.rel = "nofollow";
+        // base64 of the UTF-8 bytes: .rux is mostly punctuation, so percent
+        // encoding would be both enormous and unreadable.
+        var bytes = new TextEncoder().encode(src);
+        var bin = "";
+        bytes.forEach(function (b) { bin += String.fromCharCode(b); });
+        link.href = PLAYGROUND + "#" + btoa(bin);
+
+        code.parentElement.classList.add("has-tryit");
+        code.parentElement.appendChild(link);
+      });
+    })();
+  </script>
+
   <footer class="site-foot">
     <p>
-      Rux is early and experimental (<code>0.x</code>) — expect rough edges.
+      Rux is early and experimental (<code>0.x</code>). Expect rough edges.
       MIT licensed · <a href="{{ config.extra.repo }}">source on GitHub</a>
     </p>
   </footer>

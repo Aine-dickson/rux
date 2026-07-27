@@ -5,7 +5,7 @@ is **use it and tell us where it broke**.
 
 ## Before anything: what stage this is at
 
-Rux is `0.x`. The language spec is **not frozen** — element names, directives,
+Rux is `0.x`. The language spec is **not frozen**. Element names, directives,
 and the honored-CSS set can change between point releases, and they have. If you
 build something on Rux today, expect to fix it on upgrade.
 
@@ -21,7 +21,7 @@ Pull requests are gated on purpose, and not because outside code isn't wanted.
 Merging a change into a language whose design is still moving creates an
 obligation to somebody whose work may have to be broken two releases later.
 Until the spec settles, that promise is only made where the shape of the answer
-is already known — which is what those two labels mean.
+is already known, which is what those two labels mean.
 
 If you want to work on something outside that set, **open an issue first** and
 say what you have in mind. A "yes, and here's the constraint you'll hit" is much
@@ -39,7 +39,7 @@ screenshot of the window beats a paragraph describing the window.
 
 ## Working on the runtime
 
-Start with the [architecture tour](https://ruxlang.dev/contribute/) — it walks
+Start with the [architecture tour](https://ruxlang.dev/contribute/). It walks
 the pipeline from `.rux` file to pixels and says which crate owns which stage.
 The [reference](https://ruxlang.dev/reference/) is the authoritative account of
 what currently works.
@@ -53,7 +53,7 @@ cargo build                                 # must be warning-clean
 ### The one rule that isn't obvious
 
 **Drive your change in the window before you call it done.** Not "the tests
-pass" — open the app and look at it.
+pass": open the app and look at it.
 
 This is not ceremony. Every release so far has shipped with at least one bug
 that the test suite was fully green through and that was obvious within seconds

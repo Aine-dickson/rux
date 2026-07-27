@@ -1,4 +1,4 @@
-<!-- /learn, step 4 — the task list: r-model, r-for, r-if, and :class.
+<!-- /learn, step 4: the task list: r-model, r-for, r-if, and :class.
      cargo run -p rux-cli -- examples/learn/04-tasks.rux -->
 <template>
   <screen class="app">
@@ -18,7 +18,7 @@
       </button>
     </view>
 
-    <text class="empty" r-if="items.len() == 0">Nothing yet — add your first task.</text>
+    <text class="empty" r-if="items.len() == 0">Nothing yet. Add your first task.</text>
 
     <view class="list">
       <!-- `t` is a SNAPSHOT of the item, baked into the handler as a literal.
@@ -84,7 +84,7 @@
     overflow: auto;
   }
   /* And its rows need `flex-shrink: 0`, or the column squeezes them all in to
-     fit — the most common "why won't it scroll". CSS behaves the same way. */
+     fit. This is the most common "why won't it scroll". CSS behaves the same way. */
   .row {
     display: flex;
     flex-direction: row;
@@ -107,7 +107,7 @@
   .label { color: #cdd6f4; font-size: 15px; }
 
   /* `:class` merged `done` into the row's classes, so the finished look is
-     ordinary CSS — the same cascade a written class gets. */
+     ordinary CSS, the same cascade a written class gets. */
   .row.done .box   { background: #a6e3a1; border: 2px #a6e3a1 solid; }
   .row.done .label { color: #6c7086; text-decoration: line-through; }
 </style>
