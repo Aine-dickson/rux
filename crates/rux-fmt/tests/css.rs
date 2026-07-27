@@ -39,7 +39,7 @@ fn long_rules_break_one_declaration_per_line() {
     );
 }
 
-/// A rule already spread over lines collapses when it is short enough — the
+/// A rule already spread over lines collapses when it is short enough, the
 /// formatter decides the shape, not the input.
 #[test]
 fn shape_comes_from_the_rule_not_the_input() {

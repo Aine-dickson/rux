@@ -10,7 +10,7 @@ fn boxed(style: Style, children: Vec<Node>) -> Node {
 /// out of view.
 ///
 /// The rows need `flex-shrink: 0` or the flex column squeezes all five into the
-/// 200px box and there is nothing to scroll — the same trap CSS has.
+/// 200px box and there is nothing to scroll, the same trap CSS has.
 fn scroller() -> Node {
     let row = || {
         boxed(
@@ -98,7 +98,7 @@ fn offset_shifts_the_content_not_the_box() {
     );
 }
 
-/// An offset past the end is clamped — you can't scroll into empty space.
+/// An offset past the end is clamped, you can't scroll into empty space.
 #[test]
 fn offset_is_clamped_to_the_content() {
     let overscrolled = row_tops(&run(&[Offset { x: 0.0, y: 10_000.0 }]));

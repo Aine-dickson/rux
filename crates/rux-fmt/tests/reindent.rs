@@ -1,7 +1,7 @@
 //! Re-indenter behaviour, mostly as invariants.
 //!
 //! Snapshot tests would lock in today's output; these lock in the properties the
-//! playground's Format button actually depends on — that it never loses or
+//! playground's Format button actually depends on, that it never loses or
 //! rewrites content, and that pressing it twice is the same as pressing it once.
 
 use rux_fmt::{indent_after, indent_of, reindent};

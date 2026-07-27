@@ -1,6 +1,6 @@
 //! The embedded font, verified on the host.
 //!
-//! On the web this font is the *only* one there is — a browser exposes no system
+//! On the web this font is the *only* one there is, a browser exposes no system
 //! font source, so if these bytes don't parse, every string measures to zero and
 //! the canvas renders blank boxes with no error anywhere. That failure is
 //! miserable to diagnose through a wasm bundle, so it is caught here instead.
@@ -16,19 +16,19 @@ fn embedded_font_registers_and_shapes_text() {
     );
 
     // Measured through the generic family, which is what an unstyled <text>
-    // resolves to — the path that silently breaks when nothing is registered.
+    // resolves to, the path that silently breaks when nothing is registered.
     let style = TextStyle { family: Some("sans-serif"), ..TextStyle::new(16.0, 400, Wrap::Normal) };
     let (w, h) = engine.measure("Hello, Rux", &style, None);
     assert!(w > 0.0 && h > 0.0, "text measured to nothing: {w}x{h}");
 
     // A longer string must be wider, or we are measuring a constant rather than
     // actually shaping glyphs.
-    let (wide, _) = engine.measure("Hello, Rux — a longer line", &style, None);
+    let (wide, _) = engine.measure("Hello, Rux, and a longer line", &style, None);
     assert!(wide > w, "shaping is not responding to content: {wide} vs {w}");
 }
 
 /// The examples lean on `font-weight: 700`. Inter is a variable font, so bold
-/// has to come from the weight axis rather than a second file — if that stopped
+/// has to come from the weight axis rather than a second file, if that stopped
 /// working, headings would silently render at regular weight.
 #[test]
 fn bold_differs_from_regular() {

@@ -1,4 +1,4 @@
-//! Rux styling — milestone M2.
+//! Rux styling, milestone M2.
 //!
 //! Parses the `<style>` CSS with `lightningcss` (literal CSS, per Law 4), matches
 //! rules against the template tree with our own small selector engine, applies
@@ -6,7 +6,7 @@
 //! of `docs/04-architecture.md`, narrowed to the honored subset.
 //!
 //! Selector support: tag, `.class`, `#id`, `[role="…"]`, compound
-//! (`view.card`), and all four combinators — descendant (`.a .b`), child
+//! (`view.card`), and all four combinators, descendant (`.a .b`), child
 //! (`.a > .b`), next-sibling (`.a + .b`) and subsequent-sibling (`.a ~ .b`).
 //! Specificity and source order resolve conflicts, as in CSS.
 
@@ -42,7 +42,7 @@ pub struct TextBinding {
     pub template: String,
     /// `r-for` loop locals captured at build time (empty for ordinary text).
     pub locals: Vec<(String, Value)>,
-    /// Signals this binding reads — its subscription set.
+    /// Signals this binding reads, its subscription set.
     pub deps: HashSet<String>,
 }
 
@@ -64,7 +64,7 @@ pub struct ValueBinding {
     pub placeholder_color: Rgba,
     /// `r-for` locals captured at build (empty for ordinary inputs).
     pub locals: Vec<(String, Value)>,
-    /// Signals the value reads — normally just `model`.
+    /// Signals the value reads, normally just `model`.
     pub deps: HashSet<String>,
 }
 
@@ -86,7 +86,7 @@ pub struct ShowBinding {
 /// A parent element that holds structural directives (`r-if`/`r-elif`/`r-else`/
 /// `r-for`) among its children. Recorded so a change to one of `deps` can rebuild
 /// just this parent's children and splice them in, instead of rebuilding the whole
-/// tree (the reconciliation engine — slice 2b). `tpl_path` re-finds the parent
+/// tree (the reconciliation engine, slice 2b). `tpl_path` re-finds the parent
 /// element in the template; `tree_path` locates its node in the built tree.
 #[derive(Clone, Debug)]
 pub struct StructuralParent {
@@ -105,7 +105,7 @@ pub struct StructuralParent {
 pub struct ToggleBinding {
     /// Path to the toggle `<input>` node.
     pub path: Vec<usize>,
-    /// Signals the checked state reads — normally just the `r-model` signal.
+    /// Signals the checked state reads, normally just the `r-model` signal.
     pub deps: HashSet<String>,
 }
 
@@ -123,7 +123,7 @@ pub struct ComponentBinding {
 /// A node with a dynamic `:class` / `:style` that reads signals: a change
 /// re-cascades/re-interprets it, so it reconciles in place (node splice) like a
 /// component. (A `:style` that reads only an `r-for` local has no signal deps and
-/// is handled by the loop's own reconcile — so it isn't recorded here.)
+/// is handled by the loop's own reconcile, so it isn't recorded here.)
 #[derive(Clone, Debug)]
 pub struct StyledBinding {
     /// Path to the node.
@@ -156,16 +156,16 @@ pub struct BindingRegistry {
     pub text: Vec<TextBinding>,
     pub value: Vec<ValueBinding>,
     pub show: Vec<ShowBinding>,
-    /// `:src` on `<image>` — rewrites the image source.
+    /// `:src` on `<image>`, rewrites the image source.
     pub src: Vec<AttrBinding>,
-    /// `:options` on `<select>` — rewrites the option list.
+    /// `:options` on `<select>`, rewrites the option list.
     pub options: Vec<AttrBinding>,
     pub structural_parents: Vec<StructuralParent>,
     pub toggles: Vec<ToggleBinding>,
     pub components: Vec<ComponentBinding>,
     pub styled: Vec<StyledBinding>,
     /// Signals read by any non-patchable, non-reconcilable site. A change touching
-    /// one of these means the runtime must rebuild rather than patch. (Empty now —
+    /// one of these means the runtime must rebuild rather than patch. (Empty now,
     /// kept as a safety net for any future non-reconcilable binding.)
     pub structural: HashSet<String>,
 }
@@ -263,7 +263,7 @@ pub fn build_styled_tree(
     build_styled_tree_tracked(sfc, components, engine).map(|(node, _)| node)
 }
 
-/// Recompute a text binding's string against the engine's current state — what
+/// Recompute a text binding's string against the engine's current state, what
 /// the runtime writes into the node at `binding.path` when a dependency changes.
 pub fn eval_text_binding(binding: &TextBinding, engine: &mut Engine) -> String {
     interpolate_tracked(&binding.template, engine, &binding.locals).0
@@ -291,7 +291,7 @@ fn class_list(value: &Value) -> Vec<String> {
 
 /// Merge an inline CSS declaration string (`"background: red; color: white"`) into
 /// the resolved props at highest priority (inline wins over the cascade). A simple
-/// `;`/`:` split — enough for the flat declaration lists inline styles carry.
+/// `;`/`:` split, enough for the flat declaration lists inline styles carry.
 fn merge_inline_style(props: &mut HashMap<String, String>, css: &str) {
     for decl in css.split(';') {
         if let Some((name, value)) = decl.split_once(':') {
@@ -307,7 +307,7 @@ fn merge_inline_style(props: &mut HashMap<String, String>, css: &str) {
 /// Resolve `for=` labels: a node with `label_for` and no `@tap` of its own inherits
 /// the `@tap` of the input whose `id` it targets, so tapping the label activates
 /// that input (toggles a checkbox/radio) exactly as tapping the input would. A
-/// build-time link — no shell plumbing, and it survives a reconcile (which rebuilds).
+/// build-time link, no shell plumbing, and it survives a reconcile (which rebuilds).
 /// A `for=` target's tap handler (toggles/buttons) or bound model (text inputs).
 type LabelTarget = (Option<String>, Option<String>);
 
@@ -371,7 +371,7 @@ pub fn eval_value_binding(binding: &ValueBinding, engine: &mut Engine) -> (Strin
     }
 }
 
-/// Like [`build_styled_tree`], but also returns the [`BindingRegistry`] — where
+/// Like [`build_styled_tree`], but also returns the [`BindingRegistry`], where
 /// each patchable text binding lives and which signals force a rebuild. The
 /// runtime uses it to update in place instead of rebuilding the whole tree.
 pub fn build_styled_tree_tracked(
@@ -414,7 +414,7 @@ pub fn build_styled_tree_tracked(
 }
 
 /// Replace `{{ expr }}` spans in `text` with values evaluated by the engine, and
-/// return the union of signals read across all spans — the text binding's
+/// return the union of signals read across all spans, the text binding's
 /// dependency set. Literal text has its HTML entities (`&amp;`, `&lt;`, …)
 /// decoded; interpolated values are inserted verbatim (already runtime strings).
 fn interpolate_tracked(
@@ -446,7 +446,7 @@ fn interpolate_tracked(
 }
 
 /// The raw concatenated text of an element's direct text children, `{{ }}` spans
-/// left intact — the template a [`TextBinding`] re-interpolates on change.
+/// left intact, the template a [`TextBinding`] re-interpolates on change.
 fn text_template(el: &Element) -> String {
     el.children
         .iter()
@@ -521,13 +521,13 @@ struct Compound {
 /// How one compound relates to the compound on its left in a selector.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Combinator {
-    /// `a b` — b is any descendant of a.
+    /// `a b`: b is any descendant of a.
     Descendant,
-    /// `a > b` — b is a direct child of a.
+    /// `a > b`: b is a direct child of a.
     Child,
-    /// `a + b` — b is the element immediately following sibling a.
+    /// `a + b`: b is the element immediately following sibling a.
     NextSibling,
-    /// `a ~ b` — b is any following sibling of a.
+    /// `a ~ b`: b is any following sibling of a.
     SubsequentSibling,
 }
 
@@ -662,7 +662,7 @@ fn is_honored(property: &str) -> bool {
     HONORED_PROPERTIES.contains(&property)
 }
 
-/// Warn — once per property name, for the life of the process — that a parsed
+/// Warn, once per property name, for the life of the process, that a parsed
 /// declaration is not honored. Deduped so a whole-tree rebuild (which reparses
 /// every sheet) doesn't repeat the same line on every keystroke.
 fn warn_if_unhonored(property: &str) {
@@ -677,7 +677,7 @@ fn warn_if_unhonored(property: &str) {
     let Ok(mut seen) = seen.lock() else { return };
     if seen.insert(property.to_string()) {
         eprintln!(
-            "rux: CSS property `{property}` is parsed but not yet honored — it will have no effect"
+            "rux: CSS property `{property}` is parsed but not yet honored, so it will have no effect"
         );
     }
 }
@@ -840,7 +840,7 @@ fn matches_compound(c: &Compound, el: &ElemDesc) -> bool {
 ///
 /// Matches right-to-left with backtracking: the rightmost compound must match
 /// `el`, then the combinator to its left dictates where the remaining prefix is
-/// sought — up the ancestor chain (descendant/child) or across the preceding
+/// sought, up the ancestor chain (descendant/child) or across the preceding
 /// siblings (`+`/`~`). Siblings share `el`'s ancestors; an ancestor's own
 /// preceding siblings ride along in [`AncNode::prev`], so a sibling combinator
 /// above a descendant hop still resolves.
@@ -935,13 +935,13 @@ fn build_node(
 
     let mut desc = ElemDesc::of(el);
     // A ticked checkbox / selected radio carries a synthetic `checked` class, so
-    // its checked look is plain CSS (`.box.checked { background: … }`) — we have
+    // its checked look is plain CSS (`.box.checked { background: … }`), we have
     // no `:checked` pseudo-class and this needs no new selector machinery.
     let toggle = Toggle::of(el, engine, locals);
     if toggle.as_ref().is_some_and(|t| t.checked) {
         desc.classes.push("checked".to_string());
     }
-    // `:class` — dynamic classes fed into the cascade (the `checked` pattern,
+    // `:class`: dynamic classes fed into the cascade (the `checked` pattern,
     // generalized). Signals it reads are collected for reconcile.
     let mut dyn_deps: HashSet<String> = HashSet::new();
     if let Some(expr) = el.attr(":class") {
@@ -954,7 +954,7 @@ fn build_node(
 
     let mut props = matched_props(&desc, ancestors, prev, rules);
     // Inline styles override the cascade: static `style=` first, then dynamic
-    // `:style` (which may interpolate — rhai backtick strings evaluate here).
+    // `:style` (which may interpolate, rhai backtick strings evaluate here).
     if let Some(s) = el.attr("style") {
         merge_inline_style(&mut props, s);
     }
@@ -979,7 +979,7 @@ fn build_node(
     }
     let style = interpret(&props);
     // A `@tap` handler runs later, in global scope, where the `r-for` loop
-    // variable no longer exists — so `@tap="picked = item"` would see `item`
+    // variable no longer exists, so `@tap="picked = item"` would see `item`
     // undefined and silently do nothing. Bake the current loop bindings into the
     // handler as a `let` prelude so it reproduces them when it runs.
     let on_tap = el.attr("@tap").map(|h| bind_locals(h, locals));
@@ -1088,7 +1088,7 @@ fn build_node(
         let src = el
             .attr(":src")
             .map(|e| {
-                // `:src` rewrites the image source in place on change — no shape
+                // `:src` rewrites the image source in place on change, no shape
                 // change, so it's patchable rather than a rebuild.
                 let (v, deps) = engine.eval_display_tracked(e, locals);
                 reg.src.push(AttrBinding {
@@ -1217,7 +1217,7 @@ fn build_node(
         const PLACEHOLDER_COLOR: Rgba = Rgba::new(0.42, 0.44, 0.52, 1.0); // #6c7086
         // The value display is patchable: record where it lives and how to render
         // it, so a keystroke rewrites this input's text in place instead of
-        // rebuilding. (If `model` is *also* read structurally — e.g. by an `r-if` —
+        // rebuilding. (If `model` is *also* read structurally, e.g. by an `r-if`,
         // that read marks it structural elsewhere, and the change rebuilds anyway.)
         let value = model
             .as_deref()
@@ -1344,7 +1344,7 @@ fn expand_component(
     for (key, expr) in &el.attrs {
         if let Some(name) = key.strip_prefix(':') {
             // Props are evaluated in the caller's scope and become the component's
-            // only locals — a prop change re-expands this subtree (a reconcile).
+            // only locals, a prop change re-expands this subtree (a reconcile).
             let (value, deps) = engine.eval_value_tracked(expr, parent_locals);
             prop_deps.extend(deps);
             if let Some(value) = value {
@@ -1400,18 +1400,18 @@ fn build_children(
     reg: &mut BindingRegistry,
 ) -> (Vec<LayoutNode>, HashSet<String>) {
     let mut out = Vec::new();
-    // Signals read by structural directives at this level — returned so the parent
+    // Signals read by structural directives at this level, returned so the parent
     // can register itself as reconcilable.
     let mut structural_deps: HashSet<String> = HashSet::new();
     // The identities of the rendered siblings so far, so `+`/`~` combinators can
     // see the elements preceding the one being built. (The synthetic `checked`
-    // class is not reflected here — sibling combinators don't see checked state.)
+    // class is not reflected here, sibling combinators don't see checked state.)
     let mut prev: Vec<ElemDesc> = Vec::new();
     // Tracks an active r-if/r-elif/r-else chain and whether a branch was taken.
     let mut in_chain = false;
     let mut chain_satisfied = false;
 
-    // The tree path to the child about to be pushed — its index is its position in
+    // The tree path to the child about to be pushed, its index is its position in
     // `out`. The template path uses the element's index `ti`, shared by r-for items.
     let child_path = |out: &Vec<LayoutNode>| -> Vec<usize> {
         path.iter().copied().chain(std::iter::once(out.len())).collect()
@@ -1423,7 +1423,7 @@ fn build_children(
     for (ti, el) in elements.iter().enumerate() {
         let ctp = child_tpl(ti);
         // r-for expands the element once per collection item; it ends any chain.
-        // The collection is a structural read — a change re-diffs the list.
+        // The collection is a structural read, a change re-diffs the list.
         if let Some(for_expr) = el.attr("r-for") {
             in_chain = false;
             if let Some((var, coll)) = parse_for(for_expr) {
@@ -1605,7 +1605,7 @@ fn interpret(p: &HashMap<String, String>) -> Style {
             _ => TextWrap::Normal,
         };
     }
-    // word-break: break-all is stronger — it breaks anywhere, not just to avoid
+    // word-break: break-all is stronger, it breaks anywhere, not just to avoid
     // an overflow.
     if let Some(v) = p.get("word-break") {
         if v.trim() == "break-all" {
@@ -1694,7 +1694,7 @@ fn interpret(p: &HashMap<String, String>) -> Style {
         }
     }
     // `auto`/`scroll` scroll (and clip); `hidden`/`clip` only clip. Any axis
-    // saying so is enough — we have no per-axis overflow yet.
+    // saying so is enough, we have no per-axis overflow yet.
     let values = ["overflow", "overflow-x", "overflow-y"]
         .iter()
         .filter_map(|k| p.get(*k))
@@ -1831,7 +1831,7 @@ fn parse_linear_gradient(inner: &str) -> Option<Gradient> {
 }
 
 /// `radial-gradient([shape/size/at …,]? <stop>, <stop> …)`. The prelude before
-/// the first stop (shape, `at …`) is accepted and ignored — we always draw a
+/// the first stop (shape, `at …`) is accepted and ignored, we always draw a
 /// centred circle to the nearest edge.
 fn parse_radial_gradient(inner: &str) -> Option<Gradient> {
     let mut parts = split_top_level_commas(inner);
@@ -2190,8 +2190,8 @@ fn parse_track_side(tok: &str) -> TrackSide {
     }
 }
 
-/// Split a track list on whitespace, but keep a `minmax( … )` group — which
-/// contains its own spaces and comma — together as one token.
+/// Split a track list on whitespace, but keep a `minmax( … )` group, which
+/// contains its own spaces and comma, together as one token.
 fn split_top_level(value: &str) -> Vec<&str> {
     let mut out = Vec::new();
     let mut depth = 0i32;
@@ -2491,7 +2491,7 @@ mod tests {
             let st = interpret(&p);
             (st.grow, st.shrink, st.basis)
         };
-        // The shorthand's omitted basis is 0, not auto — a bare `flex: 1` sizes
+        // The shorthand's omitted basis is 0, not auto, a bare `flex: 1` sizes
         // purely from the free space.
         assert_eq!(flex("1"), (1.0, 1.0, Some(Len::Px(0.0))));
         assert_eq!(flex("1 0 auto"), (1.0, 0.0, None));
@@ -2873,7 +2873,7 @@ mod tests {
     use super::{matches_chain, parse_selector, AncNode, ElemDesc};
 
     fn el(spec: &str) -> ElemDesc {
-        // "tag.class.class#id" — tag optional, order flexible enough for tests.
+        // "tag.class.class#id", tag optional, order flexible enough for tests.
         let mut d = ElemDesc { tag: String::new(), id: None, classes: Vec::new(), role: None };
         let mut rest = spec;
         while let Some(pos) = rest.find(['.', '#']) {
@@ -2962,7 +2962,7 @@ mod tests {
             &[anc("view.card", &[]), anc("view.inner", &[])],
             &[],
         ));
-        // Descendant (`.card text`) still matches the nested one — the control.
+        // Descendant (`.card text`) still matches the nested one, the control.
         assert!(hits(
             "*.card text",
             "text",

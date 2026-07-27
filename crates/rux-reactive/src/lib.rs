@@ -3,7 +3,7 @@
 //! This crate began (M5) as the reactivity core: a flat `Signals` table plus a
 //! little expression evaluator. M8 replaced both with the `rhai` engine in
 //! `rux-script`, which owns state and evaluation now. What survives is `Value`
-//! — the untyped representation that `rux-script` and `rux-style` pass between
+//!, the untyped representation that `rux-script` and `rux-style` pass between
 //! each other for bindings, `r-for` locals, and props.
 //!
 //! The per-binding subscription model in `docs/04-architecture.md` is now built
@@ -84,7 +84,7 @@ impl Value {
         }
     }
 
-    /// Serialize the value as rhai source — a literal that re-creates it. Used to
+    /// Serialize the value as rhai source, a literal that re-creates it. Used to
     /// bake an `r-for` loop binding into a `@tap` handler, which runs later in
     /// global scope where the loop variable no longer exists.
     pub fn to_rhai_literal(&self) -> String {

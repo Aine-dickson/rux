@@ -15,7 +15,7 @@ fn paints(root: Node) -> Vec<Paint> {
     layout(&on_screen(root), 1000.0, 800.0, &mut measure).paints
 }
 
-/// A text node is a box too — its background and border paint under the glyphs.
+/// A text node is a box too, its background and border paint under the glyphs.
 /// (Only container boxes used to paint, so a styled <text> came out bare.)
 #[test]
 fn text_node_paints_its_background_then_its_glyphs() {

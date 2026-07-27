@@ -94,7 +94,7 @@ fn hugging_box_clamps_to_parent_inner_width() {
     }
 }
 
-/// The clamp is a default for hugging boxes only — an explicit width is the
+/// The clamp is a default for hugging boxes only, an explicit width is the
 /// author's call, even when it overflows.
 #[test]
 fn explicit_width_is_left_alone() {

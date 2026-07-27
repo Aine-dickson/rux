@@ -1,11 +1,11 @@
-//! Rux template parser — milestone M2.
+//! Rux template parser, milestone M2.
 //!
 //! Two jobs, both hand-rolled (the one piece of the pipeline with no off-the-shelf
-//! answer — see `docs/04-architecture.md`, Stage 1):
+//! answer, see `docs/04-architecture.md`, Stage 1):
 //!
 //! 1. Split a `.rux` single-file component into its `<template>`, `<style>`, and
 //!    `<script>` sections.
-//! 2. Parse the template — an XML-shaped grammar that, unlike XML, must accept our
+//! 2. Parse the template, an XML-shaped grammar that, unlike XML, must accept our
 //!    attribute spellings (`@tap`, `:device`, `r-for`) and `{{ }}` interpolations.
 //!
 //! M2 keeps interpolations and directives as raw attribute/text strings; binding
@@ -161,7 +161,7 @@ impl Parser {
                 continue;
             }
             if self.starts_with("</") {
-                break; // closing tag — caller consumes it
+                break; // closing tag, caller consumes it
             }
             if self.peek() == Some('<') {
                 let el = self.parse_element()?;

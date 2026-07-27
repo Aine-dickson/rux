@@ -1,4 +1,4 @@
-//! Rux painter — milestones M1–M4.
+//! Rux painter, milestones M1–M4.
 //!
 //! Turns the `Paint` items from `rux-layout` into a `vello::Scene`: filled
 //! rounded rectangles for boxes, glyph runs (via `rux-text`) for text. Stage 5
@@ -15,7 +15,7 @@ use vello::peniko::{
 };
 use vello::Scene;
 
-/// The selection highlight, `#89b4fa` at 45% — the focus-ring blue. Not
+/// The selection highlight, `#89b4fa` at 45%, the focus-ring blue. Not
 /// author-controlled: Rux has no `::selection` yet.
 const SELECTION: Color = Color::from_rgba8(0x89, 0xb4, 0xfa, 0x73);
 
@@ -153,7 +153,7 @@ pub fn build_scene(
     let mut scene = Scene::new();
     // Active `transform` stack. Every draw uses the accumulated transform so a
     // transformed element carries its subtree with it. (Hit regions are computed
-    // untransformed, so they don't follow — a documented limitation.)
+    // untransformed, so they don't follow, a documented limitation.)
     let mut tstack: Vec<Affine> = Vec::new();
     for item in items {
         let cur = tstack.last().copied().unwrap_or(Affine::IDENTITY);
@@ -225,7 +225,7 @@ pub fn build_scene(
             Paint::Text(t) => {
                 // The selection highlight goes behind the glyphs. There is no
                 // `::selection` in Rux yet, so the colour is ours, not the
-                // author's — the focus-ring blue, faded enough to read through.
+                // author's, the focus-ring blue, faded enough to read through.
                 if let Some((start, end)) = t.content.selection {
                     let rects = text.selection_rects(
                         &t.content.text,
@@ -255,7 +255,7 @@ pub fn build_scene(
                     Some(t.width),
                     cur,
                 );
-                // The focused input's caret, drawn on top of its own text —
+                // The focused input's caret, drawn on top of its own text,
                 // only in the visible half of the blink cycle.
                 if let (true, Some(index)) = (caret_visible, t.content.caret) {
                     let (cx, cy, ch) = text.caret_geometry(
@@ -274,7 +274,7 @@ pub fn build_scene(
                 }
             }
             // A checkmark: two strokes, round caps and joins, proportioned to the
-            // box. A stroked path rather than a ✓ glyph — the glyph is whatever
+            // box. A stroked path rather than a ✓ glyph, the glyph is whatever
             // the system font ships and reads as text, not as a control mark.
             Paint::Tick(t) => {
                 let (x, y, w, h) = (t.x as f64, t.y as f64, t.width as f64, t.height as f64);
@@ -321,7 +321,7 @@ pub fn build_scene(
                 tstack.pop();
             }
             // Fade the subtree. The layer covers the viewport so it only blends,
-            // never clips — an overflowing child still shows through.
+            // never clips, an overflowing child still shows through.
             Paint::PushOpacity {
                 alpha,
                 width,

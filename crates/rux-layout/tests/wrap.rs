@@ -22,7 +22,7 @@ fn all_rects(root: &Node, w: f32, h: f32) -> Vec<(f32, f32, f32, f32)> {
 /// flex column, followed by a sibling. The grid holds eight 64px boxes and, at
 /// this width, must wrap onto two rows. The bug: taffy measures the grid's
 /// height as if everything fits on one row (max-content), so the column places
-/// the sibling as if the grid were one row tall — while the grid actually paints
+/// the sibling as if the grid were one row tall, while the grid actually paints
 /// the 8th box on a second row, under the sibling. The sibling must sit below
 /// the whole grid, not on top of the wrapped row.
 #[test]

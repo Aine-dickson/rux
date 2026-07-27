@@ -3,7 +3,7 @@ use rux_text::{TextEngine, TextStyle, Wrap};
 /// Paint re-wraps text at the box width layout gave it, so the box must never
 /// be narrower than the text measured. It used to come back fractional
 /// (98.001px), get rounded down to a 98px box, and break the last word onto a
-/// second line the box had no height for — the text then spilled over whatever
+/// second line the box had no height for, the text then spilled over whatever
 /// sat below it. Whether a string wrapped depended on which way its natural
 /// width happened to round, which is why the glitch looked so arbitrary.
 #[test]
@@ -77,7 +77,7 @@ fn caret_maps_between_index_and_point() {
     assert_eq!(hit, text.len());
 }
 
-/// `font-family` actually reaches parley and changes shaping — not just that the
+/// `font-family` actually reaches parley and changes shaping, not just that the
 /// argument compiles. A very narrow proportional string ("illili") is far wider
 /// in a monospace face, so the measured widths must differ. Generic families
 /// (`monospace`) resolve on every platform via fontique, so this is portable.

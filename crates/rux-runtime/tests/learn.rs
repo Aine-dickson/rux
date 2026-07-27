@@ -4,7 +4,7 @@
 //! to run, and every claim the guide makes about what happens when you tap
 //! something is asserted here. The guide is hand-written against the *built*
 //! runtime rather than synced from a design doc, so this test is what stops it
-//! drifting back into describing a Rux that does not exist — the failure mode
+//! drifting back into describing a Rux that does not exist, the failure mode
 //! that made `docs/03-guide.md` unpublishable.
 //!
 //! If you change a lesson file, change the prose in `site/content/learn/` with it.
@@ -83,7 +83,7 @@ fn step4_task_list_behaves_as_documented() {
     assert!(find_text(&doc.root, "ship /learn"), "the new row rendered");
     assert!(find_text(&doc.root, "1 / 3"), "the tally counted the new row");
 
-    // Toggling, exactly as the template writes it — including the baked-in
+    // Toggling, exactly as the template writes it, including the baked-in
     // `t` snapshot the handler matches against.
     let toggle = r#"let t = #{ label: "ship /learn", done: false };
                     for i in 0..items.len() { if items[i].label == t.label { items[i].done = !items[i].done; } }"#;
@@ -105,8 +105,8 @@ fn step4_writing_through_the_loop_local_is_a_no_op() {
     assert_eq!(count_text(&doc.root, "/ 2"), before);
 }
 
-/// `:class` accepts rhai's object form. The ternary does NOT — rhai has no
-/// `?:` operator — and the guide tells readers to use `if`/`else` instead.
+/// `:class` accepts rhai's object form. The ternary does NOT, rhai has no
+/// `?:` operator, and the guide tells readers to use `if`/`else` instead.
 #[test]
 fn class_binding_object_form_applies_and_ternary_does_not_parse() {
     // A 99px marker is the only way to observe a bound class: classes are
@@ -139,7 +139,7 @@ fn class_binding_object_form_applies_and_ternary_does_not_parse() {
     // because the guide warns that it doesn't.
     let ternary = Document::from_source(&src(r#"t.done ? "done" : ""#));
     let applied = ternary.map(|d| marked(&d.root)).unwrap_or(false);
-    assert!(!applied, "the ternary must NOT apply the class — rhai has no ?: operator");
+    assert!(!applied, "the ternary must NOT apply the class; rhai has no ?: operator");
 }
 
 /// Step 5: the component renders its props, and its own CSS styles its subtree.

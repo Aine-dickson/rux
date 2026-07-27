@@ -3,7 +3,7 @@
 //! The point of this crate is that the playground, VS Code and the site's code
 //! fences all colour from one grammar. These tests are what makes that true
 //! rather than aspirational: if a grammar edit uses a TextMate feature the
-//! interpreter does not implement, loading fails and this test says so — instead
+//! interpreter does not implement, loading fails and this test says so, instead
 //! of the playground quietly colouring half the file.
 
 use std::path::Path;
@@ -35,7 +35,7 @@ const SAMPLE: &str = r#"<template>
 </script>
 "#;
 
-/// The invariant everything else depends on: spans tile the source exactly —
+/// The invariant everything else depends on: spans tile the source exactly,
 /// contiguous, non-overlapping, covering every byte. A renderer that trusted a
 /// gappy span list would silently drop source text on screen.
 #[test]
@@ -67,7 +67,7 @@ fn spans_lose_nothing() {
 }
 
 /// Spot-check that the classes actually land on the right text. These are the
-/// distinctly *Rux* parts — the ones a generic HTML or CSS highlighter would get
+/// distinctly *Rux* parts, the ones a generic HTML or CSS highlighter would get
 /// wrong, and the reason the grammar exists.
 #[test]
 fn rux_specific_constructs_are_classified() {
@@ -90,7 +90,7 @@ fn rux_specific_constructs_are_classified() {
     assert!(classed("\"row\"", "hl-string"), "attribute value not a string");
 }
 
-/// A `<style>` block must be coloured as CSS, not as template markup — the
+/// A `<style>` block must be coloured as CSS, not as template markup, the
 /// begin/end context switch is the part most likely to break.
 #[test]
 fn style_block_switches_language() {
@@ -112,7 +112,7 @@ fn html_output_is_escaped() {
     assert!(html.contains("&amp;"), "ampersand not escaped");
 }
 
-/// Every lesson file must survive the highlighter — they are the code the
+/// Every lesson file must survive the highlighter, they are the code the
 /// playground will actually be asked to render.
 #[test]
 fn every_example_highlights_without_loss() {

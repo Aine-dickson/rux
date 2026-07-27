@@ -11,7 +11,7 @@
 //! surface for the host page to call.
 //!
 //! Build it with `wasm-bindgen`, which is `cargo install`ed and needs no node or
-//! npm — the site's "no JS toolchain" rule survives intact:
+//! npm, the site's "no JS toolchain" rule survives intact:
 //!
 //! ```text
 //! cargo build -p rux-web --target wasm32-unknown-unknown --release
@@ -22,7 +22,7 @@
 
 /// The UI font, embedded in the binary.
 ///
-/// Inter, under the SIL Open Font License 1.1 — see `assets/Inter-OFL.txt`,
+/// Inter, under the SIL Open Font License 1.1, see `assets/Inter-OFL.txt`,
 /// which must ship wherever these bytes do. It is a variable font, so one file
 /// covers every weight the examples ask for (400 through 700) instead of
 /// needing a static face per weight.
@@ -63,7 +63,7 @@ mod web {
     /// coloured run. The caller renders it underneath a transparent textarea.
     ///
     /// The output always reproduces the input text exactly, so the overlay stays
-    /// aligned with the textarea character for character — that invariant is
+    /// aligned with the textarea character for character, that invariant is
     /// enforced by tests in `rux-highlight`.
     #[wasm_bindgen]
     pub fn highlight(source: &str) -> String {
@@ -91,7 +91,7 @@ mod web {
     /// One indent level in the playground.
     const UNIT: &str = "  ";
 
-    /// Re-indent a whole document — the Format button.
+    /// Re-indent a whole document, the Format button.
     ///
     /// Indentation only: nothing on a line is rewritten, so this can never eat
     /// what someone was in the middle of typing.
@@ -111,7 +111,7 @@ mod web {
 
     /// Boot Rux onto a canvas and start rendering `source`.
     ///
-    /// Returns immediately — the event loop is handed to the browser, not
+    /// Returns immediately, the event loop is handed to the browser, not
     /// blocked on. Call it once; use [`set_source`] afterwards.
     #[wasm_bindgen]
     pub fn start(canvas: web_sys::HtmlCanvasElement, source: Option<String>) {

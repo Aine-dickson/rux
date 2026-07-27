@@ -67,7 +67,7 @@ fn rects_line_up_with_our_own_line_stepping() {
     );
 }
 
-/// A line-height changes our stepping, so the rects must follow it — this is the
+/// A line-height changes our stepping, so the rects must follow it, this is the
 /// case that would break if we took parley's own vertical coords.
 #[test]
 fn rects_follow_line_height() {
@@ -93,7 +93,7 @@ fn word_at_point_picks_out_one_word() {
     let text = "hello world";
     // Probe the middle of the last word. (Not `measure("hello ") + a nudge`:
     // parley trims trailing whitespace from a layout's width, so that lands on
-    // the space, not the word — which is exactly what a caret-precision test
+    // the space, not the word, which is exactly what a caret-precision test
     // should be suspicious of.)
     let (full_w, h) = te.measure(text, &style(), None);
     let (word_w, _) = te.measure("world", &style(), None);

@@ -1,4 +1,4 @@
-//! Rux text engine — milestones M4, plus text-metric/weight/alignment fixes.
+//! Rux text engine, milestones M4, plus text-metric/weight/alignment fixes.
 //!
 //! Wraps `parley` (shaping + line layout over the system fonts) and draws the
 //! resulting glyph runs into a `vello::Scene`. It owns the font and layout
@@ -92,7 +92,7 @@ pub struct TextStyle<'a> {
     /// `text-decoration: underline` / `line-through`.
     pub underline: bool,
     pub strikethrough: bool,
-    /// `white-space: nowrap` — never break lines, even past `max_width`.
+    /// `white-space: nowrap`: never break lines, even past `max_width`.
     pub nowrap: bool,
 }
 
@@ -138,7 +138,7 @@ impl TextEngine {
     /// Register an in-memory font file and point the generic families at it.
     ///
     /// Needed on the web, where there is no system font source at all: fontique
-    /// discovers nothing, every family query misses, and text measures to zero —
+    /// discovers nothing, every family query misses, and text measures to zero,
     /// a blank window rather than an error. Registering one font gives the
     /// cascade something to land on.
     ///
@@ -243,7 +243,7 @@ impl TextEngine {
     }
 
     /// The rectangles covering the byte range `start..end`, as `(x, y, w, h)`
-    /// relative to the text's top-left — one per line the selection spans.
+    /// relative to the text's top-left, one per line the selection spans.
     ///
     /// parley reports each rect's line index alongside it, and we take only the
     /// **horizontal** extent from parley: its vertical coords come from its own
@@ -371,7 +371,7 @@ impl TextEngine {
                         }),
                     );
 
-                // Decorations are drawn as filled rects across the run — parley
+                // Decorations are drawn as filled rects across the run, parley
                 // doesn't draw them, but its `RunMetrics` give us the placement
                 // (offset is the top of the line, from the baseline, in px).
                 let rm = run.metrics();

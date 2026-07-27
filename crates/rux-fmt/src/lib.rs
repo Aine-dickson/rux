@@ -6,20 +6,20 @@
 //!   corrected; nothing on a line is rewritten, wrapped or reordered. A `@tap`
 //!   handler is rhai, and rearranging someone's expressions is not this tool's
 //!   business.
-//! - **`<style>` is genuinely formatted**, by [`css`] — one space before `{`,
+//! - **`<style>` is genuinely formatted**, by [`css`], one space before `{`,
 //!   long rules broken one declaration per line, short ones kept inline. CSS has
 //!   a conventional shape worth enforcing.
 //!
-//! The real `rux fmt` — parse to a tree and pretty-print it through
-//! `rux-parser` / `rux-style` / `rux-script` — is still the planned replacement
+//! The real `rux fmt`, parse to a tree and pretty-print it through
+//! `rux-parser` / `rux-style` / `rux-script`, is still the planned replacement
 //! (see `docs/06-roadmap.md`, "Dev tooling"). Until then this is what the
 //! playground's Format button and the editor's auto-indent run.
 //!
 //! The indenter began as a port of `editors/vscode/extension.js`, which VS Code
 //! still uses; the CSS formatter has no JS counterpart. When `rux fmt` exists as
 //! a CLI the extension should shell out to it and the JS copy should go. **Until
-//! then, an indenting change here needs the same change there** — and note the
-//! JS still has the `<image>` bug described on [`VOID_TAGS`].
+//! then, an indenting change here needs the same change there**, and note the
+//! JS still has the `<image>` bug described on `VOID_TAGS` below.
 //!
 //! Where the indenter differs from the JS: the JS blanks strings and comments
 //! with a chain of regexes and then re-scans. This walks each line once as a
@@ -52,7 +52,7 @@ pub enum Pending {
 /// `image` is the one that matters and the one the JS list misses: it inherited
 /// HTML's set, which has `img`, but Rux's element is `<image>`. An `<image
 /// src="…">` written without a self-closing slash therefore over-indents
-/// everything after it — in VS Code today, and here until this test caught it.
+/// everything after it, in VS Code today, and here until this test caught it.
 /// The HTML names are kept because they cost nothing and pasted markup is
 /// common.
 const VOID_TAGS: &[&str] = &[
@@ -63,7 +63,7 @@ const VOID_TAGS: &[&str] = &[
 
 /// Format `text`, using `unit` for one indent level (`"  "`, `"    "`, `"\t"`…).
 ///
-/// The `<template>` and `<script>` sections are only re-indented — nothing on a
+/// The `<template>` and `<script>` sections are only re-indented, nothing on a
 /// line is rewritten. The `<style>` section goes through the CSS pretty-printer
 /// in [`css`], which does reflow declarations. That split is deliberate: CSS has
 /// a shape worth enforcing, while a `@tap` handler is rhai that only its author
@@ -102,7 +102,7 @@ fn reindent_lines(text: &str, unit: &str) -> String {
     let mut pending = Pending::None;
 
     for raw in text.split('\n') {
-        // Inside a multi-line comment the author's alignment is theirs to keep —
+        // Inside a multi-line comment the author's alignment is theirs to keep,
         // re-indenting ASCII art or a wrapped sentence would be vandalism.
         if pending != Pending::None {
             out.push(raw.to_string());
@@ -215,7 +215,7 @@ fn scan(line: &str) -> (Delta, Pending) {
                 }
             },
             b'<' if b.get(i + 1) == Some(&b'/') => {
-                // `</name>` — a closing tag.
+                // `</name>`: a closing tag.
                 match find(b, i, b">") {
                     Some(end) => {
                         close(&mut net, &mut leading_close, &mut seen_non_close);

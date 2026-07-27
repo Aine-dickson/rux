@@ -1,9 +1,9 @@
-//! Rux runtime shell — milestone M3.
+//! Rux runtime shell, milestone M3.
 //!
 //! Opens a native window (winit), manages the GPU via vello's `RenderContext`,
 //! loads a `.rux` document each frame's tree from `rux-runtime`, and paints it
 //! (`rux-paint`). A `notify` file watcher wakes the event loop through an
-//! `EventLoopProxy` on every save, so edits to the `.rux` file repaint live —
+//! `EventLoopProxy` on every save, so edits to the `.rux` file repaint live,
 //! the hot-reload path from `docs/04-architecture.md`.
 
 use std::num::NonZeroUsize;
@@ -11,7 +11,7 @@ use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::sync::Arc;
 // `web_time` re-exports `std::time` verbatim on native, so this is the std type
-// everywhere except wasm — where `std::time::Instant` panics on construction and
+// everywhere except wasm, where `std::time::Instant` panics on construction and
 // `ControlFlow::WaitUntil` wants the browser clock's instant instead. One import
 // covers both; there is no cfg and no behavioural difference off the web.
 use web_time::{Duration, Instant};
@@ -53,7 +53,7 @@ enum RuxEvent {
     /// that they be.
     #[cfg(target_arch = "wasm32")]
     SurfaceReady,
-    /// New source text from the host page — the playground's replacement for a
+    /// New source text from the host page, the playground's replacement for a
     /// file watcher. `String` is `Send`, so this one can travel in the event.
     #[cfg(target_arch = "wasm32")]
     SetSource(String),
@@ -95,7 +95,7 @@ fn dropdown_row(sel: &SelectRegion, i: usize) -> (f32, f32, f32, f32) {
 const BAR_W: f32 = 8.0;
 /// Shortest a thumb may get, however long the content is.
 const BAR_MIN_THUMB: f32 = 24.0;
-/// One line of scroll travel — the wheel's unit, and the arrow keys'.
+/// One line of scroll travel, the wheel's unit, and the arrow keys'.
 const LINE: f32 = 24.0;
 
 /// Which axis a scrollbar (or a drag on one) belongs to.
@@ -117,7 +117,7 @@ struct BarDrag {
     start: f32,
 }
 
-/// The track a scrollbar runs in, as `(x, y, w, h)` in logical px — an overlay
+/// The track a scrollbar runs in, as `(x, y, w, h)` in logical px, an overlay
 /// inset along the box's trailing edge. When a box scrolls both ways the tracks
 /// stop short of the corner so they never overlap.
 fn bar_track(r: &ScrollRegion, axis: Axis2) -> (f32, f32, f32, f32) {
@@ -141,7 +141,7 @@ fn bar_thumb(r: &ScrollRegion, offset: Offset, axis: Axis2) -> Option<(f32, f32,
     let (tx, ty, tw, th) = bar_track(r, axis);
     let track_len = if axis == Axis2::Y { th } else { tw };
     // The thumb is as long a fraction of the track as the box is of the content
-    // — the standard proportion — but never so short it can't be grabbed.
+    //, the standard proportion, but never so short it can't be grabbed.
     let thumb_len = (track_len * visible / content.max(1.0)).clamp(BAR_MIN_THUMB.min(track_len), track_len);
     let travel = (track_len - thumb_len).max(0.0);
     let pos = match axis {
@@ -150,7 +150,7 @@ fn bar_thumb(r: &ScrollRegion, offset: Offset, axis: Axis2) -> Option<(f32, f32,
     };
     let along = travel * (pos / max).clamp(0.0, 1.0);
     // The track tuple is (x, y, w, h): its thickness is `tw` on the vertical bar
-    // and `th` on the horizontal one — the length is the other component.
+    // and `th` on the horizontal one, the length is the other component.
     Some(match axis {
         Axis2::Y => (tx, ty + along, tw, thumb_len),
         Axis2::X => (tx + along, ty, thumb_len, th),
@@ -337,7 +337,7 @@ struct App {
     pending: Pending,
     #[cfg(target_arch = "wasm32")]
     starting: bool,
-    /// The file behind the document. Native only — it titles the window and is
+    /// The file behind the document. Native only, it titles the window and is
     /// what the watcher re-reads; on the web there is no file, and new source
     /// arrives as text.
     #[cfg(not(target_arch = "wasm32"))]
@@ -380,13 +380,13 @@ struct App {
     /// Caret position in the focused input, as a byte index into its value.
     caret: usize,
     /// Where the current selection started, as a byte index. Equal to `caret`
-    /// when nothing is selected — the selection is the range between them.
+    /// when nothing is selected, the selection is the range between them.
     anchor: usize,
     /// Whether the pointer is selecting text by dragging inside an input.
     text_drag: bool,
     /// When and where the last click landed, for double-click word-select.
     last_click: Option<(Instant, f64, f64)>,
-    /// The system clipboard. `None` if the platform wouldn't give us one — the
+    /// The system clipboard. `None` if the platform wouldn't give us one, the
     /// app still runs, copy/paste just does nothing. Absent on the web, where
     /// the clipboard is async and permission-gated; same "copy/paste does
     /// nothing" outcome, reached without a field.
@@ -444,7 +444,7 @@ impl App {
             last_click: None,
             #[cfg(not(target_arch = "wasm32"))]
             clipboard: arboard::Clipboard::new()
-                .map_err(|e| eprintln!("rux: no clipboard ({e}) — copy/paste disabled"))
+                .map_err(|e| eprintln!("rux: no clipboard ({e}), so copy/paste is disabled"))
                 .ok(),
             caret_visible: true,
             blink_deadline: None,
@@ -468,7 +468,7 @@ impl App {
         }
     }
 
-    /// Rebuild from new source text — the web's equivalent of a file save.
+    /// Rebuild from new source text, the web's equivalent of a file save.
     ///
     /// A parse error keeps the previous document on screen rather than blanking
     /// the canvas, which matters in a playground where the source is mid-edit
@@ -539,7 +539,7 @@ impl App {
     }
 
     /// Start a scrollbar drag if the press landed on a thumb. Returns whether it
-    /// did — in which case the press is the bar's, not a tap's.
+    /// did, in which case the press is the bar's, not a tap's.
     fn press_scrollbar(&mut self, pointer: (f64, f64)) -> bool {
         let (px, py) = self.logical(pointer);
         // Topmost (innermost) bar wins, as with the wheel.
@@ -638,7 +638,7 @@ impl App {
             if !r.scrollable() {
                 continue;
             }
-            // Only a scroller the item is horizontally within can own it — a
+            // Only a scroller the item is horizontally within can own it, a
             // cheap stand-in for a real ancestor test (we don't carry parentage).
             if item.x + item.width < r.x || item.x > r.x + r.width {
                 continue;
@@ -679,7 +679,7 @@ impl App {
     /// the anchor) where you clicked, and a drag from there extends it. A second
     /// click in the same spot selects the word instead.
     ///
-    /// Returns whether the press was ours — if so it is *not* also dispatched as a
+    /// Returns whether the press was ours, if so it is *not* also dispatched as a
     /// tap on release, since focusing already happened here.
     fn press_text(&mut self, pointer: (f64, f64)) -> bool {
         // An open dropdown floats over everything and gets first refusal.
@@ -801,7 +801,7 @@ impl App {
         }
 
         // Inputs are handled at press time (`press_text`), which is where a
-        // selection drag has to start — so by here the tap is on something else.
+        // selection drag has to start, so by here the tap is on something else.
         // Tapping elsewhere drops focus.
         self.set_focus(None);
 
@@ -883,7 +883,7 @@ impl App {
                 }
             }
             // A plain arrow with a selection collapses to its near edge rather
-            // than moving — that's what every text field does.
+            // than moving, that's what every text field does.
             Key::Named(NamedKey::ArrowLeft) => {
                 if has_selection && !extend {
                     new_caret = sel_start;
@@ -969,8 +969,8 @@ impl App {
     }
 
     /// Ctrl chords inside a focused input: select all, copy, cut, paste. Returns
-    /// whether the key was one of them (so it isn't also typed as a character —
-    /// Ctrl+V arrives as `Key::Character("v")`).
+    /// whether the key was one of them, so it isn't also typed as a character:
+    /// Ctrl+V arrives as `Key::Character("v")`.
     fn text_shortcut(&mut self, key: &Key, model: &str) -> bool {
         let Key::Character(s) = key else { return false };
         let value = self.document.engine_mut().get_string(model);
@@ -1001,7 +1001,7 @@ impl App {
                 let Some(pasted) = self.clipboard_read() else {
                     return true;
                 };
-                // A single-line input takes the first line only — pasting a block
+                // A single-line input takes the first line only, pasting a block
                 // of text into a one-line field shouldn't smuggle newlines in.
                 let pasted = if self.focused_multiline {
                     pasted.replace("\r\n", "\n")
@@ -1179,7 +1179,7 @@ impl App {
 
     // On the web the clipboard is asynchronous and permission-gated, so it can't
     // be read inside a synchronous key handler. Ctrl+C/X/V therefore do nothing
-    // for now — the same graceful no-op as a native platform that denies us a
+    // for now, the same graceful no-op as a native platform that denies us a
     // clipboard. Wiring the async Clipboard API through the event loop is
     // tracked as playground work, not shell work.
     #[cfg(target_arch = "wasm32")]
@@ -1192,7 +1192,7 @@ impl App {
 
     /// Show the caret solid and (re)start the blink cycle. Called on focus and on
     /// every edit, so the caret is steady while you type and only blinks at rest.
-    /// Clearing focus stops the timer entirely — an idle window stays event-driven.
+    /// Clearing focus stops the timer entirely, an idle window stays event-driven.
     fn reset_blink(&mut self) {
         self.caret_visible = true;
         self.blink_deadline = self.focused.is_some().then(|| Instant::now() + BLINK);
@@ -1302,7 +1302,7 @@ impl App {
 
         let device_handle = &context.devices[state.surface.dev_id];
         // wgpu 29 reports acquisition as a status enum. A timeout/occluded frame
-        // is normal (minimized window, compositor hiccup) — skip it and repaint
+        // is normal (minimized window, compositor hiccup), skip it and repaint
         // on the next event rather than tearing the app down.
         let surface_texture = match state.surface.surface.get_current_texture() {
             CurrentSurfaceTexture::Success(t) | CurrentSurfaceTexture::Suboptimal(t) => t,
@@ -1372,7 +1372,7 @@ impl ApplicationHandler<RuxEvent> for App {
         }
 
         let title = format!(
-            "Rux — {}",
+            "Rux · {}",
             self.path
                 .file_name()
                 .map(|n| n.to_string_lossy().into_owned())
@@ -1513,7 +1513,7 @@ impl ApplicationHandler<RuxEvent> for App {
                         ((p.x / scale) as f32, (p.y / scale) as f32)
                     }
                 };
-                // Shift+wheel scrolls horizontally — the platform convention for a
+                // Shift+wheel scrolls horizontally, the platform convention for a
                 // wheel with only one axis.
                 let (dx, dy) = if self.shift_held && dx == 0.0 { (dy, 0.0) } else { (dx, dy) };
                 self.scroll_at(self.pointer, -dx, -dy);
@@ -1585,7 +1585,7 @@ impl ApplicationHandler<RuxEvent> for App {
                 }
             }
             // Event-driven: we only paint in response to a redraw request, which
-            // is issued on resume, resize, reload, and tap — not every frame.
+            // is issued on resume, resize, reload, and tap, not every frame.
             WindowEvent::RedrawRequested => self.render(),
             _ => {}
         }
@@ -1613,7 +1613,7 @@ impl ApplicationHandler<RuxEvent> for App {
 //
 // The browser drives the same `App` as the desktop: same input handling, same
 // focus and caret logic, same painter. Only the three things a browser does not
-// have are different — no file watcher (the host page pushes source instead), no
+// have are different, no file watcher (the host page pushes source instead), no
 // blocking on the main thread (surface setup is a task), and no OS clipboard.
 //
 // Two values have to outlive the call that creates them and be reachable from
@@ -1625,16 +1625,16 @@ impl ApplicationHandler<RuxEvent> for App {
 thread_local! {
     /// The canvas the host page gave us, taken by `resumed`.
     static WEB_CANVAS: RefCell<Option<web_sys::HtmlCanvasElement>> = const { RefCell::new(None) };
-    /// Kept so the surface task — and `set_source` — can wake the event loop.
+    /// Kept so the surface task, and `set_source`, can wake the event loop.
     static WEB_PROXY: RefCell<Option<winit::event_loop::EventLoopProxy<RuxEvent>>> =
         const { RefCell::new(None) };
     /// The canvas's CSS size at boot, in logical pixels.
     ///
-    /// Not a convenience — it is load-bearing. winit's web backend leaves a
+    /// Not a convenience, it is load-bearing. winit's web backend leaves a
     /// window's `current_size` at **zero** until a `ResizeObserver` fires, and it
     /// only styles the canvas at all when `inner_size` was requested. Ask a
     /// freshly created window for its size and you get 0×0, configure a surface
-    /// at that, and wgpu sets the canvas backing store to 1×1 — which collapses
+    /// at that, and wgpu sets the canvas backing store to 1×1, which collapses
     /// the element to a one-pixel strip that then never resizes, because there is
     /// no longer any size change to observe. So the size is captured from the DOM
     /// up front and used for both the window attributes and the first surface.
@@ -1685,7 +1685,7 @@ pub fn start_web(canvas: web_sys::HtmlCanvasElement, source: String, font: Vec<u
 
     let mut app = App::new(document);
     if !app.text.register_font(font) {
-        web_sys::console::error_1(&"rux: the supplied font had no usable faces — text will not render".into());
+        web_sys::console::error_1(&"rux: the supplied font had no usable faces, so text will not render".into());
     }
     event_loop.spawn_app(app);
 }
@@ -1696,7 +1696,7 @@ pub fn start_web(canvas: web_sys::HtmlCanvasElement, source: String, font: Vec<u
 /// The source is checked here rather than in the event handler so the caller
 /// gets a *synchronous* answer it can put on screen. The running app parses it
 /// again when the event arrives; parsing is cheap next to a frame, and the
-/// alternative — plumbing a result back out through the event loop — would be
+/// alternative, plumbing a result back out through the event loop, would be
 /// far more machinery for the same outcome.
 #[cfg(target_arch = "wasm32")]
 pub fn set_web_source(source: String) -> Option<String> {
@@ -1726,7 +1726,7 @@ pub fn run(path: PathBuf) {
 
     // Watch the file's directory *recursively* so edits to imported components
     // (which live in subdirectories) also trigger a reload. Reload on any `.rux`
-    // change — `Document::load` re-reads the main file and its components.
+    // change, `Document::load` re-reads the main file and its components.
     let proxy = event_loop.create_proxy();
     let watch_dir = path
         .parent()
@@ -1791,7 +1791,7 @@ mod tests {
     /// The horizontal thumb is the mirror of the vertical one: it runs *along* the
     /// bottom edge and is only `BAR_W` thick. (Getting the track tuple's length
     /// and thickness the wrong way round here painted a thumb as tall as the whole
-    /// box — invisible to every test that only looked at the vertical bar.)
+    /// box, invisible to every test that only looked at the vertical bar.)
     #[test]
     fn horizontal_thumb_lies_along_the_bottom_edge() {
         let mut wide = tall();
@@ -1806,7 +1806,7 @@ mod tests {
         assert_eq!(y, 200.0 - BAR_W, "it sits on the box's bottom edge");
     }
 
-    /// At the end of the content the thumb is at the end of its track — the
+    /// At the end of the content the thumb is at the end of its track, the
     /// bottom of the thumb meets the bottom of the box.
     #[test]
     fn thumb_reaches_the_end_of_the_track() {
@@ -1815,7 +1815,7 @@ mod tests {
         assert_eq!(y + h, r.height);
     }
 
-    /// The negative case: an axis with no travel has no thumb — nothing to draw,
+    /// The negative case: an axis with no travel has no thumb, nothing to draw,
     /// and nothing to grab. (A bar you can drag on a box that can't scroll was the
     /// easy bug here.)
     #[test]

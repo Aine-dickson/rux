@@ -1,6 +1,6 @@
 //! A small CSS pretty-printer for the `<style>` section.
 //!
-//! Unlike the re-indenter in `lib.rs`, this one *does* rewrite lines — it is a
+//! Unlike the re-indenter in `lib.rs`, this one *does* rewrite lines, it is a
 //! formatter, not an aligner. The shape it produces:
 //!
 //! ```css
@@ -18,7 +18,7 @@
 //!   aligned them.
 //! - A rule with **more than [`INLINE_MAX`] declarations** breaks one per line,
 //!   with the closing `}` on its own line. At or under it, the rule stays on one
-//!   line — which is what keeps a wall of two-property rules readable.
+//!   line, which is what keeps a wall of two-property rules readable.
 //! - A rule carrying a comment always breaks, because a `/* … */` shoved into a
 //!   one-liner is worse than the line it saved.
 //!
@@ -36,7 +36,7 @@ pub const INLINE_MAX: usize = 3;
 enum Item {
     /// `/* … */`, kept verbatim.
     Comment(String),
-    /// `color: red` — no trailing semicolon.
+    /// `color: red`: no trailing semicolon.
     Decl(String),
     /// A selector or at-rule and its block.
     Block { prelude: String, items: Vec<Item> },
@@ -176,7 +176,7 @@ fn collapse(s: &str) -> String {
 ///
 /// Kept separate from [`collapse`] on purpose: a selector is *not* a
 /// declaration, and running this over one would rewrite `a:hover` as
-/// `a: hover` — which is exactly what it did until a test caught it.
+/// `a: hover`: which is exactly what it did until a test caught it.
 fn collapse_decl(s: &str) -> String {
     let joined = collapse(s);
 

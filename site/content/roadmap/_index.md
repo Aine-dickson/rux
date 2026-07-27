@@ -379,7 +379,7 @@ and driven in `examples/fonts.rux`.
 
 **Also worth doing while in here:** *say something* when a declaration is ignored.
 ✅ **Done (2026-07-15):** `warn_if_unhonored` prints one line per unhonored
-property (`rux: CSS property \`box-shadow\` is parsed but not yet honored, it
+property (`rux: CSS property \`box-shadow\` is parsed but not yet honored, so it
 will have no effect`), deduped for the life of the process via a `static` set so
 the whole-tree rebuild doesn't repeat it every keystroke. The honored set is the
 `HONORED_PROPERTIES` list in `rux-style`: **when you honor a new property below,

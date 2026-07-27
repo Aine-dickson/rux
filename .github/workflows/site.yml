@@ -42,7 +42,7 @@ jobs:
       ZOLA_VERSION: "0.22.1"
       # Must match the `wasm-bindgen` version cargo resolves, or the CLI refuses
       # to process the binary. If a dependency bump changes it, this fails loudly
-      # with both versions printed — bump it here to match.
+      # with both versions printed. Bump it here to match.
       WASM_BINDGEN_VERSION: "0.2.126"
     steps:
       - uses: actions/checkout@v4
@@ -85,7 +85,7 @@ jobs:
 
       # docs/ is canonical; site/content/{reference,roadmap,contribute} is
       # generated from it and committed. If someone edits docs/ without
-      # re-running the sync, the committed copies go stale silently — so fail
+      # re-running the sync, the committed copies go stale silently, so fail
       # here instead of publishing yesterday's text.
         # Invoked via `bash`, not `./`, on purpose: this repo is developed on
         # Windows, where the executable bit isn't preserved, so the script keeps

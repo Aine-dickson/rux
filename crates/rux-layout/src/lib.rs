@@ -1,9 +1,9 @@
-//! Rux layout — milestones M1–M4.
+//! Rux layout, milestones M1–M4.
 //!
 //! A styled node tree fed through `taffy` (flexbox) to produce absolute paint
 //! items. Boxes come straight from taffy; text leaves are sized through a
 //! caller-supplied `measure` callback (so this crate stays free of any font
-//! dependency — the shell owns the text engine). See `docs/04-architecture.md`,
+//! dependency, the shell owns the text engine). See `docs/04-architecture.md`,
 //! Stage 4.
 
 use taffy::prelude::*;
@@ -62,12 +62,12 @@ pub enum Track {
     Fr(f32),
     Auto,
     /// `minmax(min, max)`. Its whole point over a bare `1fr` is a `0` (or `px`)
-    /// minimum, which lets the track shrink *below* its content's min-content —
+    /// minimum, which lets the track shrink *below* its content's min-content,
     /// so a grid of fixed-size cards squeezes to fit instead of overflowing.
     MinMax(TrackSide, TrackSide),
 }
 
-/// One side of a `minmax()` — never itself a `minmax`. A `Fr` is only valid on
+/// One side of a `minmax()`, never itself a `minmax`. A `Fr` is only valid on
 /// the max side (a flex minimum is meaningless), and degrades to `auto` if used
 /// as a minimum.
 #[derive(Clone, Copy, Debug)]
@@ -121,9 +121,9 @@ pub enum TextAlign {
 pub enum TextWrap {
     #[default]
     Normal,
-    /// `overflow-wrap: break-word` — break inside a word rather than overflow.
+    /// `overflow-wrap: break-word`: break inside a word rather than overflow.
     BreakWord,
-    /// `word-break: break-all` — break anywhere.
+    /// `word-break: break-all`: break anywhere.
     Anywhere,
 }
 
@@ -161,7 +161,7 @@ pub enum Overflow {
 pub enum Cursor {
     #[default]
     Default,
-    /// `cursor: pointer` — the hand, for tappable things.
+    /// `cursor: pointer`: the hand, for tappable things.
     Pointer,
 }
 
@@ -175,7 +175,7 @@ pub enum Position {
     Absolute,
 }
 
-/// Corner radii in CSS order — top-left, top-right, bottom-right, bottom-left.
+/// Corner radii in CSS order, top-left, top-right, bottom-right, bottom-left.
 /// A single `border-radius` fills all four; the per-corner longhands override.
 pub type Corners = [f32; 4];
 
@@ -184,7 +184,7 @@ pub type Corners = [f32; 4];
 /// in logical px; the origin is applied at paint time (CSS default: box centre).
 pub type Transform = [f32; 6];
 
-/// `grid-auto-flow` — how auto-placed items fill the implicit grid.
+/// `grid-auto-flow`: how auto-placed items fill the implicit grid.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub enum GridFlow {
     #[default]
@@ -226,10 +226,10 @@ pub struct Gradient {
 
 #[derive(Clone, Copy, Debug)]
 pub enum GradientKind {
-    /// `linear-gradient(<angle>, …)` — angle in radians, CSS convention (0 = to
+    /// `linear-gradient(<angle>, …)`: angle in radians, CSS convention (0 = to
     /// top, increasing clockwise).
     Linear { angle: f32 },
-    /// `radial-gradient(…)` — a centred circle out to the nearest edge.
+    /// `radial-gradient(…)`: a centred circle out to the nearest edge.
     Radial,
 }
 
@@ -266,12 +266,12 @@ pub struct Style {
     pub grid_auto_columns: Vec<Track>,
     pub grow: f32,
     /// `flex-shrink`. CSS defaults to 1: a flex item gives up space to fit its
-    /// container. `0` keeps the item's size and lets it overflow — which is the
+    /// container. `0` keeps the item's size and lets it overflow, which is the
     /// author's call, and what `overflow: clip` is for.
     pub shrink: f32,
     /// `flex-basis`. `None` = `auto` (size from width/content).
     pub basis: Option<Len>,
-    /// `flex-wrap: wrap` — items that don't fit start a new line.
+    /// `flex-wrap: wrap`: items that don't fit start a new line.
     pub wrap: bool,
     /// `opacity`, 0.0–1.0. Applies to the whole subtree.
     pub opacity: f32,
@@ -302,10 +302,10 @@ pub struct Style {
     pub radius: Corners,
     /// `box-shadow` (single, outer). Drawn behind the box's own background.
     pub box_shadow: Option<BoxShadow>,
-    /// `transform` — an affine applied to this box and its subtree at paint time.
+    /// `transform`: an affine applied to this box and its subtree at paint time.
     /// Visual only: hit regions are not transformed.
     pub transform: Option<Transform>,
-    /// `cursor` — the pointer shape over this box.
+    /// `cursor`: the pointer shape over this box.
     pub cursor: Cursor,
     /// `position` and its `inset` (top, right, bottom, left). `None` per side =
     /// `auto`. Only meaningful when `position: absolute`.
@@ -396,7 +396,7 @@ pub struct TextContent {
     /// `text-decoration: underline` / `line-through`.
     pub underline: bool,
     pub strikethrough: bool,
-    /// `white-space: nowrap` — never wrap, even past the box width.
+    /// `white-space: nowrap`: never wrap, even past the box width.
     pub nowrap: bool,
     /// Byte index of the caret, when this text is inside the focused input.
     pub caret: Option<usize>,
@@ -415,22 +415,22 @@ pub struct Node {
     /// `<image src=…>`.
     pub image: Option<ImageContent>,
     /// A checkmark stroked to fill this box, in the given colour. Drawn as a
-    /// path rather than a font glyph — ✓ is whatever the system font happens to
+    /// path rather than a font glyph, since ✓ is whatever the system font happens to
     /// ship, which is not a control mark.
     pub tick: Option<Rgba>,
     pub children: Vec<Node>,
     pub on_tap: Option<String>,
     /// `r-model` signal name for `<input>` nodes (focus target + edit binding).
     pub model: Option<String>,
-    /// `type="textarea"`: a multi-line text input — `Enter` inserts a newline.
+    /// `type="textarea"`: a multi-line text input, `Enter` inserts a newline.
     pub multiline: bool,
     /// `type="select"`: the bound `:options`, so the shell can open a dropdown.
     pub options: Option<Vec<String>>,
     /// `r-show="false"`: laid out (space reserved) but not painted.
     pub hidden: bool,
-    /// `id="…"` — a stable identifier a label's `for=` can target.
+    /// `id="…"`: a stable identifier a label's `for=` can target.
     pub id: Option<String>,
-    /// `for="…"` on a label — the `id` of the input it labels. Resolved at build
+    /// `for="…"` on a label, the `id` of the input it labels. Resolved at build
     /// time (the label inherits its target's `@tap`), so tapping the label toggles
     /// the target the same way tapping the target would.
     pub label_for: Option<String>,
@@ -607,7 +607,7 @@ impl Offset {
     }
 }
 
-/// A scrollable box. `id` is its index in tree order — stable across rebuilds
+/// A scrollable box. `id` is its index in tree order, stable across rebuilds
 /// as long as the tree's shape is, which is what the shell keys offsets by.
 #[derive(Clone, Debug)]
 pub struct ScrollRegion {
@@ -907,13 +907,13 @@ fn to_taffy(style: &Style, vp: (f32, f32)) -> taffy::Style {
             // `flex-wrap` + a *percentage* width + a `max-width` trips a taffy
             // bug (still present in 0.12): it measures the container's content
             // at the full percentage width, ignoring the cap, so it sees one
-            // row and sizes the cross-axis for one row — then clamps the width
+            // row and sizes the cross-axis for one row, then clamps the width
             // to `max-width`, wraps to two rows, and never revisits the height.
             // The wrapped rows then paint *under* the following sibling. Both a
             // definite width and `auto` measure correctly, so for this exact
             // combination we drop the percentage to `auto` (fit-content, capped
             // by the same `max-width`), which fills available width up to the
-            // cap for any content that overflows it — i.e. the wrap case.
+            // cap for any content that overflows it, i.e. the wrap case.
             width: match style.width {
                 Some(Len::Pct(_)) if style.wrap && style.max_width.is_some() => auto(),
                 Some(l) => to_dim(l, vp),
@@ -927,13 +927,13 @@ fn to_taffy(style: &Style, vp: (f32, f32)) -> taffy::Style {
         },
         max_size: Size {
             // A box with no width hugs its content. Hug means CSS `fit-content`
-            // — min(max-content, available) — so clamp it to the parent's inner
+            //, min(max-content, available), so clamp it to the parent's inner
             // width. Without this, taffy hands a hugging box its full max-content
             // size and it bursts out of a narrower parent. An explicit width or
             // max-width is the author's call and is left alone.
             width: match (style.max_width, style.width) {
                 (Some(l), _) => to_dim(l, vp),
-                // `flex-shrink: 0` says "keep my size" — don't clamp behind the
+                // `flex-shrink: 0` says "keep my size", don't clamp behind the
                 // author's back; let it overflow and let the parent clip it.
                 (None, None) if style.shrink != 0.0 => percent(1.0),
                 (None, _) => auto(),
@@ -1343,7 +1343,7 @@ fn collect(
         });
     }
 
-    // overflow: clip/scroll — bound the subtree to this box (following its corners).
+    // overflow: clip/scroll, bound the subtree to this box (following its corners).
     if clip {
         out.paints.push(Paint::PushClip {
             x,

@@ -1,7 +1,7 @@
 //! A minimal TextMate grammar interpreter.
 //!
-//! Rux has exactly one description of its own syntax colouring —
-//! `rux.tmLanguage.json` — and it already feeds two consumers: the VS Code
+//! Rux has exactly one description of its own syntax colouring,
+//! `rux.tmLanguage.json`: and it already feeds two consumers: the VS Code
 //! extension, and the code fences on the site (via Zola). This crate makes the
 //! browser playground a third, rather than letting it grow a hand-written
 //! tokenizer that would drift from the other two.
@@ -13,14 +13,14 @@
 //! - `match` with `captures`
 //! - `begin` / `end` with `beginCaptures` / `endCaptures` and `contentName`
 //!
-//! and nothing else — no injections, no `while`, no `$self` / `$base`, no
+//! and nothing else, no injections, no `while`, no `$self` / `$base`, no
 //! backreferences from `begin` into `end`, and no cross-grammar includes such as
 //! `source.css`. The Rux grammar is self-contained and uses none of them. If a
 //! future grammar edit reaches for one, loading fails loudly rather than
 //! silently mis-colouring, and this is the file to extend.
 //!
-//! Matching goes through `ferroni`, a pure-Rust Oniguruma — the same engine
-//! family the real TextMate implementations use — so the regex dialect in the
+//! Matching goes through `ferroni`, a pure-Rust Oniguruma, the same engine
+//! family the real TextMate implementations use, so the regex dialect in the
 //! grammar behaves the way it does in VS Code. Pure Rust is not incidental: the
 //! C-backed alternatives cannot target wasm, and the browser is the whole reason
 //! this crate exists.
@@ -295,7 +295,7 @@ impl Grammar {
             match rule_id {
                 None => {
                     // Closing the current block. The end match still belongs to
-                    // the block, so it is emitted before popping — and its scope
+                    // the block, so it is emitted before popping, and its scope
                     // is the block's own `name`, not the content scope, which is
                     // why the frame remembers which rule opened it.
                     let (caps, fallback) = match frame.block.map(|b| &self.rules[b].kind) {
@@ -325,7 +325,7 @@ impl Grammar {
                 },
             }
 
-            // A zero-width match would spin forever, so step past one character —
+            // A zero-width match would spin forever, so step past one character,
             // but *emit* that character, or it vanishes from the output. This is
             // how a line comment ending on `$` used to eat the newline: `$`
             // matches before `\n`, so the skipped char was the line terminator
@@ -447,7 +447,7 @@ const SCOPES: &[(&str, &str)] = &[
     ("meta.interpolation", "hl-interp"),
     ("punctuation", "hl-punct"),
     // A comment's `//` or `<!--`, and a string's quotes, belong to the thing
-    // they delimit — colouring them as generic punctuation makes a comment look
+    // they delimit, colouring them as generic punctuation makes a comment look
     // half-commented. These beat the bare `punctuation` entry on length.
     ("punctuation.definition.comment", "hl-comment"),
     ("punctuation.definition.string", "hl-string"),

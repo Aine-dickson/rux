@@ -2,7 +2,7 @@
  *
  * Dark-only and deliberately: the palette is the one the examples ship
  * (Catppuccin Mocha-ish), so the site looks like the thing it documents.
- * Hand-written, no framework — it's a five-page site.
+ * Hand-written, no framework; it's a five-page site.
  */
 
 :root {
@@ -459,7 +459,7 @@ pre code {
 .pg-btn:disabled { opacity: 0.45; cursor: not-allowed; }
 
 .pg-actions { display: flex; align-items: center; gap: 8px; }
-/* Format is the secondary action — present, but not competing with Run. */
+/* Format is the secondary action: present, but not competing with Run. */
 .pg-btn-quiet {
   background: transparent;
   color: var(--ink-dim);
@@ -468,7 +468,7 @@ pre code {
 .pg-btn-quiet:hover { color: var(--ink); border-color: var(--ink-faint); }
 
 /* The editor is a transparent <textarea> over a highlighted <pre>. Every text
-   metric below is shared by both layers — change one, change the other, or the
+   metric below is shared by both layers. Change one, change the other, or the
    colouring slides out from under the caret. */
 .pg-editwrap {
   position: relative;
@@ -503,7 +503,7 @@ pre code {
 }
 /* The textarea never wraps (wrap="off"), so this layer must not either, or the
    two drift a line apart on every long line. `white-space: pre` alone was not
-   enough in practice — sizing the content to `max-content` removes the
+   enough in practice, and sizing the content to `max-content` removes the
    constraint that made a wrap possible at all. */
 .pg-code code {
   display: block;
@@ -530,7 +530,7 @@ pre code {
 .pg-editor:focus { outline: 2px solid var(--accent); outline-offset: -2px; }
 
 /* Token colours: ayu-dark, matching the site's code fences. The class set is
-   deliberately small — see the SCOPES table in crates/rux-highlight. */
+   deliberately small; see the SCOPES table in crates/rux-highlight. */
 .hl-comment   { color: #acb6bf8c; font-style: italic; }
 .hl-string    { color: #aad94c; }
 .hl-escape    { color: #d2a6ff; }
@@ -550,7 +550,7 @@ pre code {
 .hl-var       { color: #bfbdb6; }
 
 /* The canvas is a fixed logical size (a phone-ish 420x640), centred rather than
-   stretched — scaling it would lie about the layout being demonstrated. */
+   stretched, since scaling it would lie about the layout being demonstrated. */
 .pg-stage {
   display: flex;
   justify-content: center;
@@ -558,7 +558,7 @@ pre code {
   background: var(--bg);
   /* Scroll rather than scale on a narrow viewport. winit drives the canvas's
      CSS width/height to match the surface, and taps are hit-tested against that
-     same geometry — so shrinking it with `max-width` would misalign every tap
+     same geometry, so shrinking it with `max-width` would misalign every tap
      by the scale factor. Overflow is the honest option. */
   overflow: auto;
 }

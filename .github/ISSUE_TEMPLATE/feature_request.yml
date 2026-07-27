@@ -5,7 +5,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Please check the [roadmap](https://ruxlang.dev/roadmap/) first — it lists
+        Please check the [roadmap](https://ruxlang.dev/roadmap/) first. It lists
         what's planned *and* what is deliberately not being built, with reasons.
 
   - type: textarea
@@ -32,6 +32,6 @@ body:
     attributes:
       label: How does the web do this?
       description: >
-        Optional but valuable. Rux is web-flavoured on purpose — if CSS or HTML
+        Optional but valuable. Rux is web-flavoured on purpose, so if CSS or HTML
         already has a name and a semantic for this, that is usually the strongest
         argument for a particular shape.

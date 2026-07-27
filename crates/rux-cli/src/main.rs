@@ -1,4 +1,4 @@
-//! `rux` — the Rux command-line entry point.
+//! `rux`: the Rux command-line entry point.
 //!
 //! Usage: `rux [path/to/app.rux]`. With no argument it loads the bundled
 //! `examples/battery.rux`, so `cargo run` shows something immediately.

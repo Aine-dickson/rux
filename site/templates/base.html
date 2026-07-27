@@ -26,12 +26,15 @@
       <a class="brand" href="{{ get_url(path='@/_index.md') }}">
         <img src="{{ get_url(path='rux-wordmark.svg') }}" alt="Rux" height="22">
       </a>
+      {# Why and Roadmap are deliberately not here. They are reading, not
+         destinations, and the nav is for the things someone arrives wanting to
+         do. Both stay one click away: the docs sidebar carries them on every
+         docs page, the hero has a "Why Rux?" button, and the home page links
+         both under "Read on". #}
       <div class="nav-links">
         <a href="{{ get_url(path='@/learn/_index.md') }}">Learn</a>
         <a href="{{ get_url(path='@/reference/_index.md') }}">Docs</a>
         <a href="{{ get_url(path='@/playground.md') }}">Playground</a>
-        <a href="{{ get_url(path='@/why.md') }}">Why</a>
-        <a href="{{ get_url(path='@/roadmap/_index.md') }}">Roadmap</a>
         <a href="{{ get_url(path='@/blog/_index.md') }}">Blog</a>
         <a href="{{ config.extra.repo }}">GitHub</a>
       </div>

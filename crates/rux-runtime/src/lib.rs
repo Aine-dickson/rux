@@ -1,4 +1,4 @@
-//! Rux runtime — milestones M2–M9.
+//! Rux runtime, milestones M2–M9.
 //!
 //! The document model: loads a `.rux` file, resolves its `use` component imports
 //! (loading each imported `.rux`), builds the script [`Engine`] (merging the main
@@ -20,12 +20,12 @@ pub struct Document {
     sfc: Sfc,
     components: HashMap<String, Sfc>,
     engine: Engine,
-    /// Directory the document was loaded from — `<image src>` resolves against it.
+    /// Directory the document was loaded from, `<image src>` resolves against it.
     base: PathBuf,
     /// The focused input, with its caret and selection, if any. Re-applied on
     /// every rebuild so both survive a state change.
     focus: Option<Focus>,
-    /// Where each patchable text binding lives and which signals force a rebuild —
+    /// Where each patchable text binding lives and which signals force a rebuild,
     /// refreshed on every full build. Lets [`Document::patch`] update value
     /// bindings in place instead of throwing the tree away.
     registry: BindingRegistry,
@@ -36,8 +36,8 @@ pub struct Document {
 ///
 /// The selection is the range between `anchor` (where it started) and `caret`
 /// (where it has been dragged/extended to); `anchor == caret` means no selection,
-/// just a caret. Either may be the smaller — dragging leftwards puts the caret
-/// before the anchor — so consumers normalize with [`Focus::range`].
+/// just a caret. Either may be the smaller, dragging leftwards puts the caret
+/// before the anchor, so consumers normalize with [`Focus::range`].
 #[derive(Clone, Debug, PartialEq)]
 pub struct Focus {
     pub model: String,
@@ -63,7 +63,7 @@ impl Focus {
 }
 
 /// Mark the focused input's text child with the caret position and selection, so
-/// it paints them — and clear every other input's.
+/// it paints them, and clear every other input's.
 ///
 /// Clearing matters: this runs against the *existing* tree when focus moves, not
 /// only against a freshly built one. Setting without clearing left the caret
@@ -195,10 +195,10 @@ impl Document {
 
     /// Apply a set of changed signals *in place* where possible: re-evaluate the
     /// text bindings that read them and write the new strings into their nodes,
-    /// without rebuilding the tree (so ephemeral state — caret, scroll — survives
-    /// untouched). Returns `false` when the change can't be patched — it touched a
+    /// without rebuilding the tree (so ephemeral state, caret, scroll, survives
+    /// untouched). Returns `false` when the change can't be patched, it touched a
     /// signal that drives structure, an attribute, an input value, or a component
-    /// prop — in which case the caller must [`rebuild`](Self::rebuild). Nothing is
+    /// prop, in which case the caller must [`rebuild`](Self::rebuild). Nothing is
     /// mutated on the `false` path.
     #[must_use]
     pub fn patch(&mut self, changed: &HashSet<String>) -> bool {
@@ -218,7 +218,7 @@ impl Document {
     }
 
     /// Re-evaluate the value bindings (text `{{ }}`, input values, `r-show`) whose
-    /// deps changed and write them into their nodes — no shape change.
+    /// deps changed and write them into their nodes, no shape change.
     fn patch_values(&mut self, changed: &HashSet<String>) {
         for binding in &self.registry.text {
             if binding.deps.is_disjoint(changed) {
@@ -246,7 +246,7 @@ impl Document {
                 }
             }
         }
-        // `r-show` only flips paint on/off — rewrite the `hidden` bool in place.
+        // `r-show` only flips paint on/off, rewrite the `hidden` bool in place.
         for binding in &self.registry.show {
             if binding.deps.is_disjoint(changed) {
                 continue;
@@ -256,7 +256,7 @@ impl Document {
                 node.hidden = !visible;
             }
         }
-        // `:src` — rewrite the image source and re-resolve it (path + intrinsic size).
+        // `:src`: rewrite the image source and re-resolve it (path + intrinsic size).
         for binding in &self.registry.src {
             if binding.deps.is_disjoint(changed) {
                 continue;
@@ -269,7 +269,7 @@ impl Document {
                 resolve_images(node, &self.base);
             }
         }
-        // `:options` — rewrite a select's option list in place.
+        // `:options`: rewrite a select's option list in place.
         for binding in &self.registry.options {
             if binding.deps.is_disjoint(changed) {
                 continue;
@@ -455,7 +455,7 @@ fn extract_imports(script: &str) -> (String, Vec<Import>) {
         let trimmed = line.trim();
         if let Some(rest) = trimmed.strip_prefix("use ") {
             // A `use` must be its own statement on its own line; a path with
-            // spaces or extra `;` is malformed — leave it for rhai to reject.
+            // spaces or extra `;` is malformed, leave it for rhai to reject.
             if let Some(path) = rest.strip_suffix(';').map(str::trim).filter(|p| {
                 !p.is_empty() && !p.contains(char::is_whitespace) && !p.contains(';')
             }) {
@@ -648,7 +648,7 @@ mod tests {
         assert_eq!(selection_of(&doc.root, "name"), None);
     }
 
-    /// Both caret and selection are re-applied after a rebuild — the whole-tree
+    /// Both caret and selection are re-applied after a rebuild, the whole-tree
     /// rebuild throws the tree away, so anything ephemeral must be put back.
     #[test]
     fn selection_survives_a_rebuild() {
@@ -670,7 +670,7 @@ mod tests {
         .expect("load")
     }
 
-    /// A display-only change patches the text node in place — no rebuild — so the
+    /// A display-only change patches the text node in place, no rebuild, so the
     /// caret in an unrelated input survives without any restore pass running.
     #[test]
     fn patch_updates_text_and_preserves_caret() {
@@ -701,8 +701,8 @@ mod tests {
         &doc.root.children[0].children[0].text.as_ref().unwrap().text
     }
 
-    /// A keystroke patches the input's shown value in place — `patch` returns true
-    /// (no rebuild needed) and the text updates — and the caret survives.
+    /// A keystroke patches the input's shown value in place, `patch` returns true
+    /// (no rebuild needed) and the text updates, and the caret survives.
     #[test]
     fn typing_patches_the_input_value_in_place() {
         let mut doc = Document::from_source(
@@ -724,7 +724,7 @@ mod tests {
         assert_eq!(input_text(&doc), "type…");
     }
 
-    /// `:options` rewrites a select's option list in place — no rebuild.
+    /// `:options` rewrites a select's option list in place, no rebuild.
     #[test]
     fn options_patch_in_place() {
         let mut doc = Document::from_source(
@@ -769,7 +769,7 @@ mod tests {
     }
 
     /// Toggling a checkbox reconciles just that node (its checked style + mark) in
-    /// place — and a caret on an input elsewhere survives with no whole-tree
+    /// place, and a caret on an input elsewhere survives with no whole-tree
     /// restore.
     #[test]
     fn toggle_reconciles_and_preserves_an_outside_caret() {
@@ -795,8 +795,8 @@ mod tests {
         assert_eq!(caret_of(&doc.root, "name"), Some(1));
     }
 
-    /// `r-show` flips the node's `hidden` flag in place — no shape change, no
-    /// rebuild — both ways.
+    /// `r-show` flips the node's `hidden` flag in place, no shape change, no
+    /// rebuild, both ways.
     #[test]
     fn r_show_toggles_hidden_in_place() {
         let mut doc = Document::from_source(
@@ -815,7 +815,7 @@ mod tests {
         assert!(!doc.root.children[0].hidden, "on=true → visible again");
     }
 
-    /// An `r-if` toggling patches its owning subtree in place — and a caret on an
+    /// An `r-if` toggling patches its owning subtree in place, and a caret on an
     /// input in a *different* subtree survives untouched, with no whole-tree
     /// `apply_focus`. This is the reconciliation payoff.
     #[test]
@@ -836,7 +836,7 @@ mod tests {
         let changed = doc.engine_mut().run_handler_tracked("show = true");
         assert!(doc.patch(&changed), "an r-if change reconciles in place");
         assert!(find_text(&doc.root, "secret"), "branch now shown");
-        // The input is in `.top`, an untouched subtree — its caret persists with no
+        // The input is in `.top`, an untouched subtree, its caret persists with no
         // whole-tree restore.
         assert_eq!(caret_of(&doc.root, "name"), Some(1), "outside caret survived");
 
@@ -864,7 +864,7 @@ mod tests {
     }
 
     /// A label with `for="id"` inherits the `@tap` of the input with that `id`, so
-    /// tapping the label toggles the input — even though the label doesn't wrap it.
+    /// tapping the label toggles the input, even though the label doesn't wrap it.
     #[test]
     fn label_for_inherits_the_targets_tap() {
         let doc = Document::from_source(
@@ -970,7 +970,7 @@ mod tests {
         assert_eq!(bg_rgb(&chips.children[1]), Some((0.0, 1.0, 0.0)), "second chip green");
     }
 
-    /// `:class` object/conditional form (`#{ hot: cond }`) — keys whose value is
+    /// `:class` object/conditional form (`#{ hot: cond }`), keys whose value is
     /// truthy become classes; a change flips them and reconciles.
     #[test]
     fn conditional_class_object_form() {
@@ -988,7 +988,7 @@ mod tests {
     }
 
     /// The shipped `css-showcase.rux` (the `:class`/`:style` chip demo) loads and
-    /// builds — a smoke test that the example stays valid.
+    /// builds, a smoke test that the example stays valid.
     #[test]
     fn css_showcase_example_builds() {
         let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/css-showcase.rux");
@@ -996,7 +996,7 @@ mod tests {
         assert!(find_text(&doc.root, "teal"), "a :style-coloured chip rendered");
     }
 
-    /// `:style` object form (`#{ background: c }`) — each entry a declaration.
+    /// `:style` object form (`#{ background: c }`), each entry a declaration.
     #[test]
     fn style_object_form() {
         let doc = Document::from_source(

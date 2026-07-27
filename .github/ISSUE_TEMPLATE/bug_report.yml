@@ -6,7 +6,7 @@ body:
     attributes:
       value: |
         Thanks for reporting. The **`.rux` file** is the most useful thing you
-        can give us — a layout bug is rarely reproducible from a description,
+        can give us. A layout bug is rarely reproducible from a description,
         and almost always reproducible from twenty lines of markup.
 
   - type: textarea

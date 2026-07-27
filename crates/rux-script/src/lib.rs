@@ -1,4 +1,4 @@
-//! Rux script tier — milestone M8.
+//! Rux script tier, milestone M8.
 //!
 //! Wraps a `rhai` engine that holds the app's live state (the script's top-level
 //! `let` variables persist in a `Scope`) and evaluates `{{ }}` bindings,
@@ -51,7 +51,7 @@ impl Builder {
         });
         // Record every variable read while dependency-tracking is active, then
         // fall through (`Ok(None)`) to normal scope resolution. `on_var` is
-        // flagged volatile upstream, not deprecated — hence the allow.
+        // flagged volatile upstream, not deprecated, hence the allow.
         #[allow(deprecated)]
         engine.on_var(|name, _index, _context| {
             READS.with(|r| {
@@ -110,7 +110,7 @@ pub struct Engine {
     engine: RhaiEngine,
     scope: Scope<'static>,
     funcs: AST,
-    /// Names of the top-level signals — the universe of reactive dependencies.
+    /// Names of the top-level signals, the universe of reactive dependencies.
     signals: HashSet<String>,
 }
 
@@ -155,7 +155,7 @@ impl Engine {
         self.eval(src, &[]).is_some()
     }
 
-    /// Evaluate an expression *and* report which signals it read — the binding's
+    /// Evaluate an expression *and* report which signals it read, the binding's
     /// dependency set. Only top-level signal names are returned; loop-locals and
     /// function parameters are filtered out. This is the read half of fine-grained
     /// reactivity: a binding subscribes to exactly the signals it touches.
@@ -193,7 +193,7 @@ impl Engine {
         (value.map(|v| v.is_truthy()).unwrap_or(false), deps)
     }
 
-    /// Run an `@tap` handler and report which signals it *changed* — the write
+    /// Run an `@tap` handler and report which signals it *changed*, the write
     /// half. Detected by diffing the signal values across the run, so it needs no
     /// cooperation from the handler source (which is arbitrary rhai). Returns an
     /// empty set if the handler errored or changed nothing.
@@ -302,18 +302,18 @@ mod tests {
         assert_eq!(e.eval_display("double(level)", &[]), "160");
     }
 
-    /// rhai backtick template literals interpolate `${…}` — this is what makes
+    /// rhai backtick template literals interpolate `${…}`, this is what makes
     /// `:style="`background: ${c}`"` work (no template-layer code in Rux).
     #[test]
     fn evaluates_backtick_string_interpolation() {
         let mut e = engine(); // has `level = 82`
-        // Strings interpolate exactly — the common `:style`/`:class` case.
+        // Strings interpolate exactly, the common `:style`/`:class` case.
         assert_eq!(
             e.eval_display("`background: ${c}`", &[("c".into(), Value::Text("teal".into()))]),
             "background: teal"
         );
         // WRINKLE: a whole-number signal renders through rhai's float default
-        // (`82.0`), NOT Rux's `to_display` (`82`), inside a backtick string — signals
+        // (`82.0`), NOT Rux's `to_display` (`82`), inside a backtick string, signals
         // are stored as f64. Valid CSS (`82.0px` works) but not pretty; interpolate
         // strings, or convert (`${level.to_int()}`), when you need `82`.
         assert_eq!(e.eval_display("`level is ${level}`", &[]), "level is 82.0");
@@ -345,7 +345,7 @@ mod tests {
         v
     }
 
-    /// A binding reports exactly the signals it read — the subscription set.
+    /// A binding reports exactly the signals it read, the subscription set.
     #[test]
     fn tracks_binding_dependencies() {
         let mut e = engine();
@@ -361,7 +361,7 @@ mod tests {
         assert_eq!(deps(&mut e, "level + items[0]", &[]), ["items", "level"]);
     }
 
-    /// A handler reports exactly the signals it changed — and nothing it left
+    /// A handler reports exactly the signals it changed, and nothing it left
     /// alone. This is what lets a write dirty only the affected bindings.
     #[test]
     fn tracks_handler_writes() {
