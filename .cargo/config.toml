@@ -1,7 +1,7 @@
 # Cargo configuration.
 #
-# The wasm32 flag exists for the browser build (the /learn playground). `ahash`
-# — pulled in by both lightningcss and rhai — depends on `getrandom` 0.3, which
+# The wasm32 flag exists for the browser build (the /learn playground). `ahash`,
+# pulled in by both lightningcss and rhai, depends on `getrandom` 0.3, which
 # refuses to build for wasm32-unknown-unknown unless a backend is named
 # explicitly. Enabling the crate's `wasm_js` *feature* is not sufficient on its
 # own; getrandom also requires this cfg. See

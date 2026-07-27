@@ -8,7 +8,7 @@ description = "A minimal TextMate grammar interpreter, so .rux highlights from t
 
 [dependencies]
 # Pure-Rust Oniguruma. The `cc` / `ffi` features (which would build the C
-# library) are off by default and must stay off — they are what stops this
+# library) are off by default and must stay off. They are what stops this
 # compiling for wasm32, and the browser is the whole reason this crate exists.
 ferroni = { version = "1.3", default-features = false }
 serde = { version = "1", features = ["derive"] }

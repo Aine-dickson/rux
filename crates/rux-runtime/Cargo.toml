@@ -14,7 +14,7 @@ rux-layout = { path = "../rux-layout" }
 rux-script = { path = "../rux-script" }
 
 # Not used directly. `ahash` (via lightningcss and rhai) needs `getrandom`, and
-# on wasm32 getrandom builds only when its `wasm_js` feature is on — feature
+# on wasm32 getrandom builds only when its `wasm_js` feature is on, and feature
 # unification means someone in the graph has to ask for it, so the runtime does,
 # on behalf of any wasm consumer. Paired with the rustflag in `.cargo/config.toml`;
 # both are required. No effect on native builds.
