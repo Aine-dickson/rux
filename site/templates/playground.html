@@ -59,7 +59,7 @@
 </div>
 
 <script type="module">
-  import init, { start, setSource, highlight, format, indentAfter }
+  import init, { start, setSource, highlight, format, indentAfter, resize }
     from "{{ get_url(path='wasm/rux_web.js') }}";
 
   const status = document.getElementById("pg-status");
@@ -114,6 +114,36 @@
 
   editor.value = sourceFromHash() ?? DEFAULT_SOURCE;
 
+  // The canvas has to fit the column it sits in. It cannot be scaled with CSS:
+  // taps are hit-tested against the canvas geometry, so a displayed size that
+  // differs from the surface size misaligns every tap by the ratio. So the size
+  // is computed here and pushed through winit, which restyles the canvas and
+  // reconfigures the surface together.
+  //
+  // 420x640 is the phone-shaped ideal. On anything narrower the width wins,
+  // because a canvas wider than its container is what produced the clipped
+  // "ello, world" on a real phone.
+  const stage = document.querySelector(".pg-stage");
+  const IDEAL = { w: 420, h: 640 };
+
+  function fit() {
+    const style = getComputedStyle(stage);
+    const pad = parseFloat(style.paddingLeft) + parseFloat(style.paddingRight);
+    const w = Math.max(240, Math.min(IDEAL.w, Math.floor(stage.clientWidth - pad)));
+    // Keep the aspect ratio when the width is the constraint, so a phone gets a
+    // phone-shaped canvas rather than a letterbox.
+    const h = Math.round(w * (IDEAL.h / IDEAL.w));
+    return { w, h };
+  }
+
+  // Set it before boot: `start` reads the canvas's own size to configure the
+  // first surface, so getting it right here avoids a resize on the first frame.
+  {
+    const { w, h } = fit();
+    canvas.style.width = w + "px";
+    canvas.style.height = h + "px";
+  }
+
   if (!navigator.gpu) {
     status.textContent = "needs WebGPU";
     status.classList.add("is-error");
@@ -136,6 +166,19 @@
           code.parentElement.scrollTop = editor.scrollTop;
           code.parentElement.scrollLeft = editor.scrollLeft;
         });
+
+        // Rotation, a window resize, or the panes reflowing at the breakpoint.
+        // ResizeObserver rather than a window listener, because the pane can
+        // change size without the window doing so.
+        let last = "";
+        const observer = new ResizeObserver(() => {
+          const { w, h } = fit();
+          const key = w + "x" + h;
+          if (key === last) return;
+          last = key;
+          resize(w, h);
+        });
+        observer.observe(stage);
 
         const errorBox = document.getElementById("pg-error");
         const run = () => {

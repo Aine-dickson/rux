@@ -88,6 +88,16 @@ mod web {
         s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
     }
 
+    /// Resize the canvas, in logical (CSS) pixels.
+    ///
+    /// The page calls this on load and whenever the pane changes size, which is
+    /// what makes the playground usable on a phone: the canvas fits the column
+    /// instead of overflowing it.
+    #[wasm_bindgen]
+    pub fn resize(width: f64, height: f64) {
+        rux_shell::resize_web(width, height);
+    }
+
     /// One indent level in the playground.
     const UNIT: &str = "  ";
 

@@ -553,7 +553,12 @@ pre code {
    stretched, since scaling it would lie about the layout being demonstrated. */
 .pg-stage {
   display: flex;
-  justify-content: center;
+  /* `safe` matters: with plain `center`, content wider than the container
+     overflows equally in both directions and the left edge becomes unreachable,
+     which is how a 420px canvas on a 360px phone rendered as "ello, world" with
+     the H cut off. `safe` falls back to flex-start rather than clipping. The
+     canvas is sized to fit in JS, so this is the backstop, not the mechanism. */
+  justify-content: safe center;
   padding: 14px;
   background: var(--bg);
   /* Scroll rather than scale on a narrow viewport. winit drives the canvas's
@@ -607,4 +612,17 @@ pre code {
   .pg { padding: 24px 20px 56px; }
   .pg-grid { grid-template-columns: minmax(0, 1fr); }
   .pg-editwrap, .pg-editor { min-height: 340px; }
+}
+
+/* Phones. Every horizontal pixel spent on chrome is one the canvas cannot have,
+   and the canvas is the point of the page. */
+@media (max-width: 560px) {
+  .pg { padding: 16px 10px 40px; }
+  .pg-head h1 { font-size: 1.6rem; }
+  .pg-stage { padding: 8px; }
+  .pg-bar { padding: 8px; }
+  .pg-editwrap, .pg-editor { min-height: 260px; }
+  /* The output pane first: someone arriving on a phone should see Rux running
+     before they see its source. */
+  .pg-grid { display: flex; flex-direction: column-reverse; }
 }

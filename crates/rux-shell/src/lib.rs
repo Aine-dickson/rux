@@ -57,6 +57,11 @@ enum RuxEvent {
     /// file watcher. `String` is `Send`, so this one can travel in the event.
     #[cfg(target_arch = "wasm32")]
     SetSource(String),
+    /// The host page's canvas container changed size, in logical pixels. Web
+    /// only: on a desktop the window manager drives this, but in a page the
+    /// layout does, and the canvas has to be told rather than asked.
+    #[cfg(target_arch = "wasm32")]
+    Resize(f64, f64),
 }
 
 /// Taps closer than this (in physical pixels) between press and release still
@@ -1482,6 +1487,21 @@ impl ApplicationHandler<RuxEvent> for App {
 
             #[cfg(target_arch = "wasm32")]
             RuxEvent::SetSource(source) => self.set_source(source),
+
+            // Asking winit to resize restyles the canvas and then reports a
+            // `Resized`, which reconfigures the surface through the same path a
+            // desktop window resize takes. Going through winit rather than
+            // setting CSS directly is what keeps the canvas's displayed size and
+            // its surface size equal: taps are hit-tested against that geometry,
+            // so any divergence misaligns every tap by the ratio.
+            #[cfg(target_arch = "wasm32")]
+            RuxEvent::Resize(w, h) => {
+                if let Some(state) = self.state.as_ref() {
+                    let _ = state
+                        .window
+                        .request_inner_size(winit::dpi::LogicalSize::new(w.max(1.0), h.max(1.0)));
+                }
+            }
         }
         self.request_redraw();
     }
@@ -1688,6 +1708,22 @@ pub fn start_web(canvas: web_sys::HtmlCanvasElement, source: String, font: Vec<u
         web_sys::console::error_1(&"rux: the supplied font had no usable faces, so text will not render".into());
     }
     event_loop.spawn_app(app);
+}
+
+/// Resize the canvas to `w` x `h` logical pixels. No-op before `start_web`.
+///
+/// The host page owns the layout, so it has to push the size in. Everything
+/// downstream (canvas styling, surface reconfigure, re-layout at the new
+/// viewport, `@media` re-evaluation once v0.4 lands) follows from winit's
+/// `Resized`.
+#[cfg(target_arch = "wasm32")]
+pub fn resize_web(w: f64, h: f64) {
+    WEB_SIZE.with(|s| *s.borrow_mut() = (w, h));
+    WEB_PROXY.with(|p| {
+        if let Some(proxy) = p.borrow().as_ref() {
+            let _ = proxy.send_event(RuxEvent::Resize(w, h));
+        }
+    });
 }
 
 /// Replace the running document's source, returning a parse error if the source
