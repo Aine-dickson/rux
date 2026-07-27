@@ -1548,20 +1548,63 @@ impl ApplicationHandler<RuxEvent> for App {
                     self.update_cursor();
                 }
             }
-            // Touch drags the content itself: the finger stays on the pixel it
-            // grabbed, so the content follows it and the offset moves the other way.
+            // Touch follows the same path as the mouse: press, drag, release.
+            // It used to only scroll, which meant a finger could never tap
+            // anything. That went unnoticed because there was no touch hardware
+            // to try it on, and it is the first thing someone on a phone does.
+            //
+            // The one behaviour touch does *not* share: dragging on content that
+            // is neither a scrollbar nor text scrolls that content directly. The
+            // finger stays on the pixel it grabbed, so the content follows it and
+            // the offset moves the other way.
             WindowEvent::Touch(touch) => {
+                let at = (touch.location.x, touch.location.y);
                 let scale = self.scale();
-                let here = ((touch.location.x / scale) as f32, (touch.location.y / scale) as f32);
+                let here = ((at.0 / scale) as f32, (at.1 / scale) as f32);
                 match touch.phase {
-                    TouchPhase::Started => self.touch = Some(here),
+                    TouchPhase::Started => {
+                        // There is no hover on a touchscreen, so the pointer only
+                        // exists while a finger is down and has to be set here.
+                        // Every helper below reads it.
+                        self.pointer = at;
+                        self.touch = Some(here);
+                        if !self.press_scrollbar(at) && !self.press_text(at) {
+                            self.press = Some(at);
+                        }
+                    }
                     TouchPhase::Moved => {
-                        if let Some((lx, ly)) = self.touch.replace(here) {
-                            let at = (touch.location.x, touch.location.y);
+                        self.pointer = at;
+                        if self.bar_drag.is_some() {
+                            self.drag_scrollbar(at);
+                        } else if self.text_drag {
+                            self.drag_text(at);
+                        } else if let Some((lx, ly)) = self.touch.replace(here) {
                             self.scroll_at(at, lx - here.0, ly - here.1);
                         }
                     }
-                    TouchPhase::Ended | TouchPhase::Cancelled => self.touch = None,
+                    TouchPhase::Ended => {
+                        self.pointer = at;
+                        self.touch = None;
+                        if self.bar_drag.take().is_some() {
+                            return;
+                        }
+                        if std::mem::take(&mut self.text_drag) {
+                            return;
+                        }
+                        // A finger wanders more than a mouse, but the slop that
+                        // separates a tap from a drag is the same idea.
+                        if let Some((sx, sy)) = self.press.take() {
+                            if (at.0 - sx).hypot(at.1 - sy) <= TAP_SLOP {
+                                self.dispatch_tap(at.0, at.1);
+                            }
+                        }
+                    }
+                    TouchPhase::Cancelled => {
+                        self.touch = None;
+                        self.press = None;
+                        self.bar_drag = None;
+                        self.text_drag = false;
+                    }
                 }
             }
             WindowEvent::ModifiersChanged(mods) => {

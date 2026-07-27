@@ -570,6 +570,16 @@ pre code {
 .pg-stage canvas {
   flex: none;
   border-radius: 8px;
+  /* The canvas is an app, not a document. Without this the browser claims the
+     gesture for page panning and Rux never sees the drag, so its own scrolling
+     never works on a touchscreen. The cost is that a finger starting on the
+     canvas cannot scroll the page; there is plenty of page either side of it. */
+  touch-action: none;
+  /* No long-press text selection and no blue flash on tap: both belong to a
+     document, and this is a running application. */
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-tap-highlight-color: transparent;
 }
 
 .pg-note {
