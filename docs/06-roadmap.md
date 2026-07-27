@@ -923,7 +923,11 @@ self-contained-vs-`source.css` decision).
 
 ---
 
-## Further out (post-v0.4, sequenced but not versioned yet)
+## Further out: the original three (recorded 2026-07-18)
+
+> Superseded as a *sequence* by the version plan below, which folds these
+> three in and says where each landed. Kept because the engine notes under
+> item 3 are the most detailed record of why the rhai fork exists.
 
 Bigger themes queued after the v0.4 Known-ceilings pool drains. Ordered; each is a
 milestone in its own right, not a Friday slice. Recorded 2026-07-18.
@@ -981,3 +985,177 @@ milestone in its own right, not a Friday slice. Recorded 2026-07-18.
    test of how painful carrying a fork actually is. Both motivators point the same
    way: the strict-bindings mode and shared-cell signals are the two changes the
    fork exists to carry.
+
+---
+
+## After v0.4: the version plan
+
+Written 2026-07-27, once the v0.4 pool had drained. Each heading below is a
+milestone with a theme, drawn from several Friday point-releases, in the order
+they unblock each other. The three "Further out" items recorded on 2026-07-18
+are folded in, re-sequenced where the reason for moving them is given.
+
+A version ships when its theme is true, not when every bullet is ticked.
+Anything that slips moves to the next one rather than holding the release.
+
+---
+
+### v0.5: usable by someone who is not you
+
+Everything so far has been built and judged by the person who wrote it. This
+milestone is about a stranger being able to install Rux, get told what is wrong
+with their file, and format it the same way we do.
+
+1. **Publish to crates.io** as `ruxlang`, with the `rux-*` crates beneath it.
+   The rename already landed on this branch. What is left is per-crate metadata
+   (description, keywords, categories, README), checking each crate builds on
+   docs.rs, and deciding which of the thirteen are public API and which are
+   implementation detail nobody should depend on.
+2. **`rux fmt` as a CLI subcommand** (Tier 1 in the dev-tooling section). This
+   also closes a duplication that has already cost us: the re-indenter exists
+   twice, in `editors/vscode/extension.js` and in `crates/rux-fmt`, and the two
+   drifted within a week. The JS copy missed `<image>` in its void-tag list
+   (inherited from HTML, which has `img`), so an `<image src="...">` written
+   without a self-closing slash over-indented everything after it. The
+   extension should shell out to `rux fmt` and the JS copy should go.
+3. **`rux check`**: the machine-readable half of the dev overlay, flagged as
+   still-open in v0.4. A non-zero exit and parseable diagnostics are what let
+   CI and an editor use the same errors the overlay shows.
+4. **The playground catches up to v0.4.** It ships on `main` today running the
+   v0.3 runtime, so it reports parse failures with no line or column and shows
+   no warnings at all. Wiring the v0.4 overlay through `rux-web` gives the page
+   the same diagnostics the desktop window gets, which is what the playground
+   was for.
+5. **Locate the warnings.** CSS warnings still have no line numbers, and the
+   overlay cannot be dismissed. Both are small and both are felt immediately.
+
+### v0.6: apps bigger than one screen
+
+Everything Rux can express today fits in one file and one screen. This is the
+set of things you hit the moment that stops being true.
+
+1. **External CSS include** (`<style src="...">` or an `@import`), already
+   listed as expected but never scheduled. A shared palette currently has to be
+   pasted into every file.
+2. **Component slots and events.** Props go in; nothing comes out. A component
+   cannot render caller-supplied children, and cannot tell its caller that
+   something happened, so every piece of state gets hoisted to the root. This
+   is the single biggest ceiling on component reuse and it is not on any list
+   today.
+3. **A router.** `docs/02-spec.md` already promises `role="link"` with
+   `to="/path"` "handled by the router". There is no router. Either build one or
+   strike the promise.
+4. **Keyed `r-for`.** Reconciliation is by count, so reordering a list rebuilds
+   more rows than it needs to.
+5. **Computed values and effects.** A `{{ }}` expression is the only "computed"
+   there is, and there is no way to run a side effect when a signal changes.
+
+### v0.7: the script tier, and the fork
+
+The two fork motivators recorded above are both real and both point the same
+way. This milestone is where Rux stops being stock rhai.
+
+1. **Strict bindings** (motivator b). A missing map property evaluates to `()`
+   in silence, which is exactly the failure the dev-overlay work exists to
+   kill. This is a lookup-failure path rather than a reactivity change, so it is
+   the cheap first divergence and a good test of how painful carrying a fork
+   actually is. Do this one first for that reason.
+2. **Shared-cell signals** (motivator a), so a function can mutate state. This
+   retires the single biggest trap in the language: `/learn` spends a callout
+   on it, `docs/05-as-built.md` calls it "the single biggest trap", and every
+   handler has to be written inline because of it.
+3. **Element access from script**, the DOM-like handle. Sequenced after
+   reactivity for the reason already recorded: script mutations must feed the
+   same subscription graph or they desync.
+4. **Script documentation**, last, once the surface has stopped moving.
+
+### v0.8: mobile
+
+The README has said "desktop first, then mobile and embedded" since the
+beginning, and there is not one line of mobile code in the repo. Four releases
+have all been desktop. This milestone either makes the claim true or it comes
+out of the pitch.
+
+1. **Android and iOS**, through winit and wgpu, which both support them. The
+   wasm work in v0.5 is a useful rehearsal: it already forced the shell to stop
+   assuming a filesystem, a blocking main thread and a system clipboard.
+2. **Touch for real.** Kinetic scrolling is unimplemented and touch drag is
+   marked untested because there is no touch hardware here.
+3. **Native pickers** for `<input type="select">`, promised in the spec and
+   currently a drawn dropdown.
+4. **Safe areas, orientation, density.** `@media (orientation)` already exists
+   from v0.4, which helps.
+
+### v0.9: text, and the long tail
+
+1. **True inline text flow**, the standing known ceiling. Two `<text>` siblings
+   cannot share a line, so bold inside a sentence is impossible. taffy has no
+   inline formatting context, so this is our own line-breaker over parley: a
+   real project, and the reason it has never fitted in a weekly slot.
+2. **Text editing gaps**: word-wise movement, triple-click line select,
+   drag-and-drop of a selection, `::selection` styling.
+3. **Scrolling gaps**: click-on-track paging, scrollbar hover and fade,
+   independent `overflow-x` / `overflow-y`, `overscroll-behavior`.
+4. **CSS long tail**: per-side border colours, `position: sticky` and `fixed`.
+
+### v1.0: freeze
+
+1. **`rux build`.** There is still no answer to "I made a thing, how do I give
+   it to someone". A Rux app today is a checkout plus `cargo run`. This may
+   deserve to move earlier; see below.
+2. **Re-derive the spec.** `docs/02-spec.md` describes itself as the v0.1
+   design surface, not the built surface, and is published only as history.
+   1.0 means the spec and the runtime agree again.
+3. **`rux-lsp`** (Tier 2): go-to-definition, hover, completion, diagnostics
+   from `rux check`.
+4. **TailwindCSS**, if it still looks worth it. See below.
+
+---
+
+### Worth deciding early
+
+Things that are not scheduled above but that change the plan if the answer is
+not what we assume.
+
+- **Packaging may belong in v0.6, not v1.0.** Nobody can build something real
+  with Rux until they can hand the result to someone else. Everything in v0.6
+  and v0.7 is aimed at people building real things, which is awkward if they
+  cannot ship what they build. The counter-argument is that the language should
+  stop moving first, and that is why it currently sits at 1.0.
+
+- **Tailwind was first on the old list; here it is last.** It is a layer over a
+  CSS engine that already works, and it mostly pays off for people already
+  fluent in it. Components, a router, mutable-from-function state and mobile
+  all unblock things that are impossible today rather than making possible
+  things terser. The unresolved question underneath it has not changed: a
+  curated utility set generated into Rux CSS is self-contained, while a real
+  Tailwind pass pulls in the Node toolchain the project has avoided everywhere
+  else, including in the web playground.
+
+- **`docs/05-as-built.md` is maintained by hand and has been wrong.** It
+  claimed the whole-tree rebuild was the largest remaining gap after v0.3 had
+  already deleted it, and that was found by accident. The honored-CSS set is
+  derivable from `rux-style`; generating the matrix would make the reference
+  true by construction. This is a small job that removes a whole class of
+  quiet error.
+
+- **`docs/03-guide.md` should be deleted.** It opens by saying it does not work
+  as written, it is excluded from the site build, and `/learn` now covers the
+  same ground against the runtime that exists. Keeping a known-wrong tutorial
+  in the repo costs more than the history is worth.
+
+- **There is no test story for app authors.** The runtime has thirty-six test
+  binaries; somebody writing a `.rux` file has nothing. If Rux wants apps, at
+  some point "how do I test this screen" needs an answer better than "open it
+  and look", which is the standing rule for *our* work precisely because it is
+  hard to automate.
+
+- **The host still needs a rebuild.** Template, style and script hot-reload;
+  the compiled host does not. Dynamic-library reload would take the last
+  rebuild out of the loop, and it is the kind of thing that is much easier to
+  design in early than to retrofit.
+
+- **`host::` is unrestricted.** That is fine while every `.rux` file is one you
+  wrote. It stops being fine the moment files are shared, fetched, or pasted
+  from a playground link. The browser build is sandboxed by wasm and safe by
+  accident rather than by design; native is not sandboxed at all.
