@@ -422,6 +422,9 @@ pre code {
 .pg-pane {
   display: flex;
   flex-direction: column;
+  /* Without this a pane will not shrink below its content, which on a phone
+     means the canvas pushes the page wider than the screen. */
+  min-width: 0;
   background: var(--surface);
   border: 1px solid var(--line);
   border-radius: var(--radius);
@@ -626,13 +629,17 @@ pre code {
 
 /* Phones. Every horizontal pixel spent on chrome is one the canvas cannot have,
    and the canvas is the point of the page. */
+/* Phones. Every horizontal pixel spent on chrome is one the canvas cannot have.
+   Note what is NOT here: any change to `.pg-grid`. It stays a grid with
+   `minmax(0, 1fr)` columns, because that zero minimum is what lets the column
+   shrink below the canvas's own width. Switching it to flex re-introduced the
+   `min-width: auto` default, the pane refused to shrink under a 420px canvas,
+   the page scrolled sideways, and the sizing code then measured that overflowed
+   width and kept picking 420. Do not swap the grid out. */
 @media (max-width: 560px) {
   .pg { padding: 16px 10px 40px; }
   .pg-head h1 { font-size: 1.6rem; }
   .pg-stage { padding: 8px; }
   .pg-bar { padding: 8px; }
-  .pg-editwrap, .pg-editor { min-height: 260px; }
-  /* The output pane first: someone arriving on a phone should see Rux running
-     before they see its source. */
-  .pg-grid { display: flex; flex-direction: column-reverse; }
+  .pg-editwrap, .pg-editor { min-height: 380px; }
 }

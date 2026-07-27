@@ -130,9 +130,13 @@
     const style = getComputedStyle(stage);
     const pad = parseFloat(style.paddingLeft) + parseFloat(style.paddingRight);
     const w = Math.max(240, Math.min(IDEAL.w, Math.floor(stage.clientWidth - pad)));
-    // Keep the aspect ratio when the width is the constraint, so a phone gets a
-    // phone-shaped canvas rather than a letterbox.
-    const h = Math.round(w * (IDEAL.h / IDEAL.w));
+    // Keep the 420x640 ratio when width is the constraint, so a phone gets a
+    // phone-shaped canvas. But cap the height against the viewport: at the full
+    // ratio a narrow screen gets a canvas taller than the screen itself, which
+    // reads as a large empty box because most demos are short.
+    const ratio = Math.round(w * (IDEAL.h / IDEAL.w));
+    const room = Math.round(window.innerHeight * 0.62);
+    const h = Math.max(320, Math.min(ratio, Math.max(room, 320)));
     return { w, h };
   }
 
@@ -168,17 +172,21 @@
         });
 
         // Rotation, a window resize, or the panes reflowing at the breakpoint.
-        // ResizeObserver rather than a window listener, because the pane can
-        // change size without the window doing so.
         let last = "";
-        const observer = new ResizeObserver(() => {
+        const refit = () => {
           const { w, h } = fit();
           const key = w + "x" + h;
           if (key === last) return;
           last = key;
           resize(w, h);
-        });
-        observer.observe(stage);
+        };
+        // ResizeObserver rather than only a window listener, because the pane can
+        // change size without the window doing so. `orientationchange` is here
+        // too: innerHeight feeds the height cap, and a rotation changes it
+        // without necessarily changing the pane's width.
+        new ResizeObserver(refit).observe(stage);
+        window.addEventListener("orientationchange", () => setTimeout(refit, 100));
+        refit();
 
         const errorBox = document.getElementById("pg-error");
         const run = () => {
