@@ -39,7 +39,7 @@ whole runtime is about 7,000 lines.
 Two crates sit alongside rather than in the flow: **rux-script** (the [rhai]
 engine holding state and running `@tap` handlers) and **rux-text** ([parley]
 shaping, measuring and drawing text). **rux-runtime** owns the `Document` that
-ties it together — load, resolve imports, build the engine, rebuild the tree.
+ties it together: load, resolve imports, build the engine, rebuild the tree.
 
 | Crate | Job |
 |---|---|
@@ -58,7 +58,7 @@ ties it together — load, resolve imports, build the engine, rebuild the tree.
 `rux-style` runs real [lightningcss] over your `<style>` block, then applies its
 own cascade: specificity, source order, and inheritance for the properties that
 inherit (`color`, `font-size`, `font-family`). The result is a `Style` struct per
-node, which `rux-layout` maps onto [taffy] — the same layout engine Dioxus and
+node, which `rux-layout` maps onto [taffy], the same layout engine Dioxus and
 Bevy use.
 
 That mapping is the honest boundary of "it's just CSS." Taffy implements flexbox,
@@ -71,7 +71,7 @@ included:
 - A word longer than its box **overflows** unless you set `overflow-wrap:
   break-word`.
 
-Those aren't Rux quirks — that's CSS. What taffy has no notion of is **inline text
+Those aren't Rux quirks. That's CSS. What taffy has no notion of is **inline text
 flow**: there's no inline formatting context, so text can't wrap around a floating
 image and `display: inline` isn't real. Everything defaults to `display: block`,
 and you reach for `display: flex` to lay things out.
@@ -84,7 +84,7 @@ everywhere:
 
 **Rux trims leading.** A line box is `ascent + descent`, not the font's full line
 height, and the baseline sits at `top + ascent`. Text therefore hugs its box, and
-`padding` reads equally on all four sides — which is what you want when you're
+`padding` reads equally on all four sides, which is what you want when you're
 styling with CSS. Set `line-height` and you get the normal behaviour back.
 
 The cost is that anything positioning itself against drawn glyphs must use *our*
@@ -95,15 +95,15 @@ every wrapped line.
 
 ## Painting
 
-`rux-layout` doesn't produce a widget tree — it produces a flat, ordered list of
+`rux-layout` doesn't produce a widget tree. It produces a flat, ordered list of
 paint items: `Rect`, `Text`, `Image`, `Shadow`, `Tick`, and the bracket pairs
 `PushClip`/`PopClip`, `PushTransform`/`PopTransform`, `PushOpacity`/`PopOpacity`.
 `rux-paint` walks that list into a [vello] `Scene`, keeping a transform stack so a
 transformed element carries its subtree with it.
 
 Vello renders the scene with compute shaders on the GPU via [wgpu]. Rux is
-**event-driven**: it paints in response to a redraw request — resize, tap,
-keystroke, reload — not on a frame clock. An idle Rux window uses no CPU. The one
+**event-driven**: it paints in response to a redraw request (resize, tap,
+keystroke, reload) rather than on a frame clock. An idle Rux window uses no CPU. The one
 exception is the caret, which blinks on a 530 ms timer while an input is focused,
 and stops the timer the moment it isn't.
 
@@ -123,11 +123,11 @@ compiled Rust through a `host::` registry, which needs a rebuild. That split is
 deliberate: script is glue, Rust is the engine.
 
 Here is the crude part, stated plainly: **any signal change rebuilds the entire
-tree.** Not a diff, not a subscription — the whole thing, then a fresh layout.
+tree.** Not a diff, not a subscription: the whole thing, then a fresh layout.
 
 At these sizes it's imperceptible, and it's simple to reason about. But it means
-every piece of *ephemeral* UI state — the caret, the selection, scroll offsets,
-which dropdown is open, where keyboard focus is — is thrown away on every
+every piece of *ephemeral* UI state (the caret, the selection, scroll offsets,
+which dropdown is open, where keyboard focus is) is thrown away on every
 keystroke and has to be **put back by hand** afterwards. There's a named restore
 pass for each one. This has already produced one real bug (the caret stayed
 visible in the input you'd just left, because the restore pass only ever *set* a
@@ -140,8 +140,8 @@ doc and the code.
 
 ## Hot reload
 
-A [notify] watcher watches the file's directory recursively — so imported
-components reload too — and wakes the event loop through an `EventLoopProxy` on
+A [notify] watcher watches the file's directory recursively, so imported
+components reload too, and wakes the event loop through an `EventLoopProxy` on
 any `.rux` change. The `Document` reloads, rebuilds, repaints. If the new file
 fails to parse, the last good document stays on screen and the error goes to
 stderr rather than blanking the window.
@@ -153,7 +153,7 @@ on the list.
 
 ## Why compose instead of build
 
-Every heavy part of Rux is someone else's crate — taffy, parley, vello, wgpu,
+Every heavy part of Rux is someone else's crate: taffy, parley, vello, wgpu,
 winit, lightningcss, rhai. That's Law 4, and it's why a UI language with a GPU
 renderer fits in ~7,000 lines. It also means Rux inherits their bugs and their
 release cadences, which is a trade worth making: those crates are maintained by

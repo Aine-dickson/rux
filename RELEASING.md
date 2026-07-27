@@ -1,6 +1,6 @@
 # Releasing Rux
 
-Every release ships with a blog post. **No post, no tag** — the post is not
+Every release ships with a blog post. **No post, no tag**. The post is not
 paperwork after the fact, it's part of the release, and writing it is often where
 you notice the release isn't actually ready.
 
@@ -12,7 +12,7 @@ This file is the checklist. It's short on purpose.
 > `site/content/blog/`. All three, or none.
 
 The blog is not a changelog. A changelog says *what changed*; a Rux release post
-says **what landed, what it cost, and what's still broken** — in that order, in
+says **what landed, what it cost, and what's still broken**, in that order, in
 prose. The two existing posts (`v0-1-0.md`, `v0-2-0.md`) are the reference for
 tone and length. If you're tempted to write "various fixes and improvements,"
 stop: that sentence means you haven't found the story yet.
@@ -20,7 +20,7 @@ stop: that sentence means you haven't found the story yet.
 Two things every post must contain, because they're the two things this project
 keeps learning:
 
-1. **The bug you only found by looking.** Every release so far had one — a defect
+1. **The bug you only found by looking.** Every release so far had one: a defect
    the test suite was green through, obvious within seconds in the window. Name
    it. It's the most useful paragraph for the next person (usually you).
 2. **What the release is *not*.** The honest limits, as plainly as the wins. This
@@ -31,7 +31,7 @@ keeps learning:
 ### 1. Land the work
 
 - [ ] Every feature has been **driven in the window**, not just tested. This is
-      the standing rule — see [`docs/06-roadmap.md`](docs/06-roadmap.md). Tests
+      the standing rule; see [`docs/06-roadmap.md`](docs/06-roadmap.md). Tests
       protect against regression; they don't tell you it works.
 - [ ] `cargo test` is green, and the count in the post matches reality.
 - [ ] `cargo build` is warning-clean.
@@ -71,7 +71,7 @@ keeps learning:
 
 ## Building the site
 
-Zola is a single Rust binary — no JS toolchain, which is the point. Get it from
+Zola is a single Rust binary, with no JS toolchain, which is the point. Get it from
 <https://www.getzola.org/documentation/getting-started/installation/>, then:
 
 ```bash

@@ -3,14 +3,14 @@
     <text class="title">Scrolling</text>
     <text class="hint">Wheel, drag a scrollbar thumb, or point at a box and use the arrows, PageUp/PageDown, Home/End. Shift+wheel scrolls sideways.</text>
 
-    <text class="label">A row of cards — scrolls sideways</text>
+    <text class="label">A row of cards that scrolls sideways</text>
     <view class="strip">
       <view class="card" r-for="item in items" @tap="picked = item">
         <text class="name">{{ item }}</text>
       </view>
     </view>
 
-    <text class="label">Wide and tall — scrolls both ways</text>
+    <text class="label">Wide and tall, scrolls both ways</text>
     <view class="grid">
       <view class="band" r-for="row in rows">
         <view class="cell" r-for="n in cells">

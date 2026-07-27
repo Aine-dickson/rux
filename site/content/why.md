@@ -10,8 +10,8 @@ that." The web already has one, and a lot of people already know it: CSS. Rux's
 whole bet is that you can keep that authoring model and drop everything else the
 browser brings with it.
 
-> **The web's authoring ergonomics — literal CSS, a handful of HTML-like elements
-> — but pure Rust, GPU-native, with no JavaScript and no new DSL.**
+> **The web's authoring ergonomics (literal CSS, a handful of HTML-like
+> elements) but pure Rust, GPU-native, with no JavaScript and no new DSL.**
 
 That sentence is the product. Everything below is either a consequence of it or an
 honest admission about it.
@@ -22,7 +22,7 @@ This is the load-bearing rule, and the one most likely to change how your code
 looks. **Markup says what content *is*. CSS says where it goes and how it looks.**
 
 There is no `<Column>`, no `<Row>`, no `<Padding>`, no `<Center>`, no `<Spacer>`,
-no `<SizedBox>`. Those aren't elements — they're `display: flex`,
+no `<SizedBox>`. Those aren't elements. They're `display: flex`,
 `flex-direction`, `padding`, `justify-content`, and `gap` on a plain `<view>`.
 
 A widget-tree toolkit makes you build this to center a padded column of two
@@ -62,21 +62,21 @@ Rux makes you write this:
 }
 ```
 
-The markup is the *content* — two pieces of text — and it stays that way no matter
+The markup is the *content*, two pieces of text, and it stays that way no matter
 how the design changes. Restyling doesn't re-shape the tree. That's the ceremony
 Law 1 is meant to kill, and it's the main thing Rux is actually claiming.
 
 ## The other three laws
 
-**Law 2 — capabilities, not widgets.** Elements emit a fixed set of events; you
+**Law 2: capabilities, not widgets.** Elements emit a fixed set of events; you
 bind the ones you need. There's no sprawling widget catalogue to learn, and no
 `FancyButton` that's just a button with opinions.
 
-**Law 3 — few elements, `role=` for meaning.** Six elements (`screen`, `view`,
+**Law 3: few elements, `role=` for meaning.** Six elements (`screen`, `view`,
 `text`, `image`, `button`, `input`) cover the ground. Semantics come from `role=`,
 never from layout.
 
-**Law 4 — stay close to Rust.** Rux is glue over the best crates in the ecosystem
+**Law 4: stay close to Rust.** Rux is glue over the best crates in the ecosystem
 rather than a from-scratch engine: [taffy] for layout, [parley] for text, [vello]
 for painting, [lightningcss] for CSS, [rhai] for script, Leptos-style signals for
 state. Fewer things to reinvent, and each one is maintained by people who care
@@ -89,7 +89,7 @@ will notice.
 
 **"GPU-rendered UI without a browser" is not a new idea.** Flutter does it. Slint
 does it. Lynx does it. If you came here expecting a novel rendering architecture,
-there isn't one — Rux composes existing Rust crates, and every one of those
+there isn't one. Rux composes existing Rust crates, and every one of those
 engines is more mature, more tested, and more complete than Rux is or will be for
 a long time.
 

@@ -4,7 +4,7 @@
 
 Be decent to people. Criticise code, not the person who wrote it. Assume the
 other person is competent and acting in good faith until you have real evidence
-otherwise — and if you do have it, report it rather than litigating in a thread.
+otherwise, and if you do have it, report it rather than litigating in a thread.
 
 ## The standard
 
@@ -20,7 +20,7 @@ not acceptable in issues, pull requests, discussions, or any other project space
 ## Technical disagreement is not a conduct problem
 
 Rux is opinionated and its design laws rule things out on purpose. Arguing
-forcefully that a decision is wrong — with reasons — is welcome and is how the
+forcefully that a decision is wrong, with reasons, is welcome and is how the
 design improves. What is not welcome is making it personal, repeating a rejected
 argument indefinitely, or treating a maintainer's "no" as an insult.
 

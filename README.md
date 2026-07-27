@@ -3,12 +3,12 @@
 </h1>
 
 <p align="center">
-  A pure-Rust, web-flavored UI language that renders natively on the GPU — no browser, no webview.
+  A pure-Rust, web-flavored UI language that renders natively on the GPU, with no browser and no webview.
 </p>
 
 ---
 
-You write a single `.rux` file with familiar `<template>` / `<style>` / `<script>` sections and **literal CSS**. Rux lays it out with a real flexbox/grid engine and paints it in a native window — and reloads live as you edit.
+You write a single `.rux` file with familiar `<template>` / `<style>` / `<script>` sections and **literal CSS**. Rux lays it out with a real flexbox/grid engine and paints it in a native window, reloading live as you edit.
 
 ```rux
 <template>
@@ -61,11 +61,11 @@ You write a single `.rux` file with familiar `<template>` / `<style>` / `<script
 cargo run -p rux-cli -- examples/form.rux
 ```
 
-The examples — `form`, `list`, `gallery`, `dashboard`, `battery` — cover inputs, scrolling, images, a responsive grid, and a fixed-width card. Edit any of them with the window open and it hot-reloads.
+The examples (`form`, `list`, `gallery`, `dashboard`, `battery`) cover inputs, scrolling, images, a responsive grid, and a fixed-width card. Edit any of them with the window open and it hot-reloads.
 
 ## Editor support (VS Code)
 
-A `.rux` VS Code extension ships in this repo — **syntax highlighting** for all three sections, **snippets**, **folding**, a basic **Format Document** re-indenter (`Shift+Alt+F`), and a **file icon**. Install the prebuilt package (no build step):
+A `.rux` VS Code extension ships in this repo: **syntax highlighting** for all three sections, **snippets**, **folding**, a basic **Format Document** re-indenter (`Shift+Alt+F`), and a **file icon**. Install the prebuilt package (no build step):
 
 ```bash
 code --install-extension editors/vscode/rux-0.1.0.vsix
@@ -83,9 +83,9 @@ See [`docs/05-as-built.md`](docs/05-as-built.md) for the exact honored-CSS set a
 
 Rux is a bet on one specific combination that nothing else quite lands:
 
-> **The web's authoring ergonomics — literal CSS, a handful of HTML-like elements — but pure Rust, GPU-native, with no JavaScript and no new DSL.**
+> **The web's authoring ergonomics (literal CSS, a handful of HTML-like elements) but pure Rust, GPU-native, with no JavaScript and no new DSL.**
 
-The guiding rule (Law 1) is that **layout never appears in markup**. There is no `<Column>`, `<Padding>`, `<Center>`, or `<Spacer>` — those are `display: flex`, `padding`, `justify-content`, `gap` on a `<view>`. That single rule is what kills the wrapper-nesting ceremony that keeps people off native UI.
+The guiding rule (Law 1) is that **layout never appears in markup**. There is no `<Column>`, `<Padding>`, `<Center>`, or `<Spacer>`. Those are `display: flex`, `padding`, `justify-content`, `gap` on a `<view>`. That single rule is what kills the wrapper-nesting ceremony that keeps people off native UI.
 
 | | authoring model | language | renderer |
 |---|---|---|---|
@@ -95,22 +95,22 @@ The guiding rule (Law 1) is that **layout never appears in markup**. There is no
 | Slint | its own `.slint` DSL (QML-like) | Rust/C++/JS | own, GPU/software |
 | Lynx | web-like, multi-framework | JS | own |
 
-If you want to ship a production app today, those mature engines are the right call. Rux exists to explore whether the *CSS-authored, Rust-native, no-DSL, no-JS* corner is a nicer place to build — and it's early (`0.x`, expect rough edges). The full argument is in [`docs/01-rationale.md`](docs/01-rationale.md).
+If you want to ship a production app today, those mature engines are the right call. Rux exists to explore whether the *CSS-authored, Rust-native, no-DSL, no-JS* corner is a nicer place to build, and it's early (`0.x`, expect rough edges). The full argument is in [`docs/01-rationale.md`](docs/01-rationale.md).
 
 ## Documentation
 
-- [`01-rationale.md`](docs/01-rationale.md) — why Rux is shaped this way (the four laws)
-- [`02-spec.md`](docs/02-spec.md) — the language spec
-- [`03-guide.md`](docs/03-guide.md) — a walkthrough guide
-- [`04-architecture.md`](docs/04-architecture.md) — how the runtime is built
-- [`05-as-built.md`](docs/05-as-built.md) — **what actually works today** (authoritative)
-- [`06-roadmap.md`](docs/06-roadmap.md) — what's next
+- [`01-rationale.md`](docs/01-rationale.md): why Rux is shaped this way (the four laws)
+- [`02-spec.md`](docs/02-spec.md): the language spec
+- [`03-guide.md`](docs/03-guide.md): a walkthrough guide
+- [`04-architecture.md`](docs/04-architecture.md): how the runtime is built
+- [`05-as-built.md`](docs/05-as-built.md): **what actually works today** (authoritative)
+- [`06-roadmap.md`](docs/06-roadmap.md): what's next
 
 > **Note:** docs 01–04 describe the original design *intent* and have drifted from the code in places. Where they disagree, [`05-as-built.md`](docs/05-as-built.md) wins.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE).
 
 [`taffy`]: https://github.com/DioxusLabs/taffy
 [`parley`]: https://github.com/linebender/parley

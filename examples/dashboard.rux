@@ -1,7 +1,7 @@
 <template>
   <screen class="screen">
     <text class="title">Dashboard</text>
-    <text class="hint">A three-column grid using minmax(0, 1fr). Resize the window — the columns shrink evenly and the cards stay inside, instead of overflowing at narrow widths.</text>
+    <text class="hint">A three-column grid using minmax(0, 1fr). Resize the window and the columns shrink evenly and the cards stay inside, instead of overflowing at narrow widths.</text>
 
     <!-- grid-template-columns: 1fr 1fr 1fr → three equal, fluid columns. Six
          cards fall into two rows. -->
@@ -75,5 +75,5 @@
 </style>
 
 <script>
-  // A static grid — the point is the 1fr columns reflowing on resize.
+  // A static grid; the point is the 1fr columns reflowing on resize.
 </script>

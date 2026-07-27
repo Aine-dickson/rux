@@ -1,4 +1,4 @@
-<!-- /learn, step 2 — layout. Everything is `display: block` until you say
+<!-- /learn, step 2: layout. Everything is `display: block` until you say
      otherwise, so this is where `display: flex` earns its keep.
      cargo run -p rux-cli -- examples/learn/02-layout.rux -->
 <template>

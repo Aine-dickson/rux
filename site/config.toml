@@ -2,10 +2,10 @@
 #
 # Zola is a single Rust binary, which is the point: the site of a pure-Rust
 # project shouldn't need a JS toolchain to build. `.github/workflows/site.yml`
-# pins the version — bump it in both places together.
+# pins the version. Bump it in both places together.
 #
 # Served from the apex domain, via `static/CNAME` (registrar: Cloudflare; host:
-# GitHub Pages). There is no `/rux` path segment any more — every internal link
+# GitHub Pages). There is no `/rux` path segment any more, so every internal link
 # resolves against the bare domain. GitHub redirects the old
 # `aine-dickson.github.io/rux` URLs here once the custom domain is set, so the
 # links in the v0.1–v0.3 posts keep working.
@@ -15,13 +15,13 @@
 # link against a host that isn't serving yet.
 base_url = "https://ruxlang.dev"
 title = "Rux"
-description = "A pure-Rust, web-flavored UI language that renders natively on the GPU — no browser, no webview."
+description = "A pure-Rust, web-flavored UI language that renders natively on the GPU, with no browser and no webview."
 
 compile_sass = false
 
 # Powers the docs sidebar search. `elasticlunr_json` emits a plain JSON index
 # rather than the default JS-wrapped elasticlunr one, so `static/search.js` can
-# read it directly — no search library to vendor, which keeps the "no JS
+# read it directly, with no search library to vendor, which keeps the "no JS
 # toolchain" rule intact. The index is built from the docs sections only
 # (see `in_search_index` on the other pages).
 build_search_index = true
@@ -38,8 +38,8 @@ feed_filenames = ["atom.xml"]
 enabled = true
 theme = "ayu-dark"
 # `.rux` code fences light up via our own TextMate grammar. Zola 0.22's
-# highlighter (Giallo) consumes TextMate JSON grammars — the same format VS Code
-# uses — so this one file at `site/syntaxes/` is shared with `editors/vscode/`;
+# highlighter (Giallo) consumes TextMate JSON grammars, the same format VS Code
+# uses, so this one file at `site/syntaxes/` is shared with `editors/vscode/`;
 # keep the two copies in sync (see editors/vscode/README.md). Verified on Zola
 # 0.22.1 (the version pinned in .github/workflows/site.yml).
 extra_grammars = ["syntaxes/rux.tmLanguage.json"]

@@ -37,7 +37,7 @@ Start the app's header. Replace the body of `hello.rux`:
 ```
 
 The title sits left, the tally right. That is ordinary flexbox and it is the
-real thing — taffy implements the same spec a browser does, so `flex-grow`,
+real thing: taffy implements the same spec a browser does, so `flex-grow`,
 `flex-basis`, `gap`, `align-self` and the rest behave as you already know.
 
 ## Use `display: flex`
@@ -49,25 +49,25 @@ Here is the rule that will save you the most time:
 
 Delete `display: flex` from `.head` and save. The title and tally stack
 vertically and each spans the full width. That is `block` doing exactly what
-block does — it is just rarely what you want.
+block does, and it is just rarely what you want.
 
 ## Two `<text>` elements never share a line
 
 There is **no inline text flow**. Two `<text>` siblings stack; they do not run
 together into a paragraph the way two `<span>`s would.
 
-This is a real limitation, not a preference — taffy has no inline formatting
+This is a real limitation, not a preference: taffy has no inline formatting
 context, and building one means writing a line-breaker. So if you want words on
 one line, they go in **one** `<text>`, and if you want them laid out beside each
 other, that is a flex row.
 
 Text *within* a single `<text>` wraps normally, honors `text-align`, and shapes
-properly through parley — including scripts that need it.
+properly through parley, including scripts that need it.
 
 ## The one divergence: children hug
 
 In CSS, a flex container's cross axis defaults to `stretch`. In Rux it defaults
-to **`flex-start`** — children hug their content instead of filling.
+to **`flex-start`**: children hug their content instead of filling.
 
 This is deliberate. Stretch-by-default is the source of a lot of "why is my
 button full width" confusion, and hugging is what you want most of the time.
@@ -79,7 +79,7 @@ When you *do* want children to fill, say so:
 
 You will need exactly that in chapter 4, so it is worth remembering where it is.
 
-Hugging means `fit-content`, and it is clamped to the parent's inner width — a
+Hugging means `fit-content`, and it is clamped to the parent's inner width, so a
 box with no `width` cannot burst out of a narrower parent. An explicit `width`
 is your call and *will* overflow; clip it with `overflow: hidden` if you meant
 it.
@@ -92,7 +92,7 @@ you never write DPI-handling code. `%`, `rem` (16px), `vw`, `vh` and `dvh` all
 work.
 
 `display: grid` works too, with `grid-template-columns` / `-rows`, spans and
-auto-flow — useful once you have more than a list to arrange.
+auto-flow, which is useful once you have more than a list to arrange.
 
 ## Checkpoint
 

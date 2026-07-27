@@ -1,6 +1,6 @@
 +++
 title = "Rux"
-# The top-level pages (why, how-it-works) carry a `weight`, not a date — sorting
+# The top-level pages (why, how-it-works) carry a `weight`, not a date. Sorting
 # the root section by date would drop them from `section.pages` and warn.
 sort_by = "weight"
 template = "index.html"
@@ -14,7 +14,7 @@ shot_caption = "examples/showcase.rux, running in a native window"
 
 ## The whole app, in one file
 
-That window is this file — all of it. No layout widgets, no JSX, no `.slint` DSL,
+That window is this file, all of it. No layout widgets, no JSX, no `.slint` DSL,
 no JavaScript. `<template>` says *what the content is*, `<style>` is literal CSS
 that says *where it goes and how it looks*, `<script>` holds the state.
 
@@ -69,7 +69,7 @@ that says *where it goes and how it looks*, `<script>` holds the state.
 </script>
 ```
 
-Type in the field and the heading changes as you type — `r-model` binds it to the
+Type in the field and the heading changes as you type. `r-model` binds it to the
 signal, and `{{ name }}` reads it back. Tap the button and the count moves. Edit
 the file with the window open and it reloads live.
 
@@ -114,7 +114,7 @@ GPU, [winit] holds the window.
   <li>HiDPI</li>
 </ul>
 
-The exact honored-CSS set lives in [the reference](@/reference/_index.md) — the
+The exact honored-CSS set lives in [the reference](@/reference/_index.md), the
 authoritative "what actually works" doc. What's missing is written down just as
 plainly: CSS custom properties, `@media`, and pseudo-classes (`:hover`,
 `:focus`, `:checked`) are the biggest gaps. There's also no true inline
@@ -122,26 +122,26 @@ text-flow, text editing lacks word-wise movement and triple-click selection,
 and the reactive tier has no effects or computed values.
 
 > **Rux is 0.x and experimental.** It is not trying to replace Flutter, React
-> Native, or Slint — those are mature, and if you need to ship an app this
+> Native, or Slint. Those are mature, and if you need to ship an app this
 > quarter you should use one of them. Rux exists to find out whether one specific
-> corner — CSS-authored, Rust-native, no DSL, no JS — is a nicer place to build.
+> corner (CSS-authored, Rust-native, no DSL, no JS) is a nicer place to build.
 > [The honest version of that argument, including where Rux isn't novel, is
 > here.](@/why.md)
 
 ## Read on
 
-- [**Learn**](@/learn/_index.md) — build a task list from an empty file, in
+- [**Learn**](@/learn/_index.md): build a task list from an empty file, in
   about half an hour. Start here if you want to write some Rux.
-- [**Reference**](@/reference/_index.md) — the authoritative list of what works:
+- [**Reference**](@/reference/_index.md): the authoritative list of what works:
   honored CSS, elements, directives, and the honest gaps.
-- [**Why Rux?**](@/why.md) — the thesis, the four laws, and where Rux genuinely
+- [**Why Rux?**](@/why.md): the thesis, the four laws, and where Rux genuinely
   isn't novel.
-- [**How it works**](@/how-it-works.md) — the pipeline from `.rux` file to pixels.
-- [**Roadmap**](@/roadmap/_index.md) — what's next, and what is deliberately not
+- [**How it works**](@/how-it-works.md): the pipeline from `.rux` file to pixels.
+- [**Roadmap**](@/roadmap/_index.md): what's next, and what is deliberately not
   being built.
-- [**Contribute**](@/contribute/_index.md) — the architecture tour, for anyone
+- [**Contribute**](@/contribute/_index.md): the architecture tour, for anyone
   who wants to work on the runtime itself.
-- [**Blog**](@/blog/_index.md) — release notes, written every release.
+- [**Blog**](@/blog/_index.md): release notes, written every release.
 
 [taffy]: https://github.com/DioxusLabs/taffy
 [parley]: https://github.com/linebender/parley

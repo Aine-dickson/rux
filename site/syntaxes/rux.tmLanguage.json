@@ -103,7 +103,7 @@
     },
 
     "directive-attribute": {
-      "comment": "r-for / r-if / r-model, @event handlers, and :prop bindings — value is a Rux script expression.",
+      "comment": "r-for / r-if / r-model, @event handlers, and :prop bindings. The value is a Rux script expression.",
       "patterns": [
         {
           "begin": "(@[\\w-]+|:[\\w-]+|r-[\\w-]+)(=)(\")",

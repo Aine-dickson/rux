@@ -1,9 +1,9 @@
-<!-- /learn, step 1 — the smallest Rux file that opens a window.
+<!-- /learn, step 1: the smallest Rux file that opens a window.
      cargo run -p rux-cli -- examples/learn/01-hello.rux -->
 <template>
   <screen class="app">
     <text class="title">Hello, Rux</text>
-    <text class="sub">Edit this file and save — the window reloads itself.</text>
+    <text class="sub">Edit this file and save. The window reloads itself.</text>
   </screen>
 </template>
 

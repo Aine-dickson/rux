@@ -1,19 +1,19 @@
-# 04 — Architecture
+# 04. Architecture
 
 How the Rux runtime turns a `.rux` file into pixels and keeps them live. The [spec](./02-spec.md) defines *what the language is*; this defines *what we build*.
-Everything here is downstream of the [rationale](./01-rationale.md) — especially [Law 4](./01-rationale.md#law-4--stay-close-to-rust-dont-pop-the-balloon): **reuse mature Rust crates; write only the glue that is uniquely ours.**
+Everything here is downstream of the [rationale](./01-rationale.md), especially [Law 4](./01-rationale.md#law-4-stay-close-to-rust-dont-pop-the-balloon): **reuse mature Rust crates; write only the glue that is uniquely ours.**
 
-> **Status:** v0.1 architecture proposal. Concrete crate choices are recommendations, not commitments — the milestone plan is designed so each can be swapped without redesign.
+> **Status:** v0.1 architecture proposal. Concrete crate choices are recommendations, not commitments. The milestone plan is designed so each can be swapped without redesign.
 
 ## Contents
 
 - [The pipeline at a glance](#the-pipeline-at-a-glance)
 - [What we reuse vs. what we build](#what-we-reuse-vs-what-we-build)
-- [Stage 1 — Parse](#stage-1--parse)
-- [Stage 2 — Cascade](#stage-2--cascade)
-- [Stage 3 — Reactive graph](#stage-3--reactive-graph)
-- [Stage 4 — Layout](#stage-4--layout)
-- [Stage 5 — Paint & present](#stage-5--paint--present)
+- [Stage 1: Parse](#stage-1-parse)
+- [Stage 2: Cascade](#stage-2-cascade)
+- [Stage 3: Reactive graph](#stage-3-reactive-graph)
+- [Stage 4: Layout](#stage-4-layout)
+- [Stage 5: Paint & present](#stage-5-paint--present)
 - [Input & event routing](#input--event-routing)
 - [The script tier & host bridge](#the-script-tier--host-bridge)
 - [Hot-reload](#hot-reload)
@@ -54,22 +54,22 @@ Law 4 in one table. The "build" column is the actual surface area of the project
 | Concern | Reuse (crate) | We build |
 |---|---|---|
 | Windowing / input events | `winit` | thin adapter to our event model |
-| GPU surface | `wgpu` | — |
+| GPU surface | `wgpu` | n/a |
 | Vector painting | `vello` (or `tiny-skia` CPU fallback) | scene builder from our render tree |
 | Text shaping / layout | `parley` + `swash` (or `cosmic-text`) | glyph → paint integration |
 | CSS parsing | `lightningcss` | property → our style-struct mapping |
 | Flexbox/grid layout | `taffy` | style → taffy-node translation |
 | Script interpreter | `rhai` | host bindings, signal integration |
 | File watching | `notify` | debounce + reload orchestration |
-| **Template parsing** | *(none — ours)* | XML+directive parser → node tree |
+| **Template parsing** | *(none, ours)* | XML+directive parser → node tree |
 | **Reactive graph** | *(ours; Leptos-inspired)* | signals, subscriptions, dirty tracking |
-| **The glue** | — | the document model tying all stages |
+| **The glue** | n/a | the document model tying all stages |
 
 Roughly: **template parser + reactive graph + the document model** are the genuinely new code Everything else is integration.
 
 ---
 
-## Stage 1 — Parse
+## Stage 1: Parse
 
 Input: the raw `.rux` text. Output: three parsed artifacts bundled into a **Document**.
 
@@ -81,9 +81,9 @@ Input: the raw `.rux` text. Output: three parsed artifacts bundled into a **Docu
    - Custom element tags (kebab-case, not one of the six) → **component instantiation** points Output is a tree of `TemplateNode`s where every dynamic piece is already distinguished from static text. Directive expressions are stored as *unparsed source strings* here; they compile against the script scope in Stage 3.
 3. **Style → stylesheet.** Hand the CSS to `lightningcss`; keep its parsed rule list. No evaluation yet.
 4. **Script → program.** Hand the script to `rhai`'s parser; keep the compiled AST. Top-level `let signal(...)` declarations and `fn`s are catalogued so the template compiler can resolve names.
-Parse errors do **not** panic. They produce a `DiagnosticSet` that the [hot-reload](#hot-reload) layer renders as a dev overlay — the accepted cost of [runtime documents](./01-rationale.md#runtime-documents-over-compile-time-components).
+Parse errors do **not** panic. They produce a `DiagnosticSet` that the [hot-reload](#hot-reload) layer renders as a dev overlay, the accepted cost of [runtime documents](./01-rationale.md#runtime-documents-over-compile-time-components).
 
-## Stage 2 — Cascade
+## Stage 2: Cascade
 
 Input: the node tree + the parsed stylesheet. Output: a **resolved style struct** per node.
 
@@ -99,14 +99,14 @@ Input: the node tree + the parsed stylesheet. Output: a **resolved style struct*
 - Split `ComputedStyle` conceptually into **layout props** (feed Stage 4) and
   **paint props** (feed Stage 5).
 
-Cascade re-runs on style hot-reload or when a node's classes change reactively — never on a plain signal value change.
+Cascade re-runs on style hot-reload or when a node's classes change reactively, never on a plain signal value change.
 
-## Stage 3 — Reactive graph
+## Stage 3: Reactive graph
 
-This is the heart, and it's ours (modeled on Leptos/Solid — proven in Rust, per Law 4). Input: the node tree + compiled script. Output: a live graph where value changes propagate to exactly the affected nodes.
+This is the heart, and it's ours (modeled on Leptos/Solid, proven in Rust, per Law 4). Input: the node tree + compiled script. Output: a live graph where value changes propagate to exactly the affected nodes.
 
 - **Signals** are the leaves: `signal(v)` registers a reactive cell in the runtime. `rhai`'s host functions expose `signal`, `.get()`, `.set()`, `.update()` into script scope.
-- **Binding compilation.** Each `{{ expr }}`, `:attr`, `r-if`, `r-for`, etc. is compiled once into a *reactive computation*: a closure that reads signals and produces a value. The read establishes the subscription — reading a signal inside a binding records "this binding depends on that signal."
+- **Binding compilation.** Each `{{ expr }}`, `:attr`, `r-if`, `r-for`, etc. is compiled once into a *reactive computation*: a closure that reads signals and produces a value. The read establishes the subscription: reading a signal inside a binding records "this binding depends on that signal."
 - **Dirty propagation.** `signal.set()` marks its subscribers dirty and schedules a frame. On the frame, dirty computations re-run; a text binding updates its node's text, an `r-if` adds/removes a subtree, an `r-for` diffs its keyed list.
 - **No virtual DOM.** The binding *is* the subscription; there is no whole-tree diff. Only dirty computations do work.
 
@@ -120,7 +120,7 @@ The structural directives are reactive computations with side effects on tree sh
 | `r-for` | keyed reconcile of child instances against the data |
 | `r-model` | two-way: bind value in, write signal on input event |
 
-## Stage 4 — Layout
+## Stage 4: Layout
 
 Input: layout props + tree shape. Output: a box (x, y, w, h) per node.
 
@@ -135,7 +135,7 @@ Input: layout props + tree shape. Output: a box (x, y, w, h) per node.
 - `overflow: auto`/`scroll` produces a clipping+scrollable region and enables the
   node's `scroll` [capability](./02-spec.md#events).
 
-## Stage 5 — Paint & present
+## Stage 5: Paint & present
 
 Input: paint props + layout rects. Output: pixels on the window.
 
@@ -156,7 +156,7 @@ The reverse path: `winit` raw input → our event model → script handlers.
 2. **Gesture recognition** turns raw pointer streams into our gesture-honest
    [capabilities](./02-spec.md#events): a press+release within slop/time = `tap`;
    held = `longpress`; moved = `drag`/`swipe`; wheel/touch-move over an
-   `overflow` node = `scroll`. This is where "not a browser" is enforced —
+   `overflow` node = `scroll`. This is where "not a browser" is enforced:
    `hover` only exists when a pointer device is present.
 3. **Hit-testing** uses the layout rects to find the target node; the event
    bubbles up ancestors (like DOM bubbling) until a handler consumes it.
@@ -166,7 +166,7 @@ The reverse path: `winit` raw input → our event model → script handlers.
 
 ## The script tier & host bridge
 
-Two tiers, one boundary — the [decision](./01-rationale.md#two-tier-logic-rhai-script-over-a-compiled-rust-host).
+Two tiers, one boundary. See the [decision](./01-rationale.md#two-tier-logic-rhai-script-over-a-compiled-rust-host).
 
 - **Script (rhai).** Runs the component's handlers and holds its signals. Each
   component instance gets a `rhai` scope seeded with its top-level `let`s/`fn`s.
@@ -175,7 +175,7 @@ Two tiers, one boundary — the [decision](./01-rationale.md#two-tier-logic-rhai
   into the `rhai` engine as the `host` module. This is the registry contract:
 
   ```rust
-  // illustrative — final shape decided during build
+  // illustrative; final shape decided during build
   let mut host = HostRegistry::new();
   host.function("load_devices", || db::all());
   host.function("read_battery", || sensors::battery());
@@ -202,13 +202,13 @@ The feature that drove the whole [runtime-document decision](./01-rationale.md#r
   | `<style>` | Cascade (Stage 2) → relayout/repaint |
   | `<template>` | Parse template → Cascade → rebuild reactive graph |
   | `<script>` | Reparse script → re-seed scopes → rebuild bindings |
-  | host (Rust) | **rebuild required** — not hot |
+  | host (Rust) | **rebuild required**: not hot |
 
 - **State preservation** is best-effort: on a script/template reload we attempt
   to carry signal values forward by name; when the shape changed too much we
   reset to initial. (Exact policy is an [open question](#open-questions).)
 - Parse/eval failures show the `DiagnosticSet` as an **overlay** over the last
-  good frame — never a crash, never a blank window.
+  good frame, never a crash and never a blank window.
 
 ## Crate layout
 
@@ -229,7 +229,7 @@ rux/
 ```
 
 `rux-reactive` and `rux-parser` have zero GPU/OS deps and are unit-testable in
-isolation — deliberately, since they're the novel logic.
+isolation, deliberately, since they're the novel logic.
 
 ## Milestone plan
 
@@ -249,23 +249,23 @@ front-loads the thesis (layout-is-CSS, hot-reload) before the elaborate parts.
 | **M8** | Host registry; `host::` calls from script | native-capability boundary | `rux-script` |
 | **M9** | Component import + embed (`<device-tile>`) | reuse/module system | `rux-parser`, `rux-runtime` |
 
-The [guide's](./03-guide.md) finished dashboard is the acceptance test for M9 —
+The [guide's](./03-guide.md) finished dashboard is the acceptance test for M9:
 when that file renders and behaves, v0.1 is real.
 
 ## Open questions
 
 Deferred to build-time decisions, flagged so we don't pretend they're solved:
 
-- **Async/host concurrency** — the exact model for non-blocking host calls and
+- **Async/host concurrency**: the exact model for non-blocking host calls and
   how their results re-enter the signal graph.
-- **State preservation policy on hot-reload** — how aggressively to carry signal
+- **State preservation policy on hot-reload**: how aggressively to carry signal
   values across a reload before resetting.
-- **Text/`parley` vs `cosmic-text`** — pick after M4 measures both for our needs.
-- **Vello maturity on the CPU/embedded path** — may push `tiny-skia` earlier for
+- **Text/`parley` vs `cosmic-text`**: pick after M4 measures both for our needs.
+- **Vello maturity on the CPU/embedded path**: may push `tiny-skia` earlier for
   the eventual `thumbv7em` target.
-- **Event object shape** — the concrete gesture payload passed to handlers
+- **Event object shape**: the concrete gesture payload passed to handlers
   (`$event`), finalized alongside M6.
-- **Grid/table** — still [deferred](./01-rationale.md#the-element-audit); revisit
+- **Grid/table**: still [deferred](./01-rationale.md#the-element-audit); revisit
   only after v0.1 ships.
 
 ---

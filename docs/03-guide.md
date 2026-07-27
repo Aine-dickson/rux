@@ -1,17 +1,17 @@
-# 03 — Guide
+# 03. Guide
 
 > ⚠️ **Parts of this guide do not work as written.** It was authored before the
 > runtime existed. Most notably, the `fn drain() { level.update(...) }` pattern
-> **cannot work** — rhai functions can't read or mutate global state; state
+> **cannot work**: rhai functions can't read or mutate global state; state
 > changes go inline (`@tap="level = level - 1"`) or into a `host::` function.
-> `<input type="select">` isn't built either. See **[05 — As Built](./05-as-built.md)**
+> `<input type="select">` isn't built either. See **[As Built](./05-as-built.md)**
 > for what actually runs.
 
 Learn Rux by building a small screen: a **device dashboard** that lists devices, shows a battery card, filters with a search box, and adds a device through a form. By the end you'll have touched every part of the language.
 
-This is a design-stage tutorial — the runtime isn't built yet, so treat the code as the *authoring experience we're committing to*. If something here feels awkward to write, that's a signal to fix the [spec](./02-spec.md) before we build.
+This is a design-stage tutorial. The runtime isn't built yet, so treat the code as the *authoring experience we're committing to*. If something here feels awkward to write, that's a signal to fix the [spec](./02-spec.md) before we build.
 
-New to the ideas? Skim the [rationale](./01-rationale.md) first — especially that **layout is CSS, never markup**.
+New to the ideas? Skim the [rationale](./01-rationale.md) first, especially that **layout is CSS, never markup**.
 
 ## Contents
 
@@ -41,7 +41,7 @@ Every app starts at a `<screen>`. Create `app.rux`:
 ```
 
 `<screen>` is the root of one view (like `<body>`). `<text>` is a text run.
-That's a complete, runnable component. Save it and the window shows the text — no build step for the template.
+That's a complete, runnable component. Save it and the window shows the text, with no build step for the template.
 
 ## 2. Styling with literal CSS
 
@@ -69,7 +69,7 @@ There are no layout elements. To center that text in a padded card, you add a `<
 </style>
 ```
 
-If you know CSS, you already know this — the property names are identical. Notice what you *didn't* write: no `<Padding>`, no `<Center>`, no `<Column>`. `padding`, `align-items`, and `flex-direction` did all three. That's [Law 1](./01-rationale.md#law-1--content-vs-spatial).
+If you know CSS, you already know this: the property names are identical. Notice what you *didn't* write: no `<Padding>`, no `<Center>`, no `<Column>`. `padding`, `align-items`, and `flex-direction` did all three. That's [Law 1](./01-rationale.md#law-1-content-vs-spatial).
 
 ## 3. State with signals
 
@@ -90,7 +90,7 @@ Dynamic values are **signals**. Declare them in `<script>` (Rust-shaped `rhai`) 
 </script>
 ```
 
-`{{ level }}` doesn't just print once — the binding *subscribes* to `level`. When `level` changes, only that text node repaints ([reactivity](./02-spec.md#reactivity)).
+`{{ level }}` doesn't just print once. The binding *subscribes* to `level`. When `level` changes, only that text node repaints ([reactivity](./02-spec.md#reactivity)).
 
 ## 4. Events
 
@@ -112,11 +112,11 @@ Elements emit only the events in their [capability set](./02-spec.md#events). A 
 </script>
 ```
 
-Tapping the button runs `drain`, which updates the signal, which repaints the value. You bound a capability the button already had — you didn't reach for a new widget ([Law 2](./01-rationale.md#law-2--capabilities-not-widgets)).
+Tapping the button runs `drain`, which updates the signal, which repaints the value. You bound a capability the button already had, rather than reaching for a new widget ([Law 2](./01-rationale.md#law-2-capabilities-not-widgets)).
 
 ## 5. Lists with `r-for`
 
-A list is not a `<list>` element. It's a `role="list"` container plus a **loop** over data — repetition is data, not markup:
+A list is not a `<list>` element. It's a `role="list"` container plus a **loop** over data. Repetition is data, not markup:
 
 ```xml
 <template>
@@ -151,7 +151,7 @@ A list is not a `<list>` element. It's a `role="list"` container plus a **loop**
 </script>
 ```
 
-To make the list scroll, you gave `.feed` `overflow-y: auto`. No `<SingleChildScrollView>`, no `<ListView>` — just CSS. `:key="d.id"` gives each row a stable identity for correct updates on reorder.
+To make the list scroll, you gave `.feed` `overflow-y: auto`. No `<SingleChildScrollView>`, no `<ListView>`, just CSS. `:key="d.id"` gives each row a stable identity for correct updates on reorder.
 
 ## 6. Conditionals
 
@@ -169,7 +169,7 @@ Show something only when a condition holds with `r-if` / `r-else`:
 
 ## 7. Forms and inputs
 
-Every control is `<input type=…>` — there's no `<select>` or `<textarea>`. A form is `role="form"` with `@submit`. Two-way binding is `r-model`:
+Every control is `<input type=…>`; there's no `<select>` or `<textarea>`. A form is `role="form"` with `@submit`. Two-way binding is `r-model`:
 
 ```xml
 <template>
@@ -197,11 +197,11 @@ Every control is `<input type=…>` — there's no `<select>` or `<textarea>`. A
 </script>
 ```
 
-The `select`'s choices come from the bound `:options="kinds"` collection — no `<option>` tags. On a phone, this `select` opens the **native picker**. The `for="name"` on the label associates it with the input (tap-to-focus), and it doesn't collide with `r-for` because loops are `r-`-prefixed.
+The `select`'s choices come from the bound `:options="kinds"` collection, with no `<option>` tags. On a phone, this `select` opens the **native picker**. The `for="name"` on the label associates it with the input (tap-to-focus), and it doesn't collide with `r-for` because loops are `r-`-prefixed.
 
 ## 8. Talking to the host
 
-Signals hold app state, but reading a real battery, hitting a database, or navigating needs **native capability** — that's the compiled Rust `host`. The script calls registered `host::` functions:
+Signals hold app state, but reading a real battery, hitting a database, or navigating needs **native capability**: that's the compiled Rust `host`. The script calls registered `host::` functions:
 
 ```rust
 <script>
@@ -255,7 +255,7 @@ Import it Rust-style and embed it as `<device-tile>`, passing the prop as an att
 
 ## 10. The finished screen
 
-Putting it together — `app.rux`:
+Putting it together, `app.rux`:
 
 ```xml
 <script>
@@ -319,10 +319,10 @@ Putting it together — `app.rux`:
 Everything you learned, on one screen:
 
 - **Six elements**, structured with `<view>` + `role`.
-- **All layout in CSS** — flex, gap, padding, `overflow-y: auto` for scroll, `flex: 1` to make the feed fill space. No layout widgets anywhere.
+- **All layout in CSS**: flex, gap, padding, `overflow-y: auto` for scroll, `flex: 1` to make the feed fill space. No layout widgets anywhere.
 - **Signals** (`devices`, `query`, `draft`) driving the view; a derived `shown()` filtering live as you type.
-- **Directives** — `r-for`, `r-if`, `r-model`, `:key`, `:device`.
-- **Events** — `@tap`, `@submit`.
+- **Directives**: `r-for`, `r-if`, `r-model`, `:key`, `:device`.
+- **Events**: `@tap`, `@submit`.
 - **`<input type=>`** covering text and select, options as data.
 - **A component** (`device-tile`) imported Rust-style and embedded.
 - **The host** for the one thing script can't do itself (`load_devices`, `open`).
@@ -331,5 +331,5 @@ Everything you learned, on one screen:
 
 - The precise rules behind anything above: the [spec](./02-spec.md).
 - Why it's shaped this way, and what's deferred: the [rationale](./01-rationale.md).
-- Building the runtime that makes this file render is the next project phase —
+- Building the runtime that makes this file render is the next project phase,
   the pipeline is sketched in the [README](./README.md#status).

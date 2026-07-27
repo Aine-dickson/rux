@@ -2,7 +2,7 @@
 #
 # Generate site pages from the canonical docs in `docs/`.
 #
-# `docs/` is the source of truth — edit there, never in the generated files.
+# `docs/` is the source of truth. Edit there, never in the generated files.
 # This script wraps each doc in Zola front matter and rewrites the intra-doc
 # links so they resolve as site URLs instead of relative .md paths.
 #
@@ -27,7 +27,7 @@ content="$repo/site/content"
 #
 #   <source>|<output path>|<title>|<weight>|<description>
 pages=(
-  "05-as-built.md|reference/_index.md|Reference|1|What Rux actually does today — the authoritative honored-CSS set, elements, and directives."
+  "05-as-built.md|reference/_index.md|Reference|1|What Rux actually does today: the authoritative honored-CSS set, elements, and directives."
   "02-spec.md|reference/spec.md|Design surface (v0.1)|2|The original v0.1 spec, kept as design history. Not a description of the built runtime."
   "06-roadmap.md|roadmap/_index.md|Roadmap|3|Where Rux goes next: milestones, the release cadence, and what is deliberately not being built."
   "04-architecture.md|contribute/_index.md|Architecture|4|How a .rux file becomes pixels, and which crate owns which stage."
@@ -76,9 +76,9 @@ for entry in "${pages[@]}"; do
     fi
     echo "+++"
     echo
-    echo "<!-- GENERATED FROM docs/$src BY site/sync-docs.sh — DO NOT EDIT HERE. -->"
+    echo "<!-- GENERATED FROM docs/$src BY site/sync-docs.sh. DO NOT EDIT HERE. -->"
     echo
-    # Drop the leading `# NN — Title` heading: the template renders the title
+    # Drop the leading `# NN. Title` heading: the template renders the title
     # from front matter, and a second <h1> would be wrong for both a11y and the
     # search index.
     tail -n +2 "$repo/docs/$src" | rewrite_links

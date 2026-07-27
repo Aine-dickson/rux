@@ -1,6 +1,6 @@
 +++
 title = "State that changes"
-description = "Signals, interpolation, tap handlers — and the one rule about functions that trips up everybody."
+description = "Signals, interpolation, tap handlers, and the one rule about functions that trips up everybody."
 weight = 3
 +++
 
@@ -28,13 +28,13 @@ Now read it in the template with `{{ }}`, and change it with `@tap`:
 
 Tap the button and the tally moves.
 
-Anything between `{{ }}` is a rhai *expression*, not just a name — `{{ count * 2 }}`
+Anything between `{{ }}` is a rhai *expression*, not just a name. `{{ count * 2 }}`
 and `{{ items.len() }}` are both fine. You will use that in the next chapter to
 count finished tasks without keeping a second signal in sync.
 
 ## Only what reads it updates
 
-When `count` changes, Rux updates the bindings that actually read `count` — not
+When `count` changes, Rux updates the bindings that actually read `count`, not
 the tree. Nothing is rebuilt, so a caret you had placed stays where it was, a
 scrolled list stays scrolled, and an open dropdown stays open.
 
@@ -44,7 +44,7 @@ You can watch this happen:
 RUX_TRACE=1 cargo run -p rux-cli -- examples/learn/03-state.rux
 ```
 
-Every interaction prints the path it took — `patched in place (no rebuild)` or
+Every interaction prints the path it took: `patched in place (no rebuild)` or
 `rebuilt (structural)`. Display changes patch; changes that add or remove nodes
 (`r-if` flipping, a list growing) reconcile just that subtree.
 
@@ -72,9 +72,9 @@ It is a constraint of stock rhai: a function body gets its own scope and the
 globals are not in it. So:
 
 - **State changes go inline in the handler.** `@tap="count = count + 1"`.
-  Handlers can be several statements — `@tap='a = 1; b = 2'` is fine, and so is
+  Handlers can be several statements: `@tap='a = 1; b = 2'` is fine, and so is
   an `if`.
-- **Script `fn`s must be pure** — take arguments, return a value, touch no
+- **Script `fn`s must be pure**: take arguments, return a value, touch no
   state. `fn label(n) { if n == 1 { "task" } else { "tasks" } }`, called as
   `{{ label(count) }}`. That works, and is the right home for display logic.
 - **Anything heavier belongs in Rust**, as a `host::` function.

@@ -81,7 +81,7 @@
         color: #cdd6f4;
         font-size: 14px;
     }
-    /* A checked box carries a synthetic `checked` class — so the checked look is
+    /* A checked box carries a synthetic `checked` class, so the checked look is
      ordinary CSS. Keep the ring a shade apart from the fill, or the box loses
      its outline and reads as a blob. */
     .box.checked {
@@ -89,7 +89,7 @@
         border: 2px #a6e3a1 solid;
         color: #ffffff;
     }
-    /* Fully round ring. (A radio with no border-radius at all is round anyway —
+    /* Fully round ring. (A radio with no border-radius at all is round anyway;
      this class only has to undo the 4px it inherits from .box.) */
     .ring {
         border-radius: 9999px;
