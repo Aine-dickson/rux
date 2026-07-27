@@ -185,6 +185,22 @@ checked `background`, or the ring dissolves into the fill. A radio is **round** 
 huge radius like `9999px` is clamped to a circle, so that's how you re-round one
 that inherited a radius from another class).
 
+### Touch
+A finger takes the same path as the mouse: it taps buttons and toggles, focuses
+inputs, drags a scrollbar thumb, drags out a text selection, and scrolls content
+directly when it grabs something that is none of those. A drag that stays inside
+the tap slop is still a tap.
+
+Touch went a long time doing only the scrolling half, because there was no touch
+hardware here to try it on. It was found within a minute of the playground being
+opened on a phone, so treat "no hardware" as a reason to be suspicious of a path
+rather than a reason to call it done. In a browser the canvas also needs
+`touch-action: none`, or the page claims the gesture and the runtime never sees
+a drag.
+
+**Not done:** no kinetic or inertial fling after the finger lifts, no
+multi-touch, no pinch zoom, and no long-press.
+
 ### Selection & clipboard
 A focused input has a **selection**, not just a caret: `Focus` carries a `caret`
 and an `anchor`, and the range between them is selected (`anchor == caret` means
@@ -215,7 +231,7 @@ overflows**: vertical, horizontal, or both. It scrolls by:
 
 - **wheel** (Shift+wheel, or a horizontal wheel, scrolls sideways),
 - **dragging a scrollbar thumb**,
-- **touch**: a finger drags the content itself (untested: no touch hardware here),
+- **touch**: a finger drags the content itself,
 - **keyboard**: arrows, PageUp/PageDown, Home/End scroll the box **under the
   pointer**, when no input has focus.
 
