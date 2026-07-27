@@ -1,0 +1,47 @@
+<!-- /learn, step 2 — layout. Everything is `display: block` until you say
+     otherwise, so this is where `display: flex` earns its keep.
+     cargo run -p rux-cli -- examples/learn/02-layout.rux -->
+<template>
+  <screen class="app">
+    <view class="head">
+      <text class="title">Tasks</text>
+      <text class="tally">0 / 0</text>
+    </view>
+
+    <view class="card">
+      <text class="hint">
+        The header above is a flex row: the title hugs its text on the left and
+        the tally is pushed to the right by `justify-content: space-between`.
+      </text>
+    </view>
+  </screen>
+</template>
+
+<style>
+  .app {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    padding: 24px;
+    background: #1e1e2e;
+  }
+
+  /* A row. Without `display: flex` these two would stack: there is no inline
+     text flow, so two <text> siblings never share a line. */
+  .head {
+    display: flex;
+    flex-direction: row;
+    justify-content: space-between;
+    align-items: center;
+  }
+  .title { color: #cdd6f4; font-size: 24px; font-weight: 700; }
+  .tally { color: #9399b2; font-size: 15px; }
+
+  .card {
+    display: flex;
+    padding: 16px;
+    background: #313244;
+    border-radius: 12px;
+  }
+  .hint { color: #bac2de; font-size: 14px; }
+</style>

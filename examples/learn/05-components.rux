@@ -1,0 +1,97 @@
+<!-- /learn, step 5 — the same app, with the row extracted into a component.
+     cargo run -p rux-cli -- examples/learn/05-components.rux -->
+<template>
+  <screen class="app">
+    <view class="head">
+      <text class="title">Tasks</text>
+      <text class="tally">{{ items.filter(|t| t.done).len() }} / {{ items.len() }}</text>
+    </view>
+
+    <view class="composer">
+      <input class="field" r-model="draft" placeholder="add a task…" />
+      <button class="add" @tap='if draft != "" { items.push(#{ label: draft, done: false }); draft = ""; }'>
+        <text class="addlabel">Add</text>
+      </button>
+    </view>
+
+    <text class="empty" r-if="items.len() == 0">Nothing yet — add your first task.</text>
+
+    <view class="list">
+      <!-- The tap stays out here, because the handler needs `items`, and a
+           component cannot see the caller's signals. The component gets the
+           two values it needs and owns how they look. -->
+      <view class="slot" r-for="t in items"
+            @tap='for i in 0..items.len() { if items[i].label == t.label { items[i].done = !items[i].done; } }'>
+        <row :label="t.label" :done="t.done" />
+      </view>
+    </view>
+  </screen>
+</template>
+
+<style>
+  .app {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    padding: 24px;
+    background: #1e1e2e;
+  }
+  .head {
+    display: flex;
+    flex-direction: row;
+    justify-content: space-between;
+    align-items: center;
+  }
+  .title { color: #cdd6f4; font-size: 24px; font-weight: 700; }
+  .tally { color: #9399b2; font-size: 15px; }
+
+  .composer { display: flex; flex-direction: row; gap: 8px; align-items: center; }
+  .field {
+    display: flex;
+    flex-grow: 1;
+    padding: 10px;
+    background: #313244;
+    border: 2px #45475a solid;
+    border-radius: 8px;
+    color: #cdd6f4;
+    font-size: 15px;
+  }
+  .add {
+    display: flex;
+    justify-content: center;
+    flex-shrink: 0;
+    padding: 10px 16px;
+    background: #89b4fa;
+    border-radius: 8px;
+    cursor: pointer;
+  }
+  .addlabel { color: #11111b; font-size: 15px; font-weight: 700; }
+  .empty    { color: #6c7086; font-size: 14px; }
+
+  .list {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+    height: 320px;
+    overflow: auto;
+  }
+  /* The tappable wrapper. The component fills it, so the whole row is the
+     hit target rather than just the text. */
+  .slot {
+    display: flex;
+    flex-shrink: 0;
+    align-items: stretch;
+    cursor: pointer;
+  }
+</style>
+
+<script>
+  use components::row;
+
+  let draft = signal("");
+  let items = signal([
+    #{ label: "read the reference", done: true },
+    #{ label: "build a task list", done: false },
+  ]);
+</script>

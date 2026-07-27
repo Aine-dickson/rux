@@ -15,13 +15,21 @@
     {% if page.description %}<p class="lede">{{ page.description }}</p>{% endif %}
     {{ page.content | safe }}
 
-    {% if page.earlier or page.later %}
+    {# Zola names a page's neighbours after its section's sort key: `lower` /
+       `higher` under `sort_by = "weight"`, `earlier` / `later` under
+       `sort_by = "date"`. Every section using this template sorts by weight, so
+       the date pair is not merely empty here but *undefined*, and referencing it
+       is a render error rather than a blank — which is why this pair is not
+       written defensively. Lower weight comes first, so `lower` is the previous
+       page. (This read `earlier`/`later` until /learn arrived and it turned out
+       to have never rendered anything.) #}
+    {% if page.lower or page.higher %}
     <nav class="docs-seq" aria-label="Section pages">
-      {% if page.earlier %}
-        <a class="prev" href="{{ page.earlier.permalink }}">← {{ page.earlier.title }}</a>
+      {% if page.lower %}
+        <a class="prev" href="{{ page.lower.permalink }}">← {{ page.lower.title }}</a>
       {% endif %}
-      {% if page.later %}
-        <a class="next" href="{{ page.later.permalink }}">{{ page.later.title }} →</a>
+      {% if page.higher %}
+        <a class="next" href="{{ page.higher.permalink }}">{{ page.higher.title }} →</a>
       {% endif %}
     </nav>
     {% endif %}

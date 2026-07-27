@@ -1,0 +1,20 @@
+<!-- /learn, step 1 — the smallest Rux file that opens a window.
+     cargo run -p rux-cli -- examples/learn/01-hello.rux -->
+<template>
+  <screen class="app">
+    <text class="title">Hello, Rux</text>
+    <text class="sub">Edit this file and save — the window reloads itself.</text>
+  </screen>
+</template>
+
+<style>
+  .app {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 32px;
+    background: #1e1e2e;
+  }
+  .title { color: #cdd6f4; font-size: 28px; font-weight: 700; }
+  .sub   { color: #9399b2; font-size: 15px; }
+</style>

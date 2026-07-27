@@ -1,0 +1,52 @@
+<!-- /learn, step 3 — state. A signal, an interpolation, and a tap handler.
+     cargo run -p rux-cli -- examples/learn/03-state.rux -->
+<template>
+  <screen class="app">
+    <view class="head">
+      <text class="title">Tasks</text>
+      <!-- Any rhai expression goes between the braces, not just a name. -->
+      <text class="tally">{{ count }} added</text>
+    </view>
+
+    <!-- State changes go INLINE in the handler. A rhai `fn` cannot reach a
+         signal, so `@tap="add()"` would run and silently change nothing. -->
+    <button class="add" @tap="count = count + 1">
+      <text class="addlabel">Add one</text>
+    </button>
+
+    <text class="empty" r-if="count == 0">Nothing yet.</text>
+  </screen>
+</template>
+
+<style>
+  .app {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    padding: 24px;
+    background: #1e1e2e;
+  }
+  .head {
+    display: flex;
+    flex-direction: row;
+    justify-content: space-between;
+    align-items: center;
+  }
+  .title { color: #cdd6f4; font-size: 24px; font-weight: 700; }
+  .tally { color: #9399b2; font-size: 15px; }
+
+  .add {
+    display: flex;
+    justify-content: center;
+    padding: 12px;
+    background: #89b4fa;
+    border-radius: 10px;
+    cursor: pointer;
+  }
+  .addlabel { color: #11111b; font-size: 15px; font-weight: 700; }
+  .empty    { color: #6c7086; font-size: 14px; }
+</style>
+
+<script>
+  let count = signal(0);
+</script>

@@ -130,6 +130,8 @@ and the reactive tier has no effects or computed values.
 
 ## Read on
 
+- [**Learn**](@/learn/_index.md) — build a task list from an empty file, in
+  about half an hour. Start here if you want to write some Rux.
 - [**Reference**](@/reference/_index.md) — the authoritative list of what works:
   honored CSS, elements, directives, and the honest gaps.
 - [**Why Rux?**](@/why.md) — the thesis, the four laws, and where Rux genuinely
