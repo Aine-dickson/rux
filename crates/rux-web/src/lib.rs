@@ -120,13 +120,16 @@ mod web {
         rux_shell::start_web(canvas, source, super::DEFAULT_FONT.to_vec());
     }
 
-    /// Replace the running document with new source — the playground editor's
-    /// equivalent of saving a file. A parse error leaves the last good document
-    /// on screen and reports to the console, because in an editor the source is
-    /// invalid most of the time you are typing.
+    /// Replace the running document with new source, the playground editor's
+    /// equivalent of saving a file.
+    ///
+    /// Returns the parse error, if there is one, so the page can show it. On an
+    /// error the last good document stays on screen rather than the canvas going
+    /// blank, because while you are typing the source is invalid most of the
+    /// time and a flickering canvas helps nobody.
     #[wasm_bindgen(js_name = setSource)]
-    pub fn set_source(source: String) {
-        rux_shell::set_web_source(source);
+    pub fn set_source(source: String) -> Option<String> {
+        rux_shell::set_web_source(source)
     }
 
     /// Send panics to `console.error` instead of the default, which on wasm is

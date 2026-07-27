@@ -572,6 +572,37 @@ pre code {
   color: var(--ink-dim);
 }
 
+/* Parse errors from the runtime, shown under the canvas. */
+.pg-error {
+  margin: 0;
+  padding: 12px 14px;
+  border-top: 1px solid var(--line);
+  background: #2a1720;
+  color: #f38ba8;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12.5px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+
+/* "Try it" on a runnable code block. Positioned against the <pre>, which the
+   script marks with .has-tryit so only those blocks become containers. */
+.prose pre.has-tryit { position: relative; }
+.tryit {
+  position: absolute;
+  top: 8px;
+  right: 10px;
+  padding: 3px 10px;
+  background: var(--raised);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--ink-dim);
+  font-family: ui-sans-serif, system-ui, sans-serif;
+  font-size: 12px;
+  text-decoration: none;
+}
+.tryit:hover { color: var(--ink); border-color: var(--accent); }
+
 @media (max-width: 860px) {
   .pg { padding: 24px 20px 56px; }
   .pg-grid { grid-template-columns: minmax(0, 1fr); }

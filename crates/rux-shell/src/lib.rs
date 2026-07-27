@@ -1690,14 +1690,25 @@ pub fn start_web(canvas: web_sys::HtmlCanvasElement, source: String, font: Vec<u
     event_loop.spawn_app(app);
 }
 
-/// Replace the running document's source. No-op before `start_web`.
+/// Replace the running document's source, returning a parse error if the source
+/// is not loadable. No-op before `start_web`.
+///
+/// The source is checked here rather than in the event handler so the caller
+/// gets a *synchronous* answer it can put on screen. The running app parses it
+/// again when the event arrives; parsing is cheap next to a frame, and the
+/// alternative — plumbing a result back out through the event loop — would be
+/// far more machinery for the same outcome.
 #[cfg(target_arch = "wasm32")]
-pub fn set_web_source(source: String) {
+pub fn set_web_source(source: String) -> Option<String> {
+    if let Err(err) = Document::from_source(&source) {
+        return Some(err);
+    }
     WEB_PROXY.with(|p| {
         if let Some(proxy) = p.borrow().as_ref() {
             let _ = proxy.send_event(RuxEvent::SetSource(source));
         }
     });
+    None
 }
 
 /// Open the Rux window for the given `.rux` file and run the frame loop until the

@@ -14,7 +14,7 @@
 
   {# Progressive disclosure: the panel starts in a "loading" state and JS clears
      it. With JS off, or on a browser without WebGPU, the message stays and says
-     why — rather than leaving a blank rectangle. #}
+     why, rather than leaving a blank rectangle. #}
   <div class="pg-grid">
     <section class="pg-pane" aria-label="Editor">
       <div class="pg-bar">
@@ -28,7 +28,7 @@
       {# The editor is a transparent textarea over a highlighted <pre>. The two
          must share every text metric or the overlay drifts from the caret, so
          `.pg-code` and `.pg-editor` set font, size, line-height, padding and
-         tab-size identically — see style.css. #}
+         tab-size identically. See style.css. #}
       <div class="pg-editwrap">
         <pre class="pg-code" id="pg-code" aria-hidden="true"><code></code></pre>
         <textarea id="pg-src" class="pg-editor" spellcheck="false" autocomplete="off"
@@ -45,6 +45,9 @@
       <div class="pg-stage">
         <canvas id="pg-canvas" width="420" height="640"></canvas>
       </div>
+      {# Parse errors land here. `role="alert"` so a screen reader announces one
+         instead of it only being a colour change. #}
+      <p id="pg-error" class="pg-error" role="alert" hidden></p>
     </section>
   </div>
 
@@ -134,15 +137,26 @@
           code.parentElement.scrollLeft = editor.scrollLeft;
         });
 
-        runBtn.addEventListener("click", () => {
-          setSource(editor.value);
-          status.textContent = "running";
-        });
+        const errorBox = document.getElementById("pg-error");
+        const run = () => {
+          const err = setSource(editor.value);
+          if (err) {
+            errorBox.textContent = err;
+            errorBox.hidden = false;
+            status.textContent = "error";
+            status.classList.add("is-error");
+          } else {
+            errorBox.hidden = true;
+            status.textContent = "running";
+            status.classList.remove("is-error");
+          }
+        };
+        runBtn.addEventListener("click", run);
 
         // ── Editing behaviour ────────────────────────────────────────────
         // A textarea gives us none of this, so it is hand-rolled. `replace`
         // goes through execCommand where available purely to keep the native
-        // undo stack intact — losing Ctrl+Z in a code editor is worse than the
+        // undo stack intact, since losing Ctrl+Z in a code editor is worse than the
         // deprecation.
         const replace = (text, selStart, selEnd, caret, caretEnd) => {
           editor.setSelectionRange(selStart, selEnd);
@@ -169,7 +183,7 @@
         editor.addEventListener("keydown", (e) => {
           if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
             e.preventDefault();
-            runBtn.click();
+            run();
             return;
           }
           if (e.shiftKey && e.altKey && (e.key === "F" || e.key === "f")) {
