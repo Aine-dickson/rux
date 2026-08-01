@@ -16,8 +16,9 @@ rux-text = { path = "../rux-text" }
 # The explicit version is what `cargo publish` requires of a path dependency:
 # a bare `path` won't publish. It must track `workspace.package.version` exactly,
 # including the `-dev` suffix, because a plain `0.4.0` requirement does NOT match
-# the prerelease `0.4.0-dev`, so dropping the suffix here alone breaks the build.
-rux-reactive = { version = "0.4.0-dev", path = "../rux-reactive" }
+# the prerelease it carries between releases, so dropping the suffix in one
+# place and not the other breaks the build.
+rux-reactive = { version = "0.4.0", path = "../rux-reactive" }
 # `std::time::Instant` panics on wasm; web-time swaps in the browser clock there
 # and re-exports std everywhere else. winit already depends on it, so this adds
 # no weight; it just lets our code name the same type winit's API expects.
