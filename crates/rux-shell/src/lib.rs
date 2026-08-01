@@ -7,6 +7,7 @@
 //! the hot-reload path from `docs/04-architecture.md`.
 
 use std::num::NonZeroUsize;
+use std::path::Path;
 #[cfg(not(target_arch = "wasm32"))]
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -24,16 +25,23 @@ use std::rc::Rc;
 #[cfg(not(target_arch = "wasm32"))]
 use notify::{EventKind, RecursiveMode, Watcher};
 use rux_layout::{
-    Background, Cursor, FocusItem, FocusKind, FocusRegion, HitRegion, Offset, Paint, PaintRect,
-    PaintText, Rgba, ScrollRegion, SelectRegion, TextAlign, TextContent, TextWrap,
+    Background, Cursor, FocusItem, FocusKind, FocusRegion, HitRegion,
+    Offset, Paint, PaintRect, PaintText, Rgba, ScrollRegion, SelectRegion, StateRegion, TextAlign,
+    TextContent, TextWrap,
 };
-use rux_runtime::{Document, Focus};
+use rux_runtime::{Document, Focus, InteractionState, Viewport};
 use vello::kurbo::Affine;
 use vello::peniko::Color;
 use vello::util::{RenderContext, RenderSurface};
 use vello::wgpu;
 use vello::wgpu::CurrentSurfaceTexture;
 use vello::{AaConfig, AaSupport, Renderer, RendererOptions, RenderParams, Scene};
+#[cfg(not(target_arch = "wasm32"))]
+use accesskit::{Node as AccessKitNode, NodeId, Role, Toggled, Tree, TreeUpdate};
+// Only the accessibility tree uses these, so they are gated with it rather
+// than sitting unused in the wasm build.
+#[cfg(not(target_arch = "wasm32"))]
+use rux_layout::{AccessNode, AccessRole};
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
@@ -41,7 +49,7 @@ use winit::keyboard::{Key, NamedKey};
 use winit::window::{CursorIcon, Window, WindowId};
 
 /// Events delivered to the winit loop from outside it.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 enum RuxEvent {
     /// The `.rux` file changed on disk.
     #[cfg(not(target_arch = "wasm32"))]
@@ -62,6 +70,17 @@ enum RuxEvent {
     /// layout does, and the canvas has to be told rather than asked.
     #[cfg(target_arch = "wasm32")]
     Resize(f64, f64),
+    /// Assistive technology asked us something (it attached, it wants the
+    /// tree, it moved focus). Delivered through the same proxy as hot-reload.
+    #[cfg(not(target_arch = "wasm32"))]
+    Access(accesskit_winit::Event),
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl From<accesskit_winit::Event> for RuxEvent {
+    fn from(event: accesskit_winit::Event) -> Self {
+        Self::Access(event)
+    }
 }
 
 /// Taps closer than this (in physical pixels) between press and release still
@@ -303,16 +322,290 @@ fn dropdown_paints(sel: &SelectRegion, value: &str) -> Vec<Paint> {
     out
 }
 
-/// Load a `.rux` document. On failure, log the diagnostic and fall back to an
-/// empty screen so the window still opens (stand-in for the dev overlay).
+// ── Accessibility ───────────────────────────────────────────────────────────
+
+/// The accessibility tree's root. Element ids follow it, offset by one, so an
+/// element's id is stable for a given position in document order.
+#[cfg(not(target_arch = "wasm32"))]
+const ACCESS_ROOT: NodeId = NodeId(0);
+
+#[cfg(not(target_arch = "wasm32"))]
+fn to_accesskit_role(role: AccessRole) -> Role {
+    match role {
+        AccessRole::Label => Role::Label,
+        AccessRole::Heading => Role::Heading,
+        AccessRole::Button => Role::Button,
+        AccessRole::CheckBox => Role::CheckBox,
+        AccessRole::RadioButton => Role::RadioButton,
+        AccessRole::TextInput => Role::TextInput,
+        AccessRole::MultilineTextInput => Role::MultilineTextInput,
+        AccessRole::ComboBox => Role::ComboBox,
+        AccessRole::Image => Role::Image,
+        AccessRole::ScrollView => Role::ScrollView,
+        // A grouping the author marked with `role=`, and the unreachable None.
+        AccessRole::Group | AccessRole::None => Role::Group,
+    }
+}
+
+/// Build the accessibility tree for the current frame: a window root with one
+/// child per meaningful element, carrying its role, name, value, checked state
+/// and on-screen bounds.
+///
+/// Rebuilt per frame rather than diffed, at these tree sizes it is cheap, and
+/// the alternative (tracking node identity across reconciles) is exactly the kind
+/// of parallel bookkeeping that goes stale. Geometry is in *physical* pixels,
+/// which is what the platform expects.
+#[cfg(not(target_arch = "wasm32"))]
+fn access_tree(nodes: &[AccessNode], focused_model: Option<&str>, scale: f64, title: &str) -> TreeUpdate {
+    let mut root = AccessKitNode::new(Role::Window);
+    root.set_label(title.to_string());
+
+    let mut updates = Vec::with_capacity(nodes.len() + 1);
+    let mut children = Vec::with_capacity(nodes.len());
+    let mut focus = ACCESS_ROOT;
+
+    for (i, node) in nodes.iter().enumerate() {
+        let id = NodeId(i as u64 + 1);
+        children.push(id);
+
+        let mut ak = AccessKitNode::new(to_accesskit_role(node.access.role));
+        if let Some(label) = node.access.name() {
+            // Static text is the exception: accesskit reads a `Role::Label`'s
+            // name from its *value* (`label_comes_from_value`), so setting the
+            // label there leaves it nameless, which is what a UIA client saw
+            // before this line existed.
+            if node.access.role == AccessRole::Label {
+                ak.set_value(label.to_string());
+            } else {
+                ak.set_label(label.to_string());
+            }
+        }
+        if let Some(value) = &node.access.value {
+            ak.set_value(value.clone());
+        }
+        if let Some(checked) = node.access.checked {
+            ak.set_toggled(if checked { Toggled::True } else { Toggled::False });
+        }
+        // Bounds let a screen reader's cursor track the element on screen.
+        ak.set_bounds(accesskit::Rect {
+            x0: node.x as f64 * scale,
+            y0: node.y as f64 * scale,
+            x1: (node.x + node.width) as f64 * scale,
+            y1: (node.y + node.height) as f64 * scale,
+        });
+        // Anything a user can operate is reachable; static text is not a stop.
+        if matches!(
+            node.access.role,
+            AccessRole::Button
+                | AccessRole::CheckBox
+                | AccessRole::RadioButton
+                | AccessRole::TextInput
+                | AccessRole::MultilineTextInput
+                | AccessRole::ComboBox
+        ) {
+            ak.add_action(accesskit::Action::Focus);
+            ak.add_action(accesskit::Action::Click);
+        }
+        // Keep the platform's focus in step with ours, so a screen reader follows
+        // the caret instead of announcing a stale element.
+        if let (Some(model), Some(focused)) = (&node.model, focused_model) {
+            if model == focused {
+                focus = id;
+            }
+        }
+        updates.push((id, ak));
+    }
+
+    root.set_children(children);
+    let mut tree = Tree::new(ACCESS_ROOT);
+    tree.toolkit_name = Some("Rux".into());
+    tree.toolkit_version = Some(env!("CARGO_PKG_VERSION").into());
+    let mut tree_update = TreeUpdate {
+        nodes: vec![(ACCESS_ROOT, root)],
+        tree: Some(tree),
+        // We publish one window-level tree, never a subtree graft.
+        tree_id: accesskit::TreeId::ROOT,
+        focus,
+    };
+    tree_update.nodes.extend(updates);
+    tree_update
+}
+
+// ── Dev overlay ─────────────────────────────────────────────────────────────
+
+const OVERLAY_PAD: f32 = 16.0;
+const OVERLAY_LINE_H: f32 = 20.0;
+const OVERLAY_TITLE_H: f32 = 26.0;
+/// Warnings listed before the panel stops and says how many are left.
+const OVERLAY_MAX_WARNINGS: usize = 6;
+
+/// Paint items for the dev overlay: what is wrong with the document, drawn over
+/// the app.
+///
+/// This is the whole point of the feature, a broken `.rux` file used to show an
+/// empty window with one line on a stderr nobody running a GUI is watching. An
+/// error takes a red panel and says the screen is stale; warnings take a quieter
+/// amber one, since the app underneath is fine.
+fn overlay_paints(diag: &rux_runtime::Diagnostics, path: &Path, width: f32) -> Vec<Paint> {
+    if diag.is_empty() {
+        return Vec::new();
+    }
+    let error_bg = Rgba::new(0.24, 0.09, 0.13, 0.97); // deep red
+    let error_edge = Rgba::new(0.95, 0.35, 0.42, 1.0); // #f38ba8-ish
+    let warn_bg = Rgba::new(0.20, 0.17, 0.10, 0.97); // deep amber
+    let warn_edge = Rgba::new(0.98, 0.70, 0.35, 1.0); // #fab387-ish
+    let ink = Rgba::new(0.95, 0.95, 0.97, 1.0);
+    let muted = Rgba::new(0.78, 0.78, 0.84, 1.0);
+
+    let is_error = diag.error.is_some();
+    let (bg, edge) = if is_error { (error_bg, error_edge) } else { (warn_bg, warn_edge) };
+
+    // Wrap the message text to the panel width so a long error is readable
+    // rather than clipped at the edge.
+    let panel_w = (width - OVERLAY_PAD * 2.0).max(120.0);
+    let text_w = panel_w - OVERLAY_PAD * 2.0;
+    let mut lines: Vec<(String, Rgba)> = Vec::new();
+    if let Some(error) = &diag.error {
+        lines.extend(wrap_overlay(error, text_w).into_iter().map(|l| (l, ink)));
+        if diag.stale {
+            lines.push((
+                "showing the last version that loaded, fix the file and save".to_string(),
+                muted,
+            ));
+        }
+    }
+    // A document can easily have a dozen unhonored properties; an unbounded panel
+    // would grow past the window and hide the app it is describing.
+    let shown = diag.warnings.len().min(OVERLAY_MAX_WARNINGS);
+    for warning in &diag.warnings[..shown] {
+        lines.extend(
+            wrap_overlay(&format!("• {warning}"), text_w)
+                .into_iter()
+                .map(|l| (l, if is_error { muted } else { ink })),
+        );
+    }
+    if diag.warnings.len() > shown {
+        lines.push((
+            format!("… and {} more (full list on stderr)", diag.warnings.len() - shown),
+            muted,
+        ));
+    }
+
+    let title = match (&diag.error, diag.warnings.len()) {
+        (Some(_), 0) => format!("rux: {} failed to load", file_name(path)),
+        (Some(_), n) => format!("rux: {} failed to load  ·  {n} warning(s)", file_name(path)),
+        (None, n) => format!("rux: {n} warning(s) in {}", file_name(path)),
+    };
+
+    let panel_h = OVERLAY_TITLE_H + lines.len() as f32 * OVERLAY_LINE_H + OVERLAY_PAD * 1.5;
+    let x = OVERLAY_PAD;
+    let y = OVERLAY_PAD;
+
+    let mut out = Vec::with_capacity(lines.len() + 3);
+    out.push(Paint::Shadow {
+        x,
+        y: y + 3.0,
+        width: panel_w,
+        height: panel_h,
+        radius: 10.0,
+        blur: 20.0,
+        color: Rgba::new(0.0, 0.0, 0.0, 0.5),
+    });
+    out.push(Paint::Rect(PaintRect {
+        x,
+        y,
+        width: panel_w,
+        height: panel_h,
+        background: Some(Background::Color(bg)),
+        radius: [10.0; 4],
+        border_width: 2.0,
+        border_color: Some(edge),
+    }));
+    out.push(Paint::Text(PaintText {
+        x: x + OVERLAY_PAD,
+        y: y + OVERLAY_PAD * 0.6,
+        width: text_w,
+        height: OVERLAY_TITLE_H,
+        content: overlay_text(title, 15.0, 700, edge),
+    }));
+    for (i, (line, color)) in lines.into_iter().enumerate() {
+        out.push(Paint::Text(PaintText {
+            x: x + OVERLAY_PAD,
+            y: y + OVERLAY_TITLE_H + OVERLAY_PAD * 0.4 + i as f32 * OVERLAY_LINE_H,
+            width: text_w,
+            height: OVERLAY_LINE_H,
+            content: overlay_text(line, 14.0, 400, color),
+        }));
+    }
+    out
+}
+
+fn file_name(path: &Path) -> String {
+    path.file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.display().to_string())
+}
+
+/// Break `text` into lines that fit `width`, by character estimate. The overlay
+/// paints each line itself (rather than handing one block to the text engine)
+/// so the panel's height is known before it is drawn.
+fn wrap_overlay(text: &str, width: f32) -> Vec<String> {
+    // ~0.52em per character at this size, a deliberate under-estimate, since a
+    // slightly short line is invisible and an overlong one is clipped.
+    let max_chars = ((width / 7.3) as usize).max(20);
+    let mut lines = Vec::new();
+    for paragraph in text.split('\n') {
+        let mut line = String::new();
+        for word in paragraph.split_whitespace() {
+            if !line.is_empty() && line.chars().count() + 1 + word.chars().count() > max_chars {
+                lines.push(std::mem::take(&mut line));
+            }
+            if !line.is_empty() {
+                line.push(' ');
+            }
+            line.push_str(word);
+        }
+        lines.push(line);
+    }
+    lines
+}
+
+fn overlay_text(text: String, font_size: f32, weight: u16, color: Rgba) -> TextContent {
+    TextContent {
+        text,
+        font_size,
+        weight,
+        color,
+        align: TextAlign::Start,
+        wrap: TextWrap::Normal,
+        font_family: None,
+        letter_spacing: None,
+        word_spacing: None,
+        line_height: None,
+        italic: false,
+        underline: false,
+        strikethrough: false,
+        nowrap: true,
+        caret: None,
+        selection: None,
+    }
+}
+
+/// Load a `.rux` document. On failure the window still opens, but now it opens
+/// showing the error, instead of a blank screen with a line on stderr.
 #[cfg(not(target_arch = "wasm32"))]
 fn load_document(path: &PathBuf) -> Document {
     match Document::load(path) {
         Ok(doc) => doc,
         Err(err) => {
-            eprintln!("failed to load {}: {err}", path.display());
-            Document::from_source("<template><screen></screen></template>")
-                .expect("empty document")
+            eprintln!("rux: failed to load {}: {err}", path.display());
+            let mut doc = Document::from_source("<template><screen></screen></template>")
+                .expect("empty document");
+            doc.set_load_error(err);
+            // Nothing was ever shown, so the empty screen isn't "stale", it is
+            // simply all there is.
+            doc.clear_stale();
+            doc
         }
     }
 }
@@ -323,6 +616,12 @@ struct RenderState {
     surface: RenderSurface<'static>,
     renderer: Renderer,
     scene: Scene,
+    /// Publishes the accessibility tree to the platform (UI Automation on
+    /// Windows, AT-SPI on Linux, NSAccessibility on macOS). It only does work
+    /// while assistive technology is actually attached, so this costs nothing in
+    /// the common case.
+    #[cfg(not(target_arch = "wasm32"))]
+    access: accesskit_winit::Adapter,
 }
 
 /// The application: owns the vello render context, the document, the text
@@ -336,6 +635,10 @@ type Pending = Rc<RefCell<Option<(RenderContext, RenderState)>>>;
 struct App {
     context: RenderContext,
     state: Option<RenderState>,
+    /// Proxy for events raised outside the loop: the file watcher and the
+    /// accessibility adapter both deliver through it.
+    #[cfg(not(target_arch = "wasm32"))]
+    proxy: winit::event_loop::EventLoopProxy<RuxEvent>,
     /// Set while the async surface setup is in flight, so `resumed` firing twice
     /// doesn't start a second one.
     #[cfg(target_arch = "wasm32")]
@@ -367,6 +670,9 @@ struct App {
     ctrl_held: bool,
     /// Scrollable regions from the most recent layout.
     scrolls: Vec<ScrollRegion>,
+    /// Boxes styled by `:hover`/`:active`, from the most recent layout. Empty
+    /// unless the document actually uses a pointer-state rule.
+    states: Vec<StateRegion>,
     /// Scroll offset per scrollable box, in tree order. Survives the rebuild
     /// that follows every state change, so a list doesn't jump back to the top
     /// when you tap something in it.
@@ -412,14 +718,20 @@ struct App {
 }
 
 impl App {
-    /// Build the app around an already-loaded document.
+    /// Build the app. Native loads the document from `path`; the web is handed
+    /// one already parsed, because it has no filesystem to load it from.
     fn new(
         #[cfg(not(target_arch = "wasm32"))] path: PathBuf,
-        document: Document,
+        #[cfg(not(target_arch = "wasm32"))] proxy: winit::event_loop::EventLoopProxy<RuxEvent>,
+        #[cfg(target_arch = "wasm32")] document: Document,
     ) -> Self {
+        #[cfg(not(target_arch = "wasm32"))]
+        let document = load_document(&path);
         Self {
             context: RenderContext::new(),
             state: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            proxy,
             #[cfg(target_arch = "wasm32")]
             pending: Rc::new(RefCell::new(None)),
             #[cfg(target_arch = "wasm32")]
@@ -456,20 +768,28 @@ impl App {
             pointer: (0.0, 0.0),
             press: None,
             cursor: CursorIcon::Default,
+            states: Vec::new(),
         }
     }
 
-    /// Re-load the document after a file change. On a parse/load error we keep
-    /// the last good document and log the diagnostic, rather than blanking the
-    /// window (a first step toward the dev overlay).
+    /// Re-load the document after a file change. On a parse/load error the last
+    /// good tree stays on screen and the dev overlay reports the error, so a typo
+    /// mid-edit neither blanks the window nor passes unnoticed.
     #[cfg(not(target_arch = "wasm32"))]
     fn reload(&mut self) {
         match Document::load(&self.path) {
             Ok(doc) => {
-                self.document = doc;
+                // Keeps the window's own state (viewport, hover) and drops the
+                // previous error, so fixing the file clears the overlay.
+                self.document.replace_with(doc);
                 eprintln!("reloaded {}", self.path.display());
             }
-            Err(err) => eprintln!("reload failed for {}: {err}", self.path.display()),
+            Err(err) => {
+                eprintln!("rux: reload failed for {}: {err}", self.path.display());
+                // The last good tree stays on screen; the overlay explains why it
+                // is no longer what the file says.
+                self.document.set_load_error(err);
+            }
         }
     }
 
@@ -765,6 +1085,83 @@ impl App {
             if let Some(state) = &self.state {
                 state.window.set_cursor(want);
             }
+        }
+    }
+
+    /// Push the current pointer state into the document so `:hover` and `:active`
+    /// restyle. The topmost state region under the pointer wins, as with tap
+    /// dispatch; `:active` additionally requires the button to be down on it.
+    ///
+    /// Cheap to call on every mouse move: with no pointer-state rules in the
+    /// document there are no regions, and the document declines any state it is
+    /// already in without touching the tree.
+    fn update_pointer_state(&mut self) {
+        if self.states.is_empty() && self.document.interaction().hovered.is_none() {
+            return;
+        }
+        let scale = self.scale();
+        let (px, py) = ((self.pointer.0 / scale) as f32, (self.pointer.1 / scale) as f32);
+        let hovered = self
+            .states
+            .iter()
+            .rev()
+            .find(|r| r.contains(px, py))
+            .map(|r| r.path.clone());
+        // Pressing and then dragging off the element drops `:active`, the way a
+        // button un-presses when the pointer leaves it.
+        let active = self.press.is_some().then(|| hovered.clone()).flatten();
+        let next = InteractionState {
+            hovered,
+            active,
+            focused_model: self.document.interaction().focused_model.clone(),
+        };
+        if self.document.set_interaction(next) {
+            self.request_redraw();
+        }
+    }
+
+    /// Tell the document the window's *logical* size, so `@media` queries are
+    /// evaluated against the same units the stylesheet is written in. The document
+    /// only re-cascades if a query actually changed answer, so calling this on
+    /// every resize event is cheap.
+    fn update_viewport(&mut self) {
+        let Some(state) = self.state.as_ref() else { return };
+        let scale = state.window.scale_factor();
+        let viewport = Viewport {
+            width: (state.surface.config.width as f64 / scale) as f32,
+            height: (state.surface.config.height as f64 / scale) as f32,
+        };
+        if self.document.set_viewport(viewport) {
+            self.request_redraw();
+        }
+    }
+
+    /// The pointer left the window: nothing is hovered or pressed any more.
+    ///
+    /// This needs its own event because the pointer leaving produces `CursorLeft`,
+    /// not a `CursorMoved` to somewhere outside, so without it a `:hover` style
+    /// stays lit after the pointer is long gone.
+    fn clear_pointer_state(&mut self) {
+        let mut next = self.document.interaction().clone();
+        if next.hovered.is_none() && next.active.is_none() {
+            return;
+        }
+        next.hovered = None;
+        next.active = None;
+        if self.document.set_interaction(next) {
+            self.request_redraw();
+        }
+    }
+
+    /// Tell the document which input has focus, so `:focus` rules match it.
+    fn update_focus_state(&mut self, model: Option<String>) {
+        let mut next = self.document.interaction().clone();
+        if next.focused_model == model {
+            return;
+        }
+        next.focused_model = model;
+        if self.document.set_interaction(next) {
+            self.request_redraw();
         }
     }
 
@@ -1144,6 +1541,9 @@ impl App {
         self.caret = focus.as_ref().map(|f| f.caret).unwrap_or(0);
         self.anchor = focus.as_ref().map(|f| f.anchor).unwrap_or(0);
         self.document.set_focus(focus);
+        // `:focus` matches on the focused model, so the document needs it too.
+        let model = self.focused.clone();
+        self.update_focus_state(model);
         self.reset_blink();
         self.request_redraw();
     }
@@ -1210,6 +1610,9 @@ impl App {
     }
 
     fn render(&mut self) {
+        // Catches the first frame and any resize that arrived without an event
+        // (hot-reload, scale change); a no-op unless a breakpoint moved.
+        self.update_viewport();
         let caret_visible = self.caret_visible;
         // Split borrows so the text engine (used both to measure during layout
         // and to draw during paint) doesn't conflict with the render state.
@@ -1227,6 +1630,11 @@ impl App {
             open_select,
             scrolls,
             offsets,
+            states,
+            #[cfg(not(target_arch = "wasm32"))]
+            path,
+            #[cfg(not(target_arch = "wasm32"))]
+            focused,
             ..
         } = self;
         let Some(state) = state.as_mut() else {
@@ -1295,6 +1703,33 @@ impl App {
             }
         }
 
+        // The dev overlay goes last, above everything including a dropdown: if the
+        // document is broken, that is the most important thing on screen.
+        let diagnostics = document.diagnostics();
+        if !diagnostics.is_empty() {
+            #[cfg(not(target_arch = "wasm32"))]
+            let panel = overlay_paints(diagnostics, path, logical.0 as f32);
+            // No file on the web, so the overlay titles itself after the editor.
+            #[cfg(target_arch = "wasm32")]
+            let panel =
+                overlay_paints(diagnostics, Path::new("playground.rux"), logical.0 as f32);
+            let scene = rux_paint::build_scene(&panel, text, images, false);
+            state.scene.append(&scene, Some(Affine::scale(scale)));
+        }
+
+        // Publish the accessibility tree for this frame. `update_if_active` skips
+        // the work entirely unless assistive technology is attached, so the common
+        // case pays only for the (already computed) node list.
+        // Native only: the web already has an accessibility tree of its own, and
+        // accesskit_winit has no adapter for it.
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let window_title = state.window.title();
+            state.access.update_if_active(|| {
+                access_tree(&layout.access, focused.as_deref(), scale, &window_title)
+            });
+        }
+
         *hits = layout.hits;
         *focuses = layout.focuses;
         *selects = layout.selects;
@@ -1304,6 +1739,7 @@ impl App {
         }
         *focusables = layout.focusables;
         *scrolls = layout.scrolls;
+        *states = layout.states;
 
         let device_handle = &context.devices[state.surface.dev_id];
         // wgpu 29 reports acquisition as a status enum. A timeout/occluded frame
@@ -1383,10 +1819,19 @@ impl ApplicationHandler<RuxEvent> for App {
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_else(|| "M2".into())
         );
+        // Created hidden: the accessibility adapter must exist before the window
+        // is first shown, or it panics. Revealed again once the adapter is up.
         let attributes = Window::default_attributes()
             .with_title(title)
+            .with_visible(false)
             .with_inner_size(winit::dpi::LogicalSize::new(420.0, 640.0));
         let window = Arc::new(event_loop.create_window(attributes).expect("create window"));
+        let access = accesskit_winit::Adapter::with_event_loop_proxy(
+            event_loop,
+            &window,
+            self.proxy.clone(),
+        );
+        window.set_visible(true);
 
         let size = window.inner_size();
         let surface = pollster::block_on(self.context.create_surface(
@@ -1403,6 +1848,7 @@ impl ApplicationHandler<RuxEvent> for App {
             surface,
             renderer,
             scene: Scene::new(),
+            access,
         });
         self.request_redraw();
     }
@@ -1502,6 +1948,22 @@ impl ApplicationHandler<RuxEvent> for App {
                         .request_inner_size(winit::dpi::LogicalSize::new(w.max(1.0), h.max(1.0)));
                 }
             }
+
+            #[cfg(not(target_arch = "wasm32"))]
+            RuxEvent::Access(event) => {
+                match event.window_event {
+                    // Assistive technology just attached: it needs the whole tree,
+                    // which the next frame publishes.
+                    accesskit_winit::WindowEvent::InitialTreeRequested => {}
+                    // It asked to focus or activate something. Our own focus model
+                    // drives the app, so the tree is simply re-published; wiring
+                    // these to real actions is the next slice.
+                    accesskit_winit::WindowEvent::ActionRequested(_) => {}
+                    accesskit_winit::WindowEvent::AccessibilityDeactivated => {}
+                }
+                self.request_redraw();
+                return;
+            }
         }
         self.request_redraw();
     }
@@ -1512,6 +1974,13 @@ impl ApplicationHandler<RuxEvent> for App {
         _id: WindowId,
         event: WindowEvent,
     ) {
+        // The adapter needs to see window events (focus, resize) to keep the
+        // platform's view of the window in step. It observes; we still handle
+        // every event ourselves below.
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(state) = self.state.as_mut() {
+            state.access.process_event(&state.window, &event);
+        }
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::Resized(size) => {
@@ -1522,6 +1991,7 @@ impl ApplicationHandler<RuxEvent> for App {
                         size.height.max(1),
                     );
                 }
+                self.update_viewport();
                 self.request_redraw();
             }
             WindowEvent::MouseWheel { delta, .. } => {
@@ -1546,8 +2016,12 @@ impl ApplicationHandler<RuxEvent> for App {
                     self.drag_text(self.pointer);
                 } else {
                     self.update_cursor();
+                    self.update_pointer_state();
                 }
             }
+            // The pointer left the window entirely, no CursorMoved follows, so
+            // hover/active have to be dropped here or they stay lit.
+            WindowEvent::CursorLeft { .. } => self.clear_pointer_state(),
             // Touch follows the same path as the mouse: press, drag, release.
             // It used to only scroll, which meant a finger could never tap
             // anything. That went unnoticed because there was no touch hardware
@@ -1626,6 +2100,8 @@ impl ApplicationHandler<RuxEvent> for App {
                 // content under it.
                 if !self.press_scrollbar(self.pointer) && !self.press_text(self.pointer) {
                     self.press = Some(self.pointer);
+                    // `:active` holds from press to release.
+                    self.update_pointer_state();
                 }
             }
             WindowEvent::MouseInput {
@@ -1641,6 +2117,9 @@ impl ApplicationHandler<RuxEvent> for App {
                     return;
                 }
                 if let Some((sx, sy)) = self.press.take() {
+                    // Release ends `:active`, before the tap runs, so a handler
+                    // that restructures the tree doesn't leave a pressed node behind.
+                    self.update_pointer_state();
                     let (px, py) = self.pointer;
                     if (px - sx).hypot(py - sy) <= TAP_SLOP {
                         self.dispatch_tap(px, py);
@@ -1831,8 +2310,7 @@ pub fn run(path: PathBuf) {
         .watch(&watch_dir, RecursiveMode::Recursive)
         .expect("watch directory");
 
-    let document = load_document(&path);
-    let mut app = App::new(path, document);
+    let mut app = App::new(path, event_loop.create_proxy());
     event_loop.run_app(&mut app).expect("run app");
 
     drop(watcher); // keep the watcher alive for the loop's lifetime

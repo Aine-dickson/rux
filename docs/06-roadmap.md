@@ -357,9 +357,8 @@ and driven in `examples/fonts.rux`.
   resolution pass in the cascade.
 - **`@media` queries**: the honest way to make examples responsive, rather than
   hand-tuning `max-width` per screen.
-- **Pseudo-classes** (`:hover`, `:active`, `:focus`, `:checked`): needs
-  interaction state threaded into matching. `:hover`/`:active` also need pointer
-  tracking to invalidate. This retires the synthetic `checked` class hack.
+- ~~**Pseudo-classes** (`:hover`, `:active`, `:focus`, `:checked`)~~: ✅ done
+  2026-07-25; see the v0.4 section.
 - **`!important`, `inherit`/`initial`**: cascade completeness.
 - **`text-overflow: ellipsis`**: needs measure-and-truncate; parley won't do it
   for us.
@@ -773,19 +772,124 @@ Nothing here is committed to a specific Friday yet; this is the ordered pool the
 v0.4.x point-releases draw from. Reactivity landing in v0.3 is what unblocks the
 first item.
 
-1. **Pseudo-classes** (`:hover`, `:focus`, `:active`, `:checked`): *the intended
-   first v0.4 item.* Needs interaction state threaded into selector matching, which
-   fine-grained reactivity (v0.3) makes tractable: `:hover`/`:active` need pointer
-   tracking to invalidate, and per-binding subscriptions are how that invalidation
-   stays cheap. Retires the synthetic `checked`-class hack.
-2. **CSS custom properties + `var()`**: one place for the theme palette instead of
-   hard-coded per class. Wants a resolution pass in the cascade.
-3. **`@media` queries**: the honest way to make examples responsive.
-4. **Error surfacing / dev overlay**: today unknown CSS is silently ignored and a
-   bad `.rux` file falls back to an empty screen. The biggest gap before this is in
-   anyone else's hands. (Also listed under Known ceilings.)
-5. **Accessibility**: parley 0.11 already pulls in `accesskit`; `role=` is honored
-   for selectors but wired to nothing. That door is open.
+1. **Pseudo-classes** (`:hover`, `:focus`, `:active`, `:checked`): ✅ **done
+   2026-07-25, driven & verified in the window.** All four match; they stack, carry
+   class-level specificity, and work anywhere in a chain (`.card:hover .title`).
+
+   - **How the state gets in.** `rux_style::InteractionState` (hovered path, active
+     path, focused `r-model`) is threaded through the build; `ElemDesc` carries an
+     `ElemStates` the pseudo-classes test. `:checked` resolves from the toggle's
+     `r-model` at build time; the other three come from the shell.
+   - **How the shell knows what to report.** A node any `:hover`/`:active` rule
+     could match is marked with its tree path (`Node.state_path`), and the layout
+     emits a `StateRegion` for it, so a document with no pointer-state rules emits
+     none and pays nothing. Deliberately an over-approximation (only the
+     pseudo-carrying compound is tested): over-flagging costs a region,
+     under-flagging would be a rule that silently never fires.
+   - **How it stays cheap.** `Document::set_interaction` re-cascades only the
+     subtree where the old and new pointer chains **diverge**, reusing the v0.3
+     node-splice reconcile, so a caret or selection elsewhere survives by node
+     identity. Moving within one element is not a state change and does no work.
+   - **Two bugs this surfaced.** (a) `parse_compound` used to stop at the `:` and
+     drop it, so `.box:hover` parsed as plain `.box` and applied *unconditionally*;
+     an unknown pseudo-class now fails closed and warns once. (b) Found only by
+     driving it: the pointer leaving the window fires `CursorLeft`, not a
+     `CursorMoved`, so a hovered element stayed lit after the pointer was gone, the "set but never cleared" category again, now covered by a test that asserts
+     the *clearing*.
+   - **Still open:** the synthetic `checked` class is kept one release for
+     compatibility (examples and docs are migrated to `:checked`); entering or
+     leaving *all* interactive boxes re-cascades from the root rather than a
+     sub-path, which is correct but coarser than the sibling-to-sibling case.
+2. **CSS custom properties + `var()`**: ✅ **done 2026-07-25, driven & verified.**
+   `--name` declarations inherit like `color`; `var()` is substituted into every
+   declaration *after* the cascade and inline styles merge, so every property gets
+   variables without its parser knowing they exist. Fallbacks, variables defined in
+   terms of variables, per-subtree overrides, and a depth cap for cycles. Undefined
+   + no fallback = the declaration is dropped (CSS's rule) and warned once. The
+   var map is shared by `Rc`, so a subtree declaring none copies nothing.
+   `examples/theme.rux` swaps a whole palette with one `:class`.
+
+   **Gap this surfaced:** attribute values were never entity-decoded, so there was
+   no way to write a script string literal inside a `:` binding or `@tap`, the
+   attribute and the expression share the `"` delimiter. `decode_entities` moved to
+   `rux-parser` and now runs as attributes are read (`&quot;` works), with
+   `rux-style` reusing it rather than keeping a second table.
+3. **`@media` queries**: ✅ **done 2026-07-26, driven & verified.** Rules inside a
+   non-matching block are simply never emitted, so matching, cascade and
+   specificity are untouched: a block adds no specificity, and the order counter
+   runs across blocks so a later `@media` rule beats an earlier plain one.
+   `min-`/`max-width`/`-height`, `orientation`, `screen`/`all`, `and` chains and
+   comma alternatives; unsupported conditions warn once and never apply.
+
+   **Landmine:** lightningcss *normalizes* `(min-width: 600px)` into the Media
+   Queries Level 4 range form `(width >= 600px)` before we see it, so the range
+   spelling is the one that actually arrives, the `min-`/`max-` arm is the
+   compatibility path, not the main one. Both are parsed, including double-ended
+   `(400px <= width <= 600px)`.
+
+   **Cost control:** `Document::set_viewport` evaluates every media condition at
+   the old and new size and re-cascades only if that vector differs, so a resize
+   crossing no breakpoint does nothing, and a document without `@media` never
+   re-cascades. `examples/responsive.rux` drives it.
+4. **Error surfacing / dev overlay**: ✅ **done 2026-07-26, driven & verified.**
+   A broken file no longer opens an empty window: the shell paints a dev overlay
+   above everything (including a dropdown) with the failure, and a **failed
+   hot-reload keeps the last good tree on screen** and marks it stale, so a typo
+   mid-edit neither blanks the window nor passes unnoticed. Fixing the file clears
+   it; `Document::replace_with` carries the window's own state (viewport, pointer)
+   across the reload so a narrow window doesn't come back with desktop styling.
+
+   - **Parse errors carry line and column**, offset onto the *file's* numbering
+     rather than the `<template>` section's, so they match an editor's gutter.
+   - **Warnings are collected, not just printed.** Thread-local sinks in
+     `rux-style` (unhonored property, unknown pseudo-class, undefined `var()`,
+     unsupported `@media`) and `rux-script` (expressions that failed to compile or
+     evaluate), drained per build by the runtime. stderr keeps its process-wide
+     dedupe so a rebuild doesn't spam the terminal; the sinks dedupe only within a
+     build so the overlay always lists everything currently wrong.
+   - **The silent-expression hole is closed**: `eval` used to swallow every error
+     with `.ok()?`, so a typo in `{{ }}` or `@tap` rendered empty and said nothing.
+   - `crates/rux-runtime/tests/examples.rs` asserts every shipped example loads
+     **warning-free**: a noisy overlay in `examples/` is now a test failure.
+
+   **Still open:** the overlay is not dismissable, and warnings are not yet
+   located (no line numbers for CSS). The machine-readable `rux check` subcommand
+   in the Dev-tooling section below is the natural next step, it can reuse these
+   same sinks.
+
+   **Not fixable from outside the engine:** rhai returns `()` for a missing map
+   property instead of erroring, so `{{ user.nmae }}` is still silently empty.
+   That is now recorded as the **second motivator for the rhai fork** (Further out
+   → item 3), beside the signal-mutation constraint.
+5. **Accessibility**: ✅ **done 2026-07-26, driven & verified.** `role=` now means
+   something to assistive technology, not just to selectors: Rux publishes a real
+   accessibility tree via `accesskit` + `accesskit_winit` (0.24 / 0.33, which share
+   our exact winit 0.30, no duplicate winit).
+
+   - **Roles resolved at build time** in `rux-style` into a small `AccessRole` enum
+     owned by `rux-layout`, so neither crate depends on `accesskit`, only the
+     shell translates. Text→Label, `@tap` box→Button, inputs→TextInput/
+     MultilineTextInput/ComboBox, toggles→CheckBox/RadioButton with live checked
+     state, images→Image, scrollers→ScrollView; `role=` overrides.
+   - **Names** come from authored `label=`/`alt=`, else a `<text for="…">` linked
+     by the existing `link_labels` pass, else (inputs only) the placeholder. A
+     button is named by the text inside it.
+   - **Geometry** rides the existing `collect` walk, so every exposed node carries
+     real on-screen bounds; `r-show="false"` nodes are absent, not just invisible.
+   - Republished per frame, but only while an AT is attached (`update_if_active`).
+
+   **Two things only driving it could have caught:** the adapter must be created
+   *before* the window is first shown (it panics otherwise, the window is now
+   created hidden and revealed after), and accesskit takes a `Role::Label`'s name
+   from its **value**, not its label, so every static text was nameless until that
+   was special-cased. Verified end-to-end by querying the live UI Automation tree
+   from PowerShell: correct control types, names, values, toggle state and bounds,
+   updating live when a checkbox is ticked.
+
+   **Not done:** action requests (an AT asking to click/focus) are received but not
+   dispatched; the tree is flat under the window (no landmarks/nesting); no live
+   regions. `examples/form-controls.rux` gained `id`/`for=` pairs so its controls
+   are actually named, the old adjacent-label pattern left them anonymous.
 
 Deliberately **not** in the v0.4 pool: true inline text flow, flagged below as
 "a real project, not a patch," too big for a weekly slot.
@@ -803,20 +907,26 @@ self-contained-vs-`source.css` decision).
 
 - **True inline text flow.** Two `<text>` siblings stack; they cannot share a
   line. taffy has no inline formatting context, so this needs our own line-breaker
-  over parley: a real project, not a patch.
-- **Error surfacing.** Unknown CSS is silently ignored; a bad `.rux` file falls
-  back to an empty screen. There is no dev overlay. Fine for a prototype, not for
-  anyone else's hands.
-- **`:checked` and other pseudo-classes.** Today a checked box gets a synthetic
-  `checked` *class*, deliberately, to avoid new selector machinery. If pseudo-
-  classes arrive (`:hover`, `:focus`, `:disabled`), that hack should be retired
-  with them.
-- **Accessibility.** `role=` is honored for selectors and semantics but is wired
-  to nothing. parley 0.11 pulls in `accesskit`; that door is open.
+  over parley, a real project, not a patch.
+- ~~**Error surfacing.**~~ ✅ Resolved 2026-07-26: there is a dev overlay. A bad
+  `.rux` file shows the error (with line/column) instead of an empty screen, a
+  failed hot-reload keeps the last good UI, and dead CSS / failed expressions are
+  listed in-window. Remaining: no line numbers on CSS warnings, no `rux check`.
+- ~~**`:checked` and other pseudo-classes.**~~ ✅ Resolved 2026-07-25: `:hover`,
+  `:focus`, `:active` and `:checked` all match. The synthetic `checked` class
+  survives one more release for compatibility, then goes.
+- ~~**Accessibility.**~~ ✅ Resolved 2026-07-26: a real `accesskit` tree is
+  published (roles, names, values, checked state, bounds), verified through UI
+  Automation. Remaining: action requests aren't dispatched, the tree is flat, and
+  there are no live regions.
 
 ---
 
-## Further out (post-v0.4, sequenced but not versioned yet)
+## Further out: the original three (recorded 2026-07-18)
+
+> Superseded as a *sequence* by the version plan below, which folds these
+> three in and says where each landed. Kept because the engine notes under
+> item 3 are the most detailed record of why the rhai fork exists.
 
 Bigger themes queued after the v0.4 Known-ceilings pool drains. Ordered; each is a
 milestone in its own right, not a Friday slice. Recorded 2026-07-18.
@@ -856,3 +966,195 @@ milestone in its own right, not a Friday slice. Recorded 2026-07-18.
    compile-time macros, not first-class values), or make signals shared cells the
    fork can write through (true first-class functions, but a reactivity-core change).
    The second is the language change this fork would carry.
+
+   **A second fork motivator, found building the dev overlay (2026-07-26):
+   stock rhai fails *silently* on a missing map property.** `user.nmae` on an
+   object map evaluates to `()` rather than raising an error, so a typo in a
+   `{{ }}` binding renders empty and the overlay has nothing to report, the exact
+   failure mode the error-surfacing work exists to kill. A missing *function* or
+   *variable* does error, and those are reported; the map hole is rhai's semantics,
+   not ours, so it cannot be closed from outside the engine.
+
+   Options, in the order they'd be tried: (a) evaluate bindings under a stricter
+   engine option if one lands upstream; (b) have the fork raise on unknown-property
+   access, at least in a "strict bindings" mode Rux turns on for `{{ }}` and `:`
+   expressions; (c) leave it and document it. (c) is what ships today. This is
+   *cheaper* than the signal-mutation change, it's a lookup-failure path, not a
+   reactivity-core change, so it's a good first divergence to attempt, and a good
+   test of how painful carrying a fork actually is. Both motivators point the same
+   way: the strict-bindings mode and shared-cell signals are the two changes the
+   fork exists to carry.
+
+---
+
+## After v0.4: the version plan
+
+Written 2026-07-27, once the v0.4 pool had drained. Each heading below is a
+milestone with a theme, drawn from several Friday point-releases, in the order
+they unblock each other. The three "Further out" items recorded on 2026-07-18
+are folded in, re-sequenced where the reason for moving them is given.
+
+A version ships when its theme is true, not when every bullet is ticked.
+Anything that slips moves to the next one rather than holding the release.
+
+---
+
+### v0.5: usable by someone who is not you
+
+Everything so far has been built and judged by the person who wrote it. This
+milestone is about a stranger being able to install Rux, get told what is wrong
+with their file, and format it the same way we do.
+
+1. **Publish to crates.io** as `ruxlang`, with the `rux-*` crates beneath it.
+   The rename already landed on this branch. What is left is per-crate metadata
+   (description, keywords, categories, README), checking each crate builds on
+   docs.rs, and deciding which of the thirteen are public API and which are
+   implementation detail nobody should depend on.
+2. **`rux fmt` as a CLI subcommand** (Tier 1 in the dev-tooling section). This
+   also closes a duplication that has already cost us: the re-indenter exists
+   twice, in `editors/vscode/extension.js` and in `crates/rux-fmt`, and the two
+   drifted within a week. The JS copy missed `<image>` in its void-tag list
+   (inherited from HTML, which has `img`), so an `<image src="...">` written
+   without a self-closing slash over-indented everything after it. The
+   extension should shell out to `rux fmt` and the JS copy should go.
+3. **`rux check`**: the machine-readable half of the dev overlay, flagged as
+   still-open in v0.4. A non-zero exit and parseable diagnostics are what let
+   CI and an editor use the same errors the overlay shows.
+4. **The playground catches up to v0.4.** It ships on `main` today running the
+   v0.3 runtime, so it reports parse failures with no line or column and shows
+   no warnings at all. Wiring the v0.4 overlay through `rux-web` gives the page
+   the same diagnostics the desktop window gets, which is what the playground
+   was for.
+5. **Locate the warnings.** CSS warnings still have no line numbers, and the
+   overlay cannot be dismissed. Both are small and both are felt immediately.
+
+### v0.6: apps bigger than one screen
+
+Everything Rux can express today fits in one file and one screen. This is the
+set of things you hit the moment that stops being true.
+
+1. **External CSS include** (`<style src="...">` or an `@import`), already
+   listed as expected but never scheduled. A shared palette currently has to be
+   pasted into every file.
+2. **Component slots and events.** Props go in; nothing comes out. A component
+   cannot render caller-supplied children, and cannot tell its caller that
+   something happened, so every piece of state gets hoisted to the root. This
+   is the single biggest ceiling on component reuse and it is not on any list
+   today.
+3. **A router.** `docs/02-spec.md` already promises `role="link"` with
+   `to="/path"` "handled by the router". There is no router. Either build one or
+   strike the promise.
+4. **Keyed `r-for`.** Reconciliation is by count, so reordering a list rebuilds
+   more rows than it needs to.
+5. **Computed values and effects.** A `{{ }}` expression is the only "computed"
+   there is, and there is no way to run a side effect when a signal changes.
+
+### v0.7: the script tier, and the fork
+
+The two fork motivators recorded above are both real and both point the same
+way. This milestone is where Rux stops being stock rhai.
+
+1. **Strict bindings** (motivator b). A missing map property evaluates to `()`
+   in silence, which is exactly the failure the dev-overlay work exists to
+   kill. This is a lookup-failure path rather than a reactivity change, so it is
+   the cheap first divergence and a good test of how painful carrying a fork
+   actually is. Do this one first for that reason.
+2. **Shared-cell signals** (motivator a), so a function can mutate state. This
+   retires the single biggest trap in the language: `/learn` spends a callout
+   on it, `docs/05-as-built.md` calls it "the single biggest trap", and every
+   handler has to be written inline because of it.
+3. **Element access from script**, the DOM-like handle. Sequenced after
+   reactivity for the reason already recorded: script mutations must feed the
+   same subscription graph or they desync.
+4. **Script documentation**, last, once the surface has stopped moving.
+
+### v0.8: mobile
+
+The README has said "desktop first, then mobile and embedded" since the
+beginning, and there is not one line of mobile code in the repo. Four releases
+have all been desktop. This milestone either makes the claim true or it comes
+out of the pitch.
+
+1. **Android and iOS**, through winit and wgpu, which both support them. The
+   wasm work in v0.5 is a useful rehearsal: it already forced the shell to stop
+   assuming a filesystem, a blocking main thread and a system clipboard.
+2. **Touch for real.** Kinetic scrolling is unimplemented and touch drag is
+   marked untested because there is no touch hardware here.
+3. **Native pickers** for `<input type="select">`, promised in the spec and
+   currently a drawn dropdown.
+4. **Safe areas, orientation, density.** `@media (orientation)` already exists
+   from v0.4, which helps.
+
+### v0.9: text, and the long tail
+
+1. **True inline text flow**, the standing known ceiling. Two `<text>` siblings
+   cannot share a line, so bold inside a sentence is impossible. taffy has no
+   inline formatting context, so this is our own line-breaker over parley: a
+   real project, and the reason it has never fitted in a weekly slot.
+2. **Text editing gaps**: word-wise movement, triple-click line select,
+   drag-and-drop of a selection, `::selection` styling.
+3. **Scrolling gaps**: click-on-track paging, scrollbar hover and fade,
+   independent `overflow-x` / `overflow-y`, `overscroll-behavior`.
+4. **CSS long tail**: per-side border colours, `position: sticky` and `fixed`.
+
+### v1.0: freeze
+
+1. **`rux build`.** There is still no answer to "I made a thing, how do I give
+   it to someone". A Rux app today is a checkout plus `cargo run`. This may
+   deserve to move earlier; see below.
+2. **Re-derive the spec.** `docs/02-spec.md` describes itself as the v0.1
+   design surface, not the built surface, and is published only as history.
+   1.0 means the spec and the runtime agree again.
+3. **`rux-lsp`** (Tier 2): go-to-definition, hover, completion, diagnostics
+   from `rux check`.
+4. **TailwindCSS**, if it still looks worth it. See below.
+
+---
+
+### Worth deciding early
+
+Things that are not scheduled above but that change the plan if the answer is
+not what we assume.
+
+- **Packaging may belong in v0.6, not v1.0.** Nobody can build something real
+  with Rux until they can hand the result to someone else. Everything in v0.6
+  and v0.7 is aimed at people building real things, which is awkward if they
+  cannot ship what they build. The counter-argument is that the language should
+  stop moving first, and that is why it currently sits at 1.0.
+
+- **Tailwind was first on the old list; here it is last.** It is a layer over a
+  CSS engine that already works, and it mostly pays off for people already
+  fluent in it. Components, a router, mutable-from-function state and mobile
+  all unblock things that are impossible today rather than making possible
+  things terser. The unresolved question underneath it has not changed: a
+  curated utility set generated into Rux CSS is self-contained, while a real
+  Tailwind pass pulls in the Node toolchain the project has avoided everywhere
+  else, including in the web playground.
+
+- **`docs/05-as-built.md` is maintained by hand and has been wrong.** It
+  claimed the whole-tree rebuild was the largest remaining gap after v0.3 had
+  already deleted it, and that was found by accident. The honored-CSS set is
+  derivable from `rux-style`; generating the matrix would make the reference
+  true by construction. This is a small job that removes a whole class of
+  quiet error.
+
+- **`docs/03-guide.md` should be deleted.** It opens by saying it does not work
+  as written, it is excluded from the site build, and `/learn` now covers the
+  same ground against the runtime that exists. Keeping a known-wrong tutorial
+  in the repo costs more than the history is worth.
+
+- **There is no test story for app authors.** The runtime has thirty-six test
+  binaries; somebody writing a `.rux` file has nothing. If Rux wants apps, at
+  some point "how do I test this screen" needs an answer better than "open it
+  and look", which is the standing rule for *our* work precisely because it is
+  hard to automate.
+
+- **The host still needs a rebuild.** Template, style and script hot-reload;
+  the compiled host does not. Dynamic-library reload would take the last
+  rebuild out of the loop, and it is the kind of thing that is much easier to
+  design in early than to retrofit.
+
+- **`host::` is unrestricted.** That is fine while every `.rux` file is one you
+  wrote. It stops being fine the moment files are shared, fetched, or pasted
+  from a playground link. The browser build is sandboxed by wasm and safe by
+  accident rather than by design; native is not sandboxed at all.

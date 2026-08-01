@@ -1,0 +1,58 @@
+<template>
+    <screen class="app">
+        <text class="title">responsive</text>
+        <text class="hint">Drag the window narrower than 600px and the layout re-flows.</text>
+
+        <view class="row">
+            <view class="card"><text class="card-title">one</text></view>
+            <view class="card"><text class="card-title">two</text></view>
+            <view class="card"><text class="card-title">three</text></view>
+        </view>
+
+        <view class="badge"><text class="badge-label">breakpoint: 600px</text></view>
+    </screen>
+</template>
+
+<style>
+    .app {
+        --gap: 16px;
+        display: flex;
+        flex-direction: column;
+        gap: var(--gap);
+        padding: 32px;
+        background: #1e1e2e;
+    }
+    .title { color: #cdd6f4; font-size: 22px; font-weight: 700; }
+    .hint  { color: #6c7086; font-size: 13px; }
+
+    /* Wide: three cards side by side. */
+    .row { display: flex; flex-direction: row; gap: var(--gap); }
+    .card {
+        flex-grow: 1;
+        padding: 20px;
+        background: #313244;
+        border: 2px solid #45475a;
+        border-radius: 10px;
+    }
+    .card-title { color: #cdd6f4; font-size: 16px; font-weight: 700; }
+
+    .badge {
+        padding: 6px 12px;
+        background: #89b4fa;
+        border-radius: 9999px;
+    }
+    .badge-label { color: #11111b; font-size: 12px; font-weight: 700; }
+
+    /* Narrow: stack them, tighten the padding, and recolour so the breakpoint is
+       unmistakable when you drag the window. */
+    @media (max-width: 600px) {
+        .app  { --gap: 10px; padding: 20px; background: #11111b; }
+        .row  { flex-direction: column; }
+        .card { background: #45475a; border-color: #89b4fa; }
+        .badge { background: #a6e3a1; }
+        .badge-label { color: #11111b; }
+    }
+</style>
+
+<script>
+</script>

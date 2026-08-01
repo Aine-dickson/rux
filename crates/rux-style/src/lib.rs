@@ -11,12 +11,13 @@
 //! Specificity and source order resolve conflicts, as in CSS.
 
 use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
 
 use lightningcss::rules::CssRule;
 use lightningcss::stylesheet::{ParserOptions, PrinterOptions, StyleSheet};
 use lightningcss::traits::ToCss;
 use rux_layout::{
-    Align, Axis, Background, BoxShadow, Cursor, Display, Gradient, GridPlace, ImageContent, Justify,
+    Access, AccessRole, Align, Axis, Background, BoxShadow, Cursor, Display, Gradient, GridPlace, ImageContent, Justify,
     Len, Node as LayoutNode, Overflow, Position, Rgba, Sides, Style, TextAlign, TextContent,
     TextWrap, Track, TrackSide,
 };
@@ -28,6 +29,34 @@ use rux_script::Engine;
 /// Loop-variable bindings introduced by `r-for`, layered as a scope stack and
 /// injected into the script engine for each evaluation.
 type Locals = Vec<(String, Value)>;
+
+// ── Warning collection ──────────────────────────────────────────────────────
+
+thread_local! {
+    /// Warnings raised while building the current tree, unhonored properties,
+    /// unknown pseudo-classes, undefined `var()`s, unsupported `@media`.
+    ///
+    /// Collected per build so the runtime can show them *in the window*. The
+    /// stderr lines keep their own process-wide dedupe (a rebuild shouldn't spam
+    /// the terminal on every keystroke), but the overlay must list everything the
+    /// current document has wrong, every build, so this sink dedupes only within
+    /// itself and is drained by [`take_warnings`].
+    static WARNINGS: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+fn warn(message: String) {
+    WARNINGS.with(|w| {
+        let mut w = w.borrow_mut();
+        if !w.iter().any(|existing| *existing == message) {
+            w.push(message);
+        }
+    });
+}
+
+/// Take the warnings raised since the last call, emptying the sink.
+pub fn take_warnings() -> Vec<String> {
+    WARNINGS.with(|w| std::mem::take(&mut *w.borrow_mut()))
+}
 
 /// A text `{{ }}` binding recorded during build: where its node lives in the
 /// final tree, the raw text (with `{{ }}` intact) to re-interpolate, the
@@ -211,6 +240,128 @@ struct Inherited {
     color: Rgba,
     font_size: f32,
     font_family: Option<String>,
+    /// Custom properties (`--name`) in scope. They inherit like the text
+    /// properties above, see [`Vars`].
+    vars: Vars,
+}
+
+/// CSS custom properties (`--name: value`) in scope for an element: its own
+/// declarations layered over everything it inherited. Custom properties inherit
+/// like `color` does, which is what lets a palette be declared once on the root
+/// and read by `var()` anywhere below.
+///
+/// Shared by `Rc` because the overwhelmingly common case is a subtree that
+/// declares none of its own, those nodes hand the very same map to their
+/// children instead of copying it.
+type Vars = Rc<HashMap<String, String>>;
+
+/// How many `var()` hops to follow before giving up. A custom property may be
+/// defined in terms of another (`--accent: var(--blue)`), so resolution
+/// recurses; this is what stops `--a: var(--b); --b: var(--a)` from hanging.
+const MAX_VAR_DEPTH: usize = 16;
+
+/// Substitute every `var(--name[, fallback])` in `value`.
+///
+/// An undefined variable with no fallback leaves the reference in place, which
+/// makes the declaration unparseable and so ignored, which is CSS's own "invalid at
+/// computed-value time" behaviour. [`warn_undefined_var`] says so out loud,
+/// because a silently dropped declaration is the failure mode this project keeps
+/// trying to design away.
+fn resolve_vars(value: &str, vars: &HashMap<String, String>, depth: usize) -> String {
+    if depth >= MAX_VAR_DEPTH || !value.contains("var(") {
+        return value.to_string();
+    }
+    let mut out = String::with_capacity(value.len());
+    let mut rest = value;
+    while let Some(start) = rest.find("var(") {
+        out.push_str(&rest[..start]);
+        let after = &rest[start + 4..];
+        // Find this var()'s closing paren, allowing nested parens in a fallback
+        // (`var(--x, rgb(0, 0, 0))`).
+        let mut depth_parens = 1i32;
+        let mut end = None;
+        for (i, c) in after.char_indices() {
+            match c {
+                '(' => depth_parens += 1,
+                ')' => {
+                    depth_parens -= 1;
+                    if depth_parens == 0 {
+                        end = Some(i);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let Some(end) = end else {
+            // Unclosed `var(`, emit the rest verbatim rather than looping.
+            out.push_str("var(");
+            out.push_str(after);
+            return out;
+        };
+        let inner = &after[..end];
+        let (name, fallback) = match inner.split_once(',') {
+            Some((n, f)) => (n.trim(), Some(f.trim())),
+            None => (inner.trim(), None),
+        };
+        match vars.get(name) {
+            // The substituted value may itself contain var().
+            Some(v) => out.push_str(&resolve_vars(v, vars, depth + 1)),
+            None => match fallback {
+                Some(f) => out.push_str(&resolve_vars(f, vars, depth + 1)),
+                None => {
+                    warn_undefined_var(name);
+                    out.push_str("var(");
+                    out.push_str(inner);
+                    out.push(')');
+                }
+            },
+        }
+        rest = &after[end + 1..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Pull this element's `--name` declarations out of `props` and layer them over
+/// the inherited ones, returning what `var()` resolves against here and in the
+/// subtree below.
+///
+/// Declaring none, the common case, returns the inherited map by `Rc` clone, so
+/// only elements that actually define a variable pay for a copy. A custom
+/// property's own value may reference other variables, so it is resolved as it is
+/// inserted; that also means a `--x: var(--x)` self-reference resolves against
+/// the *outer* scope, as in CSS.
+fn take_vars(props: &mut HashMap<String, String>, inherited: &Vars) -> Vars {
+    let declared: Vec<String> = props.keys().filter(|k| k.starts_with("--")).cloned().collect();
+    if declared.is_empty() {
+        return Rc::clone(inherited);
+    }
+    let mut vars = (**inherited).clone();
+    for name in declared {
+        // Remove it: a custom property is not a real property, and leaving it in
+        // would only be fed to `interpret` (which ignores it) as noise.
+        let Some(value) = props.remove(&name) else { continue };
+        let value = resolve_vars(&value, &vars, 0);
+        vars.insert(name, value);
+    }
+    Rc::new(vars)
+}
+
+/// Warn once per name that a `var()` referenced an undefined custom property.
+fn warn_undefined_var(name: &str) {
+    use std::sync::{Mutex, OnceLock};
+    static SEEN: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    let message = format!(
+        "custom property `{name}` is not defined, the declaration using var({name}) is \
+         ignored (give it a fallback: `var({name}, …)`)"
+    );
+    warn(message.clone());
+    let seen = SEEN.get_or_init(|| Mutex::new(HashSet::new()));
+    let Ok(mut seen) = seen.lock() else { return };
+    if seen.insert(name.to_string()) {
+        eprintln!("rux: {message}");
+    }
 }
 
 /// A radius larger than any sane box; kurbo clamps it to half the shorter side,
@@ -311,11 +462,99 @@ fn merge_inline_style(props: &mut HashMap<String, String>, css: &str) {
 /// A `for=` target's tap handler (toggles/buttons) or bound model (text inputs).
 type LabelTarget = (Option<String>, Option<String>);
 
+/// An explicit `role="…"` mapped to an accessibility role. `role=` already drives
+/// selector matching (`[role="heading"]`); this makes it mean something to a
+/// screen reader too, which is what it was always for.
+///
+/// An unrecognised role still counts as a meaningful grouping rather than being
+/// dropped, the author said this element *is* something.
+fn explicit_access_role(el: &Element) -> Option<AccessRole> {
+    let role = el.role()?.to_ascii_lowercase();
+    Some(match role.as_str() {
+        "heading" => AccessRole::Heading,
+        "button" => AccessRole::Button,
+        "label" | "text" | "paragraph" => AccessRole::Label,
+        "checkbox" => AccessRole::CheckBox,
+        "radio" => AccessRole::RadioButton,
+        "textbox" | "textfield" => AccessRole::TextInput,
+        "combobox" | "listbox" | "select" => AccessRole::ComboBox,
+        "image" | "img" => AccessRole::Image,
+        _ => AccessRole::Group,
+    })
+}
+
+/// The author-supplied accessible name, if any: `label="…"` (or `alt="…"` on an
+/// image). When absent the name comes from the element's own text, or from a
+/// `<text for="…">` label pointing at it (see [`link_labels`]).
+fn authored_label(el: &Element) -> Option<String> {
+    el.attr("label")
+        .or_else(|| el.attr("alt"))
+        .filter(|v| !v.trim().is_empty())
+        .map(str::to_string)
+}
+
+/// All the text under a node, joined, the accessible name for a control whose
+/// label is its own content, like a `<view @tap>` acting as a button.
+fn subtree_text(node: &LayoutNode) -> String {
+    let mut out = String::new();
+    collect_subtree_text(node, &mut out);
+    out
+}
+
+fn collect_subtree_text(node: &LayoutNode, out: &mut String) {
+    if let Some(text) = &node.text {
+        if !text.text.trim().is_empty() {
+            if !out.is_empty() {
+                out.push(' ');
+            }
+            out.push_str(text.text.trim());
+        }
+    }
+    for child in &node.children {
+        collect_subtree_text(child, out);
+    }
+}
+
 fn link_labels(root: &mut LayoutNode) {
     let mut targets: HashMap<String, LabelTarget> = HashMap::new();
     collect_label_targets(root, &mut targets);
     if !targets.is_empty() {
         apply_label_targets(root, &targets);
+    }
+    // A `<text for="email">Email</text>` names the control it points at, which is
+    // the accessible name a screen reader announces for it. Collected in the same
+    // pass that makes such a label tappable, so the two can't drift apart.
+    let mut names: HashMap<String, String> = HashMap::new();
+    collect_label_names(root, &mut names);
+    if !names.is_empty() {
+        apply_label_names(root, &names);
+    }
+}
+
+/// Map each `for=` target id to the labelling element's text.
+fn collect_label_names(node: &LayoutNode, names: &mut HashMap<String, String>) {
+    if let Some(target) = &node.label_for {
+        let text = subtree_text(node);
+        if !text.is_empty() {
+            names.entry(target.clone()).or_insert(text);
+        }
+    }
+    for child in &node.children {
+        collect_label_names(child, names);
+    }
+}
+
+/// Give each labelled control its label's text as an accessible name. An
+/// authored `label=` on the control itself wins, it is the more specific
+/// statement of intent.
+fn apply_label_names(node: &mut LayoutNode, names: &HashMap<String, String>) {
+    if node.access.label.is_none() {
+        if let Some(name) = node.id.as_ref().and_then(|id| names.get(id)) {
+            node.access.label = Some(name.clone());
+        }
+    }
+    for child in &mut node.children {
+        apply_label_names(child, names);
     }
 }
 
@@ -379,7 +618,27 @@ pub fn build_styled_tree_tracked(
     components: &HashMap<String, Sfc>,
     engine: &mut Engine,
 ) -> Result<(LayoutNode, BindingRegistry), String> {
-    let rules = parse_rules(&sfc.style);
+    build_styled_tree_stateful(
+        sfc,
+        components,
+        engine,
+        &InteractionState::default(),
+        Viewport::default(),
+    )
+}
+
+/// Like [`build_styled_tree_tracked`], but matches pseudo-class selectors against
+/// the shell's current [`InteractionState`], what is hovered, pressed, focused,
+/// and `@media` queries against the current [`Viewport`]. The runtime passes its
+/// live state on every build so a reconcile reproduces the same styling.
+pub fn build_styled_tree_stateful(
+    sfc: &Sfc,
+    components: &HashMap<String, Sfc>,
+    engine: &mut Engine,
+    state: &InteractionState,
+    viewport: Viewport,
+) -> Result<(LayoutNode, BindingRegistry), String> {
+    let rules = parse_rules(&sfc.style, viewport);
     let comps: Components = components
         .iter()
         .map(|(tag, c)| {
@@ -387,7 +646,7 @@ pub fn build_styled_tree_tracked(
                 tag.clone(),
                 Component {
                     template: c.template.clone(),
-                    rules: parse_rules(&c.style),
+                    rules: parse_rules(&c.style, viewport),
                 },
             )
         })
@@ -402,12 +661,18 @@ pub fn build_styled_tree_tracked(
         &comps,
         &mut ancestors,
         &[],
-        &Inherited { color: DEFAULT_COLOR, font_size: DEFAULT_FONT_SIZE, font_family: None },
+        &Inherited {
+            color: DEFAULT_COLOR,
+            font_size: DEFAULT_FONT_SIZE,
+            font_family: None,
+            vars: Vars::default(),
+        },
         engine,
         &locals,
         &[],
         &[],
         &mut reg,
+        state,
     );
     link_labels(&mut node);
     Ok((node, reg))
@@ -459,63 +724,112 @@ fn text_template(el: &Element) -> String {
         .join(" ")
 }
 
-/// Decode the HTML entities an author might write in text: the named ones
-/// (`&amp;`, `&lt;`, `&gt;`, `&quot;`, `&apos;`, `&nbsp;`) and numeric
-/// (`&#38;`, `&#x26;`). An unrecognised `&…;` is left as written.
-fn decode_entities(s: &str) -> String {
-    if !s.contains('&') {
-        return s.to_string();
-    }
-    let mut out = String::with_capacity(s.len());
-    let mut rest = s;
-    while let Some(amp) = rest.find('&') {
-        out.push_str(&rest[..amp]);
-        let after = &rest[amp..];
-        // An entity is short and has no spaces; only look at the next few chars.
-        if let Some(semi) = after[1..].find(';').map(|i| i + 1) {
-            if semi <= 12 {
-                if let Some(ch) = entity_char(&after[1..semi]) {
-                    out.push(ch);
-                    rest = &after[semi + 1..];
-                    continue;
-                }
-            }
-        }
-        out.push('&');
-        rest = &after[1..];
-    }
-    out.push_str(rest);
-    out
-}
-
-fn entity_char(entity: &str) -> Option<char> {
-    match entity {
-        "amp" => Some('&'),
-        "lt" => Some('<'),
-        "gt" => Some('>'),
-        "quot" => Some('"'),
-        "apos" => Some('\''),
-        "nbsp" => Some('\u{00A0}'),
-        _ => {
-            let num = entity.strip_prefix('#')?;
-            let code = match num.strip_prefix(['x', 'X']) {
-                Some(hex) => u32::from_str_radix(hex, 16).ok()?,
-                None => num.parse::<u32>().ok()?,
-            };
-            char::from_u32(code)
-        }
-    }
-}
+// Entity decoding for text lives in `rux_parser::decode_entities`, the parser
+// applies it to attribute values as it reads them, and text goes through the same
+// function, so there is one table, not two.
+use rux_parser::decode_entities;
 
 // ── Selector model ──────────────────────────────────────────────────────────
 
-/// One compound selector, e.g. `view.card#main[role="section"]`.
+/// One compound selector, e.g. `view.card#main[role="section"]:hover`.
 #[derive(Debug, Clone, Default)]
 struct Compound {
     tag: Option<String>,
     id: Option<String>,
     classes: Vec<String>,
     role: Option<String>,
+    pseudos: Vec<Pseudo>,
+}
+
+/// A pseudo-class in a compound selector. Each one tests a bit of interaction
+/// state carried on [`ElemStates`], *not* the element's markup.
+///
+/// An unrecognised pseudo-class becomes [`Pseudo::Unknown`], which **never
+/// matches**. That is deliberate: before pseudo-classes existed, `parse_compound`
+/// stopped at the `:` and dropped it, so `.box:hover` parsed as plain `.box` and
+/// the rule applied *unconditionally*. Failing closed means an unsupported
+/// pseudo-class does nothing instead of styling everything.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Pseudo {
+    Hover,
+    Focus,
+    Active,
+    Checked,
+    Unknown(String),
+}
+
+/// Interaction state for one element, tested by the pseudo-classes above. It is
+/// not part of the element's markup: `checked` is resolved at build time from the
+/// toggle's `r-model`, while `hover`/`focus`/`active` are threaded in from the
+/// shell (see [`InteractionState`]).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ElemStates {
+    pub hover: bool,
+    pub focus: bool,
+    pub active: bool,
+    pub checked: bool,
+}
+
+/// The interaction state the *shell* owns, handed to the build so pseudo-class
+/// selectors can match against it. Elements are identified by their tree path,
+/// the same child-index path the [`BindingRegistry`] uses, because that is what
+/// survives a reconcile and what the layout's state regions report back.
+///
+/// `checked` is not here: it is resolved from the toggle's `r-model` during the
+/// build, not tracked by the shell.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct InteractionState {
+    /// Path of the innermost element under the pointer.
+    pub hovered: Option<Vec<usize>>,
+    /// Path of the element currently pressed (pointer down on it).
+    pub active: Option<Vec<usize>>,
+    /// `r-model` of the focused input, the shell tracks focus by model, not path.
+    pub focused_model: Option<String>,
+}
+
+impl InteractionState {
+    /// Does `path` name the hovered element or one of its ancestors? CSS `:hover`
+    /// matches the whole chain from the root down to the pointer, not just the
+    /// innermost element, a hovered button inside a hovered card leaves both
+    /// hovered.
+    fn hovers(&self, path: &[usize]) -> bool {
+        self.hovered.as_ref().is_some_and(|h| h.starts_with(path))
+    }
+
+    /// Same containment rule as [`Self::hovers`], for `:active`.
+    fn activates(&self, path: &[usize]) -> bool {
+        self.active.as_ref().is_some_and(|a| a.starts_with(path))
+    }
+}
+
+impl Pseudo {
+    /// Is this a state the *shell* supplies (as opposed to `:checked`, resolved
+    /// during the build)? Such an element needs a layout region so the shell can
+    /// tell when the pointer enters or leaves it.
+    fn is_pointer_state(&self) -> bool {
+        matches!(self, Self::Hover | Self::Active)
+    }
+
+    fn parse(name: &str) -> Self {
+        match name.to_ascii_lowercase().as_str() {
+            "hover" => Self::Hover,
+            "focus" => Self::Focus,
+            "active" => Self::Active,
+            "checked" => Self::Checked,
+            other => Self::Unknown(other.to_string()),
+        }
+    }
+
+    fn holds(&self, s: &ElemStates) -> bool {
+        match self {
+            Self::Hover => s.hover,
+            Self::Focus => s.focus,
+            Self::Active => s.active,
+            Self::Checked => s.checked,
+            // Fails closed, see the type docs.
+            Self::Unknown(_) => false,
+        }
+    }
 }
 
 /// How one compound relates to the compound on its left in a selector.
@@ -550,6 +864,7 @@ struct ElemDesc {
     id: Option<String>,
     classes: Vec<String>,
     role: Option<String>,
+    states: ElemStates,
 }
 
 /// An ancestor in the match context: its identity plus the identities of the
@@ -569,13 +884,324 @@ impl ElemDesc {
             id: el.id().map(str::to_string),
             classes: el.classes().into_iter().map(str::to_string).collect(),
             role: el.role().map(str::to_string),
+            states: ElemStates::default(),
+        }
+    }
+}
+
+// ── Media queries ───────────────────────────────────────────────────────────
+
+/// The viewport `@media` queries are evaluated against, the window's logical
+/// size. It reaches the build the same way interaction state does, because a
+/// resize can change which rules apply, not just where boxes land.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Viewport {
+    pub width: f32,
+    pub height: f32,
+}
+
+impl Default for Viewport {
+    /// A desktop-ish window, so headless builds evaluate `@media` the way the
+    /// default window would.
+    fn default() -> Self {
+        Self { width: 1280.0, height: 800.0 }
+    }
+}
+
+/// A comparison in a media feature. `min-width: 600px` is `Ge(600)`, and the
+/// Level-4 range spelling `(width < 600px)` is `Lt(600)`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Cmp {
+    Le,
+    Lt,
+    Ge,
+    Gt,
+    Eq,
+}
+
+impl Cmp {
+    fn holds(self, actual: f32, bound: f32) -> bool {
+        match self {
+            Self::Le => actual <= bound,
+            Self::Lt => actual < bound,
+            Self::Ge => actual >= bound,
+            Self::Gt => actual > bound,
+            Self::Eq => (actual - bound).abs() < f32::EPSILON,
+        }
+    }
+
+    /// The same comparison read right-to-left, for `(600px >= width)`.
+    fn flipped(self) -> Self {
+        match self {
+            Self::Le => Self::Ge,
+            Self::Lt => Self::Gt,
+            Self::Ge => Self::Le,
+            Self::Gt => Self::Lt,
+            Self::Eq => Self::Eq,
+        }
+    }
+}
+
+/// One media feature we understand. Anything else parses to [`Feature::Never`],
+/// so an unsupported query hides its rules rather than applying them
+/// unconditionally, the same fail-closed choice as an unknown pseudo-class.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Feature {
+    Width(Cmp, f32),
+    Height(Cmp, f32),
+    Portrait,
+    Landscape,
+    /// A media *type* we're always in (`screen`, `all`).
+    Always,
+    /// Unsupported, never matches.
+    Never,
+}
+
+impl Feature {
+    fn holds(&self, vp: Viewport) -> bool {
+        match *self {
+            Self::Width(cmp, v) => cmp.holds(vp.width, v),
+            Self::Height(cmp, v) => cmp.holds(vp.height, v),
+            Self::Portrait => vp.height >= vp.width,
+            Self::Landscape => vp.width > vp.height,
+            Self::Always => true,
+            Self::Never => false,
+        }
+    }
+}
+
+/// A parsed media condition: a comma-separated list of alternatives (OR), each a
+/// chain of `and`-ed features.
+#[derive(Debug, Clone, Default)]
+struct MediaCond {
+    any: Vec<Vec<Feature>>,
+}
+
+impl MediaCond {
+    fn holds(&self, vp: Viewport) -> bool {
+        self.any.iter().any(|all| all.iter().all(|f| f.holds(vp)))
+    }
+
+    /// Parse a serialized media query list, e.g.
+    /// `screen and (width <= 600px), (orientation: portrait)`.
+    fn parse(text: &str) -> Self {
+        let any = text
+            .split(',')
+            .map(|alternative| {
+                alternative
+                    .split(" and ")
+                    .flat_map(|token| parse_media_feature(token.trim()))
+                    .collect()
+            })
+            .collect();
+        Self { any }
+    }
+}
+
+/// Parse one media feature. Returns several when the source is a double-ended
+/// range (`(400px <= width <= 600px)` is two bounds `and`-ed).
+///
+/// **Both spellings have to work.** An author writes `(min-width: 600px)`, but
+/// lightningcss normalizes it to the Media Queries Level 4 range form
+/// `(width >= 600px)` before we ever see it, so the range form is in fact the
+/// one that arrives in practice, and the `min-`/`max-` arm is the compatibility
+/// path, not the other way round.
+fn parse_media_feature(token: &str) -> Vec<Feature> {
+    let inner = token.trim();
+    // A bare media type.
+    if !inner.starts_with('(') {
+        return vec![match inner.to_ascii_lowercase().as_str() {
+            "screen" | "all" => Feature::Always,
+            // `print`/`speech` never apply to a window; `not …` and `only …` are
+            // unsupported rather than wrong.
+            other => {
+                warn_unsupported_media(other);
+                Feature::Never
+            }
+        }];
+    }
+    let body = inner.trim_start_matches('(').trim_end_matches(')').trim();
+
+    // Range syntax: `width <= 600px`, `600px >= width`, `400px <= width <= 600px`.
+    let parts = split_on_comparators(body);
+    if parts.len() >= 3 {
+        return parse_range(&parts);
+    }
+
+    let Some((name, value)) = body.split_once(':') else {
+        // A boolean feature like `(hover)`, not something we can answer.
+        warn_unsupported_media(body);
+        return vec![Feature::Never];
+    };
+    let name = name.trim().to_ascii_lowercase();
+    let value = value.trim();
+    vec![match name.as_str() {
+        "orientation" => match value.to_ascii_lowercase().as_str() {
+            "portrait" => Feature::Portrait,
+            "landscape" => Feature::Landscape,
+            _ => Feature::Never,
+        },
+        "min-width" | "max-width" | "min-height" | "max-height" => {
+            // Media lengths are absolute; the viewport-relative units a
+            // stylesheet can use elsewhere would be circular here.
+            let Some(px) = parse_px(value) else {
+                warn_unsupported_media(&format!("{name}: {value}"));
+                return vec![Feature::Never];
+            };
+            match name.as_str() {
+                "min-width" => Feature::Width(Cmp::Ge, px),
+                "max-width" => Feature::Width(Cmp::Le, px),
+                "min-height" => Feature::Height(Cmp::Ge, px),
+                _ => Feature::Height(Cmp::Le, px),
+            }
+        }
+        other => {
+            warn_unsupported_media(other);
+            Feature::Never
+        }
+    }]
+}
+
+/// One token of a range-syntax feature: an operand or a comparator.
+enum RangePart {
+    Operand(String),
+    Op(Cmp),
+}
+
+/// Split `width <= 600px` into operands and comparators. Returns an empty vec
+/// when there is no comparator, so the caller falls through to `name: value`.
+fn split_on_comparators(body: &str) -> Vec<RangePart> {
+    let mut parts = Vec::new();
+    let mut current = String::new();
+    let mut chars = body.chars().peekable();
+    let mut saw_op = false;
+    while let Some(c) = chars.next() {
+        let op = match c {
+            '<' if chars.peek() == Some(&'=') => {
+                chars.next();
+                Some(Cmp::Le)
+            }
+            '>' if chars.peek() == Some(&'=') => {
+                chars.next();
+                Some(Cmp::Ge)
+            }
+            '<' => Some(Cmp::Lt),
+            '>' => Some(Cmp::Gt),
+            '=' => Some(Cmp::Eq),
+            _ => None,
+        };
+        match op {
+            Some(op) => {
+                parts.push(RangePart::Operand(current.trim().to_string()));
+                parts.push(RangePart::Op(op));
+                current = String::new();
+                saw_op = true;
+            }
+            None => current.push(c),
+        }
+    }
+    if !saw_op {
+        return Vec::new();
+    }
+    parts.push(RangePart::Operand(current.trim().to_string()));
+    parts
+}
+
+/// Turn a split range into features: `[operand, op, operand]` or the double-ended
+/// `[operand, op, operand, op, operand]`.
+fn parse_range(parts: &[RangePart]) -> Vec<Feature> {
+    // Which side is the axis name decides how the comparison reads.
+    let feature = |axis: &str, cmp: Cmp, value: &str| -> Feature {
+        let Some(px) = parse_px(value) else {
+            warn_unsupported_media(value);
+            return Feature::Never;
+        };
+        match axis {
+            "width" => Feature::Width(cmp, px),
+            "height" => Feature::Height(cmp, px),
+            other => {
+                warn_unsupported_media(other);
+                Feature::Never
+            }
+        }
+    };
+    let operand = |i: usize| match &parts[i] {
+        RangePart::Operand(s) => s.to_ascii_lowercase(),
+        RangePart::Op(_) => String::new(),
+    };
+    let op = |i: usize| match &parts[i] {
+        RangePart::Op(c) => *c,
+        RangePart::Operand(_) => Cmp::Eq,
+    };
+
+    match parts.len() {
+        3 => {
+            let (left, right) = (operand(0), operand(2));
+            if left == "width" || left == "height" {
+                vec![feature(&left, op(1), &right)]
+            } else {
+                // `600px >= width`: same relation, read the other way.
+                vec![feature(&right, op(1).flipped(), &left)]
+            }
+        }
+        // `400px <= width <= 600px`: both bounds, `and`-ed.
+        5 => {
+            let axis = operand(2);
+            vec![
+                feature(&axis, op(1).flipped(), &operand(0)),
+                feature(&axis, op(3), &operand(4)),
+            ]
+        }
+        _ => vec![Feature::Never],
+    }
+}
+
+/// Warn once per unsupported media feature, an `@media` block that silently
+/// never applies is exactly the failure mode the unhonored-property warning
+/// exists to prevent.
+fn warn_unsupported_media(what: &str) {
+    use std::sync::{Mutex, OnceLock};
+    static SEEN: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    let message = format!(
+        "`@media` condition `{what}` is not supported, its rules will never apply \
+         (supported: screen/all, min-/max-width, min-/max-height, orientation)"
+    );
+    warn(message.clone());
+    let seen = SEEN.get_or_init(|| Mutex::new(HashSet::new()));
+    let Ok(mut seen) = seen.lock() else { return };
+    if seen.insert(what.to_string()) {
+        eprintln!("rux: {message}");
+    }
+}
+
+/// Whether each `@media` block in `css` applies at `vp`, in source order. The
+/// runtime compares this across a resize: if it is unchanged, no rule set changed
+/// and the tree does not need re-cascading.
+pub fn media_matches(css: &str, vp: Viewport) -> Vec<bool> {
+    let Ok(sheet) = StyleSheet::parse(css, ParserOptions::default()) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    collect_media_matches(&sheet.rules.0, vp, &mut out);
+    out
+}
+
+fn collect_media_matches(rules: &[CssRule], vp: Viewport, out: &mut Vec<bool>) {
+    for rule in rules {
+        if let CssRule::Media(media) = rule {
+            let text = media
+                .query
+                .to_css_string(PrinterOptions::default())
+                .unwrap_or_default();
+            out.push(MediaCond::parse(&text).holds(vp));
+            collect_media_matches(&media.rules.0, vp, out);
         }
     }
 }
 
 // ── Parsing the stylesheet ──────────────────────────────────────────────────
 
-fn parse_rules(css: &str) -> Vec<Rule> {
+fn parse_rules(css: &str, vp: Viewport) -> Vec<Rule> {
     let sheet = match StyleSheet::parse(css, ParserOptions::default()) {
         Ok(s) => s,
         Err(_) => return Vec::new(),
@@ -583,10 +1209,39 @@ fn parse_rules(css: &str) -> Vec<Rule> {
 
     let mut rules = Vec::new();
     let mut order = 0usize;
+    collect_rules(&sheet.rules.0, vp, &mut rules, &mut order);
+    rules
+}
 
-    for rule in &sheet.rules.0 {
-        let CssRule::Style(style) = rule else { continue };
+/// Walk the rule list, descending into `@media` blocks whose condition holds at
+/// `vp`. A block that doesn't hold contributes nothing, so everything
+/// downstream (matching, cascade, specificity) is untouched by media queries.
+/// `order` keeps counting across blocks, which is what makes a later `@media`
+/// rule win over an earlier plain rule of equal specificity, as in CSS.
+fn collect_rules(rules: &[CssRule], vp: Viewport, out: &mut Vec<Rule>, order: &mut usize) {
+    for rule in rules {
+        match rule {
+            CssRule::Media(media) => {
+                let text = media
+                    .query
+                    .to_css_string(PrinterOptions::default())
+                    .unwrap_or_default();
+                if MediaCond::parse(&text).holds(vp) {
+                    collect_rules(&media.rules.0, vp, out, order);
+                }
+            }
+            CssRule::Style(style) => collect_style_rule(style, out, order),
+            _ => {}
+        }
+    }
+}
 
+fn collect_style_rule(
+    style: &lightningcss::rules::style::StyleRule,
+    out: &mut Vec<Rule>,
+    order: &mut usize,
+) {
+    {
         // Serialize each declaration to "prop: value" and split it.
         let mut decls = Vec::new();
         for prop in &style.declarations.declarations {
@@ -608,19 +1263,18 @@ fn parse_rules(css: &str) -> Vec<Rule> {
         for selector in &style.selectors.0 {
             if let Ok(text) = selector.to_css_string(PrinterOptions::default()) {
                 if let Some((chain, combs, specificity)) = parse_selector(&text) {
-                    rules.push(Rule {
+                    out.push(Rule {
                         chain,
                         combs,
                         specificity,
-                        order,
+                        order: *order,
                         decls: decls.clone(),
                     });
                 }
             }
-            order += 1;
+            *order += 1;
         }
     }
-    rules
 }
 
 /// The CSS properties the runtime actually interprets today. Anything outside
@@ -670,15 +1324,18 @@ fn warn_if_unhonored(property: &str) {
     use std::sync::{Mutex, OnceLock};
     static SEEN: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 
-    if is_honored(property) {
+    // A custom property is not a property we could fail to honor, it is storage
+    // for `var()`, and any name is legal.
+    if property.starts_with("--") || is_honored(property) {
         return;
     }
+    let message =
+        format!("CSS property `{property}` is parsed but not yet honored, it will have no effect");
+    warn(message.clone());
     let seen = SEEN.get_or_init(|| Mutex::new(HashSet::new()));
     let Ok(mut seen) = seen.lock() else { return };
     if seen.insert(property.to_string()) {
-        eprintln!(
-            "rux: CSS property `{property}` is parsed but not yet honored, so it will have no effect"
-        );
+        eprintln!("rux: {message}");
     }
 }
 
@@ -713,9 +1370,9 @@ fn parse_selector(text: &str) -> Option<(Vec<Compound>, Vec<Combinator>, (u32, u
         let mut depth = 0i32;
         while i < chars.len() {
             let d = chars[i];
-            if d == '[' {
+            if d == '[' || d == '(' {
                 depth += 1;
-            } else if d == ']' {
+            } else if d == ']' || d == ')' {
                 depth -= 1;
             } else if depth == 0 && (d.is_whitespace() || combinator_of(d).is_some()) {
                 break;
@@ -801,10 +1458,72 @@ fn parse_compound(token: &str, spec: &mut (u32, u32, u32)) -> Option<Compound> {
                 }
                 i = end + 1;
             }
+            ':' => {
+                // `:hover`: and `::selection`, whose second colon just falls into
+                // the name and makes it an Unknown (never-matching) pseudo, which
+                // is the right answer for a pseudo-*element* we don't support.
+                i += 1;
+                let mut name = String::new();
+                // A second colon means a pseudo-*element* (`::selection`). Keep it
+                // in the name so it stays Unknown rather than colliding with the
+                // same-named pseudo-class.
+                if i < chars.len() && chars[i] == ':' {
+                    name.push(':');
+                    i += 1;
+                }
+                while i < chars.len() && (chars[i].is_alphanumeric() || chars[i] == '-') {
+                    name.push(chars[i]);
+                    i += 1;
+                }
+                // A functional pseudo (`:not(…)`) keeps its argument in the name so
+                // it stays Unknown rather than matching as a bare `:not`.
+                if i < chars.len() && chars[i] == '(' {
+                    let mut depth = 0i32;
+                    while i < chars.len() {
+                        if chars[i] == '(' {
+                            depth += 1;
+                        } else if chars[i] == ')' {
+                            depth -= 1;
+                        }
+                        name.push(chars[i]);
+                        i += 1;
+                        if depth == 0 {
+                            break;
+                        }
+                    }
+                }
+                if !name.is_empty() {
+                    let pseudo = Pseudo::parse(&name);
+                    if let Pseudo::Unknown(n) = &pseudo {
+                        warn_unknown_pseudo(n);
+                    }
+                    c.pseudos.push(pseudo);
+                    // A pseudo-class has class-level specificity.
+                    spec.1 += 1;
+                }
+            }
             _ => break,
         }
     }
     Some(c)
+}
+
+/// Warn once per unknown pseudo-class. Same reasoning as `warn_if_unhonored`:
+/// valid CSS that quietly does nothing is the worst failure mode we have, and
+/// since an unknown pseudo now *fails closed*, the rule disappears entirely.
+fn warn_unknown_pseudo(name: &str) {
+    use std::sync::{Mutex, OnceLock};
+    static SEEN: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    let message = format!(
+        "pseudo-class `:{name}` is not supported, rules using it will never match \
+         (supported: :hover, :focus, :active, :checked)"
+    );
+    warn(message.clone());
+    let seen = SEEN.get_or_init(|| Mutex::new(HashSet::new()));
+    let Ok(mut seen) = seen.lock() else { return };
+    if seen.insert(name.to_string()) {
+        eprintln!("rux: {message}");
+    }
 }
 
 // ── Matching & cascade ──────────────────────────────────────────────────────
@@ -830,6 +1549,10 @@ fn matches_compound(c: &Compound, el: &ElemDesc) -> bool {
         if !el.role.as_deref().is_some_and(|er| er.eq_ignore_ascii_case(r)) {
             return false;
         }
+    }
+    // Every pseudo-class in the compound must hold (`.btn:hover:active`).
+    if !c.pseudos.iter().all(|p| p.holds(&el.states)) {
+        return false;
     }
     true
 }
@@ -885,6 +1608,34 @@ fn matches_chain(
     }
 }
 
+/// Could any `:hover` / `:active` rule apply to this element? If so the layout
+/// emits a [`rux_layout::StateRegion`] for it, which is how the shell learns the
+/// pointer entered or left it.
+///
+/// Only the *pseudo-carrying compound* is tested, and only against this element,
+/// the rest of the chain is ignored, so this over-approximates (a `.card:hover`
+/// rule flags every `.card`, even one no full selector reaches). Over-flagging
+/// costs one region; under-flagging would mean a `:hover` rule that silently never
+/// fires, so the bias is deliberate.
+///
+/// Note `.card:hover .icon` flags the **card**, not the icon: the card is what the
+/// pointer is over, and its subtree, icon included, is re-cascaded when its hover
+/// state flips.
+fn pointer_state_sensitive(desc: &ElemDesc, rules: &[Rule]) -> bool {
+    // Probe with both pointer states on: we're asking "could this ever match",
+    // not "does it match now".
+    let probe = ElemDesc {
+        states: ElemStates { hover: true, active: true, ..desc.states },
+        ..desc.clone()
+    };
+    rules.iter().any(|rule| {
+        rule.chain.iter().any(|compound| {
+            compound.pseudos.iter().any(Pseudo::is_pointer_state)
+                && matches_compound(compound, &probe)
+        })
+    })
+}
+
 /// Collect the matching rules' declarations for an element, in cascade order.
 fn matched_props(
     desc: &ElemDesc,
@@ -927,20 +1678,34 @@ fn build_node(
     path: &[usize],
     tpl_path: &[usize],
     reg: &mut BindingRegistry,
+    state: &InteractionState,
 ) -> LayoutNode {
     // A custom-element tag expands its imported component in place.
     if let Some(component) = comps.get(&el.tag) {
-        return expand_component(el, component, comps, inherited, engine, locals, path, tpl_path, reg);
+        return expand_component(
+            el, component, comps, inherited, engine, locals, path, tpl_path, reg, state,
+        );
     }
 
     let mut desc = ElemDesc::of(el);
-    // A ticked checkbox / selected radio carries a synthetic `checked` class, so
-    // its checked look is plain CSS (`.box.checked { background: … }`), we have
-    // no `:checked` pseudo-class and this needs no new selector machinery.
+    // A ticked checkbox / selected radio is matched by `:checked`. It *also* still
+    // carries the synthetic `checked` class, the pre-pseudo-class hack, so
+    // stylesheets written against `.box.checked` keep working for one release.
+    // Deprecated: prefer `.box:checked`.
     let toggle = Toggle::of(el, engine, locals);
     if toggle.as_ref().is_some_and(|t| t.checked) {
+        desc.states.checked = true;
         desc.classes.push("checked".to_string());
     }
+    // Pointer state comes from the shell, keyed by this node's tree path. Focus is
+    // keyed by `r-model` instead, that is how the shell tracks it, and it is what
+    // survives a reconcile that moves nodes around.
+    desc.states.hover = state.hovers(path);
+    desc.states.active = state.activates(path);
+    desc.states.focus = match (&state.focused_model, el.attr("r-model")) {
+        (Some(focused), Some(model)) => focused == model,
+        _ => false,
+    };
     // `:class`: dynamic classes fed into the cascade (the `checked` pattern,
     // generalized). Signals it reads are collected for reconcile.
     let mut dyn_deps: HashSet<String> = HashSet::new();
@@ -951,6 +1716,11 @@ fn build_node(
             desc.classes.extend(class_list(&v));
         }
     }
+
+    // Set on every node this build produces, so the shell gets a region to hit-test
+    // (see `pointer_state_sensitive`). Computed after `:class`, so dynamically
+    // applied classes count too.
+    let state_path = pointer_state_sensitive(&desc, rules).then(|| path.to_vec());
 
     let mut props = matched_props(&desc, ancestors, prev, rules);
     // Inline styles override the cascade: static `style=` first, then dynamic
@@ -977,6 +1747,22 @@ fn build_node(
     if !dyn_deps.is_empty() {
         reg.styled.push(StyledBinding { path: path.to_vec(), deps: dyn_deps });
     }
+
+    // Custom properties: this element's own `--name` declarations (from the
+    // cascade and from inline styles alike) layer over what it inherited, and the
+    // result is what `var()` sees here *and* below. A node that declares none,
+    // most of them, passes the inherited map straight down without copying it.
+    let vars = take_vars(&mut props, &inherited.vars);
+    // Substitute var() everywhere before interpreting, so every property gets it
+    // for free rather than each parser learning about variables. Runs even with no
+    // variables in scope: `var(--x, 12px)` is a legitimate way to write a default,
+    // and skipping the pass would leave the fallback unresolved.
+    for value in props.values_mut() {
+        if value.contains("var(") {
+            *value = resolve_vars(value, &vars, 0);
+        }
+    }
+
     let style = interpret(&props);
     // A `@tap` handler runs later, in global scope, where the `r-for` loop
     // variable no longer exists, so `@tap="picked = item"` would see `item`
@@ -1078,6 +1864,20 @@ fn build_node(
         node.hidden = hidden;
         node.id = el.attr("id").map(str::to_string);
         node.label_for = el.attr("for").map(str::to_string);
+        node.state_path = state_path.clone();
+        // Static text reads as a label; `role="heading"` promotes it. Text that is
+        // itself tappable is a button whose name is its own words.
+        node.access = Access {
+            role: explicit_access_role(el).unwrap_or(if node.on_tap.is_some() {
+                AccessRole::Button
+            } else {
+                AccessRole::Label
+            }),
+            label: authored_label(el).or_else(|| {
+                node.text.as_ref().map(|t| t.text.trim().to_string()).filter(|t| !t.is_empty())
+            }),
+            ..Access::default()
+        };
         return node;
     }
 
@@ -1112,6 +1912,14 @@ fn build_node(
         node.hidden = hidden;
         node.id = el.attr("id").map(str::to_string);
         node.label_for = el.attr("for").map(str::to_string);
+        node.state_path = state_path.clone();
+        // An image with no `alt` has no accessible name, deliberately left None
+        // rather than announcing a file path, which is noise, not information.
+        node.access = Access {
+            role: explicit_access_role(el).unwrap_or(AccessRole::Image),
+            label: authored_label(el),
+            ..Access::default()
+        };
         return node;
     }
 
@@ -1175,6 +1983,16 @@ fn build_node(
         node.hidden = hidden;
         node.id = el.attr("id").map(str::to_string);
         node.label_for = el.attr("for").map(str::to_string);
+        node.state_path = state_path.clone();
+        // The checked state is what a screen reader announces alongside the name,
+        // so it has to be the resolved boolean, not the class hack.
+        node.access = Access {
+            role: if radio { AccessRole::RadioButton } else { AccessRole::CheckBox },
+            label: authored_label(el),
+            placeholder: None,
+            checked: Some(checked),
+            value: None,
+        };
         return node;
     }
 
@@ -1272,6 +2090,29 @@ fn build_node(
         node.hidden = hidden;
         node.id = el.attr("id").map(str::to_string);
         node.label_for = el.attr("for").map(str::to_string);
+        node.state_path = state_path.clone();
+        // The *value* is the signal's text, never the placeholder, a placeholder
+        // is a hint, and announcing it as the content would be a lie. It becomes
+        // the fallback *name* instead, when nothing else labels the field.
+        node.access = Access {
+            role: explicit_access_role(el).unwrap_or(if node.options.is_some() {
+                AccessRole::ComboBox
+            } else if multiline {
+                AccessRole::MultilineTextInput
+            } else {
+                AccessRole::TextInput
+            }),
+            label: authored_label(el),
+            // Only a fallback name, a `<text for="…">` label linked after the
+            // build must outrank it.
+            placeholder: (!placeholder.is_empty()).then(|| placeholder.clone()),
+            value: node
+                .model
+                .as_deref()
+                .map(|m| engine.eval_display(m, locals))
+                .filter(|v| !v.is_empty()),
+            checked: None,
+        };
         return node;
     }
 
@@ -1289,12 +2130,13 @@ fn build_node(
         rules,
         comps,
         ancestors,
-        &Inherited { color, font_size, font_family },
+        &Inherited { color, font_size, font_family, vars: Rc::clone(&vars) },
         engine,
         locals,
         path,
         tpl_path,
         reg,
+        state,
     );
     ancestors.pop();
     // If any child carried a structural directive, this parent can be reconciled
@@ -1307,7 +2149,7 @@ fn build_node(
         });
     }
 
-    LayoutNode {
+    let mut node = LayoutNode {
         style,
         text: None,
         image: None,
@@ -1321,7 +2163,28 @@ fn build_node(
         id: el.attr("id").map(str::to_string),
         label_for: el.attr("for").map(str::to_string),
         focus_model: None,
+        state_path,
+        access: Access::default(),
+    };
+    // A tappable box is a button, named by the text inside it, that is how
+    // `<view @tap><text>Save</text></view>` announces as "Save, button". A
+    // scroller is worth exposing so its content can be reached; anything else is
+    // structure, and only appears if the author gave it a `role=`.
+    let role = explicit_access_role(el).unwrap_or(if node.on_tap.is_some() {
+        AccessRole::Button
+    } else if node.style.overflow == Overflow::Scroll {
+        AccessRole::ScrollView
+    } else {
+        AccessRole::None
+    });
+    if role.is_meaningful() {
+        let label = authored_label(el).or_else(|| {
+            let text = subtree_text(&node);
+            (!text.is_empty()).then_some(text)
+        });
+        node.access = Access { role, label, ..Access::default() };
     }
+    node
 }
 
 /// Expand a `<custom-element :prop="expr" …>` into its component's tree. Props
@@ -1338,6 +2201,7 @@ fn expand_component(
     path: &[usize],
     tpl_path: &[usize],
     reg: &mut BindingRegistry,
+    state: &InteractionState,
 ) -> LayoutNode {
     let mut props: Locals = Vec::new();
     let mut prop_deps: HashSet<String> = HashSet::new();
@@ -1375,6 +2239,7 @@ fn expand_component(
         path,
         tpl_path,
         reg,
+        state,
     )
 }
 
@@ -1398,6 +2263,7 @@ fn build_children(
     path: &[usize],
     tpl_path: &[usize],
     reg: &mut BindingRegistry,
+    state: &InteractionState,
 ) -> (Vec<LayoutNode>, HashSet<String>) {
     let mut out = Vec::new();
     // Signals read by structural directives at this level, returned so the parent
@@ -1438,7 +2304,7 @@ fn build_children(
                         let mut child_locals = locals.clone();
                         child_locals.push((var.to_string(), item));
                         let cp = child_path(&out);
-                        out.push(build_node(el, rules, comps, ancestors, &prev, inherited, engine, &child_locals, &cp, &ctp, reg));
+                        out.push(build_node(el, rules, comps, ancestors, &prev, inherited, engine, &child_locals, &cp, &ctp, reg, state));
                         prev.push(ElemDesc::of(el));
                     }
                 }
@@ -1454,7 +2320,7 @@ fn build_children(
             chain_satisfied = v;
             if chain_satisfied {
                 let cp = child_path(&out);
-                out.push(build_node(el, rules, comps, ancestors, &prev, inherited, engine, locals, &cp, &ctp, reg));
+                out.push(build_node(el, rules, comps, ancestors, &prev, inherited, engine, locals, &cp, &ctp, reg, state));
                 prev.push(ElemDesc::of(el));
             }
             continue;
@@ -1470,7 +2336,7 @@ fn build_children(
             if taken {
                 chain_satisfied = true;
                 let cp = child_path(&out);
-                out.push(build_node(el, rules, comps, ancestors, &prev, inherited, engine, locals, &cp, &ctp, reg));
+                out.push(build_node(el, rules, comps, ancestors, &prev, inherited, engine, locals, &cp, &ctp, reg, state));
                 prev.push(ElemDesc::of(el));
             }
             continue;
@@ -1478,7 +2344,7 @@ fn build_children(
         if el.attr("r-else").is_some() {
             if in_chain && !chain_satisfied {
                 let cp = child_path(&out);
-                out.push(build_node(el, rules, comps, ancestors, &prev, inherited, engine, locals, &cp, &ctp, reg));
+                out.push(build_node(el, rules, comps, ancestors, &prev, inherited, engine, locals, &cp, &ctp, reg, state));
                 prev.push(ElemDesc::of(el));
             }
             in_chain = false;
@@ -1488,7 +2354,7 @@ fn build_children(
         // A plain element ends any active chain.
         in_chain = false;
         let cp = child_path(&out);
-        out.push(build_node(el, rules, comps, ancestors, &prev, inherited, engine, locals, &cp, &ctp, reg));
+        out.push(build_node(el, rules, comps, ancestors, &prev, inherited, engine, locals, &cp, &ctp, reg, state));
         prev.push(ElemDesc::of(el));
     }
     (out, structural_deps)
@@ -2870,11 +3736,17 @@ mod tests {
     // These test `matches_chain` directly so both the positive and the negative
     // case are asserted: the bug being fixed here made `>`, `+` and `~` behave
     // as descendant, i.e. match elements they must NOT match.
-    use super::{matches_chain, parse_selector, AncNode, ElemDesc};
+    use super::{matches_chain, parse_selector, AncNode, ElemDesc, ElemStates};
 
     fn el(spec: &str) -> ElemDesc {
         // "tag.class.class#id", tag optional, order flexible enough for tests.
-        let mut d = ElemDesc { tag: String::new(), id: None, classes: Vec::new(), role: None };
+        let mut d = ElemDesc {
+            tag: String::new(),
+            id: None,
+            classes: Vec::new(),
+            role: None,
+            states: ElemStates::default(),
+        };
         let mut rest = spec;
         while let Some(pos) = rest.find(['.', '#']) {
             if pos > 0 {
@@ -2897,6 +3769,524 @@ mod tests {
         d
     }
 
+    // ── Accessibility ───────────────────────────────────────────────────────
+
+    use super::AccessRole;
+
+    fn built(src: &str) -> rux_layout::Node {
+        let sfc = rux_parser::parse_sfc(src).unwrap();
+        let mut engine = Builder::new().build(&sfc.script).unwrap();
+        build_styled_tree(&sfc, &HashMap::new(), &mut engine).unwrap()
+    }
+
+    /// Every control gets a role a screen reader can announce, derived from what
+    /// it is rather than guessed from how it paints.
+    #[test]
+    fn controls_get_their_implicit_roles() {
+        let root = built(
+            r#"<template><screen>
+                 <text>a heading</text>
+                 <input r-model="name" />
+                 <input type="textarea" r-model="notes" />
+                 <input type="checkbox" r-model="agree" />
+                 <input type="radio" r-model="plan" value="pro" />
+                 <view @tap="n = n + 1"><text>Save</text></view>
+                 <image src="logo.png" alt="the logo" />
+               </screen></template>
+               <script>let name = signal(""); let notes = signal(""); let agree = signal(false);
+                       let plan = signal("free"); let n = signal(0);</script>"#,
+        );
+        let roles: Vec<AccessRole> = root.children.iter().map(|c| c.access.role).collect();
+        assert_eq!(
+            roles,
+            vec![
+                AccessRole::Label,
+                AccessRole::TextInput,
+                AccessRole::MultilineTextInput,
+                AccessRole::CheckBox,
+                AccessRole::RadioButton,
+                AccessRole::Button,
+                AccessRole::Image,
+            ]
+        );
+    }
+
+    /// A tappable box is named by the text inside it, so it announces as
+    /// "Save, button" rather than as an anonymous control.
+    #[test]
+    fn a_tappable_box_is_named_by_its_content() {
+        let root = built(
+            r#"<template><screen><view @tap="n = n + 1"><text>Save</text></view></screen></template>
+               <script>let n = signal(0);</script>"#,
+        );
+        let button = &root.children[0];
+        assert_eq!(button.access.role, AccessRole::Button);
+        assert_eq!(button.access.label.as_deref(), Some("Save"));
+    }
+
+    /// A `for=` label names the control it points at, the same link that already
+    /// makes the label tappable.
+    #[test]
+    fn a_for_label_names_its_control() {
+        let root = built(
+            r#"<template><screen>
+                 <text for="email">Email address</text>
+                 <input id="email" r-model="email" />
+               </screen></template>
+               <script>let email = signal("");</script>"#,
+        );
+        let input = &root.children[1];
+        assert_eq!(input.access.role, AccessRole::TextInput);
+        assert_eq!(input.access.label.as_deref(), Some("Email address"));
+    }
+
+    /// An explicit `role=` wins over the implicit one, and an authored `label=`
+    /// wins over content, both are the author being specific.
+    #[test]
+    fn explicit_role_and_label_win() {
+        let root = built(
+            r#"<template><screen>
+                 <text role="heading">Dashboard</text>
+                 <view @tap="n = n + 1" label="Save changes"><text>OK</text></view>
+               </screen></template>
+               <script>let n = signal(0);</script>"#,
+        );
+        assert_eq!(root.children[0].access.role, AccessRole::Heading);
+        assert_eq!(root.children[1].access.label.as_deref(), Some("Save changes"));
+    }
+
+    /// A toggle reports its checked state, and reports it *live*, that is what a
+    /// screen reader announces alongside the name.
+    #[test]
+    fn a_toggle_reports_its_checked_state() {
+        let root = built(
+            r#"<template><screen>
+                 <input type="checkbox" r-model="on" />
+                 <input type="checkbox" r-model="off" />
+               </screen></template>
+               <script>let on = signal(true); let off = signal(false);</script>"#,
+        );
+        assert_eq!(root.children[0].access.checked, Some(true));
+        assert_eq!(root.children[1].access.checked, Some(false));
+    }
+
+    /// An input exposes its value, but a placeholder is a hint, not content, so
+    /// it names the field instead of pretending to be what's typed in it.
+    #[test]
+    fn an_input_exposes_value_but_not_its_placeholder_as_value() {
+        let root = built(
+            r#"<template><screen>
+                 <input r-model="name" placeholder="Your name" />
+                 <input r-model="city" placeholder="Your city" />
+               </screen></template>
+               <script>let name = signal("Ada"); let city = signal("");</script>"#,
+        );
+        let filled = &root.children[0];
+        assert_eq!(filled.access.value.as_deref(), Some("Ada"));
+        assert_eq!(
+            filled.access.name(),
+            Some("Your name"),
+            "an unlabelled field falls back to its placeholder for a name"
+        );
+
+        let empty = &root.children[1];
+        assert_eq!(empty.access.value, None, "an empty field has no value");
+        assert_eq!(empty.access.name(), Some("Your city"));
+    }
+
+    /// A real label outranks a placeholder: the placeholder is only the fallback
+    /// name for a field nobody labelled.
+    #[test]
+    fn a_for_label_outranks_a_placeholder() {
+        let root = built(
+            r#"<template><screen>
+                 <text for="notes">Notes</text>
+                 <input id="notes" r-model="notes" placeholder="Type a few lines…" />
+               </screen></template>
+               <script>let notes = signal("");</script>"#,
+        );
+        let input = &root.children[1];
+        assert_eq!(input.access.name(), Some("Notes"), "the label wins");
+        assert_eq!(
+            input.access.placeholder.as_deref(),
+            Some("Type a few lines…"),
+            "the placeholder is still available as a hint"
+        );
+    }
+
+    /// Plain layout boxes stay out of the tree, an assistive tree full of
+    /// anonymous groups is worse than a short one.
+    #[test]
+    fn plain_boxes_are_not_exposed() {
+        let root = built(
+            r#"<template><screen><view class="row"><view class="col" /></view></screen></template>"#,
+        );
+        assert_eq!(root.children[0].access.role, AccessRole::None);
+        assert_eq!(root.children[0].children[0].access.role, AccessRole::None);
+        assert!(!AccessRole::None.is_meaningful());
+    }
+
+    // ── @media ──────────────────────────────────────────────────────────────
+
+    use super::{media_matches, parse_rules, InteractionState, Viewport};
+
+    fn vp(width: f32, height: f32) -> Viewport {
+        Viewport { width, height }
+    }
+
+    /// Build at a given viewport and report the target's background.
+    fn bg_at_vp(src: &str, viewport: Viewport) -> Option<Background> {
+        let sfc = rux_parser::parse_sfc(src).unwrap();
+        let mut engine = Builder::new().build(&sfc.script).unwrap();
+        let root = super::build_styled_tree_stateful(
+            &sfc,
+            &HashMap::new(),
+            &mut engine,
+            &InteractionState::default(),
+            viewport,
+        )
+        .unwrap();
+        root.0.children[0].style.background.clone()
+    }
+
+    const MEDIA_DOC: &str = r#"<template><screen><view class="target" /></screen></template>
+        <style>
+          .target { background: #00ff00; }
+          @media (max-width: 600px) { .target { background: #ff0000; } }
+        </style>"#;
+
+    /// The rules inside a matching `@media` apply; outside it they don't exist.
+    #[test]
+    fn media_query_gates_its_rules_on_the_viewport() {
+        assert!(is_red(&bg_at_vp(MEDIA_DOC, vp(480.0, 800.0))), "narrow → the @media rule");
+        let wide = bg_at_vp(MEDIA_DOC, vp(1200.0, 800.0));
+        assert!(
+            matches!(&wide, Some(Background::Color(c)) if c.g == 1.0),
+            "wide → the base rule, as if the block weren't there"
+        );
+    }
+
+    /// A media rule beats an equally-specific earlier rule by source order, and
+    /// loses to a more specific one, media adds no specificity, as in CSS.
+    #[test]
+    fn media_rules_cascade_by_order_not_by_being_in_a_block() {
+        let src = r#"<template><screen><view class="target" id="t" /></screen></template>
+            <style>
+              #t { background: #00ff00; }
+              @media (max-width: 600px) { .target { background: #ff0000; } }
+            </style>"#;
+        let narrow = bg_at_vp(src, vp(480.0, 800.0));
+        assert!(
+            matches!(&narrow, Some(Background::Color(c)) if c.g == 1.0),
+            "#id still beats a .class inside @media"
+        );
+    }
+
+    /// `and`, comma alternatives, orientation, and a media type all evaluate.
+    #[test]
+    fn media_conditions_evaluate() {
+        let and = r#"<template><screen><view class="target" /></screen></template>
+            <style>@media screen and (min-width: 400px) and (max-width: 600px) {
+              .target { background: #ff0000; } }</style>"#;
+        assert!(is_red(&bg_at_vp(and, vp(500.0, 800.0))), "inside the band");
+        assert!(bg_at_vp(and, vp(700.0, 800.0)).is_none(), "outside the band");
+
+        let either = r#"<template><screen><view class="target" /></screen></template>
+            <style>@media (max-width: 400px), (min-width: 1000px) {
+              .target { background: #ff0000; } }</style>"#;
+        assert!(is_red(&bg_at_vp(either, vp(300.0, 800.0))), "first alternative");
+        assert!(is_red(&bg_at_vp(either, vp(1200.0, 800.0))), "second alternative");
+        assert!(bg_at_vp(either, vp(600.0, 800.0)).is_none(), "neither");
+
+        let portrait = r#"<template><screen><view class="target" /></screen></template>
+            <style>@media (orientation: portrait) { .target { background: #ff0000; } }</style>"#;
+        assert!(is_red(&bg_at_vp(portrait, vp(400.0, 800.0))), "taller than wide");
+        assert!(bg_at_vp(portrait, vp(800.0, 400.0)).is_none(), "wider than tall");
+    }
+
+    /// An unsupported condition hides its rules rather than applying them, the
+    /// same fail-closed rule as an unknown pseudo-class.
+    #[test]
+    fn unsupported_media_condition_never_applies() {
+        let src = r#"<template><screen><view class="target" /></screen></template>
+            <style>@media (min-resolution: 2dppx) { .target { background: #ff0000; } }</style>"#;
+        assert!(bg_at_vp(src, vp(800.0, 600.0)).is_none());
+    }
+
+    /// `media_matches` is what lets the runtime skip work on a resize that crosses
+    /// no breakpoint: same answers, no re-cascade.
+    #[test]
+    fn media_matches_reports_each_block() {
+        let css = "@media (max-width: 600px) { .a { color: red } } \
+                   @media (min-width: 1000px) { .b { color: red } }";
+        assert_eq!(media_matches(css, vp(500.0, 800.0)), vec![true, false]);
+        assert_eq!(media_matches(css, vp(800.0, 800.0)), vec![false, false]);
+        assert_eq!(media_matches(css, vp(1200.0, 800.0)), vec![false, true]);
+        // Two sizes on the same side of every breakpoint look identical, which is
+        // exactly the "don't rebuild" signal.
+        assert_eq!(media_matches(css, vp(700.0, 800.0)), media_matches(css, vp(900.0, 800.0)));
+        assert!(media_matches(".a { color: red }", vp(800.0, 600.0)).is_empty());
+    }
+
+    /// A rule outside any block is unaffected by the viewport.
+    #[test]
+    fn plain_rules_are_viewport_independent() {
+        let css = ".a { color: red }";
+        assert_eq!(parse_rules(css, vp(320.0, 480.0)).len(), parse_rules(css, vp(1600.0, 900.0)).len());
+    }
+
+    // ── Custom properties + var() ───────────────────────────────────────────
+
+    use super::{Background, Vars};
+
+    /// Build a document and return the background of the node at `path`.
+    fn bg_at(src: &str, path: &[usize]) -> Option<Background> {
+        let sfc = rux_parser::parse_sfc(src).unwrap();
+        let mut engine = Builder::new().build(&sfc.script).unwrap();
+        let root = build_styled_tree(&sfc, &HashMap::new(), &mut engine).unwrap();
+        let mut node = &root;
+        for i in path {
+            node = &node.children[*i];
+        }
+        node.style.background.clone()
+    }
+
+    fn is_red(bg: &Option<Background>) -> bool {
+        matches!(bg, Some(Background::Color(c)) if c.r == 1.0 && c.g == 0.0 && c.b == 0.0)
+    }
+
+    /// A variable declared on an ancestor is visible to `var()` far below it,
+    /// the whole point of a palette declared once at the root.
+    #[test]
+    fn custom_property_inherits_down_the_tree() {
+        let bg = bg_at(
+            r#"<template><screen class="app"><view><view class="target" /></view></screen></template>
+               <style>
+                 .app { --brand: #ff0000; }
+                 .target { background: var(--brand); }
+               </style>"#,
+            &[0, 0],
+        );
+        assert!(is_red(&bg), "var() resolved from an ancestor's declaration");
+    }
+
+    /// A nearer declaration wins over a farther one, and only within its subtree.
+    #[test]
+    fn nearer_declaration_shadows_the_inherited_one() {
+        let src = r#"<template><screen class="app">
+                       <view class="panel"><view class="target" /></view>
+                       <view><view class="target" /></view>
+                     </screen></template>
+                     <style>
+                       .app { --brand: #00ff00; }
+                       .panel { --brand: #ff0000; }
+                       .target { background: var(--brand); }
+                     </style>"#;
+        assert!(is_red(&bg_at(src, &[0, 0])), "inside .panel the nearer value wins");
+        let outside = bg_at(src, &[1, 0]);
+        assert!(
+            matches!(&outside, Some(Background::Color(c)) if c.g == 1.0),
+            "outside .panel the root value still applies, the override didn't leak"
+        );
+    }
+
+    /// A variable may be defined in terms of another.
+    #[test]
+    fn custom_property_can_reference_another() {
+        let bg = bg_at(
+            r#"<template><screen class="app"><view class="target" /></screen></template>
+               <style>
+                 .app { --red: #ff0000; --brand: var(--red); }
+                 .target { background: var(--brand); }
+               </style>"#,
+            &[0],
+        );
+        assert!(is_red(&bg));
+    }
+
+    /// An undefined variable falls back when given one, including a fallback that
+    /// itself contains parentheses.
+    #[test]
+    fn var_falls_back_when_undefined() {
+        let bg = bg_at(
+            r#"<template><screen><view class="target" /></screen></template>
+               <style>.target { background: var(--nope, #ff0000); }</style>"#,
+            &[0],
+        );
+        assert!(is_red(&bg), "the fallback is used");
+
+        let bg = bg_at(
+            r#"<template><screen><view class="target" /></screen></template>
+               <style>.target { background: var(--nope, rgb(255, 0, 0)); }</style>"#,
+            &[0],
+        );
+        assert!(is_red(&bg), "a fallback with its own parens survives");
+    }
+
+    /// An undefined variable with no fallback leaves the declaration invalid, so
+    /// it is dropped, it must not paint something arbitrary.
+    #[test]
+    fn undefined_var_without_fallback_drops_the_declaration() {
+        let bg = bg_at(
+            r#"<template><screen><view class="target" /></screen></template>
+               <style>.target { background: var(--nope); }</style>"#,
+            &[0],
+        );
+        assert!(bg.is_none(), "no background, rather than a wrong one");
+    }
+
+    /// A cycle must terminate rather than hang.
+    #[test]
+    fn circular_variables_terminate() {
+        let bg = bg_at(
+            r#"<template><screen class="app"><view class="target" /></screen></template>
+               <style>
+                 .app { --a: var(--b); --b: var(--a); }
+                 .target { background: var(--a); }
+               </style>"#,
+            &[0],
+        );
+        assert!(bg.is_none(), "a cycle resolves to nothing, and returns");
+    }
+
+    /// `var()` works in inline `style=` too, since substitution happens after the
+    /// cascade and inline styles are merged.
+    #[test]
+    fn var_resolves_in_inline_style() {
+        let bg = bg_at(
+            r#"<template><screen class="app"><view style="background: var(--brand)" /></screen></template>
+               <style>.app { --brand: #ff0000; }</style>"#,
+            &[0],
+        );
+        assert!(is_red(&bg));
+    }
+
+    /// A custom property is not a real property: it must not reach `interpret`,
+    /// and must not be reported as an unhonored one.
+    #[test]
+    fn custom_property_is_not_treated_as_a_property() {
+        assert!(!super::is_honored("--brand"));
+        let mut props: HashMap<String, String> = HashMap::new();
+        props.insert("--brand".into(), "#ff0000".into());
+        props.insert("background".into(), "var(--brand)".into());
+        let vars = super::take_vars(&mut props, &Vars::default());
+        assert!(!props.contains_key("--brand"), "stripped out of the property map");
+        assert_eq!(vars.get("--brand").map(String::as_str), Some("#ff0000"));
+    }
+
+    // ── Pseudo-classes ──────────────────────────────────────────────────────
+    //
+    // The negative case matters most here. Before pseudo-classes existed,
+    // `parse_compound` stopped at the `:` and threw it away, so `.box:hover`
+    // parsed as `.box` and matched *always*. Every test below that asserts a
+    // rule does NOT match is guarding that regression.
+
+    /// `selector` against an element with the given states and no ancestors.
+    fn hits_state(selector: &str, target: &str, states: ElemStates) -> bool {
+        let (chain, combs, _) = parse_selector(selector).expect("selector parses");
+        let mut d = el(target);
+        d.states = states;
+        matches_chain(&chain, &combs, &d, &[], &[])
+    }
+
+    fn hovered() -> ElemStates {
+        ElemStates { hover: true, ..ElemStates::default() }
+    }
+
+    #[test]
+    fn pseudo_class_matches_only_in_that_state() {
+        assert!(hits_state(".box:hover", ".box", hovered()));
+        assert!(
+            !hits_state(".box:hover", ".box", ElemStates::default()),
+            "an unhovered element must NOT match :hover (it used to match always)"
+        );
+        // The un-suffixed rule still matches in either state.
+        assert!(hits_state(".box", ".box", hovered()));
+    }
+
+    #[test]
+    fn each_pseudo_reads_its_own_state() {
+        let s = ElemStates { hover: false, focus: true, active: false, checked: true };
+        assert!(hits_state("input:focus", "input", s));
+        assert!(hits_state("input:checked", "input", s));
+        assert!(!hits_state("input:hover", "input", s));
+        assert!(!hits_state("input:active", "input", s));
+    }
+
+    #[test]
+    fn stacked_pseudos_all_have_to_hold() {
+        let hover_only = hovered();
+        let both = ElemStates { hover: true, active: true, ..ElemStates::default() };
+        assert!(!hits_state(".btn:hover:active", ".btn", hover_only));
+        assert!(hits_state(".btn:hover:active", ".btn", both));
+    }
+
+    /// An unsupported pseudo-class fails *closed*, the rule never matches,
+    /// rather than being dropped and matching everything.
+    #[test]
+    fn unknown_pseudo_never_matches() {
+        let all_on = ElemStates { hover: true, focus: true, active: true, checked: true };
+        assert!(!hits_state(".box:disabled", ".box", all_on));
+        assert!(!hits_state(".box:nth-child(2)", ".box", all_on));
+        assert!(!hits_state(".box::selection", ".box", all_on));
+    }
+
+    /// A pseudo-class carries class-level specificity, so `.box:hover` beats
+    /// `.box` regardless of source order.
+    #[test]
+    fn pseudo_class_adds_class_specificity() {
+        let (_, _, plain) = parse_selector(".box").unwrap();
+        let (_, _, with_pseudo) = parse_selector(".box:hover").unwrap();
+        assert_eq!(plain, (0, 1, 0));
+        assert_eq!(with_pseudo, (0, 2, 0));
+        assert!(with_pseudo > plain);
+    }
+
+    /// A pseudo-class sits inside one compound, it must not be mistaken for a
+    /// new compound or split the selector.
+    #[test]
+    fn pseudo_class_stays_within_its_compound() {
+        let (chain, combs, _) = parse_selector(".card > .btn:hover").unwrap();
+        assert_eq!(chain.len(), 2, "two compounds, not three");
+        assert_eq!(combs.len(), 1);
+        // The state is on the *right* compound: a hovered .btn inside .card.
+        let hover = hovered();
+        let mut btn = el(".btn");
+        btn.states = hover;
+        let card = anc(".card", &[]);
+        assert!(matches_chain(&chain, &combs, &btn, &[card.clone()], &[]));
+        let plain_btn = el(".btn");
+        assert!(!matches_chain(&chain, &combs, &plain_btn, &[card], &[]));
+    }
+
+    /// End-to-end: a ticked checkbox is styled by `:checked` through the real
+    /// cascade, and an unticked one is not.
+    #[test]
+    fn checked_pseudo_styles_a_ticked_toggle() {
+        let src = r#"
+            <template>
+              <screen>
+                <input type="checkbox" class="box" r-model="on" />
+                <input type="checkbox" class="box" r-model="off" />
+              </screen>
+            </template>
+            <style>
+              .box { background: #000000; }
+              .box:checked { background: #00ff00; }
+            </style>
+            <script> let on = signal(true); let off = signal(false); </script>
+        "#;
+        let sfc = rux_parser::parse_sfc(src).unwrap();
+        let mut engine = Builder::new().build(&sfc.script).unwrap();
+        let root = build_styled_tree(&sfc, &HashMap::new(), &mut engine).unwrap();
+
+        let green = |n: &rux_layout::Node| {
+            matches!(&n.style.background, Some(rux_layout::Background::Color(c)) if c.g == 1.0)
+        };
+        assert!(green(&root.children[0]), "ticked box matches .box:checked");
+        assert!(!green(&root.children[1]), "unticked box does not");
+    }
+
     fn anc(spec: &str, prev: &[&str]) -> AncNode {
         AncNode { desc: el(spec), prev: prev.iter().map(|s| el(s)).collect() }
     }
@@ -2916,7 +4306,7 @@ mod tests {
         // it before it silently degrades matching back to descendant-only.
         use super::{parse_rules, Combinator};
         let css = ".card > text { color: #111 } .a + .b { color: #222 } .a ~ .b { color: #333 }";
-        let rules = parse_rules(css);
+        let rules = parse_rules(css, Viewport::default());
         let combs: Vec<&[Combinator]> = rules.iter().map(|r| r.combs.as_slice()).collect();
         assert_eq!(combs[0], &[Combinator::Child]);
         assert_eq!(combs[1], &[Combinator::NextSibling]);

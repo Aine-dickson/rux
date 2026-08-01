@@ -13,26 +13,35 @@ rux-layout = { path = "../rux-layout" }
 rux-paint = { path = "../rux-paint" }
 rux-runtime = { path = "../rux-runtime" }
 rux-text = { path = "../rux-text" }
-rux-reactive = { version = "0.1.0", path = "../rux-reactive" }
+# The explicit version is what `cargo publish` requires of a path dependency:
+# a bare `path` won't publish. It must track `workspace.package.version` exactly,
+# including the `-dev` suffix, because a plain `0.4.0` requirement does NOT match
+# the prerelease `0.4.0-dev`, so dropping the suffix here alone breaks the build.
+rux-reactive = { version = "0.4.0-dev", path = "../rux-reactive" }
 # `std::time::Instant` panics on wasm; web-time swaps in the browser clock there
 # and re-exports std everywhere else. winit already depends on it, so this adds
 # no weight; it just lets our code name the same type winit's API expects.
 web-time = "1.1"
 
-# Native-only platform services. None of the three exist in a browser:
-#   pollster  blocks on a future, and a wasm main thread must not block, so the
-#             web build awaits the same futures instead.
-#   notify    watches the filesystem for hot reload; there is no filesystem,
-#             and the playground editor supplies new source directly.
-#   arboard   talks to the OS clipboard; the browser's is async and permissioned.
+# Native-only platform services. None of these exist in a browser:
+#   pollster   blocks on a future, and a wasm main thread must not block, so the
+#              web build awaits the same futures instead.
+#   notify     watches the filesystem for hot reload; there is no filesystem,
+#              and the playground editor supplies new source directly.
+#   arboard    talks to the OS clipboard; the browser's is async and permissioned.
+#   accesskit  wraps the per-platform accessibility APIs (UI Automation, AT-SPI,
+#              NSAccessibility). The web already has an accessibility tree of its
+#              own and accesskit_winit has no adapter for it.
 # Everything above this line (window, input, focus, layout, paint) is shared.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 pollster.workspace = true
 notify = "8.2.0"
 arboard.workspace = true
+accesskit = "0.24.1"
+accesskit_winit = "0.33.2"
 
-# The browser's stand-ins for the three above: a task spawner instead of
-# blocking, and the canvas/console bindings winit and the loader need.
+# The browser's stand-ins: a task spawner instead of blocking, and the
+# canvas/console bindings winit and the loader need.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen-futures = "0.4"
 web-sys = { version = "0.3", features = ["HtmlCanvasElement", "console"] }

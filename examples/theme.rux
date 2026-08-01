@@ -1,0 +1,108 @@
+<template>
+    <screen class="app" :class="if dark { &quot;dark&quot; } else { &quot;light&quot; }">
+        <view class="bar">
+            <text class="title">custom properties</text>
+            <view class="btn" @tap="dark = !dark">
+                <text class="btn-label">{{ if dark { "light theme" } else { "dark theme" } }}</text>
+            </view>
+        </view>
+
+        <text class="lead">Every colour below comes from one palette. The button swaps which palette is in scope, no rule below it changes.</text>
+
+        <view class="row">
+            <view class="card">
+                <text class="card-title">card</text>
+                <text class="card-body">Background, border and text all read var().</text>
+            </view>
+            <view class="card accent">
+                <text class="card-title">accent</text>
+                <text class="card-body">Same rules, one variable overridden here.</text>
+            </view>
+        </view>
+
+        <view class="field">
+            <text class="label">A field</text>
+            <input class="input" r-model="name" placeholder="type here" />
+        </view>
+    </screen>
+</template>
+
+<style>
+    /* The palette. Declared once; everything below reads it through var(). */
+    .app {
+        --bg:      #1e1e2e;
+        --surface: #313244;
+        --border:  #45475a;
+        --ink:     #cdd6f4;
+        --muted:   #9399b2;
+        --brand:   #89b4fa;
+        --on-brand:#11111b;
+        --radius:  10px;
+        --pad:     16px;
+
+        display: flex;
+        flex-direction: column;
+        gap: 20px;
+        padding: 32px;
+        background: var(--bg);
+    }
+
+    /* The light theme is the same sheet with different values, nothing below
+       this rule knows a theme exists. */
+    .app.light {
+        --bg:      #eff1f5;
+        --surface: #ffffff;
+        --border:  #ccd0da;
+        --ink:     #4c4f69;
+        --muted:   #6c6f85;
+        --brand:   #1e66f5;
+        --on-brand:#ffffff;
+    }
+
+    .bar { display: flex; align-items: center; justify-content: space-between; }
+    .title { color: var(--ink); font-size: 22px; font-weight: 700; }
+    .lead  { color: var(--muted); font-size: 13px; }
+    .label { color: var(--muted); font-size: 14px; }
+
+    .btn {
+        padding: 8px 14px;
+        background: var(--brand);
+        border-radius: var(--radius);
+        cursor: pointer;
+    }
+    .btn:hover { background: var(--ink); }
+    .btn-label { color: var(--on-brand); font-size: 13px; font-weight: 700; }
+
+    .row { display: flex; gap: 16px; }
+    .card {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        width: 100%;
+        max-width: 240px;
+        padding: var(--pad);
+        background: var(--surface);
+        border: 2px solid var(--border);
+        border-radius: var(--radius);
+    }
+    /* One variable overridden for this element and its children. */
+    .card.accent { --surface: var(--brand); --ink: var(--on-brand); --muted: var(--on-brand); }
+    .card-title { color: var(--ink); font-size: 16px; font-weight: 700; }
+    .card-body  { color: var(--muted); font-size: 13px; }
+
+    .field { display: flex; flex-direction: column; gap: 8px; width: 100%; max-width: 320px; }
+    .input {
+        height: 38px;
+        padding: 0 12px;
+        background: var(--surface);
+        border: 2px solid var(--border);
+        border-radius: var(--radius);
+        color: var(--ink);
+    }
+    .input:focus { border-color: var(--brand); }
+</style>
+
+<script>
+    let dark = signal(true);
+    let name = signal("");
+</script>

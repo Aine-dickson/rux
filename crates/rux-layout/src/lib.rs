@@ -406,6 +406,70 @@ pub struct TextContent {
     pub selection: Option<(usize, usize)>,
 }
 
+/// What an element *is*, for assistive technology. Deliberately a small enum
+/// owned by the layout rather than an `accesskit` type: the layout stays free of
+/// the platform a11y crate, and only the shell translates these.
+///
+/// Resolved during the build, where the tag, the `type=` and the `role=`
+/// attribute are all still in hand, deriving it later from painted output would
+/// be guesswork.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum AccessRole {
+    /// Not interesting to a screen reader on its own (a plain layout box).
+    #[default]
+    None,
+    /// Static text.
+    Label,
+    Heading,
+    Button,
+    CheckBox,
+    RadioButton,
+    TextInput,
+    /// `type="textarea"`.
+    MultilineTextInput,
+    /// `type="select"`.
+    ComboBox,
+    Image,
+    /// A box that scrolls its content.
+    ScrollView,
+    /// A meaningful grouping (an explicit `role=` we don't map more precisely).
+    Group,
+}
+
+impl AccessRole {
+    /// Does this element carry meaning worth exposing at all?
+    pub fn is_meaningful(self) -> bool {
+        self != Self::None
+    }
+}
+
+/// The accessibility facts about one node: what it is, what it's called, and what
+/// state it's in. Attached during the build and carried through layout so the
+/// shell can publish a tree with real geometry.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Access {
+    pub role: AccessRole,
+    /// The accessible *name*, what a screen reader announces. For a control this
+    /// is its label, not its value.
+    pub label: Option<String>,
+    /// An input's placeholder. Kept apart from `label` because it is only a
+    /// *fallback* name: a real label (authored `label=`, or a `<text for="…">`)
+    /// must win, and labels are linked after the build, so baking the placeholder
+    /// into `label` would let a hint outrank the actual label.
+    pub placeholder: Option<String>,
+    /// Current value, for inputs and selects.
+    pub value: Option<String>,
+    /// Checked state, for checkboxes and radios.
+    pub checked: Option<bool>,
+}
+
+impl Access {
+    /// What to announce as this element's name: its label, else its placeholder.
+    pub fn name(&self) -> Option<&str> {
+        self.label.as_deref().or(self.placeholder.as_deref())
+    }
+}
+
 /// A node in the view tree: a style, optional text, children, and an optional
 /// `@tap` handler (raw handler source, run by the shell on tap).
 #[derive(Clone, Debug)]
@@ -438,6 +502,13 @@ pub struct Node {
     /// The layout emits a `FocusRegion` here so tapping the label focuses that input
     /// (the caret lands in the input itself, matched by model).
     pub focus_model: Option<String>,
+    /// This node's tree path, set only when some `:hover`/`:active` rule could
+    /// match it. The layout emits a [`StateRegion`] for such nodes so the shell can
+    /// tell what the pointer is over and hand the path back as interaction state.
+    /// `None`: the common case, costs nothing.
+    pub state_path: Option<Vec<usize>>,
+    /// What this element is, for assistive technology.
+    pub access: Access,
 }
 
 impl Node {
@@ -456,6 +527,8 @@ impl Node {
             id: None,
             label_for: None,
             focus_model: None,
+            state_path: None,
+            access: Access::default(),
         }
     }
 
@@ -474,6 +547,8 @@ impl Node {
             id: None,
             label_for: None,
             focus_model: None,
+            state_path: None,
+            access: Access::default(),
         }
     }
 
@@ -492,6 +567,8 @@ impl Node {
             id: None,
             label_for: None,
             focus_model: None,
+            state_path: None,
+            access: Access::default(),
         }
     }
 
@@ -697,6 +774,46 @@ impl SelectRegion {
     }
 }
 
+/// An absolutely-positioned box whose styling depends on pointer state
+/// (`:hover` / `:active`), carrying the tree path that identifies it to the
+/// builder. Emitted only for nodes some pointer-state rule could match, so a
+/// document with no such rules produces none.
+#[derive(Clone, Debug)]
+pub struct StateRegion {
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+    /// The node's child-index path from the root, the same identity the binding
+    /// registry uses.
+    pub path: Vec<usize>,
+}
+
+impl StateRegion {
+    pub fn contains(&self, px: f32, py: f32) -> bool {
+        px >= self.x && px <= self.x + self.width && py >= self.y && py <= self.y + self.height
+    }
+}
+
+/// One element exposed to assistive technology, with the geometry it ended up
+/// occupying. Emitted in document order, and only for nodes whose role is
+/// meaningful, a plain layout box contributes nothing.
+///
+/// Flat rather than nested: the shell publishes these as children of the window,
+/// which is enough for a screen reader to enumerate and hit-test the UI. Nesting
+/// (landmarks, grouping) can layer on later without changing what is collected.
+#[derive(Clone, Debug)]
+pub struct AccessNode {
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+    pub access: Access,
+    /// `r-model`, when this element is an input, lets the shell match it against
+    /// the focused model and report focus to the platform.
+    pub model: Option<String>,
+}
+
 /// One keyboard-focusable element, in document (Tab) order. Carries the geometry
 /// (for the focus ring) plus how the shell should act on it.
 #[derive(Clone, Debug)]
@@ -735,6 +852,10 @@ pub struct Layout {
     /// Keyboard-focusable elements in document (Tab) order.
     pub focusables: Vec<FocusItem>,
     pub scrolls: Vec<ScrollRegion>,
+    /// Boxes with `:hover`/`:active` styling, in painter's order (topmost last).
+    pub states: Vec<StateRegion>,
+    /// Elements exposed to assistive technology, in document order.
+    pub access: Vec<AccessNode>,
 }
 
 /// Callback that measures a text block:
@@ -1018,6 +1139,8 @@ fn build(
     opacities: &mut Vec<(NodeId, f32)>,
     scrolls: &mut Vec<NodeId>,
     transforms: &mut Vec<(NodeId, Transform)>,
+    states: &mut Vec<(NodeId, Vec<usize>)>,
+    access: &mut Vec<(NodeId, Access, Option<String>)>,
     vp: (f32, f32),
 ) -> NodeId {
     let id = if let Some(tc) = &node.text {
@@ -1073,7 +1196,7 @@ fn build(
         let children: Vec<NodeId> = node
             .children
             .iter()
-            .map(|c| build(tree, c, paint, handlers, models, focus_labels, hidden, opacities, scrolls, transforms, vp))
+            .map(|c| build(tree, c, paint, handlers, models, focus_labels, hidden, opacities, scrolls, transforms, states, access, vp))
             .collect();
         let id = if children.is_empty() {
             tree.new_leaf(to_taffy(&node.style, vp)).expect("taffy leaf")
@@ -1121,6 +1244,12 @@ fn build(
     if node.style.overflow == Overflow::Scroll {
         scrolls.push(id);
     }
+    if let Some(path) = &node.state_path {
+        states.push((id, path.clone()));
+    }
+    if node.access.role.is_meaningful() {
+        access.push((id, node.access.clone(), node.model.clone()));
+    }
     id
 }
 
@@ -1138,6 +1267,8 @@ fn collect(
     opacities: &[(NodeId, f32)],
     scrolls: &[NodeId],
     transforms: &[(NodeId, Transform)],
+    states: &[(NodeId, Vec<usize>)],
+    access: &[(NodeId, Access, Option<String>)],
     offsets: &[Offset],
     vp: (f32, f32),
     out: &mut Layout,
@@ -1257,6 +1388,32 @@ fn collect(
             text: None,
             multiline: false,
             scroll_id: None,
+        });
+    }
+
+    // Assistive technology needs the same geometry the pointer uses, so this rides
+    // the same walk. `hidden` nodes returned above, so an `r-show="false"` element
+    // is absent from the a11y tree too, not merely invisible.
+    if let Some((_, node_access, model)) = access.iter().find(|(nid, ..)| *nid == id) {
+        out.access.push(AccessNode {
+            x,
+            y,
+            width: layout.size.width,
+            height: layout.size.height,
+            access: node_access.clone(),
+            model: model.clone(),
+        });
+    }
+
+    // Emitted for any box a `:hover`/`:active` rule could style, tappable or not,
+    // unlike `cursor`, pointer-state styling is not limited to `@tap` boxes.
+    if let Some((_, path)) = states.iter().find(|(nid, _)| *nid == id) {
+        out.states.push(StateRegion {
+            x,
+            y,
+            width: layout.size.width,
+            height: layout.size.height,
+            path: path.clone(),
         });
     }
 
@@ -1390,6 +1547,8 @@ fn collect(
             opacities,
             scrolls,
             transforms,
+            states,
+            access,
             offsets,
             vp,
             out,
@@ -1448,6 +1607,8 @@ pub fn layout_scrolled(
     let mut opacities = Vec::new();
     let mut scrolls = Vec::new();
     let mut transforms = Vec::new();
+    let mut states = Vec::new();
+    let mut access = Vec::new();
     let vp = (avail_w, avail_h);
     let root_id = build(
         &mut tree,
@@ -1460,6 +1621,8 @@ pub fn layout_scrolled(
         &mut opacities,
         &mut scrolls,
         &mut transforms,
+        &mut states,
+        &mut access,
         vp,
     );
 
@@ -1507,7 +1670,7 @@ pub fn layout_scrolled(
     let mut out = Layout::default();
     collect(
         &tree, root_id, 0.0, 0.0, &paint, &handlers, &models, &focus_labels, &hidden, &opacities,
-        &scrolls, &transforms, offsets, vp, &mut out,
+        &scrolls, &transforms, &states, &access, offsets, vp, &mut out,
     );
     out
 }

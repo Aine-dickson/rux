@@ -4,26 +4,26 @@
         <text class="hint">Tab / Shift+Tab to move focus · Space/Enter to toggle · type in the fields</text>
 
         <view class="field">
-            <text class="label">Fruit</text>
-            <input class="select" type="select" r-model="fruit" :options="fruits" />
+            <text class="label" for="fruit">Fruit</text>
+            <input id="fruit" class="select" type="select" r-model="fruit" :options="fruits" />
             <text class="echo">chosen: {{ fruit }}</text>
         </view>
 
         <view class="field">
-            <text class="label">Notes (Enter for a new line)</text>
-            <input class="area" type="textarea" r-model="notes" placeholder="Type a few lines…" />
+            <text class="label" for="notes">Notes (Enter for a new line)</text>
+            <input id="notes" class="area" type="textarea" r-model="notes" placeholder="Type a few lines…" />
         </view>
 
         <view class="row">
-            <input class="check" type="checkbox" r-model="agree" />
-            <text class="label">I agree {{ agree }}</text>
+            <input id="agree" class="check" type="checkbox" r-model="agree" />
+            <text class="label" for="agree">I agree {{ agree }}</text>
         </view>
 
         <view class="row">
-            <input class="radio" type="radio" r-model="plan" value="free" />
-            <text class="label">Free</text>
-            <input class="radio" type="radio" r-model="plan" value="pro" />
-            <text class="label">Pro: {{ plan }}</text>
+            <input id="plan-free" class="radio" type="radio" r-model="plan" value="free" />
+            <text class="label" for="plan-free">Free</text>
+            <input id="plan-pro" class="radio" type="radio" r-model="plan" value="pro" />
+            <text class="label" for="plan-pro">Pro: {{ plan }}</text>
         </view>
     </screen>
 </template>
@@ -72,7 +72,7 @@
         flex-shrink: 0;
     }
     .radio { border-radius: 9999px; }
-    .check.checked, .radio.checked { background: #89b4fa; border-color: #89b4fa; color: #11111b; }
+    .check:checked, .radio:checked { background: #89b4fa; border-color: #89b4fa; color: #11111b; }
 </style>
 
 <script>

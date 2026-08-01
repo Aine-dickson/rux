@@ -114,11 +114,57 @@ pub struct Engine {
     signals: HashSet<String>,
 }
 
+// ── Warning collection ──────────────────────────────────────────────────────
+
+thread_local! {
+    /// Expression failures raised since the last drain. Mirrors the sink in
+    /// `rux-style`: the runtime drains both after a build so the dev overlay can
+    /// list everything wrong with the document, not just what reached stderr.
+    static WARNINGS: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+}
+
+fn warn(message: String) {
+    WARNINGS.with(|w| {
+        let mut w = w.borrow_mut();
+        // A binding is re-evaluated on every build, and an `r-for` evaluates the
+        // same expression once per row, so the same failure arrives many times.
+        if !w.iter().any(|existing| *existing == message) {
+            eprintln!("rux: {message}");
+            w.push(message);
+        }
+    });
+}
+
+/// Take the expression failures raised since the last call, emptying the sink.
+pub fn take_warnings() -> Vec<String> {
+    WARNINGS.with(|w| std::mem::take(&mut *w.borrow_mut()))
+}
+
+/// Collapse an expression to one short line for a message, a handler can be a
+/// multi-line block, and the overlay has one line to spend on it.
+fn trim_expr(src: &str) -> String {
+    let flat: String = src.split_whitespace().collect::<Vec<_>>().join(" ");
+    if flat.chars().count() > 60 {
+        format!("{}…", flat.chars().take(60).collect::<String>())
+    } else {
+        flat
+    }
+}
+
 impl Engine {
     /// Evaluate `src` (an expression or statements) with `locals` temporarily in
     /// scope. Script functions are available. Returns the resulting value.
     fn eval(&mut self, src: &str, locals: &[(String, Value)]) -> Option<Dynamic> {
-        let ast = self.engine.compile(src).ok()?;
+        let ast = match self.engine.compile(src) {
+            Ok(ast) => ast,
+            Err(e) => {
+                // A `{{ }}` or `@tap` that doesn't compile used to evaluate to
+                // nothing, silently, the same failure mode as ignored CSS. Record
+                // it so the dev overlay can say what's wrong.
+                warn(format!("expression `{}` failed to compile: {e}", trim_expr(src)));
+                return None;
+            }
+        };
         let merged = self.funcs.merge(&ast);
 
         let base = self.scope.len();
@@ -127,7 +173,13 @@ impl Engine {
         }
         let result = self.engine.eval_ast_with_scope::<Dynamic>(&mut self.scope, &merged);
         self.scope.rewind(base); // drop the temporary locals
-        result.ok()
+        match result {
+            Ok(value) => Some(value),
+            Err(e) => {
+                warn(format!("expression `{}` failed: {e}", trim_expr(src)));
+                None
+            }
+        }
     }
 
     /// Evaluate an expression to a [`Value`].
@@ -270,6 +322,42 @@ fn from_dynamic(d: &Dynamic) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A failing expression is *reported*, not just swallowed, it used to
+    /// evaluate to an empty string with nothing said anywhere.
+    #[test]
+    fn a_failing_expression_is_reported() {
+        let mut e = engine();
+        let _ = take_warnings(); // start from a clean sink
+
+        assert_eq!(e.eval_display("nope(1)", &[]), "", "still degrades to empty");
+        let warnings = take_warnings();
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].contains("nope(1)"), "names the expression: {warnings:?}");
+
+        assert!(take_warnings().is_empty(), "draining empties the sink");
+    }
+
+    /// The same failing binding is re-evaluated on every build (and once per row
+    /// in an `r-for`), so the sink must not grow a duplicate each time.
+    #[test]
+    fn repeated_failures_are_reported_once() {
+        let mut e = engine();
+        let _ = take_warnings();
+        for _ in 0..5 {
+            let _ = e.eval_display("nope(1)", &[]);
+        }
+        assert_eq!(take_warnings().len(), 1);
+    }
+
+    /// A working expression reports nothing.
+    #[test]
+    fn a_good_expression_is_silent() {
+        let mut e = engine();
+        let _ = take_warnings();
+        assert_eq!(e.eval_display("double(4)", &[]), "8");
+        assert!(take_warnings().is_empty());
+    }
 
     fn engine() -> Engine {
         let mut b = Builder::new();

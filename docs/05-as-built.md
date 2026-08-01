@@ -103,6 +103,53 @@ cursor (pointer, on @tap boxes only)
 **Selectors:** tag, `.class`, `#id`, `[role="…"]`, compounds, and all four
 combinators: descendant (`.a .b`), child (`.a > .b`), next-sibling (`.a + .b`),
 subsequent-sibling (`.a ~ .b`).
+
+**Pseudo-classes:** `:hover`, `:focus`, `:active`, `:checked`. They stack
+(`.btn:hover:active`), count as class-level specificity, and work anywhere in a
+chain, `.card:hover .title` recolours the title while the pointer is over the
+card. `:hover`/`:active` hold for the whole chain under the pointer, as in CSS;
+`:active` is press-to-release and drops if you drag off the element; `:focus`
+matches the input holding the caret. Driven in `examples/pseudo.rux`.
+
+Any *other* pseudo-class (`:disabled`, `:nth-child(…)`, `::selection`) **never
+matches**, and says so once on stderr. Before this existed the `:` was silently
+dropped, so `.box:hover` parsed as `.box` and applied *unconditionally*, failing
+closed is the safer half of that trade.
+
+**Custom properties + `var()`:** `--name: value` declarations **inherit** down the
+tree (like `color`), so a palette declared once is readable anywhere below:
+```css
+.app        { --brand: #89b4fa; --radius: 10px; }
+.btn        { background: var(--brand); border-radius: var(--radius); }
+.app.light  { --brand: #1e66f5; }   /* same sheet, different values */
+```
+Substitution happens after the cascade *and* inline styles merge, so `var()` works
+in every property, in `style=` and in `:style`. Supported: fallbacks
+(`var(--x, 12px)`, including fallbacks with their own parens), variables defined
+in terms of other variables, and overriding a variable on any element to retheme
+its subtree. A cycle terminates rather than hanging.
+
+An **undefined** variable with no fallback makes the declaration invalid, so it is
+dropped (as in CSS) and warned about once. Driven in `examples/theme.rux`, which
+swaps a whole palette with one `:class`.
+
+**`@media` queries:** evaluated against the window's **logical** size.
+```css
+@media (max-width: 600px) { .row { flex-direction: column; } }
+@media screen and (min-width: 400px) and (max-width: 600px) { … }
+@media (max-width: 400px), (min-width: 1000px) { … }   /* alternatives */
+@media (orientation: portrait) { … }
+```
+Supported features: `min-`/`max-width`, `min-`/`max-height`, `orientation`, the
+`screen`/`all` types, `and` chains and comma alternatives. A block adds **no
+specificity**: rules inside it cascade by ordinary source order, so a later
+`@media` rule beats an earlier plain one, and `#id` still beats a `.class` in a
+media block. Anything else (`min-resolution`, `not …`, `(hover)`) warns once and
+never applies.
+
+Resizing re-cascades **only when a query changes answer**: dragging a window
+edge within a breakpoint costs nothing, and a document with no `@media` never
+re-cascades at all. Driven in `examples/responsive.rux`.
 `flex: 1` means `1 1 0%` (CSS's shorthand defaults), not `1 1 auto`.
 `opacity` fades the node **and its subtree** as one layer.
 `background`/`border` work on `<text>` nodes, not just containers.
@@ -172,12 +219,14 @@ radios are now keyboard-reachable, not tap-only.
 no keyboard. They write the bound signal through the ordinary handler path
 (`flag = !flag`, `choice = "pro"`), so an authored `@tap` overrides them.
 
-A checked box carries a synthetic **`checked` class**, so its checked look is
-ordinary CSS. There is no `:checked` pseudo-class:
+A ticked box matches **`:checked`**:
 ```css
-.box         { background: #313244; border: 2px #45475a solid; color: #cdd6f4; }
-.box.checked { background: #a6e3a1; color: #ffffff; }   /* white tick on green */
+.box          { background: #313244; border: 2px #45475a solid; color: #cdd6f4; }
+.box:checked  { background: #a6e3a1; color: #ffffff; }   /* white tick on green */
 ```
+It *also* still carries the synthetic **`checked` class** that predated the
+pseudo-class, so stylesheets written against `.box.checked` keep working. That is
+deprecated and goes away in a later release, write `:checked`.
 The mark is drawn in the box's own `color`: a **stroked checkmark** for a checkbox
 (a path, not a ✓ glyph, since a glyph is whatever the system font ships and reads as a
 letter), a dot for a radio. Keep the checked `border` a shade apart from the
@@ -263,6 +312,74 @@ scrollbar hover/fade states, no `scrollbar-width`/`scrollbar-color`, no
 ```
 Component instances are isolated (only props are visible inside). Their CSS styles
 their own subtree. Editing a component hot-reloads.
+
+### Accessibility
+
+Rux publishes a real accessibility tree through **accesskit**, so a screen reader
+(Narrator/UI Automation on Windows, AT-SPI on Linux, NSAccessibility on macOS)
+can enumerate and describe the UI. Roles are resolved during the build, where the
+tag and `type=` are still known:
+
+| Markup | Role |
+|---|---|
+| `<text>` | Label (`role="heading"` → Heading) |
+| `<view @tap>` / `<button>` | Button, **named by the text inside it** |
+| `<input>` | TextInput · `type="textarea"` → MultilineTextInput · `type="select"` → ComboBox |
+| `<input type="checkbox">` / `="radio"` | CheckBox / RadioButton, with live **checked** state |
+| `<image alt="…">` | Image |
+| a scrolling box | ScrollView |
+| `role="…"` on anything | that role, overriding the implicit one |
+
+**The accessible name** comes from, in order: an authored `label="…"` (or `alt=`
+on an image), then a `<text for="…">` pointing at the element's `id`, then, for
+inputs only, the `placeholder` as a last resort. A hint never outranks a real
+label. Controls also expose their **value**, and the platform's focus follows the
+focused input.
+
+```xml
+<text for="email">Email address</text>
+<input id="email" r-model="email" placeholder="you@example.com" />
+<!-- announces as: "Email address, edit" -->
+```
+
+Plain layout boxes are **not** exposed, a tree full of anonymous groups is worse
+than a short one. `r-show="false"` elements are absent from the tree, not merely
+invisible. The whole tree is rebuilt per frame but only published while assistive
+technology is actually attached, so it costs nothing otherwise.
+
+**Not done:** accesskit *action requests* (a screen reader asking to click or
+focus an element) are received but not yet dispatched into the app; there is no
+nesting/landmark structure (the tree is flat under the window); and live-region
+announcements are unimplemented.
+
+### Errors & the dev overlay
+
+Mistakes are shown **in the window**, not only on a stderr nobody running a GUI
+app is watching.
+
+- **A file that won't load** opens the window with a red panel naming the file and
+  the failure. Parse errors carry a **line and column**, numbered against the whole
+  `.rux` file (not the `<template>` section), so they line up with the editor
+  gutter: `parse error at line 6, column 16: mismatched closing tag: expected
+  </view>, found </vieww>`.
+- **A hot-reload that fails keeps the last good UI on screen** and says so
+  (*"showing the last version that loaded"*), so a typo mid-edit neither blanks
+  the window nor passes unnoticed. Fixing the file clears the overlay; the window
+  keeps its size and pointer state across the reload.
+- **A document that builds but has dead CSS** gets a quieter amber panel listing
+  what does nothing: unhonored properties, unknown pseudo-classes, undefined
+  `var()`s, unsupported `@media` conditions, and **expressions that failed**, `expression \`dubble(n)\` failed: Function not found: dubble`. Long lists are
+  capped at six with a count of the rest; everything still goes to stderr.
+
+Every shipped example is checked to load **warning-free**, so a noisy overlay in
+`examples/` is a test failure.
+
+**Known limits:** rhai returns `()` for a missing *map property*, rather than
+erroring, so `{{ user.nmae }}` still renders empty with nothing reported (a
+missing *function* or variable does report). That one is rhai's semantics, not
+ours, it is tracked as a motivator for the planned rhai fork in
+[Roadmap](./06-roadmap.md) (Further out → *Script documentation*). CSS
+warnings also carry no line numbers yet, and the overlay can't be dismissed.
 
 ---
 

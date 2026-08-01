@@ -49,7 +49,7 @@ You write a single `.rux` file with familiar `<template>` / `<style>` / `<script
 </p>
 
 <p align="center">
-  <strong><a href="https://ruxlang.dev">rux website</a></strong>
+  <strong><a href="https://ruxlang.dev">ruxlang.dev</a></strong>
   · <a href="https://ruxlang.dev/why/">why Rux?</a>
   · <a href="https://ruxlang.dev/blog/">release blog</a>
 </p>
@@ -58,7 +58,15 @@ You write a single `.rux` file with familiar `<template>` / `<style>` / `<script
 
 ```bash
 # from a clone of this repo
-cargo run -p rux-cli -- examples/form.rux
+cargo run -p ruxlang -- examples/form.rux
+```
+
+Or install the `rux` command without cloning. Rux isn't on crates.io yet, so
+install straight from the repo:
+
+```bash
+cargo install --git https://github.com/Aine-dickson/rux ruxlang
+rux examples/form.rux
 ```
 
 The examples (`form`, `list`, `gallery`, `dashboard`, `battery`) cover inputs, scrolling, images, a responsive grid, and a fixed-width card. Edit any of them with the window open and it hot-reloads.

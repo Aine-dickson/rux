@@ -13,6 +13,9 @@ use rux_layout::Node as LayoutNode;
 use rux_parser::Sfc;
 use rux_script::{Builder, Engine};
 use rux_style::BindingRegistry;
+/// Re-exported so the shell can hand pointer/focus state and the window size in
+/// without depending on `rux-style` directly.
+pub use rux_style::{InteractionState, Viewport};
 
 /// A loaded `.rux` document: parsed source, imported components (by tag), the
 /// script engine, and the current tree.
@@ -29,7 +32,40 @@ pub struct Document {
     /// refreshed on every full build. Lets [`Document::patch`] update value
     /// bindings in place instead of throwing the tree away.
     registry: BindingRegistry,
+    /// What the pointer is over / pressing, and which input has focus, the state
+    /// `:hover`, `:active` and `:focus` match against. Owned here so every build
+    /// (rebuild, reconcile, hot-reload) reproduces the same styling.
+    state: InteractionState,
+    /// The window size `@media` queries are evaluated against.
+    viewport: Viewport,
+    /// What is currently wrong with this document, for the dev overlay.
+    diagnostics: Diagnostics,
     pub root: LayoutNode,
+}
+
+/// What is wrong with the document right now, the model behind the dev overlay.
+///
+/// An **error** means the file could not be loaded at all: there is no tree to
+/// show, so the window would otherwise be blank (or, on hot-reload, silently
+/// stale). A **warning** means the document built, but something in it does
+/// nothing, an unhonored property, an unknown pseudo-class, an undefined
+/// `var()`, an unsupported `@media`.
+///
+/// Both used to go only to stderr, which nobody running a GUI app is watching.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Diagnostics {
+    /// The load/parse failure, if the document is currently broken.
+    pub error: Option<String>,
+    /// Whether the tree on screen predates that error (a failed hot-reload keeps
+    /// the last good UI rather than blanking the window).
+    pub stale: bool,
+    pub warnings: Vec<String>,
+}
+
+impl Diagnostics {
+    pub fn is_empty(&self) -> bool {
+        self.error.is_none() && self.warnings.is_empty()
+    }
 }
 
 /// Which input has keyboard focus, and where its caret and selection are.
@@ -84,6 +120,32 @@ fn apply_focus(node: &mut LayoutNode, focus: Option<&Focus>) {
     for child in &mut node.children {
         apply_focus(child, focus);
     }
+}
+
+/// The deepest node whose subtree covers both paths, where the old and new
+/// pointer targets diverge. Re-cascading from here restyles every element that
+/// gained or lost the state and nothing else, because `:hover`/`:active` hold for
+/// the whole chain from the root down to the pointer, and the two chains are
+/// identical above the divergence.
+///
+/// When one side is `None` the pointer entered from (or left to) nothing, and the
+/// entire chain changed state, including ancestors, so the splice starts at the
+/// root. That is a full re-cascade, but only on entering/leaving all interactive
+/// boxes, and only in documents that use pointer-state rules at all.
+fn divergence(a: Option<&[usize]>, b: Option<&[usize]>) -> Vec<usize> {
+    match (a, b) {
+        (Some(a), Some(b)) => a.iter().zip(b).take_while(|(x, y)| x == y).map(|(x, _)| *x).collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// Drain both warning sinks, the cascade's (unhonored properties, unknown
+/// pseudo-classes, undefined `var()`s, unsupported `@media`) and the script's
+/// (expressions that failed to compile or evaluate).
+fn collect_warnings() -> Vec<String> {
+    let mut warnings = rux_style::take_warnings();
+    warnings.extend(rux_script::take_warnings());
+    warnings
 }
 
 /// Resolve every `<image src>` in the tree against `base` and read its intrinsic
@@ -147,6 +209,13 @@ impl Document {
             base: base.to_path_buf(),
             focus: None,
             registry,
+            state: InteractionState::default(),
+            viewport: Viewport::default(),
+            // Whatever the build just complained about, ready for the overlay.
+            diagnostics: Diagnostics {
+                warnings: collect_warnings(),
+                ..Diagnostics::default()
+            },
             root,
         })
     }
@@ -166,6 +235,12 @@ impl Document {
             base,
             focus: None,
             registry,
+            state: InteractionState::default(),
+            viewport: Viewport::default(),
+            diagnostics: Diagnostics {
+                warnings: collect_warnings(),
+                ..Diagnostics::default()
+            },
             root,
         })
     }
@@ -175,21 +250,155 @@ impl Document {
         &mut self.engine
     }
 
+    /// What is currently wrong with this document, for the dev overlay.
+    pub fn diagnostics(&self) -> &Diagnostics {
+        &self.diagnostics
+    }
+
+    /// Record that a re-load failed. The tree on screen stays as it was, so the
+    /// app keeps working while the file is broken; the overlay says so, and marks
+    /// what you're looking at as stale.
+    pub fn set_load_error(&mut self, error: impl Into<String>) {
+        self.diagnostics.error = Some(error.into());
+        self.diagnostics.stale = true;
+    }
+
+    /// Mark the visible tree as *not* a leftover from before the error, used when
+    /// the very first load failed, so there is no earlier version being shown.
+    pub fn clear_stale(&mut self) {
+        self.diagnostics.stale = false;
+    }
+
+    /// Adopt a freshly loaded document's tree and state, keeping this one's
+    /// identity. Used by hot-reload so a successful load clears the error.
+    pub fn replace_with(&mut self, mut fresh: Document) {
+        // A reload rebuilds from scratch, so focus is legitimately reset, but the
+        // viewport and pointer state belong to the window, not the file.
+        fresh.viewport = self.viewport;
+        fresh.state = self.state.clone();
+        fresh.rebuild();
+        *self = fresh;
+    }
+
     /// Focus an input (by `r-model`), with its caret and selection. `None` clears.
     pub fn set_focus(&mut self, focus: Option<Focus>) {
         self.focus = focus;
         apply_focus(&mut self.root, self.focus.as_ref());
     }
 
+    /// The pointer/focus state pseudo-class selectors match against.
+    pub fn interaction(&self) -> &InteractionState {
+        &self.state
+    }
+
+    /// Update the interaction state (`:hover` / `:active` / `:focus`) and restyle
+    /// what it affects. Returns whether anything was restyled, so the shell knows
+    /// whether to repaint, `false` for the overwhelmingly common case of the
+    /// pointer moving within the same element.
+    ///
+    /// Only the affected subtree is spliced, not the whole tree: hover moving
+    /// between two siblings re-cascades their common parent's subtree, so a caret
+    /// or selection anywhere else survives by node identity, the same reconcile
+    /// discipline signal changes use.
+    pub fn set_interaction(&mut self, next: InteractionState) -> bool {
+        if next == self.state {
+            return false;
+        }
+        // A focus move can restyle anything (`:focus` is matched by model, not by
+        // path, and `.field:focus .hint` reaches elsewhere), so it re-cascades from
+        // the root. It is rare, one click or Tab, and the caret is being moved
+        // anyway, so there is no ephemeral state left to preserve.
+        let mut roots: Vec<Vec<usize>> = Vec::new();
+        if next.focused_model == self.state.focused_model {
+            roots.push(divergence(self.state.hovered.as_deref(), next.hovered.as_deref()));
+            roots.push(divergence(self.state.active.as_deref(), next.active.as_deref()));
+        } else {
+            roots.push(Vec::new());
+        }
+        self.state = next;
+        self.restyle(&roots);
+        true
+    }
+
+    /// Tell the document the window size, for `@media`. Returns whether any query
+    /// changed answer, i.e. whether the rule set moved and the tree had to be
+    /// re-cascaded.
+    ///
+    /// A resize fires continuously, and almost every one crosses no breakpoint, so
+    /// the common case must be free: the media conditions are evaluated at the old
+    /// and new size and compared, and the tree is only rebuilt when that vector
+    /// actually differs. A document with no `@media` at all compares two empty
+    /// vectors and never rebuilds.
+    pub fn set_viewport(&mut self, viewport: Viewport) -> bool {
+        if viewport == self.viewport {
+            return false;
+        }
+        let before = self.media_state(self.viewport);
+        let after = self.media_state(viewport);
+        self.viewport = viewport;
+        if before == after {
+            return false;
+        }
+        // A breakpoint was crossed: re-cascade everything. Focus is re-applied by
+        // `rebuild`, and scroll offsets live in the shell, so nothing is lost.
+        self.rebuild();
+        true
+    }
+
+    /// Whether each `@media` block, in the document and in every component,
+    /// applies at `viewport`.
+    fn media_state(&self, viewport: Viewport) -> Vec<bool> {
+        let mut out = rux_style::media_matches(&self.sfc.style, viewport);
+        // Components are keyed by tag in a HashMap, so sort for a stable order.
+        let mut tags: Vec<&String> = self.components.keys().collect();
+        tags.sort();
+        for tag in tags {
+            out.extend(rux_style::media_matches(&self.components[tag].style, viewport));
+        }
+        out
+    }
+
+    /// Rebuild the given subtrees against the current interaction state and splice
+    /// them into the live tree, re-applying focus scoped to each.
+    fn restyle(&mut self, roots: &[Vec<usize>]) {
+        let Ok((mut fresh_root, fresh_reg)) = rux_style::build_styled_tree_stateful(
+            &self.sfc,
+            &self.components,
+            &mut self.engine,
+            &self.state,
+            self.viewport,
+        ) else {
+            return;
+        };
+        resolve_images(&mut fresh_root, &self.base);
+        for path in roots {
+            let Some(fresh) = node_at(&fresh_root, path) else { continue };
+            let fresh_node = fresh.clone();
+            if let Some(live) = node_at_mut(&mut self.root, path) {
+                *live = fresh_node;
+                apply_focus(live, self.focus.as_ref());
+            }
+        }
+        self.registry = fresh_reg;
+    }
+
     /// Rebuild the layout tree from the engine's current state.
     pub fn rebuild(&mut self) {
-        if let Ok((mut root, registry)) =
-            rux_style::build_styled_tree_tracked(&self.sfc, &self.components, &mut self.engine)
-        {
+        if let Ok((mut root, registry)) = rux_style::build_styled_tree_stateful(
+            &self.sfc,
+            &self.components,
+            &mut self.engine,
+            &self.state,
+            self.viewport,
+        ) {
             resolve_images(&mut root, &self.base);
             apply_focus(&mut root, self.focus.as_ref());
             self.registry = registry;
             self.root = root;
+            // Refresh what the overlay lists: a rebuild re-runs the cascade and
+            // every binding, so it re-raises exactly what this document still has
+            // wrong.
+            self.diagnostics.warnings = collect_warnings();
         }
     }
 
@@ -331,9 +540,13 @@ impl Document {
             }
         }
 
-        let Ok((mut fresh_root, fresh_reg)) =
-            rux_style::build_styled_tree_tracked(&self.sfc, &self.components, &mut self.engine)
-        else {
+        let Ok((mut fresh_root, fresh_reg)) = rux_style::build_styled_tree_stateful(
+            &self.sfc,
+            &self.components,
+            &mut self.engine,
+            &self.state,
+            self.viewport,
+        ) else {
             return;
         };
         resolve_images(&mut fresh_root, &self.base);
@@ -795,6 +1008,280 @@ mod tests {
         assert_eq!(caret_of(&doc.root, "name"), Some(1));
     }
 
+    // ── Pointer state (`:hover` / `:active`) ────────────────────────────────
+
+    // ── Diagnostics / dev overlay ───────────────────────────────────────────
+
+    /// A document that builds but whose CSS partly does nothing reports it,
+    /// instead of the silence that made unknown CSS the worst failure mode here.
+    #[test]
+    fn warnings_are_collected_for_the_overlay() {
+        let doc = Document::from_source(
+            "<template><screen><view class=\"card\" /></screen></template>
+             <style>.card { filter: blur(2px); background: var(--nope); }</style>",
+        )
+        .expect("load");
+        let warnings = &doc.diagnostics().warnings;
+        assert!(
+            warnings.iter().any(|w| w.contains("filter")),
+            "unhonored property reported: {warnings:?}"
+        );
+        assert!(
+            warnings.iter().any(|w| w.contains("--nope")),
+            "undefined var reported: {warnings:?}"
+        );
+        assert!(doc.diagnostics().error.is_none(), "the document still built");
+    }
+
+    /// A clean document reports nothing, so the overlay stays out of the way.
+    #[test]
+    fn a_clean_document_has_no_diagnostics() {
+        let doc = Document::from_source(
+            "<template><screen><view class=\"card\" /></screen></template>
+             <style>.card { background: #313244; }</style>",
+        )
+        .expect("load");
+        assert!(doc.diagnostics().is_empty(), "{:?}", doc.diagnostics());
+    }
+
+    /// A failed reload keeps the tree that is on screen and marks it stale,
+    /// a typo mid-edit must not blank the window.
+    #[test]
+    fn a_failed_reload_keeps_the_last_good_tree() {
+        let mut doc = Document::from_source(
+            "<template><screen><text>hello</text></screen></template>",
+        )
+        .expect("load");
+        let before = doc.root.children.len();
+
+        doc.set_load_error("parse error at line 6, column 13: mismatched closing tag");
+        assert_eq!(doc.root.children.len(), before, "the tree is untouched");
+        assert!(doc.diagnostics().error.is_some());
+        assert!(doc.diagnostics().stale, "what's on screen predates the error");
+    }
+
+    /// Loading a good document over a broken one clears the error.
+    #[test]
+    fn a_successful_reload_clears_the_error() {
+        let mut doc = Document::from_source("<template><screen><text>old</text></screen></template>")
+            .expect("load");
+        doc.set_load_error("something was wrong");
+
+        let fresh = Document::from_source("<template><screen><text>new</text></screen></template>")
+            .expect("load");
+        doc.replace_with(fresh);
+        assert!(doc.diagnostics().error.is_none(), "error cleared");
+        assert!(!doc.diagnostics().stale);
+        assert_eq!(doc.root.children[0].text.as_ref().unwrap().text, "new");
+    }
+
+    /// The window owns the viewport, not the file, a reload must not reset it,
+    /// or a hot-reload in a narrow window would come back with desktop styling.
+    #[test]
+    fn a_reload_keeps_the_window_viewport() {
+        let mut doc = media_doc();
+        doc.set_viewport(Viewport { width: 480.0, height: 800.0 });
+        assert!(is_red(&doc.root.children[0]));
+
+        let fresh = Document::from_source(
+            "<template><screen><view class=\"card\" /></screen></template>
+             <style>
+               .card { background: #00ff00; }
+               @media (max-width: 600px) { .card { background: #ff0000; } }
+             </style>",
+        )
+        .expect("load");
+        doc.replace_with(fresh);
+        assert!(
+            is_red(&doc.root.children[0]),
+            "still narrow after the reload, so the @media rule still applies"
+        );
+    }
+
+    // ── @media / viewport ───────────────────────────────────────────────────
+
+    fn media_doc() -> Document {
+        Document::from_source(
+            "<template><screen><view class=\"card\" /></screen></template>
+             <style>
+               .card { background: #00ff00; }
+               @media (max-width: 600px) { .card { background: #ff0000; } }
+             </style>",
+        )
+        .expect("load")
+    }
+
+    fn is_red(n: &LayoutNode) -> bool {
+        matches!(&n.style.background, Some(rux_layout::Background::Color(c)) if c.r == 1.0 && c.g == 0.0)
+    }
+
+    /// Crossing a breakpoint re-cascades; crossing back restores.
+    #[test]
+    fn resize_across_a_breakpoint_restyles() {
+        let mut doc = media_doc();
+        assert!(!is_red(&doc.root.children[0]), "the default viewport is wide");
+
+        assert!(doc.set_viewport(Viewport { width: 480.0, height: 800.0 }), "breakpoint crossed");
+        assert!(is_red(&doc.root.children[0]), "narrow → the @media rule applies");
+
+        assert!(doc.set_viewport(Viewport { width: 1000.0, height: 800.0 }), "crossed back");
+        assert!(!is_red(&doc.root.children[0]), "wide again → the base rule");
+    }
+
+    /// The case that has to stay free: a resize crossing no breakpoint reports no
+    /// change, so dragging a window edge doesn't re-cascade on every pixel.
+    #[test]
+    fn resize_within_a_breakpoint_is_not_a_change() {
+        let mut doc = media_doc();
+        doc.set_viewport(Viewport { width: 400.0, height: 800.0 });
+        assert!(
+            !doc.set_viewport(Viewport { width: 500.0, height: 800.0 }),
+            "still under 600px, nothing to redo"
+        );
+        assert!(is_red(&doc.root.children[0]), "and the styling is still correct");
+    }
+
+    /// A document with no `@media` at all never re-cascades on resize.
+    #[test]
+    fn resize_does_nothing_without_media_queries() {
+        let mut doc = Document::from_source(
+            "<template><screen><view class=\"card\" /></screen></template>
+             <style>.card { background: #00ff00; }</style>",
+        )
+        .expect("load");
+        assert!(!doc.set_viewport(Viewport { width: 320.0, height: 480.0 }));
+        assert!(!doc.set_viewport(Viewport { width: 1600.0, height: 900.0 }));
+    }
+
+    /// Two sibling cards, only the second of which holds an input, plus a
+    /// `:hover` rule that repaints a card green.
+    fn hover_doc() -> Document {
+        Document::from_source(
+            "<template><screen>\
+               <view class=\"card\"><text>one</text></view>\
+               <view class=\"card\"><input r-model=\"name\" /></view>\
+             </screen></template>
+             <style>.card { background: #000000; } .card:hover { background: #00ff00; }</style>
+             <script>let name = signal(\"ab\");</script>",
+        )
+        .expect("load")
+    }
+
+    fn hovering(path: &[usize]) -> InteractionState {
+        InteractionState { hovered: Some(path.to_vec()), ..InteractionState::default() }
+    }
+
+    fn is_green(n: &LayoutNode) -> bool {
+        matches!(&n.style.background, Some(rux_layout::Background::Color(c)) if c.g == 1.0)
+    }
+
+    /// The hovered element restyles, its unhovered sibling does not, and leaving
+    /// puts it back, the negative case is the point.
+    #[test]
+    fn hover_restyles_only_the_hovered_element() {
+        let mut doc = hover_doc();
+        assert!(!is_green(&doc.root.children[0]), "nothing hovered → no green");
+
+        assert!(doc.set_interaction(hovering(&[0])), "entering a card restyles");
+        assert!(is_green(&doc.root.children[0]), "hovered card is green");
+        assert!(!is_green(&doc.root.children[1]), "its sibling is NOT");
+
+        assert!(doc.set_interaction(InteractionState::default()), "leaving restyles");
+        assert!(!is_green(&doc.root.children[0]), "hover ends → back to black");
+    }
+
+    /// The pointer moving *within* the same element is not a state change, so it
+    /// must not restyle anything, this is the every-mouse-move path.
+    #[test]
+    fn same_hover_target_is_not_a_change() {
+        let mut doc = hover_doc();
+        assert!(doc.set_interaction(hovering(&[0])));
+        assert!(
+            !doc.set_interaction(hovering(&[0])),
+            "re-reporting the same target does no work"
+        );
+    }
+
+    /// Hover moves between siblings while a caret sits in an input elsewhere: the
+    /// caret survives, because only the diverging subtree is spliced.
+    #[test]
+    fn hover_change_preserves_a_caret_elsewhere() {
+        let mut doc = hover_doc();
+        doc.set_focus(Some(Focus::at("name", 1)));
+        assert_eq!(caret_of(&doc.root, "name"), Some(1));
+
+        assert!(doc.set_interaction(hovering(&[0])));
+        assert_eq!(caret_of(&doc.root, "name"), Some(1), "caret survives a hover change");
+        assert!(is_green(&doc.root.children[0]));
+    }
+
+    /// Clearing the pointer state (the pointer left the window) un-styles what was
+    /// hovered or pressed. Found by driving it: leaving the window fires
+    /// `CursorLeft`, not a `CursorMoved`, so a hovered button stayed lit after the
+    /// pointer was gone. This is the "assert it is *cleared*" half of the rule.
+    #[test]
+    fn clearing_pointer_state_unstyles_the_hovered_element() {
+        let mut doc = hover_doc();
+        doc.set_interaction(InteractionState {
+            hovered: Some(vec![0]),
+            active: Some(vec![0]),
+            ..InteractionState::default()
+        });
+        assert!(is_green(&doc.root.children[0]));
+
+        assert!(doc.set_interaction(InteractionState::default()), "clearing restyles");
+        assert!(!is_green(&doc.root.children[0]), "nothing is hovered any more");
+    }
+
+    /// `:hover` holds for the whole chain under the pointer, as in CSS: hovering a
+    /// child leaves its ancestor hovered too.
+    #[test]
+    fn hover_applies_to_the_ancestor_chain() {
+        let mut doc = Document::from_source(
+            "<template><screen>\
+               <view class=\"card\"><view class=\"inner\"><text>x</text></view></view>\
+             </screen></template>
+             <style>\
+               .card { background: #000000; } .card:hover { background: #00ff00; }\
+               .inner:hover { background: #0000ff; }\
+             </style>",
+        )
+        .expect("load");
+        // Pointer over the inner box (path [0, 0]).
+        assert!(doc.set_interaction(hovering(&[0, 0])));
+        assert!(is_green(&doc.root.children[0]), "the ancestor card is hovered too");
+        let inner = &doc.root.children[0].children[0];
+        assert!(
+            matches!(&inner.style.background, Some(rux_layout::Background::Color(c)) if c.b == 1.0),
+            "the inner box is hovered"
+        );
+    }
+
+    /// A document with no pointer-state rules emits no state regions, so hover
+    /// costs nothing at all.
+    #[test]
+    fn no_pointer_rules_means_no_state_regions() {
+        let doc = Document::from_source(
+            "<template><screen><view class=\"card\"><text>x</text></view></screen></template>
+             <style>.card { background: #000000; }</style>",
+        )
+        .expect("load");
+        fn any_marked(n: &LayoutNode) -> bool {
+            n.state_path.is_some() || n.children.iter().any(any_marked)
+        }
+        assert!(!any_marked(&doc.root), "no :hover/:active rule → nothing to track");
+    }
+
+    /// The element a `:hover` rule could match carries a path, so the layout emits
+    /// a region the shell can hit-test.
+    #[test]
+    fn hoverable_elements_are_marked_for_the_shell() {
+        let doc = hover_doc();
+        assert_eq!(doc.root.children[0].state_path.as_deref(), Some(&[0][..]));
+        assert_eq!(doc.root.children[1].state_path.as_deref(), Some(&[1][..]));
+        assert!(doc.root.state_path.is_none(), "the screen has no :hover rule");
+    }
+
     /// `r-show` flips the node's `hidden` flag in place, no shape change, no
     /// rebuild, both ways.
     #[test]
@@ -1032,3 +1519,4 @@ mod tests {
         assert_eq!(boxes[2].children.len(), 0);
     }
 }
+
