@@ -46,6 +46,10 @@ jobs:
       WASM_BINDGEN_VERSION: "0.2.126"
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Tags are what the playground build is pinned to, and a
+          # shallow clone has none.
+          fetch-depth: 0
 
       # ── The playground bundle ──────────────────────────────────────────────
       # crates/rux-web compiled to wasm, emitted into site/static/wasm/ so Zola
@@ -70,13 +74,28 @@ jobs:
               "wasm-bindgen-${WASM_BINDGEN_VERSION}-x86_64-unknown-linux-musl/wasm-bindgen"
           wasm-bindgen --version
 
-      - name: Build the playground
+      # The playground runs the latest *released* runtime rather than the tip of
+      # main, so it demonstrates what /learn and /reference describe instead of
+      # unreleased work. The site itself is still built from main, so the page
+      # can be fixed without waiting for a release. That is also why the page
+      # imports the bundle as a namespace and feature-detects: it may be newer
+      # than the runtime it is driving.
+      - name: Build the playground from the latest release
         run: |
+          set -euo pipefail
+          TAG="$(git tag --list 'v*' --sort=-v:refname | head -n1)"
+          if [ -z "$TAG" ] || ! git cat-file -e "$TAG:crates/rux-web" 2>/dev/null; then
+            echo "No tag carries crates/rux-web; building from HEAD instead."
+            TAG=HEAD
+          fi
+          echo "Building the playground from $TAG"
+          git worktree add ../rux-release "$TAG"
+          cd ../rux-release
           cargo build -p rux-web --target wasm32-unknown-unknown --profile wasm-release
           wasm-bindgen --target web --no-typescript \
-            --out-dir site/static/wasm \
+            --out-dir "$GITHUB_WORKSPACE/site/static/wasm" \
             target/wasm32-unknown-unknown/wasm-release/rux_web.wasm
-          ls -lh site/static/wasm
+          ls -lh "$GITHUB_WORKSPACE/site/static/wasm"
 
       - name: Install Zola
         run: |

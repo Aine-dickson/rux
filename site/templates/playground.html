@@ -69,8 +69,18 @@
      The wasm URL has to be passed to `init` explicitly. Left to itself the glue
      resolves it with `new URL('rux_web_bg.wasm', import.meta.url)`, which drops
      the query and would cache-bust the loader while serving a stale runtime. #}
-  import init, { start, setSource, highlight, format, indentAfter, resize, version }
+  {# A namespace import, not named imports, because the runtime is pinned to the
+     latest *tag* while this page is built from main. A named import of an
+     export the pinned build predates is a hard module-load error, which would
+     take the whole playground down over a version badge. This way a missing
+     export is a missing feature, not a blank page. #}
+  import * as rux
     from "{{ get_url(path='wasm/rux_web.js') }}?v={{ get_hash(path='wasm/rux_web.js', sha_type=256, base64=false) | truncate(length=12, end='') }}";
+
+  const init = rux.default;
+  const { start, setSource, highlight, format, indentAfter, resize } = rux;
+  // Added after v0.4.0, so the pinned runtime may not have it.
+  const version = typeof rux.version === "function" ? rux.version : () => "";
 
   const WASM_URL =
     "{{ get_url(path='wasm/rux_web_bg.wasm') }}?v={{ get_hash(path='wasm/rux_web_bg.wasm', sha_type=256, base64=false) | truncate(length=12, end='') }}";
