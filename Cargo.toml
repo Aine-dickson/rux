@@ -27,7 +27,7 @@ edition = "2021"
 # through the v0.2 and v0.3 tags; reconciled onto the 0.4 line here, because a
 # wrong version is unfixable once it is on crates.io (yank ≠ unpublish).
 version = "0.4.0"
-license = "MIT"
+license = "MIT OR Apache-2.0"
 repository = "https://github.com/Aine-dickson/rux"
 homepage = "https://ruxlang.dev"
 documentation = "https://ruxlang.dev"

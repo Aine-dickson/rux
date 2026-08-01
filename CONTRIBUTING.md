@@ -74,4 +74,6 @@ a decision that looks wrong until you know the reason is exactly right.
 
 ## Licence
 
-Rux is MIT. By contributing you agree your work ships under it. There is no CLA.
+Rux is dual licensed under Apache-2.0 or MIT, at the user's option, which is
+the Rust ecosystem convention. Unless you say otherwise, any contribution you
+intentionally submit for inclusion ships under both. There is no CLA.

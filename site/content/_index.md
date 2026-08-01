@@ -8,7 +8,7 @@ template = "index.html"
 [extra]
 headline = "Write a native app the way you write a web page."
 lede = "Rux is a pure-Rust UI language: familiar template / style / script sections and literal CSS, laid out by a real flexbox and grid engine and painted on the GPU. No browser. No webview. No JavaScript."
-note = "Early and experimental (0.x) · MIT · desktop today, mobile next"
+note = "Early and experimental (0.x) · Apache-2.0 or MIT · desktop today, mobile next"
 shot_caption = "examples/showcase.rux, running in a native window"
 +++
 

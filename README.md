@@ -118,7 +118,13 @@ If you want to ship a production app today, those mature engines are the right c
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+Dual licensed under either of [Apache License, Version 2.0](LICENSE-APACHE)
+or the [MIT license](LICENSE-MIT), at your option. This is the convention
+across the Rust ecosystem, and it matches the crates Rux is built on.
+
+Unless you explicitly state otherwise, any contribution you intentionally
+submit for inclusion in Rux shall be dual licensed as above, without any
+additional terms or conditions.
 
 [`taffy`]: https://github.com/DioxusLabs/taffy
 [`parley`]: https://github.com/linebender/parley
