@@ -97,23 +97,24 @@ The most useful next step is to break it. A few that are worth the time:
 - **Persist it.** This one needs Rust: register a `host::` function and call it
   from a handler. That is the escape hatch for anything the script tier can't do.
 - **Use a real checkbox.** `<input type="checkbox" r-model="flag" />` is a
-  tap-toggle that writes its signal directly. A checked box carries a synthetic
-  `checked` class, so `.box.checked { … }` styles it.
+  tap-toggle that writes its signal directly, and `.box:checked { … }` styles
+  it. (A synthetic `checked` class still works for one more release, but
+  `:checked` is the one to write.)
 
 ## Where the edges are
 
 Rux is `0.x` and honest about it. Things you will run into if you keep going,
-as of **v0.3.0**:
+as of **v0.4.0**:
 
-- **No CSS variables, `@media`, or pseudo-classes.** No `:hover`, `:focus` or
-  `:checked`, which is why the `checked` class above exists as a stopgap.
-  These are the headline items of the next release.
+- **No true inline text flow.** Two `<text>` elements cannot share a line, so
+  bold inside a sentence is not expressible. This is the largest gap.
+- **A component takes props but cannot emit events or render children**, which
+  is why the tap handler above had to stay in the parent.
 - **No `fn` that mutates state**, as [chapter 3](@/learn/03-state.md) covered.
 - **No index in `r-for`**, and reordering a list re-renders more rows than a
   keyed diff would.
 - **No effects or computed values.** A `{{ }}` expression is the only
   "computed" there is.
-- **No true inline text flow**, so no mixing bold into a sentence yet.
 
 The [reference](@/reference/_index.md) has the exact honored-CSS set and the
 full gap list; the [roadmap](@/roadmap/_index.md) has the order they get fixed

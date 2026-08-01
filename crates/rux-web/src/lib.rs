@@ -88,6 +88,15 @@ mod web {
         s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
     }
 
+    /// The runtime version this bundle was built from.
+    ///
+    /// Taken from the crate version rather than passed in by the page, so it
+    /// cannot claim to be a release the wasm was not built from.
+    #[wasm_bindgen]
+    pub fn version() -> String {
+        env!("CARGO_PKG_VERSION").to_string()
+    }
+
     /// Resize the canvas, in logical (CSS) pixels.
     ///
     /// The page calls this on load and whenever the pane changes size, which is

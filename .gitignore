@@ -7,3 +7,6 @@ Cargo.lock.orig
 # ~7 MB, and a binary that large has no business in the history of a repo whose
 # whole source tree is smaller.
 /site/static/wasm/
+
+# Release artifacts are built on demand, not committed.
+/dist/

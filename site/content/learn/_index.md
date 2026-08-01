@@ -31,7 +31,7 @@ window and paints it on the GPU.
 ```bash
 git clone https://github.com/Aine-dickson/rux
 cd rux
-cargo run -p rux-cli -- examples/learn/01-hello.rux
+cargo run -p ruxlang -- examples/learn/01-hello.rux
 ```
 
 The first build takes a few minutes. After that, edits to a `.rux` file reload
@@ -64,7 +64,7 @@ obvious thing instead.
 
 ## A note on versions
 
-This guide is written against **Rux v0.3.0**, the current release, and every
+This guide is written against **Rux v0.4.0**, the current release, and every
 snippet in it is checked by the test suite on each commit. Rux is `0.x` and
 moves weekly, so a feature you read about elsewhere may be newer than this
 guide. The [reference](@/reference/_index.md) is always the authority on what

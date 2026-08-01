@@ -40,7 +40,8 @@
     <section class="pg-pane" aria-label="Output">
       <div class="pg-bar">
         <span class="pg-label">output</span>
-        <span id="pg-status" class="pg-status">loading…</span>
+        <span class="pg-meta"><span id="pg-version" class="pg-version"></span>
+        <span id="pg-status" class="pg-status">loading…</span></span>
       </div>
       <div class="pg-stage">
         <canvas id="pg-canvas" width="420" height="640"></canvas>
@@ -54,13 +55,25 @@
   <noscript>
     <p class="pg-note">The playground needs JavaScript to load the WebAssembly
     build. The same code runs natively with
-    <code>cargo run -p rux-cli -- app.rux</code>.</p>
+    <code>cargo run -p ruxlang -- app.rux</code>.</p>
   </noscript>
 </div>
 
 <script type="module">
-  import init, { start, setSource, highlight, format, indentAfter, resize }
-    from "{{ get_url(path='wasm/rux_web.js') }}";
+  {# The bundle filenames are stable across deploys, so a returning visitor would
+     otherwise be served whatever the browser cached, which during this project's
+     first week meant being told to hard-reload after every fix. The content hash
+     in the query gives each build its own URL: caches stay warm while the bytes
+     are unchanged, and miss exactly when they are not.
+
+     The wasm URL has to be passed to `init` explicitly. Left to itself the glue
+     resolves it with `new URL('rux_web_bg.wasm', import.meta.url)`, which drops
+     the query and would cache-bust the loader while serving a stale runtime. #}
+  import init, { start, setSource, highlight, format, indentAfter, resize, version }
+    from "{{ get_url(path='wasm/rux_web.js') }}?v={{ get_hash(path='wasm/rux_web.js', sha_type=256, base64=false) | truncate(length=12, end='') }}";
+
+  const WASM_URL =
+    "{{ get_url(path='wasm/rux_web_bg.wasm') }}?v={{ get_hash(path='wasm/rux_web_bg.wasm', sha_type=256, base64=false) | truncate(length=12, end='') }}";
 
   const status = document.getElementById("pg-status");
   const editor = document.getElementById("pg-src");
@@ -153,10 +166,13 @@
     status.classList.add("is-error");
     runBtn.disabled = true;
   } else {
-    init()
+    init({ module_or_path: WASM_URL })
       .then(() => {
         start(canvas, editor.value);
         status.textContent = "running";
+        // Read from the wasm, so it reports the runtime that is actually
+        // loaded rather than whatever the page was built alongside.
+        document.getElementById("pg-version").textContent = "v" + version();
 
         // A trailing newline would let the <pre> collapse its last line and
         // drift out of step with the textarea, so pad it.

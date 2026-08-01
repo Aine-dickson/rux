@@ -643,3 +643,12 @@ pre code {
   .pg-bar { padding: 8px; }
   .pg-editwrap, .pg-editor { min-height: 380px; }
 }
+
+/* Runtime version beside the output status, so what the playground is running
+   is visible rather than assumed. */
+.pg-meta { display: flex; align-items: center; gap: 10px; }
+.pg-version {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  color: var(--ink-faint);
+}

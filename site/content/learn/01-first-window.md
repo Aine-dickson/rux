@@ -30,7 +30,7 @@ Create a file called `hello.rux`:
 Run it:
 
 ```bash
-cargo run -p rux-cli -- hello.rux
+cargo run -p ruxlang -- hello.rux
 ```
 
 A native window opens. Not a webview and not a browser tab. [taffy] laid that

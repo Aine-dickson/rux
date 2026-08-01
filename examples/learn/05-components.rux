@@ -1,5 +1,5 @@
 <!-- /learn, step 5: the same app, with the row extracted into a component.
-     cargo run -p rux-cli -- examples/learn/05-components.rux -->
+     cargo run -p ruxlang -- examples/learn/05-components.rux -->
 <template>
   <screen class="app">
     <view class="head">

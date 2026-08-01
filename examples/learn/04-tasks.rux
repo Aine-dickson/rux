@@ -1,5 +1,5 @@
 <!-- /learn, step 4: the task list: r-model, r-for, r-if, and :class.
-     cargo run -p rux-cli -- examples/learn/04-tasks.rux -->
+     cargo run -p ruxlang -- examples/learn/04-tasks.rux -->
 <template>
   <screen class="app">
     <view class="head">

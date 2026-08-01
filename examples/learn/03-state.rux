@@ -1,5 +1,5 @@
 <!-- /learn, step 3: state. A signal, an interpolation, and a tap handler.
-     cargo run -p rux-cli -- examples/learn/03-state.rux -->
+     cargo run -p ruxlang -- examples/learn/03-state.rux -->
 <template>
   <screen class="app">
     <view class="head">
