@@ -244,6 +244,39 @@ checked `background`, or the ring dissolves into the fill. A radio is **round** 
 huge radius like `9999px` is clamped to a circle, so that's how you re-round one
 that inherited a radius from another class).
 
+### Text input and composition
+Typing is not only key presses. Anything past unaccented Latin is *composed*:
+a dead key and a vowel make one accented character, and a CJK keyboard spells a
+character out of several keystrokes, showing the half-finished result as it goes.
+The shell asks the platform for those events with `set_ime_allowed` whenever a
+text field is focused, and parks the candidate window under the caret with
+`set_ime_cursor_area` so the list of characters to choose from does not cover the
+text it is being chosen for.
+
+Composed text is written straight into the bound signal as it is typed, which is
+what a browser does to an `<input>`'s value mid-composition, so it renders
+through the ordinary text path. `Focus` carries the byte range that is still
+provisional and the painter underlines it. A composition can be abandoned as
+well as committed: clicking away, tabbing off, or the input method detaching all
+put the field back exactly as it was before composing started. While one is
+running the input method owns the keyboard, and raw key presses are ignored, or
+every letter would be typed twice.
+
+On the web none of that applies, because a browser will not raise a phone's
+on-screen keyboard for a `<canvas>`. There the shell keeps a real `<input>` laid
+over the field it is editing, invisible and `pointer-events: none` so taps still
+reach the canvas and still move the caret, focused only in response to the tap
+that focused the field. It holds the real text rather than acting as an event
+sink, which hands composition, autocorrect, dictation and the keyboard's own
+backspace to the browser; the shell copies the value back into the signal. This
+happens only on touch devices, because focusing it takes DOM focus off the canvas
+where winit listens for keys.
+
+The sharp edge there is that a browser counts a caret in UTF-16 code units and
+Rux indexes strings by bytes. They agree only on ASCII, an emoji being 4 bytes
+and 2 code units, so the conversion is done explicitly and tested rather than
+assumed.
+
 ### Touch
 A finger takes the same path as the mouse: it taps buttons and toggles, focuses
 inputs, drags a scrollbar thumb, drags out a text selection, and scrolls content
@@ -414,13 +447,14 @@ warnings also carry no line numbers yet, and the overlay can't be dismissed.
 
 ## Known gaps / backlog
 
-- **No IME, and therefore no soft keyboard.** The shell handles raw
-  `KeyboardInput` only: it never calls `set_ime_allowed` and never reads
-  `WindowEvent::Ime`. Two consequences. On a phone, tapping a Rux `<input>`
-  focuses it inside the runtime but nothing tells the platform, so the on-screen
-  keyboard never opens and the field cannot be typed into at all. On the desktop
-  it means no composition, so CJK, dead keys and accented input do not work.
-  Reported from a phone on the playground, 2026-08-02.
+- **The soft keyboard is written but unproven on a real phone.** The shell now
+  keeps a hidden `<input>` over the focused field on touch devices, so the
+  browser has something focusable to raise a keyboard for (see "Text input" for
+  how it works). It has been compiled and reasoned through but not driven on a
+  phone, which is where the original bug was found; treat it as unverified until
+  someone types into the playground on one. It also only reaches
+  ruxlang.dev once v0.5.0 is tagged, because the deployed playground is built
+  from the latest release rather than from `main`.
 - Text editing: no word-wise movement (Ctrl+arrows), no triple-click line-select,
   no drag-and-drop of selected text, no `::selection` styling.
 - Scrolling: no track-click paging, no kinetic touch fling, no scrollbar

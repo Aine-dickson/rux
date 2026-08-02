@@ -1027,24 +1027,26 @@ with their file, and format it the same way we do.
    was for.
 5. **Locate the warnings.** CSS warnings still have no line numbers, and the
    overlay cannot be dismissed. Both are small and both are felt immediately.
-6. **A keyboard on a phone.** Reported 2026-08-02: tapping a text input in the
-   playground focuses it inside the runtime, but the browser sees only a
-   `<canvas>` with nothing focusable, so the on-screen keyboard never opens and
-   the field cannot be typed into. The playground is currently unusable on a
-   phone for anything involving text.
+6. **A keyboard on a phone.** *Done, and half of it still needs checking on a
+   phone.* Reported 2026-08-02: tapping a text input in the playground focused
+   it inside the runtime, but the browser saw only a `<canvas>` with nothing
+   focusable, so the on-screen keyboard never opened.
 
-   The narrow fix is a transparent DOM `<input>` positioned over the focused
-   field, focused on tap so the platform raises its keyboard, with its events
-   fed into the runtime. That is what canvas applications on the web generally
-   do.
+   Both halves of the fix landed. The shell has an IME: it asks for composition
+   with `set_ime_allowed`, handles `WindowEvent::Ime`, carries the provisional
+   range on `Focus` and underlines it, and restores the field when a composition
+   is abandoned. That was the wider fix worth taking, because there had been no
+   composition anywhere, so dead keys, accents and CJK had never worked on the
+   desktop either. It is verified there: with the US-International layout, `'`
+   then `e` produces `é`.
 
-   The wider fix is the one worth taking: **the shell has no IME support at
-   all.** It never calls `set_ime_allowed` and never reads `WindowEvent::Ime`,
-   so there is no composition anywhere, and CJK, dead keys and accented input do
-   not work on the desktop either. Doing IME properly serves the phone, the
-   desktop, and the mobile targets in v0.8 at once, and it is the reason this
-   sits in a milestone about being usable by other people rather than in the
-   mobile one.
+   On the web the same pathway is fed by a hidden `<input>` laid over the
+   focused field, since a browser raises a keyboard for a focused DOM element
+   and not for a canvas. **That half is unverified**: it was written in a
+   session whose desktop locked before it could be driven, and a phone is the
+   only place it means anything. It also will not appear on ruxlang.dev until
+   v0.5.0 is tagged, because the playground there is built from the latest
+   release rather than from `main`.
 
 ### v0.6: apps bigger than one screen
 
