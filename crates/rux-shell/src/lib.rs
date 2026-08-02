@@ -43,7 +43,7 @@ use accesskit::{Node as AccessKitNode, NodeId, Role, Toggled, Tree, TreeUpdate};
 #[cfg(not(target_arch = "wasm32"))]
 use rux_layout::{AccessNode, AccessRole};
 use winit::application::ApplicationHandler;
-use winit::event::{ElementState, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent};
+use winit::event::{ElementState, Ime, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{Key, NamedKey};
 use winit::window::{CursorIcon, Window, WindowId};
@@ -316,6 +316,7 @@ fn dropdown_paints(sel: &SelectRegion, value: &str) -> Vec<Paint> {
                 nowrap: true,
                 caret: None,
                 selection: None,
+                preedit: None,
             },
         }));
     }
@@ -588,6 +589,7 @@ fn overlay_text(text: String, font_size: f32, weight: u16, color: Rgba) -> TextC
         nowrap: true,
         caret: None,
         selection: None,
+        preedit: None,
     }
 }
 
@@ -622,6 +624,28 @@ struct RenderState {
     /// the common case.
     #[cfg(not(target_arch = "wasm32"))]
     access: accesskit_winit::Adapter,
+}
+
+/// An IME composition in flight: the text between pressing a dead key (or
+/// starting to spell a CJK word) and choosing what it becomes.
+///
+/// The composed text is written straight into the bound signal, so it renders
+/// through the ordinary text path and needs no second string that the layout and
+/// painter would have to be taught about. A browser does the same thing to an
+/// `<input>`'s value while you compose, so an `@input` handler seeing provisional
+/// text is the behaviour people already expect.
+///
+/// What must be remembered separately is how to take it back out again, because
+/// a composition can be abandoned as well as committed.
+#[derive(Clone, Debug)]
+struct Preedit {
+    /// Byte offset in the value where the composition starts.
+    at: usize,
+    /// Byte length of the composed text currently sitting in the value.
+    len: usize,
+    /// Whatever the composition replaced when it began (composing over a
+    /// selection is allowed), put back if it is cancelled rather than committed.
+    replaced: String,
 }
 
 /// The application: owns the vello render context, the document, the text
@@ -693,6 +717,9 @@ struct App {
     /// Where the current selection started, as a byte index. Equal to `caret`
     /// when nothing is selected, the selection is the range between them.
     anchor: usize,
+    /// The IME composition in flight, if any. `None` covers every keyboard that
+    /// commits directly, which is most of them most of the time.
+    preedit: Option<Preedit>,
     /// Whether the pointer is selecting text by dragging inside an input.
     text_drag: bool,
     /// When and where the last click landed, for double-click word-select.
@@ -757,6 +784,7 @@ impl App {
             open_select: None,
             caret: 0,
             anchor: 0,
+            preedit: None,
             text_drag: false,
             last_click: None,
             #[cfg(not(target_arch = "wasm32"))]
@@ -1038,7 +1066,12 @@ impl App {
                     fx - t.x,
                     fy - t.y,
                 );
-                self.set_focus_range(Some(Focus { model: region.model, caret: end, anchor: start }));
+                self.set_focus_range(Some(Focus {
+                    model: region.model,
+                    caret: end,
+                    anchor: start,
+                    preedit: None,
+                }));
                 return true;
             }
         }
@@ -1060,7 +1093,7 @@ impl App {
         let caret = self.index_in(&region, fx, fy);
         if caret != self.caret {
             let anchor = self.anchor;
-            self.set_focus_range(Some(Focus { model, caret, anchor }));
+            self.set_focus_range(Some(Focus { model, caret, anchor, preedit: None }));
         }
     }
 
@@ -1366,6 +1399,7 @@ impl App {
                 model,
                 caret: new_caret,
                 anchor: new_anchor,
+                preedit: None,
             }));
         }
     }
@@ -1382,6 +1416,7 @@ impl App {
                     model: model.to_string(),
                     caret: value.len(),
                     anchor: 0,
+                    preedit: None,
                 }));
             }
             "c" => {
@@ -1535,8 +1570,16 @@ impl App {
         }
     }
 
-    /// The full-fidelity focus setter: caret *and* selection anchor.
+    /// The full-fidelity focus setter: caret, selection anchor *and* composition.
+    ///
+    /// Any caller that is not the IME leaves `preedit` at `None`, which is taken
+    /// as "whatever was being composed is abandoned": clicking into another
+    /// field, tabbing away or pressing Escape mid-composition all put the field
+    /// back the way it was, rather than stranding half-typed text nobody chose.
     fn set_focus_range(&mut self, focus: Option<Focus>) {
+        if focus.as_ref().and_then(|f| f.preedit).is_none() {
+            self.cancel_preedit();
+        }
         self.focused = focus.as_ref().map(|f| f.model.clone());
         self.caret = focus.as_ref().map(|f| f.caret).unwrap_or(0);
         self.anchor = focus.as_ref().map(|f| f.anchor).unwrap_or(0);
@@ -1544,8 +1587,161 @@ impl App {
         // `:focus` matches on the focused model, so the document needs it too.
         let model = self.focused.clone();
         self.update_focus_state(model);
+        self.set_ime_enabled(self.focused.is_some());
         self.reset_blink();
         self.request_redraw();
+    }
+
+    /// Tell the platform whether to route composition at us.
+    ///
+    /// Off by default in winit, which is why Rux had no dead keys and no CJK
+    /// input on any desktop: the events exist, nothing had ever asked for them.
+    /// It is toggled with focus rather than left on, because while it is on the
+    /// compositor may swallow plain keystrokes that the rest of the UI wants.
+    fn set_ime_enabled(&mut self, on: bool) {
+        let Some(state) = self.state.as_ref() else { return };
+        state.window.set_ime_allowed(on);
+        if on {
+            self.update_ime_area();
+        }
+    }
+
+    /// Park the candidate window under the caret instead of at the window's
+    /// top-left, so the list of characters to choose from does not cover the text
+    /// it is being chosen for.
+    fn update_ime_area(&mut self) {
+        let Some(window) = self.state.as_ref().map(|s| s.window.clone()) else { return };
+        let scale = window.scale_factor();
+        let Some(model) = self.focused.clone() else { return };
+        let Some(region) = self.focuses.iter().find(|f| f.model == model).cloned() else {
+            return;
+        };
+        let Some(t) = region.text.as_ref() else { return };
+        let value = self.document.engine_mut().get_string(&model);
+        let style = rux_paint::text_style(&t.content);
+        let caret = self.caret.min(value.len());
+        let (cx, cy, ch) = self.text.caret_geometry(&value, &style, Some(t.width), caret);
+        window.set_ime_cursor_area(
+            winit::dpi::LogicalPosition::new((t.x + cx) as f64, (t.y + cy) as f64)
+                .to_physical::<f64>(scale),
+            winit::dpi::LogicalSize::new(rux_text::CARET_WIDTH as f64, ch as f64)
+                .to_physical::<f64>(scale),
+        );
+    }
+
+    /// Route a composition event from the platform's input method.
+    ///
+    /// This is the path that makes dead keys, accents and CJK work. Before it
+    /// existed the shell read `KeyboardInput` only, so `´` then `e` produced two
+    /// characters instead of `é`, and there was no way at all to type a language
+    /// that spells one character out of several keystrokes.
+    fn on_ime(&mut self, ime: &Ime) {
+        match ime {
+            // The method is attached. Nothing to do until text arrives.
+            Ime::Enabled => {}
+            Ime::Preedit(text, cursor) => self.set_preedit(text, *cursor),
+            Ime::Commit(text) => self.commit_text(text),
+            // The method detached (the window lost focus, the user switched
+            // keyboards). Half-composed text was never chosen, so it goes back.
+            Ime::Disabled => {
+                self.cancel_preedit();
+                self.request_redraw();
+            }
+        }
+    }
+
+    /// Show the text being composed, replacing whatever the last preedit showed.
+    ///
+    /// `cursor` is the platform's caret *within* the composition, as a byte
+    /// range; we take its start, which is where compositors put the insertion
+    /// point. `None` means it wants the caret after the whole thing.
+    fn set_preedit(&mut self, text: &str, cursor: Option<(usize, usize)>) {
+        let Some(model) = self.focused.clone() else { return };
+        let mut value = self.document.engine_mut().get_string(&model);
+
+        // Starting a composition lifts out whatever it is going to sit on top
+        // of, so that abandoning it can put that back.
+        let composing = match self.preedit.clone() {
+            Some(p) => p,
+            None => {
+                let (start, end) = self.selection();
+                let (start, end) = (start.min(value.len()), end.min(value.len()));
+                let replaced = value[start..end].to_string();
+                value.replace_range(start..end, "");
+                Preedit { at: start, len: 0, replaced }
+            }
+        };
+
+        let at = composing.at.min(value.len());
+        let end = (at + composing.len).min(value.len());
+        value.replace_range(at..end, text);
+
+        // An empty preedit is how a compositor says the composition ended with
+        // nothing chosen, which is a cancel, not a commit of "".
+        if text.is_empty() {
+            value.insert_str(at, &composing.replaced);
+            let caret = at + composing.replaced.len();
+            self.preedit = None;
+            self.document.apply_edit(&model, &value);
+            self.set_focus_range(Some(Focus::at(model, caret)));
+            return;
+        }
+
+        let caret = at + cursor.map(|(s, _)| s.min(text.len())).unwrap_or(text.len());
+        self.preedit = Some(Preedit { at, len: text.len(), replaced: composing.replaced });
+        self.document.apply_edit(&model, &value);
+        self.scroll_caret_into_view(&model, &value, caret);
+        self.set_focus_range(Some(Focus {
+            model,
+            caret,
+            anchor: caret,
+            preedit: Some((at, at + text.len())),
+        }));
+        self.update_ime_area();
+    }
+
+    /// Accept composed text into the field for good.
+    ///
+    /// Also the path a plain keystroke takes on platforms whose input method
+    /// stays in the loop even when nothing is being composed, so it has to
+    /// behave like typing when there is no composition to replace.
+    fn commit_text(&mut self, text: &str) {
+        let Some(model) = self.focused.clone() else { return };
+        let mut value = self.document.engine_mut().get_string(&model);
+        let (start, end) = match self.preedit.take() {
+            Some(p) => {
+                let at = p.at.min(value.len());
+                (at, (at + p.len).min(value.len()))
+            }
+            None => {
+                let (s, e) = self.selection();
+                (s.min(value.len()), e.min(value.len()))
+            }
+        };
+        // A one-line input never takes a newline, the rule paste already follows.
+        let text = if self.focused_multiline {
+            text.replace("\r\n", "\n")
+        } else {
+            text.lines().next().unwrap_or("").to_string()
+        };
+        value.replace_range(start..end, &text);
+        let caret = start + text.len();
+        self.document.apply_edit(&model, &value);
+        self.scroll_caret_into_view(&model, &value, caret);
+        self.set_focus_range(Some(Focus::at(model, caret)));
+        self.update_ime_area();
+    }
+
+    /// Abandon a composition, putting the field back exactly as it was before it
+    /// started. A no-op when nothing is being composed, which is the usual case.
+    fn cancel_preedit(&mut self) {
+        let Some(p) = self.preedit.take() else { return };
+        let Some(model) = self.focused.clone() else { return };
+        let mut value = self.document.engine_mut().get_string(&model);
+        let at = p.at.min(value.len());
+        let end = (at + p.len).min(value.len());
+        value.replace_range(at..end, &p.replaced);
+        self.document.apply_edit(&model, &value);
     }
 
     /// The focused input's selected byte range, low to high. Empty when there's
@@ -2085,8 +2281,12 @@ impl ApplicationHandler<RuxEvent> for App {
                 self.shift_held = mods.state().shift_key();
                 self.ctrl_held = mods.state().control_key();
             }
+            WindowEvent::Ime(ime) => self.on_ime(&ime),
             WindowEvent::KeyboardInput { event, .. } => {
-                if event.state == ElementState::Pressed {
+                // While a composition is running the input method owns the
+                // keyboard: the same keystrokes also arrive here, and acting on
+                // them would type the letters twice, once raw and once composed.
+                if event.state == ElementState::Pressed && self.preedit.is_none() {
                     self.on_key(&event.logical_key);
                 }
             }

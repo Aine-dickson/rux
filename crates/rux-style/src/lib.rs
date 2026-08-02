@@ -1858,6 +1858,7 @@ fn build_node(
                 nowrap,
                 caret: None,
                 selection: None,
+                preedit: None,
             },
         );
         node.on_tap = on_tap;
@@ -2079,6 +2080,7 @@ fn build_node(
                 // The runtime marks the focused input's caret and selection.
                 caret: None,
                 selection: None,
+                preedit: None,
             },
         );
         let mut node = LayoutNode::new(style);

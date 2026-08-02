@@ -79,13 +79,17 @@ pub struct Focus {
     pub model: String,
     pub caret: usize,
     pub anchor: usize,
+    /// The byte range of an in-progress IME composition, if one is running. The
+    /// composed text is already in the bound value; this only marks which part
+    /// of it is provisional, so the painter can underline it.
+    pub preedit: Option<(usize, usize)>,
 }
 
 impl Focus {
     /// A plain caret with nothing selected.
     pub fn at(model: impl Into<String>, caret: usize) -> Self {
         let model = model.into();
-        Self { model, caret, anchor: caret }
+        Self { model, caret, anchor: caret, preedit: None }
     }
 
     /// The selected range, low to high.
@@ -113,6 +117,9 @@ fn apply_focus(node: &mut LayoutNode, focus: Option<&Focus>) {
             text.caret = mine.map(|f| f.caret.min(text.text.len()));
             text.selection = mine.filter(|f| !f.is_collapsed()).map(|f| {
                 let (start, end) = f.range();
+                (start.min(text.text.len()), end.min(text.text.len()))
+            });
+            text.preedit = mine.and_then(|f| f.preedit).map(|(start, end)| {
                 (start.min(text.text.len()), end.min(text.text.len()))
             });
         }
@@ -809,6 +816,13 @@ mod tests {
         node.children.iter().find_map(|c| selection_of(c, model))
     }
 
+    fn preedit_of(node: &LayoutNode, model: &str) -> Option<(usize, usize)> {
+        if node.model.as_deref() == Some(model) {
+            return node.children.first()?.text.as_ref()?.preedit;
+        }
+        node.children.iter().find_map(|c| preedit_of(c, model))
+    }
+
     fn two_inputs() -> Document {
         Document::from_source(
             "<template><screen>             <input r-model=\"name\" /><input r-model=\"city\" />             </screen></template>
@@ -823,12 +837,12 @@ mod tests {
     fn selection_paints_only_in_the_focused_input() {
         let mut doc = two_inputs();
 
-        doc.set_focus(Some(Focus { model: "name".into(), caret: 3, anchor: 1 }));
+        doc.set_focus(Some(Focus { model: "name".into(), caret: 3, anchor: 1, preedit: None }));
         assert_eq!(selection_of(&doc.root, "name"), Some((1, 3)));
         assert_eq!(selection_of(&doc.root, "city"), None);
 
         // Dragging leftwards puts the caret *before* the anchor; same range.
-        doc.set_focus(Some(Focus { model: "name".into(), caret: 1, anchor: 3 }));
+        doc.set_focus(Some(Focus { model: "name".into(), caret: 1, anchor: 3, preedit: None }));
         assert_eq!(selection_of(&doc.root, "name"), Some((1, 3)));
     }
 
@@ -839,10 +853,10 @@ mod tests {
     fn focus_moves_the_selection_out_of_the_old_input() {
         let mut doc = two_inputs();
 
-        doc.set_focus(Some(Focus { model: "name".into(), caret: 3, anchor: 0 }));
+        doc.set_focus(Some(Focus { model: "name".into(), caret: 3, anchor: 0, preedit: None }));
         assert_eq!(selection_of(&doc.root, "name"), Some((0, 3)));
 
-        doc.set_focus(Some(Focus { model: "city".into(), caret: 2, anchor: 0 }));
+        doc.set_focus(Some(Focus { model: "city".into(), caret: 2, anchor: 0, preedit: None }));
         assert_eq!(selection_of(&doc.root, "name"), None, "old input kept its selection");
         assert_eq!(selection_of(&doc.root, "city"), Some((0, 2)));
 
@@ -866,11 +880,49 @@ mod tests {
     #[test]
     fn selection_survives_a_rebuild() {
         let mut doc = two_inputs();
-        doc.set_focus(Some(Focus { model: "name".into(), caret: 3, anchor: 1 }));
+        doc.set_focus(Some(Focus { model: "name".into(), caret: 3, anchor: 1, preedit: None }));
         doc.rebuild();
         assert_eq!(selection_of(&doc.root, "name"), Some((1, 3)));
         assert_eq!(caret_of(&doc.root, "name"), Some(3));
         assert_eq!(selection_of(&doc.root, "city"), None);
+    }
+
+    /// Text being composed through an input method is marked on the focused
+    /// input only, and is cleared the same way a selection is when focus moves.
+    /// Without the clearing, leaving a field mid-composition left the underline
+    /// behind on text that had since been committed.
+    #[test]
+    fn a_composition_marks_only_the_focused_input() {
+        let mut doc = two_inputs();
+
+        doc.set_focus(Some(Focus {
+            model: "name".into(),
+            caret: 3,
+            anchor: 3,
+            preedit: Some((1, 3)),
+        }));
+        assert_eq!(preedit_of(&doc.root, "name"), Some((1, 3)));
+        assert_eq!(preedit_of(&doc.root, "city"), None);
+
+        doc.set_focus(Some(Focus::at("city", 1)));
+        assert_eq!(preedit_of(&doc.root, "name"), None, "old input kept its composition");
+        assert_eq!(preedit_of(&doc.root, "city"), None);
+    }
+
+    /// A composition outlives the rebuild that showing it causes: the shell
+    /// writes the composed text into the bound signal, and that edit can rebuild
+    /// the tree, so a range applied before it must be put back after.
+    #[test]
+    fn a_composition_survives_a_rebuild() {
+        let mut doc = two_inputs();
+        doc.set_focus(Some(Focus {
+            model: "name".into(),
+            caret: 2,
+            anchor: 2,
+            preedit: Some((0, 2)),
+        }));
+        doc.rebuild();
+        assert_eq!(preedit_of(&doc.root, "name"), Some((0, 2)));
     }
 
     fn patch_doc() -> Document {

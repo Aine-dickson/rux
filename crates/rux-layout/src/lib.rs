@@ -404,6 +404,16 @@ pub struct TextContent {
     /// inside the focused input and its selection isn't collapsed. The painter
     /// highlights it behind the glyphs.
     pub selection: Option<(usize, usize)>,
+    /// The byte range holding an in-progress IME composition, when this text is
+    /// inside the focused input and something is being composed. The painter
+    /// underlines it.
+    ///
+    /// The composed text is already inside `text`: the shell writes it into the
+    /// bound signal as it is typed, exactly as a browser does to an `<input>`'s
+    /// value during composition. This range only says which part of it is not
+    /// committed yet, so it can be drawn as provisional rather than as text the
+    /// author typed and meant.
+    pub preedit: Option<(usize, usize)>,
 }
 
 /// What an element *is*, for assistive technology. Deliberately a small enum
