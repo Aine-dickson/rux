@@ -3191,6 +3191,7 @@ dependencies = [
  "rux-runtime",
  "rux-text",
  "vello",
+ "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
  "web-time",

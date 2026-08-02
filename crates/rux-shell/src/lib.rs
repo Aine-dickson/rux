@@ -70,6 +70,17 @@ enum RuxEvent {
     /// layout does, and the canvas has to be told rather than asked.
     #[cfg(target_arch = "wasm32")]
     Resize(f64, f64),
+    /// The browser's soft keyboard edited the focused field. Web only: on a
+    /// phone the text does not arrive as key presses at all, it arrives as the
+    /// new contents of the hidden `<input>` the shell keeps focused, so this
+    /// carries the whole value rather than a keystroke.
+    ///
+    /// `composing` is the byte length of any in-progress composition at the end
+    /// of the caret, `0` when there is none. The browser runs the composition
+    /// itself here; the shell only needs to know which tail of the text is still
+    /// provisional so it can underline it, exactly as it does natively.
+    #[cfg(target_arch = "wasm32")]
+    WebText { value: String, caret: usize, composing: usize },
     /// Assistive technology asked us something (it attached, it wants the
     /// tree, it moved focus). Delivered through the same proxy as hot-reload.
     #[cfg(not(target_arch = "wasm32"))]
@@ -1604,6 +1615,83 @@ impl App {
         if on {
             self.update_ime_area();
         }
+        #[cfg(target_arch = "wasm32")]
+        self.sync_web_ime();
+    }
+
+    /// Keep the hidden `<input>` in step with the focused field, and focus or
+    /// blur it so the phone's keyboard opens and closes with the caret.
+    ///
+    /// Only on a touch device: see [`web_is_touch`]. Focusing it has to happen
+    /// while the browser still considers a user gesture to be in progress, which
+    /// is why this hangs off the focus change a tap causes rather than off a
+    /// later frame.
+    #[cfg(target_arch = "wasm32")]
+    fn sync_web_ime(&mut self) {
+        if !web_is_touch() {
+            return;
+        }
+        let Some(el) = web_ime_element() else { return };
+        let Some(model) = self.focused.clone() else {
+            let _ = el.blur();
+            return;
+        };
+        let value = self.document.engine_mut().get_string(&model);
+        // Only rewrite it when it has actually drifted. Assigning `value`
+        // resets the browser's own caret and would fight the user mid-word.
+        if el.value() != value {
+            el.set_value(&value);
+        }
+        let caret = byte_to_utf16_index(&value, self.caret.min(value.len())) as u32;
+        let _ = el.set_selection_range(caret, caret);
+        let _ = el.focus();
+        self.position_web_ime();
+    }
+
+    /// Lay the hidden input over the field it is editing, so that when the
+    /// keyboard opens the browser scrolls to the right place and any native UI
+    /// it anchors (the composition popup, the selection handles) lands on the
+    /// text rather than in the corner of the page.
+    #[cfg(target_arch = "wasm32")]
+    fn position_web_ime(&mut self) {
+        let Some(el) = WEB_IME.with(|c| c.borrow().clone()) else { return };
+        let Some(canvas) = WEB_CANVAS.with(|c| c.borrow().clone()) else { return };
+        let Some(model) = self.focused.clone() else { return };
+        let Some(region) = self.focuses.iter().find(|f| f.model == model) else { return };
+        // Rux's logical pixels are CSS pixels, and the input is the canvas's
+        // sibling, so the field's box offsets straight off the canvas's own.
+        let (ox, oy) = (canvas.offset_left() as f32, canvas.offset_top() as f32);
+        let style = el.style();
+        let _ = style.set_property("left", &format!("{}px", ox + region.x));
+        let _ = style.set_property("top", &format!("{}px", oy + region.y));
+        let _ = style.set_property("width", &format!("{}px", region.width.max(1.0)));
+        let _ = style.set_property("height", &format!("{}px", region.height.max(1.0)));
+    }
+
+    /// Apply an edit the browser's soft keyboard made.
+    ///
+    /// On a phone the text never arrives as key presses: the browser owns the
+    /// editing, the composition and the autocorrect, and reports the result as
+    /// the hidden input's new contents. So this replaces the field's value
+    /// outright rather than applying a keystroke to it.
+    #[cfg(target_arch = "wasm32")]
+    fn apply_web_text(&mut self, value: String, caret: usize, composing: usize) {
+        let Some(model) = self.focused.clone() else { return };
+        // A one-line field never takes a newline, the rule paste already follows.
+        let value = if self.focused_multiline {
+            value.replace("\r\n", "\n")
+        } else {
+            value.replace(['\n', '\r'], "")
+        };
+        let caret = floor_char_boundary(&value, caret.min(value.len()));
+        let preedit = (composing > 0 && composing <= caret)
+            .then(|| (floor_char_boundary(&value, caret - composing), caret));
+        // The browser is running the composition, so the shell's own
+        // composition state stays empty and must not be restored over this.
+        self.preedit = None;
+        self.document.apply_edit(&model, &value);
+        self.scroll_caret_into_view(&model, &value, caret);
+        self.set_focus_range(Some(Focus { model, caret, anchor: caret, preedit }));
     }
 
     /// Park the candidate window under the caret instead of at the window's
@@ -2130,6 +2218,11 @@ impl ApplicationHandler<RuxEvent> for App {
             #[cfg(target_arch = "wasm32")]
             RuxEvent::SetSource(source) => self.set_source(source),
 
+            #[cfg(target_arch = "wasm32")]
+            RuxEvent::WebText { value, caret, composing } => {
+                self.apply_web_text(value, caret, composing)
+            }
+
             // Asking winit to resize restyles the canvas and then reports a
             // `Resized`, which reconfigures the surface through the same path a
             // desktop window resize takes. Going through winit rather than
@@ -2381,6 +2474,231 @@ thread_local! {
     /// no longer any size change to observe. So the size is captured from the DOM
     /// up front and used for both the window attributes and the first surface.
     static WEB_SIZE: RefCell<(f64, f64)> = const { RefCell::new((420.0, 640.0)) };
+    /// The hidden `<input>` that exists purely to be focusable.
+    ///
+    /// A browser raises a phone's on-screen keyboard for a focused editable DOM
+    /// element and for nothing else. Rux's fields are painted inside a
+    /// `<canvas>`, which the browser knows nothing about, so before this there
+    /// was no way to type into one on a phone at all: tapping a field focused it
+    /// inside the runtime and the keyboard never came up.
+    ///
+    /// It is a real input holding the real text rather than a bare event sink,
+    /// because that hands composition, autocorrect, dictation and the keyboard's
+    /// own backspace to the browser, which already does all of it properly. The
+    /// shell reads the value back out and copies it into the bound signal.
+    static WEB_IME: RefCell<Option<web_sys::HtmlInputElement>> = const { RefCell::new(None) };
+    /// Byte length of the composition in flight in that input, `0` when none.
+    static WEB_COMPOSING: RefCell<usize> = const { RefCell::new(0) };
+}
+
+/// Whether this is a touch-first device, where the keyboard has to be summoned.
+///
+/// The hidden input is deliberately *not* used on a pointer-driven browser: it
+/// takes DOM focus away from the canvas, and winit's web backend listens for
+/// keys on the canvas, so focusing it there would trade a working desktop
+/// keyboard for one that is not needed.
+#[cfg(target_arch = "wasm32")]
+fn web_is_touch() -> bool {
+    web_sys::window()
+        .and_then(|w| w.match_media("(pointer: coarse)").ok().flatten())
+        .map(|m| m.matches())
+        .unwrap_or(false)
+}
+
+/// The hidden input, created and wired on first use.
+#[cfg(target_arch = "wasm32")]
+fn web_ime_element() -> Option<web_sys::HtmlInputElement> {
+    use wasm_bindgen::JsCast;
+    use wasm_bindgen::prelude::Closure;
+
+    if let Some(el) = WEB_IME.with(|c| c.borrow().clone()) {
+        return Some(el);
+    }
+    let canvas = WEB_CANVAS.with(|c| c.borrow().clone())?;
+    let document = web_sys::window()?.document()?;
+    let el: web_sys::HtmlInputElement =
+        document.create_element("input").ok()?.dyn_into().ok()?;
+
+    el.set_type("text");
+    // Turn off every helper that would rewrite what is typed behind our back.
+    // Autocorrect on a phone is welcome inside a text field, but capitalising
+    // the first letter of a password or a code is not, and Rux has no way yet
+    // to say which a field is.
+    let _ = el.set_attribute("autocomplete", "off");
+    let _ = el.set_attribute("autocapitalize", "off");
+    let _ = el.set_attribute("autocorrect", "off");
+    let _ = el.set_attribute("spellcheck", "false");
+    let _ = el.set_attribute("aria-hidden", "true");
+    // Invisible, but genuinely present and laid out over the field it is
+    // editing: `display: none` or `visibility: hidden` cannot take focus, and an
+    // element parked off-screen makes the browser scroll to it when the keyboard
+    // opens. `pointer-events: none` keeps taps going to the canvas, so tapping
+    // to move the caret still works; focus is only ever set programmatically.
+    // The 16px floor is what stops iOS Safari zooming the page in on focus.
+    let _ = el.set_attribute(
+        "style",
+        "position: absolute; opacity: 0; pointer-events: none; z-index: 1; \
+         border: 0; padding: 0; margin: 0; background: transparent; \
+         color: transparent; caret-color: transparent; font-size: 16px; \
+         width: 1px; height: 1px; left: 0; top: 0;",
+    );
+
+    // The canvas's parent is the positioned box the canvas itself sits in, so
+    // placing the input there lets both be positioned in the same coordinates.
+    let parent = canvas.parent_element()?;
+    parent.append_child(&el).ok()?;
+
+    // Every path that changes the text ends in an `input` event, including
+    // composition, dictation, autocorrect and the keyboard's own backspace, so
+    // one listener covers all of them and no key mapping is needed.
+    let on_input = Closure::<dyn FnMut(web_sys::Event)>::new(move |event: web_sys::Event| {
+        if let Some(target) = event.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok()) {
+            web_send_text(&target);
+        }
+    });
+    let _ = el.add_event_listener_with_callback("input", on_input.as_ref().unchecked_ref());
+    on_input.forget();
+
+    // Composition needs its own listeners only to know how much of the tail is
+    // still provisional, so the runtime can underline it the way the desktop
+    // does. The text itself already arrives through `input`.
+    let on_comp = Closure::<dyn FnMut(web_sys::CompositionEvent)>::new(
+        move |event: web_sys::CompositionEvent| {
+            let composing = match event.type_().as_str() {
+                "compositionend" => 0,
+                _ => event.data().unwrap_or_default().len(),
+            };
+            WEB_COMPOSING.with(|c| *c.borrow_mut() = composing);
+            if let Some(target) =
+                event.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok())
+            {
+                web_send_text(&target);
+            }
+        },
+    );
+    for name in ["compositionstart", "compositionupdate", "compositionend"] {
+        let _ = el.add_event_listener_with_callback(name, on_comp.as_ref().unchecked_ref());
+    }
+    on_comp.forget();
+
+    WEB_IME.with(|c| *c.borrow_mut() = Some(el.clone()));
+    Some(el)
+}
+
+/// Push the hidden input's contents at the event loop.
+#[cfg(target_arch = "wasm32")]
+fn web_send_text(el: &web_sys::HtmlInputElement) {
+    let value = el.value();
+    // `selection_start` is in UTF-16 code units, which is not where Rux counts
+    // from: it indexes strings by byte. Converting through the prefix keeps a
+    // caret after an emoji or a CJK character in the right place instead of
+    // several bytes short.
+    let caret16 = el.selection_start().ok().flatten().unwrap_or(0) as usize;
+    let caret = utf16_to_byte_index(&value, caret16);
+    let composing = WEB_COMPOSING.with(|c| *c.borrow()).min(caret);
+    WEB_PROXY.with(|p| {
+        if let Some(proxy) = p.borrow().as_ref() {
+            let _ = proxy.send_event(RuxEvent::WebText { value, caret, composing });
+        }
+    });
+}
+
+// The caret arithmetic between a browser and Rux, kept out of the wasm cfg so
+// it can be tested on any target. A browser counts a caret in UTF-16 code units
+// and Rux indexes strings by bytes, and the two only agree on pure ASCII: an
+// emoji is 4 bytes and 2 code units, a CJK character 3 bytes and 1. Getting this
+// wrong does not misplace the caret slightly, it panics on the first slice that
+// lands inside a character, so it is worth testing directly.
+
+/// Byte index of the character boundary at or before `units` UTF-16 code units
+/// into `s`.
+///
+/// "At or before" matters for the one index that has no byte equivalent: the
+/// middle of a surrogate pair. Rounding down puts the caret in front of the
+/// character, which is the same direction [`floor_char_boundary`] rounds, so a
+/// caret can never appear to jump over an emoji depending on which conversion it
+/// happened to go through.
+fn utf16_to_byte_index(s: &str, units: usize) -> usize {
+    let mut seen = 0;
+    for (byte, ch) in s.char_indices() {
+        if seen >= units {
+            return byte;
+        }
+        let next = seen + ch.len_utf16();
+        if next > units {
+            return byte;
+        }
+        seen = next;
+    }
+    s.len()
+}
+
+/// The inverse: how many UTF-16 code units precede byte index `byte` in `s`.
+fn byte_to_utf16_index(s: &str, byte: usize) -> usize {
+    s[..floor_char_boundary(s, byte)].chars().map(char::len_utf16).sum()
+}
+
+/// Round `index` down to a character boundary, so a caret that arrives inside a
+/// character is pulled back to its start rather than left to panic a later slice.
+fn floor_char_boundary(s: &str, mut index: usize) -> usize {
+    index = index.min(s.len());
+    while index > 0 && !s.is_char_boundary(index) {
+        index -= 1;
+    }
+    index
+}
+
+#[cfg(test)]
+mod caret_index {
+    use super::{byte_to_utf16_index, floor_char_boundary, utf16_to_byte_index};
+
+    /// ASCII is the case where the two agree, and the one every other case is
+    /// measured against.
+    #[test]
+    fn ascii_indices_are_the_same_in_both_counts() {
+        let s = "hello";
+        for i in 0..=s.len() {
+            assert_eq!(utf16_to_byte_index(s, i), i);
+            assert_eq!(byte_to_utf16_index(s, i), i);
+        }
+    }
+
+    /// A caret after a CJK character: 1 code unit, 3 bytes.
+    #[test]
+    fn a_cjk_caret_converts_both_ways() {
+        let s = "日本語";
+        assert_eq!(utf16_to_byte_index(s, 0), 0);
+        assert_eq!(utf16_to_byte_index(s, 1), 3);
+        assert_eq!(utf16_to_byte_index(s, 3), 9);
+        assert_eq!(byte_to_utf16_index(s, 3), 1);
+        assert_eq!(byte_to_utf16_index(s, 9), 3);
+    }
+
+    /// An emoji is a surrogate pair: 2 code units, 4 bytes. A caret between the
+    /// two halves is not a position Rux can represent, so it comes back as the
+    /// start of the character rather than as an index inside it.
+    #[test]
+    fn a_surrogate_pair_never_yields_an_index_inside_a_character() {
+        let s = "a🙂b";
+        assert_eq!(utf16_to_byte_index(s, 1), 1);
+        assert_eq!(utf16_to_byte_index(s, 2), 1, "mid-surrogate falls back to the start");
+        assert_eq!(utf16_to_byte_index(s, 3), 5);
+        assert_eq!(byte_to_utf16_index(s, 5), 3);
+        for i in 0..=s.len() {
+            assert!(s.is_char_boundary(utf16_to_byte_index(s, i)));
+        }
+    }
+
+    /// Past the end clamps rather than panicking: a stale caret can outlive the
+    /// text it pointed into, because the value is replaced wholesale.
+    #[test]
+    fn indices_past_the_end_clamp() {
+        let s = "ab";
+        assert_eq!(utf16_to_byte_index(s, 99), 2);
+        assert_eq!(byte_to_utf16_index(s, 99), 2);
+        assert_eq!(floor_char_boundary(s, 99), 2);
+        assert_eq!(floor_char_boundary("é", 1), 0);
+    }
 }
 
 /// Boot Rux onto an existing `<canvas>`, rendering `source`.
