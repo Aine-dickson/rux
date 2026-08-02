@@ -404,6 +404,13 @@ warnings also carry no line numbers yet, and the overlay can't be dismissed.
 
 ## Known gaps / backlog
 
+- **No IME, and therefore no soft keyboard.** The shell handles raw
+  `KeyboardInput` only: it never calls `set_ime_allowed` and never reads
+  `WindowEvent::Ime`. Two consequences. On a phone, tapping a Rux `<input>`
+  focuses it inside the runtime but nothing tells the platform, so the on-screen
+  keyboard never opens and the field cannot be typed into at all. On the desktop
+  it means no composition, so CJK, dead keys and accented input do not work.
+  Reported from a phone on the playground, 2026-08-02.
 - Text editing: no word-wise movement (Ctrl+arrows), no triple-click line-select,
   no drag-and-drop of selected text, no `::selection` styling.
 - Scrolling: no track-click paging, no kinetic touch fling, no scrollbar
