@@ -1037,26 +1037,25 @@ with their file, and format it the same way we do.
    was for.
 5. **Locate the warnings.** CSS warnings still have no line numbers, and the
    overlay cannot be dismissed. Both are small and both are felt immediately.
-6. **A keyboard on a phone.** *Done, and half of it still needs checking on a
-   phone.* Reported 2026-08-02: tapping a text input in the playground focused
-   it inside the runtime, but the browser saw only a `<canvas>` with nothing
-   focusable, so the on-screen keyboard never opened.
+6. **A keyboard on a phone.** *Done.* Reported 2026-08-02: tapping a text input
+   in the playground focused it inside the runtime, but the browser saw only a
+   `<canvas>` with nothing focusable, so the on-screen keyboard never opened.
 
-   Both halves of the fix landed. The shell has an IME: it asks for composition
-   with `set_ime_allowed`, handles `WindowEvent::Ime`, carries the provisional
-   range on `Focus` and underlines it, and restores the field when a composition
-   is abandoned. That was the wider fix worth taking, because there had been no
+   Both halves landed. The shell has an IME: it asks for composition with
+   `set_ime_allowed`, handles `WindowEvent::Ime`, carries the provisional range
+   on `Focus` and underlines it, and restores the field when a composition is
+   abandoned. That was the wider fix worth taking, because there had been no
    composition anywhere, so dead keys, accents and CJK had never worked on the
-   desktop either. It is verified there: with the US-International layout, `'`
+   desktop either. Verified in the window: with the US-International layout, `'`
    then `e` produces `é`.
 
    On the web the same pathway is fed by a hidden `<input>` laid over the
    focused field, since a browser raises a keyboard for a focused DOM element
-   and not for a canvas. **That half is unverified**: it was written in a
-   session whose desktop locked before it could be driven, and a phone is the
-   only place it means anything. It also will not appear on ruxlang.dev until
-   v0.5.0 is tagged, because the playground there is built from the latest
-   release rather than from `main`.
+   and not for a canvas. Verified under browser touch emulation, driven from the
+   tap through typing, backspace, composition and a committed CJK character.
+   The one thing emulation cannot demonstrate is a keyboard physically rising,
+   so it is still worth half a minute on a real phone, and it only reaches
+   ruxlang.dev once v0.5.0 is tagged.
 
 ### v0.6: apps bigger than one screen
 

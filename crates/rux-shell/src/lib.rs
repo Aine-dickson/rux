@@ -1637,13 +1637,16 @@ impl App {
             return;
         };
         let value = self.document.engine_mut().get_string(&model);
-        // Only rewrite it when it has actually drifted. Assigning `value`
-        // resets the browser's own caret and would fight the user mid-word.
+        // Only touch it when it has actually drifted, which means the change
+        // came from Rux (a handler, a tap moving the caret) rather than from the
+        // keyboard. Writing the value or the selection back on every edit would
+        // fight the browser for the caret mid-word, and the browser is the one
+        // holding the composition.
         if el.value() != value {
             el.set_value(&value);
+            let caret = byte_to_utf16_index(&value, self.caret.min(value.len())) as u32;
+            let _ = el.set_selection_range(caret, caret);
         }
-        let caret = byte_to_utf16_index(&value, self.caret.min(value.len())) as u32;
-        let _ = el.set_selection_range(caret, caret);
         let _ = el.focus();
         self.position_web_ime();
     }
@@ -2071,6 +2074,13 @@ impl App {
         device_handle.queue.submit([encoder.finish()]);
 
         surface_texture.present();
+
+        // The hidden input is placed from `self.focuses`, which only becomes the
+        // *current* layout here. Placing it during the focus change instead
+        // would use the previous frame's geometry, so it sat one edit behind
+        // whenever an edit moved the field it covers.
+        #[cfg(target_arch = "wasm32")]
+        self.position_web_ime();
     }
 }
 

@@ -437,13 +437,13 @@ warnings also carry no line numbers yet, and the overlay can't be dismissed.
 
 ## Known gaps / backlog
 
-- **The soft keyboard is written but unproven on a real phone.** The shell now
-  keeps a hidden `<input>` over the focused field on touch devices, so the
-  browser has something focusable to raise a keyboard for (see "Text input" for
-  how it works). It has been compiled and reasoned through but not driven on a
-  phone, which is where the original bug was found; treat it as unverified until
-  someone types into the playground on one. It also only reaches
-  ruxlang.dev once v0.5.0 is tagged, because the deployed playground is built
+- **The soft keyboard has not been tried on real phone hardware.** It is driven
+  and passing under browser touch emulation, tap through to committed CJK (see
+  "Text input and composition"), so the mechanism works: the hidden `<input>` is
+  created on demand, focused by the tap, and laid over the field. What emulation
+  cannot show is a keyboard physically rising, since that is the OS's decision.
+  Worth thirty seconds on a real phone before v0.5.0 ships. Note it only reaches
+  ruxlang.dev once that tag exists, because the deployed playground is built
   from the latest release rather than from `main`.
 - Text editing: no word-wise movement (Ctrl+arrows), no triple-click line-select,
   no drag-and-drop of selected text, no `::selection` styling.
