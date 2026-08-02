@@ -199,12 +199,12 @@ cargo run -p ruxlang -- examples/showcase.rux</code></pre>
     // rather than a dead rectangle.
     init({ module_or_path: WASM_URL })
       .then(() => {
-        code.innerHTML = highlight(editor.value + "
-");
-        editor.addEventListener("input", () => {
-          code.innerHTML = highlight(editor.value + "
-");
-        });
+        const paint = () => {
+          code.innerHTML = highlight(editor.value + "\n");
+          editor.classList.add("is-overlaid");
+        };
+        paint();
+        editor.addEventListener("input", paint);
       })
       .catch(() => {});
   } else {
@@ -218,8 +218,16 @@ cargo run -p ruxlang -- examples/showcase.rux</code></pre>
 
         // A trailing newline would let the <pre> collapse its last line and
         // drift out of step with the textarea, so pad it.
+        // Hand the glyphs to the <pre> only once it has actually produced
+        // some. Anything that throws leaves the textarea readable.
         const repaint = () => {
-          code.innerHTML = highlight(editor.value + "\n");
+          try {
+            code.innerHTML = highlight(editor.value + "\n");
+            editor.classList.add("is-overlaid");
+          } catch (err) {
+            editor.classList.remove("is-overlaid");
+            console.error(err);
+          }
         };
         repaint();
         editor.addEventListener("input", repaint);
