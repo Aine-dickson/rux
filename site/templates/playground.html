@@ -45,6 +45,23 @@
       </div>
       <div class="pg-stage">
         <canvas id="pg-canvas" width="420" height="640"></canvas>
+        {# Shown instead of the canvas when the browser has no WebGPU. A blank
+           rectangle and a two-word status told a visitor nothing about why, or
+           what to do instead. #}
+        <div id="pg-nogpu" class="pg-nogpu" hidden>
+          <p><strong>This browser has no WebGPU.</strong></p>
+          <p>Rux paints on the GPU, so the playground needs it. It is on by
+          default in recent Chrome, Edge and Safari, and in Firefox on Windows.
+          On Firefox elsewhere it is behind <code>dom.webgpu.enabled</code> in
+          <code>about:config</code>.</p>
+          <p>The editor still works, and Rux itself does not need a browser at
+          all:</p>
+          <pre><code>git clone https://github.com/Aine-dickson/rux
+cd rux
+cargo run -p ruxlang -- examples/showcase.rux</code></pre>
+          <p><a href="https://ruxlang.dev/learn/">The guide</a> walks through
+          building an app from an empty file.</p>
+        </div>
       </div>
       {# Parse errors land here. `role="alert"` so a screen reader announces one
          instead of it only being a colour change. #}
@@ -175,6 +192,21 @@
     status.textContent = "needs WebGPU";
     status.classList.add("is-error");
     runBtn.disabled = true;
+    canvas.hidden = true;
+    document.getElementById("pg-nogpu").hidden = false;
+    // The editor is still worth having: the colouring is a wasm feature that
+    // does not need a GPU, so the page degrades to a syntax-highlighted viewer
+    // rather than a dead rectangle.
+    init({ module_or_path: WASM_URL })
+      .then(() => {
+        code.innerHTML = highlight(editor.value + "
+");
+        editor.addEventListener("input", () => {
+          code.innerHTML = highlight(editor.value + "
+");
+        });
+      })
+      .catch(() => {});
   } else {
     init({ module_or_path: WASM_URL })
       .then(() => {

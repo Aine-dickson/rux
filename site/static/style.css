@@ -652,3 +652,24 @@ pre code {
   font-size: 11px;
   color: var(--ink-faint);
 }
+
+/* Shown in place of the canvas when the browser has no WebGPU. */
+.pg-nogpu {
+  max-width: 420px;
+  padding: 20px 22px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  color: var(--ink-dim);
+  font-size: 14.5px;
+  line-height: 1.6;
+}
+.pg-nogpu p { margin: 0 0 12px; }
+.pg-nogpu p:last-child { margin-bottom: 0; }
+.pg-nogpu strong { color: var(--ink); }
+.pg-nogpu pre {
+  font-size: 12.5px;
+  padding: 10px 12px;
+  margin: 0 0 12px;
+  white-space: pre-wrap;
+}
