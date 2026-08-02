@@ -523,13 +523,20 @@ pre code {
   min-height: 640px;
   overflow: auto;
   background: transparent;
-  /* The glyphs come from the <pre> underneath; only the caret and the selection
-     highlight are the textarea's own. */
-  color: transparent;
+  /* Visible by default, and deliberately. The glyphs are meant to come from the
+     <pre> underneath, but if that never fills in (no wasm, a load error, JS off)
+     a transparent textarea is an invisible one: the caret still moves and
+     selection still works, because those belong to the textarea, so it reads as
+     a field that swallows your typing. Someone reported exactly that. The text
+     only goes transparent once a highlight has actually rendered, which is what
+     `is-overlaid` means. */
+  color: #bfbdb6;
   caret-color: #bfbdb6;
   resize: none;
 }
-.pg-editor::selection { background: #409fff40; color: transparent; }
+.pg-editor.is-overlaid { color: transparent; }
+.pg-editor::selection { background: #409fff40; }
+.pg-editor.is-overlaid::selection { background: #409fff40; color: transparent; }
 .pg-editor:focus { outline: 2px solid var(--accent); outline-offset: -2px; }
 
 /* Token colours: ayu-dark, matching the site's code fences. The class set is

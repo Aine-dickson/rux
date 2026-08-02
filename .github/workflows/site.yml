@@ -117,6 +117,15 @@ jobs:
         # --drafts is off, so posts with `draft = true` stay unpublished.
         run: zola build
 
+      # A literal newline inside a JS string once took the whole playground down
+      # in production: an ES module that fails to parse runs nothing, so the page
+      # looked alive while doing nothing. Zola has no opinion about JavaScript,
+      # so nothing caught it. Node is used here purely as a syntax checker and is
+      # not a build dependency; the site is still produced by Zola alone.
+      - name: Syntax-check inline scripts
+        working-directory: site
+        run: python check-scripts.py
+
       - uses: actions/configure-pages@v5
 
       - uses: actions/upload-pages-artifact@v3
