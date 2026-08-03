@@ -15,6 +15,7 @@ use rux_script::{Builder, Engine};
 use rux_style::BindingRegistry;
 /// Re-exported so the shell can hand pointer/focus state and the window size in
 /// without depending on `rux-style` directly.
+pub use rux_reactive::json_string;
 pub use rux_style::{InteractionState, Viewport, Warning};
 
 /// A loaded `.rux` document: parsed source, imported components (by tag), the
@@ -242,10 +243,12 @@ impl LoadError {
         Self { message, file: None, line: None, column: None, parse: false }
     }
 
-    fn parse(err: rux_parser::ParseError, file: &Path) -> Self {
+    /// `file` is `None` when the source did not come from one, which is the
+    /// playground's case: it has a buffer, not a path.
+    fn parse(err: rux_parser::ParseError, file: Option<&Path>) -> Self {
         Self {
             message: err.message,
-            file: Some(file.to_path_buf()),
+            file: file.map(Path::to_path_buf),
             line: err.line,
             column: err.column,
             parse: true,
@@ -281,7 +284,7 @@ impl Document {
         let path = path.as_ref();
         let src = std::fs::read_to_string(path)
             .map_err(|e| LoadError::plain(format!("reading {}: {e}", path.display())))?;
-        let sfc = rux_parser::parse_sfc(&src).map_err(|e| LoadError::parse(e, path))?;
+        let sfc = rux_parser::parse_sfc(&src).map_err(|e| LoadError::parse(e, Some(path)))?;
 
         // Resolve `use module::component;` imports relative to this file.
         let base = path.parent().unwrap_or_else(|| Path::new("."));
@@ -295,7 +298,7 @@ impl Document {
                 LoadError::plain(format!("reading component {}: {e}", comp_path.display()))
             })?;
             let comp_sfc =
-                rux_parser::parse_sfc(&comp_src).map_err(|e| LoadError::parse(e, &comp_path))?;
+                rux_parser::parse_sfc(&comp_src).map_err(|e| LoadError::parse(e, Some(&comp_path)))?;
             let (comp_script, _nested) = extract_imports(&comp_sfc.script);
             // Merge the component's (pure) functions into the shared engine.
             combined_script.push('\n');
@@ -327,10 +330,21 @@ impl Document {
 
     /// Process `.rux` source with no import resolution (used for fallbacks/tests).
     pub fn from_source(src: &str) -> Result<Self, String> {
-        let sfc = rux_parser::parse_sfc(src).map_err(|e| e.to_string())?;
+        Self::from_source_checked(src).map_err(|e| e.to_string())
+    }
+
+    /// [`Document::from_source`], keeping the failure's position.
+    ///
+    /// The playground needs this: it has no file to point at, so a parse error
+    /// with no line was all it could ever show, and "something is wrong
+    /// somewhere" is not much of an editor.
+    pub fn from_source_checked(src: &str) -> Result<Self, LoadError> {
+        let sfc = rux_parser::parse_sfc(src).map_err(|e| LoadError::parse(e, None))?;
         let (main_script, _imports) = extract_imports(&sfc.script);
-        let mut engine = build_engine(&main_script)?;
-        let (mut root, registry) = rux_style::build_styled_tree_tracked(&sfc, &HashMap::new(), &mut engine)?;
+        let mut engine = build_engine(&main_script).map_err(LoadError::plain)?;
+        let (mut root, registry) =
+            rux_style::build_styled_tree_tracked(&sfc, &HashMap::new(), &mut engine)
+                .map_err(LoadError::plain)?;
         let base = PathBuf::from(".");
         resolve_images(&mut root, &base);
         Ok(Self {

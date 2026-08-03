@@ -610,6 +610,50 @@ pre code {
   white-space: pre-wrap;
 }
 
+/* An error that knows its line can be clicked to go there. */
+.pg-error.is-clickable {
+  cursor: pointer;
+}
+
+/* Warnings: the document loads, but part of it does nothing. Amber rather than
+   red, matching the dev overlay's split between "broken" and "inert". */
+.pg-warnings {
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid var(--line);
+  background: #241f14;
+  max-height: 9.5em;
+  overflow-y: auto;
+}
+
+.pg-diag {
+  padding: 7px 14px;
+  border: 0;
+  border-bottom: 1px solid rgba(250, 179, 135, 0.12);
+  background: none;
+  color: #fab387;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12.5px;
+  line-height: 1.45;
+  text-align: left;
+  white-space: pre-wrap;
+}
+
+.pg-diag:last-child {
+  border-bottom: 0;
+}
+
+/* Only the ones that know a line are buttons, so only those invite a click. */
+button.pg-diag {
+  cursor: pointer;
+}
+
+button.pg-diag:hover,
+button.pg-diag:focus-visible {
+  background: rgba(250, 179, 135, 0.1);
+  color: #ffd0a8;
+}
+
 /* "Try it" on a runnable code block. Positioned against the <pre>, which the
    script marks with .has-tryit so only those blocks become containers. */
 .prose pre.has-tryit { position: relative; }

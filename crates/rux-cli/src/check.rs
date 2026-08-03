@@ -13,7 +13,10 @@
 
 use std::path::{Path, PathBuf};
 
-use rux_runtime::Document;
+// `json_string` is shared with the browser playground, which serialises the same
+// warnings. Two hand-rolled escapers is how the re-indenter came to disagree
+// with itself.
+use rux_runtime::{json_string, Document};
 
 /// How bad a finding is. Errors mean the document will not load at all.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -190,25 +193,6 @@ fn to_json(found: &[Diagnostic]) -> String {
     out
 }
 
-/// Escape per RFC 8259. Windows paths carry backslashes and messages quote the
-/// source, so both of those have to survive the trip into an editor.
-fn json_string(s: &str) -> String {
-    let mut out = String::with_capacity(s.len() + 2);
-    out.push('"');
-    for ch in s.chars() {
-        match ch {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
-            c => out.push(c),
-        }
-    }
-    out.push('"');
-    out
-}
 
 /// Expand the requested paths into `.rux` files: a file is itself, a directory
 /// is everything under it. No paths at all means the current directory, so

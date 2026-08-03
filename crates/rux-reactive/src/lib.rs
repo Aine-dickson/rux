@@ -48,6 +48,43 @@ impl Warning {
     }
 }
 
+/// Quote and escape `s` as a JSON string, per RFC 8259.
+///
+/// Lives beside [`Warning`] because both things that serialise one, the `rux
+/// check` CLI and the browser playground, need exactly this and nothing more.
+/// Two hand-rolled copies of an escaper is how the re-indenter went wrong.
+/// Windows paths carry backslashes and messages quote the author's source, so
+/// both of those have to survive the trip into an editor.
+pub fn json_string(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for ch in s.chars() {
+        match ch {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
+impl Warning {
+    /// `{"message": …, "line": … }`, with `line` present and null when unplaced
+    /// so a consumer never has to tell "no position" from "field missing".
+    pub fn to_json(&self) -> String {
+        let line = match self.line {
+            Some(line) => line.to_string(),
+            None => "null".to_string(),
+        };
+        format!("{{\"message\": {}, \"line\": {line}}}", json_string(&self.message))
+    }
+}
+
 impl std::fmt::Display for Warning {
     /// `line 12: message`, or just the message when it has no position. This is
     /// what the dev overlay shows, so it stays prose rather than becoming a

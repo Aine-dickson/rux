@@ -3164,6 +3164,7 @@ dependencies = [
  "image",
  "rux-layout",
  "rux-parser",
+ "rux-reactive",
  "rux-script",
  "rux-style",
 ]

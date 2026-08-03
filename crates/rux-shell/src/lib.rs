@@ -2426,10 +2426,13 @@ impl ApplicationHandler<RuxEvent> for App {
                         self.touch = Some(here);
                         // Same order as the mouse: the dev overlay is above
                         // everything, so a finger on it arms a dismiss rather
-                        // than reaching the app it is covering.
-                        if self.overlay_covers_physical(at) {
-                            self.press = Some(at);
-                        } else if !self.press_scrollbar(at) && !self.press_text(at) {
+                        // than reaching the app it is covering. The short-circuit
+                        // is load-bearing, `press_scrollbar` and `press_text`
+                        // start a drag as a side effect and must not run when the
+                        // panel took the press.
+                        if self.overlay_covers_physical(at)
+                            || (!self.press_scrollbar(at) && !self.press_text(at))
+                        {
                             self.press = Some(at);
                         }
                     }
@@ -2884,7 +2887,7 @@ pub fn resize_web(w: f64, h: f64) {
 #[cfg(target_arch = "wasm32")]
 pub fn set_web_source(source: String) -> Option<String> {
     if let Err(err) = Document::from_source(&source) {
-        return Some(err);
+        return Some(err.to_string());
     }
     WEB_PROXY.with(|p| {
         if let Some(proxy) = p.borrow().as_ref() {
@@ -2892,6 +2895,47 @@ pub fn set_web_source(source: String) -> Option<String> {
         }
     });
     None
+}
+
+/// Replace the running document and report **everything** wrong with it, as
+/// JSON: `{"error": {"message", "line", "column"} | null, "warnings": [...]}`.
+///
+/// [`set_web_source`] returns only an error message, which is all the playground
+/// could ever show: no line to jump to, and no warnings at all, while the
+/// desktop window had both. This is the same call with the diagnostics the
+/// runtime already computes actually handed over.
+///
+/// The document is built twice, once here to inspect and once on the event loop
+/// to display. That is not new and not avoidable cheaply: a `Document` is not
+/// `Send`, and the proxy that wakes the loop requires that it be, so the source
+/// text is what travels. Both builds run the same code over the same input, so
+/// the diagnostics reported are the diagnostics shown.
+#[cfg(target_arch = "wasm32")]
+pub fn diagnose_web_source(source: String) -> String {
+    let (error, warnings) = match Document::from_source_checked(&source) {
+        Err(err) => {
+            let line = err.line.map(|l| l.to_string()).unwrap_or_else(|| "null".into());
+            let column = err.column.map(|c| c.to_string()).unwrap_or_else(|| "null".into());
+            let error = format!(
+                "{{\"message\": {}, \"line\": {line}, \"column\": {column}}}",
+                rux_runtime::json_string(&err.message)
+            );
+            (error, String::from("[]"))
+        }
+        Ok(doc) => {
+            let warnings: Vec<String> =
+                doc.diagnostics().warnings.iter().map(|w| w.to_json()).collect();
+            // Only a document that builds gets displayed: a broken one leaves the
+            // last good tree on screen, which is what the desktop does too.
+            WEB_PROXY.with(|p| {
+                if let Some(proxy) = p.borrow().as_ref() {
+                    let _ = proxy.send_event(RuxEvent::SetSource(source));
+                }
+            });
+            (String::from("null"), format!("[{}]", warnings.join(", ")))
+        }
+    };
+    format!("{{\"error\": {error}, \"warnings\": {warnings}}}")
 }
 
 /// Open the Rux window for the given `.rux` file and run the frame loop until the

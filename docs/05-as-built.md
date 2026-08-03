@@ -480,6 +480,19 @@ app is watching.
 Every shipped example is checked to load **warning-free**, so a noisy overlay in
 `examples/` is a test failure.
 
+**The browser playground shows the same diagnostics**, in the page rather than
+only on the canvas. `rux-web`'s `diagnose(source)` sets the document and returns
+the error (with line and column) and every warning (with its line) as JSON; the
+page lists them under the editor and each one that knows its line is a button
+that selects that line. It runs on load as well as on Run, since a shared link
+carries its source in the URL hash.
+
+> The deployed page is built from `main` while the runtime it loads is pinned to
+> the latest **tag**, so the page has to keep working against a build that
+> predates its own features. It feature-detects `diagnose` and falls back to the
+> older `setSource`, which reports an error and no warnings. That fallback goes
+> once v0.5.0 is tagged.
+
 **Known limits:** rhai returns `()` for a missing *map property*, rather than
 erroring, so `{{ user.nmae }}` still renders empty with nothing reported (a
 missing *function* or variable does report). That one is rhai's semantics, not

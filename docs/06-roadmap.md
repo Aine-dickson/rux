@@ -1051,11 +1051,23 @@ with their file, and format it the same way we do.
 
    Still missing a position: CSS and expression warnings report a file but no
    line, which is item 5.
-4. **The playground catches up to v0.4.** It ships on `main` today running the
-   v0.3 runtime, so it reports parse failures with no line or column and shows
-   no warnings at all. Wiring the v0.4 overlay through `rux-web` gives the page
-   the same diagnostics the desktop window gets, which is what the playground
-   was for.
+4. **The playground catches up.** *Done.* It could report an error message and
+   nothing else: no line to jump to, and no warnings at all, while the desktop
+   window had both.
+
+   `rux-web` gains `diagnose(source)`, which sets the document and returns
+   everything wrong with it as JSON: the error with its line and column, and
+   every warning with its line. The page lists them under the editor, and each
+   one that knows its line is a button that selects that line. It runs on load
+   as well as on Run, because a shared link carries its source in the URL hash,
+   so the first thing on screen can already be someone else's broken document.
+
+   `setSource` stays exactly as it was. The deployed page is built from `main`
+   while the runtime it loads is pinned to the latest **tag**, so the page has to
+   work against a build that predates its own features. It feature-detects
+   `diagnose` and falls back; that fallback was tested against a module with the
+   export removed, and degrades to the old behaviour with no errors. It can go
+   once v0.5.0 is tagged.
 5. **Locate the warnings.** *Done.*
 
    A warning is now a `Warning { message, line }` rather than a string, and

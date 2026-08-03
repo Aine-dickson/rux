@@ -151,6 +151,31 @@ mod web {
         rux_shell::set_web_source(source)
     }
 
+    /// Replace the running document and report everything wrong with it, as a
+    /// JSON string:
+    ///
+    /// ```json
+    /// {"error": {"message": "…", "line": 6, "column": 16}, "warnings":
+    ///  [{"message": "…", "line": 11}]}
+    /// ```
+    ///
+    /// `error` is null when the document loaded. `line` and `column` are null
+    /// when that stage did not know a position, so a consumer never has to tell
+    /// an absent field from an unplaced one.
+    ///
+    /// This is what [`set_source`] should always have been. That one returns a
+    /// bare error message, so the playground could show no line to jump to and
+    /// no warnings at all, while the desktop window had both. It stays because
+    /// the deployed page runs against the runtime from the latest *tag*, which
+    /// predates this.
+    ///
+    /// JSON as a string rather than a built object keeps `js-sys` out of the
+    /// bundle for a payload this shape.
+    #[wasm_bindgen]
+    pub fn diagnose(source: String) -> String {
+        rux_shell::diagnose_web_source(source)
+    }
+
     /// Send panics to `console.error` instead of the default, which on wasm is
     /// an unadorned "unreachable executed" with no message or location. Written
     /// out rather than pulling in `console_error_panic_hook`, which is a
