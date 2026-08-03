@@ -37,6 +37,72 @@ cargo run -- examples/dashboard.rux
 Edit any `.rux` file (including imported components) and it **hot-reloads**: no
 rebuild. Only changing the compiled Rust host requires `cargo run` again.
 
+## Formatting
+
+```bash
+rux fmt                         # every .rux under the current directory, in place
+rux fmt app.rux                 # or a named file or directory
+rux fmt --check .               # change nothing; exit non-zero if a file would
+rux fmt --indent 4 app.rux      # one indent level: spaces, or `tab` (default 2)
+rux fmt -                       # read stdin, write stdout (what an editor uses)
+```
+
+`<template>` and `<script>` are only **re-indented**: nothing on a line is
+rewritten, wrapped or reordered, because a `@tap` handler is rhai and
+rearranging someone's expressions is not a formatter's business. `<style>` *is*
+formatted, one space before `{`, long rules broken one declaration per line,
+short ones (up to three) kept inline. Line endings are preserved.
+
+This is the one implementation. The VS Code extension used to carry its own copy
+in JavaScript and the two drifted: the JS list of non-nesting tags came from
+HTML, which has `img` but not Rux's `<image>`, so everything after an `<image
+src="…">` without a self-closing slash was indented one level too deep. The
+extension now shells out to `rux fmt`.
+
+> **The shipped `examples/` are not formatted to this.** All 28 differ, about
+> half on indent width and half on CSS, which inlines rules of up to three
+> declarations that the examples write expanded. Running the formatter over them
+> is a real decision (the expanded form may read better when teaching) and has
+> not been made.
+
+## Checking a file without opening a window
+
+```bash
+rux check                       # every .rux under the current directory
+rux check examples              # or a named file or directory
+rux check --deny-warnings .     # warnings fail too, which is what CI wants
+rux check --format json .       # for an editor to turn into squiggles
+```
+
+Output is `path:line:col: severity: message`, the shape every compiler emits and
+every editor and CI log already parses. Exit codes: **0** clean, **1** problems
+found, **2** the request itself was wrong (no such path, unknown flag).
+
+It loads through the same code the window does, so it cannot disagree with the
+runtime about what a valid file is. **Errors** are failures to load and carry a
+line and column. **Warnings** are the things the dev overlay lists.
+
+**CSS warnings carry a line**: unhonored properties, unknown pseudo-classes and
+unsupported `@media` conditions all report the line of the rule they are in, in
+the file's own numbering rather than the `<style>` block's. The line is the
+*rule's*, not the declaration's, so there is no column: lightningcss locates a
+rule and the declarations inside it share that position.
+
+Two kinds are still unplaced, deliberately rather than by omission:
+
+- **Expression failures** (`{{ user.nmae }}`, a broken `@tap`). An expression
+  comes from a template attribute or a `{{ }}` span and the template parser does
+  not record where each one started.
+- **Anything from a component's CSS.** A component's rules live in a *different*
+  file, and a warning carries a line but not a file, so a line from the
+  component's numbering would point confidently at the wrong part of whichever
+  document imported it. A wrong line is worse than none.
+
+Walking a directory **skips components**, the files whose template root is not
+`<screen>`. A component's `{{ prop }}` values come from whoever uses it, so
+loading one on its own reports every prop as undefined. Naming a component
+explicitly checks it anyway, since that was asked for on purpose.
+
 ## Crates
 
 | Crate | Job |
@@ -413,6 +479,13 @@ app is watching.
   what does nothing: unhonored properties, unknown pseudo-classes, undefined
   `var()`s, unsupported `@media` conditions, and **expressions that failed**, `expression \`dubble(n)\` failed: Function not found: dubble`. Long lists are
   capped at six with a count of the rest; everything still goes to stderr.
+  CSS warnings are prefixed with the line they are on (`line 11: …`).
+- **Tapping the panel dismisses it**, and it says so. The panel covers the app it
+  is describing, which was a problem when the thing you needed to look at was
+  underneath. The dismissal is remembered against *those* diagnostics, so it
+  lasts exactly as long as the document's problems are the same ones: fix a
+  warning, or introduce an error, and the panel comes straight back. A press
+  landing on the panel does not reach the app under it either.
 
 Every shipped example is checked to load **warning-free**, so a noisy overlay in
 `examples/` is a test failure.
@@ -421,8 +494,9 @@ Every shipped example is checked to load **warning-free**, so a noisy overlay in
 erroring, so `{{ user.nmae }}` still renders empty with nothing reported (a
 missing *function* or variable does report). That one is rhai's semantics, not
 ours, it is tracked as a motivator for the planned rhai fork in
-[Roadmap](/roadmap/) (Further out → *Script documentation*). CSS
-warnings also carry no line numbers yet, and the overlay can't be dismissed.
+[Roadmap](/roadmap/) (Further out → *Script documentation*). Expression
+failures and anything from a component's CSS are still reported without a line,
+for the reasons under "Checking a file without opening a window".
 
 ---
 

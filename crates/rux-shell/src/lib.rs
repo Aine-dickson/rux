@@ -458,9 +458,18 @@ const OVERLAY_MAX_WARNINGS: usize = 6;
 /// empty window with one line on a stderr nobody running a GUI is watching. An
 /// error takes a red panel and says the screen is stale; warnings take a quieter
 /// amber one, since the app underneath is fine.
-fn overlay_paints(diag: &rux_runtime::Diagnostics, path: &Path, width: f32) -> Vec<Paint> {
+/// The painted overlay, and where it ended up.
+struct Overlay {
+    paints: Vec<Paint>,
+    /// The panel's box in logical px, so a tap on it can dismiss it. Kept beside
+    /// the paints rather than recomputed, since a hit region that disagrees with
+    /// what was drawn is the kind of bug that only shows up under a resize.
+    rect: (f32, f32, f32, f32),
+}
+
+fn overlay_paints(diag: &rux_runtime::Diagnostics, path: &Path, width: f32) -> Option<Overlay> {
     if diag.is_empty() {
-        return Vec::new();
+        return None;
     }
     let error_bg = Rgba::new(0.24, 0.09, 0.13, 0.97); // deep red
     let error_edge = Rgba::new(0.95, 0.35, 0.42, 1.0); // #f38ba8-ish
@@ -508,6 +517,10 @@ fn overlay_paints(diag: &rux_runtime::Diagnostics, path: &Path, width: f32) -> V
         (Some(_), n) => format!("rux: {} failed to load  ·  {n} warning(s)", file_name(path)),
         (None, n) => format!("rux: {n} warning(s) in {}", file_name(path)),
     };
+    // The panel covers the app it is describing, and there was no way to move it
+    // out of the way. It says so rather than leaving the gesture to be guessed
+    // at, and it comes back by itself the moment the diagnostics change.
+    lines.push(("tap this panel to dismiss it".to_string(), muted));
 
     let panel_h = OVERLAY_TITLE_H + lines.len() as f32 * OVERLAY_LINE_H + OVERLAY_PAD * 1.5;
     let x = OVERLAY_PAD;
@@ -549,7 +562,21 @@ fn overlay_paints(diag: &rux_runtime::Diagnostics, path: &Path, width: f32) -> V
             content: overlay_text(line, 14.0, 400, color),
         }));
     }
-    out
+    Some(Overlay { paints: out, rect: (x, y, panel_w, panel_h) })
+}
+
+/// Whether the overlay should be on screen: there is something to say, and it
+/// has not been dismissed *for these particular diagnostics*.
+///
+/// Comparing the whole `Diagnostics` rather than holding a flag is what makes
+/// the panel come back on its own. Dismissing "3 warnings" and then introducing
+/// a parse error must not leave the window silent about it, which a boolean
+/// would do until the next restart.
+fn overlay_visible(
+    diag: &rux_runtime::Diagnostics,
+    dismissed: Option<&rux_runtime::Diagnostics>,
+) -> bool {
+    !diag.is_empty() && dismissed != Some(diag)
 }
 
 fn file_name(path: &Path) -> String {
@@ -728,6 +755,14 @@ struct App {
     /// Where the current selection started, as a byte index. Equal to `caret`
     /// when nothing is selected, the selection is the range between them.
     anchor: usize,
+    /// The diagnostics whose overlay has been dismissed, if any. Held as the
+    /// diagnostics themselves rather than a flag so that the panel reappears the
+    /// moment what is wrong with the document changes: dismissing "3 warnings"
+    /// must not also hide the error you introduce next.
+    overlay_dismissed: Option<rux_runtime::Diagnostics>,
+    /// Where the overlay was drawn last frame, in logical px, for hit testing.
+    /// `None` when it is not on screen.
+    overlay_rect: Option<(f32, f32, f32, f32)>,
     /// The IME composition in flight, if any. `None` covers every keyboard that
     /// commits directly, which is most of them most of the time.
     preedit: Option<Preedit>,
@@ -795,6 +830,8 @@ impl App {
             open_select: None,
             caret: 0,
             anchor: 0,
+            overlay_dismissed: None,
+            overlay_rect: None,
             preedit: None,
             text_drag: false,
             last_click: None,
@@ -1210,11 +1247,48 @@ impl App {
     }
 
     /// Handle a completed tap at `(px, py)`, in physical pixels: focus an input
+    /// Hide the dev overlay if `(fx, fy)` in logical px is on it. Returns whether
+    /// it acted, so the tap is not also delivered to the app underneath.
+    ///
+    /// The dismissal is remembered against the current diagnostics, so it lasts
+    /// exactly as long as the document's problems are the same ones.
+    fn dismiss_overlay_at(&mut self, fx: f32, fy: f32) -> bool {
+        if !self.overlay_covers(fx, fy) {
+            return false;
+        }
+        self.overlay_dismissed = Some(self.document.diagnostics().clone());
+        self.overlay_rect = None;
+        self.request_redraw();
+        true
+    }
+
+    /// Whether the overlay is on screen and covers `(fx, fy)` in logical px.
+    fn overlay_covers(&self, fx: f32, fy: f32) -> bool {
+        self.overlay_rect
+            .is_some_and(|(x, y, w, h)| fx >= x && fx <= x + w && fy >= y && fy <= y + h)
+    }
+
+    /// The same test against a physical-pixel pointer position, which is what
+    /// the press handlers have. A press landing on the panel must not reach the
+    /// app underneath: starting a text selection inside a field you cannot see
+    /// is exactly the confusion the panel is there to prevent.
+    fn overlay_covers_physical(&self, (px, py): (f64, f64)) -> bool {
+        let scale = self.scale();
+        self.overlay_covers((px / scale) as f32, (py / scale) as f32)
+    }
+
     /// if one is under the pointer, otherwise run the topmost `@tap` handler.
     fn dispatch_tap(&mut self, px: f64, py: f64) {
         let scale = self.scale();
         let (px, py) = (px / scale, py / scale);
         let (fx, fy) = (px as f32, py as f32);
+
+        // The dev overlay is painted above everything, including a dropdown, so
+        // it takes the tap first. Anything else would have the panel swallow
+        // taps meant for it while passing them to whatever it is covering.
+        if self.dismiss_overlay_at(fx, fy) {
+            return;
+        }
 
         // An open dropdown is on top of everything, so it intercepts taps first:
         // a tap on an option selects it; any other tap just closes the dropdown.
@@ -1918,6 +1992,8 @@ impl App {
             scrolls,
             offsets,
             states,
+            overlay_dismissed,
+            overlay_rect,
             #[cfg(not(target_arch = "wasm32"))]
             path,
             #[cfg(not(target_arch = "wasm32"))]
@@ -1993,15 +2069,22 @@ impl App {
         // The dev overlay goes last, above everything including a dropdown: if the
         // document is broken, that is the most important thing on screen.
         let diagnostics = document.diagnostics();
-        if !diagnostics.is_empty() {
+        // Dismissal is remembered against the diagnostics it was for, so fixing
+        // one thing and breaking another brings the panel straight back rather
+        // than leaving it hidden until restart.
+        *overlay_rect = None;
+        if overlay_visible(diagnostics, overlay_dismissed.as_ref()) {
             #[cfg(not(target_arch = "wasm32"))]
             let panel = overlay_paints(diagnostics, path, logical.0 as f32);
             // No file on the web, so the overlay titles itself after the editor.
             #[cfg(target_arch = "wasm32")]
             let panel =
                 overlay_paints(diagnostics, Path::new("playground.rux"), logical.0 as f32);
-            let scene = rux_paint::build_scene(&panel, text, images, false);
-            state.scene.append(&scene, Some(Affine::scale(scale)));
+            if let Some(panel) = panel {
+                let scene = rux_paint::build_scene(&panel.paints, text, images, false);
+                state.scene.append(&scene, Some(Affine::scale(scale)));
+                *overlay_rect = Some(panel.rect);
+            }
         }
 
         // Publish the accessibility tree for this frame. `update_if_active` skips
@@ -2341,7 +2424,12 @@ impl ApplicationHandler<RuxEvent> for App {
                         // Every helper below reads it.
                         self.pointer = at;
                         self.touch = Some(here);
-                        if !self.press_scrollbar(at) && !self.press_text(at) {
+                        // Same order as the mouse: the dev overlay is above
+                        // everything, so a finger on it arms a dismiss rather
+                        // than reaching the app it is covering.
+                        if self.overlay_covers_physical(at) {
+                            self.press = Some(at);
+                        } else if !self.press_scrollbar(at) && !self.press_text(at) {
                             self.press = Some(at);
                         }
                     }
@@ -2400,8 +2488,11 @@ impl ApplicationHandler<RuxEvent> for App {
             } => {
                 // A press on a scrollbar thumb belongs to the bar, and a press in
                 // an input starts a text selection: neither becomes a tap on the
-                // content under it.
-                if !self.press_scrollbar(self.pointer) && !self.press_text(self.pointer) {
+                // content under it. A press on the dev overlay is none of those,
+                // it just arms the tap that dismisses it.
+                if self.overlay_covers_physical(self.pointer) {
+                    self.press = Some(self.pointer);
+                } else if !self.press_scrollbar(self.pointer) && !self.press_text(self.pointer) {
                     self.press = Some(self.pointer);
                     // `:active` holds from press to release.
                     self.update_pointer_state();
@@ -2619,6 +2710,9 @@ fn web_send_text(el: &web_sys::HtmlInputElement) {
 // emoji is 4 bytes and 2 code units, a CJK character 3 bytes and 1. Getting this
 // wrong does not misplace the caret slightly, it panics on the first slice that
 // lands inside a character, so it is worth testing directly.
+//
+// Compiled for the web, which is the only caller, and for tests, which are the
+// reason it is not simply inside the wasm module.
 
 /// Byte index of the character boundary at or before `units` UTF-16 code units
 /// into `s`.
@@ -2628,6 +2722,7 @@ fn web_send_text(el: &web_sys::HtmlInputElement) {
 /// character, which is the same direction [`floor_char_boundary`] rounds, so a
 /// caret can never appear to jump over an emoji depending on which conversion it
 /// happened to go through.
+#[cfg(any(target_arch = "wasm32", test))]
 fn utf16_to_byte_index(s: &str, units: usize) -> usize {
     let mut seen = 0;
     for (byte, ch) in s.char_indices() {
@@ -2644,12 +2739,14 @@ fn utf16_to_byte_index(s: &str, units: usize) -> usize {
 }
 
 /// The inverse: how many UTF-16 code units precede byte index `byte` in `s`.
+#[cfg(any(target_arch = "wasm32", test))]
 fn byte_to_utf16_index(s: &str, byte: usize) -> usize {
     s[..floor_char_boundary(s, byte)].chars().map(char::len_utf16).sum()
 }
 
 /// Round `index` down to a character boundary, so a caret that arrives inside a
 /// character is pulled back to its start rather than left to panic a later slice.
+#[cfg(any(target_arch = "wasm32", test))]
 fn floor_char_boundary(s: &str, mut index: usize) -> usize {
     index = index.min(s.len());
     while index > 0 && !s.is_char_boundary(index) {
@@ -2847,6 +2944,48 @@ pub fn run(path: PathBuf) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rux_runtime::{Diagnostics, Warning};
+
+    fn warned(message: &str) -> Diagnostics {
+        Diagnostics { warnings: vec![Warning::new(message)], ..Diagnostics::default() }
+    }
+
+    /// The overlay covers the app it is describing, so it has to be dismissable.
+    #[test]
+    fn dismissing_the_overlay_hides_it() {
+        let diag = warned("float does nothing");
+        assert!(overlay_visible(&diag, None), "shown before it is dismissed");
+        assert!(!overlay_visible(&diag, Some(&diag)), "hidden after");
+    }
+
+    /// And it must come back on its own when what is wrong changes, or
+    /// dismissing a warning would silence the error you write next.
+    #[test]
+    fn a_dismissed_overlay_returns_when_the_diagnostics_change() {
+        let dismissed = warned("float does nothing");
+
+        let another_warning = warned("`:nope` is not supported");
+        assert!(overlay_visible(&another_warning, Some(&dismissed)));
+
+        let now_broken = Diagnostics {
+            error: Some("parse error".into()),
+            stale: true,
+            warnings: dismissed.warnings.clone(),
+        };
+        assert!(
+            overlay_visible(&now_broken, Some(&dismissed)),
+            "an error arriving after a dismissed warning must show"
+        );
+    }
+
+    /// Fixing everything hides the panel whether or not it was dismissed, and a
+    /// stale dismissal must not make an empty document look dismissed-into-silence.
+    #[test]
+    fn nothing_wrong_means_no_overlay() {
+        let clean = Diagnostics::default();
+        assert!(!overlay_visible(&clean, None));
+        assert!(!overlay_visible(&clean, Some(&warned("old"))));
+    }
 
     /// A 200x200 box holding 500px-tall content: it scrolls down, not sideways.
     fn tall() -> ScrollRegion {

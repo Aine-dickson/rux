@@ -45,7 +45,8 @@ fn every_example_is_warning_free() {
         let Ok(doc) = Document::load(&path) else { continue }; // reported by the test above
         let warnings = &doc.diagnostics().warnings;
         if !warnings.is_empty() {
-            noisy.push(format!("{}:\n  - {}", path.display(), warnings.join("\n  - ")));
+            let listed: Vec<String> = warnings.iter().map(|w| w.to_string()).collect();
+            noisy.push(format!("{}:\n  - {}", path.display(), listed.join("\n  - ")));
         }
     }
     assert!(

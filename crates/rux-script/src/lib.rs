@@ -13,7 +13,7 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 
 use rhai::{Dynamic, Engine as RhaiEngine, Module, Scope, AST};
-use rux_reactive::Value;
+use rux_reactive::{Value, Warning};
 
 thread_local! {
     /// While `Some`, every signal read during evaluation is recorded here. This is
@@ -120,7 +120,7 @@ thread_local! {
     /// Expression failures raised since the last drain. Mirrors the sink in
     /// `rux-style`: the runtime drains both after a build so the dev overlay can
     /// list everything wrong with the document, not just what reached stderr.
-    static WARNINGS: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+    static WARNINGS: RefCell<Vec<Warning>> = const { RefCell::new(Vec::new()) };
 }
 
 fn warn(message: String) {
@@ -128,15 +128,37 @@ fn warn(message: String) {
         let mut w = w.borrow_mut();
         // A binding is re-evaluated on every build, and an `r-for` evaluates the
         // same expression once per row, so the same failure arrives many times.
-        if !w.iter().any(|existing| *existing == message) {
-            eprintln!("rux: {message}");
-            w.push(message);
+        if !w.iter().any(|existing: &Warning| existing.message == message) {
+            if ECHO.with(|e| e.get()) {
+                eprintln!("rux: {message}");
+            }
+            // Expression failures are still unplaced: an expression comes from a
+            // template attribute or a `{{ }}` span, and the template parser does
+            // not yet record where each of those started. See `rux-reactive`'s
+            // `Warning` on why a guess would be worse than nothing.
+            w.push(Warning::new(message));
         }
     });
 }
 
+thread_local! {
+    /// Whether to mirror each warning to stderr as it happens.
+    ///
+    /// On for anyone running the window, where stderr is the only place a
+    /// warning could go before the overlay existed. Off for a tool that drains
+    /// the sink and formats it itself: printing each warning twice, once as
+    /// prose and once as a diagnostic, is what makes machine-readable output
+    /// unpipeable.
+    static ECHO: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
+}
+
+/// Stop (or resume) mirroring warnings to stderr. See [`ECHO`].
+pub fn set_stderr_echo(on: bool) {
+    ECHO.with(|e| e.set(on));
+}
+
 /// Take the expression failures raised since the last call, emptying the sink.
-pub fn take_warnings() -> Vec<String> {
+pub fn take_warnings() -> Vec<Warning> {
     WARNINGS.with(|w| std::mem::take(&mut *w.borrow_mut()))
 }
 
@@ -333,7 +355,7 @@ mod tests {
         assert_eq!(e.eval_display("nope(1)", &[]), "", "still degrades to empty");
         let warnings = take_warnings();
         assert_eq!(warnings.len(), 1, "{warnings:?}");
-        assert!(warnings[0].contains("nope(1)"), "names the expression: {warnings:?}");
+        assert!(warnings[0].message.contains("nope(1)"), "names the expression: {warnings:?}");
 
         assert!(take_warnings().is_empty(), "draining empties the sink");
     }

@@ -724,19 +724,20 @@ Ships with coloring.
 - ✅ **File icon**: `.rux` files show the Rux mark via `contributes.languages.icon`
   (shown when the active file-icon theme falls back to language icons; Seti does).
 - ✅ **Basic Format Document** (`Shift+Alt+F`): a bracket/tag-aware **re-indenter**
-  in a plain-JS `extension.js` (no build toolchain). Tracks nesting across tags,
-  braces, brackets, parens; preserves multi-line comment prose; idempotent; matches
-  14/18 hand-written examples byte-for-byte, normalizes the rest. **This is a
-  stopgap, not `rux fmt`**: it only fixes indentation, never intra-line spacing,
-  wrap, or alignment of multi-line continuations. Registering it made the extension
-  a *runtime* extension (a `main`), but still no compiler/bundler; the parser-backed
-  formatter below is the real one.
+  in a plain-JS `extension.js` (no build toolchain). **Superseded in v0.5**: the
+  JS copy is gone and the extension shells out to `rux fmt`, which is one
+  implementation instead of two that had already drifted. What is left of the
+  history is worth keeping: a second copy of a rule set is a bug waiting for a
+  week to pass.
 
 ### Tier 1: Rust CLI subcommand + thin extension glue
 
-**This is the threshold** where the extension stops being static config and becomes
-a **compiled TypeScript extension** (an activation entry, a node build). Worth it,
-but it's a real step up, so plan it deliberately.
+**Reached in v0.5.** This was expected to be the threshold where the extension
+became a **compiled TypeScript extension** (an activation entry, a node build).
+It was not: shelling out to `rux fmt` and `rux check --format json` from plain
+JavaScript needs no compiler and no bundler, only `child_process`. The step up
+that was budgeted for did not have to be taken, which is worth remembering the
+next time a toolchain looks unavoidable.
 
 - **`rux fmt`**: parse with the real parser, pretty-print, reuse in a VS Code
   `DocumentFormattingEditProvider`. Also a standalone CLI formatter (`rux fmt
@@ -1017,16 +1018,68 @@ with their file, and format it the same way we do.
    (inherited from HTML, which has `img`), so an `<image src="...">` written
    without a self-closing slash over-indented everything after it. The
    extension should shell out to `rux fmt` and the JS copy should go.
-3. **`rux check`**: the machine-readable half of the dev overlay, flagged as
-   still-open in v0.4. A non-zero exit and parseable diagnostics are what let
-   CI and an editor use the same errors the overlay shows.
+
+   *Done.* `rux fmt [path...]` formats in place, `--check` changes nothing and
+   exits non-zero if anything would, `--indent <n|tab>` sets one level, and `-`
+   reads stdin and writes stdout, which is what an editor wants because the
+   buffer it needs formatted is usually unsaved. The extension shells out to it
+   and the JavaScript copy is gone, along with the `<image>` bug, which is now a
+   test.
+
+   **Left open by this:** the shipped `examples/` do not match the formatter.
+   All 28 would be rewritten, roughly half on indent width and half because the
+   CSS formatter inlines rules of up to three declarations that the examples
+   write expanded. Whether to reformat them, or to change `INLINE_MAX`, is a
+   taste decision nobody has made.
+3. **`rux check`**: *done.* The machine-readable half of the dev overlay, so CI
+   and an editor can act on the errors the overlay shows.
+
+   `rux check [path...]` loads through the same path the window does, because a
+   checker that disagrees with the runtime is worse than none. It reports
+   `path:line:col: severity: message`, or JSON with `--format json`, and exits 0
+   clean, 1 on problems, 2 if the request itself was wrong. Warnings do not fail
+   a build unless `--deny-warnings` is passed: a document that renders should
+   not break someone's build over a property Rux has not got to yet.
+
+   Two things fell out of building it. The warning sinks were mirrored to stderr
+   as they were raised, which printed every finding twice, so both sinks now
+   have an off switch that any tool formatting them itself can use. And walking
+   a directory has to skip *components*: their props come from the parent, so
+   checking one standalone reports every prop as undefined. The test is the one
+   the spec already sets, a document roots at `<screen>`, which also catches a
+   component nothing currently imports. Naming one explicitly still checks it.
+
+   Still missing a position: CSS and expression warnings report a file but no
+   line, which is item 5.
 4. **The playground catches up to v0.4.** It ships on `main` today running the
    v0.3 runtime, so it reports parse failures with no line or column and shows
    no warnings at all. Wiring the v0.4 overlay through `rux-web` gives the page
    the same diagnostics the desktop window gets, which is what the playground
    was for.
-5. **Locate the warnings.** CSS warnings still have no line numbers, and the
-   overlay cannot be dismissed. Both are small and both are felt immediately.
+5. **Locate the warnings.** *Done.*
+
+   A warning is now a `Warning { message, line }` rather than a string, and
+   every CSS warning carries the line of the rule it came from, counted in the
+   file rather than in the `<style>` block. That needed the parser to record
+   which file line each section starts on, since the sections are trimmed before
+   any later stage sees them. It is the rule's line, not the declaration's, so
+   there is no column.
+
+   Two kinds stay unplaced on purpose. **Expression failures**, because the
+   template parser does not record where each binding started. And **anything
+   from a component's CSS**, because those rules are in another file and a
+   warning carries no file: a line from the component's numbering would point
+   confidently at the wrong part of whichever document imported it. Giving
+   `Warning` a file as well as a line would fix both, and is the natural next
+   step if this starts to bite.
+
+   The overlay is dismissed by tapping it, and says so. Dismissal is remembered
+   against the diagnostics it was for, so the panel returns as soon as what is
+   wrong changes rather than staying hidden until restart.
+
+   **Not verified in the window.** The session that built it had no reachable
+   desktop by the end, so the panel's appearance and the tap have only been
+   tested through the logic underneath them.
 6. **A keyboard on a phone.** *Done.* Reported 2026-08-02: tapping a text input
    in the playground focused it inside the runtime, but the browser saw only a
    `<canvas>` with nothing focusable, so the on-screen keyboard never opened.

@@ -24,6 +24,9 @@ use rux_layout::{
 use rux_layout::{GradientKind, GridFlow, Transform};
 use rux_parser::{Element, Node as TplNode, Sfc};
 use rux_reactive::Value;
+/// Re-exported so the runtime and the shell can name a warning without
+/// depending on `rux-reactive` directly, the same way `Viewport` travels.
+pub use rux_reactive::Warning;
 use rux_script::Engine;
 
 /// Loop-variable bindings introduced by `r-for`, layered as a scope stack and
@@ -41,21 +44,66 @@ thread_local! {
     /// the terminal on every keystroke), but the overlay must list everything the
     /// current document has wrong, every build, so this sink dedupes only within
     /// itself and is drained by [`take_warnings`].
-    static WARNINGS: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+    static WARNINGS: std::cell::RefCell<Vec<Warning>> = const { std::cell::RefCell::new(Vec::new()) };
+
+    /// The file line currently being cascaded, when it is known.
+    ///
+    /// Set around one rule's collection, so a warning raised anywhere beneath
+    /// can say where it came from without every function in between carrying a
+    /// line it does not otherwise care about. The alternative was threading a
+    /// parameter through selector parsing and pseudo-class parsing, neither of
+    /// which has any other reason to know what a file is.
+    static AT_LINE: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
+}
+
+/// Run `f` with any warnings it raises attributed to `line`. Restores whatever
+/// was set before, so nesting (a rule inside an `@media`) unwinds correctly.
+fn located<T>(line: Option<usize>, f: impl FnOnce() -> T) -> T {
+    let previous = AT_LINE.with(|l| l.replace(line));
+    let out = f();
+    AT_LINE.with(|l| l.set(previous));
+    out
 }
 
 fn warn(message: String) {
+    let warning = Warning::maybe_at(message, AT_LINE.with(|l| l.get()));
     WARNINGS.with(|w| {
         let mut w = w.borrow_mut();
-        if !w.iter().any(|existing| *existing == message) {
-            w.push(message);
+        // Deduped by message *and* line: the same unhonored property on two
+        // different rules is two places to go and fix, and an editor wants a
+        // squiggle on each. Twice on one line is still once.
+        if !w.contains(&warning) {
+            w.push(warning);
         }
     });
 }
 
 /// Take the warnings raised since the last call, emptying the sink.
-pub fn take_warnings() -> Vec<String> {
+pub fn take_warnings() -> Vec<Warning> {
     WARNINGS.with(|w| std::mem::take(&mut *w.borrow_mut()))
+}
+
+thread_local! {
+    /// Whether to mirror warnings to stderr as they are raised.
+    ///
+    /// On for anyone running the window, where stderr was the only place a
+    /// warning could go before the overlay existed. Off for a tool that drains
+    /// the sink and formats it itself: printing each warning twice, once as
+    /// prose and once as a diagnostic, is what makes machine-readable output
+    /// unpipeable.
+    static ECHO: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
+}
+
+/// Stop (or resume) mirroring warnings to stderr. See [`ECHO`].
+pub fn set_stderr_echo(on: bool) {
+    ECHO.with(|e| e.set(on));
+}
+
+/// Mirror one already-deduped warning to stderr, unless that has been turned off.
+fn echo(message: &str) {
+    if ECHO.with(|e| e.get()) {
+        eprintln!("rux: {message}");
+    }
 }
 
 /// A text `{{ }}` binding recorded during build: where its node lives in the
@@ -360,7 +408,7 @@ fn warn_undefined_var(name: &str) {
     let seen = SEEN.get_or_init(|| Mutex::new(HashSet::new()));
     let Ok(mut seen) = seen.lock() else { return };
     if seen.insert(name.to_string()) {
-        eprintln!("rux: {message}");
+        echo(&message);
     }
 }
 
@@ -638,7 +686,13 @@ pub fn build_styled_tree_stateful(
     state: &InteractionState,
     viewport: Viewport,
 ) -> Result<(LayoutNode, BindingRegistry), String> {
-    let rules = parse_rules(&sfc.style, viewport);
+    // The document's own `<style>` knows where it is in its file, so its
+    // warnings get a line. A component's does not: its rules live in a
+    // *different* file, and every consumer of a warning attributes it to the
+    // document being built, so a line from the component's coordinate space
+    // would point confidently at the wrong place. Unplaced is the honest answer
+    // until warnings carry a file as well as a line.
+    let rules = parse_rules_at(&sfc.style, viewport, Some(sfc.style_line));
     let comps: Components = components
         .iter()
         .map(|(tag, c)| {
@@ -1170,7 +1224,7 @@ fn warn_unsupported_media(what: &str) {
     let seen = SEEN.get_or_init(|| Mutex::new(HashSet::new()));
     let Ok(mut seen) = seen.lock() else { return };
     if seen.insert(what.to_string()) {
-        eprintln!("rux: {message}");
+        echo(&message);
     }
 }
 
@@ -1201,7 +1255,14 @@ fn collect_media_matches(rules: &[CssRule], vp: Viewport, out: &mut Vec<bool>) {
 
 // ── Parsing the stylesheet ──────────────────────────────────────────────────
 
+/// `base` is the 1-based file line the `<style>` block's first character sits
+/// on, used to lift lightningcss's section-relative positions onto the file's
+/// own lines. `None` means "do not claim to know": see [`parse_rules_at`].
 fn parse_rules(css: &str, vp: Viewport) -> Vec<Rule> {
+    parse_rules_at(css, vp, None)
+}
+
+fn parse_rules_at(css: &str, vp: Viewport, base: Option<usize>) -> Vec<Rule> {
     let sheet = match StyleSheet::parse(css, ParserOptions::default()) {
         Ok(s) => s,
         Err(_) => return Vec::new(),
@@ -1209,7 +1270,7 @@ fn parse_rules(css: &str, vp: Viewport) -> Vec<Rule> {
 
     let mut rules = Vec::new();
     let mut order = 0usize;
-    collect_rules(&sheet.rules.0, vp, &mut rules, &mut order);
+    collect_rules(&sheet.rules.0, vp, &mut rules, &mut order, base);
     rules
 }
 
@@ -1218,7 +1279,13 @@ fn parse_rules(css: &str, vp: Viewport) -> Vec<Rule> {
 /// downstream (matching, cascade, specificity) is untouched by media queries.
 /// `order` keeps counting across blocks, which is what makes a later `@media`
 /// rule win over an earlier plain rule of equal specificity, as in CSS.
-fn collect_rules(rules: &[CssRule], vp: Viewport, out: &mut Vec<Rule>, order: &mut usize) {
+fn collect_rules(
+    rules: &[CssRule],
+    vp: Viewport,
+    out: &mut Vec<Rule>,
+    order: &mut usize,
+    base: Option<usize>,
+) {
     for rule in rules {
         match rule {
             CssRule::Media(media) => {
@@ -1226,22 +1293,34 @@ fn collect_rules(rules: &[CssRule], vp: Viewport, out: &mut Vec<Rule>, order: &m
                     .query
                     .to_css_string(PrinterOptions::default())
                     .unwrap_or_default();
-                if MediaCond::parse(&text).holds(vp) {
-                    collect_rules(&media.rules.0, vp, out, order);
+                // An unsupported condition is reported against the `@media` line.
+                let holds = located(file_line(base, media.loc.line), || {
+                    MediaCond::parse(&text).holds(vp)
+                });
+                if holds {
+                    collect_rules(&media.rules.0, vp, out, order, base);
                 }
             }
-            CssRule::Style(style) => collect_style_rule(style, out, order),
+            CssRule::Style(style) => collect_style_rule(style, out, order, base),
             _ => {}
         }
     }
+}
+
+/// Lift a section-relative line (lightningcss counts from 0) onto the file's
+/// own 1-based numbering. `None` in, `None` out: a document whose base is not
+/// known reports no line rather than a wrong one.
+fn file_line(base: Option<usize>, relative: u32) -> Option<usize> {
+    base.map(|b| b + relative as usize)
 }
 
 fn collect_style_rule(
     style: &lightningcss::rules::style::StyleRule,
     out: &mut Vec<Rule>,
     order: &mut usize,
+    base: Option<usize>,
 ) {
-    {
+    located(file_line(base, style.loc.line), || {
         // Serialize each declaration to "prop: value" and split it.
         let mut decls = Vec::new();
         for prop in &style.declarations.declarations {
@@ -1274,7 +1353,7 @@ fn collect_style_rule(
             }
             *order += 1;
         }
-    }
+    });
 }
 
 /// The CSS properties the runtime actually interprets today. Anything outside
@@ -1335,7 +1414,7 @@ fn warn_if_unhonored(property: &str) {
     let seen = SEEN.get_or_init(|| Mutex::new(HashSet::new()));
     let Ok(mut seen) = seen.lock() else { return };
     if seen.insert(property.to_string()) {
-        eprintln!("rux: {message}");
+        echo(&message);
     }
 }
 
@@ -1522,7 +1601,7 @@ fn warn_unknown_pseudo(name: &str) {
     let seen = SEEN.get_or_init(|| Mutex::new(HashSet::new()));
     let Ok(mut seen) = seen.lock() else { return };
     if seen.insert(name.to_string()) {
-        eprintln!("rux: {message}");
+        echo(&message);
     }
 }
 
@@ -3333,6 +3412,66 @@ mod tests {
     use super::{build_styled_tree, build_styled_tree_tracked, interpolate_tracked, interpret, Len, Locals};
     use rux_script::{Builder, Engine};
     use std::collections::HashMap;
+
+    /// Every kind of CSS warning must land on the line the reader can see, not
+    /// on a line counted from the start of the `<style>` block. Getting this
+    /// wrong sends someone confidently to the wrong part of their file, which is
+    /// why the offset is carried rather than assumed to be zero.
+    #[test]
+    fn css_warnings_carry_the_line_of_the_file() {
+        let src = "<template>\n  <screen class=\"a\"></screen>\n</template>\n\n<style>\n  .a { display: flex; }\n  .b { float: left; }\n\n  .c:nope { color: red; }\n\n  @media (hover: hover) { .a { gap: 4px; } }\n</style>\n";
+        let sfc = rux_parser::parse_sfc(src).expect("parses");
+        let mut engine = Builder::new().build("").expect("engine");
+
+        let _ = super::take_warnings(); // start from a clean sink
+        let _ = build_styled_tree(&sfc, &HashMap::new(), &mut engine).expect("builds");
+        let warnings = super::take_warnings();
+
+        let line_for = |needle: &str| {
+            warnings
+                .iter()
+                .find(|w| w.message.contains(needle))
+                .unwrap_or_else(|| panic!("no warning mentioning {needle}: {warnings:?}"))
+                .line
+        };
+        assert_eq!(line_for("float"), Some(7));
+        assert_eq!(line_for(":nope"), Some(9));
+        assert_eq!(line_for("@media"), Some(11));
+
+        // And each reported line really does contain what was complained about.
+        let line_of = |n: usize| src.lines().nth(n - 1).unwrap();
+        assert!(line_of(7).contains("float"));
+        assert!(line_of(9).contains(":nope"));
+        assert!(line_of(11).contains("@media"));
+    }
+
+    /// A component's CSS lives in a different file, and a warning carries no
+    /// file, so claiming a line would point into whichever document happened to
+    /// import it. Unplaced is the honest answer until warnings carry a file too.
+    #[test]
+    fn a_components_css_warning_is_left_unplaced() {
+        let main = rux_parser::parse_sfc(
+            "<template>\n  <screen><my-row /></screen>\n</template>\n<script>\nuse components::row;\n</script>\n",
+        )
+        .expect("parses");
+        let component = rux_parser::parse_sfc(
+            "<template>\n  <view class=\"r\"></view>\n</template>\n<style>\n  .r { float: left; }\n</style>\n",
+        )
+        .expect("parses");
+        let mut components = HashMap::new();
+        components.insert("my-row".to_string(), component);
+        let mut engine = Builder::new().build("").expect("engine");
+
+        let _ = super::take_warnings();
+        let _ = build_styled_tree(&main, &components, &mut engine).expect("builds");
+        let warnings = super::take_warnings();
+
+        let float = warnings
+            .iter()
+            .find(|w| w.message.contains("float"))
+            .expect("the component's unhonored property is still reported");
+        assert_eq!(float.line, None, "but without a line from another file");
+    }
 
     #[test]
     fn box_model_shorthand_sides_and_border() {

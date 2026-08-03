@@ -3234,6 +3234,8 @@ dependencies = [
 name = "ruxlang"
 version = "0.5.0-dev"
 dependencies = [
+ "rux-fmt",
+ "rux-runtime",
  "rux-shell",
 ]
 

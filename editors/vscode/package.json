@@ -1,8 +1,8 @@
 {
   "name": "rux",
   "displayName": "Rux",
-  "description": "Syntax highlighting for the Rux UI language (.rux files).",
-  "version": "0.1.0",
+  "description": "Syntax highlighting, formatting and diagnostics for the Rux UI language (.rux files).",
+  "version": "0.2.0",
   "publisher": "aine-dickson",
   "license": "MIT",
   "repository": {
@@ -17,6 +17,21 @@
   ],
   "main": "./extension.js",
   "contributes": {
+    "configuration": {
+      "title": "Rux",
+      "properties": {
+        "rux.path": {
+          "type": "string",
+          "default": "rux",
+          "markdownDescription": "Path to the `rux` binary, which provides formatting and diagnostics. Install it with `cargo install ruxlang`. Leave as `rux` to find it on your PATH."
+        },
+        "rux.check.enable": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Report problems from `rux check` as you open and save `.rux` files."
+        }
+      }
+    },
     "languages": [
       {
         "id": "rux",
