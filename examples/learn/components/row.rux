@@ -19,6 +19,7 @@
     background: #313244;
     border-radius: 8px;
   }
+
   .box {
     width: 18px;
     height: 18px;
@@ -27,8 +28,8 @@
     border: 2px #585b70 solid;
     border-radius: 4px;
   }
-  .label { color: #cdd6f4; font-size: 15px; }
 
-  .task.done .box   { background: #a6e3a1; border: 2px #a6e3a1 solid; }
+  .label { color: #cdd6f4; font-size: 15px; }
+  .task.done .box { background: #a6e3a1; border: 2px #a6e3a1 solid; }
   .task.done .label { color: #6c7086; text-decoration: line-through; }
 </style>

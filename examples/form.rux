@@ -1,124 +1,116 @@
 <template>
-    <screen class="screen">
-        <text role="heading" class="title">Sign in</text>
+  <screen class="screen">
+    <text role="heading" class="title">Sign in</text>
 
-        <!-- Tap to focus, then type. The caret lands where you tapped; arrow keys,
+    <!-- Tap to focus, then type. The caret lands where you tapped; arrow keys,
          Home/End, Backspace and Delete work around it. Esc unfocuses. -->
-        <input class="field" r-model="name" placeholder="Your name" />
-        <input class="field" r-model="city" placeholder="Your city" />
+    <input class="field" r-model="name" placeholder="Your name" />
+    <input class="field" r-model="city" placeholder="Your city" />
 
-        <!-- Tap-toggles: no focus, no keyboard. They just write their signal. -->
-        <view class="opt" @tap="remember = !remember">
-            <input type="checkbox" class="box" r-model="remember" />
-            <text class="optlabel">Remember me</text>
-        </view>
+    <!-- Tap-toggles: no focus, no keyboard. They just write their signal. -->
+    <view class="opt" @tap="remember = !remember">
+      <input type="checkbox" class="box" r-model="remember" />
+      <text class="optlabel">Remember me</text>
+    </view>
 
-        <text class="legend">Plan</text>
-        <view class="opt" @tap='plan = "free"'>
-            <input type="radio" class="box ring" r-model="plan" value="free" />
-            <text class="optlabel">Free</text>
-        </view>
-        <view class="opt" @tap='plan = "pro"'>
-            <input type="radio" class="box ring" r-model="plan" value="pro" />
-            <text class="optlabel">Pro</text>
-        </view>
+    <text class="legend">Plan</text>
+    <view class="opt" @tap='plan = "free"'>
+      <input type="radio" class="box ring" r-model="plan" value="free" />
+      <text class="optlabel">Free</text>
+    </view>
+    <view class="opt" @tap='plan = "pro"'>
+      <input type="radio" class="box ring" r-model="plan" value="pro" />
+      <text class="optlabel">Pro</text>
+    </view>
 
-        <!-- Live: these update as you type, because they read the same signals.
+    <!-- Live: these update as you type, because they read the same signals.
          Note: single-quoted attributes so rhai sees real "" string literals. -->
-        <text class="greet">Hello, {{ name }}!</text>
-        <text class="sub" r-if='city != ""'>Greetings from {{ city }}.</text>
-        <text class="sub">Plan: {{ plan }} · remember: {{ remember }}</text>
+    <text class="greet">Hello, {{ name }}!</text>
+    <text class="sub" r-if='city != ""'>Greetings from {{ city }}.</text>
+    <text class="sub">Plan: {{ plan }} · remember: {{ remember }}</text>
 
-        <view class="row">
-            <button class="btn" @tap='name = ""'>
-                <text class="btnlabel">Clear name</text>
-            </button>
-        </view>
-    </screen>
+    <view class="row">
+      <button class="btn" @tap='name = ""'>
+        <text class="btnlabel">Clear name</text>
+      </button>
+    </view>
+  </screen>
 </template>
 
 <style>
-    .screen {
-        display: flex;
-        flex-direction: column;
-        gap: 12px;
-        padding: 24px;
-        background: #1e1e2e;
-    }
-    .title {
-        color: #cdd6f4;
-        font-size: 22px;
-        font-weight: 700;
-    }
-    .field {
-        display: flex;
-        width: 100%;
-        max-width: 360px;
-        padding: 10px;
-        background: #313244;
-        border: 2px #45475a solid;
-        border-radius: 8px;
-        color: #cdd6f4;
-        font-size: 16px;
-        /* A word longer than the field can't shrink below min-content, so without
+  .screen {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    padding: 24px;
+    background: #1e1e2e;
+  }
+
+  .title { color: #cdd6f4; font-size: 22px; font-weight: 700; }
+
+  .field {
+    display: flex;
+    width: 100%;
+    max-width: 360px;
+    padding: 10px;
+    background: #313244;
+    border: 2px #45475a solid;
+    border-radius: 8px;
+    color: #cdd6f4;
+    font-size: 16px;
+    /* A word longer than the field can't shrink below min-content, so without
        this it would hang out over the edge. */
-        overflow-wrap: break-word;
-    }
-    .opt {
-        display: flex;
-        flex-direction: row;
-        align-items: center;
-        gap: 8px;
-        cursor: pointer;
-    }
-    /* The mark inside is drawn in the box's own `color`. */
-    .box {
-        width: 20px;
-        height: 20px;
-        background: #313244;
-        border: 2px #45475a solid;
-        border-radius: 4px;
-        color: #cdd6f4;
-        font-size: 14px;
-    }
-    /* A ticked box matches `:checked`. Keep the ring a shade apart from the fill,
+    overflow-wrap: break-word;
+  }
+
+  .opt {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    gap: 8px;
+    cursor: pointer;
+  }
+
+  /* The mark inside is drawn in the box's own `color`. */
+
+  .box {
+    width: 20px;
+    height: 20px;
+    background: #313244;
+    border: 2px #45475a solid;
+    border-radius: 4px;
+    color: #cdd6f4;
+    font-size: 14px;
+  }
+
+  /* A ticked box matches `:checked`. Keep the ring a shade apart from the fill,
      or the box loses its outline and reads as a blob. */
-    .box:checked {
-        background: #40a02b;
-        border: 2px #a6e3a1 solid;
-        color: #ffffff;
-    }
-    /* Fully round ring. (A radio with no border-radius at all is round anyway;
+  .box:checked { background: #40a02b; border: 2px #a6e3a1 solid; color: #ffffff; }
+  /* Fully round ring. (A radio with no border-radius at all is round anyway;
      this class only has to undo the 4px it inherits from .box.) */
-    .ring {
-        border-radius: 9999px;
-    }
-    .ring:checked {
-        background: #313244;
-        border: 2px #a6e3a1 solid;
-        color: #a6e3a1;
-    }
+  .ring { border-radius: 9999px; }
+  .ring:checked { background: #313244; border: 2px #a6e3a1 solid; color: #a6e3a1; }
+  .optlabel { color: #cdd6f4; font-size: 15px; }
+  .legend { color: #9399b2; font-size: 13px; }
+  .greet { color: #a6e3a1; font-size: 18px; }
+  .sub { color: #9399b2; font-size: 14px; }
+  .row { display: flex; flex-direction: row; gap: 8px; }
 
-    .optlabel { color: #cdd6f4; font-size: 15px; }
-    .legend   { color: #9399b2; font-size: 13px; }
+  .btn {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    padding: 10px;
+    background: #45475a;
+    border-radius: 8px;
+  }
 
-    .greet { color: #a6e3a1; font-size: 18px; }
-    .sub   { color: #9399b2; font-size: 14px; }
-    .row   { display: flex; flex-direction: row; gap: 8px; }
-    .btn {
-        display: flex;
-        justify-content: center;
-        align-items: center;
-        padding: 10px;
-        background: #45475a;
-        border-radius: 8px;
-    }
-    .btnlabel { color: #cdd6f4; font-size: 14px; }
+  .btnlabel { color: #cdd6f4; font-size: 14px; }
 </style>
 
 <script>
-    let name = signal("");
-    let city = signal("");
-    let remember = signal(false);
-    let plan = signal("free");
+  let name = signal("");
+  let city = signal("");
+  let remember = signal(false);
+  let plan = signal("free");
 </script>

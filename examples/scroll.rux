@@ -31,12 +31,13 @@
     padding: 24px;
     background: #1e1e2e;
   }
-  .title { color: #cdd6f4; font-size: 22px; font-weight: 700; }
-  .hint  { color: #6c7086; font-size: 13px; max-width: 520px; }
-  .label { color: #a6adc8; font-size: 13px; font-weight: 700; }
 
+  .title { color: #cdd6f4; font-size: 22px; font-weight: 700; }
+  .hint { color: #6c7086; font-size: 13px; max-width: 520px; }
+  .label { color: #a6adc8; font-size: 13px; font-weight: 700; }
   /* A horizontal scroller: a flex row whose children refuse to shrink, so the
      content is wider than the box and `overflow: auto` gives it a bar. */
+
   .strip {
     display: flex;
     flex-direction: row;
@@ -49,6 +50,7 @@
     border-radius: 10px;
     overflow: auto;
   }
+
   .card {
     display: flex;
     flex-shrink: 0;
@@ -61,6 +63,7 @@
   }
 
   /* Both axes at once: a column of bands, each band wider than the box. */
+
   .grid {
     display: flex;
     flex-direction: column;
@@ -73,12 +76,14 @@
     border-radius: 10px;
     overflow: auto;
   }
+
   .band {
     display: flex;
     flex-direction: row;
     flex-shrink: 0;
     gap: 8px;
   }
+
   .cell {
     display: flex;
     flex-shrink: 0;
@@ -90,15 +95,15 @@
     border-radius: 6px;
   }
 
-  .name   { color: #cdd6f4; font-size: 15px; }
+  .name { color: #cdd6f4; font-size: 15px; }
   .picked { color: #a6e3a1; font-size: 16px; }
 </style>
 
 <script>
   let picked = signal("");
   let items = signal([
-    "Alpha", "Bravo", "Charlie", "Delta", "Echo", "Foxtrot", "Golf", "Hotel",
-    "India", "Juliett", "Kilo", "Lima",
+      "Alpha", "Bravo", "Charlie", "Delta", "Echo", "Foxtrot", "Golf", "Hotel",
+      "India", "Juliett", "Kilo", "Lima",
   ]);
   let rows = signal(["A", "B", "C", "D", "E"]);
   let cells = signal(["1", "2", "3", "4", "5", "6", "7", "8"]);

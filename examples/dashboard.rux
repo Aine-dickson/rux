@@ -48,8 +48,9 @@
     padding: 24px;
     background: #1e1e2e;
   }
+
   .title { color: #cdd6f4; font-size: 22px; font-weight: 700; }
-  .hint  { color: #6c7086; font-size: 13px; max-width: 560px; }
+  .hint { color: #6c7086; font-size: 13px; max-width: 560px; }
 
   .grid {
     display: grid;
@@ -58,6 +59,7 @@
     grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr);
     gap: 12px;
   }
+
   .card {
     display: flex;
     flex-direction: column;
@@ -65,13 +67,15 @@
     padding: 16px;
     background: #313244;
     border-radius: 10px;
-    overflow: hidden;   /* clip a stat that can't fit rather than spill the card */
+    overflow: hidden;
+    /* clip a stat that can't fit rather than spill the card */
   }
+
   .label { color: #9399b2; font-size: 13px; }
-  .stat  { color: #cdd6f4; font-size: 26px; font-weight: 700; }
+  .stat { color: #cdd6f4; font-size: 26px; font-weight: 700; }
   .delta { font-size: 13px; }
-  .up    { color: #a6e3a1; }
-  .down  { color: #f38ba8; }
+  .up { color: #a6e3a1; }
+  .down { color: #f38ba8; }
 </style>
 
 <script>

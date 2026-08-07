@@ -14,6 +14,7 @@
     background: #0b9c4c;
     border-radius: 10px;
   }
+
   .stat-label { color: #cacedb; font-size: 12px; }
   .stat-value { color: #cdd6f4; font-size: 22px; }
 </style>

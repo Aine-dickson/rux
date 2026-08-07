@@ -25,12 +25,12 @@
            Writing `t.done = !t.done` would mutate that copy and change nothing;
            the write has to go through `items` itself, by index. -->
       <view class="row" r-for="t in items" :class='#{ done: t.done }'
-            @tap='for i in 0..items.len() { if items[i].label == t.label { items[i].done = !items[i].done; } }'>
-        <view class="box" />
-        <text class="label">{{ t.label }}</text>
-      </view>
+      @tap='for i in 0..items.len() { if items[i].label == t.label { items[i].done = !items[i].done; } }'>
+      <view class="box" />
+      <text class="label">{{ t.label }}</text>
     </view>
-  </screen>
+  </view>
+</screen>
 </template>
 
 <style>
@@ -41,16 +41,24 @@
     padding: 24px;
     background: #1e1e2e;
   }
+
   .head {
     display: flex;
     flex-direction: row;
     justify-content: space-between;
     align-items: center;
   }
+
   .title { color: #cdd6f4; font-size: 24px; font-weight: 700; }
   .tally { color: #9399b2; font-size: 15px; }
 
-  .composer { display: flex; flex-direction: row; gap: 8px; align-items: center; }
+  .composer {
+    display: flex;
+    flex-direction: row;
+    gap: 8px;
+    align-items: center;
+  }
+
   .field {
     display: flex;
     flex-grow: 1;
@@ -61,6 +69,7 @@
     color: #cdd6f4;
     font-size: 15px;
   }
+
   .add {
     display: flex;
     justify-content: center;
@@ -70,11 +79,12 @@
     border-radius: 8px;
     cursor: pointer;
   }
-  .addlabel { color: #11111b; font-size: 15px; font-weight: 700; }
-  .empty    { color: #6c7086; font-size: 14px; }
 
+  .addlabel { color: #11111b; font-size: 15px; font-weight: 700; }
+  .empty { color: #6c7086; font-size: 14px; }
   /* A scroll container needs a bounded height, or it just grows and there is
      nothing to scroll. */
+
   .list {
     display: flex;
     flex-direction: column;
@@ -83,8 +93,10 @@
     height: 320px;
     overflow: auto;
   }
+
   /* And its rows need `flex-shrink: 0`, or the column squeezes them all in to
      fit. This is the most common "why won't it scroll". CSS behaves the same way. */
+
   .row {
     display: flex;
     flex-direction: row;
@@ -96,6 +108,7 @@
     border-radius: 8px;
     cursor: pointer;
   }
+
   .box {
     width: 18px;
     height: 18px;
@@ -104,18 +117,18 @@
     border: 2px #585b70 solid;
     border-radius: 4px;
   }
-  .label { color: #cdd6f4; font-size: 15px; }
 
+  .label { color: #cdd6f4; font-size: 15px; }
   /* `:class` merged `done` into the row's classes, so the finished look is
      ordinary CSS, the same cascade a written class gets. */
-  .row.done .box   { background: #a6e3a1; border: 2px #a6e3a1 solid; }
+  .row.done .box { background: #a6e3a1; border: 2px #a6e3a1 solid; }
   .row.done .label { color: #6c7086; text-decoration: line-through; }
 </style>
 
 <script>
   let draft = signal("");
   let items = signal([
-    #{ label: "read the reference", done: true },
-    #{ label: "build a task list", done: false },
+      #{ label: "read the reference", done: true },
+      #{ label: "build a task list", done: false },
   ]);
 </script>

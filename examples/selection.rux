@@ -29,11 +29,20 @@
     padding: 28px;
     background: #1e1e2e;
   }
+
   .title { color: #cdd6f4; font-size: 22px; font-weight: 700; }
-  .hint  { color: #6c7086; font-size: 13px; max-width: 380px; }
-  .field { display: flex; flex-direction: column; gap: 8px; width: 100%; max-width: 360px; }
+  .hint { color: #6c7086; font-size: 13px; max-width: 380px; }
+
+  .field {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    width: 100%;
+    max-width: 360px;
+  }
+
   .label { color: #a6adc8; font-size: 14px; }
-  .echo  { color: #a6e3a1; font-size: 13px; }
+  .echo { color: #a6e3a1; font-size: 13px; }
 
   .line {
     height: 38px;
@@ -43,6 +52,7 @@
     color: #cdd6f4;
     font-size: 16px;
   }
+
   .area {
     height: 110px;
     padding: 10px 12px;

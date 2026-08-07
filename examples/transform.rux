@@ -29,9 +29,10 @@
     padding: 40px;
     background: #181825;
   }
-  .title { color: #cdd6f4; font-size: 22px; font-weight: 700; }
 
+  .title { color: #cdd6f4; font-size: 22px; font-weight: 700; }
   .row { display: flex; gap: 28px; }
+
   .card {
     display: flex;
     align-items: center;
@@ -44,12 +45,13 @@
     font-weight: 700;
     box-shadow: 0 6px 16px rgba(0, 0, 0, 0.4);
   }
+
   .t1 { transform: rotate(8deg); }
   .t2 { transform: scale(1.15); }
   .t3 { transform: translate(0, -12px); background: #a6e3a1; }
   .t4 { transform: rotate(-6deg) scale(1.1); background: #f9e2af; }
-
   /* Two rows, filled column-first: 1,2 | 3,4 | 5,6 read top-to-bottom. */
+
   .autogrid {
     display: grid;
     grid-template-rows: 1fr 1fr;
@@ -57,6 +59,7 @@
     grid-auto-columns: 80px;
     gap: 10px;
   }
+
   .cell {
     display: flex;
     align-items: center;

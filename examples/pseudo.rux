@@ -1,108 +1,120 @@
 <template>
-    <screen class="app">
-        <text class="title">pseudo-classes</text>
-        <text class="hint">Hover the cards · press and hold a button · focus a field · tick the box</text>
+  <screen class="app">
+    <text class="title">pseudo-classes</text>
+    <text class="hint">Hover the cards · press and hold a button · focus a field · tick the box</text>
 
-        <view class="row">
-            <view class="card">
-                <text class="card-title">hover me</text>
-                <text class="card-body">The card lifts and the label brightens, one rule each, no script.</text>
-            </view>
-            <view class="card">
-                <text class="card-title">and me</text>
-                <text class="card-body">Only the card under the pointer restyles; its sibling is untouched.</text>
-            </view>
-        </view>
+    <view class="row">
+      <view class="card">
+        <text class="card-title">hover me</text>
+        <text class="card-body">The card lifts and the label brightens, one rule each, no script.</text>
+      </view>
+      <view class="card">
+        <text class="card-title">and me</text>
+        <text class="card-body">Only the card under the pointer restyles; its sibling is untouched.</text>
+      </view>
+    </view>
 
-        <view class="row">
-            <view class="btn" @tap="taps = taps + 1">
-                <text class="btn-label">press and hold</text>
-            </view>
-            <text class="echo">taps: {{ taps }}</text>
-        </view>
+    <view class="row">
+      <view class="btn" @tap="taps = taps + 1">
+        <text class="btn-label">press and hold</text>
+      </view>
+      <text class="echo">taps: {{ taps }}</text>
+    </view>
 
-        <view class="field">
-            <text class="label">Name</text>
-            <input class="input" r-model="name" placeholder="focus me" />
-        </view>
+    <view class="field">
+      <text class="label">Name</text>
+      <input class="input" r-model="name" placeholder="focus me" />
+    </view>
 
-        <view class="row">
-            <input class="check" type="checkbox" r-model="agree" />
-            <text class="label">:checked styles the box, no synthetic class</text>
-        </view>
-    </screen>
+    <view class="row">
+      <input class="check" type="checkbox" r-model="agree" />
+      <text class="label">:checked styles the box, no synthetic class</text>
+    </view>
+  </screen>
 </template>
 
 <style>
-    .app {
-        display: flex;
-        flex-direction: column;
-        gap: 20px;
-        padding: 32px;
-        background: #1e1e2e;
-    }
-    .title { color: #cdd6f4; font-size: 22px; font-weight: 700; }
-    .hint { color: #6c7086; font-size: 13px; }
-    .row { display: flex; align-items: center; gap: 16px; }
-    .label { color: #a6adc8; font-size: 14px; }
-    .echo { color: #a6e3a1; font-size: 14px; }
+  .app {
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+    padding: 32px;
+    background: #1e1e2e;
+  }
 
-    /* :hover, the card, and its title through a descendant selector. */
-    .card {
-        display: flex;
-        flex-direction: column;
-        gap: 6px;
-        width: 100%;
-        max-width: 240px;
-        padding: 16px;
-        background: #313244;
-        border: 2px solid #313244;
-        border-radius: 10px;
-    }
-    .card-title { color: #cdd6f4; font-size: 16px; font-weight: 700; }
-    .card-body { color: #9399b2; font-size: 13px; }
-    .card:hover { background: #45475a; border-color: #89b4fa; }
-    .card:hover .card-title { color: #89b4fa; }
+  .title { color: #cdd6f4; font-size: 22px; font-weight: 700; }
+  .hint { color: #6c7086; font-size: 13px; }
+  .row { display: flex; align-items: center; gap: 16px; }
+  .label { color: #a6adc8; font-size: 14px; }
+  .echo { color: #a6e3a1; font-size: 14px; }
+  /* :hover, the card, and its title through a descendant selector. */
 
-    /* :hover + :active, the pressed state is the two stacked. */
-    .btn {
-        padding: 10px 18px;
-        background: #89b4fa;
-        border-radius: 8px;
-        cursor: pointer;
-    }
-    .btn-label { color: #11111b; font-size: 14px; font-weight: 700; }
-    .btn:hover { background: #b4befe; }
-    .btn:active { background: #7287fd; }
+  .card {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    width: 100%;
+    max-width: 240px;
+    padding: 16px;
+    background: #313244;
+    border: 2px solid #313244;
+    border-radius: 10px;
+  }
 
-    /* :focus, the field lights up while it holds the caret. */
-    .field { display: flex; flex-direction: column; gap: 8px; width: 100%; max-width: 320px; }
-    .input {
-        height: 38px;
-        padding: 0 12px;
-        background: #313244;
-        border: 2px solid #313244;
-        border-radius: 8px;
-        color: #cdd6f4;
-    }
-    .input:focus { border-color: #a6e3a1; background: #1e1e2e; }
+  .card-title { color: #cdd6f4; font-size: 16px; font-weight: 700; }
+  .card-body { color: #9399b2; font-size: 13px; }
+  .card:hover { background: #45475a; border-color: #89b4fa; }
+  .card:hover .card-title { color: #89b4fa; }
+  /* :hover + :active, the pressed state is the two stacked. */
 
-    /* :checked, replaces the synthetic `.checked` class. */
-    .check {
-        width: 22px;
-        height: 22px;
-        background: #313244;
-        border: 2px solid #585b70;
-        border-radius: 6px;
-        color: #89b4fa;
-        flex-shrink: 0;
-    }
-    .check:hover { border-color: #89b4fa; }
-    .check:checked { background: #a6e3a1; border-color: #a6e3a1; color: #11111b; }
+  .btn {
+    padding: 10px 18px;
+    background: #89b4fa;
+    border-radius: 8px;
+    cursor: pointer;
+  }
+
+  .btn-label { color: #11111b; font-size: 14px; font-weight: 700; }
+  .btn:hover { background: #b4befe; }
+  .btn:active { background: #7287fd; }
+  /* :focus, the field lights up while it holds the caret. */
+
+  .field {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    width: 100%;
+    max-width: 320px;
+  }
+
+  .input {
+    height: 38px;
+    padding: 0 12px;
+    background: #313244;
+    border: 2px solid #313244;
+    border-radius: 8px;
+    color: #cdd6f4;
+  }
+
+  .input:focus { border-color: #a6e3a1; background: #1e1e2e; }
+  /* :checked, replaces the synthetic `.checked` class. */
+
+  .check {
+    width: 22px;
+    height: 22px;
+    background: #313244;
+    border: 2px solid #585b70;
+    border-radius: 6px;
+    color: #89b4fa;
+    flex-shrink: 0;
+  }
+
+  .check:hover { border-color: #89b4fa; }
+  .check:checked { background: #a6e3a1; border-color: #a6e3a1; color: #11111b; }
 </style>
 
 <script>
-    let taps = signal(0);
-    let name = signal("");
-    let agree = signal(false);
+  let taps = signal(0);
+  let name = signal("");
+  let agree = signal(false);
 </script>
