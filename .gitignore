@@ -10,3 +10,4 @@ Cargo.lock.orig
 
 # Release artifacts are built on demand, not committed.
 /dist/
+*.vsix

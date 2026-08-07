@@ -4,7 +4,7 @@
   "description": "Syntax highlighting, formatting and diagnostics for the Rux UI language (.rux files).",
   "version": "0.2.0",
   "publisher": "aine-dickson",
-  "license": "MIT",
+  "license": "MIT OR Apache-2.0",
   "repository": {
     "type": "git",
     "url": "https://github.com/Aine-dickson/rux"

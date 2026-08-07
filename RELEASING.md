@@ -92,16 +92,25 @@ unrelated abandoned crate. The binary is still `rux`, so `cargo install ruxlang`
 gives you a `rux` command.
 
 **The workspace cannot publish as it stands.** `cargo publish` rejects any path
-dependency without a version, and 13 of them are bare `path = "../…"`, across
-`rux-paint`, `rux-runtime`, `rux-script`, `rux-style`, `rux-shell`, and
-`ruxlang`. Only `rux-shell`'s `rux-reactive` carries one today. All 13 need
-versions before the first publish, and all 13 then have to track the workspace
+dependency without a version, and 24 of them are bare `path = "../…"`, across
+`rux-cli`, `rux-paint`, `rux-runtime`, `rux-script`, `rux-shell`, `rux-style`
+and `rux-web`. Only `rux-shell`'s `rux-reactive` carries one today. All 24 need
+versions before the first publish, and all 24 then have to track the workspace
 version at every release.
 
+Re-derive the count before trusting it, it grows every time a crate is added:
+`grep -rn 'path = "\.\./' crates/*/Cargo.toml | grep -v version`.
+
 - [ ] Add versions to the remaining bare path deps.
-- [ ] Publish in dependency order, one at a time:
-      `rux-parser`, `rux-reactive`, `rux-text`, `rux-layout` → `rux-script` →
-      `rux-style`, `rux-paint` → `rux-runtime` → `rux-shell` → `ruxlang`.
+- [ ] Decide whether `rux-web` publishes at all. It is a `cdylib` for
+      `wasm32-unknown-unknown` that only the playground consumes, so it is a
+      `publish = false` candidate rather than a tenth crate name to hold
+      forever.
+- [ ] Publish in dependency order, one at a time. The six leaves first, in any
+      order among themselves, then each layer once the one above it is up:
+      `rux-parser`, `rux-reactive`, `rux-text`, `rux-layout`, `rux-fmt`,
+      `rux-highlight` → `rux-script`, `rux-paint` → `rux-style` →
+      `rux-runtime` → `rux-shell` → `ruxlang`.
 - [ ] `cargo publish --dry-run -p <crate>` on each before the real thing.
 - [ ] Expect throttling: crates.io rate-limits new crate names, so ten in one
       sitting will stall partway.
