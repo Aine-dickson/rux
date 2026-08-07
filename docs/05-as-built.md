@@ -72,11 +72,16 @@ It loads through the same code the window does, so it cannot disagree with the
 runtime about what a valid file is. **Errors** are failures to load and carry a
 line and column. **Warnings** are the things the dev overlay lists.
 
-**CSS warnings carry a line**: unhonored properties, unknown pseudo-classes and
-unsupported `@media` conditions all report the line of the rule they are in, in
-the file's own numbering rather than the `<style>` block's. The line is the
-*rule's*, not the declaration's, so there is no column: lightningcss locates a
-rule and the declarations inside it share that position.
+**CSS warnings carry a line**, in the file's own numbering rather than the
+`<style>` block's. An unhonored property reports the line of the *declaration*,
+so an expanded rule sends you to the property and not to its selector.
+Selector-level warnings (an unknown pseudo-class) and unsupported `@media`
+conditions report the line of the rule, which is where they are written.
+
+There is no column. lightningcss locates a rule and gives the declarations
+inside it no position of their own, so the declaration's line is recovered by
+scanning the source forward from the rule, stopping at the closing brace. That
+finds the line but not the offset within it.
 
 Two kinds are still unplaced, deliberately rather than by omission:
 

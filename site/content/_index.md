@@ -118,6 +118,9 @@ GPU, [winit] holds the window.
   <li>accessibility tree</li>
   <li>HiDPI</li>
   <li>runs in a browser</li>
+  <li>rux fmt</li>
+  <li>rux check</li>
+  <li>soft keyboard + IME</li>
 </ul>
 
 The exact honored-CSS set lives in [the reference](@/reference/_index.md), the

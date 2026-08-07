@@ -1011,6 +1011,16 @@ with their file, and format it the same way we do.
    (description, keywords, categories, README), checking each crate builds on
    docs.rs, and deciding which of the thirteen are public API and which are
    implementation detail nobody should depend on.
+
+   **Did not ship in v0.5.0**, the one item of the six that slipped, and the
+   only thing between here and the milestone being closed. Every crate now
+   carries a licence, a repository and a description; what is missing is
+   versions on the 24 bare intra-workspace path deps (`cargo publish` rejects
+   any path dep without one), a decision on whether `rux-web` publishes at all,
+   and a `--dry-run` per crate. It was left last on purpose and then left
+   undone on purpose: publishing is a one-way door, crates.io rate-limits new
+   names so ten in a sitting stalls partway, and neither belongs on a day with
+   a tag to cut. See `RELEASING.md` section 6.
 2. **`rux fmt` as a CLI subcommand** (Tier 1 in the dev-tooling section). This
    also closes a duplication that has already cost us: the re-indenter exists
    twice, in `editors/vscode/extension.js` and in `crates/rux-fmt`, and the two
@@ -1026,11 +1036,12 @@ with their file, and format it the same way we do.
    and the JavaScript copy is gone, along with the `<image>` bug, which is now a
    test.
 
-   **Left open by this:** the shipped `examples/` do not match the formatter.
-   All 28 would be rewritten, roughly half on indent width and half because the
-   CSS formatter inlines rules of up to three declarations that the examples
-   write expanded. Whether to reformat them, or to change `INLINE_MAX`, is a
-   taste decision nobody has made.
+   **Settled in v0.5.0:** the shipped `examples/` did not match the formatter,
+   all 28 of them, roughly half on indent width and half because the CSS
+   formatter inlines rules of up to three declarations that the examples wrote
+   expanded. The examples were reformatted rather than `INLINE_MAX` relaxed: a
+   formatter whose own repository fails its `--check` is not one to hand anyone
+   else. `rux fmt --check examples` is now clean and can go into CI.
 3. **`rux check`**: *done.* The machine-readable half of the dev overlay, so CI
    and an editor can act on the errors the overlay shows.
 
@@ -1074,8 +1085,15 @@ with their file, and format it the same way we do.
    every CSS warning carries the line of the rule it came from, counted in the
    file rather than in the `<style>` block. That needed the parser to record
    which file line each section starts on, since the sections are trimmed before
-   any later stage sees them. It is the rule's line, not the declaration's, so
-   there is no column.
+   any later stage sees them. There is no column.
+
+   It reported the *rule's* line at first, which was wrong the moment a rule was
+   written across more than one line, and every real stylesheet is. lightningcss
+   records a location for a rule and none for the declarations inside it, so the
+   line is now recovered by scanning the source forward from the rule for the
+   declaration, stopping at the closing brace so a property that is absent
+   borrows no line from the next rule. Selector-level warnings (an unknown
+   pseudo-class) still report the rule's line, which is where they belong.
 
    Two kinds stay unplaced on purpose. **Expression failures**, because the
    template parser does not record where each binding started. And **anything
@@ -1089,9 +1107,12 @@ with their file, and format it the same way we do.
    against the diagnostics it was for, so the panel returns as soon as what is
    wrong changes rather than staying hidden until restart.
 
-   **Not verified in the window.** The session that built it had no reachable
-   desktop by the end, so the panel's appearance and the tap have only been
-   tested through the logic underneath them.
+   **Verified in the window** on 2026-08-07, having been unverifiable when it
+   was built (that session had no reachable desktop). The panel paints, a tap
+   dismisses it and reveals the document underneath, and introducing a parse
+   error into an already-dismissed document brings the panel straight back, red,
+   with the error above the warnings. Looking at it is also what caught the
+   wrong-line bug above.
 6. **A keyboard on a phone.** *Done.* Reported 2026-08-02: tapping a text input
    in the playground focused it inside the runtime, but the browser saw only a
    `<canvas>` with nothing focusable, so the on-screen keyboard never opened.
