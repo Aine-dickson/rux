@@ -1270,7 +1270,7 @@ fn parse_rules_at(css: &str, vp: Viewport, base: Option<usize>) -> Vec<Rule> {
 
     let mut rules = Vec::new();
     let mut order = 0usize;
-    collect_rules(&sheet.rules.0, vp, &mut rules, &mut order, base);
+    collect_rules(&sheet.rules.0, vp, &mut rules, &mut order, base, css);
     rules
 }
 
@@ -1285,6 +1285,7 @@ fn collect_rules(
     out: &mut Vec<Rule>,
     order: &mut usize,
     base: Option<usize>,
+    css: &str,
 ) {
     for rule in rules {
         match rule {
@@ -1298,10 +1299,10 @@ fn collect_rules(
                     MediaCond::parse(&text).holds(vp)
                 });
                 if holds {
-                    collect_rules(&media.rules.0, vp, out, order, base);
+                    collect_rules(&media.rules.0, vp, out, order, base, css);
                 }
             }
-            CssRule::Style(style) => collect_style_rule(style, out, order, base),
+            CssRule::Style(style) => collect_style_rule(style, out, order, base, css),
             _ => {}
         }
     }
@@ -1314,11 +1315,57 @@ fn file_line(base: Option<usize>, relative: u32) -> Option<usize> {
     base.map(|b| b + relative as usize)
 }
 
+/// The section-relative line `property` is declared on, scanning forward from
+/// `rule_line` (the line the rule's selector sits on).
+///
+/// lightningcss records a location for a *rule* but none for the declarations
+/// inside it, so this is the only way back to the line a reader can see. The
+/// scan stops at the brace that closes the rule, so a property absent from this
+/// rule reports `None` rather than borrowing a line from the next one.
+///
+/// Matching is deliberately loose: the property name at the start of a line,
+/// then optional whitespace, then a colon. That is how a declaration is written
+/// in practice, and a miss costs the rule's line, which is what the caller
+/// would have used anyway.
+fn decl_line(css: &str, rule_line: u32, property: &str) -> Option<u32> {
+    let mut depth = 0usize;
+    let mut entered = false;
+    for (offset, text) in css.lines().enumerate().skip(rule_line as usize) {
+        // Inside the block, a line whose first token is the property is it.
+        if entered {
+            let trimmed = text.trim_start();
+            if let Some(rest) = trimmed.strip_prefix(property) {
+                if rest.trim_start().starts_with(':') {
+                    return u32::try_from(offset).ok();
+                }
+            }
+        }
+        for ch in text.chars() {
+            match ch {
+                '{' => {
+                    depth += 1;
+                    entered = true;
+                }
+                '}' => {
+                    depth = depth.saturating_sub(1);
+                    // The rule has closed without the property turning up.
+                    if entered && depth == 0 {
+                        return None;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    None
+}
+
 fn collect_style_rule(
     style: &lightningcss::rules::style::StyleRule,
     out: &mut Vec<Rule>,
     order: &mut usize,
     base: Option<usize>,
+    css: &str,
 ) {
     located(file_line(base, style.loc.line), || {
         // Serialize each declaration to "prop: value" and split it.
@@ -1329,7 +1376,13 @@ fn collect_style_rule(
                     let key = k.trim().to_lowercase();
                     // Silent ignoring is the worst failure mode we have: valid CSS
                     // that does nothing with no explanation. Say so, once per name.
-                    warn_if_unhonored(&key);
+                    //
+                    // Against the declaration's own line, not the rule's: a
+                    // selector and the property under it can be many lines
+                    // apart, and a warning that points at the selector sends
+                    // the reader somewhere the named property does not appear.
+                    let at = decl_line(css, style.loc.line, &key).unwrap_or(style.loc.line);
+                    located(file_line(base, at), || warn_if_unhonored(&key));
                     decls.push((
                         key,
                         v.trim().trim_end_matches(';').trim().to_string(),
@@ -3443,6 +3496,55 @@ mod tests {
         assert!(line_of(7).contains("float"));
         assert!(line_of(9).contains(":nope"));
         assert!(line_of(11).contains("@media"));
+    }
+
+    /// The fixture above writes every rule on one line, which makes the rule's
+    /// line and its declarations' lines the same and hides the difference. A
+    /// real stylesheet is written expanded, and a warning must name the line the
+    /// property is actually on, not the line the selector is on.
+    #[test]
+    fn a_warning_in_an_expanded_rule_names_the_declaration_not_the_selector() {
+        let src = concat!(
+            "<template>\n",
+            "  <screen class=\"a\"></screen>\n",
+            "</template>\n",
+            "\n",
+            "<style>\n",
+            "  .a {\n",
+            "    display: flex;\n",
+            "    padding: 8px;\n",
+            "    float: left;\n",
+            "  }\n",
+            "\n",
+            "  .b {\n",
+            "    color: red;\n",
+            "    zoom: 2;\n",
+            "  }\n",
+            "</style>\n",
+        );
+        let sfc = rux_parser::parse_sfc(src).expect("parses");
+        let mut engine = Builder::new().build("").expect("engine");
+
+        let _ = super::take_warnings();
+        let _ = build_styled_tree(&sfc, &HashMap::new(), &mut engine).expect("builds");
+        let warnings = super::take_warnings();
+
+        let line_for = |needle: &str| {
+            warnings
+                .iter()
+                .find(|w| w.message.contains(needle))
+                .unwrap_or_else(|| panic!("no warning mentioning {needle}: {warnings:?}"))
+                .line
+        };
+        // `float` is on line 9; `.a` opens on line 6, which is what the rule's
+        // own location would have reported.
+        assert_eq!(line_for("float"), Some(9));
+        // And the scan must not run past the closing brace into the next rule.
+        assert_eq!(line_for("zoom"), Some(14));
+
+        let line_of = |n: usize| src.lines().nth(n - 1).unwrap();
+        assert!(line_of(9).contains("float"));
+        assert!(line_of(14).contains("zoom"));
     }
 
     /// A component's CSS lives in a different file, and a warning carries no
