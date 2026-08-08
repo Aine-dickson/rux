@@ -820,6 +820,16 @@ struct App {
     /// mouse does not use this: it keeps `text_drag`, since drag-to-select is
     /// the right model with a pointer.
     touch_text: Option<TouchText>,
+    /// How far the focused *single-line* input's text is scrolled left, in
+    /// logical px.
+    ///
+    /// A textarea is `overflow: scroll` and gets a real scroll region, which is
+    /// what `scroll_caret_into_view` moves. An input is `overflow: clip`: it has
+    /// no scroll region, so nothing ever kept its caret inside the box and the
+    /// caret was simply clipped away past the right edge. This is the offset
+    /// that was missing. Held for the focused field only, and reset when focus
+    /// moves.
+    text_scroll: f32,
     /// When and where the last click landed, for double-click word-select.
     last_click: Option<(Instant, f64, f64)>,
     /// The system clipboard. `None` if the platform wouldn't give us one, the
@@ -887,6 +897,7 @@ impl App {
             preedit: None,
             text_drag: false,
             touch_text: None,
+            text_scroll: 0.0,
             last_click: None,
             #[cfg(not(target_arch = "wasm32"))]
             clipboard: arboard::Clipboard::new()
@@ -1117,16 +1128,79 @@ impl App {
     /// input is showing its placeholder, not a value, so its caret belongs at 0.
     fn index_in(&mut self, region: &FocusRegion, px: f32, py: f32) -> usize {
         let value = self.document.engine_mut().get_string(&region.model);
+        // The focused input's text is painted shifted left by `text_scroll`, so
+        // a pointer at a given screen x is over a character further along than
+        // the unshifted layout would say. Without this, tapping a scrolled field
+        // puts the caret in the wrong place by exactly the scroll distance.
+        let scroll = self.text_scroll_for(region);
         match &region.text {
             Some(t) if !value.is_empty() => self.text.index_at_point(
                 &value,
                 &rux_paint::text_style(&t.content),
                 Some(t.width),
-                px - t.x,
+                px - t.x + scroll,
                 py - t.y,
             ),
             _ => 0,
         }
+    }
+
+    /// Update the focused single-line input's horizontal offset so its caret is
+    /// inside the visible box, and return the offset to paint with.
+    ///
+    /// The offset only moves when the caret would otherwise fall outside, which
+    /// is what stops the text sliding under a caret that is already visible. It
+    /// is also clamped so the field never scrolls past the start, and never
+    /// leaves blank space after the end once the text is short enough to fit.
+    fn track_caret_x(
+        layout: &rux_layout::Layout,
+        focused: Option<&str>,
+        caret: usize,
+        scroll: &mut f32,
+        text: &mut rux_text::TextEngine,
+        document: &mut rux_runtime::Document,
+    ) -> f32 {
+        let Some(model) = focused else {
+            *scroll = 0.0;
+            return 0.0;
+        };
+        let Some(region) = layout.focuses.iter().find(|f| f.model == model) else {
+            return *scroll;
+        };
+        // A textarea has a real scroll region and is handled by
+        // `scroll_caret_into_view`; this is only for the clipped single line.
+        let (false, Some(t)) = (region.multiline, region.text.as_ref()) else {
+            *scroll = 0.0;
+            return 0.0;
+        };
+        let value = document.engine_mut().get_string(model);
+        let style = rux_paint::text_style(&t.content);
+        let (cx, _, _) = text.caret_geometry(&value, &style, Some(t.width), caret.min(value.len()));
+
+        // The text starts inset from the box by its padding and border. Mirroring
+        // that inset on the right gives the span actually visible, without the
+        // layout having to report a content box it does not currently carry.
+        let inset = (t.x - region.x).max(0.0);
+        let visible = (region.width - inset * 2.0).max(1.0);
+
+        if cx < *scroll {
+            *scroll = cx;
+        } else if cx > *scroll + visible {
+            *scroll = cx - visible;
+        }
+        // `None` for the width: the caret is tracked against the text's true
+        // length, not a re-wrap at the box width.
+        let full = text.measure(&value, &style, None).0;
+        *scroll = scroll.clamp(0.0, (full - visible).max(0.0));
+        *scroll
+    }
+
+    /// The horizontal offset in force for `region`, which is zero for anything
+    /// but the focused single-line input. A textarea scrolls through its own
+    /// scroll region instead, and an unfocused field is never scrolled.
+    fn text_scroll_for(&self, region: &FocusRegion) -> f32 {
+        let focused = self.focused.as_deref() == Some(region.model.as_str());
+        if focused && !region.multiline { self.text_scroll } else { 0.0 }
     }
 
     /// A press inside an input starts a text selection: it drops the caret (and
@@ -1767,6 +1841,13 @@ impl App {
         if focus.as_ref().and_then(|f| f.preedit).is_none() {
             self.cancel_preedit();
         }
+        // A different field starts unscrolled: the offset belongs to the text
+        // being edited, and carrying it over would show the new field's value
+        // already scrolled to somewhere the caret is not.
+        let next = focus.as_ref().map(|f| f.model.as_str());
+        if next != self.focused.as_deref() {
+            self.text_scroll = 0.0;
+        }
         self.focused = focus.as_ref().map(|f| f.model.clone());
         self.caret = focus.as_ref().map(|f| f.caret).unwrap_or(0);
         self.anchor = focus.as_ref().map(|f| f.anchor).unwrap_or(0);
@@ -2108,10 +2189,11 @@ impl App {
             states,
             overlay_dismissed,
             overlay_rect,
+            caret,
+            text_scroll,
+            focused,
             #[cfg(not(target_arch = "wasm32"))]
             path,
-            #[cfg(not(target_arch = "wasm32"))]
-            focused,
             ..
         } = self;
         let Some(state) = state.as_mut() else {
@@ -2128,7 +2210,7 @@ impl App {
 
         // Layout (text sized via the engine's measure), then paint. Cache the
         // hit regions for tap dispatch.
-        let layout = {
+        let mut layout = {
             let mut measure = |tc: &rux_layout::TextContent, mw: Option<f32>| {
                 text.measure(&tc.text, &rux_paint::text_style(tc), mw)
             };
@@ -2147,6 +2229,27 @@ impl App {
         offsets.resize(layout.scrolls.len(), Offset::default());
         for region in &layout.scrolls {
             offsets[region.id] = offsets[region.id].clamp_to(region.max);
+        }
+
+        // Keep the focused single-line input's caret inside its box.
+        //
+        // Done here, once per frame, rather than at each place the caret moves:
+        // typing, arrows, Home/End, a tap, a drag, an IME commit and the
+        // browser's own keyboard all end up here, and one rule covers them all
+        // where six call sites would eventually disagree.
+        let shift = Self::track_caret_x(&layout, focused.as_deref(), *caret, text_scroll, text, document);
+        if shift != 0.0 {
+            // Only the focused input has a caret, so this finds exactly one text
+            // paint. Everything the painter draws for it (glyphs, caret,
+            // selection, preedit) is placed from this single x, so moving it
+            // moves them together, and the box's own clip hides the rest.
+            for paint in layout.paints.iter_mut() {
+                if let Paint::Text(t) = paint {
+                    if t.content.caret.is_some() {
+                        t.x -= shift;
+                    }
+                }
+            }
         }
 
         let content = rux_paint::build_scene(&layout.paints, text, images, caret_visible);
