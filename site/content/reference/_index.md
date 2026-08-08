@@ -17,8 +17,9 @@ for the *why*, but the implementation has diverged from them in places. Where
 they disagree, **this document wins**. Divergences are called out below. For what
 is *not* built yet and in what order, see [Roadmap](/roadmap/).
 
-Last updated: 2026-07-15. All milestones **M0–M9 are complete**, plus several
-follow-up passes. Branch: `build/m0-window`.
+Last updated: 2026-08-08, for **v0.5.0**. The original M0–M9 milestones that
+built the runtime are all complete; everything since has shipped in the v0.2
+through v0.5 releases, which the [Roadmap](/roadmap/) lists.
 
 ---
 
@@ -505,8 +506,10 @@ carries its source in the URL hash.
 > The deployed page is built from `main` while the runtime it loads is pinned to
 > the latest **tag**, so the page has to keep working against a build that
 > predates its own features. It feature-detects `diagnose` and falls back to the
-> older `setSource`, which reports an error and no warnings. That fallback goes
-> once v0.5.0 is tagged.
+> older `setSource`, which reports an error and no warnings. The fallback is
+> only removable once a deployed build actually carries `diagnose`, which means
+> after the tag exists *and* the site has been rebuilt against it: pushing a tag
+> deploys nothing on its own, since the workflow fires on pushes to `main`.
 
 **Known limits:** rhai returns `()` for a missing *map property*, rather than
 erroring, so `{{ user.nmae }}` still renders empty with nothing reported (a
@@ -544,9 +547,10 @@ for the reasons under "Checking a file without opening a window".
   "Text input and composition"), so the mechanism works: the hidden `<input>` is
   created on demand, focused by the tap, and laid over the field. What emulation
   cannot show is a keyboard physically rising, since that is the OS's decision.
-  Worth thirty seconds on a real phone before v0.5.0 ships. Note it only reaches
-  ruxlang.dev once that tag exists, because the deployed playground is built
-  from the latest release rather than from `main`.
+  Still worth thirty seconds on a real phone. Note it only reaches ruxlang.dev
+  once a tag carrying it has been deployed, because the playground is built from
+  the latest release rather than from `main`, and a tag push does not itself
+  trigger a deploy.
 - Text editing: no word-wise movement (Ctrl+arrows), no triple-click line-select,
   no drag-and-drop of selected text, no `::selection` styling.
 - Scrolling: no track-click paging, no kinetic touch fling, no scrollbar

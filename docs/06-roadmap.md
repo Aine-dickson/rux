@@ -1,7 +1,6 @@
 # 06. Roadmap
 
-Where Rux goes next. Written 2026-07-15, on branch `build/m0-window` (7 commits
-ahead of the last docs commit, **not pushed**).
+Where Rux goes next. Last updated 2026-08-08, for **v0.5.0**.
 
 For *what works today*, read [As Built](./05-as-built.md). This document is
 only about what is **not done yet**, and in what order.
@@ -1078,7 +1077,8 @@ with their file, and format it the same way we do.
    work against a build that predates its own features. It feature-detects
    `diagnose` and falls back; that fallback was tested against a module with the
    export removed, and degrades to the old behaviour with no errors. It can go
-   once v0.5.0 is tagged.
+   once a deployed build actually carries `diagnose`, which needs the tag *and*
+   a site rebuild against it: a tag push does not trigger the deploy by itself.
 5. **Locate the warnings.** *Done.*
 
    A warning is now a `Warning { message, line }` rather than a string, and
@@ -1131,7 +1131,7 @@ with their file, and format it the same way we do.
    tap through typing, backspace, composition and a committed CJK character.
    The one thing emulation cannot demonstrate is a keyboard physically rising,
    so it is still worth half a minute on a real phone, and it only reaches
-   ruxlang.dev once v0.5.0 is tagged.
+   ruxlang.dev once a tag carrying it has been deployed.
 
 ### v0.6: apps bigger than one screen
 
