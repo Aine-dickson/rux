@@ -1128,21 +1128,38 @@ impl App {
     /// input is showing its placeholder, not a value, so its caret belongs at 0.
     fn index_in(&mut self, region: &FocusRegion, px: f32, py: f32) -> usize {
         let value = self.document.engine_mut().get_string(&region.model);
-        // The focused input's text is painted shifted left by `text_scroll`, so
-        // a pointer at a given screen x is over a character further along than
-        // the unshifted layout would say. Without this, tapping a scrolled field
-        // puts the caret in the wrong place by exactly the scroll distance.
-        let scroll = self.text_scroll_for(region);
-        match &region.text {
-            Some(t) if !value.is_empty() => self.text.index_at_point(
-                &value,
-                &rux_paint::text_style(&t.content),
-                Some(t.width),
-                px - t.x + scroll,
-                py - t.y,
-            ),
+        match region.text.as_ref() {
+            Some(t) if !value.is_empty() => {
+                let (tx, ty) = self.text_point(region, t, px, py);
+                self.text.index_at_point(
+                    &value,
+                    &rux_paint::text_style(&t.content),
+                    Some(t.width),
+                    tx,
+                    ty,
+                )
+            }
             _ => 0,
         }
+    }
+
+    /// A pointer position in the text's own coordinates, with the field's
+    /// horizontal scroll applied.
+    ///
+    /// Every mapping from a pointer onto a string goes through here: a caret in
+    /// [`index_in`](Self::index_in), a word in
+    /// [`select_word_at`](Self::select_word_at). They were originally written
+    /// separately and one of them missed the scroll, so a long press in a
+    /// scrolled field took the word one scroll-distance behind the finger. A
+    /// single conversion cannot disagree with itself.
+    fn text_point(
+        &self,
+        region: &FocusRegion,
+        t: &rux_layout::PaintText,
+        px: f32,
+        py: f32,
+    ) -> (f32, f32) {
+        (px - t.x + self.text_scroll_for(region), py - t.y)
     }
 
     /// Update the focused single-line input's horizontal offset so its caret is
@@ -1256,12 +1273,13 @@ impl App {
         let (Some(t), false) = (&region.text, value.is_empty()) else {
             return false;
         };
+        let (tx, ty) = self.text_point(&region, t, fx, fy);
         let (start, end) = self.text.word_at_point(
             &value,
             &rux_paint::text_style(&t.content),
             Some(t.width),
-            fx - t.x,
-            fy - t.y,
+            tx,
+            ty,
         );
         self.set_focus_range(Some(Focus {
             model: region.model,
