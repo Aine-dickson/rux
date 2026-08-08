@@ -79,8 +79,14 @@ enum RuxEvent {
     /// of the caret, `0` when there is none. The browser runs the composition
     /// itself here; the shell only needs to know which tail of the text is still
     /// provisional so it can underline it, exactly as it does natively.
+    ///
+    /// `anchor` is the other end of the selection, equal to `caret` when nothing
+    /// is selected. It is carried because the browser's own copy, cut and
+    /// select-all act on the hidden input's selection, so the two have to agree
+    /// about what is selected or the phone's clipboard operates on the wrong
+    /// text (before v0.5.1, on no text at all).
     #[cfg(target_arch = "wasm32")]
-    WebText { value: String, caret: usize, composing: usize },
+    WebText { value: String, caret: usize, anchor: usize, composing: usize },
     /// Assistive technology asked us something (it attached, it wants the
     /// tree, it moved focus). Delivered through the same proxy as hot-reload.
     #[cfg(not(target_arch = "wasm32"))]
@@ -1716,10 +1722,21 @@ impl App {
         // keyboard. Writing the value or the selection back on every edit would
         // fight the browser for the caret mid-word, and the browser is the one
         // holding the composition.
+        let caret16 = byte_to_utf16_index(&value, self.caret.min(value.len())) as u32;
+        let anchor16 = byte_to_utf16_index(&value, self.anchor.min(value.len())) as u32;
+        let (start, end, direction) = browser_selection(anchor16, caret16);
         if el.value() != value {
             el.set_value(&value);
-            let caret = byte_to_utf16_index(&value, self.caret.min(value.len())) as u32;
-            let _ = el.set_selection_range(caret, caret);
+            let _ = el.set_selection_range_with_direction(start, end, direction);
+        } else if el.selection_start().ok().flatten() != Some(start)
+            || el.selection_end().ok().flatten() != Some(end)
+        {
+            // The text is unchanged but the selection moved on our side: a drag
+            // across the canvas, a double-tap on a word, a handler selecting
+            // all. The browser has to be told, because its own copy, cut and
+            // select-all read the hidden input's selection and nothing else.
+            // Leaving this out is what made copy on a phone act on no text.
+            let _ = el.set_selection_range_with_direction(start, end, direction);
         }
         let _ = el.focus();
         self.position_web_ime();
@@ -1752,7 +1769,7 @@ impl App {
     /// the hidden input's new contents. So this replaces the field's value
     /// outright rather than applying a keystroke to it.
     #[cfg(target_arch = "wasm32")]
-    fn apply_web_text(&mut self, value: String, caret: usize, composing: usize) {
+    fn apply_web_text(&mut self, value: String, caret: usize, anchor: usize, composing: usize) {
         let Some(model) = self.focused.clone() else { return };
         // A one-line field never takes a newline, the rule paste already follows.
         let value = if self.focused_multiline {
@@ -1761,6 +1778,7 @@ impl App {
             value.replace(['\n', '\r'], "")
         };
         let caret = floor_char_boundary(&value, caret.min(value.len()));
+        let anchor = floor_char_boundary(&value, anchor.min(value.len()));
         let preedit = (composing > 0 && composing <= caret)
             .then(|| (floor_char_boundary(&value, caret - composing), caret));
         // The browser is running the composition, so the shell's own
@@ -1768,7 +1786,7 @@ impl App {
         self.preedit = None;
         self.document.apply_edit(&model, &value);
         self.scroll_caret_into_view(&model, &value, caret);
-        self.set_focus_range(Some(Focus { model, caret, anchor: caret, preedit }));
+        self.set_focus_range(Some(Focus { model, caret, anchor, preedit }));
     }
 
     /// Park the candidate window under the caret instead of at the window's
@@ -2312,8 +2330,8 @@ impl ApplicationHandler<RuxEvent> for App {
             RuxEvent::SetSource(source) => self.set_source(source),
 
             #[cfg(target_arch = "wasm32")]
-            RuxEvent::WebText { value, caret, composing } => {
-                self.apply_web_text(value, caret, composing)
+            RuxEvent::WebText { value, caret, anchor, composing } => {
+                self.apply_web_text(value, caret, anchor, composing)
             }
 
             // Asking winit to resize restyles the canvas and then reports a
@@ -2697,12 +2715,20 @@ fn web_send_text(el: &web_sys::HtmlInputElement) {
     // from: it indexes strings by byte. Converting through the prefix keeps a
     // caret after an emoji or a CJK character in the right place instead of
     // several bytes short.
-    let caret16 = el.selection_start().ok().flatten().unwrap_or(0) as usize;
+    let start16 = el.selection_start().ok().flatten().unwrap_or(0) as usize;
+    let end16 = el.selection_end().ok().flatten().map_or(start16, |v| v as usize);
+    // `selectionStart`/`End` are ordered, so on their own they cannot say which
+    // end the caret is at. `selectionDirection` is what distinguishes a
+    // selection dragged leftwards from the same range dragged rightwards, and
+    // getting it wrong makes Shift+arrow extend from the wrong end afterwards.
+    let backward = el.selection_direction().ok().flatten().as_deref() == Some("backward");
+    let (anchor16, caret16) = rux_selection(start16, end16, backward);
     let caret = utf16_to_byte_index(&value, caret16);
+    let anchor = utf16_to_byte_index(&value, anchor16);
     let composing = WEB_COMPOSING.with(|c| *c.borrow()).min(caret);
     WEB_PROXY.with(|p| {
         if let Some(proxy) = p.borrow().as_ref() {
-            let _ = proxy.send_event(RuxEvent::WebText { value, caret, composing });
+            let _ = proxy.send_event(RuxEvent::WebText { value, caret, anchor, composing });
         }
     });
 }
@@ -2716,6 +2742,35 @@ fn web_send_text(el: &web_sys::HtmlInputElement) {
 //
 // Compiled for the web, which is the only caller, and for tests, which are the
 // reason it is not simply inside the wasm module.
+
+/// Rux's `(anchor, caret)` as the browser's `(start, end, direction)`.
+///
+/// Rux stores a selection as two ends where the caret is the moving one. A DOM
+/// input stores an ordered range plus a direction, so the caret's end is only
+/// recoverable from `selectionDirection`. Mapping the two is pure arithmetic and
+/// lives here so it can be tested without a browser.
+#[cfg(any(target_arch = "wasm32", test))]
+fn browser_selection(anchor: u32, caret: u32) -> (u32, u32, &'static str) {
+    if anchor <= caret {
+        (anchor, caret, "forward")
+    } else {
+        (caret, anchor, "backward")
+    }
+}
+
+/// The inverse: the browser's ordered range and direction as Rux's ends.
+///
+/// A collapsed range is reported `"none"` rather than a direction, which lands
+/// on the forward arm and gives `anchor == caret`, meaning nothing selected.
+/// That is the same thing Rux means by it.
+#[cfg(any(target_arch = "wasm32", test))]
+fn rux_selection(start: usize, end: usize, backward: bool) -> (usize, usize) {
+    if backward {
+        (end, start)
+    } else {
+        (start, end)
+    }
+}
 
 /// Byte index of the character boundary at or before `units` UTF-16 code units
 /// into `s`.
@@ -2760,7 +2815,10 @@ fn floor_char_boundary(s: &str, mut index: usize) -> usize {
 
 #[cfg(test)]
 mod caret_index {
-    use super::{byte_to_utf16_index, floor_char_boundary, utf16_to_byte_index};
+    use super::{
+        browser_selection, byte_to_utf16_index, floor_char_boundary, rux_selection,
+        utf16_to_byte_index,
+    };
 
     /// ASCII is the case where the two agree, and the one every other case is
     /// measured against.
@@ -2808,6 +2866,41 @@ mod caret_index {
         assert_eq!(byte_to_utf16_index(s, 99), 2);
         assert_eq!(floor_char_boundary(s, 99), 2);
         assert_eq!(floor_char_boundary("é", 1), 0);
+    }
+
+    /// A DOM input stores an ordered range and a direction; Rux stores two ends
+    /// with the caret as the moving one. A selection dragged leftwards is the
+    /// same range as one dragged rightwards, so the direction is the only thing
+    /// carrying which end the caret is at.
+    #[test]
+    fn a_selection_keeps_which_end_the_caret_is_at() {
+        assert_eq!(browser_selection(2, 7), (2, 7, "forward"));
+        assert_eq!(browser_selection(7, 2), (2, 7, "backward"), "dragged leftwards");
+        assert_eq!(browser_selection(4, 4), (4, 4, "forward"), "collapsed");
+
+        assert_eq!(rux_selection(2, 7, false), (2, 7));
+        assert_eq!(rux_selection(2, 7, true), (7, 2), "caret at the left end");
+        // A collapsed range reports "none", which is not "backward", so it takes
+        // the forward arm and means nothing is selected.
+        assert_eq!(rux_selection(4, 4, false), (4, 4));
+    }
+
+    /// The two directions are inverses. Round-tripping is what catches a
+    /// direction bug: pushing a backward selection to the browser and reading it
+    /// straight back must not silently flip the caret to the other end, which is
+    /// what makes a later Shift+arrow extend the wrong way.
+    #[test]
+    fn pushing_a_selection_and_reading_it_back_is_lossless() {
+        for (anchor, caret) in [(0u32, 0u32), (0, 5), (5, 0), (3, 9), (9, 3), (4, 4)] {
+            let (start, end, direction) = browser_selection(anchor, caret);
+            let backward = direction == "backward";
+            let (back_anchor, back_caret) = rux_selection(start as usize, end as usize, backward);
+            assert_eq!(
+                (back_anchor as u32, back_caret as u32),
+                (anchor, caret),
+                "round trip changed ({anchor}, {caret})"
+            );
+        }
     }
 }
 

@@ -374,6 +374,17 @@ parley, but only their *horizontal* extent: the vertical position is recomputed
 from our own leading-trimmed line stepping, since parley's line pitch isn't ours
 (see `rux-text::selection_rects`).
 
+**On the web there is no system clipboard**, so Ctrl+C and friends have nothing
+to talk to. The browser's own copy, cut, paste and select-all are the only route,
+and they act on the hidden `<input>` the shell keeps over the focused field. That
+means the selection has to be kept in step in *both* directions, which it now is:
+a drag across the canvas is written out to the hidden input, and a selection made
+with the browser's own handles is read back, including which end the caret is at
+(`selectionStart`/`End` are ordered, so `selectionDirection` is what carries it).
+
+Until v0.5.1 the hidden input's selection was always collapsed, so on a phone the
+native Copy acted on no text at all.
+
 **Limits:** no word-wise movement (Ctrl+arrows moves by character), no
 triple-click line-select, no drag-and-drop of selected text, no middle-click
 paste on X11, and a `select` has no arrow-key list navigation or native mobile
