@@ -71,15 +71,29 @@ rux examples/form.rux
 
 The examples (`form`, `list`, `gallery`, `dashboard`, `battery`) cover inputs, scrolling, images, a responsive grid, and a fixed-width card. Edit any of them with the window open and it hot-reloads.
 
-## Editor support (VS Code)
+## Check and format
 
-A `.rux` VS Code extension ships in this repo: **syntax highlighting** for all three sections, **snippets**, **folding**, a basic **Format Document** re-indenter (`Shift+Alt+F`), and a **file icon**. Install the prebuilt package (no build step):
+Neither needs a window or a GPU, so both work in CI:
 
 ```bash
-code --install-extension editors/vscode/rux-0.1.0.vsix
+rux check .                   # path:line:col: severity: message
+rux check --deny-warnings .   # warnings fail too
+rux check --format json .     # for an editor
+rux fmt .                     # format in place
+rux fmt --check .             # change nothing, exit non-zero if it would
 ```
 
-Then open any `.rux` file. Details and the tooling roadmap (a parser-backed `rux fmt`, `rux check` diagnostics, and a language server are next) are in [`editors/vscode/README.md`](editors/vscode/README.md). The same highlighting powers the ` ```rux ` code blocks on the [website](https://ruxlang.dev).
+## Editor support (VS Code)
+
+A `.rux` VS Code extension ships in this repo: **syntax highlighting** for all three sections, **snippets**, **folding**, a **file icon**, **Format Document** (`Shift+Alt+F`), and **problems reported as you open and save**. The last two shell out to the `rux` binary, so install that first (above), then build and install the extension:
+
+```bash
+cd editors/vscode
+npx @vscode/vsce package          # produces rux-<version>.vsix
+code --install-extension rux-0.2.0.vsix
+```
+
+Then open any `.rux` file. If `rux` isn't on your `PATH`, point the `rux.path` setting at it. Details are in [`editors/vscode/README.md`](editors/vscode/README.md); a language server is still to come. The same highlighting powers the ` ```rux ` code blocks on the [website](https://ruxlang.dev).
 
 ## What works today
 
