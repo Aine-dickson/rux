@@ -5,5 +5,7 @@ version.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "Tag- and bracket-aware re-indentation for .rux files."
+keywords = ["ui", "formatter", "rux"]
+categories = ["gui", "development-tools"]
 
 [dependencies]

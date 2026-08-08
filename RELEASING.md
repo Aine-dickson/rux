@@ -67,12 +67,13 @@ the *line being built*, not a release. Releasing is what drops the suffix.
 
 - [ ] Drop `-dev` from `version` in `[workspace.package]` (root `Cargo.toml`),
       so `X.Y.Z-dev` becomes `X.Y.Z`.
-- [ ] Drop it from every intra-workspace path dependency that carries an explicit
-      version too, today just `rux-reactive` in `crates/rux-shell/Cargo.toml`.
-      These must match the workspace version **exactly**: a plain `X.Y.Z`
+- [ ] Drop it from every `rux-*` entry in `[workspace.dependencies]`, in the same
+      file. These must match the workspace version **exactly**: a plain `X.Y.Z`
       requirement does not match the prerelease `X.Y.Z-dev`, so changing one
       without the other breaks the build.
-      Grep: `grep -rn 'version = "0\.' crates/*/Cargo.toml`.
+      Grep: `grep -n 'rux-.* = { version' Cargo.toml`.
+      Members inherit with `rux-x.workspace = true` and need no edit; the only
+      one without a version is `rux-highlight`, which is never published.
 - [ ] `cargo build` passes after the change.
 - [ ] After tagging, open the next line: set both back to `X.Y.(Z+1)-dev`.
 
@@ -91,31 +92,42 @@ The CLI publishes as **`ruxlang`**, not `rux`, the bare name is held by an
 unrelated abandoned crate. The binary is still `rux`, so `cargo install ruxlang`
 gives you a `rux` command.
 
-**The workspace cannot publish as it stands.** `cargo publish` rejects any path
-dependency without a version, and 24 of them are bare `path = "../…"`, across
-`rux-cli`, `rux-paint`, `rux-runtime`, `rux-script`, `rux-shell`, `rux-style`
-and `rux-web`. Only `rux-shell`'s `rux-reactive` carries one today. All 24 need
-versions before the first publish, and all 24 then have to track the workspace
-version at every release.
+**Eleven crates publish.** `rux-web` and `rux-highlight` carry
+`publish = false`: the first is a `cdylib` only the playground links, the second
+is used by nothing else, and a crates.io name is held forever whether or not it
+turns out to be wanted.
 
-Re-derive the count before trusting it, it grows every time a crate is added:
-`grep -rn 'path = "\.\./' crates/*/Cargo.toml | grep -v version`.
+Versions on the intra-workspace deps live in **`[workspace.dependencies]` in the
+root `Cargo.toml`**, and members inherit them with `rux-x.workspace = true`.
+`cargo publish` rejects a path dependency with no version, so each one needs a
+version that matches `[workspace.package] version` exactly. Keeping them in one
+block is what stops that being nineteen lines across six files. Step 4 above
+bumps them.
 
-- [ ] Add versions to the remaining bare path deps.
-- [ ] Decide whether `rux-web` publishes at all. It is a `cdylib` for
-      `wasm32-unknown-unknown` that only the playground consumes, so it is a
-      `publish = false` candidate rather than a tenth crate name to hold
-      forever.
-- [ ] Publish in dependency order, one at a time. The six leaves first, in any
-      order among themselves, then each layer once the one above it is up:
-      `rux-parser`, `rux-reactive`, `rux-text`, `rux-layout`, `rux-fmt`,
-      `rux-highlight` → `rux-script`, `rux-paint` → `rux-style` →
-      `rux-runtime` → `rux-shell` → `ruxlang`.
-- [ ] `cargo publish --dry-run -p <crate>` on each before the real thing.
-- [ ] Expect throttling: crates.io rate-limits new crate names, so ten in one
-      sitting will stall partway.
+**Publishing is a staircase, not a batch.** `cargo publish --dry-run` resolves
+against the *real* index, so a crate cannot be dry-run until everything it
+depends on is genuinely published. Before the first publish only the five leaves
+can be checked; every layer above is unverifiable until the layer below is up,
+and `cargo package --no-verify` does not get around it, it resolves too.
+
+Plan for that: publish a layer, wait for the index, then dry-run the next.
+
+- [ ] `cargo publish --dry-run -p <crate>` for the leaves, which is all that can
+      be checked up front.
+- [ ] Publish in dependency order, one at a time, dry-running each layer once
+      the one below it is on the index:
+      `rux-parser`, `rux-reactive`, `rux-text`, `rux-layout`, `rux-fmt`
+      → `rux-script`, `rux-paint` → `rux-style` → `rux-runtime`
+      → `rux-shell` → `ruxlang`.
+- [ ] Expect throttling: crates.io rate-limits new crate names, so eleven in one
+      sitting will stall partway. That is survivable precisely because the order
+      is a staircase, pick up where it stopped.
 - [ ] Double-check the version. **crates.io is a one-way door**: yanking hides a
       version, it does not remove or free it, and you cannot re-publish over it.
+      Whatever ships first becomes Rux's permanent floor on the registry; there
+      will never be a `0.1.0` there.
+- [ ] Check the rendered page for `ruxlang` afterwards. It is the one crate with
+      a `readme`, and it is what anyone finding Rux by search reads first.
 
 ## Release timing
 

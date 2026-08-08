@@ -51,6 +51,30 @@ strip = true
 # and `peniko`, so the shell uses `vello::wgpu` rather than pinning wgpu itself
 # (avoids a version split between the renderer and the surface).
 [workspace.dependencies]
+# The Rux crates themselves, declared here rather than as paths in each member.
+#
+# `cargo publish` rejects a path dependency with no version, so publishing means
+# every intra-workspace dep carries one, and every one of them has to be bumped
+# at every release. Declaring them once makes that a single block to edit rather
+# than nineteen lines spread across six files, which is the shape of mistake
+# that only shows up as a broken crate nobody can install.
+#
+# The version must match `[workspace.package] version` exactly. `RELEASING.md`
+# step 4 covers both.
+rux-parser = { version = "0.5.1", path = "crates/rux-parser" }
+rux-reactive = { version = "0.5.1", path = "crates/rux-reactive" }
+rux-text = { version = "0.5.1", path = "crates/rux-text" }
+rux-layout = { version = "0.5.1", path = "crates/rux-layout" }
+rux-fmt = { version = "0.5.1", path = "crates/rux-fmt" }
+rux-script = { version = "0.5.1", path = "crates/rux-script" }
+rux-paint = { version = "0.5.1", path = "crates/rux-paint" }
+rux-style = { version = "0.5.1", path = "crates/rux-style" }
+rux-runtime = { version = "0.5.1", path = "crates/rux-runtime" }
+rux-shell = { version = "0.5.1", path = "crates/rux-shell" }
+# Not published (see its own `publish = false`), so it needs no version: nothing
+# on crates.io will ever have to resolve it.
+rux-highlight = { path = "crates/rux-highlight" }
+
 winit = "0.30"
 pollster = "0.4"
 vello = "0.9"

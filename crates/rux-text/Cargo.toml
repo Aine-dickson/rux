@@ -5,6 +5,8 @@ version.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "Rux text engine: parley shaping/layout + vello glyph drawing."
+keywords = ["ui", "text", "font", "shaping"]
+categories = ["gui", "text-processing"]
 
 [dependencies]
 parley = "0.11"

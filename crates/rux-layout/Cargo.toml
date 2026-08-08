@@ -5,6 +5,8 @@ version.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "Rux layout: a styled node tree resolved to absolute paint rects via taffy."
+keywords = ["ui", "layout", "flexbox", "grid"]
+categories = ["gui"]
 
 [dependencies]
 taffy.workspace = true
