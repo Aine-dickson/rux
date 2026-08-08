@@ -75,6 +75,15 @@ pub struct Sfc {
     pub template: Element,
     pub style: String,
     pub script: String,
+    /// 1-based line in the *file* where `style`'s first character sits.
+    ///
+    /// The later stages parse `style` on its own, so everything they know a
+    /// position for is relative to the section. Without this a warning would
+    /// point at the wrong line of the file, which is worse than pointing
+    /// nowhere: the reader trusts it and looks in the wrong place.
+    pub style_line: usize,
+    /// The same, for `script`.
+    pub script_line: usize,
 }
 
 /// An element node: a tag, its attributes (in source order), and its children.
@@ -160,8 +169,8 @@ impl std::error::Error for ParseError {}
 pub fn parse_sfc(src: &str) -> Result<Sfc, ParseError> {
     let (template_src, template_start) =
         section(src, "template").ok_or_else(|| ParseError::new("missing <template> section"))?;
-    let style = section(src, "style").map(|(s, _)| s).unwrap_or_default();
-    let script = section(src, "script").map(|(s, _)| s).unwrap_or_default();
+    let (style, style_line) = trimmed_section(src, "style");
+    let (script, script_line) = trimmed_section(src, "script");
 
     // Positions inside the template are relative to the section; shift them onto
     // the file's lines so a reported line matches the editor's gutter.
@@ -179,9 +188,26 @@ pub fn parse_sfc(src: &str) -> Result<Sfc, ParseError> {
 
     Ok(Sfc {
         template,
-        style: style.trim().to_string(),
-        script: script.trim().to_string(),
+        style,
+        style_line,
+        script,
+        script_line,
     })
+}
+
+/// A section's contents with the surrounding blank space removed, and the
+/// 1-based file line its first remaining character sits on.
+///
+/// The trim is what makes the line number necessary rather than obvious: a
+/// `<style>` tag on line 8 usually has its first rule on line 9, and counting
+/// the newlines that were trimmed away is the only way to say which.
+fn trimmed_section(src: &str, name: &str) -> (String, usize) {
+    let Some((raw, start)) = section(src, name) else {
+        return (String::new(), 1);
+    };
+    let leading = raw.len() - raw.trim_start().len();
+    let line = src[..start + leading].matches('\n').count() + 1;
+    (raw.trim().to_string(), line)
 }
 
 /// Extract the inner text of a top-level `<name> … </name>` section, with the
@@ -435,6 +461,32 @@ impl Parser {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The line a section's content starts on, which is what lets a later stage
+    /// report a CSS warning against the file's own gutter rather than against an
+    /// offset into a string nobody can see.
+    #[test]
+    fn sections_record_the_file_line_they_start_on() {
+        // Deliberately not aligned: the leading blank lines inside `<style>` are
+        // trimmed, and the count has to survive that.
+        let src = "<template>\n  <screen></screen>\n</template>\n\n<style>\n\n  .a { color: red; }\n</style>\n\n<script>\nlet n = signal(1);\n</script>\n";
+        let sfc = parse_sfc(src).expect("parses");
+
+        assert_eq!(sfc.style_line, 7, "`.a` is on line 7");
+        assert_eq!(sfc.script_line, 11, "`let n` is on line 11");
+        // And the recorded line really is where that text is in the file.
+        let line_of = |n: usize| src.lines().nth(n - 1).unwrap().trim();
+        assert!(line_of(sfc.style_line).starts_with(".a"));
+        assert!(line_of(sfc.script_line).starts_with("let n"));
+    }
+
+    /// A file with no `<style>` must not claim line 0, which is not a line.
+    #[test]
+    fn a_missing_section_reports_a_usable_line() {
+        let sfc = parse_sfc("<template><screen></screen></template>").expect("parses");
+        assert_eq!(sfc.style, "");
+        assert_eq!(sfc.style_line, 1);
+    }
 
     #[test]
     fn parses_sections_and_tree() {

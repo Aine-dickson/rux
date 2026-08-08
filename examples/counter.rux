@@ -16,11 +16,9 @@
     padding: 32px;
     background: #1e1e2e;
   }
-  .count {
-    color: #a6e3a1;
-    font-size: 48px;
-    font-weight: 700;
-  }
+
+  .count { color: #a6e3a1; font-size: 48px; font-weight: 700; }
+
   .btn {
     padding: 12px 20px;
     background: #313244;

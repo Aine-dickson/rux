@@ -17,6 +17,7 @@
     padding: 32px;
     background: #11111b;
   }
+
   .title { color: #cdd6f4; font-size: 22px; font-weight: 700; }
   .row { display: flex; gap: 24px; align-items: center; }
 
@@ -28,7 +29,8 @@
     border-radius: 16px;
     overflow: hidden;
   }
-  .logo    { background-image: url(assets/logo.png); }
+
+  .logo { background-image: url(assets/logo.png); }
   .counter { background-image: url(assets/counter.png); }
 
   .cap {
@@ -41,11 +43,7 @@
   }
 
   /* Same image cover-filling a circle, which proves the corner clip. */
-  .circle {
-    width: 110px;
-    height: 110px;
-    border-radius: 9999px;
-  }
+  .circle { width: 110px; height: 110px; border-radius: 9999px; }
 </style>
 
 <script>

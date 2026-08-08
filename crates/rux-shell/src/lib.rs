@@ -43,7 +43,7 @@ use accesskit::{Node as AccessKitNode, NodeId, Role, Toggled, Tree, TreeUpdate};
 #[cfg(not(target_arch = "wasm32"))]
 use rux_layout::{AccessNode, AccessRole};
 use winit::application::ApplicationHandler;
-use winit::event::{ElementState, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent};
+use winit::event::{ElementState, Ime, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{Key, NamedKey};
 use winit::window::{CursorIcon, Window, WindowId};
@@ -70,6 +70,17 @@ enum RuxEvent {
     /// layout does, and the canvas has to be told rather than asked.
     #[cfg(target_arch = "wasm32")]
     Resize(f64, f64),
+    /// The browser's soft keyboard edited the focused field. Web only: on a
+    /// phone the text does not arrive as key presses at all, it arrives as the
+    /// new contents of the hidden `<input>` the shell keeps focused, so this
+    /// carries the whole value rather than a keystroke.
+    ///
+    /// `composing` is the byte length of any in-progress composition at the end
+    /// of the caret, `0` when there is none. The browser runs the composition
+    /// itself here; the shell only needs to know which tail of the text is still
+    /// provisional so it can underline it, exactly as it does natively.
+    #[cfg(target_arch = "wasm32")]
+    WebText { value: String, caret: usize, composing: usize },
     /// Assistive technology asked us something (it attached, it wants the
     /// tree, it moved focus). Delivered through the same proxy as hot-reload.
     #[cfg(not(target_arch = "wasm32"))]
@@ -316,6 +327,7 @@ fn dropdown_paints(sel: &SelectRegion, value: &str) -> Vec<Paint> {
                 nowrap: true,
                 caret: None,
                 selection: None,
+                preedit: None,
             },
         }));
     }
@@ -446,9 +458,18 @@ const OVERLAY_MAX_WARNINGS: usize = 6;
 /// empty window with one line on a stderr nobody running a GUI is watching. An
 /// error takes a red panel and says the screen is stale; warnings take a quieter
 /// amber one, since the app underneath is fine.
-fn overlay_paints(diag: &rux_runtime::Diagnostics, path: &Path, width: f32) -> Vec<Paint> {
+/// The painted overlay, and where it ended up.
+struct Overlay {
+    paints: Vec<Paint>,
+    /// The panel's box in logical px, so a tap on it can dismiss it. Kept beside
+    /// the paints rather than recomputed, since a hit region that disagrees with
+    /// what was drawn is the kind of bug that only shows up under a resize.
+    rect: (f32, f32, f32, f32),
+}
+
+fn overlay_paints(diag: &rux_runtime::Diagnostics, path: &Path, width: f32) -> Option<Overlay> {
     if diag.is_empty() {
-        return Vec::new();
+        return None;
     }
     let error_bg = Rgba::new(0.24, 0.09, 0.13, 0.97); // deep red
     let error_edge = Rgba::new(0.95, 0.35, 0.42, 1.0); // #f38ba8-ish
@@ -496,6 +517,10 @@ fn overlay_paints(diag: &rux_runtime::Diagnostics, path: &Path, width: f32) -> V
         (Some(_), n) => format!("rux: {} failed to load  ·  {n} warning(s)", file_name(path)),
         (None, n) => format!("rux: {n} warning(s) in {}", file_name(path)),
     };
+    // The panel covers the app it is describing, and there was no way to move it
+    // out of the way. It says so rather than leaving the gesture to be guessed
+    // at, and it comes back by itself the moment the diagnostics change.
+    lines.push(("tap this panel to dismiss it".to_string(), muted));
 
     let panel_h = OVERLAY_TITLE_H + lines.len() as f32 * OVERLAY_LINE_H + OVERLAY_PAD * 1.5;
     let x = OVERLAY_PAD;
@@ -537,7 +562,21 @@ fn overlay_paints(diag: &rux_runtime::Diagnostics, path: &Path, width: f32) -> V
             content: overlay_text(line, 14.0, 400, color),
         }));
     }
-    out
+    Some(Overlay { paints: out, rect: (x, y, panel_w, panel_h) })
+}
+
+/// Whether the overlay should be on screen: there is something to say, and it
+/// has not been dismissed *for these particular diagnostics*.
+///
+/// Comparing the whole `Diagnostics` rather than holding a flag is what makes
+/// the panel come back on its own. Dismissing "3 warnings" and then introducing
+/// a parse error must not leave the window silent about it, which a boolean
+/// would do until the next restart.
+fn overlay_visible(
+    diag: &rux_runtime::Diagnostics,
+    dismissed: Option<&rux_runtime::Diagnostics>,
+) -> bool {
+    !diag.is_empty() && dismissed != Some(diag)
 }
 
 fn file_name(path: &Path) -> String {
@@ -588,6 +627,7 @@ fn overlay_text(text: String, font_size: f32, weight: u16, color: Rgba) -> TextC
         nowrap: true,
         caret: None,
         selection: None,
+        preedit: None,
     }
 }
 
@@ -622,6 +662,28 @@ struct RenderState {
     /// the common case.
     #[cfg(not(target_arch = "wasm32"))]
     access: accesskit_winit::Adapter,
+}
+
+/// An IME composition in flight: the text between pressing a dead key (or
+/// starting to spell a CJK word) and choosing what it becomes.
+///
+/// The composed text is written straight into the bound signal, so it renders
+/// through the ordinary text path and needs no second string that the layout and
+/// painter would have to be taught about. A browser does the same thing to an
+/// `<input>`'s value while you compose, so an `@input` handler seeing provisional
+/// text is the behaviour people already expect.
+///
+/// What must be remembered separately is how to take it back out again, because
+/// a composition can be abandoned as well as committed.
+#[derive(Clone, Debug)]
+struct Preedit {
+    /// Byte offset in the value where the composition starts.
+    at: usize,
+    /// Byte length of the composed text currently sitting in the value.
+    len: usize,
+    /// Whatever the composition replaced when it began (composing over a
+    /// selection is allowed), put back if it is cancelled rather than committed.
+    replaced: String,
 }
 
 /// The application: owns the vello render context, the document, the text
@@ -693,6 +755,17 @@ struct App {
     /// Where the current selection started, as a byte index. Equal to `caret`
     /// when nothing is selected, the selection is the range between them.
     anchor: usize,
+    /// The diagnostics whose overlay has been dismissed, if any. Held as the
+    /// diagnostics themselves rather than a flag so that the panel reappears the
+    /// moment what is wrong with the document changes: dismissing "3 warnings"
+    /// must not also hide the error you introduce next.
+    overlay_dismissed: Option<rux_runtime::Diagnostics>,
+    /// Where the overlay was drawn last frame, in logical px, for hit testing.
+    /// `None` when it is not on screen.
+    overlay_rect: Option<(f32, f32, f32, f32)>,
+    /// The IME composition in flight, if any. `None` covers every keyboard that
+    /// commits directly, which is most of them most of the time.
+    preedit: Option<Preedit>,
     /// Whether the pointer is selecting text by dragging inside an input.
     text_drag: bool,
     /// When and where the last click landed, for double-click word-select.
@@ -757,6 +830,9 @@ impl App {
             open_select: None,
             caret: 0,
             anchor: 0,
+            overlay_dismissed: None,
+            overlay_rect: None,
+            preedit: None,
             text_drag: false,
             last_click: None,
             #[cfg(not(target_arch = "wasm32"))]
@@ -1038,7 +1114,12 @@ impl App {
                     fx - t.x,
                     fy - t.y,
                 );
-                self.set_focus_range(Some(Focus { model: region.model, caret: end, anchor: start }));
+                self.set_focus_range(Some(Focus {
+                    model: region.model,
+                    caret: end,
+                    anchor: start,
+                    preedit: None,
+                }));
                 return true;
             }
         }
@@ -1060,7 +1141,7 @@ impl App {
         let caret = self.index_in(&region, fx, fy);
         if caret != self.caret {
             let anchor = self.anchor;
-            self.set_focus_range(Some(Focus { model, caret, anchor }));
+            self.set_focus_range(Some(Focus { model, caret, anchor, preedit: None }));
         }
     }
 
@@ -1166,11 +1247,48 @@ impl App {
     }
 
     /// Handle a completed tap at `(px, py)`, in physical pixels: focus an input
+    /// Hide the dev overlay if `(fx, fy)` in logical px is on it. Returns whether
+    /// it acted, so the tap is not also delivered to the app underneath.
+    ///
+    /// The dismissal is remembered against the current diagnostics, so it lasts
+    /// exactly as long as the document's problems are the same ones.
+    fn dismiss_overlay_at(&mut self, fx: f32, fy: f32) -> bool {
+        if !self.overlay_covers(fx, fy) {
+            return false;
+        }
+        self.overlay_dismissed = Some(self.document.diagnostics().clone());
+        self.overlay_rect = None;
+        self.request_redraw();
+        true
+    }
+
+    /// Whether the overlay is on screen and covers `(fx, fy)` in logical px.
+    fn overlay_covers(&self, fx: f32, fy: f32) -> bool {
+        self.overlay_rect
+            .is_some_and(|(x, y, w, h)| fx >= x && fx <= x + w && fy >= y && fy <= y + h)
+    }
+
+    /// The same test against a physical-pixel pointer position, which is what
+    /// the press handlers have. A press landing on the panel must not reach the
+    /// app underneath: starting a text selection inside a field you cannot see
+    /// is exactly the confusion the panel is there to prevent.
+    fn overlay_covers_physical(&self, (px, py): (f64, f64)) -> bool {
+        let scale = self.scale();
+        self.overlay_covers((px / scale) as f32, (py / scale) as f32)
+    }
+
     /// if one is under the pointer, otherwise run the topmost `@tap` handler.
     fn dispatch_tap(&mut self, px: f64, py: f64) {
         let scale = self.scale();
         let (px, py) = (px / scale, py / scale);
         let (fx, fy) = (px as f32, py as f32);
+
+        // The dev overlay is painted above everything, including a dropdown, so
+        // it takes the tap first. Anything else would have the panel swallow
+        // taps meant for it while passing them to whatever it is covering.
+        if self.dismiss_overlay_at(fx, fy) {
+            return;
+        }
 
         // An open dropdown is on top of everything, so it intercepts taps first:
         // a tap on an option selects it; any other tap just closes the dropdown.
@@ -1366,6 +1484,7 @@ impl App {
                 model,
                 caret: new_caret,
                 anchor: new_anchor,
+                preedit: None,
             }));
         }
     }
@@ -1382,6 +1501,7 @@ impl App {
                     model: model.to_string(),
                     caret: value.len(),
                     anchor: 0,
+                    preedit: None,
                 }));
             }
             "c" => {
@@ -1535,8 +1655,16 @@ impl App {
         }
     }
 
-    /// The full-fidelity focus setter: caret *and* selection anchor.
+    /// The full-fidelity focus setter: caret, selection anchor *and* composition.
+    ///
+    /// Any caller that is not the IME leaves `preedit` at `None`, which is taken
+    /// as "whatever was being composed is abandoned": clicking into another
+    /// field, tabbing away or pressing Escape mid-composition all put the field
+    /// back the way it was, rather than stranding half-typed text nobody chose.
     fn set_focus_range(&mut self, focus: Option<Focus>) {
+        if focus.as_ref().and_then(|f| f.preedit).is_none() {
+            self.cancel_preedit();
+        }
         self.focused = focus.as_ref().map(|f| f.model.clone());
         self.caret = focus.as_ref().map(|f| f.caret).unwrap_or(0);
         self.anchor = focus.as_ref().map(|f| f.anchor).unwrap_or(0);
@@ -1544,8 +1672,241 @@ impl App {
         // `:focus` matches on the focused model, so the document needs it too.
         let model = self.focused.clone();
         self.update_focus_state(model);
+        self.set_ime_enabled(self.focused.is_some());
         self.reset_blink();
         self.request_redraw();
+    }
+
+    /// Tell the platform whether to route composition at us.
+    ///
+    /// Off by default in winit, which is why Rux had no dead keys and no CJK
+    /// input on any desktop: the events exist, nothing had ever asked for them.
+    /// It is toggled with focus rather than left on, because while it is on the
+    /// compositor may swallow plain keystrokes that the rest of the UI wants.
+    fn set_ime_enabled(&mut self, on: bool) {
+        let Some(state) = self.state.as_ref() else { return };
+        state.window.set_ime_allowed(on);
+        if on {
+            self.update_ime_area();
+        }
+        #[cfg(target_arch = "wasm32")]
+        self.sync_web_ime();
+    }
+
+    /// Keep the hidden `<input>` in step with the focused field, and focus or
+    /// blur it so the phone's keyboard opens and closes with the caret.
+    ///
+    /// Only on a touch device: see [`web_is_touch`]. Focusing it has to happen
+    /// while the browser still considers a user gesture to be in progress, which
+    /// is why this hangs off the focus change a tap causes rather than off a
+    /// later frame.
+    #[cfg(target_arch = "wasm32")]
+    fn sync_web_ime(&mut self) {
+        if !web_is_touch() {
+            return;
+        }
+        let Some(el) = web_ime_element() else { return };
+        let Some(model) = self.focused.clone() else {
+            let _ = el.blur();
+            return;
+        };
+        let value = self.document.engine_mut().get_string(&model);
+        // Only touch it when it has actually drifted, which means the change
+        // came from Rux (a handler, a tap moving the caret) rather than from the
+        // keyboard. Writing the value or the selection back on every edit would
+        // fight the browser for the caret mid-word, and the browser is the one
+        // holding the composition.
+        if el.value() != value {
+            el.set_value(&value);
+            let caret = byte_to_utf16_index(&value, self.caret.min(value.len())) as u32;
+            let _ = el.set_selection_range(caret, caret);
+        }
+        let _ = el.focus();
+        self.position_web_ime();
+    }
+
+    /// Lay the hidden input over the field it is editing, so that when the
+    /// keyboard opens the browser scrolls to the right place and any native UI
+    /// it anchors (the composition popup, the selection handles) lands on the
+    /// text rather than in the corner of the page.
+    #[cfg(target_arch = "wasm32")]
+    fn position_web_ime(&mut self) {
+        let Some(el) = WEB_IME.with(|c| c.borrow().clone()) else { return };
+        let Some(canvas) = WEB_CANVAS.with(|c| c.borrow().clone()) else { return };
+        let Some(model) = self.focused.clone() else { return };
+        let Some(region) = self.focuses.iter().find(|f| f.model == model) else { return };
+        // Rux's logical pixels are CSS pixels, and the input is the canvas's
+        // sibling, so the field's box offsets straight off the canvas's own.
+        let (ox, oy) = (canvas.offset_left() as f32, canvas.offset_top() as f32);
+        let style = el.style();
+        let _ = style.set_property("left", &format!("{}px", ox + region.x));
+        let _ = style.set_property("top", &format!("{}px", oy + region.y));
+        let _ = style.set_property("width", &format!("{}px", region.width.max(1.0)));
+        let _ = style.set_property("height", &format!("{}px", region.height.max(1.0)));
+    }
+
+    /// Apply an edit the browser's soft keyboard made.
+    ///
+    /// On a phone the text never arrives as key presses: the browser owns the
+    /// editing, the composition and the autocorrect, and reports the result as
+    /// the hidden input's new contents. So this replaces the field's value
+    /// outright rather than applying a keystroke to it.
+    #[cfg(target_arch = "wasm32")]
+    fn apply_web_text(&mut self, value: String, caret: usize, composing: usize) {
+        let Some(model) = self.focused.clone() else { return };
+        // A one-line field never takes a newline, the rule paste already follows.
+        let value = if self.focused_multiline {
+            value.replace("\r\n", "\n")
+        } else {
+            value.replace(['\n', '\r'], "")
+        };
+        let caret = floor_char_boundary(&value, caret.min(value.len()));
+        let preedit = (composing > 0 && composing <= caret)
+            .then(|| (floor_char_boundary(&value, caret - composing), caret));
+        // The browser is running the composition, so the shell's own
+        // composition state stays empty and must not be restored over this.
+        self.preedit = None;
+        self.document.apply_edit(&model, &value);
+        self.scroll_caret_into_view(&model, &value, caret);
+        self.set_focus_range(Some(Focus { model, caret, anchor: caret, preedit }));
+    }
+
+    /// Park the candidate window under the caret instead of at the window's
+    /// top-left, so the list of characters to choose from does not cover the text
+    /// it is being chosen for.
+    fn update_ime_area(&mut self) {
+        let Some(window) = self.state.as_ref().map(|s| s.window.clone()) else { return };
+        let scale = window.scale_factor();
+        let Some(model) = self.focused.clone() else { return };
+        let Some(region) = self.focuses.iter().find(|f| f.model == model).cloned() else {
+            return;
+        };
+        let Some(t) = region.text.as_ref() else { return };
+        let value = self.document.engine_mut().get_string(&model);
+        let style = rux_paint::text_style(&t.content);
+        let caret = self.caret.min(value.len());
+        let (cx, cy, ch) = self.text.caret_geometry(&value, &style, Some(t.width), caret);
+        window.set_ime_cursor_area(
+            winit::dpi::LogicalPosition::new((t.x + cx) as f64, (t.y + cy) as f64)
+                .to_physical::<f64>(scale),
+            winit::dpi::LogicalSize::new(rux_text::CARET_WIDTH as f64, ch as f64)
+                .to_physical::<f64>(scale),
+        );
+    }
+
+    /// Route a composition event from the platform's input method.
+    ///
+    /// This is the path that makes dead keys, accents and CJK work. Before it
+    /// existed the shell read `KeyboardInput` only, so `´` then `e` produced two
+    /// characters instead of `é`, and there was no way at all to type a language
+    /// that spells one character out of several keystrokes.
+    fn on_ime(&mut self, ime: &Ime) {
+        match ime {
+            // The method is attached. Nothing to do until text arrives.
+            Ime::Enabled => {}
+            Ime::Preedit(text, cursor) => self.set_preedit(text, *cursor),
+            Ime::Commit(text) => self.commit_text(text),
+            // The method detached (the window lost focus, the user switched
+            // keyboards). Half-composed text was never chosen, so it goes back.
+            Ime::Disabled => {
+                self.cancel_preedit();
+                self.request_redraw();
+            }
+        }
+    }
+
+    /// Show the text being composed, replacing whatever the last preedit showed.
+    ///
+    /// `cursor` is the platform's caret *within* the composition, as a byte
+    /// range; we take its start, which is where compositors put the insertion
+    /// point. `None` means it wants the caret after the whole thing.
+    fn set_preedit(&mut self, text: &str, cursor: Option<(usize, usize)>) {
+        let Some(model) = self.focused.clone() else { return };
+        let mut value = self.document.engine_mut().get_string(&model);
+
+        // Starting a composition lifts out whatever it is going to sit on top
+        // of, so that abandoning it can put that back.
+        let composing = match self.preedit.clone() {
+            Some(p) => p,
+            None => {
+                let (start, end) = self.selection();
+                let (start, end) = (start.min(value.len()), end.min(value.len()));
+                let replaced = value[start..end].to_string();
+                value.replace_range(start..end, "");
+                Preedit { at: start, len: 0, replaced }
+            }
+        };
+
+        let at = composing.at.min(value.len());
+        let end = (at + composing.len).min(value.len());
+        value.replace_range(at..end, text);
+
+        // An empty preedit is how a compositor says the composition ended with
+        // nothing chosen, which is a cancel, not a commit of "".
+        if text.is_empty() {
+            value.insert_str(at, &composing.replaced);
+            let caret = at + composing.replaced.len();
+            self.preedit = None;
+            self.document.apply_edit(&model, &value);
+            self.set_focus_range(Some(Focus::at(model, caret)));
+            return;
+        }
+
+        let caret = at + cursor.map(|(s, _)| s.min(text.len())).unwrap_or(text.len());
+        self.preedit = Some(Preedit { at, len: text.len(), replaced: composing.replaced });
+        self.document.apply_edit(&model, &value);
+        self.scroll_caret_into_view(&model, &value, caret);
+        self.set_focus_range(Some(Focus {
+            model,
+            caret,
+            anchor: caret,
+            preedit: Some((at, at + text.len())),
+        }));
+        self.update_ime_area();
+    }
+
+    /// Accept composed text into the field for good.
+    ///
+    /// Also the path a plain keystroke takes on platforms whose input method
+    /// stays in the loop even when nothing is being composed, so it has to
+    /// behave like typing when there is no composition to replace.
+    fn commit_text(&mut self, text: &str) {
+        let Some(model) = self.focused.clone() else { return };
+        let mut value = self.document.engine_mut().get_string(&model);
+        let (start, end) = match self.preedit.take() {
+            Some(p) => {
+                let at = p.at.min(value.len());
+                (at, (at + p.len).min(value.len()))
+            }
+            None => {
+                let (s, e) = self.selection();
+                (s.min(value.len()), e.min(value.len()))
+            }
+        };
+        // A one-line input never takes a newline, the rule paste already follows.
+        let text = if self.focused_multiline {
+            text.replace("\r\n", "\n")
+        } else {
+            text.lines().next().unwrap_or("").to_string()
+        };
+        value.replace_range(start..end, &text);
+        let caret = start + text.len();
+        self.document.apply_edit(&model, &value);
+        self.scroll_caret_into_view(&model, &value, caret);
+        self.set_focus_range(Some(Focus::at(model, caret)));
+        self.update_ime_area();
+    }
+
+    /// Abandon a composition, putting the field back exactly as it was before it
+    /// started. A no-op when nothing is being composed, which is the usual case.
+    fn cancel_preedit(&mut self) {
+        let Some(p) = self.preedit.take() else { return };
+        let Some(model) = self.focused.clone() else { return };
+        let mut value = self.document.engine_mut().get_string(&model);
+        let at = p.at.min(value.len());
+        let end = (at + p.len).min(value.len());
+        value.replace_range(at..end, &p.replaced);
+        self.document.apply_edit(&model, &value);
     }
 
     /// The focused input's selected byte range, low to high. Empty when there's
@@ -1631,6 +1992,8 @@ impl App {
             scrolls,
             offsets,
             states,
+            overlay_dismissed,
+            overlay_rect,
             #[cfg(not(target_arch = "wasm32"))]
             path,
             #[cfg(not(target_arch = "wasm32"))]
@@ -1706,15 +2069,22 @@ impl App {
         // The dev overlay goes last, above everything including a dropdown: if the
         // document is broken, that is the most important thing on screen.
         let diagnostics = document.diagnostics();
-        if !diagnostics.is_empty() {
+        // Dismissal is remembered against the diagnostics it was for, so fixing
+        // one thing and breaking another brings the panel straight back rather
+        // than leaving it hidden until restart.
+        *overlay_rect = None;
+        if overlay_visible(diagnostics, overlay_dismissed.as_ref()) {
             #[cfg(not(target_arch = "wasm32"))]
             let panel = overlay_paints(diagnostics, path, logical.0 as f32);
             // No file on the web, so the overlay titles itself after the editor.
             #[cfg(target_arch = "wasm32")]
             let panel =
                 overlay_paints(diagnostics, Path::new("playground.rux"), logical.0 as f32);
-            let scene = rux_paint::build_scene(&panel, text, images, false);
-            state.scene.append(&scene, Some(Affine::scale(scale)));
+            if let Some(panel) = panel {
+                let scene = rux_paint::build_scene(&panel.paints, text, images, false);
+                state.scene.append(&scene, Some(Affine::scale(scale)));
+                *overlay_rect = Some(panel.rect);
+            }
         }
 
         // Publish the accessibility tree for this frame. `update_if_active` skips
@@ -1787,6 +2157,13 @@ impl App {
         device_handle.queue.submit([encoder.finish()]);
 
         surface_texture.present();
+
+        // The hidden input is placed from `self.focuses`, which only becomes the
+        // *current* layout here. Placing it during the focus change instead
+        // would use the previous frame's geometry, so it sat one edit behind
+        // whenever an edit moved the field it covers.
+        #[cfg(target_arch = "wasm32")]
+        self.position_web_ime();
     }
 }
 
@@ -1934,6 +2311,11 @@ impl ApplicationHandler<RuxEvent> for App {
             #[cfg(target_arch = "wasm32")]
             RuxEvent::SetSource(source) => self.set_source(source),
 
+            #[cfg(target_arch = "wasm32")]
+            RuxEvent::WebText { value, caret, composing } => {
+                self.apply_web_text(value, caret, composing)
+            }
+
             // Asking winit to resize restyles the canvas and then reports a
             // `Resized`, which reconfigures the surface through the same path a
             // desktop window resize takes. Going through winit rather than
@@ -2042,7 +2424,15 @@ impl ApplicationHandler<RuxEvent> for App {
                         // Every helper below reads it.
                         self.pointer = at;
                         self.touch = Some(here);
-                        if !self.press_scrollbar(at) && !self.press_text(at) {
+                        // Same order as the mouse: the dev overlay is above
+                        // everything, so a finger on it arms a dismiss rather
+                        // than reaching the app it is covering. The short-circuit
+                        // is load-bearing, `press_scrollbar` and `press_text`
+                        // start a drag as a side effect and must not run when the
+                        // panel took the press.
+                        if self.overlay_covers_physical(at)
+                            || (!self.press_scrollbar(at) && !self.press_text(at))
+                        {
                             self.press = Some(at);
                         }
                     }
@@ -2085,8 +2475,12 @@ impl ApplicationHandler<RuxEvent> for App {
                 self.shift_held = mods.state().shift_key();
                 self.ctrl_held = mods.state().control_key();
             }
+            WindowEvent::Ime(ime) => self.on_ime(&ime),
             WindowEvent::KeyboardInput { event, .. } => {
-                if event.state == ElementState::Pressed {
+                // While a composition is running the input method owns the
+                // keyboard: the same keystrokes also arrive here, and acting on
+                // them would type the letters twice, once raw and once composed.
+                if event.state == ElementState::Pressed && self.preedit.is_none() {
                     self.on_key(&event.logical_key);
                 }
             }
@@ -2097,8 +2491,11 @@ impl ApplicationHandler<RuxEvent> for App {
             } => {
                 // A press on a scrollbar thumb belongs to the bar, and a press in
                 // an input starts a text selection: neither becomes a tap on the
-                // content under it.
-                if !self.press_scrollbar(self.pointer) && !self.press_text(self.pointer) {
+                // content under it. A press on the dev overlay is none of those,
+                // it just arms the tap that dismisses it.
+                if self.overlay_covers_physical(self.pointer) {
+                    self.press = Some(self.pointer);
+                } else if !self.press_scrollbar(self.pointer) && !self.press_text(self.pointer) {
                     self.press = Some(self.pointer);
                     // `:active` holds from press to release.
                     self.update_pointer_state();
@@ -2181,6 +2578,237 @@ thread_local! {
     /// no longer any size change to observe. So the size is captured from the DOM
     /// up front and used for both the window attributes and the first surface.
     static WEB_SIZE: RefCell<(f64, f64)> = const { RefCell::new((420.0, 640.0)) };
+    /// The hidden `<input>` that exists purely to be focusable.
+    ///
+    /// A browser raises a phone's on-screen keyboard for a focused editable DOM
+    /// element and for nothing else. Rux's fields are painted inside a
+    /// `<canvas>`, which the browser knows nothing about, so before this there
+    /// was no way to type into one on a phone at all: tapping a field focused it
+    /// inside the runtime and the keyboard never came up.
+    ///
+    /// It is a real input holding the real text rather than a bare event sink,
+    /// because that hands composition, autocorrect, dictation and the keyboard's
+    /// own backspace to the browser, which already does all of it properly. The
+    /// shell reads the value back out and copies it into the bound signal.
+    static WEB_IME: RefCell<Option<web_sys::HtmlInputElement>> = const { RefCell::new(None) };
+    /// Byte length of the composition in flight in that input, `0` when none.
+    static WEB_COMPOSING: RefCell<usize> = const { RefCell::new(0) };
+}
+
+/// Whether this is a touch-first device, where the keyboard has to be summoned.
+///
+/// The hidden input is deliberately *not* used on a pointer-driven browser: it
+/// takes DOM focus away from the canvas, and winit's web backend listens for
+/// keys on the canvas, so focusing it there would trade a working desktop
+/// keyboard for one that is not needed.
+#[cfg(target_arch = "wasm32")]
+fn web_is_touch() -> bool {
+    web_sys::window()
+        .and_then(|w| w.match_media("(pointer: coarse)").ok().flatten())
+        .map(|m| m.matches())
+        .unwrap_or(false)
+}
+
+/// The hidden input, created and wired on first use.
+#[cfg(target_arch = "wasm32")]
+fn web_ime_element() -> Option<web_sys::HtmlInputElement> {
+    use wasm_bindgen::JsCast;
+    use wasm_bindgen::prelude::Closure;
+
+    if let Some(el) = WEB_IME.with(|c| c.borrow().clone()) {
+        return Some(el);
+    }
+    let canvas = WEB_CANVAS.with(|c| c.borrow().clone())?;
+    let document = web_sys::window()?.document()?;
+    let el: web_sys::HtmlInputElement =
+        document.create_element("input").ok()?.dyn_into().ok()?;
+
+    el.set_type("text");
+    // Turn off every helper that would rewrite what is typed behind our back.
+    // Autocorrect on a phone is welcome inside a text field, but capitalising
+    // the first letter of a password or a code is not, and Rux has no way yet
+    // to say which a field is.
+    let _ = el.set_attribute("autocomplete", "off");
+    let _ = el.set_attribute("autocapitalize", "off");
+    let _ = el.set_attribute("autocorrect", "off");
+    let _ = el.set_attribute("spellcheck", "false");
+    let _ = el.set_attribute("aria-hidden", "true");
+    // Invisible, but genuinely present and laid out over the field it is
+    // editing: `display: none` or `visibility: hidden` cannot take focus, and an
+    // element parked off-screen makes the browser scroll to it when the keyboard
+    // opens. `pointer-events: none` keeps taps going to the canvas, so tapping
+    // to move the caret still works; focus is only ever set programmatically.
+    // The 16px floor is what stops iOS Safari zooming the page in on focus.
+    let _ = el.set_attribute(
+        "style",
+        "position: absolute; opacity: 0; pointer-events: none; z-index: 1; \
+         border: 0; padding: 0; margin: 0; background: transparent; \
+         color: transparent; caret-color: transparent; font-size: 16px; \
+         width: 1px; height: 1px; left: 0; top: 0;",
+    );
+
+    // The canvas's parent is the positioned box the canvas itself sits in, so
+    // placing the input there lets both be positioned in the same coordinates.
+    let parent = canvas.parent_element()?;
+    parent.append_child(&el).ok()?;
+
+    // Every path that changes the text ends in an `input` event, including
+    // composition, dictation, autocorrect and the keyboard's own backspace, so
+    // one listener covers all of them and no key mapping is needed.
+    let on_input = Closure::<dyn FnMut(web_sys::Event)>::new(move |event: web_sys::Event| {
+        if let Some(target) = event.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok()) {
+            web_send_text(&target);
+        }
+    });
+    let _ = el.add_event_listener_with_callback("input", on_input.as_ref().unchecked_ref());
+    on_input.forget();
+
+    // Composition needs its own listeners only to know how much of the tail is
+    // still provisional, so the runtime can underline it the way the desktop
+    // does. The text itself already arrives through `input`.
+    let on_comp = Closure::<dyn FnMut(web_sys::CompositionEvent)>::new(
+        move |event: web_sys::CompositionEvent| {
+            let composing = match event.type_().as_str() {
+                "compositionend" => 0,
+                _ => event.data().unwrap_or_default().len(),
+            };
+            WEB_COMPOSING.with(|c| *c.borrow_mut() = composing);
+            if let Some(target) =
+                event.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok())
+            {
+                web_send_text(&target);
+            }
+        },
+    );
+    for name in ["compositionstart", "compositionupdate", "compositionend"] {
+        let _ = el.add_event_listener_with_callback(name, on_comp.as_ref().unchecked_ref());
+    }
+    on_comp.forget();
+
+    WEB_IME.with(|c| *c.borrow_mut() = Some(el.clone()));
+    Some(el)
+}
+
+/// Push the hidden input's contents at the event loop.
+#[cfg(target_arch = "wasm32")]
+fn web_send_text(el: &web_sys::HtmlInputElement) {
+    let value = el.value();
+    // `selection_start` is in UTF-16 code units, which is not where Rux counts
+    // from: it indexes strings by byte. Converting through the prefix keeps a
+    // caret after an emoji or a CJK character in the right place instead of
+    // several bytes short.
+    let caret16 = el.selection_start().ok().flatten().unwrap_or(0) as usize;
+    let caret = utf16_to_byte_index(&value, caret16);
+    let composing = WEB_COMPOSING.with(|c| *c.borrow()).min(caret);
+    WEB_PROXY.with(|p| {
+        if let Some(proxy) = p.borrow().as_ref() {
+            let _ = proxy.send_event(RuxEvent::WebText { value, caret, composing });
+        }
+    });
+}
+
+// The caret arithmetic between a browser and Rux, kept out of the wasm cfg so
+// it can be tested on any target. A browser counts a caret in UTF-16 code units
+// and Rux indexes strings by bytes, and the two only agree on pure ASCII: an
+// emoji is 4 bytes and 2 code units, a CJK character 3 bytes and 1. Getting this
+// wrong does not misplace the caret slightly, it panics on the first slice that
+// lands inside a character, so it is worth testing directly.
+//
+// Compiled for the web, which is the only caller, and for tests, which are the
+// reason it is not simply inside the wasm module.
+
+/// Byte index of the character boundary at or before `units` UTF-16 code units
+/// into `s`.
+///
+/// "At or before" matters for the one index that has no byte equivalent: the
+/// middle of a surrogate pair. Rounding down puts the caret in front of the
+/// character, which is the same direction [`floor_char_boundary`] rounds, so a
+/// caret can never appear to jump over an emoji depending on which conversion it
+/// happened to go through.
+#[cfg(any(target_arch = "wasm32", test))]
+fn utf16_to_byte_index(s: &str, units: usize) -> usize {
+    let mut seen = 0;
+    for (byte, ch) in s.char_indices() {
+        if seen >= units {
+            return byte;
+        }
+        let next = seen + ch.len_utf16();
+        if next > units {
+            return byte;
+        }
+        seen = next;
+    }
+    s.len()
+}
+
+/// The inverse: how many UTF-16 code units precede byte index `byte` in `s`.
+#[cfg(any(target_arch = "wasm32", test))]
+fn byte_to_utf16_index(s: &str, byte: usize) -> usize {
+    s[..floor_char_boundary(s, byte)].chars().map(char::len_utf16).sum()
+}
+
+/// Round `index` down to a character boundary, so a caret that arrives inside a
+/// character is pulled back to its start rather than left to panic a later slice.
+#[cfg(any(target_arch = "wasm32", test))]
+fn floor_char_boundary(s: &str, mut index: usize) -> usize {
+    index = index.min(s.len());
+    while index > 0 && !s.is_char_boundary(index) {
+        index -= 1;
+    }
+    index
+}
+
+#[cfg(test)]
+mod caret_index {
+    use super::{byte_to_utf16_index, floor_char_boundary, utf16_to_byte_index};
+
+    /// ASCII is the case where the two agree, and the one every other case is
+    /// measured against.
+    #[test]
+    fn ascii_indices_are_the_same_in_both_counts() {
+        let s = "hello";
+        for i in 0..=s.len() {
+            assert_eq!(utf16_to_byte_index(s, i), i);
+            assert_eq!(byte_to_utf16_index(s, i), i);
+        }
+    }
+
+    /// A caret after a CJK character: 1 code unit, 3 bytes.
+    #[test]
+    fn a_cjk_caret_converts_both_ways() {
+        let s = "日本語";
+        assert_eq!(utf16_to_byte_index(s, 0), 0);
+        assert_eq!(utf16_to_byte_index(s, 1), 3);
+        assert_eq!(utf16_to_byte_index(s, 3), 9);
+        assert_eq!(byte_to_utf16_index(s, 3), 1);
+        assert_eq!(byte_to_utf16_index(s, 9), 3);
+    }
+
+    /// An emoji is a surrogate pair: 2 code units, 4 bytes. A caret between the
+    /// two halves is not a position Rux can represent, so it comes back as the
+    /// start of the character rather than as an index inside it.
+    #[test]
+    fn a_surrogate_pair_never_yields_an_index_inside_a_character() {
+        let s = "a🙂b";
+        assert_eq!(utf16_to_byte_index(s, 1), 1);
+        assert_eq!(utf16_to_byte_index(s, 2), 1, "mid-surrogate falls back to the start");
+        assert_eq!(utf16_to_byte_index(s, 3), 5);
+        assert_eq!(byte_to_utf16_index(s, 5), 3);
+        for i in 0..=s.len() {
+            assert!(s.is_char_boundary(utf16_to_byte_index(s, i)));
+        }
+    }
+
+    /// Past the end clamps rather than panicking: a stale caret can outlive the
+    /// text it pointed into, because the value is replaced wholesale.
+    #[test]
+    fn indices_past_the_end_clamp() {
+        let s = "ab";
+        assert_eq!(utf16_to_byte_index(s, 99), 2);
+        assert_eq!(byte_to_utf16_index(s, 99), 2);
+        assert_eq!(floor_char_boundary(s, 99), 2);
+        assert_eq!(floor_char_boundary("é", 1), 0);
+    }
 }
 
 /// Boot Rux onto an existing `<canvas>`, rendering `source`.
@@ -2259,7 +2887,7 @@ pub fn resize_web(w: f64, h: f64) {
 #[cfg(target_arch = "wasm32")]
 pub fn set_web_source(source: String) -> Option<String> {
     if let Err(err) = Document::from_source(&source) {
-        return Some(err);
+        return Some(err.to_string());
     }
     WEB_PROXY.with(|p| {
         if let Some(proxy) = p.borrow().as_ref() {
@@ -2267,6 +2895,47 @@ pub fn set_web_source(source: String) -> Option<String> {
         }
     });
     None
+}
+
+/// Replace the running document and report **everything** wrong with it, as
+/// JSON: `{"error": {"message", "line", "column"} | null, "warnings": [...]}`.
+///
+/// [`set_web_source`] returns only an error message, which is all the playground
+/// could ever show: no line to jump to, and no warnings at all, while the
+/// desktop window had both. This is the same call with the diagnostics the
+/// runtime already computes actually handed over.
+///
+/// The document is built twice, once here to inspect and once on the event loop
+/// to display. That is not new and not avoidable cheaply: a `Document` is not
+/// `Send`, and the proxy that wakes the loop requires that it be, so the source
+/// text is what travels. Both builds run the same code over the same input, so
+/// the diagnostics reported are the diagnostics shown.
+#[cfg(target_arch = "wasm32")]
+pub fn diagnose_web_source(source: String) -> String {
+    let (error, warnings) = match Document::from_source_checked(&source) {
+        Err(err) => {
+            let line = err.line.map(|l| l.to_string()).unwrap_or_else(|| "null".into());
+            let column = err.column.map(|c| c.to_string()).unwrap_or_else(|| "null".into());
+            let error = format!(
+                "{{\"message\": {}, \"line\": {line}, \"column\": {column}}}",
+                rux_runtime::json_string(&err.message)
+            );
+            (error, String::from("[]"))
+        }
+        Ok(doc) => {
+            let warnings: Vec<String> =
+                doc.diagnostics().warnings.iter().map(|w| w.to_json()).collect();
+            // Only a document that builds gets displayed: a broken one leaves the
+            // last good tree on screen, which is what the desktop does too.
+            WEB_PROXY.with(|p| {
+                if let Some(proxy) = p.borrow().as_ref() {
+                    let _ = proxy.send_event(RuxEvent::SetSource(source));
+                }
+            });
+            (String::from("null"), format!("[{}]", warnings.join(", ")))
+        }
+    };
+    format!("{{\"error\": {error}, \"warnings\": {warnings}}}")
 }
 
 /// Open the Rux window for the given `.rux` file and run the frame loop until the
@@ -2319,6 +2988,48 @@ pub fn run(path: PathBuf) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rux_runtime::{Diagnostics, Warning};
+
+    fn warned(message: &str) -> Diagnostics {
+        Diagnostics { warnings: vec![Warning::new(message)], ..Diagnostics::default() }
+    }
+
+    /// The overlay covers the app it is describing, so it has to be dismissable.
+    #[test]
+    fn dismissing_the_overlay_hides_it() {
+        let diag = warned("float does nothing");
+        assert!(overlay_visible(&diag, None), "shown before it is dismissed");
+        assert!(!overlay_visible(&diag, Some(&diag)), "hidden after");
+    }
+
+    /// And it must come back on its own when what is wrong changes, or
+    /// dismissing a warning would silence the error you write next.
+    #[test]
+    fn a_dismissed_overlay_returns_when_the_diagnostics_change() {
+        let dismissed = warned("float does nothing");
+
+        let another_warning = warned("`:nope` is not supported");
+        assert!(overlay_visible(&another_warning, Some(&dismissed)));
+
+        let now_broken = Diagnostics {
+            error: Some("parse error".into()),
+            stale: true,
+            warnings: dismissed.warnings.clone(),
+        };
+        assert!(
+            overlay_visible(&now_broken, Some(&dismissed)),
+            "an error arriving after a dismissed warning must show"
+        );
+    }
+
+    /// Fixing everything hides the panel whether or not it was dismissed, and a
+    /// stale dismissal must not make an empty document look dismissed-into-silence.
+    #[test]
+    fn nothing_wrong_means_no_overlay() {
+        let clean = Diagnostics::default();
+        assert!(!overlay_visible(&clean, None));
+        assert!(!overlay_visible(&clean, Some(&warned("old"))));
+    }
 
     /// A 200x200 box holding 500px-tall content: it scrolls down, not sideways.
     fn tall() -> ScrollRegion {

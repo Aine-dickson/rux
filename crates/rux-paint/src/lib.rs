@@ -19,6 +19,10 @@ use vello::Scene;
 /// author-controlled: Rux has no `::selection` yet.
 const SELECTION: Color = Color::from_rgba8(0x89, 0xb4, 0xfa, 0x73);
 
+/// Thickness of the rule under an in-progress IME composition, in logical px.
+/// Deliberately the caret's width, so the two read as the same pen.
+const PREEDIT_RULE: f32 = rux_text::CARET_WIDTH;
+
 /// Decoded images, keyed by the `src` path. Decoding is the expensive part, and
 /// we repaint on every event, so an image is read from disk at most once. A src
 /// that fails to decode is remembered as a miss and not retried.
@@ -255,6 +259,28 @@ pub fn build_scene(
                     Some(t.width),
                     cur,
                 );
+                // An in-progress IME composition, underlined so it reads as
+                // provisional. Reuses the selection geometry, which already
+                // returns one rect per line a range spans, and puts a rule along
+                // the bottom of each in the text's own colour.
+                if let Some((start, end)) = t.content.preedit {
+                    let rects = text.selection_rects(
+                        &t.content.text,
+                        &text_style(&t.content),
+                        Some(t.width),
+                        start,
+                        end,
+                    );
+                    for (sx, sy, sw, sh) in rects {
+                        let rule = Rect::new(
+                            (t.x + sx) as f64,
+                            (t.y + sy + sh - PREEDIT_RULE) as f64,
+                            (t.x + sx + sw) as f64,
+                            (t.y + sy + sh) as f64,
+                        );
+                        scene.fill(Fill::NonZero, cur, to_color(t.content.color), None, &rule);
+                    }
+                }
                 // The focused input's caret, drawn on top of its own text,
                 // only in the visible half of the blink cycle.
                 if let (true, Some(index)) = (caret_visible, t.content.caret) {

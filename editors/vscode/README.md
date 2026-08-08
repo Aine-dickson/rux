@@ -1,4 +1,4 @@
-# Rux VS Code syntax highlighting
+# Rux VS Code support
 
 Editor support for `.rux` files:
 
@@ -10,10 +10,15 @@ Editor support for `.rux` files:
   tags (`text`, `view`, `button`).
 - **Folding** of the three sections, HTML-style tag indentation, and bracket/quote
   auto-close.
-- **Format Document** (`Shift+Alt+F`): a basic re-indenter. It fixes nesting
-  indentation across tags, braces, brackets and parens, and unifies mixed indent
-  widths to your editor's `tab_size`. It does **not** touch spacing inside a line,
-  wrap, or reorder. That's the job of the planned `rux fmt`.
+- **Format Document** (`Shift+Alt+F`): runs `rux fmt`. It re-indents the
+  `<template>` and `<script>` sections and formats the CSS in `<style>`, at your
+  editor's own `tab_size`. Nothing inside a template or script line is rewritten,
+  wrapped or reordered.
+- **Diagnostics**: problems from `rux check` appear as squiggles when you open
+  and save a file. Errors are failures to load and point at a line and column;
+  warnings are the things the dev overlay lists (unhonored CSS, unknown
+  pseudo-classes, undefined `var()`, failed expressions) and carry only a file so
+  far, so they sit on line 1.
 - **File icon**: `.rux` files show the Rux mark, when your active file-icon theme
   falls back to language icons (VS Code's default "Seti" does; some themes override
   it).
@@ -22,23 +27,47 @@ Editor support for `.rux` files:
 > Document is **`Shift+Alt+F`** (or right-click → Format Document, or enable
 > `"editor.formatOnSave": true`).
 
-### Formatter limitations (deliberate: it's an indenter, not `rux fmt`)
+## Requires the `rux` binary
+
+Formatting and diagnostics shell out to it:
+
+```
+cargo install ruxlang        # puts a `rux` command on your PATH
+```
+
+Set `rux.path` if it lives somewhere else, and `rux.check.enable` to `false` to
+turn the squiggles off. The extension says so once, rather than on every
+keystroke, if it cannot run the binary.
+
+This used to be a re-indenter written in JavaScript here. Two implementations of
+the same rules drifted within a week: the JS copy inherited HTML's void-tag list,
+which has `img` but not Rux's `<image>`, so an `<image src="...">` written without
+a self-closing slash over-indented everything after it, and it never formatted
+CSS at all. An editor that formats differently from the project's own tool is
+worse than one that asks you to install the tool.
+
+### What the formatter still does not do
 
 - Multi-line continuations of a single statement (a wrapped attribute, text
   content on its own lines, or a multi-line array literal) are indented to
   structural depth, not hand-aligned to the opener.
 - Lines inside a multi-line comment are left exactly as written.
-- The real formatter (`rux fmt`: parse → pretty-print via the actual Rux parser)
-  will supersede this and handle alignment properly. See the "Dev tooling" section
-  of `docs/06-roadmap.md`; `rux check` diagnostics and a language server are on the
-  same track.
+- It re-indents rather than reprints: a full parse to a tree and back is still
+  the eventual plan. See "Dev tooling" in `docs/06-roadmap.md`, where a language
+  server is on the same track.
+
+### Diagnostics refresh on open and save, not as you type
+
+`rux check` reads the file from disk on purpose: it resolves `use` imports
+relative to the file's own directory, which a buffer piped over stdin no longer
+has. Live diagnostics are a job for the language server.
 
 ## Install locally
 
 ```
 cd editors/vscode
 npx @vscode/vsce package     # produces rux-<version>.vsix
-code --install-extension rux-0.1.0.vsix
+code --install-extension rux-0.2.0.vsix
 ```
 
 Then open any `.rux` file. Publishing to the Marketplace is optional and needs a

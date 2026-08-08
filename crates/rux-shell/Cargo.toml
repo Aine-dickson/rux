@@ -18,7 +18,7 @@ rux-text = { path = "../rux-text" }
 # including the `-dev` suffix, because a plain `0.4.0` requirement does NOT match
 # the prerelease it carries between releases, so dropping the suffix in one
 # place and not the other breaks the build.
-rux-reactive = { version = "0.4.0", path = "../rux-reactive" }
+rux-reactive = { version = "0.5.0", path = "../rux-reactive" }
 # `std::time::Instant` panics on wasm; web-time swaps in the browser clock there
 # and re-exports std everywhere else. winit already depends on it, so this adds
 # no weight; it just lets our code name the same type winit's API expects.
@@ -45,4 +45,22 @@ accesskit_winit = "0.33.2"
 # canvas/console bindings winit and the loader need.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen-futures = "0.4"
-web-sys = { version = "0.3", features = ["HtmlCanvasElement", "console"] }
+wasm-bindgen = "0.2"
+# The extra features past the canvas are the soft-keyboard sink: a browser only
+# raises a phone's keyboard for a focused DOM element, and a `<canvas>` is not
+# one, so the shell keeps a real `<input>` over the field it is editing.
+web-sys = { version = "0.3", features = [
+    "HtmlCanvasElement",
+    "console",
+    "CompositionEvent",
+    "CssStyleDeclaration",
+    "Document",
+    "Element",
+    "Event",
+    "EventTarget",
+    "HtmlElement",
+    "HtmlInputElement",
+    "MediaQueryList",
+    "Node",
+    "Window",
+] }

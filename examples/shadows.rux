@@ -17,8 +17,10 @@
     padding: 40px;
     background: #cdd6f4;
   }
+
   .title { color: #1e1e2e; font-size: 22px; font-weight: 700; }
   .row { display: flex; gap: 40px; }
+
   .card {
     display: flex;
     align-items: center;
@@ -29,6 +31,7 @@
     border-radius: 12px;
     color: #1e1e2e;
   }
+
   .s1 { box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35); }
   .s2 { box-shadow: 0 2px 4px rgba(0, 0, 0, 0.5); }
   .s3 { box-shadow: 0 10px 20px 6px rgba(30, 30, 46, 0.4); }

@@ -15,7 +15,8 @@ use rux_script::{Builder, Engine};
 use rux_style::BindingRegistry;
 /// Re-exported so the shell can hand pointer/focus state and the window size in
 /// without depending on `rux-style` directly.
-pub use rux_style::{InteractionState, Viewport};
+pub use rux_reactive::json_string;
+pub use rux_style::{InteractionState, Viewport, Warning};
 
 /// A loaded `.rux` document: parsed source, imported components (by tag), the
 /// script engine, and the current tree.
@@ -59,7 +60,7 @@ pub struct Diagnostics {
     /// Whether the tree on screen predates that error (a failed hot-reload keeps
     /// the last good UI rather than blanking the window).
     pub stale: bool,
-    pub warnings: Vec<String>,
+    pub warnings: Vec<Warning>,
 }
 
 impl Diagnostics {
@@ -79,13 +80,17 @@ pub struct Focus {
     pub model: String,
     pub caret: usize,
     pub anchor: usize,
+    /// The byte range of an in-progress IME composition, if one is running. The
+    /// composed text is already in the bound value; this only marks which part
+    /// of it is provisional, so the painter can underline it.
+    pub preedit: Option<(usize, usize)>,
 }
 
 impl Focus {
     /// A plain caret with nothing selected.
     pub fn at(model: impl Into<String>, caret: usize) -> Self {
         let model = model.into();
-        Self { model, caret, anchor: caret }
+        Self { model, caret, anchor: caret, preedit: None }
     }
 
     /// The selected range, low to high.
@@ -115,6 +120,9 @@ fn apply_focus(node: &mut LayoutNode, focus: Option<&Focus>) {
                 let (start, end) = f.range();
                 (start.min(text.text.len()), end.min(text.text.len()))
             });
+            text.preedit = mine.and_then(|f| f.preedit).map(|(start, end)| {
+                (start.min(text.text.len()), end.min(text.text.len()))
+            });
         }
     }
     for child in &mut node.children {
@@ -142,10 +150,46 @@ fn divergence(a: Option<&[usize]>, b: Option<&[usize]>) -> Vec<usize> {
 /// Drain both warning sinks, the cascade's (unhonored properties, unknown
 /// pseudo-classes, undefined `var()`s, unsupported `@media`) and the script's
 /// (expressions that failed to compile or evaluate).
-fn collect_warnings() -> Vec<String> {
+fn collect_warnings() -> Vec<Warning> {
     let mut warnings = rux_style::take_warnings();
     warnings.extend(rux_script::take_warnings());
     warnings
+}
+
+/// Drain the warning sinks without building anything.
+///
+/// The sinks are global and are only emptied by a *successful* build, so a load
+/// that fails partway leaves whatever it managed to warn about sitting there,
+/// ready to be misattributed to the next file. Anything checking more than one
+/// document in a row needs to be able to clear them between files.
+pub fn take_warnings() -> Vec<Warning> {
+    collect_warnings()
+}
+
+/// Stop mirroring warnings to stderr as they are raised. Covers both sinks, so a
+/// tool that formats them itself does not have to know there are two.
+pub fn set_stderr_echo(on: bool) {
+    rux_script::set_stderr_echo(on);
+    rux_style::set_stderr_echo(on);
+}
+
+/// Whether this file is a document in its own right, rather than a component
+/// meant to be used by one. `None` means the question could not be answered,
+/// because the file would not read or parse.
+///
+/// The test is the one the spec already sets: "the application entry point is a
+/// component whose root is `<screen>`". Anything else is a fragment expecting a
+/// parent.
+///
+/// A checker needs the distinction. A component's `{{ prop }}` bindings are
+/// supplied by whoever uses it, so loading one on its own reports every prop as
+/// an undefined variable: failures that say nothing about whether the file is
+/// correct. Going by the root rather than by who imports what also catches a
+/// component that nothing currently uses.
+pub fn is_entry_point(path: impl AsRef<Path>) -> Option<bool> {
+    let src = std::fs::read_to_string(path.as_ref()).ok()?;
+    let sfc = rux_parser::parse_sfc(&src).ok()?;
+    Some(sfc.template.tag == "screen")
 }
 
 /// Resolve every `<image src>` in the tree against `base` and read its intrinsic
@@ -175,11 +219,72 @@ fn resolve_images(node: &mut LayoutNode, base: &Path) {
     }
 }
 
+/// What went wrong loading a document, with the position kept when there is one.
+///
+/// [`Document::load`] flattens this to a string, which is what the dev overlay
+/// wants: prose in a panel. A checker wants the parts separately, because an
+/// editor cannot put a squiggle under a sentence. Same failure, two audiences,
+/// so the structure is preserved here and thrown away at the last moment.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LoadError {
+    pub message: String,
+    /// The file the error is actually in, which is not always the file that was
+    /// asked for: a component is reached through its parent's `use`.
+    pub file: Option<PathBuf>,
+    pub line: Option<usize>,
+    pub column: Option<usize>,
+    /// Whether this came from the parser, which is the only stage that knows a
+    /// position. Kept so the flattened form reads the way it always has.
+    parse: bool,
+}
+
+impl LoadError {
+    fn plain(message: String) -> Self {
+        Self { message, file: None, line: None, column: None, parse: false }
+    }
+
+    /// `file` is `None` when the source did not come from one, which is the
+    /// playground's case: it has a buffer, not a path.
+    fn parse(err: rux_parser::ParseError, file: Option<&Path>) -> Self {
+        Self {
+            message: err.message,
+            file: file.map(Path::to_path_buf),
+            line: err.line,
+            column: err.column,
+            parse: true,
+        }
+    }
+}
+
+impl std::fmt::Display for LoadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if !self.parse {
+            return write!(f, "{}", self.message);
+        }
+        match (self.line, self.column) {
+            (Some(l), Some(c)) => {
+                write!(f, "parse error at line {l}, column {c}: {}", self.message)
+            }
+            _ => write!(f, "parse error: {}", self.message),
+        }
+    }
+}
+
+impl std::error::Error for LoadError {}
+
 impl Document {
+    /// Load a document, flattening any failure to a sentence.
     pub fn load(path: impl AsRef<Path>) -> Result<Self, String> {
+        Self::load_checked(path).map_err(|e| e.to_string())
+    }
+
+    /// Load a document, keeping the failure's position so a checker can point at
+    /// it. [`Document::load`] is this with the structure discarded.
+    pub fn load_checked(path: impl AsRef<Path>) -> Result<Self, LoadError> {
         let path = path.as_ref();
-        let src = std::fs::read_to_string(path).map_err(|e| format!("reading {}: {e}", path.display()))?;
-        let sfc = rux_parser::parse_sfc(&src).map_err(|e| e.to_string())?;
+        let src = std::fs::read_to_string(path)
+            .map_err(|e| LoadError::plain(format!("reading {}: {e}", path.display())))?;
+        let sfc = rux_parser::parse_sfc(&src).map_err(|e| LoadError::parse(e, Some(path)))?;
 
         // Resolve `use module::component;` imports relative to this file.
         let base = path.parent().unwrap_or_else(|| Path::new("."));
@@ -189,9 +294,11 @@ impl Document {
         let mut combined_script = main_script;
         for import in imports {
             let comp_path = base.join(&import.file);
-            let comp_src = std::fs::read_to_string(&comp_path)
-                .map_err(|e| format!("reading component {}: {e}", comp_path.display()))?;
-            let comp_sfc = rux_parser::parse_sfc(&comp_src).map_err(|e| e.to_string())?;
+            let comp_src = std::fs::read_to_string(&comp_path).map_err(|e| {
+                LoadError::plain(format!("reading component {}: {e}", comp_path.display()))
+            })?;
+            let comp_sfc =
+                rux_parser::parse_sfc(&comp_src).map_err(|e| LoadError::parse(e, Some(&comp_path)))?;
             let (comp_script, _nested) = extract_imports(&comp_sfc.script);
             // Merge the component's (pure) functions into the shared engine.
             combined_script.push('\n');
@@ -199,8 +306,9 @@ impl Document {
             components.insert(import.tag, comp_sfc);
         }
 
-        let mut engine = build_engine(&combined_script)?;
-        let (mut root, registry) = rux_style::build_styled_tree_tracked(&sfc, &components, &mut engine)?;
+        let mut engine = build_engine(&combined_script).map_err(LoadError::plain)?;
+        let (mut root, registry) = rux_style::build_styled_tree_tracked(&sfc, &components, &mut engine)
+            .map_err(LoadError::plain)?;
         resolve_images(&mut root, base);
         Ok(Self {
             sfc,
@@ -222,10 +330,21 @@ impl Document {
 
     /// Process `.rux` source with no import resolution (used for fallbacks/tests).
     pub fn from_source(src: &str) -> Result<Self, String> {
-        let sfc = rux_parser::parse_sfc(src).map_err(|e| e.to_string())?;
+        Self::from_source_checked(src).map_err(|e| e.to_string())
+    }
+
+    /// [`Document::from_source`], keeping the failure's position.
+    ///
+    /// The playground needs this: it has no file to point at, so a parse error
+    /// with no line was all it could ever show, and "something is wrong
+    /// somewhere" is not much of an editor.
+    pub fn from_source_checked(src: &str) -> Result<Self, LoadError> {
+        let sfc = rux_parser::parse_sfc(src).map_err(|e| LoadError::parse(e, None))?;
         let (main_script, _imports) = extract_imports(&sfc.script);
-        let mut engine = build_engine(&main_script)?;
-        let (mut root, registry) = rux_style::build_styled_tree_tracked(&sfc, &HashMap::new(), &mut engine)?;
+        let mut engine = build_engine(&main_script).map_err(LoadError::plain)?;
+        let (mut root, registry) =
+            rux_style::build_styled_tree_tracked(&sfc, &HashMap::new(), &mut engine)
+                .map_err(LoadError::plain)?;
         let base = PathBuf::from(".");
         resolve_images(&mut root, &base);
         Ok(Self {
@@ -809,6 +928,13 @@ mod tests {
         node.children.iter().find_map(|c| selection_of(c, model))
     }
 
+    fn preedit_of(node: &LayoutNode, model: &str) -> Option<(usize, usize)> {
+        if node.model.as_deref() == Some(model) {
+            return node.children.first()?.text.as_ref()?.preedit;
+        }
+        node.children.iter().find_map(|c| preedit_of(c, model))
+    }
+
     fn two_inputs() -> Document {
         Document::from_source(
             "<template><screen>             <input r-model=\"name\" /><input r-model=\"city\" />             </screen></template>
@@ -823,12 +949,12 @@ mod tests {
     fn selection_paints_only_in_the_focused_input() {
         let mut doc = two_inputs();
 
-        doc.set_focus(Some(Focus { model: "name".into(), caret: 3, anchor: 1 }));
+        doc.set_focus(Some(Focus { model: "name".into(), caret: 3, anchor: 1, preedit: None }));
         assert_eq!(selection_of(&doc.root, "name"), Some((1, 3)));
         assert_eq!(selection_of(&doc.root, "city"), None);
 
         // Dragging leftwards puts the caret *before* the anchor; same range.
-        doc.set_focus(Some(Focus { model: "name".into(), caret: 1, anchor: 3 }));
+        doc.set_focus(Some(Focus { model: "name".into(), caret: 1, anchor: 3, preedit: None }));
         assert_eq!(selection_of(&doc.root, "name"), Some((1, 3)));
     }
 
@@ -839,10 +965,10 @@ mod tests {
     fn focus_moves_the_selection_out_of_the_old_input() {
         let mut doc = two_inputs();
 
-        doc.set_focus(Some(Focus { model: "name".into(), caret: 3, anchor: 0 }));
+        doc.set_focus(Some(Focus { model: "name".into(), caret: 3, anchor: 0, preedit: None }));
         assert_eq!(selection_of(&doc.root, "name"), Some((0, 3)));
 
-        doc.set_focus(Some(Focus { model: "city".into(), caret: 2, anchor: 0 }));
+        doc.set_focus(Some(Focus { model: "city".into(), caret: 2, anchor: 0, preedit: None }));
         assert_eq!(selection_of(&doc.root, "name"), None, "old input kept its selection");
         assert_eq!(selection_of(&doc.root, "city"), Some((0, 2)));
 
@@ -866,11 +992,49 @@ mod tests {
     #[test]
     fn selection_survives_a_rebuild() {
         let mut doc = two_inputs();
-        doc.set_focus(Some(Focus { model: "name".into(), caret: 3, anchor: 1 }));
+        doc.set_focus(Some(Focus { model: "name".into(), caret: 3, anchor: 1, preedit: None }));
         doc.rebuild();
         assert_eq!(selection_of(&doc.root, "name"), Some((1, 3)));
         assert_eq!(caret_of(&doc.root, "name"), Some(3));
         assert_eq!(selection_of(&doc.root, "city"), None);
+    }
+
+    /// Text being composed through an input method is marked on the focused
+    /// input only, and is cleared the same way a selection is when focus moves.
+    /// Without the clearing, leaving a field mid-composition left the underline
+    /// behind on text that had since been committed.
+    #[test]
+    fn a_composition_marks_only_the_focused_input() {
+        let mut doc = two_inputs();
+
+        doc.set_focus(Some(Focus {
+            model: "name".into(),
+            caret: 3,
+            anchor: 3,
+            preedit: Some((1, 3)),
+        }));
+        assert_eq!(preedit_of(&doc.root, "name"), Some((1, 3)));
+        assert_eq!(preedit_of(&doc.root, "city"), None);
+
+        doc.set_focus(Some(Focus::at("city", 1)));
+        assert_eq!(preedit_of(&doc.root, "name"), None, "old input kept its composition");
+        assert_eq!(preedit_of(&doc.root, "city"), None);
+    }
+
+    /// A composition outlives the rebuild that showing it causes: the shell
+    /// writes the composed text into the bound signal, and that edit can rebuild
+    /// the tree, so a range applied before it must be put back after.
+    #[test]
+    fn a_composition_survives_a_rebuild() {
+        let mut doc = two_inputs();
+        doc.set_focus(Some(Focus {
+            model: "name".into(),
+            caret: 2,
+            anchor: 2,
+            preedit: Some((0, 2)),
+        }));
+        doc.rebuild();
+        assert_eq!(preedit_of(&doc.root, "name"), Some((0, 2)));
     }
 
     fn patch_doc() -> Document {
@@ -1023,11 +1187,11 @@ mod tests {
         .expect("load");
         let warnings = &doc.diagnostics().warnings;
         assert!(
-            warnings.iter().any(|w| w.contains("filter")),
+            warnings.iter().any(|w| w.message.contains("filter")),
             "unhonored property reported: {warnings:?}"
         );
         assert!(
-            warnings.iter().any(|w| w.contains("--nope")),
+            warnings.iter().any(|w| w.message.contains("--nope")),
             "undefined var reported: {warnings:?}"
         );
         assert!(doc.diagnostics().error.is_none(), "the document still built");

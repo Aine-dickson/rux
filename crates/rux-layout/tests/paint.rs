@@ -42,6 +42,7 @@ fn text_node_paints_its_background_then_its_glyphs() {
             nowrap: false,
             caret: None,
         selection: None,
+        preedit: None,
         },
     );
 

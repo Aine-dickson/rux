@@ -10,6 +10,8 @@ description = "Rux runtime document model: loads a .rux file into a renderable t
 image.workspace = true
 rux-parser = { path = "../rux-parser" }
 rux-style = { path = "../rux-style" }
+# For `Warning` and the JSON escaper the checker and the playground share.
+rux-reactive = { path = "../rux-reactive" }
 rux-layout = { path = "../rux-layout" }
 rux-script = { path = "../rux-script" }
 

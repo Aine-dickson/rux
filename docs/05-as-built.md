@@ -27,6 +27,77 @@ cargo run -- examples/dashboard.rux
 Edit any `.rux` file (including imported components) and it **hot-reloads**: no
 rebuild. Only changing the compiled Rust host requires `cargo run` again.
 
+## Formatting
+
+```bash
+rux fmt                         # every .rux under the current directory, in place
+rux fmt app.rux                 # or a named file or directory
+rux fmt --check .               # change nothing; exit non-zero if a file would
+rux fmt --indent 4 app.rux      # one indent level: spaces, or `tab` (default 2)
+rux fmt -                       # read stdin, write stdout (what an editor uses)
+```
+
+`<template>` and `<script>` are only **re-indented**: nothing on a line is
+rewritten, wrapped or reordered, because a `@tap` handler is rhai and
+rearranging someone's expressions is not a formatter's business. `<style>` *is*
+formatted, one space before `{`, long rules broken one declaration per line,
+short ones (up to three) kept inline. Line endings are preserved.
+
+This is the one implementation. The VS Code extension used to carry its own copy
+in JavaScript and the two drifted: the JS list of non-nesting tags came from
+HTML, which has `img` but not Rux's `<image>`, so everything after an `<image
+src="…">` without a self-closing slash was indented one level too deep. The
+extension now shells out to `rux fmt`.
+
+> **The shipped `examples/` are not formatted to this.** All 28 differ, about
+> half on indent width and half on CSS, which inlines rules of up to three
+> declarations that the examples write expanded. Running the formatter over them
+> is a real decision (the expanded form may read better when teaching) and has
+> not been made.
+
+## Checking a file without opening a window
+
+```bash
+rux check                       # every .rux under the current directory
+rux check examples              # or a named file or directory
+rux check --deny-warnings .     # warnings fail too, which is what CI wants
+rux check --format json .       # for an editor to turn into squiggles
+```
+
+Output is `path:line:col: severity: message`, the shape every compiler emits and
+every editor and CI log already parses. Exit codes: **0** clean, **1** problems
+found, **2** the request itself was wrong (no such path, unknown flag).
+
+It loads through the same code the window does, so it cannot disagree with the
+runtime about what a valid file is. **Errors** are failures to load and carry a
+line and column. **Warnings** are the things the dev overlay lists.
+
+**CSS warnings carry a line**, in the file's own numbering rather than the
+`<style>` block's. An unhonored property reports the line of the *declaration*,
+so an expanded rule sends you to the property and not to its selector.
+Selector-level warnings (an unknown pseudo-class) and unsupported `@media`
+conditions report the line of the rule, which is where they are written.
+
+There is no column. lightningcss locates a rule and gives the declarations
+inside it no position of their own, so the declaration's line is recovered by
+scanning the source forward from the rule, stopping at the closing brace. That
+finds the line but not the offset within it.
+
+Two kinds are still unplaced, deliberately rather than by omission:
+
+- **Expression failures** (`{{ user.nmae }}`, a broken `@tap`). An expression
+  comes from a template attribute or a `{{ }}` span and the template parser does
+  not record where each one started.
+- **Anything from a component's CSS.** A component's rules live in a *different*
+  file, and a warning carries a line but not a file, so a line from the
+  component's numbering would point confidently at the wrong part of whichever
+  document imported it. A wrong line is worse than none.
+
+Walking a directory **skips components**, the files whose template root is not
+`<screen>`. A component's `{{ prop }}` values come from whoever uses it, so
+loading one on its own reports every prop as undefined. Naming a component
+explicitly checks it anyway, since that was asked for on purpose.
+
 ## Crates
 
 | Crate | Job |
@@ -234,6 +305,39 @@ checked `background`, or the ring dissolves into the fill. A radio is **round** 
 huge radius like `9999px` is clamped to a circle, so that's how you re-round one
 that inherited a radius from another class).
 
+### Text input and composition
+Typing is not only key presses. Anything past unaccented Latin is *composed*:
+a dead key and a vowel make one accented character, and a CJK keyboard spells a
+character out of several keystrokes, showing the half-finished result as it goes.
+The shell asks the platform for those events with `set_ime_allowed` whenever a
+text field is focused, and parks the candidate window under the caret with
+`set_ime_cursor_area` so the list of characters to choose from does not cover the
+text it is being chosen for.
+
+Composed text is written straight into the bound signal as it is typed, which is
+what a browser does to an `<input>`'s value mid-composition, so it renders
+through the ordinary text path. `Focus` carries the byte range that is still
+provisional and the painter underlines it. A composition can be abandoned as
+well as committed: clicking away, tabbing off, or the input method detaching all
+put the field back exactly as it was before composing started. While one is
+running the input method owns the keyboard, and raw key presses are ignored, or
+every letter would be typed twice.
+
+On the web none of that applies, because a browser will not raise a phone's
+on-screen keyboard for a `<canvas>`. There the shell keeps a real `<input>` laid
+over the field it is editing, invisible and `pointer-events: none` so taps still
+reach the canvas and still move the caret, focused only in response to the tap
+that focused the field. It holds the real text rather than acting as an event
+sink, which hands composition, autocorrect, dictation and the keyboard's own
+backspace to the browser; the shell copies the value back into the signal. This
+happens only on touch devices, because focusing it takes DOM focus off the canvas
+where winit listens for keys.
+
+The sharp edge there is that a browser counts a caret in UTF-16 code units and
+Rux indexes strings by bytes. They agree only on ASCII, an emoji being 4 bytes
+and 2 code units, so the conversion is done explicitly and tested rather than
+assumed.
+
 ### Touch
 A finger takes the same path as the mouse: it taps buttons and toggles, focuses
 inputs, drags a scrollbar thumb, drags out a text selection, and scrolls content
@@ -370,16 +474,37 @@ app is watching.
   what does nothing: unhonored properties, unknown pseudo-classes, undefined
   `var()`s, unsupported `@media` conditions, and **expressions that failed**, `expression \`dubble(n)\` failed: Function not found: dubble`. Long lists are
   capped at six with a count of the rest; everything still goes to stderr.
+  CSS warnings are prefixed with the line they are on (`line 11: …`).
+- **Tapping the panel dismisses it**, and it says so. The panel covers the app it
+  is describing, which was a problem when the thing you needed to look at was
+  underneath. The dismissal is remembered against *those* diagnostics, so it
+  lasts exactly as long as the document's problems are the same ones: fix a
+  warning, or introduce an error, and the panel comes straight back. A press
+  landing on the panel does not reach the app under it either.
 
 Every shipped example is checked to load **warning-free**, so a noisy overlay in
 `examples/` is a test failure.
+
+**The browser playground shows the same diagnostics**, in the page rather than
+only on the canvas. `rux-web`'s `diagnose(source)` sets the document and returns
+the error (with line and column) and every warning (with its line) as JSON; the
+page lists them under the editor and each one that knows its line is a button
+that selects that line. It runs on load as well as on Run, since a shared link
+carries its source in the URL hash.
+
+> The deployed page is built from `main` while the runtime it loads is pinned to
+> the latest **tag**, so the page has to keep working against a build that
+> predates its own features. It feature-detects `diagnose` and falls back to the
+> older `setSource`, which reports an error and no warnings. That fallback goes
+> once v0.5.0 is tagged.
 
 **Known limits:** rhai returns `()` for a missing *map property*, rather than
 erroring, so `{{ user.nmae }}` still renders empty with nothing reported (a
 missing *function* or variable does report). That one is rhai's semantics, not
 ours, it is tracked as a motivator for the planned rhai fork in
-[Roadmap](./06-roadmap.md) (Further out → *Script documentation*). CSS
-warnings also carry no line numbers yet, and the overlay can't be dismissed.
+[Roadmap](./06-roadmap.md) (Further out → *Script documentation*). Expression
+failures and anything from a component's CSS are still reported without a line,
+for the reasons under "Checking a file without opening a window".
 
 ---
 
@@ -404,13 +529,14 @@ warnings also carry no line numbers yet, and the overlay can't be dismissed.
 
 ## Known gaps / backlog
 
-- **No IME, and therefore no soft keyboard.** The shell handles raw
-  `KeyboardInput` only: it never calls `set_ime_allowed` and never reads
-  `WindowEvent::Ime`. Two consequences. On a phone, tapping a Rux `<input>`
-  focuses it inside the runtime but nothing tells the platform, so the on-screen
-  keyboard never opens and the field cannot be typed into at all. On the desktop
-  it means no composition, so CJK, dead keys and accented input do not work.
-  Reported from a phone on the playground, 2026-08-02.
+- **The soft keyboard has not been tried on real phone hardware.** It is driven
+  and passing under browser touch emulation, tap through to committed CJK (see
+  "Text input and composition"), so the mechanism works: the hidden `<input>` is
+  created on demand, focused by the tap, and laid over the field. What emulation
+  cannot show is a keyboard physically rising, since that is the OS's decision.
+  Worth thirty seconds on a real phone before v0.5.0 ships. Note it only reaches
+  ruxlang.dev once that tag exists, because the deployed playground is built
+  from the latest release rather than from `main`.
 - Text editing: no word-wise movement (Ctrl+arrows), no triple-click line-select,
   no drag-and-drop of selected text, no `::selection` styling.
 - Scrolling: no track-click paging, no kinetic touch fling, no scrollbar

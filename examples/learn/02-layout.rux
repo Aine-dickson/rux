@@ -28,12 +28,14 @@
 
   /* A row. Without `display: flex` these two would stack: there is no inline
      text flow, so two <text> siblings never share a line. */
+
   .head {
     display: flex;
     flex-direction: row;
     justify-content: space-between;
     align-items: center;
   }
+
   .title { color: #cdd6f4; font-size: 24px; font-weight: 700; }
   .tally { color: #9399b2; font-size: 15px; }
 
@@ -43,5 +45,6 @@
     background: #313244;
     border-radius: 12px;
   }
+
   .hint { color: #bac2de; font-size: 14px; }
 </style>

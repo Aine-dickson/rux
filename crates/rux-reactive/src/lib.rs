@@ -12,6 +12,91 @@
 //! in place instead of rebuilding the whole tree. This crate stays the shared
 //! `Value` type those layers pass around.
 
+/// Something the document does that will not work, with where it is if that is
+/// known.
+///
+/// Lives here because both `rux-style` and `rux-script` raise these and neither
+/// depends on the other; this is already the crate that exists to hold what they
+/// pass between them. `rux-runtime` merges both sinks for the dev overlay, and
+/// `rux check` turns them into editor diagnostics.
+///
+/// `line` is a **1-based line in the file**, not in the section that produced
+/// it: a position relative to a `<style>` block would send a reader to the wrong
+/// part of the file, which is worse than sending them nowhere. It is `None`
+/// wherever the stage that noticed the problem does not know where it was, and
+/// that is not a placeholder to be filled with a guess.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Warning {
+    pub message: String,
+    pub line: Option<usize>,
+}
+
+impl Warning {
+    /// A warning whose position is not known.
+    pub fn new(message: impl Into<String>) -> Self {
+        Self { message: message.into(), line: None }
+    }
+
+    /// A warning at a known 1-based file line.
+    pub fn at(message: impl Into<String>, line: usize) -> Self {
+        Self { message: message.into(), line: Some(line) }
+    }
+
+    /// Attach `line` if there is one, leaving the warning unplaced otherwise.
+    pub fn maybe_at(message: impl Into<String>, line: Option<usize>) -> Self {
+        Self { message: message.into(), line }
+    }
+}
+
+/// Quote and escape `s` as a JSON string, per RFC 8259.
+///
+/// Lives beside [`Warning`] because both things that serialise one, the `rux
+/// check` CLI and the browser playground, need exactly this and nothing more.
+/// Two hand-rolled copies of an escaper is how the re-indenter went wrong.
+/// Windows paths carry backslashes and messages quote the author's source, so
+/// both of those have to survive the trip into an editor.
+pub fn json_string(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for ch in s.chars() {
+        match ch {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
+impl Warning {
+    /// `{"message": …, "line": … }`, with `line` present and null when unplaced
+    /// so a consumer never has to tell "no position" from "field missing".
+    pub fn to_json(&self) -> String {
+        let line = match self.line {
+            Some(line) => line.to_string(),
+            None => "null".to_string(),
+        };
+        format!("{{\"message\": {}, \"line\": {line}}}", json_string(&self.message))
+    }
+}
+
+impl std::fmt::Display for Warning {
+    /// `line 12: message`, or just the message when it has no position. This is
+    /// what the dev overlay shows, so it stays prose rather than becoming a
+    /// `path:line:col` machine format.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.line {
+            Some(line) => write!(f, "line {line}: {}", self.message),
+            None => write!(f, "{}", self.message),
+        }
+    }
+}
+
 /// A dynamically-typed signal value. Untyped so template interpolation and the
 /// future script tier can share one representation.
 #[derive(Clone, Debug, PartialEq)]

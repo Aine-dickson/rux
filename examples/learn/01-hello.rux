@@ -15,6 +15,7 @@
     padding: 32px;
     background: #1e1e2e;
   }
+
   .title { color: #cdd6f4; font-size: 28px; font-weight: 700; }
-  .sub   { color: #9399b2; font-size: 15px; }
+  .sub { color: #9399b2; font-size: 15px; }
 </style>

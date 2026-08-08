@@ -17,3 +17,9 @@ path = "src/main.rs"
 
 [dependencies]
 rux-shell = { path = "../rux-shell" }
+# `rux check` loads documents through the same path the window does, so the
+# checker cannot disagree with the runtime about what a valid file is.
+rux-runtime = { path = "../rux-runtime" }
+# `rux fmt` is the one implementation of the re-indenter, replacing the copy the
+# VS Code extension used to carry in JavaScript.
+rux-fmt = { path = "../rux-fmt" }

@@ -66,6 +66,10 @@ cargo run -p ruxlang -- examples/showcase.rux</code></pre>
       {# Parse errors land here. `role="alert"` so a screen reader announces one
          instead of it only being a colour change. #}
       <p id="pg-error" class="pg-error" role="alert" hidden></p>
+      {# Warnings: the things that load but do nothing. Not an alert, because
+         they are not urgent and a screen reader should not interrupt typing for
+         them. Each one that knows its line is a button that goes there. #}
+      <div id="pg-warnings" class="pg-warnings" hidden></div>
     </section>
   </div>
 
@@ -255,20 +259,81 @@ cargo run -p ruxlang -- examples/showcase.rux</code></pre>
         refit();
 
         const errorBox = document.getElementById("pg-error");
+        const warnBox = document.getElementById("pg-warnings");
+
+        // Jump the editor to a 1-based line and put the caret there, so a
+        // reported line is somewhere you can go rather than a number to count to.
+        const goToLine = (line) => {
+          const lines = editor.value.split("\n");
+          const at = Math.min(Math.max(line, 1), lines.length);
+          const start = lines.slice(0, at - 1).reduce((n, l) => n + l.length + 1, 0);
+          editor.focus();
+          editor.setSelectionRange(start, start + lines[at - 1].length);
+        };
+
+        // One clickable entry per diagnostic.
+        const listDiagnostics = (items) => {
+          warnBox.textContent = "";
+          for (const item of items) {
+            const row = document.createElement(item.line ? "button" : "span");
+            row.className = "pg-diag";
+            row.textContent = item.line ? `line ${item.line}: ${item.message}` : item.message;
+            if (item.line) {
+              row.type = "button";
+              row.addEventListener("click", () => goToLine(item.line));
+            }
+            warnBox.appendChild(row);
+          }
+          warnBox.hidden = items.length === 0;
+        };
+
         const run = () => {
-          const err = setSource(editor.value);
-          if (err) {
-            errorBox.textContent = err;
+          // `diagnose` was added after v0.4.0 and the runtime here is pinned to
+          // the latest tag, so fall back to `setSource`, which reports an error
+          // message and nothing else. Drop the fallback once v0.5.0 ships.
+          if (typeof rux.diagnose !== "function") {
+            const err = setSource(editor.value);
+            errorBox.textContent = err || "";
+            errorBox.hidden = !err;
+            status.textContent = err ? "error" : "running";
+            status.classList.toggle("is-error", !!err);
+            return;
+          }
+
+          const report = JSON.parse(rux.diagnose(editor.value));
+          if (report.error) {
+            const where = report.error.line
+              ? `line ${report.error.line}, column ${report.error.column ?? 1}: `
+              : "";
+            errorBox.textContent = where + report.error.message;
             errorBox.hidden = false;
-            status.textContent = "error";
+            // The last document that loaded stays on the canvas, so say that
+            // rather than let the picture look like the source next to it.
+            status.textContent = "error, showing last good";
             status.classList.add("is-error");
+            if (report.error.line) {
+              errorBox.onclick = () => goToLine(report.error.line);
+              errorBox.classList.add("is-clickable");
+            } else {
+              errorBox.onclick = null;
+              errorBox.classList.remove("is-clickable");
+            }
           } else {
             errorBox.hidden = true;
-            status.textContent = "running";
+            errorBox.onclick = null;
+            errorBox.classList.remove("is-clickable");
+            const n = report.warnings.length;
+            status.textContent = n === 0 ? "running" : `running, ${n} warning${n === 1 ? "" : "s"}`;
             status.classList.remove("is-error");
           }
+          listDiagnostics(report.error ? [] : report.warnings);
         };
         runBtn.addEventListener("click", run);
+        // Report whatever loaded, without waiting for a click. A shared link
+        // carries its source in the URL hash, so the first thing on screen can
+        // already be someone else's broken document, and saying nothing about
+        // it until they press Run is how the playground used to behave.
+        run();
 
         // ── Editing behaviour ────────────────────────────────────────────
         // A textarea gives us none of this, so it is hand-rolled. `replace`
