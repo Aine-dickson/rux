@@ -104,6 +104,48 @@ impl From<accesskit_winit::Event> for RuxEvent {
 /// count as a tap rather than a drag.
 const TAP_SLOP: f64 = 6.0;
 
+/// How long a finger must rest on text before the press takes the word under it.
+///
+/// This is the gesture a phone uses to start selecting, and it is why a drag is
+/// free to mean something else (moving the caret). Roughly the platform
+/// convention: much shorter and an ordinary tap starts selecting text, much
+/// longer and the field feels unresponsive.
+const LONG_PRESS: Duration = Duration::from_millis(500);
+
+/// What the finger currently down is doing to a text field.
+///
+/// Touch used to share the mouse's press/drag/release path, which meant a drag
+/// selected, because that is what a mouse does. A phone expects the three
+/// gestures below instead, so touch needs its own small state machine: the same
+/// finger movement means different things depending on whether the press has had
+/// time to become a long one.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum TouchText {
+    /// Down on text and not yet resolved. Still becomes `Selecting` if the
+    /// finger rests until `deadline`, or `Caret` if it moves first.
+    Pending { at: (f64, f64), deadline: Instant },
+    /// Moved before the deadline: the caret follows the finger and nothing is
+    /// selected.
+    Caret,
+    /// The long press took a word: further movement extends the selection from
+    /// it, which is the only gesture that selects.
+    Selecting,
+}
+
+/// What a finger `distance` px from where it went down means, given what the
+/// press was already doing.
+///
+/// The whole gesture model is this one decision, so it is a plain function
+/// rather than inline in the event arm: a press that moves before it is old
+/// enough is a caret drag and can never become a selection afterwards, and one
+/// that has already taken a word keeps extending it however far it travels.
+fn touch_text_after_move(state: TouchText, distance: f64) -> TouchText {
+    match state {
+        TouchText::Pending { .. } if distance > TAP_SLOP => TouchText::Caret,
+        other => other,
+    }
+}
+
 /// Half the caret blink period: the caret is shown for this long, then hidden
 /// for this long. ~530ms matches the platform norm.
 const BLINK: Duration = Duration::from_millis(530);
@@ -774,6 +816,10 @@ struct App {
     preedit: Option<Preedit>,
     /// Whether the pointer is selecting text by dragging inside an input.
     text_drag: bool,
+    /// The touch text gesture in progress, if a finger is down on a field. The
+    /// mouse does not use this: it keeps `text_drag`, since drag-to-select is
+    /// the right model with a pointer.
+    touch_text: Option<TouchText>,
     /// When and where the last click landed, for double-click word-select.
     last_click: Option<(Instant, f64, f64)>,
     /// The system clipboard. `None` if the platform wouldn't give us one, the
@@ -840,6 +886,7 @@ impl App {
             overlay_rect: None,
             preedit: None,
             text_drag: false,
+            touch_text: None,
             last_click: None,
             #[cfg(not(target_arch = "wasm32"))]
             clipboard: arboard::Clipboard::new()
@@ -1109,31 +1156,80 @@ impl App {
             });
         self.last_click = Some((Instant::now(), pointer.0, pointer.1));
 
-        if double {
-            // Double-click selects the word under the pointer.
-            let value = self.document.engine_mut().get_string(&region.model);
-            if let (Some(t), false) = (&region.text, value.is_empty()) {
-                let (start, end) = self.text.word_at_point(
-                    &value,
-                    &rux_paint::text_style(&t.content),
-                    Some(t.width),
-                    fx - t.x,
-                    fy - t.y,
-                );
-                self.set_focus_range(Some(Focus {
-                    model: region.model,
-                    caret: end,
-                    anchor: start,
-                    preedit: None,
-                }));
-                return true;
-            }
+        // Double-click, and double-tap, select the word under the pointer.
+        if double && self.select_word_at(pointer) {
+            return true;
         }
 
         let caret = self.index_in(&region, fx, fy);
         self.text_drag = true;
         self.set_focus(Some((region.model, caret)));
         true
+    }
+
+    /// Select the word under `pointer`, in whichever field it lands in.
+    ///
+    /// Shared by double-click and by the touch long press: both mean "take the
+    /// word here", and having one implementation is what keeps them agreeing
+    /// about where a word ends. Returns whether a word was actually taken, which
+    /// is false for an empty field or a press outside any text.
+    fn select_word_at(&mut self, pointer: (f64, f64)) -> bool {
+        let (fx, fy) = self.logical(pointer);
+        let Some(region) = self.focuses.iter().rev().find(|f| f.contains(fx, fy)).cloned() else {
+            return false;
+        };
+        let value = self.document.engine_mut().get_string(&region.model);
+        let (Some(t), false) = (&region.text, value.is_empty()) else {
+            return false;
+        };
+        let (start, end) = self.text.word_at_point(
+            &value,
+            &rux_paint::text_style(&t.content),
+            Some(t.width),
+            fx - t.x,
+            fy - t.y,
+        );
+        self.set_focus_range(Some(Focus {
+            model: region.model,
+            caret: end,
+            anchor: start,
+            preedit: None,
+        }));
+        true
+    }
+
+    /// Press on text from a *finger*. Unlike the mouse, this does not start a
+    /// selection: it moves the caret and arms the long press, so that what the
+    /// finger does next decides between dragging the caret and selecting.
+    fn press_text_touch(&mut self, pointer: (f64, f64)) -> bool {
+        if !self.press_text(pointer) {
+            return false;
+        }
+        // `press_text` set this for the mouse's model; touch resolves the drag
+        // itself and must not also be dragging a selection.
+        self.text_drag = false;
+        // A double-tap has already taken a word, so there is nothing pending.
+        self.touch_text = Some(if self.anchor == self.caret {
+            TouchText::Pending { at: pointer, deadline: Instant::now() + LONG_PRESS }
+        } else {
+            TouchText::Selecting
+        });
+        true
+    }
+
+    /// Move the caret to the pointer *without* selecting: the anchor follows it,
+    /// so the range stays empty. This is what a finger dragging on text does on
+    /// a phone, where selecting is what the long press is for.
+    fn drag_caret(&mut self, pointer: (f64, f64)) {
+        let Some(model) = self.focused.clone() else { return };
+        let Some(region) = self.focuses.iter().find(|f| f.model == model).cloned() else {
+            return;
+        };
+        let (fx, fy) = self.logical(pointer);
+        let caret = self.index_in(&region, fx, fy);
+        if caret != self.caret || self.anchor != caret {
+            self.set_focus_range(Some(Focus { model, caret, anchor: caret, preedit: None }));
+        }
     }
 
     /// Extend the selection to the pointer while dragging inside an input: the
@@ -2449,7 +2545,7 @@ impl ApplicationHandler<RuxEvent> for App {
                         // start a drag as a side effect and must not run when the
                         // panel took the press.
                         if self.overlay_covers_physical(at)
-                            || (!self.press_scrollbar(at) && !self.press_text(at))
+                            || (!self.press_scrollbar(at) && !self.press_text_touch(at))
                         {
                             self.press = Some(at);
                         }
@@ -2458,8 +2554,24 @@ impl ApplicationHandler<RuxEvent> for App {
                         self.pointer = at;
                         if self.bar_drag.is_some() {
                             self.drag_scrollbar(at);
-                        } else if self.text_drag {
-                            self.drag_text(at);
+                        } else if let Some(state) = self.touch_text {
+                            // The finger is on text. Which of the three gestures
+                            // this is depends on whether the press had time to
+                            // become a long one before it moved.
+                            let from = match state {
+                                TouchText::Pending { at, .. } => at,
+                                _ => at,
+                            };
+                            let moved = (at.0 - from.0).hypot(at.1 - from.1);
+                            let next = touch_text_after_move(state, moved);
+                            self.touch_text = Some(next);
+                            match next {
+                                TouchText::Selecting => self.drag_text(at),
+                                TouchText::Caret => self.drag_caret(at),
+                                // Still resting inside the slop: the press has
+                                // not decided yet, so nothing moves.
+                                TouchText::Pending { .. } => {}
+                            }
                         } else if let Some((lx, ly)) = self.touch.replace(here) {
                             self.scroll_at(at, lx - here.0, ly - here.1);
                         }
@@ -2471,6 +2583,12 @@ impl ApplicationHandler<RuxEvent> for App {
                             return;
                         }
                         if std::mem::take(&mut self.text_drag) {
+                            return;
+                        }
+                        // A finger lifting off text has already had its effect,
+                        // whichever gesture it turned out to be, and must not
+                        // also reach the app as a tap.
+                        if self.touch_text.take().is_some() {
                             return;
                         }
                         // A finger wanders more than a mouse, but the slop that
@@ -2486,6 +2604,9 @@ impl ApplicationHandler<RuxEvent> for App {
                         self.press = None;
                         self.bar_drag = None;
                         self.text_drag = false;
+                        // Dropping this also disarms a pending long press, so a
+                        // cancelled touch cannot select a word after the fact.
+                        self.touch_text = None;
                     }
                 }
             }
@@ -2552,15 +2673,36 @@ impl ApplicationHandler<RuxEvent> for App {
     /// focused, wake every `BLINK` to toggle the caret. With no focus the
     /// deadline is `None`, so we wait indefinitely for the next real event.
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        match self.blink_deadline {
-            Some(deadline) => {
-                if Instant::now() >= deadline {
-                    self.caret_visible = !self.caret_visible;
-                    self.blink_deadline = Some(Instant::now() + BLINK);
+        // A resting finger is the second clock, and the reason this is not just
+        // the blink any more: nothing arrives to say a press has gone on long
+        // enough, so the deadline has to be waited on and checked here.
+        if let Some(TouchText::Pending { at, deadline }) = self.touch_text {
+            if Instant::now() >= deadline {
+                // Whether or not a word was there to take, the press has
+                // resolved: it must not stay pending and fire again later.
+                self.touch_text = Some(TouchText::Selecting);
+                if self.select_word_at(at) {
                     self.request_redraw();
                 }
-                event_loop.set_control_flow(ControlFlow::WaitUntil(self.blink_deadline.unwrap()));
             }
+        }
+
+        if let Some(deadline) = self.blink_deadline {
+            if Instant::now() >= deadline {
+                self.caret_visible = !self.caret_visible;
+                self.blink_deadline = Some(Instant::now() + BLINK);
+                self.request_redraw();
+            }
+        }
+
+        // Wake for whichever clock is due first. With neither running, wait
+        // indefinitely for a real event, as before.
+        let long_press = match self.touch_text {
+            Some(TouchText::Pending { deadline, .. }) => Some(deadline),
+            _ => None,
+        };
+        match [self.blink_deadline, long_press].into_iter().flatten().min() {
+            Some(next) => event_loop.set_control_flow(ControlFlow::WaitUntil(next)),
             None => event_loop.set_control_flow(ControlFlow::Wait),
         }
     }
@@ -2816,8 +2958,8 @@ fn floor_char_boundary(s: &str, mut index: usize) -> usize {
 #[cfg(test)]
 mod caret_index {
     use super::{
-        browser_selection, byte_to_utf16_index, floor_char_boundary, rux_selection,
-        utf16_to_byte_index,
+        Instant, TAP_SLOP, TouchText, browser_selection, byte_to_utf16_index,
+        floor_char_boundary, rux_selection, touch_text_after_move, utf16_to_byte_index,
     };
 
     /// ASCII is the case where the two agree, and the one every other case is
@@ -2883,6 +3025,30 @@ mod caret_index {
         // A collapsed range reports "none", which is not "backward", so it takes
         // the forward arm and means nothing is selected.
         assert_eq!(rux_selection(4, 4, false), (4, 4));
+    }
+
+    /// A finger drag on text moved the caret on a phone only after v0.5.1;
+    /// before that it selected, because touch was routed down the mouse's path.
+    /// These are the transitions that separate the two.
+    #[test]
+    fn a_finger_that_moves_before_the_long_press_drags_the_caret() {
+        let pending = TouchText::Pending { at: (0.0, 0.0), deadline: Instant::now() };
+
+        // Inside the slop the press has not decided: it can still become a
+        // selection if the finger stays put.
+        assert_eq!(touch_text_after_move(pending, 0.0), pending);
+        assert_eq!(touch_text_after_move(pending, TAP_SLOP), pending);
+
+        // Past it, the gesture is a caret drag, and cannot become a selection
+        // later however long the finger then rests.
+        assert_eq!(touch_text_after_move(pending, TAP_SLOP + 0.1), TouchText::Caret);
+        assert_eq!(touch_text_after_move(TouchText::Caret, 0.0), TouchText::Caret);
+        assert_eq!(touch_text_after_move(TouchText::Caret, 500.0), TouchText::Caret);
+
+        // Once a word has been taken, every further movement extends it. This
+        // is the only path that selects.
+        assert_eq!(touch_text_after_move(TouchText::Selecting, 0.0), TouchText::Selecting);
+        assert_eq!(touch_text_after_move(TouchText::Selecting, 500.0), TouchText::Selecting);
     }
 
     /// The two directions are inverses. Round-tripping is what catches a
