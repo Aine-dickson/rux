@@ -1988,8 +1988,10 @@ impl App {
         self.set_focus_range(Some(Focus::at(model, caret)));
     }
 
-    /// Keep the caret visible in a scrolling textarea: adjust its scroll offset so
-    /// the caret line sits inside the box. No-op for non-scrolling inputs.
+    /// Keep the caret visible in a scrolling textarea: adjust its scroll offset
+    /// so the caret *line* sits inside the box. No-op for a single-line input,
+    /// which has no scroll region; its horizontal equivalent is
+    /// [`track_caret_x`](Self::track_caret_x), applied once per frame.
     fn scroll_caret_into_view(&mut self, model: &str, value: &str, caret: usize) {
         let Some(region) = self.focuses.iter().find(|f| f.model == model).cloned() else {
             return;

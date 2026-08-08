@@ -26,7 +26,7 @@ edition = "2021"
 # Every crate in the workspace ships together under one version. It sat at 0.1.0
 # through the v0.2 and v0.3 tags; reconciled onto the 0.4 line here, because a
 # wrong version is unfixable once it is on crates.io (yank ≠ unpublish).
-version = "0.5.1-dev"
+version = "0.5.1"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/Aine-dickson/rux"
 homepage = "https://ruxlang.dev"

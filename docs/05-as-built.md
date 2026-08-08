@@ -353,22 +353,24 @@ rather than a reason to call it done. In a browser the canvas also needs
 a drag.
 
 **Not done:** no kinetic or inertial fling after the finger lifts, no
-multi-touch, no pinch zoom, and no long-press.
+multi-touch, and no pinch zoom.
 
-**Touch text interaction uses the mouse's gestures, and should not.** A finger
-dragged across text selects, because touch is routed through the same
-press/drag/release path a mouse takes. That is the desktop model, and it is not
-what a phone does. Tried on hardware 2026-08-08, the expected model is:
+**Touch text has its own gestures**, added in v0.5.1 and confirmed on hardware.
+Until then a finger dragged across text *selected*, because touch was routed
+down the same press/drag/release path a mouse takes, which is the desktop model
+and not what a phone does:
 
-- **drag** on text moves the caret along the path, rather than selecting;
-- **long press** selects the word under the finger;
-- **long press then drag** extends the selection from there.
+- **drag** on text moves the caret along the path;
+- **long press** (500 ms) selects the word under the finger;
+- **long press then drag** extends the selection from that word.
 
-None of the three exists yet, and the first is actively wrong rather than
-missing. This needs a touch gesture state machine (a press timer plus slop),
-which is also the prerequisite for the selection toolbar noted under
-[Selection & clipboard](#selection--clipboard), since a phone has nowhere else to
-put copy and paste.
+The long press is therefore the only gesture that selects, which is what frees a
+drag to mean something else. The decision is one-way: a press that moves before
+the timer is a caret drag and cannot become a selection however long the finger
+then rests, so a drag never turns into a selection halfway through. A resting
+finger raises no events, so the press deadline is a second clock in
+`about_to_wait` beside the caret blink. The mouse is unchanged and still
+drag-selects.
 
 ### Selection & clipboard
 A focused input has a **selection**, not just a caret: `Focus` carries a `caret`
@@ -383,31 +385,51 @@ nothing is). Both are re-applied after every rebuild, like the caret.
   (via `arboard`, the real system clipboard). Pasting several lines into a
   single-line input keeps only the first.
 
+**A single-line input scrolls horizontally to keep its caret in view**, added in
+v0.5.1. Before that the caret walked out of the box and was clipped away, so a
+field could not be used at all once its value outgrew its width: not by typing,
+arrows, End, a tap or a drag, on any platform. The cause was that an input is
+given `overflow: clip` while a textarea is given `overflow: scroll`, and only
+the latter produces a scroll region for `scroll_caret_into_view` to move.
+
+The offset moves only when the caret would otherwise fall outside, so the text
+does not slide under a caret that is already visible, and it is clamped so the
+field never scrolls past the start nor leaves a gap after the end. Hit testing
+applies the same offset, or a tap in a scrolled field would land a character out
+by exactly the scroll distance.
+
 The highlight is painted behind the glyphs in the focus-ring blue: **not
 author-controlled**: there is no `::selection` yet. Its rectangles come from
 parley, but only their *horizontal* extent: the vertical position is recomputed
 from our own leading-trimmed line stepping, since parley's line pitch isn't ours
 (see `rux-text::selection_rects`).
 
-**On the web there is no clipboard at all.** `arboard` is a desktop-only
-dependency, and nothing calls `navigator.clipboard`, so copy and cut do nothing
-in a browser. Paste works on a phone, but only because the keyboard's own paste
-writes into the hidden `<input>` and arrives as an ordinary `input` event; that
-is text coming *in*, which never went through the clipboard code.
+**A selection toolbar** appears above the focused field whenever something is
+selected (below it when there is no room above), offering **Copy**, **Cut**,
+**Paste** and **Select all**. It runs the same four actions the Ctrl shortcuts
+do, not a second copy of them.
 
-The selection is kept in step with the hidden input in both directions as of
-v0.5.1: a drag on the canvas is written out, and a range set in the input is read
-back, including which end the caret is at (`selectionStart`/`End` are ordered, so
-`selectionDirection` carries it). That makes the range *correct*, which it was
-not before, since it used to be pinned collapsed.
+It exists because on a phone there is no Ctrl+C, and in a browser there was no
+clipboard at all: `arboard` is a desktop-only dependency. The browser's *own*
+copy bubble cannot be used either, whatever the selection says. The hidden
+`<input>` is `pointer-events: none`, `opacity: 0` and one pixel square, so the
+browser never sees a selection gesture on it, and setting the range from code
+does not raise native selection UI. That was verified on a phone rather than
+assumed. Before v0.5.1 the only thing that worked was paste, and only because
+the keyboard writes into the hidden input directly, arriving as an ordinary
+`input` event that never touched clipboard code.
 
-**It does not make the browser's own copy/paste bubble appear, and cannot.**
-Verified on a phone 2026-08-08. The hidden input is `pointer-events: none`,
-`opacity: 0` and one pixel square, so the browser never sees a selection gesture
-on it, and setting the range programmatically does not raise native selection UI.
-Copying text out of a Rux field in a browser has no working route today. Giving
-it one means Rux drawing its own selection toolbar and calling
-`navigator.clipboard`, which would serve desktop browsers too.
+On the web the toolbar goes through `navigator.clipboard`. Writing is fired and
+forgotten. Reading cannot be: the API is a promise and may prompt for
+permission, so a paste is *started* by the tap and applied later, when the read
+resolves. A refused prompt is silent, since declining is a decision rather than
+a fault. A press on the toolbar is refused by the text press handler, or moving
+the caret would collapse the selection the button is about to act on.
+
+The selection is also kept in step with the hidden input in both directions as
+of v0.5.1: a drag on the canvas is written out, and a range set in the input is
+read back, including which end the caret is at (`selectionStart`/`End` are
+ordered, so `selectionDirection` carries it).
 
 **Limits:** no word-wise movement (Ctrl+arrows moves by character), no
 triple-click line-select, no drag-and-drop of selected text, no middle-click
