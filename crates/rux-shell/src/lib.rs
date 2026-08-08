@@ -87,6 +87,11 @@ enum RuxEvent {
     /// text (before v0.5.1, on no text at all).
     #[cfg(target_arch = "wasm32")]
     WebText { value: String, caret: usize, anchor: usize, composing: usize },
+    /// The browser's clipboard resolved, carrying what it held. Web only: the
+    /// Clipboard API is a promise, so a paste cannot be finished inside the tap
+    /// or key press that asked for it.
+    #[cfg(target_arch = "wasm32")]
+    WebPaste(String),
     /// Assistive technology asked us something (it attached, it wants the
     /// tree, it moved focus). Delivered through the same proxy as hot-reload.
     #[cfg(not(target_arch = "wasm32"))]
@@ -111,6 +116,79 @@ const TAP_SLOP: f64 = 6.0;
 /// convention: much shorter and an ordinary tap starts selecting text, much
 /// longer and the field feels unresponsive.
 const LONG_PRESS: Duration = Duration::from_millis(500);
+
+/// The selection toolbar's height and the padding around its labels, in logical
+/// px.
+const TOOLBAR_H: f32 = 34.0;
+const TOOLBAR_PAD: f32 = 12.0;
+/// Gap between the toolbar and the field it belongs to.
+const TOOLBAR_GAP: f32 = 6.0;
+
+/// What the selection toolbar offers, left to right.
+///
+/// A phone has no Ctrl+C, and a browser has no system clipboard for Rux to
+/// reach, so without this there is no way at all to get text out of a field on
+/// either. The desktop app keeps its shortcuts; this is the same four actions
+/// with somewhere to tap.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum TextAction {
+    Copy,
+    Cut,
+    Paste,
+    SelectAll,
+}
+
+impl TextAction {
+    const ALL: [TextAction; 4] =
+        [TextAction::Copy, TextAction::Cut, TextAction::Paste, TextAction::SelectAll];
+
+    fn label(self) -> &'static str {
+        match self {
+            TextAction::Copy => "Copy",
+            TextAction::Cut => "Cut",
+            TextAction::Paste => "Paste",
+            TextAction::SelectAll => "Select all",
+        }
+    }
+
+    /// Button width from the label's length.
+    ///
+    /// Estimated rather than measured because the geometry is needed for hit
+    /// testing as well as painting, and threading the text engine into a hit
+    /// test to agree with the painter is how the two end up disagreeing. The
+    /// estimate is deliberately generous, so a label sits inside its button
+    /// rather than against its edge.
+    fn width(self) -> f32 {
+        (self.label().chars().count() as f32 * 7.8).round() + TOOLBAR_PAD * 2.0
+    }
+}
+
+/// Where the toolbar sits for a field at `(x, y, w, h)`, and the box of each
+/// button, in logical px.
+///
+/// Above the field when there is room, below it when there is not, and never off
+/// the left edge. One function so the painter and the hit test cannot drift.
+fn toolbar_layout(
+    field: (f32, f32, f32, f32),
+    viewport: (f32, f32),
+) -> ((f32, f32, f32, f32), Vec<(TextAction, f32, f32, f32, f32)>) {
+    let total: f32 = TextAction::ALL.iter().map(|a| a.width()).sum();
+    let (fx, fy, _, fh) = field;
+    let x = fx.min(viewport.0 - total).max(0.0);
+    // Above by preference: a finger selecting text is usually below the line it
+    // is selecting, and a toolbar under the finger is one you cannot read.
+    let above = fy - TOOLBAR_H - TOOLBAR_GAP;
+    let y = if above >= 0.0 { above } else { fy + fh + TOOLBAR_GAP };
+
+    let mut buttons = Vec::with_capacity(TextAction::ALL.len());
+    let mut bx = x;
+    for action in TextAction::ALL {
+        let w = action.width();
+        buttons.push((action, bx, y, w, TOOLBAR_H));
+        bx += w;
+    }
+    ((x, y, total, TOOLBAR_H), buttons)
+}
 
 /// What the finger currently down is doing to a text field.
 ///
@@ -294,6 +372,65 @@ fn focus_ring(item: &FocusItem) -> Vec<Paint> {
 
 /// Paint items for an open dropdown: a single floating panel with a shadow, the
 /// selected value picked out as a pill, and thin separators between options.
+/// The selection toolbar: one rounded strip of actions above (or below) the
+/// focused field. Same palette as the dropdown, so the two read as one system.
+fn toolbar_paints(field: (f32, f32, f32, f32), viewport: (f32, f32)) -> Vec<Paint> {
+    let panel_bg = Rgba::new(0.19, 0.20, 0.27, 1.0); // #313244
+    let border = Rgba::new(0.27, 0.28, 0.35, 1.0); // #45475a
+    let ink = Rgba::new(0.80, 0.84, 0.96, 1.0); // #cdd6f4
+    let divider = Rgba::new(0.35, 0.36, 0.44, 1.0); // #585b70
+
+    let ((x, y, w, h), buttons) = toolbar_layout(field, viewport);
+    let mut out = Vec::with_capacity(buttons.len() * 2 + 2);
+    out.push(Paint::Shadow {
+        x,
+        y: y + 3.0,
+        width: w,
+        height: h,
+        radius: 8.0,
+        blur: 16.0,
+        color: Rgba::new(0.0, 0.0, 0.0, 0.45),
+    });
+    out.push(Paint::Rect(PaintRect {
+        x,
+        y,
+        width: w,
+        height: h,
+        background: Some(Background::Color(panel_bg)),
+        radius: [8.0; 4],
+        border_width: 1.0,
+        border_color: Some(border),
+    }));
+
+    for (i, (action, bx, by, bw, bh)) in buttons.iter().enumerate() {
+        // A hairline between buttons, so the strip reads as separate targets
+        // rather than one wide button.
+        if i > 0 {
+            out.push(Paint::Rect(PaintRect {
+                x: *bx,
+                y: by + 7.0,
+                width: 1.0,
+                height: bh - 14.0,
+                background: Some(Background::Color(divider)),
+                radius: [0.0; 4],
+                border_width: 0.0,
+                border_color: None,
+            }));
+        }
+        out.push(Paint::Text(PaintText {
+            x: *bx,
+            y: by + (bh - 17.0) / 2.0,
+            width: *bw,
+            height: 17.0,
+            content: TextContent {
+                align: TextAlign::Center,
+                ..overlay_text(action.label().to_string(), 14.0, 500, ink)
+            },
+        }));
+    }
+    out
+}
+
 fn dropdown_paints(sel: &SelectRegion, value: &str) -> Vec<Paint> {
     let panel_bg = Rgba::new(0.19, 0.20, 0.27, 1.0); // #313244
     let border = Rgba::new(0.27, 0.28, 0.35, 1.0); // #45475a
@@ -1212,6 +1349,61 @@ impl App {
         *scroll
     }
 
+    /// The focused field's box, when it has a selection worth offering actions
+    /// on. `None` means no toolbar: nothing focused, or nothing selected.
+    ///
+    /// Tied to the selection rather than to focus so the strip is not sitting
+    /// over the page the whole time an input has a caret in it.
+    fn toolbar_field(&self) -> Option<(f32, f32, f32, f32)> {
+        if self.caret == self.anchor {
+            return None;
+        }
+        let model = self.focused.as_deref()?;
+        let region = self.focuses.iter().find(|f| f.model == model)?;
+        Some((region.x, region.y, region.width, region.height))
+    }
+
+    /// The action under `(fx, fy)` in logical px, if the toolbar is up and the
+    /// point is on one of its buttons.
+    fn toolbar_action_at(&self, fx: f32, fy: f32) -> Option<TextAction> {
+        let field = self.toolbar_field()?;
+        let (_, buttons) = toolbar_layout(field, self.logical_size());
+        buttons
+            .into_iter()
+            .find(|(_, bx, by, bw, bh)| fx >= *bx && fx <= bx + bw && fy >= *by && fy <= by + bh)
+            .map(|(action, ..)| action)
+    }
+
+    /// Whether the toolbar covers `(fx, fy)`, so a press there is not also a
+    /// press on whatever is underneath. The same rule the dev overlay follows.
+    fn toolbar_covers(&self, fx: f32, fy: f32) -> bool {
+        let Some(field) = self.toolbar_field() else { return false };
+        let ((x, y, w, h), _) = toolbar_layout(field, self.logical_size());
+        fx >= x && fx <= x + w && fy >= y && fy <= y + h
+    }
+
+    /// Run a toolbar action against the focused field.
+    fn run_text_action(&mut self, action: TextAction) {
+        let Some(model) = self.focused.clone() else { return };
+        match action {
+            TextAction::Copy => self.copy_selection(),
+            TextAction::Cut => self.cut_selection(&model),
+            TextAction::Paste => self.request_paste(&model),
+            TextAction::SelectAll => self.select_all_text(&model),
+        }
+        // Copy leaves the selection up, which is what every platform does: you
+        // may want to cut what you just copied. The others change it themselves.
+        self.request_redraw();
+    }
+
+    /// The window in logical px, which the toolbar is kept inside.
+    fn logical_size(&self) -> (f32, f32) {
+        let Some(state) = self.state.as_ref() else { return (0.0, 0.0) };
+        let scale = state.window.scale_factor();
+        let size = state.window.inner_size();
+        ((size.width as f64 / scale) as f32, (size.height as f64 / scale) as f32)
+    }
+
     /// The horizontal offset in force for `region`, which is zero for anything
     /// but the focused single-line input. A textarea scrolls through its own
     /// scroll region instead, and an unfocused field is never scrolled.
@@ -1231,7 +1423,13 @@ impl App {
         if self.open_select.is_some() {
             return false;
         }
+        // A press on the toolbar must not move the caret: collapsing the
+        // selection is exactly what the button is about to act on. The tap is
+        // handled on release, in `dispatch_tap`.
         let (fx, fy) = self.logical(pointer);
+        if self.toolbar_covers(fx, fy) {
+            return false;
+        }
         let Some(region) = self.focuses.iter().rev().find(|f| f.contains(fx, fy)).cloned() else {
             return false;
         };
@@ -1484,6 +1682,14 @@ impl App {
             return;
         }
 
+        // The selection toolbar sits above the page like the dropdown, so it
+        // takes the tap before anything under it. Checked before the dropdown
+        // because the two are never up together: opening a select drops focus.
+        if let Some(action) = self.toolbar_action_at(fx, fy) {
+            self.run_text_action(action);
+            return;
+        }
+
         // An open dropdown is on top of everything, so it intercepts taps first:
         // a tap on an option selects it; any other tap just closes the dropdown.
         if let Some(model) = self.open_select.take() {
@@ -1688,54 +1894,98 @@ impl App {
     /// Ctrl+V arrives as `Key::Character("v")`.
     fn text_shortcut(&mut self, key: &Key, model: &str) -> bool {
         let Key::Character(s) = key else { return false };
-        let value = self.document.engine_mut().get_string(model);
+        // The bodies live in named methods because the selection toolbar runs
+        // the same four actions from a tap. Two implementations of "cut" would
+        // drift the moment one of them learned about something the other did
+        // not.
         match s.to_lowercase().as_str() {
-            "a" => {
-                self.set_focus_range(Some(Focus {
-                    model: model.to_string(),
-                    caret: value.len(),
-                    anchor: 0,
-                    preedit: None,
-                }));
-            }
-            "c" => {
-                if let Some(text) = self.selected_text() {
-                    self.clipboard_write(&text);
-                }
-            }
-            "x" => {
-                if let Some(text) = self.selected_text() {
-                    self.clipboard_write(&text);
-                    let (start, end) = self.selection();
-                    let mut value = value;
-                    value.replace_range(start.min(value.len())..end.min(value.len()), "");
-                    self.document.apply_edit(model, &value);
-                    self.set_focus_range(Some(Focus::at(model, start)));
-                }
-            }
-            "v" => {
-                let Some(pasted) = self.clipboard_read() else {
-                    return true;
-                };
-                // A single-line input takes the first line only, pasting a block
-                // of text into a one-line field shouldn't smuggle newlines in.
-                let pasted = if self.focused_multiline {
-                    pasted.replace("\r\n", "\n")
-                } else {
-                    pasted.lines().next().unwrap_or("").to_string()
-                };
-                let (start, end) = self.selection();
-                let mut value = value;
-                let (start, end) = (start.min(value.len()), end.min(value.len()));
-                value.replace_range(start..end, &pasted);
-                let caret = start + pasted.len();
-                self.document.apply_edit(model, &value);
-                self.scroll_caret_into_view(model, &value, caret);
-                self.set_focus_range(Some(Focus::at(model, caret)));
-            }
+            "a" => self.select_all_text(model),
+            "c" => self.copy_selection(),
+            "x" => self.cut_selection(model),
+            "v" => self.request_paste(model),
             _ => return false,
         }
         true
+    }
+
+    fn select_all_text(&mut self, model: &str) {
+        let value = self.document.engine_mut().get_string(model);
+        self.set_focus_range(Some(Focus {
+            model: model.to_string(),
+            caret: value.len(),
+            anchor: 0,
+            preedit: None,
+        }));
+    }
+
+    fn copy_selection(&mut self) {
+        if let Some(text) = self.selected_text() {
+            self.clipboard_write(&text);
+        }
+    }
+
+    fn cut_selection(&mut self, model: &str) {
+        let Some(text) = self.selected_text() else { return };
+        self.clipboard_write(&text);
+        let value = self.document.engine_mut().get_string(model);
+        let (start, end) = self.selection();
+        let mut value = value;
+        value.replace_range(start.min(value.len())..end.min(value.len()), "");
+        self.document.apply_edit(model, &value);
+        self.set_focus_range(Some(Focus::at(model, start)));
+    }
+
+    /// Ask for the clipboard's contents and paste them.
+    ///
+    /// Native reads it here and pastes immediately. The web cannot: the Clipboard
+    /// API is a promise, and permission may even be prompted for, so the read is
+    /// started here and the paste happens later, when [`RuxEvent::WebPaste`]
+    /// arrives. Both ends meet in [`apply_paste`](Self::apply_paste).
+    #[cfg(not(target_arch = "wasm32"))]
+    fn request_paste(&mut self, model: &str) {
+        if let Some(pasted) = self.clipboard_read() {
+            self.apply_paste(model, &pasted);
+        }
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn request_paste(&mut self, _model: &str) {
+        use wasm_bindgen_futures::JsFuture;
+
+        let Some(clipboard) = web_clipboard() else { return };
+        let promise = clipboard.read_text();
+        wasm_bindgen_futures::spawn_local(async move {
+            // A rejection is the ordinary case when the user declines the
+            // permission prompt, so it is silent rather than a warning: refusing
+            // to paste is not an error in the document.
+            let Ok(value) = JsFuture::from(promise).await else { return };
+            let Some(text) = value.as_string() else { return };
+            WEB_PROXY.with(|p| {
+                if let Some(proxy) = p.borrow().as_ref() {
+                    let _ = proxy.send_event(RuxEvent::WebPaste(text));
+                }
+            });
+        });
+    }
+
+    /// Replace the selection with `pasted`, or insert it at the caret.
+    fn apply_paste(&mut self, model: &str, pasted: &str) {
+        // A single-line input takes the first line only, pasting a block
+        // of text into a one-line field shouldn't smuggle newlines in.
+        let pasted = if self.focused_multiline {
+            pasted.replace("\r\n", "\n")
+        } else {
+            pasted.lines().next().unwrap_or("").to_string()
+        };
+        let value = self.document.engine_mut().get_string(model);
+        let (start, end) = self.selection();
+        let mut value = value;
+        let (start, end) = (start.min(value.len()), end.min(value.len()));
+        value.replace_range(start..end, &pasted);
+        let caret = start + pasted.len();
+        self.document.apply_edit(model, &value);
+        self.scroll_caret_into_view(model, &value, caret);
+        self.set_focus_range(Some(Focus::at(model, caret)));
     }
 
     /// Keep the caret visible in a scrolling textarea: adjust its scroll offset so
@@ -2156,16 +2406,22 @@ impl App {
         self.clipboard.as_mut()?.get_text().ok()
     }
 
-    // On the web the clipboard is asynchronous and permission-gated, so it can't
-    // be read inside a synchronous key handler. Ctrl+C/X/V therefore do nothing
-    // for now, the same graceful no-op as a native platform that denies us a
-    // clipboard. Wiring the async Clipboard API through the event loop is
-    // tracked as playground work, not shell work.
+    // On the web the clipboard is asynchronous and permission-gated. Writing can
+    // be fired and forgotten; reading cannot, so it does not go through
+    // `clipboard_read` at all: see `request_paste`.
     #[cfg(target_arch = "wasm32")]
-    fn clipboard_write(&mut self, _text: &str) {}
+    fn clipboard_write(&mut self, text: &str) {
+        let Some(clipboard) = web_clipboard() else { return };
+        // The promise is deliberately dropped. A rejection (no permission, not a
+        // secure context) means the copy did not happen, and there is nothing
+        // useful to do about it in a UI with no place to report it.
+        let _ = clipboard.write_text(text);
+    }
 
     #[cfg(target_arch = "wasm32")]
     fn clipboard_read(&mut self) -> Option<String> {
+        // Unreachable in practice: `request_paste` takes the async path on the
+        // web. Kept so the native and web shells present the same surface.
         None
     }
 
@@ -2208,6 +2464,7 @@ impl App {
             overlay_dismissed,
             overlay_rect,
             caret,
+            anchor,
             text_scroll,
             focused,
             #[cfg(not(target_arch = "wasm32"))]
@@ -2289,6 +2546,23 @@ impl App {
         if let Some(item) = focus_index.and_then(|i| layout.focusables.get(i)) {
             let ring = rux_paint::build_scene(&focus_ring(item), text, images, false);
             state.scene.append(&ring, Some(Affine::scale(scale)));
+        }
+
+        // The selection toolbar, over the content while something is selected.
+        // It is the only route to copy and paste on a phone, and on the web at
+        // all, so it is drawn above the page rather than inside it.
+        if *caret != *anchor {
+            if let Some(r) = focused
+                .as_deref()
+                .and_then(|m| layout.focuses.iter().find(|f| f.model == m))
+            {
+                let strip = toolbar_paints(
+                    (r.x, r.y, r.width, r.height),
+                    (logical.0 as f32, logical.1 as f32),
+                );
+                let scene = rux_paint::build_scene(&strip, text, images, false);
+                state.scene.append(&scene, Some(Affine::scale(scale)));
+            }
         }
 
         // An open `select` draws its dropdown on top of everything else.
@@ -2549,6 +2823,18 @@ impl ApplicationHandler<RuxEvent> for App {
             #[cfg(target_arch = "wasm32")]
             RuxEvent::WebText { value, caret, anchor, composing } => {
                 self.apply_web_text(value, caret, anchor, composing)
+            }
+
+            // The clipboard read started by a paste has come back. The field may
+            // have lost focus in the meantime, in which case there is nowhere to
+            // put it and dropping it is right.
+            #[cfg(target_arch = "wasm32")]
+            RuxEvent::WebPaste(text) => {
+                if let Some(model) = self.focused.clone() {
+                    self.apply_paste(&model, &text);
+                    self.sync_web_ime();
+                    self.request_redraw();
+                }
             }
 
             // Asking winit to resize restyles the canvas and then reports a
@@ -2890,6 +3176,15 @@ fn web_is_touch() -> bool {
         .unwrap_or(false)
 }
 
+/// The browser's clipboard, when there is one.
+///
+/// Absent outside a secure context, which is also where WebGPU is absent, so in
+/// practice this only fails on a page that could not have rendered anyway.
+#[cfg(target_arch = "wasm32")]
+fn web_clipboard() -> Option<web_sys::Clipboard> {
+    Some(web_sys::window()?.navigator().clipboard())
+}
+
 /// The hidden input, created and wired on first use.
 #[cfg(target_arch = "wasm32")]
 fn web_ime_element() -> Option<web_sys::HtmlInputElement> {
@@ -3079,7 +3374,7 @@ fn floor_char_boundary(s: &str, mut index: usize) -> usize {
 #[cfg(test)]
 mod caret_index {
     use super::{
-        Instant, TAP_SLOP, TouchText, browser_selection, byte_to_utf16_index,
+        Instant, TAP_SLOP, TouchText, browser_selection, byte_to_utf16_index, toolbar_layout,
         floor_char_boundary, rux_selection, touch_text_after_move, utf16_to_byte_index,
     };
 
@@ -3146,6 +3441,38 @@ mod caret_index {
         // A collapsed range reports "none", which is not "backward", so it takes
         // the forward arm and means nothing is selected.
         assert_eq!(rux_selection(4, 4, false), (4, 4));
+    }
+
+    /// The painter draws the toolbar from this and the hit test reads it, so a
+    /// button's box must be exactly where it is painted, and the strip must stay
+    /// on screen for a field at either edge.
+    #[test]
+    fn the_toolbar_sits_where_its_buttons_are_hit() {
+        let viewport = (400.0, 800.0);
+        let ((x, y, w, h), buttons) = toolbar_layout((20.0, 300.0, 200.0, 40.0), viewport);
+
+        // Buttons tile the strip exactly: no gap to fall through, no overlap.
+        assert_eq!(buttons.len(), 4);
+        assert!((buttons[0].1 - x).abs() < f32::EPSILON, "first starts at the panel");
+        let mut edge = x;
+        for (_, bx, by, bw, bh) in &buttons {
+            assert!((bx - edge).abs() < 0.001, "buttons are contiguous");
+            assert_eq!((*by, *bh), (y, h), "all share the strip's line");
+            edge += bw;
+        }
+        assert!((edge - (x + w)).abs() < 0.001, "and fill it exactly");
+
+        // Above the field, since there is room above it.
+        assert!(y + h < 300.0, "sits above the field: {y}");
+
+        // A field at the top has no room above, so the strip goes below it.
+        let ((_, below_y, _, _), _) = toolbar_layout((20.0, 0.0, 200.0, 40.0), viewport);
+        assert!(below_y >= 40.0, "drops below the field instead: {below_y}");
+
+        // A field against the right edge must not push the strip off screen.
+        let ((right_x, _, right_w, _), _) = toolbar_layout((380.0, 300.0, 200.0, 40.0), viewport);
+        assert!(right_x >= 0.0, "never off the left edge");
+        assert!(right_x + right_w <= viewport.0 + 0.001, "nor off the right: {right_x}");
     }
 
     /// A finger drag on text moved the caret on a phone only after v0.5.1;
