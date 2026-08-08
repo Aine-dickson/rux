@@ -18,7 +18,7 @@ rux-text = { path = "../rux-text" }
 # including the `-dev` suffix, because a plain `0.4.0` requirement does NOT match
 # the prerelease it carries between releases, so dropping the suffix in one
 # place and not the other breaks the build.
-rux-reactive = { version = "0.5.0", path = "../rux-reactive" }
+rux-reactive = { version = "0.5.1-dev", path = "../rux-reactive" }
 # `std::time::Instant` panics on wasm; web-time swaps in the browser clock there
 # and re-exports std everywhere else. winit already depends on it, so this adds
 # no weight; it just lets our code name the same type winit's API expects.
