@@ -361,6 +361,50 @@ impl Engine {
         self.scope.set_or_push(name, value.to_string());
     }
 
+    /// Re-evaluate a computed's expression and store the result under its name.
+    ///
+    /// Returns whether the value actually changed, and what it read. Only a real
+    /// change is reported, so a computed that lands on the same answer does not
+    /// invalidate the bindings that read it: recomputing is cheap, rebuilding a
+    /// subtree is not.
+    ///
+    /// A computed is a signal like any other, because it is declared as a plain
+    /// `let` in the script handed to rhai. That is what makes `{{ total }}`
+    /// track it without anything else knowing computeds exist.
+    pub fn recompute(&mut self, name: &str, expr: &str) -> (bool, HashSet<String>) {
+        let (value, deps) = self.eval_value_tracked(expr, &[]);
+        let Some(value) = value else { return (false, deps) };
+        let changed = self.read_signal(name).as_ref() != Some(&value);
+        if changed {
+            self.scope.set_or_push(name, to_dynamic(&value));
+        }
+        (changed, deps)
+    }
+
+    /// Run an effect body, reporting what it read and what it wrote.
+    ///
+    /// Both halves are needed and neither can be inferred from the other: the
+    /// reads say when to run it again, and the writes say what its running has
+    /// invalidated. A handler only needs the writes, which is why this is not
+    /// [`run_handler_tracked`](Self::run_handler_tracked).
+    pub fn run_effect_tracked(&mut self, src: &str) -> (HashSet<String>, HashSet<String>) {
+        let names: Vec<String> = self.signals.iter().cloned().collect();
+        let before: HashMap<String, Option<Value>> =
+            names.iter().map(|n| (n.clone(), self.read_signal(n))).collect();
+
+        READS.with(|r| *r.borrow_mut() = Some(HashSet::new()));
+        let ran = self.eval(src, &[]).is_some();
+        let mut reads = READS.with(|r| r.borrow_mut().take()).unwrap_or_default();
+        reads.retain(|n| self.signals.contains(n));
+        if !ran {
+            // It still subscribes to whatever it managed to read, so a fixed
+            // signal re-runs it rather than leaving it dead until a reload.
+            return (reads, HashSet::new());
+        }
+        let writes = names.into_iter().filter(|n| self.read_signal(n) != before[n]).collect();
+        (reads, writes)
+    }
+
     /// Write a string into whatever an `r-model` names, and report which signals
     /// that changed.
     ///

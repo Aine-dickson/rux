@@ -207,6 +207,45 @@ matches**, and says so once on stderr. Before this existed the `:` was silently
 dropped, so `.box:hover` parsed as `.box` and applied *unconditionally*, failing
 closed is the safer half of that trade.
 
+**Computed values:** `computed name = expr;` in `<script>` declares derived
+state, written once and readable anywhere a signal is:
+```rux
+let qty = signal(2);
+let price = signal(12);
+computed subtotal = qty * price;
+computed total = subtotal + subtotal / 10;   // may read the one above it
+```
+A computed *is* a signal: the line is rewritten to a plain `let`, so `{{ total }}`
+tracks it like any other, and it re-evaluates when what it reads changes. Only a
+real change propagates, so a computed landing on the same answer patches nothing.
+
+Refreshing is **one pass in declaration order**, so a computed may read
+computeds declared above it and not below. That is a deliberate limit rather
+than a fixpoint loop, which would turn a circular typo into a hang.
+
+**Effects:** `effect { … }` runs statements when what they read changes, **and
+once on load**, so an effect can establish something rather than only react to a
+later edit:
+```rux
+effect {
+  status = if total > 100 { "over budget" } else { "ok" };
+}
+```
+An effect subscribes to what it actually read on its last run, so a signal it
+never touched does not wake it, and a conditional branch changes what it
+watches.
+
+**An effect is never woken by its own writes.** Assigning to a signal also
+resolves its name, so the tracker cannot tell the write from a read; without
+this rule every effect that wrote anything would re-trigger itself. The cost is
+that an effect writing `x` will not re-run when something *else* changes `x`,
+which is the right way round: that effect is the one deciding what `x` is.
+Effects that feed *each other* still cycle; that is stopped after 8 rounds and
+reported in the overlay rather than hung on.
+
+Both are document-level today: a component's own `computed`/`effect` lines are
+stripped, not run. Driven in `examples/computed.rux`.
+
 **Keyed lists:** `r-key` on the same element as `r-for` says what a row *is*,
 rather than where it sits:
 ```html

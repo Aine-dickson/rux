@@ -59,6 +59,11 @@ pub struct Document {
     viewport: Viewport,
     /// What is currently wrong with this document, for the dev overlay.
     diagnostics: Diagnostics,
+    /// `computed` declarations, in declaration order, so one may read another
+    /// declared above it and a single pass refreshes them all.
+    computeds: Vec<Computed>,
+    /// `effect` blocks, with what each read when it last ran.
+    effects: Vec<Effect>,
     pub root: LayoutNode,
 }
 
@@ -338,6 +343,7 @@ impl Document {
         let base = path.parent().unwrap_or_else(|| Path::new("."));
         resolve_style_includes(&mut sfc, base)?;
         let (main_script, imports) = extract_imports(&sfc.script);
+        let (main_script, computeds, effects) = extract_reactives(&main_script);
 
         let mut components = HashMap::new();
         let mut combined_script = main_script;
@@ -354,6 +360,9 @@ impl Document {
             let comp_base = comp_path.parent().unwrap_or_else(|| Path::new(".")).to_path_buf();
             resolve_style_includes(&mut comp_sfc, &comp_base)?;
             let (comp_script, _nested) = extract_imports(&comp_sfc.script);
+            // A component's own computed/effect declarations are not
+            // supported yet; strip them so the merged script still compiles.
+            let (comp_script, _c, _e) = extract_reactives(&comp_script);
             // Merge the component's (pure) functions into the shared engine.
             combined_script.push('\n');
             combined_script.push_str(&comp_script);
@@ -364,7 +373,7 @@ impl Document {
         let (mut root, registry) = rux_style::build_styled_tree_tracked(&sfc, &components, &mut engine)
             .map_err(LoadError::plain)?;
         resolve_images(&mut root, base);
-        Ok(Self {
+        let mut doc = Self {
             sfc,
             components,
             engine,
@@ -378,8 +387,12 @@ impl Document {
                 warnings: collect_warnings(),
                 ..Diagnostics::default()
             },
+            computeds,
+            effects,
             root,
-        })
+        };
+        doc.init_reactive();
+        Ok(doc)
     }
 
     /// Process `.rux` source with no import resolution (used for fallbacks/tests).
@@ -403,13 +416,14 @@ impl Document {
             warn_unresolvable_include(path);
         }
         let (main_script, _imports) = extract_imports(&sfc.script);
+        let (main_script, computeds, effects) = extract_reactives(&main_script);
         let mut engine = build_engine(&main_script).map_err(LoadError::plain)?;
         let (mut root, registry) =
             rux_style::build_styled_tree_tracked(&sfc, &HashMap::new(), &mut engine)
                 .map_err(LoadError::plain)?;
         let base = PathBuf::from(".");
         resolve_images(&mut root, &base);
-        Ok(Self {
+        let mut doc = Self {
             sfc,
             components: HashMap::new(),
             engine,
@@ -422,8 +436,12 @@ impl Document {
                 warnings: collect_warnings(),
                 ..Diagnostics::default()
             },
+            computeds,
+            effects,
             root,
-        })
+        };
+        doc.init_reactive();
+        Ok(doc)
     }
 
     /// The script engine, for running `@tap` handlers.
@@ -837,10 +855,119 @@ impl Document {
     /// Reflect a set of changed signals: patch in place, or rebuild when the change
     /// is structural. `RUX_TRACE=1` prints which path was taken, so the reactivity
     /// behavior is observable while driving (the pixels are identical either way).
+    /// Record what the computeds and effects read, and run every effect once.
+    ///
+    /// Effects run on load rather than only on the first change, which is the
+    /// only way an effect can *establish* something (a title, a saved value)
+    /// rather than merely react to it. It is also where their dependency sets
+    /// come from: an effect subscribes to what it read, so it has to read first.
+    fn init_reactive(&mut self) {
+        for i in 0..self.computeds.len() {
+            let (name, expr) = (self.computeds[i].name.clone(), self.computeds[i].expr.clone());
+            let (_, deps) = self.engine.recompute(&name, &expr);
+            self.computeds[i].deps = deps;
+        }
+        let mut writes: HashSet<String> = HashSet::new();
+        for i in 0..self.effects.len() {
+            let body = self.effects[i].body.clone();
+            let (mut reads, wrote) = self.engine.run_effect_tracked(&body);
+            // An effect is never woken by its own writes. Assigning to a signal
+            // resolves its name, so the tracker sees a write as a read too, and
+            // every effect that wrote anything would immediately re-trigger
+            // itself: harmless when the result settles, an eight-round pile-up
+            // when it does not. The cost is that an effect which writes X will
+            // not re-run when someone *else* changes X, which is the right way
+            // round: that effect is the one deciding what X is.
+            reads.retain(|n| !wrote.contains(n));
+            self.effects[i].deps = reads;
+            writes.extend(wrote);
+        }
+        self.diagnostics.warnings.extend(collect_warnings());
+        if !writes.is_empty() {
+            // An effect that set something on load has to be reflected, or the
+            // first frame shows the state it was written to replace.
+            self.apply_change_depth(&writes, 1);
+        }
+    }
+
+    /// Bring the computeds up to date, adding any that actually changed to
+    /// `changed` so the bindings reading them are patched too.
+    ///
+    /// One pass in declaration order, which is enough for a computed that reads
+    /// another declared above it, and is where the ordering rule comes from: a
+    /// computed may only read computeds declared before it. The alternative is
+    /// iterating to a fixpoint, which turns a typo into a hang.
+    fn refresh_computed(&mut self, changed: &mut HashSet<String>) {
+        for i in 0..self.computeds.len() {
+            let stale = !self.computeds[i].deps.is_disjoint(changed);
+            if !stale {
+                continue;
+            }
+            let (name, expr) = (self.computeds[i].name.clone(), self.computeds[i].expr.clone());
+            let (moved, deps) = self.engine.recompute(&name, &expr);
+            self.computeds[i].deps = deps;
+            if moved {
+                changed.insert(name);
+            }
+        }
+    }
+
+    /// Run the effects whose dependencies changed, and report what they wrote.
+    fn run_effects(&mut self, changed: &HashSet<String>) -> HashSet<String> {
+        let mut writes = HashSet::new();
+        for i in 0..self.effects.len() {
+            if self.effects[i].deps.is_disjoint(changed) {
+                continue;
+            }
+            let body = self.effects[i].body.clone();
+            let (mut reads, wrote) = self.engine.run_effect_tracked(&body);
+            // An effect is never woken by its own writes. Assigning to a signal
+            // resolves its name, so the tracker sees a write as a read too, and
+            // every effect that wrote anything would immediately re-trigger
+            // itself: harmless when the result settles, an eight-round pile-up
+            // when it does not. The cost is that an effect which writes X will
+            // not re-run when someone *else* changes X, which is the right way
+            // round: that effect is the one deciding what X is.
+            reads.retain(|n| !wrote.contains(n));
+            self.effects[i].deps = reads;
+            writes.extend(wrote);
+        }
+        writes
+    }
+
     fn apply_change(&mut self, changed: &HashSet<String>) {
-        let patched = self.patch(changed);
+        self.apply_change_depth(changed, 0);
+    }
+
+    /// [`apply_change`](Self::apply_change), counting how many times an effect
+    /// has caused another round.
+    ///
+    /// An effect that writes a signal it also reads is a loop. It is stopped and
+    /// reported rather than followed: a window that hangs tells you nothing,
+    /// while a warning naming the effect is the whole diagnosis.
+    fn apply_change_depth(&mut self, changed: &HashSet<String>, depth: u32) {
+        const MAX_EFFECT_ROUNDS: u32 = 8;
+        let mut changed = changed.clone();
+        self.refresh_computed(&mut changed);
+        let patched = self.patch(&changed);
         if !patched {
             self.rebuild();
+        }
+        let writes = self.run_effects(&changed);
+        if !writes.is_empty() {
+            if depth + 1 >= MAX_EFFECT_ROUNDS {
+                let mut names: Vec<&str> = writes.iter().map(String::as_str).collect();
+                names.sort_unstable();
+                rux_style::warn_stylesheet(format!(
+                    "an `effect` keeps re-triggering itself (still writing {names:?} after \
+                     {MAX_EFFECT_ROUNDS} rounds); it was stopped. An effect must not write a \
+                     signal it also reads."
+                ));
+                self.diagnostics.warnings.extend(collect_warnings());
+                return;
+            }
+            self.apply_change_depth(&writes, depth + 1);
+            return;
         }
         if std::env::var_os("RUX_TRACE").is_some() {
             let mut names: Vec<&str> = changed.iter().map(String::as_str).collect();
@@ -922,6 +1049,124 @@ fn warn_unresolvable_include(path: &str) {
     ));
 }
 
+/// A `computed name = expr;` declaration.
+///
+/// Kept beside the script rather than inside it because it has to be
+/// *re-evaluated*, and rhai has no lazy value: the line is rewritten to a plain
+/// `let` so the name becomes an ordinary signal, and the expression is kept here
+/// so the runtime can run it again when something it reads changes.
+#[derive(Clone, Debug)]
+struct Computed {
+    name: String,
+    expr: String,
+    /// Signals the expression read when it last ran.
+    deps: HashSet<String>,
+}
+
+/// An `effect { … }` block: statements to run when what they read changes.
+#[derive(Clone, Debug)]
+struct Effect {
+    body: String,
+    /// Signals the body read when it last ran. Recorded per run, so an effect
+    /// whose reads depend on a condition subscribes to what it actually touched.
+    deps: HashSet<String>,
+}
+
+/// Pull `computed` and `effect` declarations out of a script.
+///
+/// Returns the script rhai should see, with every consumed line replaced by a
+/// blank one so line numbers still match the file: a warning pointing at the
+/// wrong line is worse than one pointing nowhere.
+///
+/// `computed x = expr;` becomes `let x = expr;`, which is what makes a computed
+/// an ordinary signal, initialised in declaration order alongside the rest.
+fn extract_reactives(script: &str) -> (String, Vec<Computed>, Vec<Effect>) {
+    let mut cleaned = String::new();
+    let mut computeds = Vec::new();
+    let mut effects = Vec::new();
+
+    let lines: Vec<&str> = script.lines().collect();
+    let mut i = 0;
+    while i < lines.len() {
+        let line = lines[i];
+        let trimmed = line.trim();
+
+        if let Some(rest) = trimmed.strip_prefix("computed ") {
+            if let Some((name, expr)) = rest.split_once('=') {
+                let name = name.trim();
+                let expr = expr.trim().trim_end_matches(';').trim();
+                if is_identifier(name) && !expr.is_empty() {
+                    computeds.push(Computed {
+                        name: name.to_string(),
+                        expr: expr.to_string(),
+                        deps: HashSet::new(),
+                    });
+                    // Declared, not stripped: the value has to exist before any
+                    // binding reads it, and being a `let` is what makes it a
+                    // signal the rest of the pipeline already understands.
+                    cleaned.push_str(&format!("let {name} = {expr};\n"));
+                    i += 1;
+                    continue;
+                }
+            }
+        }
+
+        if trimmed == "effect {" || trimmed.starts_with("effect {") {
+            // Take the block by counting braces, so an effect can hold an `if`.
+            let mut depth = 0i32;
+            let mut body = String::new();
+            let mut j = i;
+            let mut closed = false;
+            while j < lines.len() {
+                let l = lines[j];
+                for c in l.chars() {
+                    match c {
+                        '{' => depth += 1,
+                        '}' => depth -= 1,
+                        _ => {}
+                    }
+                }
+                let start = if j == i { l.find('{').map(|p| p + 1).unwrap_or(0) } else { 0 };
+                body.push_str(&l[start..]);
+                body.push('\n');
+                cleaned.push('\n'); // keep the file's line numbering
+                j += 1;
+                if depth <= 0 {
+                    closed = true;
+                    break;
+                }
+            }
+            if closed {
+                // Drop the trailing `}` the loop consumed with the last line.
+                let body = body.trim_end();
+                let body = body.strip_suffix('}').unwrap_or(body).to_string();
+                effects.push(Effect { body, deps: HashSet::new() });
+                i = j;
+                continue;
+            }
+            // Unterminated: leave it to rhai to complain about, with its lines.
+            rux_style::warn_stylesheet(
+                "an `effect {` block is never closed; it was ignored".to_string(),
+            );
+            i = j;
+            continue;
+        }
+
+        cleaned.push_str(line);
+        cleaned.push('\n');
+        i += 1;
+    }
+    (cleaned, computeds, effects)
+}
+
+/// Whether `s` is a plain identifier, so `computed 2 + 2 = x;` is left for rhai
+/// to reject rather than quietly becoming a declaration.
+fn is_identifier(s: &str) -> bool {
+    !s.is_empty()
+        && !s.starts_with(|c: char| c.is_ascii_digit())
+        && s.chars().all(|c| c.is_alphanumeric() || c == '_')
+}
+
 /// A resolved component import.
 struct Import {
     /// Custom-element tag (last path segment, `_` → `-`).
@@ -971,6 +1216,16 @@ fn build_engine(script: &str) -> Result<Engine, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every string the tree renders, for a failure message that says what was
+    /// actually on screen rather than dumping the whole node.
+    fn text_of(node: &LayoutNode) -> Vec<String> {
+        let mut out: Vec<String> = node.text.iter().map(|t| t.text.clone()).collect();
+        for child in &node.children {
+            out.extend(text_of(child));
+        }
+        out
+    }
 
     fn find_text(node: &LayoutNode, needle: &str) -> bool {
         if let Some(t) = &node.text {
@@ -1358,6 +1613,157 @@ mod tests {
         let awkward = "she said \"hi\" \\ then left";
         doc.apply_edit("name", awkward);
         assert_eq!(doc.value_in("name", None), awkward);
+    }
+
+    /// A computed is derived state: it is written once, read anywhere, and
+    /// keeps itself current. Before this the only "computed" was a `{{ }}`
+    /// expression, so the same derivation was retyped at every use.
+    #[test]
+    fn a_computed_tracks_what_it_reads() {
+        let mut doc = Document::from_source(
+            "<template><screen><text>{{ total }} for {{ count }}</text></screen></template>
+             <script>\
+               let count = signal(2);\n\
+               let price = signal(10);\n\
+               computed total = count * price;\n\
+             </script>",
+        )
+        .expect("load");
+        assert!(find_text(&doc.root, "20 for 2"), "computed on load: {:?}", doc.root);
+
+        assert!(doc.apply_handler("count = 3;"), "the handler changed a signal");
+        assert!(find_text(&doc.root, "30 for 3"), "and the computed followed");
+    }
+
+    /// A computed may read one declared above it, and the refresh is a single
+    /// pass in declaration order, so a chain settles in one go.
+    #[test]
+    fn a_computed_may_read_an_earlier_computed() {
+        let mut doc = Document::from_source(
+            "<template><screen><text>{{ shout }}</text></screen></template>
+             <script>\n\
+               let name = signal(\"ada\");\n\
+               computed greeting = \"hi \" + name;\n\
+               computed shout = greeting + \"!\";\n\
+             </script>",
+        )
+        .expect("load");
+        assert!(find_text(&doc.root, "hi ada!"));
+
+        assert!(doc.apply_handler("name = \"grace\";"));
+        assert!(find_text(&doc.root, "hi grace!"), "the whole chain refreshed");
+    }
+
+    /// An effect runs on load, so it can *establish* something rather than only
+    /// react to a later change, and again whenever what it read changes.
+    #[test]
+    fn an_effect_runs_on_load_and_on_change() {
+        let mut doc = Document::from_source(
+            "<template><screen><text>{{ mirror }}</text></screen></template>
+             <script>\n\
+               let count = signal(1);\n\
+               let mirror = signal(0);\n\
+               effect {\n\
+                 mirror = count * 100;\n\
+               }\n\
+             </script>",
+        )
+        .expect("load");
+        assert!(find_text(&doc.root, "100"), "ran once on load: {:?}", text_of(&doc.root));
+
+        assert!(doc.apply_handler("count = 2;"));
+        assert!(
+            find_text(&doc.root, "200"),
+            "ran again when count changed: {:?}",
+            text_of(&doc.root)
+        );
+    }
+
+    /// An effect only re-runs for what it actually read. A signal it never
+    /// touches must not wake it, or "runs when its dependencies change" is just
+    /// "runs on everything".
+    #[test]
+    fn an_effect_ignores_signals_it_never_read() {
+        let mut doc = Document::from_source(
+            "<template><screen><text>{{ mirror }}</text></screen></template>
+             <script>\n\
+               let watched = signal(1);\n\
+               let other = signal(1);\n\
+               let mirror = signal(0);\n\
+               effect {\n\
+                 mirror = watched * 100;\n\
+               }\n\
+             </script>",
+        )
+        .expect("load");
+        // The subscription itself, which is the thing under test: an effect
+        // that subscribed to everything would still pass a behavioural check.
+        assert_eq!(doc.effects.len(), 1);
+        assert!(doc.effects[0].deps.contains("watched"), "it read `watched`");
+        assert!(!doc.effects[0].deps.contains("other"), "it never read `other`");
+        assert!(
+            !doc.effects[0].deps.contains("mirror"),
+            "writing a signal is not reading it, or every effect would feed itself"
+        );
+
+        assert!(doc.apply_handler("other = 2;"));
+        assert!(find_text(&doc.root, "100"), "an unread signal leaves it alone");
+
+        assert!(doc.apply_handler("watched = 3;"));
+        assert!(find_text(&doc.root, "300"), "the one it read wakes it");
+    }
+
+    /// An effect that writes the signal it reads settles instead of looping,
+    /// because its own writes do not wake it.
+    #[test]
+    fn an_effect_is_not_woken_by_its_own_writes() {
+        let _ = take_warnings();
+        let mut doc = Document::from_source(
+            "<template><screen><text>{{ n }}</text></screen></template>
+             <script>\n\
+               let n = signal(0);\n\
+               effect {\n\
+                 n = n + 1;\n\
+               }\n\
+             </script>",
+        )
+        .expect("load");
+        assert!(find_text(&doc.root, "1"), "ran once: {:?}", text_of(&doc.root));
+
+        assert!(doc.apply_handler("n = 100;"));
+        assert!(
+            find_text(&doc.root, "100"),
+            "an outside write is not chased by the effect that owns n: {:?}",
+            text_of(&doc.root)
+        );
+        assert!(doc.diagnostics.warnings.is_empty(), "{:?}", doc.diagnostics.warnings);
+    }
+
+    /// Two effects feeding each other still loop, and that is stopped and
+    /// reported: a window that hangs says nothing at all.
+    #[test]
+    fn effects_that_feed_each_other_are_stopped_and_reported() {
+        let _ = take_warnings();
+        let mut doc = Document::from_source(
+            "<template><screen><text>{{ a }}</text></screen></template>
+             <script>\n\
+               let a = signal(0);\n\
+               let b = signal(0);\n\
+               effect {\n\
+                 b = a + 1;\n\
+               }\n\
+               effect {\n\
+                 a = b + 1;\n\
+               }\n\
+             </script>",
+        )
+        .expect("load");
+        // Reaching here at all is half the assertion: the loop is bounded.
+        assert!(
+            doc.diagnostics.warnings.iter().any(|w| w.message.contains("re-triggering")),
+            "the cycle is named rather than hung on: {:?}",
+            doc.diagnostics.warnings
+        );
     }
 
     /// A `<select>` in each row is a separate select. The layout has to say so,
