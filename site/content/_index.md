@@ -79,12 +79,20 @@ the file with the window open and it reloads live.
 ## Run it
 
 ```bash
+cargo install ruxlang
+rux run app.rux
+```
+
+That installs a `rux` command from crates.io and needs no clone. To run the
+example above and the rest of them, clone the repo instead:
+
+```bash
 git clone https://github.com/Aine-dickson/rux
 cd rux
 cargo run -p ruxlang -- examples/showcase.rux
 ```
 
-That opens a real native window. There is no browser and no webview anywhere in
+Either way it opens a real native window. There is no browser and no webview anywhere in
 the stack: [taffy] lays it out, [parley] shapes the text, [vello] paints it on the
 GPU, [winit] holds the window.
 

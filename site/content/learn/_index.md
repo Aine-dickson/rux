@@ -29,13 +29,22 @@ Rust, and about half an hour. No Node, no npm, no browser. Rux opens a native
 window and paints it on the GPU.
 
 ```bash
+cargo install ruxlang
+```
+
+That takes a few minutes and gives you a `rux` command. Chapter 1 starts from an
+empty file, so nothing else is needed to follow along.
+
+If you would rather have every finished example to hand, clone the repo as well:
+
+```bash
 git clone https://github.com/Aine-dickson/rux
 cd rux
 cargo run -p ruxlang -- examples/learn/01-hello.rux
 ```
 
-The first build takes a few minutes. After that, edits to a `.rux` file reload
-in the open window without rebuilding anything.
+Either way, edits to a `.rux` file reload in the open window without rebuilding
+anything.
 
 If you would rather not install anything yet, the
 [playground](@/playground.md) runs the same runtime in your browser. Every

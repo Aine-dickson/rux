@@ -41,7 +41,7 @@ scrolled list stays scrolled, and an open dropdown stays open.
 You can watch this happen:
 
 ```bash
-RUX_TRACE=1 cargo run -p ruxlang -- examples/learn/03-state.rux
+RUX_TRACE=1 rux run 03-state.rux
 ```
 
 Every interaction prints the path it took: `patched in place (no rebuild)` or

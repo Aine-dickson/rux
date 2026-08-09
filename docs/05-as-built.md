@@ -15,6 +15,15 @@ through v0.5 releases, which the [Roadmap](./06-roadmap.md) lists.
 
 ## Running it
 
+Rux is on crates.io, so the shortest path needs no clone at all:
+
+```bash
+cargo install ruxlang
+rux run app.rux
+```
+
+From a checkout of this repo, with the examples to hand:
+
 ```bash
 cargo run                          # examples/battery.rux (default)
 cargo run -- examples/form.rux     # inputs + two-way binding + overflow-wrap

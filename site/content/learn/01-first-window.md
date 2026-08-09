@@ -30,7 +30,7 @@ Create a file called `hello.rux`:
 Run it:
 
 ```bash
-cargo run -p ruxlang -- hello.rux
+rux run hello.rux
 ```
 
 A native window opens. Not a webview and not a browser tab. [taffy] laid that
@@ -45,8 +45,8 @@ and reloads it. This is the loop you will work in for the rest of the guide, so
 it is worth getting a feel for now: put the editor and the window side by side
 and change a few colours.
 
-Only the compiled Rust host needs `cargo run` again. Everything in a `.rux` file
-is read at runtime.
+Only the compiled Rust host needs restarting. Everything in a `.rux` file is
+read at runtime.
 
 ## What the pieces are
 
