@@ -957,9 +957,15 @@ struct App {
     focused_row: Option<String>,
     /// Whether the focused input is a `type="textarea"` (Enter → newline).
     focused_multiline: bool,
-    /// The `r-model` of the currently open `select` dropdown, if any. Survives
+    /// The currently open `select` dropdown, as `(r-model, row key)`. Survives
     /// the rebuild after a state change, like scroll offsets.
-    open_select: Option<String>,
+    ///
+    /// The row is half the identity, for the same reason an input needs one: the
+    /// model is recorded as written, so every row of an `r-for` carries the same
+    /// one. Keyed by the model alone, tapping row three's select opened row
+    /// one's dropdown, drew it over row one, hit-tested the options against row
+    /// one's box, and wrote the chosen option into row one.
+    open_select: Option<(String, Option<String>)>,
     /// Caret position in the focused input, as a byte index into its value.
     caret: usize,
     /// Where the current selection started, as a byte index. Equal to `caret`
@@ -1732,12 +1738,17 @@ impl App {
 
         // An open dropdown is on top of everything, so it intercepts taps first:
         // a tap on an option selects it; any other tap just closes the dropdown.
-        if let Some(model) = self.open_select.take() {
-            if let Some(sel) = self.selects.iter().find(|s| s.model == model).cloned() {
+        if let Some((model, row)) = self.open_select.take() {
+            if let Some(sel) = self
+                .selects
+                .iter()
+                .find(|s| s.model == model && s.row == row)
+                .cloned()
+            {
                 for (i, option) in sel.options.iter().enumerate() {
                     let (rx, ry, rw, rh) = dropdown_row(&sel, i);
                     if fx >= rx && fx <= rx + rw && fy >= ry && fy <= ry + rh {
-                        self.document.apply_edit(&model, option);
+                        self.document.apply_edit_in(&model, row.as_deref(), option);
                         self.request_redraw();
                         return;
                     }
@@ -1754,7 +1765,7 @@ impl App {
 
         // A tap on a closed select opens its dropdown.
         if let Some(sel) = self.selects.iter().find(|s| s.contains(fx, fy)) {
-            self.open_select = Some(sel.model.clone());
+            self.open_select = Some((sel.model.clone(), sel.row.clone()));
             self.set_focus(None);
             self.request_redraw();
             return;
@@ -2130,8 +2141,8 @@ impl App {
                 self.document.apply_handler(&on_tap);
                 self.request_redraw();
             }
-            Some(FocusKind::Select { model, .. }) => {
-                self.open_select = Some(model);
+            Some(FocusKind::Select { model, row, .. }) => {
+                self.open_select = Some((model, row));
                 self.request_redraw();
             }
             _ => {}
@@ -2664,9 +2675,9 @@ impl App {
         }
 
         // An open `select` draws its dropdown on top of everything else.
-        if let Some(model) = open_select.clone() {
-            if let Some(sel) = layout.selects.iter().find(|s| s.model == model) {
-                let value = document.engine_mut().get_string(&model);
+        if let Some((model, row)) = open_select.clone() {
+            if let Some(sel) = layout.selects.iter().find(|s| s.model == model && s.row == row) {
+                let value = document.value_in(&model, row.as_deref());
                 let overlay = dropdown_paints(sel, &value);
                 let scene = rux_paint::build_scene(&overlay, text, images, false);
                 state.scene.append(&scene, Some(Affine::scale(scale)));

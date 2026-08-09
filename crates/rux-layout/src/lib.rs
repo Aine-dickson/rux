@@ -817,6 +817,11 @@ pub struct SelectRegion {
     pub width: f32,
     pub height: f32,
     pub model: String,
+    /// The `r-key` of the `r-for` row this select is in, when it is in one. The
+    /// model repeats across a list's rows, so without this the shell opens the
+    /// first row's dropdown wherever you tapped, draws it over that row, and
+    /// writes the chosen option into it.
+    pub row: Option<String>,
     pub options: Vec<String>,
 }
 
@@ -890,7 +895,7 @@ pub enum FocusKind {
     /// A button / checkbox / radio: Space or Enter runs its handler.
     Activate { on_tap: String },
     /// A select: Space or Enter opens its dropdown.
-    Select { model: String, options: Vec<String> },
+    Select { model: String, row: Option<String>, options: Vec<String> },
 }
 
 /// The result of laying out a tree: paint items, hit regions, and focus regions,
@@ -1542,6 +1547,7 @@ fn collect(
                 width: fw,
                 height: fh,
                 model: bound.model.clone(),
+                row: bound.row.clone(),
                 options: options.clone(),
             });
             out.focusables.push(FocusItem {
@@ -1549,7 +1555,11 @@ fn collect(
                 y,
                 width: fw,
                 height: fh,
-                kind: FocusKind::Select { model: bound.model.clone(), options: options.clone() },
+                kind: FocusKind::Select {
+                    model: bound.model.clone(),
+                    row: bound.row.clone(),
+                    options: options.clone(),
+                },
             });
         } else {
             // A text/textarea input: its value is rendered by its single text

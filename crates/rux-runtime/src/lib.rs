@@ -1360,6 +1360,40 @@ mod tests {
         assert_eq!(doc.value_in("name", None), awkward);
     }
 
+    /// A `<select>` in each row is a separate select. The layout has to say so,
+    /// or the shell opens the first row's dropdown wherever you tapped, draws it
+    /// over that row, and writes the chosen option into it.
+    #[test]
+    fn each_rows_select_is_its_own() {
+        let doc = Document::from_source(
+            "<template><screen>\
+               <input r-for=\"row in rows\" r-key=\"row.id\" type=\"select\" \
+                      r-model=\"pick\" :options=\"row.options\" />\
+             </screen></template>
+             <script>\
+               let pick = signal(\"a\");\
+               let rows = signal([\
+                 #{ id: \"one\", options: [\"a\", \"b\"] },\
+                 #{ id: \"two\", options: [\"c\", \"d\"] }\
+               ]);\
+             </script>",
+        )
+        .expect("load");
+
+        let mut measure = |_: &rux_layout::TextContent, _: Option<f32>| (10.0, 10.0);
+        let out = rux_layout::layout(&doc.root, 800.0, 600.0, &mut measure);
+        let rows: Vec<Option<String>> = out.selects.iter().map(|s| s.row.clone()).collect();
+        assert_eq!(
+            rows,
+            vec![Some("one".to_string()), Some("two".to_string())],
+            "two selects, each stamped with the row it is in"
+        );
+        // Same model text on both, which is exactly why the row is needed.
+        assert_eq!(out.selects[0].model, out.selects[1].model);
+        assert_eq!(out.selects[0].options, vec!["a", "b"]);
+        assert_eq!(out.selects[1].options, vec!["c", "d"]);
+    }
+
     /// Two rows claiming one identity is worse than none, so it is said out
     /// loud. Same for a key on an element that is not a row at all.
     #[test]
