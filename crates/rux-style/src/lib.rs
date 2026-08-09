@@ -94,7 +94,13 @@ thread_local! {
     static ECHO: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
 }
 
-/// Stop (or resume) mirroring warnings to stderr. See [`ECHO`].
+/// Stop (or resume) mirroring warnings to stderr.
+///
+/// On by default, which suits anyone running the window, where stderr was the
+/// only place a warning could go before the overlay existed. A tool that drains
+/// the sink and formats the warnings itself turns it off: printing each one
+/// twice, once as prose and once as a diagnostic, is what makes machine-readable
+/// output unpipeable.
 pub fn set_stderr_echo(on: bool) {
     ECHO.with(|e| e.set(on));
 }

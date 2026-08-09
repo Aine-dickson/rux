@@ -8,6 +8,17 @@ description = "Rux runtime shell: window, GPU surface, input, and frame loop."
 keywords = ["ui", "window", "gpu", "winit"]
 categories = ["gui"]
 
+# docs.rs documents the host target only. Half of this crate is behind
+# `cfg(target_arch = "wasm32")` (the IME, the hidden input that raises a phone's
+# keyboard, the clipboard), including `start_web`, `resize_web`,
+# `set_web_source` and `diagnose_web_source`, so without the wasm target in this
+# list the published docs would simply not mention the web shell exists.
+#
+# This is the only crate that needs it: every other published crate has no
+# target-gated code at all.
+[package.metadata.docs.rs]
+targets = ["x86_64-unknown-linux-gnu", "wasm32-unknown-unknown"]
+
 [dependencies]
 winit.workspace = true
 vello.workspace = true
