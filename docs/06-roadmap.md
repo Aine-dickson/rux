@@ -1194,6 +1194,16 @@ set of things you hit the moment that stops being true.
    more rows than it needs to.
 5. **Computed values and effects.** A `{{ }}` expression is the only "computed"
    there is, and there is no way to run a side effect when a signal changes.
+6. **`rux build`, for web and Windows only.** Moved here from v1.0, decided
+   2026-08-09. The rest of this milestone is aimed at people building real
+   things, which is awkward while the only way to hand over what they build is
+   "clone this and run `cargo run`". Two targets and no more: a static web
+   bundle, which is close to what the playground already produces, and a
+   Windows executable, which is the platform Rux is actually developed and
+   tested on. **No `.msi`, no `.app`, no `.apk`.** Mobile packaging waits for
+   v0.8, where mobile itself lives; committing to an installer format now would
+   mean freezing an output surface while slots, events and the script fork are
+   still moving it.
 
 ### v0.7: the script tier, and the fork
 
@@ -1245,9 +1255,10 @@ out of the pitch.
 
 ### v1.0: freeze
 
-1. **`rux build`.** There is still no answer to "I made a thing, how do I give
-   it to someone". A Rux app today is a checkout plus `cargo run`. This may
-   deserve to move earlier; see below.
+1. **`rux build`, the rest of it.** The web bundle and the Windows executable
+   moved to v0.6; what stays here is what genuinely needs a language that has
+   stopped moving: installer formats, an app bundle, and a platform matrix
+   wider than the one machine Rux is developed on.
 2. **Re-derive the spec.** `docs/02-spec.md` describes itself as the v0.1
    design surface, not the built surface, and is published only as history.
    1.0 means the spec and the runtime agree again.
@@ -1262,11 +1273,14 @@ out of the pitch.
 Things that are not scheduled above but that change the plan if the answer is
 not what we assume.
 
-- **Packaging may belong in v0.6, not v1.0.** Nobody can build something real
-  with Rux until they can hand the result to someone else. Everything in v0.6
-  and v0.7 is aimed at people building real things, which is awkward if they
-  cannot ship what they build. The counter-argument is that the language should
-  stop moving first, and that is why it currently sits at 1.0.
+- **Packaging belonged in v0.6, not v1.0. Settled 2026-08-09**, and it is now
+  item 6 of that milestone. Nobody can build something real with Rux until they
+  can hand the result to someone else. The counter-argument, that the language
+  should stop moving before an output format is committed to, was answered by
+  narrowing the scope rather than by waiting: web and Windows only, no
+  installer formats, so nothing durable is frozen. `rux build` stays listed
+  under v1.0 as well, because what is left there (installers, the platform
+  matrix) really does want a language that has stopped moving.
 
 - **Tailwind was first on the old list; here it is last.** It is a layer over a
   CSS engine that already works, and it mostly pays off for people already
