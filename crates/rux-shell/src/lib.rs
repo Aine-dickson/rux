@@ -950,6 +950,11 @@ struct App {
     touch: Option<(f32, f32)>,
     /// The `r-model` of the currently focused input, if any.
     focused: Option<String>,
+    /// The `r-key` of the row that input is in, when it is inside an `r-for`.
+    /// The model repeats across a list's rows, so this is the half that says
+    /// which row, and it is what keeps the caret with its row when the list is
+    /// reordered.
+    focused_row: Option<String>,
     /// Whether the focused input is a `type="textarea"` (Enter → newline).
     focused_multiline: bool,
     /// The `r-model` of the currently open `select` dropdown, if any. Survives
@@ -1045,6 +1050,7 @@ impl App {
             bar_drag: None,
             touch: None,
             focused: None,
+            focused_row: None,
             focused_multiline: false,
             open_select: None,
             caret: 0,
@@ -1329,6 +1335,7 @@ impl App {
     fn track_caret_x(
         layout: &rux_layout::Layout,
         focused: Option<&str>,
+        focused_row: Option<&str>,
         caret: usize,
         scroll: &mut f32,
         text: &mut rux_text::TextEngine,
@@ -1338,7 +1345,11 @@ impl App {
             *scroll = 0.0;
             return 0.0;
         };
-        let Some(region) = layout.focuses.iter().find(|f| f.model == model) else {
+        let Some(region) = layout
+            .focuses
+            .iter()
+            .find(|f| f.model == model && f.row.as_deref() == focused_row)
+        else {
             return *scroll;
         };
         // A textarea has a real scroll region and is handled by
@@ -1378,8 +1389,7 @@ impl App {
         if self.caret == self.anchor {
             return None;
         }
-        let model = self.focused.as_deref()?;
-        let region = self.focuses.iter().find(|f| f.model == model)?;
+        let region = self.focused_region()?;
         Some((region.x, region.y, region.width, region.height))
     }
 
@@ -1428,7 +1438,8 @@ impl App {
     /// but the focused single-line input. A textarea scrolls through its own
     /// scroll region instead, and an unfocused field is never scrolled.
     fn text_scroll_for(&self, region: &FocusRegion) -> f32 {
-        let focused = self.focused.as_deref() == Some(region.model.as_str());
+        let focused = self.focused.as_deref() == Some(region.model.as_str())
+            && self.focused_row.as_deref() == region.row.as_deref();
         if focused && !region.multiline { self.text_scroll } else { 0.0 }
     }
 
@@ -1472,7 +1483,7 @@ impl App {
 
         let caret = self.index_in(&region, fx, fy);
         self.text_drag = true;
-        self.set_focus(Some((region.model, caret)));
+        self.set_focus(Some((region.model, region.row, caret)));
         true
     }
 
@@ -1501,6 +1512,7 @@ impl App {
         );
         self.set_focus_range(Some(Focus {
             model: region.model,
+            row: region.row,
             caret: end,
             anchor: start,
             preedit: None,
@@ -1531,29 +1543,35 @@ impl App {
     /// so the range stays empty. This is what a finger dragging on text does on
     /// a phone, where selecting is what the long press is for.
     fn drag_caret(&mut self, pointer: (f64, f64)) {
-        let Some(model) = self.focused.clone() else { return };
-        let Some(region) = self.focuses.iter().find(|f| f.model == model).cloned() else {
-            return;
-        };
+        let Some(region) = self.focused_region().cloned() else { return };
         let (fx, fy) = self.logical(pointer);
         let caret = self.index_in(&region, fx, fy);
         if caret != self.caret || self.anchor != caret {
-            self.set_focus_range(Some(Focus { model, caret, anchor: caret, preedit: None }));
+            self.set_focus_range(Some(Focus {
+                model: region.model,
+                row: region.row,
+                caret,
+                anchor: caret,
+                preedit: None,
+            }));
         }
     }
 
     /// Extend the selection to the pointer while dragging inside an input: the
     /// anchor stays where the press landed, the caret follows the pointer.
     fn drag_text(&mut self, pointer: (f64, f64)) {
-        let Some(model) = self.focused.clone() else { return };
-        let Some(region) = self.focuses.iter().find(|f| f.model == model).cloned() else {
-            return;
-        };
+        let Some(region) = self.focused_region().cloned() else { return };
         let (fx, fy) = self.logical(pointer);
         let caret = self.index_in(&region, fx, fy);
         if caret != self.caret {
             let anchor = self.anchor;
-            self.set_focus_range(Some(Focus { model, caret, anchor, preedit: None }));
+            self.set_focus_range(Some(Focus {
+                model: region.model,
+                row: region.row,
+                caret,
+                anchor,
+                preedit: None,
+            }));
         }
     }
 
@@ -1846,9 +1864,7 @@ impl App {
             // index at the same x on the line above/below the current caret.
             Key::Named(NamedKey::ArrowUp | NamedKey::ArrowDown) if self.focused_multiline => {
                 if let Some(t) = self
-                    .focuses
-                    .iter()
-                    .find(|f| f.model == model)
+                    .focused_region()
                     .and_then(|f| f.text.clone())
                 {
                     let style = rux_paint::text_style(&t.content);
@@ -1894,7 +1910,7 @@ impl App {
             // Shift+movement keeps the anchor, extending the selection; anything
             // else collapses it to the caret.
             let new_anchor = if moved && extend { self.anchor } else { new_caret };
-            self.scroll_caret_into_view(&model, &value, new_caret);
+            self.scroll_caret_into_view(&value, new_caret);
             // Patch the input's value in place (no rebuild) unless `model` is also
             // structural; then set the caret on the resulting tree.
             if edited {
@@ -1902,6 +1918,8 @@ impl App {
             }
             self.set_focus_range(Some(Focus {
                 model,
+                // Still the same field being typed into.
+                row: self.focused_row.clone(),
                 caret: new_caret,
                 anchor: new_anchor,
                 preedit: None,
@@ -1932,6 +1950,7 @@ impl App {
         let value = self.document.engine_mut().get_string(model);
         self.set_focus_range(Some(Focus {
             model: model.to_string(),
+            row: self.focused_row.clone(),
             caret: value.len(),
             anchor: 0,
             preedit: None,
@@ -2004,7 +2023,7 @@ impl App {
         value.replace_range(start..end, &pasted);
         let caret = start + pasted.len();
         self.document.apply_edit(model, &value);
-        self.scroll_caret_into_view(model, &value, caret);
+        self.scroll_caret_into_view(&value, caret);
         self.set_focus_range(Some(Focus::at(model, caret)));
     }
 
@@ -2012,8 +2031,10 @@ impl App {
     /// so the caret *line* sits inside the box. No-op for a single-line input,
     /// which has no scroll region; its horizontal equivalent is
     /// [`track_caret_x`](Self::track_caret_x), applied once per frame.
-    fn scroll_caret_into_view(&mut self, model: &str, value: &str, caret: usize) {
-        let Some(region) = self.focuses.iter().find(|f| f.model == model).cloned() else {
+    /// Takes no model: the field is whichever one has focus, and a model on its
+    /// own cannot say which row of a list that is.
+    fn scroll_caret_into_view(&mut self, value: &str, caret: usize) {
+        let Some(region) = self.focused_region().cloned() else {
             return;
         };
         let (Some(sid), Some(t)) = (region.scroll_id, &region.text) else {
@@ -2084,10 +2105,10 @@ impl App {
     fn set_keyboard_focus(&mut self, index: Option<usize>) {
         self.focus_index = index;
         match index.and_then(|i| self.focusables.get(i)).map(|f| f.kind.clone()) {
-            Some(FocusKind::Text { model, multiline, .. }) => {
+            Some(FocusKind::Text { model, row, multiline, .. }) => {
                 let caret = self.document.engine_mut().get_string(&model).len();
                 self.focused_multiline = multiline;
-                self.set_focus(Some((model, caret)));
+                self.set_focus(Some((model, row, caret)));
             }
             _ => self.set_focus(None),
         }
@@ -2114,11 +2135,23 @@ impl App {
 
     /// Focus an input (or clear focus) and tell the document, so the caret and
     /// selection paint. Collapses the selection to the caret.
-    fn set_focus(&mut self, focus: Option<(String, usize)>) {
+    ///
+    /// The row is the `r-key` of the `r-for` row the input is in, and `None`
+    /// outside a list. It is half the identity: every row of a list is bound to
+    /// the same `r-model` text, so the model alone cannot say which one.
+    fn set_focus(&mut self, focus: Option<(String, Option<String>, usize)>) {
         match focus {
-            Some((model, caret)) => self.set_focus_range(Some(Focus::at(model, caret))),
+            Some((model, row, caret)) => self.set_focus_range(Some(Focus::at_row(model, row, caret))),
             None => self.set_focus_range(None),
         }
+    }
+
+    /// The focused input's region, matched on both halves of its identity.
+    fn focused_region(&self) -> Option<&FocusRegion> {
+        let model = self.focused.as_deref()?;
+        self.focuses
+            .iter()
+            .find(|f| f.model == model && f.row.as_deref() == self.focused_row.as_deref())
     }
 
     /// The full-fidelity focus setter: caret, selection anchor *and* composition.
@@ -2134,11 +2167,14 @@ impl App {
         // A different field starts unscrolled: the offset belongs to the text
         // being edited, and carrying it over would show the new field's value
         // already scrolled to somewhere the caret is not.
-        let next = focus.as_ref().map(|f| f.model.as_str());
-        if next != self.focused.as_deref() {
+        let same_field = focus
+            .as_ref()
+            .is_some_and(|f| f.is(self.focused.as_deref().unwrap_or(""), self.focused_row.as_deref()));
+        if !same_field {
             self.text_scroll = 0.0;
         }
         self.focused = focus.as_ref().map(|f| f.model.clone());
+        self.focused_row = focus.as_ref().and_then(|f| f.row.clone());
         self.caret = focus.as_ref().map(|f| f.caret).unwrap_or(0);
         self.anchor = focus.as_ref().map(|f| f.anchor).unwrap_or(0);
         self.document.set_focus(focus);
@@ -2217,8 +2253,7 @@ impl App {
     fn position_web_ime(&mut self) {
         let Some(el) = WEB_IME.with(|c| c.borrow().clone()) else { return };
         let Some(canvas) = WEB_CANVAS.with(|c| c.borrow().clone()) else { return };
-        let Some(model) = self.focused.clone() else { return };
-        let Some(region) = self.focuses.iter().find(|f| f.model == model) else { return };
+        let Some(region) = self.focused_region() else { return };
         // Rux's logical pixels are CSS pixels, and the input is the canvas's
         // sibling, so the field's box offsets straight off the canvas's own.
         let (ox, oy) = (canvas.offset_left() as f32, canvas.offset_top() as f32);
@@ -2252,7 +2287,7 @@ impl App {
         // composition state stays empty and must not be restored over this.
         self.preedit = None;
         self.document.apply_edit(&model, &value);
-        self.scroll_caret_into_view(&model, &value, caret);
+        self.scroll_caret_into_view(&value, caret);
         self.set_focus_range(Some(Focus { model, caret, anchor, preedit }));
     }
 
@@ -2263,7 +2298,7 @@ impl App {
         let Some(window) = self.state.as_ref().map(|s| s.window.clone()) else { return };
         let scale = window.scale_factor();
         let Some(model) = self.focused.clone() else { return };
-        let Some(region) = self.focuses.iter().find(|f| f.model == model).cloned() else {
+        let Some(region) = self.focused_region().cloned() else {
             return;
         };
         let Some(t) = region.text.as_ref() else { return };
@@ -2340,9 +2375,10 @@ impl App {
         let caret = at + cursor.map(|(s, _)| s.min(text.len())).unwrap_or(text.len());
         self.preedit = Some(Preedit { at, len: text.len(), replaced: composing.replaced });
         self.document.apply_edit(&model, &value);
-        self.scroll_caret_into_view(&model, &value, caret);
+        self.scroll_caret_into_view(&value, caret);
         self.set_focus_range(Some(Focus {
             model,
+            row: self.focused_row.clone(),
             caret,
             anchor: caret,
             preedit: Some((at, at + text.len())),
@@ -2377,7 +2413,7 @@ impl App {
         value.replace_range(start..end, &text);
         let caret = start + text.len();
         self.document.apply_edit(&model, &value);
-        self.scroll_caret_into_view(&model, &value, caret);
+        self.scroll_caret_into_view(&value, caret);
         self.set_focus_range(Some(Focus::at(model, caret)));
         self.update_ime_area();
     }
@@ -2489,6 +2525,7 @@ impl App {
             anchor,
             text_scroll,
             focused,
+            focused_row,
             #[cfg(not(target_arch = "wasm32"))]
             path,
             ..
@@ -2534,7 +2571,15 @@ impl App {
         // typing, arrows, Home/End, a tap, a drag, an IME commit and the
         // browser's own keyboard all end up here, and one rule covers them all
         // where six call sites would eventually disagree.
-        let shift = Self::track_caret_x(&layout, focused.as_deref(), *caret, text_scroll, text, document);
+        let shift = Self::track_caret_x(
+            &layout,
+            focused.as_deref(),
+            focused_row.as_deref(),
+            *caret,
+            text_scroll,
+            text,
+            document,
+        );
         if shift != 0.0 {
             // Only the focused input has a caret, so this finds exactly one text
             // paint. Everything the painter draws for it (glyphs, caret,
@@ -2574,10 +2619,12 @@ impl App {
         // It is the only route to copy and paste on a phone, and on the web at
         // all, so it is drawn above the page rather than inside it.
         if *caret != *anchor {
-            if let Some(r) = focused
-                .as_deref()
-                .and_then(|m| layout.focuses.iter().find(|f| f.model == m))
-            {
+            if let Some(r) = focused.as_deref().and_then(|m| {
+                layout
+                    .focuses
+                    .iter()
+                    .find(|f| f.model == m && f.row.as_deref() == focused_row.as_deref())
+            }) {
                 let strip = toolbar_paints(
                     (r.x, r.y, r.width, r.height),
                     (logical.0 as f32, logical.1 as f32),

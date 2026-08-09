@@ -1,0 +1,87 @@
+<template>
+  <screen class="app">
+    <text class="title">a keyed list</text>
+    <text class="lead">Each row carries an r-key, so it is identified by what it is rather than by where it sits. Move a row and its id and its note travel together, instead of the note staying behind in the slot.</text>
+
+    <view class="row" r-for="item in items" r-key="item.id">
+      <text class="tag">{{ item.id }}</text>
+      <text class="note">{{ item.note }}</text>
+      <view class="btn" @tap="items = rotate(items)">
+        <text class="btn-label">move</text>
+      </view>
+    </view>
+
+    <text class="foot">Order: {{ order(items) }}</text>
+  </screen>
+</template>
+
+<style>
+  .app {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    padding: 28px;
+    background: #1e1e2e;
+  }
+
+  .title { color: #cdd6f4; font-size: 22px; font-weight: 700; }
+  .lead { color: #9399b2; font-size: 13px; max-width: 460px; }
+  .foot { color: #9399b2; font-size: 12px; }
+
+  .row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 12px;
+    background: #313244;
+    border-radius: 10px;
+    max-width: 460px;
+  }
+
+  .tag {
+    color: #89b4fa;
+    font-size: 13px;
+    font-weight: 700;
+    width: 44px;
+  }
+
+  .note { color: #cdd6f4; font-size: 14px; width: 100%; }
+
+  .btn {
+    padding: 6px 12px;
+    background: #89b4fa;
+    border-radius: 8px;
+    cursor: pointer;
+  }
+
+  .btn:hover { background: #b4befe; }
+  .btn-label { color: #11111b; font-size: 12px; font-weight: 700; }
+</style>
+
+<script>
+  let items = signal([
+    #{ id: "one", note: "first" },
+    #{ id: "two", note: "second" },
+    #{ id: "three", note: "third" }
+  ]);
+
+  // Move the last row to the front. Nothing here renumbers anything: a row is
+  // its own object, and the key is read off it, so the ids and notes move as
+  // one and the list is identified by content rather than by position.
+  fn rotate(list) {
+    let out = [list[list.len - 1]];
+    for i in 0..(list.len - 1) {
+      out.push(list[i]);
+    }
+    out
+  }
+
+  fn order(list) {
+    let names = "";
+    for i in 0..list.len {
+      if i > 0 { names += ", "; }
+      names += list[i].id;
+    }
+    names
+  }
+</script>

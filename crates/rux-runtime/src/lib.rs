@@ -96,6 +96,14 @@ impl Diagnostics {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Focus {
     pub model: String,
+    /// The `r-key` of the `r-for` row holding this input, when it is in one.
+    ///
+    /// `model` is the `r-model` expression as written, so every row of a list
+    /// shares it and cannot identify which row the caret is in. The row's key
+    /// is the other half. It also makes the caret follow its row when the list
+    /// reorders: the identity is the row, not the position, so nothing has to
+    /// be remapped afterwards.
+    pub row: Option<String>,
     pub caret: usize,
     pub anchor: usize,
     /// The byte range of an in-progress IME composition, if one is running. The
@@ -105,10 +113,20 @@ pub struct Focus {
 }
 
 impl Focus {
-    /// A plain caret with nothing selected.
+    /// A plain caret with nothing selected, in an input that is not in a list.
     pub fn at(model: impl Into<String>, caret: usize) -> Self {
-        let model = model.into();
-        Self { model, caret, anchor: caret, preedit: None }
+        Self::at_row(model, None, caret)
+    }
+
+    /// The same, in a known `r-for` row.
+    pub fn at_row(model: impl Into<String>, row: Option<String>, caret: usize) -> Self {
+        Self { model: model.into(), row, caret, anchor: caret, preedit: None }
+    }
+
+    /// Whether this focus is the input bound to `model` in row `row`. Both
+    /// halves matter: a list's rows all share one model.
+    pub fn is(&self, model: &str, row: Option<&str>) -> bool {
+        self.model == model && self.row.as_deref() == row
     }
 
     /// The selected range, low to high.
@@ -129,9 +147,21 @@ impl Focus {
 /// showing in the input you just left, until some unrelated rebuild wiped it.
 /// The selection is one more thing that can be left behind the same way.
 fn apply_focus(node: &mut LayoutNode, focus: Option<&Focus>) {
+    apply_focus_in(node, focus, None);
+}
+
+/// [`apply_focus`], carrying the `r-key` of the row being walked.
+///
+/// A splice starts partway down the tree, so the row a subtree sits in cannot be
+/// recovered from the subtree itself; `row` is what the caller already knew. It
+/// is `None` at the root and everywhere outside a keyed list.
+fn apply_focus_in(node: &mut LayoutNode, focus: Option<&Focus>, row: Option<&str>) {
+    let row = node.key.as_deref().or(row);
     if node.model.is_some() {
         if let Some(text) = node.children.first_mut().and_then(|c| c.text.as_mut()) {
-            let mine = focus.filter(|f| node.model.as_deref() == Some(f.model.as_str()));
+            let mine = focus.filter(|f| {
+                node.model.as_deref().is_some_and(|m| f.is(m, row))
+            });
             // An empty input shows its placeholder; the caret still sits at 0.
             text.caret = mine.map(|f| f.caret.min(text.text.len()));
             text.selection = mine.filter(|f| !f.is_collapsed()).map(|f| {
@@ -144,7 +174,7 @@ fn apply_focus(node: &mut LayoutNode, focus: Option<&Focus>) {
         }
     }
     for child in &mut node.children {
-        apply_focus(child, focus);
+        apply_focus_in(child, focus, row);
     }
 }
 
@@ -525,9 +555,10 @@ impl Document {
         for path in roots {
             let Some(fresh) = node_at(&fresh_root, path) else { continue };
             let fresh_node = fresh.clone();
+            let row = row_at(&fresh_root, path);
             if let Some(live) = node_at_mut(&mut self.root, path) {
                 *live = fresh_node;
-                apply_focus(live, self.focus.as_ref());
+                apply_focus_in(live, self.focus.as_ref(), row.as_deref());
             }
         }
         self.registry = fresh_reg;
@@ -705,10 +736,13 @@ impl Document {
         for p in &roots {
             let Some(fresh) = node_at(&fresh_root, p) else { continue };
             let fresh_children = fresh.children.clone();
+            let row = row_at(&fresh_root, p);
             if let Some(live) = node_at_mut(&mut self.root, p) {
                 live.children = fresh_children;
-                // Put the caret back only within this rebuilt subtree.
-                apply_focus(live, self.focus.as_ref());
+                // Put the caret back only within this rebuilt subtree. The rows
+                // carry their own keys, so a caret in a row that moved lands in
+                // that row rather than in the position it used to hold.
+                apply_focus_in(live, self.focus.as_ref(), row.as_deref());
             }
         }
         // Toggles: replace just the single node (its checked style + mark). No
@@ -732,9 +766,10 @@ impl Document {
             }
             if let Some(fresh) = node_at(&fresh_root, p) {
                 let fresh_node = fresh.clone();
+                let row = row_at(&fresh_root, p);
                 if let Some(live) = node_at_mut(&mut self.root, p) {
                     *live = fresh_node;
-                    apply_focus(live, self.focus.as_ref());
+                    apply_focus_in(live, self.focus.as_ref(), row.as_deref());
                 }
             }
         }
@@ -790,6 +825,23 @@ fn node_at<'a>(root: &'a LayoutNode, path: &[usize]) -> Option<&'a LayoutNode> {
         node = node.children.get(i)?;
     }
     Some(node)
+}
+
+/// The `r-key` of the row `path` lands inside, if any.
+///
+/// A splice re-applies focus to a subtree, and the subtree cannot tell you which
+/// row it is in: the key is on an ancestor that the splice never looks at. This
+/// walks down from the root to recover it.
+fn row_at(root: &LayoutNode, path: &[usize]) -> Option<String> {
+    let mut node = root;
+    let mut row = node.key.clone();
+    for &i in path {
+        node = node.children.get(i)?;
+        if node.key.is_some() {
+            row = node.key.clone();
+        }
+    }
+    row
 }
 
 /// Follow a child-index path from the root to a node, mutably.
@@ -1088,12 +1140,12 @@ mod tests {
     fn selection_paints_only_in_the_focused_input() {
         let mut doc = two_inputs();
 
-        doc.set_focus(Some(Focus { model: "name".into(), caret: 3, anchor: 1, preedit: None }));
+        doc.set_focus(Some(Focus { model: "name".into(), row: None, caret: 3, anchor: 1, preedit: None }));
         assert_eq!(selection_of(&doc.root, "name"), Some((1, 3)));
         assert_eq!(selection_of(&doc.root, "city"), None);
 
         // Dragging leftwards puts the caret *before* the anchor; same range.
-        doc.set_focus(Some(Focus { model: "name".into(), caret: 1, anchor: 3, preedit: None }));
+        doc.set_focus(Some(Focus { model: "name".into(), row: None, caret: 1, anchor: 3, preedit: None }));
         assert_eq!(selection_of(&doc.root, "name"), Some((1, 3)));
     }
 
@@ -1104,10 +1156,10 @@ mod tests {
     fn focus_moves_the_selection_out_of_the_old_input() {
         let mut doc = two_inputs();
 
-        doc.set_focus(Some(Focus { model: "name".into(), caret: 3, anchor: 0, preedit: None }));
+        doc.set_focus(Some(Focus { model: "name".into(), row: None, caret: 3, anchor: 0, preedit: None }));
         assert_eq!(selection_of(&doc.root, "name"), Some((0, 3)));
 
-        doc.set_focus(Some(Focus { model: "city".into(), caret: 2, anchor: 0, preedit: None }));
+        doc.set_focus(Some(Focus { model: "city".into(), row: None, caret: 2, anchor: 0, preedit: None }));
         assert_eq!(selection_of(&doc.root, "name"), None, "old input kept its selection");
         assert_eq!(selection_of(&doc.root, "city"), Some((0, 2)));
 
@@ -1152,6 +1204,71 @@ mod tests {
             "the keys moved with their rows"
         );
         assert!(find_text(&doc.root, "bravo"));
+    }
+
+    /// Every row of a list is bound to the same `r-model` text, so a model on
+    /// its own cannot say which row the caret is in. Before the row was part of
+    /// focus, setting the caret in one row put a caret in *every* row of the
+    /// list at once.
+    fn keyed_inputs() -> Document {
+        Document::from_source(
+            "<template><screen>\
+               <view r-for=\"row in rows\" r-key=\"row.id\">\
+                 <input r-model=\"draft\" />\
+               </view>\
+             </screen></template>
+             <script>\
+               let rows = signal([#{ id: \"a\" }, #{ id: \"b\" }]);\
+               let draft = signal(\"hello\");\
+             </script>",
+        )
+        .expect("load")
+    }
+
+    /// The caret inside a keyed row belongs to that row alone.
+    #[test]
+    fn only_the_focused_row_gets_a_caret() {
+        let mut doc = keyed_inputs();
+        doc.set_focus(Some(Focus::at_row("draft", Some("b".into()), 2)));
+
+        let carets: Vec<Option<usize>> = doc
+            .root
+            .children
+            .iter()
+            .map(|row| caret_of(row, "draft"))
+            .collect();
+        assert_eq!(
+            carets,
+            vec![None, Some(2)],
+            "the caret is in row b only, not in every row bound to `draft`"
+        );
+    }
+
+    /// And it stays with its row when the list is reordered, rather than with
+    /// the position the row used to hold. Nothing is remapped to achieve this:
+    /// the identity *is* the row, so the caret lands wherever that row went.
+    #[test]
+    fn the_caret_follows_its_row_across_a_reorder() {
+        let mut doc = keyed_inputs();
+        doc.set_focus(Some(Focus::at_row("draft", Some("b".into()), 2)));
+
+        assert!(
+            doc.apply_handler("rows = [#{ id: \"b\" }, #{ id: \"a\" }];"),
+            "the reorder changed a signal"
+        );
+        assert_eq!(doc.root.children[0].key.as_deref(), Some("b"), "row b is first now");
+
+        let carets: Vec<Option<usize>> = doc
+            .root
+            .children
+            .iter()
+            .map(|row| caret_of(row, "draft"))
+            .collect();
+        assert_eq!(
+            carets,
+            vec![Some(2), None],
+            "the caret moved with row b instead of staying in the first slot"
+        );
     }
 
     /// Two rows claiming one identity is worse than none, so it is said out
@@ -1199,7 +1316,7 @@ mod tests {
     #[test]
     fn selection_survives_a_rebuild() {
         let mut doc = two_inputs();
-        doc.set_focus(Some(Focus { model: "name".into(), caret: 3, anchor: 1, preedit: None }));
+        doc.set_focus(Some(Focus { model: "name".into(), row: None, caret: 3, anchor: 1, preedit: None }));
         doc.rebuild();
         assert_eq!(selection_of(&doc.root, "name"), Some((1, 3)));
         assert_eq!(caret_of(&doc.root, "name"), Some(3));
@@ -1216,6 +1333,7 @@ mod tests {
 
         doc.set_focus(Some(Focus {
             model: "name".into(),
+            row: None,
             caret: 3,
             anchor: 3,
             preedit: Some((1, 3)),
@@ -1236,6 +1354,7 @@ mod tests {
         let mut doc = two_inputs();
         doc.set_focus(Some(Focus {
             model: "name".into(),
+            row: None,
             caret: 2,
             anchor: 2,
             preedit: Some((0, 2)),

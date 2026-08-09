@@ -785,6 +785,13 @@ pub struct FocusRegion {
     pub width: f32,
     pub height: f32,
     pub model: String,
+    /// The `r-key` of the `r-for` row this input sits in, when it sits in one.
+    ///
+    /// `model` alone does not identify an input: `r-model` is stored as written,
+    /// so every row of a list carries the *same* model text. Without this, two
+    /// inputs in one list are indistinguishable and the caret lands in the first
+    /// of them whichever one was tapped.
+    pub row: Option<String>,
     /// The input's text box (its laid-out child). The shell needs it to turn a
     /// click into a caret position.
     pub text: Option<PaintText>,
@@ -879,7 +886,7 @@ impl FocusItem {
 #[derive(Clone, Debug)]
 pub enum FocusKind {
     /// A text / textarea input: focusing it starts caret editing.
-    Text { model: String, multiline: bool, text: Option<PaintText> },
+    Text { model: String, row: Option<String>, multiline: bool, text: Option<PaintText> },
     /// A button / checkbox / radio: Space or Enter runs its handler.
     Activate { on_tap: String },
     /// A select: Space or Enter opens its dropdown.
@@ -1168,6 +1175,8 @@ fn to_inset(l: Option<Len>, vp: (f32, f32)) -> LengthPercentageAuto {
 struct Bound {
     id: NodeId,
     model: String,
+    /// The enclosing `r-for` row's key, the other half of an input's identity.
+    row: Option<String>,
     multiline: bool,
     options: Option<Vec<String>>,
 }
@@ -1212,7 +1221,7 @@ fn build(
     paint: &mut Vec<(NodeId, PaintKind)>,
     handlers: &mut Vec<(NodeId, String, Cursor)>,
     models: &mut Vec<Bound>,
-    focus_labels: &mut Vec<(NodeId, String)>,
+    focus_labels: &mut Vec<(NodeId, String, Option<String>)>,
     hidden: &mut Vec<NodeId>,
     opacities: &mut Vec<(NodeId, f32)>,
     scrolls: &mut Vec<NodeId>,
@@ -1224,9 +1233,13 @@ fn build(
     // it; `caps` is where each text leaf's own cap is left for the measure hook.
     cap: Option<f32>,
     caps: &mut HashMap<NodeId, f32>,
+    // The `r-key` of the row this node is inside, inherited by everything under
+    // it. A keyed node starts a new row; nothing else changes it.
+    row: Option<&str>,
 ) -> NodeId {
     let own_cap = width_cap(&node.style, cap, vp);
     let child_cap = inner_cap(&node.style, own_cap);
+    let row = node.key.as_deref().or(row);
     let id = if let Some(tc) = &node.text {
         // Text leaves carry their content as taffy context so the measure hook
         // can shape them.
@@ -1285,7 +1298,7 @@ fn build(
         let children: Vec<NodeId> = node
             .children
             .iter()
-            .map(|c| build(tree, c, paint, handlers, models, focus_labels, hidden, opacities, scrolls, transforms, states, access, vp, child_cap, caps))
+            .map(|c| build(tree, c, paint, handlers, models, focus_labels, hidden, opacities, scrolls, transforms, states, access, vp, child_cap, caps, row))
             .collect();
         let id = if children.is_empty() {
             tree.new_leaf(to_taffy(&node.style, vp)).expect("taffy leaf")
@@ -1314,12 +1327,13 @@ fn build(
         models.push(Bound {
             id,
             model: model.clone(),
+            row: row.map(str::to_string),
             multiline: node.multiline,
             options: node.options.clone(),
         });
     }
     if let Some(fm) = &node.focus_model {
-        focus_labels.push((id, fm.clone()));
+        focus_labels.push((id, fm.clone(), row.map(str::to_string)));
     }
     if node.hidden {
         hidden.push(id);
@@ -1351,7 +1365,7 @@ fn collect(
     paint: &[(NodeId, PaintKind)],
     handlers: &[(NodeId, String, Cursor)],
     models: &[Bound],
-    focus_labels: &[(NodeId, String)],
+    focus_labels: &[(NodeId, String, Option<String>)],
     hidden: &[NodeId],
     opacities: &[(NodeId, f32)],
     scrolls: &[NodeId],
@@ -1467,13 +1481,14 @@ fn collect(
 
     // A `for=` label targeting a text input: a focus region at the label's box,
     // carrying the *target's* model, so tapping the label focuses that input.
-    if let Some((_, model)) = focus_labels.iter().find(|(nid, _)| *nid == id) {
+    if let Some((_, model, row)) = focus_labels.iter().find(|(nid, ..)| *nid == id) {
         out.focuses.push(FocusRegion {
             x,
             y,
             width: layout.size.width,
             height: layout.size.height,
             model: model.clone(),
+            row: row.clone(),
             text: None,
             multiline: false,
             scroll_id: None,
@@ -1563,6 +1578,7 @@ fn collect(
                 width: fw,
                 height: fh,
                 model: bound.model.clone(),
+                row: bound.row.clone(),
                 text: text.clone(),
                 multiline: bound.multiline,
                 // The scroll block below assigns ids as `out.scrolls.len()`, so if
@@ -1574,7 +1590,12 @@ fn collect(
                 y,
                 width: fw,
                 height: fh,
-                kind: FocusKind::Text { model: bound.model.clone(), multiline: bound.multiline, text },
+                kind: FocusKind::Text {
+                    model: bound.model.clone(),
+                    row: bound.row.clone(),
+                    multiline: bound.multiline,
+                    text,
+                },
             });
         }
     } else if let Some((_, handler, _)) = handlers.iter().find(|(nid, ..)| *nid == id) {
@@ -1718,6 +1739,7 @@ pub fn layout_scrolled(
         // anything can be.
         Some(avail_w),
         &mut caps,
+        None, // the root is not inside any row
     );
 
     // Force the root to fill the viewport so a `screen` always covers the window.

@@ -197,6 +197,30 @@ matches**, and says so once on stderr. Before this existed the `:` was silently
 dropped, so `.box:hover` parsed as `.box` and applied *unconditionally*, failing
 closed is the safer half of that trade.
 
+**Keyed lists:** `r-key` on the same element as `r-for` says what a row *is*,
+rather than where it sits:
+```html
+<view r-for="item in items" r-key="item.id"> … </view>
+```
+The key is evaluated once per row with that row's loop variable in scope.
+Duplicate keys warn (two rows claiming one identity is worse than none), and so
+does an `r-key` on an element with no `r-for`.
+
+What it buys today: an input inside a keyed row has its own caret. Focus is
+addressed by the bound `r-model`, which is stored **as written**, so every row
+of a list carries the same one; before keys, setting the caret in one row put a
+caret in all of them. Focus is now `(model, row key)`, which also means the
+caret follows its row across a reorder with nothing to remap, because the
+identity *is* the row.
+
+**Two known gaps, both the same root cause,** an identity taken from the model
+alone. `:focus` still matches by model, so styling lights every row of a list at
+once; and the shell reads and writes an input's value by evaluating the model
+with no loop variable in scope, so an `r-model` that mentions the loop variable
+(`items[item.at].note`) cannot be read or typed into. **Text inputs inside
+`r-for` are therefore not usable yet.** `examples/keyed-list.rux` demonstrates
+keys without one.
+
 **External stylesheets:** `<style src="…">` pulls in one or more `.css` files,
 so a palette can be shared instead of pasted into every document:
 ```html
