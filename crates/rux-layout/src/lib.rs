@@ -5,6 +5,28 @@
 //! caller-supplied `measure` callback (so this crate stays free of any font
 //! dependency, the shell owns the text engine). See `docs/04-architecture.md`,
 //! Stage 4.
+//!
+//! The crate is mostly its vocabulary. [`Style`] is the honored subset of CSS
+//! as the engine actually sees it, and [`Node`] is one styled element with its
+//! children. `rux-style` produces that tree; this crate turns it into the flat
+//! [`Paint`] list `rux-paint` consumes, in absolute coordinates with the
+//! cascade and the box model already collapsed into numbers.
+//!
+//! Layout emits more than pictures, because a frame's geometry is the only
+//! place several other questions can be answered honestly. Alongside the paint
+//! items come the regions the shell needs and cannot recompute for itself:
+//! [`HitRegion`] for pointer targets, [`ScrollRegion`] for what scrolls and how
+//! far, [`FocusRegion`] and [`FocusItem`] for tab order, [`SelectRegion`] for
+//! selectable text, [`StateRegion`] for hover and active, and [`AccessNode`]
+//! for the accessibility tree. All of them are in the same coordinate space as
+//! the paint items, which is the point: two places doing the same coordinate
+//! arithmetic eventually disagree, so there is one conversion and everyone
+//! reads its output.
+//!
+//! Both flexbox and grid come from taffy. What does not come from taffy is
+//! text sizing, which is why `measure` is a callback: pulling a font
+//! stack into this crate would put shaping under layout, and the shell already
+//! owns one.
 
 use taffy::prelude::*;
 use taffy::geometry::Point;

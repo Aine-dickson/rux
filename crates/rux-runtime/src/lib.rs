@@ -5,6 +5,24 @@
 //! and component scripts, registering host functions), and builds the renderable
 //! tree with bindings, directives, and component expansions resolved. Running an
 //! `@tap` handler mutates engine state; `rebuild` refreshes the tree.
+//!
+//! [`Document`] is the unit everything else works in terms of. `rux-shell` owns
+//! one and asks it for a tree each frame; `rux check` builds one and throws the
+//! tree away, which is why checking a file needs no window and no GPU and runs
+//! in CI.
+//!
+//! Handling an event does not rebuild the document. `rux-script` records which
+//! signals each binding reads and which ones a handler writes, so a state change
+//! patches the nodes that the written signals actually reach and reconciles the
+//! lists that changed shape. A full rebuild is the fallback, not the path.
+//!
+//! Two things are collected rather than printed, because the same document is
+//! loaded by a CLI, a window and a browser, and only the caller knows where
+//! output belongs. [`Diagnostics`] carries the errors and warnings a load
+//! produced; [`take_warnings`] drains the ones raised out of band. Loading a
+//! document that cannot be parsed is not a panic: it is a [`LoadError`], so the
+//! window can keep the last good tree on screen and show the overlay instead of
+//! dying on a half-typed edit.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};

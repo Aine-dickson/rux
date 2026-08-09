@@ -5,6 +5,26 @@
 //! (`rux-paint`). A `notify` file watcher wakes the event loop through an
 //! `EventLoopProxy` on every save, so edits to the `.rux` file repaint live,
 //! the hot-reload path from `docs/04-architecture.md`.
+//!
+//! This is the largest crate in the workspace and the least pure, because it is
+//! where the pipeline meets an operating system. Beyond the frame loop it owns
+//! all of input: pointer and touch, keyboard and modifiers, focus and tab order,
+//! text editing, selection and the clipboard, scrolling, and the dev overlay
+//! that puts a load error on screen instead of exiting.
+//!
+//! It runs in two worlds. [`run`] opens a native window; `start_web` and its
+//! neighbours drive the same document against a canvas, and are compiled only
+//! for `wasm32`, so they are absent from these docs unless the page was built
+//! for that target. The browser has no filesystem, no blocking main thread and no
+//! system clipboard, so those three assumptions are not baked into the paths
+//! above. Making the shell survive that was most of the v0.5 web work, and it
+//! is the reason a phone looks reachable at all.
+//!
+//! Touch is not the mouse. Routing a finger down the pointer path is the bug
+//! v0.5.1 exists to fix: a drag moves the caret where a mouse drag selects, and
+//! a long press picks a word. Anything new that reads a position should convert
+//! it through the one shared conversion here, not derive a second correct one,
+//! because two places doing the same coordinate arithmetic eventually disagree.
 
 use std::num::NonZeroUsize;
 use std::path::Path;
