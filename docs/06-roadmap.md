@@ -1011,15 +1011,25 @@ with their file, and format it the same way we do.
    docs.rs, and deciding which of the thirteen are public API and which are
    implementation detail nobody should depend on.
 
-   **Did not ship in v0.5.0**, the one item of the six that slipped, and the
-   only thing between here and the milestone being closed. Every crate now
-   carries a licence, a repository and a description; what is missing is
-   versions on the 24 bare intra-workspace path deps (`cargo publish` rejects
-   any path dep without one), a decision on whether `rux-web` publishes at all,
-   and a `--dry-run` per crate. It was left last on purpose and then left
-   undone on purpose: publishing is a one-way door, crates.io rate-limits new
-   names so ten in a sitting stalls partway, and neither belongs on a day with
-   a tag to cut. See `RELEASING.md` section 6.
+   **Slipped v0.5.0, prepared in v0.5.1.** The 24 bare intra-workspace path
+   deps now carry versions, held in one `[workspace.dependencies]` block so a
+   release bumps them once. Eleven crates publish; `rux-web` does not, a wasm
+   cdylib being nothing anything can depend on, and neither does
+   `rux-highlight`, whose grammar handling is not ready to be a dependency.
+   Every library's description names `ruxlang` as the supported entry point,
+   and `rux-shell` asks docs.rs for the wasm target, since four of its public
+   functions live behind `cfg(target_arch = "wasm32")` and a host-only build
+   would not mention the web shell at all.
+
+   The first published version is 0.5.1 rather than 0.1.0: five releases are
+   already public, and starting the crate line below them would contradict
+   them.
+
+   Publishing itself is a staircase, not a batch. `cargo publish --dry-run`
+   resolves against the real index, so only the five leaf crates can be
+   verified before anything goes up; each layer above is unverifiable until the
+   layer beneath it is on the index. Expect the rate limit on new names to stop
+   it partway, and resume where it stopped. See `RELEASING.md` section 6.
 2. **`rux fmt` as a CLI subcommand** (Tier 1 in the dev-tooling section). This
    also closes a duplication that has already cost us: the re-indenter exists
    twice, in `editors/vscode/extension.js` and in `crates/rux-fmt`, and the two
