@@ -1,0 +1,38 @@
+/* A palette meant to be shared, not pasted.
+   Pull it in with <style src="palette.css"> and read it through var(). */
+
+.app {
+  --bg: #1e1e2e;
+  --surface: #313244;
+  --border: #45475a;
+  --ink: #cdd6f4;
+  --muted: #9399b2;
+  --brand: #89b4fa;
+  --on-brand: #11111b;
+  --radius: 10px;
+  --pad: 16px;
+}
+
+/* The house style for a card, so two documents including this sheet agree
+   about what a card is without either of them saying so. */
+
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: var(--pad);
+  background: var(--surface);
+  border: 2px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.card-title {
+  color: var(--ink);
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.card-body {
+  color: var(--muted);
+  font-size: 13px;
+}

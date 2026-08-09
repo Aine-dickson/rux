@@ -207,6 +207,33 @@ matches**, and says so once on stderr. Before this existed the `:` was silently
 dropped, so `.box:hover` parsed as `.box` and applied *unconditionally*, failing
 closed is the safer half of that trade.
 
+**External stylesheets:** `<style src="…">` pulls in one or more `.css` files,
+so a palette can be shared instead of pasted into every document:
+```html
+<style src="palette.css, cards.css">
+  .app { background: var(--bg); }   /* the document's own rules, as before */
+</style>
+```
+Paths are relative to the **file that names them**, the same rule as `use`
+imports and `<image src>`, so a component's include is relative to the
+component. Comma-separated, in the order written.
+
+Included sheets cascade **before** the `<style>` body, so a rule in the
+document beats a rule of the same specificity in the include. That is what
+makes including a palette useful: you pull one in to override part of it, and
+needing `!important` to do so would mean the include had been layered on top
+instead of underneath.
+
+A stylesheet that is not there **fails the load**, like a missing component,
+and the overlay names the path. A document that quietly renders unstyled reads
+as a layout bug, which is a much longer walk back to a typo. Editing an
+included `.css` hot-reloads the window, same as editing the `.rux`.
+
+The playground is the exception: it has source text and no file, so there is
+nothing for a path to be relative to and nothing to read. An include there is
+ignored, with a warning saying exactly that. Driven in
+`examples/shared-style.rux`, which shares `examples/palette.css`.
+
 **Custom properties + `var()`:** `--name: value` declarations **inherit** down the
 tree (like `color`), so a palette declared once is readable anywhere below:
 ```css

@@ -3683,6 +3683,11 @@ pub fn run(path: PathBuf) {
     // Watch the file's directory *recursively* so edits to imported components
     // (which live in subdirectories) also trigger a reload. Reload on any `.rux`
     // change, `Document::load` re-reads the main file and its components.
+    //
+    // `.css` counts too, since `<style src="…">` means a document's styling can
+    // live in a file that is not a `.rux` at all. Hot reload that covers most of
+    // a document is worse than none: it teaches you to trust the window, and
+    // then quietly stops telling the truth for one kind of edit.
     let proxy = event_loop.create_proxy();
     let watch_dir = path
         .parent()
@@ -3695,11 +3700,11 @@ pub fn run(path: PathBuf) {
         if !matches!(event.kind, EventKind::Modify(_) | EventKind::Create(_)) {
             return;
         }
-        let touches_rux = event
+        let touches_source = event
             .paths
             .iter()
-            .any(|p| p.extension().is_some_and(|e| e == "rux"));
-        if touches_rux {
+            .any(|p| p.extension().is_some_and(|e| e == "rux" || e == "css"));
+        if touches_source {
             let _ = proxy.send_event(RuxEvent::Reload);
         }
     })

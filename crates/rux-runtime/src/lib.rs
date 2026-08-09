@@ -28,7 +28,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use rux_layout::Node as LayoutNode;
-use rux_parser::Sfc;
+use rux_parser::{Sfc, StyleInclude};
 use rux_script::{Builder, Engine};
 use rux_style::BindingRegistry;
 /// Re-exported so the shell can hand pointer/focus state and the window size in
@@ -302,10 +302,11 @@ impl Document {
         let path = path.as_ref();
         let src = std::fs::read_to_string(path)
             .map_err(|e| LoadError::plain(format!("reading {}: {e}", path.display())))?;
-        let sfc = rux_parser::parse_sfc(&src).map_err(|e| LoadError::parse(e, Some(path)))?;
+        let mut sfc = rux_parser::parse_sfc(&src).map_err(|e| LoadError::parse(e, Some(path)))?;
 
         // Resolve `use module::component;` imports relative to this file.
         let base = path.parent().unwrap_or_else(|| Path::new("."));
+        resolve_style_includes(&mut sfc, base)?;
         let (main_script, imports) = extract_imports(&sfc.script);
 
         let mut components = HashMap::new();
@@ -315,8 +316,13 @@ impl Document {
             let comp_src = std::fs::read_to_string(&comp_path).map_err(|e| {
                 LoadError::plain(format!("reading component {}: {e}", comp_path.display()))
             })?;
-            let comp_sfc =
+            let mut comp_sfc =
                 rux_parser::parse_sfc(&comp_src).map_err(|e| LoadError::parse(e, Some(&comp_path)))?;
+            // A component's `src` is relative to the component, not to whoever
+            // imported it. Anything else would make a component unusable from a
+            // second directory, which is the whole point of having one.
+            let comp_base = comp_path.parent().unwrap_or_else(|| Path::new(".")).to_path_buf();
+            resolve_style_includes(&mut comp_sfc, &comp_base)?;
             let (comp_script, _nested) = extract_imports(&comp_sfc.script);
             // Merge the component's (pure) functions into the shared engine.
             combined_script.push('\n');
@@ -358,6 +364,14 @@ impl Document {
     /// somewhere" is not much of an editor.
     pub fn from_source_checked(src: &str) -> Result<Self, LoadError> {
         let sfc = rux_parser::parse_sfc(src).map_err(|e| LoadError::parse(e, None))?;
+        // There is no file here, so there is nothing for `src` to be relative
+        // to and nothing to read it from. Warn rather than fail: the document
+        // still renders, just without the sheet it asked for, and a playground
+        // that refused to show anything would be worse than one that shows the
+        // document and says what is missing.
+        for path in &sfc.style_src {
+            warn_unresolvable_include(path);
+        }
         let (main_script, _imports) = extract_imports(&sfc.script);
         let mut engine = build_engine(&main_script).map_err(LoadError::plain)?;
         let (mut root, registry) =
@@ -787,6 +801,40 @@ fn node_at_mut<'a>(root: &'a mut LayoutNode, path: &[usize]) -> Option<&'a mut L
     Some(node)
 }
 
+/// Read the stylesheets a document asked for with `<style src="…">`, relative
+/// to the file that asked.
+///
+/// A missing stylesheet is a load failure, not a warning, and deliberately the
+/// same kind of failure as a missing component: both are a file naming another
+/// file that is not there, and a document that silently renders unstyled looks
+/// like a layout bug rather than a typo in a path. The window keeps the last
+/// good tree on screen and puts the message in the overlay, so the cost of
+/// being strict is a red panel and not a closed window.
+fn resolve_style_includes(sfc: &mut Sfc, base: &Path) -> Result<(), LoadError> {
+    if sfc.style_src.is_empty() {
+        return Ok(());
+    }
+    let mut includes = Vec::with_capacity(sfc.style_src.len());
+    for relative in &sfc.style_src {
+        let path = base.join(relative);
+        let css = std::fs::read_to_string(&path).map_err(|e| {
+            LoadError::plain(format!("reading stylesheet {}: {e}", path.display()))
+        })?;
+        includes.push(StyleInclude { path: relative.clone(), css });
+    }
+    sfc.style_includes = includes;
+    Ok(())
+}
+
+/// Say that an include could not be resolved because there is no file to be
+/// relative to. Only the browser reaches this.
+fn warn_unresolvable_include(path: &str) {
+    rux_style::warn_stylesheet(format!(
+        "`<style src=\"{path}\">` was ignored: this document was loaded from source, \
+         not from a file, so there is nothing for the path to be relative to"
+    ));
+}
+
 /// A resolved component import.
 struct Import {
     /// Custom-element tag (last path segment, `_` → `-`).
@@ -875,6 +923,79 @@ mod tests {
         assert!(find_text(&doc.root, "82"), "component value prop rendered");
 
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// An included sheet styles the document, and the document's own `<style>`
+    /// wins a tie. That order is the whole point: you include a palette in
+    /// order to override part of it, and needing `!important` to do so would
+    /// mean the include had been bolted on top rather than cascaded under.
+    #[test]
+    fn included_stylesheets_cascade_under_the_document() {
+        use std::fs;
+        let dir = std::env::temp_dir().join(format!("rux_css_{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("theme.css"),
+            ".card { background: #ff0000; } .plain { background: #0000ff; }",
+        )
+        .unwrap();
+        fs::write(
+            dir.join("app.rux"),
+            "<template><screen><view class=\"card\" /><view class=\"plain\" /></screen></template>\n\
+             <style src=\"theme.css\">\n  .card { background: #00ff00; }\n</style>",
+        )
+        .unwrap();
+
+        let doc = Document::load(dir.join("app.rux")).expect("load app");
+        let bg = |i: usize| doc.root.children[i].style.background.clone();
+        assert!(
+            matches!(bg(0), Some(rux_layout::Background::Color(c)) if c.g == 1.0),
+            "same specificity, so the document's own rule wins on source order"
+        );
+        assert!(
+            matches!(bg(1), Some(rux_layout::Background::Color(c)) if c.b == 1.0),
+            "and what the document says nothing about still comes from the include"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A stylesheet that is not there fails the load, the same way a missing
+    /// component does. A document that renders unstyled reads as a layout bug,
+    /// which is a much longer walk back to the typo in the path.
+    #[test]
+    fn a_missing_stylesheet_fails_the_load() {
+        use std::fs;
+        let dir = std::env::temp_dir().join(format!("rux_css_missing_{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("app.rux"),
+            "<template><screen /></template>\n<style src=\"nope.css\">.a{color:red}</style>",
+        )
+        .unwrap();
+
+        let Err(err) = Document::load(dir.join("app.rux")) else {
+            panic!("a document naming a stylesheet that is not there must not load");
+        };
+        assert!(err.contains("nope.css"), "names the file that is missing: {err}");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// From source there is no file, so there is nothing for the path to be
+    /// relative to. The document still renders; it just says what it lost.
+    #[test]
+    fn an_include_from_source_warns_instead_of_failing() {
+        let _ = take_warnings(); // the sinks are global; start from a known state
+        let doc = Document::from_source(
+            "<template><screen /></template>\n<style src=\"theme.css\">.a{color:red}</style>",
+        )
+        .expect("renders anyway");
+        assert!(
+            doc.diagnostics.warnings.iter().any(|w| w.message.contains("theme.css")),
+            "the warning names the sheet that was ignored: {:?}",
+            doc.diagnostics.warnings
+        );
     }
 
     /// `<image src>` is relative to the .rux file, not the working directory,

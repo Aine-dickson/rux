@@ -78,6 +78,17 @@ fn warn(message: String) {
     });
 }
 
+/// Raise a stylesheet warning from outside the cascade.
+///
+/// The runtime resolves `<style src="…">`, so it is the only layer that can
+/// notice an include that cannot be read at all. The warning still belongs in
+/// this sink, because to everyone downstream it is one more thing wrong with
+/// the document's styling, and having two places to drain would mean the
+/// overlay and `rux check` could disagree about what was said.
+pub fn warn_stylesheet(message: impl Into<String>) {
+    warn(message.into());
+}
+
 /// Take the warnings raised since the last call, emptying the sink.
 pub fn take_warnings() -> Vec<Warning> {
     WARNINGS.with(|w| std::mem::take(&mut *w.borrow_mut()))
@@ -698,7 +709,7 @@ pub fn build_styled_tree_stateful(
     // document being built, so a line from the component's coordinate space
     // would point confidently at the wrong place. Unplaced is the honest answer
     // until warnings carry a file as well as a line.
-    let rules = parse_rules_at(&sfc.style, viewport, Some(sfc.style_line));
+    let rules = parse_document_rules(sfc, viewport);
     let comps: Components = components
         .iter()
         .map(|(tag, c)| {
@@ -706,7 +717,7 @@ pub fn build_styled_tree_stateful(
                 tag.clone(),
                 Component {
                     template: c.template.clone(),
-                    rules: parse_rules(&c.style, viewport),
+                    rules: parse_component_rules(c, viewport),
                 },
             )
         })
@@ -1266,6 +1277,59 @@ fn collect_media_matches(rules: &[CssRule], vp: Viewport, out: &mut Vec<bool>) {
 /// own lines. `None` means "do not claim to know": see [`parse_rules_at`].
 fn parse_rules(css: &str, vp: Viewport) -> Vec<Rule> {
     parse_rules_at(css, vp, None)
+}
+
+/// Every sheet a document styles with: what it included, then its own
+/// `<style>` body.
+///
+/// The included sheets come first so the document wins a tie, which is what
+/// including a palette is for. That is source order doing the work, exactly as
+/// it would if the file had been pasted in.
+///
+/// Included rules are parsed unplaced. They live in a different file, and every
+/// consumer attributes a warning to the document being built, so a line number
+/// from the include's coordinate space would point confidently at the wrong
+/// place. Same reasoning as a component's `<style>` above.
+fn parse_document_rules(sfc: &Sfc, vp: Viewport) -> Vec<Rule> {
+    if sfc.style_includes.is_empty() {
+        // The overwhelmingly common case, and it keeps the `order` values
+        // exactly as they were before includes existed.
+        return parse_rules_at(&sfc.style, vp, Some(sfc.style_line));
+    }
+    let mut rules = Vec::new();
+    for include in &sfc.style_includes {
+        rules.extend(parse_rules(&include.css, vp));
+    }
+    rules.extend(parse_rules_at(&sfc.style, vp, Some(sfc.style_line)));
+    renumber(&mut rules);
+    rules
+}
+
+/// [`parse_document_rules`] for a component, whose own `<style>` is unplaced
+/// too.
+fn parse_component_rules(sfc: &Sfc, vp: Viewport) -> Vec<Rule> {
+    if sfc.style_includes.is_empty() {
+        return parse_rules(&sfc.style, vp);
+    }
+    let mut rules = Vec::new();
+    for include in &sfc.style_includes {
+        rules.extend(parse_rules(&include.css, vp));
+    }
+    rules.extend(parse_rules(&sfc.style, vp));
+    renumber(&mut rules);
+    rules
+}
+
+/// Restate `order` across concatenated sheets.
+///
+/// `order` is per-sheet and breaks specificity ties, so two sheets each
+/// starting at 0 would make the tie-break meaningless and let an included rule
+/// beat the document's own. Renumbering makes the concatenation read as one
+/// sheet, which is what it is.
+fn renumber(rules: &mut [Rule]) {
+    for (i, rule) in rules.iter_mut().enumerate() {
+        rule.order = i;
+    }
 }
 
 fn parse_rules_at(css: &str, vp: Viewport, base: Option<usize>) -> Vec<Rule> {
