@@ -3120,11 +3120,11 @@ checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
 
 [[package]]
 name = "rux-fmt"
-version = "0.5.1"
+version = "0.6.0-dev"
 
 [[package]]
 name = "rux-highlight"
-version = "0.5.1"
+version = "0.6.0-dev"
 dependencies = [
  "ferroni",
  "serde",
@@ -3133,14 +3133,14 @@ dependencies = [
 
 [[package]]
 name = "rux-layout"
-version = "0.5.1"
+version = "0.6.0-dev"
 dependencies = [
  "taffy",
 ]
 
 [[package]]
 name = "rux-paint"
-version = "0.5.1"
+version = "0.6.0-dev"
 dependencies = [
  "image",
  "rux-layout",
@@ -3150,15 +3150,15 @@ dependencies = [
 
 [[package]]
 name = "rux-parser"
-version = "0.5.1"
+version = "0.6.0-dev"
 
 [[package]]
 name = "rux-reactive"
-version = "0.5.1"
+version = "0.6.0-dev"
 
 [[package]]
 name = "rux-runtime"
-version = "0.5.1"
+version = "0.6.0-dev"
 dependencies = [
  "getrandom 0.3.4",
  "image",
@@ -3171,7 +3171,7 @@ dependencies = [
 
 [[package]]
 name = "rux-script"
-version = "0.5.1"
+version = "0.6.0-dev"
 dependencies = [
  "rhai",
  "rux-reactive",
@@ -3179,7 +3179,7 @@ dependencies = [
 
 [[package]]
 name = "rux-shell"
-version = "0.5.1"
+version = "0.6.0-dev"
 dependencies = [
  "accesskit",
  "accesskit_winit",
@@ -3201,7 +3201,7 @@ dependencies = [
 
 [[package]]
 name = "rux-style"
-version = "0.5.1"
+version = "0.6.0-dev"
 dependencies = [
  "lightningcss",
  "rux-layout",
@@ -3212,7 +3212,7 @@ dependencies = [
 
 [[package]]
 name = "rux-text"
-version = "0.5.1"
+version = "0.6.0-dev"
 dependencies = [
  "parley",
  "vello",
@@ -3220,7 +3220,7 @@ dependencies = [
 
 [[package]]
 name = "rux-web"
-version = "0.5.1"
+version = "0.6.0-dev"
 dependencies = [
  "rux-fmt",
  "rux-highlight",
@@ -3233,7 +3233,7 @@ dependencies = [
 
 [[package]]
 name = "ruxlang"
-version = "0.5.1"
+version = "0.6.0-dev"
 dependencies = [
  "rux-fmt",
  "rux-runtime",
