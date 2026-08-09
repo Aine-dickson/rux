@@ -4,7 +4,7 @@ edition.workspace = true
 version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Rux runtime document model: loads a .rux file into a renderable tree."
+description = "Rux runtime document model: loads a .rux file into a renderable tree. Internal to Rux; the supported entry point is the ruxlang crate."
 keywords = ["ui", "runtime", "rux"]
 categories = ["gui"]
 

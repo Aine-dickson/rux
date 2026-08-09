@@ -4,7 +4,7 @@ edition.workspace = true
 version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Rux runtime shell: window, GPU surface, input, and frame loop."
+description = "Rux runtime shell: window, GPU surface, input, and frame loop. Internal to Rux; the supported entry point is the ruxlang crate."
 keywords = ["ui", "window", "gpu", "winit"]
 categories = ["gui"]
 

@@ -4,7 +4,7 @@ edition.workspace = true
 version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Rux styling: literal CSS (lightningcss) cascaded onto the template tree."
+description = "Rux styling: literal CSS (lightningcss) cascaded onto the template tree. Internal to Rux; the supported entry point is the ruxlang crate."
 keywords = ["ui", "css", "styling", "cascade"]
 categories = ["gui"]
 

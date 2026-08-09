@@ -1,7 +1,6 @@
 # Rux
 
-A pure-Rust, web-flavored UI language that renders natively on the GPU, with no
-browser and no webview.
+A pure-Rust, web-flavored UI language that renders natively on the GPU, with no browser and no webview.
 
 You write a single `.rux` file with familiar `<template>` / `<style>` /
 `<script>` sections and **literal CSS**. Rux lays it out with a real flexbox and
@@ -47,15 +46,9 @@ rux fmt --check .             # verify only, exits non-zero
 
 ## What this is
 
-The bet is one specific combination: the web's authoring ergonomics (literal
-CSS, a handful of HTML-like elements) but pure Rust, GPU-native, with no
-JavaScript and no new DSL. The guiding rule is that **layout never appears in
-markup**: there is no `<Column>`, `<Padding>` or `<Center>`, because those are
-`display: flex`, `padding` and `justify-content` on a `<view>`.
+The bet is one specific combination: the web's authoring ergonomics (literal CSS, a handful of HTML-like elements) but pure Rust, GPU-native, with no JavaScript and no new DSL. The guiding rule is that **layout never appears in markup**: there is no `<Column>`, `<Padding>` or `<Center>`, because those are `display: flex`, `padding` and `justify-content` on a `<view>`.
 
-**Rux is 0.x and experimental.** If you need to ship an app this quarter, use
-Flutter, React Native or Slint. Rux exists to find out whether that corner is a
-nicer place to build.
+**Rux is 0.x and experimental.** If you need to ship an app this quarter, use Flutter, React Native or Slint. Rux exists to find out whether that corner is a nicer place to build.
 
 - [ruxlang.dev](https://ruxlang.dev) · [try it in a browser](https://ruxlang.dev/playground/)
 - [Learn](https://ruxlang.dev/learn/): build a task list from an empty file
@@ -64,5 +57,4 @@ nicer place to build.
 
 ## Licence
 
-Dual licensed under [Apache-2.0](https://github.com/Aine-dickson/rux/blob/main/LICENSE-APACHE)
-or [MIT](https://github.com/Aine-dickson/rux/blob/main/LICENSE-MIT), at your option.
+Dual licensed under [Apache-2.0](https://github.com/Aine-dickson/rux/blob/main/LICENSE-APACHE) or [MIT](https://github.com/Aine-dickson/rux/blob/main/LICENSE-MIT), at your option.

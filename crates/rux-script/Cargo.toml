@@ -4,7 +4,7 @@ edition.workspace = true
 version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Rux script tier: a rhai engine holding state, plus the host registry."
+description = "Rux script tier: a rhai engine holding state, plus the host registry. Internal to Rux; the supported entry point is the ruxlang crate."
 keywords = ["ui", "scripting", "rhai"]
 categories = ["gui"]
 
