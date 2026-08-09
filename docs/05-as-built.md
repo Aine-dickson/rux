@@ -206,20 +206,32 @@ The key is evaluated once per row with that row's loop variable in scope.
 Duplicate keys warn (two rows claiming one identity is worse than none), and so
 does an `r-key` on an element with no `r-for`.
 
-What it buys today: an input inside a keyed row has its own caret. Focus is
-addressed by the bound `r-model`, which is stored **as written**, so every row
-of a list carries the same one; before keys, setting the caret in one row put a
-caret in all of them. Focus is now `(model, row key)`, which also means the
-caret follows its row across a reorder with nothing to remap, because the
-identity *is* the row.
+**A key is what makes an input inside a list work at all.** An `r-model` is
+stored **as written**, so every row of a list carries the same one, and an
+identity taken from it alone cannot tell two rows apart. Everything that
+addresses an input is now `(model, row key)`: the caret and selection, `:focus`
+matching, and the value the shell reads and writes. Before this, focusing one
+row put a caret in **all** of them and lit every row's `:focus` rule at once.
 
-**Two known gaps, both the same root cause,** an identity taken from the model
-alone. `:focus` still matches by model, so styling lights every row of a list at
-once; and the shell reads and writes an input's value by evaluating the model
-with no loop variable in scope, so an `r-model` that mentions the loop variable
-(`items[item.at].note`) cannot be read or typed into. **Text inputs inside
-`r-for` are therefore not usable yet.** `examples/keyed-list.rux` demonstrates
-keys without one.
+The value is read and written **in the row's own scope**, using the loop
+variables captured where the input was built, so a model may mention the loop
+variable:
+```html
+<input r-for="item in items" r-key="item.id"
+       r-model="items[item.at.to_int()].note" />
+```
+Writing goes through an assignment rather than setting a scope variable, so an
+`r-model` that is a path (`user.name`, `items[0].note`) now writes through to
+the real target. It previously created a variable *named* `user.name` and left
+`user` untouched, in or out of a list.
+
+Two consequences worth knowing. Numbers are f64, so an index needs `to_int()`.
+And the caret follows its row across a reorder with nothing to remap, because
+the identity *is* the row; tapping a button to reorder still moves keyboard
+focus to that button, as any tap on a button does.
+
+**Still keyed by model alone:** `type="select"`. A `<select>` inside an `r-for`
+has the same ambiguity inputs had. Driven in `examples/keyed-list.rux`.
 
 **External stylesheets:** `<style src="…">` pulls in one or more `.css` files,
 so a palette can be shared instead of pasted into every document:

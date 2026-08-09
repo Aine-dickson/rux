@@ -150,6 +150,11 @@ pub struct ValueBinding {
     pub path: Vec<usize>,
     /// The `r-model` signal expression.
     pub model: String,
+    /// The `r-key` of the row this input is in, when it is in one. With
+    /// [`ValueBinding::locals`] it is what lets the value be read and written in
+    /// the row's own scope: the expression is recorded as written, so a model
+    /// like `items[item.at].note` means nothing without `item` in scope.
+    pub row: Option<String>,
     /// Shown (dim) when the value is empty.
     pub placeholder: String,
     /// Text colour when the field has a value.
@@ -744,6 +749,7 @@ pub fn build_styled_tree_stateful(
         &[],
         &mut reg,
         state,
+        None, // the document root is not inside any row
     );
     link_labels(&mut node);
     Ok((node, reg))
@@ -856,6 +862,10 @@ pub struct InteractionState {
     pub active: Option<Vec<usize>>,
     /// `r-model` of the focused input, the shell tracks focus by model, not path.
     pub focused_model: Option<String>,
+    /// The `r-key` of the row that input is in, when it is inside an `r-for`.
+    /// Without it `:focus` matches every row of a list at once, since they all
+    /// carry the same `r-model` text.
+    pub focused_row: Option<String>,
 }
 
 impl InteractionState {
@@ -1881,11 +1891,15 @@ fn build_node(
     tpl_path: &[usize],
     reg: &mut BindingRegistry,
     state: &InteractionState,
+    // The `r-key` of the `r-for` row this element is inside, `None` outside one.
+    // Half the identity of anything in a list: `r-model` is recorded as written,
+    // so every row of a list otherwise looks like the same input.
+    row: Option<&str>,
 ) -> LayoutNode {
     // A custom-element tag expands its imported component in place.
     if let Some(component) = comps.get(&el.tag) {
         return expand_component(
-            el, component, comps, inherited, engine, locals, path, tpl_path, reg, state,
+            el, component, comps, inherited, engine, locals, path, tpl_path, reg, state, row,
         );
     }
 
@@ -1904,8 +1918,10 @@ fn build_node(
     // survives a reconcile that moves nodes around.
     desc.states.hover = state.hovers(path);
     desc.states.active = state.activates(path);
+    // Both halves, or every row of a list matches at once: they all carry the
+    // same `r-model` text, so the model alone cannot pick one out.
     desc.states.focus = match (&state.focused_model, el.attr("r-model")) {
-        (Some(focused), Some(model)) => focused == model,
+        (Some(focused), Some(model)) => focused == model && state.focused_row.as_deref() == row,
         _ => false,
     };
     // `:class`: dynamic classes fed into the cascade (the `checked` pattern,
@@ -2247,6 +2263,7 @@ fn build_node(
                 reg.value.push(ValueBinding {
                     path: path.to_vec(),
                     model: m.to_string(),
+                    row: row.map(str::to_string),
                     placeholder: placeholder.clone(),
                     color,
                     placeholder_color: PLACEHOLDER_COLOR,
@@ -2341,6 +2358,7 @@ fn build_node(
         tpl_path,
         reg,
         state,
+        row,
     );
     ancestors.pop();
     // If any child carried a structural directive, this parent can be reconciled
@@ -2409,6 +2427,7 @@ fn expand_component(
     tpl_path: &[usize],
     reg: &mut BindingRegistry,
     state: &InteractionState,
+    row: Option<&str>,
 ) -> LayoutNode {
     let mut props: Locals = Vec::new();
     let mut prop_deps: HashSet<String> = HashSet::new();
@@ -2447,6 +2466,8 @@ fn expand_component(
         tpl_path,
         reg,
         state,
+        // A component expanded inside a row is still inside that row.
+        row,
     )
 }
 
@@ -2471,6 +2492,7 @@ fn build_children(
     tpl_path: &[usize],
     reg: &mut BindingRegistry,
     state: &InteractionState,
+    row: Option<&str>,
 ) -> (Vec<LayoutNode>, HashSet<String>) {
     let mut out = Vec::new();
     // Signals read by structural directives at this level, returned so the parent
@@ -2523,8 +2545,12 @@ fn build_children(
                         let mut child_locals = locals.clone();
                         child_locals.push((var.to_string(), item));
                         let cp = child_path(&out);
-                        let mut node = build_node(el, rules, comps, ancestors, &prev, inherited, engine, &child_locals, &cp, &ctp, reg, state);
-                        if let Some(expr) = key_expr {
+                        // The key is evaluated *before* the row is built, because
+                        // everything inside the row is identified by it: an
+                        // input's focus, its `:focus` styling and the binding
+                        // that reads its value all need to know which row they
+                        // are in while they are being recorded.
+                        let key = key_expr.map(|expr| {
                             let key = engine.eval_display(expr, &child_locals);
                             if key.is_empty() {
                                 warn(format!(
@@ -2542,8 +2568,16 @@ fn build_children(
                             } else {
                                 seen_keys.push(key.clone());
                             }
-                            node.key = Some(key);
-                        }
+                            key
+                        });
+                        let mut node = build_node(
+                            el, rules, comps, ancestors, &prev, inherited, engine, &child_locals,
+                            &cp, &ctp, reg, state,
+                            // An unkeyed row inherits whatever row it is nested
+                            // in, which is normally nothing.
+                            key.as_deref().or(row),
+                        );
+                        node.key = key;
                         out.push(node);
                         prev.push(ElemDesc::of(el));
                     }
@@ -2560,7 +2594,7 @@ fn build_children(
             chain_satisfied = v;
             if chain_satisfied {
                 let cp = child_path(&out);
-                out.push(build_node(el, rules, comps, ancestors, &prev, inherited, engine, locals, &cp, &ctp, reg, state));
+                out.push(build_node(el, rules, comps, ancestors, &prev, inherited, engine, locals, &cp, &ctp, reg, state, row));
                 prev.push(ElemDesc::of(el));
             }
             continue;
@@ -2576,7 +2610,7 @@ fn build_children(
             if taken {
                 chain_satisfied = true;
                 let cp = child_path(&out);
-                out.push(build_node(el, rules, comps, ancestors, &prev, inherited, engine, locals, &cp, &ctp, reg, state));
+                out.push(build_node(el, rules, comps, ancestors, &prev, inherited, engine, locals, &cp, &ctp, reg, state, row));
                 prev.push(ElemDesc::of(el));
             }
             continue;
@@ -2584,7 +2618,7 @@ fn build_children(
         if el.attr("r-else").is_some() {
             if in_chain && !chain_satisfied {
                 let cp = child_path(&out);
-                out.push(build_node(el, rules, comps, ancestors, &prev, inherited, engine, locals, &cp, &ctp, reg, state));
+                out.push(build_node(el, rules, comps, ancestors, &prev, inherited, engine, locals, &cp, &ctp, reg, state, row));
                 prev.push(ElemDesc::of(el));
             }
             in_chain = false;
@@ -2594,7 +2628,7 @@ fn build_children(
         // A plain element ends any active chain.
         in_chain = false;
         let cp = child_path(&out);
-        out.push(build_node(el, rules, comps, ancestors, &prev, inherited, engine, locals, &cp, &ctp, reg, state));
+        out.push(build_node(el, rules, comps, ancestors, &prev, inherited, engine, locals, &cp, &ctp, reg, state, row));
         prev.push(ElemDesc::of(el));
     }
     (out, structural_deps)

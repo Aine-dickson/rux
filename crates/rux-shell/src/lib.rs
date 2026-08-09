@@ -1290,7 +1290,7 @@ impl App {
     /// The byte index in `region`'s text nearest a point, in logical px. An empty
     /// input is showing its placeholder, not a value, so its caret belongs at 0.
     fn index_in(&mut self, region: &FocusRegion, px: f32, py: f32) -> usize {
-        let value = self.document.engine_mut().get_string(&region.model);
+        let value = self.document.value_in(&region.model, region.row.as_deref());
         match region.text.as_ref() {
             Some(t) if !value.is_empty() => {
                 let (tx, ty) = self.text_point(region, t, px, py);
@@ -1358,7 +1358,7 @@ impl App {
             *scroll = 0.0;
             return 0.0;
         };
-        let value = document.engine_mut().get_string(model);
+        let value = document.value_in(model, focused_row);
         let style = rux_paint::text_style(&t.content);
         let (cx, _, _) = text.caret_geometry(&value, &style, Some(t.width), caret.min(value.len()));
 
@@ -1498,7 +1498,7 @@ impl App {
         let Some(region) = self.focuses.iter().rev().find(|f| f.contains(fx, fy)).cloned() else {
             return false;
         };
-        let value = self.document.engine_mut().get_string(&region.model);
+        let value = self.document.value_in(&region.model, region.row.as_deref());
         let (Some(t), false) = (&region.text, value.is_empty()) else {
             return false;
         };
@@ -1625,6 +1625,7 @@ impl App {
             hovered,
             active,
             focused_model: self.document.interaction().focused_model.clone(),
+            focused_row: self.document.interaction().focused_row.clone(),
         };
         if self.document.set_interaction(next) {
             self.request_redraw();
@@ -1665,12 +1666,13 @@ impl App {
     }
 
     /// Tell the document which input has focus, so `:focus` rules match it.
-    fn update_focus_state(&mut self, model: Option<String>) {
+    fn update_focus_state(&mut self, model: Option<String>, row: Option<String>) {
         let mut next = self.document.interaction().clone();
-        if next.focused_model == model {
+        if next.focused_model == model && next.focused_row == row {
             return;
         }
         next.focused_model = model;
+        next.focused_row = row;
         if self.document.set_interaction(next) {
             self.request_redraw();
         }
@@ -1798,7 +1800,7 @@ impl App {
             return;
         }
 
-        let mut value = self.document.engine_mut().get_string(&model);
+        let mut value = self.focused_value();
         let caret = self.caret.min(value.len());
         let (sel_start, sel_end) = {
             let (s, e) = self.selection();
@@ -1914,7 +1916,7 @@ impl App {
             // Patch the input's value in place (no rebuild) unless `model` is also
             // structural; then set the caret on the resulting tree.
             if edited {
-                self.document.apply_edit(&model, &value);
+                self.write_focused(&value);
             }
             self.set_focus_range(Some(Focus {
                 model,
@@ -1947,7 +1949,7 @@ impl App {
     }
 
     fn select_all_text(&mut self, model: &str) {
-        let value = self.document.engine_mut().get_string(model);
+        let value = self.focused_value();
         self.set_focus_range(Some(Focus {
             model: model.to_string(),
             row: self.focused_row.clone(),
@@ -1966,11 +1968,11 @@ impl App {
     fn cut_selection(&mut self, model: &str) {
         let Some(text) = self.selected_text() else { return };
         self.clipboard_write(&text);
-        let value = self.document.engine_mut().get_string(model);
+        let value = self.focused_value();
         let (start, end) = self.selection();
         let mut value = value;
         value.replace_range(start.min(value.len())..end.min(value.len()), "");
-        self.document.apply_edit(model, &value);
+        self.write_focused(&value);
         self.set_focus_range(Some(Focus::at(model, start)));
     }
 
@@ -2016,13 +2018,13 @@ impl App {
         } else {
             pasted.lines().next().unwrap_or("").to_string()
         };
-        let value = self.document.engine_mut().get_string(model);
+        let value = self.focused_value();
         let (start, end) = self.selection();
         let mut value = value;
         let (start, end) = (start.min(value.len()), end.min(value.len()));
         value.replace_range(start..end, &pasted);
         let caret = start + pasted.len();
-        self.document.apply_edit(model, &value);
+        self.write_focused(&value);
         self.scroll_caret_into_view(&value, caret);
         self.set_focus_range(Some(Focus::at(model, caret)));
     }
@@ -2106,7 +2108,10 @@ impl App {
         self.focus_index = index;
         match index.and_then(|i| self.focusables.get(i)).map(|f| f.kind.clone()) {
             Some(FocusKind::Text { model, row, multiline, .. }) => {
-                let caret = self.document.engine_mut().get_string(&model).len();
+                // Read against the field being moved *to*, not the one being
+                // left: focus has not moved yet, so `focused_value` is still the
+                // old field and Tab would drop the caret at its length.
+                let caret = self.document.value_in(&model, row.as_deref()).len();
                 self.focused_multiline = multiline;
                 self.set_focus(Some((model, row, caret)));
             }
@@ -2146,6 +2151,26 @@ impl App {
         }
     }
 
+    /// The focused input's value, read in its own row's scope.
+    ///
+    /// Every read and write of the edited text goes through this pair, because
+    /// an `r-model` inside a list can mention the loop variable and means
+    /// nothing without it. Reading it raw returned an empty string and a
+    /// `Variable not found` warning, which is how a row's field looked editable
+    /// and swallowed every keystroke.
+    fn focused_value(&mut self) -> String {
+        let Some(model) = self.focused.clone() else { return String::new() };
+        let row = self.focused_row.clone();
+        self.document.value_in(&model, row.as_deref())
+    }
+
+    /// Write the focused input's value back, in that same scope.
+    fn write_focused(&mut self, value: &str) {
+        let Some(model) = self.focused.clone() else { return };
+        let row = self.focused_row.clone();
+        self.document.apply_edit_in(&model, row.as_deref(), value);
+    }
+
     /// The focused input's region, matched on both halves of its identity.
     fn focused_region(&self) -> Option<&FocusRegion> {
         let model = self.focused.as_deref()?;
@@ -2178,9 +2203,11 @@ impl App {
         self.caret = focus.as_ref().map(|f| f.caret).unwrap_or(0);
         self.anchor = focus.as_ref().map(|f| f.anchor).unwrap_or(0);
         self.document.set_focus(focus);
-        // `:focus` matches on the focused model, so the document needs it too.
+        // `:focus` matches on the focused input, so the document needs both
+        // halves of its identity, or every row of a list matches at once.
         let model = self.focused.clone();
-        self.update_focus_state(model);
+        let row = self.focused_row.clone();
+        self.update_focus_state(model, row);
         self.set_ime_enabled(self.focused.is_some());
         self.reset_blink();
         self.request_redraw();
@@ -2219,7 +2246,7 @@ impl App {
             let _ = el.blur();
             return;
         };
-        let value = self.document.engine_mut().get_string(&model);
+        let value = self.focused_value();
         // Only touch it when it has actually drifted, which means the change
         // came from Rux (a handler, a tap moving the caret) rather than from the
         // keyboard. Writing the value or the selection back on every edit would
@@ -2286,7 +2313,7 @@ impl App {
         // The browser is running the composition, so the shell's own
         // composition state stays empty and must not be restored over this.
         self.preedit = None;
-        self.document.apply_edit(&model, &value);
+        self.write_focused(&value);
         self.scroll_caret_into_view(&value, caret);
         self.set_focus_range(Some(Focus { model, caret, anchor, preedit }));
     }
@@ -2297,12 +2324,14 @@ impl App {
     fn update_ime_area(&mut self) {
         let Some(window) = self.state.as_ref().map(|s| s.window.clone()) else { return };
         let scale = window.scale_factor();
-        let Some(model) = self.focused.clone() else { return };
+        // The guard is that *something* is focused; the field itself comes
+        // from ocused_region, which knows about rows.
+        if self.focused.is_none() { return; }
         let Some(region) = self.focused_region().cloned() else {
             return;
         };
         let Some(t) = region.text.as_ref() else { return };
-        let value = self.document.engine_mut().get_string(&model);
+        let value = self.focused_value();
         let style = rux_paint::text_style(&t.content);
         let caret = self.caret.min(value.len());
         let (cx, cy, ch) = self.text.caret_geometry(&value, &style, Some(t.width), caret);
@@ -2342,7 +2371,7 @@ impl App {
     /// point. `None` means it wants the caret after the whole thing.
     fn set_preedit(&mut self, text: &str, cursor: Option<(usize, usize)>) {
         let Some(model) = self.focused.clone() else { return };
-        let mut value = self.document.engine_mut().get_string(&model);
+        let mut value = self.focused_value();
 
         // Starting a composition lifts out whatever it is going to sit on top
         // of, so that abandoning it can put that back.
@@ -2367,14 +2396,14 @@ impl App {
             value.insert_str(at, &composing.replaced);
             let caret = at + composing.replaced.len();
             self.preedit = None;
-            self.document.apply_edit(&model, &value);
+            self.write_focused(&value);
             self.set_focus_range(Some(Focus::at(model, caret)));
             return;
         }
 
         let caret = at + cursor.map(|(s, _)| s.min(text.len())).unwrap_or(text.len());
         self.preedit = Some(Preedit { at, len: text.len(), replaced: composing.replaced });
-        self.document.apply_edit(&model, &value);
+        self.write_focused(&value);
         self.scroll_caret_into_view(&value, caret);
         self.set_focus_range(Some(Focus {
             model,
@@ -2393,7 +2422,7 @@ impl App {
     /// behave like typing when there is no composition to replace.
     fn commit_text(&mut self, text: &str) {
         let Some(model) = self.focused.clone() else { return };
-        let mut value = self.document.engine_mut().get_string(&model);
+        let mut value = self.focused_value();
         let (start, end) = match self.preedit.take() {
             Some(p) => {
                 let at = p.at.min(value.len());
@@ -2412,7 +2441,7 @@ impl App {
         };
         value.replace_range(start..end, &text);
         let caret = start + text.len();
-        self.document.apply_edit(&model, &value);
+        self.write_focused(&value);
         self.scroll_caret_into_view(&value, caret);
         self.set_focus_range(Some(Focus::at(model, caret)));
         self.update_ime_area();
@@ -2422,12 +2451,12 @@ impl App {
     /// started. A no-op when nothing is being composed, which is the usual case.
     fn cancel_preedit(&mut self) {
         let Some(p) = self.preedit.take() else { return };
-        let Some(model) = self.focused.clone() else { return };
-        let mut value = self.document.engine_mut().get_string(&model);
+        if self.focused.is_none() { return; }
+        let mut value = self.focused_value();
         let at = p.at.min(value.len());
         let end = (at + p.len).min(value.len());
         value.replace_range(at..end, &p.replaced);
-        self.document.apply_edit(&model, &value);
+        self.write_focused(&value);
     }
 
     /// The focused input's selected byte range, low to high. Empty when there's
@@ -2438,12 +2467,12 @@ impl App {
 
     /// The focused input's selected text, if any.
     fn selected_text(&mut self) -> Option<String> {
-        let model = self.focused.clone()?;
+        self.focused.as_ref()?;
         let (start, end) = self.selection();
         if start == end {
             return None;
         }
-        let value = self.document.engine_mut().get_string(&model);
+        let value = self.focused_value();
         value.get(start.min(value.len())..end.min(value.len())).map(str::to_string)
     }
 

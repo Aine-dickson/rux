@@ -1,11 +1,12 @@
 <template>
   <screen class="app">
     <text class="title">a keyed list</text>
-    <text class="lead">Each row carries an r-key, so it is identified by what it is rather than by where it sits. Move a row and its id and its note travel together, instead of the note staying behind in the slot.</text>
+    <text class="lead">Each row carries an r-key, so it is identified by what it is rather than by where it sits. Type in a field: only that row takes the caret and the focus ring, though every row is bound to the same r-model text. Then move that row, and your edit goes with it instead of staying behind in the slot.</text>
 
     <view class="row" r-for="item in items" r-key="item.id">
       <text class="tag">{{ item.id }}</text>
-      <text class="note">{{ item.note }}</text>
+      <!-- `to_int()` because Rux numbers are f64 and an index must be whole. -->
+      <input class="note" r-model="items[item.at.to_int()].note" placeholder="a note" />
       <view class="btn" @tap="items = rotate(items)">
         <text class="btn-label">move</text>
       </view>
@@ -45,7 +46,18 @@
     width: 44px;
   }
 
-  .note { color: #cdd6f4; font-size: 14px; width: 100%; }
+  .note {
+    height: 32px;
+    padding: 0 10px;
+    width: 100%;
+    background: #1e1e2e;
+    border: 2px solid #45475a;
+    border-radius: 8px;
+    color: #cdd6f4;
+    font-size: 14px;
+  }
+
+  .note:focus { border-color: #89b4fa; }
 
   .btn {
     padding: 6px 12px;
@@ -60,18 +72,23 @@
 
 <script>
   let items = signal([
-    #{ id: "one", note: "first" },
-    #{ id: "two", note: "second" },
-    #{ id: "three", note: "third" }
+    #{ id: "one", at: 0, note: "first" },
+    #{ id: "two", at: 1, note: "second" },
+    #{ id: "three", at: 2, note: "third" }
   ]);
 
-  // Move the last row to the front. Nothing here renumbers anything: a row is
-  // its own object, and the key is read off it, so the ids and notes move as
-  // one and the list is identified by content rather than by position.
+  // Move the last row to the front, then renumber the slot each row's r-model
+  // indexes through. The ids and notes travel with their rows.
+  //
+  // Renumbering is by index, not `for row in out`: rhai's for-loop hands you a
+  // copy of each element, so assigning to it changes nothing.
   fn rotate(list) {
     let out = [list[list.len - 1]];
     for i in 0..(list.len - 1) {
       out.push(list[i]);
+    }
+    for i in 0..out.len {
+      out[i].at = i;
     }
     out
   }

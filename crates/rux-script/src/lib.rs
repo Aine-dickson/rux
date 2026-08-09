@@ -344,12 +344,48 @@ impl Engine {
 
     /// Read a signal's current value as a display string (for input `r-model`).
     pub fn get_string(&mut self, name: &str) -> String {
-        self.eval_value(name, &[]).map(|v| v.to_display()).unwrap_or_default()
+        self.get_string_in(name, &[])
+    }
+
+    /// The same, with a row's loop variables in scope.
+    ///
+    /// An `r-model` is recorded as written, so one inside an `r-for` can mention
+    /// the loop variable (`items[item.at].note`). Read without it, that is not an
+    /// expression at all, and the field comes back empty.
+    pub fn get_string_in(&mut self, expr: &str, locals: &[(String, Value)]) -> String {
+        self.eval_value(expr, locals).map(|v| v.to_display()).unwrap_or_default()
     }
 
     /// Set a signal to a string value (from input editing).
     pub fn set_string(&mut self, name: &str, value: &str) {
         self.scope.set_or_push(name, value.to_string());
+    }
+
+    /// Write a string into whatever an `r-model` names, and report which signals
+    /// that changed.
+    ///
+    /// An assignment rather than [`set_string`](Self::set_string), which can only
+    /// set a scope variable *called* `name`: for anything but a bare signal
+    /// (`user.name`, `items[0].note`) that quietly created a variable with a
+    /// punctuation-filled name and left the real target untouched. Running it as
+    /// script is also what lets a row's loop variable be in scope.
+    pub fn assign_string(
+        &mut self,
+        target: &str,
+        value: &str,
+        locals: &[(String, Value)],
+    ) -> HashSet<String> {
+        let names: Vec<String> = self.signals.iter().cloned().collect();
+        let before: HashMap<String, Option<Value>> =
+            names.iter().map(|n| (n.clone(), self.read_signal(n))).collect();
+        // The value is a person's typing, so it is quoted as a literal rather
+        // than pasted in: a quote or a backslash in a text field would otherwise
+        // be a syntax error at best.
+        let src = format!("{target} = {}", rux_reactive::json_string(value));
+        if self.eval(&src, locals).is_none() {
+            return HashSet::new();
+        }
+        names.into_iter().filter(|n| self.read_signal(n) != before[n]).collect()
     }
 }
 

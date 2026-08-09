@@ -490,7 +490,9 @@ impl Document {
         // the root. It is rare, one click or Tab, and the caret is being moved
         // anyway, so there is no ephemeral state left to preserve.
         let mut roots: Vec<Vec<usize>> = Vec::new();
-        if next.focused_model == self.state.focused_model {
+        if next.focused_model == self.state.focused_model
+            && next.focused_row == self.state.focused_row
+        {
             roots.push(divergence(self.state.hovered.as_deref(), next.hovered.as_deref()));
             roots.push(divergence(self.state.active.as_deref(), next.active.as_deref()));
         } else {
@@ -781,9 +783,42 @@ impl Document {
     /// to a rebuild only when `model` is also read structurally. The caller sets
     /// the caret afterward via [`set_focus`](Self::set_focus).
     pub fn apply_edit(&mut self, model: &str, value: &str) {
-        self.engine.set_string(model, value);
-        let changed: HashSet<String> = std::iter::once(model.to_string()).collect();
+        self.apply_edit_in(model, None, value);
+    }
+
+    /// [`apply_edit`](Self::apply_edit) for an input in a known `r-for` row.
+    ///
+    /// The row matters because an `r-model` is recorded as written: inside a
+    /// list it can mention the loop variable, which only exists in that row's
+    /// scope. The scope was captured when the input was built, so this looks it
+    /// up rather than reconstructing it.
+    pub fn apply_edit_in(&mut self, model: &str, row: Option<&str>, value: &str) {
+        let locals = self.locals_for(model, row);
+        let changed = self.engine.assign_string(model, value, &locals);
+        if changed.is_empty() {
+            return;
+        }
         self.apply_change(&changed);
+    }
+
+    /// An input's current value, read in its own row's scope.
+    pub fn value_in(&mut self, model: &str, row: Option<&str>) -> String {
+        let locals = self.locals_for(model, row);
+        self.engine.get_string_in(model, &locals)
+    }
+
+    /// The loop variables that were in scope where this input was built.
+    ///
+    /// Matched on model *and* row, since a list's rows all record the same
+    /// model. Empty for an input outside a list, which is the common case and
+    /// needs nothing.
+    fn locals_for(&self, model: &str, row: Option<&str>) -> Vec<(String, rux_reactive::Value)> {
+        self.registry
+            .value
+            .iter()
+            .find(|b| b.model == model && b.row.as_deref() == row)
+            .map(|b| b.locals.clone())
+            .unwrap_or_default()
     }
 
     /// Run an `@tap` handler and reflect its effect the cheapest correct way:
@@ -1269,6 +1304,60 @@ mod tests {
             vec![Some(2), None],
             "the caret moved with row b instead of staying in the first slot"
         );
+    }
+
+    /// A row's field can be read and written, which needs that row's loop
+    /// variable in scope: the `r-model` is recorded as written, so
+    /// `rows[row.at.to_int()].note` is not an expression without `row`. Reading
+    /// it raw returned "" and warned `Variable not found`, and writing it set a
+    /// scope variable *named* `rows[row.at.to_int()].note`, leaving the real
+    /// target untouched. Typing into a row's field did nothing at all.
+    #[test]
+    fn a_rows_field_reads_and_writes_in_its_own_scope() {
+        let mut doc = Document::from_source(
+            "<template><screen>\
+               <input r-for=\"row in rows\" r-key=\"row.id\" r-model=\"rows[row.at.to_int()].note\" />\
+             </screen></template>
+             <script>\
+               let rows = signal([\
+                 #{ id: \"a\", at: 0, note: \"alpha\" },\
+                 #{ id: \"b\", at: 1, note: \"bravo\" }\
+               ]);\
+             </script>",
+        )
+        .expect("load");
+        let model = "rows[row.at.to_int()].note";
+
+        assert_eq!(doc.value_in(model, Some("a")), "alpha");
+        assert_eq!(doc.value_in(model, Some("b")), "bravo", "each row reads its own value");
+
+        doc.apply_edit_in(model, Some("b"), "bravo!");
+        assert_eq!(doc.value_in(model, Some("b")), "bravo!", "the edit landed");
+        assert_eq!(doc.value_in(model, Some("a")), "alpha", "and only in that row");
+    }
+
+    /// An `r-model` that is a path rather than a bare signal is written through
+    /// too. This never worked, in or out of a list.
+    #[test]
+    fn a_path_model_is_assigned_not_shadowed() {
+        let mut doc = Document::from_source(
+            "<template><screen><input r-model=\"user.name\" /></screen></template>
+             <script>let user = signal(#{ name: \"ada\" });</script>",
+        )
+        .expect("load");
+
+        doc.apply_edit("user.name", "grace");
+        assert_eq!(doc.value_in("user.name", None), "grace");
+    }
+
+    /// A value containing quotes and backslashes survives being written, since
+    /// the write runs as script and the text is a person's typing.
+    #[test]
+    fn an_awkward_value_survives_the_round_trip() {
+        let mut doc = two_inputs();
+        let awkward = "she said \"hi\" \\ then left";
+        doc.apply_edit("name", awkward);
+        assert_eq!(doc.value_in("name", None), awkward);
     }
 
     /// Two rows claiming one identity is worse than none, so it is said out
