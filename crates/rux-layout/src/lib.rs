@@ -28,6 +28,8 @@
 //! stack into this crate would put shaping under layout, and the shell already
 //! owns one.
 
+use std::collections::HashMap;
+
 use taffy::prelude::*;
 use taffy::geometry::Point;
 
@@ -1159,6 +1161,39 @@ struct Bound {
     options: Option<Vec<String>>,
 }
 
+/// The widest a box can ever be, given its own CSS and everything above it.
+///
+/// `parent` is the parent's *inner* width bound, `None` when nothing above has
+/// pinned one down. A `%` resolves against it; `vw`/`vh` against the viewport.
+/// `min-width` wins over `max-width`, as in CSS.
+fn width_cap(style: &Style, parent: Option<f32>, vp: (f32, f32)) -> Option<f32> {
+    let resolve = |l: Len| match l {
+        Len::Px(px) => Some(px),
+        Len::Pct(p) => parent.map(|b| b * p),
+        Len::Vw(v) => Some(vp.0 * v / 100.0),
+        Len::Vh(v) => Some(vp.1 * v / 100.0),
+    };
+    let capped = match (style.width.and_then(resolve), style.max_width.and_then(resolve)) {
+        (Some(w), Some(m)) => Some(w.min(m)),
+        (Some(w), None) => Some(w),
+        (None, Some(m)) => Some(parent.map_or(m, |p| p.min(m))),
+        (None, None) => parent,
+    };
+    match style.min_width.and_then(resolve) {
+        Some(min) => Some(capped.map_or(min, |c| c.max(min))),
+        None => capped,
+    }
+}
+
+/// The cap to hand this box's children: its own, less what its padding and
+/// border take out of it.
+fn inner_cap(style: &Style, own: Option<f32>) -> Option<f32> {
+    own.map(|w| {
+        let horizontal = style.padding.left + style.padding.right + style.border.left + style.border.right;
+        (w - horizontal).max(0.0)
+    })
+}
+
 #[allow(clippy::too_many_arguments)]
 fn build(
     tree: &mut TaffyTree<TextContent>,
@@ -1174,7 +1209,13 @@ fn build(
     states: &mut Vec<(NodeId, Vec<usize>)>,
     access: &mut Vec<(NodeId, Access, Option<String>)>,
     vp: (f32, f32),
+    // `cap` is the widest this node can end up, from the constraint chain above
+    // it; `caps` is where each text leaf's own cap is left for the measure hook.
+    cap: Option<f32>,
+    caps: &mut HashMap<NodeId, f32>,
 ) -> NodeId {
+    let own_cap = width_cap(&node.style, cap, vp);
+    let child_cap = inner_cap(&node.style, own_cap);
     let id = if let Some(tc) = &node.text {
         // Text leaves carry their content as taffy context so the measure hook
         // can shape them.
@@ -1195,6 +1236,11 @@ fn build(
             },
         ));
         paint.push((id, PaintKind::Text(tc.clone())));
+        // The text wraps inside this box, so its own padding and border come
+        // out of the width available to the glyphs.
+        if let Some(c) = child_cap {
+            caps.insert(id, c);
+        }
         id
     } else if let Some(color) = node.tick {
         let id = tree.new_leaf(to_taffy(&node.style, vp)).expect("taffy tick");
@@ -1228,7 +1274,7 @@ fn build(
         let children: Vec<NodeId> = node
             .children
             .iter()
-            .map(|c| build(tree, c, paint, handlers, models, focus_labels, hidden, opacities, scrolls, transforms, states, access, vp))
+            .map(|c| build(tree, c, paint, handlers, models, focus_labels, hidden, opacities, scrolls, transforms, states, access, vp, child_cap, caps))
             .collect();
         let id = if children.is_empty() {
             tree.new_leaf(to_taffy(&node.style, vp)).expect("taffy leaf")
@@ -1642,6 +1688,7 @@ pub fn layout_scrolled(
     let mut states = Vec::new();
     let mut access = Vec::new();
     let vp = (avail_w, avail_h);
+    let mut caps: HashMap<NodeId, f32> = HashMap::new();
     let root_id = build(
         &mut tree,
         root,
@@ -1656,6 +1703,10 @@ pub fn layout_scrolled(
         &mut states,
         &mut access,
         vp,
+        // The root is forced to the viewport below, so that is the widest
+        // anything can be.
+        Some(avail_w),
+        &mut caps,
     );
 
     // Force the root to fill the viewport so a `screen` always covers the window.
@@ -1672,7 +1723,7 @@ pub fn layout_scrolled(
             width: AvailableSpace::Definite(avail_w),
             height: AvailableSpace::Definite(avail_h),
         },
-        |known, available, _id, ctx, _style| {
+        |known, available, id, ctx, _style| {
             if let (Some(w), Some(h)) = (known.width, known.height) {
                 return Size { width: w, height: h };
             }
@@ -1682,8 +1733,27 @@ pub fn layout_scrolled(
                     // the text take its natural single-line width.
                     let max = known.width.or(match available.width {
                         AvailableSpace::Definite(w) => Some(w),
-                        _ => None,
+                        // Min-content is the narrowest the box can be without
+                        // its content spilling, which for text is the longest
+                        // unbreakable word. Wrapping at zero asks exactly that.
+                        // Answering it with the single-line width (which is
+                        // what "no constraint" means here) told taffy the box
+                        // could never be narrower than one long line.
+                        AvailableSpace::MinContent => Some(0.0),
+                        AvailableSpace::MaxContent => None,
                     });
+                    // Never measure at a width this box can never have. Taffy
+                    // sizes a capped box from its *un*capped content, clamps
+                    // the width afterwards, and does not revisit the height, so
+                    // a `max-width` card was measured as one long line and
+                    // drawn as three. Wrapping at the cap up front is what
+                    // makes the measured height the height that gets drawn.
+                    let cap = caps.get(&id).copied();
+                    let max = match (max, cap) {
+                        (Some(m), Some(c)) => Some(m.min(c)),
+                        (None, Some(c)) => Some(c),
+                        (m, None) => m,
+                    };
                     let (w, h) = measure(tc, max);
                     Size {
                         width: known.width.unwrap_or(w),
