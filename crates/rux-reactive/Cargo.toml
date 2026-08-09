@@ -5,6 +5,7 @@ version.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "Rux reactivity core: signals and their values. Internal to Rux; the supported entry point is the ruxlang crate."
+readme = "README.md"
 keywords = ["ui", "reactive", "signals", "state"]
 categories = ["gui"]
 
