@@ -5,6 +5,11 @@ version.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "A minimal TextMate grammar interpreter, so .rux highlights from the same grammar VS Code uses."
+# Not published. Its only consumer is `rux-web`, which is not published either,
+# so nothing on crates.io would resolve it. Standalone it is a plausible little
+# crate, and holding the name back leaves that option open rather than spending
+# it on something no published crate depends on.
+publish = false
 
 [dependencies]
 # Pure-Rust Oniguruma. The `cc` / `ffi` features (which would build the C

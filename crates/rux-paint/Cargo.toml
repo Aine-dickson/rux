@@ -4,10 +4,12 @@ edition.workspace = true
 version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Rux painter: turns resolved paint items into a vello Scene."
+description = "Rux painter: turns resolved paint items into a vello Scene. Internal to Rux; the supported entry point is the ruxlang crate."
+keywords = ["ui", "graphics", "gpu", "vello"]
+categories = ["gui", "graphics"]
 
 [dependencies]
 vello.workspace = true
 image.workspace = true
-rux-layout = { path = "../rux-layout" }
-rux-text = { path = "../rux-text" }
+rux-layout.workspace = true
+rux-text.workspace = true

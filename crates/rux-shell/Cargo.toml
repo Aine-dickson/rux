@@ -4,21 +4,29 @@ edition.workspace = true
 version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Rux runtime shell: window, GPU surface, input, and frame loop."
+description = "Rux runtime shell: window, GPU surface, input, and frame loop. Internal to Rux; the supported entry point is the ruxlang crate."
+keywords = ["ui", "window", "gpu", "winit"]
+categories = ["gui"]
+
+# docs.rs documents the host target only. Half of this crate is behind
+# `cfg(target_arch = "wasm32")` (the IME, the hidden input that raises a phone's
+# keyboard, the clipboard), including `start_web`, `resize_web`,
+# `set_web_source` and `diagnose_web_source`, so without the wasm target in this
+# list the published docs would simply not mention the web shell exists.
+#
+# This is the only crate that needs it: every other published crate has no
+# target-gated code at all.
+[package.metadata.docs.rs]
+targets = ["x86_64-unknown-linux-gnu", "wasm32-unknown-unknown"]
 
 [dependencies]
 winit.workspace = true
 vello.workspace = true
-rux-layout = { path = "../rux-layout" }
-rux-paint = { path = "../rux-paint" }
-rux-runtime = { path = "../rux-runtime" }
-rux-text = { path = "../rux-text" }
-# The explicit version is what `cargo publish` requires of a path dependency:
-# a bare `path` won't publish. It must track `workspace.package.version` exactly,
-# including the `-dev` suffix, because a plain `0.4.0` requirement does NOT match
-# the prerelease it carries between releases, so dropping the suffix in one
-# place and not the other breaks the build.
-rux-reactive = { version = "0.5.0", path = "../rux-reactive" }
+rux-layout.workspace = true
+rux-paint.workspace = true
+rux-runtime.workspace = true
+rux-text.workspace = true
+rux-reactive.workspace = true
 # `std::time::Instant` panics on wasm; web-time swaps in the browser clock there
 # and re-exports std everywhere else. winit already depends on it, so this adds
 # no weight; it just lets our code name the same type winit's API expects.
@@ -52,6 +60,8 @@ wasm-bindgen = "0.2"
 web-sys = { version = "0.3", features = [
     "HtmlCanvasElement",
     "console",
+    "Clipboard",
+    "Navigator",
     "CompositionEvent",
     "CssStyleDeclaration",
     "Document",

@@ -9,17 +9,26 @@ edition.workspace = true
 version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Rux command-line entry point (`rux run app.rux`)."
+description = "Rux: a pure-Rust, web-flavored UI language that renders natively on the GPU. Run, check and format .rux files."
+# crates.io renders this as the crate's page, and a package with none is a bare
+# title and a version. It is the first thing anyone finding Rux by search reads,
+# so it is its own file rather than the repository README, which opens with
+# things (screenshots, a docs tree) that do not belong on a crate page.
+readme = "README.md"
+homepage = "https://ruxlang.dev"
+documentation = "https://ruxlang.dev/reference/"
+keywords = ["ui", "gui", "gpu", "css", "declarative"]
+categories = ["gui", "command-line-utilities"]
 
 [[bin]]
 name = "rux"
 path = "src/main.rs"
 
 [dependencies]
-rux-shell = { path = "../rux-shell" }
+rux-shell.workspace = true
 # `rux check` loads documents through the same path the window does, so the
 # checker cannot disagree with the runtime about what a valid file is.
-rux-runtime = { path = "../rux-runtime" }
+rux-runtime.workspace = true
 # `rux fmt` is the one implementation of the re-indenter, replacing the copy the
 # VS Code extension used to carry in JavaScript.
-rux-fmt = { path = "../rux-fmt" }
+rux-fmt.workspace = true

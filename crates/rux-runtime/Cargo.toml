@@ -4,16 +4,18 @@ edition.workspace = true
 version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Rux runtime document model: loads a .rux file into a renderable tree."
+description = "Rux runtime document model: loads a .rux file into a renderable tree. Internal to Rux; the supported entry point is the ruxlang crate."
+keywords = ["ui", "runtime", "rux"]
+categories = ["gui"]
 
 [dependencies]
 image.workspace = true
-rux-parser = { path = "../rux-parser" }
-rux-style = { path = "../rux-style" }
+rux-parser.workspace = true
+rux-style.workspace = true
 # For `Warning` and the JSON escaper the checker and the playground share.
-rux-reactive = { path = "../rux-reactive" }
-rux-layout = { path = "../rux-layout" }
-rux-script = { path = "../rux-script" }
+rux-reactive.workspace = true
+rux-layout.workspace = true
+rux-script.workspace = true
 
 # Not used directly. `ahash` (via lightningcss and rhai) needs `getrandom`, and
 # on wasm32 getrandom builds only when its `wasm_js` feature is on, and feature

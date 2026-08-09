@@ -1133,6 +1133,37 @@ with their file, and format it the same way we do.
    so it is still worth half a minute on a real phone, and it only reaches
    ruxlang.dev once a tag carrying it has been deployed.
 
+   **Confirmed on hardware 2026-08-08**, along with everything in v0.5.1 below.
+
+#### v0.5.1: text input that works on a phone
+
+Not planned. It came out of putting v0.5.0 in front of a real phone, which
+found four things in a row, each one uncovered by fixing the one before it.
+
+1. **A diagnostic pointed at a line that does not exist.** rhai appends its own
+   `(line 1, position N)` to every error, measured inside the expression rather
+   than the file, so it was always line 1. Stripped.
+2. **Touch used the mouse's gestures.** A finger drag selected. A phone expects
+   drag to move the caret, long press to take the word, and long press then drag
+   to extend. Touch now has its own state machine.
+3. **A single-line input never scrolled to its caret**, so the caret left the
+   box and was clipped. Every platform, every means of moving it. This one had
+   nothing to do with touch; the caret drag just made it visible.
+4. **A long press picked the word one scroll-distance behind the finger**,
+   because the caret path had been given the new offset and the word path had
+   not. Both now go through one conversion.
+
+Then the piece all of that was for: **a selection toolbar** (Copy, Cut, Paste,
+Select all) over `navigator.clipboard`, because a browser gave Rux no clipboard
+at all and a phone has no Ctrl+C. It serves desktop browsers too.
+
+The thread running through the four is the same one this project keeps pulling
+on: each was invisible to the suite, and three of them were invisible to a
+desktop as well. The last is the more specific lesson, and the reason two of
+these commits end with a refactor rather than a fix: **two places doing the same
+coordinate arithmetic will eventually disagree**, so the fix is one conversion,
+not two correct ones.
+
 ### v0.6: apps bigger than one screen
 
 Everything Rux can express today fits in one file and one screen. This is the

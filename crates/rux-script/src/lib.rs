@@ -152,7 +152,13 @@ thread_local! {
     static ECHO: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
 }
 
-/// Stop (or resume) mirroring warnings to stderr. See [`ECHO`].
+/// Stop (or resume) mirroring warnings to stderr.
+///
+/// On by default, which suits anyone running the window, where stderr was the
+/// only place a warning could go before the overlay existed. A tool that drains
+/// the sink and formats the warnings itself turns it off: printing each one
+/// twice, once as prose and once as a diagnostic, is what makes machine-readable
+/// output unpipeable.
 pub fn set_stderr_echo(on: bool) {
     ECHO.with(|e| e.set(on));
 }
@@ -173,6 +179,45 @@ fn trim_expr(src: &str) -> String {
     }
 }
 
+/// Strip rhai's own `(line N, position M)` suffix from an error message.
+///
+/// Every `{{ }}` and `@tap` is compiled as its own small script, so rhai's line
+/// is **always 1** and its position counts characters inside the expression, not
+/// inside the file. Printed beside a file name in the overlay or in `rux check`,
+/// it reads as a location in the document and is not one: the reader is sent
+/// confidently to line 1. That is the same failure this project removed from CSS
+/// warnings, so it does not belong here either.
+///
+/// Nothing is lost by dropping it. The expression is already quoted in the
+/// message, and a position within a string the reader can see is not worth the
+/// cost of looking like a file position.
+fn strip_rhai_position(message: &str) -> String {
+    let trimmed = message.trim_end();
+    // Only the exact trailing shape is removed, so a message that merely ends
+    // in a parenthesis keeps it.
+    let Some(open) = trimmed.rfind(" (line ") else {
+        return trimmed.to_string();
+    };
+    let Some(inner) = trimmed[open + 1..].strip_prefix('(') else {
+        return trimmed.to_string();
+    };
+    let Some(inner) = inner.strip_suffix(')') else {
+        return trimmed.to_string();
+    };
+    let Some(rest) = inner.strip_prefix("line ") else {
+        return trimmed.to_string();
+    };
+    let Some((line, position)) = rest.split_once(", position ") else {
+        return trimmed.to_string();
+    };
+    let numeric = |s: &str| !s.is_empty() && s.chars().all(|c| c.is_ascii_digit());
+    if numeric(line) && numeric(position) {
+        trimmed[..open].trim_end().to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
 impl Engine {
     /// Evaluate `src` (an expression or statements) with `locals` temporarily in
     /// scope. Script functions are available. Returns the resulting value.
@@ -183,7 +228,11 @@ impl Engine {
                 // A `{{ }}` or `@tap` that doesn't compile used to evaluate to
                 // nothing, silently, the same failure mode as ignored CSS. Record
                 // it so the dev overlay can say what's wrong.
-                warn(format!("expression `{}` failed to compile: {e}", trim_expr(src)));
+                warn(format!(
+                    "expression `{}` failed to compile: {}",
+                    trim_expr(src),
+                    strip_rhai_position(&e.to_string())
+                ));
                 return None;
             }
         };
@@ -198,7 +247,11 @@ impl Engine {
         match result {
             Ok(value) => Some(value),
             Err(e) => {
-                warn(format!("expression `{}` failed: {e}", trim_expr(src)));
+                warn(format!(
+                    "expression `{}` failed: {}",
+                    trim_expr(src),
+                    strip_rhai_position(&e.to_string())
+                ));
                 None
             }
         }
@@ -358,6 +411,54 @@ mod tests {
         assert!(warnings[0].message.contains("nope(1)"), "names the expression: {warnings:?}");
 
         assert!(take_warnings().is_empty(), "draining empties the sink");
+    }
+
+    /// rhai appends its own `(line 1, position N)` to every error. Each binding
+    /// is compiled alone, so that line is always 1 and the position counts
+    /// inside the expression, never inside the file. Beside a file name it reads
+    /// as a document location, which is the one thing a diagnostic must not do.
+    ///
+    /// Asserted against a real rhai error rather than a hand-written string, so
+    /// it still fails if rhai changes the wording.
+    #[test]
+    fn a_failing_expression_does_not_quote_a_line_that_is_not_in_the_file() {
+        let mut e = engine();
+        let _ = take_warnings();
+
+        let _ = e.eval_display("names", &[]); // an undefined variable
+        let warnings = take_warnings();
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        let message = &warnings[0].message;
+
+        assert!(message.contains("Variable not found"), "keeps the cause: {message}");
+        assert!(message.contains("names"), "keeps the expression: {message}");
+        assert!(
+            !message.contains("line 1"),
+            "must not report a line that is not a line of the file: {message}"
+        );
+        assert!(!message.contains("position"), "nor a position: {message}");
+    }
+
+    /// The stripping is narrow: only rhai's exact trailing shape goes, so a
+    /// message that merely ends in a parenthesis is left alone.
+    #[test]
+    fn stripping_the_position_leaves_other_parentheses_alone() {
+        assert_eq!(
+            strip_rhai_position("Variable not found: names (line 1, position 1)"),
+            "Variable not found: names"
+        );
+        // Not the shape: no position, so nothing is removed.
+        assert_eq!(strip_rhai_position("something (line 4)"), "something (line 4)");
+        assert_eq!(
+            strip_rhai_position("call to fn(a, b) failed"),
+            "call to fn(a, b) failed"
+        );
+        assert_eq!(strip_rhai_position("plain message"), "plain message");
+        // Non-numeric where digits belong, so it is not rhai's suffix.
+        assert_eq!(
+            strip_rhai_position("x (line one, position two)"),
+            "x (line one, position two)"
+        );
     }
 
     /// The same failing binding is re-evaluated on every build (and once per row

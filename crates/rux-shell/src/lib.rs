@@ -79,8 +79,19 @@ enum RuxEvent {
     /// of the caret, `0` when there is none. The browser runs the composition
     /// itself here; the shell only needs to know which tail of the text is still
     /// provisional so it can underline it, exactly as it does natively.
+    ///
+    /// `anchor` is the other end of the selection, equal to `caret` when nothing
+    /// is selected. It is carried because the browser's own copy, cut and
+    /// select-all act on the hidden input's selection, so the two have to agree
+    /// about what is selected or the phone's clipboard operates on the wrong
+    /// text (before v0.5.1, on no text at all).
     #[cfg(target_arch = "wasm32")]
-    WebText { value: String, caret: usize, composing: usize },
+    WebText { value: String, caret: usize, anchor: usize, composing: usize },
+    /// The browser's clipboard resolved, carrying what it held. Web only: the
+    /// Clipboard API is a promise, so a paste cannot be finished inside the tap
+    /// or key press that asked for it.
+    #[cfg(target_arch = "wasm32")]
+    WebPaste(String),
     /// Assistive technology asked us something (it attached, it wants the
     /// tree, it moved focus). Delivered through the same proxy as hot-reload.
     #[cfg(not(target_arch = "wasm32"))]
@@ -97,6 +108,121 @@ impl From<accesskit_winit::Event> for RuxEvent {
 /// Taps closer than this (in physical pixels) between press and release still
 /// count as a tap rather than a drag.
 const TAP_SLOP: f64 = 6.0;
+
+/// How long a finger must rest on text before the press takes the word under it.
+///
+/// This is the gesture a phone uses to start selecting, and it is why a drag is
+/// free to mean something else (moving the caret). Roughly the platform
+/// convention: much shorter and an ordinary tap starts selecting text, much
+/// longer and the field feels unresponsive.
+const LONG_PRESS: Duration = Duration::from_millis(500);
+
+/// The selection toolbar's height and the padding around its labels, in logical
+/// px.
+const TOOLBAR_H: f32 = 34.0;
+const TOOLBAR_PAD: f32 = 12.0;
+/// Gap between the toolbar and the field it belongs to.
+const TOOLBAR_GAP: f32 = 6.0;
+
+/// What the selection toolbar offers, left to right.
+///
+/// A phone has no Ctrl+C, and a browser has no system clipboard for Rux to
+/// reach, so without this there is no way at all to get text out of a field on
+/// either. The desktop app keeps its shortcuts; this is the same four actions
+/// with somewhere to tap.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum TextAction {
+    Copy,
+    Cut,
+    Paste,
+    SelectAll,
+}
+
+impl TextAction {
+    const ALL: [TextAction; 4] =
+        [TextAction::Copy, TextAction::Cut, TextAction::Paste, TextAction::SelectAll];
+
+    fn label(self) -> &'static str {
+        match self {
+            TextAction::Copy => "Copy",
+            TextAction::Cut => "Cut",
+            TextAction::Paste => "Paste",
+            TextAction::SelectAll => "Select all",
+        }
+    }
+
+    /// Button width from the label's length.
+    ///
+    /// Estimated rather than measured because the geometry is needed for hit
+    /// testing as well as painting, and threading the text engine into a hit
+    /// test to agree with the painter is how the two end up disagreeing. The
+    /// estimate is deliberately generous, so a label sits inside its button
+    /// rather than against its edge.
+    fn width(self) -> f32 {
+        (self.label().chars().count() as f32 * 7.8).round() + TOOLBAR_PAD * 2.0
+    }
+}
+
+/// Where the toolbar sits for a field at `(x, y, w, h)`, and the box of each
+/// button, in logical px.
+///
+/// Above the field when there is room, below it when there is not, and never off
+/// the left edge. One function so the painter and the hit test cannot drift.
+fn toolbar_layout(
+    field: (f32, f32, f32, f32),
+    viewport: (f32, f32),
+) -> ((f32, f32, f32, f32), Vec<(TextAction, f32, f32, f32, f32)>) {
+    let total: f32 = TextAction::ALL.iter().map(|a| a.width()).sum();
+    let (fx, fy, _, fh) = field;
+    let x = fx.min(viewport.0 - total).max(0.0);
+    // Above by preference: a finger selecting text is usually below the line it
+    // is selecting, and a toolbar under the finger is one you cannot read.
+    let above = fy - TOOLBAR_H - TOOLBAR_GAP;
+    let y = if above >= 0.0 { above } else { fy + fh + TOOLBAR_GAP };
+
+    let mut buttons = Vec::with_capacity(TextAction::ALL.len());
+    let mut bx = x;
+    for action in TextAction::ALL {
+        let w = action.width();
+        buttons.push((action, bx, y, w, TOOLBAR_H));
+        bx += w;
+    }
+    ((x, y, total, TOOLBAR_H), buttons)
+}
+
+/// What the finger currently down is doing to a text field.
+///
+/// Touch used to share the mouse's press/drag/release path, which meant a drag
+/// selected, because that is what a mouse does. A phone expects the three
+/// gestures below instead, so touch needs its own small state machine: the same
+/// finger movement means different things depending on whether the press has had
+/// time to become a long one.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum TouchText {
+    /// Down on text and not yet resolved. Still becomes `Selecting` if the
+    /// finger rests until `deadline`, or `Caret` if it moves first.
+    Pending { at: (f64, f64), deadline: Instant },
+    /// Moved before the deadline: the caret follows the finger and nothing is
+    /// selected.
+    Caret,
+    /// The long press took a word: further movement extends the selection from
+    /// it, which is the only gesture that selects.
+    Selecting,
+}
+
+/// What a finger `distance` px from where it went down means, given what the
+/// press was already doing.
+///
+/// The whole gesture model is this one decision, so it is a plain function
+/// rather than inline in the event arm: a press that moves before it is old
+/// enough is a caret drag and can never become a selection afterwards, and one
+/// that has already taken a word keeps extending it however far it travels.
+fn touch_text_after_move(state: TouchText, distance: f64) -> TouchText {
+    match state {
+        TouchText::Pending { .. } if distance > TAP_SLOP => TouchText::Caret,
+        other => other,
+    }
+}
 
 /// Half the caret blink period: the caret is shown for this long, then hidden
 /// for this long. ~530ms matches the platform norm.
@@ -246,6 +372,65 @@ fn focus_ring(item: &FocusItem) -> Vec<Paint> {
 
 /// Paint items for an open dropdown: a single floating panel with a shadow, the
 /// selected value picked out as a pill, and thin separators between options.
+/// The selection toolbar: one rounded strip of actions above (or below) the
+/// focused field. Same palette as the dropdown, so the two read as one system.
+fn toolbar_paints(field: (f32, f32, f32, f32), viewport: (f32, f32)) -> Vec<Paint> {
+    let panel_bg = Rgba::new(0.19, 0.20, 0.27, 1.0); // #313244
+    let border = Rgba::new(0.27, 0.28, 0.35, 1.0); // #45475a
+    let ink = Rgba::new(0.80, 0.84, 0.96, 1.0); // #cdd6f4
+    let divider = Rgba::new(0.35, 0.36, 0.44, 1.0); // #585b70
+
+    let ((x, y, w, h), buttons) = toolbar_layout(field, viewport);
+    let mut out = Vec::with_capacity(buttons.len() * 2 + 2);
+    out.push(Paint::Shadow {
+        x,
+        y: y + 3.0,
+        width: w,
+        height: h,
+        radius: 8.0,
+        blur: 16.0,
+        color: Rgba::new(0.0, 0.0, 0.0, 0.45),
+    });
+    out.push(Paint::Rect(PaintRect {
+        x,
+        y,
+        width: w,
+        height: h,
+        background: Some(Background::Color(panel_bg)),
+        radius: [8.0; 4],
+        border_width: 1.0,
+        border_color: Some(border),
+    }));
+
+    for (i, (action, bx, by, bw, bh)) in buttons.iter().enumerate() {
+        // A hairline between buttons, so the strip reads as separate targets
+        // rather than one wide button.
+        if i > 0 {
+            out.push(Paint::Rect(PaintRect {
+                x: *bx,
+                y: by + 7.0,
+                width: 1.0,
+                height: bh - 14.0,
+                background: Some(Background::Color(divider)),
+                radius: [0.0; 4],
+                border_width: 0.0,
+                border_color: None,
+            }));
+        }
+        out.push(Paint::Text(PaintText {
+            x: *bx,
+            y: by + (bh - 17.0) / 2.0,
+            width: *bw,
+            height: 17.0,
+            content: TextContent {
+                align: TextAlign::Center,
+                ..overlay_text(action.label().to_string(), 14.0, 500, ink)
+            },
+        }));
+    }
+    out
+}
+
 fn dropdown_paints(sel: &SelectRegion, value: &str) -> Vec<Paint> {
     let panel_bg = Rgba::new(0.19, 0.20, 0.27, 1.0); // #313244
     let border = Rgba::new(0.27, 0.28, 0.35, 1.0); // #45475a
@@ -768,6 +953,20 @@ struct App {
     preedit: Option<Preedit>,
     /// Whether the pointer is selecting text by dragging inside an input.
     text_drag: bool,
+    /// The touch text gesture in progress, if a finger is down on a field. The
+    /// mouse does not use this: it keeps `text_drag`, since drag-to-select is
+    /// the right model with a pointer.
+    touch_text: Option<TouchText>,
+    /// How far the focused *single-line* input's text is scrolled left, in
+    /// logical px.
+    ///
+    /// A textarea is `overflow: scroll` and gets a real scroll region, which is
+    /// what `scroll_caret_into_view` moves. An input is `overflow: clip`: it has
+    /// no scroll region, so nothing ever kept its caret inside the box and the
+    /// caret was simply clipped away past the right edge. This is the offset
+    /// that was missing. Held for the focused field only, and reset when focus
+    /// moves.
+    text_scroll: f32,
     /// When and where the last click landed, for double-click word-select.
     last_click: Option<(Instant, f64, f64)>,
     /// The system clipboard. `None` if the platform wouldn't give us one, the
@@ -834,6 +1033,8 @@ impl App {
             overlay_rect: None,
             preedit: None,
             text_drag: false,
+            touch_text: None,
+            text_scroll: 0.0,
             last_click: None,
             #[cfg(not(target_arch = "wasm32"))]
             clipboard: arboard::Clipboard::new()
@@ -1064,16 +1265,151 @@ impl App {
     /// input is showing its placeholder, not a value, so its caret belongs at 0.
     fn index_in(&mut self, region: &FocusRegion, px: f32, py: f32) -> usize {
         let value = self.document.engine_mut().get_string(&region.model);
-        match &region.text {
-            Some(t) if !value.is_empty() => self.text.index_at_point(
-                &value,
-                &rux_paint::text_style(&t.content),
-                Some(t.width),
-                px - t.x,
-                py - t.y,
-            ),
+        match region.text.as_ref() {
+            Some(t) if !value.is_empty() => {
+                let (tx, ty) = self.text_point(region, t, px, py);
+                self.text.index_at_point(
+                    &value,
+                    &rux_paint::text_style(&t.content),
+                    Some(t.width),
+                    tx,
+                    ty,
+                )
+            }
             _ => 0,
         }
+    }
+
+    /// A pointer position in the text's own coordinates, with the field's
+    /// horizontal scroll applied.
+    ///
+    /// Every mapping from a pointer onto a string goes through here: a caret in
+    /// [`index_in`](Self::index_in), a word in
+    /// [`select_word_at`](Self::select_word_at). They were originally written
+    /// separately and one of them missed the scroll, so a long press in a
+    /// scrolled field took the word one scroll-distance behind the finger. A
+    /// single conversion cannot disagree with itself.
+    fn text_point(
+        &self,
+        region: &FocusRegion,
+        t: &rux_layout::PaintText,
+        px: f32,
+        py: f32,
+    ) -> (f32, f32) {
+        (px - t.x + self.text_scroll_for(region), py - t.y)
+    }
+
+    /// Update the focused single-line input's horizontal offset so its caret is
+    /// inside the visible box, and return the offset to paint with.
+    ///
+    /// The offset only moves when the caret would otherwise fall outside, which
+    /// is what stops the text sliding under a caret that is already visible. It
+    /// is also clamped so the field never scrolls past the start, and never
+    /// leaves blank space after the end once the text is short enough to fit.
+    fn track_caret_x(
+        layout: &rux_layout::Layout,
+        focused: Option<&str>,
+        caret: usize,
+        scroll: &mut f32,
+        text: &mut rux_text::TextEngine,
+        document: &mut rux_runtime::Document,
+    ) -> f32 {
+        let Some(model) = focused else {
+            *scroll = 0.0;
+            return 0.0;
+        };
+        let Some(region) = layout.focuses.iter().find(|f| f.model == model) else {
+            return *scroll;
+        };
+        // A textarea has a real scroll region and is handled by
+        // `scroll_caret_into_view`; this is only for the clipped single line.
+        let (false, Some(t)) = (region.multiline, region.text.as_ref()) else {
+            *scroll = 0.0;
+            return 0.0;
+        };
+        let value = document.engine_mut().get_string(model);
+        let style = rux_paint::text_style(&t.content);
+        let (cx, _, _) = text.caret_geometry(&value, &style, Some(t.width), caret.min(value.len()));
+
+        // The text starts inset from the box by its padding and border. Mirroring
+        // that inset on the right gives the span actually visible, without the
+        // layout having to report a content box it does not currently carry.
+        let inset = (t.x - region.x).max(0.0);
+        let visible = (region.width - inset * 2.0).max(1.0);
+
+        if cx < *scroll {
+            *scroll = cx;
+        } else if cx > *scroll + visible {
+            *scroll = cx - visible;
+        }
+        // `None` for the width: the caret is tracked against the text's true
+        // length, not a re-wrap at the box width.
+        let full = text.measure(&value, &style, None).0;
+        *scroll = scroll.clamp(0.0, (full - visible).max(0.0));
+        *scroll
+    }
+
+    /// The focused field's box, when it has a selection worth offering actions
+    /// on. `None` means no toolbar: nothing focused, or nothing selected.
+    ///
+    /// Tied to the selection rather than to focus so the strip is not sitting
+    /// over the page the whole time an input has a caret in it.
+    fn toolbar_field(&self) -> Option<(f32, f32, f32, f32)> {
+        if self.caret == self.anchor {
+            return None;
+        }
+        let model = self.focused.as_deref()?;
+        let region = self.focuses.iter().find(|f| f.model == model)?;
+        Some((region.x, region.y, region.width, region.height))
+    }
+
+    /// The action under `(fx, fy)` in logical px, if the toolbar is up and the
+    /// point is on one of its buttons.
+    fn toolbar_action_at(&self, fx: f32, fy: f32) -> Option<TextAction> {
+        let field = self.toolbar_field()?;
+        let (_, buttons) = toolbar_layout(field, self.logical_size());
+        buttons
+            .into_iter()
+            .find(|(_, bx, by, bw, bh)| fx >= *bx && fx <= bx + bw && fy >= *by && fy <= by + bh)
+            .map(|(action, ..)| action)
+    }
+
+    /// Whether the toolbar covers `(fx, fy)`, so a press there is not also a
+    /// press on whatever is underneath. The same rule the dev overlay follows.
+    fn toolbar_covers(&self, fx: f32, fy: f32) -> bool {
+        let Some(field) = self.toolbar_field() else { return false };
+        let ((x, y, w, h), _) = toolbar_layout(field, self.logical_size());
+        fx >= x && fx <= x + w && fy >= y && fy <= y + h
+    }
+
+    /// Run a toolbar action against the focused field.
+    fn run_text_action(&mut self, action: TextAction) {
+        let Some(model) = self.focused.clone() else { return };
+        match action {
+            TextAction::Copy => self.copy_selection(),
+            TextAction::Cut => self.cut_selection(&model),
+            TextAction::Paste => self.request_paste(&model),
+            TextAction::SelectAll => self.select_all_text(&model),
+        }
+        // Copy leaves the selection up, which is what every platform does: you
+        // may want to cut what you just copied. The others change it themselves.
+        self.request_redraw();
+    }
+
+    /// The window in logical px, which the toolbar is kept inside.
+    fn logical_size(&self) -> (f32, f32) {
+        let Some(state) = self.state.as_ref() else { return (0.0, 0.0) };
+        let scale = state.window.scale_factor();
+        let size = state.window.inner_size();
+        ((size.width as f64 / scale) as f32, (size.height as f64 / scale) as f32)
+    }
+
+    /// The horizontal offset in force for `region`, which is zero for anything
+    /// but the focused single-line input. A textarea scrolls through its own
+    /// scroll region instead, and an unfocused field is never scrolled.
+    fn text_scroll_for(&self, region: &FocusRegion) -> f32 {
+        let focused = self.focused.as_deref() == Some(region.model.as_str());
+        if focused && !region.multiline { self.text_scroll } else { 0.0 }
     }
 
     /// A press inside an input starts a text selection: it drops the caret (and
@@ -1087,7 +1423,13 @@ impl App {
         if self.open_select.is_some() {
             return false;
         }
+        // A press on the toolbar must not move the caret: collapsing the
+        // selection is exactly what the button is about to act on. The tap is
+        // handled on release, in `dispatch_tap`.
         let (fx, fy) = self.logical(pointer);
+        if self.toolbar_covers(fx, fy) {
+            return false;
+        }
         let Some(region) = self.focuses.iter().rev().find(|f| f.contains(fx, fy)).cloned() else {
             return false;
         };
@@ -1103,31 +1445,81 @@ impl App {
             });
         self.last_click = Some((Instant::now(), pointer.0, pointer.1));
 
-        if double {
-            // Double-click selects the word under the pointer.
-            let value = self.document.engine_mut().get_string(&region.model);
-            if let (Some(t), false) = (&region.text, value.is_empty()) {
-                let (start, end) = self.text.word_at_point(
-                    &value,
-                    &rux_paint::text_style(&t.content),
-                    Some(t.width),
-                    fx - t.x,
-                    fy - t.y,
-                );
-                self.set_focus_range(Some(Focus {
-                    model: region.model,
-                    caret: end,
-                    anchor: start,
-                    preedit: None,
-                }));
-                return true;
-            }
+        // Double-click, and double-tap, select the word under the pointer.
+        if double && self.select_word_at(pointer) {
+            return true;
         }
 
         let caret = self.index_in(&region, fx, fy);
         self.text_drag = true;
         self.set_focus(Some((region.model, caret)));
         true
+    }
+
+    /// Select the word under `pointer`, in whichever field it lands in.
+    ///
+    /// Shared by double-click and by the touch long press: both mean "take the
+    /// word here", and having one implementation is what keeps them agreeing
+    /// about where a word ends. Returns whether a word was actually taken, which
+    /// is false for an empty field or a press outside any text.
+    fn select_word_at(&mut self, pointer: (f64, f64)) -> bool {
+        let (fx, fy) = self.logical(pointer);
+        let Some(region) = self.focuses.iter().rev().find(|f| f.contains(fx, fy)).cloned() else {
+            return false;
+        };
+        let value = self.document.engine_mut().get_string(&region.model);
+        let (Some(t), false) = (&region.text, value.is_empty()) else {
+            return false;
+        };
+        let (tx, ty) = self.text_point(&region, t, fx, fy);
+        let (start, end) = self.text.word_at_point(
+            &value,
+            &rux_paint::text_style(&t.content),
+            Some(t.width),
+            tx,
+            ty,
+        );
+        self.set_focus_range(Some(Focus {
+            model: region.model,
+            caret: end,
+            anchor: start,
+            preedit: None,
+        }));
+        true
+    }
+
+    /// Press on text from a *finger*. Unlike the mouse, this does not start a
+    /// selection: it moves the caret and arms the long press, so that what the
+    /// finger does next decides between dragging the caret and selecting.
+    fn press_text_touch(&mut self, pointer: (f64, f64)) -> bool {
+        if !self.press_text(pointer) {
+            return false;
+        }
+        // `press_text` set this for the mouse's model; touch resolves the drag
+        // itself and must not also be dragging a selection.
+        self.text_drag = false;
+        // A double-tap has already taken a word, so there is nothing pending.
+        self.touch_text = Some(if self.anchor == self.caret {
+            TouchText::Pending { at: pointer, deadline: Instant::now() + LONG_PRESS }
+        } else {
+            TouchText::Selecting
+        });
+        true
+    }
+
+    /// Move the caret to the pointer *without* selecting: the anchor follows it,
+    /// so the range stays empty. This is what a finger dragging on text does on
+    /// a phone, where selecting is what the long press is for.
+    fn drag_caret(&mut self, pointer: (f64, f64)) {
+        let Some(model) = self.focused.clone() else { return };
+        let Some(region) = self.focuses.iter().find(|f| f.model == model).cloned() else {
+            return;
+        };
+        let (fx, fy) = self.logical(pointer);
+        let caret = self.index_in(&region, fx, fy);
+        if caret != self.caret || self.anchor != caret {
+            self.set_focus_range(Some(Focus { model, caret, anchor: caret, preedit: None }));
+        }
     }
 
     /// Extend the selection to the pointer while dragging inside an input: the
@@ -1287,6 +1679,14 @@ impl App {
         // it takes the tap first. Anything else would have the panel swallow
         // taps meant for it while passing them to whatever it is covering.
         if self.dismiss_overlay_at(fx, fy) {
+            return;
+        }
+
+        // The selection toolbar sits above the page like the dropdown, so it
+        // takes the tap before anything under it. Checked before the dropdown
+        // because the two are never up together: opening a select drops focus.
+        if let Some(action) = self.toolbar_action_at(fx, fy) {
+            self.run_text_action(action);
             return;
         }
 
@@ -1494,58 +1894,104 @@ impl App {
     /// Ctrl+V arrives as `Key::Character("v")`.
     fn text_shortcut(&mut self, key: &Key, model: &str) -> bool {
         let Key::Character(s) = key else { return false };
-        let value = self.document.engine_mut().get_string(model);
+        // The bodies live in named methods because the selection toolbar runs
+        // the same four actions from a tap. Two implementations of "cut" would
+        // drift the moment one of them learned about something the other did
+        // not.
         match s.to_lowercase().as_str() {
-            "a" => {
-                self.set_focus_range(Some(Focus {
-                    model: model.to_string(),
-                    caret: value.len(),
-                    anchor: 0,
-                    preedit: None,
-                }));
-            }
-            "c" => {
-                if let Some(text) = self.selected_text() {
-                    self.clipboard_write(&text);
-                }
-            }
-            "x" => {
-                if let Some(text) = self.selected_text() {
-                    self.clipboard_write(&text);
-                    let (start, end) = self.selection();
-                    let mut value = value;
-                    value.replace_range(start.min(value.len())..end.min(value.len()), "");
-                    self.document.apply_edit(model, &value);
-                    self.set_focus_range(Some(Focus::at(model, start)));
-                }
-            }
-            "v" => {
-                let Some(pasted) = self.clipboard_read() else {
-                    return true;
-                };
-                // A single-line input takes the first line only, pasting a block
-                // of text into a one-line field shouldn't smuggle newlines in.
-                let pasted = if self.focused_multiline {
-                    pasted.replace("\r\n", "\n")
-                } else {
-                    pasted.lines().next().unwrap_or("").to_string()
-                };
-                let (start, end) = self.selection();
-                let mut value = value;
-                let (start, end) = (start.min(value.len()), end.min(value.len()));
-                value.replace_range(start..end, &pasted);
-                let caret = start + pasted.len();
-                self.document.apply_edit(model, &value);
-                self.scroll_caret_into_view(model, &value, caret);
-                self.set_focus_range(Some(Focus::at(model, caret)));
-            }
+            "a" => self.select_all_text(model),
+            "c" => self.copy_selection(),
+            "x" => self.cut_selection(model),
+            "v" => self.request_paste(model),
             _ => return false,
         }
         true
     }
 
-    /// Keep the caret visible in a scrolling textarea: adjust its scroll offset so
-    /// the caret line sits inside the box. No-op for non-scrolling inputs.
+    fn select_all_text(&mut self, model: &str) {
+        let value = self.document.engine_mut().get_string(model);
+        self.set_focus_range(Some(Focus {
+            model: model.to_string(),
+            caret: value.len(),
+            anchor: 0,
+            preedit: None,
+        }));
+    }
+
+    fn copy_selection(&mut self) {
+        if let Some(text) = self.selected_text() {
+            self.clipboard_write(&text);
+        }
+    }
+
+    fn cut_selection(&mut self, model: &str) {
+        let Some(text) = self.selected_text() else { return };
+        self.clipboard_write(&text);
+        let value = self.document.engine_mut().get_string(model);
+        let (start, end) = self.selection();
+        let mut value = value;
+        value.replace_range(start.min(value.len())..end.min(value.len()), "");
+        self.document.apply_edit(model, &value);
+        self.set_focus_range(Some(Focus::at(model, start)));
+    }
+
+    /// Ask for the clipboard's contents and paste them.
+    ///
+    /// Native reads it here and pastes immediately. The web cannot: the Clipboard
+    /// API is a promise, and permission may even be prompted for, so the read is
+    /// started here and the paste happens later, when [`RuxEvent::WebPaste`]
+    /// arrives. Both ends meet in [`apply_paste`](Self::apply_paste).
+    #[cfg(not(target_arch = "wasm32"))]
+    fn request_paste(&mut self, model: &str) {
+        if let Some(pasted) = self.clipboard_read() {
+            self.apply_paste(model, &pasted);
+        }
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn request_paste(&mut self, _model: &str) {
+        use wasm_bindgen_futures::JsFuture;
+
+        let Some(clipboard) = web_clipboard() else { return };
+        let promise = clipboard.read_text();
+        wasm_bindgen_futures::spawn_local(async move {
+            // A rejection is the ordinary case when the user declines the
+            // permission prompt, so it is silent rather than a warning: refusing
+            // to paste is not an error in the document.
+            let Ok(value) = JsFuture::from(promise).await else { return };
+            let Some(text) = value.as_string() else { return };
+            WEB_PROXY.with(|p| {
+                if let Some(proxy) = p.borrow().as_ref() {
+                    let _ = proxy.send_event(RuxEvent::WebPaste(text));
+                }
+            });
+        });
+    }
+
+    /// Replace the selection with `pasted`, or insert it at the caret.
+    fn apply_paste(&mut self, model: &str, pasted: &str) {
+        // A single-line input takes the first line only, pasting a block
+        // of text into a one-line field shouldn't smuggle newlines in.
+        let pasted = if self.focused_multiline {
+            pasted.replace("\r\n", "\n")
+        } else {
+            pasted.lines().next().unwrap_or("").to_string()
+        };
+        let value = self.document.engine_mut().get_string(model);
+        let (start, end) = self.selection();
+        let mut value = value;
+        let (start, end) = (start.min(value.len()), end.min(value.len()));
+        value.replace_range(start..end, &pasted);
+        let caret = start + pasted.len();
+        self.document.apply_edit(model, &value);
+        self.scroll_caret_into_view(model, &value, caret);
+        self.set_focus_range(Some(Focus::at(model, caret)));
+    }
+
+    /// Keep the caret visible in a scrolling textarea: adjust its scroll offset
+    /// so the caret *line* sits inside the box. No-op for a single-line input,
+    /// which has no scroll region; its horizontal equivalent is
+    /// [`track_caret_x`](Self::track_caret_x), applied once per frame.
     fn scroll_caret_into_view(&mut self, model: &str, value: &str, caret: usize) {
         let Some(region) = self.focuses.iter().find(|f| f.model == model).cloned() else {
             return;
@@ -1665,6 +2111,13 @@ impl App {
         if focus.as_ref().and_then(|f| f.preedit).is_none() {
             self.cancel_preedit();
         }
+        // A different field starts unscrolled: the offset belongs to the text
+        // being edited, and carrying it over would show the new field's value
+        // already scrolled to somewhere the caret is not.
+        let next = focus.as_ref().map(|f| f.model.as_str());
+        if next != self.focused.as_deref() {
+            self.text_scroll = 0.0;
+        }
         self.focused = focus.as_ref().map(|f| f.model.clone());
         self.caret = focus.as_ref().map(|f| f.caret).unwrap_or(0);
         self.anchor = focus.as_ref().map(|f| f.anchor).unwrap_or(0);
@@ -1716,10 +2169,21 @@ impl App {
         // keyboard. Writing the value or the selection back on every edit would
         // fight the browser for the caret mid-word, and the browser is the one
         // holding the composition.
+        let caret16 = byte_to_utf16_index(&value, self.caret.min(value.len())) as u32;
+        let anchor16 = byte_to_utf16_index(&value, self.anchor.min(value.len())) as u32;
+        let (start, end, direction) = browser_selection(anchor16, caret16);
         if el.value() != value {
             el.set_value(&value);
-            let caret = byte_to_utf16_index(&value, self.caret.min(value.len())) as u32;
-            let _ = el.set_selection_range(caret, caret);
+            let _ = el.set_selection_range_with_direction(start, end, direction);
+        } else if el.selection_start().ok().flatten() != Some(start)
+            || el.selection_end().ok().flatten() != Some(end)
+        {
+            // The text is unchanged but the selection moved on our side: a drag
+            // across the canvas, a double-tap on a word, a handler selecting
+            // all. The browser has to be told, because its own copy, cut and
+            // select-all read the hidden input's selection and nothing else.
+            // Leaving this out is what made copy on a phone act on no text.
+            let _ = el.set_selection_range_with_direction(start, end, direction);
         }
         let _ = el.focus();
         self.position_web_ime();
@@ -1752,7 +2216,7 @@ impl App {
     /// the hidden input's new contents. So this replaces the field's value
     /// outright rather than applying a keystroke to it.
     #[cfg(target_arch = "wasm32")]
-    fn apply_web_text(&mut self, value: String, caret: usize, composing: usize) {
+    fn apply_web_text(&mut self, value: String, caret: usize, anchor: usize, composing: usize) {
         let Some(model) = self.focused.clone() else { return };
         // A one-line field never takes a newline, the rule paste already follows.
         let value = if self.focused_multiline {
@@ -1761,6 +2225,7 @@ impl App {
             value.replace(['\n', '\r'], "")
         };
         let caret = floor_char_boundary(&value, caret.min(value.len()));
+        let anchor = floor_char_boundary(&value, anchor.min(value.len()));
         let preedit = (composing > 0 && composing <= caret)
             .then(|| (floor_char_boundary(&value, caret - composing), caret));
         // The browser is running the composition, so the shell's own
@@ -1768,7 +2233,7 @@ impl App {
         self.preedit = None;
         self.document.apply_edit(&model, &value);
         self.scroll_caret_into_view(&model, &value, caret);
-        self.set_focus_range(Some(Focus { model, caret, anchor: caret, preedit }));
+        self.set_focus_range(Some(Focus { model, caret, anchor, preedit }));
     }
 
     /// Park the candidate window under the caret instead of at the window's
@@ -1943,16 +2408,22 @@ impl App {
         self.clipboard.as_mut()?.get_text().ok()
     }
 
-    // On the web the clipboard is asynchronous and permission-gated, so it can't
-    // be read inside a synchronous key handler. Ctrl+C/X/V therefore do nothing
-    // for now, the same graceful no-op as a native platform that denies us a
-    // clipboard. Wiring the async Clipboard API through the event loop is
-    // tracked as playground work, not shell work.
+    // On the web the clipboard is asynchronous and permission-gated. Writing can
+    // be fired and forgotten; reading cannot, so it does not go through
+    // `clipboard_read` at all: see `request_paste`.
     #[cfg(target_arch = "wasm32")]
-    fn clipboard_write(&mut self, _text: &str) {}
+    fn clipboard_write(&mut self, text: &str) {
+        let Some(clipboard) = web_clipboard() else { return };
+        // The promise is deliberately dropped. A rejection (no permission, not a
+        // secure context) means the copy did not happen, and there is nothing
+        // useful to do about it in a UI with no place to report it.
+        let _ = clipboard.write_text(text);
+    }
 
     #[cfg(target_arch = "wasm32")]
     fn clipboard_read(&mut self) -> Option<String> {
+        // Unreachable in practice: `request_paste` takes the async path on the
+        // web. Kept so the native and web shells present the same surface.
         None
     }
 
@@ -1994,10 +2465,12 @@ impl App {
             states,
             overlay_dismissed,
             overlay_rect,
+            caret,
+            anchor,
+            text_scroll,
+            focused,
             #[cfg(not(target_arch = "wasm32"))]
             path,
-            #[cfg(not(target_arch = "wasm32"))]
-            focused,
             ..
         } = self;
         let Some(state) = state.as_mut() else {
@@ -2014,7 +2487,7 @@ impl App {
 
         // Layout (text sized via the engine's measure), then paint. Cache the
         // hit regions for tap dispatch.
-        let layout = {
+        let mut layout = {
             let mut measure = |tc: &rux_layout::TextContent, mw: Option<f32>| {
                 text.measure(&tc.text, &rux_paint::text_style(tc), mw)
             };
@@ -2033,6 +2506,27 @@ impl App {
         offsets.resize(layout.scrolls.len(), Offset::default());
         for region in &layout.scrolls {
             offsets[region.id] = offsets[region.id].clamp_to(region.max);
+        }
+
+        // Keep the focused single-line input's caret inside its box.
+        //
+        // Done here, once per frame, rather than at each place the caret moves:
+        // typing, arrows, Home/End, a tap, a drag, an IME commit and the
+        // browser's own keyboard all end up here, and one rule covers them all
+        // where six call sites would eventually disagree.
+        let shift = Self::track_caret_x(&layout, focused.as_deref(), *caret, text_scroll, text, document);
+        if shift != 0.0 {
+            // Only the focused input has a caret, so this finds exactly one text
+            // paint. Everything the painter draws for it (glyphs, caret,
+            // selection, preedit) is placed from this single x, so moving it
+            // moves them together, and the box's own clip hides the rest.
+            for paint in layout.paints.iter_mut() {
+                if let Paint::Text(t) = paint {
+                    if t.content.caret.is_some() {
+                        t.x -= shift;
+                    }
+                }
+            }
         }
 
         let content = rux_paint::build_scene(&layout.paints, text, images, caret_visible);
@@ -2054,6 +2548,23 @@ impl App {
         if let Some(item) = focus_index.and_then(|i| layout.focusables.get(i)) {
             let ring = rux_paint::build_scene(&focus_ring(item), text, images, false);
             state.scene.append(&ring, Some(Affine::scale(scale)));
+        }
+
+        // The selection toolbar, over the content while something is selected.
+        // It is the only route to copy and paste on a phone, and on the web at
+        // all, so it is drawn above the page rather than inside it.
+        if *caret != *anchor {
+            if let Some(r) = focused
+                .as_deref()
+                .and_then(|m| layout.focuses.iter().find(|f| f.model == m))
+            {
+                let strip = toolbar_paints(
+                    (r.x, r.y, r.width, r.height),
+                    (logical.0 as f32, logical.1 as f32),
+                );
+                let scene = rux_paint::build_scene(&strip, text, images, false);
+                state.scene.append(&scene, Some(Affine::scale(scale)));
+            }
         }
 
         // An open `select` draws its dropdown on top of everything else.
@@ -2312,8 +2823,20 @@ impl ApplicationHandler<RuxEvent> for App {
             RuxEvent::SetSource(source) => self.set_source(source),
 
             #[cfg(target_arch = "wasm32")]
-            RuxEvent::WebText { value, caret, composing } => {
-                self.apply_web_text(value, caret, composing)
+            RuxEvent::WebText { value, caret, anchor, composing } => {
+                self.apply_web_text(value, caret, anchor, composing)
+            }
+
+            // The clipboard read started by a paste has come back. The field may
+            // have lost focus in the meantime, in which case there is nowhere to
+            // put it and dropping it is right.
+            #[cfg(target_arch = "wasm32")]
+            RuxEvent::WebPaste(text) => {
+                if let Some(model) = self.focused.clone() {
+                    self.apply_paste(&model, &text);
+                    self.sync_web_ime();
+                    self.request_redraw();
+                }
             }
 
             // Asking winit to resize restyles the canvas and then reports a
@@ -2431,7 +2954,7 @@ impl ApplicationHandler<RuxEvent> for App {
                         // start a drag as a side effect and must not run when the
                         // panel took the press.
                         if self.overlay_covers_physical(at)
-                            || (!self.press_scrollbar(at) && !self.press_text(at))
+                            || (!self.press_scrollbar(at) && !self.press_text_touch(at))
                         {
                             self.press = Some(at);
                         }
@@ -2440,8 +2963,24 @@ impl ApplicationHandler<RuxEvent> for App {
                         self.pointer = at;
                         if self.bar_drag.is_some() {
                             self.drag_scrollbar(at);
-                        } else if self.text_drag {
-                            self.drag_text(at);
+                        } else if let Some(state) = self.touch_text {
+                            // The finger is on text. Which of the three gestures
+                            // this is depends on whether the press had time to
+                            // become a long one before it moved.
+                            let from = match state {
+                                TouchText::Pending { at, .. } => at,
+                                _ => at,
+                            };
+                            let moved = (at.0 - from.0).hypot(at.1 - from.1);
+                            let next = touch_text_after_move(state, moved);
+                            self.touch_text = Some(next);
+                            match next {
+                                TouchText::Selecting => self.drag_text(at),
+                                TouchText::Caret => self.drag_caret(at),
+                                // Still resting inside the slop: the press has
+                                // not decided yet, so nothing moves.
+                                TouchText::Pending { .. } => {}
+                            }
                         } else if let Some((lx, ly)) = self.touch.replace(here) {
                             self.scroll_at(at, lx - here.0, ly - here.1);
                         }
@@ -2453,6 +2992,12 @@ impl ApplicationHandler<RuxEvent> for App {
                             return;
                         }
                         if std::mem::take(&mut self.text_drag) {
+                            return;
+                        }
+                        // A finger lifting off text has already had its effect,
+                        // whichever gesture it turned out to be, and must not
+                        // also reach the app as a tap.
+                        if self.touch_text.take().is_some() {
                             return;
                         }
                         // A finger wanders more than a mouse, but the slop that
@@ -2468,6 +3013,9 @@ impl ApplicationHandler<RuxEvent> for App {
                         self.press = None;
                         self.bar_drag = None;
                         self.text_drag = false;
+                        // Dropping this also disarms a pending long press, so a
+                        // cancelled touch cannot select a word after the fact.
+                        self.touch_text = None;
                     }
                 }
             }
@@ -2534,15 +3082,36 @@ impl ApplicationHandler<RuxEvent> for App {
     /// focused, wake every `BLINK` to toggle the caret. With no focus the
     /// deadline is `None`, so we wait indefinitely for the next real event.
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        match self.blink_deadline {
-            Some(deadline) => {
-                if Instant::now() >= deadline {
-                    self.caret_visible = !self.caret_visible;
-                    self.blink_deadline = Some(Instant::now() + BLINK);
+        // A resting finger is the second clock, and the reason this is not just
+        // the blink any more: nothing arrives to say a press has gone on long
+        // enough, so the deadline has to be waited on and checked here.
+        if let Some(TouchText::Pending { at, deadline }) = self.touch_text {
+            if Instant::now() >= deadline {
+                // Whether or not a word was there to take, the press has
+                // resolved: it must not stay pending and fire again later.
+                self.touch_text = Some(TouchText::Selecting);
+                if self.select_word_at(at) {
                     self.request_redraw();
                 }
-                event_loop.set_control_flow(ControlFlow::WaitUntil(self.blink_deadline.unwrap()));
             }
+        }
+
+        if let Some(deadline) = self.blink_deadline {
+            if Instant::now() >= deadline {
+                self.caret_visible = !self.caret_visible;
+                self.blink_deadline = Some(Instant::now() + BLINK);
+                self.request_redraw();
+            }
+        }
+
+        // Wake for whichever clock is due first. With neither running, wait
+        // indefinitely for a real event, as before.
+        let long_press = match self.touch_text {
+            Some(TouchText::Pending { deadline, .. }) => Some(deadline),
+            _ => None,
+        };
+        match [self.blink_deadline, long_press].into_iter().flatten().min() {
+            Some(next) => event_loop.set_control_flow(ControlFlow::WaitUntil(next)),
             None => event_loop.set_control_flow(ControlFlow::Wait),
         }
     }
@@ -2607,6 +3176,15 @@ fn web_is_touch() -> bool {
         .and_then(|w| w.match_media("(pointer: coarse)").ok().flatten())
         .map(|m| m.matches())
         .unwrap_or(false)
+}
+
+/// The browser's clipboard, when there is one.
+///
+/// Absent outside a secure context, which is also where WebGPU is absent, so in
+/// practice this only fails on a page that could not have rendered anyway.
+#[cfg(target_arch = "wasm32")]
+fn web_clipboard() -> Option<web_sys::Clipboard> {
+    Some(web_sys::window()?.navigator().clipboard())
 }
 
 /// The hidden input, created and wired on first use.
@@ -2697,12 +3275,20 @@ fn web_send_text(el: &web_sys::HtmlInputElement) {
     // from: it indexes strings by byte. Converting through the prefix keeps a
     // caret after an emoji or a CJK character in the right place instead of
     // several bytes short.
-    let caret16 = el.selection_start().ok().flatten().unwrap_or(0) as usize;
+    let start16 = el.selection_start().ok().flatten().unwrap_or(0) as usize;
+    let end16 = el.selection_end().ok().flatten().map_or(start16, |v| v as usize);
+    // `selectionStart`/`End` are ordered, so on their own they cannot say which
+    // end the caret is at. `selectionDirection` is what distinguishes a
+    // selection dragged leftwards from the same range dragged rightwards, and
+    // getting it wrong makes Shift+arrow extend from the wrong end afterwards.
+    let backward = el.selection_direction().ok().flatten().as_deref() == Some("backward");
+    let (anchor16, caret16) = rux_selection(start16, end16, backward);
     let caret = utf16_to_byte_index(&value, caret16);
+    let anchor = utf16_to_byte_index(&value, anchor16);
     let composing = WEB_COMPOSING.with(|c| *c.borrow()).min(caret);
     WEB_PROXY.with(|p| {
         if let Some(proxy) = p.borrow().as_ref() {
-            let _ = proxy.send_event(RuxEvent::WebText { value, caret, composing });
+            let _ = proxy.send_event(RuxEvent::WebText { value, caret, anchor, composing });
         }
     });
 }
@@ -2716,6 +3302,35 @@ fn web_send_text(el: &web_sys::HtmlInputElement) {
 //
 // Compiled for the web, which is the only caller, and for tests, which are the
 // reason it is not simply inside the wasm module.
+
+/// Rux's `(anchor, caret)` as the browser's `(start, end, direction)`.
+///
+/// Rux stores a selection as two ends where the caret is the moving one. A DOM
+/// input stores an ordered range plus a direction, so the caret's end is only
+/// recoverable from `selectionDirection`. Mapping the two is pure arithmetic and
+/// lives here so it can be tested without a browser.
+#[cfg(any(target_arch = "wasm32", test))]
+fn browser_selection(anchor: u32, caret: u32) -> (u32, u32, &'static str) {
+    if anchor <= caret {
+        (anchor, caret, "forward")
+    } else {
+        (caret, anchor, "backward")
+    }
+}
+
+/// The inverse: the browser's ordered range and direction as Rux's ends.
+///
+/// A collapsed range is reported `"none"` rather than a direction, which lands
+/// on the forward arm and gives `anchor == caret`, meaning nothing selected.
+/// That is the same thing Rux means by it.
+#[cfg(any(target_arch = "wasm32", test))]
+fn rux_selection(start: usize, end: usize, backward: bool) -> (usize, usize) {
+    if backward {
+        (end, start)
+    } else {
+        (start, end)
+    }
+}
 
 /// Byte index of the character boundary at or before `units` UTF-16 code units
 /// into `s`.
@@ -2760,7 +3375,10 @@ fn floor_char_boundary(s: &str, mut index: usize) -> usize {
 
 #[cfg(test)]
 mod caret_index {
-    use super::{byte_to_utf16_index, floor_char_boundary, utf16_to_byte_index};
+    use super::{
+        Instant, TAP_SLOP, TouchText, browser_selection, byte_to_utf16_index, toolbar_layout,
+        floor_char_boundary, rux_selection, touch_text_after_move, utf16_to_byte_index,
+    };
 
     /// ASCII is the case where the two agree, and the one every other case is
     /// measured against.
@@ -2808,6 +3426,97 @@ mod caret_index {
         assert_eq!(byte_to_utf16_index(s, 99), 2);
         assert_eq!(floor_char_boundary(s, 99), 2);
         assert_eq!(floor_char_boundary("é", 1), 0);
+    }
+
+    /// A DOM input stores an ordered range and a direction; Rux stores two ends
+    /// with the caret as the moving one. A selection dragged leftwards is the
+    /// same range as one dragged rightwards, so the direction is the only thing
+    /// carrying which end the caret is at.
+    #[test]
+    fn a_selection_keeps_which_end_the_caret_is_at() {
+        assert_eq!(browser_selection(2, 7), (2, 7, "forward"));
+        assert_eq!(browser_selection(7, 2), (2, 7, "backward"), "dragged leftwards");
+        assert_eq!(browser_selection(4, 4), (4, 4, "forward"), "collapsed");
+
+        assert_eq!(rux_selection(2, 7, false), (2, 7));
+        assert_eq!(rux_selection(2, 7, true), (7, 2), "caret at the left end");
+        // A collapsed range reports "none", which is not "backward", so it takes
+        // the forward arm and means nothing is selected.
+        assert_eq!(rux_selection(4, 4, false), (4, 4));
+    }
+
+    /// The painter draws the toolbar from this and the hit test reads it, so a
+    /// button's box must be exactly where it is painted, and the strip must stay
+    /// on screen for a field at either edge.
+    #[test]
+    fn the_toolbar_sits_where_its_buttons_are_hit() {
+        let viewport = (400.0, 800.0);
+        let ((x, y, w, h), buttons) = toolbar_layout((20.0, 300.0, 200.0, 40.0), viewport);
+
+        // Buttons tile the strip exactly: no gap to fall through, no overlap.
+        assert_eq!(buttons.len(), 4);
+        assert!((buttons[0].1 - x).abs() < f32::EPSILON, "first starts at the panel");
+        let mut edge = x;
+        for (_, bx, by, bw, bh) in &buttons {
+            assert!((bx - edge).abs() < 0.001, "buttons are contiguous");
+            assert_eq!((*by, *bh), (y, h), "all share the strip's line");
+            edge += bw;
+        }
+        assert!((edge - (x + w)).abs() < 0.001, "and fill it exactly");
+
+        // Above the field, since there is room above it.
+        assert!(y + h < 300.0, "sits above the field: {y}");
+
+        // A field at the top has no room above, so the strip goes below it.
+        let ((_, below_y, _, _), _) = toolbar_layout((20.0, 0.0, 200.0, 40.0), viewport);
+        assert!(below_y >= 40.0, "drops below the field instead: {below_y}");
+
+        // A field against the right edge must not push the strip off screen.
+        let ((right_x, _, right_w, _), _) = toolbar_layout((380.0, 300.0, 200.0, 40.0), viewport);
+        assert!(right_x >= 0.0, "never off the left edge");
+        assert!(right_x + right_w <= viewport.0 + 0.001, "nor off the right: {right_x}");
+    }
+
+    /// A finger drag on text moved the caret on a phone only after v0.5.1;
+    /// before that it selected, because touch was routed down the mouse's path.
+    /// These are the transitions that separate the two.
+    #[test]
+    fn a_finger_that_moves_before_the_long_press_drags_the_caret() {
+        let pending = TouchText::Pending { at: (0.0, 0.0), deadline: Instant::now() };
+
+        // Inside the slop the press has not decided: it can still become a
+        // selection if the finger stays put.
+        assert_eq!(touch_text_after_move(pending, 0.0), pending);
+        assert_eq!(touch_text_after_move(pending, TAP_SLOP), pending);
+
+        // Past it, the gesture is a caret drag, and cannot become a selection
+        // later however long the finger then rests.
+        assert_eq!(touch_text_after_move(pending, TAP_SLOP + 0.1), TouchText::Caret);
+        assert_eq!(touch_text_after_move(TouchText::Caret, 0.0), TouchText::Caret);
+        assert_eq!(touch_text_after_move(TouchText::Caret, 500.0), TouchText::Caret);
+
+        // Once a word has been taken, every further movement extends it. This
+        // is the only path that selects.
+        assert_eq!(touch_text_after_move(TouchText::Selecting, 0.0), TouchText::Selecting);
+        assert_eq!(touch_text_after_move(TouchText::Selecting, 500.0), TouchText::Selecting);
+    }
+
+    /// The two directions are inverses. Round-tripping is what catches a
+    /// direction bug: pushing a backward selection to the browser and reading it
+    /// straight back must not silently flip the caret to the other end, which is
+    /// what makes a later Shift+arrow extend the wrong way.
+    #[test]
+    fn pushing_a_selection_and_reading_it_back_is_lossless() {
+        for (anchor, caret) in [(0u32, 0u32), (0, 5), (5, 0), (3, 9), (9, 3), (4, 4)] {
+            let (start, end, direction) = browser_selection(anchor, caret);
+            let backward = direction == "backward";
+            let (back_anchor, back_caret) = rux_selection(start as usize, end as usize, backward);
+            assert_eq!(
+                (back_anchor as u32, back_caret as u32),
+                (anchor, caret),
+                "round trip changed ({anchor}, {caret})"
+            );
+        }
     }
 }
 

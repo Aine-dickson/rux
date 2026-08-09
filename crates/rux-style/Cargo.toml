@@ -4,12 +4,14 @@ edition.workspace = true
 version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Rux styling: literal CSS (lightningcss) cascaded onto the template tree."
+description = "Rux styling: literal CSS (lightningcss) cascaded onto the template tree. Internal to Rux; the supported entry point is the ruxlang crate."
+keywords = ["ui", "css", "styling", "cascade"]
+categories = ["gui"]
 
 [dependencies]
-rux-parser = { path = "../rux-parser" }
-rux-layout = { path = "../rux-layout" }
-rux-reactive = { path = "../rux-reactive" }
-rux-script = { path = "../rux-script" }
+rux-parser.workspace = true
+rux-layout.workspace = true
+rux-reactive.workspace = true
+rux-script.workspace = true
 lightningcss = "1.0.0-alpha.71"
 # lightningcss added via `cargo add` so the exact published version is pinned.
