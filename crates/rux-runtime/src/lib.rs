@@ -1116,6 +1116,74 @@ mod tests {
         assert_eq!(selection_of(&doc.root, "city"), None);
     }
 
+    /// `r-key` stamps each row with what it stands for, and the stamp survives
+    /// a reorder: after reversing the data, the row carrying key `b` is the one
+    /// at the front. Nothing consumes this yet (see the note on
+    /// `LayoutNode::key`), but it is the only thing in a document that says a
+    /// row is the same row.
+    #[test]
+    fn a_key_identifies_a_row_across_a_reorder() {
+        let mut doc = Document::from_source(
+            "<template><screen>\
+               <text r-for=\"row in rows\" r-key=\"row.id\">{{ row.text }}</text>\
+             </screen></template>
+             <script>\
+               let rows = signal([\
+                 #{ id: \"a\", text: \"alpha\" },\
+                 #{ id: \"b\", text: \"bravo\" }\
+               ]);\
+               </script>",
+        )
+        .expect("load");
+        let keys = |d: &Document| -> Vec<Option<String>> {
+            d.root.children.iter().map(|c| c.key.clone()).collect()
+        };
+        assert_eq!(keys(&doc), vec![Some("a".into()), Some("b".into())]);
+
+        assert!(
+            doc.apply_handler(
+                "rows = [#{ id: \"b\", text: \"bravo\" }, #{ id: \"a\", text: \"alpha\" }];"
+            ),
+            "the reorder changed a signal"
+        );
+        assert_eq!(
+            keys(&doc),
+            vec![Some("b".into()), Some("a".into())],
+            "the keys moved with their rows"
+        );
+        assert!(find_text(&doc.root, "bravo"));
+    }
+
+    /// Two rows claiming one identity is worse than none, so it is said out
+    /// loud. Same for a key on an element that is not a row at all.
+    #[test]
+    fn keys_that_cannot_work_are_warned_about() {
+        let _ = take_warnings();
+        let doc = Document::from_source(
+            "<template><screen>\
+               <text r-for=\"row in rows\" r-key=\"row.id\">{{ row.id }}</text>\
+             </screen></template>
+             <script>let rows = signal([#{ id: \"a\" }, #{ id: \"a\" }]);</script>",
+        )
+        .expect("load");
+        assert!(
+            doc.diagnostics.warnings.iter().any(|w| w.message.contains("duplicate key")),
+            "duplicate keys are reported: {:?}",
+            doc.diagnostics.warnings
+        );
+
+        let _ = take_warnings();
+        let doc = Document::from_source(
+            "<template><screen><text r-key=\"x\">hi</text></screen></template>",
+        )
+        .expect("load");
+        assert!(
+            doc.diagnostics.warnings.iter().any(|w| w.message.contains("without `r-for`")),
+            "a key with no list is reported: {:?}",
+            doc.diagnostics.warnings
+        );
+    }
+
     /// A collapsed selection is no selection: a plain caret must not paint a
     /// zero-width highlight.
     #[test]

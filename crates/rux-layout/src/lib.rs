@@ -543,6 +543,14 @@ pub struct Node {
     pub state_path: Option<Vec<usize>>,
     /// What this element is, for assistive technology.
     pub access: Access,
+    /// `r-key` on an `r-for` row: which *item* this node stands for, rather than
+    /// which slot it happens to occupy.
+    ///
+    /// Without it a list is identified by position, so reordering the data moves
+    /// every row's identity by one and anything attached to a row (the caret,
+    /// most visibly) stays behind with the slot. The runtime uses this to follow
+    /// a row across a reorder. Layout itself ignores it.
+    pub key: Option<String>,
 }
 
 impl Node {
@@ -563,6 +571,7 @@ impl Node {
             focus_model: None,
             state_path: None,
             access: Access::default(),
+            key: None,
         }
     }
 
@@ -583,6 +592,7 @@ impl Node {
             focus_model: None,
             state_path: None,
             access: Access::default(),
+            key: None,
         }
     }
 
@@ -603,6 +613,7 @@ impl Node {
             focus_model: None,
             state_path: None,
             access: Access::default(),
+            key: None,
         }
     }
 

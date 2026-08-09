@@ -2369,6 +2369,9 @@ fn build_node(
         focus_model: None,
         state_path,
         access: Access::default(),
+        // Filled in by the `r-for` expansion, which is the only place that knows
+        // an element is a row and which item it stands for.
+        key: None,
     };
     // A tappable box is a button, named by the text inside it, that is how
     // `<view @tap><text>Save</text></view>` announces as "Save, button". A
@@ -2492,6 +2495,14 @@ fn build_children(
 
     for (ti, el) in elements.iter().enumerate() {
         let ctp = child_tpl(ti);
+        if el.attr("r-key").is_some() && el.attr("r-for").is_none() {
+            // A key with nothing to identify. Silently ignoring it would let
+            // someone believe their list was keyed when it was not.
+            warn(format!(
+                "`r-key` on <{}> does nothing without `r-for` on the same element",
+                el.tag
+            ));
+        }
         // r-for expands the element once per collection item; it ends any chain.
         // The collection is a structural read, a change re-diffs the list.
         if let Some(for_expr) = el.attr("r-for") {
@@ -2504,11 +2515,36 @@ fn build_children(
                 structural_deps.extend(deps);
                 let items = value.and_then(|v| v.as_list().map(<[Value]>::to_vec));
                 if let Some(items) = items {
+                    // `r-key` names what a row *is*, so the runtime can follow it
+                    // when the list reorders instead of tracking slots.
+                    let key_expr = el.attr("r-key");
+                    let mut seen_keys: Vec<String> = Vec::new();
                     for item in items {
                         let mut child_locals = locals.clone();
                         child_locals.push((var.to_string(), item));
                         let cp = child_path(&out);
-                        out.push(build_node(el, rules, comps, ancestors, &prev, inherited, engine, &child_locals, &cp, &ctp, reg, state));
+                        let mut node = build_node(el, rules, comps, ancestors, &prev, inherited, engine, &child_locals, &cp, &ctp, reg, state);
+                        if let Some(expr) = key_expr {
+                            let key = engine.eval_display(expr, &child_locals);
+                            if key.is_empty() {
+                                warn(format!(
+                                    "`r-key=\"{expr}\"` evaluated to nothing on one row, so that \
+                                     row has no identity and will be treated as a new one"
+                                ));
+                            } else if seen_keys.contains(&key) {
+                                // Two rows claiming one identity is worse than
+                                // none: whatever follows a key follows the wrong
+                                // row, silently.
+                                warn(format!(
+                                    "`r-key=\"{expr}\"` produced the duplicate key `{key}`; keys \
+                                     must be unique within a list, or rows cannot be told apart"
+                                ));
+                            } else {
+                                seen_keys.push(key.clone());
+                            }
+                            node.key = Some(key);
+                        }
+                        out.push(node);
                         prev.push(ElemDesc::of(el));
                     }
                 }
