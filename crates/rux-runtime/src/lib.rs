@@ -480,6 +480,9 @@ impl Document {
             components.insert(import.tag, comp_sfc);
         }
 
+        // Before the first build: a `:to` calling `path_for` is evaluated
+        // during that build, so the names have to be known by then.
+        rux_script::set_routes(rux_style::named_routes(&sfc.template));
         let mut engine = build_engine(&combined_script).map_err(LoadError::plain)?;
         let mut instances = Instances::new();
         let (mut root, registry) = rux_style::build_styled_tree_tracked(&sfc, &components, &mut engine, &mut instances)
@@ -531,6 +534,7 @@ impl Document {
         }
         let (main_script, _imports) = extract_imports(&sfc.script);
         let (main_script, computeds, effects) = extract_reactives(&main_script);
+        rux_script::set_routes(rux_style::named_routes(&sfc.template));
         let mut engine = build_engine(&main_script).map_err(LoadError::plain)?;
         let mut instances = Instances::new();
         let (mut root, registry) =
@@ -1008,8 +1012,21 @@ impl Document {
         moved
     }
 
-    /// The path the document is on.
+    /// The path the document is on, without any query string.
+    ///
+    /// The same thing the `route` signal holds, so `doc.route()` and
+    /// `{{ route }}` cannot disagree. For the whole address, query included,
+    /// see [`Document::location`].
     pub fn route(&self) -> &str {
+        rux_script::split_query(self.history.current()).0
+    }
+
+    /// The whole address the document is on, query string included.
+    ///
+    /// What a URL bar shows and what `--route` accepts. The history stores
+    /// this rather than the bare path, so going back to a search restores what
+    /// was being searched for.
+    pub fn location(&self) -> &str {
         self.history.current()
     }
 
@@ -1080,16 +1097,19 @@ impl Document {
         self.history.forward() && self.show_current_route()
     }
 
-    /// Move the document to whatever path the history now points at.
+    /// Move the document to whatever the history now points at.
     fn show_current_route(&mut self) -> bool {
-        let path = self.history.current().to_string();
+        let location = self.history.current().to_string();
+        // The *path*, because that is what a view records itself against: a
+        // query is an argument to a page and does not make it a different one.
+        let path = rux_script::split_query(&location).0.to_string();
         // A route's views are dropped when we leave it, so visiting one a second
         // time starts fresh instead of resuming where it was left. That is what
         // every router does, and the alternative here would be accidental:
         // instance state is keyed by template position and would otherwise
         // simply still be sitting there.
         self.instances.retain(|_, i| i.route.as_deref().is_none_or(|r| r == path));
-        let moved = self.publish_route(&path);
+        let moved = self.publish_route(&location);
         if !moved {
             return false;
         }
@@ -1116,11 +1136,17 @@ impl Document {
     /// `params` is matched against the template's routes *before* the build.
     /// Falling out of the build instead would leave `{{ params.id }}` written
     /// outside the router rendering one navigation behind.
-    fn publish_route(&mut self, path: &str) -> bool {
+    fn publish_route(&mut self, location: &str) -> bool {
+        // A query is an argument to a page, not a different page, so matching
+        // and the `route` signal both see the path alone.
+        let (path, query) = rux_script::split_query(location);
         let params = rux_style::route_params(&self.sfc.template, path);
         let (at, len) = (self.history.at, self.history.entries.len());
         let mut moved = self.engine.set_route(path);
         moved |= self.engine.set_provided(rux_script::PARAMS_SIGNAL, Value::Map(params));
+        moved |= self
+            .engine
+            .set_provided(rux_script::QUERY_SIGNAL, Value::Map(rux_script::parse_query(query)));
         moved |= self.engine.set_provided(rux_script::CAN_BACK_SIGNAL, Value::Bool(at > 0));
         moved |=
             self.engine.set_provided(rux_script::CAN_FORWARD_SIGNAL, Value::Bool(at + 1 < len));
@@ -1639,6 +1665,7 @@ fn build_engine(script: &str) -> Result<Engine, String> {
     // reading `params.id` or `can_go_back` on its opening screen would fail to
     // resolve the name rather than see the empty answer that is the truth.
     engine.set_provided(rux_script::PARAMS_SIGNAL, Value::Map(Vec::new()));
+    engine.set_provided(rux_script::QUERY_SIGNAL, Value::Map(Vec::new()));
     engine.set_provided(rux_script::CAN_BACK_SIGNAL, Value::Bool(false));
     engine.set_provided(rux_script::CAN_FORWARD_SIGNAL, Value::Bool(false));
     Ok(engine)
@@ -2477,6 +2504,119 @@ mod tests {
         // Somewhere new drops what was ahead, so forward closes again.
         doc.navigate("/user/1");
         assert_eq!(doc.value_in("can_go_forward", None), "false");
+    }
+
+    /// A query is an argument to a page, not a different page. So it does not
+    /// take part in matching, and `route` does not carry it: every
+    /// `route == "/search"` already written keeps meaning what it says.
+    #[test]
+    fn a_query_is_readable_and_does_not_change_the_page() {
+        let mut doc = with_router(
+            "<template><screen>\
+               <text>looking for {{ query.q }}</text>\
+               <router>\
+                 <route path=\"/\" view=\"home\" />\
+                 <route path=\"/settings\" view=\"settings\" />\
+                 <route fallback view=\"missing\" />\
+               </router>\
+             </screen></template>\n\
+             <script>\nuse components::home;\nuse components::settings;\n\
+             use components::missing;\n</script>",
+        );
+        doc.navigate("/settings?q=dark+mode&page=2");
+        assert_eq!(doc.route(), "/settings", "the path alone");
+        assert_eq!(doc.location(), "/settings?q=dark+mode&page=2", "the whole address");
+        assert!(find_text(&doc.root, "settings live here"), "it matched: {:?}", text_of(&doc.root));
+        assert!(find_text(&doc.root, "looking for dark mode"), "{:?}", text_of(&doc.root));
+
+        // And the history holds the whole address, so Back restores what was
+        // being searched for rather than a bare page.
+        doc.navigate("/");
+        assert!(!find_text(&doc.root, "looking for dark mode"), "{:?}", text_of(&doc.root));
+        doc.back();
+        assert_eq!(doc.location(), "/settings?q=dark+mode&page=2");
+        assert!(find_text(&doc.root, "looking for dark mode"), "{:?}", text_of(&doc.root));
+    }
+
+    /// A path is written into every link that leads to it, so a URL scheme that
+    /// can never be changed afterwards is not much of a scheme. `path_for`
+    /// returns a string, so it composes with `navigate`, `replace`, `to` and
+    /// `:to` rather than needing a second form of each.
+    #[test]
+    fn a_named_route_builds_its_own_path() {
+        let mut doc = with_router(
+            "<template><screen>\
+               <view @tap=\"navigate(path_for(&quot;who&quot;, #{ id: &quot;7&quot; }))\">\
+                 <text>go</text>\
+               </view>\
+               <router>\
+                 <route path=\"/\" view=\"home\" />\
+                 <route name=\"who\" path=\"/user/:id\" view=\"user\" />\
+                 <route fallback view=\"missing\" />\
+               </router>\
+             </screen></template>\n\
+             <script>\nuse components::home;\nuse components::user;\n\
+             use components::missing;\n</script>",
+        );
+        let button = doc.root.children[0].clone();
+        assert!(doc.apply_handler(&button.on_tap.clone().expect("a tap")));
+        assert_eq!(doc.route(), "/user/7");
+        assert!(find_text(&doc.root, "user 7 seen 0"), "{:?}", text_of(&doc.root));
+    }
+
+    /// Whatever the pattern does not take becomes a query, which is what makes
+    /// `path_for` usable for a route with no path parameters at all.
+    #[test]
+    fn path_for_puts_what_is_left_over_in_the_query() {
+        let mut doc = with_router(
+            "<template><screen>\
+               <view @tap=\"navigate(path_for(&quot;who&quot;, \
+                 #{ id: &quot;7&quot;, tab: &quot;posts&quot; }))\">\
+                 <text>go</text>\
+               </view>\
+               <text>tab {{ query.tab }}</text>\
+               <router>\
+                 <route path=\"/\" view=\"home\" />\
+                 <route name=\"who\" path=\"/user/:id\" view=\"user\" />\
+                 <route fallback view=\"missing\" />\
+               </router>\
+             </screen></template>\n\
+             <script>\nuse components::home;\nuse components::user;\n\
+             use components::missing;\n</script>",
+        );
+        let button = doc.root.children[0].clone();
+        doc.apply_handler(&button.on_tap.clone().expect("a tap"));
+        assert_eq!(doc.location(), "/user/7?tab=posts");
+        assert_eq!(doc.route(), "/user/7", "the leftover did not become a path segment");
+        assert!(find_text(&doc.root, "tab posts"), "{:?}", text_of(&doc.root));
+    }
+
+    /// A value carrying a `/` or a `&` must survive being put in a URL and read
+    /// back, or it would silently become extra path segments or extra
+    /// parameters.
+    #[test]
+    fn path_for_escapes_what_it_is_given() {
+        let mut doc = with_router(
+            "<template><screen>\
+               <view @tap=\"navigate(path_for(&quot;who&quot;, \
+                 #{ id: &quot;a/b&quot;, q: &quot;x&amp;y z&quot; }))\">\
+                 <text>go</text>\
+               </view>\
+               <text>q is {{ query.q }}</text>\
+               <router>\
+                 <route path=\"/\" view=\"home\" />\
+                 <route name=\"who\" path=\"/user/:id\" view=\"user\" />\
+                 <route fallback view=\"missing\" />\
+               </router>\
+             </screen></template>\n\
+             <script>\nuse components::home;\nuse components::user;\n\
+             use components::missing;\n</script>",
+        );
+        let button = doc.root.children[0].clone();
+        doc.apply_handler(&button.on_tap.clone().expect("a tap"));
+        assert_eq!(doc.location(), "/user/a%2Fb?q=x%26y%20z");
+        assert!(find_text(&doc.root, "user a/b"), "the id came back whole: {:?}", text_of(&doc.root));
+        assert!(find_text(&doc.root, "q is x&y z"), "and so did the query: {:?}", text_of(&doc.root));
     }
 
     /// A trailing slash is not a different path. Anyone typing one by hand

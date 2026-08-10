@@ -7,7 +7,7 @@
     <router>
       <route path="/" view="home-page" />
       <route path="/crew" view="crew-list" :crew="crew" />
-      <route path="/crew/:id" view="crew-detail" :crew="crew" />
+      <route name="crew-detail" path="/crew/:id" view="crew-detail" :crew="crew" />
       <route path="/about" view="about-page" />
       <route fallback view="lost-page" />
     </router>

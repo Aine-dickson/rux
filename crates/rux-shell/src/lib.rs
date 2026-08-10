@@ -1130,7 +1130,7 @@ impl App {
             return;
         }
         let (index, _) = self.document.history_position();
-        let route = self.document.route().to_string();
+        let route = self.document.location().to_string();
         let Some((was, ref was_route)) = self.mirrored else {
             // The tab's first entry is one the browser made, not us. Rewrite it
             // in place so it carries an index like every other entry, or a Back
@@ -1174,7 +1174,8 @@ impl App {
         // Recorded whether or not anything moved: the browser is where it is
         // either way, and the point of this is that the next frame agrees with
         // it instead of trying to correct it back.
-        self.mirrored = Some((self.document.history_position().0, self.document.route().to_string()));
+        self.mirrored =
+            Some((self.document.history_position().0, self.document.location().to_string()));
         if moved {
             self.request_redraw();
         }
@@ -1189,7 +1190,7 @@ impl App {
             Ok(doc) => {
                 // Keeps the window's own state (viewport, hover) and drops the
                 // previous error, so fixing the file clears the overlay.
-                let was = self.document.route().to_string();
+                let was = self.document.location().to_string();
                 self.document.replace_with(doc);
                 // A reloaded document starts at `/`, so without this, saving a
                 // file while looking at a page other than the first one sent
@@ -3541,8 +3542,13 @@ thread_local! {
 #[cfg(target_arch = "wasm32")]
 fn web_route_now() -> Option<String> {
     let base = WEB_BASE.with(|b| b.borrow().clone())?;
-    let pathname = web_sys::window()?.location().pathname().ok()?;
-    Some(route_from_path(&base, &pathname))
+    let location = web_sys::window()?.location();
+    let route = route_from_path(&base, &location.pathname().ok()?);
+    // The query rides along, so opening `/search?q=rust` opens the search
+    // showing what was searched for. `search()` already includes the `?`, and
+    // is empty when there is none.
+    let query = location.search().unwrap_or_default();
+    Some(format!("{route}{query}"))
 }
 
 /// Write the document's position into the browser's history.

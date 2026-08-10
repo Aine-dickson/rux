@@ -4,7 +4,11 @@
     <text class="lead">Each row goes to its own path. The name in the path is all the detail page is given.</text>
 
     <view class="rows">
-      <view class="row" r-for="member in crew" r-key="member.id" :to="&quot;/crew/&quot; + member.id">
+      <!-- `path_for` builds the path from the route's *name*, so the URL scheme
+           lives in one place instead of being spelled out in every link that
+           leads there. It returns a string, so it works anywhere a path does. -->
+      <view class="row" r-for="member in crew" r-key="member.id"
+            :to="path_for(&quot;crew-detail&quot;, #{ id: member.id })">
         <text class="name">{{ member.name }}</text>
         <text class="job">{{ member.job }}</text>
       </view>

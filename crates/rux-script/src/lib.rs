@@ -89,6 +89,20 @@ impl Builder {
         engine.register_fn("replace", |path: ImmutableString| {
             NAVIGATIONS.with(|n| n.borrow_mut().push(Nav::Replace(path.to_string())));
         });
+        // `path_for("crew-detail", #{ id: "grace" })` builds a path from a
+        // named route. A function returning a string rather than a second form
+        // of `navigate`, because a path is what `to=`, `:to=`, `navigate` and
+        // `replace` all already take: one new function reaches all four, and
+        // there is no second way to say the same thing.
+        engine.register_fn("path_for", |name: ImmutableString, values: rhai::Map| {
+            let values: Vec<(String, Value)> =
+                values.into_iter().map(|(k, v)| (k.to_string(), from_dynamic(&v))).collect();
+            build_named_path(&name, &values)
+        });
+        // A route with no parameters still has a name worth using.
+        engine.register_fn("path_for", |name: ImmutableString| {
+            build_named_path(&name, &[])
+        });
         engine.register_fn("back", || {
             NAVIGATIONS.with(|n| n.borrow_mut().push(Nav::Back));
         });
@@ -159,6 +173,13 @@ pub const ROUTE_SIGNAL: &str = "route";
 /// `{{ params.id }}` works anywhere and not only inside the matched view.
 pub const PARAMS_SIGNAL: &str = "params";
 
+/// The signal holding the query string, parsed, as a map.
+///
+/// Separate from `route` rather than part of it, so `route == "/search"` keeps
+/// meaning what it says once a query is present. Matching ignores it too: a
+/// query is an argument to a page, not a different page.
+pub const QUERY_SIGNAL: &str = "query";
+
 /// Whether there is anywhere to go back to, and anywhere to go forward to.
 /// Signals rather than functions, because what they are for is disabling a
 /// button, and a button's `:class` reads signals.
@@ -166,8 +187,8 @@ pub const CAN_BACK_SIGNAL: &str = "can_go_back";
 pub const CAN_FORWARD_SIGNAL: &str = "can_go_forward";
 
 /// Every name the router provides. A script declaring one of these is warned.
-pub const ROUTER_SIGNALS: [&str; 4] =
-    [ROUTE_SIGNAL, PARAMS_SIGNAL, CAN_BACK_SIGNAL, CAN_FORWARD_SIGNAL];
+pub const ROUTER_SIGNALS: [&str; 5] =
+    [ROUTE_SIGNAL, PARAMS_SIGNAL, QUERY_SIGNAL, CAN_BACK_SIGNAL, CAN_FORWARD_SIGNAL];
 
 /// A live script engine: state in `scope`, script functions in `funcs`.
 pub struct Engine {
@@ -279,6 +300,161 @@ thread_local! {
 /// Take the navigations asked for since the last call, emptying the sink.
 pub fn take_navigations() -> Vec<Nav> {
     NAVIGATIONS.with(|n| std::mem::take(&mut *n.borrow_mut()))
+}
+
+thread_local! {
+    /// Named routes, as `(name, pattern)` in the order written, so `path_for`
+    /// can build a path from a name and some parameters.
+    ///
+    /// A sink like the others, and for the same reason: `path_for` is a plain
+    /// rhai function registered once on the engine, and it has no way to reach
+    /// the document's template from inside a call.
+    static ROUTES: RefCell<Vec<(String, String)>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Tell the script tier what the document's named routes are. Replaces the
+/// previous set, since a reload may have changed them.
+pub fn set_routes(routes: Vec<(String, String)>) {
+    ROUTES.with(|r| *r.borrow_mut() = routes);
+}
+
+/// Build a path from a named route and a map of values.
+///
+/// Values matching a `:name` segment fill it. Anything left over becomes a
+/// query string, which is what makes this usable for a route that takes no path
+/// parameters at all (`path_for("search", #{ q: "rust" })`).
+///
+/// Every failure is warned about and then produces a path that visibly does not
+/// work, rather than one that quietly goes somewhere plausible: landing on the
+/// fallback page is a bug you can see, and landing on the wrong record is not.
+fn build_named_path(name: &str, values: &[(String, Value)]) -> String {
+    let pattern = ROUTES.with(|r| {
+        r.borrow().iter().find(|(n, _)| n == name).map(|(_, p)| p.clone())
+    });
+    let Some(pattern) = pattern else {
+        warn(format!(
+            "`path_for(\"{name}\", …)` names a route that does not exist; add `name=\"{name}\"` \
+             to the <route> it means"
+        ));
+        return name.to_string();
+    };
+
+    let mut used: Vec<&str> = Vec::new();
+    let mut path = String::new();
+    for segment in pattern.split('/').filter(|s| !s.is_empty()) {
+        path.push('/');
+        match segment.strip_prefix(':') {
+            Some(param) => match values.iter().find(|(k, _)| k == param) {
+                Some((key, value)) => {
+                    used.push(key.as_str());
+                    path.push_str(&encode(&value.to_display()));
+                }
+                None => {
+                    warn(format!(
+                        "`path_for(\"{name}\", …)` was not given `{param}`, which the route \
+                         `{pattern}` needs"
+                    ));
+                    path.push_str(segment);
+                }
+            },
+            None => path.push_str(segment),
+        }
+    }
+    if path.is_empty() {
+        path.push('/');
+    }
+
+    // Whatever the pattern did not take is a query. Order is the caller's, so
+    // the same call always produces the same URL.
+    let query: Vec<String> = values
+        .iter()
+        .filter(|(k, _)| !used.contains(&k.as_str()))
+        .map(|(k, v)| format!("{}={}", encode(k), encode(&v.to_display())))
+        .collect();
+    if query.is_empty() {
+        path
+    } else {
+        format!("{path}?{}", query.join("&"))
+    }
+}
+
+/// Split a location into its path and its query string.
+pub fn split_query(location: &str) -> (&str, &str) {
+    match location.split_once('?') {
+        Some((path, query)) => (path, query),
+        None => (location, ""),
+    }
+}
+
+/// Parse `a=1&b=two` into pairs, undoing percent-encoding.
+///
+/// A key with no `=` is present with an empty value, which is how a flag in a
+/// URL (`?debug`) reads, and a repeated key keeps the first: a map has one slot
+/// per name, and the alternative (a list, sometimes) would make every read of
+/// every query parameter check which it got.
+pub fn parse_query(query: &str) -> Vec<(String, Value)> {
+    let mut out: Vec<(String, Value)> = Vec::new();
+    for pair in query.split('&').filter(|p| !p.is_empty()) {
+        let (key, value) = match pair.split_once('=') {
+            Some((k, v)) => (k, v),
+            None => (pair, ""),
+        };
+        let key = decode(key);
+        if key.is_empty() || out.iter().any(|(k, _)| *k == key) {
+            continue;
+        }
+        out.push((key, Value::Text(decode(value))));
+    }
+    out
+}
+
+/// Percent-decode, treating `+` as a space the way a query string does.
+///
+/// Public because a path parameter has to come back out of a URL as whatever
+/// went in: `path_for` escapes a `/` in an id, and the route that captures it
+/// has to undo that, or the view is handed `a%2Fb` and shows it to somebody.
+pub fn percent_decode(s: &str) -> String {
+    decode(s)
+}
+
+fn decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'+' => out.push(b' '),
+            b'%' if i + 2 < bytes.len() => {
+                match u8::from_str_radix(&s[i + 1..i + 3], 16) {
+                    Ok(byte) => {
+                        out.push(byte);
+                        i += 2;
+                    }
+                    // Not an escape after all, so it is a literal `%`.
+                    Err(_) => out.push(b'%'),
+                }
+            }
+            byte => out.push(byte),
+        }
+        i += 1;
+    }
+    // A URL can carry any bytes; only valid UTF-8 can come back out as text.
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// Percent-encode everything that is not unreserved, so a value carrying a `/`,
+/// an `&` or a space survives being put in a URL and read back.
+fn encode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for byte in s.as_bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(*byte as char)
+            }
+            other => out.push_str(&format!("%{other:02X}")),
+        }
+    }
+    out
 }
 
 /// Collapse an expression to one short line for a message, a handler can be a

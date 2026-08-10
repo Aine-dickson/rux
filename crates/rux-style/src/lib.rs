@@ -2728,8 +2728,13 @@ fn match_route(pattern: &str, path: &str) -> Option<Locals> {
     let mut params: Locals = Vec::new();
     for (p, c) in pat.iter().zip(cur.iter()) {
         match p.strip_prefix(':') {
-            // A parameter takes whatever sits in that position, under its name.
-            Some(name) => params.push((name.to_string(), Value::Text((*c).to_string()))),
+            // A parameter takes whatever sits in that position, under its name,
+            // decoded: a value that had to be escaped to go into the URL has to
+            // come back out as what it was, or a view is handed `a%2Fb`.
+            Some(name) => params.push((
+                name.to_string(),
+                Value::Text(rux_script::percent_decode(c)),
+            )),
             // A literal segment has to be exactly itself.
             None if p == c => {}
             None => return None,
@@ -2753,12 +2758,6 @@ fn match_route(pattern: &str, path: &str) -> Option<Locals> {
 /// when they are, the parameters of an inner one belong to it rather than to
 /// the document.
 pub fn route_params(template: &Element, path: &str) -> Vec<(String, Value)> {
-    fn find_router(el: &Element) -> Option<&Element> {
-        if el.tag == "router" {
-            return Some(el);
-        }
-        element_children(el).into_iter().find_map(find_router)
-    }
     let Some(router) = find_router(template) else { return Vec::new() };
     element_children(router)
         .into_iter()
@@ -2767,6 +2766,29 @@ pub fn route_params(template: &Element, path: &str) -> Vec<(String, Value)> {
         // patterns: there is nothing in `/nowhere` to name.
         .find_map(|r| match_route(r.attr("path")?, path))
         .unwrap_or_default()
+}
+
+/// The document's `<router>`, wherever in the template it was written.
+fn find_router(el: &Element) -> Option<&Element> {
+    if el.tag == "router" {
+        return Some(el);
+    }
+    element_children(el).into_iter().find_map(find_router)
+}
+
+/// Every `<route name="…" path="…">` in the template, in the order written.
+///
+/// What `path_for("crew-detail", #{ id: "grace" })` builds a path from. A name
+/// is worth having because a path is written in every link that leads to it,
+/// and a URL scheme that can never be changed afterwards is not much of a
+/// scheme.
+pub fn named_routes(template: &Element) -> Vec<(String, String)> {
+    let Some(router) = find_router(template) else { return Vec::new() };
+    element_children(router)
+        .into_iter()
+        .filter(|r| r.tag == "route")
+        .filter_map(|r| Some((r.attr("name")?.to_string(), r.attr("path")?.to_string())))
+        .collect()
 }
 
 /// Parse `r-for="item in items"` into `(binding, collection_expr)`.

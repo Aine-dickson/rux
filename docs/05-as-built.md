@@ -750,8 +750,37 @@ itself out:
 Signals rather than functions because what they are for is disabling a control,
 and disabling a control is a class, and a class reads signals.
 
-`route`, `params`, `can_go_back` and `can_go_forward` are all provided, and all
-reserved: a script declaring one is warned rather than quietly overwritten.
+**Query strings** are read through a `query` map, and are not part of the path:
+```xml
+<text>looking for {{ query.q }}</text>   <!-- /search?q=dark+mode -->
+```
+`route` stays `/search`, so every `route == "/search"` already written keeps
+meaning what it says. A query is an argument to a page rather than a different
+page, so it takes no part in matching either. The history stores the whole
+address, so going back to a search restores what was being searched for. `+` is
+a space and `%xx` is decoded; a key with no `=` is present and empty; a repeated
+key keeps the first.
+
+**Named routes.** A path is written into every link that leads to it, so a URL
+scheme that can never be changed afterwards is not much of a scheme. Name a
+route and build its path with `path_for`:
+```xml
+<route name="crew-detail" path="/crew/:id" view="crew-detail" />
+...
+<view :to="path_for(&quot;crew-detail&quot;, #{ id: member.id })">
+```
+It returns a **string**, so it composes with `to`, `:to`, `navigate` and
+`replace` rather than needing a second form of each. Values matching a `:name`
+segment fill it; whatever is left over becomes a query string, which is what
+makes `path_for("search", #{ q: "rust" })` work for a route with no parameters
+at all. Values are escaped on the way in and unescaped on the way out, so an id
+containing a `/` survives the round trip. A missing parameter or an unknown name
+warns, and produces a path that visibly does not work: landing on the fallback
+page is a bug you can see, and landing on the wrong record is not.
+
+`route`, `params`, `query`, `can_go_back` and `can_go_forward` are all provided,
+and all reserved: a script declaring one is warned rather than quietly
+overwritten.
 
 **A route's view starts fresh when you return to it.** Instance state is keyed by
 template position, so *keeping* it across a visit is what would happen by
@@ -786,8 +815,8 @@ the playground runs documents written by whoever is typing into them, and one of
 them containing a `<router>` must not be able to rewrite the address of the page
 hosting it.
 
-Not built: query strings, nested routes (a layout component with a `<router />`
-in its slot covers most of that), route guards, and scroll restoration.
+Not built: nested routes (a layout component with a `<router />` in its slot
+covers most of that), route guards, and scroll restoration.
 
 ### Accessibility
 
