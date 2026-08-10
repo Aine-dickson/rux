@@ -63,6 +63,17 @@ impl Builder {
         engine.register_fn("+", |a: f64, b: ImmutableString| {
             format!("{}{b}", Value::Number(a).to_display())
         });
+        // `emit("change")` / `emit("change", payload)`: a component telling its
+        // caller that something happened. It only records the emission; who
+        // listens, and in whose scope their handler runs, is the runtime's
+        // business. A script function cannot mutate a signal, so it could not
+        // run the caller's body itself even if it knew it.
+        engine.register_fn("emit", |name: ImmutableString| {
+            EMISSIONS.with(|e| e.borrow_mut().push((name.to_string(), None)));
+        });
+        engine.register_fn("emit", |name: ImmutableString, payload: Dynamic| {
+            EMISSIONS.with(|e| e.borrow_mut().push((name.to_string(), Some(from_dynamic(&payload)))));
+        });
         // Record every variable read while dependency-tracking is active, then
         // fall through (`Ok(None)`) to normal scope resolution. `on_var` is
         // flagged volatile upstream, not deprecated, hence the allow.
@@ -180,6 +191,30 @@ pub fn set_stderr_echo(on: bool) {
 /// Take the expression failures raised since the last call, emptying the sink.
 pub fn take_warnings() -> Vec<Warning> {
     WARNINGS.with(|w| std::mem::take(&mut *w.borrow_mut()))
+}
+
+/// Raise a script warning from outside the engine.
+///
+/// The runtime, not the engine, decides who receives an emitted event and how
+/// far a chain of them may run, so it is the only layer that can notice an
+/// event with nowhere to go. The warning belongs in this sink anyway: to the
+/// overlay and to `rux check` it is one more thing wrong with the script, and
+/// a second sink would let those two disagree about what was said.
+pub fn warn_script(message: impl Into<String>) {
+    warn(message.into());
+}
+
+thread_local! {
+    /// Events raised by `emit` since the last drain, in the order they were
+    /// raised. A sink rather than a return value because an emission can happen
+    /// anywhere inside a handler, including several levels down a script
+    /// function, and the handler's own result is already spoken for.
+    static EMISSIONS: RefCell<Vec<(String, Option<Value>)>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Take the events emitted since the last call, emptying the sink.
+pub fn take_emissions() -> Vec<(String, Option<Value>)> {
+    EMISSIONS.with(|e| std::mem::take(&mut *e.borrow_mut()))
 }
 
 /// Collapse an expression to one short line for a message, a handler can be a

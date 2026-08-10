@@ -1,0 +1,50 @@
+<template>
+  <screen class="app">
+    <text class="title">component events</text>
+    <text class="lead">Each stepper owns its own count and tells this file when it moves. Nothing had to be hoisted out of the component to make the total work: the count stays where it belongs, and only the change travels.</text>
+
+    <view class="row">
+      <stepper :label="&quot;apples&quot;" @change="total = total + event" />
+      <stepper :label="&quot;pears&quot;" @change="total = total + event" />
+      <stepper :label="&quot;plums&quot;" @change="total = total + event" />
+    </view>
+
+    <view class="tally">
+      <text class="tally-label">in the basket</text>
+      <text class="tally-count">{{ total }}</text>
+    </view>
+  </screen>
+</template>
+
+<style>
+  .app {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    padding: 28px;
+    background: #1e1e2e;
+  }
+
+  .title { color: #cdd6f4; font-size: 22px; font-weight: 700; }
+  .lead { color: #9399b2; font-size: 13px; max-width: 620px; }
+  .row { display: flex; gap: 16px; align-items: flex-start; }
+
+  .tally {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 12px 16px;
+    background: #313244;
+    border-radius: 10px;
+    max-width: 260px;
+  }
+
+  .tally-label { color: #9399b2; font-size: 13px; }
+  .tally-count { color: #89b4fa; font-size: 24px; font-weight: 700; }
+</style>
+
+<script>
+  use components::stepper;
+
+  let total = signal(0);
+</script>

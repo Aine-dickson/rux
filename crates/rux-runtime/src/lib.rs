@@ -872,8 +872,37 @@ impl Document {
     /// claiming otherwise would mean bindings quietly missing updates. A
     /// component is a subtree, so the rebuild is bounded in practice.
     pub fn apply_handler_in(&mut self, src: &str, instance: Option<&str>) -> bool {
+        // Anything emitted before this handler was not emitted *by* it: a build
+        // evaluates every binding, and a stray `emit` in one of those would
+        // otherwise be delivered to the first tap that happened afterwards.
+        let _ = rux_script::take_emissions();
+        self.dispatch_handler(src, instance, 0)
+    }
+
+    /// One handler run, plus whatever its `emit` calls set off. `depth` is the
+    /// length of that chain: a component listened to by a component that emits
+    /// back is a cycle, and stopping it at a bound is better than a window that
+    /// never repaints.
+    fn dispatch_handler(&mut self, src: &str, instance: Option<&str>, depth: usize) -> bool {
+        const MAX_EVENT_DEPTH: usize = 8;
+        if depth > MAX_EVENT_DEPTH {
+            rux_script::warn_script(format!(
+                "an event chain is still going after {MAX_EVENT_DEPTH} rounds and has been \
+                 stopped; a component is probably emitting an event that comes back to it"
+            ));
+            return false;
+        }
+
         let Some(key) = instance.filter(|k| self.instances.contains_key(*k)) else {
             let changed = self.engine.run_handler_tracked(src);
+            // An `emit` outside a component has nobody to tell: the document is
+            // the top of the tree. Say so rather than dropping it, since the
+            // author plainly expected something to happen.
+            for (event, _) in rux_script::take_emissions() {
+                rux_script::warn_script(format!(
+                    "`emit(\"{event}\")` outside a component has no caller to receive it"
+                ));
+            }
             if changed.is_empty() {
                 return false;
             }
@@ -908,6 +937,23 @@ impl Document {
             }
         }
 
+        // Deliver whatever the handler emitted. After the state write-back
+        // above, so a listener that rebuilds rebuilds against the state the
+        // handler left, not the state it started from.
+        let mut fired = false;
+        for (event, payload) in rux_script::take_emissions() {
+            let listener = self.instances[key]
+                .listeners
+                .iter()
+                .find(|(name, _)| *name == event)
+                .map(|(_, body)| body.clone());
+            // An event nobody listens to is ordinary, not a mistake: a
+            // component offers events and a caller takes the ones it wants.
+            let Some(body) = listener else { continue };
+            let caller = self.instances[key].caller.clone();
+            fired |= self.dispatch_handler(&with_event(&body, payload.as_ref()), caller.as_deref(), depth + 1);
+        }
+
         if !changed.is_empty() {
             self.apply_change(&changed);
             return true;
@@ -916,7 +962,7 @@ impl Document {
             self.rebuild();
             return true;
         }
-        false
+        fired
     }
 
     /// Reflect a set of changed signals: patch in place, or rebuild when the change
@@ -1232,6 +1278,20 @@ fn is_identifier(s: &str) -> bool {
     !s.is_empty()
         && !s.starts_with(|c: char| c.is_ascii_digit())
         && s.chars().all(|c| c.is_alphanumeric() || c == '_')
+}
+
+/// A listener body with the emitted payload bound to `event`.
+///
+/// Baked in as a `let` prelude rather than passed as an argument, the same
+/// trick that carries an `r-for` row into an `@tap`: the body is statements the
+/// caller wrote inline, not a function, so there is no parameter list to put it
+/// in. `emit("change")` with no payload leaves `event` undeclared, so reading it
+/// is a lookup failure rather than a silent empty value.
+fn with_event(body: &str, payload: Option<&rux_reactive::Value>) -> String {
+    match payload {
+        Some(value) => format!("let event = {}; {body}", value.to_rhai_literal()),
+        None => body.to_string(),
+    }
 }
 
 /// Just the `fn` definitions from a component's script.
@@ -1795,6 +1855,126 @@ mod tests {
         );
     }
 
+    /// Tap the one tappable box in a subtree, the way the shell would: with the
+    /// instance recorded on the node it was tapped on.
+    fn tap(doc: &mut Document, node: &LayoutNode) -> bool {
+        fn find(node: &LayoutNode) -> Option<&LayoutNode> {
+            if node.on_tap.is_some() {
+                return Some(node);
+            }
+            node.children.iter().find_map(find)
+        }
+        let button = find(node).expect("a tappable box").clone();
+        doc.apply_handler_in(&button.on_tap.clone().unwrap(), button.instance.as_deref())
+    }
+
+    /// The other half of props: something comes back out. Without this a
+    /// component can only ever be told things, so every piece of state a caller
+    /// cares about has to be hoisted out of the component that owns it.
+    #[test]
+    fn an_emitted_event_runs_the_callers_handler() {
+        let mut doc = with_component(
+            "<template><view>\
+               <view @tap=\"emit(&quot;bumped&quot;)\"><text>add</text></view>\
+             </view></template>",
+            "<template><screen>\
+               <text>total {{ total }}</text>\
+               <card @bumped=\"total = total + 1\" />\
+             </screen></template>\n\
+             <script>\nuse components::card;\nlet total = signal(0);\n</script>",
+        );
+        let card = doc.root.children[1].clone();
+        assert!(tap(&mut doc, &card), "the tap reached the caller");
+        assert!(find_text(&doc.root, "total 1"), "{:?}", text_of(&doc.root));
+        let card = doc.root.children[1].clone();
+        assert!(tap(&mut doc, &card), "and again");
+        assert!(find_text(&doc.root, "total 2"), "{:?}", text_of(&doc.root));
+    }
+
+    /// A payload arrives as `event`, so a component can say *what* happened
+    /// rather than only that something did.
+    #[test]
+    fn an_event_carries_its_payload() {
+        let mut doc = with_component(
+            "<template><view>\
+               <view @tap=\"emit(&quot;picked&quot;, label)\"><text>pick</text></view>\
+             </view></template>",
+            "<template><screen>\
+               <text>chose {{ chosen }}</text>\
+               <card :label=\"&quot;blue&quot;\" @picked=\"chosen = event\" />\
+             </screen></template>\n\
+             <script>\nuse components::card;\nlet chosen = signal(\"nothing\");\n</script>",
+        );
+        let card = doc.root.children[1].clone();
+        assert!(tap(&mut doc, &card), "the tap reached the caller");
+        assert!(find_text(&doc.root, "chose blue"), "{:?}", text_of(&doc.root));
+    }
+
+    /// The listener body is the *caller's* code and must run in the caller's
+    /// scope. Run in the instance's, it would write to a variable of the same
+    /// name inside the component, or to nothing at all, and look like it worked.
+    #[test]
+    fn a_listener_runs_in_the_callers_scope() {
+        let mut doc = with_component(
+            "<template><view>\
+               <text>inner {{ total }}</text>\
+               <view @tap=\"emit(&quot;bumped&quot;)\"><text>add</text></view>\
+             </view></template>\n\
+             <script>\nlet total = signal(100);\n</script>",
+            "<template><screen>\
+               <text>outer {{ total }}</text>\
+               <card @bumped=\"total = total + 1\" />\
+             </screen></template>\n\
+             <script>\nuse components::card;\nlet total = signal(0);\n</script>",
+        );
+        let card = doc.root.children[1].clone();
+        assert!(tap(&mut doc, &card));
+        assert!(find_text(&doc.root, "outer 1"), "the caller's own: {:?}", text_of(&doc.root));
+        assert!(
+            find_text(&doc.root, "inner 100"),
+            "the component's like-named state is untouched: {:?}",
+            text_of(&doc.root)
+        );
+    }
+
+    /// A component offers events; a caller takes the ones it wants. Emitting
+    /// one nobody listens to is ordinary, and must not fail or warn.
+    #[test]
+    fn an_event_with_no_listener_is_ignored() {
+        let _ = take_warnings();
+        let mut doc = with_component(
+            "<template><view>\
+               <view @tap=\"count = count + 1; emit(&quot;bumped&quot;)\"><text>add</text></view>\
+               <text>{{ count }}</text>\
+             </view></template>\n\
+             <script>\nlet count = signal(0);\n</script>",
+            "<template><screen><card /></screen></template>\n\
+             <script>\nuse components::card;\n</script>",
+        );
+        let card = doc.root.children[0].clone();
+        assert!(tap(&mut doc, &card), "the handler's own work still happened");
+        assert!(find_text(&doc.root, "1"), "{:?}", text_of(&doc.root));
+        assert!(take_warnings().is_empty(), "an unheard event is not a mistake");
+    }
+
+    /// `emit` outside a component has nobody to tell. Silence there would be a
+    /// handler that plainly expected something to happen and did nothing.
+    #[test]
+    fn emit_outside_a_component_warns() {
+        let _ = take_warnings();
+        let mut doc = Document::from_source(
+            "<template><screen><view @tap=\"emit(&quot;bumped&quot;)\"><text>go</text></view></screen></template>",
+        )
+        .expect("loads");
+        let button = doc.root.children[0].clone();
+        doc.apply_handler_in(&button.on_tap.clone().unwrap(), None);
+        let warnings = take_warnings();
+        assert!(
+            warnings.iter().any(|w| w.message.contains("no caller")),
+            "the warning says why nothing happened: {warnings:?}"
+        );
+    }
+
     /// A component's state is not a document signal, so the app cannot reach in
     /// and read it by name. That isolation is the reason a component can be
     /// used in a second app at all.
@@ -2039,7 +2219,7 @@ mod tests {
     #[test]
     fn effects_that_feed_each_other_are_stopped_and_reported() {
         let _ = take_warnings();
-        let mut doc = Document::from_source(
+        let doc = Document::from_source(
             "<template><screen><text>{{ a }}</text></screen></template>
              <script>\n\
                let a = signal(0);\n\

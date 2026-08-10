@@ -634,12 +634,36 @@ not a signal and the binding registry has nothing to look it up by. A component
 is a subtree, so it is bounded, but it is coarser than a signal change. Driven
 in `examples/component-state.rux`.
 
-**Still missing: events.** A component cannot tell its caller that something
-happened: there is no `emit` and no callback prop. Slot content sidesteps it
-(that markup is the caller's, handlers and all), and a component can now keep
-whatever state is genuinely its own, so what is left is the narrower case of a
-component reporting *outwards*. Also not supported: `computed` and `effect`
-inside a component, which are stripped.
+**Events.** A component tells its caller that something happened with `emit`,
+and the caller listens with `@event` on the tag:
+```rux
+<!-- components/stepper.rux -->
+<view @tap="count = count + 1; emit(&quot;change&quot;, 1)"><text>{{ count }}</text></view>
+<script> let count = signal(0); </script>
+```
+```xml
+<stepper @change="total = total + event" />    <!-- payload arrives as `event` -->
+```
+The body of a listener is the **caller's** code and runs in the caller's scope,
+the same rule slot content follows: a component with its own `total` cannot be
+written to by mistake. `emit` with no payload leaves `event` undeclared rather
+than defining it empty. An event nobody listens to is ignored, so a component
+can offer more events than any one caller wants. An `emit` outside a component
+has no caller and warns.
+
+A listener is carried as text and never evaluated at build time, which is why it
+is `@event` and not a prop: a prop is evaluated on every build, and a statement
+that ran once per build would be the opposite of an event. A payload is read
+where `emit` is written, so `emit("change", 0 - count); count = 0` reports the
+count it had. A chain of components emitting at each other is stopped after 8
+rounds with a warning.
+
+Together with props this closes the loop: state can stay in the component that
+owns it instead of being hoisted into the document so the document can see it
+change. Driven in `examples/events.rux`.
+
+Still not supported inside a component: `computed` and `effect`, which are
+stripped.
 
 ### Accessibility
 

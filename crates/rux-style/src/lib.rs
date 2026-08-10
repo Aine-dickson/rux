@@ -311,6 +311,15 @@ struct Component {
 pub struct Instance {
     pub state: Vec<(String, Value)>,
     pub props: Vec<(String, Value)>,
+    /// What the caller wrote as `@event="…"` on the tag: the bodies to run when
+    /// this instance emits. The caller's `r-for` locals are already baked in,
+    /// the same treatment an `@tap` gets, since the body runs long after the
+    /// build that read them.
+    pub listeners: Vec<(String, String)>,
+    /// The instance the caller itself sits in, `None` at document level. A
+    /// listener body is the caller's code and must run in the caller's scope:
+    /// anything else writes to the wrong variables and looks like it worked.
+    pub caller: Option<String>,
 }
 
 /// Every live component instance, by identity. Owned by the runtime so it
@@ -2026,7 +2035,7 @@ fn build_node(
     if let Some(component) = comps.get(&el.tag) {
         return expand_component(
             el, component, comps, inherited, engine, locals, path, tpl_path, reg, state, rules,
-            instances, row,
+            instances, instance, row,
         );
     }
 
@@ -2558,11 +2567,22 @@ fn expand_component(
     // The caller's stylesheet, for whatever it wrote between the tags.
     caller_rules: &[Rule],
     instances: &mut Instances,
+    // The instance the *caller* is in, which is where a listener body belongs.
+    caller: Option<&str>,
     row: Option<&str>,
 ) -> LayoutNode {
     let mut props: Locals = Vec::new();
     let mut prop_deps: HashSet<String> = HashSet::new();
+    let mut listeners: Vec<(String, String)> = Vec::new();
     for (key, expr) in &el.attrs {
+        // `@event="body"` is a listener, not a prop: the body is the caller's
+        // code to run *later*, so it is carried as text and never evaluated
+        // here. Evaluating it would run the caller's statements at build time,
+        // once per build, which is the opposite of an event.
+        if let Some(name) = key.strip_prefix('@') {
+            listeners.push((name.to_string(), bind_locals(expr, parent_locals)));
+            continue;
+        }
         if let Some(name) = key.strip_prefix(':') {
             // Props are evaluated in the caller's scope and become the component's
             // only locals, a prop change re-expands this subtree (a reconcile).
@@ -2594,9 +2614,13 @@ fn expand_component(
     let key = instance_key(tpl_path, row);
     let entry = instances.entry(key.clone()).or_insert_with(|| Instance {
         state: engine.init_scope(&component.script),
-        props: Vec::new(),
+        ..Instance::default()
     });
     entry.props = props.clone();
+    // Listeners and the calling instance are the caller's, so like props they
+    // are re-derived on every build rather than kept.
+    entry.listeners = listeners;
+    entry.caller = caller.map(str::to_string);
     // State first, so a prop of the same name wins: the caller's input is more
     // specific than the component's own default.
     let mut locals: Locals = entry.state.clone();
