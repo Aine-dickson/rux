@@ -76,10 +76,25 @@ gate_docs_synced() {
 }
 
 gate_build() {
+  # `--locked` on purpose: the lockfile pins the workspace members by version
+  # too, so dropping `-dev` from the manifest without refreshing the lock
+  # leaves the two disagreeing. An ordinary `cargo build` silently rewrites the
+  # lock and says nothing, which is exactly how that shipped once.
+  local out
+  out="$(cargo build --workspace --locked 2>&1)" || {
+    echo "$out" | tail -5 >&2
+    die "cargo build --workspace --locked failed; the lockfile is stale or a dependency moved"
+  }
   local warnings
-  warnings="$(cargo build --workspace 2>&1 | grep -c '^warning' || true)"
+  warnings="$(echo "$out" | grep -c '^warning' || true)"
   [[ "$warnings" == "0" ]] || die "cargo build emitted $warnings warning(s); releases go out warning-clean"
-  ok "cargo build is warning-clean"
+  ok "cargo build is warning-clean, and the lockfile matches"
+}
+
+# Bring Cargo.lock in step with a version that has just changed in Cargo.toml.
+relock() {
+  cargo metadata --format-version 1 >/dev/null 2>&1 \
+    || die "cargo could not resolve the workspace after the version change"
 }
 
 gate_tests() {
@@ -131,6 +146,7 @@ cmd_freeze() {
   sed -i -E "s/^version = \"$version-dev\"/version = \"$version\"/" Cargo.toml
   sed -i -E "s/^(rux-[a-z]+ = \{ version = )\"$version-dev\"/\1\"$version\"/" Cargo.toml
   gate_version "$version"
+  relock
 
   # The post is packed as a draft. Zola builds future-dated pages, so a date
   # alone will not hold it; `draft = true` is what keeps it unpublished, and
@@ -183,6 +199,7 @@ cmd_open_next() {
   sed -i -E "s/^version = \"[0-9.]+\"/version = \"$next-dev\"/" Cargo.toml
   sed -i -E "s/^(rux-[a-z]+ = \{ version = )\"[0-9.]+\"/\1\"$next-dev\"/" Cargo.toml
   gate_version "$next-dev"
+  relock
   git commit -aqm "Open the $next line
 
 Branched from the $from capsule so the released tree is the ancestor of what
