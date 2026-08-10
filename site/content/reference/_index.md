@@ -596,6 +596,38 @@ scrollbar hover/fade states, no `scrollbar-width`/`scrollbar-color`, no
 Component instances are isolated (only props are visible inside). Their CSS styles
 their own subtree. Editing a component hot-reloads.
 
+**Slots.** A `<slot />` in a component's template renders whatever the caller
+wrote between the tags, so a component can wrap markup it has never seen:
+```xml
+<!-- components/panel.rux -->
+<view class="panel">
+  <text>{{ title }}</text>
+  <slot><text>nothing here yet</text></slot>   <!-- children = the default -->
+</view>
+```
+```xml
+<panel :title="&quot;stats&quot;">
+  <text class="stat">{{ count }}</text>        <!-- this file's signal, this file's CSS -->
+</panel>
+```
+Slot content belongs to the **caller**: it reads the caller's signals (the
+component cannot see them), is styled by the caller's stylesheet, and its
+handlers run in the caller's scope. Only its position comes from the component.
+An unfilled slot falls back to its own children, as in HTML. A `<slot>` emits no
+box of its own, so a component adds no wrapper nobody wrote.
+
+Before this, children written between the tags were **silently dropped**, which
+made every component a fixed shape: no cards, panels, modals or layout wrappers.
+Driven in `examples/slots.rux`.
+
+**Still missing: events.** A component cannot tell its caller that anything
+happened. There is no `emit`, no callback prop, and a prop is a temporary local,
+so a component's handler cannot write one back. Slot content sidesteps it (the
+handler is the caller's), but a component's *own* markup still cannot report a
+tap. Related: a component's `<script>` is merged into the one shared script, so
+its top-level `let`s are root signals and **two instances share them**, which is
+why per-instance state needs the same work.
+
 ### Accessibility
 
 Rux publishes a real accessibility tree through **accesskit**, so a screen reader

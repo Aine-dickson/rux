@@ -1615,6 +1615,97 @@ mod tests {
         assert_eq!(doc.value_in("name", None), awkward);
     }
 
+    /// Write a component with a `<slot />` and a document that fills it, in a
+    /// temp dir, then load it. Returns the document.
+    fn with_component(component: &str, app: &str) -> Document {
+        use std::fs;
+        let dir = std::env::temp_dir().join(format!(
+            "rux_slot_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(dir.join("components")).unwrap();
+        fs::write(dir.join("components/card.rux"), component).unwrap();
+        fs::write(dir.join("app.rux"), app).unwrap();
+        let doc = Document::load(dir.join("app.rux")).expect("load");
+        let _ = fs::remove_dir_all(&dir);
+        doc
+    }
+
+    /// The whole point of a slot: a component can wrap markup it never saw.
+    /// Before this, the children written between the tags were silently thrown
+    /// away, so a component could only ever be a fixed shape.
+    #[test]
+    fn a_slot_renders_the_callers_children() {
+        let doc = with_component(
+            "<template><view class=\"card\"><text>title</text><slot /></view></template>",
+            "<template><screen>\
+               <card><text>from the caller</text></card>\
+             </screen></template>\n\
+             <script>\nuse components::card;\n</script>",
+        );
+        assert!(find_text(&doc.root, "title"), "the component's own markup: {:?}", text_of(&doc.root));
+        assert!(
+            find_text(&doc.root, "from the caller"),
+            "and the children it was handed: {:?}",
+            text_of(&doc.root)
+        );
+    }
+
+    /// Slot content is the caller's, so it reads the caller's signals. The
+    /// component cannot see them, and does not need to.
+    #[test]
+    fn slot_content_reads_the_callers_scope() {
+        let doc = with_component(
+            "<template><view><slot /></view></template>",
+            "<template><screen>\
+               <card><text>{{ greeting }}</text></card>\
+             </screen></template>\n\
+             <script>\nuse components::card;\nlet greeting = signal(\"hello there\");\n</script>",
+        );
+        assert!(
+            find_text(&doc.root, "hello there"),
+            "the caller's signal resolved inside the slot: {:?}",
+            text_of(&doc.root)
+        );
+    }
+
+    /// An unfilled slot falls back to its own children, as in HTML, so a
+    /// component can offer a default without the caller writing one.
+    #[test]
+    fn an_empty_slot_falls_back_to_its_own_children() {
+        let doc = with_component(
+            "<template><view><slot><text>nothing here yet</text></slot></view></template>",
+            "<template><screen><card /></screen></template>\n\
+             <script>\nuse components::card;\n</script>",
+        );
+        assert!(
+            find_text(&doc.root, "nothing here yet"),
+            "the fallback showed: {:?}",
+            text_of(&doc.root)
+        );
+    }
+
+    /// The slot leaves no box of its own: the caller's children sit exactly
+    /// where the `<slot />` was, so a component adds no wrapper nobody wrote.
+    #[test]
+    fn a_slot_adds_no_node_of_its_own() {
+        let doc = with_component(
+            "<template><view><slot /></view></template>",
+            "<template><screen>\
+               <card><text>a</text><text>b</text></card>\
+             </screen></template>\n\
+             <script>\nuse components::card;\n</script>",
+        );
+        // screen > view(card root) > the two texts, with nothing in between.
+        let card = &doc.root.children[0];
+        assert_eq!(card.children.len(), 2, "two children, no wrapper: {:?}", text_of(card));
+        assert!(card.children.iter().all(|c| c.text.is_some()));
+    }
+
     /// A number reads the same whether it went through `{{ }}` or through
     /// string concatenation in a handler. Every Rux number is an f64, so rhai
     /// rendered a whole one as "32.0" beside the same value shown as "32" a

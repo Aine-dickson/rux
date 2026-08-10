@@ -1,0 +1,50 @@
+<template>
+  <view class="panel">
+    <view class="head">
+      <text class="heading">{{ title }}</text>
+      <text class="badge">{{ badge }}</text>
+    </view>
+    <view class="body">
+      <!-- Whatever the caller wrote between the tags lands here. With nothing
+           supplied, the children below are the default. -->
+      <slot>
+        <text class="empty">This panel has no content yet.</text>
+      </slot>
+    </view>
+  </view>
+</template>
+
+<style>
+  .panel {
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+    max-width: 300px;
+    background: #313244;
+    border: 2px solid #45475a;
+    border-radius: 10px;
+  }
+
+  .head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    width: 100%;
+    padding: 10px 14px;
+    background: #45475a;
+    border-radius: 8px;
+  }
+
+  .heading { color: #cdd6f4; font-size: 14px; font-weight: 700; }
+  .badge { color: #89b4fa; font-size: 12px; font-weight: 700; }
+
+  .body {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 14px;
+    width: 100%;
+  }
+
+  .empty { color: #6c7086; font-size: 13px; font-style: italic; }
+</style>

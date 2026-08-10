@@ -295,6 +295,33 @@ struct Component {
     rules: Vec<Rule>,
 }
 
+/// What a `<slot />` inside a component renders: the children written at the
+/// call site, and the context they were written in.
+///
+/// The context travels because slot content belongs to the *caller*, not to the
+/// component. It reads the caller's signals (the component cannot see them) and
+/// is styled by the caller's stylesheet (the component's rules are written for
+/// markup the component itself wrote). Only its position in the tree comes from
+/// the component.
+#[derive(Clone, Copy)]
+struct Slot<'a> {
+    children: &'a [&'a Element],
+    locals: &'a Locals,
+    rules: &'a [Rule],
+}
+
+/// An element's element children, skipping text nodes. Text between tags is
+/// handled by the text-binding path, not by the child builder.
+fn element_children(el: &Element) -> Vec<&Element> {
+    el.children
+        .iter()
+        .filter_map(|n| match n {
+            TplNode::Element(child) => Some(child),
+            TplNode::Text(_) => None,
+        })
+        .collect()
+}
+
 /// Registered components, keyed by custom-element tag.
 type Components = HashMap<String, Component>;
 
@@ -749,7 +776,8 @@ pub fn build_styled_tree_stateful(
         &[],
         &mut reg,
         state,
-        None, // the document root is not inside any row
+        None, // the document root has no caller, so no slot content
+        None, // and is not inside any row
     );
     link_labels(&mut node);
     Ok((node, reg))
@@ -1891,6 +1919,7 @@ fn build_node(
     tpl_path: &[usize],
     reg: &mut BindingRegistry,
     state: &InteractionState,
+    slot: Option<Slot>,
     // The `r-key` of the `r-for` row this element is inside, `None` outside one.
     // Half the identity of anything in a list: `r-model` is recorded as written,
     // so every row of a list otherwise looks like the same input.
@@ -1899,7 +1928,8 @@ fn build_node(
     // A custom-element tag expands its imported component in place.
     if let Some(component) = comps.get(&el.tag) {
         return expand_component(
-            el, component, comps, inherited, engine, locals, path, tpl_path, reg, state, row,
+            el, component, comps, inherited, engine, locals, path, tpl_path, reg, state, rules,
+            row,
         );
     }
 
@@ -2338,14 +2368,7 @@ fn build_node(
     }
 
     ancestors.push(AncNode { desc, prev: prev.to_vec() });
-    let element_children: Vec<&Element> = el
-        .children
-        .iter()
-        .filter_map(|n| match n {
-            TplNode::Element(child) => Some(child),
-            TplNode::Text(_) => None,
-        })
-        .collect();
+    let element_children = element_children(el);
     let (children, structural_deps) = build_children(
         &element_children,
         rules,
@@ -2358,6 +2381,9 @@ fn build_node(
         tpl_path,
         reg,
         state,
+        // A `<slot>` deeper inside a component still fills from the same call
+        // site, so the slot travels down with everything else.
+        slot,
         row,
     );
     ancestors.pop();
@@ -2427,6 +2453,8 @@ fn expand_component(
     tpl_path: &[usize],
     reg: &mut BindingRegistry,
     state: &InteractionState,
+    // The caller's stylesheet, for whatever it wrote between the tags.
+    caller_rules: &[Rule],
     row: Option<&str>,
 ) -> LayoutNode {
     let mut props: Locals = Vec::new();
@@ -2450,6 +2478,12 @@ fn expand_component(
         });
     }
 
+    // Whatever was written between the tags becomes this instance's slot
+    // content. It stays in the caller's rules and the caller's scope: the
+    // component decides *where* it goes, not what it means.
+    let supplied = element_children(el);
+    let slot = Slot { children: &supplied, locals: parent_locals, rules: caller_rules };
+
     // The component expands in place at this element's path, so its root node
     // takes the same path; its bindings are recorded relative to it.
     let mut ancestors: Vec<AncNode> = Vec::new();
@@ -2466,6 +2500,7 @@ fn expand_component(
         tpl_path,
         reg,
         state,
+        Some(slot),
         // A component expanded inside a row is still inside that row.
         row,
     )
@@ -2492,6 +2527,7 @@ fn build_children(
     tpl_path: &[usize],
     reg: &mut BindingRegistry,
     state: &InteractionState,
+    slot: Option<Slot>,
     row: Option<&str>,
 ) -> (Vec<LayoutNode>, HashSet<String>) {
     let mut out = Vec::new();
@@ -2525,6 +2561,57 @@ fn build_children(
                 el.tag
             ));
         }
+        // `<slot />` is where the caller's children land. It is not an element
+        // of its own: it renders them (or its own children as a fallback) and
+        // leaves nothing behind, so a component adds no wrapper box the author
+        // did not write.
+        if el.tag == "slot" {
+            in_chain = false;
+            let ctp = child_tpl(ti);
+            let filled = slot.filter(|s| !s.children.is_empty());
+            match filled {
+                Some(s) => {
+                    for (si, child) in s.children.iter().enumerate() {
+                        let cp = child_path(&out);
+                        let mut ctp = ctp.clone();
+                        ctp.push(si);
+                        // The caller's rules and the caller's scope: this markup
+                        // was written out there, and reads what is in scope out
+                        // there. `slot: None` inside, since a component's own
+                        // `<slot>` is not a place to put the outer one's content.
+                        out.push(build_node(
+                            child, s.rules, comps, ancestors, &prev, inherited, engine, s.locals,
+                            &cp, &ctp, reg, state, None, row,
+                        ));
+                        prev.push(ElemDesc::of(child));
+                    }
+                }
+                None => {
+                    // Nothing supplied: the slot's own children are the default,
+                    // and they belong to the component, so they build in its
+                    // rules and its scope.
+                    if slot.is_none() {
+                        warn(
+                            "`<slot>` outside a component renders its own children and nothing \
+                             else; only a component has a caller to take content from"
+                                .to_string(),
+                        );
+                    }
+                    for (si, child) in element_children(el).iter().enumerate() {
+                        let cp = child_path(&out);
+                        let mut ctp = ctp.clone();
+                        ctp.push(si);
+                        out.push(build_node(
+                            child, rules, comps, ancestors, &prev, inherited, engine, locals, &cp,
+                            &ctp, reg, state, slot, row,
+                        ));
+                        prev.push(ElemDesc::of(child));
+                    }
+                }
+            }
+            continue;
+        }
+
         // r-for expands the element once per collection item; it ends any chain.
         // The collection is a structural read, a change re-diffs the list.
         if let Some(for_expr) = el.attr("r-for") {
@@ -2572,7 +2659,7 @@ fn build_children(
                         });
                         let mut node = build_node(
                             el, rules, comps, ancestors, &prev, inherited, engine, &child_locals,
-                            &cp, &ctp, reg, state,
+                            &cp, &ctp, reg, state, slot,
                             // An unkeyed row inherits whatever row it is nested
                             // in, which is normally nothing.
                             key.as_deref().or(row),
@@ -2594,7 +2681,7 @@ fn build_children(
             chain_satisfied = v;
             if chain_satisfied {
                 let cp = child_path(&out);
-                out.push(build_node(el, rules, comps, ancestors, &prev, inherited, engine, locals, &cp, &ctp, reg, state, row));
+                out.push(build_node(el, rules, comps, ancestors, &prev, inherited, engine, locals, &cp, &ctp, reg, state, slot, row));
                 prev.push(ElemDesc::of(el));
             }
             continue;
@@ -2610,7 +2697,7 @@ fn build_children(
             if taken {
                 chain_satisfied = true;
                 let cp = child_path(&out);
-                out.push(build_node(el, rules, comps, ancestors, &prev, inherited, engine, locals, &cp, &ctp, reg, state, row));
+                out.push(build_node(el, rules, comps, ancestors, &prev, inherited, engine, locals, &cp, &ctp, reg, state, slot, row));
                 prev.push(ElemDesc::of(el));
             }
             continue;
@@ -2618,7 +2705,7 @@ fn build_children(
         if el.attr("r-else").is_some() {
             if in_chain && !chain_satisfied {
                 let cp = child_path(&out);
-                out.push(build_node(el, rules, comps, ancestors, &prev, inherited, engine, locals, &cp, &ctp, reg, state, row));
+                out.push(build_node(el, rules, comps, ancestors, &prev, inherited, engine, locals, &cp, &ctp, reg, state, slot, row));
                 prev.push(ElemDesc::of(el));
             }
             in_chain = false;
@@ -2628,7 +2715,7 @@ fn build_children(
         // A plain element ends any active chain.
         in_chain = false;
         let cp = child_path(&out);
-        out.push(build_node(el, rules, comps, ancestors, &prev, inherited, engine, locals, &cp, &ctp, reg, state, row));
+        out.push(build_node(el, rules, comps, ancestors, &prev, inherited, engine, locals, &cp, &ctp, reg, state, slot, row));
         prev.push(ElemDesc::of(el));
     }
     (out, structural_deps)
