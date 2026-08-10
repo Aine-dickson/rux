@@ -15,6 +15,29 @@ fn paints(root: Node) -> Vec<Paint> {
     layout(&on_screen(root), 1000.0, 800.0, &mut measure).paints
 }
 
+/// Plain white 16px text, for tests that care about geometry rather than type.
+fn label(text: &str) -> TextContent {
+    TextContent {
+        text: text.into(),
+        font_size: 16.0,
+        weight: 400,
+        color: Rgba::new(1.0, 1.0, 1.0, 1.0),
+        align: TextAlign::Start,
+        wrap: TextWrap::Normal,
+        font_family: None,
+        letter_spacing: None,
+        word_spacing: None,
+        line_height: None,
+        italic: false,
+        underline: false,
+        strikethrough: false,
+        nowrap: false,
+        caret: None,
+        selection: None,
+        preedit: None,
+    }
+}
+
 /// A text node is a box too, its background and border paint under the glyphs.
 /// (Only container boxes used to paint, so a styled <text> came out bare.)
 #[test]
@@ -53,6 +76,57 @@ fn text_node_paints_its_background_then_its_glyphs() {
         paints[0]
     );
     assert!(matches!(paints[1], Paint::Text(_)));
+}
+
+/// Text is drawn in its node's *content* box, so padding moves the words and
+/// not just the background behind them.
+///
+/// It used to be painted at the border box: a padded label sat flush against
+/// the edge of its own pill while the pill grew around it, and raising the
+/// padding widened the box without moving the text at all.
+#[test]
+fn padding_insets_the_glyphs_not_just_the_box() {
+    let node = Node::text(
+        Style {
+            padding: Sides { top: 8.0, right: 40.0, bottom: 8.0, left: 40.0 },
+            background: Some(Background::Color(Rgba::new(0.2, 0.2, 0.2, 1.0))),
+            ..Default::default()
+        },
+        label("hi"),
+    );
+
+    let paints = paints(node);
+    let Paint::Rect(bg) = &paints[0] else { panic!("background first: {:?}", paints[0]) };
+    let Paint::Text(text) = &paints[1] else { panic!("then glyphs: {:?}", paints[1]) };
+
+    // The measure stub reports 50x20, so the box is that plus the padding.
+    assert_eq!((bg.width, bg.height), (130.0, 36.0), "the box grew by the padding");
+    assert_eq!((text.x - bg.x, text.y - bg.y), (40.0, 8.0), "and the glyphs moved with it");
+    assert_eq!(
+        (text.width, text.height),
+        (50.0, 20.0),
+        "the run is aligned and wrapped within the content box, not the border box"
+    );
+}
+
+/// A border insets the text as well, and stacks with padding: both are box
+/// model, and the glyphs belong inside both.
+#[test]
+fn a_border_insets_the_glyphs_too() {
+    let node = Node::text(
+        Style {
+            padding: Sides { top: 4.0, right: 4.0, bottom: 4.0, left: 4.0 },
+            border: Sides { top: 3.0, right: 3.0, bottom: 3.0, left: 3.0 },
+            border_color: Some(Rgba::new(1.0, 0.0, 0.0, 1.0)),
+            ..Default::default()
+        },
+        label("hi"),
+    );
+
+    let paints = paints(node);
+    let Paint::Rect(bg) = &paints[0] else { panic!("border box first: {:?}", paints[0]) };
+    let Paint::Text(text) = &paints[1] else { panic!("then glyphs: {:?}", paints[1]) };
+    assert_eq!((text.x - bg.x, text.y - bg.y), (7.0, 7.0), "padding plus border");
 }
 
 /// An <image> with no CSS size lays out at its intrinsic pixel size; a CSS size

@@ -934,6 +934,22 @@ pub struct Layout {
     pub access: Vec<AccessNode>,
 }
 
+/// A node's content box, as an offset from its border-box origin plus a size.
+///
+/// Taffy resolves padding and border against the container during layout, so
+/// these are already absolute pixels: percentage padding and `em` borders are
+/// handled by the time this is asked. Clamped at zero, because padding wider
+/// than the box itself is arithmetic, not a crash.
+fn content_box(layout: &taffy::Layout) -> (f32, f32, f32, f32) {
+    let (p, b) = (layout.padding, layout.border);
+    (
+        p.left + b.left,
+        p.top + b.top,
+        (layout.size.width - p.left - p.right - b.left - b.right).max(0.0),
+        (layout.size.height - p.top - p.bottom - b.top - b.bottom).max(0.0),
+    )
+}
+
 /// Callback that measures a text block:
 /// `(text, font_size, weight, wrap, max_width) -> (w, h)`.
 /// Measures a text node to `(width, height)` given an optional max width. Takes
@@ -1479,13 +1495,21 @@ fn collect(
                     }));
                 }
             }
-            PaintKind::Text(tc) => out.paints.push(Paint::Text(PaintText {
-                x,
-                y,
-                width: layout.size.width,
-                height: layout.size.height,
-                content: tc.clone(),
-            })),
+            // Glyphs go in the *content* box, inside this node's own padding and
+            // border. Painting them at the border box put a padded label flush
+            // against the edge of its own background: the box grew, the words
+            // did not move. The size matters as much as the origin, since it is
+            // what the run is aligned and wrapped within.
+            PaintKind::Text(tc) => {
+                let (cx, cy, cw, ch) = content_box(layout);
+                out.paints.push(Paint::Text(PaintText {
+                    x: x + cx,
+                    y: y + cy,
+                    width: cw,
+                    height: ch,
+                    content: tc.clone(),
+                }))
+            }
             PaintKind::Tick(color) => out.paints.push(Paint::Tick(PaintTick {
                 x,
                 y,
@@ -1594,11 +1618,15 @@ fn collect(
                         PaintKind::Text(tc) if *nid == kid => Some(tc.clone()),
                         _ => None,
                     })?;
+                    // The same content box the glyphs are painted in, or the
+                    // caret would sit at the border box while the text it is
+                    // supposed to be inside sits within the padding.
+                    let (cx, cy, cw, ch) = content_box(child);
                     Some(PaintText {
-                        x: x + child.location.x,
-                        y: y + child.location.y,
-                        width: child.size.width,
-                        height: child.size.height,
+                        x: x + child.location.x + cx,
+                        y: y + child.location.y + cy,
+                        width: cw,
+                        height: ch,
                         content,
                     })
                 });
