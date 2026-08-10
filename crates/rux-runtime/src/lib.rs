@@ -29,6 +29,7 @@ use std::path::{Path, PathBuf};
 
 use rux_layout::Node as LayoutNode;
 use rux_parser::{Sfc, StyleInclude};
+use rux_reactive::Value;
 use rux_script::{Builder, Engine};
 use rux_style::{BindingRegistry, Instances};
 /// Re-exported so the shell can hand pointer/focus state and the window size in
@@ -134,6 +135,20 @@ impl History {
         self.entries.truncate(self.at + 1);
         self.entries.push(path.to_string());
         self.at = self.entries.len() - 1;
+        true
+    }
+
+    /// Go somewhere *instead of* where we are: overwrite the current entry.
+    ///
+    /// Anything ahead is dropped, as it is for a push. This is still a
+    /// navigation, and what is ahead was reached from the page being replaced,
+    /// which is no longer on the way there.
+    fn replace(&mut self, path: &str) -> bool {
+        if self.current() == path && self.at + 1 == self.entries.len() {
+            return false;
+        }
+        self.entries.truncate(self.at + 1);
+        self.entries[self.at] = path.to_string();
         true
     }
 
@@ -985,6 +1000,7 @@ impl Document {
         for nav in rux_script::take_navigations() {
             moved |= match nav {
                 rux_script::Nav::To(path) => self.navigate(&path),
+                rux_script::Nav::Replace(path) => self.replace(&path),
                 rux_script::Nav::Back => self.back(),
                 rux_script::Nav::Forward => self.forward(),
             };
@@ -1042,6 +1058,18 @@ impl Document {
         self.history.go_to(index) && self.show_current_route()
     }
 
+    /// Go to `path` *instead of* where we are, overwriting the current entry.
+    ///
+    /// What a redirect needs. `navigate` would leave the redirecting page in
+    /// the history, so Back would land on it and be redirected forward again,
+    /// which reads as the Back button being broken.
+    pub fn replace(&mut self, path: &str) -> bool {
+        if !self.history.replace(path) {
+            return false;
+        }
+        self.show_current_route()
+    }
+
     /// Step back through the history. Returns whether there was anywhere to go.
     pub fn back(&mut self) -> bool {
         self.history.back() && self.show_current_route()
@@ -1061,14 +1089,42 @@ impl Document {
         // instance state is keyed by template position and would otherwise
         // simply still be sitting there.
         self.instances.retain(|_, i| i.route.as_deref().is_none_or(|r| r == path));
-        if !self.engine.set_route(&path) {
+        let moved = self.publish_route(&path);
+        if !moved {
             return false;
         }
         // The route is a signal like any other, so the ordinary change path
         // decides between a reconcile and a rebuild. A `<router>` records itself
         // as a structural read, so this reconciles the router's subtree.
-        self.apply_change(&HashSet::from([rux_script::ROUTE_SIGNAL.to_string()]));
+        //
+        // All four names, not just the path: a breadcrumb bound to `params.id`
+        // or a Back button bound to `can_go_back` subscribed to *that* name,
+        // and invalidating only `route` would leave them showing the last page.
+        self.apply_change(&HashSet::from_iter(
+            rux_script::ROUTER_SIGNALS.iter().map(|s| s.to_string()),
+        ));
         true
+    }
+
+    /// Put the path and everything derived from it in scope, and say whether
+    /// any of it moved.
+    ///
+    /// The three companions to `route` are all set here rather than where each
+    /// is caused, so there is one place where the router's view of the world is
+    /// assembled and no way for them to disagree with the path.
+    ///
+    /// `params` is matched against the template's routes *before* the build.
+    /// Falling out of the build instead would leave `{{ params.id }}` written
+    /// outside the router rendering one navigation behind.
+    fn publish_route(&mut self, path: &str) -> bool {
+        let params = rux_style::route_params(&self.sfc.template, path);
+        let (at, len) = (self.history.at, self.history.entries.len());
+        let mut moved = self.engine.set_route(path);
+        moved |= self.engine.set_provided(rux_script::PARAMS_SIGNAL, Value::Map(params));
+        moved |= self.engine.set_provided(rux_script::CAN_BACK_SIGNAL, Value::Bool(at > 0));
+        moved |=
+            self.engine.set_provided(rux_script::CAN_FORWARD_SIGNAL, Value::Bool(at + 1 < len));
+        moved
     }
 
     /// One handler run, plus whatever its `emit` calls set off. `depth` is the
@@ -1570,13 +1626,21 @@ fn build_engine(script: &str) -> Result<Engine, String> {
     // The route has to be in scope before the first build, because a `<router>`
     // reads it during that build. A document that declared `route` itself is
     // told rather than quietly overwritten on the first navigation.
-    if engine.declares_route() {
-        rux_script::warn_script(
-            "`route` is the router's signal and is provided for you; a `let route` of your own \
-             is overwritten on every navigation",
-        );
+    for name in rux_script::ROUTER_SIGNALS {
+        if engine.declares(name) {
+            rux_script::warn_script(format!(
+                "`{name}` is the router's and is provided for you; a `let {name}` of your own is \
+                 overwritten on every navigation"
+            ));
+        }
     }
     engine.set_route(ROOT_PATH);
+    // The companions need to exist before the first build too, or a document
+    // reading `params.id` or `can_go_back` on its opening screen would fail to
+    // resolve the name rather than see the empty answer that is the truth.
+    engine.set_provided(rux_script::PARAMS_SIGNAL, Value::Map(Vec::new()));
+    engine.set_provided(rux_script::CAN_BACK_SIGNAL, Value::Bool(false));
+    engine.set_provided(rux_script::CAN_FORWARD_SIGNAL, Value::Bool(false));
     Ok(engine)
 }
 
@@ -2328,6 +2392,91 @@ mod tests {
         assert!(!doc.go_to(9), "there is no ninth entry");
         assert!(!doc.go_to(1), "already there");
         assert_eq!(doc.route(), "/settings");
+    }
+
+    /// `replace` goes somewhere instead of here, which is what a redirect
+    /// needs. Done with `navigate`, the redirecting page stays in the history,
+    /// so Back lands on it and is redirected forward again and the user is
+    /// stuck. There is no way to work around that in userland.
+    #[test]
+    fn replace_leaves_no_entry_to_go_back_to() {
+        let mut doc = router_app();
+        doc.navigate("/settings");
+        assert!(doc.replace("/user/1"), "the document moved");
+        assert_eq!(doc.route(), "/user/1");
+        assert_eq!(doc.history_position(), (1, 2), "it took the entry, it did not add one");
+
+        assert!(doc.back(), "back goes past the page that was replaced");
+        assert_eq!(doc.route(), ROOT_PATH, "and lands on the one before it");
+    }
+
+    /// A redirect written the way it actually gets written.
+    #[test]
+    fn a_handler_can_replace_the_current_page() {
+        let mut doc = with_router(
+            "<template><screen>\
+               <view @tap=\"replace(&quot;/settings&quot;)\"><text>go</text></view>\
+               <router>\
+                 <route path=\"/\" view=\"home\" />\
+                 <route path=\"/settings\" view=\"settings\" />\
+                 <route fallback view=\"missing\" />\
+               </router>\
+             </screen></template>\n\
+             <script>\nuse components::home;\nuse components::settings;\n\
+             use components::missing;\n</script>",
+        );
+        let button = doc.root.children[0].clone();
+        assert!(doc.apply_handler(&button.on_tap.clone().expect("a tap")));
+        assert_eq!(doc.route(), "/settings");
+        assert_eq!(doc.history_position(), (0, 1), "nothing was added to go back to");
+    }
+
+    /// The matched view already gets its parameters as props. Anything *around*
+    /// the router did not: a title bar is in the document's own layout, so the
+    /// `id` in `/user/7` was invisible to it. That is what `params` is for.
+    #[test]
+    fn params_are_readable_outside_the_matched_view() {
+        let mut doc = with_router(
+            "<template><screen>\
+               <text>looking at {{ params.id }}</text>\
+               <router>\
+                 <route path=\"/\" view=\"home\" />\
+                 <route path=\"/user/:id\" view=\"user\" />\
+                 <route fallback view=\"missing\" />\
+               </router>\
+             </screen></template>\n\
+             <script>\nuse components::home;\nuse components::user;\n\
+             use components::missing;\n</script>",
+        );
+        doc.navigate("/user/7");
+        assert!(find_text(&doc.root, "looking at 7"), "{:?}", text_of(&doc.root));
+        // And it empties again when the next route captures nothing, rather
+        // than keeping the last page's answer.
+        doc.navigate("/");
+        assert!(find_text(&doc.root, "looking at"), "{:?}", text_of(&doc.root));
+        assert!(!find_text(&doc.root, "looking at 7"), "{:?}", text_of(&doc.root));
+    }
+
+    /// What a Back button binds to in order to grey itself out. Signals rather
+    /// than functions, because disabling a button is a `:class`, and a `:class`
+    /// reads signals.
+    #[test]
+    fn the_history_says_whether_it_can_be_walked() {
+        let mut doc = router_app();
+        assert_eq!(doc.value_in("can_go_back", None), "false", "nothing behind the first page");
+        assert_eq!(doc.value_in("can_go_forward", None), "false");
+
+        doc.navigate("/settings");
+        assert_eq!(doc.value_in("can_go_back", None), "true");
+        assert_eq!(doc.value_in("can_go_forward", None), "false", "nothing ahead of the last page");
+
+        doc.back();
+        assert_eq!(doc.value_in("can_go_back", None), "false");
+        assert_eq!(doc.value_in("can_go_forward", None), "true", "the page just left is ahead");
+
+        // Somewhere new drops what was ahead, so forward closes again.
+        doc.navigate("/user/1");
+        assert_eq!(doc.value_in("can_go_forward", None), "false");
     }
 
     /// A trailing slash is not a different path. Anyone typing one by hand

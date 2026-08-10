@@ -714,8 +714,7 @@ fallback catches renders nothing, and warns.
 **The path is an ordinary signal called `route`.** That is the whole design:
 `{{ route }}`, `r-if="route == \"/about\""` and `:class` already understand
 navigation, and a route change reconciles the router's subtree rather than
-rebuilding the document. `route` is reserved, and a script declaring it is
-warned.
+rebuilding the document.
 
 **Parameters.** A `:name` segment matches anything and is handed to the view as
 a prop, so `/crew/grace` reaches `crew-detail` with `id` set to `"grace"`. A
@@ -732,11 +731,37 @@ which is how a nav bar shows where you are:
 different (`:to="&quot;/crew/&quot; + member.id"`). An explicit `@tap` wins over
 both, so a link can still do something else on the way.
 
-**History.** `navigate("/path")`, `back()` and `forward()` are callable from any
-handler. History is one list with a cursor, so going back and then somewhere new
-drops what was ahead. Navigating to where you already are is not a visit, or
-tapping the current tab would fill the history with repeats. On the desktop,
-**Alt+Left / Alt+Right** and the mouse's side buttons walk it.
+**Parameters are also readable from outside the matched view**, as `params`:
+```xml
+<text r-if="params.id != ()">viewing: {{ params.id }}</text>
+```
+The view gets them as props, which is enough for the view. It is not enough for
+a title bar or a breadcrumb, which sit in the document's own layout and are not
+the matched view. `params` empties when a route captures nothing, rather than
+keeping the last page's answer.
+
+**History.** `navigate("/path")`, `replace("/path")`, `back()` and `forward()`
+are callable from any handler. History is one list with a cursor, so going back
+and then somewhere new drops what was ahead. Navigating to where you already are
+is not a visit, or tapping the current tab would fill the history with repeats.
+On the desktop, **Alt+Left / Alt+Right** and the mouse's side buttons walk it.
+
+`replace` goes somewhere *instead of* where you are, overwriting the current
+entry, and it is what a redirect needs rather than a nicety. Redirect with
+`navigate` and the redirecting page stays in the history, so Back lands on it
+and is redirected forward again: the Back button appears broken and nothing in
+userland can fix it.
+
+**`can_go_back` and `can_go_forward`** are signals, so a history button can grey
+itself out:
+```xml
+<view class="step" :class="#{ dead: !can_go_back }" @tap="back()">
+```
+Signals rather than functions because what they are for is disabling a control,
+and disabling a control is a class, and a class reads signals.
+
+`route`, `params`, `can_go_back` and `can_go_forward` are all provided, and all
+reserved: a script declaring one is warned rather than quietly overwritten.
 
 **A route's view starts fresh when you return to it.** Instance state is keyed by
 template position, so *keeping* it across a visit is what would happen by

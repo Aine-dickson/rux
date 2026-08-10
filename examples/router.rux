@@ -12,6 +12,22 @@
       <route fallback view="lost-page" />
     </router>
 
+    <!-- Back and Forward, greyed out when there is nowhere to go. This is what
+         `can_go_back` is for: disabling a control is a class, and a class reads
+         signals. Alt+Left and the mouse's side buttons do the same thing. -->
+    <view class="history">
+      <view class="step" :class="#{ dead: !can_go_back }" @tap="back()">
+        <text class="step-label">go back</text>
+      </view>
+      <view class="step" :class="#{ dead: !can_go_forward }" @tap="forward()">
+        <text class="step-label">go forward</text>
+      </view>
+      <!-- `params` is readable out here, outside the matched view. The view
+           gets `id` as a prop; this line is in the document's own layout and
+           could not see it before. -->
+      <text class="who" r-if="params.id != ()">viewing: {{ params.id }}</text>
+    </view>
+
     <view class="footer">
       <text class="path">path: {{ route }}</text>
       <view class="lost" to="/nowhere">
@@ -39,6 +55,25 @@
   }
 
   .path { color: #6c7086; font-size: 12px; font-weight: 700; }
+
+  .history { display: flex; align-items: center; gap: 10px; }
+
+  .step {
+    padding: 5px 12px;
+    background: #313244;
+    border-radius: 8px;
+    cursor: pointer;
+  }
+
+  .step:hover { background: #45475a; }
+  .step-label { color: #cdd6f4; font-size: 12px; font-weight: 700; }
+
+  /* Nowhere to go: say so by looking unavailable rather than by vanishing, so
+     the row does not change shape as you move through the app. */
+  .step.dead { background: #26263a; cursor: default; }
+  .step.dead .step-label { color: #45475a; }
+
+  .who { color: #a6e3a1; font-size: 12px; font-weight: 700; }
 
   .lost {
     align-items: center;

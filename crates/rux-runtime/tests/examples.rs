@@ -123,6 +123,28 @@ fn the_router_example_navigates() {
     doc.navigate("/nowhere");
     assert!(has(&doc, "nothing here"), "the fallback: {:?}", texts(&doc.root));
     assert!(has(&doc, "/nowhere"), "which read the path: {:?}", texts(&doc.root));
+
+    // `params` is read in the document's own footer, outside the matched view,
+    // which is the whole reason it exists. It empties when a route captures
+    // nothing rather than keeping the last page's answer.
+    assert!(!has(&doc, "viewing:"), "no parameters here: {:?}", texts(&doc.root));
+    doc.navigate("/crew/hedy");
+    assert!(has(&doc, "viewing: hedy"), "read outside the view: {:?}", texts(&doc.root));
+
+    // And the history buttons say whether they lead anywhere. Compared against
+    // each other rather than against a colour written here twice: what matters
+    // is that a dead button does not look like a live one.
+    let paint = |doc: &Document, label: &str| {
+        let button = find_link(&doc.root, label).expect("a history button");
+        format!("{:?}", button.style.background)
+    };
+    assert_ne!(
+        paint(&doc, "go back"),
+        paint(&doc, "go forward"),
+        "plenty behind us and nothing ahead, so the two should not look alike"
+    );
+    doc.back();
+    assert_eq!(paint(&doc, "go back"), paint(&doc, "go forward"), "both lead somewhere now");
 }
 
 #[test]

@@ -2738,6 +2738,37 @@ fn match_route(pattern: &str, path: &str) -> Option<Locals> {
     Some(params)
 }
 
+/// What the routes in `template` capture from `path`, without building anything.
+///
+/// The matched view already receives its parameters as props, and that is
+/// enough for the view itself. It is not enough for anything *around* the
+/// router: a title bar or a breadcrumb sits in the document's own layout, is
+/// not the matched view, and so had no way to see the `id` in `/crew/grace`.
+/// This is what backs the `params` signal, which fills that gap.
+///
+/// It has to run *before* the build rather than fall out of it, or `{{ params.id }}`
+/// written outside the router would render one navigation behind.
+///
+/// The first `<router>` in the template wins. Nested routers are not built, and
+/// when they are, the parameters of an inner one belong to it rather than to
+/// the document.
+pub fn route_params(template: &Element, path: &str) -> Vec<(String, Value)> {
+    fn find_router(el: &Element) -> Option<&Element> {
+        if el.tag == "router" {
+            return Some(el);
+        }
+        element_children(el).into_iter().find_map(find_router)
+    }
+    let Some(router) = find_router(template) else { return Vec::new() };
+    element_children(router)
+        .into_iter()
+        .filter(|r| r.tag == "route")
+        // A fallback route captures nothing, which is why this looks only at
+        // patterns: there is nothing in `/nowhere` to name.
+        .find_map(|r| match_route(r.attr("path")?, path))
+        .unwrap_or_default()
+}
+
 /// Parse `r-for="item in items"` into `(binding, collection_expr)`.
 fn parse_for(expr: &str) -> Option<(&str, &str)> {
     let (var, coll) = expr.split_once(" in ")?;

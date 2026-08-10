@@ -81,6 +81,14 @@ impl Builder {
         engine.register_fn("navigate", |path: ImmutableString| {
             NAVIGATIONS.with(|n| n.borrow_mut().push(Nav::To(path.to_string())));
         });
+        // `replace` is not a convenience over `navigate`: it is the only way to
+        // redirect. A redirect done with `navigate` leaves the page that
+        // redirected sitting in the history, so Back returns to it and it
+        // redirects again, and the user cannot leave. Nothing in userland can
+        // work around that.
+        engine.register_fn("replace", |path: ImmutableString| {
+            NAVIGATIONS.with(|n| n.borrow_mut().push(Nav::Replace(path.to_string())));
+        });
         engine.register_fn("back", || {
             NAVIGATIONS.with(|n| n.borrow_mut().push(Nav::Back));
         });
@@ -146,6 +154,20 @@ impl Builder {
 /// The signal the router keeps the current path in. Reserved: a document that
 /// declares it is warned rather than quietly overwritten.
 pub const ROUTE_SIGNAL: &str = "route";
+
+/// The signal holding what the matched route captured, as a map, so
+/// `{{ params.id }}` works anywhere and not only inside the matched view.
+pub const PARAMS_SIGNAL: &str = "params";
+
+/// Whether there is anywhere to go back to, and anywhere to go forward to.
+/// Signals rather than functions, because what they are for is disabling a
+/// button, and a button's `:class` reads signals.
+pub const CAN_BACK_SIGNAL: &str = "can_go_back";
+pub const CAN_FORWARD_SIGNAL: &str = "can_go_forward";
+
+/// Every name the router provides. A script declaring one of these is warned.
+pub const ROUTER_SIGNALS: [&str; 4] =
+    [ROUTE_SIGNAL, PARAMS_SIGNAL, CAN_BACK_SIGNAL, CAN_FORWARD_SIGNAL];
 
 /// A live script engine: state in `scope`, script functions in `funcs`.
 pub struct Engine {
@@ -239,6 +261,9 @@ pub fn take_emissions() -> Vec<(String, Option<Value>)> {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Nav {
     To(String),
+    /// Go there *instead of* here: the current entry is overwritten rather than
+    /// added to, so Back skips the page that redirected.
+    Replace(String),
     Back,
     Forward,
 }
@@ -443,11 +468,24 @@ impl Engine {
         changed
     }
 
-    /// Whether the script declared `route` itself, so the runtime can say so
-    /// rather than silently overwriting it. Asked *before* [`Self::set_route`],
-    /// which would otherwise make the answer always yes.
-    pub fn declares_route(&self) -> bool {
-        self.signals.contains(ROUTE_SIGNAL)
+    /// Put one of the router's other provided values in scope, the same way
+    /// [`Self::set_route`] does with the path.
+    ///
+    /// Returns whether it moved, so the runtime can skip a repaint nothing
+    /// asked for: `can_go_forward` in particular is false through most of a
+    /// session and would otherwise report a change on every navigation.
+    pub fn set_provided(&mut self, name: &str, value: Value) -> bool {
+        let changed = self.read_signal(name).as_ref() != Some(&value);
+        self.scope.set_or_push(name, to_dynamic(&value));
+        self.signals.insert(name.to_string());
+        changed
+    }
+
+    /// Whether the script declared one of the router's names itself, so the
+    /// runtime can say so rather than silently overwriting it. Asked *before*
+    /// the setters, which would otherwise make the answer always yes.
+    pub fn declares(&self, name: &str) -> bool {
+        self.signals.contains(name)
     }
 
     /// A signal's current value, read straight from the scope (no evaluation).
