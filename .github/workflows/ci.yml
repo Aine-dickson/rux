@@ -1,0 +1,57 @@
+# Check every push, on every branch.
+#
+# There was no such workflow until now: `site.yml` deploys, and it only fires on
+# `main`. So nothing at all ran on a feature branch, which is exactly how the
+# wasm build stayed broken for three weeks on `build/v0.6` without anyone
+# noticing: the suite never compiles for wasm32, and CI never saw the branch.
+#
+# This runs the *same* gates a release runs, by calling the same script, so the
+# two cannot drift apart. See RELEASING.md, "Packing a release".
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+# Enough to read the repo and nothing else: this workflow publishes nothing.
+permissions:
+  contents: read
+
+# A new push to the same branch makes the previous run irrelevant.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the wasm target
+        run: rustup target add wasm32-unknown-unknown
+
+      # `cargo test` needs the workspace built twice over (host and wasm), so
+      # the cache is what keeps this in the couple-of-minutes range.
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ci-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: ci-${{ runner.os }}-
+
+      # The GPU crates need these to build on a bare runner, even though
+      # nothing here opens a window: the tests are headless.
+      - name: System dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libx11-dev libxkbcommon-dev libwayland-dev \
+            libxcursor-dev libxrandr-dev libxi-dev
+
+      - name: Verify
+        run: ./scripts/release.sh verify
