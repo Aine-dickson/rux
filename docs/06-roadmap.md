@@ -1194,18 +1194,13 @@ set of things you hit the moment that stops being true.
    more rows than it needs to.
 5. **Computed values and effects.** A `{{ }}` expression is the only "computed"
    there is, and there is no way to run a side effect when a signal changes.
-6. **`rux build`, for web and Windows only.** Moved here from v1.0, decided
-   2026-08-09. The rest of this milestone is aimed at people building real
-   things, which is awkward while the only way to hand over what they build is
-   "clone this and run `cargo run`". Two targets and no more: a static web
-   bundle, which is close to what the playground already produces, and a
-   Windows executable, which is the platform Rux is actually developed and
-   tested on. **No `.msi`, no `.app`, no `.apk`.** Mobile packaging waits for
-   v0.8, where mobile itself lives; committing to an installer format now would
-   mean freezing an output surface while slots, events and the script fork are
-   still moving it.
+**`rux build` was scheduled here on 2026-08-09 and moved out again on
+2026-08-11**, to sit after the script tier rather than before it. See v0.7 below.
+The reason is the one this document already recorded when packaging sat at v1.0:
+the language should stop moving before its output format is committed to. What
+changed is the judgement of how long "stop moving" takes, not the argument.
 
-### v0.7: the script tier, and the fork
+### v0.7: the script tier and the fork, then animation, then packaging
 
 The two fork motivators recorded above are both real and both point the same
 way. This milestone is where Rux stops being stock rhai.
@@ -1222,7 +1217,38 @@ way. This milestone is where Rux stops being stock rhai.
 3. **Element access from script**, the DOM-like handle. Sequenced after
    reactivity for the reason already recorded: script mutations must feed the
    same subscription graph or they desync.
-4. **Script documentation**, last, once the surface has stopped moving.
+4. **Script documentation**, once the script surface has stopped moving.
+5. **Animation**, added 2026-08-11. Rux has no transition of any kind, which is
+   the most visible thing missing from a UI toolkit that is otherwise usable.
+   Sequenced *after* the fork rather than mixed into it, and in tiers, because
+   they differ enormously in cost:
+   - **`transition` on style changes** first and alone. It fires when a node's
+     computed style changes between builds, from a signal or from a
+     pseudo-class flipping, so the tree shape never changes and enter/leave
+     never arises. This is the case almost every app wants. The clock it needs
+     mostly exists: the shell already schedules the caret blink and the
+     long-press timer on `ControlFlow::WaitUntil`, and generalising that keeps
+     the property that matters on a phone, which is that an idle app sleeps
+     instead of burning frames.
+   - **Enter and leave** second, and it shares a foundation with lifecycle
+     hooks: both need a subtree to outlive its removal from the tree.
+   - **Route transitions last**, never first. They *are* the enter/leave
+     problem, so building them for the router alone means writing a bespoke
+     animator and throwing it away.
+6. **Lifecycle hooks**, `mounted` and `unmounted`, alongside enter/leave for the
+   reason above. They belong after the fork rather than before it: a hook is
+   naturally a named `fn`, and until shared-cell signals land a `fn` cannot
+   mutate a signal, so a hook would have to be written as an inline body.
+7. **`rux build`, for web and Windows only.** Moved out of v0.6 on 2026-08-11
+   to sit here, at the end, after the language has stopped moving. Two targets
+   and no more: a static web bundle, which is close to what the playground
+   already produces, and a Windows executable, which is the platform Rux is
+   actually developed and tested on. **No `.msi`, no `.app`, no `.apk`.**
+   Mobile packaging waits for v0.8, where mobile itself lives.
+
+The ordering within this milestone is the point: the fork changes what a script
+can do, animation and hooks both build on that, and packaging commits to an
+output format only once nothing above it is still moving.
 
 ### v0.8: mobile
 
@@ -1256,7 +1282,7 @@ out of the pitch.
 ### v1.0: freeze
 
 1. **`rux build`, the rest of it.** The web bundle and the Windows executable
-   moved to v0.6; what stays here is what genuinely needs a language that has
+   moved to v0.7; what stays here is what genuinely needs a language that has
    stopped moving: installer formats, an app bundle, and a platform matrix
    wider than the one machine Rux is developed on.
 2. **Re-derive the spec.** `docs/02-spec.md` describes itself as the v0.1
@@ -1273,14 +1299,28 @@ out of the pitch.
 Things that are not scheduled above but that change the plan if the answer is
 not what we assume.
 
-- **Packaging belonged in v0.6, not v1.0. Settled 2026-08-09**, and it is now
-  item 6 of that milestone. Nobody can build something real with Rux until they
-  can hand the result to someone else. The counter-argument, that the language
-  should stop moving before an output format is committed to, was answered by
-  narrowing the scope rather than by waiting: web and Windows only, no
-  installer formats, so nothing durable is frozen. `rux build` stays listed
-  under v1.0 as well, because what is left there (installers, the platform
-  matrix) really does want a language that has stopped moving.
+- **Packaging: v1.0 → v0.6 (2026-08-09) → v0.7, after the script tier
+  (2026-08-11).** Settled. The argument for moving it out of v1.0 stands and has
+  not been revisited: nobody can build something real with Rux until they can
+  hand the result to someone else, and narrowing to web and Windows with no
+  installer formats means nothing durable gets frozen.
+
+  What changed on the second move is where "the language has stopped moving"
+  falls. v0.7 changes what a script can do, and animation adds a whole property
+  family on top of that; shipping a build format immediately before both would
+  have meant committing to an output surface and then watching it move
+  underneath. Packaging now sits at the *end* of v0.7 rather than the start of
+  v0.6, which is the same argument this list already made, applied with a better
+  estimate of the timing. `rux build` stays listed under v1.0 as well, because
+  what is left there (installers, the platform matrix) really does want a
+  language that has stopped moving.
+
+- **Animation had no milestone at all until 2026-08-11.** It is now v0.7, after
+  the fork. The gap was found by accident while answering a question about route
+  transitions: the word "animation" appeared exactly once in the entire doc set,
+  in `02-spec.md`, saying `r-key` exists for "reordering, animation". A UI
+  toolkit with no transitions reads as unfinished in a way a missing Tailwind
+  layer does not, which is why it goes ahead of Tailwind rather than beside it.
 
 - **Tailwind was first on the old list; here it is last.** It is a layer over a
   CSS engine that already works, and it mostly pays off for people already
