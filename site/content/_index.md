@@ -120,7 +120,12 @@ GPU, [winit] holds the window.
   <li>:hover / :focus / :checked</li>
   <li>custom properties + var()</li>
   <li>@media queries</li>
-  <li>components</li>
+  <li>components + slots</li>
+  <li>component events</li>
+  <li>a router</li>
+  <li>keyed r-for</li>
+  <li>computed + effects</li>
+  <li>external stylesheets</li>
   <li>hot reload</li>
   <li>dev overlay</li>
   <li>accessibility tree</li>
@@ -135,10 +140,11 @@ The exact honored-CSS set lives in [the reference](@/reference/_index.md), the
 authoritative "what actually works" doc. What's missing is written down just as
 plainly. The biggest gap is **true inline text flow**: two `<text>` elements
 cannot share a line, so bold inside a sentence is not expressible. After that:
-a component takes props but cannot emit events or render children, `r-for` has
-no index and reconciles by count rather than by key, the reactive tier has no
-effects or computed values, a rhai `fn` still cannot mutate a signal, and text
-editing lacks word-wise movement and triple-click selection.
+there is **no animation or transition of any kind**, a rhai `fn` still cannot
+mutate a signal (so handlers are written inline), the router is desktop-only
+until a web build can carry components, `computed` and `effect` do not work
+inside a component, and text editing lacks word-wise movement and triple-click
+selection.
 
 > **Rux is 0.x and experimental.** It is not trying to replace Flutter, React
 > Native, or Slint. Those are mature, and if you need to ship an app this
