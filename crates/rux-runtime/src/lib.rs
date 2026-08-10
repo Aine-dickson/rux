@@ -91,9 +91,36 @@ impl Default for History {
 }
 
 impl History {
+    /// A history that begins somewhere other than `/`.
+    ///
+    /// One entry, not two: arriving straight at `/user/7` from a link or a
+    /// command line means there is nowhere to go *back* to. Seeding `/` beneath
+    /// it would invent a page the user never visited and make Back leave the
+    /// app's opening screen showing without them ever having asked for it.
+    /// An empty path is not a path: a page served from a `file://` URL or an
+    /// odd host can report one, and it would match no route at all.
+    fn starting_at(path: &str) -> Self {
+        let path = if path.is_empty() { ROOT_PATH } else { path };
+        Self { entries: vec![path.to_string()], at: 0 }
+    }
+
     /// Where we are now. Never empty, so this always answers.
     fn current(&self) -> &str {
         &self.entries[self.at]
+    }
+
+    /// Jump straight to an entry by index, the browser's model of Back and
+    /// Forward. A browser hands back *where it landed*, not which way it went,
+    /// and a long-press on Back can move several entries at once, so stepping
+    /// one at a time cannot express it. Out of range is refused rather than
+    /// clamped: it means the two histories have drifted, and quietly landing
+    /// somewhere near would hide that.
+    fn go_to(&mut self, index: usize) -> bool {
+        if index >= self.entries.len() || index == self.at {
+            return false;
+        }
+        self.at = index;
+        true
     }
 
     /// Go somewhere new, dropping anything that was ahead. Navigating to where
@@ -980,6 +1007,39 @@ impl Document {
             return false;
         }
         self.show_current_route()
+    }
+
+    /// Open the document *at* `path` instead of at `/`.
+    ///
+    /// This is what a deep link arrives as: a browser tab opened straight at
+    /// `/user/7`, or `rux run app.rux --route /user/7`. It replaces the history
+    /// rather than adding to it, so the arrival page is the first page and Back
+    /// has nowhere to go, which is what actually happened.
+    ///
+    /// Called before the first frame. Calling it later would silently discard
+    /// wherever the user had got to.
+    pub fn start_at(&mut self, path: &str) -> bool {
+        self.history = History::starting_at(path);
+        self.show_current_route()
+    }
+
+    /// How far along the history the document is, and how long the history is.
+    ///
+    /// The pair is what a host history (the browser's) needs to mirror this
+    /// one: the index is stamped into each entry it pushes, and comes back
+    /// untouched when the user presses Back. See [`Document::go_to`].
+    pub fn history_position(&self) -> (usize, usize) {
+        (self.history.at, self.history.entries.len())
+    }
+
+    /// Move to the history entry at `index`, without recording a visit.
+    ///
+    /// The browser's Back button reports *where it landed*, not which way it
+    /// went, and it can move several entries at once. Returns whether the
+    /// document moved; `false` means the index was out of range or already
+    /// current, and the caller's history has drifted from this one.
+    pub fn go_to(&mut self, index: usize) -> bool {
+        self.history.go_to(index) && self.show_current_route()
     }
 
     /// Step back through the history. Returns whether there was anywhere to go.
@@ -2208,6 +2268,66 @@ mod tests {
         let mut doc = router_app();
         doc.navigate("/nowhere");
         assert!(find_text(&doc.root, "no such page"), "{:?}", text_of(&doc.root));
+    }
+
+    /// A deep link opens the app on the page it names, not on `/`. Without
+    /// this a shared URL always landed on the home page, whatever it said.
+    #[test]
+    fn a_document_can_start_somewhere_other_than_root() {
+        let mut doc = router_app();
+        assert!(doc.start_at("/user/7"), "the document moved off the home page");
+        assert_eq!(doc.route(), "/user/7");
+        assert!(find_text(&doc.root, "user 7 seen 0"), "{:?}", text_of(&doc.root));
+    }
+
+    /// The arrival page is the *first* page. Seeding `/` underneath it would
+    /// invent a visit that never happened and give Back somewhere to go.
+    #[test]
+    fn starting_at_a_path_leaves_nothing_behind_it() {
+        let mut doc = router_app();
+        doc.start_at("/settings");
+        assert_eq!(doc.history_position(), (0, 1));
+        assert!(!doc.back(), "there is nowhere back to");
+        assert_eq!(doc.route(), "/settings");
+    }
+
+    /// An empty path matches no route at all, and a browser can report one from
+    /// a `file://` URL. It means the root.
+    #[test]
+    fn starting_at_nothing_starts_at_the_root() {
+        let mut doc = router_app();
+        doc.start_at("");
+        assert_eq!(doc.route(), ROOT_PATH);
+        assert!(find_text(&doc.root, "the home page"), "{:?}", text_of(&doc.root));
+    }
+
+    /// What a host history mirrors with: it stamps an index on each entry and
+    /// hands the same index back, because the browser reports where Back landed
+    /// rather than which way it went, and can move several entries at once.
+    #[test]
+    fn the_history_can_be_walked_by_index() {
+        let mut doc = router_app();
+        doc.navigate("/settings");
+        doc.navigate("/user/3");
+        assert_eq!(doc.history_position(), (2, 3));
+
+        assert!(doc.go_to(0), "jumped two entries at once, as a long-press Back does");
+        assert_eq!(doc.route(), ROOT_PATH);
+        assert_eq!(doc.history_position(), (0, 3), "jumping is not a visit: nothing was dropped");
+
+        assert!(doc.go_to(2), "and forward again to where it had been");
+        assert_eq!(doc.route(), "/user/3");
+    }
+
+    /// An index that is not there means the two histories have drifted. Refused
+    /// rather than clamped: landing somewhere near would hide the drift.
+    #[test]
+    fn an_out_of_range_history_index_is_refused() {
+        let mut doc = router_app();
+        doc.navigate("/settings");
+        assert!(!doc.go_to(9), "there is no ninth entry");
+        assert!(!doc.go_to(1), "already there");
+        assert_eq!(doc.route(), "/settings");
     }
 
     /// A trailing slash is not a different path. Anyone typing one by hand

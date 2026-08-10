@@ -112,6 +112,16 @@ enum RuxEvent {
     /// or key press that asked for it.
     #[cfg(target_arch = "wasm32")]
     WebPaste(String),
+    /// The user walked the browser's history: its Back or Forward button, a
+    /// swipe, or a long-press that jumped several entries at once.
+    ///
+    /// The payload is the index Rux stamped on that entry when it pushed it,
+    /// handed back untouched, which is why this is an index and not a
+    /// direction: a browser reports where it landed. `None` is an entry Rux
+    /// never pushed, which is the tab's own first entry, so it means the path
+    /// has to be read back off the URL instead.
+    #[cfg(target_arch = "wasm32")]
+    WebRoute(Option<usize>),
     /// Assistive technology asked us something (it attached, it wants the
     /// tree, it moved focus). Delivered through the same proxy as hot-reload.
     #[cfg(not(target_arch = "wasm32"))]
@@ -1022,6 +1032,15 @@ struct App {
     /// The cursor icon currently set on the window, so a mouse-move only calls
     /// `set_cursor` when the shape actually changes.
     cursor: CursorIcon,
+    /// The history position the browser's URL bar was last told about, as
+    /// `(index, route)`.
+    ///
+    /// Kept so the shell can tell a move it made itself from one the user made
+    /// with the browser's own Back button. Applying a `popstate` updates this
+    /// too, which is what stops the echo: after it, the document and the URL
+    /// already agree, so there is nothing left to write.
+    #[cfg(target_arch = "wasm32")]
+    mirrored: Option<(usize, String)>,
 }
 
 impl App {
@@ -1083,6 +1102,81 @@ impl App {
             press: None,
             cursor: CursorIcon::Default,
             states: Vec::new(),
+            #[cfg(target_arch = "wasm32")]
+            mirrored: None,
+        }
+    }
+
+    /// Keep the browser's URL bar showing where the document actually is.
+    ///
+    /// Called once per frame rather than at each place that can navigate, so a
+    /// handler that navigates more than once produces the single move it
+    /// amounts to instead of one per call.
+    ///
+    /// Which of the three moves it is falls out of comparing the document's
+    /// history position with the last one written:
+    ///
+    /// - **further along** means a new page was visited: push an entry.
+    /// - **further back** means the app went back or forward itself (Alt+Left,
+    ///   a mouse side button, a `back()` in a handler): walk the browser by the
+    ///   same number of entries, so its own Back button stays in step. The
+    ///   `popstate` that answers is recognised as an echo and does nothing.
+    /// - **the same index, a different route** means a navigation that replaced
+    ///   where we were, which is what going back and then somewhere new looks
+    ///   like once the two moves are collapsed into one frame.
+    #[cfg(target_arch = "wasm32")]
+    fn sync_url(&mut self) {
+        if WEB_BASE.with(|b| b.borrow().is_none()) {
+            return;
+        }
+        let (index, _) = self.document.history_position();
+        let route = self.document.route().to_string();
+        let Some((was, ref was_route)) = self.mirrored else {
+            // The tab's first entry is one the browser made, not us. Rewrite it
+            // in place so it carries an index like every other entry, or a Back
+            // that lands on it would arrive with nothing to say where it is.
+            web_write_history(index, &route, true);
+            self.mirrored = Some((index, route));
+            return;
+        };
+        if was == index {
+            if *was_route != route {
+                web_write_history(index, &route, true);
+                self.mirrored = Some((index, route));
+            }
+            return;
+        }
+        if index > was {
+            web_write_history(index, &route, false);
+        } else if let Some(window) = web_sys::window() {
+            if let Ok(history) = window.history() {
+                let _ = history.go_with_delta(index as i32 - was as i32);
+            }
+        }
+        self.mirrored = Some((index, route));
+    }
+
+    /// The browser's Back or Forward moved the tab; move the document to match.
+    ///
+    /// The index is the one Rux stamped on that entry, so a jump of any size is
+    /// one call. An entry with no index is one Rux never pushed, which happens
+    /// when the tab's own first entry is reached; the URL is then the only
+    /// statement of where we are, so it is read back off the location.
+    #[cfg(target_arch = "wasm32")]
+    fn apply_web_route(&mut self, index: Option<usize>) {
+        let moved = match index {
+            Some(index) => self.document.go_to(index),
+            None => match web_route_now() {
+                Some(route) => self.document.start_at(&route),
+                None => false,
+            },
+        };
+        // Recorded whether or not anything moved: the browser is where it is
+        // either way, and the point of this is that the next frame agrees with
+        // it instead of trying to correct it back.
+        self.mirrored = Some((self.document.history_position().0, self.document.route().to_string()));
+        if moved {
+            self.request_redraw();
         }
     }
 
@@ -1095,7 +1189,16 @@ impl App {
             Ok(doc) => {
                 // Keeps the window's own state (viewport, hover) and drops the
                 // previous error, so fixing the file clears the overlay.
+                let was = self.document.route().to_string();
                 self.document.replace_with(doc);
+                // A reloaded document starts at `/`, so without this, saving a
+                // file while looking at a page other than the first one sent
+                // the window home and the edit could not be seen. The history
+                // behind it is genuinely gone: the reloaded document is a new
+                // one, and claiming it was visited would be a lie.
+                if was != rux_runtime::ROOT_PATH {
+                    self.document.start_at(&was);
+                }
                 eprintln!("reloaded {}", self.path.display());
             }
             Err(err) => {
@@ -2277,10 +2380,11 @@ impl App {
             return;
         }
         let Some(el) = web_ime_element() else { return };
-        let Some(model) = self.focused.clone() else {
+        // Nothing focused means nothing to type into, so the keyboard goes away.
+        if self.focused.is_none() {
             let _ = el.blur();
             return;
-        };
+        }
         let value = self.focused_value();
         // Only touch it when it has actually drifted, which means the change
         // came from Rux (a handler, a tap moving the caret) rather than from the
@@ -2350,7 +2454,11 @@ impl App {
         self.preedit = None;
         self.write_focused(&value);
         self.scroll_caret_into_view(&value, caret);
-        self.set_focus_range(Some(Focus { model, caret, anchor, preedit }));
+        // The row travels with the model: an input inside an `r-for` is
+        // identified by both, and dropping it here would put the caret in every
+        // row of the list at once.
+        let row = self.focused_row.clone();
+        self.set_focus_range(Some(Focus { model, row, caret, anchor, preedit }));
     }
 
     /// Park the candidate window under the caret instead of at the window's
@@ -2565,6 +2673,11 @@ impl App {
         // Catches the first frame and any resize that arrived without an event
         // (hot-reload, scale change); a no-op unless a breakpoint moved.
         self.update_viewport();
+        // Every navigation ends in a repaint, so this is the one place that
+        // sees all of them, wherever they came from: a link, a handler, a key,
+        // or a mouse button.
+        #[cfg(target_arch = "wasm32")]
+        self.sync_url();
         let caret_visible = self.caret_visible;
         // Split borrows so the text engine (used both to measure during layout
         // and to draw during paint) doesn't conflict with the render state.
@@ -2958,6 +3071,9 @@ impl ApplicationHandler<RuxEvent> for App {
                 self.apply_web_text(value, caret, anchor, composing)
             }
 
+            #[cfg(target_arch = "wasm32")]
+            RuxEvent::WebRoute(index) => self.apply_web_route(index),
+
             // The clipboard read started by a paste has come back. The field may
             // have lost focus in the meantime, in which case there is nowhere to
             // put it and dropping it is right.
@@ -3266,6 +3382,104 @@ impl ApplicationHandler<RuxEvent> for App {
     }
 }
 
+// ── The URL bar as the router's address bar ──────────────────────────────────
+//
+// Two functions, and they are deliberately not gated to wasm: the arithmetic
+// between a served base path and a Rux route is where this goes wrong, and it
+// is worth being able to test it without a browser.
+//
+// A Rux app served at the root of a domain has base `/`, and its routes are the
+// URL's path. One served from a subdirectory (which is what `rux build` output
+// dropped into an existing site looks like, and what the docs site does) has
+// base `/app/`, and the same route `/settings` is the URL `/app/settings`. The
+// app is written the same way either way, which is the point: a route is the
+// app's own address, not its address on somebody's server.
+
+/// The route named by a browser path, with the app's base subtracted.
+///
+/// Anything that is not under the base is treated as the root rather than
+/// passed through: it means the page is served from somewhere the base does not
+/// describe, and a route the app cannot match would land on its fallback page
+/// with no way to tell why.
+///
+/// Only the wasm build calls it. It is compiled everywhere anyway so that its
+/// tests run in the ordinary `cargo test`, which is the whole reason it is a
+/// separate function.
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+fn route_from_path(base: &str, pathname: &str) -> String {
+    let base = base.trim_end_matches('/');
+    let rest = match pathname.strip_prefix(base) {
+        Some(rest) => rest,
+        // Serving at `/app/` and asked about `/app` exactly: the base itself,
+        // which is the app's root.
+        None if base.trim_start_matches('/') == pathname.trim_start_matches('/') => "",
+        None => "",
+    };
+    if rest.is_empty() || !rest.starts_with('/') {
+        return rux_runtime::ROOT_PATH.to_string();
+    }
+    rest.to_string()
+}
+
+/// The browser path a route lives at, the inverse of [`route_from_path`].
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+fn path_for_route(base: &str, route: &str) -> String {
+    let base = base.trim_end_matches('/');
+    if route == rux_runtime::ROOT_PATH {
+        // A bare base with no trailing slash is a valid URL and the one a user
+        // would type, but `/` is what the root of a site is spelled.
+        return if base.is_empty() { rux_runtime::ROOT_PATH.to_string() } else { base.to_string() };
+    }
+    format!("{base}{route}")
+}
+
+#[cfg(test)]
+mod url_routes {
+    use super::{path_for_route, route_from_path};
+
+    /// Served at the root of a domain: the URL path is the route, unchanged.
+    #[test]
+    fn at_the_root_a_path_is_a_route() {
+        assert_eq!(route_from_path("/", "/"), "/");
+        assert_eq!(route_from_path("/", "/settings"), "/settings");
+        assert_eq!(route_from_path("/", "/user/7"), "/user/7");
+    }
+
+    /// Served from a subdirectory: the base comes off, and the app never sees
+    /// where it was deployed.
+    #[test]
+    fn a_base_is_subtracted() {
+        assert_eq!(route_from_path("/app/", "/app/settings"), "/settings");
+        assert_eq!(route_from_path("/app", "/app/user/7"), "/user/7");
+        assert_eq!(route_from_path("/app/", "/app/"), "/");
+        assert_eq!(route_from_path("/app/", "/app"), "/");
+    }
+
+    /// A path outside the base means the page is not where the base says. The
+    /// app's root beats a route it could only answer with its fallback.
+    #[test]
+    fn a_path_outside_the_base_is_the_root() {
+        assert_eq!(route_from_path("/app/", "/other/page"), "/");
+        // `/application` starts with `/app` as *text* and is a different place.
+        assert_eq!(route_from_path("/app", "/application"), "/");
+    }
+
+    /// Round trip: every route the app can be on maps to a URL that maps back.
+    #[test]
+    fn a_route_survives_the_round_trip() {
+        for base in ["/", "/app", "/app/"] {
+            for route in ["/", "/settings", "/user/7"] {
+                let path = path_for_route(base, route);
+                assert_eq!(
+                    route_from_path(base, &path),
+                    route,
+                    "base {base}, route {route}, path {path}"
+                );
+            }
+        }
+    }
+}
+
 // ── Web entry point ──────────────────────────────────────────────────────────
 //
 // The browser drives the same `App` as the desktop: same input handling, same
@@ -3311,6 +3525,76 @@ thread_local! {
     static WEB_IME: RefCell<Option<web_sys::HtmlInputElement>> = const { RefCell::new(None) };
     /// Byte length of the composition in flight in that input, `0` when none.
     static WEB_COMPOSING: RefCell<usize> = const { RefCell::new(0) };
+    /// The path the app is served under, and the switch that turns URL routing
+    /// on at all.
+    ///
+    /// `None` means leave the URL bar alone, and it is the default for a
+    /// reason: the playground runs *other people's documents* on a page of
+    /// ruxlang.dev, and a document with a router in it must not be able to
+    /// rewrite the address of the site hosting it. A page that wants its URL
+    /// to be its app's address says so by passing a base to `start`.
+    static WEB_BASE: RefCell<Option<String>> = const { RefCell::new(None) };
+}
+
+/// The route the browser's URL currently names, or `None` when URL routing is
+/// off.
+#[cfg(target_arch = "wasm32")]
+fn web_route_now() -> Option<String> {
+    let base = WEB_BASE.with(|b| b.borrow().clone())?;
+    let pathname = web_sys::window()?.location().pathname().ok()?;
+    Some(route_from_path(&base, &pathname))
+}
+
+/// Write the document's position into the browser's history.
+///
+/// `replace` rewrites the entry the tab is on; otherwise a new one is added.
+/// The index travels as the entry's state, and comes back on `popstate`, which
+/// is what lets a jump of several entries be applied in one move.
+#[cfg(target_arch = "wasm32")]
+fn web_write_history(index: usize, route: &str, replace: bool) {
+    let Some(base) = WEB_BASE.with(|b| b.borrow().clone()) else { return };
+    let Some(history) = web_sys::window().and_then(|w| w.history().ok()) else { return };
+    let url = path_for_route(&base, route);
+    let state = wasm_bindgen::JsValue::from_f64(index as f64);
+    // A number is structured-cloneable, so the state needs no object and this
+    // needs no `js-sys`. The title argument is ignored by every browser.
+    let wrote = if replace {
+        history.replace_state_with_url(&state, "", Some(&url))
+    } else {
+        history.push_state_with_url(&state, "", Some(&url))
+    };
+    if wrote.is_err() {
+        // Cross-origin, or a sandboxed frame without `allow-top-navigation`.
+        // The app keeps working, the URL bar simply stops following it, so this
+        // is said once rather than on every navigation.
+        web_sys::console::warn_1(
+            &"rux: this page may not change its URL, so the address bar will not follow the router"
+                .into(),
+        );
+        WEB_BASE.with(|b| *b.borrow_mut() = None);
+    }
+}
+
+/// Listen for the browser's Back and Forward, once.
+#[cfg(target_arch = "wasm32")]
+fn web_watch_history() {
+    use wasm_bindgen::JsCast;
+    use wasm_bindgen::prelude::Closure;
+
+    let Some(window) = web_sys::window() else { return };
+    let on_pop = Closure::<dyn FnMut(web_sys::PopStateEvent)>::new(
+        move |event: web_sys::PopStateEvent| {
+            let index = event.state().as_f64().map(|n| n as usize);
+            WEB_PROXY.with(|p| {
+                if let Some(proxy) = p.borrow().as_ref() {
+                    let _ = proxy.send_event(RuxEvent::WebRoute(index));
+                }
+            });
+        },
+    );
+    let _ = window
+        .add_event_listener_with_callback("popstate", on_pop.as_ref().unchecked_ref());
+    on_pop.forget();
 }
 
 /// Whether this is a touch-first device, where the keyboard has to be summoned.
@@ -3679,17 +3963,39 @@ mod caret_index {
 /// of blocking, so the caller keeps running. Errors in `source` are reported and
 /// replaced with an empty document, matching what the native loader does with an
 /// unreadable file.
+///
+/// `base` is the path the app is served under, and giving one is what makes the
+/// URL bar the app's address bar: the document opens on the route the URL
+/// names, navigating pushes a history entry, and the browser's Back and Forward
+/// walk the app. Without it the URL is left alone entirely and the document
+/// opens at `/`, which is what the playground needs: it runs documents written
+/// by other people on a page of somebody else's site.
 #[cfg(target_arch = "wasm32")]
-pub fn start_web(canvas: web_sys::HtmlCanvasElement, source: String, font: Vec<u8>) {
+pub fn start_web(
+    canvas: web_sys::HtmlCanvasElement,
+    source: String,
+    font: Vec<u8>,
+    base: Option<String>,
+) {
     use winit::platform::web::EventLoopExtWebSys;
 
-    let document = match Document::from_source(&source) {
+    let mut document = match Document::from_source(&source) {
         Ok(doc) => doc,
         Err(err) => {
             web_sys::console::error_1(&format!("rux: {err}").into());
             Document::from_source("<template><screen></screen></template>").expect("empty document")
         }
     };
+
+    // Before the first frame: `start_at` replaces the history rather than
+    // adding to it, so it has to happen while there is nothing to replace.
+    if let Some(base) = base {
+        WEB_BASE.with(|b| *b.borrow_mut() = Some(base));
+        if let Some(route) = web_route_now() {
+            document.start_at(&route);
+        }
+        web_watch_history();
+    }
 
     let event_loop = EventLoop::<RuxEvent>::with_user_event()
         .build()
@@ -3804,6 +4110,17 @@ pub fn diagnose_web_source(source: String) -> String {
 /// supplied by the playground editor.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn run(path: PathBuf) {
+    run_at(path, None)
+}
+
+/// The same, opening the document on `route` instead of on `/`.
+///
+/// This is a deep link arriving on the desktop, and it is what makes one
+/// testable at all: a page reached only by tapping through the app cannot be
+/// checked on its own, and on a phone the same call is what an `myapp://` URL
+/// eventually turns into.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn run_at(path: PathBuf, route: Option<String>) {
     let event_loop = EventLoop::<RuxEvent>::with_user_event()
         .build()
         .expect("create event loop");
@@ -3843,6 +4160,11 @@ pub fn run(path: PathBuf) {
         .expect("watch directory");
 
     let mut app = App::new(path, event_loop.create_proxy());
+    // Before the first frame, and before the watcher can reload: `start_at`
+    // replaces the history, so it has to be the first thing that touches it.
+    if let Some(route) = route {
+        app.document.start_at(&route);
+    }
     event_loop.run_app(&mut app).expect("run app");
 
     drop(watcher); // keep the watcher alive for the loop's lifetime

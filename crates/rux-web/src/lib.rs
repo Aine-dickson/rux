@@ -132,11 +132,32 @@ mod web {
     ///
     /// Returns immediately, the event loop is handed to the browser, not
     /// blocked on. Call it once; use [`set_source`] afterwards.
+    ///
+    /// `base` is optional and off by default. Passing the path the app is
+    /// served under (`"/"` at the root of a domain, `"/app/"` from a
+    /// subdirectory) hands the URL bar to the router: the document opens on the
+    /// route the URL names, so a shared link arrives on the page it points at,
+    /// navigating adds a history entry, and the browser's Back and Forward walk
+    /// the app.
+    ///
+    /// Leaving it out leaves the URL untouched. That is the right default and
+    /// not merely a compatible one: the playground runs documents written by
+    /// whoever is typing into it, and one of them containing a `<router>` must
+    /// not rewrite the address of the page hosting it.
+    ///
+    /// ```js
+    /// start(canvas, source, "/");    // the URL bar is this app's address
+    /// start(canvas, source);         // the URL bar is not ours to touch
+    /// ```
     #[wasm_bindgen]
-    pub fn start(canvas: web_sys::HtmlCanvasElement, source: Option<String>) {
+    pub fn start(
+        canvas: web_sys::HtmlCanvasElement,
+        source: Option<String>,
+        base: Option<String>,
+    ) {
         set_panic_hook();
         let source = source.unwrap_or_else(|| super::PLACEHOLDER.to_string());
-        rux_shell::start_web(canvas, source, super::DEFAULT_FONT.to_vec());
+        rux_shell::start_web(canvas, source, super::DEFAULT_FONT.to_vec(), base);
     }
 
     /// Replace the running document with new source, the playground editor's

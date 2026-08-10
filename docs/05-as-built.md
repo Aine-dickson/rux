@@ -733,9 +733,36 @@ template position, so *keeping* it across a visit is what would happen by
 accident; anything meant to outlive a visit belongs in a document signal. Driven
 in `examples/router.rux`.
 
+**An app can open on a page other than its first one**, which is what a link
+someone shared arrives as. On the desktop that is a flag:
+```text
+rux run app.rux --route /crew/grace
+```
+The arrival page is the *first* page, not the second: there is no `/` behind it,
+because no one visited one, so Back has nowhere to go. Saving the file while a
+page other than `/` is showing now reloads onto that page instead of jumping
+home, so an edit to a page three taps in can actually be seen.
+
+**On the web the URL bar is the app's address bar**, if the page hands it over:
+```js
+start(canvas, source, "/");     // served at the root of a domain
+start(canvas, source, "/app/"); // served from a subdirectory
+start(canvas, source);          // leave the URL alone
+```
+The base is subtracted from the URL, so an app is written the same way wherever
+it is deployed: the route is `/crew`, the URL is `/app/crew`. With a base given,
+opening a URL opens that route, navigating adds a history entry, and the
+browser's own Back and Forward walk the app, including a long-press that jumps
+several entries at once. Each entry carries its position in the history, which
+is what makes a multi-entry jump one move rather than a guess about direction.
+
+Passing no base leaves the URL untouched, and that is the default on purpose:
+the playground runs documents written by whoever is typing into them, and one of
+them containing a `<router>` must not be able to rewrite the address of the page
+hosting it.
+
 Not built: query strings, nested routes (a layout component with a `<router />`
-in its slot covers most of that), route guards, scroll restoration, and any tie
-to the browser's own URL bar on the web target.
+in its slot covers most of that), route guards, and scroll restoration.
 
 ### Accessibility
 

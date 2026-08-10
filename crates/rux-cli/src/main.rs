@@ -4,6 +4,7 @@
 //! rux                      run examples/battery.rux
 //! rux app.rux              run a file
 //! rux run app.rux          the same, said explicitly
+//! rux app.rux --route /x   open it on a route, the way a deep link arrives
 //! rux check [path...]      report what is wrong with a file or a tree
 //! rux fmt [path...]        re-indent, and format the CSS inside
 //! ```
@@ -30,6 +31,10 @@ Usage:
                              (defaults to the current directory)
   rux fmt [path...]          Re-indent files in place, and format their CSS
                              (defaults to the current directory)
+
+Run options:
+  --route <path>             Open on this route instead of `/`, the way a
+                             deep link arrives
 
 Check options:
   --format json              Emit diagnostics as JSON, for an editor
@@ -62,25 +67,42 @@ fn main() -> ExitCode {
         }
         Some("check") => ExitCode::from(check(&args[1..]) as u8),
         Some("fmt") => ExitCode::from(format(&args[1..]) as u8),
-        Some("run") => match args.get(1) {
-            Some(path) => run(PathBuf::from(path)),
+        Some("run") => match args.get(1).filter(|a| !a.starts_with('-')) {
+            Some(path) => run(PathBuf::from(path), &args[2..]),
             None => {
                 eprintln!("rux: `run` needs a file\n\n{USAGE}");
                 ExitCode::from(2)
             }
         },
         // A bare path, the form everything written so far tells people to use.
-        Some(path) if !path.starts_with('-') => run(PathBuf::from(path)),
+        Some(path) if !path.starts_with('-') => run(PathBuf::from(path), &args[1..]),
         Some(flag) => {
             eprintln!("rux: unknown option `{flag}`\n\n{USAGE}");
             ExitCode::from(2)
         }
-        None => run(PathBuf::from("examples/battery.rux")),
+        None => run(PathBuf::from("examples/battery.rux"), &[]),
     }
 }
 
-fn run(path: PathBuf) -> ExitCode {
-    rux_shell::run(path);
+fn run(path: PathBuf, args: &[String]) -> ExitCode {
+    let mut route = None;
+    let mut rest = args.iter();
+    while let Some(arg) = rest.next() {
+        match arg.as_str() {
+            "--route" => match rest.next() {
+                Some(value) => route = Some(value.clone()),
+                None => {
+                    eprintln!("rux: `--route` needs a path, like `--route /settings`");
+                    return ExitCode::from(2);
+                }
+            },
+            flag => {
+                eprintln!("rux: unknown option `{flag}`\n\n{USAGE}");
+                return ExitCode::from(2);
+            }
+        }
+    }
+    rux_shell::run_at(path, route);
     ExitCode::SUCCESS
 }
 

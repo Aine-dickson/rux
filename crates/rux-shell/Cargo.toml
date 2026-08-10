@@ -74,4 +74,9 @@ web-sys = { version = "0.3", features = [
     "MediaQueryList",
     "Node",
     "Window",
+    # The router's web half: read the path the page was opened at, push an entry
+    # per navigation, and hear the browser's own Back and Forward.
+    "History",
+    "Location",
+    "PopStateEvent",
 ] }
