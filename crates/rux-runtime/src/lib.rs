@@ -67,8 +67,70 @@ pub struct Document {
     computeds: Vec<Computed>,
     /// `effect` blocks, with what each read when it last ran.
     effects: Vec<Effect>,
+    /// Where navigation has been, and where it is in that. See [`History`].
+    history: History,
     pub root: LayoutNode,
 }
+
+/// The paths visited, and where along them we are.
+///
+/// A cursor into one list rather than two stacks, because that is the model a
+/// user already has: going back then somewhere new drops the forward entries,
+/// and going back and forward again returns to exactly where it was. Two stacks
+/// express the same thing and make the truncation easy to get wrong.
+#[derive(Clone, Debug)]
+struct History {
+    entries: Vec<String>,
+    at: usize,
+}
+
+impl Default for History {
+    fn default() -> Self {
+        Self { entries: vec![ROOT_PATH.to_string()], at: 0 }
+    }
+}
+
+impl History {
+    /// Where we are now. Never empty, so this always answers.
+    fn current(&self) -> &str {
+        &self.entries[self.at]
+    }
+
+    /// Go somewhere new, dropping anything that was ahead. Navigating to where
+    /// we already are is not a visit: it would otherwise fill the history with
+    /// repeats of whatever link a user tapped twice, and make Back do nothing
+    /// visible the first time it was pressed.
+    fn push(&mut self, path: &str) -> bool {
+        if self.current() == path {
+            return false;
+        }
+        self.entries.truncate(self.at + 1);
+        self.entries.push(path.to_string());
+        self.at = self.entries.len() - 1;
+        true
+    }
+
+    /// Step back, if there is anywhere to step back to.
+    fn back(&mut self) -> bool {
+        if self.at == 0 {
+            return false;
+        }
+        self.at -= 1;
+        true
+    }
+
+    /// Step forward into somewhere already visited and stepped back from.
+    fn forward(&mut self) -> bool {
+        if self.at + 1 >= self.entries.len() {
+            return false;
+        }
+        self.at += 1;
+        true
+    }
+}
+
+/// Where a document starts before anything navigates.
+pub const ROOT_PATH: &str = "/";
 
 /// What is wrong with the document right now, the model behind the dev overlay.
 ///
@@ -398,6 +460,7 @@ impl Document {
             instances,
             computeds,
             effects,
+            history: History::default(),
             root,
         };
         doc.init_reactive();
@@ -449,6 +512,7 @@ impl Document {
             instances,
             computeds,
             effects,
+            history: History::default(),
             root,
         };
         doc.init_reactive();
@@ -874,9 +938,77 @@ impl Document {
     pub fn apply_handler_in(&mut self, src: &str, instance: Option<&str>) -> bool {
         // Anything emitted before this handler was not emitted *by* it: a build
         // evaluates every binding, and a stray `emit` in one of those would
-        // otherwise be delivered to the first tap that happened afterwards.
+        // otherwise be delivered to the first tap that happened afterwards. The
+        // same goes for a `navigate` evaluated during a build.
         let _ = rux_script::take_emissions();
-        self.dispatch_handler(src, instance, 0)
+        let _ = rux_script::take_navigations();
+        let ran = self.dispatch_handler(src, instance, 0);
+        // Navigation is applied once, after the handler and everything it set
+        // off have finished. A handler that navigates and then writes a signal
+        // would otherwise render the old route with the new state in it.
+        self.apply_navigations() || ran
+    }
+
+    /// Apply whatever `navigate`/`back`/`forward` the last run asked for.
+    ///
+    /// Later calls win: a handler that navigates twice ends up where the second
+    /// one pointed, and the intermediate path is not a place the user visited.
+    fn apply_navigations(&mut self) -> bool {
+        let mut moved = false;
+        for nav in rux_script::take_navigations() {
+            moved |= match nav {
+                rux_script::Nav::To(path) => self.navigate(&path),
+                rux_script::Nav::Back => self.back(),
+                rux_script::Nav::Forward => self.forward(),
+            };
+        }
+        moved
+    }
+
+    /// The path the document is on.
+    pub fn route(&self) -> &str {
+        self.history.current()
+    }
+
+    /// Go to `path`, recording it in the history.
+    ///
+    /// Returns whether anything changed, so the shell knows whether to repaint.
+    /// Navigating to where we already are changes nothing, which is what makes
+    /// tapping the current link in a nav bar a no-op rather than a rebuild.
+    pub fn navigate(&mut self, path: &str) -> bool {
+        if !self.history.push(path) {
+            return false;
+        }
+        self.show_current_route()
+    }
+
+    /// Step back through the history. Returns whether there was anywhere to go.
+    pub fn back(&mut self) -> bool {
+        self.history.back() && self.show_current_route()
+    }
+
+    /// Step forward again. Returns whether there was anywhere to go.
+    pub fn forward(&mut self) -> bool {
+        self.history.forward() && self.show_current_route()
+    }
+
+    /// Move the document to whatever path the history now points at.
+    fn show_current_route(&mut self) -> bool {
+        let path = self.history.current().to_string();
+        // A route's views are dropped when we leave it, so visiting one a second
+        // time starts fresh instead of resuming where it was left. That is what
+        // every router does, and the alternative here would be accidental:
+        // instance state is keyed by template position and would otherwise
+        // simply still be sitting there.
+        self.instances.retain(|_, i| i.route.as_deref().is_none_or(|r| r == path));
+        if !self.engine.set_route(&path) {
+            return false;
+        }
+        // The route is a signal like any other, so the ordinary change path
+        // decides between a reconcile and a rebuild. A `<router>` records itself
+        // as a structural read, so this reconciles the router's subtree.
+        self.apply_change(&HashSet::from([rux_script::ROUTE_SIGNAL.to_string()]));
+        true
     }
 
     /// One handler run, plus whatever its `emit` calls set off. `depth` is the
@@ -1374,7 +1506,18 @@ fn extract_imports(script: &str) -> (String, Vec<Import>) {
 fn build_engine(script: &str) -> Result<Engine, String> {
     let mut builder = Builder::new();
     builder.host_number("full", || 100.0);
-    builder.build(script)
+    let mut engine = builder.build(script)?;
+    // The route has to be in scope before the first build, because a `<router>`
+    // reads it during that build. A document that declared `route` itself is
+    // told rather than quietly overwritten on the first navigation.
+    if engine.declares_route() {
+        rux_script::warn_script(
+            "`route` is the router's signal and is provided for you; a `let route` of your own \
+             is overwritten on every navigation",
+        );
+    }
+    engine.set_route(ROOT_PATH);
+    Ok(engine)
 }
 
 #[cfg(test)]
@@ -1972,6 +2115,235 @@ mod tests {
         assert!(
             warnings.iter().any(|w| w.message.contains("no caller")),
             "the warning says why nothing happened: {warnings:?}"
+        );
+    }
+
+    /// Write a document with a router over three views, in a temp dir.
+    ///
+    /// `home` and `settings` are plain; `user` reads an `:id` captured from the
+    /// path and counts taps, so a test can tell whether a view's state survived
+    /// a navigation.
+    fn with_router(app: &str) -> Document {
+        use std::fs;
+        let dir = std::env::temp_dir().join(format!(
+            "rux_router_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(dir.join("components")).unwrap();
+        fs::write(dir.join("components/home.rux"), "<template><text>the home page</text></template>")
+            .unwrap();
+        fs::write(
+            dir.join("components/settings.rux"),
+            "<template><text>settings live here</text></template>",
+        )
+        .unwrap();
+        fs::write(
+            dir.join("components/user.rux"),
+            "<template><view>\
+               <text>user {{ id }} seen {{ seen }}</text>\
+               <view @tap=\"seen = seen + 1\"><text>look</text></view>\
+             </view></template>\n\
+             <script>\nlet seen = signal(0);\n</script>",
+        )
+        .unwrap();
+        fs::write(
+            dir.join("components/missing.rux"),
+            "<template><text>no such page</text></template>",
+        )
+        .unwrap();
+        fs::write(dir.join("app.rux"), app).unwrap();
+        let doc = Document::load(dir.join("app.rux")).expect("load");
+        let _ = fs::remove_dir_all(&dir);
+        doc
+    }
+
+    /// The standard three-route app, used by most of the router tests.
+    fn router_app() -> Document {
+        with_router(
+            "<template><screen>\
+               <text to=\"/\">home</text>\
+               <text to=\"/settings\">settings</text>\
+               <router>\
+                 <route path=\"/\" view=\"home\" />\
+                 <route path=\"/settings\" view=\"settings\" />\
+                 <route path=\"/user/:id\" view=\"user\" />\
+                 <route fallback view=\"missing\" />\
+               </router>\
+             </screen></template>\n\
+             <script>\nuse components::home;\nuse components::settings;\n\
+             use components::user;\nuse components::missing;\n</script>",
+        )
+    }
+
+    /// The whole point: one path renders one view, and only that one.
+    #[test]
+    fn the_router_renders_the_matching_route() {
+        let mut doc = router_app();
+        assert!(find_text(&doc.root, "the home page"), "{:?}", text_of(&doc.root));
+        assert!(!find_text(&doc.root, "settings live here"), "and not the others");
+
+        assert!(doc.navigate("/settings"), "navigating changed something");
+        assert!(find_text(&doc.root, "settings live here"), "{:?}", text_of(&doc.root));
+        assert!(!find_text(&doc.root, "the home page"), "the old view is gone");
+    }
+
+    /// A `:segment` is captured and handed to the view as a prop, which is what
+    /// makes a list-detail app expressible at all.
+    #[test]
+    fn a_path_parameter_reaches_the_view() {
+        let mut doc = router_app();
+        doc.navigate("/user/7");
+        assert!(find_text(&doc.root, "user 7 seen 0"), "{:?}", text_of(&doc.root));
+        doc.navigate("/user/12");
+        assert!(find_text(&doc.root, "user 12 seen 0"), "{:?}", text_of(&doc.root));
+    }
+
+    /// A path nothing matches renders the fallback, not a blank screen.
+    #[test]
+    fn an_unmatched_path_falls_back() {
+        let mut doc = router_app();
+        doc.navigate("/nowhere");
+        assert!(find_text(&doc.root, "no such page"), "{:?}", text_of(&doc.root));
+    }
+
+    /// A trailing slash is not a different path. Anyone typing one by hand
+    /// produces both spellings and means the same place.
+    #[test]
+    fn a_trailing_slash_is_the_same_path() {
+        let mut doc = router_app();
+        doc.navigate("/settings/");
+        assert!(find_text(&doc.root, "settings live here"), "{:?}", text_of(&doc.root));
+    }
+
+    /// `to="/path"` navigates when tapped: the spec's promise since v0.1.
+    #[test]
+    fn a_link_navigates_when_tapped() {
+        let mut doc = router_app();
+        let link = doc.root.children[1].clone();
+        assert_eq!(link.access.role, rux_layout::AccessRole::Link, "announced as a link");
+        assert!(doc.apply_handler(&link.on_tap.clone().expect("a link taps")));
+        assert_eq!(doc.route(), "/settings");
+        assert!(find_text(&doc.root, "settings live here"), "{:?}", text_of(&doc.root));
+    }
+
+    /// Back and forward walk the same list, and forward is only available after
+    /// going back.
+    #[test]
+    fn history_walks_both_ways() {
+        let mut doc = router_app();
+        doc.navigate("/settings");
+        doc.navigate("/user/3");
+        assert!(!doc.forward(), "nothing ahead of the newest entry");
+
+        assert!(doc.back(), "back to settings");
+        assert_eq!(doc.route(), "/settings");
+        assert!(doc.back(), "back to home");
+        assert_eq!(doc.route(), "/");
+        assert!(!doc.back(), "and no further");
+
+        assert!(doc.forward(), "forward again");
+        assert_eq!(doc.route(), "/settings");
+        assert!(find_text(&doc.root, "settings live here"), "{:?}", text_of(&doc.root));
+    }
+
+    /// Going somewhere new after going back drops what was ahead, which is the
+    /// behaviour a back button has everywhere else.
+    #[test]
+    fn a_new_path_after_going_back_drops_the_forward_entries() {
+        let mut doc = router_app();
+        doc.navigate("/settings");
+        doc.back();
+        doc.navigate("/user/1");
+        assert!(!doc.forward(), "settings is no longer ahead: {:?}", doc.history);
+        assert!(doc.back(), "but home is still behind");
+        assert_eq!(doc.route(), "/");
+    }
+
+    /// Navigating to where we already are is not a visit. Otherwise tapping the
+    /// current link fills the history with repeats and Back does nothing.
+    #[test]
+    fn navigating_to_the_current_path_is_not_a_visit() {
+        let mut doc = router_app();
+        doc.navigate("/settings");
+        assert!(!doc.navigate("/settings"), "no change, so nothing to repaint");
+        assert!(doc.back());
+        assert_eq!(doc.route(), "/", "one Back is enough to leave");
+    }
+
+    /// A view keeps its state while you are on it, and starts fresh when you
+    /// come back to it. Instance state is keyed by template position, so
+    /// *keeping* it across a visit is what would happen by accident.
+    #[test]
+    fn a_route_view_is_fresh_on_a_second_visit() {
+        let mut doc = router_app();
+        doc.navigate("/user/7");
+
+        let view = doc.root.children[2].clone();
+        let button = view.children.iter().find(|c| c.on_tap.is_some()).expect("the look button");
+        let (src, instance) = (button.on_tap.clone().unwrap(), button.instance.clone());
+        doc.apply_handler_in(&src, instance.as_deref());
+        assert!(find_text(&doc.root, "user 7 seen 1"), "state moves while here: {:?}", text_of(&doc.root));
+
+        doc.navigate("/settings");
+        doc.navigate("/user/7");
+        assert!(
+            find_text(&doc.root, "user 7 seen 0"),
+            "and starts over on return: {:?}",
+            text_of(&doc.root)
+        );
+    }
+
+    /// `:current` is how a nav bar shows where you are. It reads the route, so
+    /// the link restyles on navigation without the tree being rebuilt.
+    #[test]
+    fn the_current_link_matches_the_current_pseudo() {
+        let mut doc = with_router(
+            "<template><screen>\
+               <text to=\"/\" class=\"nav\">home</text>\
+               <text to=\"/settings\" class=\"nav\">settings</text>\
+               <router><route path=\"/\" view=\"home\" />\
+                 <route path=\"/settings\" view=\"settings\" /></router>\
+             </screen></template>\n\
+             <style>.nav { color: #888888; } .nav:current { color: #ff0000; }</style>\n\
+             <script>\nuse components::home;\nuse components::settings;\n</script>",
+        );
+        // As a tuple, since `Rgba` is deliberately not `PartialEq`.
+        let lit = |n: &LayoutNode| -> Option<(f32, f32, f32)> {
+            n.text.as_ref().map(|t| (t.color.r, t.color.g, t.color.b))
+        };
+        assert_ne!(lit(&doc.root.children[0]), lit(&doc.root.children[1]), "one of them is current");
+        let home_on_home = lit(&doc.root.children[0]);
+
+        doc.navigate("/settings");
+        assert_eq!(
+            lit(&doc.root.children[1]),
+            home_on_home,
+            "the current colour moved to the settings link"
+        );
+        assert_ne!(lit(&doc.root.children[0]), home_on_home, "and off the home link");
+    }
+
+    /// A route naming a view that was never imported is a mistake worth saying
+    /// out loud: the screen would otherwise just be empty.
+    #[test]
+    fn a_route_naming_an_unimported_view_warns() {
+        let _ = take_warnings();
+        let doc = with_router(
+            "<template><screen><router>\
+               <route path=\"/\" view=\"nowhere\" />\
+             </router></screen></template>\n\
+             <script>\nuse components::home;\n</script>",
+        );
+        // A load drains the sink into its own diagnostics, which is where the
+        // overlay reads from.
+        let warnings = &doc.diagnostics.warnings;
+        assert!(
+            warnings.iter().any(|w| w.message.contains("nowhere")),
+            "the warning names the view: {warnings:?}"
         );
     }
 

@@ -558,6 +558,7 @@ fn to_accesskit_role(role: AccessRole) -> Role {
         AccessRole::MultilineTextInput => Role::MultilineTextInput,
         AccessRole::ComboBox => Role::ComboBox,
         AccessRole::Image => Role::Image,
+        AccessRole::Link => Role::Link,
         AccessRole::ScrollView => Role::ScrollView,
         // A grouping the author marked with `role=`, and the unreachable None.
         AccessRole::Group | AccessRole::None => Role::Group,
@@ -614,6 +615,7 @@ fn access_tree(nodes: &[AccessNode], focused_model: Option<&str>, scale: f64, ti
         if matches!(
             node.access.role,
             AccessRole::Button
+                | AccessRole::Link
                 | AccessRole::CheckBox
                 | AccessRole::RadioButton
                 | AccessRole::TextInput
@@ -935,6 +937,8 @@ struct App {
     shift_held: bool,
     /// Whether Ctrl is held (Ctrl+A/C/X/V).
     ctrl_held: bool,
+    /// Whether Alt is held (Alt+Left/Right walk the router's history).
+    alt_held: bool,
     /// Scrollable regions from the most recent layout.
     scrolls: Vec<ScrollRegion>,
     /// Boxes styled by `:hover`/`:active`, from the most recent layout. Empty
@@ -1051,6 +1055,7 @@ impl App {
             focus_index: None,
             shift_held: false,
             ctrl_held: false,
+            alt_held: false,
             scrolls: Vec::new(),
             offsets: Vec::new(),
             bar_drag: None,
@@ -2076,6 +2081,21 @@ impl App {
     /// text input edits, and a focused button/checkbox/radio/select activates on
     /// Space/Enter.
     fn on_key(&mut self, key: &Key) {
+        // Alt+Left / Alt+Right walk the history, the platform's own shortcut for
+        // it. Checked before anything else, including the focused input: it is a
+        // chord, so it cannot be text, and a caret in a field is exactly when
+        // someone wants to leave a page they typed into by mistake.
+        if self.alt_held {
+            let moved = match key {
+                Key::Named(NamedKey::ArrowLeft) => self.document.back(),
+                Key::Named(NamedKey::ArrowRight) => self.document.forward(),
+                _ => false,
+            };
+            if moved {
+                self.request_redraw();
+                return;
+            }
+        }
         if let Key::Named(NamedKey::Tab) = key {
             self.move_focus(self.shift_held);
             return;
@@ -3133,6 +3153,24 @@ impl ApplicationHandler<RuxEvent> for App {
             WindowEvent::ModifiersChanged(mods) => {
                 self.shift_held = mods.state().shift_key();
                 self.ctrl_held = mods.state().control_key();
+                self.alt_held = mods.state().alt_key();
+            }
+            // The side buttons on a mouse are the back and forward buttons
+            // everywhere else, and a router that ignored them would be the one
+            // app on the machine that does.
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: button @ (MouseButton::Back | MouseButton::Forward),
+                ..
+            } => {
+                let moved = if button == MouseButton::Back {
+                    self.document.back()
+                } else {
+                    self.document.forward()
+                };
+                if moved {
+                    self.request_redraw();
+                }
             }
             WindowEvent::Ime(ime) => self.on_ime(&ime),
             WindowEvent::KeyboardInput { event, .. } => {

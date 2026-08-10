@@ -74,6 +74,19 @@ impl Builder {
         engine.register_fn("emit", |name: ImmutableString, payload: Dynamic| {
             EMISSIONS.with(|e| e.borrow_mut().push((name.to_string(), Some(from_dynamic(&payload)))));
         });
+        // `navigate("/path")`, `back()`, `forward()`: the router's verbs. Like
+        // `emit`, they record an intent rather than acting on it. Navigation
+        // moves the `route` signal and pushes history, and neither is something
+        // a script function can reach from in here.
+        engine.register_fn("navigate", |path: ImmutableString| {
+            NAVIGATIONS.with(|n| n.borrow_mut().push(Nav::To(path.to_string())));
+        });
+        engine.register_fn("back", || {
+            NAVIGATIONS.with(|n| n.borrow_mut().push(Nav::Back));
+        });
+        engine.register_fn("forward", || {
+            NAVIGATIONS.with(|n| n.borrow_mut().push(Nav::Forward));
+        });
         // Record every variable read while dependency-tracking is active, then
         // fall through (`Ok(None)`) to normal scope resolution. `on_var` is
         // flagged volatile upstream, not deprecated, hence the allow.
@@ -129,6 +142,10 @@ impl Builder {
         })
     }
 }
+
+/// The signal the router keeps the current path in. Reserved: a document that
+/// declares it is warned rather than quietly overwritten.
+pub const ROUTE_SIGNAL: &str = "route";
 
 /// A live script engine: state in `scope`, script functions in `funcs`.
 pub struct Engine {
@@ -215,6 +232,28 @@ thread_local! {
 /// Take the events emitted since the last call, emptying the sink.
 pub fn take_emissions() -> Vec<(String, Option<Value>)> {
     EMISSIONS.with(|e| std::mem::take(&mut *e.borrow_mut()))
+}
+
+/// One navigation asked for by a script: where to go, or which way along the
+/// history that has already been walked.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Nav {
+    To(String),
+    Back,
+    Forward,
+}
+
+thread_local! {
+    /// Navigations asked for since the last drain, in order. A sink for the same
+    /// reason as [`EMISSIONS`]: `navigate` can be called from anywhere inside a
+    /// handler, and what it means (move the route, push history) belongs to the
+    /// runtime rather than to the script tier.
+    static NAVIGATIONS: RefCell<Vec<Nav>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Take the navigations asked for since the last call, emptying the sink.
+pub fn take_navigations() -> Vec<Nav> {
+    NAVIGATIONS.with(|n| std::mem::take(&mut *n.borrow_mut()))
 }
 
 /// Collapse an expression to one short line for a message, a handler can be a
@@ -384,6 +423,31 @@ impl Engine {
             .into_iter()
             .filter(|n| self.read_signal(n) != before[n])
             .collect()
+    }
+
+    /// Put the current path in scope as the `route` signal.
+    ///
+    /// A signal rather than anything router-shaped, so `{{ route }}`, `r-if`,
+    /// `:class` and the change diff all understand navigation with no knowledge
+    /// of the router at all. It is added to the signal set as well as the scope,
+    /// or dependency tracking would filter reads of it out as a stray local and
+    /// nothing would subscribe.
+    ///
+    /// Returns whether the value actually moved, which is what tells the runtime
+    /// there is anything to repaint.
+    pub fn set_route(&mut self, path: &str) -> bool {
+        let changed = self.read_signal(ROUTE_SIGNAL).as_ref()
+            != Some(&Value::Text(path.to_string()));
+        self.scope.set_or_push(ROUTE_SIGNAL, path.to_string());
+        self.signals.insert(ROUTE_SIGNAL.to_string());
+        changed
+    }
+
+    /// Whether the script declared `route` itself, so the runtime can say so
+    /// rather than silently overwriting it. Asked *before* [`Self::set_route`],
+    /// which would otherwise make the answer always yes.
+    pub fn declares_route(&self) -> bool {
+        self.signals.contains(ROUTE_SIGNAL)
     }
 
     /// A signal's current value, read straight from the scope (no evaluation).

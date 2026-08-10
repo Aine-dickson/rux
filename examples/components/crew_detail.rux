@@ -1,0 +1,78 @@
+<template>
+  <view class="page">
+    <!-- `back()` walks the history rather than linking to /crew, so it returns
+         to wherever you actually came from. -->
+    <view class="back" @tap="back()">
+      <text class="back-label">back</text>
+    </view>
+
+    <!-- The page was handed the id and the list, and looks the rest up itself.
+         A component's `fn` definitions are shared with the engine, so a helper
+         can sit beside the markup that needs it. -->
+    <text class="heading">{{ member_of(crew, id).name }}</text>
+    <text class="job">{{ member_of(crew, id).job }}</text>
+    <text class="note">The path said `{{ id }}`, and that is the only thing this page was told. Everything else it looked up.</text>
+
+    <view class="notes" @tap="notes = notes + 1">
+      <text class="notes-label">notes taken here: {{ notes }}</text>
+      <text class="hint">tap to add one, then leave and come back</text>
+    </view>
+  </view>
+</template>
+
+<style>
+  .page {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    width: 100%;
+  }
+
+  .back {
+    align-items: center;
+    padding: 6px 12px;
+    background: #313244;
+    border-radius: 8px;
+    cursor: pointer;
+  }
+
+  .back:hover { background: #45475a; }
+  .back-label { color: #9399b2; font-size: 12px; font-weight: 700; }
+  .heading { color: #cdd6f4; font-size: 22px; font-weight: 700; }
+  .job { color: #a6e3a1; font-size: 14px; font-weight: 700; }
+  .note { color: #9399b2; font-size: 13px; max-width: 460px; }
+
+  .notes {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-top: 8px;
+    padding: 12px 14px;
+    background: #313244;
+    border: 2px solid #45475a;
+    border-radius: 10px;
+    cursor: pointer;
+  }
+
+  .notes:hover { border-color: #89b4fa; }
+  .notes-label { color: #cdd6f4; font-size: 13px; font-weight: 700; }
+  .hint { color: #6c7086; font-size: 12px; }
+</style>
+
+<script>
+  // Private to this page, and gone when you leave it: a route's view starts
+  // fresh on a second visit. Anything meant to outlive a visit belongs to the
+  // document.
+  let notes = signal(0);
+
+  // The path carries an id and nothing else, which is the point: a link is a
+  // string, so it can only ever hand over a name for something.
+  fn member_of(list, id) {
+    for m in list {
+      if m.id == id {
+        return m;
+      }
+    }
+    #{ name: "unknown", job: "no such crew member" }
+  }
+</script>

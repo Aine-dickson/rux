@@ -139,7 +139,9 @@ explicitly checks it anyway, since that was asked for on purpose.
 
 ### Elements
 `<screen>` `<view>` `<text>` `<image>` `<button>` `<input>` + imported
-components as custom tags. `role=` is honored for **selectors and semantics**
+components as custom tags, plus two that render no box of their own: `<slot>`
+(a component's hole for the caller's children) and `<router>`/`<route>` (see
+[Routing](#routing)). `role=` is honored for **selectors and semantics**
 (and matches **case-insensitively**: `role="Heading"` matches `[role="heading"]`).
 
 `<image src="assets/logo.png">`: `src` resolves **relative to the .rux file**
@@ -195,7 +197,8 @@ cursor (pointer, on @tap boxes only)
 combinators: descendant (`.a .b`), child (`.a > .b`), next-sibling (`.a + .b`),
 subsequent-sibling (`.a ~ .b`).
 
-**Pseudo-classes:** `:hover`, `:focus`, `:active`, `:checked`. They stack
+**Pseudo-classes:** `:hover`, `:focus`, `:active`, `:checked`, `:current` (a
+link whose `to` names the path you are on). They stack
 (`.btn:hover:active`), count as class-level specificity, and work anywhere in a
 chain, `.card:hover .title` recolours the title while the pointer is over the
 card. `:hover`/`:active` hold for the whole chain under the pointer, as in CSS;
@@ -675,6 +678,59 @@ change. Driven in `examples/events.rux`.
 Still not supported inside a component: `computed` and `effect`, which are
 stripped.
 
+### Routing
+
+A `<router>` renders the one `<route>` whose path matches, and a route maps a
+path to a component, so a page is a component like any other:
+```xml
+<router>
+  <route path="/"          view="home-page" />
+  <route path="/crew"      view="crew-list" :crew="crew" />
+  <route path="/crew/:id"  view="crew-detail" :crew="crew" />
+  <route fallback          view="lost-page" />
+</router>
+```
+Like `<slot>`, a router leaves **no box of its own** behind: the matched view
+expands in its place. Routes are tried in the order written and the first match
+wins, so a `fallback` can sit anywhere among them. A path nothing matches and no
+fallback catches renders nothing, and warns.
+
+**The path is an ordinary signal called `route`.** That is the whole design:
+`{{ route }}`, `r-if="route == \"/about\""` and `:class` already understand
+navigation, and a route change reconciles the router's subtree rather than
+rebuilding the document. `route` is reserved, and a script declaring it is
+warned.
+
+**Parameters.** A `:name` segment matches anything and is handed to the view as
+a prop, so `/crew/grace` reaches `crew-detail` with `id` set to `"grace"`. A
+pattern must match the whole path, not a prefix, or `/` would match everything.
+A trailing slash is not a difference.
+
+**Links.** `to="/path"` makes an element tap to that path, announce as a link
+rather than a button, and match `:current` when it names the path you are on,
+which is how a nav bar shows where you are:
+```css
+.tab:current { background: #89b4fa; color: #11111b; }
+```
+`:to="…"` is the computed form, for a list whose every row links somewhere
+different (`:to="&quot;/crew/&quot; + member.id"`). An explicit `@tap` wins over
+both, so a link can still do something else on the way.
+
+**History.** `navigate("/path")`, `back()` and `forward()` are callable from any
+handler. History is one list with a cursor, so going back and then somewhere new
+drops what was ahead. Navigating to where you already are is not a visit, or
+tapping the current tab would fill the history with repeats. On the desktop,
+**Alt+Left / Alt+Right** and the mouse's side buttons walk it.
+
+**A route's view starts fresh when you return to it.** Instance state is keyed by
+template position, so *keeping* it across a visit is what would happen by
+accident; anything meant to outlive a visit belongs in a document signal. Driven
+in `examples/router.rux`.
+
+Not built: query strings, nested routes (a layout component with a `<router />`
+in its slot covers most of that), route guards, scroll restoration, and any tie
+to the browser's own URL bar on the web target.
+
 ### Accessibility
 
 Rux publishes a real accessibility tree through **accesskit**, so a screen reader
@@ -686,6 +742,7 @@ tag and `type=` are still known:
 |---|---|
 | `<text>` | Label (`role="heading"` → Heading) |
 | `<view @tap>` / `<button>` | Button, **named by the text inside it** |
+| `to="/path"` on anything | Link, so navigating is announced as going somewhere |
 | `<input>` | TextInput · `type="textarea"` → MultilineTextInput · `type="select"` → ComboBox |
 | `<input type="checkbox">` / `="radio"` | CheckBox / RadioButton, with live **checked** state |
 | `<image alt="…">` | Image |

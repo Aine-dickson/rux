@@ -1,0 +1,33 @@
+<template>
+  <view class="page">
+    <text class="heading">nothing here</text>
+    <text class="lead">No route matches `{{ route }}`. The `fallback` route caught it, which is why this is a page and not a blank window.</text>
+    <view class="home" to="/">
+      <text class="home-label">go home</text>
+    </view>
+  </view>
+</template>
+
+<style>
+  .page {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    width: 100%;
+  }
+
+  .heading { color: #f38ba8; font-size: 22px; font-weight: 700; }
+  .lead { color: #9399b2; font-size: 13px; max-width: 480px; }
+
+  .home {
+    align-items: center;
+    margin-top: 4px;
+    padding: 8px 14px;
+    background: #89b4fa;
+    border-radius: 8px;
+    cursor: pointer;
+  }
+
+  .home:hover { background: #b4befe; }
+  .home-label { color: #11111b; font-size: 13px; font-weight: 700; }
+</style>

@@ -1,0 +1,68 @@
+<template>
+  <screen class="app">
+    <nav-bar />
+
+    <!-- Only the matched route renders, and the router leaves no box of its own
+         behind: the page below sits directly in this column. -->
+    <router>
+      <route path="/" view="home-page" />
+      <route path="/crew" view="crew-list" :crew="crew" />
+      <route path="/crew/:id" view="crew-detail" :crew="crew" />
+      <route path="/about" view="about-page" />
+      <route fallback view="lost-page" />
+    </router>
+
+    <view class="footer">
+      <text class="path">path: {{ route }}</text>
+      <view class="lost" to="/nowhere">
+        <text class="lost-label">try a path that does not exist</text>
+      </view>
+    </view>
+  </screen>
+</template>
+
+<style>
+  .app {
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+    padding: 22px;
+    background: #1e1e2e;
+  }
+
+  .footer {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    margin-top: 8px;
+    width: 100%;
+  }
+
+  .path { color: #6c7086; font-size: 12px; font-weight: 700; }
+
+  .lost {
+    align-items: center;
+    padding: 5px 10px;
+    border: 2px solid #45475a;
+    border-radius: 8px;
+    cursor: pointer;
+  }
+
+  .lost:hover { border-color: #f38ba8; }
+  .lost-label { color: #6c7086; font-size: 12px; }
+</style>
+
+<script>
+  use components::nav_bar;
+  use components::home_page;
+  use components::about_page;
+  use components::crew_list;
+  use components::crew_detail;
+  use components::lost_page;
+
+  let crew = signal([
+      #{ id: "ada",   name: "Ada",   job: "navigator" },
+      #{ id: "grace", name: "Grace", job: "engineer" },
+      #{ id: "hedy",  name: "Hedy",  job: "signals" },
+  ]);
+</script>

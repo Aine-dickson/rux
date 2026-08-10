@@ -464,6 +464,11 @@ pub enum AccessRole {
     /// `type="select"`.
     ComboBox,
     Image,
+    /// A navigation target: `to="/path"`, or an explicit `role="link"`. Distinct
+    /// from a button because a screen reader announces it differently, and
+    /// because the distinction is what tells someone they are moving rather than
+    /// acting.
+    Link,
     /// A box that scrolls its content.
     ScrollView,
     /// A meaningful grouping (an explicit `role=` we don't map more precisely).

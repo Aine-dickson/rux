@@ -66,6 +66,65 @@ fn the_computed_example_recomputes_when_tapped() {
     );
 }
 
+/// Drive the router example the way a person would: tap a link, follow a row
+/// into a detail page, and come back.
+///
+/// The links matter as much as the routes. A `to=` that produced no tappable
+/// region would leave a router that only the API can drive, which is a router
+/// nobody can use.
+#[test]
+fn the_router_example_navigates() {
+    fn texts(node: &rux_layout::Node) -> Vec<String> {
+        let mut out: Vec<String> = node.text.iter().map(|t| t.text.clone()).collect();
+        for child in &node.children {
+            out.extend(texts(child));
+        }
+        out
+    }
+    fn find_link<'a>(node: &'a rux_layout::Node, label: &str) -> Option<&'a rux_layout::Node> {
+        let names_it = node.text.as_ref().is_some_and(|t| t.text.trim() == label);
+        if names_it && node.on_tap.is_some() {
+            return Some(node);
+        }
+        // A link may be a box around the text, so the handler is on the parent.
+        if node.on_tap.is_some() && texts(node).iter().any(|t| t.trim() == label) {
+            return Some(node);
+        }
+        node.children.iter().find_map(|c| find_link(c, label))
+    }
+    let has = |doc: &Document, needle: &str| {
+        texts(&doc.root).iter().any(|t| t.contains(needle))
+    };
+
+    let mut doc = Document::load(examples_dir().join("router.rux")).expect("loads");
+    assert!(has(&doc, "a router, at last"), "the home page: {:?}", texts(&doc.root));
+
+    // The nav bar is a component, and its links are ordinary tappable nodes.
+    let crew = find_link(&doc.root, "crew").expect("a crew link").clone();
+    assert_eq!(crew.access.role, rux_layout::AccessRole::Link, "announced as a link");
+    assert!(doc.apply_handler_in(&crew.on_tap.clone().unwrap(), crew.instance.as_deref()));
+    assert_eq!(doc.route(), "/crew");
+    assert!(has(&doc, "Grace"), "the list rendered: {:?}", texts(&doc.root));
+
+    // A row's `:to` is computed from the row itself, so each goes somewhere else.
+    let row = find_link(&doc.root, "Grace").expect("a crew row").clone();
+    assert!(doc.apply_handler_in(&row.on_tap.clone().unwrap(), row.instance.as_deref()));
+    assert_eq!(doc.route(), "/crew/grace");
+    assert!(has(&doc, "engineer"), "the detail page looked her up: {:?}", texts(&doc.root));
+
+    // `back()` from inside the page walks the history rather than linking.
+    let back = find_link(&doc.root, "back").expect("a back button").clone();
+    assert!(doc.apply_handler_in(&back.on_tap.clone().unwrap(), back.instance.as_deref()));
+    assert_eq!(doc.route(), "/crew");
+    assert!(has(&doc, "Grace"), "and the list is back: {:?}", texts(&doc.root));
+
+    // Nothing matches, so the fallback renders, and the view reads `route` for
+    // itself: the path is a signal, and a route's view is not cut off from it.
+    doc.navigate("/nowhere");
+    assert!(has(&doc, "nothing here"), "the fallback: {:?}", texts(&doc.root));
+    assert!(has(&doc, "/nowhere"), "which read the path: {:?}", texts(&doc.root));
+}
+
 #[test]
 fn every_example_loads() {
     let mut failures = Vec::new();

@@ -1,0 +1,44 @@
+<template>
+  <view class="bar" role="nav">
+    <!-- `to` is the whole link: it taps to that path, announces as a link, and
+         matches `:current` when it names the path we are already on. -->
+    <view class="tab" to="/">
+      <text class="label">home</text>
+    </view>
+    <view class="tab" to="/crew">
+      <text class="label">crew</text>
+    </view>
+    <view class="tab" to="/about">
+      <text class="label">about</text>
+    </view>
+  </view>
+</template>
+
+<style>
+  .bar {
+    display: flex;
+    gap: 6px;
+    width: 100%;
+    padding: 6px;
+    background: #181825;
+    border-radius: 10px;
+  }
+
+  .tab {
+    display: flex;
+    align-items: center;
+    padding: 8px 14px;
+    border-radius: 8px;
+    cursor: pointer;
+  }
+
+  .label { color: #9399b2; font-size: 13px; font-weight: 700; }
+
+  .tab:hover { background: #313244; }
+  .tab:hover .label { color: #cdd6f4; }
+
+  /* The page you are on. Reading the route is what subscribes this link to it,
+     so navigating restyles the tab without rebuilding the tree. */
+  .tab:current { background: #89b4fa; }
+  .tab:current .label { color: #11111b; }
+</style>

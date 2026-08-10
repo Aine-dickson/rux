@@ -320,6 +320,12 @@ pub struct Instance {
     /// listener body is the caller's code and must run in the caller's scope:
     /// anything else writes to the wrong variables and looks like it worked.
     pub caller: Option<String>,
+    /// The path this instance was expanded under, when a `<router>` chose it.
+    /// Leaving that route drops the instance, so a view visited a second time
+    /// starts fresh rather than resuming where it was left. Anything meant to
+    /// outlive a visit belongs in a document signal, which is the same rule
+    /// components already follow for anything the caller needs to see.
+    pub route: Option<String>,
 }
 
 /// Every live component instance, by identity. Owned by the runtime so it
@@ -668,6 +674,7 @@ fn explicit_access_role(el: &Element) -> Option<AccessRole> {
         "heading" => AccessRole::Heading,
         "button" => AccessRole::Button,
         "label" | "text" | "paragraph" => AccessRole::Label,
+        "link" => AccessRole::Link,
         "checkbox" => AccessRole::CheckBox,
         "radio" => AccessRole::RadioButton,
         "textbox" | "textfield" => AccessRole::TextInput,
@@ -963,6 +970,7 @@ enum Pseudo {
     Focus,
     Active,
     Checked,
+    Current,
     Unknown(String),
 }
 
@@ -976,6 +984,9 @@ pub struct ElemStates {
     pub focus: bool,
     pub active: bool,
     pub checked: bool,
+    /// This element's `to` names the path we are on. Resolved at build time from
+    /// the `route` signal, like `checked` and unlike the pointer states.
+    pub current: bool,
 }
 
 /// The interaction state the *shell* owns, handed to the build so pseudo-class
@@ -1028,6 +1039,7 @@ impl Pseudo {
             "focus" => Self::Focus,
             "active" => Self::Active,
             "checked" => Self::Checked,
+            "current" => Self::Current,
             other => Self::Unknown(other.to_string()),
         }
     }
@@ -1038,6 +1050,7 @@ impl Pseudo {
             Self::Focus => s.focus,
             Self::Active => s.active,
             Self::Checked => s.checked,
+            Self::Current => s.current,
             // Fails closed, see the type docs.
             Self::Unknown(_) => false,
         }
@@ -2035,7 +2048,7 @@ fn build_node(
     if let Some(component) = comps.get(&el.tag) {
         return expand_component(
             el, component, comps, inherited, engine, locals, path, tpl_path, reg, state, rules,
-            instances, instance, row,
+            instances, instance, row, &Locals::new(), None,
         );
     }
 
@@ -2063,6 +2076,25 @@ fn build_node(
     // `:class`: dynamic classes fed into the cascade (the `checked` pattern,
     // generalized). Signals it reads are collected for reconcile.
     let mut dyn_deps: HashSet<String> = HashSet::new();
+    // Where this element links to, if anywhere. `:to` is the computed form, which
+    // is what a list of rows needs: every row links somewhere different, and the
+    // path is built from the row's own data.
+    let to = el.attr("to").map(str::to_string).or_else(|| {
+        let expr = el.attr(":to")?;
+        let (value, deps) = engine.eval_value_tracked(expr, locals);
+        dyn_deps.extend(deps);
+        value.map(|v| v.to_display())
+    });
+    // `:current` is the link pointing at the path we are already on, so a nav bar
+    // can show where you are. Reading the route here also subscribes this node to
+    // it, which is what lets navigation restyle the link in place instead of
+    // rebuilding: the same trick `:class` uses.
+    if let Some(to) = &to {
+        let (value, deps) = engine.eval_value_tracked(rux_script::ROUTE_SIGNAL, locals);
+        dyn_deps.extend(deps);
+        desc.states.current =
+            value.is_some_and(|v| match_route(to, &v.to_display()).is_some());
+    }
     if let Some(expr) = el.attr(":class") {
         let (value, deps) = engine.eval_value_tracked(expr, locals);
         dyn_deps.extend(deps);
@@ -2122,7 +2154,13 @@ fn build_node(
     // variable no longer exists, so `@tap="picked = item"` would see `item`
     // undefined and silently do nothing. Bake the current loop bindings into the
     // handler as a `let` prelude so it reproduces them when it runs.
-    let on_tap = el.attr("@tap").map(|h| bind_locals(h, locals));
+    // `to="/path"` is a navigation intent, which is a tap like any other once it
+    // is written as a handler: it then travels the one route a tap already
+    // takes, through the hit region and `apply_handler`. An explicit `@tap`
+    // wins, so a link can still do something else on the way.
+    let on_tap = el.attr("@tap").map(|h| bind_locals(h, locals)).or_else(|| {
+        to.as_ref().map(|p| format!("navigate({})", Value::Text(p.clone()).to_rhai_literal()))
+    });
     // r-show="false" keeps the layout slot but paints nothing. It only flips
     // `hidden`, never the shape, so it's patchable: record it and a change rewrites
     // the bool in place.
@@ -2221,9 +2259,12 @@ fn build_node(
         node.label_for = el.attr("for").map(str::to_string);
         node.state_path = state_path.clone();
         // Static text reads as a label; `role="heading"` promotes it. Text that is
-        // itself tappable is a button whose name is its own words.
+        // itself tappable is a button whose name is its own words, unless it is a
+        // link, which a screen reader announces differently and should.
         node.access = Access {
-            role: explicit_access_role(el).unwrap_or(if node.on_tap.is_some() {
+            role: explicit_access_role(el).unwrap_or(if to.is_some() {
+                AccessRole::Link
+            } else if node.on_tap.is_some() {
                 AccessRole::Button
             } else {
                 AccessRole::Label
@@ -2532,7 +2573,9 @@ fn build_node(
     // `<view @tap><text>Save</text></view>` announces as "Save, button". A
     // scroller is worth exposing so its content can be reached; anything else is
     // structure, and only appears if the author gave it a `role=`.
-    let role = explicit_access_role(el).unwrap_or(if node.on_tap.is_some() {
+    let role = explicit_access_role(el).unwrap_or(if to.is_some() {
+        AccessRole::Link
+    } else if node.on_tap.is_some() {
         AccessRole::Button
     } else if node.style.overflow == Overflow::Scroll {
         AccessRole::ScrollView
@@ -2570,6 +2613,12 @@ fn expand_component(
     // The instance the *caller* is in, which is where a listener body belongs.
     caller: Option<&str>,
     row: Option<&str>,
+    // Props resolved by the caller rather than written as attributes: the route
+    // parameters a `<router>` captured. Empty for an ordinary component tag.
+    extra_props: &Locals,
+    // The path this was expanded under, when a `<router>` chose it. Recorded so
+    // leaving the route can drop the instance's state.
+    route: Option<&str>,
 ) -> LayoutNode {
     let mut props: Locals = Vec::new();
     let mut prop_deps: HashSet<String> = HashSet::new();
@@ -2593,6 +2642,11 @@ fn expand_component(
             }
         }
     }
+    // Route parameters are already values, so they are appended rather than
+    // evaluated. Last, so on a name collision the captured segment wins: it is
+    // what the path actually says, and a `:prop` of the same name is more likely
+    // a leftover than an override.
+    props.extend(extra_props.iter().cloned());
     // Reconcile this component instance in place when a prop's signals change.
     if !prop_deps.is_empty() {
         reg.components.push(ComponentBinding {
@@ -2621,6 +2675,7 @@ fn expand_component(
     // are re-derived on every build rather than kept.
     entry.listeners = listeners;
     entry.caller = caller.map(str::to_string);
+    entry.route = route.map(str::to_string);
     // State first, so a prop of the same name wins: the caller's input is more
     // specific than the component's own default.
     let mut locals: Locals = entry.state.clone();
@@ -2648,6 +2703,38 @@ fn expand_component(
         // A component expanded inside a row is still inside that row.
         row,
     )
+}
+
+/// Match a `<route path="…">` pattern against the current path, capturing the
+/// `:name` segments as parameters.
+///
+/// `None` means the pattern does not apply. `Some(params)` means it does, with
+/// whatever it captured (often nothing). Segment counts have to agree, because a
+/// pattern is a whole path and not a prefix: matching on a prefix would make
+/// `/` match every path there is, and the first route would always win.
+///
+/// A trailing slash is not a difference, so `/settings` and `/settings/` are one
+/// path. Anyone typing a URL by hand will produce both.
+fn match_route(pattern: &str, path: &str) -> Option<Locals> {
+    fn segments(s: &str) -> Vec<&str> {
+        s.split('/').filter(|p| !p.is_empty()).collect()
+    }
+    let pat = segments(pattern);
+    let cur = segments(path);
+    if pat.len() != cur.len() {
+        return None;
+    }
+    let mut params: Locals = Vec::new();
+    for (p, c) in pat.iter().zip(cur.iter()) {
+        match p.strip_prefix(':') {
+            // A parameter takes whatever sits in that position, under its name.
+            Some(name) => params.push((name.to_string(), Value::Text((*c).to_string()))),
+            // A literal segment has to be exactly itself.
+            None if p == c => {}
+            None => return None,
+        }
+    }
+    Some(params)
 }
 
 /// Parse `r-for="item in items"` into `(binding, collection_expr)`.
@@ -2753,6 +2840,86 @@ fn build_children(
                         ));
                         prev.push(ElemDesc::of(child));
                     }
+                }
+            }
+            continue;
+        }
+
+        // `<router>` renders the one `<route>` whose path matches, and nothing
+        // else. Like `<slot>` it leaves no box of its own behind, so a router
+        // adds nothing to the layout: the matched view expands in its place.
+        if el.tag == "router" {
+            in_chain = false;
+            // Reading the route here is what subscribes the enclosing parent to
+            // it, so navigating reconciles this subtree the way a changed `r-for`
+            // collection does, rather than forcing a whole rebuild.
+            let (value, deps) = engine.eval_value_tracked(rux_script::ROUTE_SIGNAL, locals);
+            structural_deps.extend(deps);
+            let current = value.map(|v| v.to_display()).unwrap_or_default();
+
+            let routes = element_children(el);
+            for r in &routes {
+                if r.tag != "route" {
+                    warn(format!(
+                        "<{}> inside <router> is ignored; a router's children are <route> \
+                         elements",
+                        r.tag
+                    ));
+                }
+            }
+            // First match wins, so routes are tried in the order they are
+            // written and a fallback can sit anywhere among them.
+            let matched = routes.iter().enumerate().find_map(|(ri, r)| {
+                if r.tag != "route" {
+                    return None;
+                }
+                let params = match_route(r.attr("path")?, &current)?;
+                Some((ri, *r, params))
+            });
+            let chosen = matched.or_else(|| {
+                routes
+                    .iter()
+                    .enumerate()
+                    .find(|(_, r)| r.tag == "route" && r.attr("fallback").is_some())
+                    .map(|(ri, r)| (ri, *r, Locals::new()))
+            });
+
+            match chosen {
+                Some((ri, route_el, params)) => {
+                    let Some(view) = route_el.attr("view") else {
+                        warn(format!(
+                            "<route path=\"{current}\"> has no `view`, so there is nothing to \
+                             render for it"
+                        ));
+                        continue;
+                    };
+                    let Some(component) = comps.get(view) else {
+                        warn(format!(
+                            "<route> names the view `{view}`, which is not imported; add \
+                             `use components::{view};` to the script"
+                        ));
+                        continue;
+                    };
+                    let cp = child_path(&out);
+                    let mut rtp = ctp.clone();
+                    rtp.push(ri);
+                    // The `<route>` element stands in for the component tag, so
+                    // any `:prop` written on it is passed through as well, and
+                    // the captured parameters join them.
+                    out.push(expand_component(
+                        route_el, component, comps, inherited, engine, locals, &cp, &rtp, reg,
+                        state, rules, instances, instance, row, &params, Some(&current),
+                    ));
+                    prev.push(ElemDesc::of(route_el));
+                }
+                None => {
+                    // Every path should render something. A router with nothing
+                    // to show is far more likely to be a missing route than an
+                    // intended blank screen.
+                    warn(format!(
+                        "no <route> matches `{current}`, and there is no `fallback` route, so \
+                         the router rendered nothing"
+                    ));
                 }
             }
             continue;
@@ -4826,11 +4993,18 @@ mod tests {
 
     #[test]
     fn each_pseudo_reads_its_own_state() {
-        let s = ElemStates { hover: false, focus: true, active: false, checked: true };
+        let s = ElemStates {
+            hover: false,
+            focus: true,
+            active: false,
+            checked: true,
+            current: false,
+        };
         assert!(hits_state("input:focus", "input", s));
         assert!(hits_state("input:checked", "input", s));
         assert!(!hits_state("input:hover", "input", s));
         assert!(!hits_state("input:active", "input", s));
+        assert!(!hits_state("input:current", "input", s));
     }
 
     #[test]
@@ -4845,7 +5019,13 @@ mod tests {
     /// rather than being dropped and matching everything.
     #[test]
     fn unknown_pseudo_never_matches() {
-        let all_on = ElemStates { hover: true, focus: true, active: true, checked: true };
+        let all_on = ElemStates {
+            hover: true,
+            focus: true,
+            active: true,
+            checked: true,
+            current: true,
+        };
         assert!(!hits_state(".box:disabled", ".box", all_on));
         assert!(!hits_state(".box:nth-child(2)", ".box", all_on));
         assert!(!hits_state(".box::selection", ".box", all_on));
