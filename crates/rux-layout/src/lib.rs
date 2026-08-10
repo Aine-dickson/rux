@@ -543,6 +543,13 @@ pub struct Node {
     pub state_path: Option<Vec<usize>>,
     /// What this element is, for assistive technology.
     pub access: Access,
+    /// Which component instance this node belongs to, when it is inside one.
+    ///
+    /// A component's own state is private to the instance, so a handler written
+    /// in a component has to say which instance it is running in: two `<panel>`
+    /// elements are two separate sets of state, and the handler text is
+    /// identical in both.
+    pub instance: Option<String>,
     /// `r-key` on an `r-for` row: which *item* this node stands for, rather than
     /// which slot it happens to occupy.
     ///
@@ -571,6 +578,7 @@ impl Node {
             focus_model: None,
             state_path: None,
             access: Access::default(),
+            instance: None,
             key: None,
         }
     }
@@ -592,6 +600,7 @@ impl Node {
             focus_model: None,
             state_path: None,
             access: Access::default(),
+            instance: None,
             key: None,
         }
     }
@@ -613,6 +622,7 @@ impl Node {
             focus_model: None,
             state_path: None,
             access: Access::default(),
+            instance: None,
             key: None,
         }
     }
@@ -768,6 +778,10 @@ pub struct HitRegion {
     /// it hovers here. Carried on the hit region because that is the geometry the
     /// shell already hit-tests; a `cursor` on a non-tappable box is not honored.
     pub cursor: Cursor,
+    /// The component instance this handler was written in, if any. Its state is
+    /// what the handler reads and writes, and two instances of one component
+    /// carry identical handler text, so the text alone cannot say which.
+    pub instance: Option<String>,
 }
 
 impl HitRegion {
@@ -893,7 +907,7 @@ pub enum FocusKind {
     /// A text / textarea input: focusing it starts caret editing.
     Text { model: String, row: Option<String>, multiline: bool, text: Option<PaintText> },
     /// A button / checkbox / radio: Space or Enter runs its handler.
-    Activate { on_tap: String },
+    Activate { on_tap: String, instance: Option<String> },
     /// A select: Space or Enter opens its dropdown.
     Select { model: String, row: Option<String>, options: Vec<String> },
 }
@@ -1224,7 +1238,7 @@ fn build(
     tree: &mut TaffyTree<TextContent>,
     node: &Node,
     paint: &mut Vec<(NodeId, PaintKind)>,
-    handlers: &mut Vec<(NodeId, String, Cursor)>,
+    handlers: &mut Vec<(NodeId, String, Cursor, Option<String>)>,
     models: &mut Vec<Bound>,
     focus_labels: &mut Vec<(NodeId, String, Option<String>)>,
     hidden: &mut Vec<NodeId>,
@@ -1326,7 +1340,7 @@ fn build(
         id
     };
     if let Some(handler) = &node.on_tap {
-        handlers.push((id, handler.clone(), node.style.cursor));
+        handlers.push((id, handler.clone(), node.style.cursor, node.instance.clone()));
     }
     if let Some(model) = &node.model {
         models.push(Bound {
@@ -1368,7 +1382,7 @@ fn collect(
     origin_x: f32,
     origin_y: f32,
     paint: &[(NodeId, PaintKind)],
-    handlers: &[(NodeId, String, Cursor)],
+    handlers: &[(NodeId, String, Cursor, Option<String>)],
     models: &[Bound],
     focus_labels: &[(NodeId, String, Option<String>)],
     hidden: &[NodeId],
@@ -1526,7 +1540,7 @@ fn collect(
         });
     }
 
-    if let Some((_, handler, cursor)) = handlers.iter().find(|(nid, ..)| *nid == id) {
+    if let Some((_, handler, cursor, instance)) = handlers.iter().find(|(nid, ..)| *nid == id) {
         out.hits.push(HitRegion {
             x,
             y,
@@ -1534,6 +1548,7 @@ fn collect(
             height: layout.size.height,
             on_tap: handler.clone(),
             cursor: *cursor,
+            instance: instance.clone(),
         });
     }
 
@@ -1608,7 +1623,7 @@ fn collect(
                 },
             });
         }
-    } else if let Some((_, handler, _)) = handlers.iter().find(|(nid, ..)| *nid == id) {
+    } else if let Some((_, handler, _, instance)) = handlers.iter().find(|(nid, ..)| *nid == id) {
         // A button / checkbox / radio (anything with a `@tap` handler) is
         // keyboard-reachable: Space or Enter runs the same handler as a tap.
         out.focusables.push(FocusItem {
@@ -1616,7 +1631,7 @@ fn collect(
             y,
             width: fw,
             height: fh,
-            kind: FocusKind::Activate { on_tap: handler.clone() },
+            kind: FocusKind::Activate { on_tap: handler.clone(), instance: instance.clone() },
         });
     }
 

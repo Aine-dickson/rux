@@ -610,13 +610,36 @@ Before this, children written between the tags were **silently dropped**, which
 made every component a fixed shape: no cards, panels, modals or layout wrappers.
 Driven in `examples/slots.rux`.
 
-**Still missing: events.** A component cannot tell its caller that anything
-happened. There is no `emit`, no callback prop, and a prop is a temporary local,
-so a component's handler cannot write one back. Slot content sidesteps it (the
-handler is the caller's), but a component's *own* markup still cannot report a
-tap. Related: a component's `<script>` is merged into the one shared script, so
-its top-level `let`s are root signals and **two instances share them**, which is
-why per-instance state needs the same work.
+**A component has its own state.** Its `<script>`'s top-level `let`s run **once
+per instance**, so three `<counter>` elements are three counts:
+```rux
+<!-- components/counter.rux -->
+<view @tap="count = count + step"><text>{{ count }}</text></view>
+<script> let count = signal(0); </script>   <!-- private to each instance -->
+```
+The isolation goes both ways: a component cannot read the document's signals
+(so it is not coupled to the app it was first written for), and the document
+cannot read a component's. The same name on both sides is two different
+variables.
+
+Only `fn` definitions are shared with the document's engine, because a function
+is code and state is not. A handler carries its instance from the cascade to the
+shell, so the identical handler text in two instances still writes to the right
+one. Props are re-derived from the caller on every build and are **not**
+writable from inside: assigning to one would look like it worked and be
+forgotten on the next build.
+
+A change to instance state **rebuilds** rather than patches, since the state is
+not a signal and the binding registry has nothing to look it up by. A component
+is a subtree, so it is bounded, but it is coarser than a signal change. Driven
+in `examples/component-state.rux`.
+
+**Still missing: events.** A component cannot tell its caller that something
+happened: there is no `emit` and no callback prop. Slot content sidesteps it
+(that markup is the caller's, handlers and all), and a component can now keep
+whatever state is genuinely its own, so what is left is the narrower case of a
+component reporting *outwards*. Also not supported: `computed` and `effect`
+inside a component, which are stripped.
 
 ### Accessibility
 

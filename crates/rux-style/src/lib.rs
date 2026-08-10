@@ -289,10 +289,97 @@ fn bind_locals(src: &str, locals: &Locals) -> String {
     out
 }
 
-/// A compiled component: its template root and its own CSS rules.
+/// A compiled component: its template root, its own CSS rules, and the
+/// top-level script that gives each instance its private state.
 struct Component {
     template: Element,
     rules: Vec<Rule>,
+    /// The component's own `let` declarations, run once per instance. Its `fn`
+    /// definitions are not here: those are shared, merged into the one engine,
+    /// because a function is code and state is not.
+    script: String,
+}
+
+/// One component instance's private world: the state its own script declared,
+/// and the props the caller passed in.
+///
+/// State persists across rebuilds, keyed by where the instance sits in the
+/// *template* rather than in the tree, so it survives a list reordering around
+/// it. Props are re-derived on every build, since they are the caller's to
+/// decide.
+#[derive(Clone, Debug, Default)]
+pub struct Instance {
+    pub state: Vec<(String, Value)>,
+    pub props: Vec<(String, Value)>,
+}
+
+/// Every live component instance, by identity. Owned by the runtime so it
+/// outlives the tree, which is rebuilt constantly.
+pub type Instances = HashMap<String, Instance>;
+
+/// A component instance's identity: where it sits in the template, and which
+/// `r-for` row it is in.
+///
+/// Deliberately not the tree path, which moves when a list reorders. Two
+/// `<panel>` elements written in one file are two instances; the same `<panel>`
+/// repeated by `r-for` is one instance per row.
+fn instance_key(tpl_path: &[usize], row: Option<&str>) -> String {
+    let mut key = String::new();
+    for step in tpl_path {
+        key.push_str(&step.to_string());
+        key.push('.');
+    }
+    if let Some(row) = row {
+        key.push('#');
+        key.push_str(row);
+    }
+    key
+}
+
+/// A component's own top-level statements: its script with `fn` blocks and
+/// `use` lines removed.
+///
+/// The functions are merged into the shared engine (code is shared; two
+/// instances calling one function is right), while what is left declares the
+/// state each instance gets its own copy of.
+fn component_statements(script: &str) -> String {
+    let mut out = String::new();
+    let lines: Vec<&str> = script.lines().collect();
+    let mut i = 0;
+    while i < lines.len() {
+        let trimmed = lines[i].trim();
+        if trimmed.starts_with("use ") {
+            i += 1;
+            continue;
+        }
+        if trimmed.starts_with("fn ") {
+            // Skip the whole definition by counting braces, so a function with
+            // an `if` inside does not end early.
+            let mut depth = 0i32;
+            let mut seen = false;
+            while i < lines.len() {
+                for c in lines[i].chars() {
+                    match c {
+                        '{' => {
+                            depth += 1;
+                            seen = true;
+                        }
+                        '}' => depth -= 1,
+                        _ => {}
+                    }
+                }
+                i += 1;
+                if seen && depth <= 0 {
+                    break;
+                }
+            }
+            continue;
+        }
+        out.push_str(lines[i]);
+        out.push('\n');
+        i += 1;
+    }
+    out
 }
 
 /// What a `<slot />` inside a component renders: the children written at the
@@ -508,7 +595,8 @@ pub fn build_styled_tree(
     components: &HashMap<String, Sfc>,
     engine: &mut Engine,
 ) -> Result<LayoutNode, String> {
-    build_styled_tree_tracked(sfc, components, engine).map(|(node, _)| node)
+    let mut instances = Instances::new();
+    build_styled_tree_tracked(sfc, components, engine, &mut instances).map(|(node, _)| node)
 }
 
 /// Recompute a text binding's string against the engine's current state, what
@@ -714,11 +802,13 @@ pub fn build_styled_tree_tracked(
     sfc: &Sfc,
     components: &HashMap<String, Sfc>,
     engine: &mut Engine,
+    instances: &mut Instances,
 ) -> Result<(LayoutNode, BindingRegistry), String> {
     build_styled_tree_stateful(
         sfc,
         components,
         engine,
+        instances,
         &InteractionState::default(),
         Viewport::default(),
     )
@@ -732,6 +822,7 @@ pub fn build_styled_tree_stateful(
     sfc: &Sfc,
     components: &HashMap<String, Sfc>,
     engine: &mut Engine,
+    instances: &mut Instances,
     state: &InteractionState,
     viewport: Viewport,
 ) -> Result<(LayoutNode, BindingRegistry), String> {
@@ -750,6 +841,7 @@ pub fn build_styled_tree_stateful(
                 Component {
                     template: c.template.clone(),
                     rules: parse_component_rules(c, viewport),
+                    script: component_statements(&c.script),
                 },
             )
         })
@@ -776,6 +868,8 @@ pub fn build_styled_tree_stateful(
         &[],
         &mut reg,
         state,
+        instances,
+        None, // the root is not inside a component
         None, // the document root has no caller, so no slot content
         None, // and is not inside any row
     );
@@ -1919,6 +2013,9 @@ fn build_node(
     tpl_path: &[usize],
     reg: &mut BindingRegistry,
     state: &InteractionState,
+    instances: &mut Instances,
+    // The component instance this element is inside, None at document level.
+    instance: Option<&str>,
     slot: Option<Slot>,
     // The `r-key` of the `r-for` row this element is inside, `None` outside one.
     // Half the identity of anything in a list: `r-model` is recorded as written,
@@ -1929,7 +2026,7 @@ fn build_node(
     if let Some(component) = comps.get(&el.tag) {
         return expand_component(
             el, component, comps, inherited, engine, locals, path, tpl_path, reg, state, rules,
-            row,
+            instances, row,
         );
     }
 
@@ -2381,6 +2478,8 @@ fn build_node(
         tpl_path,
         reg,
         state,
+        instances,
+        instance,
         // A `<slot>` deeper inside a component still fills from the same call
         // site, so the slot travels down with everything else.
         slot,
@@ -2413,6 +2512,9 @@ fn build_node(
         focus_model: None,
         state_path,
         access: Access::default(),
+        // Set when this node is inside a component, so a handler on it knows
+        // whose state it is running against.
+        instance: instance.map(str::to_string),
         // Filled in by the `r-for` expansion, which is the only place that knows
         // an element is a row and which item it stands for.
         key: None,
@@ -2455,6 +2557,7 @@ fn expand_component(
     state: &InteractionState,
     // The caller's stylesheet, for whatever it wrote between the tags.
     caller_rules: &[Rule],
+    instances: &mut Instances,
     row: Option<&str>,
 ) -> LayoutNode {
     let mut props: Locals = Vec::new();
@@ -2484,6 +2587,21 @@ fn expand_component(
     let supplied = element_children(el);
     let slot = Slot { children: &supplied, locals: parent_locals, rules: caller_rules };
 
+    // This instance's own state. Created the first time it is expanded, by
+    // running the component's script in a scope of its own, and kept across
+    // rebuilds: the tree is thrown away constantly, and a component's state
+    // must not be.
+    let key = instance_key(tpl_path, row);
+    let entry = instances.entry(key.clone()).or_insert_with(|| Instance {
+        state: engine.init_scope(&component.script),
+        props: Vec::new(),
+    });
+    entry.props = props.clone();
+    // State first, so a prop of the same name wins: the caller's input is more
+    // specific than the component's own default.
+    let mut locals: Locals = entry.state.clone();
+    locals.extend(props);
+
     // The component expands in place at this element's path, so its root node
     // takes the same path; its bindings are recorded relative to it.
     let mut ancestors: Vec<AncNode> = Vec::new();
@@ -2495,11 +2613,13 @@ fn expand_component(
         &[],
         inherited,
         engine,
-        &props,
+        &locals,
         path,
         tpl_path,
         reg,
         state,
+        instances,
+        Some(key.as_str()),
         Some(slot),
         // A component expanded inside a row is still inside that row.
         row,
@@ -2527,6 +2647,8 @@ fn build_children(
     tpl_path: &[usize],
     reg: &mut BindingRegistry,
     state: &InteractionState,
+    instances: &mut Instances,
+    instance: Option<&str>,
     slot: Option<Slot>,
     row: Option<&str>,
 ) -> (Vec<LayoutNode>, HashSet<String>) {
@@ -2581,7 +2703,7 @@ fn build_children(
                         // `<slot>` is not a place to put the outer one's content.
                         out.push(build_node(
                             child, s.rules, comps, ancestors, &prev, inherited, engine, s.locals,
-                            &cp, &ctp, reg, state, None, row,
+                            &cp, &ctp, reg, state, instances, instance, None, row,
                         ));
                         prev.push(ElemDesc::of(child));
                     }
@@ -2603,7 +2725,7 @@ fn build_children(
                         ctp.push(si);
                         out.push(build_node(
                             child, rules, comps, ancestors, &prev, inherited, engine, locals, &cp,
-                            &ctp, reg, state, slot, row,
+                            &ctp, reg, state, instances, instance, slot, row,
                         ));
                         prev.push(ElemDesc::of(child));
                     }
@@ -2659,7 +2781,7 @@ fn build_children(
                         });
                         let mut node = build_node(
                             el, rules, comps, ancestors, &prev, inherited, engine, &child_locals,
-                            &cp, &ctp, reg, state, slot,
+                            &cp, &ctp, reg, state, instances, instance, slot,
                             // An unkeyed row inherits whatever row it is nested
                             // in, which is normally nothing.
                             key.as_deref().or(row),
@@ -2681,7 +2803,7 @@ fn build_children(
             chain_satisfied = v;
             if chain_satisfied {
                 let cp = child_path(&out);
-                out.push(build_node(el, rules, comps, ancestors, &prev, inherited, engine, locals, &cp, &ctp, reg, state, slot, row));
+                out.push(build_node(el, rules, comps, ancestors, &prev, inherited, engine, locals, &cp, &ctp, reg, state, instances, instance, slot, row));
                 prev.push(ElemDesc::of(el));
             }
             continue;
@@ -2697,7 +2819,7 @@ fn build_children(
             if taken {
                 chain_satisfied = true;
                 let cp = child_path(&out);
-                out.push(build_node(el, rules, comps, ancestors, &prev, inherited, engine, locals, &cp, &ctp, reg, state, slot, row));
+                out.push(build_node(el, rules, comps, ancestors, &prev, inherited, engine, locals, &cp, &ctp, reg, state, instances, instance, slot, row));
                 prev.push(ElemDesc::of(el));
             }
             continue;
@@ -2705,7 +2827,7 @@ fn build_children(
         if el.attr("r-else").is_some() {
             if in_chain && !chain_satisfied {
                 let cp = child_path(&out);
-                out.push(build_node(el, rules, comps, ancestors, &prev, inherited, engine, locals, &cp, &ctp, reg, state, slot, row));
+                out.push(build_node(el, rules, comps, ancestors, &prev, inherited, engine, locals, &cp, &ctp, reg, state, instances, instance, slot, row));
                 prev.push(ElemDesc::of(el));
             }
             in_chain = false;
@@ -2715,7 +2837,7 @@ fn build_children(
         // A plain element ends any active chain.
         in_chain = false;
         let cp = child_path(&out);
-        out.push(build_node(el, rules, comps, ancestors, &prev, inherited, engine, locals, &cp, &ctp, reg, state, slot, row));
+        out.push(build_node(el, rules, comps, ancestors, &prev, inherited, engine, locals, &cp, &ctp, reg, state, instances, instance, slot, row));
         prev.push(ElemDesc::of(el));
     }
     (out, structural_deps)
@@ -3944,7 +4066,9 @@ mod tests {
         "#;
         let sfc = rux_parser::parse_sfc(src).unwrap();
         let mut engine = Builder::new().build(&sfc.script).unwrap();
-        let (_root, reg) = build_styled_tree_tracked(&sfc, &HashMap::new(), &mut engine).unwrap();
+        let mut instances = super::Instances::new();
+        let (_root, reg) =
+            build_styled_tree_tracked(&sfc, &HashMap::new(), &mut engine, &mut instances).unwrap();
 
         assert_eq!(reg.structural_parents.len(), 1, "the screen is the one structural parent");
         let sp = &reg.structural_parents[0];
@@ -4408,10 +4532,12 @@ mod tests {
     fn bg_at_vp(src: &str, viewport: Viewport) -> Option<Background> {
         let sfc = rux_parser::parse_sfc(src).unwrap();
         let mut engine = Builder::new().build(&sfc.script).unwrap();
+        let mut instances = super::Instances::new();
         let root = super::build_styled_tree_stateful(
             &sfc,
             &HashMap::new(),
             &mut engine,
+            &mut instances,
             &InteractionState::default(),
             viewport,
         )

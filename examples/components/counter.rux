@@ -1,0 +1,49 @@
+<template>
+  <view class="counter">
+    <text class="name">{{ label }}</text>
+    <view class="controls">
+      <view class="btn" @tap="count = count - step"><text class="btn-label">-</text></view>
+      <text class="count">{{ count }}</text>
+      <view class="btn" @tap="count = count + step"><text class="btn-label">+</text></view>
+    </view>
+    <text class="hint">steps of {{ step }}</text>
+  </view>
+</template>
+
+<style>
+  .counter {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 16px;
+    background: #313244;
+    border: 2px solid #45475a;
+    border-radius: 10px;
+  }
+
+  .name { color: #cdd6f4; font-size: 14px; font-weight: 700; }
+  .controls { display: flex; align-items: center; gap: 12px; }
+  .count { color: #a6e3a1; font-size: 24px; font-weight: 700; width: 52px; text-align: center; }
+  .hint { color: #6c7086; font-size: 12px; }
+
+  .btn {
+    width: 30px;
+    height: 30px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: #45475a;
+    border-radius: 8px;
+    cursor: pointer;
+  }
+
+  .btn:hover { background: #585b70; }
+  .btn-label { color: #cdd6f4; font-size: 16px; font-weight: 700; }
+</style>
+
+<script>
+  // This is the component's own state. Each <counter> on the page gets its own
+  // copy: nothing here is visible to the document, and the document's signals
+  // are not visible here.
+  let count = signal(0);
+</script>

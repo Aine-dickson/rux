@@ -1,0 +1,51 @@
+<template>
+  <screen class="app">
+    <text class="title">a component with its own state</text>
+    <text class="lead">Three counters, one component file. Each keeps its own count: the component's script runs once per instance, and its state is private to that instance. The document below cannot see any of them, and they cannot see the document.</text>
+
+    <view class="row">
+      <counter :label="&quot;first&quot;" :step="1" />
+      <counter :label="&quot;second&quot;" :step="1" />
+      <counter :label="&quot;by tens&quot;" :step="10" />
+    </view>
+
+    <text class="foot">The document's own count, which no counter touches: {{ count }}</text>
+    <view class="btn" @tap="count = count + 1">
+      <text class="btn-label">document count</text>
+    </view>
+  </screen>
+</template>
+
+<style>
+  .app {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    padding: 28px;
+    background: #1e1e2e;
+  }
+
+  .title { color: #cdd6f4; font-size: 22px; font-weight: 700; }
+  .lead { color: #9399b2; font-size: 13px; max-width: 620px; }
+  .foot { color: #9399b2; font-size: 13px; }
+  .row { display: flex; gap: 14px; align-items: flex-start; }
+
+  .btn {
+    padding: 8px 14px;
+    background: #89b4fa;
+    border-radius: 8px;
+    cursor: pointer;
+    max-width: 160px;
+  }
+
+  .btn:hover { background: #b4befe; }
+  .btn-label { color: #11111b; font-size: 12px; font-weight: 700; }
+</style>
+
+<script>
+  use components::counter;
+
+  // Same name as the component's own `count`, deliberately: they are different
+  // variables, and neither can reach the other.
+  let count = signal(0);
+</script>

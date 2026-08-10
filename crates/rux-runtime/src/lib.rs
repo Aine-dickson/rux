@@ -30,7 +30,7 @@ use std::path::{Path, PathBuf};
 use rux_layout::Node as LayoutNode;
 use rux_parser::{Sfc, StyleInclude};
 use rux_script::{Builder, Engine};
-use rux_style::BindingRegistry;
+use rux_style::{BindingRegistry, Instances};
 /// Re-exported so the shell can hand pointer/focus state and the window size in
 /// without depending on `rux-style` directly.
 pub use rux_reactive::json_string;
@@ -59,6 +59,9 @@ pub struct Document {
     viewport: Viewport,
     /// What is currently wrong with this document, for the dev overlay.
     diagnostics: Diagnostics,
+    /// Every component instance's private state, kept here because the tree it
+    /// belongs to is rebuilt constantly and the state must not be.
+    instances: Instances,
     /// `computed` declarations, in declaration order, so one may read another
     /// declared above it and a single pass refreshes them all.
     computeds: Vec<Computed>,
@@ -363,14 +366,19 @@ impl Document {
             // A component's own computed/effect declarations are not
             // supported yet; strip them so the merged script still compiles.
             let (comp_script, _c, _e) = extract_reactives(&comp_script);
-            // Merge the component's (pure) functions into the shared engine.
+            // Only its *functions* join the shared engine. Its `let`s do not:
+            // they are the state each instance gets a private copy of, so
+            // merging them here would put one shared variable behind every
+            // instance, which is exactly the bug this is fixing. `rux-style`
+            // runs the same split and hands the statements to `init_scope`.
             combined_script.push('\n');
-            combined_script.push_str(&comp_script);
+            combined_script.push_str(&component_functions(&comp_script));
             components.insert(import.tag, comp_sfc);
         }
 
         let mut engine = build_engine(&combined_script).map_err(LoadError::plain)?;
-        let (mut root, registry) = rux_style::build_styled_tree_tracked(&sfc, &components, &mut engine)
+        let mut instances = Instances::new();
+        let (mut root, registry) = rux_style::build_styled_tree_tracked(&sfc, &components, &mut engine, &mut instances)
             .map_err(LoadError::plain)?;
         resolve_images(&mut root, base);
         let mut doc = Self {
@@ -387,6 +395,7 @@ impl Document {
                 warnings: collect_warnings(),
                 ..Diagnostics::default()
             },
+            instances,
             computeds,
             effects,
             root,
@@ -418,8 +427,9 @@ impl Document {
         let (main_script, _imports) = extract_imports(&sfc.script);
         let (main_script, computeds, effects) = extract_reactives(&main_script);
         let mut engine = build_engine(&main_script).map_err(LoadError::plain)?;
+        let mut instances = Instances::new();
         let (mut root, registry) =
-            rux_style::build_styled_tree_tracked(&sfc, &HashMap::new(), &mut engine)
+            rux_style::build_styled_tree_tracked(&sfc, &HashMap::new(), &mut engine, &mut instances)
                 .map_err(LoadError::plain)?;
         let base = PathBuf::from(".");
         resolve_images(&mut root, &base);
@@ -436,6 +446,7 @@ impl Document {
                 warnings: collect_warnings(),
                 ..Diagnostics::default()
             },
+            instances,
             computeds,
             effects,
             root,
@@ -566,6 +577,7 @@ impl Document {
             &self.sfc,
             &self.components,
             &mut self.engine,
+            &mut self.instances,
             &self.state,
             self.viewport,
         ) else {
@@ -590,6 +602,7 @@ impl Document {
             &self.sfc,
             &self.components,
             &mut self.engine,
+            &mut self.instances,
             &self.state,
             self.viewport,
         ) {
@@ -746,6 +759,7 @@ impl Document {
             &self.sfc,
             &self.components,
             &mut self.engine,
+            &mut self.instances,
             &self.state,
             self.viewport,
         ) else {
@@ -844,12 +858,65 @@ impl Document {
     /// when the change is structural. Returns whether anything changed, so the
     /// shell knows whether to repaint.
     pub fn apply_handler(&mut self, src: &str) -> bool {
-        let changed = self.engine.run_handler_tracked(src);
-        if changed.is_empty() {
-            return false;
+        self.apply_handler_in(src, None)
+    }
+
+    /// Run a handler that was written inside a component instance.
+    ///
+    /// The instance's state and props are in scope, and whatever the handler
+    /// leaves them at is written back: that is what makes a component's own
+    /// state writable, and what keeps two instances of one component apart.
+    ///
+    /// A change to instance state rebuilds rather than patches. The state is
+    /// not a signal, so the binding registry has nothing to look it up by, and
+    /// claiming otherwise would mean bindings quietly missing updates. A
+    /// component is a subtree, so the rebuild is bounded in practice.
+    pub fn apply_handler_in(&mut self, src: &str, instance: Option<&str>) -> bool {
+        let Some(key) = instance.filter(|k| self.instances.contains_key(*k)) else {
+            let changed = self.engine.run_handler_tracked(src);
+            if changed.is_empty() {
+                return false;
+            }
+            self.apply_change(&changed);
+            return true;
+        };
+
+        let entry = &self.instances[key];
+        let mut locals = entry.state.clone();
+        locals.extend(entry.props.iter().cloned());
+        let (after, changed) = self.engine.run_scoped_handler(src, &locals);
+
+        // Only the component's own names are written back. A prop belongs to the
+        // caller: assigning to one inside a component would look like it worked
+        // and be forgotten on the next build, which is worse than not allowing it.
+        let state_names: Vec<String> =
+            self.instances[key].state.iter().map(|(n, _)| n.clone()).collect();
+        let mut moved = false;
+        for (name, value) in after {
+            if !state_names.contains(&name) {
+                continue;
+            }
+            let slot = self
+                .instances
+                .get_mut(key)
+                .and_then(|i| i.state.iter_mut().find(|(n, _)| *n == name));
+            if let Some(slot) = slot {
+                if slot.1 != value {
+                    slot.1 = value;
+                    moved = true;
+                }
+            }
         }
-        self.apply_change(&changed);
-        true
+
+        if !changed.is_empty() {
+            self.apply_change(&changed);
+            return true;
+        }
+        if moved {
+            self.rebuild();
+            return true;
+        }
+        false
     }
 
     /// Reflect a set of changed signals: patch in place, or rebuild when the change
@@ -1165,6 +1232,43 @@ fn is_identifier(s: &str) -> bool {
     !s.is_empty()
         && !s.starts_with(|c: char| c.is_ascii_digit())
         && s.chars().all(|c| c.is_alphanumeric() || c == '_')
+}
+
+/// Just the `fn` definitions from a component's script.
+///
+/// The complement of `rux-style`'s `component_statements`: functions are code
+/// and are shared across instances, everything else is state and is not.
+fn component_functions(script: &str) -> String {
+    let mut out = String::new();
+    let lines: Vec<&str> = script.lines().collect();
+    let mut i = 0;
+    while i < lines.len() {
+        if !lines[i].trim().starts_with("fn ") {
+            i += 1;
+            continue;
+        }
+        let mut depth = 0i32;
+        let mut seen = false;
+        while i < lines.len() {
+            for c in lines[i].chars() {
+                match c {
+                    '{' => {
+                        depth += 1;
+                        seen = true;
+                    }
+                    '}' => depth -= 1,
+                    _ => {}
+                }
+            }
+            out.push_str(lines[i]);
+            out.push('\n');
+            i += 1;
+            if seen && depth <= 0 {
+                break;
+            }
+        }
+    }
+    out
 }
 
 /// A resolved component import.
@@ -1633,6 +1737,79 @@ mod tests {
         let doc = Document::load(dir.join("app.rux")).expect("load");
         let _ = fs::remove_dir_all(&dir);
         doc
+    }
+
+    /// The point of scoping: two instances of one component are two separate
+    /// sets of state. Their scripts used to be merged into the single shared
+    /// script, so both `<counter>` elements counted the same number.
+    #[test]
+    fn two_instances_keep_their_own_state() {
+        let doc = with_component(
+            "<template><view class=\"card\">\
+               <text>{{ count }}</text>\
+               <view @tap=\"count = count + 1\"><text>add</text></view>\
+             </view></template>\n\
+             <script>\nlet count = signal(0);\n</script>",
+            "<template><screen><card /><card /></screen></template>\n\
+             <script>\nuse components::card;\n</script>",
+        );
+        // Two instances, two keys, and neither is a document signal.
+        assert_eq!(doc.instances.len(), 2, "one entry per instance: {:?}", doc.instances);
+        assert!(
+            doc.instances.values().all(|i| i.state.iter().any(|(n, _)| n == "count")),
+            "each holds its own `count`: {:?}",
+            doc.instances
+        );
+    }
+
+    /// Tapping inside one instance moves that instance's state and no other's.
+    #[test]
+    fn a_handler_moves_only_its_own_instance() {
+        let mut doc = with_component(
+            "<template><view>\
+               <text>{{ label }}:{{ count }}</text>\
+               <view @tap=\"count = count + 1\"><text>add</text></view>\
+             </view></template>\n\
+             <script>\nlet count = signal(0);\n</script>",
+            "<template><screen>\
+               <card :label=\"&quot;a&quot;\" /><card :label=\"&quot;b&quot;\" />\
+             </screen></template>\n\
+             <script>\nuse components::card;\n</script>",
+        );
+        assert!(find_text(&doc.root, "a:0"), "{:?}", text_of(&doc.root));
+        assert!(find_text(&doc.root, "b:0"), "{:?}", text_of(&doc.root));
+
+        // The second card's handler, found the way the shell finds it: by the
+        // instance recorded on the node it was tapped on.
+        let second = doc.root.children[1].clone();
+        let button = second.children.iter().find(|c| c.on_tap.is_some()).expect("a tappable box");
+        let (src, instance) = (button.on_tap.clone().unwrap(), button.instance.clone());
+        assert!(instance.is_some(), "the node knows which instance it is in");
+
+        assert!(doc.apply_handler_in(&src, instance.as_deref()), "the tap changed state");
+        assert!(find_text(&doc.root, "b:1"), "the tapped card counted: {:?}", text_of(&doc.root));
+        assert!(
+            find_text(&doc.root, "a:0"),
+            "and the other one did not: {:?}",
+            text_of(&doc.root)
+        );
+    }
+
+    /// A component's state is not a document signal, so the app cannot reach in
+    /// and read it by name. That isolation is the reason a component can be
+    /// used in a second app at all.
+    #[test]
+    fn component_state_is_not_a_document_signal() {
+        let mut doc = with_component(
+            "<template><view><text>{{ count }}</text></view></template>\n\
+             <script>\nlet count = signal(7);\n</script>",
+            "<template><screen><card /><text>{{ count }}</text></screen></template>\n\
+             <script>\nuse components::card;\n</script>",
+        );
+        assert!(find_text(&doc.root, "7"), "the component sees its own: {:?}", text_of(&doc.root));
+        // The document's own `{{ count }}` has nothing to read, and says so
+        // rather than borrowing the component's.
+        assert_eq!(doc.value_in("count", None), "", "{:?}", text_of(&doc.root));
     }
 
     /// The whole point of a slot: a component can wrap markup it never saw.

@@ -1782,12 +1782,16 @@ impl App {
             .iter()
             .rev()
             .find(|h| h.contains(px as f32, py as f32))
-            .map(|h| h.on_tap.clone());
+            .map(|h| (h.on_tap.clone(), h.instance.clone()));
 
-        if let Some(src) = handler {
+        if let Some((src, instance)) = handler {
             // Patch in place when the change is display-only; rebuild only when it
             // touches structure/attributes/input values. Either way, repaint.
-            if self.document.apply_handler(&src) {
+            //
+            // The instance travels with the handler because two instances of one
+            // component carry identical handler text: the string alone cannot
+            // say whose state to run it against.
+            if self.document.apply_handler_in(&src, instance.as_deref()) {
                 self.request_redraw();
             }
         }
@@ -2137,8 +2141,8 @@ impl App {
     /// open a select's dropdown.
     fn activate_focused(&mut self, index: usize) {
         match self.focusables.get(index).map(|f| f.kind.clone()) {
-            Some(FocusKind::Activate { on_tap }) => {
-                self.document.apply_handler(&on_tap);
+            Some(FocusKind::Activate { on_tap, instance }) => {
+                self.document.apply_handler_in(&on_tap, instance.as_deref());
                 self.request_redraw();
             }
             Some(FocusKind::Select { model, row, .. }) => {

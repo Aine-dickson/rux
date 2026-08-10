@@ -375,6 +375,98 @@ impl Engine {
         self.scope.set_or_push(name, value.to_string());
     }
 
+    /// Run a component's own top-level script in a scope of its own, and hand
+    /// back the variables it declared: one instance's private state.
+    ///
+    /// The document's script is not visible, which is the point. A component
+    /// that could read the app's signals by name would be coupled to the app it
+    /// was first written for, and could not be used twice.
+    pub fn init_scope(&mut self, script: &str) -> Vec<(String, Value)> {
+        let ast = match self.engine.compile(script) {
+            Ok(ast) => ast,
+            Err(e) => {
+                warn(format!(
+                    "a component's script failed to compile: {}",
+                    strip_rhai_position(&e.to_string())
+                ));
+                return Vec::new();
+            }
+        };
+        // Its own functions plus everything already registered, so a component
+        // can call helpers it declared beside its state.
+        let merged = self.funcs.merge(&ast);
+        let mut scope = Scope::new();
+        if let Err(e) = self.engine.run_ast_with_scope(&mut scope, &merged) {
+            warn(format!(
+                "a component's script failed to run: {}",
+                strip_rhai_position(&e.to_string())
+            ));
+        }
+        scope.iter().map(|(name, _, value)| (name.to_string(), from_dynamic(&value))).collect()
+    }
+
+    /// Run a handler inside a component instance, whose state is `locals`.
+    ///
+    /// Returns the instance's variables as they stand afterwards, and which of
+    /// the *document's* signals changed. Both matter: a handler in a component
+    /// may touch its own state, a prop's underlying signal, or both.
+    ///
+    /// Reading the locals back before the scope is rewound is what makes a
+    /// component's state writable at all. Ordinary evaluation drops them, which
+    /// is right for a `{{ }}` binding and wrong for a `@tap`.
+    pub fn run_scoped_handler(
+        &mut self,
+        src: &str,
+        locals: &[(String, Value)],
+    ) -> (Vec<(String, Value)>, HashSet<String>) {
+        let names: Vec<String> = self.signals.iter().cloned().collect();
+        let before: HashMap<String, Option<Value>> =
+            names.iter().map(|n| (n.clone(), self.read_signal(n))).collect();
+
+        let ast = match self.engine.compile(src) {
+            Ok(ast) => ast,
+            Err(e) => {
+                warn(format!(
+                    "handler `{}` failed to compile: {}",
+                    trim_expr(src),
+                    strip_rhai_position(&e.to_string())
+                ));
+                return (locals.to_vec(), HashSet::new());
+            }
+        };
+        let merged = self.funcs.merge(&ast);
+        let base = self.scope.len();
+        for (name, value) in locals {
+            self.scope.push(name.clone(), to_dynamic(value));
+        }
+        let result = self.engine.eval_ast_with_scope::<Dynamic>(&mut self.scope, &merged);
+        // Read the instance's state back *before* rewinding, or the handler's
+        // effect on it is dropped along with the temporary scope.
+        let after: Vec<(String, Value)> = locals
+            .iter()
+            .map(|(name, previous)| {
+                let value = self
+                    .scope
+                    .get_value::<Dynamic>(name)
+                    .map(|d| from_dynamic(&d))
+                    .unwrap_or_else(|| previous.clone());
+                (name.clone(), value)
+            })
+            .collect();
+        self.scope.rewind(base);
+
+        if let Err(e) = result {
+            warn(format!(
+                "handler `{}` failed: {}",
+                trim_expr(src),
+                strip_rhai_position(&e.to_string())
+            ));
+            return (after, HashSet::new());
+        }
+        let changed = names.into_iter().filter(|n| self.read_signal(n) != before[n]).collect();
+        (after, changed)
+    }
+
     /// Re-evaluate a computed's expression and store the result under its name.
     ///
     /// Returns whether the value actually changed, and what it read. Only a real
