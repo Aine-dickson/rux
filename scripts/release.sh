@@ -163,19 +163,29 @@ EOF
 
 cmd_open_next() {
   local next="$version"
-  git rev-parse --verify --quiet "$branch" >/dev/null \
-    || die "no capsule for $tag; freeze it before opening the next line"
+  # The capsule to continue *from* is the release just packed, not the version
+  # being opened. Given explicitly, or the newest capsule there is.
+  local from_version="${3:-}"
+  local from
+  if [[ -n "$from_version" ]]; then
+    from="release/v$from_version"
+  else
+    from="$(git for-each-ref --sort=-v:refname --format='%(refname:short)' 'refs/heads/release/v*' | head -1)"
+  fi
+  [[ -n "$from" ]] && git rev-parse --verify --quiet "$from" >/dev/null \
+    || die "no capsule to branch from; freeze a release first, or name one: open-next $next <released-version>"
+
   local line="build/v${next%.*}"
   git rev-parse --verify --quiet "$line" >/dev/null && die "$line already exists"
 
-  step "opening $line at ${next}-dev, from the $tag capsule"
-  git switch -qc "$line" "$branch"
+  step "opening $line at ${next}-dev, from the $from capsule"
+  git switch -qc "$line" "$from"
   sed -i -E "s/^version = \"[0-9.]+\"/version = \"$next-dev\"/" Cargo.toml
   sed -i -E "s/^(rux-[a-z]+ = \{ version = )\"[0-9.]+\"/\1\"$next-dev\"/" Cargo.toml
   gate_version "$next-dev"
   git commit -aqm "Open the $next line
 
-Branched from the $tag capsule so the released tree is the ancestor of what
+Branched from the $from capsule so the released tree is the ancestor of what
 comes next, and so nothing here can reach back into the release."
   ok "$line is open; work for the next milestone goes here"
 }
