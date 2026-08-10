@@ -653,6 +653,15 @@ not a signal and the binding registry has nothing to look it up by. A component
 is a subtree, so it is bounded, but it is coarser than a signal change. Driven
 in `examples/component-state.rux`.
 
+**An instance lives as long as it is on screen.** A component closed over by an
+`r-if`, or a row that leaves an `r-for`, loses its state, and shows up new if it
+comes back. Every build walks the whole template, so what a build does not reach
+is what has gone. This is the same rule a route view already followed, and until
+now it was the *only* place that followed it: a hidden component used to keep
+its state for the life of the process and hand it back on the way in, and the
+instance map only ever grew. Anything meant to outlive being hidden belongs in a
+document signal.
+
 **Events.** A component tells its caller that something happened with `emit`,
 and the caller listens with `@event` on the tag:
 ```rux
@@ -815,8 +824,23 @@ the playground runs documents written by whoever is typing into them, and one of
 them containing a `<router>` must not be able to rewrite the address of the page
 hosting it.
 
+**Scroll restoration** is on, and `<router restore-scroll="false">` turns it off.
+The flag means **remember**, not *always restore*: a page you open starts at the
+top, and a page you go **back** to comes back where you left it. Which of the
+two you get is decided by how you arrived rather than by a preference, which is
+what every platform does. A flag meaning "always restore" would drop you into
+the middle of a page you had just opened for the first time, which reads as a
+bug. Turned off, every arrival is the top. A redirect through `replace` is an
+arrival, not a return, so it lands at the top too.
+
+Offsets are stored on the **history entry**, not on the route. A scroll region
+is identified by its position among the scrolling boxes in tree order, so those
+ids only line up when the tree has the same shape, and an entry is always one
+route: by the time the offsets are read back, the shape is the one they were
+recorded against.
+
 Not built: nested routes (a layout component with a `<router />` in its slot
-covers most of that), route guards, and scroll restoration.
+covers most of that), and route guards.
 
 ### Accessibility
 

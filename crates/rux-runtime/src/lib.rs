@@ -27,7 +27,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use rux_layout::Node as LayoutNode;
+use rux_layout::{Node as LayoutNode, Offset};
 use rux_parser::{Sfc, StyleInclude};
 use rux_reactive::Value;
 use rux_script::{Builder, Engine};
@@ -70,6 +70,15 @@ pub struct Document {
     effects: Vec<Effect>,
     /// Where navigation has been, and where it is in that. See [`History`].
     history: History,
+    /// The scroll offsets the next frame should adopt, set by a navigation and
+    /// taken by the shell.
+    ///
+    /// An empty vector means the top, which is what a *new* navigation gets: a
+    /// fresh page opens at its beginning. Back and forward carry the offsets
+    /// recorded on the entry being returned to. `None` means no navigation has
+    /// happened since the shell last looked, so whatever the user has scrolled
+    /// to stands.
+    pending_scroll: Option<Vec<Offset>>,
     pub root: LayoutNode,
 }
 
@@ -81,13 +90,32 @@ pub struct Document {
 /// express the same thing and make the truncation easy to get wrong.
 #[derive(Clone, Debug)]
 struct History {
-    entries: Vec<String>,
+    entries: Vec<Entry>,
     at: usize,
+}
+
+/// One place the user has been: where it was, and how far down it they were.
+///
+/// The scroll offsets belong to the *entry* rather than to the route, which is
+/// what makes restoring them simple. A scroll region is identified by its index
+/// among the scrollable boxes in tree order, so the ids only line up when the
+/// tree has the same shape; an entry is always one route, so by the time these
+/// are read back the shape is the one they were recorded against.
+#[derive(Clone, Debug)]
+struct Entry {
+    location: String,
+    scroll: Vec<Offset>,
+}
+
+impl Entry {
+    fn new(location: impl Into<String>) -> Self {
+        Self { location: location.into(), scroll: Vec::new() }
+    }
 }
 
 impl Default for History {
     fn default() -> Self {
-        Self { entries: vec![ROOT_PATH.to_string()], at: 0 }
+        Self { entries: vec![Entry::new(ROOT_PATH)], at: 0 }
     }
 }
 
@@ -102,12 +130,12 @@ impl History {
     /// odd host can report one, and it would match no route at all.
     fn starting_at(path: &str) -> Self {
         let path = if path.is_empty() { ROOT_PATH } else { path };
-        Self { entries: vec![path.to_string()], at: 0 }
+        Self { entries: vec![Entry::new(path)], at: 0 }
     }
 
     /// Where we are now. Never empty, so this always answers.
     fn current(&self) -> &str {
-        &self.entries[self.at]
+        &self.entries[self.at].location
     }
 
     /// Jump straight to an entry by index, the browser's model of Back and
@@ -133,7 +161,7 @@ impl History {
             return false;
         }
         self.entries.truncate(self.at + 1);
-        self.entries.push(path.to_string());
+        self.entries.push(Entry::new(path));
         self.at = self.entries.len() - 1;
         true
     }
@@ -148,7 +176,7 @@ impl History {
             return false;
         }
         self.entries.truncate(self.at + 1);
-        self.entries[self.at] = path.to_string();
+        self.entries[self.at] = Entry::new(path);
         true
     }
 
@@ -506,6 +534,7 @@ impl Document {
             computeds,
             effects,
             history: History::default(),
+            pending_scroll: None,
             root,
         };
         doc.init_reactive();
@@ -559,6 +588,7 @@ impl Document {
             computeds,
             effects,
             history: History::default(),
+            pending_scroll: None,
             root,
         };
         doc.init_reactive();
@@ -1039,6 +1069,8 @@ impl Document {
         if !self.history.push(path) {
             return false;
         }
+        // A page being opened, not returned to, so it opens at its beginning.
+        self.set_scroll_intent(None);
         self.show_current_route()
     }
 
@@ -1053,6 +1085,7 @@ impl Document {
     /// wherever the user had got to.
     pub fn start_at(&mut self, path: &str) -> bool {
         self.history = History::starting_at(path);
+        self.set_scroll_intent(None);
         self.show_current_route()
     }
 
@@ -1072,7 +1105,11 @@ impl Document {
     /// document moved; `false` means the index was out of range or already
     /// current, and the caller's history has drifted from this one.
     pub fn go_to(&mut self, index: usize) -> bool {
-        self.history.go_to(index) && self.show_current_route()
+        if !self.history.go_to(index) {
+            return false;
+        }
+        self.restore_scroll_here();
+        self.show_current_route()
     }
 
     /// Go to `path` *instead of* where we are, overwriting the current entry.
@@ -1084,17 +1121,74 @@ impl Document {
         if !self.history.replace(path) {
             return false;
         }
+        // Still an arrival rather than a return: a redirect lands at the top.
+        self.set_scroll_intent(None);
         self.show_current_route()
     }
 
     /// Step back through the history. Returns whether there was anywhere to go.
     pub fn back(&mut self) -> bool {
-        self.history.back() && self.show_current_route()
+        if !self.history.back() {
+            return false;
+        }
+        self.restore_scroll_here();
+        self.show_current_route()
     }
 
     /// Step forward again. Returns whether there was anywhere to go.
     pub fn forward(&mut self) -> bool {
-        self.history.forward() && self.show_current_route()
+        if !self.history.forward() {
+            return false;
+        }
+        self.restore_scroll_here();
+        self.show_current_route()
+    }
+
+    /// Ask for the offsets recorded on the entry just arrived at. Only called
+    /// after a step through the history, which is the one way to arrive
+    /// somewhere you have already been.
+    fn restore_scroll_here(&mut self) {
+        let recorded = self.history.entries[self.history.at].scroll.clone();
+        self.set_scroll_intent(Some(recorded));
+    }
+
+    /// Remember how far down the current page the user is.
+    ///
+    /// Called once a frame by the shell, which owns the offsets, rather than at
+    /// each place that could navigate: a `navigate()` inside a handler moves the
+    /// history before the shell hears about it, so the position has to have been
+    /// recorded already. A scroll causes a repaint, so the last frame's record is
+    /// current.
+    pub fn record_scroll(&mut self, offsets: &[Offset]) {
+        let entry = &mut self.history.entries[self.history.at];
+        if entry.scroll != offsets {
+            entry.scroll = offsets.to_vec();
+        }
+    }
+
+    /// The offsets the next frame should adopt, if a navigation has chosen some.
+    ///
+    /// Empty means the top. Taking it clears it, so a frame that has already
+    /// obeyed does not keep being told.
+    pub fn take_scroll(&mut self) -> Option<Vec<Offset>> {
+        self.pending_scroll.take()
+    }
+
+    /// Decide where the page that is arriving should sit.
+    ///
+    /// The flag means *remember*, not *always restore*: on a new navigation you
+    /// go to the top, and only back or forward puts you back where you were.
+    /// Which of the two it is comes from **how you arrived**, not from a
+    /// preference, and that is what every platform does. A flag meaning "always
+    /// restore" would drop you into the middle of a page you had just opened
+    /// for the first time, which reads as a bug rather than a feature.
+    fn set_scroll_intent(&mut self, restored: Option<Vec<Offset>>) {
+        let remembering = rux_style::restore_scroll(&self.sfc.template);
+        self.pending_scroll = match restored {
+            Some(offsets) if remembering => Some(offsets),
+            // Turned off, or a page being opened rather than returned to.
+            _ => Some(Vec::new()),
+        };
     }
 
     /// Move the document to whatever the history now points at.
@@ -1108,6 +1202,11 @@ impl Document {
         // every router does, and the alternative here would be accidental:
         // instance state is keyed by template position and would otherwise
         // simply still be sitting there.
+        //
+        // The build's own pruning does not cover this case and does not replace
+        // it: going from `/user/7` to `/user/12` expands the *same* view at the
+        // same template position, so the build reaches that instance and keeps
+        // it. Only the recorded route can tell the two visits apart.
         self.instances.retain(|_, i| i.route.as_deref().is_none_or(|r| r == path));
         let moved = self.publish_route(&location);
         if !moved {
@@ -2619,6 +2718,71 @@ mod tests {
         assert!(find_text(&doc.root, "q is x&y z"), "and so did the query: {:?}", text_of(&doc.root));
     }
 
+    fn at_y(y: f32) -> Vec<Offset> {
+        vec![Offset { x: 0.0, y }]
+    }
+
+    /// The flag means *remember*, not *always restore*. Which of the two you
+    /// get is decided by how you arrived: a page you open starts at the top, a
+    /// page you go back to comes back where you left it. Always restoring would
+    /// drop you into the middle of a page you had just opened for the first
+    /// time, which reads as a bug.
+    #[test]
+    fn back_returns_to_where_the_page_was_left() {
+        let mut doc = router_app();
+        doc.record_scroll(&at_y(120.0));
+
+        doc.navigate("/settings");
+        assert_eq!(doc.take_scroll(), Some(Vec::new()), "a page being opened starts at the top");
+        doc.record_scroll(&at_y(40.0));
+
+        doc.back();
+        assert_eq!(doc.take_scroll(), Some(at_y(120.0)), "and one returned to does not");
+        doc.forward();
+        assert_eq!(doc.take_scroll(), Some(at_y(40.0)), "forward is a return too");
+    }
+
+    /// Nothing to obey when nothing navigated, or every frame would drag the
+    /// page back to wherever the last navigation put it.
+    #[test]
+    fn scrolling_alone_asks_for_nothing() {
+        let mut doc = router_app();
+        doc.navigate("/settings");
+        assert!(doc.take_scroll().is_some(), "the navigation spoke");
+        doc.record_scroll(&at_y(80.0));
+        assert_eq!(doc.take_scroll(), None, "and then stopped speaking");
+    }
+
+    /// Turned off, every arrival is the top, including a return.
+    #[test]
+    fn restore_scroll_false_always_starts_at_the_top() {
+        let mut doc = with_router(
+            "<template><screen>\
+               <router restore-scroll=\"false\">\
+                 <route path=\"/\" view=\"home\" />\
+                 <route path=\"/settings\" view=\"settings\" />\
+                 <route fallback view=\"missing\" />\
+               </router>\
+             </screen></template>\n\
+             <script>\nuse components::home;\nuse components::settings;\n\
+             use components::missing;\n</script>",
+        );
+        doc.record_scroll(&at_y(150.0));
+        doc.navigate("/settings");
+        assert_eq!(doc.take_scroll(), Some(Vec::new()));
+        doc.back();
+        assert_eq!(doc.take_scroll(), Some(Vec::new()), "a return is the top too, when off");
+    }
+
+    /// A redirect is an arrival, not a return, so it lands at the top.
+    #[test]
+    fn a_replace_lands_at_the_top() {
+        let mut doc = router_app();
+        doc.record_scroll(&at_y(90.0));
+        doc.replace("/settings");
+        assert_eq!(doc.take_scroll(), Some(Vec::new()));
+    }
+
     /// A trailing slash is not a different path. Anyone typing one by hand
     /// produces both spellings and means the same place.
     #[test]
@@ -2799,6 +2963,57 @@ mod tests {
         assert!(tap(&mut doc, &card), "the handler wrote a document signal");
         assert_eq!(doc.value_in("theme", None), "dark");
         assert!(find_text(&doc.root, "saw dark"), "{:?}", text_of(&doc.root));
+    }
+
+    /// A component that leaves the screen leaves the instance map with it.
+    ///
+    /// Nothing said an instance had gone before this: the router's was the only
+    /// removal anywhere, so an `r-if` that closed over a component kept its
+    /// state for the life of the process and handed it back on the way in. The
+    /// map grew and never shrank, and a hidden component was quietly different
+    /// from a route view, which does start fresh.
+    #[test]
+    fn hiding_a_component_drops_its_state() {
+        let mut doc = with_component(
+            "<template><view @tap=\"count = count + 1\"><text>n {{ count }}</text></view>\
+             </template>\n\
+             <script>\nlet count = signal(0);\n</script>",
+            "<template><screen><card r-if=\"shown\" /></screen></template>\n\
+             <script>\nuse components::card;\nlet shown = signal(true);\n</script>",
+        );
+        let card = doc.root.children[0].clone();
+        tap(&mut doc, &card);
+        assert!(find_text(&doc.root, "n 1"), "it counted: {:?}", text_of(&doc.root));
+
+        doc.apply_handler("shown = false");
+        assert!(doc.instances.is_empty(), "gone from the map: {:?}", doc.instances.keys());
+
+        doc.apply_handler("shown = true");
+        assert!(
+            find_text(&doc.root, "n 0"),
+            "and comes back new, not where it was left: {:?}",
+            text_of(&doc.root)
+        );
+    }
+
+    /// The same for a row of a list, whose instance is keyed by its `r-key`.
+    /// Without this a long-lived list leaks one instance per row ever shown.
+    #[test]
+    fn a_row_that_goes_away_takes_its_instance_with_it() {
+        let mut doc = with_component(
+            "<template><view><text>{{ label }}</text></view></template>\n\
+             <script>\nlet seen = signal(0);\n</script>",
+            "<template><screen>\
+               <card r-for=\"row in rows\" r-key=\"row.id\" :label=\"row.id\" />\
+             </screen></template>\n\
+             <script>\nuse components::card;\n\
+             let rows = signal([#{ id: \"a\" }, #{ id: \"b\" }, #{ id: \"c\" }]);\n</script>",
+        );
+        assert_eq!(doc.instances.len(), 3, "one per row: {:?}", doc.instances.keys());
+
+        doc.apply_handler("rows = [#{ id: \"a\" }]");
+        assert_eq!(doc.instances.len(), 1, "two rows left, so two instances did: {:?}", doc.instances.keys());
+        assert!(find_text(&doc.root, "a"), "{:?}", text_of(&doc.root));
     }
 
     /// The whole point of a slot: a component can wrap markup it never saw.

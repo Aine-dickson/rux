@@ -27,11 +27,15 @@
   .heading { color: #cdd6f4; font-size: 20px; font-weight: 700; }
   .lead { color: #9399b2; font-size: 13px; }
 
+  /* Capped and scrolling on purpose: scroll restoration cannot be seen on a
+     page that fits. Scroll down, open a member, come back. */
   .rows {
     display: flex;
     flex-direction: column;
     gap: 8px;
     width: 100%;
+    max-height: 220px;
+    overflow-y: auto;
   }
 
   .row {

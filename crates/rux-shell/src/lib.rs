@@ -2720,6 +2720,14 @@ impl App {
         let scale = state.window.scale_factor();
         let logical = (width as f64 / scale, height as f64 / scale);
 
+        // A navigation has chosen where the arriving page should sit: the top
+        // for one being opened, wherever it was left for one being returned to.
+        // Taken before the layout so this frame is already laid out there,
+        // rather than drawn in the wrong place and corrected on the next one.
+        if let Some(restored) = document.take_scroll() {
+            *offsets = restored;
+        }
+
         // Layout (text sized via the engine's measure), then paint. Cache the
         // hit regions for tap dispatch.
         let mut layout = {
@@ -2742,6 +2750,10 @@ impl App {
         for region in &layout.scrolls {
             offsets[region.id] = offsets[region.id].clamp_to(region.max);
         }
+        // Remember where this page is, so returning to it can come back here.
+        // Recorded once a frame rather than at each place that scrolls, and
+        // after the clamp, so what is stored is a position that exists.
+        document.record_scroll(offsets);
 
         // Keep the focused single-line input's caret inside its box.
         //

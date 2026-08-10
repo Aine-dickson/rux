@@ -326,6 +326,14 @@ pub struct Instance {
     /// outlive a visit belongs in a document signal, which is the same rule
     /// components already follow for anything the caller needs to see.
     pub route: Option<String>,
+    /// Whether the build now running has expanded this instance.
+    ///
+    /// Every build walks the whole template, including the one a reconcile does
+    /// before splicing, so an instance the current build never reached is one
+    /// that is no longer on screen: an `r-if` closed over it, or its `r-for` row
+    /// went away. Cleared at the start of a build and checked at the end, which
+    /// is the only moment both facts are known.
+    pub touched: bool,
 }
 
 /// Every live component instance, by identity. Owned by the runtime so it
@@ -864,6 +872,15 @@ pub fn build_styled_tree_stateful(
         })
         .collect();
 
+    // An instance lives as long as it is on screen, and until now nothing ever
+    // said it had left: the only removal anywhere was the router's, so an
+    // `r-if` that closed over a component kept its state forever and gave it
+    // back on the way in, and the map only ever grew. A build walks the whole
+    // template, so what it does not reach is what is gone.
+    for instance in instances.values_mut() {
+        instance.touched = false;
+    }
+
     let mut ancestors: Vec<AncNode> = Vec::new();
     let locals = Locals::new();
     let mut reg = BindingRegistry::default();
@@ -891,6 +908,7 @@ pub fn build_styled_tree_stateful(
         None, // and is not inside any row
     );
     link_labels(&mut node);
+    instances.retain(|_, instance| instance.touched);
     Ok((node, reg))
 }
 
@@ -2671,6 +2689,7 @@ fn expand_component(
         state: engine.init_scope(&component.script),
         ..Instance::default()
     });
+    entry.touched = true;
     entry.props = props.clone();
     // Listeners and the calling instance are the caller's, so like props they
     // are re-derived on every build rather than kept.
@@ -2789,6 +2808,18 @@ pub fn named_routes(template: &Element) -> Vec<(String, String)> {
         .filter(|r| r.tag == "route")
         .filter_map(|r| Some((r.attr("name")?.to_string(), r.attr("path")?.to_string())))
         .collect()
+}
+
+/// Whether the router remembers where each page was scrolled to.
+///
+/// `<router restore-scroll="false">` turns it off; anything else, including no
+/// attribute at all, leaves it on. On by default because remembering is what a
+/// user expects from Back, and a document with no `<router>` is unaffected
+/// either way.
+pub fn restore_scroll(template: &Element) -> bool {
+    find_router(template)
+        .and_then(|r| r.attr("restore-scroll"))
+        .is_none_or(|v| v.trim() != "false")
 }
 
 /// Parse `r-for="item in items"` into `(binding, collection_expr)`.

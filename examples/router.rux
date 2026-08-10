@@ -95,9 +95,18 @@
   use components::crew_detail;
   use components::lost_page;
 
+  // Long enough that the list scrolls, which is the only way to see that Back
+  // returns you to where you were rather than to the top.
   let crew = signal([
-      #{ id: "ada",   name: "Ada",   job: "navigator" },
-      #{ id: "grace", name: "Grace", job: "engineer" },
-      #{ id: "hedy",  name: "Hedy",  job: "signals" },
+      #{ id: "ada",     name: "Ada",     job: "navigator" },
+      #{ id: "grace",   name: "Grace",   job: "engineer" },
+      #{ id: "hedy",    name: "Hedy",    job: "signals" },
+      #{ id: "katherine", name: "Katherine", job: "trajectories" },
+      #{ id: "margaret",  name: "Margaret",  job: "onboard software" },
+      #{ id: "annie",   name: "Annie",   job: "spectra" },
+      #{ id: "jean",    name: "Jean",    job: "compiler" },
+      #{ id: "evelyn",  name: "Evelyn",  job: "ballistics" },
+      #{ id: "mary",    name: "Mary",    job: "aeronautics" },
+      #{ id: "dorothy", name: "Dorothy", job: "supervisor" },
   ]);
 </script>
