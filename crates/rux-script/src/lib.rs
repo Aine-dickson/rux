@@ -12,7 +12,7 @@
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 
-use rhai::{Dynamic, Engine as RhaiEngine, Module, Scope, AST};
+use rhai::{Dynamic, Engine as RhaiEngine, ImmutableString, Module, Scope, AST};
 use rux_reactive::{Value, Warning};
 
 thread_local! {
@@ -48,6 +48,20 @@ impl Builder {
                 Ok(i) => Dynamic::from(i as f64),
                 Err(_) => x,
             }
+        });
+        // Numbers become text the same way everywhere.
+        //
+        // Every number in Rux is an f64, so rhai renders a whole one as "32.0"
+        // while `{{ }}` renders it as "32": the same value spelled two ways in
+        // one window, depending on whether it went through string concatenation
+        // on the way. These overloads point rhai at the same rule `Value`
+        // displays with, so `"over by " + total` and `{{ total }}` agree.
+        engine.register_fn("to_string", |n: f64| Value::Number(n).to_display());
+        engine.register_fn("+", |a: ImmutableString, b: f64| {
+            format!("{a}{}", Value::Number(b).to_display())
+        });
+        engine.register_fn("+", |a: f64, b: ImmutableString| {
+            format!("{}{b}", Value::Number(a).to_display())
         });
         // Record every variable read while dependency-tracking is active, then
         // fall through (`Ok(None)`) to normal scope resolution. `on_var` is
@@ -603,11 +617,16 @@ mod tests {
             e.eval_display("`background: ${c}`", &[("c".into(), Value::Text("teal".into()))]),
             "background: teal"
         );
-        // WRINKLE: a whole-number signal renders through rhai's float default
-        // (`82.0`), NOT Rux's `to_display` (`82`), inside a backtick string, signals
-        // are stored as f64. Valid CSS (`82.0px` works) but not pretty; interpolate
-        // strings, or convert (`${level.to_int()}`), when you need `82`.
-        assert_eq!(e.eval_display("`level is ${level}`", &[]), "level is 82.0");
+        // A whole-number signal renders as `82`, not rhai's float default
+        // `82.0`, because `to_string` is overridden to Rux's own rule. It used
+        // to differ, so `${level}px` in a `:style` and `{{ level }}` in text
+        // showed the same value two ways in one window.
+        assert_eq!(e.eval_display("`level is ${level}`", &[]), "level is 82");
+        // A fraction keeps its fraction; only the empty tail goes.
+        assert_eq!(
+            e.eval_display("`half is ${h}`", &[("h".into(), Value::Number(2.5))]),
+            "half is 2.5"
+        );
         // The read is tracked, so a `:style` reading a signal reconciles on change.
         let (_, deps) = e.eval_value_tracked("`level: ${level}`", &[]);
         assert!(deps.contains("level"));

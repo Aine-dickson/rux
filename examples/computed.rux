@@ -71,7 +71,9 @@
     border-radius: 10px;
   }
 
-  .line { display: flex; justify-content: space-between; }
+  /* `width: 100%` because space-between needs free space to distribute, and a
+     hugging box has none. */
+  .line { display: flex; justify-content: space-between; width: 100%; }
   .key { color: #9399b2; font-size: 13px; }
   .value { color: #cdd6f4; font-size: 13px; }
   .total .key, .total .value { color: #a6e3a1; font-size: 16px; font-weight: 700; }

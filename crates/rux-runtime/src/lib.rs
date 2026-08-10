@@ -1615,6 +1615,33 @@ mod tests {
         assert_eq!(doc.value_in("name", None), awkward);
     }
 
+    /// A number reads the same whether it went through `{{ }}` or through
+    /// string concatenation in a handler. Every Rux number is an f64, so rhai
+    /// rendered a whole one as "32.0" beside the same value shown as "32" a
+    /// line above it.
+    #[test]
+    fn numbers_render_the_same_in_text_and_in_script() {
+        let doc = Document::from_source(
+            "<template><screen>\
+               <text>{{ total }}</text>\
+               <text>{{ \"total is \" + total }}</text>\
+               <text>{{ half }}</text>\
+               <text>{{ \"half is \" + half }}</text>\
+             </screen></template>
+             <script>\n\
+               let total = signal(32);\n\
+               let half = signal(2.5);\n\
+             </script>",
+        )
+        .expect("load");
+        let shown = text_of(&doc.root);
+        assert!(shown.contains(&"32".to_string()), "{shown:?}");
+        assert!(shown.contains(&"total is 32".to_string()), "{shown:?}");
+        // A fraction still shows its fraction; only the ".0" tail goes.
+        assert!(shown.contains(&"2.5".to_string()), "{shown:?}");
+        assert!(shown.contains(&"half is 2.5".to_string()), "{shown:?}");
+    }
+
     /// A computed is derived state: it is written once, read anywhere, and
     /// keeps itself current. Before this the only "computed" was a `{{ }}`
     /// expression, so the same derivation was retyped at every use.
