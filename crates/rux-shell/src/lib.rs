@@ -387,8 +387,15 @@ fn scrollbar_paints(scrolls: &[ScrollRegion], offsets: &[Offset]) -> Vec<Paint> 
 }
 
 /// A 2px focus ring just outside the focused element's box.
-fn focus_ring(item: &FocusItem) -> Vec<Paint> {
-    vec![Paint::Rect(PaintRect {
+///
+/// `within` is the scroller the item sits in, if any. The ring is painted as
+/// its own scene after the document's, so it never passes through the
+/// `PushClip` a scroller emits around its children; without clipping it here, a
+/// ring on a row scrolled out of a list draws over whatever is above the list.
+/// The ring is allowed the 2px it sits outside its element by, so a focused row
+/// flush with the top of its container still shows one.
+fn focus_ring(item: &FocusItem, within: Option<&ScrollRegion>) -> Vec<Paint> {
+    let ring = Paint::Rect(PaintRect {
         x: item.x - 2.0,
         y: item.y - 2.0,
         width: item.width + 4.0,
@@ -397,7 +404,18 @@ fn focus_ring(item: &FocusItem) -> Vec<Paint> {
         radius: [7.0; 4],
         border_width: 2.0,
         border_color: Some(Rgba::new(0.54, 0.71, 0.98, 1.0)), // #89b4fa
-    })]
+    });
+    let Some(r) = within else { return vec![ring] };
+    // Scrolled entirely out of view: draw nothing rather than a ring clipped to
+    // a sliver at the edge, which reads as a rendering fault.
+    if item.y + item.height < r.y || item.y > r.y + r.height {
+        return Vec::new();
+    }
+    vec![
+        Paint::PushClip { x: r.x - 2.0, y: r.y - 2.0, width: r.width + 4.0, height: r.height + 4.0, radius: [0.0; 4] },
+        ring,
+        Paint::PopClip,
+    ]
 }
 
 /// Paint items for an open dropdown: a single floating panel with a shadow, the
@@ -2801,7 +2819,8 @@ impl App {
 
         // A keyboard focus ring, drawn over the content (but under a dropdown).
         if let Some(item) = focus_index.and_then(|i| layout.focusables.get(i)) {
-            let ring = rux_paint::build_scene(&focus_ring(item), text, images, false);
+            let within = item.scroll.and_then(|s| layout.scrolls.get(s));
+            let ring = rux_paint::build_scene(&focus_ring(item, within), text, images, false);
             state.scene.append(&ring, Some(Affine::scale(scale)));
         }
 
@@ -2870,6 +2889,29 @@ impl App {
 
         *hits = layout.hits;
         *focuses = layout.focuses;
+        // A field that is no longer in the tree must not stay focused. Nothing
+        // dropped focus when its input went away: only a web source reload ever
+        // cleared it, so navigating off a page you had been typing on left the
+        // shell believing that field was still there.
+        //
+        // It shows up worst on the web, where the hidden `<input>` holds real
+        // DOM focus and a phone's on-screen keyboard would stay up over the
+        // page you just moved to. Identity is `(model, row)`, the same pair the
+        // caret uses, or one row of a list would answer for another.
+        if let Some(model) = focused.clone() {
+            let still_here = focuses
+                .iter()
+                .any(|f| f.model == model && f.row.as_deref() == focused_row.as_deref());
+            if !still_here {
+                *focused = None;
+                *focused_row = None;
+                *text_scroll = 0.0;
+                #[cfg(target_arch = "wasm32")]
+                if let Some(el) = web_ime_element() {
+                    let _ = el.blur();
+                }
+            }
+        }
         *selects = layout.selects;
         // Keep the focus index in range if the new layout has fewer focusables.
         if focus_index.map(|i| i >= layout.focusables.len()).unwrap_or(false) {
@@ -4195,6 +4237,65 @@ mod tests {
 
     fn warned(message: &str) -> Diagnostics {
         Diagnostics { warnings: vec![Warning::new(message)], ..Diagnostics::default() }
+    }
+
+    fn focusable(y: f32, scroll: Option<usize>) -> FocusItem {
+        FocusItem {
+            x: 40.0,
+            y,
+            width: 200.0,
+            height: 50.0,
+            kind: FocusKind::Activate { on_tap: String::new(), instance: None },
+            scroll,
+        }
+    }
+
+    fn scroller() -> ScrollRegion {
+        ScrollRegion {
+            id: 0,
+            x: 30.0,
+            y: 100.0,
+            width: 220.0,
+            height: 220.0,
+            content_width: 220.0,
+            content_height: 600.0,
+            max: Offset { x: 0.0, y: 380.0 },
+        }
+    }
+
+    /// Outside a scroller there is nothing to clip against, so the ring is one
+    /// plain rectangle, as it always was.
+    #[test]
+    fn a_focus_ring_outside_a_scroller_is_unclipped() {
+        assert_eq!(focus_ring(&focusable(150.0, None), None).len(), 1);
+    }
+
+    /// The ring is painted as its own scene after the document's, so it never
+    /// passes through the clip a scroller puts around its children. It has to
+    /// carry its own, or a ring on a row scrolled up out of a list draws over
+    /// whatever sits above the list. That is a real defect, seen in
+    /// `examples/router.rux`: the crew list drew a ring over the paragraph
+    /// above it.
+    #[test]
+    fn a_focus_ring_inside_a_scroller_is_clipped_to_it() {
+        let paints = focus_ring(&focusable(150.0, Some(0)), Some(&scroller()));
+        assert_eq!(paints.len(), 3, "a clip, the ring, and the matching pop");
+        assert!(matches!(paints[0], Paint::PushClip { .. }), "{:?}", paints[0]);
+        assert!(matches!(paints[2], Paint::PopClip), "{:?}", paints[2]);
+    }
+
+    /// Scrolled fully out of view it draws nothing at all. A ring clipped to a
+    /// sliver at the container's edge reads as a rendering fault rather than as
+    /// a focused element that happens to be off-screen.
+    #[test]
+    fn a_focus_ring_scrolled_out_of_view_is_not_drawn() {
+        let above = focus_ring(&focusable(-90.0, Some(0)), Some(&scroller()));
+        assert!(above.is_empty(), "scrolled off the top: {above:?}");
+        let below = focus_ring(&focusable(400.0, Some(0)), Some(&scroller()));
+        assert!(below.is_empty(), "scrolled off the bottom: {below:?}");
+        // And one straddling the edge is still drawn, clipped.
+        let edge = focus_ring(&focusable(90.0, Some(0)), Some(&scroller()));
+        assert_eq!(edge.len(), 3, "partly visible, so still drawn: {edge:?}");
     }
 
     /// The overlay covers the app it is describing, so it has to be dismissable.

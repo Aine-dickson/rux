@@ -899,6 +899,16 @@ pub struct FocusItem {
     pub width: f32,
     pub height: f32,
     pub kind: FocusKind,
+    /// The scroller this item sits inside, if any, as an index into
+    /// [`Layout::scrolls`].
+    ///
+    /// The focus ring is painted by the shell as its own scene *after* the
+    /// document's, so it never passes through the `PushClip` a scroller emits
+    /// around its children. Without knowing the enclosing scroller, a ring on a
+    /// row scrolled out of a list draws over whatever is above the list. This
+    /// is the enclosing one, not the item's own: a scroller that is itself
+    /// focusable is clipped by its parent, not by itself.
+    pub scroll: Option<usize>,
 }
 
 impl FocusItem {
@@ -1414,6 +1424,9 @@ fn collect(
     access: &[(NodeId, Access, Option<String>)],
     offsets: &[Offset],
     vp: (f32, f32),
+    // The nearest scroller above this node, so a focus ring can be clipped to
+    // the box that clips everything else in it.
+    inside_scroll: Option<usize>,
     out: &mut Layout,
 ) {
     let layout = tree.layout(id).expect("layout");
@@ -1604,6 +1617,7 @@ fn collect(
                     row: bound.row.clone(),
                     options: options.clone(),
                 },
+                scroll: inside_scroll,
             });
         } else {
             // A text/textarea input: its value is rendered by its single text
@@ -1654,6 +1668,7 @@ fn collect(
                     multiline: bound.multiline,
                     text,
                 },
+                scroll: inside_scroll,
             });
         }
     } else if let Some((_, handler, _, instance)) = handlers.iter().find(|(nid, ..)| *nid == id) {
@@ -1665,6 +1680,7 @@ fn collect(
             width: fw,
             height: fh,
             kind: FocusKind::Activate { on_tap: handler.clone(), instance: instance.clone() },
+            scroll: inside_scroll,
         });
     }
 
@@ -1682,8 +1698,12 @@ fn collect(
     // A scroller shifts its children by the current offset and registers itself
     // so the wheel, the scrollbars and the keyboard can find it.
     let mut shift = Offset::default();
+    // What the children are clipped by: this box if it scrolls, otherwise
+    // whatever was clipping us.
+    let mut child_scroll = inside_scroll;
     if scrolls.contains(&id) {
         let sid = out.scrolls.len();
+        child_scroll = Some(sid);
         let max = Offset {
             x: (layout.content_size.width - layout.size.width).max(0.0),
             y: (layout.content_size.height - layout.size.height).max(0.0),
@@ -1719,6 +1739,7 @@ fn collect(
             access,
             offsets,
             vp,
+            child_scroll,
             out,
         );
     }
@@ -1863,7 +1884,7 @@ pub fn layout_scrolled(
     let mut out = Layout::default();
     collect(
         &tree, root_id, 0.0, 0.0, &paint, &handlers, &models, &focus_labels, &hidden, &opacities,
-        &scrolls, &transforms, &states, &access, offsets, vp, &mut out,
+        &scrolls, &transforms, &states, &access, offsets, vp, None, &mut out,
     );
     out
 }

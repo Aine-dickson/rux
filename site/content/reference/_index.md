@@ -599,6 +599,13 @@ scrollbar hover/fade states, no `scrollbar-width`/`scrollbar-color`, no
 Component instances are isolated (only props are visible inside). Their CSS styles
 their own subtree. Editing a component hot-reloads.
 
+**Components are a desktop feature today.** `use components::stat;` names a
+*file*, and the web build has no filesystem to read it from: a document run in
+a browser is handed no components, so every component tag renders nothing and
+every `<route>` warns that its view is not imported. Bundling components into a
+web build is `rux build`'s job. Nothing about the component model itself is
+web-specific, so this is a packaging gap rather than a design one.
+
 **Slots.** A `<slot />` in a component's template renders whatever the caller
 wrote between the tags, so a component can wrap markup it has never seen:
 ```xml
@@ -833,6 +840,15 @@ Passing no base leaves the URL untouched, and that is the default on purpose:
 the playground runs documents written by whoever is typing into them, and one of
 them containing a `<router>` must not be able to rewrite the address of the page
 hosting it.
+
+> **A `<router>` cannot render a route view on the web yet.** A route's view is
+> a component, a component is loaded from a file, and a browser has no
+> filesystem: the web entry point is handed no components at all, so every
+> `<route>` warns that its view is not imported and the router renders nothing.
+> The URL half above is built and works, and `route` is an ordinary signal, so
+> `r-if="route == &quot;/about&quot;"` does work on the web today. What is
+> missing is the bundling of components into a web build, which is what
+> `rux build` is for. Until then, treat the router as desktop-only.
 
 **Scroll restoration** is on, and `<router restore-scroll="false">` turns it off.
 The flag means **remember**, not *always restore*: a page you open starts at the
