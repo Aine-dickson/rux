@@ -98,9 +98,16 @@ relock() {
 }
 
 gate_tests() {
-  cargo test --workspace >/dev/null 2>&1 || die "cargo test --workspace is not green"
+  # Output is kept and shown on failure. Swallowing it turned a one-off cold
+  # -worktree hiccup into "not green" with nothing to act on, which is worse
+  # than the failure itself on a release morning.
+  local out
+  out="$(cargo test --workspace 2>&1)" || {
+    echo "$out" | grep -E '^(error|test result: FAILED|---- .* stdout)' -A 6 | head -40 >&2
+    die "cargo test --workspace is not green"
+  }
   local count
-  count="$(cargo test --workspace 2>&1 | grep -cE '^test .* ok$' || true)"
+  count="$(echo "$out" | grep -cE '^test .* ok$' || true)"
   ok "cargo test --workspace green ($count tests)"
 }
 
@@ -109,8 +116,11 @@ gate_wasm() {
   # the suite compiles for wasm32, so nothing else notices.
   rustup target list --installed | grep -q wasm32-unknown-unknown \
     || { echo "   -- wasm32 target not installed, skipping"; return; }
-  cargo check -p rux-web --target wasm32-unknown-unknown >/dev/null 2>&1 \
-    || die "rux-web does not compile for wasm32; the web build is part of the release"
+  local out
+  out="$(cargo check -p rux-web --target wasm32-unknown-unknown 2>&1)" || {
+    echo "$out" | grep '^error' -A 6 | head -30 >&2
+    die "rux-web does not compile for wasm32; the web build is part of the release"
+  }
   ok "the web build compiles"
 }
 
