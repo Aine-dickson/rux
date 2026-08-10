@@ -604,7 +604,8 @@ wrote between the tags, so a component can wrap markup it has never seen:
 </panel>
 ```
 Slot content belongs to the **caller**: it reads the caller's signals (the
-component cannot see them), is styled by the caller's stylesheet, and its
+component cannot see the caller's own instance state), is styled by the
+caller's stylesheet, and its
 handlers run in the caller's scope. Only its position comes from the component.
 An unfilled slot falls back to its own children, as in HTML. A `<slot>` emits no
 box of its own, so a component adds no wrapper nobody wrote.
@@ -620,10 +621,25 @@ per instance**, so three `<counter>` elements are three counts:
 <view @tap="count = count + step"><text>{{ count }}</text></view>
 <script> let count = signal(0); </script>   <!-- private to each instance -->
 ```
-The isolation goes both ways: a component cannot read the document's signals
-(so it is not coupled to the app it was first written for), and the document
-cannot read a component's. The same name on both sides is two different
-variables.
+The isolation is about **declarations, and it runs one way**. A component's
+`<script>` executes in a scope of its own, so its `let`s are private: the
+document cannot read them, and the same name declared on both sides is two
+different variables, the component's winning inside it.
+
+What the component's **template and handlers** see is wider. They are evaluated
+against the document's scope with the instance's own names pushed on top, so a
+document signal the component does not shadow is visible to `{{ }}` and can be
+assigned in a `@tap`:
+```rux
+<!-- components/card.rux: `theme` is the document's, not this file's -->
+<view @tap="theme = &quot;dark&quot;"><text>theme is {{ theme }}</text></view>
+```
+This is deliberate and the router depends on it: `{{ route }}` works inside a
+route view, which is a component. It is also the coupling a component author
+should be aware of, since a component reading a name it never declared will only
+work in an app that happens to declare it. Anything a component means to be told
+should come in as a **prop**, and anything it means to report should go out as an
+**event**. Reaching for a document signal by name is available, not recommended.
 
 Only `fn` definitions are shared with the document's engine, because a function
 is code and state is not. A handler carries its instance from the cascade to the

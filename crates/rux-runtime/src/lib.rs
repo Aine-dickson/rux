@@ -2364,6 +2364,34 @@ mod tests {
         assert_eq!(doc.value_in("count", None), "", "{:?}", text_of(&doc.root));
     }
 
+    /// The isolation is one-directional, and the docs claimed otherwise. A
+    /// component's *script* runs in a fresh scope, so its `let`s are private.
+    /// Its template and handlers do not: they run against the document's scope
+    /// with the instance's names pushed on top, so an un-shadowed document
+    /// signal is both readable and writable from inside. The router depends on
+    /// it (`{{ route }}` inside a route view).
+    #[test]
+    fn a_component_reads_and_writes_an_unshadowed_document_signal() {
+        let mut doc = with_component(
+            "<template><view>\
+               <text>saw {{ theme }}</text>\
+               <view @tap=\"theme = &quot;dark&quot;\"><text>go</text></view>\
+             </view></template>\n\
+             <script>\nlet count = signal(0);\n</script>",
+            "<template><screen><card /></screen></template>\n\
+             <script>\nuse components::card;\nlet theme = signal(\"light\");\n</script>",
+        );
+        assert!(
+            find_text(&doc.root, "saw light"),
+            "the document's signal is visible inside: {:?}",
+            text_of(&doc.root)
+        );
+        let card = doc.root.children[0].clone();
+        assert!(tap(&mut doc, &card), "the handler wrote a document signal");
+        assert_eq!(doc.value_in("theme", None), "dark");
+        assert!(find_text(&doc.root, "saw dark"), "{:?}", text_of(&doc.root));
+    }
+
     /// The whole point of a slot: a component can wrap markup it never saw.
     /// Before this, the children written between the tags were silently thrown
     /// away, so a component could only ever be a fixed shape.
@@ -2384,8 +2412,8 @@ mod tests {
         );
     }
 
-    /// Slot content is the caller's, so it reads the caller's signals. The
-    /// component cannot see them, and does not need to.
+    /// Slot content is the caller's, so it is evaluated in the caller's scope,
+    /// which includes the caller's own instance state the component cannot see.
     #[test]
     fn slot_content_reads_the_callers_scope() {
         let doc = with_component(

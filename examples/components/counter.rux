@@ -43,7 +43,8 @@
 
 <script>
   // This is the component's own state. Each <counter> on the page gets its own
-  // copy: nothing here is visible to the document, and the document's signals
-  // are not visible here.
+  // copy, and nothing declared here is visible to the document. The reverse is
+  // not true: a document signal this file does not shadow can be read, and
+  // written, from the template and the handlers above.
   let count = signal(0);
 </script>

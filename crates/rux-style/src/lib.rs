@@ -401,7 +401,8 @@ fn component_statements(script: &str) -> String {
 /// call site, and the context they were written in.
 ///
 /// The context travels because slot content belongs to the *caller*, not to the
-/// component. It reads the caller's signals (the component cannot see them) and
+/// component. It reads the caller's scope, including the caller's own instance
+/// state, which the component has no access to, and
 /// is styled by the caller's stylesheet (the component's rules are written for
 /// markup the component itself wrote). Only its position in the tree comes from
 /// the component.
