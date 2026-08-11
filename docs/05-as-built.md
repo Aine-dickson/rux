@@ -364,11 +364,25 @@ plain `color: #ff0000` would fall back to the default.
 - `@tap="…"` handlers.
 - `host::fn()` calls into compiled Rust (registered in `rux-runtime::build_engine`).
 
-> **DIVERGENCE / IMPORTANT:** **rhai functions cannot read or mutate global
-> state.** The guide's `fn drain() { level.update(...) }` **does not work**.
-> - State changes go **inline** in handlers: `@tap="level = level - 1"`.
-> - Script `fn`s must be **pure** (take args, return values): `{{ hours(level) }}`.
-> - Anything heavier belongs in a **`host::`** function.
+> **CHANGED in v0.7: a function can now read and write the state around it.**
+> This used to be the single biggest trap in the language, and it is gone.
+>
+> ```
+> let level = signal(82);
+> fn drain() { level-- }        // works
+> fn is_low() { level < 20 }    // works
+> ```
+>
+> `@tap="drain()"` is a handler like any other, and the write is tracked, so the
+> screen updates. Handlers no longer have to be written inline, which is why so
+> much of this document and of `/learn` still shows them that way.
+>
+> Two things to know:
+> - **A method call does not see the surrounding scope.** `thing.helper()`
+>   cannot reach `level`; `helper(thing)` can. Method dispatch passes its
+>   receiver by reference and the scope cannot be borrowed at the same time.
+> - **Anything heavy still belongs in a `host::` function.** Script is for
+>   describing what the UI does, not for doing work.
 
 ### Inputs
 `<input r-model="sig" placeholder="…">`: tap to focus, type to edit. There is a
@@ -958,7 +972,10 @@ for the reasons under "Checking a file without opening a window".
    `@tap='name = ""'`, `r-if='city != ""'`. We do **not** decode HTML entities,
    and rhai treats `'x'` as a *char*, not a string.
 2. **`use` must be alone on its own line** in `<script>`.
-3. **rhai `fn`s can't touch globals** (see above). The single biggest trap.
+3. **A `fn` called in method style cannot see the surrounding scope.**
+   `helper(thing)` reaches the state around it; `thing.helper()` does not. This
+   is all that is left of what used to be the single biggest trap here, "rhai
+   `fn`s can't touch globals", which v0.7 removed (see above).
 4. **`text-align` needs a box wider than the text** (set a width, or the element
    must fill), or there's nothing to align within.
 5. **A scroll container needs a bounded height** (`height`, `max-height`, or a

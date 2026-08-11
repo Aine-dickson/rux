@@ -1,6 +1,7 @@
 # 06. Roadmap
 
-Where Rux goes next. Last updated 2026-08-08, for **v0.5.0**.
+Where Rux goes next. Last updated 2026-08-11, with the **`rux-rhai` fork design**
+under v0.7.
 
 For *what works today*, read [As Built](./05-as-built.md). This document is
 only about what is **not done yet**, and in what order.
@@ -985,6 +986,14 @@ milestone in its own right, not a Friday slice. Recorded 2026-07-18.
    way: the strict-bindings mode and shared-cell signals are the two changes the
    fork exists to carry.
 
+   > **Superseded in part, 2026-08-11.** The two motivators above still stand and
+   > are still why the fork exists, but the second one is now answered by **full
+   > lexical scoping** rather than by shared-cell signals, which were the narrower
+   > version of the same fix. The settled design, including the crate name, the
+   > three buckets of work and the decisions on truthiness, numbers and object
+   > literals, is under [v0.7](#v07-the-script-tier-and-the-fork-then-animation-then-packaging).
+   > Read this item for *why* the fork exists and that one for *what it does*.
+
 ---
 
 ## After v0.4: the version plan
@@ -1205,15 +1214,54 @@ changed is the judgement of how long "stop moving" takes, not the argument.
 The two fork motivators recorded above are both real and both point the same
 way. This milestone is where Rux stops being stock rhai.
 
-1. **Strict bindings** (motivator b). A missing map property evaluates to `()`
-   in silence, which is exactly the failure the dev-overlay work exists to
-   kill. This is a lookup-failure path rather than a reactivity change, so it is
-   the cheap first divergence and a good test of how painful carrying a fork
-   actually is. Do this one first for that reason.
-2. **Shared-cell signals** (motivator a), so a function can mutate state. This
-   retires the single biggest trap in the language: `/learn` spends a callout
-   on it, `docs/05-as-built.md` calls it "the single biggest trap", and every
-   handler has to be written inline because of it.
+1. **Strict bindings** (motivator b), shipped together with `?.` and `??`.
+   **Not a fork change at all**, established 2026-08-11 by reading rhai 1.25.1's
+   source; see "What upstream already has" below. A missing map property
+   evaluates to `()` in silence, which is exactly the failure the dev-overlay
+   work exists to kill. Still first, because it is now nearly free rather than
+   because it is a cheap divergence. The optional-chaining operators are not a
+   separate nicety here,
+   they are the escape hatch strict bindings creates the need for: without them,
+   every legitimately absent property, from data still loading to an optional
+   field, turns a silent-wrong result into a noisy-wrong one with no way to say
+   "absent is fine". They ship in the same release as the strictness that
+   requires them.
+2. **Full lexical scoping: done.** A function sees the scope it was written in
+   and can read and write it, so `fn bump() { n++ }` is a working handler and
+   `@tap="bump()"` moves the screen. This retires the single biggest trap in the
+   language: `/learn` spends a callout on it, `docs/05-as-built.md` calls it
+   "the single biggest trap", and every handler in every example is inline
+   because of it. Settled 2026-08-11 in favour of real scoping over the narrower
+   "signals are shared cells the fork writes through".
+
+   rhai already had the mechanism, as an opt-in `f!(…)` call form that runs in
+   the caller's scope; the fork makes that what a call *means*. **Two lines**,
+   which is worth saying plainly because it is wildly out of proportion to the
+   size of the language change, and is the strongest argument that vendoring the
+   whole engine was the right call: the change was cheap precisely because it
+   could be made in the one place that already knew about scopes.
+
+   One consequence: **a method call does not capture the caller's scope**, and
+   the flag is cleared for those rather than raising, or `colors.len()` would
+   become illegal. That limitation is upstream's and stands, since method
+   dispatch passes its receiver by reference and the scope cannot also be
+   borrowed. A function that needs the surrounding state is written as a plain
+   call, which does capture.
+
+   `05-as-built.md` is updated, since it describes the tree as built. **`/learn`
+   is deliberately not**, and must not be until v0.7 ships: the standing rule is
+   that it documents the latest *release*, never the tip, and it currently
+   carries a whole section called "The rule that catches everyone" explaining
+   this exact limitation to people running v0.6, for whom it is still true.
+   Rewriting that section is **part of the v0.7 release work**, along with
+   `examples/learn/03-state.rux` and the assertions in
+   `crates/rux-runtime/tests/learn.rs` that hold it honest.
+
+   Worth noting while it is fresh: this also removes the reason `docs/03-guide.md`
+   was declared unpublishable. Its central example was a `fn` mutating state,
+   which is why the guide was abandoned and `/learn` hand-written against the
+   real runtime instead. That is not an argument for reviving it, but the
+   blocker recorded against it is no longer the blocker.
 3. **Element access from script**, the DOM-like handle. Sequenced after
    reactivity for the reason already recorded: script mutations must feed the
    same subscription graph or they desync.
@@ -1249,6 +1297,311 @@ way. This milestone is where Rux stops being stock rhai.
 The ordering within this milestone is the point: the fork changes what a script
 can do, animation and hooks both build on that, and packaging commits to an
 output format only once nothing above it is still moving.
+
+#### The fork: `rux-rhai`
+
+Designed 2026-08-11. Everything in this section is decided, not proposed.
+
+The fork is published to crates.io as **`rux-rhai`**, under rhai's own
+MIT-or-Apache terms with attribution. It cannot be a vendored directory: every
+Rux crate publishes, and `cargo publish` rejects a path dependency without a
+version, so the fork has to be a real crate with a real version like the other
+eleven. The name is the one that communicates what it is at a glance in a
+dependency list.
+
+The organising question is not "what should the language have", it is **what the
+fork must carry**. Anything achievable from outside the engine is free forever;
+anything inside it is a rebase cost at every upstream rhai release, for as long
+as Rux exists. So the work splits three ways, and the split governs the order.
+
+**Bucket 1, no fork needed.** Registration and configuration in `rux-script`.
+All of it is a pass, and it should land first, because it moves the
+JS-familiarity needle further than anything below it and costs no divergence.
+
+- JS method names on arrays and strings: `forEach`, `find`, `includes`,
+  `indexOf`, `slice`, `join`, `startsWith`, `endsWith`, `trim`, and the case
+  conversions. `map`, `filter` and `reduce` already match.
+- `length` as a property getter, rather than `len()`. Arrays and strings only:
+  JS has no `length` on a plain object, and adding one to maps would be inventing
+  a rule rather than matching a known one, which is the thing this whole exercise
+  is trying not to do.
+- `join` and `forEach`, which rhai does not have under any name. `map` and
+  `filter` build a new array and a loop is a statement, so there was no way to
+  run a side effect per item as an expression. `forEach` is called with
+  `(item, index)` like JS and falls back to `(item)`, because rhai rejects a
+  closure handed more arguments than it declares and `|x| …` is the form nearly
+  everyone writes.
+- **`.length` returns an integer**, which is the opposite of the rule everywhere
+  else and is deliberate until numbers are unified. `items[items.length - 1]`
+  and `for i in 0..items.length` are the two commonest uses of a length and both
+  need an integer, since rhai indexes and builds ranges with `INT`. A `length`
+  that reads correctly in a binding and fails the moment it is used to index
+  would be worse than not having it. **The all-f64 change below has to teach
+  indexing and ranges to coerce at the same time**, or it will break this.
+  Found by an example rather than by a test: `keyed-list.rux` was rewritten to
+  use `.length` and stopped rotating.
+- **Numeric arguments taken as `Dynamic` and coerced at every boundary.** A
+  literal `1` is still an rhai integer while anything through `signal()` is a
+  float, so `items.slice(1)` and `items.slice(start)` would otherwise resolve to
+  different overloads and one of them would not exist. This is the
+  numbers-are-two-types problem biting in the first five minutes of use, and it
+  is the strongest practical argument for the all-f64 change below: coercing at
+  each boundary is the version of that fix available without a fork, and it has
+  to be remembered at every single registration.
+- `null` as an alias for `()`. Not a scope binding: `null` is a *reserved
+  keyword* in rhai, so it never reaches variable resolution. Registered as custom
+  syntax, which is the one hook that sees it, and which has the side benefit that
+  `null` cannot be shadowed by a `let` and never enters the signal set.
+- **Printf-debugging**, which the script tier had no way to do at all. For a JS
+  developer this is the most reflexive tool they own, and its absence is a larger
+  practical problem than any syntax difference on this page.
+
+  Spelled **`print(…)` and `debug(…)`**, rhai's own names, wired to a Rux sink.
+  Deliberately **not `log(…)`**, which is what a JS developer would reach for:
+  rhai's arithmetic package already defines `log` as the logarithm, and its more
+  specific `f64` overload beats a registered `Dynamic` one, so `log(2)` quietly
+  computes `0.301` and reports nothing. That is the worst available outcome and
+  precisely the class of silent failure the rest of this milestone exists to
+  remove. `console.log` is not offered either, since there is no `console` object
+  and inventing one to hold a single function would misrepresent what else is
+  there.
+
+  The sink is separate from the warning sink. A warning is something wrong with
+  the document and a print is the author talking to themselves; merging them
+  would fill the overlay's problem list with output that is working as intended,
+  and `rux check` would start failing on it. Prints are not deduplicated, unlike
+  warnings: the same line ten times is the information.
+
+  It reaches **the dev overlay**, on `Diagnostics::prints`, for the same reason
+  the warnings do: nobody running a GUI app is watching stderr, so debugging
+  output that only went there would not be debugging. The panel takes a slate
+  blue rather than the warnings' amber when nothing is actually wrong, since
+  amber for a healthy document teaches the eye to ignore amber. `Diagnostics`
+  grew a `has_problems()` alongside `is_empty()` to keep the two questions apart:
+  the overlay asks "is there anything to show", `rux check` and CI ask "is
+  anything wrong", and a leftover `print` must answer yes to the first and no to
+  the second. Collection is deliberately order-independent, because a tap reaches
+  the runtime through either a patch or a rebuild depending on whether the tree's
+  shape changed, and printf-debugging that only worked on one of those paths
+  would be worse than none.
+- **Diagnostics reskinned into Rux's vocabulary.** The script tier is an
+  implementation detail; someone writing a `.rux` file has been told they are
+  writing Rux, and "Property not found: nmae" is rhai talking to a rhai user
+  about a rhai object map. Each rewrite also says what to do next, since these
+  are failures with exactly one sensible fix, and the escape-hatch advice on a
+  missing property is not guessable given `?.` does not provide one. The four
+  translated are missing property, undefined variable, missing function and
+  reserved word; anything unrecognised passes through untouched, because a
+  slightly foreign message beats a confidently wrong one and the list will never
+  be complete.
+
+  Spans into the `.rux` source are **not** part of this and remain unbuilt. Every
+  binding is compiled as its own small script, so rhai's line is always 1 and its
+  position counts characters inside the expression; the existing code already
+  strips that suffix rather than printing a location that is not one. Giving a
+  real file position means the template parser recording where each `{{ }}` and
+  attribute began, which is parser work, not script work.
+
+**What upstream already has.** Checked against rhai 1.25.1's source on
+2026-08-11, before writing any of it, because the whole point of sequencing the
+cheap divergence first was to measure fork pain and it would be absurd to pay for
+a divergence upstream already supports. Three items came back free:
+
+- **Strict map properties already exist as an engine option.**
+  `Engine::set_fail_on_invalid_map_property(true)` (`src/api/options.rs`) is
+  enforced in `src/eval/chaining.rs` and raises `ErrorPropertyNotFound`, which is
+  exactly the semantics wanted. Option (a) of the three recorded under Further
+  out item 3, "evaluate bindings under a stricter engine option if one lands
+  upstream", is the one that applies. It had landed and nobody had looked.
+- **`??` works.** `?.` exists as a token but **did not do what item 1 needs**,
+  which only came out when it was run rather than read: rhai's `?.` guards a
+  *base that is absent*, so `missing?.anything` is fine, but on a map that does
+  exist it raised for a missing property exactly as `.` does. So strict bindings
+  had no JS-shaped escape hatch upstream, and a property-guarding `?.` was fork
+  work after all. **This became the fork's first change**; see below.
+- **`===` and `!==` are reserved tokens**, and `Engine::register_custom_operator`
+  explicitly accepts `Token::Reserved`, so both are a registration rather than a
+  parser change.
+
+So **item 1's strictness is bucket 1**, and it shipped that way. The consequence
+is that the milestone lost its warm-up: item 1 was chosen to go first partly as a
+cheap gauge of how painful carrying a fork would be, and the strictness half is
+not a divergence at all. The gauge moves to the sugar below, which is mechanical
+parser work and a better measurement anyway, and which should therefore be the
+fork's first commit rather than an afterthought bundled behind scoping.
+
+**The fork now exists**, as `crates/rux-rhai`, and this was its first change.
+`?.` guards a missing property, not only an absent base, so `params?.id` is how
+a document says that absent is a legitimate answer; `examples/router.rux` uses
+it. Without it, strictness had no opt-out at all, since the only alternative was
+`"id" in params`, which works but is not what a JS developer reaches for and
+cannot be written inline in the middle of a chain.
+
+Three things about how the fork is kept, all of them deliberate:
+
+- **Vendored, not patched.** The whole of rhai 1.25.1 is in the tree.
+  `crates/rux-rhai/DIVERGENCE.md` is the complete list of what was changed, with
+  the upstream files, so a rebase is working through one list rather than reading
+  a diff of forty thousand lines. It also records what was considered and *not*
+  changed, so nobody pays twice to rediscover that something needed no fork.
+- **The library target is still called `rhai`** even though the package is
+  `rux-rhai`. Upstream's several hundred doc-tests are written `use rhai::…` and
+  compile as external crates against the *target* name, so renaming it would have
+  silently dropped the test coverage a fork most needs to keep. Every `use
+  rhai::…` in `rux-script` is untouched too, which is what made the swap a
+  one-line change to the workspace manifest.
+- **The fork was proved inert before it diverged.** Vendored, wired in, full
+  suite green including rhai's own tests, and only then changed. A fork that is
+  built and modified in one step cannot tell a porting mistake from a deliberate
+  change.
+
+This also turned up a hole in `scripts/release.sh`, now fixed: it found
+intra-workspace dependencies by *name* (`^rux-[a-z]+`), so the aliased
+`rhai = { package = "rux-rhai", … }` line was invisible to both the version gate
+and the release bump, and would have shipped still saying `-dev`. Both now match
+on `path = "crates/`, which is the honest invariant.
+
+**A caution this turned up, unrelated to any of the above.** rhai's default
+optimizer removes a call whose result is unused when it believes the call is
+pure, and it cannot know that a host-registered function is not. Nearly every Rux
+builtin is called for effect and discarded: `print(x)`, `emit("change")`,
+`navigate("/")`. It was found by `print(1); print(1)` producing one line instead
+of two, which is a harmless symptom of a rule that could as easily have eaten a
+navigation. The optimizer is now off. There is nothing for it to win on
+expressions the size of a single binding.
+
+**Bucket 2, parser sugar, and now the fork's first actual divergence.** New
+tokens desugaring to existing AST, no semantic change, low rebase risk:
+
+- **`++` and `--`: done.** Reserved upstream but not implemented, and rhai's
+  custom operators are binary only, so these could not be registered from
+  outside. Desugared to `+=` and `-=` at parse time, so they inherit lvalue
+  checking, operator overloads and write tracking rather than introducing
+  anything new at evaluation. Statement position only, on purpose: JS's `x++`
+  *expression* evaluates to the value before the increment, which is the rule
+  behind the `i = i++` puzzle, and rhai's assignment is a statement anyway, so
+  supporting it would mean inventing JS's confusing half rather than matching
+  something that exists.
+- **`=>` for closures: done, and it was not sugar.** All four shapes work:
+  `x => …`, `() => …`, `(x) => …` and `(a, b) => …`. Each is exactly the
+  matching `|…|` form, so nothing new reaches evaluation.
+
+  It needed a change to the parser's input path, which is why it was worth
+  more than the label "sugar" suggested. rhai's `TokenStream` was a `Peekable`,
+  giving one token of lookahead, and one is not enough to tell `(a, b) => …`
+  from `(a + b)`: they are identical until several tokens in, and a `Peekable`
+  cannot put back what it read. `TokenStream` is now a small buffered struct
+  whose `next` and `peek` keep their exact signatures, so the ninety-odd call
+  sites in the parser did not change; `peek_nth` is the only addition. Tokens
+  are pulled on demand and never eagerly, because the tokenizer is stateful and
+  reading ahead of what was asked for could tokenize under settings the parser
+  has not applied yet.
+
+  The lookahead consumes nothing, so an ordinary parenthesised expression falls
+  through untouched, which is the property that made the change safe to make at
+  all. There is a test asserting exactly that, because a lookahead that guessed
+  wrong would quietly break arithmetic rather than failing loudly.
+- `===` and `!==` are **not** in this bucket after all; see above. Loose equality
+  with coercion is still not adopted, both spellings mean the strict comparison.
+
+**Object literals stay `#{ }`.** Decided against accepting bare `{ }` in
+expression position, even though it is what a JS developer types. One spelling
+learned once and for all beats two spellings and a rule about which contexts
+accept which, and it is the highest-ambiguity change on the list for a purely
+cosmetic win. The consequence is that the docs teach `#{ }` early, prominently,
+and on its own, rather than letting it first appear in passing.
+
+**Bucket 3, semantic divergence.** The permanent cost, and the reason the fork
+exists.
+
+- **Strict property lookup**, item 1 above.
+- **Full lexical scoping**, item 2 above. Chosen over the narrower shared-cell
+  approach, which would have punched a signal-shaped hole through rhai's
+  scopeless-function wall rather than taking the wall down. The hole is cheaper
+  and was the wrong trade: it solves exactly one motion, a handler bumping one
+  signal, and leaves a helper that reads a top-level `let` or calls another
+  top-level `fn` still broken, which is most of what "reusable handler" means in
+  practice. It also leaves the language with an exception that gets *harder* to
+  state as it gets smaller, where real scoping is one sentence a JS developer
+  already knows. It keeps `=>` closures and named `fn`s as one construct with
+  one capture rule instead of two. And it is load-bearing for three things
+  already scheduled: navigation guards, lifecycle hooks, and element access,
+  each of which would otherwise need its own carve-out. Shared cells do not
+  disappear entirely, but their job narrows: scoping delivers the *write*, and
+  the cell remains the mechanism by which the reactivity graph *notices* it.
+- **JS truthiness, matched exactly: done.** `false`, `0`, `NaN`, `""`, `null`
+  and `()` are falsy and everything else is truthy, including empty arrays and
+  empty maps. Stock rhai requires a real `bool` in a condition, which breaks
+  `r-if="user"` and `r-if="items.length"`, the two most natural conditionals
+  someone will write, in the position where they are least likely to be thinking
+  about a scripting language's type rules. JS's rules are adopted wholesale
+  rather than a Rux-specific set, because a half-familiar rule is worse than
+  either alternative.
+
+  **This is a behaviour change in existing documents, and the only one in v0.7.**
+  `r-if="items"` used to mean "there are items" and now means "items exists".
+  `r-if="items.length"` is how to ask the first question. Nothing in the repo
+  relied on it, and it is pinned by a test whose comment says why, but it belongs
+  in the release notes rather than in a changelog line.
+- **All numbers are f64: not done, and on the evidence it should not be.** It
+  was agreed on the premise "if matching JS truthiness exactly requires it".
+  Building truthiness showed the premise is false: `Dynamic::is_truthy` treats
+  `Union::Int(0)` and `Union::Float(0.0)` by the same rule, and `from_dynamic`
+  normalises both to `f64` before a binding ever sees them, so **truthiness
+  already matches JS exactly with two numeric types in the engine**.
+
+  What remained was integer division, and the seam it appears at is narrower
+  than it looked: `signal()` coerces to `f64`, so every number a document holds
+  is already a float and already divides like one. Only two bare literals
+  divided by each other could give `3` for `10 / 3`. That is fixed by
+  **registering `/` for two integers**, which is not a fork change at all, and
+  costs one line instead of diverging from every upstream doc-test that asserts
+  an integer result (16 of them use `eval::<i64>` directly, and each would have
+  to be rewritten, which is upstream churn carrying no divergence).
+
+  The two consequences that *did* need doing were done: **indexing coerces a
+  whole `f64`** (this was a live bug, see below), and division by zero now yields
+  `Infinity` / `NaN` as in JS, spelled the way JS spells them rather than Rust's
+  `inf`. **Bitwise operators are left alone**, since nothing in a UI has wanted
+  one; if that changes, JS's coerce-to-int32 rule is the shape to follow.
+
+  Recorded as a decision rather than a deferral: there is no known behaviour a
+  Rux document can observe that all-f64 would change, and the cost is a permanent
+  divergence across upstream's test suite, which is the coverage a fork most
+  needs to keep.
+
+**Sequence.** Bucket 1 entirely, including diagnostics, before any divergence.
+Then item 1 with `?.` and `??`. Then item 2 with `++`, `--` and `=>`, so the
+syntax that makes the new capability feel familiar arrives with the capability.
+Then truthiness and all-f64 batched into one release, so there is a single
+"semantics changed" note rather than two. Then items 3 through 7 as listed.
+
+**Explicitly not in the fork: `setTimeout` and `setInterval`.** They are one
+family and raise identical questions about what scope a deferred callback runs
+in and what happens when its component is gone, but they are declined for
+different reasons and with different futures.
+
+`setTimeout` is **declined outright**. Nearly every real use of it in UI code is
+"after the transition", debouncing, or auto-dismissal, and the animation tier
+above is the honest answer to all three. The docs should say so rather than
+leaving it as an unexplained absence.
+
+`setInterval` is **deferred, not declined**, because the use case behind it,
+clocks, countdowns, polling and progress ticks, has no declarative substitute
+anywhere on this page. Two things have to be true before it can land. It has to
+come after `unmounted` exists, because there is nowhere to write a cancellation
+today and a leaked repeating timer stacks another copy on every hot reload,
+where a leaked one-shot fires once and is done. And it must not be spelled
+`setInterval` or hand back a handle somebody has to remember to clear. A
+one-shot composes with the shell's `ControlFlow::WaitUntil` scheduling perfectly,
+since it books exactly one wake and then the app sleeps again; a free-floating
+repeating timer is a one-line declaration that this app is never idle again,
+which nobody notices on desktop and which is the entire battery story on the
+phones v0.8 targets. The shape that fits is a repeating timer the runtime owns
+and ties to the component instance, cancelled automatically when that instance
+is pruned. v0.6's instance pruning is already that foundation, the same one
+`unmounted` and enter/leave need, which puts this alongside item 6 rather than
+before it.
 
 ### v0.8: mobile
 
