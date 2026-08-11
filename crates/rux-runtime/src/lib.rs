@@ -1323,7 +1323,39 @@ impl Document {
     /// length of that chain: a component listened to by a component that emits
     /// back is a cycle, and stopping it at a bound is better than a window that
     /// never repaints.
+    /// The tree as `query()` sees it, for the duration of one handler.
+    ///
+    /// Built per dispatch rather than held on the document, because the index it
+    /// closes over is replaced by every build and a stale one would answer
+    /// confidently about a tree that is no longer on screen. The clone is of a
+    /// flat vector of small records, against a tap that is about to patch or
+    /// rebuild the tree anyway.
+    fn element_resolver(&self) -> rux_script::ElementResolver {
+        let index = self.registry.elements.clone();
+        std::sync::Arc::new(move |selector: &str| {
+            Some(
+                index
+                    .query(selector)?
+                    .into_iter()
+                    .map(|m| rux_script::ElementFacts {
+                        path: m.path,
+                        tag: m.tag,
+                        id: m.id,
+                        classes: m.classes,
+                    })
+                    .collect(),
+            )
+        })
+    }
+
     fn dispatch_handler(&mut self, src: &str, instance: Option<&str>, depth: usize) -> bool {
+        let resolver = self.element_resolver();
+        rux_script::with_elements(resolver, || self.dispatch_handler_inner(src, instance, depth))
+    }
+
+    /// The body of [`Document::dispatch_handler`], split out so the element
+    /// resolver wraps every path out of it, including the early returns.
+    fn dispatch_handler_inner(&mut self, src: &str, instance: Option<&str>, depth: usize) -> bool {
         const MAX_EVENT_DEPTH: usize = 8;
         if depth > MAX_EVENT_DEPTH {
             rux_script::warn_script(format!(
@@ -4191,6 +4223,84 @@ mod tests {
         assert_eq!(boxes[0].children.len(), 1);
         assert_eq!(boxes[1].children.len(), 1);
         assert_eq!(boxes[2].children.len(), 0);
+    }
+
+    // ── query() from a handler ──────────────────────────────────────────────
+
+    const QUERYABLE: &str = r#"<template><screen>
+        <text>{{ found }}</text>
+        <view class="card"><text class="title">One</text></view>
+        <view class="card wide"><text class="title">Two</text></view>
+    </screen></template>
+    <script>let found = "-"</script>"#;
+
+    /// The whole feature, end to end: a handler counts nodes the build produced
+    /// and writes the answer into a signal, and the screen shows it.
+    #[test]
+    fn a_handler_can_query_the_tree_it_is_running_against() {
+        let mut doc = Document::from_source(QUERYABLE).unwrap();
+        assert!(doc.apply_handler("found = query(\".card\").length"));
+        assert_eq!(text_of(&doc.root)[0], "2");
+    }
+
+    /// The selector reaches what the stylesheet reaches, combinators included,
+    /// which is the point of reusing the stylesheet's own matcher.
+    #[test]
+    fn combinators_work_from_a_handler() {
+        let mut doc = Document::from_source(QUERYABLE).unwrap();
+        assert!(doc.apply_handler("found = query(\".card > .title\").length"));
+        assert_eq!(text_of(&doc.root)[0], "2");
+
+        assert!(doc.apply_handler("found = query(\".card + .card\").length"));
+        assert_eq!(text_of(&doc.root)[0], "1");
+    }
+
+    /// A handle carries what it is, not just where it is.
+    #[test]
+    fn a_handle_reads_back_its_tag_and_classes() {
+        let mut doc = Document::from_source(QUERYABLE).unwrap();
+        assert!(doc.apply_handler("found = query(\".wide\")[0].tag"));
+        assert_eq!(text_of(&doc.root)[0], "view");
+
+        assert!(doc.apply_handler("found = query(\".wide\")[0].classes.join(\"|\")"));
+        assert_eq!(text_of(&doc.root)[0], "card|wide");
+    }
+
+    /// The index tracks the tree rather than the template: a node that an
+    /// `r-if` has closed over is not there to be found.
+    #[test]
+    fn the_index_follows_the_tree_not_the_template() {
+        let mut doc = Document::from_source(
+            r#"<template><screen>
+                <text>{{ found }}</text>
+                <view class="card" r-if="open"><text>x</text></view>
+            </screen></template>
+            <script>let found = "-";
+            let open = false;</script>"#,
+        )
+        .unwrap();
+        assert!(doc.apply_handler("found = query(\".card\").length"));
+        assert_eq!(text_of(&doc.root)[0], "0", "closed r-if is not in the tree");
+
+        assert!(doc.apply_handler("open = true"));
+        assert!(doc.apply_handler("found = query(\".card\").length"));
+        assert_eq!(text_of(&doc.root)[0], "1", "and reappears once it opens");
+    }
+
+    /// Outside a handler the capability does not exist, so a binding that tries
+    /// to query is reported rather than quietly rendering nothing.
+    #[test]
+    fn a_binding_cannot_query() {
+        let doc = Document::from_source(
+            r#"<template><screen><text>{{ query(".card").length }}</text></screen></template>"#,
+        )
+        .unwrap();
+        let problems: String =
+            doc.diagnostics().warnings.iter().map(|w| w.message.clone()).collect();
+        assert!(
+            problems.contains("only available inside a handler"),
+            "the overlay says why: {problems:?}"
+        );
     }
 }
 

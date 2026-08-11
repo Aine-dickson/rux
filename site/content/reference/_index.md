@@ -394,6 +394,37 @@ plain `color: #ff0000` would fall back to the default.
 > - **Anything heavy still belongs in a `host::` function.** Script is for
 >   describing what the UI does, not for doing work.
 
+**`query(selector)` reads the tree from a handler.** It takes a CSS selector,
+the same one the stylesheet takes (tags, ids, classes, `role`, and the `>`, `+`
+and `~` combinators), and returns the matching elements in document order. It is
+the stylesheet's own matcher, so the two always agree about the same document.
+
+```rux
+@tap="count = query('.card').length"
+```
+
+Each result carries `tag`, `id` and `classes`. `id` is absent rather than empty
+when the element has none, so `el.id ?? "none"` reads the way it does anywhere
+else.
+
+Three rules, all of which are the design rather than temporary limits:
+
+- **It matches the tree, not the template.** A `<view r-if="open">` that is
+  closed is not there to be found, because it is not on screen.
+- **It works in a handler and nowhere else.** In a `{{ }}` binding, a `:style`
+  or an `r-if` it raises and the overlay says why. A binding that read the tree
+  would have to invalidate whenever layout changed, and invalidating it rebuilds
+  and relayouts, which never settles.
+- **A selector that does not parse is an error**, not an empty result, so a typo
+  cannot look like "nothing matched".
+
+**There is no way to mutate the tree from script, deliberately.** No setting a
+property, no adding or removing children. A state change regenerates the
+affected tree from the template, so any such edit would be overwritten by the
+next patch, reconcile or rebuild, silently, at a moment decided by an unrelated
+handler. The tree is a function of state, and state is how it changes. Reading
+geometry back (position and size) is not built yet; see the roadmap.
+
 ### Inputs
 `<input r-model="sig" placeholder="…">`: tap to focus, type to edit. There is a
 real **caret**: tapping puts it where you tapped, ←/→ move it, Home/End jump,

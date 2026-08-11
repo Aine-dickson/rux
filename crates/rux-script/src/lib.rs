@@ -11,8 +11,9 @@
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
-use rhai::{Dynamic, Engine as RhaiEngine, ImmutableString, Module, Scope, AST};
+use rhai::{Dynamic, Engine as RhaiEngine, EvalAltResult, ImmutableString, Module, Scope, AST};
 use rux_reactive::{Value, Warning};
 
 thread_local! {
@@ -22,6 +23,100 @@ thread_local! {
     /// evaluate, then take the set. `None` means "not tracking", so ordinary
     /// evaluation (and the build-time script run) records nothing.
     static READS: RefCell<Option<HashSet<String>>> = const { RefCell::new(None) };
+}
+
+/// What a query knows about one matched element.
+///
+/// Deliberately plain data. The selector engine that produced it lives in
+/// `rux-style`, which depends on this crate and so cannot be depended on from
+/// here; the runtime bridges the two by installing a resolver (see
+/// [`with_elements`]) rather than by anything in this crate knowing what a
+/// selector is.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ElementFacts {
+    /// The node's child-index path from the root, the identity the binding
+    /// registry and the layout's regions both already use.
+    pub path: Vec<usize>,
+    pub tag: String,
+    pub id: Option<String>,
+    pub classes: Vec<String>,
+}
+
+/// Resolves a selector against the tree the last build produced.
+pub type ElementResolver = Arc<dyn Fn(&str) -> Option<Vec<ElementFacts>> + Send + Sync>;
+
+thread_local! {
+    /// The tree, as `query()` can see it, installed only for the duration of one
+    /// handler.
+    ///
+    /// **Its absence is the handler-only rule**, not a separate check. A `{{ }}`
+    /// binding, a `:style` or an `r-if` is evaluated with nothing installed, so
+    /// `query()` there raises instead of quietly answering. That matters because
+    /// the alternative has no fixed point: a binding that reads the tree would
+    /// have to invalidate when layout changes, and invalidating it rebuilds and
+    /// relayouts. Making the capability simply not exist outside a handler costs
+    /// nothing, since every real use of it is handler-shaped.
+    static ELEMENTS: RefCell<Option<ElementResolver>> = const { RefCell::new(None) };
+}
+
+/// Run `f` with `resolver` installed, so `query()` inside it can see the tree.
+///
+/// Restores whatever was installed before rather than clearing, so a handler
+/// that runs another handler (a component listener fired by `emit`) does not
+/// leave the outer one unable to query.
+pub fn with_elements<R>(resolver: ElementResolver, f: impl FnOnce() -> R) -> R {
+    let previous = ELEMENTS.with(|e| e.borrow_mut().replace(resolver));
+    let out = f();
+    ELEMENTS.with(|e| *e.borrow_mut() = previous);
+    out
+}
+
+/// One element matched by [`query`], as script sees it.
+#[derive(Clone, Debug)]
+pub struct ElementHandle {
+    facts: ElementFacts,
+}
+
+impl ElementHandle {
+    /// The node's path, for whoever has to act on it.
+    pub fn path(&self) -> &[usize] {
+        &self.facts.path
+    }
+}
+
+/// Register `query()` and the handle it returns.
+fn register_elements(engine: &mut RhaiEngine) {
+    engine
+        .register_type_with_name::<ElementHandle>("Element")
+        .register_get("tag", |e: &mut ElementHandle| e.facts.tag.clone())
+        // Absent rather than empty, so `el.id ?? "none"` reads the way it does
+        // everywhere else in the language.
+        .register_get("id", |e: &mut ElementHandle| match &e.facts.id {
+            Some(id) => Dynamic::from(id.clone()),
+            None => Dynamic::UNIT,
+        })
+        .register_get("classes", |e: &mut ElementHandle| {
+            e.facts.classes.iter().cloned().map(Dynamic::from).collect::<rhai::Array>()
+        });
+
+    engine.register_fn(
+        "query",
+        |selector: ImmutableString| -> Result<rhai::Array, Box<EvalAltResult>> {
+            let resolver = ELEMENTS.with(|e| e.borrow().clone());
+            let Some(resolver) = resolver else {
+                return Err("query() is only available inside a handler, because a \
+                            binding that reads the tree would rebuild the tree it read"
+                    .into());
+            };
+            // A selector that cannot be parsed is an error, not an empty list.
+            // Matching nothing in silence is the failure this language keeps
+            // closing off, and a typo in a selector is exactly that failure.
+            let Some(found) = resolver(&selector) else {
+                return Err(format!("`{selector}` is not a selector this can match").into());
+            };
+            Ok(found.into_iter().map(|facts| Dynamic::from(ElementHandle { facts })).collect())
+        },
+    );
 }
 
 /// Builds an [`Engine`]: register host functions, then `build` with the script.
@@ -181,6 +276,7 @@ impl Builder {
             NAVIGATIONS.with(|n| n.borrow_mut().push(Nav::Forward));
         });
         register_js_names(&mut engine);
+        register_elements(&mut engine);
 
         // Record every variable read while dependency-tracking is active, then
         // fall through (`Ok(None)`) to normal scope resolution. `on_var` is
@@ -1981,6 +2077,100 @@ mod tests {
         // Touching one signal does not report the others.
         assert_eq!(changed(&mut e, "items = [9]"), ["items"]);
         assert_eq!(changed(&mut e, "level"), Vec::<String>::new()); // a bare read changes nothing
+    }
+
+    // ── query() ─────────────────────────────────────────────────────────────
+
+    /// A resolver standing in for the one the runtime installs, answering with
+    /// two cards for `.card` and nothing for anything else.
+    fn cards() -> ElementResolver {
+        Arc::new(|selector: &str| match selector {
+            ".card" => Some(vec![
+                ElementFacts {
+                    path: vec![0, 0],
+                    tag: "view".into(),
+                    id: Some("first".into()),
+                    classes: vec!["card".into()],
+                },
+                ElementFacts {
+                    path: vec![0, 1],
+                    tag: "view".into(),
+                    id: None,
+                    classes: vec!["card".into(), "wide".into()],
+                },
+            ]),
+            "!" => None, // stands for a selector that does not parse
+            _ => Some(Vec::new()),
+        })
+    }
+
+    #[test]
+    fn query_returns_handles_inside_a_handler() {
+        let mut e = engine();
+        with_elements(cards(), || {
+            assert_eq!(e.eval_display("query(\".card\").length", &[]), "2");
+            assert_eq!(e.eval_display("query(\".card\")[0].tag", &[]), "view");
+            assert_eq!(e.eval_display("query(\".card\")[0].id", &[]), "first");
+            assert_eq!(e.eval_display("query(\".card\")[1].classes.join(\" \")", &[]), "card wide");
+            // A selector that matches nothing is an empty list, not an error.
+            assert_eq!(e.eval_display("query(\".nope\").length", &[]), "0");
+        });
+    }
+
+    /// An absent id reads as absent, so `??` works on it like anything else.
+    #[test]
+    fn a_missing_id_is_absent_rather_than_empty() {
+        let mut e = engine();
+        with_elements(cards(), || {
+            assert_eq!(e.eval_display("query(\".card\")[1].id ?? \"none\"", &[]), "none");
+        });
+    }
+
+    /// The handler-only rule, which is enforced by the resolver simply not
+    /// being installed rather than by a check anyone has to remember.
+    #[test]
+    fn query_outside_a_handler_is_an_error_not_an_empty_list() {
+        let mut e = engine();
+        let _ = take_warnings();
+
+        assert_eq!(e.eval_display("query(\".card\").length", &[]), "");
+        let warnings = take_warnings();
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(
+            warnings[0].message.contains("only available inside a handler"),
+            "says why: {warnings:?}"
+        );
+    }
+
+    /// A selector that cannot be parsed is reported. Answering "nothing
+    /// matched" would make a typo indistinguishable from an empty result.
+    #[test]
+    fn an_unparseable_selector_is_reported() {
+        let mut e = engine();
+        with_elements(cards(), || {
+            let _ = take_warnings();
+            assert_eq!(e.eval_display("query(\"!\").length", &[]), "");
+            let warnings = take_warnings();
+            assert_eq!(warnings.len(), 1, "{warnings:?}");
+            assert!(warnings[0].message.contains("not a selector"), "{warnings:?}");
+        });
+    }
+
+    /// The install is scoped and restores what it replaced, so a handler that
+    /// triggers another handler does not come back unable to query.
+    #[test]
+    fn nesting_restores_the_outer_resolver() {
+        let mut e = engine();
+        with_elements(cards(), || {
+            with_elements(Arc::new(|_: &str| Some(Vec::new())), || {
+                assert_eq!(e.eval_display("query(\".card\").length", &[]), "0");
+            });
+            assert_eq!(e.eval_display("query(\".card\").length", &[]), "2", "outer is back");
+        });
+        // And once outside every scope, the capability is gone again.
+        let _ = take_warnings();
+        assert_eq!(e.eval_display("query(\".card\").length", &[]), "");
+        assert_eq!(take_warnings().len(), 1);
     }
 }
 

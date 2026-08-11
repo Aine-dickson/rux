@@ -1676,6 +1676,13 @@ siblings. A second, weaker way to name an element would have been the thing that
 needed justifying, because a document would then have two spellings for one idea
 and a rule about which contexts take which.
 
+**Built 2026-08-11: the query half.** `query(selector)` works from a handler and
+returns handles carrying `tag`, `id` and `classes`; the element index is
+retained from the build and the stylesheet's matcher runs over it unchanged; the
+handler-only rule is enforced by the resolver simply not being installed outside
+one, so it needs no separate check to remember. **Geometry reads and the actions
+are not built yet**, and the paragraph below is why they are the larger half.
+
 **The one real cost is that the built tree has forgotten what it is.**
 `ElemDesc`, the `{ tag, id, classes, role, states }` a selector matches against,
 is computed during the style pass and discarded once the cascade has run.

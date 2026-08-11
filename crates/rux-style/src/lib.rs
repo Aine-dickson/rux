@@ -267,6 +267,12 @@ pub struct BindingRegistry {
     /// one of these means the runtime must rebuild rather than patch. (Empty now,
     /// kept as a safety net for any future non-reconcilable binding.)
     pub structural: HashSet<String>,
+    /// Every built node as a selector sees it, for `query()` from script.
+    ///
+    /// Not reactivity, unlike everything above it, and it rides here because a
+    /// build already threads this struct everywhere a node is produced. See
+    /// [`ElementIndex`].
+    pub elements: ElementIndex,
 }
 
 
@@ -1101,6 +1107,113 @@ struct Rule {
     decls: Vec<(String, String)>,
 }
 
+/// One built node, as a selector can see it: what it is, and where it sits.
+///
+/// Recorded during the build because that is the only moment both facts are
+/// known together. The cascade computes an [`ElemDesc`] for every element and
+/// then drops it, and [`crate::LayoutNode`] deliberately keeps only `id` and
+/// `key`, the two it needs for `for=` and reconciliation. Without this, a
+/// selector run after the build has nothing to match against: the tree has
+/// forgotten its own tags and classes.
+#[derive(Debug, Clone)]
+struct ElementEntry {
+    desc: ElemDesc,
+    path: Vec<usize>,
+}
+
+/// One node a selector matched: where it is, and what it is.
+///
+/// The identity a caller acts on is the `path`; the rest is what script can
+/// read back without needing the tree itself, which it has no access to.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ElementMatch {
+    pub path: Vec<usize>,
+    pub tag: String,
+    pub id: Option<String>,
+    pub classes: Vec<String>,
+}
+
+/// Every built node in document order, enough to run a selector over the tree.
+///
+/// Ancestors and preceding siblings are *not* stored per entry. They are
+/// recoverable from the paths alone, since a node's ancestors are exactly the
+/// entries whose path is a strict prefix of its own, and reconstructing them on
+/// demand costs nothing next to storing every ancestor chain twice over.
+///
+/// Built on every build and dropped with the tree. A document that never calls
+/// `query` pays only for the push.
+#[derive(Clone, Debug, Default)]
+pub struct ElementIndex {
+    entries: Vec<ElementEntry>,
+}
+
+impl ElementIndex {
+    fn push(&mut self, desc: ElemDesc, path: &[usize]) {
+        self.entries.push(ElementEntry { desc, path: path.to_vec() });
+    }
+
+    /// Every node matching `selector`, in document order.
+    ///
+    /// `None` when the selector does not parse, which the caller reports as a
+    /// diagnostic: a selector that cannot be read matches nothing, and silently
+    /// returning an empty list is the failure mode this project keeps killing.
+    pub fn query(&self, selector: &str) -> Option<Vec<ElementMatch>> {
+        let (chain, combs, _) = parse_selector(selector)?;
+        let mut out = Vec::new();
+        for entry in &self.entries {
+            let (ancestors, prev) = self.context_of(entry);
+            if matches_chain(&chain, &combs, &entry.desc, &ancestors, &prev) {
+                out.push(ElementMatch {
+                    path: entry.path.clone(),
+                    tag: entry.desc.tag.clone(),
+                    id: entry.desc.id.clone(),
+                    classes: entry.desc.classes.clone(),
+                });
+            }
+        }
+        Some(out)
+    }
+
+    /// The ancestor chain (root-first) and preceding siblings of one entry,
+    /// rebuilt from paths. Matching needs both: `.a > .b` walks ancestors and
+    /// `.a + .b` walks siblings, and an ancestor's own preceding siblings ride
+    /// along in [`AncNode::prev`] so a sibling combinator above a descendant hop
+    /// still resolves.
+    fn context_of(&self, entry: &ElementEntry) -> (Vec<AncNode>, Vec<ElemDesc>) {
+        let ancestors = (1..entry.path.len())
+            .map(|depth| {
+                let at = &entry.path[..depth];
+                AncNode {
+                    desc: self.at(at).cloned().unwrap_or_else(ElemDesc::unknown),
+                    prev: self.siblings_before(at),
+                }
+            })
+            .collect();
+        (ancestors, self.siblings_before(&entry.path))
+    }
+
+    fn at(&self, path: &[usize]) -> Option<&ElemDesc> {
+        self.entries.iter().find(|e| e.path == path).map(|e| &e.desc)
+    }
+
+    /// The rendered siblings preceding `path`, in document order. A sibling
+    /// shares the parent prefix and sits at a lower index.
+    fn siblings_before(&self, path: &[usize]) -> Vec<ElemDesc> {
+        let Some((&last, parent)) = path.split_last() else {
+            return Vec::new();
+        };
+        self.entries
+            .iter()
+            .filter(|e| {
+                e.path.len() == path.len()
+                    && e.path.starts_with(parent)
+                    && e.path[parent.len()] < last
+            })
+            .map(|e| e.desc.clone())
+            .collect()
+    }
+}
+
 /// The matchable identity of a template element.
 #[derive(Debug, Clone)]
 struct ElemDesc {
@@ -1122,6 +1235,21 @@ struct AncNode {
 }
 
 impl ElemDesc {
+    /// A stand-in for a path the index has no entry for. Its empty tag matches
+    /// no tag selector and it carries no id or class, so it satisfies a bare
+    /// descendant hop and nothing more specific. Reachable only if a built node
+    /// sits under a path no element was recorded at, which no current build
+    /// produces; it exists so a gap degrades a match rather than panicking.
+    fn unknown() -> Self {
+        Self {
+            tag: String::new(),
+            id: None,
+            classes: Vec::new(),
+            role: None,
+            states: ElemStates::default(),
+        }
+    }
+
     fn of(el: &Element) -> Self {
         Self {
             tag: el.tag.clone(),
@@ -2121,6 +2249,13 @@ fn build_node(
             desc.classes.extend(class_list(&v));
         }
     }
+
+    // Record what this node is before the cascade consumes it. Placed after
+    // `:class` and the pseudo-states for the same reason `state_path` is: a
+    // dynamically applied class is a class, and `query(".open")` has to agree
+    // with what the stylesheet matched a moment earlier or the two disagree
+    // about the same document.
+    reg.elements.push(desc.clone(), path);
 
     // Set on every node this build produces, so the shell gets a region to hit-test
     // (see `pointer_state_sensitive`). Computed after `:class`, so dynamically
@@ -5276,6 +5411,96 @@ mod tests {
         // …and fails when that ancestor has no preceding `.a`.
         let ancestors = [anc("view.b", &["view.x"])];
         assert!(!hits("*.a ~ *.b *.c", "view.c", &ancestors, &[]));
+    }
+
+    // ── The element index ───────────────────────────────────────────────────
+
+    /// Build a document and hand back the index a `query()` would run against.
+    fn indexed(src: &str) -> super::ElementIndex {
+        let sfc = rux_parser::parse_sfc(src).unwrap();
+        let mut engine = Builder::new().build(&sfc.script).unwrap();
+        let mut instances = super::Instances::new();
+        let (_, reg) =
+            super::build_styled_tree_tracked(&sfc, &HashMap::new(), &mut engine, &mut instances)
+                .unwrap();
+        reg.elements
+    }
+
+    const NESTED: &str = r#"<template><screen>
+        <view class="card"><text class="title">One</text></view>
+        <view class="card wide"><text class="title">Two</text></view>
+    </screen></template>"#;
+
+    /// The whole point of the index: after the build, the tree can still say
+    /// what it is. `LayoutNode` keeps neither tag nor class, so without this
+    /// there is nothing for a selector to match.
+    #[test]
+    fn a_class_selector_finds_every_matching_node() {
+        let index = indexed(NESTED);
+        assert_eq!(index.query(".card").unwrap().len(), 2);
+        assert_eq!(index.query(".title").unwrap().len(), 2);
+        // A compound narrows to the one element carrying both classes.
+        assert_eq!(index.query(".card.wide").unwrap().len(), 1);
+    }
+
+    /// Tag and id come back too, and an id matches at most the one node.
+    #[test]
+    fn tag_and_id_selectors_work_against_the_built_tree() {
+        let index = indexed(
+            r#"<template><screen><view id="panel"><text>Hi</text></view></screen></template>"#,
+        );
+        assert_eq!(index.query("#panel").unwrap().len(), 1);
+        assert_eq!(index.query("text").unwrap().len(), 1);
+        assert!(index.query("#missing").unwrap().is_empty());
+    }
+
+    /// Combinators resolve, which is the part that needs ancestors and
+    /// preceding siblings rebuilt from the paths rather than stored per node.
+    #[test]
+    fn combinators_resolve_from_paths_alone() {
+        let index = indexed(NESTED);
+        // Descendant and child both reach the titles through their card.
+        assert_eq!(index.query(".card .title").unwrap().len(), 2);
+        assert_eq!(index.query(".card > .title").unwrap().len(), 2);
+        // The sibling combinator picks the second card only, since the first
+        // has no preceding `.card`.
+        let after = index.query(".card + .card").unwrap();
+        assert_eq!(after.len(), 1);
+        // …and it is genuinely the later one.
+        assert!(after[0].path > index.query(".card").unwrap()[0].path);
+    }
+
+    /// Results are in document order, which is what makes indexing into a query
+    /// result mean something stable from one build to the next.
+    #[test]
+    fn results_come_back_in_document_order() {
+        let index = indexed(NESTED);
+        let hits: Vec<Vec<usize>> =
+            index.query(".card").unwrap().into_iter().map(|m| m.path).collect();
+        let mut sorted = hits.clone();
+        sorted.sort();
+        assert_eq!(hits, sorted);
+    }
+
+    /// A selector that does not parse is `None`, not an empty list. Silently
+    /// matching nothing is the failure this project keeps closing off.
+    #[test]
+    fn an_unparseable_selector_is_reported_rather_than_empty() {
+        let index = indexed(NESTED);
+        assert!(index.query(">").is_none());
+        // An ordinary selector that simply matches nothing is still `Some`.
+        assert!(index.query(".nope").unwrap().is_empty());
+    }
+
+    /// A dynamically applied `:class` is in the index, so `query` and the
+    /// stylesheet agree about the same document.
+    #[test]
+    fn dynamic_classes_are_indexed_too() {
+        let index = indexed(
+            r#"<template><screen><view :class="cls"><text>x</text></view></screen></template>
+               <script>let cls = "open"</script>"#,
+        );
+        assert_eq!(index.query(".open").unwrap().len(), 1);
     }
 }
 
