@@ -10,6 +10,7 @@ keywords = ["ui", "scripting", "rhai"]
 categories = ["gui"]
 
 [dependencies]
-rhai = "1.25.1"
+# `rux-rhai`, Rux's fork of rhai, aliased to `rhai` by the workspace so the code
+# in here reads the same either way. See crates/rux-rhai/DIVERGENCE.md.
+rhai.workspace = true
 rux-reactive.workspace = true
-# rhai added via `cargo add`.

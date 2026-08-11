@@ -14,6 +14,9 @@ members = [
     "crates/rux-fmt",
     "crates/rux-reactive",
     "crates/rux-script",
+    # A fork of rhai, vendored rather than patched: see crates/rux-rhai/DIVERGENCE.md
+    # for what is actually different and why.
+    "crates/rux-rhai",
 ]
 
 [workspace.package]
@@ -67,6 +70,11 @@ rux-text = { version = "0.7.0-dev", path = "crates/rux-text" }
 rux-layout = { version = "0.7.0-dev", path = "crates/rux-layout" }
 rux-fmt = { version = "0.7.0-dev", path = "crates/rux-fmt" }
 rux-script = { version = "0.7.0-dev", path = "crates/rux-script" }
+# Declared under the name `rhai`, so every `use rhai::…` in `rux-script` keeps
+# working and the fork is a one-line swap rather than a rename spread through the
+# script tier. What it is is not hidden: the package name is `rux-rhai` and it is
+# right here in the workspace.
+rhai = { package = "rux-rhai", version = "0.7.0-dev", path = "crates/rux-rhai" }
 rux-paint = { version = "0.7.0-dev", path = "crates/rux-paint" }
 rux-style = { version = "0.7.0-dev", path = "crates/rux-style" }
 rux-runtime = { version = "0.7.0-dev", path = "crates/rux-runtime" }

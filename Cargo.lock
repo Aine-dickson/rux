@@ -207,6 +207,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "arbitrary"
+version = "1.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c3d036a3c4ab069c7b410a2ce876bd74808d2d0888a82667669f8e783a898bf1"
+dependencies = [
+ "derive_arbitrary",
+]
+
+[[package]]
 name = "arboard"
 version = "3.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -720,6 +729,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "core-error"
+version = "0.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "efcdb2972eb64230b4c50646d8498ff73f5128d196a90c7236eec4cbe8619b8f"
+dependencies = [
+ "version_check",
+]
+
+[[package]]
 name = "core-foundation"
 version = "0.9.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -863,6 +881,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3a30bfce702bcfa94e906ef82421f2c0e61c076ad76030c16ee5d2e9a32fe193"
 dependencies = [
  "matches",
+]
+
+[[package]]
+name = "derive_arbitrary"
+version = "1.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1e567bd82dcff979e4b03460c307b3cdc9e96fde3d73bed1496d2bc75d9dd62a"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.118",
 ]
 
 [[package]]
@@ -2023,6 +2052,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "no-std-compat"
+version = "0.4.1"
+source = "git+https://gitlab.com/jD91mZM2/no-std-compat.git#47a5dfb6b48e8f8bf2fc4f6109c9b75f5c3c0b10"
+dependencies = [
+ "spin",
+]
+
+[[package]]
 name = "notify"
 version = "8.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3000,23 +3037,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "19b30a45b0cd0bcca8037f3d0dc3421eaf95327a17cad11964fb8179b4fc4832"
 
 [[package]]
-name = "rhai"
-version = "1.25.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dd4dd0f8c36625202a4ba553c416c19b719947cd2a31d1bda06126e4a5727daf"
-dependencies = [
- "ahash 0.8.12",
- "bitflags 2.13.0",
- "num-traits",
- "once_cell",
- "rhai_codegen",
- "smallvec",
- "smartstring",
- "thin-vec",
- "web-time",
-]
-
-[[package]]
 name = "rhai_codegen"
 version = "3.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3063,6 +3083,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f1964b10c76125c36f8afe190065a4bf9a87bf324842c05701330bba9f1cacbb"
 dependencies = [
  "memchr",
+]
+
+[[package]]
+name = "rust_decimal"
+version = "1.42.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "be2a24f50780bc85f09cc6ac299bdf1424302742d77221106859c9d8b102126a"
+dependencies = [
+ "arrayvec",
+ "num-traits",
 ]
 
 [[package]]
@@ -3157,6 +3187,32 @@ name = "rux-reactive"
 version = "0.7.0-dev"
 
 [[package]]
+name = "rux-rhai"
+version = "0.7.0-dev"
+dependencies = [
+ "ahash 0.8.12",
+ "arbitrary",
+ "bitflags 2.13.0",
+ "core-error",
+ "document-features",
+ "getrandom 0.3.4",
+ "hashbrown 0.16.1",
+ "libm",
+ "no-std-compat",
+ "num-traits",
+ "once_cell",
+ "rhai_codegen",
+ "rust_decimal",
+ "serde",
+ "serde_json",
+ "smallvec",
+ "smartstring",
+ "thin-vec",
+ "unicode-xid",
+ "web-time",
+]
+
+[[package]]
 name = "rux-runtime"
 version = "0.7.0-dev"
 dependencies = [
@@ -3173,8 +3229,8 @@ dependencies = [
 name = "rux-script"
 version = "0.7.0-dev"
 dependencies = [
- "rhai",
  "rux-reactive",
+ "rux-rhai",
 ]
 
 [[package]]
@@ -3442,6 +3498,9 @@ name = "smallvec"
 version = "1.15.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8ed6a63f02c8539c91a8685a86f4099661ba3da017932f6ebbea6de3f0fa7c90"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "smartstring"
@@ -3450,6 +3509,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3fb72c633efbaa2dd666986505016c32c3044395ceaf881518399d2f4127ee29"
 dependencies = [
  "autocfg",
+ "serde",
  "static_assertions",
  "version_check",
 ]
@@ -3487,6 +3547,12 @@ checksum = "dd538fb6910ac1099850255cf94a94df6551fbdd602454387d0adb2d1ca6dead"
 dependencies = [
  "serde",
 ]
+
+[[package]]
+name = "spin"
+version = "0.7.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9335ac53859132805f619b68dab9229ec74e45ad9c92d5edca2a80240806eb65"
 
 [[package]]
 name = "spirv"
@@ -3610,6 +3676,9 @@ name = "thin-vec"
 version = "0.2.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b0f7e269b48f0a7dd0146680fa24b50cc67fc0373f086a5b2f99bd084639b482"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "thiserror"
@@ -3806,6 +3875,12 @@ name = "unicode-width"
 version = "0.1.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7dd6e30e90baa6f72411720665d41d89b9a3d039dc45b8faea1ddd07f617f6af"
+
+[[package]]
+name = "unicode-xid"
+version = "0.2.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ebc1c04c71510c7f702b52b7c350734c9ff1295c464a03335b00bb84fc54f853"
 
 [[package]]
 name = "utf8_iter"

@@ -54,10 +54,21 @@ gate_version() {
   # Every intra-workspace dependency must match exactly: a plain X.Y.Z
   # requirement does not match an X.Y.Z-dev prerelease, so a half-done bump
   # builds locally and breaks on publish.
+  #
+  # Matched on `path = "crates/`, not on the dependency's name. The name was the
+  # rule until `rhai = { package = "rux-rhai", … }` was added: an intra-workspace
+  # crate can be declared under an alias, so a name-shaped rule silently stops
+  # seeing it, and a dependency this gate cannot see is exactly the one that
+  # ships still saying `-dev`. Every workspace crate has a `crates/` path and no
+  # third-party dependency does, so the path is the honest invariant.
+  #
+  # `rux-highlight` is unversioned (it is `publish = false`), so the `version = `
+  # filter drops it rather than failing it.
   local bad
-  bad="$(grep -nE '^rux-[a-z]+ = \{ version = ' Cargo.toml | grep -v "\"$want\"" || true)"
+  bad="$(grep -nE '^[a-z_-]+ = \{ .*path = "crates/' Cargo.toml \
+         | grep 'version = ' | grep -v "\"$want\"" || true)"
   [[ -z "$bad" ]] || die "workspace.dependencies disagree with the version:"$'\n'"$bad"
-  ok "version is $want, and all rux-* dependencies agree"
+  ok "version is $want, and every workspace dependency agrees"
 }
 
 gate_post() {
@@ -154,7 +165,11 @@ cmd_freeze() {
   # Releasing is what drops the -dev suffix: between releases the workspace
   # carries X.Y.Z-dev, which is the line being built rather than a release.
   sed -i -E "s/^version = \"$version-dev\"/version = \"$version\"/" Cargo.toml
-  sed -i -E "s/^(rux-[a-z]+ = \{ version = )\"$version-dev\"/\1\"$version\"/" Cargo.toml
+  # The dependency name is deliberately loose here, so an intra-workspace crate
+  # declared under an alias (`rhai = { package = "rux-rhai", … }`) is bumped too.
+  # Precision comes from `"$version-dev"` on the right: nothing outside this
+  # workspace carries that string.
+  sed -i -E "s/^([a-z_-]+ = \{ (package = \"[a-z-]+\", )?version = )\"$version-dev\"/\1\"$version\"/" Cargo.toml
   gate_version "$version"
   relock
 
