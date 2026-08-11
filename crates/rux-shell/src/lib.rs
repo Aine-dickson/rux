@@ -685,6 +685,9 @@ const OVERLAY_LINE_H: f32 = 20.0;
 const OVERLAY_TITLE_H: f32 = 26.0;
 /// Warnings listed before the panel stops and says how many are left.
 const OVERLAY_MAX_WARNINGS: usize = 6;
+/// Printed lines get their own cap, so a chatty `print` in a binding cannot
+/// crowd out the warnings that share the panel with it.
+const OVERLAY_MAX_PRINTS: usize = 6;
 
 /// Paint items for the dev overlay: what is wrong with the document, drawn over
 /// the app.
@@ -713,8 +716,21 @@ fn overlay_paints(diag: &rux_runtime::Diagnostics, path: &Path, width: f32) -> O
     let ink = Rgba::new(0.95, 0.95, 0.97, 1.0);
     let muted = Rgba::new(0.78, 0.78, 0.84, 1.0);
 
+    // A panel that is only carrying `print` output is not reporting a problem,
+    // so it does not wear a problem's colours. Amber for a document with nothing
+    // wrong would train the eye to ignore amber.
+    let print_bg = Rgba::new(0.11, 0.14, 0.22, 0.97); // deep slate
+    let print_edge = Rgba::new(0.53, 0.71, 0.98, 1.0); // #89b4fa-ish
+    let print_ink = Rgba::new(0.72, 0.82, 0.99, 1.0);
+
     let is_error = diag.error.is_some();
-    let (bg, edge) = if is_error { (error_bg, error_edge) } else { (warn_bg, warn_edge) };
+    let (bg, edge) = if is_error {
+        (error_bg, error_edge)
+    } else if diag.warnings.is_empty() {
+        (print_bg, print_edge)
+    } else {
+        (warn_bg, warn_edge)
+    };
 
     // Wrap the message text to the panel width so a long error is readable
     // rather than clipped at the edge.
@@ -747,10 +763,30 @@ fn overlay_paints(diag: &rux_runtime::Diagnostics, path: &Path, width: f32) -> O
         ));
     }
 
-    let title = match (&diag.error, diag.warnings.len()) {
-        (Some(_), 0) => format!("rux: {} failed to load", file_name(path)),
-        (Some(_), n) => format!("rux: {} failed to load  ·  {n} warning(s)", file_name(path)),
-        (None, n) => format!("rux: {n} warning(s) in {}", file_name(path)),
+    // `print(…)` output, last, so a real problem is never pushed off the top of
+    // the panel by debugging chatter. Marked with `›` rather than the warnings'
+    // `•`, and inked differently, because the two lists mean opposite things:
+    // one is the document telling you it is broken, the other is you asking it a
+    // question.
+    let prints_shown = diag.prints.len().min(OVERLAY_MAX_PRINTS);
+    for line in &diag.prints[..prints_shown] {
+        lines.extend(
+            wrap_overlay(&format!("› {line}"), text_w).into_iter().map(|l| (l, print_ink)),
+        );
+    }
+    if diag.prints.len() > prints_shown {
+        lines.push((
+            format!("… and {} more printed (full list on stderr)", diag.prints.len() - prints_shown),
+            muted,
+        ));
+    }
+
+    let title = match (&diag.error, diag.warnings.len(), diag.prints.len()) {
+        (Some(_), 0, _) => format!("rux: {} failed to load", file_name(path)),
+        (Some(_), n, _) => format!("rux: {} failed to load  ·  {n} warning(s)", file_name(path)),
+        (None, 0, p) => format!("rux: {p} printed from {}", file_name(path)),
+        (None, n, 0) => format!("rux: {n} warning(s) in {}", file_name(path)),
+        (None, n, p) => format!("rux: {n} warning(s), {p} printed in {}", file_name(path)),
     };
     // The panel covers the app it is describing, and there was no way to move it
     // out of the way. It says so rather than leaving the gesture to be guessed
@@ -4319,6 +4355,7 @@ mod tests {
             error: Some("parse error".into()),
             stale: true,
             warnings: dismissed.warnings.clone(),
+            prints: Vec::new(),
         };
         assert!(
             overlay_visible(&now_broken, Some(&dismissed)),

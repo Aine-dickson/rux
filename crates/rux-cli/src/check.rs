@@ -103,8 +103,11 @@ pub fn run(options: Options) -> i32 {
 /// Load one file and turn whatever it says into diagnostics.
 fn check_file(file: &Path) -> Vec<Diagnostic> {
     // The warning sinks are global. Clear them first so a previous file's
-    // leftovers cannot be attributed to this one.
+    // leftovers cannot be attributed to this one. The `print` sink goes with
+    // them: `rux check` never reports prints, so anything left in it would be
+    // carried silently into whichever document happens to be built next.
     let _ = rux_runtime::take_warnings();
+    let _ = rux_runtime::take_prints();
 
     match Document::load_checked(file) {
         Ok(doc) => doc
@@ -123,9 +126,10 @@ fn check_file(file: &Path) -> Vec<Diagnostic> {
             })
             .collect(),
         Err(err) => {
-            // A failed load can still have warned on its way down, and those
-            // would otherwise surface against the next file.
+            // A failed load can still have warned or printed on its way down, and
+            // those would otherwise surface against the next file.
             let _ = rux_runtime::take_warnings();
+            let _ = rux_runtime::take_prints();
             vec![Diagnostic {
                 // A `use`d component reports against its own file, not the one
                 // that imported it, so the squiggle lands where the mistake is.

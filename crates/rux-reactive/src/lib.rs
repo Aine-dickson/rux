@@ -115,7 +115,15 @@ impl Value {
     pub fn to_display(&self) -> String {
         match self {
             Value::Number(n) => {
-                if n.fract() == 0.0 {
+                // Spelled the way JavaScript spells them, not the way Rust does.
+                // Rust renders these "NaN", "inf" and "-inf"; a document that
+                // divided by zero should not show its reader a word from a
+                // language they are not writing in.
+                if n.is_nan() {
+                    "NaN".to_string()
+                } else if n.is_infinite() {
+                    if *n > 0.0 { "Infinity".to_string() } else { "-Infinity".to_string() }
+                } else if n.fract() == 0.0 {
                     format!("{}", *n as i64)
                 } else {
                     format!("{n}")
@@ -150,14 +158,27 @@ impl Value {
         }
     }
 
-    /// Truthiness for conditions: non-zero / non-empty / true.
+    /// Truthiness for conditions, matching JavaScript exactly.
+    ///
+    /// Falsy: `false`, `0`, `NaN`, `""`, and the empty value. Everything else is
+    /// truthy, **including an empty list and an empty map**.
+    ///
+    /// Those last two changed in v0.7 and are the only surprising part. An empty
+    /// list used to be falsy, which reads better in isolation: `r-if="items"`
+    /// meaning "there are items" is what most people would guess. It was dropped
+    /// anyway, because a rule that is *almost* JavaScript is worse than either
+    /// following it or visibly departing from it. Someone who knows the language
+    /// Rux is modelled on should never have to discover a private exception, and
+    /// `r-if="items.length"` says what it means without one.
+    ///
+    /// `NaN` is falsy because JavaScript says so, and because it is the honest
+    /// answer for a number that is not one.
     pub fn is_truthy(&self) -> bool {
         match self {
-            Value::Number(n) => *n != 0.0,
+            Value::Number(n) => *n != 0.0 && !n.is_nan(),
             Value::Text(s) => !s.is_empty(),
             Value::Bool(b) => *b,
-            Value::List(items) => !items.is_empty(),
-            Value::Map(entries) => !entries.is_empty(),
+            Value::List(..) | Value::Map(..) => true,
         }
     }
 
@@ -228,10 +249,20 @@ mod tests {
             "a, 2"
         );
 
+        // JavaScript's rules exactly, as of v0.7.
         assert!(Value::Number(1.0).is_truthy());
         assert!(!Value::Number(0.0).is_truthy());
+        assert!(!Value::Number(f64::NAN).is_truthy(), "NaN is falsy, as in JS");
         assert!(!Value::Text(String::new()).is_truthy());
-        assert!(!Value::List(Vec::new()).is_truthy());
+        assert!(Value::Text("0".into()).is_truthy(), "a non-empty string is truthy");
+        assert!(Value::Bool(true).is_truthy());
+        assert!(!Value::Bool(false).is_truthy());
+        // The one that changed, and the one worth pinning: an empty list used
+        // to be falsy. JS says every object is truthy, and a rule that is almost
+        // JavaScript is worse than one that is or is not. `items.length` is how
+        // you ask whether there are any.
+        assert!(Value::List(Vec::new()).is_truthy());
+        assert!(Value::Map(Vec::new()).is_truthy());
     }
 
     #[test]

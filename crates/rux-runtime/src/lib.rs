@@ -219,11 +219,37 @@ pub struct Diagnostics {
     /// the last good UI rather than blanking the window).
     pub stale: bool,
     pub warnings: Vec<Warning>,
+    /// What the script asked to show with `print(…)` / `debug(…)` during this
+    /// build.
+    ///
+    /// Kept apart from `warnings` rather than folded in, because the two are not
+    /// the same kind of thing: a warning is something wrong with the document and
+    /// a print is the author deliberately asking a question. Merging them would
+    /// fill the list of problems with output that is working exactly as intended,
+    /// and `rux check` would start failing on a document whose only sin is a
+    /// leftover `print`.
+    ///
+    /// It reaches the overlay for the same reason the warnings do: nobody running
+    /// a GUI app is watching stderr, so printf-debugging that only went there
+    /// would not be debugging at all.
+    pub prints: Vec<String>,
 }
 
 impl Diagnostics {
+    /// Whether there is anything to show at all, prints included.
+    ///
+    /// Deliberately not "is anything wrong": the overlay uses this to decide
+    /// whether to appear, and a print with nowhere to appear is useless.
     pub fn is_empty(&self) -> bool {
-        self.error.is_none() && self.warnings.is_empty()
+        self.error.is_none() && self.warnings.is_empty() && self.prints.is_empty()
+    }
+
+    /// Whether something is actually *wrong*, as opposed to merely worth showing.
+    ///
+    /// This is the question `rux check` and CI ask, and the reason it is separate
+    /// from [`is_empty`](Self::is_empty): a `print` must not fail a build.
+    pub fn has_problems(&self) -> bool {
+        self.error.is_some() || !self.warnings.is_empty()
     }
 }
 
@@ -352,6 +378,16 @@ fn collect_warnings() -> Vec<Warning> {
 /// document in a row needs to be able to clear them between files.
 pub fn take_warnings() -> Vec<Warning> {
     collect_warnings()
+}
+
+/// Drain the `print(…)` sink without building anything.
+///
+/// Same hazard as [`take_warnings`], and it needs the same escape: the sink is
+/// global and is only emptied by a *successful* build, so a load that fails
+/// partway leaves whatever the script printed sitting there, ready to be
+/// attributed to the next document checked.
+pub fn take_prints() -> Vec<String> {
+    rux_script::take_logs()
 }
 
 /// Stop mirroring warnings to stderr as they are raised. Covers both sinks, so a
@@ -525,9 +561,11 @@ impl Document {
             registry,
             state: InteractionState::default(),
             viewport: Viewport::default(),
-            // Whatever the build just complained about, ready for the overlay.
+            // Whatever the build just complained about, or printed, ready for the
+            // overlay.
             diagnostics: Diagnostics {
                 warnings: collect_warnings(),
+                prints: rux_script::take_logs(),
                 ..Diagnostics::default()
             },
             instances,
@@ -582,6 +620,7 @@ impl Document {
             viewport: Viewport::default(),
             diagnostics: Diagnostics {
                 warnings: collect_warnings(),
+                prints: rux_script::take_logs(),
                 ..Diagnostics::default()
             },
             instances,
@@ -754,6 +793,7 @@ impl Document {
             // every binding, so it re-raises exactly what this document still has
             // wrong.
             self.diagnostics.warnings = collect_warnings();
+            self.collect_prints();
         }
     }
 
@@ -1019,10 +1059,37 @@ impl Document {
         let _ = rux_script::take_emissions();
         let _ = rux_script::take_navigations();
         let ran = self.dispatch_handler(src, instance, 0);
+        // Whatever the handler printed. Collected here as well as in `rebuild`
+        // because a handler usually *patches* rather than rebuilds, so the
+        // rebuild path is not on the way out of a tap, and printf-debugging that
+        // only worked when a tap happened to change the tree's shape would be
+        // worse than none.
+        self.collect_prints();
         // Navigation is applied once, after the handler and everything it set
         // off have finished. A handler that navigates and then writes a signal
         // would otherwise render the old route with the new state in it.
         self.apply_navigations() || ran
+    }
+
+    /// Move whatever the script has printed since the last collection onto the
+    /// diagnostics, replacing the previous batch.
+    ///
+    /// Replacing rather than appending, because a `print` in a binding runs on
+    /// every single build and an accumulating list would grow without bound with
+    /// the newest line sinking off the end of the panel.
+    ///
+    /// Nothing is replaced when nothing new was printed. That makes the call
+    /// order-independent, which matters because a tap can reach here through
+    /// either a patch or a rebuild and the two run in different orders; whichever
+    /// runs first takes the lines, and the rest are no-ops instead of a race that
+    /// blanks the panel. It also means the last thing printed stays readable
+    /// until something supersedes it, rather than vanishing on the next unrelated
+    /// repaint.
+    fn collect_prints(&mut self) {
+        let fresh = rux_script::take_logs();
+        if !fresh.is_empty() {
+            self.diagnostics.prints = fresh;
+        }
     }
 
     /// Apply whatever `navigate`/`back`/`forward` the last run asked for.
@@ -3549,6 +3616,95 @@ mod tests {
             "undefined var reported: {warnings:?}"
         );
         assert!(doc.diagnostics().error.is_none(), "the document still built");
+    }
+
+    /// `print(…)` reaches the overlay, and is not mistaken for a problem.
+    ///
+    /// Both halves matter. Printf-debugging that only reached stderr would not
+    /// be debugging at all for someone running a GUI, which is why it is carried
+    /// on the diagnostics at all. And a leftover `print` must not fail
+    /// `rux check` or turn the overlay amber, which is why it is a field of its
+    /// own rather than one more warning.
+    #[test]
+    fn prints_reach_the_overlay_without_becoming_problems() {
+        let _ = take_warnings();
+        let _ = take_prints();
+        let doc = Document::from_source(
+            "<template><screen><text>{{ n }}</text></screen></template>
+             <script>let n = signal(2); print(\"n started at \" + n);</script>",
+        )
+        .expect("load");
+
+        assert_eq!(doc.diagnostics().prints, vec!["n started at 2"]);
+        // A whole number prints as "2", the way `{{ n }}` renders it, rather
+        // than as rhai's "2.0".
+        assert!(doc.diagnostics().warnings.is_empty(), "a print is not a warning");
+        assert!(doc.diagnostics().error.is_none());
+        // Nothing is wrong, so `rux check` passes …
+        assert!(!doc.diagnostics().has_problems(), "a print must not fail a check");
+        // … but the overlay still has something to show.
+        assert!(!doc.diagnostics().is_empty(), "and it still reaches the screen");
+    }
+
+    /// A print from a handler survives the rebuild that the handler triggers.
+    /// This is where printf-debugging is actually used, so it is the case that
+    /// has to work.
+    #[test]
+    fn a_print_from_a_handler_reaches_the_overlay() {
+        let _ = take_warnings();
+        let _ = take_prints();
+        let mut doc = Document::from_source(
+            "<template><screen><text @tap=\"n = n + 1; print(`now ${n}`)\">go</text></screen></template>
+             <script>let n = signal(0);</script>",
+        )
+        .expect("load");
+        assert!(doc.diagnostics().prints.is_empty(), "nothing printed at build");
+
+        let tap = doc.root.children[0].on_tap.clone().expect("a tap handler");
+        assert!(doc.apply_handler(&tap));
+        assert_eq!(doc.diagnostics().prints, vec!["now 1"]);
+
+        // The next build replaces the list rather than appending to it, so a
+        // print in a binding cannot grow the panel without bound.
+        assert!(doc.apply_handler(&tap));
+        assert_eq!(doc.diagnostics().prints, vec!["now 2"]);
+    }
+
+    /// A handler written as a named `fn`, driven through a real tap, updating
+    /// the screen.
+    ///
+    /// The whole point of lexical scoping, end to end rather than in the script
+    /// tier alone. Every handler in every example is inline because this did not
+    /// work: a `fn` could not see a signal, let alone write one. What is checked
+    /// here is not that the call succeeds but that the *rendered text changes*,
+    /// since a write the reactivity graph does not notice would leave the screen
+    /// exactly as it was.
+    #[test]
+    fn a_named_function_can_be_a_handler() {
+        let mut doc = Document::from_source(
+            "<template><screen><text @tap=\"bump()\">{{ n }}</text></screen></template>
+             <script>
+               let n = signal(0);
+               fn bump() { n++ }
+             </script>",
+        )
+        .expect("load");
+
+        let text = |doc: &Document| {
+            doc.root.children[0]
+                .text
+                .iter()
+                .map(|t| t.text.clone())
+                .collect::<String>()
+        };
+        assert_eq!(text(&doc), "0");
+
+        let tap = doc.root.children[0].on_tap.clone().expect("a tap handler");
+        assert!(doc.apply_handler(&tap));
+        assert_eq!(text(&doc), "1", "the screen moved, so the write was seen");
+        assert!(doc.apply_handler(&tap));
+        assert_eq!(text(&doc), "2");
+        assert!(doc.diagnostics().warnings.is_empty(), "{:?}", doc.diagnostics());
     }
 
     /// A clean document reports nothing, so the overlay stays out of the way.

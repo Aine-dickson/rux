@@ -24,8 +24,13 @@
       </view>
       <!-- `params` is readable out here, outside the matched view. The view
            gets `id` as a prop; this line is in the document's own layout and
-           could not see it before. -->
-      <text class="who" r-if="params.id != ()">viewing: {{ params.id }}</text>
+           could not see it before.
+
+           `params?.id` rather than `params.id`: reading a property that is not
+           there is an error now rather than silently `()`, and `?.` is how you
+           say that absent is a legitimate answer. Most routes capture no `id`,
+           so this is one of them. -->
+      <text class="who" r-if="params?.id">viewing: {{ params.id }}</text>
     </view>
 
     <view class="footer">

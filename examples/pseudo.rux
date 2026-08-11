@@ -15,7 +15,7 @@
     </view>
 
     <view class="row">
-      <view class="btn" @tap="taps = taps + 1">
+      <view class="btn" @tap="taps++">
         <text class="btn-label">press and hold</text>
       </view>
       <text class="echo">taps: {{ taps }}</text>

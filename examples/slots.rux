@@ -7,7 +7,7 @@
       <panel :title="&quot;stats&quot;" :badge="count + &quot; today&quot;">
         <text class="stat">{{ count }}</text>
         <text class="note">taps so far</text>
-        <view class="btn" @tap="count = count + 1">
+        <view class="btn" @tap="count++">
           <text class="btn-label">one more</text>
         </view>
       </panel>

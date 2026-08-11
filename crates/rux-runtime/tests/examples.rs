@@ -175,3 +175,43 @@ fn every_example_is_warning_free() {
         noisy.join("\n")
     );
 }
+
+/// The keyed-list example's `order()` and `rotate()` still say what they said.
+///
+/// Both were rewritten in v0.7 to use the JS-named collection methods and an
+/// arrow function, which turned a six-line loop into one line. `rux check` only
+/// reports warnings, so nothing else in the suite would notice if the shorter
+/// version quietly produced a different string, and the whole point of the
+/// example is that rows keep their identity across a reorder.
+#[test]
+fn the_keyed_list_example_still_orders_correctly() {
+    fn texts(node: &rux_layout::Node) -> Vec<String> {
+        let mut out: Vec<String> = node.text.iter().map(|t| t.text.clone()).collect();
+        for child in &node.children {
+            out.extend(texts(child));
+        }
+        out
+    }
+    let order = |doc: &Document| {
+        texts(&doc.root)
+            .into_iter()
+            .find(|t| t.starts_with("Order: "))
+            .expect("the footer line")
+    };
+
+    let mut doc = Document::load(examples_dir().join("keyed-list.rux")).expect("loads");
+    assert_eq!(order(&doc), "Order: one, two, three");
+
+    // Rotating moves the last row to the front, and `order()` reports it.
+    let tap = {
+        fn find(node: &rux_layout::Node) -> Option<&rux_layout::Node> {
+            if node.on_tap.is_some() {
+                return Some(node);
+            }
+            node.children.iter().find_map(find)
+        }
+        find(&doc.root).expect("a rotate button").on_tap.clone().unwrap()
+    };
+    assert!(doc.apply_handler(&tap));
+    assert_eq!(order(&doc), "Order: three, one, two");
+}
