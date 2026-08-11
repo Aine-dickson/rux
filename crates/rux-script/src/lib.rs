@@ -40,6 +40,22 @@ pub struct ElementFacts {
     pub tag: String,
     pub id: Option<String>,
     pub classes: Vec<String>,
+    /// Where the last laid-out frame put this node, if it was in one.
+    ///
+    /// `None` has two honest causes and script cannot tell them apart, nor
+    /// should it: nothing has been laid out yet (`rux check` has no window and
+    /// no GPU, which is the point of it running in CI), or the node is hidden
+    /// by `r-show="false"` and so is not on screen to have a box.
+    pub bounds: Option<ElementBox>,
+}
+
+/// A laid-out box in absolute window pixels.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ElementBox {
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
 }
 
 /// Resolves a selector against the tree the last build produced.
@@ -98,6 +114,50 @@ fn register_elements(engine: &mut RhaiEngine) {
         .register_get("classes", |e: &mut ElementHandle| {
             e.facts.classes.iter().cloned().map(Dynamic::from).collect::<rhai::Array>()
         });
+
+    // Geometry, from the frame that is currently on screen.
+    //
+    // **One frame stale, and that is the guarantee, not a defect.** A handler
+    // runs before the next layout, so it reads the numbers the last one
+    // produced, exactly as `getBoundingClientRect` does in a browser. Anything
+    // else would mean laying out mid-handler, from within a tap that is about
+    // to change the very state the layout depends on.
+    //
+    // Absent rather than zero when there is no frame to read, so "not laid out"
+    // stays distinguishable from "laid out, and genuinely zero wide".
+    fn dimension(
+        e: &ElementHandle,
+        pick: impl Fn(&ElementBox) -> f32,
+    ) -> Dynamic {
+        match &e.facts.bounds {
+            Some(b) => Dynamic::from(pick(b) as f64),
+            None => Dynamic::UNIT,
+        }
+    }
+    engine
+        .register_get("x", |e: &mut ElementHandle| dimension(e, |b| b.x))
+        .register_get("y", |e: &mut ElementHandle| dimension(e, |b| b.y))
+        .register_get("width", |e: &mut ElementHandle| dimension(e, |b| b.width))
+        .register_get("height", |e: &mut ElementHandle| dimension(e, |b| b.height));
+
+    // The actions. Each records an intent and returns nothing; the runtime
+    // applies them after the handler has finished, so a handler that focuses
+    // something and then changes state does not race its own tree.
+    engine
+        .register_fn("focus", |e: &mut ElementHandle| {
+            let path = e.facts.path.clone();
+            ELEMENT_ACTIONS.with(|a| a.borrow_mut().push(ElementAction::Focus(path)));
+        })
+        .register_fn("scrollIntoView", |e: &mut ElementHandle| {
+            let path = e.facts.path.clone();
+            ELEMENT_ACTIONS.with(|a| a.borrow_mut().push(ElementAction::ScrollIntoView(path)));
+        });
+    // `blur()` is free-standing rather than a method, because there is only one
+    // focused element and blurring "this one" would either do nothing or take
+    // focus from something else.
+    engine.register_fn("blur", || {
+        ELEMENT_ACTIONS.with(|a| a.borrow_mut().push(ElementAction::Blur));
+    });
 
     engine.register_fn(
         "query",
@@ -710,6 +770,39 @@ pub fn take_navigations() -> Vec<Nav> {
     NAVIGATIONS.with(|n| std::mem::take(&mut *n.borrow_mut()))
 }
 
+/// Something a handler asked to happen to an element.
+///
+/// None of these edits the tree, which is why they can exist at all: they move
+/// host state (what has focus, where a scroller is scrolled to) and the next
+/// build reproduces the tree exactly as before.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ElementAction {
+    /// Put the caret in this element, if it is an input.
+    Focus(Vec<usize>),
+    /// Drop focus entirely. Takes no element: there is only one focused thing,
+    /// and asking a *particular* element to blur when it is not the focused one
+    /// would either do nothing or steal focus from elsewhere, both surprising.
+    Blur,
+    /// Scroll whatever scroller contains this element until it is visible.
+    ScrollIntoView(Vec<usize>),
+}
+
+thread_local! {
+    /// Element actions asked for since the last drain, in order.
+    ///
+    /// A sink for exactly the reason [`EMISSIONS`] and [`NAVIGATIONS`] are: what
+    /// focusing something *means* (which input, which row, where the caret
+    /// lands) belongs to the runtime and the shell, and a script function
+    /// cannot reach either. This is the fourth use of that idiom rather than a
+    /// new mechanism.
+    static ELEMENT_ACTIONS: RefCell<Vec<ElementAction>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Take the element actions asked for since the last call, emptying the sink.
+pub fn take_element_actions() -> Vec<ElementAction> {
+    ELEMENT_ACTIONS.with(|a| std::mem::take(&mut *a.borrow_mut()))
+}
+
 thread_local! {
     /// Named routes, as `(name, pattern)` in the order written, so `path_for`
     /// can build a path from a name and some parameters.
@@ -1098,6 +1191,19 @@ impl Engine {
     /// half. Detected by diffing the signal values across the run, so it needs no
     /// cooperation from the handler source (which is arbitrary rhai). Returns an
     /// empty set if the handler errored or changed nothing.
+    /// Whether `src` is syntactically a script at all, without running it.
+    ///
+    /// Syntax only, deliberately. A handler names things that do not exist
+    /// until it runs (an `r-for` local, a component's own state), and those are
+    /// runtime lookups rather than compile errors, so compiling cannot produce
+    /// a false alarm about them. What it does catch is a handler that could
+    /// never run under any state, which until now reached the window and did
+    /// nothing at all, silently, because nothing compiles a handler until the
+    /// moment it is tapped.
+    pub fn check_syntax(&self, src: &str) -> Result<(), String> {
+        self.engine.compile(src).map(|_| ()).map_err(|e| rux_phrasing(&e.to_string()))
+    }
+
     pub fn run_handler_tracked(&mut self, src: &str) -> HashSet<String> {
         let names: Vec<String> = self.signals.iter().cloned().collect();
         let before: HashMap<String, Option<Value>> =
@@ -2091,12 +2197,15 @@ mod tests {
                     tag: "view".into(),
                     id: Some("first".into()),
                     classes: vec!["card".into()],
+                    bounds: Some(ElementBox { x: 4.0, y: 8.0, width: 120.0, height: 40.0 }),
                 },
                 ElementFacts {
                     path: vec![0, 1],
                     tag: "view".into(),
                     id: None,
                     classes: vec!["card".into(), "wide".into()],
+                    // Stands for a node with no box: hidden, or never laid out.
+                    bounds: None,
                 },
             ]),
             "!" => None, // stands for a selector that does not parse
@@ -2115,6 +2224,56 @@ mod tests {
             // A selector that matches nothing is an empty list, not an error.
             assert_eq!(e.eval_display("query(\".nope\").length", &[]), "0");
         });
+    }
+
+    /// Geometry reads back as plain numbers, so it does arithmetic like any
+    /// other number in the language.
+    #[test]
+    fn geometry_reads_back_as_numbers() {
+        let mut e = engine();
+        with_elements(cards(), || {
+            assert_eq!(e.eval_display("query(\".card\")[0].width", &[]), "120");
+            assert_eq!(e.eval_display("query(\".card\")[0].height", &[]), "40");
+            assert_eq!(e.eval_display("query(\".card\")[0].x", &[]), "4");
+            assert_eq!(e.eval_display("query(\".card\")[0].y", &[]), "8");
+            // And it is a number, not a string that happens to look like one.
+            assert_eq!(e.eval_display("query(\".card\")[0].width / 2", &[]), "60");
+        });
+    }
+
+    /// A node with no box reads as absent, never as zero. "Not laid out" and
+    /// "laid out, and genuinely zero wide" are different answers and a script
+    /// has to be able to tell them apart.
+    #[test]
+    fn geometry_of_an_unlaid_node_is_absent_not_zero() {
+        let mut e = engine();
+        with_elements(cards(), || {
+            assert_eq!(e.eval_display("query(\".card\")[1].width ?? \"none\"", &[]), "none");
+        });
+    }
+
+    /// The actions record an intent and nothing more. What focusing *means*
+    /// belongs to the runtime, which is why this is a queue and not a call.
+    #[test]
+    fn the_actions_queue_rather_than_act() {
+        let mut e = engine();
+        let _ = take_element_actions();
+        with_elements(cards(), || {
+            e.eval_display("query(\".card\")[0].focus()", &[]);
+            e.eval_display("query(\".card\")[1].scrollIntoView()", &[]);
+            e.eval_display("blur()", &[]);
+        });
+
+        assert_eq!(
+            take_element_actions(),
+            vec![
+                ElementAction::Focus(vec![0, 0]),
+                ElementAction::ScrollIntoView(vec![0, 1]),
+                ElementAction::Blur,
+            ],
+            "in the order they were asked for"
+        );
+        assert!(take_element_actions().is_empty(), "draining empties the sink");
     }
 
     /// An absent id reads as absent, so `??` works on it like anything else.

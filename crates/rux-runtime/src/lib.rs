@@ -79,7 +79,49 @@ pub struct Document {
     /// happened since the shell last looked, so whatever the user has scrolled
     /// to stands.
     pending_scroll: Option<Vec<Offset>>,
+    /// Where the last laid-out frame put each node, handed in by the shell.
+    ///
+    /// Owned here because a handler runs against the document, not the window,
+    /// and it is what `query()` reads geometry from. Empty until a frame has
+    /// been laid out, which is the permanent state under `rux check`: it has no
+    /// window and no GPU on purpose, so geometry there is absent rather than
+    /// wrong.
+    metrics: Vec<rux_layout::NodeMetrics>,
+    /// `scrollIntoView` requests the shell has not taken yet. Focus and blur are
+    /// applied here; scrolling is the shell's, since the offsets are.
+    pending_reveals: Vec<Vec<usize>>,
     pub root: LayoutNode,
+}
+
+/// Compile every event handler in a template once, at load, and warn about any
+/// that could not be compiled at all.
+///
+/// Nothing compiles a handler until the moment it is tapped, so a handler with a
+/// syntax error used to reach the window, sit there looking like a button, and
+/// do nothing when pressed, with the failure arriving only if somebody happened
+/// to tap it while watching stderr. `rux check` did not catch it either, because
+/// checking reuses the loader and the loader never looked.
+///
+/// Syntax only. A handler legitimately names things that do not exist until it
+/// runs, an `r-for` local or a component's own state, and those are runtime
+/// lookups rather than compile errors, so this cannot cry wolf about them.
+///
+/// Every handler in the template is checked, not only the ones currently on
+/// screen, so a branch behind a false `r-if` is covered too.
+fn check_handlers(template: &rux_parser::Element, engine: &rux_script::Engine) {
+    for (name, value) in &template.attrs {
+        if !name.starts_with('@') || value.trim().is_empty() {
+            continue;
+        }
+        if let Err(why) = engine.check_syntax(value) {
+            rux_script::warn_script(format!("`{name}` handler will never run: {why}"));
+        }
+    }
+    for child in &template.children {
+        if let rux_parser::Node::Element(el) = child {
+            check_handlers(el, engine);
+        }
+    }
 }
 
 /// The paths visited, and where along them we are.
@@ -552,6 +594,12 @@ impl Document {
         let (mut root, registry) = rux_style::build_styled_tree_tracked(&sfc, &components, &mut engine, &mut instances)
             .map_err(LoadError::plain)?;
         resolve_images(&mut root, base);
+        // Before the warnings are drained below, so a handler that cannot
+        // compile is reported by `rux check` and by the overlay alike.
+        check_handlers(&sfc.template, &engine);
+        for component in components.values() {
+            check_handlers(&component.template, &engine);
+        }
         let mut doc = Self {
             sfc,
             components,
@@ -573,6 +621,8 @@ impl Document {
             effects,
             history: History::default(),
             pending_scroll: None,
+            metrics: Vec::new(),
+            pending_reveals: Vec::new(),
             root,
         };
         doc.init_reactive();
@@ -609,6 +659,7 @@ impl Document {
                 .map_err(LoadError::plain)?;
         let base = PathBuf::from(".");
         resolve_images(&mut root, &base);
+        check_handlers(&sfc.template, &engine);
         let mut doc = Self {
             sfc,
             components: HashMap::new(),
@@ -628,6 +679,8 @@ impl Document {
             effects,
             history: History::default(),
             pending_scroll: None,
+            metrics: Vec::new(),
+            pending_reveals: Vec::new(),
             root,
         };
         doc.init_reactive();
@@ -670,6 +723,11 @@ impl Document {
     }
 
     /// Focus an input (by `r-model`), with its caret and selection. `None` clears.
+    /// What currently holds the caret, if anything.
+    pub fn focus(&self) -> Option<&Focus> {
+        self.focus.as_ref()
+    }
+
     pub fn set_focus(&mut self, focus: Option<Focus>) {
         self.focus = focus;
         apply_focus(&mut self.root, self.focus.as_ref());
@@ -1058,6 +1116,10 @@ impl Document {
         // same goes for a `navigate` evaluated during a build.
         let _ = rux_script::take_emissions();
         let _ = rux_script::take_navigations();
+        // Same reasoning for element actions: a build evaluates every binding,
+        // and although a binding cannot call `query()`, an action left over
+        // from an earlier handler must not be delivered to this one.
+        let _ = rux_script::take_element_actions();
         let ran = self.dispatch_handler(src, instance, 0);
         // Whatever the handler printed. Collected here as well as in `rebuild`
         // because a handler usually *patches* rather than rebuilds, so the
@@ -1068,7 +1130,8 @@ impl Document {
         // Navigation is applied once, after the handler and everything it set
         // off have finished. A handler that navigates and then writes a signal
         // would otherwise render the old route with the new state in it.
-        self.apply_navigations() || ran
+        let acted = self.apply_element_actions();
+        self.apply_navigations() || acted || ran
     }
 
     /// Move whatever the script has printed since the last collection onto the
@@ -1332,12 +1395,25 @@ impl Document {
     /// rebuild the tree anyway.
     fn element_resolver(&self) -> rux_script::ElementResolver {
         let index = self.registry.elements.clone();
+        // Geometry comes from the frame already on screen, so a handler reads
+        // last layout's numbers. That is the same guarantee the browser gives,
+        // and the alternative is laying out in the middle of a tap that is
+        // about to change what the layout depends on.
+        let metrics = self.metrics.clone();
         std::sync::Arc::new(move |selector: &str| {
             Some(
                 index
                     .query(selector)?
                     .into_iter()
                     .map(|m| rux_script::ElementFacts {
+                        bounds: metrics.iter().find(|e| e.path == m.path).map(|e| {
+                            rux_script::ElementBox {
+                                x: e.x,
+                                y: e.y,
+                                width: e.width,
+                                height: e.height,
+                            }
+                        }),
                         path: m.path,
                         tag: m.tag,
                         id: m.id,
@@ -1346,6 +1422,66 @@ impl Document {
                     .collect(),
             )
         })
+    }
+
+    /// Record where the last laid-out frame put everything.
+    ///
+    /// Called by the shell each frame. Without it `query()` still resolves and
+    /// the handles still carry what they are, but their geometry is absent,
+    /// which is exactly the state `rux check` runs in.
+    pub fn set_metrics(&mut self, metrics: Vec<rux_layout::NodeMetrics>) {
+        self.metrics = metrics;
+    }
+
+    /// Take the `scrollIntoView` requests the last handler made.
+    ///
+    /// The shell's, because the scroll offsets are the shell's. Focus and blur
+    /// are applied by the document itself, since focus lives here.
+    pub fn take_reveals(&mut self) -> Vec<Vec<usize>> {
+        std::mem::take(&mut self.pending_reveals)
+    }
+
+    /// Apply whatever `focus()`, `blur()` and `scrollIntoView()` the last run
+    /// asked for.
+    ///
+    /// After the handler rather than during it, so a handler that focuses an
+    /// input and then writes a signal does not fight the rebuild its own write
+    /// causes. Later calls win, as with navigation.
+    fn apply_element_actions(&mut self) -> bool {
+        let mut acted = false;
+        for action in rux_script::take_element_actions() {
+            match action {
+                rux_script::ElementAction::Blur => {
+                    self.set_focus(None);
+                    acted = true;
+                }
+                rux_script::ElementAction::Focus(path) => {
+                    // Focus is keyed by `r-model` and row, not by path: that is
+                    // how the shell tracks it and what survives a reconcile
+                    // moving nodes around. So an element is focusable exactly
+                    // when it is an input, and asking anything else to take
+                    // focus is a no-op rather than a silent half-state.
+                    let found = node_at(&self.root, &path)
+                        .and_then(|n| n.model.clone().map(|m| (m, n.key.clone())));
+                    if let Some((model, row)) = found {
+                        let caret = self.engine.get_string(&model).chars().count();
+                        self.set_focus(Some(Focus::at_row(model, row, caret)));
+                        acted = true;
+                    } else {
+                        rux_script::warn_script(
+                            "focus() was called on an element that is not a text input, \
+                             so nothing was focused"
+                                .to_string(),
+                        );
+                    }
+                }
+                rux_script::ElementAction::ScrollIntoView(path) => {
+                    self.pending_reveals.push(path);
+                    acted = true;
+                }
+            }
+        }
+        acted
     }
 
     fn dispatch_handler(&mut self, src: &str, instance: Option<&str>, depth: usize) -> bool {
@@ -4285,6 +4421,173 @@ mod tests {
         assert!(doc.apply_handler("open = true"));
         assert!(doc.apply_handler("found = query(\".card\").length"));
         assert_eq!(text_of(&doc.root)[0], "1", "and reappears once it opens");
+    }
+
+    /// Lay a document out the way the shell would, and give it back its own
+    /// metrics, which is the shell's job every frame.
+    fn lay_out(doc: &mut Document) {
+        let mut measure = |tc: &rux_layout::TextContent, _: Option<f32>| {
+            (tc.text.chars().count() as f32 * 8.0, 16.0)
+        };
+        let layout = rux_layout::layout(&doc.root, 1000.0, 800.0, &mut measure);
+        doc.set_metrics(layout.metrics);
+    }
+
+    /// Geometry comes back once a frame has been laid out, and it is the box
+    /// that frame produced.
+    #[test]
+    fn a_handle_reads_the_geometry_of_the_last_frame() {
+        let mut doc = Document::from_source(
+            r#"<template><screen>
+                <text>{{ found }}</text>
+                <view class="card" style="width: 120px; height: 40px"></view>
+            </screen></template>
+            <script>let found = "-";</script>"#,
+        )
+        .unwrap();
+        lay_out(&mut doc);
+
+        assert!(doc.apply_handler("found = query(\".card\")[0].width"));
+        assert_eq!(text_of(&doc.root)[0], "120");
+        assert!(doc.apply_handler("found = query(\".card\")[0].height"));
+        assert_eq!(text_of(&doc.root)[0], "40");
+    }
+
+    /// With no frame laid out there is no geometry, and it reads as absent
+    /// rather than as zero. This is the permanent state under `rux check`, which
+    /// has no window and no GPU on purpose, so a document must still check.
+    #[test]
+    fn geometry_is_absent_rather_than_zero_before_any_layout() {
+        let mut doc = Document::from_source(
+            r#"<template><screen>
+                <text>{{ found }}</text>
+                <view class="card" style="width: 120px"></view>
+            </screen></template>
+            <script>let found = "-";</script>"#,
+        )
+        .unwrap();
+
+        assert!(doc.apply_handler("found = query(\".card\")[0].width ?? \"unlaid\""));
+        assert_eq!(text_of(&doc.root)[0], "unlaid");
+    }
+
+    /// `focus()` puts the caret in an input, with the caret at the end of what
+    /// is already there.
+    #[test]
+    fn focus_moves_the_caret_into_an_input() {
+        let mut doc = Document::from_source(
+            r#"<template><screen>
+                <input id="name" r-model="name" />
+            </screen></template>
+            <script>let name = "abc";</script>"#,
+        )
+        .unwrap();
+        assert!(doc.focus.is_none(), "nothing is focused to start with");
+
+        doc.apply_handler("query(\"#name\")[0].focus()");
+        let focus = doc.focus.clone().expect("the input took focus");
+        assert_eq!(focus.model, "name");
+        assert_eq!(focus.caret, 3, "the caret lands after the existing text");
+
+        // …and blur gives it up again.
+        doc.apply_handler("blur()");
+        assert!(doc.focus.is_none());
+    }
+
+    /// Focus is keyed by `r-model`, so only an input can take it. Asking
+    /// anything else says so rather than half-focusing.
+    #[test]
+    fn focusing_something_that_is_not_an_input_is_reported() {
+        let mut doc = Document::from_source(
+            r#"<template><screen><view id="box"></view></screen></template>"#,
+        )
+        .unwrap();
+        let _ = rux_script::take_warnings();
+
+        doc.apply_handler("query(\"#box\")[0].focus()");
+        assert!(doc.focus.is_none());
+        let said: String =
+            rux_script::take_warnings().iter().map(|w| w.message.clone()).collect();
+        assert!(said.contains("not a text input"), "{said:?}");
+    }
+
+    /// `scrollIntoView()` is handed to the shell rather than applied here, since
+    /// the scroll offsets are the shell's. It queues the element that asked.
+    #[test]
+    fn scroll_into_view_is_queued_for_the_shell() {
+        let mut doc = Document::from_source(
+            r#"<template><screen><view id="far"></view></screen></template>"#,
+        )
+        .unwrap();
+        assert!(doc.take_reveals().is_empty());
+
+        doc.apply_handler("query(\"#far\")[0].scrollIntoView()");
+        let reveals = doc.take_reveals();
+        assert_eq!(reveals.len(), 1, "the element is queued");
+        assert!(doc.take_reveals().is_empty(), "and taking it empties the queue");
+    }
+
+    // ── Handlers are compiled at load ───────────────────────────────────────
+
+    /// A handler that cannot compile is reported when the document loads.
+    ///
+    /// Nothing compiled a handler until it was tapped, so a syntax error
+    /// reached the window as a button that looked fine and did nothing. Found
+    /// the hard way: `query('#note')` shipped in an example and checked clean,
+    /// because `'x'` is a character in a script and not a string.
+    #[test]
+    fn a_handler_that_cannot_compile_is_reported_at_load() {
+        let doc = Document::from_source(
+            r#"<template><screen>
+                <button @tap="query('#note')[0].focus()"><text>Tap</text></button>
+            </screen></template>"#,
+        )
+        .unwrap();
+
+        let said: String =
+            doc.diagnostics().warnings.iter().map(|w| w.message.clone()).collect();
+        assert!(said.contains("@tap"), "names the attribute: {said:?}");
+        assert!(said.contains("never run"), "says what it means: {said:?}");
+    }
+
+    /// A handler naming something that only exists at runtime is fine. This is
+    /// syntax checking, and an `r-for` local or a component's own state is a
+    /// lookup, not a compile error, so the check must not cry wolf.
+    #[test]
+    fn a_handler_naming_a_runtime_only_value_is_not_reported() {
+        let doc = Document::from_source(
+            r#"<template><screen>
+                <view r-for="row in rows" r-key="row">
+                    <button @tap="picked = row"><text>{{ row }}</text></button>
+                </view>
+            </screen></template>
+            <script>let rows = ["a", "b"];
+            let picked = "";</script>"#,
+        )
+        .unwrap();
+
+        let said: String =
+            doc.diagnostics().warnings.iter().map(|w| w.message.clone()).collect();
+        assert!(!said.contains("never run"), "the loop local is not a syntax error: {said:?}");
+    }
+
+    /// Every handler in the template, not only the ones on screen: a branch
+    /// behind a false `r-if` is exactly where a broken handler hides longest.
+    #[test]
+    fn a_handler_in_an_unrendered_branch_is_still_checked() {
+        let doc = Document::from_source(
+            r#"<template><screen>
+                <view r-if="never">
+                    <button @tap="query('#x')[0].focus()"><text>Tap</text></button>
+                </view>
+            </screen></template>
+            <script>let never = false;</script>"#,
+        )
+        .unwrap();
+
+        let said: String =
+            doc.diagnostics().warnings.iter().map(|w| w.message.clone()).collect();
+        assert!(said.contains("never run"), "checked though it is not built: {said:?}");
     }
 
     /// Outside a handler the capability does not exist, so a binding that tries

@@ -2809,6 +2809,48 @@ impl App {
         // after the clamp, so what is stored is a position that exists.
         document.record_scroll(offsets);
 
+        // Hand this frame's geometry back, so a handler that runs before the
+        // next one can ask where things are. One frame stale by construction:
+        // these are the boxes currently on screen, which is what a script
+        // asking "where is this" means.
+        document.set_metrics(layout.metrics.clone());
+
+        // `scrollIntoView()`: nudge the containing scroller until the element is
+        // inside it. Applied here because the offsets are the shell's, and taken
+        // after `set_metrics` so a reveal asked for by the handler that just ran
+        // is resolved against the frame it was looking at.
+        let mut revealed = false;
+        for path in document.take_reveals() {
+            let Some(m) = layout.metrics.iter().find(|e| e.path == path) else {
+                continue;
+            };
+            // The innermost scroller containing it. `scrolls` is in tree order,
+            // so the last match is the deepest one, and that is the one whose
+            // offset actually moves this element.
+            let Some(region) = layout.scrolls.iter().rfind(|s| {
+                m.x >= s.x && m.y >= s.y && m.x <= s.x + s.width && m.y <= s.y + s.height
+            }) else {
+                continue;
+            };
+            // The rect is already shifted by the current offset, so the
+            // correction is the overhang, not an absolute position.
+            let off = &mut offsets[region.id];
+            if m.y < region.y {
+                off.y -= region.y - m.y;
+            } else if m.y + m.height > region.y + region.height {
+                off.y += (m.y + m.height) - (region.y + region.height);
+            }
+            *off = off.clamp_to(region.max);
+            revealed = true;
+        }
+        // The corrected offset takes effect on the next layout, so ask for one.
+        // Through `state` rather than `self.request_redraw()`: `self` is already
+        // split-borrowed here so the text engine and the render state can be
+        // held at once.
+        if revealed {
+            state.window.request_redraw();
+        }
+
         // Keep the focused single-line input's caret inside its box.
         //
         // Done here, once per frame, rather than at each place the caret moves:

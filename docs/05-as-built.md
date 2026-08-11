@@ -82,6 +82,14 @@ It loads through the same code the window does, so it cannot disagree with the
 runtime about what a valid file is. **Errors** are failures to load and carry a
 line and column. **Warnings** are the things the dev overlay lists.
 
+**Every event handler is compiled when the document loads**, and one that cannot
+compile is a warning. Nothing compiled a handler until it was tapped, so a
+syntax error used to reach the window as a button that looked right and did
+nothing at all. Handlers in branches that are not currently rendered are checked
+too, since a false `r-if` is where a broken handler hides longest. It is syntax
+only: a handler naming an `r-for` local or a component's own state is fine,
+because those are runtime lookups rather than compile errors.
+
 **CSS warnings carry a line**, in the file's own numbering rather than the
 `<style>` block's. An unhonored property reports the line of the *declaration*,
 so an expanded rule sends you to the property and not to its selector.
@@ -408,12 +416,43 @@ Three rules, all of which are the design rather than temporary limits:
 - **A selector that does not parse is an error**, not an empty result, so a typo
   cannot look like "nothing matched".
 
+**Geometry reads back as `x`, `y`, `width` and `height`**, in absolute window
+pixels, from the frame currently on screen. That makes it **one frame stale**,
+exactly as `getBoundingClientRect` is in a browser: a handler runs before the
+next layout, so it reads what the last one produced.
+
+```rux
+fn measure() {
+  let card = query(".card")[0];
+  report = card.width + " x " + card.height;
+}
+```
+
+Geometry is **absent rather than zero** when there is no frame to read: nothing
+has been laid out yet, or the node is hidden by `r-show="false"` and so has no
+box. `card.width ?? "unknown"` is how to handle it. Under `rux check` it is
+always absent, since checking runs with no window and no GPU on purpose.
+
+**Three actions, which are not tree edits:** `el.focus()`, `blur()` and
+`el.scrollIntoView()`. They change host state (what holds the caret, where a
+scroller sits), so the next build produces the same tree it would have anyway.
+Each records an intent that is applied once the handler has finished, so a
+handler that focuses something and then writes a signal does not race the
+rebuild its own write causes. `blur()` is free-standing rather than a method,
+because there is only one focused element. Only a text input can take focus,
+since focus is keyed by `r-model`; asking anything else says so.
+
+Watch the quoting: `'x'` is a single **character** in a script, not a string, so
+a selector needs `"…"`. Inside a `@tap="…"` attribute there is no room for
+those, which is the practical reason to name the handler and call it.
+
 **There is no way to mutate the tree from script, deliberately.** No setting a
 property, no adding or removing children. A state change regenerates the
 affected tree from the template, so any such edit would be overwritten by the
 next patch, reconcile or rebuild, silently, at a moment decided by an unrelated
-handler. The tree is a function of state, and state is how it changes. Reading
-geometry back (position and size) is not built yet; see the roadmap.
+handler. The tree is a function of state, and state is how it changes.
+
+`examples/element-query.rux` demonstrates all of it.
 
 ### Inputs
 `<input r-model="sig" placeholder="…">`: tap to focus, type to edit. There is a

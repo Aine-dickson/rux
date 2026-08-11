@@ -1666,12 +1666,30 @@ siblings. A second, weaker way to name an element would have been the thing that
 needed justifying, because a document would then have two spellings for one idea
 and a rule about which contexts take which.
 
-**Built 2026-08-11: the query half.** `query(selector)` works from a handler and
-returns handles carrying `tag`, `id` and `classes`; the element index is
-retained from the build and the stylesheet's matcher runs over it unchanged; the
-handler-only rule is enforced by the resolver simply not being installed outside
-one, so it needs no separate check to remember. **Geometry reads and the actions
-are not built yet**, and the paragraph below is why they are the larger half.
+**Built 2026-08-11 and 2026-08-12: all of it.** `query(selector)` works from a
+handler and returns handles carrying `tag`, `id`, `classes` and the geometry of
+the frame on screen; `focus()`, `blur()` and `scrollIntoView()` are queued as
+intents. The element index is retained from the build and the stylesheet's
+matcher runs over it unchanged. The handler-only rule is enforced by the
+resolver simply not being installed outside a handler, so it needs no separate
+check to remember. `examples/element-query.rux` demonstrates it and is driven by
+a test rather than only loaded by one.
+
+Two things worth keeping, both found by building it:
+
+- **Paths reach the layout through the taffy-tree walker, not through
+  `collect`.** `collect` walks taffy ids, so using a child's index there assumes
+  taffy children line up with `LayoutNode` children, and a mismatch would hand
+  back confident, wrong geometry. The walker that builds the tree recurses over
+  `node.children` directly, so its indices are the real ones. Setting
+  `state_path` on every node was also considered and rejected: it would change
+  hover hit-testing as a side effect of an unrelated feature.
+- **Nothing compiled an event handler until it was tapped.** A syntax error in a
+  `@tap` reached the window as a button that looked right and did nothing, and
+  `rux check` missed it too, because checking reuses the loader and the loader
+  never looked. Handlers are now compiled at load. Found by shipping the bug:
+  `query('#note')` sat in an example and checked clean, because `'x'` is a
+  character in a script and not a string.
 
 **The one real cost is that the built tree has forgotten what it is.**
 `ElemDesc`, the `{ tag, id, classes, role, states }` a selector matches against,

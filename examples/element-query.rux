@@ -1,0 +1,147 @@
+<template>
+  <screen class="app">
+    <text class="title">query()</text>
+    <text class="hint">{{ report }}</text>
+
+    <view class="row">
+      <button class="btn" @tap="measure()">
+        <text>Measure the cards</text>
+      </button>
+      <button class="btn" @tap="count()">
+        <text>Count them</text>
+      </button>
+    </view>
+
+    <view class="row">
+      <view class="card" id="one"><text>One</text></view>
+      <view class="card wide" id="two"><text>Two, wider</text></view>
+    </view>
+
+    <view class="row">
+      <button class="btn" @tap="focus_note()">
+        <text>Focus the note</text>
+      </button>
+      <button class="btn" @tap="blur()">
+        <text>Blur</text>
+      </button>
+      <button class="btn" @tap="reveal_end()">
+        <text>Scroll to the end</text>
+      </button>
+    </view>
+
+    <input id="note" class="field" r-model="note" placeholder="Focus me from script" />
+
+    <view class="scroller">
+      <view class="filler"><text>Scroll down, or use the button above.</text></view>
+      <view class="filler"><text>Still going.</text></view>
+      <view class="filler" id="last"><text class="found">The end.</text></view>
+    </view>
+  </screen>
+</template>
+
+<style>
+  .app {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    padding: 24px;
+    background: #1e1e2e;
+  }
+
+  .title { color: #cdd6f4; font-size: 28px; font-weight: 700; }
+  .hint { color: #a6e3a1; font-size: 16px; }
+
+  .row { display: flex; flex-direction: row; gap: 12px; align-items: center; }
+
+  .btn {
+    padding: 10px 16px;
+    background: #313244;
+    border-radius: 8px;
+    color: #cdd6f4;
+    cursor: pointer;
+  }
+  .btn:hover { background: #45475a; }
+
+  .card {
+    width: 120px;
+    height: 64px;
+    background: #313244;
+    border-radius: 8px;
+    color: #cdd6f4;
+    padding: 12px;
+  }
+  .card.wide { width: 220px; background: #45475a; }
+
+  .field {
+    padding: 10px;
+    background: #11111b;
+    border-radius: 8px;
+    color: #cdd6f4;
+    width: 320px;
+  }
+  .field:focus { background: #181825; }
+
+  .scroller {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    height: 140px;
+    overflow: scroll;
+    background: #11111b;
+    border-radius: 8px;
+    padding: 8px;
+  }
+
+  .filler {
+    height: 90px;
+    background: #313244;
+    border-radius: 6px;
+    color: #cdd6f4;
+    padding: 12px;
+  }
+
+  .found { color: #f9e2af; font-weight: 700; }
+</style>
+
+<script>
+  // `query(selector)` asks what is on screen. It takes the same selectors the
+  // stylesheet takes, and it works in a handler and nowhere else: a binding
+  // that read the tree would have to rebuild the tree it just read.
+  let note = signal("");
+  let report = signal("Tap a button.");
+
+  // Focus and scrolling are not tree edits: they move host state, and the next
+  // build produces exactly the tree it would have produced anyway. That is why
+  // script is allowed to ask for them at all.
+  //
+  // Note the double quotes. In a script `'x'` is a single character, not a
+  // string, so a selector goes in `"…"`; naming the handler keeps the quotes
+  // out of the attribute entirely.
+  fn focus_note() {
+    query("#note")[0].focus();
+  }
+
+  fn reveal_end() {
+    query("#last")[0].scrollIntoView();
+  }
+
+  // Geometry comes from the frame already on screen, so it is one frame old,
+  // exactly as it is in a browser. Absent until something has been laid out.
+  fn measure() {
+    let wide = query(".card.wide")[0];
+    report = "the wide card is " + wide.width + " x " + wide.height +
+             " at " + wide.x + ", " + wide.y;
+  }
+
+  // A handle carries what the element is, not only where it is.
+  fn count() {
+    let cards = query(".card");
+    report = cards.length + " cards, the second is ." +
+             cards[1].classes.join(".") + " with id " + (cards[1].id ?? "none");
+  }
+
+  // There is no way to change the tree from here, on purpose. The tree is a
+  // function of state, so a signal is how you change it. What script can do is
+  // read the tree, and ask for things that are not tree edits at all: focus,
+  // blur, and scrolling something into view.
+</script>

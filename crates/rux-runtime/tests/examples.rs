@@ -215,3 +215,56 @@ fn the_keyed_list_example_still_orders_correctly() {
     assert!(doc.apply_handler(&tap));
     assert_eq!(order(&doc), "Order: three, one, two");
 }
+
+/// Drive the element-query example the way a person would, so the feature it
+/// demonstrates is proven rather than merely parsed.
+///
+/// `rux check` loads every example but runs no handler, and every interesting
+/// thing here happens in one. Without this, the example could go on checking
+/// clean long after `query()` stopped answering.
+#[test]
+fn the_element_query_example_measures_and_focuses() {
+    fn texts(node: &rux_layout::Node) -> Vec<String> {
+        let mut out: Vec<String> = node.text.iter().map(|t| t.text.clone()).collect();
+        for child in &node.children {
+            out.extend(texts(child));
+        }
+        out
+    }
+    let said = |doc: &Document, needle: &str| {
+        texts(&doc.root).iter().any(|t| t.contains(needle))
+    };
+
+    let mut doc = Document::load(examples_dir().join("element-query.rux")).expect("loads");
+
+    // Counting needs no layout: it is a fact about the tree, not the frame.
+    assert!(doc.apply_handler("count()"), "the tap changed state");
+    assert!(said(&doc, "2 cards"), "counted them: {:?}", texts(&doc.root));
+    assert!(said(&doc, ".card.wide"), "and read the classes back");
+    assert!(said(&doc, "id two"), "and the id");
+
+    // Measuring does need one. Stand in for the shell: lay the tree out and
+    // hand the metrics back, which is what the shell does every frame.
+    let mut measure = |tc: &rux_layout::TextContent, _: Option<f32>| {
+        (tc.text.chars().count() as f32 * 8.0, 16.0)
+    };
+    let layout = rux_layout::layout(&doc.root, 1000.0, 800.0, &mut measure);
+    doc.set_metrics(layout.metrics);
+
+    assert!(doc.apply_handler("measure()"));
+    assert!(
+        said(&doc, "the wide card is 220 x 64"),
+        "the wide card's own box, not the plain one's: {:?}",
+        texts(&doc.root)
+    );
+
+    // Focus reaches the input, and blur gives it up.
+    doc.apply_handler("focus_note()");
+    assert!(doc.focus().is_some(), "the note took focus");
+    doc.apply_handler("blur()");
+    assert!(doc.focus().is_none(), "and gave it up");
+
+    // Scrolling is the shell's to apply, so the document queues it.
+    doc.apply_handler("reveal_end()");
+    assert_eq!(doc.take_reveals().len(), 1, "one element asked to be revealed");
+}

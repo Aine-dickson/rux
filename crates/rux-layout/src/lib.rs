@@ -942,6 +942,24 @@ pub struct Layout {
     pub states: Vec<StateRegion>,
     /// Elements exposed to assistive technology, in document order.
     pub access: Vec<AccessNode>,
+    /// Where every laid-out node ended up, for `query()` to read back.
+    pub metrics: Vec<NodeMetrics>,
+}
+
+/// One node's laid-out box, keyed by the same child-index path the binding
+/// registry and the element index use.
+///
+/// Absolute window pixels with any scroll offset already applied, which is what
+/// a script asking "where is this" means. A node hidden by `r-show="false"` has
+/// no entry: it reserves layout space but is not on screen, and geometry is a
+/// property of what is actually shown.
+#[derive(Clone, Debug, PartialEq)]
+pub struct NodeMetrics {
+    pub path: Vec<usize>,
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
 }
 
 /// A node's content box, as an offset from its border-box origin plus a size.
@@ -1278,6 +1296,14 @@ fn build(
     transforms: &mut Vec<(NodeId, Transform)>,
     states: &mut Vec<(NodeId, Vec<usize>)>,
     access: &mut Vec<(NodeId, Access, Option<String>)>,
+    // Where this node sits, and where every node's path is collected.
+    //
+    // Computed here rather than in `collect` on purpose: this walker recurses
+    // over `node.children` directly, so a child's index is its index. `collect`
+    // walks taffy ids, where the same assumption is only *probably* true, and a
+    // mismatch there would hand back confident, wrong geometry.
+    path: &[usize],
+    paths: &mut Vec<(NodeId, Vec<usize>)>,
     vp: (f32, f32),
     // `cap` is the widest this node can end up, from the constraint chain above
     // it; `caps` is where each text leaf's own cap is left for the measure hook.
@@ -1348,7 +1374,12 @@ fn build(
         let children: Vec<NodeId> = node
             .children
             .iter()
-            .map(|c| build(tree, c, paint, handlers, models, focus_labels, hidden, opacities, scrolls, transforms, states, access, vp, child_cap, caps, row))
+            .enumerate()
+            .map(|(i, c)| {
+                let mut cp = path.to_vec();
+                cp.push(i);
+                build(tree, c, paint, handlers, models, focus_labels, hidden, opacities, scrolls, transforms, states, access, &cp, paths, vp, child_cap, caps, row)
+            })
             .collect();
         let id = if children.is_empty() {
             tree.new_leaf(to_taffy(&node.style, vp)).expect("taffy leaf")
@@ -1400,6 +1431,7 @@ fn build(
     if let Some(path) = &node.state_path {
         states.push((id, path.clone()));
     }
+    paths.push((id, path.to_vec()));
     if node.access.role.is_meaningful() {
         access.push((id, node.access.clone(), node.model.clone()));
     }
@@ -1422,6 +1454,7 @@ fn collect(
     transforms: &[(NodeId, Transform)],
     states: &[(NodeId, Vec<usize>)],
     access: &[(NodeId, Access, Option<String>)],
+    paths: &[(NodeId, Vec<usize>)],
     offsets: &[Offset],
     vp: (f32, f32),
     // The nearest scroller above this node, so a focus ring can be clipped to
@@ -1567,6 +1600,18 @@ fn collect(
             height: layout.size.height,
             access: node_access.clone(),
             model: model.clone(),
+        });
+    }
+
+    // Emitted after the `hidden` check above, so an `r-show="false"` subtree has
+    // no metrics at all rather than metrics nobody can see.
+    if let Some((_, path)) = paths.iter().find(|(nid, _)| *nid == id) {
+        out.metrics.push(NodeMetrics {
+            path: path.clone(),
+            x,
+            y,
+            width: layout.size.width,
+            height: layout.size.height,
         });
     }
 
@@ -1737,6 +1782,7 @@ fn collect(
             transforms,
             states,
             access,
+            paths,
             offsets,
             vp,
             child_scroll,
@@ -1798,6 +1844,7 @@ pub fn layout_scrolled(
     let mut transforms = Vec::new();
     let mut states = Vec::new();
     let mut access = Vec::new();
+    let mut paths = Vec::new();
     let vp = (avail_w, avail_h);
     let mut caps: HashMap<NodeId, f32> = HashMap::new();
     let root_id = build(
@@ -1813,6 +1860,8 @@ pub fn layout_scrolled(
         &mut transforms,
         &mut states,
         &mut access,
+        &[], // the root's own path is empty
+        &mut paths,
         vp,
         // The root is forced to the viewport below, so that is the widest
         // anything can be.
@@ -1884,7 +1933,7 @@ pub fn layout_scrolled(
     let mut out = Layout::default();
     collect(
         &tree, root_id, 0.0, 0.0, &paint, &handlers, &models, &focus_labels, &hidden, &opacities,
-        &scrolls, &transforms, &states, &access, offsets, vp, None, &mut out,
+        &scrolls, &transforms, &states, &access, &paths, offsets, vp, None, &mut out,
     );
     out
 }
