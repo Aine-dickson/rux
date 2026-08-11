@@ -1262,9 +1262,12 @@ way. This milestone is where Rux stops being stock rhai.
    which is why the guide was abandoned and `/learn` hand-written against the
    real runtime instead. That is not an argument for reviving it, but the
    blocker recorded against it is no longer the blocker.
-3. **Element access from script**, the DOM-like handle. Sequenced after
-   reactivity for the reason already recorded: script mutations must feed the
-   same subscription graph or they desync.
+3. **Element access from script.** Designed 2026-08-11; the section "Element
+   access: `query` and the handle" below is canonical. Sequenced after
+   reactivity for the reason already recorded, and that sequencing settled the
+   design rather than merely ordering it: **tree mutation is cut**, and what
+   ships is querying, reading, and a small set of actions that are not tree
+   edits.
 4. **Script documentation**, once the script surface has stopped moving.
 5. **Animation**, added 2026-08-11. Rux has no transition of any kind, which is
    the most visible thing missing from a UI toolkit that is otherwise usable.
@@ -1602,6 +1605,85 @@ and ties to the component instance, cancelled automatically when that instance
 is pruned. v0.6's instance pruning is already that foundation, the same one
 `unmounted` and enter/leave need, which puts this alongside item 6 rather than
 before it.
+
+#### Element access: `query` and the handle
+
+Designed 2026-08-11, against the code rather than against the older sketch.
+Everything in this section is decided.
+
+**The feature this item promised cannot be built, and that is the finding, not a
+setback.** The 2026 sketch above asks for "a DOM-like handle so `<script>` can
+read and mutate the tree directly (query a node, set a property, add/remove
+children)". That was written before fine-grained reactivity existed. Today a
+state change regenerates the affected tree from the template: a patch rewrites
+bound nodes in place, a reconcile splices lists, and a rebuild throws the tree
+away entirely. A node a script had mutated is overwritten by whichever of those
+runs next, with no error and no warning, and *when* it is overwritten depends on
+which signal some unrelated handler happened to write. That is not a hard
+problem to solve carefully. It is a feature that would appear to work in a demo
+and fail in a real document, which is the failure mode strict bindings and the
+dev overlay exist to eliminate.
+
+So mutation is cut, and the rule that replaces it is one the framework already
+teaches everywhere else: **the tree is a function of state, and state is how you
+change it.** Nothing is lost that signals cannot express. What signals genuinely
+cannot express is the other half, and that is what ships.
+
+**What ships is two things that are not tree edits.**
+
+*Reads*, of facts the tree knows and a template cannot state: measured geometry
+(position, size), scroll offset, and whether a node currently holds focus. These
+are properties of a laid-out frame, so they are **one frame stale**, exactly as
+`getBoundingClientRect` is in a browser. A handler runs before the next layout,
+and it reads the numbers from the last one. That is the honest guarantee and it
+should be documented as such rather than papered over.
+
+*Actions*, which change host state rather than the tree: `focus()`, `blur()`,
+`scrollIntoView()`. These are the fourth instance of an idiom the script tier
+already uses three times over. `emit`, `navigate` and `back`/`forward` all record
+an intent onto a queue the runtime drains, precisely because a script function
+cannot reach runtime state and should not pretend to. Element actions are queued
+the same way, and are applied at the same point in the frame as a navigation.
+
+**Reads are legal in handlers only**, not in a `{{ }}` binding, a `:style` or an
+`r-if`. This is a hard restriction and it exists because the alternative has no
+fixed point: a binding that reads geometry has to invalidate when layout changes,
+invalidating it triggers a rebuild, and the rebuild relayouts. The loop is not
+hypothetical, it is what a subscription graph does when a node's output is also
+its input. Forbidding it by construction costs almost nothing, since the uses
+people actually have (measure on tap, scroll a thing into view, position a
+popover after opening it) are all handler-shaped. Using a read outside a handler
+is a diagnostic, not a silent absence.
+
+**Elements are named with CSS selectors**, `query(".card")` returning a list and
+matching on tag, id, class, role and combinators. Chosen 2026-08-11 over a
+narrower `el("id")` form. The concern about a selector engine being a large
+surface to build and keep stable turned out not to apply here: **Rux already has
+one**, and it is the same one the stylesheet uses. `parse_selector` handles
+compounds, specificity, and the `>`, `+` and `~` combinators; `matches_chain`
+matches right-to-left with backtracking over an ancestor chain and preceding
+siblings. A second, weaker way to name an element would have been the thing that
+needed justifying, because a document would then have two spellings for one idea
+and a rule about which contexts take which.
+
+**The one real cost is that the built tree has forgotten what it is.**
+`ElemDesc`, the `{ tag, id, classes, role, states }` a selector matches against,
+is computed during the style pass and discarded once the cascade has run.
+`LayoutNode` keeps `id` and `key`, because `for=` and reconciliation need them,
+and keeps neither `tag` nor `classes` nor `role`. So the work is not the matcher
+and not the parser, it is **retaining an element index from the build**: per
+built node, its descriptor and its tree path, enough to run the existing matcher
+without rebuilding the ancestor context by hand. Built once per build, thrown
+away with the tree, and paid for only by documents that call `query`.
+
+Two consequences of that follow and are worth stating before anyone rediscovers
+them. Geometry lives in the shell, not the document: `layout_scrolled` is called
+by `rux-shell` and the resulting `Layout` never comes back, so reads need last
+frame's metrics handed in each frame the way `InteractionState` and `Viewport`
+already are. And **`rux check` has no layout at all**, which is the point of it
+running in CI without a window or a GPU. A geometry read there has no answer, so
+checking a document must not require one: `query` resolves, the handle exists,
+and the metrics are absent.
 
 ### v0.8: mobile
 
