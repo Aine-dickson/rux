@@ -1293,14 +1293,17 @@ way. This milestone is where Rux stops being stock rhai.
    the most visible thing missing from a UI toolkit that is otherwise usable.
    Sequenced *after* the fork rather than mixed into it, and in tiers, because
    they differ enormously in cost:
-   - **`transition` on style changes** first and alone. It fires when a node's
-     computed style changes between builds, from a signal or from a
-     pseudo-class flipping, so the tree shape never changes and enter/leave
-     never arises. This is the case almost every app wants. The clock it needs
-     mostly exists: the shell already schedules the caret blink and the
-     long-press timer on `ControlFlow::WaitUntil`, and generalising that keeps
-     the property that matters on a phone, which is that an idle app sleeps
-     instead of burning frames.
+   - **`transition` on style changes** first and alone. ✅ **Built.** It fires
+     when a node's computed style changes between builds, from a signal or from
+     a pseudo-class flipping, so the tree shape never changes and enter/leave
+     never arises. This is the case almost every app wants. The clock it needed
+     mostly existed: the shell already scheduled the caret blink and the
+     long-press timer on `ControlFlow::WaitUntil`, and the animator became a
+     third deadline on the same scheduler, which keeps the property that matters
+     on a phone: an idle app sleeps instead of burning frames, and frames stop
+     the moment a transition lands. See
+     [Transitions](/reference/#honored-css) for the surface, and
+     `examples/transition.rux`.
    - **Enter and leave** second, and it shares a foundation with lifecycle
      hooks: both need a subtree to outlive its removal from the tree.
    - **Route transitions last**, never first. They *are* the enter/leave

@@ -182,6 +182,7 @@ border, border-width, border-color, border-<side>, border-<side>-width
 background / background-color / background-image, opacity
   (colour, linear-/radial-gradient, or url(…) image, cover-sized, clipped to corners)
 box-shadow (single, outer; inset parsed but not drawn)
+transition (property duration easing delay, comma-separated; see below)
 border-radius (1–4 diagonal shorthand + per-corner -top-left/-top-right/…)
 color, font-size, font-weight, font-family, font-style (italic), text-align
 letter-spacing, word-spacing, line-height, white-space (nowrap|pre)
@@ -207,6 +208,46 @@ Any *other* pseudo-class (`:disabled`, `:nth-child(…)`, `::selection`) **never
 matches**, and says so once on stderr. Before this existed the `:` was silently
 dropped, so `.box:hover` parsed as `.box` and applied *unconditionally*, failing
 closed is the safer half of that trade.
+
+**Transitions:** `transition` walks a property to its new value instead of
+jumping to it, whatever moved it: a signal, a `:class`, or a pseudo-class.
+```css
+.card { transition: background-color 200ms ease-out, transform 200ms ease-out; }
+.card:hover { background: #45475a; transform: translateY(-4px); }
+
+.panel { height: 0; opacity: 0; transition: all 250ms ease-in-out 50ms; }
+.panel.open { height: 60px; opacity: 1; }
+```
+Each entry is a property, a duration, an easing and a delay, in any order after
+the property. As in CSS the **first** time is the duration and the second is the
+delay, `all` stands for every animatable property, and a bare `transition: 200ms`
+means `all 200ms`. Easings: `linear`, `ease` (the default), `ease-in`,
+`ease-out`, `ease-in-out`, `cubic-bezier(x1, y1, x2, y2)`. `steps()` is not
+supported.
+
+**Animatable:** `opacity`, `background-color`, `color`, `border-color`,
+`border-width`, `border-radius`, `width`, `height`, `padding`, `margin`, `gap`,
+`font-size`, `transform`, and the insets (`top`/`right`/`bottom`/`left`, which
+animate together). Naming anything else warns and lists what is animatable,
+rather than leaving you with an element that silently never moves. A longhand of
+an animatable shorthand (`padding-left`) is pointed at the shorthand: the four
+sides animate as a unit.
+
+Three limits, all of them deliberate:
+- **A value that has no midpoint jumps.** `10px` → `50%` needs a layout to
+  resolve, and a colour becoming a gradient has no halfway. Same-unit lengths
+  interpolate; anything else lands at once.
+- **Nothing animates on the way in or out.** A node arrives at its authored
+  style, and a node the build stops reaching is simply gone. Enter/leave is the
+  next tier, and it shares its machinery with the `unmounted` lifecycle hook.
+- **`transition` does not inherit**, exactly as in CSS. A parent's `color`
+  change does not animate a child's text; put the transition on the element
+  whose style is moving.
+
+An app with no transitions running is still fully event-driven: it sleeps
+waiting for real events and renders nothing. Frames are scheduled only while
+something is actually in flight, and stop the frame it lands. Driven in
+`examples/transition.rux`.
 
 **Computed values:** `computed name = expr;` in `<script>` declares derived
 state, written once and readable anywhere a signal is:

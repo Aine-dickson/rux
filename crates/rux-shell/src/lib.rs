@@ -1083,6 +1083,20 @@ struct App {
     /// When the caret next toggles. `None` when no input is focused, so an idle
     /// window stays fully event-driven with no timer.
     blink_deadline: Option<Instant>,
+    /// Per-node memory of what each transitioned property is showing, and the
+    /// only thing that knows a style change should be walked rather than jumped.
+    ///
+    /// It lives here rather than in the document for the reason every other
+    /// per-frame fact does: a build throws the tree away and rebuilds it, so
+    /// anything remembering the *previous* frame has to outlive the tree.
+    anim: rux_runtime::Animator,
+    /// When the next animation frame is due. `None` when nothing is animating,
+    /// which is what lets an idle app go back to waiting on real events.
+    anim_deadline: Option<Instant>,
+    /// The zero the animator's clock counts from. The animator takes a plain
+    /// `f64` of milliseconds rather than an `Instant` so it stays testable and
+    /// works unchanged on the web.
+    epoch: Instant,
     /// Current pointer position (physical pixels).
     pointer: (f64, f64),
     /// Where the left button was pressed, if it is currently down.
@@ -1156,6 +1170,9 @@ impl App {
                 .ok(),
             caret_visible: true,
             blink_deadline: None,
+            anim: rux_runtime::Animator::new(),
+            anim_deadline: None,
+            epoch: Instant::now(),
             pointer: (0.0, 0.0),
             press: None,
             cursor: CursorIcon::Default,
@@ -2823,6 +2840,16 @@ impl App {
         // or a mouse button.
         #[cfg(target_arch = "wasm32")]
         self.sync_url();
+        // Transitions are folded in here, after the build that changed the
+        // styles and before the layout that measures them, so a box animating
+        // its width is laid out at the width it is actually showing. The
+        // animator hands back when it next needs a frame, or `None` to say the
+        // window can go back to sleep.
+        let now = self.epoch.elapsed().as_secs_f64() * 1000.0;
+        let next = self.anim.apply(&mut self.document.root, now);
+        self.anim_deadline = next.map(|ms| {
+            Instant::now() + Duration::from_secs_f64(ms.max(rux_runtime::FRAME_MS) / 1000.0)
+        });
         let caret_visible = self.caret_visible;
         // Split borrows so the text engine (used both to measure during layout
         // and to draw during paint) doesn't conflict with the render state.
@@ -3594,13 +3621,24 @@ impl ApplicationHandler<RuxEvent> for App {
             }
         }
 
-        // Wake for whichever clock is due first. With neither running, wait
+        // The third clock, and the only one that is a frame rather than a state
+        // change: something is mid-transition and the next frame is due. The
+        // deadline is cleared here because `render` sets the following one, and
+        // sets none once the animation has landed.
+        if let Some(deadline) = self.anim_deadline {
+            if Instant::now() >= deadline {
+                self.anim_deadline = None;
+                self.request_redraw();
+            }
+        }
+
+        // Wake for whichever clock is due first. With none running, wait
         // indefinitely for a real event, as before.
         let long_press = match self.touch_text {
             Some(TouchText::Pending { deadline, .. }) => Some(deadline),
             _ => None,
         };
-        match [self.blink_deadline, long_press].into_iter().flatten().min() {
+        match [self.blink_deadline, long_press, self.anim_deadline].into_iter().flatten().min() {
             Some(next) => event_loop.set_control_flow(ControlFlow::WaitUntil(next)),
             None => event_loop.set_control_flow(ControlFlow::Wait),
         }

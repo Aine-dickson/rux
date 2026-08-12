@@ -21,13 +21,18 @@ use rux_layout::{
     Len, Node as LayoutNode, Overflow, Position, Rgba, Sides, Style, TextAlign, TextContent,
     TextWrap, Track, TrackSide,
 };
-use rux_layout::{GradientKind, GridFlow, Transform};
+use rux_layout::{AnimProp, Easing, GradientKind, GridFlow, Transform, Transition};
 use rux_parser::{Element, Node as TplNode, Sfc};
 use rux_reactive::Value;
 /// Re-exported so the runtime and the shell can name a warning without
 /// depending on `rux-reactive` directly, the same way `Viewport` travels.
 pub use rux_reactive::Warning;
 use rux_script::Engine;
+
+/// Transitions, which live between a build and the layout rather than inside
+/// either. See [`anim::Animator`].
+mod anim;
+pub use anim::{Animator, FRAME_MS};
 
 /// Loop-variable bindings introduced by `r-for`, layered as a scope stack and
 /// injected into the script engine for each evaluation.
@@ -1796,6 +1801,7 @@ const HONORED_PROPERTIES: &[&str] = &[
     "border-top", "border-right", "border-bottom", "border-left",
     "border-top-width", "border-right-width", "border-bottom-width", "border-left-width",
     "overflow", "overflow-x", "overflow-y", "opacity", "cursor", "box-shadow", "transform",
+    "transition",
     // Flex / grid
     "flex", "flex-grow", "flex-shrink", "flex-basis", "flex-wrap", "flex-direction",
     "justify-content", "align-items", "align-self", "justify-self", "justify-items",
@@ -3432,6 +3438,9 @@ fn interpret(p: &HashMap<String, String>) -> Style {
     if let Some(v) = p.get("transform") {
         st.transform = parse_transform(v);
     }
+    if let Some(v) = p.get("transition") {
+        st.transitions = parse_transitions(v);
+    }
     if let Some(v) = p.get("box-shadow") {
         st.box_shadow = parse_box_shadow(v);
     }
@@ -3702,6 +3711,148 @@ fn split_top_level_commas(value: &str) -> Vec<&str> {
         out.push(last);
     }
     out
+}
+
+/// Parse a `transition` value: a comma-separated list of entries, each naming a
+/// property and, in any order after it, a duration, an easing and a delay
+/// (`opacity 150ms ease-out, transform .3s`).
+///
+/// CSS's own rule for the two times is positional, not semantic: the *first*
+/// time is the duration and the second is the delay, which is why they are
+/// counted rather than matched.
+///
+/// A property that cannot be animated is dropped with a warning naming it. The
+/// alternative, silently ignoring it, produces an element that simply never
+/// animates and no way to find out why.
+fn parse_transitions(value: &str) -> Vec<Transition> {
+    let mut out = Vec::new();
+    for entry in split_top_level_commas(value) {
+        let entry = entry.trim();
+        if entry.is_empty() || entry.eq_ignore_ascii_case("none") {
+            continue;
+        }
+        let mut property = None;
+        let mut times = Vec::new();
+        let mut easing = None;
+        let mut unknown = None;
+        for token in split_top_level(entry) {
+            if let Some(ms) = parse_time(token) {
+                times.push(ms);
+            } else if let Some(e) = parse_easing(token) {
+                easing = Some(e);
+            } else if property.is_none() && unknown.is_none() {
+                match parse_anim_prop(token) {
+                    Some(p) => property = Some(p),
+                    None => unknown = Some(token.to_string()),
+                }
+            }
+        }
+        if let Some(name) = unknown {
+            warn_stylesheet(anim_prop_help(&name));
+            continue;
+        }
+        // A bare `transition: 200ms` is `all`, as in CSS.
+        let property = property.unwrap_or(AnimProp::All);
+        let duration = times.first().copied().unwrap_or(0.0);
+        let delay = times.get(1).copied().unwrap_or(0.0);
+        out.push(Transition {
+            property,
+            duration,
+            delay,
+            easing: easing.unwrap_or(Easing::EASE),
+        });
+    }
+    out
+}
+
+/// A CSS `<time>`: `250ms`, `.3s`, `0`. Unitless is only legal as zero, and a
+/// bare number that is not zero is not a time at all (it is a stray token), so
+/// it parses as `None` and is ignored rather than being read as seconds.
+fn parse_time(s: &str) -> Option<f32> {
+    let s = s.trim();
+    if let Some(n) = s.strip_suffix("ms") {
+        return n.trim().parse::<f32>().ok();
+    }
+    if let Some(n) = s.strip_suffix('s') {
+        return n.trim().parse::<f32>().ok().map(|v| v * 1000.0);
+    }
+    (s == "0").then_some(0.0)
+}
+
+/// A timing-function keyword or `cubic-bezier(…)`. `step-*` is not supported.
+fn parse_easing(s: &str) -> Option<Easing> {
+    let s = s.trim().to_ascii_lowercase();
+    match s.as_str() {
+        "linear" => return Some(Easing::Linear),
+        "ease" => return Some(Easing::EASE),
+        "ease-in" => return Some(Easing::EASE_IN),
+        "ease-out" => return Some(Easing::EASE_OUT),
+        "ease-in-out" => return Some(Easing::EASE_IN_OUT),
+        _ => {}
+    }
+    let args = s.strip_prefix("cubic-bezier(")?.strip_suffix(')')?;
+    let n: Vec<f32> = args.split(',').filter_map(|a| a.trim().parse::<f32>().ok()).collect();
+    match n[..] {
+        // The x coordinates are the parameter's own axis: outside 0..=1 the
+        // curve is not a function of time any more and cannot be inverted.
+        [x1, y1, x2, y2] if (0.0..=1.0).contains(&x1) && (0.0..=1.0).contains(&x2) => {
+            Some(Easing::Bezier(x1, y1, x2, y2))
+        }
+        _ => None,
+    }
+}
+
+/// A property name in a `transition`, or `None` if it is not animatable.
+fn parse_anim_prop(s: &str) -> Option<AnimProp> {
+    Some(match s.trim().to_ascii_lowercase().as_str() {
+        "all" => AnimProp::All,
+        "opacity" => AnimProp::Opacity,
+        "background-color" | "background" => AnimProp::BackgroundColor,
+        "color" => AnimProp::Color,
+        "border-color" => AnimProp::BorderColor,
+        "border-width" | "border" => AnimProp::BorderWidth,
+        "border-radius" => AnimProp::BorderRadius,
+        "width" => AnimProp::Width,
+        "height" => AnimProp::Height,
+        "padding" => AnimProp::Padding,
+        "margin" => AnimProp::Margin,
+        "gap" => AnimProp::Gap,
+        "font-size" => AnimProp::FontSize,
+        "transform" => AnimProp::Transform,
+        "inset" | "top" | "right" | "bottom" | "left" => AnimProp::Inset,
+        _ => return None,
+    })
+}
+
+/// The diagnostic for a `transition` naming something that cannot animate. A
+/// longhand of a property that *can* gets pointed at the shorthand, because
+/// that is the actual mistake and the fix is one word.
+fn anim_prop_help(name: &str) -> String {
+    let lower = name.to_ascii_lowercase();
+    let shorthand = [
+        ("padding", "padding"),
+        ("margin", "margin"),
+        ("border-", "border-width"),
+        ("row-gap", "gap"),
+        ("column-gap", "gap"),
+    ]
+    .iter()
+    .find(|(prefix, _)| lower.starts_with(prefix) && lower != *prefix)
+    .map(|(_, whole)| *whole);
+    match shorthand {
+        Some(whole) => format!(
+            "`transition: {name}` does nothing: the sides animate together, so \
+             transition `{whole}` instead"
+        ),
+        None => {
+            let animatable: Vec<&str> = AnimProp::EVERY.iter().map(|p| p.name()).collect();
+            format!(
+                "`transition: {name}` does nothing: `{name}` cannot be animated. \
+                 Animatable properties are {}, and `all`",
+                animatable.join(", ")
+            )
+        }
+    }
 }
 
 /// Parse a `transform` function list (`rotate(15deg) translate(4px, 0)`) into a
@@ -4376,6 +4527,73 @@ mod tests {
         assert_eq!(st.shrink, 0.0);
         assert!(st.wrap);
         assert_eq!(st.opacity, 0.45);
+    }
+
+    #[test]
+    fn transition_parses_a_list_in_any_order() {
+        use super::{AnimProp, Easing};
+        let ts = super::parse_transitions("opacity 150ms ease-out, transform .3s 50ms linear");
+        assert_eq!(ts.len(), 2);
+        assert_eq!(ts[0].property, AnimProp::Opacity);
+        assert_eq!(ts[0].duration, 150.0);
+        assert_eq!(ts[0].delay, 0.0);
+        assert_eq!(ts[0].easing, Easing::EASE_OUT);
+        // `.3s` is 300ms, and the *second* time is the delay however it is ordered.
+        assert_eq!(ts[1].property, AnimProp::Transform);
+        assert_eq!(ts[1].duration, 300.0);
+        assert_eq!(ts[1].delay, 50.0);
+        assert_eq!(ts[1].easing, Easing::Linear);
+
+        // A bare time is `all`, and the default curve is `ease`, as in CSS.
+        let ts = super::parse_transitions("200ms");
+        assert_eq!(ts[0].property, AnimProp::All);
+        assert_eq!(ts[0].easing, Easing::EASE);
+
+        // A comma inside cubic-bezier() is not an entry separator.
+        let ts = super::parse_transitions("width 1s cubic-bezier(0.2, 0, 0.1, 1)");
+        assert_eq!(ts.len(), 1);
+        assert_eq!(ts[0].easing, Easing::Bezier(0.2, 0.0, 0.1, 1.0));
+
+        // `none` is not an entry, and an out-of-range bezier x falls back to ease.
+        assert!(super::parse_transitions("none").is_empty());
+        assert_eq!(
+            super::parse_transitions("opacity 1s cubic-bezier(2, 0, 0.1, 1)")[0].easing,
+            Easing::EASE
+        );
+    }
+
+    #[test]
+    fn an_unanimatable_transition_property_warns_instead_of_vanishing() {
+        // The whole point: a property that cannot animate has to say so, or the
+        // author is left with an element that just never moves.
+        let _ = super::take_warnings();
+        assert!(super::parse_transitions("display 1s").is_empty());
+        let warnings = super::take_warnings();
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].message.contains("`display` cannot be animated"));
+
+        // A longhand of an animatable shorthand is pointed at the shorthand.
+        assert!(super::parse_transitions("padding-left 1s").is_empty());
+        let warnings = super::take_warnings();
+        assert!(warnings[0].message.contains("transition `padding` instead"));
+    }
+
+    #[test]
+    fn easing_curves_are_monotonic_and_pinned_at_the_ends() {
+        use super::Easing;
+        for easing in [Easing::Linear, Easing::EASE, Easing::EASE_IN, Easing::EASE_OUT, Easing::EASE_IN_OUT] {
+            assert_eq!(easing.eval(0.0), 0.0);
+            assert_eq!(easing.eval(1.0), 1.0);
+            let mut prev = 0.0;
+            for i in 1..=100 {
+                let y = easing.eval(i as f32 / 100.0);
+                assert!(y >= prev - 1e-3, "{easing:?} went backwards at {i}");
+                prev = y;
+            }
+        }
+        // ease-out is ahead of linear in the first half: that is what "out" means.
+        assert!(Easing::EASE_OUT.eval(0.25) > 0.25);
+        assert!(Easing::EASE_IN.eval(0.25) < 0.25);
     }
 
     #[test]

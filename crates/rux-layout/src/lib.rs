@@ -208,6 +208,172 @@ pub type Corners = [f32; 4];
 /// in logical px; the origin is applied at paint time (CSS default: box centre).
 pub type Transform = [f32; 6];
 
+/// One `transition` entry: which property animates when it changes, for how
+/// long, after what delay, and on which curve.
+///
+/// The style itself only carries the *declaration*. Nothing here knows what the
+/// property's value was a frame ago; that memory belongs to whoever is driving
+/// the clock, since it is per-frame state and the style is rebuilt from scratch
+/// on every build.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Transition {
+    pub property: AnimProp,
+    /// Milliseconds. A duration of `0` means the change lands immediately, which
+    /// is how CSS disables a transition without removing the declaration.
+    pub duration: f32,
+    pub delay: f32,
+    pub easing: Easing,
+}
+
+/// A property that can be transitioned.
+///
+/// One variant per *field* of [`Style`], not per CSS longhand: `padding` is a
+/// [`Sides`] and animates as a unit, so `transition: padding-left` is rejected
+/// with a diagnostic rather than quietly animating all four sides. The set is
+/// deliberately small; everything in it is a value that means something when
+/// interpolated halfway.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum AnimProp {
+    /// `all`: stands for every other variant whose value actually changed.
+    All,
+    Opacity,
+    BackgroundColor,
+    /// Text colour, which lives on the node's own text content.
+    Color,
+    BorderColor,
+    BorderWidth,
+    BorderRadius,
+    Width,
+    Height,
+    Padding,
+    Margin,
+    Gap,
+    FontSize,
+    Transform,
+    /// `top`/`right`/`bottom`/`left` as a unit.
+    Inset,
+}
+
+impl AnimProp {
+    /// Every property `all` expands to, in a fixed order so a frame's work is
+    /// deterministic.
+    pub const EVERY: &'static [AnimProp] = &[
+        AnimProp::Opacity,
+        AnimProp::BackgroundColor,
+        AnimProp::Color,
+        AnimProp::BorderColor,
+        AnimProp::BorderWidth,
+        AnimProp::BorderRadius,
+        AnimProp::Width,
+        AnimProp::Height,
+        AnimProp::Padding,
+        AnimProp::Margin,
+        AnimProp::Gap,
+        AnimProp::FontSize,
+        AnimProp::Transform,
+        AnimProp::Inset,
+    ];
+
+    /// The CSS name, for diagnostics.
+    pub fn name(self) -> &'static str {
+        match self {
+            AnimProp::All => "all",
+            AnimProp::Opacity => "opacity",
+            AnimProp::BackgroundColor => "background-color",
+            AnimProp::Color => "color",
+            AnimProp::BorderColor => "border-color",
+            AnimProp::BorderWidth => "border-width",
+            AnimProp::BorderRadius => "border-radius",
+            AnimProp::Width => "width",
+            AnimProp::Height => "height",
+            AnimProp::Padding => "padding",
+            AnimProp::Margin => "margin",
+            AnimProp::Gap => "gap",
+            AnimProp::FontSize => "font-size",
+            AnimProp::Transform => "transform",
+            AnimProp::Inset => "inset",
+        }
+    }
+}
+
+/// A timing function. The named curves are the CSS keywords, and all of them are
+/// the same cubic Bézier underneath, so there is one evaluator to be wrong in.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Easing {
+    Linear,
+    /// `cubic-bezier(x1, y1, x2, y2)`; the keywords resolve to these.
+    Bezier(f32, f32, f32, f32),
+}
+
+impl Easing {
+    pub const EASE: Easing = Easing::Bezier(0.25, 0.1, 0.25, 1.0);
+    pub const EASE_IN: Easing = Easing::Bezier(0.42, 0.0, 1.0, 1.0);
+    pub const EASE_OUT: Easing = Easing::Bezier(0.0, 0.0, 0.58, 1.0);
+    pub const EASE_IN_OUT: Easing = Easing::Bezier(0.42, 0.0, 0.58, 1.0);
+
+    /// Map linear progress `t` (0..=1) to eased progress.
+    ///
+    /// The curve is parametric in a third variable: `x` and `y` are both cubics
+    /// in `s`, and `t` is an `x`. So invert `x(s) = t` first (Newton, falling
+    /// back to bisection when the derivative goes flat), then read `y(s)`.
+    pub fn eval(self, t: f32) -> f32 {
+        let (x1, y1, x2, y2) = match self {
+            Easing::Linear => return t,
+            Easing::Bezier(x1, y1, x2, y2) => (x1, y1, x2, y2),
+        };
+        if t <= 0.0 || t >= 1.0 {
+            return t;
+        }
+        let s = solve_bezier_x(t, x1, x2);
+        bezier(s, y1, y2)
+    }
+}
+
+/// A unit cubic Bézier's coordinate at parameter `s`, with the endpoints pinned
+/// at 0 and 1: `3(1-s)²s·p1 + 3(1-s)s²·p2 + s³`.
+fn bezier(s: f32, p1: f32, p2: f32) -> f32 {
+    let u = 1.0 - s;
+    3.0 * u * u * s * p1 + 3.0 * u * s * s * p2 + s * s * s
+}
+
+/// Derivative of [`bezier`] with respect to `s`.
+fn bezier_slope(s: f32, p1: f32, p2: f32) -> f32 {
+    let u = 1.0 - s;
+    3.0 * u * u * p1 + 6.0 * u * s * (p2 - p1) + 3.0 * s * s * (1.0 - p2)
+}
+
+/// Find `s` such that `x(s) == t`.
+fn solve_bezier_x(t: f32, x1: f32, x2: f32) -> f32 {
+    let mut s = t; // x is near-linear for the usual curves, so t is a good start
+    for _ in 0..8 {
+        let err = bezier(s, x1, x2) - t;
+        if err.abs() < 1e-5 {
+            return s;
+        }
+        let slope = bezier_slope(s, x1, x2);
+        if slope.abs() < 1e-5 {
+            break; // flat: Newton would step off to nowhere
+        }
+        s -= err / slope;
+    }
+    // Bisection, which cannot diverge, for the curves Newton gives up on.
+    let (mut lo, mut hi) = (0.0f32, 1.0f32);
+    let mut s = t.clamp(0.0, 1.0);
+    for _ in 0..20 {
+        let x = bezier(s, x1, x2);
+        if (x - t).abs() < 1e-5 {
+            break;
+        }
+        if x > t {
+            hi = s;
+        } else {
+            lo = s;
+        }
+        s = (lo + hi) / 2.0;
+    }
+    s
+}
+
 /// `grid-auto-flow`: how auto-placed items fill the implicit grid.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub enum GridFlow {
@@ -337,6 +503,10 @@ pub struct Style {
     pub inset: [Option<Len>; 4],
     /// `aspect-ratio` (width / height).
     pub aspect_ratio: Option<f32>,
+    /// `transition`: which of this node's properties animate when they change,
+    /// and how. Empty for almost every node, and free when it is: the animator
+    /// only remembers nodes that declare one.
+    pub transitions: Vec<Transition>,
 }
 
 impl Default for Style {
@@ -385,6 +555,7 @@ impl Default for Style {
             position: Position::Relative,
             inset: [None; 4],
             aspect_ratio: None,
+            transitions: Vec::new(),
         }
     }
 }

@@ -36,6 +36,9 @@ use rux_style::{BindingRegistry, Instances};
 /// without depending on `rux-style` directly.
 pub use rux_reactive::json_string;
 pub use rux_style::{InteractionState, Viewport, Warning};
+/// Re-exported for the same reason: the shell owns the animator, because the
+/// clock and the previous frame are its business and not the document's.
+pub use rux_style::{Animator, FRAME_MS};
 /// Re-exported so the shell can report a script-facing problem it is the only
 /// one able to see, such as `tap()` naming an element with no box on screen.
 pub use rux_script::warn_script;
