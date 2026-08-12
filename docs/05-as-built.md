@@ -367,7 +367,12 @@ lightningcss *minifies* hex to keywords (`#ff0000` → `red`), so without it a
 plain `color: #ff0000` would fall back to the default.
 
 ### Reactivity & script
-- `<script>` is **rhai**. `let x = signal(v)` declares state (numbers coerce to float).
+
+> **[Script](./07-script.md) is the reference for this section.** What follows is
+> the tour; that is the whole surface in depth, including every way Rux's script
+> differs from stock rhai and from JavaScript.
+
+- `<script>` is **rhai**, forked as `rux-rhai`. `let x = signal(v)` declares state (numbers coerce to float).
 - `{{ expr }}` interpolation; `r-if` / `r-elif` / `r-else`, `r-for="x in list"`, `r-show`.
 - `@tap="…"` handlers.
 - `host::fn()` calls into compiled Rust (registered in `rux-runtime::build_engine`).

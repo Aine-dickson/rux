@@ -527,6 +527,20 @@ fn register_js_names(engine: &mut RhaiEngine) {
     engine.register_fn("repeat", |s: ImmutableString, n: Dynamic| {
         s.repeat(num(&n).max(0.0) as usize)
     });
+    // `trim` returns the trimmed string instead of emptying the one it was given.
+    //
+    // rhai's `trim` takes its receiver by `&mut` and trims **in place**, returning
+    // `()`. Every other string method here returns a value, and so does JS's, so
+    // `{{ name.trim() }}` rendered *empty* rather than trimmed: the call returned
+    // nothing and the nothing was displayed. That is the silent-wrong failure this
+    // language keeps closing off, and it is worse than most, because the value it
+    // quietly replaces is the one the author was looking at.
+    //
+    // Registering the same name with a by-value receiver shadows the built-in, the
+    // same move `/` on two integers and `print` already make. Found while writing
+    // `docs/07-script.md`, by checking the method list rather than trusting it.
+    engine.register_fn("trim", |s: ImmutableString| s.trim().to_string());
+
     engine.register_fn("charAt", |s: ImmutableString, i: Dynamic| {
         s.chars().nth(num(&i).max(0.0) as usize).map(String::from).unwrap_or_default()
     });
@@ -2237,6 +2251,21 @@ mod tests {
             // A selector that matches nothing is an empty list, not an error.
             assert_eq!(e.eval_display("query(\".nope\").length", &[]), "0");
         });
+    }
+
+    /// `trim` hands back the trimmed string rather than emptying its receiver.
+    ///
+    /// rhai's trims in place and returns `()`, so `{{ name.trim() }}` rendered
+    /// blank: the call returned nothing and the nothing was displayed. Every
+    /// other string method here returns a value, and so does JavaScript's.
+    #[test]
+    fn trim_returns_the_trimmed_string() {
+        let mut e = engine();
+        assert_eq!(e.eval_display("\"  hi  \".trim()", &[]), "hi");
+        // Chains, which the in-place version could not do at all.
+        assert_eq!(e.eval_display("\"  a,b \".trim().split(\",\").length", &[]), "2");
+        // And the receiver is untouched, so a signal is not silently emptied.
+        assert_eq!(e.eval_display("let s = \" x \"; s.trim(); s", &[]), " x ");
     }
 
     /// Geometry reads back as plain numbers, so it does arithmetic like any

@@ -28,9 +28,10 @@ content="$repo/site/content"
 #   <source>|<output path>|<title>|<weight>|<description>
 pages=(
   "05-as-built.md|reference/_index.md|Reference|1|What Rux actually does today: the authoritative honored-CSS set, elements, and directives."
-  "02-spec.md|reference/spec.md|Design surface (v0.1)|2|The original v0.1 spec, kept as design history. Not a description of the built runtime."
-  "06-roadmap.md|roadmap/_index.md|Roadmap|3|Where Rux goes next: milestones, the release cadence, and what is deliberately not being built."
-  "04-architecture.md|contribute/_index.md|Architecture|4|How a .rux file becomes pixels, and which crate owns which stage."
+  "07-script.md|reference/script.md|Script|2|The script language: state, functions, values, the element API, and every way it differs from rhai and from JavaScript."
+  "02-spec.md|reference/spec.md|Design surface (v0.1)|3|The original v0.1 spec, kept as design history. Not a description of the built runtime."
+  "06-roadmap.md|roadmap/_index.md|Roadmap|4|Where Rux goes next: milestones, the release cadence, and what is deliberately not being built."
+  "04-architecture.md|contribute/_index.md|Architecture|5|How a .rux file becomes pixels, and which crate owns which stage."
 )
 
 # Rewrite `./0N-name.md` links (and their #anchors) to site URLs. Docs that are
@@ -49,6 +50,7 @@ rewrite_links() {
     -e 's;(\(#v[0-9])([0-9]);\1-\2;g' \
     -e 's;\.\/05-as-built\.md;/reference/;g' \
     -e 's;\.\/02-spec\.md;/reference/spec/;g' \
+    -e 's;\.\/07-script\.md;/reference/script/;g' \
     -e 's;\.\/06-roadmap\.md;/roadmap/;g' \
     -e 's;\.\/04-architecture\.md;/contribute/;g' \
     -e 's;\.\/01-rationale\.md;/why/;g' \

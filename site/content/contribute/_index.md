@@ -1,7 +1,7 @@
 +++
 title = "Architecture"
 description = "How a .rux file becomes pixels, and which crate owns which stage."
-weight = 4
+weight = 5
 sort_by = "weight"
 template = "docs-section.html"
 page_template = "docs.html"

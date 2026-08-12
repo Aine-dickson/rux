@@ -12,7 +12,7 @@ Rux exists because of one frustration: in widget-tree toolkits like Flutter, spa
   <view role="section" class="card">
         <text role="paragraph" class="label">Battery</text>
         <text class="value">{{ level }}%</text>
-        <button class="btn" @tap="level = host::read_battery()">Refresh</button>
+        <button class="btn" @tap="refresh()">Refresh</button>
   </view>
 </template>
 
@@ -30,9 +30,11 @@ Rux exists because of one frustration: in widget-tree toolkits like Flutter, spa
 </style>
 
 <script>
-  // State changes go inline in the handler: rhai `fn`s cannot mutate globals.
-  // Script `fn`s are pure; heavy work lives behind `host::`. See 05, As Built.
+  // A function sees the state around it and can write it, so a handler has a
+  // name. Heavy work still lives behind `host::`. See 07, Script.
   let level = signal(82);
+
+  fn refresh() { level = host::read_battery() }
 </script>
 ```
 
@@ -47,6 +49,7 @@ Three sections, six element types, real CSS, gesture events, signals. No layout 
 | [Guide](./03-guide.md) | *How* to build with Rux: a tutorial that assembles a small app screen by screen and validates the developer experience. |
 | [Architecture](./04-architecture.md) | *How the runtime works*: the parse→cascade→reactive→layout→paint pipeline, crate layout, the milestone plan, and open questions. The plan for building it. |
 | **[As Built](./05-as-built.md)** | **What actually works today**: running it, honored CSS, gotchas, and gaps. Authoritative where it contradicts 01–04. Start here if you're writing `.rux` code. |
+| **[Script](./07-script.md)** | **The script language in depth**: state, functions, values, the element API, and every way it differs from rhai and from JavaScript. Rux forks rhai, so rhai's own docs are no longer correct on their own. |
 | [Roadmap](./06-roadmap.md) | *What's next*: the v0.1 shake-down, v0.2 (inputs and polish), v0.3 (fine-grained reactivity). Start here if you're picking the work up. |
 
 ## Status

@@ -1,7 +1,7 @@
 +++
 title = "Design surface (v0.1)"
 description = "The original v0.1 spec, kept as design history. Not a description of the built runtime."
-weight = 2
+weight = 3
 +++
 
 <!-- GENERATED FROM docs/02-spec.md BY site/sync-docs.sh. DO NOT EDIT HERE. -->

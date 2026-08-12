@@ -1,7 +1,7 @@
 +++
 title = "Roadmap"
 description = "Where Rux goes next: milestones, the release cadence, and what is deliberately not being built."
-weight = 3
+weight = 4
 sort_by = "weight"
 template = "docs-section.html"
 page_template = "docs.html"
@@ -1278,7 +1278,17 @@ way. This milestone is where Rux stops being stock rhai.
    design rather than merely ordering it: **tree mutation is cut**, and what
    ships is querying, reading, and a small set of actions that are not tree
    edits.
-4. **Script documentation**, once the script surface has stopped moving.
+4. **Script documentation.** Done 2026-08-12: `docs/07-script.md`, published at
+   `/reference/script/`. Pointing at rhai's own docs stopped being correct the
+   moment the fork changed what things mean, so this covers the whole surface
+   and closes with the two lists that matter, what differs from rhai and what
+   differs from JavaScript.
+
+   Writing it found a bug, which is the argument for writing this kind of
+   document by checking rather than by recall: rhai's string methods mutate in
+   place, so `trim` **emptied** its receiver and returned nothing, and
+   `{{ name.trim() }}` rendered blank. Every other string method in Rux returns
+   a value, as JavaScript's do. Now shadowed by one that does too.
 5. **Animation**, added 2026-08-11. Rux has no transition of any kind, which is
    the most visible thing missing from a UI toolkit that is otherwise usable.
    Sequenced *after* the fork rather than mixed into it, and in tiers, because
