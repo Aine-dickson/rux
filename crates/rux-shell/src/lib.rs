@@ -1957,6 +1957,22 @@ impl App {
             if self.document.apply_handler_in(&src, instance.as_deref()) {
                 self.request_redraw();
             }
+            self.adopt_focus_request();
+        }
+    }
+
+    /// Apply a `focus()` or `blur()` a handler asked for.
+    ///
+    /// Through `set_focus_range`, the shell's one focus funnel, rather than by
+    /// letting the document set its own focus directly. The document owns the
+    /// caret; the shell separately owns which input keystrokes reach, the IME
+    /// state, the blink timer and the text scroll. Setting only the first paints
+    /// a caret in an input that then ignores every key, which is exactly what
+    /// shipped until the window was driven by hand.
+    fn adopt_focus_request(&mut self) {
+        if let Some(request) = self.document.take_focus_request() {
+            self.set_focus_range(request);
+            self.request_redraw();
         }
     }
 
@@ -2321,6 +2337,7 @@ impl App {
         match self.focusables.get(index).map(|f| f.kind.clone()) {
             Some(FocusKind::Activate { on_tap, instance }) => {
                 self.document.apply_handler_in(&on_tap, instance.as_deref());
+                self.adopt_focus_request();
                 self.request_redraw();
             }
             Some(FocusKind::Select { model, row, .. }) => {

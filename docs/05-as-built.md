@@ -442,6 +442,10 @@ rebuild its own write causes. `blur()` is free-standing rather than a method,
 because there is only one focused element. Only a text input can take focus,
 since focus is keyed by `r-model`; asking anything else says so.
 
+**`focus()` is not a tap.** It puts the caret in an input and nothing more: it
+runs no `@tap` handler, follows no `to=` link and toggles no checkbox. There is
+currently no way to fire another element's handler from script.
+
 Watch the quoting: `'x'` is a single **character** in a script, not a string, so
 a selector needs `"…"`. Inside a `@tap="…"` attribute there is no room for
 those, which is the practical reason to name the handler and call it.

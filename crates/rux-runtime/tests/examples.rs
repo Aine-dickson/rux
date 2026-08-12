@@ -260,9 +260,10 @@ fn the_element_query_example_measures_and_focuses() {
 
     // Focus reaches the input, and blur gives it up.
     doc.apply_handler("focus_note()");
-    assert!(doc.focus().is_some(), "the note took focus");
+    let asked = doc.take_focus_request().expect("focus() asked for focus");
+    assert_eq!(asked.expect("for an element, not a blur").model, "note");
     doc.apply_handler("blur()");
-    assert!(doc.focus().is_none(), "and gave it up");
+    assert_eq!(doc.take_focus_request(), Some(None), "and blur asked to drop it");
 
     // Scrolling is the shell's to apply, so the document queues it.
     doc.apply_handler("reveal_end()");

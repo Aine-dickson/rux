@@ -87,9 +87,19 @@ pub struct Document {
     /// window and no GPU on purpose, so geometry there is absent rather than
     /// wrong.
     metrics: Vec<rux_layout::NodeMetrics>,
-    /// `scrollIntoView` requests the shell has not taken yet. Focus and blur are
-    /// applied here; scrolling is the shell's, since the offsets are.
+    /// `scrollIntoView` requests the shell has not taken yet.
     pending_reveals: Vec<Vec<usize>>,
+    /// A `focus()` or `blur()` the shell has not taken yet. `Some(None)` is a
+    /// blur, `Some(Some(f))` a focus, `None` nothing asked.
+    ///
+    /// A *request* rather than something applied here, which is the whole point.
+    /// Focus is not one fact: this document owns the caret, and the shell
+    /// separately owns which input keystrokes go to, plus the IME state, the
+    /// blink timer and the text scroll. Calling `set_focus` here moves the caret
+    /// and nothing else, so the input looks focused and swallows every key.
+    /// Everything else in the shell goes through its one `set_focus_range`
+    /// funnel, and so must this.
+    pending_focus: Option<Option<Focus>>,
     pub root: LayoutNode,
 }
 
@@ -623,6 +633,7 @@ impl Document {
             pending_scroll: None,
             metrics: Vec::new(),
             pending_reveals: Vec::new(),
+            pending_focus: None,
             root,
         };
         doc.init_reactive();
@@ -681,6 +692,7 @@ impl Document {
             pending_scroll: None,
             metrics: Vec::new(),
             pending_reveals: Vec::new(),
+            pending_focus: None,
             root,
         };
         doc.init_reactive();
@@ -1441,6 +1453,14 @@ impl Document {
         std::mem::take(&mut self.pending_reveals)
     }
 
+    /// Take the `focus()` / `blur()` the last handler asked for, if any.
+    ///
+    /// The shell applies it through its own focus funnel, so keystrokes, the
+    /// IME and the caret blink all follow. See [`Document::pending_focus`].
+    pub fn take_focus_request(&mut self) -> Option<Option<Focus>> {
+        self.pending_focus.take()
+    }
+
     /// Apply whatever `focus()`, `blur()` and `scrollIntoView()` the last run
     /// asked for.
     ///
@@ -1452,7 +1472,7 @@ impl Document {
         for action in rux_script::take_element_actions() {
             match action {
                 rux_script::ElementAction::Blur => {
-                    self.set_focus(None);
+                    self.pending_focus = Some(None);
                     acted = true;
                 }
                 rux_script::ElementAction::Focus(path) => {
@@ -1465,7 +1485,7 @@ impl Document {
                         .and_then(|n| n.model.clone().map(|m| (m, n.key.clone())));
                     if let Some((model, row)) = found {
                         let caret = self.engine.get_string(&model).chars().count();
-                        self.set_focus(Some(Focus::at_row(model, row, caret)));
+                        self.pending_focus = Some(Some(Focus::at_row(model, row, caret)));
                         acted = true;
                     } else {
                         rux_script::warn_script(
@@ -4485,13 +4505,21 @@ mod tests {
         assert!(doc.focus.is_none(), "nothing is focused to start with");
 
         doc.apply_handler("query(\"#name\")[0].focus()");
-        let focus = doc.focus.clone().expect("the input took focus");
+
+        // The *request* is what focus() produces, and the shell is what applies
+        // it. Asserting `doc.focus` here instead is what let a real bug ship:
+        // the document owns the caret, while the shell separately owns which
+        // input keystrokes reach, so setting the caret alone painted a focused
+        // input that ignored every key. Driving the window is what caught it.
+        let request = doc.take_focus_request().expect("focus() asked for focus");
+        let focus = request.expect("and asked to focus something, not to blur");
         assert_eq!(focus.model, "name");
         assert_eq!(focus.caret, 3, "the caret lands after the existing text");
+        assert!(doc.take_focus_request().is_none(), "taking it clears the request");
 
-        // …and blur gives it up again.
+        // …and blur asks for the opposite.
         doc.apply_handler("blur()");
-        assert!(doc.focus.is_none());
+        assert_eq!(doc.take_focus_request(), Some(None), "blur asks to focus nothing");
     }
 
     /// Focus is keyed by `r-model`, so only an input can take it. Asking
@@ -4505,7 +4533,7 @@ mod tests {
         let _ = rux_script::take_warnings();
 
         doc.apply_handler("query(\"#box\")[0].focus()");
-        assert!(doc.focus.is_none());
+        assert!(doc.take_focus_request().is_none(), "nothing was asked to take focus");
         let said: String =
             rux_script::take_warnings().iter().map(|w| w.message.clone()).collect();
         assert!(said.contains("not a text input"), "{said:?}");
