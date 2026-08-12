@@ -7,7 +7,7 @@
       <button class="btn" @tap="measure()">
         <text>Measure the cards</text>
       </button>
-      <button class="btn" @tap="count()">
+      <button class="btn" id="counter" @tap="count()">
         <text>Count them</text>
       </button>
     </view>
@@ -27,6 +27,13 @@
       <button class="btn" @tap="reveal_end()">
         <text>Scroll to the end</text>
       </button>
+    </view>
+
+    <view class="row">
+      <button class="btn" @tap="press_count()">
+        <text>Tap "Count them" from script</text>
+      </button>
+      <text class="hint">taps: {{ taps }}</text>
     </view>
 
     <input id="note" class="field" r-model="note" placeholder="Focus me from script" />
@@ -109,6 +116,7 @@
   // that read the tree would have to rebuild the tree it just read.
   let note = signal("");
   let report = signal("Tap a button.");
+  let taps = signal(0);
 
   // Focus and scrolling are not tree edits: they move host state, and the next
   // build produces exactly the tree it would have produced anyway. That is why
@@ -131,6 +139,15 @@
     let wide = query(".card.wide")[0];
     report = "the wide card is " + wide.width + " x " + wide.height +
              " at " + wide.x + ", " + wide.y;
+  }
+
+  // `tap()` presses an element the way a finger would, which is more than
+  // running its handler: it also follows a link, toggles a checkbox, opens a
+  // select and moves keyboard focus. Here it presses the "Count them" button,
+  // so the report below is written by *that* button's handler, not this one.
+  fn press_count() {
+    taps++;
+    query("#counter")[0].tap();
   }
 
   // A handle carries what the element is, not only where it is.

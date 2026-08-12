@@ -1008,6 +1008,10 @@ struct App {
     /// Boxes styled by `:hover`/`:active`, from the most recent layout. Empty
     /// unless the document actually uses a pointer-state rule.
     states: Vec<StateRegion>,
+    /// Every laid-out node's box, keyed by tree path, from the most recent
+    /// layout. What turns a `query()` handle into a point, so `tap()` can be
+    /// dispatched through the same coordinate path a finger takes.
+    metrics: Vec<rux_layout::NodeMetrics>,
     /// Scroll offset per scrollable box, in tree order. Survives the rebuild
     /// that follows every state change, so a list doesn't jump back to the top
     /// when you tap something in it.
@@ -1156,6 +1160,7 @@ impl App {
             press: None,
             cursor: CursorIcon::Default,
             states: Vec::new(),
+            metrics: Vec::new(),
             #[cfg(target_arch = "wasm32")]
             mirrored: None,
         }
@@ -1957,7 +1962,7 @@ impl App {
             if self.document.apply_handler_in(&src, instance.as_deref()) {
                 self.request_redraw();
             }
-            self.adopt_focus_request();
+            self.adopt_element_requests();
         }
     }
 
@@ -1974,6 +1979,74 @@ impl App {
             self.set_focus_range(request);
             self.request_redraw();
         }
+    }
+
+    /// Apply everything a handler asked to do to an element: any `tap()` first,
+    /// then the focus it settled on.
+    ///
+    /// Taps are drained in a bounded loop because a synthetic tap runs a
+    /// handler, and that handler may tap something else. A button that taps
+    /// itself is a loop with no exit, so it is cut off with the same reasoning
+    /// (and the same wording) as the `emit` chain limit rather than hanging the
+    /// window.
+    ///
+    /// Focus is adopted *after* the taps, because a tap moves focus itself: a
+    /// handler that taps something and then focuses an input means the focus,
+    /// and applying them the other way round would let the tap overwrite it.
+    fn adopt_element_requests(&mut self) {
+        const MAX_TAP_DEPTH: usize = 8;
+        for round in 0.. {
+            let taps = self.document.take_taps();
+            if taps.is_empty() {
+                break;
+            }
+            if round >= MAX_TAP_DEPTH {
+                rux_runtime::warn_script(format!(
+                    "a tap() chain is still going after {MAX_TAP_DEPTH} rounds and has been \
+                     stopped; an element is probably tapping something that taps it back"
+                ));
+                break;
+            }
+            for path in taps {
+                self.synthesize_tap(&path);
+            }
+        }
+        self.adopt_focus_request();
+    }
+
+    /// Press an element as a finger would, at the centre of its box.
+    ///
+    /// Routed through the *same* `press_text` + `dispatch_tap` a real pointer
+    /// takes, rather than reaching for the element's `@tap` body directly. A
+    /// press is not one action: it follows a link, toggles a checkbox, opens a
+    /// select, moves keyboard focus and puts the caret in a text input, and
+    /// every one of those lives in a different place. Going through the pointer
+    /// path means a synthetic tap cannot drift from a real one, because it is a
+    /// real one.
+    ///
+    /// It hit-tests like a real tap too, so the topmost element at that point
+    /// wins. Tapping something covered by a dropdown taps the dropdown, exactly
+    /// as a finger would, and an element with no box in the last frame (hidden,
+    /// or never laid out) cannot be tapped at all.
+    fn synthesize_tap(&mut self, path: &[usize]) {
+        let Some(m) = self.metrics.iter().find(|e| e.path == path).cloned() else {
+            rux_runtime::warn_script(
+                "tap() was called on an element with no box on screen, so nothing was tapped"
+                    .to_string(),
+            );
+            return;
+        };
+        // `dispatch_tap` takes physical pixels and divides by the scale; the
+        // metrics are logical, so they have to be scaled back up on the way in.
+        let scale = self.scale();
+        let x = (m.x + m.width / 2.0) as f64 * scale;
+        let y = (m.y + m.height / 2.0) as f64 * scale;
+        // Press first, which is where a tap on a text input is handled and
+        // where a selection would start, then release, which is what runs a
+        // handler. Both halves, or tapping an input would move no caret.
+        self.press_text((x, y));
+        self.dispatch_tap(x, y);
+        self.request_redraw();
     }
 
     /// Apply a key to the focused input's bound signal, then rebuild + repaint.
@@ -2337,7 +2410,7 @@ impl App {
         match self.focusables.get(index).map(|f| f.kind.clone()) {
             Some(FocusKind::Activate { on_tap, instance }) => {
                 self.document.apply_handler_in(&on_tap, instance.as_deref());
-                self.adopt_focus_request();
+                self.adopt_element_requests();
                 self.request_redraw();
             }
             Some(FocusKind::Select { model, row, .. }) => {
@@ -2768,6 +2841,7 @@ impl App {
             scrolls,
             offsets,
             states,
+            metrics,
             overlay_dismissed,
             overlay_rect,
             caret,
@@ -2984,6 +3058,7 @@ impl App {
 
         *hits = layout.hits;
         *focuses = layout.focuses;
+        *metrics = layout.metrics.clone();
         // A field that is no longer in the tree must not stay focused. Nothing
         // dropped focus when its input went away: only a web source reload ever
         // cleared it, so navigating off a page you had been typing on left the

@@ -36,6 +36,9 @@ use rux_style::{BindingRegistry, Instances};
 /// without depending on `rux-style` directly.
 pub use rux_reactive::json_string;
 pub use rux_style::{InteractionState, Viewport, Warning};
+/// Re-exported so the shell can report a script-facing problem it is the only
+/// one able to see, such as `tap()` naming an element with no box on screen.
+pub use rux_script::warn_script;
 
 /// A loaded `.rux` document: parsed source, imported components (by tag), the
 /// script engine, and the current tree.
@@ -89,6 +92,8 @@ pub struct Document {
     metrics: Vec<rux_layout::NodeMetrics>,
     /// `scrollIntoView` requests the shell has not taken yet.
     pending_reveals: Vec<Vec<usize>>,
+    /// `tap()` requests the shell has not taken yet, in the order asked.
+    pending_taps: Vec<Vec<usize>>,
     /// A `focus()` or `blur()` the shell has not taken yet. `Some(None)` is a
     /// blur, `Some(Some(f))` a focus, `None` nothing asked.
     ///
@@ -633,6 +638,7 @@ impl Document {
             pending_scroll: None,
             metrics: Vec::new(),
             pending_reveals: Vec::new(),
+            pending_taps: Vec::new(),
             pending_focus: None,
             root,
         };
@@ -692,6 +698,7 @@ impl Document {
             pending_scroll: None,
             metrics: Vec::new(),
             pending_reveals: Vec::new(),
+            pending_taps: Vec::new(),
             pending_focus: None,
             root,
         };
@@ -1453,6 +1460,16 @@ impl Document {
         std::mem::take(&mut self.pending_reveals)
     }
 
+    /// Take the `tap()` requests the last handler made.
+    ///
+    /// The shell's, because a press is an interaction and the shell owns those:
+    /// which element the pointer is over, what has keyboard focus, whether a
+    /// dropdown is open. See [`Document::pending_focus`] for what happens when
+    /// half of such a fact is set from here instead.
+    pub fn take_taps(&mut self) -> Vec<Vec<usize>> {
+        std::mem::take(&mut self.pending_taps)
+    }
+
     /// Take the `focus()` / `blur()` the last handler asked for, if any.
     ///
     /// The shell applies it through its own focus funnel, so keystrokes, the
@@ -1497,6 +1514,16 @@ impl Document {
                 }
                 rux_script::ElementAction::ScrollIntoView(path) => {
                     self.pending_reveals.push(path);
+                    acted = true;
+                }
+                // Handed to the shell rather than run here. Running the
+                // element's `@tap` body from the document would cover only one
+                // of the things a press does and silently skip opening a
+                // select, moving keyboard focus, or putting the caret in an
+                // input, all of which are the shell's. The shell resolves the
+                // element's box and runs the same dispatch a finger does.
+                rux_script::ElementAction::Tap(path) => {
+                    self.pending_taps.push(path);
                     acted = true;
                 }
             }
@@ -4616,6 +4643,28 @@ mod tests {
         let said: String =
             doc.diagnostics().warnings.iter().map(|w| w.message.clone()).collect();
         assert!(said.contains("never run"), "checked though it is not built: {said:?}");
+    }
+
+    /// `tap()` is queued for the shell rather than run here, because a press is
+    /// not one action: it also follows links, toggles, opens a select and moves
+    /// keyboard focus, and those are the shell's.
+    #[test]
+    fn tap_is_queued_for_the_shell() {
+        let mut doc = Document::from_source(
+            r#"<template><screen>
+                <text>{{ n }}</text>
+                <button id="go" @tap="n = n + 1"><text>Go</text></button>
+            </screen></template>
+            <script>let n = 0;</script>"#,
+        )
+        .unwrap();
+        assert!(doc.take_taps().is_empty());
+
+        doc.apply_handler("query(\"#go\")[0].tap()");
+        assert_eq!(doc.take_taps().len(), 1, "the element is queued");
+        assert!(doc.take_taps().is_empty(), "and taking it empties the queue");
+        // Nothing ran here: the document did not fire the handler itself.
+        assert_eq!(text_of(&doc.root)[0], "0");
     }
 
     /// Outside a handler the capability does not exist, so a binding that tries

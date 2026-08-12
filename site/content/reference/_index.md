@@ -453,8 +453,25 @@ because there is only one focused element. Only a text input can take focus,
 since focus is keyed by `r-model`; asking anything else says so.
 
 **`focus()` is not a tap.** It puts the caret in an input and nothing more: it
-runs no `@tap` handler, follows no `to=` link and toggles no checkbox. There is
-currently no way to fire another element's handler from script.
+runs no `@tap` handler, follows no `to=` link and toggles no checkbox.
+
+**`el.tap()` is the whole gesture.** It presses the element as a finger would,
+at the centre of its box, through the same dispatch a real pointer goes through.
+So it runs the `@tap` handler, follows a `to=` link, toggles a checkbox or
+radio, opens a `type="select"` dropdown, moves keyboard focus and puts the caret
+in a text input, in each case because that is what a press already does. It is
+not a wrapper that calls the handler.
+
+Two consequences of it being a real press rather than an imitation:
+
+- **It hit-tests.** The topmost element at that point wins, so tapping something
+  covered by an open dropdown taps the dropdown, exactly as a finger would.
+- **An element with no box cannot be tapped.** Hidden by `r-show="false"`, or
+  never laid out, means there is nothing to press, and it says so.
+
+A tap runs a handler, and that handler can tap something else. The chain is cut
+off after eight rounds, the same bound and the same reasoning as an `emit`
+chain, so a button that taps itself stops rather than hanging the window.
 
 Watch the quoting: `'x'` is a single **character** in a script, not a string, so
 a selector needs `"…"`. Inside a `@tap="…"` attribute there is no room for

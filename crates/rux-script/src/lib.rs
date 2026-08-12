@@ -151,6 +151,10 @@ fn register_elements(engine: &mut RhaiEngine) {
         .register_fn("scrollIntoView", |e: &mut ElementHandle| {
             let path = e.facts.path.clone();
             ELEMENT_ACTIONS.with(|a| a.borrow_mut().push(ElementAction::ScrollIntoView(path)));
+        })
+        .register_fn("tap", |e: &mut ElementHandle| {
+            let path = e.facts.path.clone();
+            ELEMENT_ACTIONS.with(|a| a.borrow_mut().push(ElementAction::Tap(path)));
         });
     // `blur()` is free-standing rather than a method, because there is only one
     // focused element and blurring "this one" would either do nothing or take
@@ -785,6 +789,15 @@ pub enum ElementAction {
     Blur,
     /// Scroll whatever scroller contains this element until it is visible.
     ScrollIntoView(Vec<usize>),
+    /// Press this element as a finger would.
+    ///
+    /// Deliberately the *whole* gesture rather than "run its `@tap` body": a
+    /// real press also follows a link, toggles a checkbox, opens a select,
+    /// moves keyboard focus and puts the caret in a text input, and a script
+    /// that has to remember which of those to do separately is a script that
+    /// will get it wrong. The shell resolves it against the element's box and
+    /// runs the same dispatch a pointer does.
+    Tap(Vec<usize>),
 }
 
 thread_local! {
