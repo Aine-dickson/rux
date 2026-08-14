@@ -78,6 +78,17 @@ fn warn(message: String) {
     });
 }
 
+/// Raise a stylesheet warning from outside the cascade.
+///
+/// The runtime resolves `<style src="…">`, so it is the only layer that can
+/// notice an include that cannot be read at all. The warning still belongs in
+/// this sink, because to everyone downstream it is one more thing wrong with
+/// the document's styling, and having two places to drain would mean the
+/// overlay and `rux check` could disagree about what was said.
+pub fn warn_stylesheet(message: impl Into<String>) {
+    warn(message.into());
+}
+
 /// Take the warnings raised since the last call, emptying the sink.
 pub fn take_warnings() -> Vec<Warning> {
     WARNINGS.with(|w| std::mem::take(&mut *w.borrow_mut()))
@@ -139,6 +150,11 @@ pub struct ValueBinding {
     pub path: Vec<usize>,
     /// The `r-model` signal expression.
     pub model: String,
+    /// The `r-key` of the row this input is in, when it is in one. With
+    /// [`ValueBinding::locals`] it is what lets the value be read and written in
+    /// the row's own scope: the expression is recorded as written, so a model
+    /// like `items[item.at].note` means nothing without `item` in scope.
+    pub row: Option<String>,
     /// Shown (dim) when the value is empty.
     pub placeholder: String,
     /// Text colour when the field has a value.
@@ -273,10 +289,148 @@ fn bind_locals(src: &str, locals: &Locals) -> String {
     out
 }
 
-/// A compiled component: its template root and its own CSS rules.
+/// A compiled component: its template root, its own CSS rules, and the
+/// top-level script that gives each instance its private state.
 struct Component {
     template: Element,
     rules: Vec<Rule>,
+    /// The component's own `let` declarations, run once per instance. Its `fn`
+    /// definitions are not here: those are shared, merged into the one engine,
+    /// because a function is code and state is not.
+    script: String,
+}
+
+/// One component instance's private world: the state its own script declared,
+/// and the props the caller passed in.
+///
+/// State persists across rebuilds, keyed by where the instance sits in the
+/// *template* rather than in the tree, so it survives a list reordering around
+/// it. Props are re-derived on every build, since they are the caller's to
+/// decide.
+#[derive(Clone, Debug, Default)]
+pub struct Instance {
+    pub state: Vec<(String, Value)>,
+    pub props: Vec<(String, Value)>,
+    /// What the caller wrote as `@event="…"` on the tag: the bodies to run when
+    /// this instance emits. The caller's `r-for` locals are already baked in,
+    /// the same treatment an `@tap` gets, since the body runs long after the
+    /// build that read them.
+    pub listeners: Vec<(String, String)>,
+    /// The instance the caller itself sits in, `None` at document level. A
+    /// listener body is the caller's code and must run in the caller's scope:
+    /// anything else writes to the wrong variables and looks like it worked.
+    pub caller: Option<String>,
+    /// The path this instance was expanded under, when a `<router>` chose it.
+    /// Leaving that route drops the instance, so a view visited a second time
+    /// starts fresh rather than resuming where it was left. Anything meant to
+    /// outlive a visit belongs in a document signal, which is the same rule
+    /// components already follow for anything the caller needs to see.
+    pub route: Option<String>,
+    /// Whether the build now running has expanded this instance.
+    ///
+    /// Every build walks the whole template, including the one a reconcile does
+    /// before splicing, so an instance the current build never reached is one
+    /// that is no longer on screen: an `r-if` closed over it, or its `r-for` row
+    /// went away. Cleared at the start of a build and checked at the end, which
+    /// is the only moment both facts are known.
+    pub touched: bool,
+}
+
+/// Every live component instance, by identity. Owned by the runtime so it
+/// outlives the tree, which is rebuilt constantly.
+pub type Instances = HashMap<String, Instance>;
+
+/// A component instance's identity: where it sits in the template, and which
+/// `r-for` row it is in.
+///
+/// Deliberately not the tree path, which moves when a list reorders. Two
+/// `<panel>` elements written in one file are two instances; the same `<panel>`
+/// repeated by `r-for` is one instance per row.
+fn instance_key(tpl_path: &[usize], row: Option<&str>) -> String {
+    let mut key = String::new();
+    for step in tpl_path {
+        key.push_str(&step.to_string());
+        key.push('.');
+    }
+    if let Some(row) = row {
+        key.push('#');
+        key.push_str(row);
+    }
+    key
+}
+
+/// A component's own top-level statements: its script with `fn` blocks and
+/// `use` lines removed.
+///
+/// The functions are merged into the shared engine (code is shared; two
+/// instances calling one function is right), while what is left declares the
+/// state each instance gets its own copy of.
+fn component_statements(script: &str) -> String {
+    let mut out = String::new();
+    let lines: Vec<&str> = script.lines().collect();
+    let mut i = 0;
+    while i < lines.len() {
+        let trimmed = lines[i].trim();
+        if trimmed.starts_with("use ") {
+            i += 1;
+            continue;
+        }
+        if trimmed.starts_with("fn ") {
+            // Skip the whole definition by counting braces, so a function with
+            // an `if` inside does not end early.
+            let mut depth = 0i32;
+            let mut seen = false;
+            while i < lines.len() {
+                for c in lines[i].chars() {
+                    match c {
+                        '{' => {
+                            depth += 1;
+                            seen = true;
+                        }
+                        '}' => depth -= 1,
+                        _ => {}
+                    }
+                }
+                i += 1;
+                if seen && depth <= 0 {
+                    break;
+                }
+            }
+            continue;
+        }
+        out.push_str(lines[i]);
+        out.push('\n');
+        i += 1;
+    }
+    out
+}
+
+/// What a `<slot />` inside a component renders: the children written at the
+/// call site, and the context they were written in.
+///
+/// The context travels because slot content belongs to the *caller*, not to the
+/// component. It reads the caller's scope, including the caller's own instance
+/// state, which the component has no access to, and
+/// is styled by the caller's stylesheet (the component's rules are written for
+/// markup the component itself wrote). Only its position in the tree comes from
+/// the component.
+#[derive(Clone, Copy)]
+struct Slot<'a> {
+    children: &'a [&'a Element],
+    locals: &'a Locals,
+    rules: &'a [Rule],
+}
+
+/// An element's element children, skipping text nodes. Text between tags is
+/// handled by the text-binding path, not by the child builder.
+fn element_children(el: &Element) -> Vec<&Element> {
+    el.children
+        .iter()
+        .filter_map(|n| match n {
+            TplNode::Element(child) => Some(child),
+            TplNode::Text(_) => None,
+        })
+        .collect()
 }
 
 /// Registered components, keyed by custom-element tag.
@@ -465,7 +619,8 @@ pub fn build_styled_tree(
     components: &HashMap<String, Sfc>,
     engine: &mut Engine,
 ) -> Result<LayoutNode, String> {
-    build_styled_tree_tracked(sfc, components, engine).map(|(node, _)| node)
+    let mut instances = Instances::new();
+    build_styled_tree_tracked(sfc, components, engine, &mut instances).map(|(node, _)| node)
 }
 
 /// Recompute a text binding's string against the engine's current state, what
@@ -528,6 +683,7 @@ fn explicit_access_role(el: &Element) -> Option<AccessRole> {
         "heading" => AccessRole::Heading,
         "button" => AccessRole::Button,
         "label" | "text" | "paragraph" => AccessRole::Label,
+        "link" => AccessRole::Link,
         "checkbox" => AccessRole::CheckBox,
         "radio" => AccessRole::RadioButton,
         "textbox" | "textfield" => AccessRole::TextInput,
@@ -671,11 +827,13 @@ pub fn build_styled_tree_tracked(
     sfc: &Sfc,
     components: &HashMap<String, Sfc>,
     engine: &mut Engine,
+    instances: &mut Instances,
 ) -> Result<(LayoutNode, BindingRegistry), String> {
     build_styled_tree_stateful(
         sfc,
         components,
         engine,
+        instances,
         &InteractionState::default(),
         Viewport::default(),
     )
@@ -689,6 +847,7 @@ pub fn build_styled_tree_stateful(
     sfc: &Sfc,
     components: &HashMap<String, Sfc>,
     engine: &mut Engine,
+    instances: &mut Instances,
     state: &InteractionState,
     viewport: Viewport,
 ) -> Result<(LayoutNode, BindingRegistry), String> {
@@ -698,7 +857,7 @@ pub fn build_styled_tree_stateful(
     // document being built, so a line from the component's coordinate space
     // would point confidently at the wrong place. Unplaced is the honest answer
     // until warnings carry a file as well as a line.
-    let rules = parse_rules_at(&sfc.style, viewport, Some(sfc.style_line));
+    let rules = parse_document_rules(sfc, viewport);
     let comps: Components = components
         .iter()
         .map(|(tag, c)| {
@@ -706,11 +865,21 @@ pub fn build_styled_tree_stateful(
                 tag.clone(),
                 Component {
                     template: c.template.clone(),
-                    rules: parse_rules(&c.style, viewport),
+                    rules: parse_component_rules(c, viewport),
+                    script: component_statements(&c.script),
                 },
             )
         })
         .collect();
+
+    // An instance lives as long as it is on screen, and until now nothing ever
+    // said it had left: the only removal anywhere was the router's, so an
+    // `r-if` that closed over a component kept its state forever and gave it
+    // back on the way in, and the map only ever grew. A build walks the whole
+    // template, so what it does not reach is what is gone.
+    for instance in instances.values_mut() {
+        instance.touched = false;
+    }
 
     let mut ancestors: Vec<AncNode> = Vec::new();
     let locals = Locals::new();
@@ -733,8 +902,13 @@ pub fn build_styled_tree_stateful(
         &[],
         &mut reg,
         state,
+        instances,
+        None, // the root is not inside a component
+        None, // the document root has no caller, so no slot content
+        None, // and is not inside any row
     );
     link_labels(&mut node);
+    instances.retain(|_, instance| instance.touched);
     Ok((node, reg))
 }
 
@@ -815,6 +989,7 @@ enum Pseudo {
     Focus,
     Active,
     Checked,
+    Current,
     Unknown(String),
 }
 
@@ -828,6 +1003,9 @@ pub struct ElemStates {
     pub focus: bool,
     pub active: bool,
     pub checked: bool,
+    /// This element's `to` names the path we are on. Resolved at build time from
+    /// the `route` signal, like `checked` and unlike the pointer states.
+    pub current: bool,
 }
 
 /// The interaction state the *shell* owns, handed to the build so pseudo-class
@@ -845,6 +1023,10 @@ pub struct InteractionState {
     pub active: Option<Vec<usize>>,
     /// `r-model` of the focused input, the shell tracks focus by model, not path.
     pub focused_model: Option<String>,
+    /// The `r-key` of the row that input is in, when it is inside an `r-for`.
+    /// Without it `:focus` matches every row of a list at once, since they all
+    /// carry the same `r-model` text.
+    pub focused_row: Option<String>,
 }
 
 impl InteractionState {
@@ -876,6 +1058,7 @@ impl Pseudo {
             "focus" => Self::Focus,
             "active" => Self::Active,
             "checked" => Self::Checked,
+            "current" => Self::Current,
             other => Self::Unknown(other.to_string()),
         }
     }
@@ -886,6 +1069,7 @@ impl Pseudo {
             Self::Focus => s.focus,
             Self::Active => s.active,
             Self::Checked => s.checked,
+            Self::Current => s.current,
             // Fails closed, see the type docs.
             Self::Unknown(_) => false,
         }
@@ -1266,6 +1450,59 @@ fn collect_media_matches(rules: &[CssRule], vp: Viewport, out: &mut Vec<bool>) {
 /// own lines. `None` means "do not claim to know": see [`parse_rules_at`].
 fn parse_rules(css: &str, vp: Viewport) -> Vec<Rule> {
     parse_rules_at(css, vp, None)
+}
+
+/// Every sheet a document styles with: what it included, then its own
+/// `<style>` body.
+///
+/// The included sheets come first so the document wins a tie, which is what
+/// including a palette is for. That is source order doing the work, exactly as
+/// it would if the file had been pasted in.
+///
+/// Included rules are parsed unplaced. They live in a different file, and every
+/// consumer attributes a warning to the document being built, so a line number
+/// from the include's coordinate space would point confidently at the wrong
+/// place. Same reasoning as a component's `<style>` above.
+fn parse_document_rules(sfc: &Sfc, vp: Viewport) -> Vec<Rule> {
+    if sfc.style_includes.is_empty() {
+        // The overwhelmingly common case, and it keeps the `order` values
+        // exactly as they were before includes existed.
+        return parse_rules_at(&sfc.style, vp, Some(sfc.style_line));
+    }
+    let mut rules = Vec::new();
+    for include in &sfc.style_includes {
+        rules.extend(parse_rules(&include.css, vp));
+    }
+    rules.extend(parse_rules_at(&sfc.style, vp, Some(sfc.style_line)));
+    renumber(&mut rules);
+    rules
+}
+
+/// [`parse_document_rules`] for a component, whose own `<style>` is unplaced
+/// too.
+fn parse_component_rules(sfc: &Sfc, vp: Viewport) -> Vec<Rule> {
+    if sfc.style_includes.is_empty() {
+        return parse_rules(&sfc.style, vp);
+    }
+    let mut rules = Vec::new();
+    for include in &sfc.style_includes {
+        rules.extend(parse_rules(&include.css, vp));
+    }
+    rules.extend(parse_rules(&sfc.style, vp));
+    renumber(&mut rules);
+    rules
+}
+
+/// Restate `order` across concatenated sheets.
+///
+/// `order` is per-sheet and breaks specificity ties, so two sheets each
+/// starting at 0 would make the tie-break meaningless and let an included rule
+/// beat the document's own. Renumbering makes the concatenation read as one
+/// sheet, which is what it is.
+fn renumber(rules: &mut [Rule]) {
+    for (i, rule) in rules.iter_mut().enumerate() {
+        rule.order = i;
+    }
 }
 
 fn parse_rules_at(css: &str, vp: Viewport, base: Option<usize>) -> Vec<Rule> {
@@ -1817,11 +2054,20 @@ fn build_node(
     tpl_path: &[usize],
     reg: &mut BindingRegistry,
     state: &InteractionState,
+    instances: &mut Instances,
+    // The component instance this element is inside, None at document level.
+    instance: Option<&str>,
+    slot: Option<Slot>,
+    // The `r-key` of the `r-for` row this element is inside, `None` outside one.
+    // Half the identity of anything in a list: `r-model` is recorded as written,
+    // so every row of a list otherwise looks like the same input.
+    row: Option<&str>,
 ) -> LayoutNode {
     // A custom-element tag expands its imported component in place.
     if let Some(component) = comps.get(&el.tag) {
         return expand_component(
-            el, component, comps, inherited, engine, locals, path, tpl_path, reg, state,
+            el, component, comps, inherited, engine, locals, path, tpl_path, reg, state, rules,
+            instances, instance, row, &Locals::new(), None,
         );
     }
 
@@ -1840,13 +2086,34 @@ fn build_node(
     // survives a reconcile that moves nodes around.
     desc.states.hover = state.hovers(path);
     desc.states.active = state.activates(path);
+    // Both halves, or every row of a list matches at once: they all carry the
+    // same `r-model` text, so the model alone cannot pick one out.
     desc.states.focus = match (&state.focused_model, el.attr("r-model")) {
-        (Some(focused), Some(model)) => focused == model,
+        (Some(focused), Some(model)) => focused == model && state.focused_row.as_deref() == row,
         _ => false,
     };
     // `:class`: dynamic classes fed into the cascade (the `checked` pattern,
     // generalized). Signals it reads are collected for reconcile.
     let mut dyn_deps: HashSet<String> = HashSet::new();
+    // Where this element links to, if anywhere. `:to` is the computed form, which
+    // is what a list of rows needs: every row links somewhere different, and the
+    // path is built from the row's own data.
+    let to = el.attr("to").map(str::to_string).or_else(|| {
+        let expr = el.attr(":to")?;
+        let (value, deps) = engine.eval_value_tracked(expr, locals);
+        dyn_deps.extend(deps);
+        value.map(|v| v.to_display())
+    });
+    // `:current` is the link pointing at the path we are already on, so a nav bar
+    // can show where you are. Reading the route here also subscribes this node to
+    // it, which is what lets navigation restyle the link in place instead of
+    // rebuilding: the same trick `:class` uses.
+    if let Some(to) = &to {
+        let (value, deps) = engine.eval_value_tracked(rux_script::ROUTE_SIGNAL, locals);
+        dyn_deps.extend(deps);
+        desc.states.current =
+            value.is_some_and(|v| match_route(to, &v.to_display()).is_some());
+    }
     if let Some(expr) = el.attr(":class") {
         let (value, deps) = engine.eval_value_tracked(expr, locals);
         dyn_deps.extend(deps);
@@ -1906,7 +2173,13 @@ fn build_node(
     // variable no longer exists, so `@tap="picked = item"` would see `item`
     // undefined and silently do nothing. Bake the current loop bindings into the
     // handler as a `let` prelude so it reproduces them when it runs.
-    let on_tap = el.attr("@tap").map(|h| bind_locals(h, locals));
+    // `to="/path"` is a navigation intent, which is a tap like any other once it
+    // is written as a handler: it then travels the one route a tap already
+    // takes, through the hit region and `apply_handler`. An explicit `@tap`
+    // wins, so a link can still do something else on the way.
+    let on_tap = el.attr("@tap").map(|h| bind_locals(h, locals)).or_else(|| {
+        to.as_ref().map(|p| format!("navigate({})", Value::Text(p.clone()).to_rhai_literal()))
+    });
     // r-show="false" keeps the layout slot but paints nothing. It only flips
     // `hidden`, never the shape, so it's patchable: record it and a change rewrites
     // the bool in place.
@@ -2005,9 +2278,12 @@ fn build_node(
         node.label_for = el.attr("for").map(str::to_string);
         node.state_path = state_path.clone();
         // Static text reads as a label; `role="heading"` promotes it. Text that is
-        // itself tappable is a button whose name is its own words.
+        // itself tappable is a button whose name is its own words, unless it is a
+        // link, which a screen reader announces differently and should.
         node.access = Access {
-            role: explicit_access_role(el).unwrap_or(if node.on_tap.is_some() {
+            role: explicit_access_role(el).unwrap_or(if to.is_some() {
+                AccessRole::Link
+            } else if node.on_tap.is_some() {
                 AccessRole::Button
             } else {
                 AccessRole::Label
@@ -2183,6 +2459,7 @@ fn build_node(
                 reg.value.push(ValueBinding {
                     path: path.to_vec(),
                     model: m.to_string(),
+                    row: row.map(str::to_string),
                     placeholder: placeholder.clone(),
                     color,
                     placeholder_color: PLACEHOLDER_COLOR,
@@ -2257,14 +2534,7 @@ fn build_node(
     }
 
     ancestors.push(AncNode { desc, prev: prev.to_vec() });
-    let element_children: Vec<&Element> = el
-        .children
-        .iter()
-        .filter_map(|n| match n {
-            TplNode::Element(child) => Some(child),
-            TplNode::Text(_) => None,
-        })
-        .collect();
+    let element_children = element_children(el);
     let (children, structural_deps) = build_children(
         &element_children,
         rules,
@@ -2277,6 +2547,12 @@ fn build_node(
         tpl_path,
         reg,
         state,
+        instances,
+        instance,
+        // A `<slot>` deeper inside a component still fills from the same call
+        // site, so the slot travels down with everything else.
+        slot,
+        row,
     );
     ancestors.pop();
     // If any child carried a structural directive, this parent can be reconciled
@@ -2305,12 +2581,20 @@ fn build_node(
         focus_model: None,
         state_path,
         access: Access::default(),
+        // Set when this node is inside a component, so a handler on it knows
+        // whose state it is running against.
+        instance: instance.map(str::to_string),
+        // Filled in by the `r-for` expansion, which is the only place that knows
+        // an element is a row and which item it stands for.
+        key: None,
     };
     // A tappable box is a button, named by the text inside it, that is how
     // `<view @tap><text>Save</text></view>` announces as "Save, button". A
     // scroller is worth exposing so its content can be reached; anything else is
     // structure, and only appears if the author gave it a `role=`.
-    let role = explicit_access_role(el).unwrap_or(if node.on_tap.is_some() {
+    let role = explicit_access_role(el).unwrap_or(if to.is_some() {
+        AccessRole::Link
+    } else if node.on_tap.is_some() {
         AccessRole::Button
     } else if node.style.overflow == Overflow::Scroll {
         AccessRole::ScrollView
@@ -2342,10 +2626,31 @@ fn expand_component(
     tpl_path: &[usize],
     reg: &mut BindingRegistry,
     state: &InteractionState,
+    // The caller's stylesheet, for whatever it wrote between the tags.
+    caller_rules: &[Rule],
+    instances: &mut Instances,
+    // The instance the *caller* is in, which is where a listener body belongs.
+    caller: Option<&str>,
+    row: Option<&str>,
+    // Props resolved by the caller rather than written as attributes: the route
+    // parameters a `<router>` captured. Empty for an ordinary component tag.
+    extra_props: &Locals,
+    // The path this was expanded under, when a `<router>` chose it. Recorded so
+    // leaving the route can drop the instance's state.
+    route: Option<&str>,
 ) -> LayoutNode {
     let mut props: Locals = Vec::new();
     let mut prop_deps: HashSet<String> = HashSet::new();
+    let mut listeners: Vec<(String, String)> = Vec::new();
     for (key, expr) in &el.attrs {
+        // `@event="body"` is a listener, not a prop: the body is the caller's
+        // code to run *later*, so it is carried as text and never evaluated
+        // here. Evaluating it would run the caller's statements at build time,
+        // once per build, which is the opposite of an event.
+        if let Some(name) = key.strip_prefix('@') {
+            listeners.push((name.to_string(), bind_locals(expr, parent_locals)));
+            continue;
+        }
         if let Some(name) = key.strip_prefix(':') {
             // Props are evaluated in the caller's scope and become the component's
             // only locals, a prop change re-expands this subtree (a reconcile).
@@ -2356,6 +2661,11 @@ fn expand_component(
             }
         }
     }
+    // Route parameters are already values, so they are appended rather than
+    // evaluated. Last, so on a name collision the captured segment wins: it is
+    // what the path actually says, and a `:prop` of the same name is more likely
+    // a leftover than an override.
+    props.extend(extra_props.iter().cloned());
     // Reconcile this component instance in place when a prop's signals change.
     if !prop_deps.is_empty() {
         reg.components.push(ComponentBinding {
@@ -2363,6 +2673,33 @@ fn expand_component(
             deps: prop_deps,
         });
     }
+
+    // Whatever was written between the tags becomes this instance's slot
+    // content. It stays in the caller's rules and the caller's scope: the
+    // component decides *where* it goes, not what it means.
+    let supplied = element_children(el);
+    let slot = Slot { children: &supplied, locals: parent_locals, rules: caller_rules };
+
+    // This instance's own state. Created the first time it is expanded, by
+    // running the component's script in a scope of its own, and kept across
+    // rebuilds: the tree is thrown away constantly, and a component's state
+    // must not be.
+    let key = instance_key(tpl_path, row);
+    let entry = instances.entry(key.clone()).or_insert_with(|| Instance {
+        state: engine.init_scope(&component.script),
+        ..Instance::default()
+    });
+    entry.touched = true;
+    entry.props = props.clone();
+    // Listeners and the calling instance are the caller's, so like props they
+    // are re-derived on every build rather than kept.
+    entry.listeners = listeners;
+    entry.caller = caller.map(str::to_string);
+    entry.route = route.map(str::to_string);
+    // State first, so a prop of the same name wins: the caller's input is more
+    // specific than the component's own default.
+    let mut locals: Locals = entry.state.clone();
+    locals.extend(props);
 
     // The component expands in place at this element's path, so its root node
     // takes the same path; its bindings are recorded relative to it.
@@ -2375,12 +2712,114 @@ fn expand_component(
         &[],
         inherited,
         engine,
-        &props,
+        &locals,
         path,
         tpl_path,
         reg,
         state,
+        instances,
+        Some(key.as_str()),
+        Some(slot),
+        // A component expanded inside a row is still inside that row.
+        row,
     )
+}
+
+/// Match a `<route path="…">` pattern against the current path, capturing the
+/// `:name` segments as parameters.
+///
+/// `None` means the pattern does not apply. `Some(params)` means it does, with
+/// whatever it captured (often nothing). Segment counts have to agree, because a
+/// pattern is a whole path and not a prefix: matching on a prefix would make
+/// `/` match every path there is, and the first route would always win.
+///
+/// A trailing slash is not a difference, so `/settings` and `/settings/` are one
+/// path. Anyone typing a URL by hand will produce both.
+fn match_route(pattern: &str, path: &str) -> Option<Locals> {
+    fn segments(s: &str) -> Vec<&str> {
+        s.split('/').filter(|p| !p.is_empty()).collect()
+    }
+    let pat = segments(pattern);
+    let cur = segments(path);
+    if pat.len() != cur.len() {
+        return None;
+    }
+    let mut params: Locals = Vec::new();
+    for (p, c) in pat.iter().zip(cur.iter()) {
+        match p.strip_prefix(':') {
+            // A parameter takes whatever sits in that position, under its name,
+            // decoded: a value that had to be escaped to go into the URL has to
+            // come back out as what it was, or a view is handed `a%2Fb`.
+            Some(name) => params.push((
+                name.to_string(),
+                Value::Text(rux_script::percent_decode(c)),
+            )),
+            // A literal segment has to be exactly itself.
+            None if p == c => {}
+            None => return None,
+        }
+    }
+    Some(params)
+}
+
+/// What the routes in `template` capture from `path`, without building anything.
+///
+/// The matched view already receives its parameters as props, and that is
+/// enough for the view itself. It is not enough for anything *around* the
+/// router: a title bar or a breadcrumb sits in the document's own layout, is
+/// not the matched view, and so had no way to see the `id` in `/crew/grace`.
+/// This is what backs the `params` signal, which fills that gap.
+///
+/// It has to run *before* the build rather than fall out of it, or `{{ params.id }}`
+/// written outside the router would render one navigation behind.
+///
+/// The first `<router>` in the template wins. Nested routers are not built, and
+/// when they are, the parameters of an inner one belong to it rather than to
+/// the document.
+pub fn route_params(template: &Element, path: &str) -> Vec<(String, Value)> {
+    let Some(router) = find_router(template) else { return Vec::new() };
+    element_children(router)
+        .into_iter()
+        .filter(|r| r.tag == "route")
+        // A fallback route captures nothing, which is why this looks only at
+        // patterns: there is nothing in `/nowhere` to name.
+        .find_map(|r| match_route(r.attr("path")?, path))
+        .unwrap_or_default()
+}
+
+/// The document's `<router>`, wherever in the template it was written.
+fn find_router(el: &Element) -> Option<&Element> {
+    if el.tag == "router" {
+        return Some(el);
+    }
+    element_children(el).into_iter().find_map(find_router)
+}
+
+/// Every `<route name="…" path="…">` in the template, in the order written.
+///
+/// What `path_for("crew-detail", #{ id: "grace" })` builds a path from. A name
+/// is worth having because a path is written in every link that leads to it,
+/// and a URL scheme that can never be changed afterwards is not much of a
+/// scheme.
+pub fn named_routes(template: &Element) -> Vec<(String, String)> {
+    let Some(router) = find_router(template) else { return Vec::new() };
+    element_children(router)
+        .into_iter()
+        .filter(|r| r.tag == "route")
+        .filter_map(|r| Some((r.attr("name")?.to_string(), r.attr("path")?.to_string())))
+        .collect()
+}
+
+/// Whether the router remembers where each page was scrolled to.
+///
+/// `<router restore-scroll="false">` turns it off; anything else, including no
+/// attribute at all, leaves it on. On by default because remembering is what a
+/// user expects from Back, and a document with no `<router>` is unaffected
+/// either way.
+pub fn restore_scroll(template: &Element) -> bool {
+    find_router(template)
+        .and_then(|r| r.attr("restore-scroll"))
+        .is_none_or(|v| v.trim() != "false")
 }
 
 /// Parse `r-for="item in items"` into `(binding, collection_expr)`.
@@ -2404,6 +2843,10 @@ fn build_children(
     tpl_path: &[usize],
     reg: &mut BindingRegistry,
     state: &InteractionState,
+    instances: &mut Instances,
+    instance: Option<&str>,
+    slot: Option<Slot>,
+    row: Option<&str>,
 ) -> (Vec<LayoutNode>, HashSet<String>) {
     let mut out = Vec::new();
     // Signals read by structural directives at this level, returned so the parent
@@ -2428,6 +2871,145 @@ fn build_children(
 
     for (ti, el) in elements.iter().enumerate() {
         let ctp = child_tpl(ti);
+        if el.attr("r-key").is_some() && el.attr("r-for").is_none() {
+            // A key with nothing to identify. Silently ignoring it would let
+            // someone believe their list was keyed when it was not.
+            warn(format!(
+                "`r-key` on <{}> does nothing without `r-for` on the same element",
+                el.tag
+            ));
+        }
+        // `<slot />` is where the caller's children land. It is not an element
+        // of its own: it renders them (or its own children as a fallback) and
+        // leaves nothing behind, so a component adds no wrapper box the author
+        // did not write.
+        if el.tag == "slot" {
+            in_chain = false;
+            let ctp = child_tpl(ti);
+            let filled = slot.filter(|s| !s.children.is_empty());
+            match filled {
+                Some(s) => {
+                    for (si, child) in s.children.iter().enumerate() {
+                        let cp = child_path(&out);
+                        let mut ctp = ctp.clone();
+                        ctp.push(si);
+                        // The caller's rules and the caller's scope: this markup
+                        // was written out there, and reads what is in scope out
+                        // there. `slot: None` inside, since a component's own
+                        // `<slot>` is not a place to put the outer one's content.
+                        out.push(build_node(
+                            child, s.rules, comps, ancestors, &prev, inherited, engine, s.locals,
+                            &cp, &ctp, reg, state, instances, instance, None, row,
+                        ));
+                        prev.push(ElemDesc::of(child));
+                    }
+                }
+                None => {
+                    // Nothing supplied: the slot's own children are the default,
+                    // and they belong to the component, so they build in its
+                    // rules and its scope.
+                    if slot.is_none() {
+                        warn(
+                            "`<slot>` outside a component renders its own children and nothing \
+                             else; only a component has a caller to take content from"
+                                .to_string(),
+                        );
+                    }
+                    for (si, child) in element_children(el).iter().enumerate() {
+                        let cp = child_path(&out);
+                        let mut ctp = ctp.clone();
+                        ctp.push(si);
+                        out.push(build_node(
+                            child, rules, comps, ancestors, &prev, inherited, engine, locals, &cp,
+                            &ctp, reg, state, instances, instance, slot, row,
+                        ));
+                        prev.push(ElemDesc::of(child));
+                    }
+                }
+            }
+            continue;
+        }
+
+        // `<router>` renders the one `<route>` whose path matches, and nothing
+        // else. Like `<slot>` it leaves no box of its own behind, so a router
+        // adds nothing to the layout: the matched view expands in its place.
+        if el.tag == "router" {
+            in_chain = false;
+            // Reading the route here is what subscribes the enclosing parent to
+            // it, so navigating reconciles this subtree the way a changed `r-for`
+            // collection does, rather than forcing a whole rebuild.
+            let (value, deps) = engine.eval_value_tracked(rux_script::ROUTE_SIGNAL, locals);
+            structural_deps.extend(deps);
+            let current = value.map(|v| v.to_display()).unwrap_or_default();
+
+            let routes = element_children(el);
+            for r in &routes {
+                if r.tag != "route" {
+                    warn(format!(
+                        "<{}> inside <router> is ignored; a router's children are <route> \
+                         elements",
+                        r.tag
+                    ));
+                }
+            }
+            // First match wins, so routes are tried in the order they are
+            // written and a fallback can sit anywhere among them.
+            let matched = routes.iter().enumerate().find_map(|(ri, r)| {
+                if r.tag != "route" {
+                    return None;
+                }
+                let params = match_route(r.attr("path")?, &current)?;
+                Some((ri, *r, params))
+            });
+            let chosen = matched.or_else(|| {
+                routes
+                    .iter()
+                    .enumerate()
+                    .find(|(_, r)| r.tag == "route" && r.attr("fallback").is_some())
+                    .map(|(ri, r)| (ri, *r, Locals::new()))
+            });
+
+            match chosen {
+                Some((ri, route_el, params)) => {
+                    let Some(view) = route_el.attr("view") else {
+                        warn(format!(
+                            "<route path=\"{current}\"> has no `view`, so there is nothing to \
+                             render for it"
+                        ));
+                        continue;
+                    };
+                    let Some(component) = comps.get(view) else {
+                        warn(format!(
+                            "<route> names the view `{view}`, which is not imported; add \
+                             `use components::{view};` to the script"
+                        ));
+                        continue;
+                    };
+                    let cp = child_path(&out);
+                    let mut rtp = ctp.clone();
+                    rtp.push(ri);
+                    // The `<route>` element stands in for the component tag, so
+                    // any `:prop` written on it is passed through as well, and
+                    // the captured parameters join them.
+                    out.push(expand_component(
+                        route_el, component, comps, inherited, engine, locals, &cp, &rtp, reg,
+                        state, rules, instances, instance, row, &params, Some(&current),
+                    ));
+                    prev.push(ElemDesc::of(route_el));
+                }
+                None => {
+                    // Every path should render something. A router with nothing
+                    // to show is far more likely to be a missing route than an
+                    // intended blank screen.
+                    warn(format!(
+                        "no <route> matches `{current}`, and there is no `fallback` route, so \
+                         the router rendered nothing"
+                    ));
+                }
+            }
+            continue;
+        }
+
         // r-for expands the element once per collection item; it ends any chain.
         // The collection is a structural read, a change re-diffs the list.
         if let Some(for_expr) = el.attr("r-for") {
@@ -2440,11 +3022,48 @@ fn build_children(
                 structural_deps.extend(deps);
                 let items = value.and_then(|v| v.as_list().map(<[Value]>::to_vec));
                 if let Some(items) = items {
+                    // `r-key` names what a row *is*, so the runtime can follow it
+                    // when the list reorders instead of tracking slots.
+                    let key_expr = el.attr("r-key");
+                    let mut seen_keys: Vec<String> = Vec::new();
                     for item in items {
                         let mut child_locals = locals.clone();
                         child_locals.push((var.to_string(), item));
                         let cp = child_path(&out);
-                        out.push(build_node(el, rules, comps, ancestors, &prev, inherited, engine, &child_locals, &cp, &ctp, reg, state));
+                        // The key is evaluated *before* the row is built, because
+                        // everything inside the row is identified by it: an
+                        // input's focus, its `:focus` styling and the binding
+                        // that reads its value all need to know which row they
+                        // are in while they are being recorded.
+                        let key = key_expr.map(|expr| {
+                            let key = engine.eval_display(expr, &child_locals);
+                            if key.is_empty() {
+                                warn(format!(
+                                    "`r-key=\"{expr}\"` evaluated to nothing on one row, so that \
+                                     row has no identity and will be treated as a new one"
+                                ));
+                            } else if seen_keys.contains(&key) {
+                                // Two rows claiming one identity is worse than
+                                // none: whatever follows a key follows the wrong
+                                // row, silently.
+                                warn(format!(
+                                    "`r-key=\"{expr}\"` produced the duplicate key `{key}`; keys \
+                                     must be unique within a list, or rows cannot be told apart"
+                                ));
+                            } else {
+                                seen_keys.push(key.clone());
+                            }
+                            key
+                        });
+                        let mut node = build_node(
+                            el, rules, comps, ancestors, &prev, inherited, engine, &child_locals,
+                            &cp, &ctp, reg, state, instances, instance, slot,
+                            // An unkeyed row inherits whatever row it is nested
+                            // in, which is normally nothing.
+                            key.as_deref().or(row),
+                        );
+                        node.key = key;
+                        out.push(node);
                         prev.push(ElemDesc::of(el));
                     }
                 }
@@ -2460,7 +3079,7 @@ fn build_children(
             chain_satisfied = v;
             if chain_satisfied {
                 let cp = child_path(&out);
-                out.push(build_node(el, rules, comps, ancestors, &prev, inherited, engine, locals, &cp, &ctp, reg, state));
+                out.push(build_node(el, rules, comps, ancestors, &prev, inherited, engine, locals, &cp, &ctp, reg, state, instances, instance, slot, row));
                 prev.push(ElemDesc::of(el));
             }
             continue;
@@ -2476,7 +3095,7 @@ fn build_children(
             if taken {
                 chain_satisfied = true;
                 let cp = child_path(&out);
-                out.push(build_node(el, rules, comps, ancestors, &prev, inherited, engine, locals, &cp, &ctp, reg, state));
+                out.push(build_node(el, rules, comps, ancestors, &prev, inherited, engine, locals, &cp, &ctp, reg, state, instances, instance, slot, row));
                 prev.push(ElemDesc::of(el));
             }
             continue;
@@ -2484,7 +3103,7 @@ fn build_children(
         if el.attr("r-else").is_some() {
             if in_chain && !chain_satisfied {
                 let cp = child_path(&out);
-                out.push(build_node(el, rules, comps, ancestors, &prev, inherited, engine, locals, &cp, &ctp, reg, state));
+                out.push(build_node(el, rules, comps, ancestors, &prev, inherited, engine, locals, &cp, &ctp, reg, state, instances, instance, slot, row));
                 prev.push(ElemDesc::of(el));
             }
             in_chain = false;
@@ -2494,7 +3113,7 @@ fn build_children(
         // A plain element ends any active chain.
         in_chain = false;
         let cp = child_path(&out);
-        out.push(build_node(el, rules, comps, ancestors, &prev, inherited, engine, locals, &cp, &ctp, reg, state));
+        out.push(build_node(el, rules, comps, ancestors, &prev, inherited, engine, locals, &cp, &ctp, reg, state, instances, instance, slot, row));
         prev.push(ElemDesc::of(el));
     }
     (out, structural_deps)
@@ -3723,7 +4342,9 @@ mod tests {
         "#;
         let sfc = rux_parser::parse_sfc(src).unwrap();
         let mut engine = Builder::new().build(&sfc.script).unwrap();
-        let (_root, reg) = build_styled_tree_tracked(&sfc, &HashMap::new(), &mut engine).unwrap();
+        let mut instances = super::Instances::new();
+        let (_root, reg) =
+            build_styled_tree_tracked(&sfc, &HashMap::new(), &mut engine, &mut instances).unwrap();
 
         assert_eq!(reg.structural_parents.len(), 1, "the screen is the one structural parent");
         let sp = &reg.structural_parents[0];
@@ -4187,10 +4808,12 @@ mod tests {
     fn bg_at_vp(src: &str, viewport: Viewport) -> Option<Background> {
         let sfc = rux_parser::parse_sfc(src).unwrap();
         let mut engine = Builder::new().build(&sfc.script).unwrap();
+        let mut instances = super::Instances::new();
         let root = super::build_styled_tree_stateful(
             &sfc,
             &HashMap::new(),
             &mut engine,
+            &mut instances,
             &InteractionState::default(),
             viewport,
         )
@@ -4455,11 +5078,18 @@ mod tests {
 
     #[test]
     fn each_pseudo_reads_its_own_state() {
-        let s = ElemStates { hover: false, focus: true, active: false, checked: true };
+        let s = ElemStates {
+            hover: false,
+            focus: true,
+            active: false,
+            checked: true,
+            current: false,
+        };
         assert!(hits_state("input:focus", "input", s));
         assert!(hits_state("input:checked", "input", s));
         assert!(!hits_state("input:hover", "input", s));
         assert!(!hits_state("input:active", "input", s));
+        assert!(!hits_state("input:current", "input", s));
     }
 
     #[test]
@@ -4474,7 +5104,13 @@ mod tests {
     /// rather than being dropped and matching everything.
     #[test]
     fn unknown_pseudo_never_matches() {
-        let all_on = ElemStates { hover: true, focus: true, active: true, checked: true };
+        let all_on = ElemStates {
+            hover: true,
+            focus: true,
+            active: true,
+            checked: true,
+            current: true,
+        };
         assert!(!hits_state(".box:disabled", ".box", all_on));
         assert!(!hits_state(".box:nth-child(2)", ".box", all_on));
         assert!(!hits_state(".box::selection", ".box", all_on));

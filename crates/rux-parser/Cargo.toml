@@ -5,6 +5,7 @@ version.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "Rux template parser: splits the SFC and parses the XML-shaped template. Internal to Rux; the supported entry point is the ruxlang crate."
+readme = "README.md"
 keywords = ["ui", "parser", "sfc", "template"]
 categories = ["gui", "parser-implementations"]
 

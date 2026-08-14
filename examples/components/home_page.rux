@@ -1,0 +1,19 @@
+<template>
+  <view class="page">
+    <text class="heading">a router, at last</text>
+    <text class="lead">Three pages behind one window. The bar above never re-renders when the page changes: it is outside the router, and only the matched view is swapped.</text>
+    <text class="lead">The path is an ordinary signal, so this file can read it like anything else. Right now it says `{{ route }}`.</text>
+  </view>
+</template>
+
+<style>
+  .page {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    width: 100%;
+  }
+
+  .heading { color: #cdd6f4; font-size: 22px; font-weight: 700; }
+  .lead { color: #9399b2; font-size: 13px; max-width: 480px; }
+</style>

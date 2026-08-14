@@ -1,0 +1,57 @@
+<template>
+  <screen class="app">
+    <text class="title">one palette, two files</text>
+    <text class="lead">Everything below is styled by palette.css, which this file includes rather than repeats. Edit that file and this window repaints.</text>
+
+    <view class="row">
+      <view class="card">
+        <text class="card-title">included</text>
+        <text class="card-body">This card is styled entirely by the shared sheet. Nothing about it is written here.</text>
+      </view>
+
+      <view class="card" :class="if loud { &quot;loud&quot; } else { &quot;&quot; }">
+        <text class="card-title">overridden</text>
+        <text class="card-body">Same card, one rule below the include. The document wins, no !important needed.</text>
+      </view>
+    </view>
+
+    <view class="btn" @tap="loud = !loud">
+      <text class="btn-label">{{ if loud { "calm it down" } else { "make it loud" } }}</text>
+    </view>
+  </screen>
+</template>
+
+<style src="palette.css">
+  /* The include lands first, so these rules cascade over it. */
+
+  .app {
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+    padding: 32px;
+    background: var(--bg);
+  }
+
+  .title { color: var(--ink); font-size: 22px; font-weight: 700; }
+  .lead { color: var(--muted); font-size: 13px; }
+  .row { display: flex; gap: 16px; }
+  .card { width: 100%; max-width: 260px; }
+
+  /* Overriding the shared palette for one subtree, which is the reason the
+     include cascades underneath rather than on top. */
+  .card.loud { --surface: var(--brand); --ink: var(--on-brand); --muted: var(--on-brand); }
+
+  .btn {
+    padding: 8px 14px;
+    background: var(--brand);
+    border-radius: var(--radius);
+    cursor: pointer;
+  }
+
+  .btn:hover { background: var(--ink); }
+  .btn-label { color: var(--on-brand); font-size: 13px; font-weight: 700; }
+</style>
+
+<script>
+  let loud = signal(true);
+</script>

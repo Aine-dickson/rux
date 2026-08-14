@@ -5,6 +5,7 @@ version.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "Rux text engine: parley shaping/layout + vello glyph drawing. Internal to Rux; the supported entry point is the ruxlang crate."
+readme = "README.md"
 keywords = ["ui", "text", "font", "shaping"]
 categories = ["gui", "text-processing"]
 

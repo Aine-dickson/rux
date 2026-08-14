@@ -1,0 +1,19 @@
+<template>
+  <view class="page">
+    <text class="heading">about</text>
+    <text class="lead">A route maps a path to a component, so a page is a component like any other: it takes props, holds its own state, and renders slots.</text>
+    <text class="lead">Alt+Left and the mouse's side button walk the history, the same as everywhere else on the machine.</text>
+    </view>
+  </template>
+
+  <style>
+  .page {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    width: 100%;
+  }
+
+  .heading { color: #cdd6f4; font-size: 22px; font-weight: 700; }
+  .lead { color: #9399b2; font-size: 13px; max-width: 480px; }
+</style>

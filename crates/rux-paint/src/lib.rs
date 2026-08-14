@@ -3,6 +3,30 @@
 //! Turns the `Paint` items from `rux-layout` into a `vello::Scene`: filled
 //! rounded rectangles for boxes, glyph runs (via `rux-text`) for text. Stage 5
 //! of `docs/04-architecture.md`.
+//!
+//! [`build_scene`] is the whole surface. Everything reaching it is already
+//! resolved: absolute rects, concrete colours, the text already shaped. This
+//! crate decides nothing about what a document should look like, which is
+//! deliberate. It is the one stage that can be re-pointed at a different
+//! backend without the layers above noticing, and keeping every judgement call
+//! upstream of it is what preserves that.
+//!
+//! What it knows how to draw, beyond the two basics: per-corner radii, per-side
+//! borders, linear and radial gradients, box shadows, images, scrollbar ticks,
+//! the selection highlight and the rule under an in-progress IME composition.
+//!
+//! Two pieces of state live here rather than upstream, both for the same
+//! reason, that they are pure caches of expensive work and no one above needs
+//! to know they exist:
+//!
+//! - [`ImageCache`], because decoding is the slow part and the shell repaints
+//!   on every event, so a `src` is read from disk at most once. A decode
+//!   failure is remembered as a miss and not retried.
+//! - The text engine's font and layout contexts, which `rux-text` owns and this
+//!   crate borrows.
+//!
+//! Selection and composition colours are not author-controlled. Rux has no
+//! `::selection` yet, so both are constants here.
 
 use std::collections::HashMap;
 

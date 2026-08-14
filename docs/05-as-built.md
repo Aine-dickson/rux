@@ -129,7 +129,9 @@ explicitly checks it anyway, since that was asked for on purpose.
 
 ### Elements
 `<screen>` `<view>` `<text>` `<image>` `<button>` `<input>` + imported
-components as custom tags. `role=` is honored for **selectors and semantics**
+components as custom tags, plus two that render no box of their own: `<slot>`
+(a component's hole for the caller's children) and `<router>`/`<route>` (see
+[Routing](#routing)). `role=` is honored for **selectors and semantics**
 (and matches **case-insensitively**: `role="Heading"` matches `[role="heading"]`).
 
 `<image src="assets/logo.png">`: `src` resolves **relative to the .rux file**
@@ -185,7 +187,8 @@ cursor (pointer, on @tap boxes only)
 combinators: descendant (`.a .b`), child (`.a > .b`), next-sibling (`.a + .b`),
 subsequent-sibling (`.a ~ .b`).
 
-**Pseudo-classes:** `:hover`, `:focus`, `:active`, `:checked`. They stack
+**Pseudo-classes:** `:hover`, `:focus`, `:active`, `:checked`, `:current` (a
+link whose `to` names the path you are on). They stack
 (`.btn:hover:active`), count as class-level specificity, and work anywhere in a
 chain, `.card:hover .title` recolours the title while the pointer is over the
 card. `:hover`/`:active` hold for the whole chain under the pointer, as in CSS;
@@ -196,6 +199,108 @@ Any *other* pseudo-class (`:disabled`, `:nth-child(…)`, `::selection`) **never
 matches**, and says so once on stderr. Before this existed the `:` was silently
 dropped, so `.box:hover` parsed as `.box` and applied *unconditionally*, failing
 closed is the safer half of that trade.
+
+**Computed values:** `computed name = expr;` in `<script>` declares derived
+state, written once and readable anywhere a signal is:
+```rux
+let qty = signal(2);
+let price = signal(12);
+computed subtotal = qty * price;
+computed total = subtotal + subtotal / 10;   // may read the one above it
+```
+A computed *is* a signal: the line is rewritten to a plain `let`, so `{{ total }}`
+tracks it like any other, and it re-evaluates when what it reads changes. Only a
+real change propagates, so a computed landing on the same answer patches nothing.
+
+Refreshing is **one pass in declaration order**, so a computed may read
+computeds declared above it and not below. That is a deliberate limit rather
+than a fixpoint loop, which would turn a circular typo into a hang.
+
+**Effects:** `effect { … }` runs statements when what they read changes, **and
+once on load**, so an effect can establish something rather than only react to a
+later edit:
+```rux
+effect {
+  status = if total > 100 { "over budget" } else { "ok" };
+}
+```
+An effect subscribes to what it actually read on its last run, so a signal it
+never touched does not wake it, and a conditional branch changes what it
+watches.
+
+**An effect is never woken by its own writes.** Assigning to a signal also
+resolves its name, so the tracker cannot tell the write from a read; without
+this rule every effect that wrote anything would re-trigger itself. The cost is
+that an effect writing `x` will not re-run when something *else* changes `x`,
+which is the right way round: that effect is the one deciding what `x` is.
+Effects that feed *each other* still cycle; that is stopped after 8 rounds and
+reported in the overlay rather than hung on.
+
+Both are document-level today: a component's own `computed`/`effect` lines are
+stripped, not run. Driven in `examples/computed.rux`.
+
+**Keyed lists:** `r-key` on the same element as `r-for` says what a row *is*,
+rather than where it sits:
+```html
+<view r-for="item in items" r-key="item.id"> … </view>
+```
+The key is evaluated once per row with that row's loop variable in scope.
+Duplicate keys warn (two rows claiming one identity is worse than none), and so
+does an `r-key` on an element with no `r-for`.
+
+**A key is what makes an input inside a list work at all.** An `r-model` is
+stored **as written**, so every row of a list carries the same one, and an
+identity taken from it alone cannot tell two rows apart. Everything that
+addresses an input is now `(model, row key)`: the caret and selection, `:focus`
+matching, and the value the shell reads and writes. Before this, focusing one
+row put a caret in **all** of them and lit every row's `:focus` rule at once.
+
+The value is read and written **in the row's own scope**, using the loop
+variables captured where the input was built, so a model may mention the loop
+variable:
+```html
+<input r-for="item in items" r-key="item.id"
+       r-model="items[item.at.to_int()].note" />
+```
+Writing goes through an assignment rather than setting a scope variable, so an
+`r-model` that is a path (`user.name`, `items[0].note`) now writes through to
+the real target. It previously created a variable *named* `user.name` and left
+`user` untouched, in or out of a list.
+
+Two consequences worth knowing. Numbers are f64, so an index needs `to_int()`.
+And the caret follows its row across a reorder with nothing to remap, because
+the identity *is* the row; tapping a button to reorder still moves keyboard
+focus to that button, as any tap on a button does.
+
+**Still keyed by model alone:** `type="select"`. A `<select>` inside an `r-for`
+has the same ambiguity inputs had. Driven in `examples/keyed-list.rux`.
+
+**External stylesheets:** `<style src="…">` pulls in one or more `.css` files,
+so a palette can be shared instead of pasted into every document:
+```html
+<style src="palette.css, cards.css">
+  .app { background: var(--bg); }   /* the document's own rules, as before */
+</style>
+```
+Paths are relative to the **file that names them**, the same rule as `use`
+imports and `<image src>`, so a component's include is relative to the
+component. Comma-separated, in the order written.
+
+Included sheets cascade **before** the `<style>` body, so a rule in the
+document beats a rule of the same specificity in the include. That is what
+makes including a palette useful: you pull one in to override part of it, and
+needing `!important` to do so would mean the include had been layered on top
+instead of underneath.
+
+A stylesheet that is not there **fails the load**, like a missing component,
+and the overlay names the path. A document that quietly renders unstyled reads
+as a layout bug, which is a much longer walk back to a typo. Editing an
+included `.css` hot-reloads the window, same as editing the `.rux`.
+
+The playground is the exception: it has source text and no file, so there is
+nothing for a path to be relative to and nothing to read. An include there is
+ignored, with a warning saying exactly that. Driven in
+`examples/shared-style.rux`, which shares `examples/palette.css`.
 
 **Custom properties + `var()`:** `--name: value` declarations **inherit** down the
 tree (like `color`), so a palette declared once is readable anywhere below:
@@ -484,6 +589,275 @@ scrollbar hover/fade states, no `scrollbar-width`/`scrollbar-color`, no
 Component instances are isolated (only props are visible inside). Their CSS styles
 their own subtree. Editing a component hot-reloads.
 
+**Components are a desktop feature today.** `use components::stat;` names a
+*file*, and the web build has no filesystem to read it from: a document run in
+a browser is handed no components, so every component tag renders nothing and
+every `<route>` warns that its view is not imported. Bundling components into a
+web build is `rux build`'s job. Nothing about the component model itself is
+web-specific, so this is a packaging gap rather than a design one.
+
+**Slots.** A `<slot />` in a component's template renders whatever the caller
+wrote between the tags, so a component can wrap markup it has never seen:
+```xml
+<!-- components/panel.rux -->
+<view class="panel">
+  <text>{{ title }}</text>
+  <slot><text>nothing here yet</text></slot>   <!-- children = the default -->
+</view>
+```
+```xml
+<panel :title="&quot;stats&quot;">
+  <text class="stat">{{ count }}</text>        <!-- this file's signal, this file's CSS -->
+</panel>
+```
+Slot content belongs to the **caller**: it reads the caller's signals (the
+component cannot see the caller's own instance state), is styled by the
+caller's stylesheet, and its
+handlers run in the caller's scope. Only its position comes from the component.
+An unfilled slot falls back to its own children, as in HTML. A `<slot>` emits no
+box of its own, so a component adds no wrapper nobody wrote.
+
+Before this, children written between the tags were **silently dropped**, which
+made every component a fixed shape: no cards, panels, modals or layout wrappers.
+Driven in `examples/slots.rux`.
+
+**A component has its own state.** Its `<script>`'s top-level `let`s run **once
+per instance**, so three `<counter>` elements are three counts:
+```rux
+<!-- components/counter.rux -->
+<view @tap="count = count + step"><text>{{ count }}</text></view>
+<script> let count = signal(0); </script>   <!-- private to each instance -->
+```
+The isolation is about **declarations, and it runs one way**. A component's
+`<script>` executes in a scope of its own, so its `let`s are private: the
+document cannot read them, and the same name declared on both sides is two
+different variables, the component's winning inside it.
+
+What the component's **template and handlers** see is wider. They are evaluated
+against the document's scope with the instance's own names pushed on top, so a
+document signal the component does not shadow is visible to `{{ }}` and can be
+assigned in a `@tap`:
+```rux
+<!-- components/card.rux: `theme` is the document's, not this file's -->
+<view @tap="theme = &quot;dark&quot;"><text>theme is {{ theme }}</text></view>
+```
+This is deliberate and the router depends on it: `{{ route }}` works inside a
+route view, which is a component. It is also the coupling a component author
+should be aware of, since a component reading a name it never declared will only
+work in an app that happens to declare it. Anything a component means to be told
+should come in as a **prop**, and anything it means to report should go out as an
+**event**. Reaching for a document signal by name is available, not recommended.
+
+Only `fn` definitions are shared with the document's engine, because a function
+is code and state is not. A handler carries its instance from the cascade to the
+shell, so the identical handler text in two instances still writes to the right
+one. Props are re-derived from the caller on every build and are **not**
+writable from inside: assigning to one would look like it worked and be
+forgotten on the next build.
+
+A change to instance state **rebuilds** rather than patches, since the state is
+not a signal and the binding registry has nothing to look it up by. A component
+is a subtree, so it is bounded, but it is coarser than a signal change. Driven
+in `examples/component-state.rux`.
+
+**An instance lives as long as it is on screen.** A component closed over by an
+`r-if`, or a row that leaves an `r-for`, loses its state, and shows up new if it
+comes back. Every build walks the whole template, so what a build does not reach
+is what has gone. This is the same rule a route view already followed, and until
+now it was the *only* place that followed it: a hidden component used to keep
+its state for the life of the process and hand it back on the way in, and the
+instance map only ever grew. Anything meant to outlive being hidden belongs in a
+document signal.
+
+**Events.** A component tells its caller that something happened with `emit`,
+and the caller listens with `@event` on the tag:
+```rux
+<!-- components/stepper.rux -->
+<view @tap="count = count + 1; emit(&quot;change&quot;, 1)"><text>{{ count }}</text></view>
+<script> let count = signal(0); </script>
+```
+```xml
+<stepper @change="total = total + event" />    <!-- payload arrives as `event` -->
+```
+The body of a listener is the **caller's** code and runs in the caller's scope,
+the same rule slot content follows: a component with its own `total` cannot be
+written to by mistake. `emit` with no payload leaves `event` undeclared rather
+than defining it empty. An event nobody listens to is ignored, so a component
+can offer more events than any one caller wants. An `emit` outside a component
+has no caller and warns.
+
+A listener is carried as text and never evaluated at build time, which is why it
+is `@event` and not a prop: a prop is evaluated on every build, and a statement
+that ran once per build would be the opposite of an event. A payload is read
+where `emit` is written, so `emit("change", 0 - count); count = 0` reports the
+count it had. A chain of components emitting at each other is stopped after 8
+rounds with a warning.
+
+Together with props this closes the loop: state can stay in the component that
+owns it instead of being hoisted into the document so the document can see it
+change. Driven in `examples/events.rux`.
+
+Still not supported inside a component: `computed` and `effect`, which are
+stripped.
+
+### Routing
+
+A `<router>` renders the one `<route>` whose path matches, and a route maps a
+path to a component, so a page is a component like any other:
+```xml
+<router>
+  <route path="/"          view="home-page" />
+  <route path="/crew"      view="crew-list" :crew="crew" />
+  <route path="/crew/:id"  view="crew-detail" :crew="crew" />
+  <route fallback          view="lost-page" />
+</router>
+```
+Like `<slot>`, a router leaves **no box of its own** behind: the matched view
+expands in its place. Routes are tried in the order written and the first match
+wins, so a `fallback` can sit anywhere among them. A path nothing matches and no
+fallback catches renders nothing, and warns.
+
+**The path is an ordinary signal called `route`.** That is the whole design:
+`{{ route }}`, `r-if="route == \"/about\""` and `:class` already understand
+navigation, and a route change reconciles the router's subtree rather than
+rebuilding the document.
+
+**Parameters.** A `:name` segment matches anything and is handed to the view as
+a prop, so `/crew/grace` reaches `crew-detail` with `id` set to `"grace"`. A
+pattern must match the whole path, not a prefix, or `/` would match everything.
+A trailing slash is not a difference.
+
+**Links.** `to="/path"` makes an element tap to that path, announce as a link
+rather than a button, and match `:current` when it names the path you are on,
+which is how a nav bar shows where you are:
+```css
+.tab:current { background: #89b4fa; color: #11111b; }
+```
+`:to="…"` is the computed form, for a list whose every row links somewhere
+different (`:to="&quot;/crew/&quot; + member.id"`). An explicit `@tap` wins over
+both, so a link can still do something else on the way.
+
+**Parameters are also readable from outside the matched view**, as `params`:
+```xml
+<text r-if="params.id != ()">viewing: {{ params.id }}</text>
+```
+The view gets them as props, which is enough for the view. It is not enough for
+a title bar or a breadcrumb, which sit in the document's own layout and are not
+the matched view. `params` empties when a route captures nothing, rather than
+keeping the last page's answer.
+
+**History.** `navigate("/path")`, `replace("/path")`, `back()` and `forward()`
+are callable from any handler. History is one list with a cursor, so going back
+and then somewhere new drops what was ahead. Navigating to where you already are
+is not a visit, or tapping the current tab would fill the history with repeats.
+On the desktop, **Alt+Left / Alt+Right** and the mouse's side buttons walk it.
+
+`replace` goes somewhere *instead of* where you are, overwriting the current
+entry, and it is what a redirect needs rather than a nicety. Redirect with
+`navigate` and the redirecting page stays in the history, so Back lands on it
+and is redirected forward again: the Back button appears broken and nothing in
+userland can fix it.
+
+**`can_go_back` and `can_go_forward`** are signals, so a history button can grey
+itself out:
+```xml
+<view class="step" :class="#{ dead: !can_go_back }" @tap="back()">
+```
+Signals rather than functions because what they are for is disabling a control,
+and disabling a control is a class, and a class reads signals.
+
+**Query strings** are read through a `query` map, and are not part of the path:
+```xml
+<text>looking for {{ query.q }}</text>   <!-- /search?q=dark+mode -->
+```
+`route` stays `/search`, so every `route == "/search"` already written keeps
+meaning what it says. A query is an argument to a page rather than a different
+page, so it takes no part in matching either. The history stores the whole
+address, so going back to a search restores what was being searched for. `+` is
+a space and `%xx` is decoded; a key with no `=` is present and empty; a repeated
+key keeps the first.
+
+**Named routes.** A path is written into every link that leads to it, so a URL
+scheme that can never be changed afterwards is not much of a scheme. Name a
+route and build its path with `path_for`:
+```xml
+<route name="crew-detail" path="/crew/:id" view="crew-detail" />
+...
+<view :to="path_for(&quot;crew-detail&quot;, #{ id: member.id })">
+```
+It returns a **string**, so it composes with `to`, `:to`, `navigate` and
+`replace` rather than needing a second form of each. Values matching a `:name`
+segment fill it; whatever is left over becomes a query string, which is what
+makes `path_for("search", #{ q: "rust" })` work for a route with no parameters
+at all. Values are escaped on the way in and unescaped on the way out, so an id
+containing a `/` survives the round trip. A missing parameter or an unknown name
+warns, and produces a path that visibly does not work: landing on the fallback
+page is a bug you can see, and landing on the wrong record is not.
+
+`route`, `params`, `query`, `can_go_back` and `can_go_forward` are all provided,
+and all reserved: a script declaring one is warned rather than quietly
+overwritten.
+
+**A route's view starts fresh when you return to it.** Instance state is keyed by
+template position, so *keeping* it across a visit is what would happen by
+accident; anything meant to outlive a visit belongs in a document signal. Driven
+in `examples/router.rux`.
+
+**An app can open on a page other than its first one**, which is what a link
+someone shared arrives as. On the desktop that is a flag:
+```text
+rux run app.rux --route /crew/grace
+```
+The arrival page is the *first* page, not the second: there is no `/` behind it,
+because no one visited one, so Back has nowhere to go. Saving the file while a
+page other than `/` is showing now reloads onto that page instead of jumping
+home, so an edit to a page three taps in can actually be seen.
+
+**On the web the URL bar is the app's address bar**, if the page hands it over:
+```js
+start(canvas, source, "/");     // served at the root of a domain
+start(canvas, source, "/app/"); // served from a subdirectory
+start(canvas, source);          // leave the URL alone
+```
+The base is subtracted from the URL, so an app is written the same way wherever
+it is deployed: the route is `/crew`, the URL is `/app/crew`. With a base given,
+opening a URL opens that route, navigating adds a history entry, and the
+browser's own Back and Forward walk the app, including a long-press that jumps
+several entries at once. Each entry carries its position in the history, which
+is what makes a multi-entry jump one move rather than a guess about direction.
+
+Passing no base leaves the URL untouched, and that is the default on purpose:
+the playground runs documents written by whoever is typing into them, and one of
+them containing a `<router>` must not be able to rewrite the address of the page
+hosting it.
+
+> **A `<router>` cannot render a route view on the web yet.** A route's view is
+> a component, a component is loaded from a file, and a browser has no
+> filesystem: the web entry point is handed no components at all, so every
+> `<route>` warns that its view is not imported and the router renders nothing.
+> The URL half above is built and works, and `route` is an ordinary signal, so
+> `r-if="route == &quot;/about&quot;"` does work on the web today. What is
+> missing is the bundling of components into a web build, which is what
+> `rux build` is for. Until then, treat the router as desktop-only.
+
+**Scroll restoration** is on, and `<router restore-scroll="false">` turns it off.
+The flag means **remember**, not *always restore*: a page you open starts at the
+top, and a page you go **back** to comes back where you left it. Which of the
+two you get is decided by how you arrived rather than by a preference, which is
+what every platform does. A flag meaning "always restore" would drop you into
+the middle of a page you had just opened for the first time, which reads as a
+bug. Turned off, every arrival is the top. A redirect through `replace` is an
+arrival, not a return, so it lands at the top too.
+
+Offsets are stored on the **history entry**, not on the route. A scroll region
+is identified by its position among the scrolling boxes in tree order, so those
+ids only line up when the tree has the same shape, and an entry is always one
+route: by the time the offsets are read back, the shape is the one they were
+recorded against.
+
+Not built: nested routes (a layout component with a `<router />` in its slot
+covers most of that), and route guards.
+
 ### Accessibility
 
 Rux publishes a real accessibility tree through **accesskit**, so a screen reader
@@ -495,6 +869,7 @@ tag and `type=` are still known:
 |---|---|
 | `<text>` | Label (`role="heading"` → Heading) |
 | `<view @tap>` / `<button>` | Button, **named by the text inside it** |
+| `to="/path"` on anything | Link, so navigating is announced as going somewhere |
 | `<input>` | TextInput · `type="textarea"` → MultilineTextInput · `type="select"` → ComboBox |
 | `<input type="checkbox">` / `="radio"` | CheckBox / RadioButton, with live **checked** state |
 | `<image alt="…">` | Image |

@@ -5,14 +5,33 @@
 //! and component scripts, registering host functions), and builds the renderable
 //! tree with bindings, directives, and component expansions resolved. Running an
 //! `@tap` handler mutates engine state; `rebuild` refreshes the tree.
+//!
+//! [`Document`] is the unit everything else works in terms of. `rux-shell` owns
+//! one and asks it for a tree each frame; `rux check` builds one and throws the
+//! tree away, which is why checking a file needs no window and no GPU and runs
+//! in CI.
+//!
+//! Handling an event does not rebuild the document. `rux-script` records which
+//! signals each binding reads and which ones a handler writes, so a state change
+//! patches the nodes that the written signals actually reach and reconciles the
+//! lists that changed shape. A full rebuild is the fallback, not the path.
+//!
+//! Two things are collected rather than printed, because the same document is
+//! loaded by a CLI, a window and a browser, and only the caller knows where
+//! output belongs. [`Diagnostics`] carries the errors and warnings a load
+//! produced; [`take_warnings`] drains the ones raised out of band. Loading a
+//! document that cannot be parsed is not a panic: it is a [`LoadError`], so the
+//! window can keep the last good tree on screen and show the overlay instead of
+//! dying on a half-typed edit.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use rux_layout::Node as LayoutNode;
-use rux_parser::Sfc;
+use rux_layout::{Node as LayoutNode, Offset};
+use rux_parser::{Sfc, StyleInclude};
+use rux_reactive::Value;
 use rux_script::{Builder, Engine};
-use rux_style::BindingRegistry;
+use rux_style::{BindingRegistry, Instances};
 /// Re-exported so the shell can hand pointer/focus state and the window size in
 /// without depending on `rux-style` directly.
 pub use rux_reactive::json_string;
@@ -41,8 +60,147 @@ pub struct Document {
     viewport: Viewport,
     /// What is currently wrong with this document, for the dev overlay.
     diagnostics: Diagnostics,
+    /// Every component instance's private state, kept here because the tree it
+    /// belongs to is rebuilt constantly and the state must not be.
+    instances: Instances,
+    /// `computed` declarations, in declaration order, so one may read another
+    /// declared above it and a single pass refreshes them all.
+    computeds: Vec<Computed>,
+    /// `effect` blocks, with what each read when it last ran.
+    effects: Vec<Effect>,
+    /// Where navigation has been, and where it is in that. See [`History`].
+    history: History,
+    /// The scroll offsets the next frame should adopt, set by a navigation and
+    /// taken by the shell.
+    ///
+    /// An empty vector means the top, which is what a *new* navigation gets: a
+    /// fresh page opens at its beginning. Back and forward carry the offsets
+    /// recorded on the entry being returned to. `None` means no navigation has
+    /// happened since the shell last looked, so whatever the user has scrolled
+    /// to stands.
+    pending_scroll: Option<Vec<Offset>>,
     pub root: LayoutNode,
 }
+
+/// The paths visited, and where along them we are.
+///
+/// A cursor into one list rather than two stacks, because that is the model a
+/// user already has: going back then somewhere new drops the forward entries,
+/// and going back and forward again returns to exactly where it was. Two stacks
+/// express the same thing and make the truncation easy to get wrong.
+#[derive(Clone, Debug)]
+struct History {
+    entries: Vec<Entry>,
+    at: usize,
+}
+
+/// One place the user has been: where it was, and how far down it they were.
+///
+/// The scroll offsets belong to the *entry* rather than to the route, which is
+/// what makes restoring them simple. A scroll region is identified by its index
+/// among the scrollable boxes in tree order, so the ids only line up when the
+/// tree has the same shape; an entry is always one route, so by the time these
+/// are read back the shape is the one they were recorded against.
+#[derive(Clone, Debug)]
+struct Entry {
+    location: String,
+    scroll: Vec<Offset>,
+}
+
+impl Entry {
+    fn new(location: impl Into<String>) -> Self {
+        Self { location: location.into(), scroll: Vec::new() }
+    }
+}
+
+impl Default for History {
+    fn default() -> Self {
+        Self { entries: vec![Entry::new(ROOT_PATH)], at: 0 }
+    }
+}
+
+impl History {
+    /// A history that begins somewhere other than `/`.
+    ///
+    /// One entry, not two: arriving straight at `/user/7` from a link or a
+    /// command line means there is nowhere to go *back* to. Seeding `/` beneath
+    /// it would invent a page the user never visited and make Back leave the
+    /// app's opening screen showing without them ever having asked for it.
+    /// An empty path is not a path: a page served from a `file://` URL or an
+    /// odd host can report one, and it would match no route at all.
+    fn starting_at(path: &str) -> Self {
+        let path = if path.is_empty() { ROOT_PATH } else { path };
+        Self { entries: vec![Entry::new(path)], at: 0 }
+    }
+
+    /// Where we are now. Never empty, so this always answers.
+    fn current(&self) -> &str {
+        &self.entries[self.at].location
+    }
+
+    /// Jump straight to an entry by index, the browser's model of Back and
+    /// Forward. A browser hands back *where it landed*, not which way it went,
+    /// and a long-press on Back can move several entries at once, so stepping
+    /// one at a time cannot express it. Out of range is refused rather than
+    /// clamped: it means the two histories have drifted, and quietly landing
+    /// somewhere near would hide that.
+    fn go_to(&mut self, index: usize) -> bool {
+        if index >= self.entries.len() || index == self.at {
+            return false;
+        }
+        self.at = index;
+        true
+    }
+
+    /// Go somewhere new, dropping anything that was ahead. Navigating to where
+    /// we already are is not a visit: it would otherwise fill the history with
+    /// repeats of whatever link a user tapped twice, and make Back do nothing
+    /// visible the first time it was pressed.
+    fn push(&mut self, path: &str) -> bool {
+        if self.current() == path {
+            return false;
+        }
+        self.entries.truncate(self.at + 1);
+        self.entries.push(Entry::new(path));
+        self.at = self.entries.len() - 1;
+        true
+    }
+
+    /// Go somewhere *instead of* where we are: overwrite the current entry.
+    ///
+    /// Anything ahead is dropped, as it is for a push. This is still a
+    /// navigation, and what is ahead was reached from the page being replaced,
+    /// which is no longer on the way there.
+    fn replace(&mut self, path: &str) -> bool {
+        if self.current() == path && self.at + 1 == self.entries.len() {
+            return false;
+        }
+        self.entries.truncate(self.at + 1);
+        self.entries[self.at] = Entry::new(path);
+        true
+    }
+
+    /// Step back, if there is anywhere to step back to.
+    fn back(&mut self) -> bool {
+        if self.at == 0 {
+            return false;
+        }
+        self.at -= 1;
+        true
+    }
+
+    /// Step forward into somewhere already visited and stepped back from.
+    fn forward(&mut self) -> bool {
+        if self.at + 1 >= self.entries.len() {
+            return false;
+        }
+        self.at += 1;
+        true
+    }
+}
+
+/// Where a document starts before anything navigates.
+pub const ROOT_PATH: &str = "/";
 
 /// What is wrong with the document right now, the model behind the dev overlay.
 ///
@@ -78,6 +236,14 @@ impl Diagnostics {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Focus {
     pub model: String,
+    /// The `r-key` of the `r-for` row holding this input, when it is in one.
+    ///
+    /// `model` is the `r-model` expression as written, so every row of a list
+    /// shares it and cannot identify which row the caret is in. The row's key
+    /// is the other half. It also makes the caret follow its row when the list
+    /// reorders: the identity is the row, not the position, so nothing has to
+    /// be remapped afterwards.
+    pub row: Option<String>,
     pub caret: usize,
     pub anchor: usize,
     /// The byte range of an in-progress IME composition, if one is running. The
@@ -87,10 +253,20 @@ pub struct Focus {
 }
 
 impl Focus {
-    /// A plain caret with nothing selected.
+    /// A plain caret with nothing selected, in an input that is not in a list.
     pub fn at(model: impl Into<String>, caret: usize) -> Self {
-        let model = model.into();
-        Self { model, caret, anchor: caret, preedit: None }
+        Self::at_row(model, None, caret)
+    }
+
+    /// The same, in a known `r-for` row.
+    pub fn at_row(model: impl Into<String>, row: Option<String>, caret: usize) -> Self {
+        Self { model: model.into(), row, caret, anchor: caret, preedit: None }
+    }
+
+    /// Whether this focus is the input bound to `model` in row `row`. Both
+    /// halves matter: a list's rows all share one model.
+    pub fn is(&self, model: &str, row: Option<&str>) -> bool {
+        self.model == model && self.row.as_deref() == row
     }
 
     /// The selected range, low to high.
@@ -111,9 +287,21 @@ impl Focus {
 /// showing in the input you just left, until some unrelated rebuild wiped it.
 /// The selection is one more thing that can be left behind the same way.
 fn apply_focus(node: &mut LayoutNode, focus: Option<&Focus>) {
+    apply_focus_in(node, focus, None);
+}
+
+/// [`apply_focus`], carrying the `r-key` of the row being walked.
+///
+/// A splice starts partway down the tree, so the row a subtree sits in cannot be
+/// recovered from the subtree itself; `row` is what the caller already knew. It
+/// is `None` at the root and everywhere outside a keyed list.
+fn apply_focus_in(node: &mut LayoutNode, focus: Option<&Focus>, row: Option<&str>) {
+    let row = node.key.as_deref().or(row);
     if node.model.is_some() {
         if let Some(text) = node.children.first_mut().and_then(|c| c.text.as_mut()) {
-            let mine = focus.filter(|f| node.model.as_deref() == Some(f.model.as_str()));
+            let mine = focus.filter(|f| {
+                node.model.as_deref().is_some_and(|m| f.is(m, row))
+            });
             // An empty input shows its placeholder; the caret still sits at 0.
             text.caret = mine.map(|f| f.caret.min(text.text.len()));
             text.selection = mine.filter(|f| !f.is_collapsed()).map(|f| {
@@ -126,7 +314,7 @@ fn apply_focus(node: &mut LayoutNode, focus: Option<&Focus>) {
         }
     }
     for child in &mut node.children {
-        apply_focus(child, focus);
+        apply_focus_in(child, focus, row);
     }
 }
 
@@ -284,11 +472,13 @@ impl Document {
         let path = path.as_ref();
         let src = std::fs::read_to_string(path)
             .map_err(|e| LoadError::plain(format!("reading {}: {e}", path.display())))?;
-        let sfc = rux_parser::parse_sfc(&src).map_err(|e| LoadError::parse(e, Some(path)))?;
+        let mut sfc = rux_parser::parse_sfc(&src).map_err(|e| LoadError::parse(e, Some(path)))?;
 
         // Resolve `use module::component;` imports relative to this file.
         let base = path.parent().unwrap_or_else(|| Path::new("."));
+        resolve_style_includes(&mut sfc, base)?;
         let (main_script, imports) = extract_imports(&sfc.script);
+        let (main_script, computeds, effects) = extract_reactives(&main_script);
 
         let mut components = HashMap::new();
         let mut combined_script = main_script;
@@ -297,20 +487,36 @@ impl Document {
             let comp_src = std::fs::read_to_string(&comp_path).map_err(|e| {
                 LoadError::plain(format!("reading component {}: {e}", comp_path.display()))
             })?;
-            let comp_sfc =
+            let mut comp_sfc =
                 rux_parser::parse_sfc(&comp_src).map_err(|e| LoadError::parse(e, Some(&comp_path)))?;
+            // A component's `src` is relative to the component, not to whoever
+            // imported it. Anything else would make a component unusable from a
+            // second directory, which is the whole point of having one.
+            let comp_base = comp_path.parent().unwrap_or_else(|| Path::new(".")).to_path_buf();
+            resolve_style_includes(&mut comp_sfc, &comp_base)?;
             let (comp_script, _nested) = extract_imports(&comp_sfc.script);
-            // Merge the component's (pure) functions into the shared engine.
+            // A component's own computed/effect declarations are not
+            // supported yet; strip them so the merged script still compiles.
+            let (comp_script, _c, _e) = extract_reactives(&comp_script);
+            // Only its *functions* join the shared engine. Its `let`s do not:
+            // they are the state each instance gets a private copy of, so
+            // merging them here would put one shared variable behind every
+            // instance, which is exactly the bug this is fixing. `rux-style`
+            // runs the same split and hands the statements to `init_scope`.
             combined_script.push('\n');
-            combined_script.push_str(&comp_script);
+            combined_script.push_str(&component_functions(&comp_script));
             components.insert(import.tag, comp_sfc);
         }
 
+        // Before the first build: a `:to` calling `path_for` is evaluated
+        // during that build, so the names have to be known by then.
+        rux_script::set_routes(rux_style::named_routes(&sfc.template));
         let mut engine = build_engine(&combined_script).map_err(LoadError::plain)?;
-        let (mut root, registry) = rux_style::build_styled_tree_tracked(&sfc, &components, &mut engine)
+        let mut instances = Instances::new();
+        let (mut root, registry) = rux_style::build_styled_tree_tracked(&sfc, &components, &mut engine, &mut instances)
             .map_err(LoadError::plain)?;
         resolve_images(&mut root, base);
-        Ok(Self {
+        let mut doc = Self {
             sfc,
             components,
             engine,
@@ -324,8 +530,15 @@ impl Document {
                 warnings: collect_warnings(),
                 ..Diagnostics::default()
             },
+            instances,
+            computeds,
+            effects,
+            history: History::default(),
+            pending_scroll: None,
             root,
-        })
+        };
+        doc.init_reactive();
+        Ok(doc)
     }
 
     /// Process `.rux` source with no import resolution (used for fallbacks/tests).
@@ -340,14 +553,25 @@ impl Document {
     /// somewhere" is not much of an editor.
     pub fn from_source_checked(src: &str) -> Result<Self, LoadError> {
         let sfc = rux_parser::parse_sfc(src).map_err(|e| LoadError::parse(e, None))?;
+        // There is no file here, so there is nothing for `src` to be relative
+        // to and nothing to read it from. Warn rather than fail: the document
+        // still renders, just without the sheet it asked for, and a playground
+        // that refused to show anything would be worse than one that shows the
+        // document and says what is missing.
+        for path in &sfc.style_src {
+            warn_unresolvable_include(path);
+        }
         let (main_script, _imports) = extract_imports(&sfc.script);
+        let (main_script, computeds, effects) = extract_reactives(&main_script);
+        rux_script::set_routes(rux_style::named_routes(&sfc.template));
         let mut engine = build_engine(&main_script).map_err(LoadError::plain)?;
+        let mut instances = Instances::new();
         let (mut root, registry) =
-            rux_style::build_styled_tree_tracked(&sfc, &HashMap::new(), &mut engine)
+            rux_style::build_styled_tree_tracked(&sfc, &HashMap::new(), &mut engine, &mut instances)
                 .map_err(LoadError::plain)?;
         let base = PathBuf::from(".");
         resolve_images(&mut root, &base);
-        Ok(Self {
+        let mut doc = Self {
             sfc,
             components: HashMap::new(),
             engine,
@@ -360,8 +584,15 @@ impl Document {
                 warnings: collect_warnings(),
                 ..Diagnostics::default()
             },
+            instances,
+            computeds,
+            effects,
+            history: History::default(),
+            pending_scroll: None,
             root,
-        })
+        };
+        doc.init_reactive();
+        Ok(doc)
     }
 
     /// The script engine, for running `@tap` handlers.
@@ -428,7 +659,9 @@ impl Document {
         // the root. It is rare, one click or Tab, and the caret is being moved
         // anyway, so there is no ephemeral state left to preserve.
         let mut roots: Vec<Vec<usize>> = Vec::new();
-        if next.focused_model == self.state.focused_model {
+        if next.focused_model == self.state.focused_model
+            && next.focused_row == self.state.focused_row
+        {
             roots.push(divergence(self.state.hovered.as_deref(), next.hovered.as_deref()));
             roots.push(divergence(self.state.active.as_deref(), next.active.as_deref()));
         } else {
@@ -484,6 +717,7 @@ impl Document {
             &self.sfc,
             &self.components,
             &mut self.engine,
+            &mut self.instances,
             &self.state,
             self.viewport,
         ) else {
@@ -493,9 +727,10 @@ impl Document {
         for path in roots {
             let Some(fresh) = node_at(&fresh_root, path) else { continue };
             let fresh_node = fresh.clone();
+            let row = row_at(&fresh_root, path);
             if let Some(live) = node_at_mut(&mut self.root, path) {
                 *live = fresh_node;
-                apply_focus(live, self.focus.as_ref());
+                apply_focus_in(live, self.focus.as_ref(), row.as_deref());
             }
         }
         self.registry = fresh_reg;
@@ -507,6 +742,7 @@ impl Document {
             &self.sfc,
             &self.components,
             &mut self.engine,
+            &mut self.instances,
             &self.state,
             self.viewport,
         ) {
@@ -663,6 +899,7 @@ impl Document {
             &self.sfc,
             &self.components,
             &mut self.engine,
+            &mut self.instances,
             &self.state,
             self.viewport,
         ) else {
@@ -673,10 +910,13 @@ impl Document {
         for p in &roots {
             let Some(fresh) = node_at(&fresh_root, p) else { continue };
             let fresh_children = fresh.children.clone();
+            let row = row_at(&fresh_root, p);
             if let Some(live) = node_at_mut(&mut self.root, p) {
                 live.children = fresh_children;
-                // Put the caret back only within this rebuilt subtree.
-                apply_focus(live, self.focus.as_ref());
+                // Put the caret back only within this rebuilt subtree. The rows
+                // carry their own keys, so a caret in a row that moved lands in
+                // that row rather than in the position it used to hold.
+                apply_focus_in(live, self.focus.as_ref(), row.as_deref());
             }
         }
         // Toggles: replace just the single node (its checked style + mark). No
@@ -700,9 +940,10 @@ impl Document {
             }
             if let Some(fresh) = node_at(&fresh_root, p) {
                 let fresh_node = fresh.clone();
+                let row = row_at(&fresh_root, p);
                 if let Some(live) = node_at_mut(&mut self.root, p) {
                     *live = fresh_node;
-                    apply_focus(live, self.focus.as_ref());
+                    apply_focus_in(live, self.focus.as_ref(), row.as_deref());
                 }
             }
         }
@@ -714,9 +955,42 @@ impl Document {
     /// to a rebuild only when `model` is also read structurally. The caller sets
     /// the caret afterward via [`set_focus`](Self::set_focus).
     pub fn apply_edit(&mut self, model: &str, value: &str) {
-        self.engine.set_string(model, value);
-        let changed: HashSet<String> = std::iter::once(model.to_string()).collect();
+        self.apply_edit_in(model, None, value);
+    }
+
+    /// [`apply_edit`](Self::apply_edit) for an input in a known `r-for` row.
+    ///
+    /// The row matters because an `r-model` is recorded as written: inside a
+    /// list it can mention the loop variable, which only exists in that row's
+    /// scope. The scope was captured when the input was built, so this looks it
+    /// up rather than reconstructing it.
+    pub fn apply_edit_in(&mut self, model: &str, row: Option<&str>, value: &str) {
+        let locals = self.locals_for(model, row);
+        let changed = self.engine.assign_string(model, value, &locals);
+        if changed.is_empty() {
+            return;
+        }
         self.apply_change(&changed);
+    }
+
+    /// An input's current value, read in its own row's scope.
+    pub fn value_in(&mut self, model: &str, row: Option<&str>) -> String {
+        let locals = self.locals_for(model, row);
+        self.engine.get_string_in(model, &locals)
+    }
+
+    /// The loop variables that were in scope where this input was built.
+    ///
+    /// Matched on model *and* row, since a list's rows all record the same
+    /// model. Empty for an input outside a list, which is the common case and
+    /// needs nothing.
+    fn locals_for(&self, model: &str, row: Option<&str>) -> Vec<(String, rux_reactive::Value)> {
+        self.registry
+            .value
+            .iter()
+            .find(|b| b.model == model && b.row.as_deref() == row)
+            .map(|b| b.locals.clone())
+            .unwrap_or_default()
     }
 
     /// Run an `@tap` handler and reflect its effect the cheapest correct way:
@@ -724,21 +998,462 @@ impl Document {
     /// when the change is structural. Returns whether anything changed, so the
     /// shell knows whether to repaint.
     pub fn apply_handler(&mut self, src: &str) -> bool {
-        let changed = self.engine.run_handler_tracked(src);
-        if changed.is_empty() {
+        self.apply_handler_in(src, None)
+    }
+
+    /// Run a handler that was written inside a component instance.
+    ///
+    /// The instance's state and props are in scope, and whatever the handler
+    /// leaves them at is written back: that is what makes a component's own
+    /// state writable, and what keeps two instances of one component apart.
+    ///
+    /// A change to instance state rebuilds rather than patches. The state is
+    /// not a signal, so the binding registry has nothing to look it up by, and
+    /// claiming otherwise would mean bindings quietly missing updates. A
+    /// component is a subtree, so the rebuild is bounded in practice.
+    pub fn apply_handler_in(&mut self, src: &str, instance: Option<&str>) -> bool {
+        // Anything emitted before this handler was not emitted *by* it: a build
+        // evaluates every binding, and a stray `emit` in one of those would
+        // otherwise be delivered to the first tap that happened afterwards. The
+        // same goes for a `navigate` evaluated during a build.
+        let _ = rux_script::take_emissions();
+        let _ = rux_script::take_navigations();
+        let ran = self.dispatch_handler(src, instance, 0);
+        // Navigation is applied once, after the handler and everything it set
+        // off have finished. A handler that navigates and then writes a signal
+        // would otherwise render the old route with the new state in it.
+        self.apply_navigations() || ran
+    }
+
+    /// Apply whatever `navigate`/`back`/`forward` the last run asked for.
+    ///
+    /// Later calls win: a handler that navigates twice ends up where the second
+    /// one pointed, and the intermediate path is not a place the user visited.
+    fn apply_navigations(&mut self) -> bool {
+        let mut moved = false;
+        for nav in rux_script::take_navigations() {
+            moved |= match nav {
+                rux_script::Nav::To(path) => self.navigate(&path),
+                rux_script::Nav::Replace(path) => self.replace(&path),
+                rux_script::Nav::Back => self.back(),
+                rux_script::Nav::Forward => self.forward(),
+            };
+        }
+        moved
+    }
+
+    /// The path the document is on, without any query string.
+    ///
+    /// The same thing the `route` signal holds, so `doc.route()` and
+    /// `{{ route }}` cannot disagree. For the whole address, query included,
+    /// see [`Document::location`].
+    pub fn route(&self) -> &str {
+        rux_script::split_query(self.history.current()).0
+    }
+
+    /// The whole address the document is on, query string included.
+    ///
+    /// What a URL bar shows and what `--route` accepts. The history stores
+    /// this rather than the bare path, so going back to a search restores what
+    /// was being searched for.
+    pub fn location(&self) -> &str {
+        self.history.current()
+    }
+
+    /// Go to `path`, recording it in the history.
+    ///
+    /// Returns whether anything changed, so the shell knows whether to repaint.
+    /// Navigating to where we already are changes nothing, which is what makes
+    /// tapping the current link in a nav bar a no-op rather than a rebuild.
+    pub fn navigate(&mut self, path: &str) -> bool {
+        if !self.history.push(path) {
             return false;
         }
-        self.apply_change(&changed);
+        // A page being opened, not returned to, so it opens at its beginning.
+        self.set_scroll_intent(None);
+        self.show_current_route()
+    }
+
+    /// Open the document *at* `path` instead of at `/`.
+    ///
+    /// This is what a deep link arrives as: a browser tab opened straight at
+    /// `/user/7`, or `rux run app.rux --route /user/7`. It replaces the history
+    /// rather than adding to it, so the arrival page is the first page and Back
+    /// has nowhere to go, which is what actually happened.
+    ///
+    /// Called before the first frame. Calling it later would silently discard
+    /// wherever the user had got to.
+    pub fn start_at(&mut self, path: &str) -> bool {
+        self.history = History::starting_at(path);
+        self.set_scroll_intent(None);
+        self.show_current_route()
+    }
+
+    /// How far along the history the document is, and how long the history is.
+    ///
+    /// The pair is what a host history (the browser's) needs to mirror this
+    /// one: the index is stamped into each entry it pushes, and comes back
+    /// untouched when the user presses Back. See [`Document::go_to`].
+    pub fn history_position(&self) -> (usize, usize) {
+        (self.history.at, self.history.entries.len())
+    }
+
+    /// Move to the history entry at `index`, without recording a visit.
+    ///
+    /// The browser's Back button reports *where it landed*, not which way it
+    /// went, and it can move several entries at once. Returns whether the
+    /// document moved; `false` means the index was out of range or already
+    /// current, and the caller's history has drifted from this one.
+    pub fn go_to(&mut self, index: usize) -> bool {
+        if !self.history.go_to(index) {
+            return false;
+        }
+        self.restore_scroll_here();
+        self.show_current_route()
+    }
+
+    /// Go to `path` *instead of* where we are, overwriting the current entry.
+    ///
+    /// What a redirect needs. `navigate` would leave the redirecting page in
+    /// the history, so Back would land on it and be redirected forward again,
+    /// which reads as the Back button being broken.
+    pub fn replace(&mut self, path: &str) -> bool {
+        if !self.history.replace(path) {
+            return false;
+        }
+        // Still an arrival rather than a return: a redirect lands at the top.
+        self.set_scroll_intent(None);
+        self.show_current_route()
+    }
+
+    /// Step back through the history. Returns whether there was anywhere to go.
+    pub fn back(&mut self) -> bool {
+        if !self.history.back() {
+            return false;
+        }
+        self.restore_scroll_here();
+        self.show_current_route()
+    }
+
+    /// Step forward again. Returns whether there was anywhere to go.
+    pub fn forward(&mut self) -> bool {
+        if !self.history.forward() {
+            return false;
+        }
+        self.restore_scroll_here();
+        self.show_current_route()
+    }
+
+    /// Ask for the offsets recorded on the entry just arrived at. Only called
+    /// after a step through the history, which is the one way to arrive
+    /// somewhere you have already been.
+    fn restore_scroll_here(&mut self) {
+        let recorded = self.history.entries[self.history.at].scroll.clone();
+        self.set_scroll_intent(Some(recorded));
+    }
+
+    /// Remember how far down the current page the user is.
+    ///
+    /// Called once a frame by the shell, which owns the offsets, rather than at
+    /// each place that could navigate: a `navigate()` inside a handler moves the
+    /// history before the shell hears about it, so the position has to have been
+    /// recorded already. A scroll causes a repaint, so the last frame's record is
+    /// current.
+    pub fn record_scroll(&mut self, offsets: &[Offset]) {
+        let entry = &mut self.history.entries[self.history.at];
+        if entry.scroll != offsets {
+            entry.scroll = offsets.to_vec();
+        }
+    }
+
+    /// The offsets the next frame should adopt, if a navigation has chosen some.
+    ///
+    /// Empty means the top. Taking it clears it, so a frame that has already
+    /// obeyed does not keep being told.
+    pub fn take_scroll(&mut self) -> Option<Vec<Offset>> {
+        self.pending_scroll.take()
+    }
+
+    /// Decide where the page that is arriving should sit.
+    ///
+    /// The flag means *remember*, not *always restore*: on a new navigation you
+    /// go to the top, and only back or forward puts you back where you were.
+    /// Which of the two it is comes from **how you arrived**, not from a
+    /// preference, and that is what every platform does. A flag meaning "always
+    /// restore" would drop you into the middle of a page you had just opened
+    /// for the first time, which reads as a bug rather than a feature.
+    fn set_scroll_intent(&mut self, restored: Option<Vec<Offset>>) {
+        let remembering = rux_style::restore_scroll(&self.sfc.template);
+        self.pending_scroll = match restored {
+            Some(offsets) if remembering => Some(offsets),
+            // Turned off, or a page being opened rather than returned to.
+            _ => Some(Vec::new()),
+        };
+    }
+
+    /// Move the document to whatever the history now points at.
+    fn show_current_route(&mut self) -> bool {
+        let location = self.history.current().to_string();
+        // The *path*, because that is what a view records itself against: a
+        // query is an argument to a page and does not make it a different one.
+        let path = rux_script::split_query(&location).0.to_string();
+        // A route's views are dropped when we leave it, so visiting one a second
+        // time starts fresh instead of resuming where it was left. That is what
+        // every router does, and the alternative here would be accidental:
+        // instance state is keyed by template position and would otherwise
+        // simply still be sitting there.
+        //
+        // The build's own pruning does not cover this case and does not replace
+        // it: going from `/user/7` to `/user/12` expands the *same* view at the
+        // same template position, so the build reaches that instance and keeps
+        // it. Only the recorded route can tell the two visits apart.
+        self.instances.retain(|_, i| i.route.as_deref().is_none_or(|r| r == path));
+        let moved = self.publish_route(&location);
+        if !moved {
+            return false;
+        }
+        // The route is a signal like any other, so the ordinary change path
+        // decides between a reconcile and a rebuild. A `<router>` records itself
+        // as a structural read, so this reconciles the router's subtree.
+        //
+        // All four names, not just the path: a breadcrumb bound to `params.id`
+        // or a Back button bound to `can_go_back` subscribed to *that* name,
+        // and invalidating only `route` would leave them showing the last page.
+        self.apply_change(&HashSet::from_iter(
+            rux_script::ROUTER_SIGNALS.iter().map(|s| s.to_string()),
+        ));
         true
+    }
+
+    /// Put the path and everything derived from it in scope, and say whether
+    /// any of it moved.
+    ///
+    /// The three companions to `route` are all set here rather than where each
+    /// is caused, so there is one place where the router's view of the world is
+    /// assembled and no way for them to disagree with the path.
+    ///
+    /// `params` is matched against the template's routes *before* the build.
+    /// Falling out of the build instead would leave `{{ params.id }}` written
+    /// outside the router rendering one navigation behind.
+    fn publish_route(&mut self, location: &str) -> bool {
+        // A query is an argument to a page, not a different page, so matching
+        // and the `route` signal both see the path alone.
+        let (path, query) = rux_script::split_query(location);
+        let params = rux_style::route_params(&self.sfc.template, path);
+        let (at, len) = (self.history.at, self.history.entries.len());
+        let mut moved = self.engine.set_route(path);
+        moved |= self.engine.set_provided(rux_script::PARAMS_SIGNAL, Value::Map(params));
+        moved |= self
+            .engine
+            .set_provided(rux_script::QUERY_SIGNAL, Value::Map(rux_script::parse_query(query)));
+        moved |= self.engine.set_provided(rux_script::CAN_BACK_SIGNAL, Value::Bool(at > 0));
+        moved |=
+            self.engine.set_provided(rux_script::CAN_FORWARD_SIGNAL, Value::Bool(at + 1 < len));
+        moved
+    }
+
+    /// One handler run, plus whatever its `emit` calls set off. `depth` is the
+    /// length of that chain: a component listened to by a component that emits
+    /// back is a cycle, and stopping it at a bound is better than a window that
+    /// never repaints.
+    fn dispatch_handler(&mut self, src: &str, instance: Option<&str>, depth: usize) -> bool {
+        const MAX_EVENT_DEPTH: usize = 8;
+        if depth > MAX_EVENT_DEPTH {
+            rux_script::warn_script(format!(
+                "an event chain is still going after {MAX_EVENT_DEPTH} rounds and has been \
+                 stopped; a component is probably emitting an event that comes back to it"
+            ));
+            return false;
+        }
+
+        let Some(key) = instance.filter(|k| self.instances.contains_key(*k)) else {
+            let changed = self.engine.run_handler_tracked(src);
+            // An `emit` outside a component has nobody to tell: the document is
+            // the top of the tree. Say so rather than dropping it, since the
+            // author plainly expected something to happen.
+            for (event, _) in rux_script::take_emissions() {
+                rux_script::warn_script(format!(
+                    "`emit(\"{event}\")` outside a component has no caller to receive it"
+                ));
+            }
+            if changed.is_empty() {
+                return false;
+            }
+            self.apply_change(&changed);
+            return true;
+        };
+
+        let entry = &self.instances[key];
+        let mut locals = entry.state.clone();
+        locals.extend(entry.props.iter().cloned());
+        let (after, changed) = self.engine.run_scoped_handler(src, &locals);
+
+        // Only the component's own names are written back. A prop belongs to the
+        // caller: assigning to one inside a component would look like it worked
+        // and be forgotten on the next build, which is worse than not allowing it.
+        let state_names: Vec<String> =
+            self.instances[key].state.iter().map(|(n, _)| n.clone()).collect();
+        let mut moved = false;
+        for (name, value) in after {
+            if !state_names.contains(&name) {
+                continue;
+            }
+            let slot = self
+                .instances
+                .get_mut(key)
+                .and_then(|i| i.state.iter_mut().find(|(n, _)| *n == name));
+            if let Some(slot) = slot {
+                if slot.1 != value {
+                    slot.1 = value;
+                    moved = true;
+                }
+            }
+        }
+
+        // Deliver whatever the handler emitted. After the state write-back
+        // above, so a listener that rebuilds rebuilds against the state the
+        // handler left, not the state it started from.
+        let mut fired = false;
+        for (event, payload) in rux_script::take_emissions() {
+            let listener = self.instances[key]
+                .listeners
+                .iter()
+                .find(|(name, _)| *name == event)
+                .map(|(_, body)| body.clone());
+            // An event nobody listens to is ordinary, not a mistake: a
+            // component offers events and a caller takes the ones it wants.
+            let Some(body) = listener else { continue };
+            let caller = self.instances[key].caller.clone();
+            fired |= self.dispatch_handler(&with_event(&body, payload.as_ref()), caller.as_deref(), depth + 1);
+        }
+
+        if !changed.is_empty() {
+            self.apply_change(&changed);
+            return true;
+        }
+        if moved {
+            self.rebuild();
+            return true;
+        }
+        fired
     }
 
     /// Reflect a set of changed signals: patch in place, or rebuild when the change
     /// is structural. `RUX_TRACE=1` prints which path was taken, so the reactivity
     /// behavior is observable while driving (the pixels are identical either way).
+    /// Record what the computeds and effects read, and run every effect once.
+    ///
+    /// Effects run on load rather than only on the first change, which is the
+    /// only way an effect can *establish* something (a title, a saved value)
+    /// rather than merely react to it. It is also where their dependency sets
+    /// come from: an effect subscribes to what it read, so it has to read first.
+    fn init_reactive(&mut self) {
+        for i in 0..self.computeds.len() {
+            let (name, expr) = (self.computeds[i].name.clone(), self.computeds[i].expr.clone());
+            let (_, deps) = self.engine.recompute(&name, &expr);
+            self.computeds[i].deps = deps;
+        }
+        let mut writes: HashSet<String> = HashSet::new();
+        for i in 0..self.effects.len() {
+            let body = self.effects[i].body.clone();
+            let (mut reads, wrote) = self.engine.run_effect_tracked(&body);
+            // An effect is never woken by its own writes. Assigning to a signal
+            // resolves its name, so the tracker sees a write as a read too, and
+            // every effect that wrote anything would immediately re-trigger
+            // itself: harmless when the result settles, an eight-round pile-up
+            // when it does not. The cost is that an effect which writes X will
+            // not re-run when someone *else* changes X, which is the right way
+            // round: that effect is the one deciding what X is.
+            reads.retain(|n| !wrote.contains(n));
+            self.effects[i].deps = reads;
+            writes.extend(wrote);
+        }
+        self.diagnostics.warnings.extend(collect_warnings());
+        if !writes.is_empty() {
+            // An effect that set something on load has to be reflected, or the
+            // first frame shows the state it was written to replace.
+            self.apply_change_depth(&writes, 1);
+        }
+    }
+
+    /// Bring the computeds up to date, adding any that actually changed to
+    /// `changed` so the bindings reading them are patched too.
+    ///
+    /// One pass in declaration order, which is enough for a computed that reads
+    /// another declared above it, and is where the ordering rule comes from: a
+    /// computed may only read computeds declared before it. The alternative is
+    /// iterating to a fixpoint, which turns a typo into a hang.
+    fn refresh_computed(&mut self, changed: &mut HashSet<String>) {
+        for i in 0..self.computeds.len() {
+            let stale = !self.computeds[i].deps.is_disjoint(changed);
+            if !stale {
+                continue;
+            }
+            let (name, expr) = (self.computeds[i].name.clone(), self.computeds[i].expr.clone());
+            let (moved, deps) = self.engine.recompute(&name, &expr);
+            self.computeds[i].deps = deps;
+            if moved {
+                changed.insert(name);
+            }
+        }
+    }
+
+    /// Run the effects whose dependencies changed, and report what they wrote.
+    fn run_effects(&mut self, changed: &HashSet<String>) -> HashSet<String> {
+        let mut writes = HashSet::new();
+        for i in 0..self.effects.len() {
+            if self.effects[i].deps.is_disjoint(changed) {
+                continue;
+            }
+            let body = self.effects[i].body.clone();
+            let (mut reads, wrote) = self.engine.run_effect_tracked(&body);
+            // An effect is never woken by its own writes. Assigning to a signal
+            // resolves its name, so the tracker sees a write as a read too, and
+            // every effect that wrote anything would immediately re-trigger
+            // itself: harmless when the result settles, an eight-round pile-up
+            // when it does not. The cost is that an effect which writes X will
+            // not re-run when someone *else* changes X, which is the right way
+            // round: that effect is the one deciding what X is.
+            reads.retain(|n| !wrote.contains(n));
+            self.effects[i].deps = reads;
+            writes.extend(wrote);
+        }
+        writes
+    }
+
     fn apply_change(&mut self, changed: &HashSet<String>) {
-        let patched = self.patch(changed);
+        self.apply_change_depth(changed, 0);
+    }
+
+    /// [`apply_change`](Self::apply_change), counting how many times an effect
+    /// has caused another round.
+    ///
+    /// An effect that writes a signal it also reads is a loop. It is stopped and
+    /// reported rather than followed: a window that hangs tells you nothing,
+    /// while a warning naming the effect is the whole diagnosis.
+    fn apply_change_depth(&mut self, changed: &HashSet<String>, depth: u32) {
+        const MAX_EFFECT_ROUNDS: u32 = 8;
+        let mut changed = changed.clone();
+        self.refresh_computed(&mut changed);
+        let patched = self.patch(&changed);
         if !patched {
             self.rebuild();
+        }
+        let writes = self.run_effects(&changed);
+        if !writes.is_empty() {
+            if depth + 1 >= MAX_EFFECT_ROUNDS {
+                let mut names: Vec<&str> = writes.iter().map(String::as_str).collect();
+                names.sort_unstable();
+                rux_style::warn_stylesheet(format!(
+                    "an `effect` keeps re-triggering itself (still writing {names:?} after \
+                     {MAX_EFFECT_ROUNDS} rounds); it was stopped. An effect must not write a \
+                     signal it also reads."
+                ));
+                self.diagnostics.warnings.extend(collect_warnings());
+                return;
+            }
+            self.apply_change_depth(&writes, depth + 1);
+            return;
         }
         if std::env::var_os("RUX_TRACE").is_some() {
             let mut names: Vec<&str> = changed.iter().map(String::as_str).collect();
@@ -760,6 +1475,23 @@ fn node_at<'a>(root: &'a LayoutNode, path: &[usize]) -> Option<&'a LayoutNode> {
     Some(node)
 }
 
+/// The `r-key` of the row `path` lands inside, if any.
+///
+/// A splice re-applies focus to a subtree, and the subtree cannot tell you which
+/// row it is in: the key is on an ancestor that the splice never looks at. This
+/// walks down from the root to recover it.
+fn row_at(root: &LayoutNode, path: &[usize]) -> Option<String> {
+    let mut node = root;
+    let mut row = node.key.clone();
+    for &i in path {
+        node = node.children.get(i)?;
+        if node.key.is_some() {
+            row = node.key.clone();
+        }
+    }
+    row
+}
+
 /// Follow a child-index path from the root to a node, mutably.
 fn node_at_mut<'a>(root: &'a mut LayoutNode, path: &[usize]) -> Option<&'a mut LayoutNode> {
     let mut node = root;
@@ -767,6 +1499,209 @@ fn node_at_mut<'a>(root: &'a mut LayoutNode, path: &[usize]) -> Option<&'a mut L
         node = node.children.get_mut(i)?;
     }
     Some(node)
+}
+
+/// Read the stylesheets a document asked for with `<style src="…">`, relative
+/// to the file that asked.
+///
+/// A missing stylesheet is a load failure, not a warning, and deliberately the
+/// same kind of failure as a missing component: both are a file naming another
+/// file that is not there, and a document that silently renders unstyled looks
+/// like a layout bug rather than a typo in a path. The window keeps the last
+/// good tree on screen and puts the message in the overlay, so the cost of
+/// being strict is a red panel and not a closed window.
+fn resolve_style_includes(sfc: &mut Sfc, base: &Path) -> Result<(), LoadError> {
+    if sfc.style_src.is_empty() {
+        return Ok(());
+    }
+    let mut includes = Vec::with_capacity(sfc.style_src.len());
+    for relative in &sfc.style_src {
+        let path = base.join(relative);
+        let css = std::fs::read_to_string(&path).map_err(|e| {
+            LoadError::plain(format!("reading stylesheet {}: {e}", path.display()))
+        })?;
+        includes.push(StyleInclude { path: relative.clone(), css });
+    }
+    sfc.style_includes = includes;
+    Ok(())
+}
+
+/// Say that an include could not be resolved because there is no file to be
+/// relative to. Only the browser reaches this.
+fn warn_unresolvable_include(path: &str) {
+    rux_style::warn_stylesheet(format!(
+        "`<style src=\"{path}\">` was ignored: this document was loaded from source, \
+         not from a file, so there is nothing for the path to be relative to"
+    ));
+}
+
+/// A `computed name = expr;` declaration.
+///
+/// Kept beside the script rather than inside it because it has to be
+/// *re-evaluated*, and rhai has no lazy value: the line is rewritten to a plain
+/// `let` so the name becomes an ordinary signal, and the expression is kept here
+/// so the runtime can run it again when something it reads changes.
+#[derive(Clone, Debug)]
+struct Computed {
+    name: String,
+    expr: String,
+    /// Signals the expression read when it last ran.
+    deps: HashSet<String>,
+}
+
+/// An `effect { … }` block: statements to run when what they read changes.
+#[derive(Clone, Debug)]
+struct Effect {
+    body: String,
+    /// Signals the body read when it last ran. Recorded per run, so an effect
+    /// whose reads depend on a condition subscribes to what it actually touched.
+    deps: HashSet<String>,
+}
+
+/// Pull `computed` and `effect` declarations out of a script.
+///
+/// Returns the script rhai should see, with every consumed line replaced by a
+/// blank one so line numbers still match the file: a warning pointing at the
+/// wrong line is worse than one pointing nowhere.
+///
+/// `computed x = expr;` becomes `let x = expr;`, which is what makes a computed
+/// an ordinary signal, initialised in declaration order alongside the rest.
+fn extract_reactives(script: &str) -> (String, Vec<Computed>, Vec<Effect>) {
+    let mut cleaned = String::new();
+    let mut computeds = Vec::new();
+    let mut effects = Vec::new();
+
+    let lines: Vec<&str> = script.lines().collect();
+    let mut i = 0;
+    while i < lines.len() {
+        let line = lines[i];
+        let trimmed = line.trim();
+
+        if let Some(rest) = trimmed.strip_prefix("computed ") {
+            if let Some((name, expr)) = rest.split_once('=') {
+                let name = name.trim();
+                let expr = expr.trim().trim_end_matches(';').trim();
+                if is_identifier(name) && !expr.is_empty() {
+                    computeds.push(Computed {
+                        name: name.to_string(),
+                        expr: expr.to_string(),
+                        deps: HashSet::new(),
+                    });
+                    // Declared, not stripped: the value has to exist before any
+                    // binding reads it, and being a `let` is what makes it a
+                    // signal the rest of the pipeline already understands.
+                    cleaned.push_str(&format!("let {name} = {expr};\n"));
+                    i += 1;
+                    continue;
+                }
+            }
+        }
+
+        if trimmed == "effect {" || trimmed.starts_with("effect {") {
+            // Take the block by counting braces, so an effect can hold an `if`.
+            let mut depth = 0i32;
+            let mut body = String::new();
+            let mut j = i;
+            let mut closed = false;
+            while j < lines.len() {
+                let l = lines[j];
+                for c in l.chars() {
+                    match c {
+                        '{' => depth += 1,
+                        '}' => depth -= 1,
+                        _ => {}
+                    }
+                }
+                let start = if j == i { l.find('{').map(|p| p + 1).unwrap_or(0) } else { 0 };
+                body.push_str(&l[start..]);
+                body.push('\n');
+                cleaned.push('\n'); // keep the file's line numbering
+                j += 1;
+                if depth <= 0 {
+                    closed = true;
+                    break;
+                }
+            }
+            if closed {
+                // Drop the trailing `}` the loop consumed with the last line.
+                let body = body.trim_end();
+                let body = body.strip_suffix('}').unwrap_or(body).to_string();
+                effects.push(Effect { body, deps: HashSet::new() });
+                i = j;
+                continue;
+            }
+            // Unterminated: leave it to rhai to complain about, with its lines.
+            rux_style::warn_stylesheet(
+                "an `effect {` block is never closed; it was ignored".to_string(),
+            );
+            i = j;
+            continue;
+        }
+
+        cleaned.push_str(line);
+        cleaned.push('\n');
+        i += 1;
+    }
+    (cleaned, computeds, effects)
+}
+
+/// Whether `s` is a plain identifier, so `computed 2 + 2 = x;` is left for rhai
+/// to reject rather than quietly becoming a declaration.
+fn is_identifier(s: &str) -> bool {
+    !s.is_empty()
+        && !s.starts_with(|c: char| c.is_ascii_digit())
+        && s.chars().all(|c| c.is_alphanumeric() || c == '_')
+}
+
+/// A listener body with the emitted payload bound to `event`.
+///
+/// Baked in as a `let` prelude rather than passed as an argument, the same
+/// trick that carries an `r-for` row into an `@tap`: the body is statements the
+/// caller wrote inline, not a function, so there is no parameter list to put it
+/// in. `emit("change")` with no payload leaves `event` undeclared, so reading it
+/// is a lookup failure rather than a silent empty value.
+fn with_event(body: &str, payload: Option<&rux_reactive::Value>) -> String {
+    match payload {
+        Some(value) => format!("let event = {}; {body}", value.to_rhai_literal()),
+        None => body.to_string(),
+    }
+}
+
+/// Just the `fn` definitions from a component's script.
+///
+/// The complement of `rux-style`'s `component_statements`: functions are code
+/// and are shared across instances, everything else is state and is not.
+fn component_functions(script: &str) -> String {
+    let mut out = String::new();
+    let lines: Vec<&str> = script.lines().collect();
+    let mut i = 0;
+    while i < lines.len() {
+        if !lines[i].trim().starts_with("fn ") {
+            i += 1;
+            continue;
+        }
+        let mut depth = 0i32;
+        let mut seen = false;
+        while i < lines.len() {
+            for c in lines[i].chars() {
+                match c {
+                    '{' => {
+                        depth += 1;
+                        seen = true;
+                    }
+                    '}' => depth -= 1,
+                    _ => {}
+                }
+            }
+            out.push_str(lines[i]);
+            out.push('\n');
+            i += 1;
+            if seen && depth <= 0 {
+                break;
+            }
+        }
+    }
+    out
 }
 
 /// A resolved component import.
@@ -812,12 +1747,42 @@ fn extract_imports(script: &str) -> (String, Vec<Import>) {
 fn build_engine(script: &str) -> Result<Engine, String> {
     let mut builder = Builder::new();
     builder.host_number("full", || 100.0);
-    builder.build(script)
+    let mut engine = builder.build(script)?;
+    // The route has to be in scope before the first build, because a `<router>`
+    // reads it during that build. A document that declared `route` itself is
+    // told rather than quietly overwritten on the first navigation.
+    for name in rux_script::ROUTER_SIGNALS {
+        if engine.declares(name) {
+            rux_script::warn_script(format!(
+                "`{name}` is the router's and is provided for you; a `let {name}` of your own is \
+                 overwritten on every navigation"
+            ));
+        }
+    }
+    engine.set_route(ROOT_PATH);
+    // The companions need to exist before the first build too, or a document
+    // reading `params.id` or `can_go_back` on its opening screen would fail to
+    // resolve the name rather than see the empty answer that is the truth.
+    engine.set_provided(rux_script::PARAMS_SIGNAL, Value::Map(Vec::new()));
+    engine.set_provided(rux_script::QUERY_SIGNAL, Value::Map(Vec::new()));
+    engine.set_provided(rux_script::CAN_BACK_SIGNAL, Value::Bool(false));
+    engine.set_provided(rux_script::CAN_FORWARD_SIGNAL, Value::Bool(false));
+    Ok(engine)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every string the tree renders, for a failure message that says what was
+    /// actually on screen rather than dumping the whole node.
+    fn text_of(node: &LayoutNode) -> Vec<String> {
+        let mut out: Vec<String> = node.text.iter().map(|t| t.text.clone()).collect();
+        for child in &node.children {
+            out.extend(text_of(child));
+        }
+        out
+    }
 
     fn find_text(node: &LayoutNode, needle: &str) -> bool {
         if let Some(t) = &node.text {
@@ -857,6 +1822,79 @@ mod tests {
         assert!(find_text(&doc.root, "82"), "component value prop rendered");
 
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// An included sheet styles the document, and the document's own `<style>`
+    /// wins a tie. That order is the whole point: you include a palette in
+    /// order to override part of it, and needing `!important` to do so would
+    /// mean the include had been bolted on top rather than cascaded under.
+    #[test]
+    fn included_stylesheets_cascade_under_the_document() {
+        use std::fs;
+        let dir = std::env::temp_dir().join(format!("rux_css_{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("theme.css"),
+            ".card { background: #ff0000; } .plain { background: #0000ff; }",
+        )
+        .unwrap();
+        fs::write(
+            dir.join("app.rux"),
+            "<template><screen><view class=\"card\" /><view class=\"plain\" /></screen></template>\n\
+             <style src=\"theme.css\">\n  .card { background: #00ff00; }\n</style>",
+        )
+        .unwrap();
+
+        let doc = Document::load(dir.join("app.rux")).expect("load app");
+        let bg = |i: usize| doc.root.children[i].style.background.clone();
+        assert!(
+            matches!(bg(0), Some(rux_layout::Background::Color(c)) if c.g == 1.0),
+            "same specificity, so the document's own rule wins on source order"
+        );
+        assert!(
+            matches!(bg(1), Some(rux_layout::Background::Color(c)) if c.b == 1.0),
+            "and what the document says nothing about still comes from the include"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A stylesheet that is not there fails the load, the same way a missing
+    /// component does. A document that renders unstyled reads as a layout bug,
+    /// which is a much longer walk back to the typo in the path.
+    #[test]
+    fn a_missing_stylesheet_fails_the_load() {
+        use std::fs;
+        let dir = std::env::temp_dir().join(format!("rux_css_missing_{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("app.rux"),
+            "<template><screen /></template>\n<style src=\"nope.css\">.a{color:red}</style>",
+        )
+        .unwrap();
+
+        let Err(err) = Document::load(dir.join("app.rux")) else {
+            panic!("a document naming a stylesheet that is not there must not load");
+        };
+        assert!(err.contains("nope.css"), "names the file that is missing: {err}");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// From source there is no file, so there is nothing for the path to be
+    /// relative to. The document still renders; it just says what it lost.
+    #[test]
+    fn an_include_from_source_warns_instead_of_failing() {
+        let _ = take_warnings(); // the sinks are global; start from a known state
+        let doc = Document::from_source(
+            "<template><screen /></template>\n<style src=\"theme.css\">.a{color:red}</style>",
+        )
+        .expect("renders anyway");
+        assert!(
+            doc.diagnostics.warnings.iter().any(|w| w.message.contains("theme.css")),
+            "the warning names the sheet that was ignored: {:?}",
+            doc.diagnostics.warnings
+        );
     }
 
     /// `<image src>` is relative to the .rux file, not the working directory,
@@ -949,12 +1987,12 @@ mod tests {
     fn selection_paints_only_in_the_focused_input() {
         let mut doc = two_inputs();
 
-        doc.set_focus(Some(Focus { model: "name".into(), caret: 3, anchor: 1, preedit: None }));
+        doc.set_focus(Some(Focus { model: "name".into(), row: None, caret: 3, anchor: 1, preedit: None }));
         assert_eq!(selection_of(&doc.root, "name"), Some((1, 3)));
         assert_eq!(selection_of(&doc.root, "city"), None);
 
         // Dragging leftwards puts the caret *before* the anchor; same range.
-        doc.set_focus(Some(Focus { model: "name".into(), caret: 1, anchor: 3, preedit: None }));
+        doc.set_focus(Some(Focus { model: "name".into(), row: None, caret: 1, anchor: 3, preedit: None }));
         assert_eq!(selection_of(&doc.root, "name"), Some((1, 3)));
     }
 
@@ -965,16 +2003,1330 @@ mod tests {
     fn focus_moves_the_selection_out_of_the_old_input() {
         let mut doc = two_inputs();
 
-        doc.set_focus(Some(Focus { model: "name".into(), caret: 3, anchor: 0, preedit: None }));
+        doc.set_focus(Some(Focus { model: "name".into(), row: None, caret: 3, anchor: 0, preedit: None }));
         assert_eq!(selection_of(&doc.root, "name"), Some((0, 3)));
 
-        doc.set_focus(Some(Focus { model: "city".into(), caret: 2, anchor: 0, preedit: None }));
+        doc.set_focus(Some(Focus { model: "city".into(), row: None, caret: 2, anchor: 0, preedit: None }));
         assert_eq!(selection_of(&doc.root, "name"), None, "old input kept its selection");
         assert_eq!(selection_of(&doc.root, "city"), Some((0, 2)));
 
         doc.set_focus(None);
         assert_eq!(selection_of(&doc.root, "name"), None);
         assert_eq!(selection_of(&doc.root, "city"), None);
+    }
+
+    /// `r-key` stamps each row with what it stands for, and the stamp survives
+    /// a reorder: after reversing the data, the row carrying key `b` is the one
+    /// at the front. Nothing consumes this yet (see the note on
+    /// `LayoutNode::key`), but it is the only thing in a document that says a
+    /// row is the same row.
+    #[test]
+    fn a_key_identifies_a_row_across_a_reorder() {
+        let mut doc = Document::from_source(
+            "<template><screen>\
+               <text r-for=\"row in rows\" r-key=\"row.id\">{{ row.text }}</text>\
+             </screen></template>
+             <script>\
+               let rows = signal([\
+                 #{ id: \"a\", text: \"alpha\" },\
+                 #{ id: \"b\", text: \"bravo\" }\
+               ]);\
+               </script>",
+        )
+        .expect("load");
+        let keys = |d: &Document| -> Vec<Option<String>> {
+            d.root.children.iter().map(|c| c.key.clone()).collect()
+        };
+        assert_eq!(keys(&doc), vec![Some("a".into()), Some("b".into())]);
+
+        assert!(
+            doc.apply_handler(
+                "rows = [#{ id: \"b\", text: \"bravo\" }, #{ id: \"a\", text: \"alpha\" }];"
+            ),
+            "the reorder changed a signal"
+        );
+        assert_eq!(
+            keys(&doc),
+            vec![Some("b".into()), Some("a".into())],
+            "the keys moved with their rows"
+        );
+        assert!(find_text(&doc.root, "bravo"));
+    }
+
+    /// Every row of a list is bound to the same `r-model` text, so a model on
+    /// its own cannot say which row the caret is in. Before the row was part of
+    /// focus, setting the caret in one row put a caret in *every* row of the
+    /// list at once.
+    fn keyed_inputs() -> Document {
+        Document::from_source(
+            "<template><screen>\
+               <view r-for=\"row in rows\" r-key=\"row.id\">\
+                 <input r-model=\"draft\" />\
+               </view>\
+             </screen></template>
+             <script>\
+               let rows = signal([#{ id: \"a\" }, #{ id: \"b\" }]);\
+               let draft = signal(\"hello\");\
+             </script>",
+        )
+        .expect("load")
+    }
+
+    /// The caret inside a keyed row belongs to that row alone.
+    #[test]
+    fn only_the_focused_row_gets_a_caret() {
+        let mut doc = keyed_inputs();
+        doc.set_focus(Some(Focus::at_row("draft", Some("b".into()), 2)));
+
+        let carets: Vec<Option<usize>> = doc
+            .root
+            .children
+            .iter()
+            .map(|row| caret_of(row, "draft"))
+            .collect();
+        assert_eq!(
+            carets,
+            vec![None, Some(2)],
+            "the caret is in row b only, not in every row bound to `draft`"
+        );
+    }
+
+    /// And it stays with its row when the list is reordered, rather than with
+    /// the position the row used to hold. Nothing is remapped to achieve this:
+    /// the identity *is* the row, so the caret lands wherever that row went.
+    #[test]
+    fn the_caret_follows_its_row_across_a_reorder() {
+        let mut doc = keyed_inputs();
+        doc.set_focus(Some(Focus::at_row("draft", Some("b".into()), 2)));
+
+        assert!(
+            doc.apply_handler("rows = [#{ id: \"b\" }, #{ id: \"a\" }];"),
+            "the reorder changed a signal"
+        );
+        assert_eq!(doc.root.children[0].key.as_deref(), Some("b"), "row b is first now");
+
+        let carets: Vec<Option<usize>> = doc
+            .root
+            .children
+            .iter()
+            .map(|row| caret_of(row, "draft"))
+            .collect();
+        assert_eq!(
+            carets,
+            vec![Some(2), None],
+            "the caret moved with row b instead of staying in the first slot"
+        );
+    }
+
+    /// A row's field can be read and written, which needs that row's loop
+    /// variable in scope: the `r-model` is recorded as written, so
+    /// `rows[row.at.to_int()].note` is not an expression without `row`. Reading
+    /// it raw returned "" and warned `Variable not found`, and writing it set a
+    /// scope variable *named* `rows[row.at.to_int()].note`, leaving the real
+    /// target untouched. Typing into a row's field did nothing at all.
+    #[test]
+    fn a_rows_field_reads_and_writes_in_its_own_scope() {
+        let mut doc = Document::from_source(
+            "<template><screen>\
+               <input r-for=\"row in rows\" r-key=\"row.id\" r-model=\"rows[row.at.to_int()].note\" />\
+             </screen></template>
+             <script>\
+               let rows = signal([\
+                 #{ id: \"a\", at: 0, note: \"alpha\" },\
+                 #{ id: \"b\", at: 1, note: \"bravo\" }\
+               ]);\
+             </script>",
+        )
+        .expect("load");
+        let model = "rows[row.at.to_int()].note";
+
+        assert_eq!(doc.value_in(model, Some("a")), "alpha");
+        assert_eq!(doc.value_in(model, Some("b")), "bravo", "each row reads its own value");
+
+        doc.apply_edit_in(model, Some("b"), "bravo!");
+        assert_eq!(doc.value_in(model, Some("b")), "bravo!", "the edit landed");
+        assert_eq!(doc.value_in(model, Some("a")), "alpha", "and only in that row");
+    }
+
+    /// An `r-model` that is a path rather than a bare signal is written through
+    /// too. This never worked, in or out of a list.
+    #[test]
+    fn a_path_model_is_assigned_not_shadowed() {
+        let mut doc = Document::from_source(
+            "<template><screen><input r-model=\"user.name\" /></screen></template>
+             <script>let user = signal(#{ name: \"ada\" });</script>",
+        )
+        .expect("load");
+
+        doc.apply_edit("user.name", "grace");
+        assert_eq!(doc.value_in("user.name", None), "grace");
+    }
+
+    /// A value containing quotes and backslashes survives being written, since
+    /// the write runs as script and the text is a person's typing.
+    #[test]
+    fn an_awkward_value_survives_the_round_trip() {
+        let mut doc = two_inputs();
+        let awkward = "she said \"hi\" \\ then left";
+        doc.apply_edit("name", awkward);
+        assert_eq!(doc.value_in("name", None), awkward);
+    }
+
+    /// Write a component with a `<slot />` and a document that fills it, in a
+    /// temp dir, then load it. Returns the document.
+    fn with_component(component: &str, app: &str) -> Document {
+        use std::fs;
+        let dir = std::env::temp_dir().join(format!(
+            "rux_slot_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(dir.join("components")).unwrap();
+        fs::write(dir.join("components/card.rux"), component).unwrap();
+        fs::write(dir.join("app.rux"), app).unwrap();
+        let doc = Document::load(dir.join("app.rux")).expect("load");
+        let _ = fs::remove_dir_all(&dir);
+        doc
+    }
+
+    /// The point of scoping: two instances of one component are two separate
+    /// sets of state. Their scripts used to be merged into the single shared
+    /// script, so both `<counter>` elements counted the same number.
+    #[test]
+    fn two_instances_keep_their_own_state() {
+        let doc = with_component(
+            "<template><view class=\"card\">\
+               <text>{{ count }}</text>\
+               <view @tap=\"count = count + 1\"><text>add</text></view>\
+             </view></template>\n\
+             <script>\nlet count = signal(0);\n</script>",
+            "<template><screen><card /><card /></screen></template>\n\
+             <script>\nuse components::card;\n</script>",
+        );
+        // Two instances, two keys, and neither is a document signal.
+        assert_eq!(doc.instances.len(), 2, "one entry per instance: {:?}", doc.instances);
+        assert!(
+            doc.instances.values().all(|i| i.state.iter().any(|(n, _)| n == "count")),
+            "each holds its own `count`: {:?}",
+            doc.instances
+        );
+    }
+
+    /// Tapping inside one instance moves that instance's state and no other's.
+    #[test]
+    fn a_handler_moves_only_its_own_instance() {
+        let mut doc = with_component(
+            "<template><view>\
+               <text>{{ label }}:{{ count }}</text>\
+               <view @tap=\"count = count + 1\"><text>add</text></view>\
+             </view></template>\n\
+             <script>\nlet count = signal(0);\n</script>",
+            "<template><screen>\
+               <card :label=\"&quot;a&quot;\" /><card :label=\"&quot;b&quot;\" />\
+             </screen></template>\n\
+             <script>\nuse components::card;\n</script>",
+        );
+        assert!(find_text(&doc.root, "a:0"), "{:?}", text_of(&doc.root));
+        assert!(find_text(&doc.root, "b:0"), "{:?}", text_of(&doc.root));
+
+        // The second card's handler, found the way the shell finds it: by the
+        // instance recorded on the node it was tapped on.
+        let second = doc.root.children[1].clone();
+        let button = second.children.iter().find(|c| c.on_tap.is_some()).expect("a tappable box");
+        let (src, instance) = (button.on_tap.clone().unwrap(), button.instance.clone());
+        assert!(instance.is_some(), "the node knows which instance it is in");
+
+        assert!(doc.apply_handler_in(&src, instance.as_deref()), "the tap changed state");
+        assert!(find_text(&doc.root, "b:1"), "the tapped card counted: {:?}", text_of(&doc.root));
+        assert!(
+            find_text(&doc.root, "a:0"),
+            "and the other one did not: {:?}",
+            text_of(&doc.root)
+        );
+    }
+
+    /// Tap the one tappable box in a subtree, the way the shell would: with the
+    /// instance recorded on the node it was tapped on.
+    fn tap(doc: &mut Document, node: &LayoutNode) -> bool {
+        fn find(node: &LayoutNode) -> Option<&LayoutNode> {
+            if node.on_tap.is_some() {
+                return Some(node);
+            }
+            node.children.iter().find_map(find)
+        }
+        let button = find(node).expect("a tappable box").clone();
+        doc.apply_handler_in(&button.on_tap.clone().unwrap(), button.instance.as_deref())
+    }
+
+    /// The other half of props: something comes back out. Without this a
+    /// component can only ever be told things, so every piece of state a caller
+    /// cares about has to be hoisted out of the component that owns it.
+    #[test]
+    fn an_emitted_event_runs_the_callers_handler() {
+        let mut doc = with_component(
+            "<template><view>\
+               <view @tap=\"emit(&quot;bumped&quot;)\"><text>add</text></view>\
+             </view></template>",
+            "<template><screen>\
+               <text>total {{ total }}</text>\
+               <card @bumped=\"total = total + 1\" />\
+             </screen></template>\n\
+             <script>\nuse components::card;\nlet total = signal(0);\n</script>",
+        );
+        let card = doc.root.children[1].clone();
+        assert!(tap(&mut doc, &card), "the tap reached the caller");
+        assert!(find_text(&doc.root, "total 1"), "{:?}", text_of(&doc.root));
+        let card = doc.root.children[1].clone();
+        assert!(tap(&mut doc, &card), "and again");
+        assert!(find_text(&doc.root, "total 2"), "{:?}", text_of(&doc.root));
+    }
+
+    /// A payload arrives as `event`, so a component can say *what* happened
+    /// rather than only that something did.
+    #[test]
+    fn an_event_carries_its_payload() {
+        let mut doc = with_component(
+            "<template><view>\
+               <view @tap=\"emit(&quot;picked&quot;, label)\"><text>pick</text></view>\
+             </view></template>",
+            "<template><screen>\
+               <text>chose {{ chosen }}</text>\
+               <card :label=\"&quot;blue&quot;\" @picked=\"chosen = event\" />\
+             </screen></template>\n\
+             <script>\nuse components::card;\nlet chosen = signal(\"nothing\");\n</script>",
+        );
+        let card = doc.root.children[1].clone();
+        assert!(tap(&mut doc, &card), "the tap reached the caller");
+        assert!(find_text(&doc.root, "chose blue"), "{:?}", text_of(&doc.root));
+    }
+
+    /// The listener body is the *caller's* code and must run in the caller's
+    /// scope. Run in the instance's, it would write to a variable of the same
+    /// name inside the component, or to nothing at all, and look like it worked.
+    #[test]
+    fn a_listener_runs_in_the_callers_scope() {
+        let mut doc = with_component(
+            "<template><view>\
+               <text>inner {{ total }}</text>\
+               <view @tap=\"emit(&quot;bumped&quot;)\"><text>add</text></view>\
+             </view></template>\n\
+             <script>\nlet total = signal(100);\n</script>",
+            "<template><screen>\
+               <text>outer {{ total }}</text>\
+               <card @bumped=\"total = total + 1\" />\
+             </screen></template>\n\
+             <script>\nuse components::card;\nlet total = signal(0);\n</script>",
+        );
+        let card = doc.root.children[1].clone();
+        assert!(tap(&mut doc, &card));
+        assert!(find_text(&doc.root, "outer 1"), "the caller's own: {:?}", text_of(&doc.root));
+        assert!(
+            find_text(&doc.root, "inner 100"),
+            "the component's like-named state is untouched: {:?}",
+            text_of(&doc.root)
+        );
+    }
+
+    /// A component offers events; a caller takes the ones it wants. Emitting
+    /// one nobody listens to is ordinary, and must not fail or warn.
+    #[test]
+    fn an_event_with_no_listener_is_ignored() {
+        let _ = take_warnings();
+        let mut doc = with_component(
+            "<template><view>\
+               <view @tap=\"count = count + 1; emit(&quot;bumped&quot;)\"><text>add</text></view>\
+               <text>{{ count }}</text>\
+             </view></template>\n\
+             <script>\nlet count = signal(0);\n</script>",
+            "<template><screen><card /></screen></template>\n\
+             <script>\nuse components::card;\n</script>",
+        );
+        let card = doc.root.children[0].clone();
+        assert!(tap(&mut doc, &card), "the handler's own work still happened");
+        assert!(find_text(&doc.root, "1"), "{:?}", text_of(&doc.root));
+        assert!(take_warnings().is_empty(), "an unheard event is not a mistake");
+    }
+
+    /// `emit` outside a component has nobody to tell. Silence there would be a
+    /// handler that plainly expected something to happen and did nothing.
+    #[test]
+    fn emit_outside_a_component_warns() {
+        let _ = take_warnings();
+        let mut doc = Document::from_source(
+            "<template><screen><view @tap=\"emit(&quot;bumped&quot;)\"><text>go</text></view></screen></template>",
+        )
+        .expect("loads");
+        let button = doc.root.children[0].clone();
+        doc.apply_handler_in(&button.on_tap.clone().unwrap(), None);
+        let warnings = take_warnings();
+        assert!(
+            warnings.iter().any(|w| w.message.contains("no caller")),
+            "the warning says why nothing happened: {warnings:?}"
+        );
+    }
+
+    /// Write a document with a router over three views, in a temp dir.
+    ///
+    /// `home` and `settings` are plain; `user` reads an `:id` captured from the
+    /// path and counts taps, so a test can tell whether a view's state survived
+    /// a navigation.
+    fn with_router(app: &str) -> Document {
+        use std::fs;
+        let dir = std::env::temp_dir().join(format!(
+            "rux_router_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(dir.join("components")).unwrap();
+        fs::write(dir.join("components/home.rux"), "<template><text>the home page</text></template>")
+            .unwrap();
+        fs::write(
+            dir.join("components/settings.rux"),
+            "<template><text>settings live here</text></template>",
+        )
+        .unwrap();
+        fs::write(
+            dir.join("components/user.rux"),
+            "<template><view>\
+               <text>user {{ id }} seen {{ seen }}</text>\
+               <view @tap=\"seen = seen + 1\"><text>look</text></view>\
+             </view></template>\n\
+             <script>\nlet seen = signal(0);\n</script>",
+        )
+        .unwrap();
+        fs::write(
+            dir.join("components/missing.rux"),
+            "<template><text>no such page</text></template>",
+        )
+        .unwrap();
+        fs::write(dir.join("app.rux"), app).unwrap();
+        let doc = Document::load(dir.join("app.rux")).expect("load");
+        let _ = fs::remove_dir_all(&dir);
+        doc
+    }
+
+    /// The standard three-route app, used by most of the router tests.
+    fn router_app() -> Document {
+        with_router(
+            "<template><screen>\
+               <text to=\"/\">home</text>\
+               <text to=\"/settings\">settings</text>\
+               <router>\
+                 <route path=\"/\" view=\"home\" />\
+                 <route path=\"/settings\" view=\"settings\" />\
+                 <route path=\"/user/:id\" view=\"user\" />\
+                 <route fallback view=\"missing\" />\
+               </router>\
+             </screen></template>\n\
+             <script>\nuse components::home;\nuse components::settings;\n\
+             use components::user;\nuse components::missing;\n</script>",
+        )
+    }
+
+    /// The whole point: one path renders one view, and only that one.
+    #[test]
+    fn the_router_renders_the_matching_route() {
+        let mut doc = router_app();
+        assert!(find_text(&doc.root, "the home page"), "{:?}", text_of(&doc.root));
+        assert!(!find_text(&doc.root, "settings live here"), "and not the others");
+
+        assert!(doc.navigate("/settings"), "navigating changed something");
+        assert!(find_text(&doc.root, "settings live here"), "{:?}", text_of(&doc.root));
+        assert!(!find_text(&doc.root, "the home page"), "the old view is gone");
+    }
+
+    /// A `:segment` is captured and handed to the view as a prop, which is what
+    /// makes a list-detail app expressible at all.
+    #[test]
+    fn a_path_parameter_reaches_the_view() {
+        let mut doc = router_app();
+        doc.navigate("/user/7");
+        assert!(find_text(&doc.root, "user 7 seen 0"), "{:?}", text_of(&doc.root));
+        doc.navigate("/user/12");
+        assert!(find_text(&doc.root, "user 12 seen 0"), "{:?}", text_of(&doc.root));
+    }
+
+    /// A path nothing matches renders the fallback, not a blank screen.
+    #[test]
+    fn an_unmatched_path_falls_back() {
+        let mut doc = router_app();
+        doc.navigate("/nowhere");
+        assert!(find_text(&doc.root, "no such page"), "{:?}", text_of(&doc.root));
+    }
+
+    /// A deep link opens the app on the page it names, not on `/`. Without
+    /// this a shared URL always landed on the home page, whatever it said.
+    #[test]
+    fn a_document_can_start_somewhere_other_than_root() {
+        let mut doc = router_app();
+        assert!(doc.start_at("/user/7"), "the document moved off the home page");
+        assert_eq!(doc.route(), "/user/7");
+        assert!(find_text(&doc.root, "user 7 seen 0"), "{:?}", text_of(&doc.root));
+    }
+
+    /// The arrival page is the *first* page. Seeding `/` underneath it would
+    /// invent a visit that never happened and give Back somewhere to go.
+    #[test]
+    fn starting_at_a_path_leaves_nothing_behind_it() {
+        let mut doc = router_app();
+        doc.start_at("/settings");
+        assert_eq!(doc.history_position(), (0, 1));
+        assert!(!doc.back(), "there is nowhere back to");
+        assert_eq!(doc.route(), "/settings");
+    }
+
+    /// An empty path matches no route at all, and a browser can report one from
+    /// a `file://` URL. It means the root.
+    #[test]
+    fn starting_at_nothing_starts_at_the_root() {
+        let mut doc = router_app();
+        doc.start_at("");
+        assert_eq!(doc.route(), ROOT_PATH);
+        assert!(find_text(&doc.root, "the home page"), "{:?}", text_of(&doc.root));
+    }
+
+    /// What a host history mirrors with: it stamps an index on each entry and
+    /// hands the same index back, because the browser reports where Back landed
+    /// rather than which way it went, and can move several entries at once.
+    #[test]
+    fn the_history_can_be_walked_by_index() {
+        let mut doc = router_app();
+        doc.navigate("/settings");
+        doc.navigate("/user/3");
+        assert_eq!(doc.history_position(), (2, 3));
+
+        assert!(doc.go_to(0), "jumped two entries at once, as a long-press Back does");
+        assert_eq!(doc.route(), ROOT_PATH);
+        assert_eq!(doc.history_position(), (0, 3), "jumping is not a visit: nothing was dropped");
+
+        assert!(doc.go_to(2), "and forward again to where it had been");
+        assert_eq!(doc.route(), "/user/3");
+    }
+
+    /// An index that is not there means the two histories have drifted. Refused
+    /// rather than clamped: landing somewhere near would hide the drift.
+    #[test]
+    fn an_out_of_range_history_index_is_refused() {
+        let mut doc = router_app();
+        doc.navigate("/settings");
+        assert!(!doc.go_to(9), "there is no ninth entry");
+        assert!(!doc.go_to(1), "already there");
+        assert_eq!(doc.route(), "/settings");
+    }
+
+    /// `replace` goes somewhere instead of here, which is what a redirect
+    /// needs. Done with `navigate`, the redirecting page stays in the history,
+    /// so Back lands on it and is redirected forward again and the user is
+    /// stuck. There is no way to work around that in userland.
+    #[test]
+    fn replace_leaves_no_entry_to_go_back_to() {
+        let mut doc = router_app();
+        doc.navigate("/settings");
+        assert!(doc.replace("/user/1"), "the document moved");
+        assert_eq!(doc.route(), "/user/1");
+        assert_eq!(doc.history_position(), (1, 2), "it took the entry, it did not add one");
+
+        assert!(doc.back(), "back goes past the page that was replaced");
+        assert_eq!(doc.route(), ROOT_PATH, "and lands on the one before it");
+    }
+
+    /// A redirect written the way it actually gets written.
+    #[test]
+    fn a_handler_can_replace_the_current_page() {
+        let mut doc = with_router(
+            "<template><screen>\
+               <view @tap=\"replace(&quot;/settings&quot;)\"><text>go</text></view>\
+               <router>\
+                 <route path=\"/\" view=\"home\" />\
+                 <route path=\"/settings\" view=\"settings\" />\
+                 <route fallback view=\"missing\" />\
+               </router>\
+             </screen></template>\n\
+             <script>\nuse components::home;\nuse components::settings;\n\
+             use components::missing;\n</script>",
+        );
+        let button = doc.root.children[0].clone();
+        assert!(doc.apply_handler(&button.on_tap.clone().expect("a tap")));
+        assert_eq!(doc.route(), "/settings");
+        assert_eq!(doc.history_position(), (0, 1), "nothing was added to go back to");
+    }
+
+    /// The matched view already gets its parameters as props. Anything *around*
+    /// the router did not: a title bar is in the document's own layout, so the
+    /// `id` in `/user/7` was invisible to it. That is what `params` is for.
+    #[test]
+    fn params_are_readable_outside_the_matched_view() {
+        let mut doc = with_router(
+            "<template><screen>\
+               <text>looking at {{ params.id }}</text>\
+               <router>\
+                 <route path=\"/\" view=\"home\" />\
+                 <route path=\"/user/:id\" view=\"user\" />\
+                 <route fallback view=\"missing\" />\
+               </router>\
+             </screen></template>\n\
+             <script>\nuse components::home;\nuse components::user;\n\
+             use components::missing;\n</script>",
+        );
+        doc.navigate("/user/7");
+        assert!(find_text(&doc.root, "looking at 7"), "{:?}", text_of(&doc.root));
+        // And it empties again when the next route captures nothing, rather
+        // than keeping the last page's answer.
+        doc.navigate("/");
+        assert!(find_text(&doc.root, "looking at"), "{:?}", text_of(&doc.root));
+        assert!(!find_text(&doc.root, "looking at 7"), "{:?}", text_of(&doc.root));
+    }
+
+    /// What a Back button binds to in order to grey itself out. Signals rather
+    /// than functions, because disabling a button is a `:class`, and a `:class`
+    /// reads signals.
+    #[test]
+    fn the_history_says_whether_it_can_be_walked() {
+        let mut doc = router_app();
+        assert_eq!(doc.value_in("can_go_back", None), "false", "nothing behind the first page");
+        assert_eq!(doc.value_in("can_go_forward", None), "false");
+
+        doc.navigate("/settings");
+        assert_eq!(doc.value_in("can_go_back", None), "true");
+        assert_eq!(doc.value_in("can_go_forward", None), "false", "nothing ahead of the last page");
+
+        doc.back();
+        assert_eq!(doc.value_in("can_go_back", None), "false");
+        assert_eq!(doc.value_in("can_go_forward", None), "true", "the page just left is ahead");
+
+        // Somewhere new drops what was ahead, so forward closes again.
+        doc.navigate("/user/1");
+        assert_eq!(doc.value_in("can_go_forward", None), "false");
+    }
+
+    /// A query is an argument to a page, not a different page. So it does not
+    /// take part in matching, and `route` does not carry it: every
+    /// `route == "/search"` already written keeps meaning what it says.
+    #[test]
+    fn a_query_is_readable_and_does_not_change_the_page() {
+        let mut doc = with_router(
+            "<template><screen>\
+               <text>looking for {{ query.q }}</text>\
+               <router>\
+                 <route path=\"/\" view=\"home\" />\
+                 <route path=\"/settings\" view=\"settings\" />\
+                 <route fallback view=\"missing\" />\
+               </router>\
+             </screen></template>\n\
+             <script>\nuse components::home;\nuse components::settings;\n\
+             use components::missing;\n</script>",
+        );
+        doc.navigate("/settings?q=dark+mode&page=2");
+        assert_eq!(doc.route(), "/settings", "the path alone");
+        assert_eq!(doc.location(), "/settings?q=dark+mode&page=2", "the whole address");
+        assert!(find_text(&doc.root, "settings live here"), "it matched: {:?}", text_of(&doc.root));
+        assert!(find_text(&doc.root, "looking for dark mode"), "{:?}", text_of(&doc.root));
+
+        // And the history holds the whole address, so Back restores what was
+        // being searched for rather than a bare page.
+        doc.navigate("/");
+        assert!(!find_text(&doc.root, "looking for dark mode"), "{:?}", text_of(&doc.root));
+        doc.back();
+        assert_eq!(doc.location(), "/settings?q=dark+mode&page=2");
+        assert!(find_text(&doc.root, "looking for dark mode"), "{:?}", text_of(&doc.root));
+    }
+
+    /// A path is written into every link that leads to it, so a URL scheme that
+    /// can never be changed afterwards is not much of a scheme. `path_for`
+    /// returns a string, so it composes with `navigate`, `replace`, `to` and
+    /// `:to` rather than needing a second form of each.
+    #[test]
+    fn a_named_route_builds_its_own_path() {
+        let mut doc = with_router(
+            "<template><screen>\
+               <view @tap=\"navigate(path_for(&quot;who&quot;, #{ id: &quot;7&quot; }))\">\
+                 <text>go</text>\
+               </view>\
+               <router>\
+                 <route path=\"/\" view=\"home\" />\
+                 <route name=\"who\" path=\"/user/:id\" view=\"user\" />\
+                 <route fallback view=\"missing\" />\
+               </router>\
+             </screen></template>\n\
+             <script>\nuse components::home;\nuse components::user;\n\
+             use components::missing;\n</script>",
+        );
+        let button = doc.root.children[0].clone();
+        assert!(doc.apply_handler(&button.on_tap.clone().expect("a tap")));
+        assert_eq!(doc.route(), "/user/7");
+        assert!(find_text(&doc.root, "user 7 seen 0"), "{:?}", text_of(&doc.root));
+    }
+
+    /// Whatever the pattern does not take becomes a query, which is what makes
+    /// `path_for` usable for a route with no path parameters at all.
+    #[test]
+    fn path_for_puts_what_is_left_over_in_the_query() {
+        let mut doc = with_router(
+            "<template><screen>\
+               <view @tap=\"navigate(path_for(&quot;who&quot;, \
+                 #{ id: &quot;7&quot;, tab: &quot;posts&quot; }))\">\
+                 <text>go</text>\
+               </view>\
+               <text>tab {{ query.tab }}</text>\
+               <router>\
+                 <route path=\"/\" view=\"home\" />\
+                 <route name=\"who\" path=\"/user/:id\" view=\"user\" />\
+                 <route fallback view=\"missing\" />\
+               </router>\
+             </screen></template>\n\
+             <script>\nuse components::home;\nuse components::user;\n\
+             use components::missing;\n</script>",
+        );
+        let button = doc.root.children[0].clone();
+        doc.apply_handler(&button.on_tap.clone().expect("a tap"));
+        assert_eq!(doc.location(), "/user/7?tab=posts");
+        assert_eq!(doc.route(), "/user/7", "the leftover did not become a path segment");
+        assert!(find_text(&doc.root, "tab posts"), "{:?}", text_of(&doc.root));
+    }
+
+    /// A value carrying a `/` or a `&` must survive being put in a URL and read
+    /// back, or it would silently become extra path segments or extra
+    /// parameters.
+    #[test]
+    fn path_for_escapes_what_it_is_given() {
+        let mut doc = with_router(
+            "<template><screen>\
+               <view @tap=\"navigate(path_for(&quot;who&quot;, \
+                 #{ id: &quot;a/b&quot;, q: &quot;x&amp;y z&quot; }))\">\
+                 <text>go</text>\
+               </view>\
+               <text>q is {{ query.q }}</text>\
+               <router>\
+                 <route path=\"/\" view=\"home\" />\
+                 <route name=\"who\" path=\"/user/:id\" view=\"user\" />\
+                 <route fallback view=\"missing\" />\
+               </router>\
+             </screen></template>\n\
+             <script>\nuse components::home;\nuse components::user;\n\
+             use components::missing;\n</script>",
+        );
+        let button = doc.root.children[0].clone();
+        doc.apply_handler(&button.on_tap.clone().expect("a tap"));
+        assert_eq!(doc.location(), "/user/a%2Fb?q=x%26y%20z");
+        assert!(find_text(&doc.root, "user a/b"), "the id came back whole: {:?}", text_of(&doc.root));
+        assert!(find_text(&doc.root, "q is x&y z"), "and so did the query: {:?}", text_of(&doc.root));
+    }
+
+    fn at_y(y: f32) -> Vec<Offset> {
+        vec![Offset { x: 0.0, y }]
+    }
+
+    /// The flag means *remember*, not *always restore*. Which of the two you
+    /// get is decided by how you arrived: a page you open starts at the top, a
+    /// page you go back to comes back where you left it. Always restoring would
+    /// drop you into the middle of a page you had just opened for the first
+    /// time, which reads as a bug.
+    #[test]
+    fn back_returns_to_where_the_page_was_left() {
+        let mut doc = router_app();
+        doc.record_scroll(&at_y(120.0));
+
+        doc.navigate("/settings");
+        assert_eq!(doc.take_scroll(), Some(Vec::new()), "a page being opened starts at the top");
+        doc.record_scroll(&at_y(40.0));
+
+        doc.back();
+        assert_eq!(doc.take_scroll(), Some(at_y(120.0)), "and one returned to does not");
+        doc.forward();
+        assert_eq!(doc.take_scroll(), Some(at_y(40.0)), "forward is a return too");
+    }
+
+    /// Nothing to obey when nothing navigated, or every frame would drag the
+    /// page back to wherever the last navigation put it.
+    #[test]
+    fn scrolling_alone_asks_for_nothing() {
+        let mut doc = router_app();
+        doc.navigate("/settings");
+        assert!(doc.take_scroll().is_some(), "the navigation spoke");
+        doc.record_scroll(&at_y(80.0));
+        assert_eq!(doc.take_scroll(), None, "and then stopped speaking");
+    }
+
+    /// Turned off, every arrival is the top, including a return.
+    #[test]
+    fn restore_scroll_false_always_starts_at_the_top() {
+        let mut doc = with_router(
+            "<template><screen>\
+               <router restore-scroll=\"false\">\
+                 <route path=\"/\" view=\"home\" />\
+                 <route path=\"/settings\" view=\"settings\" />\
+                 <route fallback view=\"missing\" />\
+               </router>\
+             </screen></template>\n\
+             <script>\nuse components::home;\nuse components::settings;\n\
+             use components::missing;\n</script>",
+        );
+        doc.record_scroll(&at_y(150.0));
+        doc.navigate("/settings");
+        assert_eq!(doc.take_scroll(), Some(Vec::new()));
+        doc.back();
+        assert_eq!(doc.take_scroll(), Some(Vec::new()), "a return is the top too, when off");
+    }
+
+    /// A redirect is an arrival, not a return, so it lands at the top.
+    #[test]
+    fn a_replace_lands_at_the_top() {
+        let mut doc = router_app();
+        doc.record_scroll(&at_y(90.0));
+        doc.replace("/settings");
+        assert_eq!(doc.take_scroll(), Some(Vec::new()));
+    }
+
+    /// A trailing slash is not a different path. Anyone typing one by hand
+    /// produces both spellings and means the same place.
+    #[test]
+    fn a_trailing_slash_is_the_same_path() {
+        let mut doc = router_app();
+        doc.navigate("/settings/");
+        assert!(find_text(&doc.root, "settings live here"), "{:?}", text_of(&doc.root));
+    }
+
+    /// `to="/path"` navigates when tapped: the spec's promise since v0.1.
+    #[test]
+    fn a_link_navigates_when_tapped() {
+        let mut doc = router_app();
+        let link = doc.root.children[1].clone();
+        assert_eq!(link.access.role, rux_layout::AccessRole::Link, "announced as a link");
+        assert!(doc.apply_handler(&link.on_tap.clone().expect("a link taps")));
+        assert_eq!(doc.route(), "/settings");
+        assert!(find_text(&doc.root, "settings live here"), "{:?}", text_of(&doc.root));
+    }
+
+    /// Back and forward walk the same list, and forward is only available after
+    /// going back.
+    #[test]
+    fn history_walks_both_ways() {
+        let mut doc = router_app();
+        doc.navigate("/settings");
+        doc.navigate("/user/3");
+        assert!(!doc.forward(), "nothing ahead of the newest entry");
+
+        assert!(doc.back(), "back to settings");
+        assert_eq!(doc.route(), "/settings");
+        assert!(doc.back(), "back to home");
+        assert_eq!(doc.route(), "/");
+        assert!(!doc.back(), "and no further");
+
+        assert!(doc.forward(), "forward again");
+        assert_eq!(doc.route(), "/settings");
+        assert!(find_text(&doc.root, "settings live here"), "{:?}", text_of(&doc.root));
+    }
+
+    /// Going somewhere new after going back drops what was ahead, which is the
+    /// behaviour a back button has everywhere else.
+    #[test]
+    fn a_new_path_after_going_back_drops_the_forward_entries() {
+        let mut doc = router_app();
+        doc.navigate("/settings");
+        doc.back();
+        doc.navigate("/user/1");
+        assert!(!doc.forward(), "settings is no longer ahead: {:?}", doc.history);
+        assert!(doc.back(), "but home is still behind");
+        assert_eq!(doc.route(), "/");
+    }
+
+    /// Navigating to where we already are is not a visit. Otherwise tapping the
+    /// current link fills the history with repeats and Back does nothing.
+    #[test]
+    fn navigating_to_the_current_path_is_not_a_visit() {
+        let mut doc = router_app();
+        doc.navigate("/settings");
+        assert!(!doc.navigate("/settings"), "no change, so nothing to repaint");
+        assert!(doc.back());
+        assert_eq!(doc.route(), "/", "one Back is enough to leave");
+    }
+
+    /// A view keeps its state while you are on it, and starts fresh when you
+    /// come back to it. Instance state is keyed by template position, so
+    /// *keeping* it across a visit is what would happen by accident.
+    #[test]
+    fn a_route_view_is_fresh_on_a_second_visit() {
+        let mut doc = router_app();
+        doc.navigate("/user/7");
+
+        let view = doc.root.children[2].clone();
+        let button = view.children.iter().find(|c| c.on_tap.is_some()).expect("the look button");
+        let (src, instance) = (button.on_tap.clone().unwrap(), button.instance.clone());
+        doc.apply_handler_in(&src, instance.as_deref());
+        assert!(find_text(&doc.root, "user 7 seen 1"), "state moves while here: {:?}", text_of(&doc.root));
+
+        doc.navigate("/settings");
+        doc.navigate("/user/7");
+        assert!(
+            find_text(&doc.root, "user 7 seen 0"),
+            "and starts over on return: {:?}",
+            text_of(&doc.root)
+        );
+    }
+
+    /// `:current` is how a nav bar shows where you are. It reads the route, so
+    /// the link restyles on navigation without the tree being rebuilt.
+    #[test]
+    fn the_current_link_matches_the_current_pseudo() {
+        let mut doc = with_router(
+            "<template><screen>\
+               <text to=\"/\" class=\"nav\">home</text>\
+               <text to=\"/settings\" class=\"nav\">settings</text>\
+               <router><route path=\"/\" view=\"home\" />\
+                 <route path=\"/settings\" view=\"settings\" /></router>\
+             </screen></template>\n\
+             <style>.nav { color: #888888; } .nav:current { color: #ff0000; }</style>\n\
+             <script>\nuse components::home;\nuse components::settings;\n</script>",
+        );
+        // As a tuple, since `Rgba` is deliberately not `PartialEq`.
+        let lit = |n: &LayoutNode| -> Option<(f32, f32, f32)> {
+            n.text.as_ref().map(|t| (t.color.r, t.color.g, t.color.b))
+        };
+        assert_ne!(lit(&doc.root.children[0]), lit(&doc.root.children[1]), "one of them is current");
+        let home_on_home = lit(&doc.root.children[0]);
+
+        doc.navigate("/settings");
+        assert_eq!(
+            lit(&doc.root.children[1]),
+            home_on_home,
+            "the current colour moved to the settings link"
+        );
+        assert_ne!(lit(&doc.root.children[0]), home_on_home, "and off the home link");
+    }
+
+    /// A route naming a view that was never imported is a mistake worth saying
+    /// out loud: the screen would otherwise just be empty.
+    #[test]
+    fn a_route_naming_an_unimported_view_warns() {
+        let _ = take_warnings();
+        let doc = with_router(
+            "<template><screen><router>\
+               <route path=\"/\" view=\"nowhere\" />\
+             </router></screen></template>\n\
+             <script>\nuse components::home;\n</script>",
+        );
+        // A load drains the sink into its own diagnostics, which is where the
+        // overlay reads from.
+        let warnings = &doc.diagnostics.warnings;
+        assert!(
+            warnings.iter().any(|w| w.message.contains("nowhere")),
+            "the warning names the view: {warnings:?}"
+        );
+    }
+
+    /// A component's state is not a document signal, so the app cannot reach in
+    /// and read it by name. That isolation is the reason a component can be
+    /// used in a second app at all.
+    #[test]
+    fn component_state_is_not_a_document_signal() {
+        let mut doc = with_component(
+            "<template><view><text>{{ count }}</text></view></template>\n\
+             <script>\nlet count = signal(7);\n</script>",
+            "<template><screen><card /><text>{{ count }}</text></screen></template>\n\
+             <script>\nuse components::card;\n</script>",
+        );
+        assert!(find_text(&doc.root, "7"), "the component sees its own: {:?}", text_of(&doc.root));
+        // The document's own `{{ count }}` has nothing to read, and says so
+        // rather than borrowing the component's.
+        assert_eq!(doc.value_in("count", None), "", "{:?}", text_of(&doc.root));
+    }
+
+    /// The isolation is one-directional, and the docs claimed otherwise. A
+    /// component's *script* runs in a fresh scope, so its `let`s are private.
+    /// Its template and handlers do not: they run against the document's scope
+    /// with the instance's names pushed on top, so an un-shadowed document
+    /// signal is both readable and writable from inside. The router depends on
+    /// it (`{{ route }}` inside a route view).
+    #[test]
+    fn a_component_reads_and_writes_an_unshadowed_document_signal() {
+        let mut doc = with_component(
+            "<template><view>\
+               <text>saw {{ theme }}</text>\
+               <view @tap=\"theme = &quot;dark&quot;\"><text>go</text></view>\
+             </view></template>\n\
+             <script>\nlet count = signal(0);\n</script>",
+            "<template><screen><card /></screen></template>\n\
+             <script>\nuse components::card;\nlet theme = signal(\"light\");\n</script>",
+        );
+        assert!(
+            find_text(&doc.root, "saw light"),
+            "the document's signal is visible inside: {:?}",
+            text_of(&doc.root)
+        );
+        let card = doc.root.children[0].clone();
+        assert!(tap(&mut doc, &card), "the handler wrote a document signal");
+        assert_eq!(doc.value_in("theme", None), "dark");
+        assert!(find_text(&doc.root, "saw dark"), "{:?}", text_of(&doc.root));
+    }
+
+    /// A component that leaves the screen leaves the instance map with it.
+    ///
+    /// Nothing said an instance had gone before this: the router's was the only
+    /// removal anywhere, so an `r-if` that closed over a component kept its
+    /// state for the life of the process and handed it back on the way in. The
+    /// map grew and never shrank, and a hidden component was quietly different
+    /// from a route view, which does start fresh.
+    #[test]
+    fn hiding_a_component_drops_its_state() {
+        let mut doc = with_component(
+            "<template><view @tap=\"count = count + 1\"><text>n {{ count }}</text></view>\
+             </template>\n\
+             <script>\nlet count = signal(0);\n</script>",
+            "<template><screen><card r-if=\"shown\" /></screen></template>\n\
+             <script>\nuse components::card;\nlet shown = signal(true);\n</script>",
+        );
+        let card = doc.root.children[0].clone();
+        tap(&mut doc, &card);
+        assert!(find_text(&doc.root, "n 1"), "it counted: {:?}", text_of(&doc.root));
+
+        doc.apply_handler("shown = false");
+        assert!(doc.instances.is_empty(), "gone from the map: {:?}", doc.instances.keys());
+
+        doc.apply_handler("shown = true");
+        assert!(
+            find_text(&doc.root, "n 0"),
+            "and comes back new, not where it was left: {:?}",
+            text_of(&doc.root)
+        );
+    }
+
+    /// The same for a row of a list, whose instance is keyed by its `r-key`.
+    /// Without this a long-lived list leaks one instance per row ever shown.
+    #[test]
+    fn a_row_that_goes_away_takes_its_instance_with_it() {
+        let mut doc = with_component(
+            "<template><view><text>{{ label }}</text></view></template>\n\
+             <script>\nlet seen = signal(0);\n</script>",
+            "<template><screen>\
+               <card r-for=\"row in rows\" r-key=\"row.id\" :label=\"row.id\" />\
+             </screen></template>\n\
+             <script>\nuse components::card;\n\
+             let rows = signal([#{ id: \"a\" }, #{ id: \"b\" }, #{ id: \"c\" }]);\n</script>",
+        );
+        assert_eq!(doc.instances.len(), 3, "one per row: {:?}", doc.instances.keys());
+
+        doc.apply_handler("rows = [#{ id: \"a\" }]");
+        assert_eq!(doc.instances.len(), 1, "two rows left, so two instances did: {:?}", doc.instances.keys());
+        assert!(find_text(&doc.root, "a"), "{:?}", text_of(&doc.root));
+    }
+
+    /// The whole point of a slot: a component can wrap markup it never saw.
+    /// Before this, the children written between the tags were silently thrown
+    /// away, so a component could only ever be a fixed shape.
+    #[test]
+    fn a_slot_renders_the_callers_children() {
+        let doc = with_component(
+            "<template><view class=\"card\"><text>title</text><slot /></view></template>",
+            "<template><screen>\
+               <card><text>from the caller</text></card>\
+             </screen></template>\n\
+             <script>\nuse components::card;\n</script>",
+        );
+        assert!(find_text(&doc.root, "title"), "the component's own markup: {:?}", text_of(&doc.root));
+        assert!(
+            find_text(&doc.root, "from the caller"),
+            "and the children it was handed: {:?}",
+            text_of(&doc.root)
+        );
+    }
+
+    /// Slot content is the caller's, so it is evaluated in the caller's scope,
+    /// which includes the caller's own instance state the component cannot see.
+    #[test]
+    fn slot_content_reads_the_callers_scope() {
+        let doc = with_component(
+            "<template><view><slot /></view></template>",
+            "<template><screen>\
+               <card><text>{{ greeting }}</text></card>\
+             </screen></template>\n\
+             <script>\nuse components::card;\nlet greeting = signal(\"hello there\");\n</script>",
+        );
+        assert!(
+            find_text(&doc.root, "hello there"),
+            "the caller's signal resolved inside the slot: {:?}",
+            text_of(&doc.root)
+        );
+    }
+
+    /// An unfilled slot falls back to its own children, as in HTML, so a
+    /// component can offer a default without the caller writing one.
+    #[test]
+    fn an_empty_slot_falls_back_to_its_own_children() {
+        let doc = with_component(
+            "<template><view><slot><text>nothing here yet</text></slot></view></template>",
+            "<template><screen><card /></screen></template>\n\
+             <script>\nuse components::card;\n</script>",
+        );
+        assert!(
+            find_text(&doc.root, "nothing here yet"),
+            "the fallback showed: {:?}",
+            text_of(&doc.root)
+        );
+    }
+
+    /// The slot leaves no box of its own: the caller's children sit exactly
+    /// where the `<slot />` was, so a component adds no wrapper nobody wrote.
+    #[test]
+    fn a_slot_adds_no_node_of_its_own() {
+        let doc = with_component(
+            "<template><view><slot /></view></template>",
+            "<template><screen>\
+               <card><text>a</text><text>b</text></card>\
+             </screen></template>\n\
+             <script>\nuse components::card;\n</script>",
+        );
+        // screen > view(card root) > the two texts, with nothing in between.
+        let card = &doc.root.children[0];
+        assert_eq!(card.children.len(), 2, "two children, no wrapper: {:?}", text_of(card));
+        assert!(card.children.iter().all(|c| c.text.is_some()));
+    }
+
+    /// A number reads the same whether it went through `{{ }}` or through
+    /// string concatenation in a handler. Every Rux number is an f64, so rhai
+    /// rendered a whole one as "32.0" beside the same value shown as "32" a
+    /// line above it.
+    #[test]
+    fn numbers_render_the_same_in_text_and_in_script() {
+        let doc = Document::from_source(
+            "<template><screen>\
+               <text>{{ total }}</text>\
+               <text>{{ \"total is \" + total }}</text>\
+               <text>{{ half }}</text>\
+               <text>{{ \"half is \" + half }}</text>\
+             </screen></template>
+             <script>\n\
+               let total = signal(32);\n\
+               let half = signal(2.5);\n\
+             </script>",
+        )
+        .expect("load");
+        let shown = text_of(&doc.root);
+        assert!(shown.contains(&"32".to_string()), "{shown:?}");
+        assert!(shown.contains(&"total is 32".to_string()), "{shown:?}");
+        // A fraction still shows its fraction; only the ".0" tail goes.
+        assert!(shown.contains(&"2.5".to_string()), "{shown:?}");
+        assert!(shown.contains(&"half is 2.5".to_string()), "{shown:?}");
+    }
+
+    /// A computed is derived state: it is written once, read anywhere, and
+    /// keeps itself current. Before this the only "computed" was a `{{ }}`
+    /// expression, so the same derivation was retyped at every use.
+    #[test]
+    fn a_computed_tracks_what_it_reads() {
+        let mut doc = Document::from_source(
+            "<template><screen><text>{{ total }} for {{ count }}</text></screen></template>
+             <script>\
+               let count = signal(2);\n\
+               let price = signal(10);\n\
+               computed total = count * price;\n\
+             </script>",
+        )
+        .expect("load");
+        assert!(find_text(&doc.root, "20 for 2"), "computed on load: {:?}", doc.root);
+
+        assert!(doc.apply_handler("count = 3;"), "the handler changed a signal");
+        assert!(find_text(&doc.root, "30 for 3"), "and the computed followed");
+    }
+
+    /// A computed may read one declared above it, and the refresh is a single
+    /// pass in declaration order, so a chain settles in one go.
+    #[test]
+    fn a_computed_may_read_an_earlier_computed() {
+        let mut doc = Document::from_source(
+            "<template><screen><text>{{ shout }}</text></screen></template>
+             <script>\n\
+               let name = signal(\"ada\");\n\
+               computed greeting = \"hi \" + name;\n\
+               computed shout = greeting + \"!\";\n\
+             </script>",
+        )
+        .expect("load");
+        assert!(find_text(&doc.root, "hi ada!"));
+
+        assert!(doc.apply_handler("name = \"grace\";"));
+        assert!(find_text(&doc.root, "hi grace!"), "the whole chain refreshed");
+    }
+
+    /// An effect runs on load, so it can *establish* something rather than only
+    /// react to a later change, and again whenever what it read changes.
+    #[test]
+    fn an_effect_runs_on_load_and_on_change() {
+        let mut doc = Document::from_source(
+            "<template><screen><text>{{ mirror }}</text></screen></template>
+             <script>\n\
+               let count = signal(1);\n\
+               let mirror = signal(0);\n\
+               effect {\n\
+                 mirror = count * 100;\n\
+               }\n\
+             </script>",
+        )
+        .expect("load");
+        assert!(find_text(&doc.root, "100"), "ran once on load: {:?}", text_of(&doc.root));
+
+        assert!(doc.apply_handler("count = 2;"));
+        assert!(
+            find_text(&doc.root, "200"),
+            "ran again when count changed: {:?}",
+            text_of(&doc.root)
+        );
+    }
+
+    /// An effect only re-runs for what it actually read. A signal it never
+    /// touches must not wake it, or "runs when its dependencies change" is just
+    /// "runs on everything".
+    #[test]
+    fn an_effect_ignores_signals_it_never_read() {
+        let mut doc = Document::from_source(
+            "<template><screen><text>{{ mirror }}</text></screen></template>
+             <script>\n\
+               let watched = signal(1);\n\
+               let other = signal(1);\n\
+               let mirror = signal(0);\n\
+               effect {\n\
+                 mirror = watched * 100;\n\
+               }\n\
+             </script>",
+        )
+        .expect("load");
+        // The subscription itself, which is the thing under test: an effect
+        // that subscribed to everything would still pass a behavioural check.
+        assert_eq!(doc.effects.len(), 1);
+        assert!(doc.effects[0].deps.contains("watched"), "it read `watched`");
+        assert!(!doc.effects[0].deps.contains("other"), "it never read `other`");
+        assert!(
+            !doc.effects[0].deps.contains("mirror"),
+            "writing a signal is not reading it, or every effect would feed itself"
+        );
+
+        assert!(doc.apply_handler("other = 2;"));
+        assert!(find_text(&doc.root, "100"), "an unread signal leaves it alone");
+
+        assert!(doc.apply_handler("watched = 3;"));
+        assert!(find_text(&doc.root, "300"), "the one it read wakes it");
+    }
+
+    /// An effect that writes the signal it reads settles instead of looping,
+    /// because its own writes do not wake it.
+    #[test]
+    fn an_effect_is_not_woken_by_its_own_writes() {
+        let _ = take_warnings();
+        let mut doc = Document::from_source(
+            "<template><screen><text>{{ n }}</text></screen></template>
+             <script>\n\
+               let n = signal(0);\n\
+               effect {\n\
+                 n = n + 1;\n\
+               }\n\
+             </script>",
+        )
+        .expect("load");
+        assert!(find_text(&doc.root, "1"), "ran once: {:?}", text_of(&doc.root));
+
+        assert!(doc.apply_handler("n = 100;"));
+        assert!(
+            find_text(&doc.root, "100"),
+            "an outside write is not chased by the effect that owns n: {:?}",
+            text_of(&doc.root)
+        );
+        assert!(doc.diagnostics.warnings.is_empty(), "{:?}", doc.diagnostics.warnings);
+    }
+
+    /// Two effects feeding each other still loop, and that is stopped and
+    /// reported: a window that hangs says nothing at all.
+    #[test]
+    fn effects_that_feed_each_other_are_stopped_and_reported() {
+        let _ = take_warnings();
+        let doc = Document::from_source(
+            "<template><screen><text>{{ a }}</text></screen></template>
+             <script>\n\
+               let a = signal(0);\n\
+               let b = signal(0);\n\
+               effect {\n\
+                 b = a + 1;\n\
+               }\n\
+               effect {\n\
+                 a = b + 1;\n\
+               }\n\
+             </script>",
+        )
+        .expect("load");
+        // Reaching here at all is half the assertion: the loop is bounded.
+        assert!(
+            doc.diagnostics.warnings.iter().any(|w| w.message.contains("re-triggering")),
+            "the cycle is named rather than hung on: {:?}",
+            doc.diagnostics.warnings
+        );
+    }
+
+    /// A `<select>` in each row is a separate select. The layout has to say so,
+    /// or the shell opens the first row's dropdown wherever you tapped, draws it
+    /// over that row, and writes the chosen option into it.
+    #[test]
+    fn each_rows_select_is_its_own() {
+        let doc = Document::from_source(
+            "<template><screen>\
+               <input r-for=\"row in rows\" r-key=\"row.id\" type=\"select\" \
+                      r-model=\"pick\" :options=\"row.options\" />\
+             </screen></template>
+             <script>\
+               let pick = signal(\"a\");\
+               let rows = signal([\
+                 #{ id: \"one\", options: [\"a\", \"b\"] },\
+                 #{ id: \"two\", options: [\"c\", \"d\"] }\
+               ]);\
+             </script>",
+        )
+        .expect("load");
+
+        let mut measure = |_: &rux_layout::TextContent, _: Option<f32>| (10.0, 10.0);
+        let out = rux_layout::layout(&doc.root, 800.0, 600.0, &mut measure);
+        let rows: Vec<Option<String>> = out.selects.iter().map(|s| s.row.clone()).collect();
+        assert_eq!(
+            rows,
+            vec![Some("one".to_string()), Some("two".to_string())],
+            "two selects, each stamped with the row it is in"
+        );
+        // Same model text on both, which is exactly why the row is needed.
+        assert_eq!(out.selects[0].model, out.selects[1].model);
+        assert_eq!(out.selects[0].options, vec!["a", "b"]);
+        assert_eq!(out.selects[1].options, vec!["c", "d"]);
+    }
+
+    /// Two rows claiming one identity is worse than none, so it is said out
+    /// loud. Same for a key on an element that is not a row at all.
+    #[test]
+    fn keys_that_cannot_work_are_warned_about() {
+        let _ = take_warnings();
+        let doc = Document::from_source(
+            "<template><screen>\
+               <text r-for=\"row in rows\" r-key=\"row.id\">{{ row.id }}</text>\
+             </screen></template>
+             <script>let rows = signal([#{ id: \"a\" }, #{ id: \"a\" }]);</script>",
+        )
+        .expect("load");
+        assert!(
+            doc.diagnostics.warnings.iter().any(|w| w.message.contains("duplicate key")),
+            "duplicate keys are reported: {:?}",
+            doc.diagnostics.warnings
+        );
+
+        let _ = take_warnings();
+        let doc = Document::from_source(
+            "<template><screen><text r-key=\"x\">hi</text></screen></template>",
+        )
+        .expect("load");
+        assert!(
+            doc.diagnostics.warnings.iter().any(|w| w.message.contains("without `r-for`")),
+            "a key with no list is reported: {:?}",
+            doc.diagnostics.warnings
+        );
     }
 
     /// A collapsed selection is no selection: a plain caret must not paint a
@@ -992,7 +3344,7 @@ mod tests {
     #[test]
     fn selection_survives_a_rebuild() {
         let mut doc = two_inputs();
-        doc.set_focus(Some(Focus { model: "name".into(), caret: 3, anchor: 1, preedit: None }));
+        doc.set_focus(Some(Focus { model: "name".into(), row: None, caret: 3, anchor: 1, preedit: None }));
         doc.rebuild();
         assert_eq!(selection_of(&doc.root, "name"), Some((1, 3)));
         assert_eq!(caret_of(&doc.root, "name"), Some(3));
@@ -1009,6 +3361,7 @@ mod tests {
 
         doc.set_focus(Some(Focus {
             model: "name".into(),
+            row: None,
             caret: 3,
             anchor: 3,
             preedit: Some((1, 3)),
@@ -1029,6 +3382,7 @@ mod tests {
         let mut doc = two_inputs();
         doc.set_focus(Some(Focus {
             model: "name".into(),
+            row: None,
             caret: 2,
             anchor: 2,
             preedit: Some((0, 2)),

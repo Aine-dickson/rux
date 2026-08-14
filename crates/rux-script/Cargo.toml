@@ -5,6 +5,7 @@ version.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "Rux script tier: a rhai engine holding state, plus the host registry. Internal to Rux; the supported entry point is the ruxlang crate."
+readme = "README.md"
 keywords = ["ui", "scripting", "rhai"]
 categories = ["gui"]
 

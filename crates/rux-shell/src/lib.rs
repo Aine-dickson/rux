@@ -5,6 +5,26 @@
 //! (`rux-paint`). A `notify` file watcher wakes the event loop through an
 //! `EventLoopProxy` on every save, so edits to the `.rux` file repaint live,
 //! the hot-reload path from `docs/04-architecture.md`.
+//!
+//! This is the largest crate in the workspace and the least pure, because it is
+//! where the pipeline meets an operating system. Beyond the frame loop it owns
+//! all of input: pointer and touch, keyboard and modifiers, focus and tab order,
+//! text editing, selection and the clipboard, scrolling, and the dev overlay
+//! that puts a load error on screen instead of exiting.
+//!
+//! It runs in two worlds. [`run`] opens a native window; `start_web` and its
+//! neighbours drive the same document against a canvas, and are compiled only
+//! for `wasm32`, so they are absent from these docs unless the page was built
+//! for that target. The browser has no filesystem, no blocking main thread and no
+//! system clipboard, so those three assumptions are not baked into the paths
+//! above. Making the shell survive that was most of the v0.5 web work, and it
+//! is the reason a phone looks reachable at all.
+//!
+//! Touch is not the mouse. Routing a finger down the pointer path is the bug
+//! v0.5.1 exists to fix: a drag moves the caret where a mouse drag selects, and
+//! a long press picks a word. Anything new that reads a position should convert
+//! it through the one shared conversion here, not derive a second correct one,
+//! because two places doing the same coordinate arithmetic eventually disagree.
 
 use std::num::NonZeroUsize;
 use std::path::Path;
@@ -92,6 +112,16 @@ enum RuxEvent {
     /// or key press that asked for it.
     #[cfg(target_arch = "wasm32")]
     WebPaste(String),
+    /// The user walked the browser's history: its Back or Forward button, a
+    /// swipe, or a long-press that jumped several entries at once.
+    ///
+    /// The payload is the index Rux stamped on that entry when it pushed it,
+    /// handed back untouched, which is why this is an index and not a
+    /// direction: a browser reports where it landed. `None` is an entry Rux
+    /// never pushed, which is the tab's own first entry, so it means the path
+    /// has to be read back off the URL instead.
+    #[cfg(target_arch = "wasm32")]
+    WebRoute(Option<usize>),
     /// Assistive technology asked us something (it attached, it wants the
     /// tree, it moved focus). Delivered through the same proxy as hot-reload.
     #[cfg(not(target_arch = "wasm32"))]
@@ -357,8 +387,15 @@ fn scrollbar_paints(scrolls: &[ScrollRegion], offsets: &[Offset]) -> Vec<Paint> 
 }
 
 /// A 2px focus ring just outside the focused element's box.
-fn focus_ring(item: &FocusItem) -> Vec<Paint> {
-    vec![Paint::Rect(PaintRect {
+///
+/// `within` is the scroller the item sits in, if any. The ring is painted as
+/// its own scene after the document's, so it never passes through the
+/// `PushClip` a scroller emits around its children; without clipping it here, a
+/// ring on a row scrolled out of a list draws over whatever is above the list.
+/// The ring is allowed the 2px it sits outside its element by, so a focused row
+/// flush with the top of its container still shows one.
+fn focus_ring(item: &FocusItem, within: Option<&ScrollRegion>) -> Vec<Paint> {
+    let ring = Paint::Rect(PaintRect {
         x: item.x - 2.0,
         y: item.y - 2.0,
         width: item.width + 4.0,
@@ -367,7 +404,18 @@ fn focus_ring(item: &FocusItem) -> Vec<Paint> {
         radius: [7.0; 4],
         border_width: 2.0,
         border_color: Some(Rgba::new(0.54, 0.71, 0.98, 1.0)), // #89b4fa
-    })]
+    });
+    let Some(r) = within else { return vec![ring] };
+    // Scrolled entirely out of view: draw nothing rather than a ring clipped to
+    // a sliver at the edge, which reads as a rendering fault.
+    if item.y + item.height < r.y || item.y > r.y + r.height {
+        return Vec::new();
+    }
+    vec![
+        Paint::PushClip { x: r.x - 2.0, y: r.y - 2.0, width: r.width + 4.0, height: r.height + 4.0, radius: [0.0; 4] },
+        ring,
+        Paint::PopClip,
+    ]
 }
 
 /// Paint items for an open dropdown: a single floating panel with a shadow, the
@@ -538,6 +586,7 @@ fn to_accesskit_role(role: AccessRole) -> Role {
         AccessRole::MultilineTextInput => Role::MultilineTextInput,
         AccessRole::ComboBox => Role::ComboBox,
         AccessRole::Image => Role::Image,
+        AccessRole::Link => Role::Link,
         AccessRole::ScrollView => Role::ScrollView,
         // A grouping the author marked with `role=`, and the unreachable None.
         AccessRole::Group | AccessRole::None => Role::Group,
@@ -594,6 +643,7 @@ fn access_tree(nodes: &[AccessNode], focused_model: Option<&str>, scale: f64, ti
         if matches!(
             node.access.role,
             AccessRole::Button
+                | AccessRole::Link
                 | AccessRole::CheckBox
                 | AccessRole::RadioButton
                 | AccessRole::TextInput
@@ -915,6 +965,8 @@ struct App {
     shift_held: bool,
     /// Whether Ctrl is held (Ctrl+A/C/X/V).
     ctrl_held: bool,
+    /// Whether Alt is held (Alt+Left/Right walk the router's history).
+    alt_held: bool,
     /// Scrollable regions from the most recent layout.
     scrolls: Vec<ScrollRegion>,
     /// Boxes styled by `:hover`/`:active`, from the most recent layout. Empty
@@ -930,11 +982,22 @@ struct App {
     touch: Option<(f32, f32)>,
     /// The `r-model` of the currently focused input, if any.
     focused: Option<String>,
+    /// The `r-key` of the row that input is in, when it is inside an `r-for`.
+    /// The model repeats across a list's rows, so this is the half that says
+    /// which row, and it is what keeps the caret with its row when the list is
+    /// reordered.
+    focused_row: Option<String>,
     /// Whether the focused input is a `type="textarea"` (Enter → newline).
     focused_multiline: bool,
-    /// The `r-model` of the currently open `select` dropdown, if any. Survives
+    /// The currently open `select` dropdown, as `(r-model, row key)`. Survives
     /// the rebuild after a state change, like scroll offsets.
-    open_select: Option<String>,
+    ///
+    /// The row is half the identity, for the same reason an input needs one: the
+    /// model is recorded as written, so every row of an `r-for` carries the same
+    /// one. Keyed by the model alone, tapping row three's select opened row
+    /// one's dropdown, drew it over row one, hit-tested the options against row
+    /// one's box, and wrote the chosen option into row one.
+    open_select: Option<(String, Option<String>)>,
     /// Caret position in the focused input, as a byte index into its value.
     caret: usize,
     /// Where the current selection started, as a byte index. Equal to `caret`
@@ -987,6 +1050,15 @@ struct App {
     /// The cursor icon currently set on the window, so a mouse-move only calls
     /// `set_cursor` when the shape actually changes.
     cursor: CursorIcon,
+    /// The history position the browser's URL bar was last told about, as
+    /// `(index, route)`.
+    ///
+    /// Kept so the shell can tell a move it made itself from one the user made
+    /// with the browser's own Back button. Applying a `popstate` updates this
+    /// too, which is what stops the echo: after it, the document and the URL
+    /// already agree, so there is nothing left to write.
+    #[cfg(target_arch = "wasm32")]
+    mirrored: Option<(usize, String)>,
 }
 
 impl App {
@@ -1020,11 +1092,13 @@ impl App {
             focus_index: None,
             shift_held: false,
             ctrl_held: false,
+            alt_held: false,
             scrolls: Vec::new(),
             offsets: Vec::new(),
             bar_drag: None,
             touch: None,
             focused: None,
+            focused_row: None,
             focused_multiline: false,
             open_select: None,
             caret: 0,
@@ -1046,6 +1120,82 @@ impl App {
             press: None,
             cursor: CursorIcon::Default,
             states: Vec::new(),
+            #[cfg(target_arch = "wasm32")]
+            mirrored: None,
+        }
+    }
+
+    /// Keep the browser's URL bar showing where the document actually is.
+    ///
+    /// Called once per frame rather than at each place that can navigate, so a
+    /// handler that navigates more than once produces the single move it
+    /// amounts to instead of one per call.
+    ///
+    /// Which of the three moves it is falls out of comparing the document's
+    /// history position with the last one written:
+    ///
+    /// - **further along** means a new page was visited: push an entry.
+    /// - **further back** means the app went back or forward itself (Alt+Left,
+    ///   a mouse side button, a `back()` in a handler): walk the browser by the
+    ///   same number of entries, so its own Back button stays in step. The
+    ///   `popstate` that answers is recognised as an echo and does nothing.
+    /// - **the same index, a different route** means a navigation that replaced
+    ///   where we were, which is what going back and then somewhere new looks
+    ///   like once the two moves are collapsed into one frame.
+    #[cfg(target_arch = "wasm32")]
+    fn sync_url(&mut self) {
+        if WEB_BASE.with(|b| b.borrow().is_none()) {
+            return;
+        }
+        let (index, _) = self.document.history_position();
+        let route = self.document.location().to_string();
+        let Some((was, ref was_route)) = self.mirrored else {
+            // The tab's first entry is one the browser made, not us. Rewrite it
+            // in place so it carries an index like every other entry, or a Back
+            // that lands on it would arrive with nothing to say where it is.
+            web_write_history(index, &route, true);
+            self.mirrored = Some((index, route));
+            return;
+        };
+        if was == index {
+            if *was_route != route {
+                web_write_history(index, &route, true);
+                self.mirrored = Some((index, route));
+            }
+            return;
+        }
+        if index > was {
+            web_write_history(index, &route, false);
+        } else if let Some(window) = web_sys::window() {
+            if let Ok(history) = window.history() {
+                let _ = history.go_with_delta(index as i32 - was as i32);
+            }
+        }
+        self.mirrored = Some((index, route));
+    }
+
+    /// The browser's Back or Forward moved the tab; move the document to match.
+    ///
+    /// The index is the one Rux stamped on that entry, so a jump of any size is
+    /// one call. An entry with no index is one Rux never pushed, which happens
+    /// when the tab's own first entry is reached; the URL is then the only
+    /// statement of where we are, so it is read back off the location.
+    #[cfg(target_arch = "wasm32")]
+    fn apply_web_route(&mut self, index: Option<usize>) {
+        let moved = match index {
+            Some(index) => self.document.go_to(index),
+            None => match web_route_now() {
+                Some(route) => self.document.start_at(&route),
+                None => false,
+            },
+        };
+        // Recorded whether or not anything moved: the browser is where it is
+        // either way, and the point of this is that the next frame agrees with
+        // it instead of trying to correct it back.
+        self.mirrored =
+            Some((self.document.history_position().0, self.document.location().to_string()));
+        if moved {
+            self.request_redraw();
         }
     }
 
@@ -1058,7 +1208,16 @@ impl App {
             Ok(doc) => {
                 // Keeps the window's own state (viewport, hover) and drops the
                 // previous error, so fixing the file clears the overlay.
+                let was = self.document.location().to_string();
                 self.document.replace_with(doc);
+                // A reloaded document starts at `/`, so without this, saving a
+                // file while looking at a page other than the first one sent
+                // the window home and the edit could not be seen. The history
+                // behind it is genuinely gone: the reloaded document is a new
+                // one, and claiming it was visited would be a lie.
+                if was != rux_runtime::ROOT_PATH {
+                    self.document.start_at(&was);
+                }
                 eprintln!("reloaded {}", self.path.display());
             }
             Err(err) => {
@@ -1264,7 +1423,7 @@ impl App {
     /// The byte index in `region`'s text nearest a point, in logical px. An empty
     /// input is showing its placeholder, not a value, so its caret belongs at 0.
     fn index_in(&mut self, region: &FocusRegion, px: f32, py: f32) -> usize {
-        let value = self.document.engine_mut().get_string(&region.model);
+        let value = self.document.value_in(&region.model, region.row.as_deref());
         match region.text.as_ref() {
             Some(t) if !value.is_empty() => {
                 let (tx, ty) = self.text_point(region, t, px, py);
@@ -1309,6 +1468,7 @@ impl App {
     fn track_caret_x(
         layout: &rux_layout::Layout,
         focused: Option<&str>,
+        focused_row: Option<&str>,
         caret: usize,
         scroll: &mut f32,
         text: &mut rux_text::TextEngine,
@@ -1318,7 +1478,11 @@ impl App {
             *scroll = 0.0;
             return 0.0;
         };
-        let Some(region) = layout.focuses.iter().find(|f| f.model == model) else {
+        let Some(region) = layout
+            .focuses
+            .iter()
+            .find(|f| f.model == model && f.row.as_deref() == focused_row)
+        else {
             return *scroll;
         };
         // A textarea has a real scroll region and is handled by
@@ -1327,7 +1491,7 @@ impl App {
             *scroll = 0.0;
             return 0.0;
         };
-        let value = document.engine_mut().get_string(model);
+        let value = document.value_in(model, focused_row);
         let style = rux_paint::text_style(&t.content);
         let (cx, _, _) = text.caret_geometry(&value, &style, Some(t.width), caret.min(value.len()));
 
@@ -1358,8 +1522,7 @@ impl App {
         if self.caret == self.anchor {
             return None;
         }
-        let model = self.focused.as_deref()?;
-        let region = self.focuses.iter().find(|f| f.model == model)?;
+        let region = self.focused_region()?;
         Some((region.x, region.y, region.width, region.height))
     }
 
@@ -1408,7 +1571,8 @@ impl App {
     /// but the focused single-line input. A textarea scrolls through its own
     /// scroll region instead, and an unfocused field is never scrolled.
     fn text_scroll_for(&self, region: &FocusRegion) -> f32 {
-        let focused = self.focused.as_deref() == Some(region.model.as_str());
+        let focused = self.focused.as_deref() == Some(region.model.as_str())
+            && self.focused_row.as_deref() == region.row.as_deref();
         if focused && !region.multiline { self.text_scroll } else { 0.0 }
     }
 
@@ -1452,7 +1616,7 @@ impl App {
 
         let caret = self.index_in(&region, fx, fy);
         self.text_drag = true;
-        self.set_focus(Some((region.model, caret)));
+        self.set_focus(Some((region.model, region.row, caret)));
         true
     }
 
@@ -1467,7 +1631,7 @@ impl App {
         let Some(region) = self.focuses.iter().rev().find(|f| f.contains(fx, fy)).cloned() else {
             return false;
         };
-        let value = self.document.engine_mut().get_string(&region.model);
+        let value = self.document.value_in(&region.model, region.row.as_deref());
         let (Some(t), false) = (&region.text, value.is_empty()) else {
             return false;
         };
@@ -1481,6 +1645,7 @@ impl App {
         );
         self.set_focus_range(Some(Focus {
             model: region.model,
+            row: region.row,
             caret: end,
             anchor: start,
             preedit: None,
@@ -1511,29 +1676,35 @@ impl App {
     /// so the range stays empty. This is what a finger dragging on text does on
     /// a phone, where selecting is what the long press is for.
     fn drag_caret(&mut self, pointer: (f64, f64)) {
-        let Some(model) = self.focused.clone() else { return };
-        let Some(region) = self.focuses.iter().find(|f| f.model == model).cloned() else {
-            return;
-        };
+        let Some(region) = self.focused_region().cloned() else { return };
         let (fx, fy) = self.logical(pointer);
         let caret = self.index_in(&region, fx, fy);
         if caret != self.caret || self.anchor != caret {
-            self.set_focus_range(Some(Focus { model, caret, anchor: caret, preedit: None }));
+            self.set_focus_range(Some(Focus {
+                model: region.model,
+                row: region.row,
+                caret,
+                anchor: caret,
+                preedit: None,
+            }));
         }
     }
 
     /// Extend the selection to the pointer while dragging inside an input: the
     /// anchor stays where the press landed, the caret follows the pointer.
     fn drag_text(&mut self, pointer: (f64, f64)) {
-        let Some(model) = self.focused.clone() else { return };
-        let Some(region) = self.focuses.iter().find(|f| f.model == model).cloned() else {
-            return;
-        };
+        let Some(region) = self.focused_region().cloned() else { return };
         let (fx, fy) = self.logical(pointer);
         let caret = self.index_in(&region, fx, fy);
         if caret != self.caret {
             let anchor = self.anchor;
-            self.set_focus_range(Some(Focus { model, caret, anchor, preedit: None }));
+            self.set_focus_range(Some(Focus {
+                model: region.model,
+                row: region.row,
+                caret,
+                anchor,
+                preedit: None,
+            }));
         }
     }
 
@@ -1587,6 +1758,7 @@ impl App {
             hovered,
             active,
             focused_model: self.document.interaction().focused_model.clone(),
+            focused_row: self.document.interaction().focused_row.clone(),
         };
         if self.document.set_interaction(next) {
             self.request_redraw();
@@ -1627,12 +1799,13 @@ impl App {
     }
 
     /// Tell the document which input has focus, so `:focus` rules match it.
-    fn update_focus_state(&mut self, model: Option<String>) {
+    fn update_focus_state(&mut self, model: Option<String>, row: Option<String>) {
         let mut next = self.document.interaction().clone();
-        if next.focused_model == model {
+        if next.focused_model == model && next.focused_row == row {
             return;
         }
         next.focused_model = model;
+        next.focused_row = row;
         if self.document.set_interaction(next) {
             self.request_redraw();
         }
@@ -1692,12 +1865,17 @@ impl App {
 
         // An open dropdown is on top of everything, so it intercepts taps first:
         // a tap on an option selects it; any other tap just closes the dropdown.
-        if let Some(model) = self.open_select.take() {
-            if let Some(sel) = self.selects.iter().find(|s| s.model == model).cloned() {
+        if let Some((model, row)) = self.open_select.take() {
+            if let Some(sel) = self
+                .selects
+                .iter()
+                .find(|s| s.model == model && s.row == row)
+                .cloned()
+            {
                 for (i, option) in sel.options.iter().enumerate() {
                     let (rx, ry, rw, rh) = dropdown_row(&sel, i);
                     if fx >= rx && fx <= rx + rw && fy >= ry && fy <= ry + rh {
-                        self.document.apply_edit(&model, option);
+                        self.document.apply_edit_in(&model, row.as_deref(), option);
                         self.request_redraw();
                         return;
                     }
@@ -1714,7 +1892,7 @@ impl App {
 
         // A tap on a closed select opens its dropdown.
         if let Some(sel) = self.selects.iter().find(|s| s.contains(fx, fy)) {
-            self.open_select = Some(sel.model.clone());
+            self.open_select = Some((sel.model.clone(), sel.row.clone()));
             self.set_focus(None);
             self.request_redraw();
             return;
@@ -1731,12 +1909,16 @@ impl App {
             .iter()
             .rev()
             .find(|h| h.contains(px as f32, py as f32))
-            .map(|h| h.on_tap.clone());
+            .map(|h| (h.on_tap.clone(), h.instance.clone()));
 
-        if let Some(src) = handler {
+        if let Some((src, instance)) = handler {
             // Patch in place when the change is display-only; rebuild only when it
             // touches structure/attributes/input values. Either way, repaint.
-            if self.document.apply_handler(&src) {
+            //
+            // The instance travels with the handler because two instances of one
+            // component carry identical handler text: the string alone cannot
+            // say whose state to run it against.
+            if self.document.apply_handler_in(&src, instance.as_deref()) {
                 self.request_redraw();
             }
         }
@@ -1760,7 +1942,7 @@ impl App {
             return;
         }
 
-        let mut value = self.document.engine_mut().get_string(&model);
+        let mut value = self.focused_value();
         let caret = self.caret.min(value.len());
         let (sel_start, sel_end) = {
             let (s, e) = self.selection();
@@ -1826,9 +2008,7 @@ impl App {
             // index at the same x on the line above/below the current caret.
             Key::Named(NamedKey::ArrowUp | NamedKey::ArrowDown) if self.focused_multiline => {
                 if let Some(t) = self
-                    .focuses
-                    .iter()
-                    .find(|f| f.model == model)
+                    .focused_region()
                     .and_then(|f| f.text.clone())
                 {
                     let style = rux_paint::text_style(&t.content);
@@ -1874,14 +2054,16 @@ impl App {
             // Shift+movement keeps the anchor, extending the selection; anything
             // else collapses it to the caret.
             let new_anchor = if moved && extend { self.anchor } else { new_caret };
-            self.scroll_caret_into_view(&model, &value, new_caret);
+            self.scroll_caret_into_view(&value, new_caret);
             // Patch the input's value in place (no rebuild) unless `model` is also
             // structural; then set the caret on the resulting tree.
             if edited {
-                self.document.apply_edit(&model, &value);
+                self.write_focused(&value);
             }
             self.set_focus_range(Some(Focus {
                 model,
+                // Still the same field being typed into.
+                row: self.focused_row.clone(),
                 caret: new_caret,
                 anchor: new_anchor,
                 preedit: None,
@@ -1909,9 +2091,10 @@ impl App {
     }
 
     fn select_all_text(&mut self, model: &str) {
-        let value = self.document.engine_mut().get_string(model);
+        let value = self.focused_value();
         self.set_focus_range(Some(Focus {
             model: model.to_string(),
+            row: self.focused_row.clone(),
             caret: value.len(),
             anchor: 0,
             preedit: None,
@@ -1927,11 +2110,11 @@ impl App {
     fn cut_selection(&mut self, model: &str) {
         let Some(text) = self.selected_text() else { return };
         self.clipboard_write(&text);
-        let value = self.document.engine_mut().get_string(model);
+        let value = self.focused_value();
         let (start, end) = self.selection();
         let mut value = value;
         value.replace_range(start.min(value.len())..end.min(value.len()), "");
-        self.document.apply_edit(model, &value);
+        self.write_focused(&value);
         self.set_focus_range(Some(Focus::at(model, start)));
     }
 
@@ -1977,14 +2160,14 @@ impl App {
         } else {
             pasted.lines().next().unwrap_or("").to_string()
         };
-        let value = self.document.engine_mut().get_string(model);
+        let value = self.focused_value();
         let (start, end) = self.selection();
         let mut value = value;
         let (start, end) = (start.min(value.len()), end.min(value.len()));
         value.replace_range(start..end, &pasted);
         let caret = start + pasted.len();
-        self.document.apply_edit(model, &value);
-        self.scroll_caret_into_view(model, &value, caret);
+        self.write_focused(&value);
+        self.scroll_caret_into_view(&value, caret);
         self.set_focus_range(Some(Focus::at(model, caret)));
     }
 
@@ -1992,8 +2175,10 @@ impl App {
     /// so the caret *line* sits inside the box. No-op for a single-line input,
     /// which has no scroll region; its horizontal equivalent is
     /// [`track_caret_x`](Self::track_caret_x), applied once per frame.
-    fn scroll_caret_into_view(&mut self, model: &str, value: &str, caret: usize) {
-        let Some(region) = self.focuses.iter().find(|f| f.model == model).cloned() else {
+    /// Takes no model: the field is whichever one has focus, and a model on its
+    /// own cannot say which row of a list that is.
+    fn scroll_caret_into_view(&mut self, value: &str, caret: usize) {
+        let Some(region) = self.focused_region().cloned() else {
             return;
         };
         let (Some(sid), Some(t)) = (region.scroll_id, &region.text) else {
@@ -2018,6 +2203,21 @@ impl App {
     /// text input edits, and a focused button/checkbox/radio/select activates on
     /// Space/Enter.
     fn on_key(&mut self, key: &Key) {
+        // Alt+Left / Alt+Right walk the history, the platform's own shortcut for
+        // it. Checked before anything else, including the focused input: it is a
+        // chord, so it cannot be text, and a caret in a field is exactly when
+        // someone wants to leave a page they typed into by mistake.
+        if self.alt_held {
+            let moved = match key {
+                Key::Named(NamedKey::ArrowLeft) => self.document.back(),
+                Key::Named(NamedKey::ArrowRight) => self.document.forward(),
+                _ => false,
+            };
+            if moved {
+                self.request_redraw();
+                return;
+            }
+        }
         if let Key::Named(NamedKey::Tab) = key {
             self.move_focus(self.shift_held);
             return;
@@ -2064,10 +2264,13 @@ impl App {
     fn set_keyboard_focus(&mut self, index: Option<usize>) {
         self.focus_index = index;
         match index.and_then(|i| self.focusables.get(i)).map(|f| f.kind.clone()) {
-            Some(FocusKind::Text { model, multiline, .. }) => {
-                let caret = self.document.engine_mut().get_string(&model).len();
+            Some(FocusKind::Text { model, row, multiline, .. }) => {
+                // Read against the field being moved *to*, not the one being
+                // left: focus has not moved yet, so `focused_value` is still the
+                // old field and Tab would drop the caret at its length.
+                let caret = self.document.value_in(&model, row.as_deref()).len();
                 self.focused_multiline = multiline;
-                self.set_focus(Some((model, caret)));
+                self.set_focus(Some((model, row, caret)));
             }
             _ => self.set_focus(None),
         }
@@ -2080,12 +2283,12 @@ impl App {
     /// open a select's dropdown.
     fn activate_focused(&mut self, index: usize) {
         match self.focusables.get(index).map(|f| f.kind.clone()) {
-            Some(FocusKind::Activate { on_tap }) => {
-                self.document.apply_handler(&on_tap);
+            Some(FocusKind::Activate { on_tap, instance }) => {
+                self.document.apply_handler_in(&on_tap, instance.as_deref());
                 self.request_redraw();
             }
-            Some(FocusKind::Select { model, .. }) => {
-                self.open_select = Some(model);
+            Some(FocusKind::Select { model, row, .. }) => {
+                self.open_select = Some((model, row));
                 self.request_redraw();
             }
             _ => {}
@@ -2094,11 +2297,43 @@ impl App {
 
     /// Focus an input (or clear focus) and tell the document, so the caret and
     /// selection paint. Collapses the selection to the caret.
-    fn set_focus(&mut self, focus: Option<(String, usize)>) {
+    ///
+    /// The row is the `r-key` of the `r-for` row the input is in, and `None`
+    /// outside a list. It is half the identity: every row of a list is bound to
+    /// the same `r-model` text, so the model alone cannot say which one.
+    fn set_focus(&mut self, focus: Option<(String, Option<String>, usize)>) {
         match focus {
-            Some((model, caret)) => self.set_focus_range(Some(Focus::at(model, caret))),
+            Some((model, row, caret)) => self.set_focus_range(Some(Focus::at_row(model, row, caret))),
             None => self.set_focus_range(None),
         }
+    }
+
+    /// The focused input's value, read in its own row's scope.
+    ///
+    /// Every read and write of the edited text goes through this pair, because
+    /// an `r-model` inside a list can mention the loop variable and means
+    /// nothing without it. Reading it raw returned an empty string and a
+    /// `Variable not found` warning, which is how a row's field looked editable
+    /// and swallowed every keystroke.
+    fn focused_value(&mut self) -> String {
+        let Some(model) = self.focused.clone() else { return String::new() };
+        let row = self.focused_row.clone();
+        self.document.value_in(&model, row.as_deref())
+    }
+
+    /// Write the focused input's value back, in that same scope.
+    fn write_focused(&mut self, value: &str) {
+        let Some(model) = self.focused.clone() else { return };
+        let row = self.focused_row.clone();
+        self.document.apply_edit_in(&model, row.as_deref(), value);
+    }
+
+    /// The focused input's region, matched on both halves of its identity.
+    fn focused_region(&self) -> Option<&FocusRegion> {
+        let model = self.focused.as_deref()?;
+        self.focuses
+            .iter()
+            .find(|f| f.model == model && f.row.as_deref() == self.focused_row.as_deref())
     }
 
     /// The full-fidelity focus setter: caret, selection anchor *and* composition.
@@ -2114,17 +2349,22 @@ impl App {
         // A different field starts unscrolled: the offset belongs to the text
         // being edited, and carrying it over would show the new field's value
         // already scrolled to somewhere the caret is not.
-        let next = focus.as_ref().map(|f| f.model.as_str());
-        if next != self.focused.as_deref() {
+        let same_field = focus
+            .as_ref()
+            .is_some_and(|f| f.is(self.focused.as_deref().unwrap_or(""), self.focused_row.as_deref()));
+        if !same_field {
             self.text_scroll = 0.0;
         }
         self.focused = focus.as_ref().map(|f| f.model.clone());
+        self.focused_row = focus.as_ref().and_then(|f| f.row.clone());
         self.caret = focus.as_ref().map(|f| f.caret).unwrap_or(0);
         self.anchor = focus.as_ref().map(|f| f.anchor).unwrap_or(0);
         self.document.set_focus(focus);
-        // `:focus` matches on the focused model, so the document needs it too.
+        // `:focus` matches on the focused input, so the document needs both
+        // halves of its identity, or every row of a list matches at once.
         let model = self.focused.clone();
-        self.update_focus_state(model);
+        let row = self.focused_row.clone();
+        self.update_focus_state(model, row);
         self.set_ime_enabled(self.focused.is_some());
         self.reset_blink();
         self.request_redraw();
@@ -2159,11 +2399,12 @@ impl App {
             return;
         }
         let Some(el) = web_ime_element() else { return };
-        let Some(model) = self.focused.clone() else {
+        // Nothing focused means nothing to type into, so the keyboard goes away.
+        if self.focused.is_none() {
             let _ = el.blur();
             return;
-        };
-        let value = self.document.engine_mut().get_string(&model);
+        }
+        let value = self.focused_value();
         // Only touch it when it has actually drifted, which means the change
         // came from Rux (a handler, a tap moving the caret) rather than from the
         // keyboard. Writing the value or the selection back on every edit would
@@ -2197,8 +2438,7 @@ impl App {
     fn position_web_ime(&mut self) {
         let Some(el) = WEB_IME.with(|c| c.borrow().clone()) else { return };
         let Some(canvas) = WEB_CANVAS.with(|c| c.borrow().clone()) else { return };
-        let Some(model) = self.focused.clone() else { return };
-        let Some(region) = self.focuses.iter().find(|f| f.model == model) else { return };
+        let Some(region) = self.focused_region() else { return };
         // Rux's logical pixels are CSS pixels, and the input is the canvas's
         // sibling, so the field's box offsets straight off the canvas's own.
         let (ox, oy) = (canvas.offset_left() as f32, canvas.offset_top() as f32);
@@ -2231,9 +2471,13 @@ impl App {
         // The browser is running the composition, so the shell's own
         // composition state stays empty and must not be restored over this.
         self.preedit = None;
-        self.document.apply_edit(&model, &value);
-        self.scroll_caret_into_view(&model, &value, caret);
-        self.set_focus_range(Some(Focus { model, caret, anchor, preedit }));
+        self.write_focused(&value);
+        self.scroll_caret_into_view(&value, caret);
+        // The row travels with the model: an input inside an `r-for` is
+        // identified by both, and dropping it here would put the caret in every
+        // row of the list at once.
+        let row = self.focused_row.clone();
+        self.set_focus_range(Some(Focus { model, row, caret, anchor, preedit }));
     }
 
     /// Park the candidate window under the caret instead of at the window's
@@ -2242,12 +2486,14 @@ impl App {
     fn update_ime_area(&mut self) {
         let Some(window) = self.state.as_ref().map(|s| s.window.clone()) else { return };
         let scale = window.scale_factor();
-        let Some(model) = self.focused.clone() else { return };
-        let Some(region) = self.focuses.iter().find(|f| f.model == model).cloned() else {
+        // The guard is that *something* is focused; the field itself comes
+        // from ocused_region, which knows about rows.
+        if self.focused.is_none() { return; }
+        let Some(region) = self.focused_region().cloned() else {
             return;
         };
         let Some(t) = region.text.as_ref() else { return };
-        let value = self.document.engine_mut().get_string(&model);
+        let value = self.focused_value();
         let style = rux_paint::text_style(&t.content);
         let caret = self.caret.min(value.len());
         let (cx, cy, ch) = self.text.caret_geometry(&value, &style, Some(t.width), caret);
@@ -2287,7 +2533,7 @@ impl App {
     /// point. `None` means it wants the caret after the whole thing.
     fn set_preedit(&mut self, text: &str, cursor: Option<(usize, usize)>) {
         let Some(model) = self.focused.clone() else { return };
-        let mut value = self.document.engine_mut().get_string(&model);
+        let mut value = self.focused_value();
 
         // Starting a composition lifts out whatever it is going to sit on top
         // of, so that abandoning it can put that back.
@@ -2312,17 +2558,18 @@ impl App {
             value.insert_str(at, &composing.replaced);
             let caret = at + composing.replaced.len();
             self.preedit = None;
-            self.document.apply_edit(&model, &value);
+            self.write_focused(&value);
             self.set_focus_range(Some(Focus::at(model, caret)));
             return;
         }
 
         let caret = at + cursor.map(|(s, _)| s.min(text.len())).unwrap_or(text.len());
         self.preedit = Some(Preedit { at, len: text.len(), replaced: composing.replaced });
-        self.document.apply_edit(&model, &value);
-        self.scroll_caret_into_view(&model, &value, caret);
+        self.write_focused(&value);
+        self.scroll_caret_into_view(&value, caret);
         self.set_focus_range(Some(Focus {
             model,
+            row: self.focused_row.clone(),
             caret,
             anchor: caret,
             preedit: Some((at, at + text.len())),
@@ -2337,7 +2584,7 @@ impl App {
     /// behave like typing when there is no composition to replace.
     fn commit_text(&mut self, text: &str) {
         let Some(model) = self.focused.clone() else { return };
-        let mut value = self.document.engine_mut().get_string(&model);
+        let mut value = self.focused_value();
         let (start, end) = match self.preedit.take() {
             Some(p) => {
                 let at = p.at.min(value.len());
@@ -2356,8 +2603,8 @@ impl App {
         };
         value.replace_range(start..end, &text);
         let caret = start + text.len();
-        self.document.apply_edit(&model, &value);
-        self.scroll_caret_into_view(&model, &value, caret);
+        self.write_focused(&value);
+        self.scroll_caret_into_view(&value, caret);
         self.set_focus_range(Some(Focus::at(model, caret)));
         self.update_ime_area();
     }
@@ -2366,12 +2613,12 @@ impl App {
     /// started. A no-op when nothing is being composed, which is the usual case.
     fn cancel_preedit(&mut self) {
         let Some(p) = self.preedit.take() else { return };
-        let Some(model) = self.focused.clone() else { return };
-        let mut value = self.document.engine_mut().get_string(&model);
+        if self.focused.is_none() { return; }
+        let mut value = self.focused_value();
         let at = p.at.min(value.len());
         let end = (at + p.len).min(value.len());
         value.replace_range(at..end, &p.replaced);
-        self.document.apply_edit(&model, &value);
+        self.write_focused(&value);
     }
 
     /// The focused input's selected byte range, low to high. Empty when there's
@@ -2382,12 +2629,12 @@ impl App {
 
     /// The focused input's selected text, if any.
     fn selected_text(&mut self) -> Option<String> {
-        let model = self.focused.clone()?;
+        self.focused.as_ref()?;
         let (start, end) = self.selection();
         if start == end {
             return None;
         }
-        let value = self.document.engine_mut().get_string(&model);
+        let value = self.focused_value();
         value.get(start.min(value.len())..end.min(value.len())).map(str::to_string)
     }
 
@@ -2445,6 +2692,11 @@ impl App {
         // Catches the first frame and any resize that arrived without an event
         // (hot-reload, scale change); a no-op unless a breakpoint moved.
         self.update_viewport();
+        // Every navigation ends in a repaint, so this is the one place that
+        // sees all of them, wherever they came from: a link, a handler, a key,
+        // or a mouse button.
+        #[cfg(target_arch = "wasm32")]
+        self.sync_url();
         let caret_visible = self.caret_visible;
         // Split borrows so the text engine (used both to measure during layout
         // and to draw during paint) doesn't conflict with the render state.
@@ -2469,6 +2721,7 @@ impl App {
             anchor,
             text_scroll,
             focused,
+            focused_row,
             #[cfg(not(target_arch = "wasm32"))]
             path,
             ..
@@ -2484,6 +2737,14 @@ impl App {
         // Without this, everything renders half-size on a 2x screen.
         let scale = state.window.scale_factor();
         let logical = (width as f64 / scale, height as f64 / scale);
+
+        // A navigation has chosen where the arriving page should sit: the top
+        // for one being opened, wherever it was left for one being returned to.
+        // Taken before the layout so this frame is already laid out there,
+        // rather than drawn in the wrong place and corrected on the next one.
+        if let Some(restored) = document.take_scroll() {
+            *offsets = restored;
+        }
 
         // Layout (text sized via the engine's measure), then paint. Cache the
         // hit regions for tap dispatch.
@@ -2507,6 +2768,10 @@ impl App {
         for region in &layout.scrolls {
             offsets[region.id] = offsets[region.id].clamp_to(region.max);
         }
+        // Remember where this page is, so returning to it can come back here.
+        // Recorded once a frame rather than at each place that scrolls, and
+        // after the clamp, so what is stored is a position that exists.
+        document.record_scroll(offsets);
 
         // Keep the focused single-line input's caret inside its box.
         //
@@ -2514,7 +2779,15 @@ impl App {
         // typing, arrows, Home/End, a tap, a drag, an IME commit and the
         // browser's own keyboard all end up here, and one rule covers them all
         // where six call sites would eventually disagree.
-        let shift = Self::track_caret_x(&layout, focused.as_deref(), *caret, text_scroll, text, document);
+        let shift = Self::track_caret_x(
+            &layout,
+            focused.as_deref(),
+            focused_row.as_deref(),
+            *caret,
+            text_scroll,
+            text,
+            document,
+        );
         if shift != 0.0 {
             // Only the focused input has a caret, so this finds exactly one text
             // paint. Everything the painter draws for it (glyphs, caret,
@@ -2546,7 +2819,8 @@ impl App {
 
         // A keyboard focus ring, drawn over the content (but under a dropdown).
         if let Some(item) = focus_index.and_then(|i| layout.focusables.get(i)) {
-            let ring = rux_paint::build_scene(&focus_ring(item), text, images, false);
+            let within = item.scroll.and_then(|s| layout.scrolls.get(s));
+            let ring = rux_paint::build_scene(&focus_ring(item, within), text, images, false);
             state.scene.append(&ring, Some(Affine::scale(scale)));
         }
 
@@ -2554,10 +2828,12 @@ impl App {
         // It is the only route to copy and paste on a phone, and on the web at
         // all, so it is drawn above the page rather than inside it.
         if *caret != *anchor {
-            if let Some(r) = focused
-                .as_deref()
-                .and_then(|m| layout.focuses.iter().find(|f| f.model == m))
-            {
+            if let Some(r) = focused.as_deref().and_then(|m| {
+                layout
+                    .focuses
+                    .iter()
+                    .find(|f| f.model == m && f.row.as_deref() == focused_row.as_deref())
+            }) {
                 let strip = toolbar_paints(
                     (r.x, r.y, r.width, r.height),
                     (logical.0 as f32, logical.1 as f32),
@@ -2568,9 +2844,9 @@ impl App {
         }
 
         // An open `select` draws its dropdown on top of everything else.
-        if let Some(model) = open_select.clone() {
-            if let Some(sel) = layout.selects.iter().find(|s| s.model == model) {
-                let value = document.engine_mut().get_string(&model);
+        if let Some((model, row)) = open_select.clone() {
+            if let Some(sel) = layout.selects.iter().find(|s| s.model == model && s.row == row) {
+                let value = document.value_in(&model, row.as_deref());
                 let overlay = dropdown_paints(sel, &value);
                 let scene = rux_paint::build_scene(&overlay, text, images, false);
                 state.scene.append(&scene, Some(Affine::scale(scale)));
@@ -2613,6 +2889,29 @@ impl App {
 
         *hits = layout.hits;
         *focuses = layout.focuses;
+        // A field that is no longer in the tree must not stay focused. Nothing
+        // dropped focus when its input went away: only a web source reload ever
+        // cleared it, so navigating off a page you had been typing on left the
+        // shell believing that field was still there.
+        //
+        // It shows up worst on the web, where the hidden `<input>` holds real
+        // DOM focus and a phone's on-screen keyboard would stay up over the
+        // page you just moved to. Identity is `(model, row)`, the same pair the
+        // caret uses, or one row of a list would answer for another.
+        if let Some(model) = focused.clone() {
+            let still_here = focuses
+                .iter()
+                .any(|f| f.model == model && f.row.as_deref() == focused_row.as_deref());
+            if !still_here {
+                *focused = None;
+                *focused_row = None;
+                *text_scroll = 0.0;
+                #[cfg(target_arch = "wasm32")]
+                if let Some(el) = web_ime_element() {
+                    let _ = el.blur();
+                }
+            }
+        }
         *selects = layout.selects;
         // Keep the focus index in range if the new layout has fewer focusables.
         if focus_index.map(|i| i >= layout.focusables.len()).unwrap_or(false) {
@@ -2827,6 +3126,9 @@ impl ApplicationHandler<RuxEvent> for App {
                 self.apply_web_text(value, caret, anchor, composing)
             }
 
+            #[cfg(target_arch = "wasm32")]
+            RuxEvent::WebRoute(index) => self.apply_web_route(index),
+
             // The clipboard read started by a paste has come back. The field may
             // have lost focus in the meantime, in which case there is nowhere to
             // put it and dropping it is right.
@@ -3022,6 +3324,24 @@ impl ApplicationHandler<RuxEvent> for App {
             WindowEvent::ModifiersChanged(mods) => {
                 self.shift_held = mods.state().shift_key();
                 self.ctrl_held = mods.state().control_key();
+                self.alt_held = mods.state().alt_key();
+            }
+            // The side buttons on a mouse are the back and forward buttons
+            // everywhere else, and a router that ignored them would be the one
+            // app on the machine that does.
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: button @ (MouseButton::Back | MouseButton::Forward),
+                ..
+            } => {
+                let moved = if button == MouseButton::Back {
+                    self.document.back()
+                } else {
+                    self.document.forward()
+                };
+                if moved {
+                    self.request_redraw();
+                }
             }
             WindowEvent::Ime(ime) => self.on_ime(&ime),
             WindowEvent::KeyboardInput { event, .. } => {
@@ -3117,6 +3437,104 @@ impl ApplicationHandler<RuxEvent> for App {
     }
 }
 
+// ── The URL bar as the router's address bar ──────────────────────────────────
+//
+// Two functions, and they are deliberately not gated to wasm: the arithmetic
+// between a served base path and a Rux route is where this goes wrong, and it
+// is worth being able to test it without a browser.
+//
+// A Rux app served at the root of a domain has base `/`, and its routes are the
+// URL's path. One served from a subdirectory (which is what `rux build` output
+// dropped into an existing site looks like, and what the docs site does) has
+// base `/app/`, and the same route `/settings` is the URL `/app/settings`. The
+// app is written the same way either way, which is the point: a route is the
+// app's own address, not its address on somebody's server.
+
+/// The route named by a browser path, with the app's base subtracted.
+///
+/// Anything that is not under the base is treated as the root rather than
+/// passed through: it means the page is served from somewhere the base does not
+/// describe, and a route the app cannot match would land on its fallback page
+/// with no way to tell why.
+///
+/// Only the wasm build calls it. It is compiled everywhere anyway so that its
+/// tests run in the ordinary `cargo test`, which is the whole reason it is a
+/// separate function.
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+fn route_from_path(base: &str, pathname: &str) -> String {
+    let base = base.trim_end_matches('/');
+    let rest = match pathname.strip_prefix(base) {
+        Some(rest) => rest,
+        // Serving at `/app/` and asked about `/app` exactly: the base itself,
+        // which is the app's root.
+        None if base.trim_start_matches('/') == pathname.trim_start_matches('/') => "",
+        None => "",
+    };
+    if rest.is_empty() || !rest.starts_with('/') {
+        return rux_runtime::ROOT_PATH.to_string();
+    }
+    rest.to_string()
+}
+
+/// The browser path a route lives at, the inverse of [`route_from_path`].
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+fn path_for_route(base: &str, route: &str) -> String {
+    let base = base.trim_end_matches('/');
+    if route == rux_runtime::ROOT_PATH {
+        // A bare base with no trailing slash is a valid URL and the one a user
+        // would type, but `/` is what the root of a site is spelled.
+        return if base.is_empty() { rux_runtime::ROOT_PATH.to_string() } else { base.to_string() };
+    }
+    format!("{base}{route}")
+}
+
+#[cfg(test)]
+mod url_routes {
+    use super::{path_for_route, route_from_path};
+
+    /// Served at the root of a domain: the URL path is the route, unchanged.
+    #[test]
+    fn at_the_root_a_path_is_a_route() {
+        assert_eq!(route_from_path("/", "/"), "/");
+        assert_eq!(route_from_path("/", "/settings"), "/settings");
+        assert_eq!(route_from_path("/", "/user/7"), "/user/7");
+    }
+
+    /// Served from a subdirectory: the base comes off, and the app never sees
+    /// where it was deployed.
+    #[test]
+    fn a_base_is_subtracted() {
+        assert_eq!(route_from_path("/app/", "/app/settings"), "/settings");
+        assert_eq!(route_from_path("/app", "/app/user/7"), "/user/7");
+        assert_eq!(route_from_path("/app/", "/app/"), "/");
+        assert_eq!(route_from_path("/app/", "/app"), "/");
+    }
+
+    /// A path outside the base means the page is not where the base says. The
+    /// app's root beats a route it could only answer with its fallback.
+    #[test]
+    fn a_path_outside_the_base_is_the_root() {
+        assert_eq!(route_from_path("/app/", "/other/page"), "/");
+        // `/application` starts with `/app` as *text* and is a different place.
+        assert_eq!(route_from_path("/app", "/application"), "/");
+    }
+
+    /// Round trip: every route the app can be on maps to a URL that maps back.
+    #[test]
+    fn a_route_survives_the_round_trip() {
+        for base in ["/", "/app", "/app/"] {
+            for route in ["/", "/settings", "/user/7"] {
+                let path = path_for_route(base, route);
+                assert_eq!(
+                    route_from_path(base, &path),
+                    route,
+                    "base {base}, route {route}, path {path}"
+                );
+            }
+        }
+    }
+}
+
 // ── Web entry point ──────────────────────────────────────────────────────────
 //
 // The browser drives the same `App` as the desktop: same input handling, same
@@ -3162,6 +3580,81 @@ thread_local! {
     static WEB_IME: RefCell<Option<web_sys::HtmlInputElement>> = const { RefCell::new(None) };
     /// Byte length of the composition in flight in that input, `0` when none.
     static WEB_COMPOSING: RefCell<usize> = const { RefCell::new(0) };
+    /// The path the app is served under, and the switch that turns URL routing
+    /// on at all.
+    ///
+    /// `None` means leave the URL bar alone, and it is the default for a
+    /// reason: the playground runs *other people's documents* on a page of
+    /// ruxlang.dev, and a document with a router in it must not be able to
+    /// rewrite the address of the site hosting it. A page that wants its URL
+    /// to be its app's address says so by passing a base to `start`.
+    static WEB_BASE: RefCell<Option<String>> = const { RefCell::new(None) };
+}
+
+/// The route the browser's URL currently names, or `None` when URL routing is
+/// off.
+#[cfg(target_arch = "wasm32")]
+fn web_route_now() -> Option<String> {
+    let base = WEB_BASE.with(|b| b.borrow().clone())?;
+    let location = web_sys::window()?.location();
+    let route = route_from_path(&base, &location.pathname().ok()?);
+    // The query rides along, so opening `/search?q=rust` opens the search
+    // showing what was searched for. `search()` already includes the `?`, and
+    // is empty when there is none.
+    let query = location.search().unwrap_or_default();
+    Some(format!("{route}{query}"))
+}
+
+/// Write the document's position into the browser's history.
+///
+/// `replace` rewrites the entry the tab is on; otherwise a new one is added.
+/// The index travels as the entry's state, and comes back on `popstate`, which
+/// is what lets a jump of several entries be applied in one move.
+#[cfg(target_arch = "wasm32")]
+fn web_write_history(index: usize, route: &str, replace: bool) {
+    let Some(base) = WEB_BASE.with(|b| b.borrow().clone()) else { return };
+    let Some(history) = web_sys::window().and_then(|w| w.history().ok()) else { return };
+    let url = path_for_route(&base, route);
+    let state = wasm_bindgen::JsValue::from_f64(index as f64);
+    // A number is structured-cloneable, so the state needs no object and this
+    // needs no `js-sys`. The title argument is ignored by every browser.
+    let wrote = if replace {
+        history.replace_state_with_url(&state, "", Some(&url))
+    } else {
+        history.push_state_with_url(&state, "", Some(&url))
+    };
+    if wrote.is_err() {
+        // Cross-origin, or a sandboxed frame without `allow-top-navigation`.
+        // The app keeps working, the URL bar simply stops following it, so this
+        // is said once rather than on every navigation.
+        web_sys::console::warn_1(
+            &"rux: this page may not change its URL, so the address bar will not follow the router"
+                .into(),
+        );
+        WEB_BASE.with(|b| *b.borrow_mut() = None);
+    }
+}
+
+/// Listen for the browser's Back and Forward, once.
+#[cfg(target_arch = "wasm32")]
+fn web_watch_history() {
+    use wasm_bindgen::JsCast;
+    use wasm_bindgen::prelude::Closure;
+
+    let Some(window) = web_sys::window() else { return };
+    let on_pop = Closure::<dyn FnMut(web_sys::PopStateEvent)>::new(
+        move |event: web_sys::PopStateEvent| {
+            let index = event.state().as_f64().map(|n| n as usize);
+            WEB_PROXY.with(|p| {
+                if let Some(proxy) = p.borrow().as_ref() {
+                    let _ = proxy.send_event(RuxEvent::WebRoute(index));
+                }
+            });
+        },
+    );
+    let _ = window
+        .add_event_listener_with_callback("popstate", on_pop.as_ref().unchecked_ref());
+    on_pop.forget();
 }
 
 /// Whether this is a touch-first device, where the keyboard has to be summoned.
@@ -3530,17 +4023,39 @@ mod caret_index {
 /// of blocking, so the caller keeps running. Errors in `source` are reported and
 /// replaced with an empty document, matching what the native loader does with an
 /// unreadable file.
+///
+/// `base` is the path the app is served under, and giving one is what makes the
+/// URL bar the app's address bar: the document opens on the route the URL
+/// names, navigating pushes a history entry, and the browser's Back and Forward
+/// walk the app. Without it the URL is left alone entirely and the document
+/// opens at `/`, which is what the playground needs: it runs documents written
+/// by other people on a page of somebody else's site.
 #[cfg(target_arch = "wasm32")]
-pub fn start_web(canvas: web_sys::HtmlCanvasElement, source: String, font: Vec<u8>) {
+pub fn start_web(
+    canvas: web_sys::HtmlCanvasElement,
+    source: String,
+    font: Vec<u8>,
+    base: Option<String>,
+) {
     use winit::platform::web::EventLoopExtWebSys;
 
-    let document = match Document::from_source(&source) {
+    let mut document = match Document::from_source(&source) {
         Ok(doc) => doc,
         Err(err) => {
             web_sys::console::error_1(&format!("rux: {err}").into());
             Document::from_source("<template><screen></screen></template>").expect("empty document")
         }
     };
+
+    // Before the first frame: `start_at` replaces the history rather than
+    // adding to it, so it has to happen while there is nothing to replace.
+    if let Some(base) = base {
+        WEB_BASE.with(|b| *b.borrow_mut() = Some(base));
+        if let Some(route) = web_route_now() {
+            document.start_at(&route);
+        }
+        web_watch_history();
+    }
 
     let event_loop = EventLoop::<RuxEvent>::with_user_event()
         .build()
@@ -3655,6 +4170,17 @@ pub fn diagnose_web_source(source: String) -> String {
 /// supplied by the playground editor.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn run(path: PathBuf) {
+    run_at(path, None)
+}
+
+/// The same, opening the document on `route` instead of on `/`.
+///
+/// This is a deep link arriving on the desktop, and it is what makes one
+/// testable at all: a page reached only by tapping through the app cannot be
+/// checked on its own, and on a phone the same call is what an `myapp://` URL
+/// eventually turns into.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn run_at(path: PathBuf, route: Option<String>) {
     let event_loop = EventLoop::<RuxEvent>::with_user_event()
         .build()
         .expect("create event loop");
@@ -3663,6 +4189,11 @@ pub fn run(path: PathBuf) {
     // Watch the file's directory *recursively* so edits to imported components
     // (which live in subdirectories) also trigger a reload. Reload on any `.rux`
     // change, `Document::load` re-reads the main file and its components.
+    //
+    // `.css` counts too, since `<style src="…">` means a document's styling can
+    // live in a file that is not a `.rux` at all. Hot reload that covers most of
+    // a document is worse than none: it teaches you to trust the window, and
+    // then quietly stops telling the truth for one kind of edit.
     let proxy = event_loop.create_proxy();
     let watch_dir = path
         .parent()
@@ -3675,11 +4206,11 @@ pub fn run(path: PathBuf) {
         if !matches!(event.kind, EventKind::Modify(_) | EventKind::Create(_)) {
             return;
         }
-        let touches_rux = event
+        let touches_source = event
             .paths
             .iter()
-            .any(|p| p.extension().is_some_and(|e| e == "rux"));
-        if touches_rux {
+            .any(|p| p.extension().is_some_and(|e| e == "rux" || e == "css"));
+        if touches_source {
             let _ = proxy.send_event(RuxEvent::Reload);
         }
     })
@@ -3689,6 +4220,11 @@ pub fn run(path: PathBuf) {
         .expect("watch directory");
 
     let mut app = App::new(path, event_loop.create_proxy());
+    // Before the first frame, and before the watcher can reload: `start_at`
+    // replaces the history, so it has to be the first thing that touches it.
+    if let Some(route) = route {
+        app.document.start_at(&route);
+    }
     event_loop.run_app(&mut app).expect("run app");
 
     drop(watcher); // keep the watcher alive for the loop's lifetime
@@ -3701,6 +4237,65 @@ mod tests {
 
     fn warned(message: &str) -> Diagnostics {
         Diagnostics { warnings: vec![Warning::new(message)], ..Diagnostics::default() }
+    }
+
+    fn focusable(y: f32, scroll: Option<usize>) -> FocusItem {
+        FocusItem {
+            x: 40.0,
+            y,
+            width: 200.0,
+            height: 50.0,
+            kind: FocusKind::Activate { on_tap: String::new(), instance: None },
+            scroll,
+        }
+    }
+
+    fn scroller() -> ScrollRegion {
+        ScrollRegion {
+            id: 0,
+            x: 30.0,
+            y: 100.0,
+            width: 220.0,
+            height: 220.0,
+            content_width: 220.0,
+            content_height: 600.0,
+            max: Offset { x: 0.0, y: 380.0 },
+        }
+    }
+
+    /// Outside a scroller there is nothing to clip against, so the ring is one
+    /// plain rectangle, as it always was.
+    #[test]
+    fn a_focus_ring_outside_a_scroller_is_unclipped() {
+        assert_eq!(focus_ring(&focusable(150.0, None), None).len(), 1);
+    }
+
+    /// The ring is painted as its own scene after the document's, so it never
+    /// passes through the clip a scroller puts around its children. It has to
+    /// carry its own, or a ring on a row scrolled up out of a list draws over
+    /// whatever sits above the list. That is a real defect, seen in
+    /// `examples/router.rux`: the crew list drew a ring over the paragraph
+    /// above it.
+    #[test]
+    fn a_focus_ring_inside_a_scroller_is_clipped_to_it() {
+        let paints = focus_ring(&focusable(150.0, Some(0)), Some(&scroller()));
+        assert_eq!(paints.len(), 3, "a clip, the ring, and the matching pop");
+        assert!(matches!(paints[0], Paint::PushClip { .. }), "{:?}", paints[0]);
+        assert!(matches!(paints[2], Paint::PopClip), "{:?}", paints[2]);
+    }
+
+    /// Scrolled fully out of view it draws nothing at all. A ring clipped to a
+    /// sliver at the container's edge reads as a rendering fault rather than as
+    /// a focused element that happens to be off-screen.
+    #[test]
+    fn a_focus_ring_scrolled_out_of_view_is_not_drawn() {
+        let above = focus_ring(&focusable(-90.0, Some(0)), Some(&scroller()));
+        assert!(above.is_empty(), "scrolled off the top: {above:?}");
+        let below = focus_ring(&focusable(400.0, Some(0)), Some(&scroller()));
+        assert!(below.is_empty(), "scrolled off the bottom: {below:?}");
+        // And one straddling the edge is still drawn, clipped.
+        let edge = focus_ring(&focusable(90.0, Some(0)), Some(&scroller()));
+        assert_eq!(edge.len(), 3, "partly visible, so still drawn: {edge:?}");
     }
 
     /// The overlay covers the app it is describing, so it has to be dismissable.

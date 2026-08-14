@@ -5,6 +5,30 @@
 //! caller-supplied `measure` callback (so this crate stays free of any font
 //! dependency, the shell owns the text engine). See `docs/04-architecture.md`,
 //! Stage 4.
+//!
+//! The crate is mostly its vocabulary. [`Style`] is the honored subset of CSS
+//! as the engine actually sees it, and [`Node`] is one styled element with its
+//! children. `rux-style` produces that tree; this crate turns it into the flat
+//! [`Paint`] list `rux-paint` consumes, in absolute coordinates with the
+//! cascade and the box model already collapsed into numbers.
+//!
+//! Layout emits more than pictures, because a frame's geometry is the only
+//! place several other questions can be answered honestly. Alongside the paint
+//! items come the regions the shell needs and cannot recompute for itself:
+//! [`HitRegion`] for pointer targets, [`ScrollRegion`] for what scrolls and how
+//! far, [`FocusRegion`] and [`FocusItem`] for tab order, [`SelectRegion`] for
+//! selectable text, [`StateRegion`] for hover and active, and [`AccessNode`]
+//! for the accessibility tree. All of them are in the same coordinate space as
+//! the paint items, which is the point: two places doing the same coordinate
+//! arithmetic eventually disagree, so there is one conversion and everyone
+//! reads its output.
+//!
+//! Both flexbox and grid come from taffy. What does not come from taffy is
+//! text sizing, which is why `measure` is a callback: pulling a font
+//! stack into this crate would put shaping under layout, and the shell already
+//! owns one.
+
+use std::collections::HashMap;
 
 use taffy::prelude::*;
 use taffy::geometry::Point;
@@ -440,6 +464,11 @@ pub enum AccessRole {
     /// `type="select"`.
     ComboBox,
     Image,
+    /// A navigation target: `to="/path"`, or an explicit `role="link"`. Distinct
+    /// from a button because a screen reader announces it differently, and
+    /// because the distinction is what tells someone they are moving rather than
+    /// acting.
+    Link,
     /// A box that scrolls its content.
     ScrollView,
     /// A meaningful grouping (an explicit `role=` we don't map more precisely).
@@ -519,6 +548,21 @@ pub struct Node {
     pub state_path: Option<Vec<usize>>,
     /// What this element is, for assistive technology.
     pub access: Access,
+    /// Which component instance this node belongs to, when it is inside one.
+    ///
+    /// A component's own state is private to the instance, so a handler written
+    /// in a component has to say which instance it is running in: two `<panel>`
+    /// elements are two separate sets of state, and the handler text is
+    /// identical in both.
+    pub instance: Option<String>,
+    /// `r-key` on an `r-for` row: which *item* this node stands for, rather than
+    /// which slot it happens to occupy.
+    ///
+    /// Without it a list is identified by position, so reordering the data moves
+    /// every row's identity by one and anything attached to a row (the caret,
+    /// most visibly) stays behind with the slot. The runtime uses this to follow
+    /// a row across a reorder. Layout itself ignores it.
+    pub key: Option<String>,
 }
 
 impl Node {
@@ -539,6 +583,8 @@ impl Node {
             focus_model: None,
             state_path: None,
             access: Access::default(),
+            instance: None,
+            key: None,
         }
     }
 
@@ -559,6 +605,8 @@ impl Node {
             focus_model: None,
             state_path: None,
             access: Access::default(),
+            instance: None,
+            key: None,
         }
     }
 
@@ -579,6 +627,8 @@ impl Node {
             focus_model: None,
             state_path: None,
             access: Access::default(),
+            instance: None,
+            key: None,
         }
     }
 
@@ -733,6 +783,10 @@ pub struct HitRegion {
     /// it hovers here. Carried on the hit region because that is the geometry the
     /// shell already hit-tests; a `cursor` on a non-tappable box is not honored.
     pub cursor: Cursor,
+    /// The component instance this handler was written in, if any. Its state is
+    /// what the handler reads and writes, and two instances of one component
+    /// carry identical handler text, so the text alone cannot say which.
+    pub instance: Option<String>,
 }
 
 impl HitRegion {
@@ -750,6 +804,13 @@ pub struct FocusRegion {
     pub width: f32,
     pub height: f32,
     pub model: String,
+    /// The `r-key` of the `r-for` row this input sits in, when it sits in one.
+    ///
+    /// `model` alone does not identify an input: `r-model` is stored as written,
+    /// so every row of a list carries the *same* model text. Without this, two
+    /// inputs in one list are indistinguishable and the caret lands in the first
+    /// of them whichever one was tapped.
+    pub row: Option<String>,
     /// The input's text box (its laid-out child). The shell needs it to turn a
     /// click into a caret position.
     pub text: Option<PaintText>,
@@ -775,6 +836,11 @@ pub struct SelectRegion {
     pub width: f32,
     pub height: f32,
     pub model: String,
+    /// The `r-key` of the `r-for` row this select is in, when it is in one. The
+    /// model repeats across a list's rows, so without this the shell opens the
+    /// first row's dropdown wherever you tapped, draws it over that row, and
+    /// writes the chosen option into it.
+    pub row: Option<String>,
     pub options: Vec<String>,
 }
 
@@ -833,6 +899,16 @@ pub struct FocusItem {
     pub width: f32,
     pub height: f32,
     pub kind: FocusKind,
+    /// The scroller this item sits inside, if any, as an index into
+    /// [`Layout::scrolls`].
+    ///
+    /// The focus ring is painted by the shell as its own scene *after* the
+    /// document's, so it never passes through the `PushClip` a scroller emits
+    /// around its children. Without knowing the enclosing scroller, a ring on a
+    /// row scrolled out of a list draws over whatever is above the list. This
+    /// is the enclosing one, not the item's own: a scroller that is itself
+    /// focusable is clipped by its parent, not by itself.
+    pub scroll: Option<usize>,
 }
 
 impl FocusItem {
@@ -844,11 +920,11 @@ impl FocusItem {
 #[derive(Clone, Debug)]
 pub enum FocusKind {
     /// A text / textarea input: focusing it starts caret editing.
-    Text { model: String, multiline: bool, text: Option<PaintText> },
+    Text { model: String, row: Option<String>, multiline: bool, text: Option<PaintText> },
     /// A button / checkbox / radio: Space or Enter runs its handler.
-    Activate { on_tap: String },
+    Activate { on_tap: String, instance: Option<String> },
     /// A select: Space or Enter opens its dropdown.
-    Select { model: String, options: Vec<String> },
+    Select { model: String, row: Option<String>, options: Vec<String> },
 }
 
 /// The result of laying out a tree: paint items, hit regions, and focus regions,
@@ -866,6 +942,22 @@ pub struct Layout {
     pub states: Vec<StateRegion>,
     /// Elements exposed to assistive technology, in document order.
     pub access: Vec<AccessNode>,
+}
+
+/// A node's content box, as an offset from its border-box origin plus a size.
+///
+/// Taffy resolves padding and border against the container during layout, so
+/// these are already absolute pixels: percentage padding and `em` borders are
+/// handled by the time this is asked. Clamped at zero, because padding wider
+/// than the box itself is arithmetic, not a crash.
+fn content_box(layout: &taffy::Layout) -> (f32, f32, f32, f32) {
+    let (p, b) = (layout.padding, layout.border);
+    (
+        p.left + b.left,
+        p.top + b.top,
+        (layout.size.width - p.left - p.right - b.left - b.right).max(0.0),
+        (layout.size.height - p.top - p.bottom - b.top - b.bottom).max(0.0),
+    )
 }
 
 /// Callback that measures a text block:
@@ -1133,8 +1225,43 @@ fn to_inset(l: Option<Len>, vp: (f32, f32)) -> LengthPercentageAuto {
 struct Bound {
     id: NodeId,
     model: String,
+    /// The enclosing `r-for` row's key, the other half of an input's identity.
+    row: Option<String>,
     multiline: bool,
     options: Option<Vec<String>>,
+}
+
+/// The widest a box can ever be, given its own CSS and everything above it.
+///
+/// `parent` is the parent's *inner* width bound, `None` when nothing above has
+/// pinned one down. A `%` resolves against it; `vw`/`vh` against the viewport.
+/// `min-width` wins over `max-width`, as in CSS.
+fn width_cap(style: &Style, parent: Option<f32>, vp: (f32, f32)) -> Option<f32> {
+    let resolve = |l: Len| match l {
+        Len::Px(px) => Some(px),
+        Len::Pct(p) => parent.map(|b| b * p),
+        Len::Vw(v) => Some(vp.0 * v / 100.0),
+        Len::Vh(v) => Some(vp.1 * v / 100.0),
+    };
+    let capped = match (style.width.and_then(resolve), style.max_width.and_then(resolve)) {
+        (Some(w), Some(m)) => Some(w.min(m)),
+        (Some(w), None) => Some(w),
+        (None, Some(m)) => Some(parent.map_or(m, |p| p.min(m))),
+        (None, None) => parent,
+    };
+    match style.min_width.and_then(resolve) {
+        Some(min) => Some(capped.map_or(min, |c| c.max(min))),
+        None => capped,
+    }
+}
+
+/// The cap to hand this box's children: its own, less what its padding and
+/// border take out of it.
+fn inner_cap(style: &Style, own: Option<f32>) -> Option<f32> {
+    own.map(|w| {
+        let horizontal = style.padding.left + style.padding.right + style.border.left + style.border.right;
+        (w - horizontal).max(0.0)
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1142,9 +1269,9 @@ fn build(
     tree: &mut TaffyTree<TextContent>,
     node: &Node,
     paint: &mut Vec<(NodeId, PaintKind)>,
-    handlers: &mut Vec<(NodeId, String, Cursor)>,
+    handlers: &mut Vec<(NodeId, String, Cursor, Option<String>)>,
     models: &mut Vec<Bound>,
-    focus_labels: &mut Vec<(NodeId, String)>,
+    focus_labels: &mut Vec<(NodeId, String, Option<String>)>,
     hidden: &mut Vec<NodeId>,
     opacities: &mut Vec<(NodeId, f32)>,
     scrolls: &mut Vec<NodeId>,
@@ -1152,7 +1279,17 @@ fn build(
     states: &mut Vec<(NodeId, Vec<usize>)>,
     access: &mut Vec<(NodeId, Access, Option<String>)>,
     vp: (f32, f32),
+    // `cap` is the widest this node can end up, from the constraint chain above
+    // it; `caps` is where each text leaf's own cap is left for the measure hook.
+    cap: Option<f32>,
+    caps: &mut HashMap<NodeId, f32>,
+    // The `r-key` of the row this node is inside, inherited by everything under
+    // it. A keyed node starts a new row; nothing else changes it.
+    row: Option<&str>,
 ) -> NodeId {
+    let own_cap = width_cap(&node.style, cap, vp);
+    let child_cap = inner_cap(&node.style, own_cap);
+    let row = node.key.as_deref().or(row);
     let id = if let Some(tc) = &node.text {
         // Text leaves carry their content as taffy context so the measure hook
         // can shape them.
@@ -1173,6 +1310,11 @@ fn build(
             },
         ));
         paint.push((id, PaintKind::Text(tc.clone())));
+        // The text wraps inside this box, so its own padding and border come
+        // out of the width available to the glyphs.
+        if let Some(c) = child_cap {
+            caps.insert(id, c);
+        }
         id
     } else if let Some(color) = node.tick {
         let id = tree.new_leaf(to_taffy(&node.style, vp)).expect("taffy tick");
@@ -1206,7 +1348,7 @@ fn build(
         let children: Vec<NodeId> = node
             .children
             .iter()
-            .map(|c| build(tree, c, paint, handlers, models, focus_labels, hidden, opacities, scrolls, transforms, states, access, vp))
+            .map(|c| build(tree, c, paint, handlers, models, focus_labels, hidden, opacities, scrolls, transforms, states, access, vp, child_cap, caps, row))
             .collect();
         let id = if children.is_empty() {
             tree.new_leaf(to_taffy(&node.style, vp)).expect("taffy leaf")
@@ -1229,18 +1371,19 @@ fn build(
         id
     };
     if let Some(handler) = &node.on_tap {
-        handlers.push((id, handler.clone(), node.style.cursor));
+        handlers.push((id, handler.clone(), node.style.cursor, node.instance.clone()));
     }
     if let Some(model) = &node.model {
         models.push(Bound {
             id,
             model: model.clone(),
+            row: row.map(str::to_string),
             multiline: node.multiline,
             options: node.options.clone(),
         });
     }
     if let Some(fm) = &node.focus_model {
-        focus_labels.push((id, fm.clone()));
+        focus_labels.push((id, fm.clone(), row.map(str::to_string)));
     }
     if node.hidden {
         hidden.push(id);
@@ -1270,9 +1413,9 @@ fn collect(
     origin_x: f32,
     origin_y: f32,
     paint: &[(NodeId, PaintKind)],
-    handlers: &[(NodeId, String, Cursor)],
+    handlers: &[(NodeId, String, Cursor, Option<String>)],
     models: &[Bound],
-    focus_labels: &[(NodeId, String)],
+    focus_labels: &[(NodeId, String, Option<String>)],
     hidden: &[NodeId],
     opacities: &[(NodeId, f32)],
     scrolls: &[NodeId],
@@ -1281,6 +1424,9 @@ fn collect(
     access: &[(NodeId, Access, Option<String>)],
     offsets: &[Offset],
     vp: (f32, f32),
+    // The nearest scroller above this node, so a focus ring can be clipped to
+    // the box that clips everything else in it.
+    inside_scroll: Option<usize>,
     out: &mut Layout,
 ) {
     let layout = tree.layout(id).expect("layout");
@@ -1362,13 +1508,21 @@ fn collect(
                     }));
                 }
             }
-            PaintKind::Text(tc) => out.paints.push(Paint::Text(PaintText {
-                x,
-                y,
-                width: layout.size.width,
-                height: layout.size.height,
-                content: tc.clone(),
-            })),
+            // Glyphs go in the *content* box, inside this node's own padding and
+            // border. Painting them at the border box put a padded label flush
+            // against the edge of its own background: the box grew, the words
+            // did not move. The size matters as much as the origin, since it is
+            // what the run is aligned and wrapped within.
+            PaintKind::Text(tc) => {
+                let (cx, cy, cw, ch) = content_box(layout);
+                out.paints.push(Paint::Text(PaintText {
+                    x: x + cx,
+                    y: y + cy,
+                    width: cw,
+                    height: ch,
+                    content: tc.clone(),
+                }))
+            }
             PaintKind::Tick(color) => out.paints.push(Paint::Tick(PaintTick {
                 x,
                 y,
@@ -1388,13 +1542,14 @@ fn collect(
 
     // A `for=` label targeting a text input: a focus region at the label's box,
     // carrying the *target's* model, so tapping the label focuses that input.
-    if let Some((_, model)) = focus_labels.iter().find(|(nid, _)| *nid == id) {
+    if let Some((_, model, row)) = focus_labels.iter().find(|(nid, ..)| *nid == id) {
         out.focuses.push(FocusRegion {
             x,
             y,
             width: layout.size.width,
             height: layout.size.height,
             model: model.clone(),
+            row: row.clone(),
             text: None,
             multiline: false,
             scroll_id: None,
@@ -1427,7 +1582,7 @@ fn collect(
         });
     }
 
-    if let Some((_, handler, cursor)) = handlers.iter().find(|(nid, ..)| *nid == id) {
+    if let Some((_, handler, cursor, instance)) = handlers.iter().find(|(nid, ..)| *nid == id) {
         out.hits.push(HitRegion {
             x,
             y,
@@ -1435,6 +1590,7 @@ fn collect(
             height: layout.size.height,
             on_tap: handler.clone(),
             cursor: *cursor,
+            instance: instance.clone(),
         });
     }
 
@@ -1448,6 +1604,7 @@ fn collect(
                 width: fw,
                 height: fh,
                 model: bound.model.clone(),
+                row: bound.row.clone(),
                 options: options.clone(),
             });
             out.focusables.push(FocusItem {
@@ -1455,7 +1612,12 @@ fn collect(
                 y,
                 width: fw,
                 height: fh,
-                kind: FocusKind::Select { model: bound.model.clone(), options: options.clone() },
+                kind: FocusKind::Select {
+                    model: bound.model.clone(),
+                    row: bound.row.clone(),
+                    options: options.clone(),
+                },
+                scroll: inside_scroll,
             });
         } else {
             // A text/textarea input: its value is rendered by its single text
@@ -1470,11 +1632,15 @@ fn collect(
                         PaintKind::Text(tc) if *nid == kid => Some(tc.clone()),
                         _ => None,
                     })?;
+                    // The same content box the glyphs are painted in, or the
+                    // caret would sit at the border box while the text it is
+                    // supposed to be inside sits within the padding.
+                    let (cx, cy, cw, ch) = content_box(child);
                     Some(PaintText {
-                        x: x + child.location.x,
-                        y: y + child.location.y,
-                        width: child.size.width,
-                        height: child.size.height,
+                        x: x + child.location.x + cx,
+                        y: y + child.location.y + cy,
+                        width: cw,
+                        height: ch,
                         content,
                     })
                 });
@@ -1484,6 +1650,7 @@ fn collect(
                 width: fw,
                 height: fh,
                 model: bound.model.clone(),
+                row: bound.row.clone(),
                 text: text.clone(),
                 multiline: bound.multiline,
                 // The scroll block below assigns ids as `out.scrolls.len()`, so if
@@ -1495,10 +1662,16 @@ fn collect(
                 y,
                 width: fw,
                 height: fh,
-                kind: FocusKind::Text { model: bound.model.clone(), multiline: bound.multiline, text },
+                kind: FocusKind::Text {
+                    model: bound.model.clone(),
+                    row: bound.row.clone(),
+                    multiline: bound.multiline,
+                    text,
+                },
+                scroll: inside_scroll,
             });
         }
-    } else if let Some((_, handler, _)) = handlers.iter().find(|(nid, ..)| *nid == id) {
+    } else if let Some((_, handler, _, instance)) = handlers.iter().find(|(nid, ..)| *nid == id) {
         // A button / checkbox / radio (anything with a `@tap` handler) is
         // keyboard-reachable: Space or Enter runs the same handler as a tap.
         out.focusables.push(FocusItem {
@@ -1506,7 +1679,8 @@ fn collect(
             y,
             width: fw,
             height: fh,
-            kind: FocusKind::Activate { on_tap: handler.clone() },
+            kind: FocusKind::Activate { on_tap: handler.clone(), instance: instance.clone() },
+            scroll: inside_scroll,
         });
     }
 
@@ -1524,8 +1698,12 @@ fn collect(
     // A scroller shifts its children by the current offset and registers itself
     // so the wheel, the scrollbars and the keyboard can find it.
     let mut shift = Offset::default();
+    // What the children are clipped by: this box if it scrolls, otherwise
+    // whatever was clipping us.
+    let mut child_scroll = inside_scroll;
     if scrolls.contains(&id) {
         let sid = out.scrolls.len();
+        child_scroll = Some(sid);
         let max = Offset {
             x: (layout.content_size.width - layout.size.width).max(0.0),
             y: (layout.content_size.height - layout.size.height).max(0.0),
@@ -1561,6 +1739,7 @@ fn collect(
             access,
             offsets,
             vp,
+            child_scroll,
             out,
         );
     }
@@ -1620,6 +1799,7 @@ pub fn layout_scrolled(
     let mut states = Vec::new();
     let mut access = Vec::new();
     let vp = (avail_w, avail_h);
+    let mut caps: HashMap<NodeId, f32> = HashMap::new();
     let root_id = build(
         &mut tree,
         root,
@@ -1634,6 +1814,11 @@ pub fn layout_scrolled(
         &mut states,
         &mut access,
         vp,
+        // The root is forced to the viewport below, so that is the widest
+        // anything can be.
+        Some(avail_w),
+        &mut caps,
+        None, // the root is not inside any row
     );
 
     // Force the root to fill the viewport so a `screen` always covers the window.
@@ -1650,7 +1835,7 @@ pub fn layout_scrolled(
             width: AvailableSpace::Definite(avail_w),
             height: AvailableSpace::Definite(avail_h),
         },
-        |known, available, _id, ctx, _style| {
+        |known, available, id, ctx, _style| {
             if let (Some(w), Some(h)) = (known.width, known.height) {
                 return Size { width: w, height: h };
             }
@@ -1660,8 +1845,27 @@ pub fn layout_scrolled(
                     // the text take its natural single-line width.
                     let max = known.width.or(match available.width {
                         AvailableSpace::Definite(w) => Some(w),
-                        _ => None,
+                        // Min-content is the narrowest the box can be without
+                        // its content spilling, which for text is the longest
+                        // unbreakable word. Wrapping at zero asks exactly that.
+                        // Answering it with the single-line width (which is
+                        // what "no constraint" means here) told taffy the box
+                        // could never be narrower than one long line.
+                        AvailableSpace::MinContent => Some(0.0),
+                        AvailableSpace::MaxContent => None,
                     });
+                    // Never measure at a width this box can never have. Taffy
+                    // sizes a capped box from its *un*capped content, clamps
+                    // the width afterwards, and does not revisit the height, so
+                    // a `max-width` card was measured as one long line and
+                    // drawn as three. Wrapping at the cap up front is what
+                    // makes the measured height the height that gets drawn.
+                    let cap = caps.get(&id).copied();
+                    let max = match (max, cap) {
+                        (Some(m), Some(c)) => Some(m.min(c)),
+                        (None, Some(c)) => Some(c),
+                        (m, None) => m,
+                    };
                     let (w, h) = measure(tc, max);
                     Size {
                         width: known.width.unwrap_or(w),
@@ -1680,7 +1884,7 @@ pub fn layout_scrolled(
     let mut out = Layout::default();
     collect(
         &tree, root_id, 0.0, 0.0, &paint, &handlers, &models, &focus_labels, &hidden, &opacities,
-        &scrolls, &transforms, &states, &access, offsets, vp, &mut out,
+        &scrolls, &transforms, &states, &access, offsets, vp, None, &mut out,
     );
     out
 }

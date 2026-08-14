@@ -5,6 +5,7 @@ version.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "Rux runtime shell: window, GPU surface, input, and frame loop. Internal to Rux; the supported entry point is the ruxlang crate."
+readme = "README.md"
 keywords = ["ui", "window", "gpu", "winit"]
 categories = ["gui"]
 
@@ -73,4 +74,9 @@ web-sys = { version = "0.3", features = [
     "MediaQueryList",
     "Node",
     "Window",
+    # The router's web half: read the path the page was opened at, push an entry
+    # per navigation, and hear the browser's own Back and Forward.
+    "History",
+    "Location",
+    "PopStateEvent",
 ] }

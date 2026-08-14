@@ -1,0 +1,56 @@
+<template>
+  <view class="page">
+    <text class="heading">the crew</text>
+    <text class="lead">Each row goes to its own path. The name in the path is all the detail page is given.</text>
+
+    <view class="rows">
+      <!-- `path_for` builds the path from the route's *name*, so the URL scheme
+           lives in one place instead of being spelled out in every link that
+           leads there. It returns a string, so it works anywhere a path does. -->
+      <view class="row" r-for="member in crew" r-key="member.id"
+            :to="path_for(&quot;crew-detail&quot;, #{ id: member.id })">
+        <text class="name">{{ member.name }}</text>
+        <text class="job">{{ member.job }}</text>
+      </view>
+    </view>
+  </view>
+</template>
+
+<style>
+  .page {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    width: 100%;
+  }
+
+  .heading { color: #cdd6f4; font-size: 20px; font-weight: 700; }
+  .lead { color: #9399b2; font-size: 13px; }
+
+  /* Capped and scrolling on purpose: scroll restoration cannot be seen on a
+     page that fits. Scroll down, open a member, come back. */
+  .rows {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    width: 100%;
+    max-height: 220px;
+    overflow-y: auto;
+  }
+
+  .row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    width: 100%;
+    padding: 12px 14px;
+    background: #313244;
+    border: 2px solid #45475a;
+    border-radius: 10px;
+    cursor: pointer;
+  }
+
+  .row:hover { border-color: #89b4fa; }
+  .name { color: #cdd6f4; font-size: 14px; font-weight: 700; }
+  .job { color: #9399b2; font-size: 12px; }
+</style>

@@ -88,14 +88,27 @@ for entry in "${pages[@]}"; do
 done
 
 if [[ "${1:-}" == "--check" ]]; then
-  # `git status --porcelain`, not `git diff`: diff is blind to untracked files,
-  # so a newly added page would pass the check while never being committed.
-  # This catches modified *and* untracked output.
-  dirty="$(git -C "$repo" status --porcelain -- "${generated[@]}")"
-  if [[ -n "$dirty" ]]; then
+  # Two questions, because neither command answers both:
+  #
+  #   · `git diff` for content. Not `git status --porcelain`, which was used
+  #     here and is wrong on Windows: with `core.autocrlf=true` a regenerated
+  #     file is written with LF where the checkout would have CRLF, and status
+  #     calls that modified *forever* while diff correctly reports the content
+  #     as identical. So this check failed on every Windows run whether or not
+  #     anything had drifted, and CI never noticed because CI is Linux.
+  #   · `ls-files --others` for new pages, which diff is blind to: a page added
+  #     to the list above would otherwise pass the check while never being
+  #     committed. That was the original reason for using status, and it is
+  #     kept rather than lost.
+  changed="$(git -C "$repo" diff --name-only -- "${generated[@]}")"
+  untracked="$(git -C "$repo" ls-files --others --exclude-standard -- "${generated[@]}")"
+  # Written as an `if`, not `[[ … ]] && …`: under `set -e` a trailing test that
+  # is simply false would end the script as though it had failed.
+  if [[ -n "$changed" || -n "$untracked" ]]; then
     echo "error: generated docs are out of sync with docs/." >&2
     echo "Run ./site/sync-docs.sh and commit the result." >&2
-    echo "$dirty" >&2
+    [[ -n "$changed" ]] && printf 'changed: %s\n' $changed >&2
+    [[ -n "$untracked" ]] && printf 'new:     %s\n' $untracked >&2
     exit 1
   fi
   echo "generated docs are up to date."

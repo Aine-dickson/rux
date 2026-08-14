@@ -84,6 +84,29 @@ pub struct Sfc {
     pub style_line: usize,
     /// The same, for `script`.
     pub script_line: usize,
+    /// Paths from `<style src="a.css, b.css">`, in the order written.
+    ///
+    /// Parsing does no IO, so this is only the request. Whoever has a
+    /// filesystem (`rux-runtime`) reads the files and fills in
+    /// [`Sfc::style_includes`]; a browser, which has neither a filesystem nor a
+    /// path to be relative to, warns instead.
+    pub style_src: Vec<String>,
+    /// Included stylesheets, filled in after parsing by whoever resolved
+    /// [`Sfc::style_src`]. Empty when nothing was included, which is the usual
+    /// case.
+    ///
+    /// These cascade **before** the inline `<style>` body, so a document can
+    /// override the palette it included without reaching for `!important`, the
+    /// same way source order works in CSS.
+    pub style_includes: Vec<StyleInclude>,
+}
+
+/// One resolved external stylesheet: where it came from, and what it said.
+#[derive(Debug, Clone)]
+pub struct StyleInclude {
+    /// The path as written in `src`, for error messages. Not reopened.
+    pub path: String,
+    pub css: String,
 }
 
 /// An element node: a tag, its attributes (in source order), and its children.
@@ -171,6 +194,10 @@ pub fn parse_sfc(src: &str) -> Result<Sfc, ParseError> {
         section(src, "template").ok_or_else(|| ParseError::new("missing <template> section"))?;
     let (style, style_line) = trimmed_section(src, "style");
     let (script, script_line) = trimmed_section(src, "script");
+    let style_src = section_with_open(src, "style")
+        .and_then(|(_, _, open)| open_tag_attr(&open, "src"))
+        .map(|v| split_src(&v))
+        .unwrap_or_default();
 
     // Positions inside the template are relative to the section; shift them onto
     // the file's lines so a reported line matches the editor's gutter.
@@ -192,6 +219,8 @@ pub fn parse_sfc(src: &str) -> Result<Sfc, ParseError> {
         style_line,
         script,
         script_line,
+        style_src,
+        style_includes: Vec::new(),
     })
 }
 
@@ -214,13 +243,65 @@ fn trimmed_section(src: &str, name: &str) -> (String, usize) {
 /// byte offset it starts at (so errors inside it can be reported against the
 /// file's own line numbers).
 fn section(src: &str, name: &str) -> Option<(String, usize)> {
+    section_with_open(src, name).map(|(body, at, _)| (body, at))
+}
+
+/// [`section`], and the opening tag itself, so its attributes can be read.
+///
+/// Only `<style src="…">` needs this today. The sections are found by scanning
+/// rather than by the element parser, because they are the frame the parser
+/// runs inside: `<script>` holds rhai and `<style>` holds CSS, and neither is
+/// the XML-shaped grammar.
+fn section_with_open(src: &str, name: &str) -> Option<(String, usize, String)> {
     let open = format!("<{name}");
     let start = src.find(&open)?;
-    // Advance past the opening tag's closing `>`.
-    let after_open = start + src[start..].find('>')? + 1;
+    let open_end = start + src[start..].find('>')?;
+    let after_open = open_end + 1;
     let close = format!("</{name}>");
     let end = src[after_open..].find(&close)? + after_open;
-    Some((src[after_open..end].to_string(), after_open))
+    Some((
+        src[after_open..end].to_string(),
+        after_open,
+        src[start..open_end].to_string(),
+    ))
+}
+
+/// Read one attribute's value out of a raw opening tag, `<style src="a.css"`.
+///
+/// Deliberately small: a section's opening tag is one line of a handful of
+/// attributes, not a document. Quotes are required, because an unquoted path
+/// cannot contain a space and silently truncating one at the space is the kind
+/// of failure that gets blamed on the file being missing.
+fn open_tag_attr(open: &str, name: &str) -> Option<String> {
+    let mut rest = open;
+    loop {
+        let at = rest.find(name)?;
+        let before_ok = rest[..at].chars().next_back().is_none_or(char::is_whitespace);
+        let after = &rest[at + name.len()..];
+        let value = after.trim_start();
+        if before_ok && value.starts_with('=') {
+            let value = value[1..].trim_start();
+            let quote = value.chars().next()?;
+            if quote == '"' || quote == '\'' {
+                let value = &value[1..];
+                let end = value.find(quote)?;
+                return Some(decode_entities(&value[..end]));
+            }
+            return None;
+        }
+        rest = &rest[at + name.len()..];
+    }
+}
+
+/// Split a `src` attribute into paths. Comma-separated, so one `<style>` can
+/// pull in a palette and a component sheet without needing a second section.
+fn split_src(value: &str) -> Vec<String> {
+    value
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect()
 }
 
 /// A small recursive-descent parser over the template characters.
@@ -478,6 +559,47 @@ mod tests {
         let line_of = |n: usize| src.lines().nth(n - 1).unwrap().trim();
         assert!(line_of(sfc.style_line).starts_with(".a"));
         assert!(line_of(sfc.script_line).starts_with("let n"));
+    }
+
+    /// `src` on the `<style>` tag is read, and reading it must not disturb the
+    /// line the body starts on: the attribute lives on the opening tag, which
+    /// was already being skipped past before includes existed.
+    #[test]
+    fn a_style_tag_can_name_external_sheets() {
+        let src = "<template>\n  <screen></screen>\n</template>\n\n<style src=\"theme.css, layout.css\">\n  .a { color: red; }\n</style>\n";
+        let sfc = parse_sfc(src).expect("parses");
+
+        assert_eq!(sfc.style_src, vec!["theme.css", "layout.css"]);
+        assert_eq!(sfc.style, ".a { color: red; }");
+        assert_eq!(sfc.style_line, 6, "the body still starts on line 6");
+        // Parsing does no IO, so nothing is resolved yet.
+        assert!(sfc.style_includes.is_empty());
+    }
+
+    #[test]
+    fn a_style_tag_without_src_asks_for_nothing() {
+        let sfc = parse_sfc("<template><screen></screen></template>\n<style>.a{color:red}</style>")
+            .expect("parses");
+        assert!(sfc.style_src.is_empty());
+    }
+
+    /// Single quotes work, and a path is allowed to contain a space. An
+    /// unquoted value is refused rather than truncated at the space, because a
+    /// half-read path fails later as "no such file" and sends the reader
+    /// looking for a missing file instead of a missing quote.
+    #[test]
+    fn src_values_are_quoted_and_may_contain_spaces() {
+        let quoted = parse_sfc(
+            "<template><screen></screen></template>\n<style src='my theme.css'>.a{color:red}</style>",
+        )
+        .expect("parses");
+        assert_eq!(quoted.style_src, vec!["my theme.css"]);
+
+        let bare = parse_sfc(
+            "<template><screen></screen></template>\n<style src=theme.css>.a{color:red}</style>",
+        )
+        .expect("parses");
+        assert!(bare.style_src.is_empty(), "unquoted is not half-read");
     }
 
     /// A file with no `<style>` must not claim line 0, which is not a line.

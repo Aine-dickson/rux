@@ -6,6 +6,11 @@ you notice the release isn't actually ready.
 
 This file is the checklist. It's short on purpose.
 
+The checklist below is what a release *is*. **[Packing a
+release](#packing-a-release)** is how one is held safely between the day the
+work closes and the day it goes out, which is the normal case now that the line
+keeps moving after a milestone closes. Read that section too before shipping.
+
 ## The rule
 
 > A release is a version tag, a GitHub Release, **and** a blog post at
@@ -65,6 +70,10 @@ keeps learning:
 Between releases the workspace version carries a `-dev` suffix, `0.4.0-dev` is
 the *line being built*, not a release. Releasing is what drops the suffix.
 
+`./scripts/release.sh freeze X.Y.Z` does this step and checks it; the boxes below
+are what it does, kept here because knowing what the script is for matters more
+than the script.
+
 - [ ] Drop `-dev` from `version` in `[workspace.package]` (root `Cargo.toml`),
       so `X.Y.Z-dev` becomes `X.Y.Z`.
 - [ ] Drop it from every `rux-*` entry in `[workspace.dependencies]`, in the same
@@ -78,6 +87,9 @@ the *line being built*, not a release. Releasing is what drops the suffix.
 - [ ] After tagging, open the next line: set both back to `X.Y.(Z+1)-dev`.
 
 ### 5. Tag and publish
+
+`./scripts/release.sh ship X.Y.Z` does the first two boxes and stops before the
+push; the rest is by hand on purpose.
 
 - [ ] Merge to `main`. The site deploys automatically
       ([`.github/workflows/site.yml`](.github/workflows/site.yml)).
@@ -128,6 +140,77 @@ Plan for that: publish a layer, wait for the index, then dry-run the next.
       will never be a `0.1.0` there.
 - [ ] Check the rendered page for `ruxlang` afterwards. It is the one crate with
       a `readme`, and it is what anyone finding Rux by search reads first.
+
+## Packing a release
+
+Releases go out on Fridays; the work does not stop on Thursday. Once a milestone
+closes, the next one starts immediately, and without a discipline for that a
+release either drags whatever landed afterwards into the tag, or has to be
+reconstructed on the day from memory.
+
+So a release is **packed when the work closes** and **shipped on its date**, and
+the two are separate operations on separate commits.
+
+### The capsule
+
+The capsule is a branch, `release/vX.Y.Z`, cut when the milestone closes and
+carrying the version drop from step 4. **Nothing lands on it afterwards** except
+the single dated commit that `ship` makes. The next milestone branches *from the
+capsule*, so the released tree is an ancestor of everything that follows and
+nothing that follows can reach back into it.
+
+One rule makes this work, and it is the easiest to forget:
+
+> **Nothing merges to `main` until the release that owns it has shipped.**
+
+`site.yml` deploys on any push to `main` touching `site/**`, so a merge is a
+publish. A later milestone merged early would put its docs live under the
+current release's name, and would drag its commits into the release merge.
+
+### The commands
+
+```bash
+./scripts/release.sh freeze 0.6.0      # pack it: capsule branch + version drop
+./scripts/release.sh open-next 0.7.0   # start the next line, off the capsule
+./scripts/release.sh check 0.6.0       # prove it still ships, any day
+./scripts/release.sh ship 0.6.0        # release day: date, undraft, merge, tag
+./scripts/release.sh ship 0.6.0 --push # ...and push, the one-way half
+./scripts/release.sh publish 0.6.0            # crates.io, dry run
+./scripts/release.sh publish 0.6.0 --execute  # crates.io, for real
+```
+
+`check` is the one that earns the discipline. It runs every gate inside a
+throwaway git worktree of the capsule, so its answer cannot be influenced by the
+working tree, the branch you happen to be on, or anything built since. Run it
+the morning of the release; if it is green, the release is the same release it
+was the day it was packed.
+
+The gates are: the version and every `[workspace.dependencies]` entry agree and
+carry no `-dev`; the post exists, names the right version, and has no
+placeholders left; `docs/` and the generated site pages match; `cargo build` is
+warning-clean; `cargo test --workspace` is green; and `rux-web` compiles for
+`wasm32`. That last one is there because the web build was once broken for three
+weeks without anything noticing: nothing else in the suite compiles for wasm.
+
+### What is deliberately not automated
+
+`ship` stops before `git push` unless you pass `--push`, and it never cuts the
+GitHub Release. Everything it does before that point is local and undoable;
+everything after is not.
+
+`publish` runs from the **tag**, in its own worktree, never from your working
+tree. crates.io is a one-way door: a version cannot be replaced, only yanked,
+so publishing from a tree that had moved on would put the next milestone's code
+under this version number permanently. It skips crates already on the index, so
+a run stopped by rate limiting is resumed by running it again.
+
+### The date
+
+`ship` stamps the post with the day it runs and flips `draft = false` in the
+same commit. That is why the post is packed as a draft: Zola builds future-dated
+pages, so a date alone will not hold a post back, and `draft = true` will. The
+post therefore reads as written on the day it went out, however long before it
+was actually written.
 
 ## Release timing
 

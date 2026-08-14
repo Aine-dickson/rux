@@ -1,0 +1,103 @@
+<template>
+  <screen class="app">
+    <text class="title">computed values &amp; effects</text>
+    <text class="lead">The totals below are declared once and never recomputed by hand. The status line is an effect: it runs when what it reads changes, and once on load, so it is never blank waiting for a first edit.</text>
+
+    <view class="row">
+      <view class="stepper">
+        <view class="btn" @tap="qty = qty - 1"><text class="btn-label">-</text></view>
+        <text class="qty">{{ qty }}</text>
+        <view class="btn" @tap="qty = qty + 1"><text class="btn-label">+</text></view>
+      </view>
+      <text class="unit">x {{ price }} each</text>
+    </view>
+
+    <view class="card">
+      <view class="line">
+        <text class="key">subtotal</text>
+        <text class="value">{{ subtotal }}</text>
+      </view>
+      <view class="line">
+        <text class="key">tax</text>
+        <text class="value">{{ tax }}</text>
+      </view>
+      <view class="line total">
+        <text class="key">total</text>
+        <text class="value">{{ total }}</text>
+      </view>
+    </view>
+
+    <text class="status">{{ status }}</text>
+  </screen>
+</template>
+
+<style>
+  .app {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    padding: 28px;
+    background: #1e1e2e;
+  }
+
+  .title { color: #cdd6f4; font-size: 22px; font-weight: 700; }
+  .lead { color: #9399b2; font-size: 13px; max-width: 460px; }
+  .row { display: flex; align-items: center; gap: 14px; }
+  .stepper { display: flex; align-items: center; gap: 10px; }
+
+  .btn {
+    width: 30px;
+    height: 30px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: #313244;
+    border-radius: 8px;
+    cursor: pointer;
+  }
+
+  .btn:hover { background: #45475a; }
+  .btn-label { color: #cdd6f4; font-size: 16px; font-weight: 700; }
+  .qty { color: #cdd6f4; font-size: 18px; font-weight: 700; width: 34px; text-align: center; }
+  .unit { color: #9399b2; font-size: 13px; }
+
+  .card {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    max-width: 300px;
+    padding: 16px;
+    background: #313244;
+    border-radius: 10px;
+  }
+
+  /* `width: 100%` because space-between needs free space to distribute, and a
+     hugging box has none. */
+  .line { display: flex; justify-content: space-between; width: 100%; }
+  .key { color: #9399b2; font-size: 13px; }
+  .value { color: #cdd6f4; font-size: 13px; }
+  .total .key, .total .value { color: #a6e3a1; font-size: 16px; font-weight: 700; }
+  .status { color: #f9e2af; font-size: 13px; }
+</style>
+
+<script>
+  let qty = signal(2);
+  let price = signal(12);
+
+  // Derived once, read anywhere. Each one may read the ones above it.
+  computed subtotal = qty * price;
+  computed tax = subtotal / 10;
+  computed total = subtotal + tax;
+
+  let status = signal("");
+
+  // An effect runs on load and whenever what it read changes. It writes
+  // `status` and does not read it, so it never wakes itself.
+  effect {
+    if total > 100 {
+      status = "over budget by " + (total - 100);
+    } else {
+      status = "within budget, " + (100 - total) + " to spare";
+    }
+  }
+</script>

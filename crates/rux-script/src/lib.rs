@@ -12,7 +12,7 @@
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 
-use rhai::{Dynamic, Engine as RhaiEngine, Module, Scope, AST};
+use rhai::{Dynamic, Engine as RhaiEngine, ImmutableString, Module, Scope, AST};
 use rux_reactive::{Value, Warning};
 
 thread_local! {
@@ -48,6 +48,66 @@ impl Builder {
                 Ok(i) => Dynamic::from(i as f64),
                 Err(_) => x,
             }
+        });
+        // Numbers become text the same way everywhere.
+        //
+        // Every number in Rux is an f64, so rhai renders a whole one as "32.0"
+        // while `{{ }}` renders it as "32": the same value spelled two ways in
+        // one window, depending on whether it went through string concatenation
+        // on the way. These overloads point rhai at the same rule `Value`
+        // displays with, so `"over by " + total` and `{{ total }}` agree.
+        engine.register_fn("to_string", |n: f64| Value::Number(n).to_display());
+        engine.register_fn("+", |a: ImmutableString, b: f64| {
+            format!("{a}{}", Value::Number(b).to_display())
+        });
+        engine.register_fn("+", |a: f64, b: ImmutableString| {
+            format!("{}{b}", Value::Number(a).to_display())
+        });
+        // `emit("change")` / `emit("change", payload)`: a component telling its
+        // caller that something happened. It only records the emission; who
+        // listens, and in whose scope their handler runs, is the runtime's
+        // business. A script function cannot mutate a signal, so it could not
+        // run the caller's body itself even if it knew it.
+        engine.register_fn("emit", |name: ImmutableString| {
+            EMISSIONS.with(|e| e.borrow_mut().push((name.to_string(), None)));
+        });
+        engine.register_fn("emit", |name: ImmutableString, payload: Dynamic| {
+            EMISSIONS.with(|e| e.borrow_mut().push((name.to_string(), Some(from_dynamic(&payload)))));
+        });
+        // `navigate("/path")`, `back()`, `forward()`: the router's verbs. Like
+        // `emit`, they record an intent rather than acting on it. Navigation
+        // moves the `route` signal and pushes history, and neither is something
+        // a script function can reach from in here.
+        engine.register_fn("navigate", |path: ImmutableString| {
+            NAVIGATIONS.with(|n| n.borrow_mut().push(Nav::To(path.to_string())));
+        });
+        // `replace` is not a convenience over `navigate`: it is the only way to
+        // redirect. A redirect done with `navigate` leaves the page that
+        // redirected sitting in the history, so Back returns to it and it
+        // redirects again, and the user cannot leave. Nothing in userland can
+        // work around that.
+        engine.register_fn("replace", |path: ImmutableString| {
+            NAVIGATIONS.with(|n| n.borrow_mut().push(Nav::Replace(path.to_string())));
+        });
+        // `path_for("crew-detail", #{ id: "grace" })` builds a path from a
+        // named route. A function returning a string rather than a second form
+        // of `navigate`, because a path is what `to=`, `:to=`, `navigate` and
+        // `replace` all already take: one new function reaches all four, and
+        // there is no second way to say the same thing.
+        engine.register_fn("path_for", |name: ImmutableString, values: rhai::Map| {
+            let values: Vec<(String, Value)> =
+                values.into_iter().map(|(k, v)| (k.to_string(), from_dynamic(&v))).collect();
+            build_named_path(&name, &values)
+        });
+        // A route with no parameters still has a name worth using.
+        engine.register_fn("path_for", |name: ImmutableString| {
+            build_named_path(&name, &[])
+        });
+        engine.register_fn("back", || {
+            NAVIGATIONS.with(|n| n.borrow_mut().push(Nav::Back));
+        });
+        engine.register_fn("forward", || {
+            NAVIGATIONS.with(|n| n.borrow_mut().push(Nav::Forward));
         });
         // Record every variable read while dependency-tracking is active, then
         // fall through (`Ok(None)`) to normal scope resolution. `on_var` is
@@ -104,6 +164,31 @@ impl Builder {
         })
     }
 }
+
+/// The signal the router keeps the current path in. Reserved: a document that
+/// declares it is warned rather than quietly overwritten.
+pub const ROUTE_SIGNAL: &str = "route";
+
+/// The signal holding what the matched route captured, as a map, so
+/// `{{ params.id }}` works anywhere and not only inside the matched view.
+pub const PARAMS_SIGNAL: &str = "params";
+
+/// The signal holding the query string, parsed, as a map.
+///
+/// Separate from `route` rather than part of it, so `route == "/search"` keeps
+/// meaning what it says once a query is present. Matching ignores it too: a
+/// query is an argument to a page, not a different page.
+pub const QUERY_SIGNAL: &str = "query";
+
+/// Whether there is anywhere to go back to, and anywhere to go forward to.
+/// Signals rather than functions, because what they are for is disabling a
+/// button, and a button's `:class` reads signals.
+pub const CAN_BACK_SIGNAL: &str = "can_go_back";
+pub const CAN_FORWARD_SIGNAL: &str = "can_go_forward";
+
+/// Every name the router provides. A script declaring one of these is warned.
+pub const ROUTER_SIGNALS: [&str; 5] =
+    [ROUTE_SIGNAL, PARAMS_SIGNAL, QUERY_SIGNAL, CAN_BACK_SIGNAL, CAN_FORWARD_SIGNAL];
 
 /// A live script engine: state in `scope`, script functions in `funcs`.
 pub struct Engine {
@@ -166,6 +251,210 @@ pub fn set_stderr_echo(on: bool) {
 /// Take the expression failures raised since the last call, emptying the sink.
 pub fn take_warnings() -> Vec<Warning> {
     WARNINGS.with(|w| std::mem::take(&mut *w.borrow_mut()))
+}
+
+/// Raise a script warning from outside the engine.
+///
+/// The runtime, not the engine, decides who receives an emitted event and how
+/// far a chain of them may run, so it is the only layer that can notice an
+/// event with nowhere to go. The warning belongs in this sink anyway: to the
+/// overlay and to `rux check` it is one more thing wrong with the script, and
+/// a second sink would let those two disagree about what was said.
+pub fn warn_script(message: impl Into<String>) {
+    warn(message.into());
+}
+
+thread_local! {
+    /// Events raised by `emit` since the last drain, in the order they were
+    /// raised. A sink rather than a return value because an emission can happen
+    /// anywhere inside a handler, including several levels down a script
+    /// function, and the handler's own result is already spoken for.
+    static EMISSIONS: RefCell<Vec<(String, Option<Value>)>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Take the events emitted since the last call, emptying the sink.
+pub fn take_emissions() -> Vec<(String, Option<Value>)> {
+    EMISSIONS.with(|e| std::mem::take(&mut *e.borrow_mut()))
+}
+
+/// One navigation asked for by a script: where to go, or which way along the
+/// history that has already been walked.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Nav {
+    To(String),
+    /// Go there *instead of* here: the current entry is overwritten rather than
+    /// added to, so Back skips the page that redirected.
+    Replace(String),
+    Back,
+    Forward,
+}
+
+thread_local! {
+    /// Navigations asked for since the last drain, in order. A sink for the same
+    /// reason as [`EMISSIONS`]: `navigate` can be called from anywhere inside a
+    /// handler, and what it means (move the route, push history) belongs to the
+    /// runtime rather than to the script tier.
+    static NAVIGATIONS: RefCell<Vec<Nav>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Take the navigations asked for since the last call, emptying the sink.
+pub fn take_navigations() -> Vec<Nav> {
+    NAVIGATIONS.with(|n| std::mem::take(&mut *n.borrow_mut()))
+}
+
+thread_local! {
+    /// Named routes, as `(name, pattern)` in the order written, so `path_for`
+    /// can build a path from a name and some parameters.
+    ///
+    /// A sink like the others, and for the same reason: `path_for` is a plain
+    /// rhai function registered once on the engine, and it has no way to reach
+    /// the document's template from inside a call.
+    static ROUTES: RefCell<Vec<(String, String)>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Tell the script tier what the document's named routes are. Replaces the
+/// previous set, since a reload may have changed them.
+pub fn set_routes(routes: Vec<(String, String)>) {
+    ROUTES.with(|r| *r.borrow_mut() = routes);
+}
+
+/// Build a path from a named route and a map of values.
+///
+/// Values matching a `:name` segment fill it. Anything left over becomes a
+/// query string, which is what makes this usable for a route that takes no path
+/// parameters at all (`path_for("search", #{ q: "rust" })`).
+///
+/// Every failure is warned about and then produces a path that visibly does not
+/// work, rather than one that quietly goes somewhere plausible: landing on the
+/// fallback page is a bug you can see, and landing on the wrong record is not.
+fn build_named_path(name: &str, values: &[(String, Value)]) -> String {
+    let pattern = ROUTES.with(|r| {
+        r.borrow().iter().find(|(n, _)| n == name).map(|(_, p)| p.clone())
+    });
+    let Some(pattern) = pattern else {
+        warn(format!(
+            "`path_for(\"{name}\", …)` names a route that does not exist; add `name=\"{name}\"` \
+             to the <route> it means"
+        ));
+        return name.to_string();
+    };
+
+    let mut used: Vec<&str> = Vec::new();
+    let mut path = String::new();
+    for segment in pattern.split('/').filter(|s| !s.is_empty()) {
+        path.push('/');
+        match segment.strip_prefix(':') {
+            Some(param) => match values.iter().find(|(k, _)| k == param) {
+                Some((key, value)) => {
+                    used.push(key.as_str());
+                    path.push_str(&encode(&value.to_display()));
+                }
+                None => {
+                    warn(format!(
+                        "`path_for(\"{name}\", …)` was not given `{param}`, which the route \
+                         `{pattern}` needs"
+                    ));
+                    path.push_str(segment);
+                }
+            },
+            None => path.push_str(segment),
+        }
+    }
+    if path.is_empty() {
+        path.push('/');
+    }
+
+    // Whatever the pattern did not take is a query. Order is the caller's, so
+    // the same call always produces the same URL.
+    let query: Vec<String> = values
+        .iter()
+        .filter(|(k, _)| !used.contains(&k.as_str()))
+        .map(|(k, v)| format!("{}={}", encode(k), encode(&v.to_display())))
+        .collect();
+    if query.is_empty() {
+        path
+    } else {
+        format!("{path}?{}", query.join("&"))
+    }
+}
+
+/// Split a location into its path and its query string.
+pub fn split_query(location: &str) -> (&str, &str) {
+    match location.split_once('?') {
+        Some((path, query)) => (path, query),
+        None => (location, ""),
+    }
+}
+
+/// Parse `a=1&b=two` into pairs, undoing percent-encoding.
+///
+/// A key with no `=` is present with an empty value, which is how a flag in a
+/// URL (`?debug`) reads, and a repeated key keeps the first: a map has one slot
+/// per name, and the alternative (a list, sometimes) would make every read of
+/// every query parameter check which it got.
+pub fn parse_query(query: &str) -> Vec<(String, Value)> {
+    let mut out: Vec<(String, Value)> = Vec::new();
+    for pair in query.split('&').filter(|p| !p.is_empty()) {
+        let (key, value) = match pair.split_once('=') {
+            Some((k, v)) => (k, v),
+            None => (pair, ""),
+        };
+        let key = decode(key);
+        if key.is_empty() || out.iter().any(|(k, _)| *k == key) {
+            continue;
+        }
+        out.push((key, Value::Text(decode(value))));
+    }
+    out
+}
+
+/// Percent-decode, treating `+` as a space the way a query string does.
+///
+/// Public because a path parameter has to come back out of a URL as whatever
+/// went in: `path_for` escapes a `/` in an id, and the route that captures it
+/// has to undo that, or the view is handed `a%2Fb` and shows it to somebody.
+pub fn percent_decode(s: &str) -> String {
+    decode(s)
+}
+
+fn decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'+' => out.push(b' '),
+            b'%' if i + 2 < bytes.len() => {
+                match u8::from_str_radix(&s[i + 1..i + 3], 16) {
+                    Ok(byte) => {
+                        out.push(byte);
+                        i += 2;
+                    }
+                    // Not an escape after all, so it is a literal `%`.
+                    Err(_) => out.push(b'%'),
+                }
+            }
+            byte => out.push(byte),
+        }
+        i += 1;
+    }
+    // A URL can carry any bytes; only valid UTF-8 can come back out as text.
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// Percent-encode everything that is not unreserved, so a value carrying a `/`,
+/// an `&` or a space survives being put in a URL and read back.
+fn encode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for byte in s.as_bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(*byte as char)
+            }
+            other => out.push_str(&format!("%{other:02X}")),
+        }
+    }
+    out
 }
 
 /// Collapse an expression to one short line for a message, a handler can be a
@@ -337,6 +626,44 @@ impl Engine {
             .collect()
     }
 
+    /// Put the current path in scope as the `route` signal.
+    ///
+    /// A signal rather than anything router-shaped, so `{{ route }}`, `r-if`,
+    /// `:class` and the change diff all understand navigation with no knowledge
+    /// of the router at all. It is added to the signal set as well as the scope,
+    /// or dependency tracking would filter reads of it out as a stray local and
+    /// nothing would subscribe.
+    ///
+    /// Returns whether the value actually moved, which is what tells the runtime
+    /// there is anything to repaint.
+    pub fn set_route(&mut self, path: &str) -> bool {
+        let changed = self.read_signal(ROUTE_SIGNAL).as_ref()
+            != Some(&Value::Text(path.to_string()));
+        self.scope.set_or_push(ROUTE_SIGNAL, path.to_string());
+        self.signals.insert(ROUTE_SIGNAL.to_string());
+        changed
+    }
+
+    /// Put one of the router's other provided values in scope, the same way
+    /// [`Self::set_route`] does with the path.
+    ///
+    /// Returns whether it moved, so the runtime can skip a repaint nothing
+    /// asked for: `can_go_forward` in particular is false through most of a
+    /// session and would otherwise report a change on every navigation.
+    pub fn set_provided(&mut self, name: &str, value: Value) -> bool {
+        let changed = self.read_signal(name).as_ref() != Some(&value);
+        self.scope.set_or_push(name, to_dynamic(&value));
+        self.signals.insert(name.to_string());
+        changed
+    }
+
+    /// Whether the script declared one of the router's names itself, so the
+    /// runtime can say so rather than silently overwriting it. Asked *before*
+    /// the setters, which would otherwise make the answer always yes.
+    pub fn declares(&self, name: &str) -> bool {
+        self.signals.contains(name)
+    }
+
     /// A signal's current value, read straight from the scope (no evaluation).
     fn read_signal(&self, name: &str) -> Option<Value> {
         self.scope.get_value::<Dynamic>(name).map(|d| from_dynamic(&d))
@@ -344,12 +671,184 @@ impl Engine {
 
     /// Read a signal's current value as a display string (for input `r-model`).
     pub fn get_string(&mut self, name: &str) -> String {
-        self.eval_value(name, &[]).map(|v| v.to_display()).unwrap_or_default()
+        self.get_string_in(name, &[])
+    }
+
+    /// The same, with a row's loop variables in scope.
+    ///
+    /// An `r-model` is recorded as written, so one inside an `r-for` can mention
+    /// the loop variable (`items[item.at].note`). Read without it, that is not an
+    /// expression at all, and the field comes back empty.
+    pub fn get_string_in(&mut self, expr: &str, locals: &[(String, Value)]) -> String {
+        self.eval_value(expr, locals).map(|v| v.to_display()).unwrap_or_default()
     }
 
     /// Set a signal to a string value (from input editing).
     pub fn set_string(&mut self, name: &str, value: &str) {
         self.scope.set_or_push(name, value.to_string());
+    }
+
+    /// Run a component's own top-level script in a scope of its own, and hand
+    /// back the variables it declared: one instance's private state.
+    ///
+    /// The document's script is not visible, which is the point. A component
+    /// that could read the app's signals by name would be coupled to the app it
+    /// was first written for, and could not be used twice.
+    pub fn init_scope(&mut self, script: &str) -> Vec<(String, Value)> {
+        let ast = match self.engine.compile(script) {
+            Ok(ast) => ast,
+            Err(e) => {
+                warn(format!(
+                    "a component's script failed to compile: {}",
+                    strip_rhai_position(&e.to_string())
+                ));
+                return Vec::new();
+            }
+        };
+        // Its own functions plus everything already registered, so a component
+        // can call helpers it declared beside its state.
+        let merged = self.funcs.merge(&ast);
+        let mut scope = Scope::new();
+        if let Err(e) = self.engine.run_ast_with_scope(&mut scope, &merged) {
+            warn(format!(
+                "a component's script failed to run: {}",
+                strip_rhai_position(&e.to_string())
+            ));
+        }
+        scope.iter().map(|(name, _, value)| (name.to_string(), from_dynamic(&value))).collect()
+    }
+
+    /// Run a handler inside a component instance, whose state is `locals`.
+    ///
+    /// Returns the instance's variables as they stand afterwards, and which of
+    /// the *document's* signals changed. Both matter: a handler in a component
+    /// may touch its own state, a prop's underlying signal, or both.
+    ///
+    /// Reading the locals back before the scope is rewound is what makes a
+    /// component's state writable at all. Ordinary evaluation drops them, which
+    /// is right for a `{{ }}` binding and wrong for a `@tap`.
+    pub fn run_scoped_handler(
+        &mut self,
+        src: &str,
+        locals: &[(String, Value)],
+    ) -> (Vec<(String, Value)>, HashSet<String>) {
+        let names: Vec<String> = self.signals.iter().cloned().collect();
+        let before: HashMap<String, Option<Value>> =
+            names.iter().map(|n| (n.clone(), self.read_signal(n))).collect();
+
+        let ast = match self.engine.compile(src) {
+            Ok(ast) => ast,
+            Err(e) => {
+                warn(format!(
+                    "handler `{}` failed to compile: {}",
+                    trim_expr(src),
+                    strip_rhai_position(&e.to_string())
+                ));
+                return (locals.to_vec(), HashSet::new());
+            }
+        };
+        let merged = self.funcs.merge(&ast);
+        let base = self.scope.len();
+        for (name, value) in locals {
+            self.scope.push(name.clone(), to_dynamic(value));
+        }
+        let result = self.engine.eval_ast_with_scope::<Dynamic>(&mut self.scope, &merged);
+        // Read the instance's state back *before* rewinding, or the handler's
+        // effect on it is dropped along with the temporary scope.
+        let after: Vec<(String, Value)> = locals
+            .iter()
+            .map(|(name, previous)| {
+                let value = self
+                    .scope
+                    .get_value::<Dynamic>(name)
+                    .map(|d| from_dynamic(&d))
+                    .unwrap_or_else(|| previous.clone());
+                (name.clone(), value)
+            })
+            .collect();
+        self.scope.rewind(base);
+
+        if let Err(e) = result {
+            warn(format!(
+                "handler `{}` failed: {}",
+                trim_expr(src),
+                strip_rhai_position(&e.to_string())
+            ));
+            return (after, HashSet::new());
+        }
+        let changed = names.into_iter().filter(|n| self.read_signal(n) != before[n]).collect();
+        (after, changed)
+    }
+
+    /// Re-evaluate a computed's expression and store the result under its name.
+    ///
+    /// Returns whether the value actually changed, and what it read. Only a real
+    /// change is reported, so a computed that lands on the same answer does not
+    /// invalidate the bindings that read it: recomputing is cheap, rebuilding a
+    /// subtree is not.
+    ///
+    /// A computed is a signal like any other, because it is declared as a plain
+    /// `let` in the script handed to rhai. That is what makes `{{ total }}`
+    /// track it without anything else knowing computeds exist.
+    pub fn recompute(&mut self, name: &str, expr: &str) -> (bool, HashSet<String>) {
+        let (value, deps) = self.eval_value_tracked(expr, &[]);
+        let Some(value) = value else { return (false, deps) };
+        let changed = self.read_signal(name).as_ref() != Some(&value);
+        if changed {
+            self.scope.set_or_push(name, to_dynamic(&value));
+        }
+        (changed, deps)
+    }
+
+    /// Run an effect body, reporting what it read and what it wrote.
+    ///
+    /// Both halves are needed and neither can be inferred from the other: the
+    /// reads say when to run it again, and the writes say what its running has
+    /// invalidated. A handler only needs the writes, which is why this is not
+    /// [`run_handler_tracked`](Self::run_handler_tracked).
+    pub fn run_effect_tracked(&mut self, src: &str) -> (HashSet<String>, HashSet<String>) {
+        let names: Vec<String> = self.signals.iter().cloned().collect();
+        let before: HashMap<String, Option<Value>> =
+            names.iter().map(|n| (n.clone(), self.read_signal(n))).collect();
+
+        READS.with(|r| *r.borrow_mut() = Some(HashSet::new()));
+        let ran = self.eval(src, &[]).is_some();
+        let mut reads = READS.with(|r| r.borrow_mut().take()).unwrap_or_default();
+        reads.retain(|n| self.signals.contains(n));
+        if !ran {
+            // It still subscribes to whatever it managed to read, so a fixed
+            // signal re-runs it rather than leaving it dead until a reload.
+            return (reads, HashSet::new());
+        }
+        let writes = names.into_iter().filter(|n| self.read_signal(n) != before[n]).collect();
+        (reads, writes)
+    }
+
+    /// Write a string into whatever an `r-model` names, and report which signals
+    /// that changed.
+    ///
+    /// An assignment rather than [`set_string`](Self::set_string), which can only
+    /// set a scope variable *called* `name`: for anything but a bare signal
+    /// (`user.name`, `items[0].note`) that quietly created a variable with a
+    /// punctuation-filled name and left the real target untouched. Running it as
+    /// script is also what lets a row's loop variable be in scope.
+    pub fn assign_string(
+        &mut self,
+        target: &str,
+        value: &str,
+        locals: &[(String, Value)],
+    ) -> HashSet<String> {
+        let names: Vec<String> = self.signals.iter().cloned().collect();
+        let before: HashMap<String, Option<Value>> =
+            names.iter().map(|n| (n.clone(), self.read_signal(n))).collect();
+        // The value is a person's typing, so it is quoted as a literal rather
+        // than pasted in: a quote or a backslash in a text field would otherwise
+        // be a syntax error at best.
+        let src = format!("{target} = {}", rux_reactive::json_string(value));
+        if self.eval(&src, locals).is_none() {
+            return HashSet::new();
+        }
+        names.into_iter().filter(|n| self.read_signal(n) != before[n]).collect()
     }
 }
 
@@ -523,11 +1022,16 @@ mod tests {
             e.eval_display("`background: ${c}`", &[("c".into(), Value::Text("teal".into()))]),
             "background: teal"
         );
-        // WRINKLE: a whole-number signal renders through rhai's float default
-        // (`82.0`), NOT Rux's `to_display` (`82`), inside a backtick string, signals
-        // are stored as f64. Valid CSS (`82.0px` works) but not pretty; interpolate
-        // strings, or convert (`${level.to_int()}`), when you need `82`.
-        assert_eq!(e.eval_display("`level is ${level}`", &[]), "level is 82.0");
+        // A whole-number signal renders as `82`, not rhai's float default
+        // `82.0`, because `to_string` is overridden to Rux's own rule. It used
+        // to differ, so `${level}px` in a `:style` and `{{ level }}` in text
+        // showed the same value two ways in one window.
+        assert_eq!(e.eval_display("`level is ${level}`", &[]), "level is 82");
+        // A fraction keeps its fraction; only the empty tail goes.
+        assert_eq!(
+            e.eval_display("`half is ${h}`", &[("h".into(), Value::Number(2.5))]),
+            "half is 2.5"
+        );
         // The read is tracked, so a `:style` reading a signal reconciles on change.
         let (_, deps) = e.eval_value_tracked("`level: ${level}`", &[]);
         assert!(deps.contains("level"));

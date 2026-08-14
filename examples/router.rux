@@ -1,0 +1,112 @@
+<template>
+  <screen class="app">
+    <nav-bar />
+
+    <!-- Only the matched route renders, and the router leaves no box of its own
+         behind: the page below sits directly in this column. -->
+    <router>
+      <route path="/" view="home-page" />
+      <route path="/crew" view="crew-list" :crew="crew" />
+      <route name="crew-detail" path="/crew/:id" view="crew-detail" :crew="crew" />
+      <route path="/about" view="about-page" />
+      <route fallback view="lost-page" />
+    </router>
+
+    <!-- Back and Forward, greyed out when there is nowhere to go. This is what
+         `can_go_back` is for: disabling a control is a class, and a class reads
+         signals. Alt+Left and the mouse's side buttons do the same thing. -->
+    <view class="history">
+      <view class="step" :class="#{ dead: !can_go_back }" @tap="back()">
+        <text class="step-label">go back</text>
+      </view>
+      <view class="step" :class="#{ dead: !can_go_forward }" @tap="forward()">
+        <text class="step-label">go forward</text>
+      </view>
+      <!-- `params` is readable out here, outside the matched view. The view
+           gets `id` as a prop; this line is in the document's own layout and
+           could not see it before. -->
+      <text class="who" r-if="params.id != ()">viewing: {{ params.id }}</text>
+    </view>
+
+    <view class="footer">
+      <text class="path">path: {{ route }}</text>
+      <view class="lost" to="/nowhere">
+        <text class="lost-label">try a path that does not exist</text>
+      </view>
+    </view>
+  </screen>
+</template>
+
+<style>
+  .app {
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+    padding: 22px;
+    background: #1e1e2e;
+  }
+
+  .footer {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    margin-top: 8px;
+    width: 100%;
+  }
+
+  .path { color: #6c7086; font-size: 12px; font-weight: 700; }
+
+  .history { display: flex; align-items: center; gap: 10px; }
+
+  .step {
+    padding: 5px 12px;
+    background: #313244;
+    border-radius: 8px;
+    cursor: pointer;
+  }
+
+  .step:hover { background: #45475a; }
+  .step-label { color: #cdd6f4; font-size: 12px; font-weight: 700; }
+
+  /* Nowhere to go: say so by looking unavailable rather than by vanishing, so
+     the row does not change shape as you move through the app. */
+  .step.dead { background: #26263a; cursor: default; }
+  .step.dead .step-label { color: #45475a; }
+
+  .who { color: #a6e3a1; font-size: 12px; font-weight: 700; }
+
+  .lost {
+    align-items: center;
+    padding: 5px 10px;
+    border: 2px solid #45475a;
+    border-radius: 8px;
+    cursor: pointer;
+  }
+
+  .lost:hover { border-color: #f38ba8; }
+  .lost-label { color: #6c7086; font-size: 12px; }
+</style>
+
+<script>
+  use components::nav_bar;
+  use components::home_page;
+  use components::about_page;
+  use components::crew_list;
+  use components::crew_detail;
+  use components::lost_page;
+
+  // Long enough that the list scrolls, which is the only way to see that Back
+  // returns you to where you were rather than to the top.
+  let crew = signal([
+      #{ id: "ada",     name: "Ada",     job: "navigator" },
+      #{ id: "grace",   name: "Grace",   job: "engineer" },
+      #{ id: "hedy",    name: "Hedy",    job: "signals" },
+      #{ id: "katherine", name: "Katherine", job: "trajectories" },
+      #{ id: "margaret",  name: "Margaret",  job: "onboard software" },
+      #{ id: "annie",   name: "Annie",   job: "spectra" },
+      #{ id: "jean",    name: "Jean",    job: "compiler" },
+      #{ id: "evelyn",  name: "Evelyn",  job: "ballistics" },
+      #{ id: "mary",    name: "Mary",    job: "aeronautics" },
+      #{ id: "dorothy", name: "Dorothy", job: "supervisor" },
+  ]);
+</script>
