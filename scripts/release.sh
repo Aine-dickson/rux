@@ -206,7 +206,10 @@ cmd_open_next() {
   local next="$version"
   # The capsule to continue *from* is the release just packed, not the version
   # being opened. Given explicitly, or the newest capsule there is.
-  local from_version="${3:-}"
+  # $1: the dispatcher passes the trailing argument through, and this function
+  # is reached with it as its first. Reading $3 made "name a capsule
+  # explicitly" unreachable, so it always fell back to the newest one.
+  local from_version="${1:-}"
   local from
   if [[ -n "$from_version" ]]; then
     from="release/v$from_version"
@@ -261,7 +264,9 @@ EOF
 # ---------------------------------------------------------------------------
 
 cmd_ship() {
-  local push="${3:-}"
+  # $2, not $3: the dispatcher hands this function (version, flag). Reading $3
+  # meant `--push` was silently ignored on every release that used it.
+  local push="${2:-}"
   [[ -z "$(git status --porcelain)" ]] || die "working tree is dirty; commit or stash first"
   git rev-parse --verify --quiet "$branch" >/dev/null || die "no capsule branch $branch"
   git rev-parse --verify --quiet "refs/tags/$tag" >/dev/null && die "$tag already exists"
@@ -346,7 +351,10 @@ wait_for_index() {
 }
 
 cmd_publish() {
-  local mode="${3:-}"
+  # $2, not $3. The same off-by-one as cmd_ship, and worse here: it made
+  # `publish --execute` a dry run that exits 0, so a release looked published
+  # and nothing had been.
+  local mode="${2:-}"
   git rev-parse --verify --quiet "refs/tags/$tag" >/dev/null \
     || die "no tag $tag; publish what was shipped, not what is lying around"
 
@@ -412,7 +420,7 @@ case "${1:-}" in
     echo
     ;;
   freeze)    cmd_freeze ;;
-  open-next) cmd_open_next ;;
+  open-next) cmd_open_next "${3:-}" ;;
   check)     cmd_check "$version" ;;
   ship)      cmd_ship "$version" "${3:-}" ;;
   publish)   cmd_publish "$version" "${3:-}" ;;
