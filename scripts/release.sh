@@ -334,9 +334,18 @@ LAYERS=(
 # Whether this exact version is already on the index. Publishing is a one-way
 # door: a version cannot be replaced, only yanked, so a re-run must skip what
 # it already did rather than fail on it.
+#
+# The User-Agent is required, not politeness: crates.io answers 403 to an API
+# request that does not identify itself, and curl sends none by default here.
+# Without it this function returns false for every crate that exists, which
+# makes `wait_for_index` block for five minutes and then declare a crate it had
+# just published missing. That is exactly how the v0.6.0 publish stalled after
+# its first layer.
+UA="rux-release-script (https://ruxlang.dev)"
+
 on_index() {
   local crate="$1" want="$2" code
-  code="$(curl -s -o /dev/null -w '%{http_code}' \
+  code="$(curl -s -A "$UA" -o /dev/null -w '%{http_code}' \
     "https://crates.io/api/v1/crates/$crate/$want" 2>/dev/null || echo 000)"
   [[ "$code" == "200" ]]
 }
