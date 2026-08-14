@@ -1299,10 +1299,32 @@ way. This milestone is where Rux stops being stock rhai.
    - **Route transitions last**, never first. They *are* the enter/leave
      problem, so building them for the router alone means writing a bespoke
      animator and throwing it away.
-6. **Lifecycle hooks**, `mounted` and `unmounted`, alongside enter/leave for the
-   reason above. They belong after the fork rather than before it: a hook is
-   naturally a named `fn`, and until shared-cell signals land a `fn` cannot
-   mutate a signal, so a hook would have to be written as an inline body.
+6. **Lifecycle hooks**, `mounted` and `unmounted`. **Document level is done**;
+   component level is not, and enter/leave is not.
+
+   The premise this was planned under has expired and the decision was re-made
+   rather than inherited. Hooks were to be inline blocks *because* a named `fn`
+   could not mutate a signal; full lexical scoping removed that constraint, so
+   blocks were re-chosen on their merits: a hook is not something the author
+   calls, and a callable name would invite exactly that.
+
+   They run where the effects run, after the build, so their writes feed back
+   through `apply_change_depth` and inherit its loop guard rather than needing
+   one of their own. `mounted` runs after the effects and exactly once, which is
+   the only thing separating it from an `effect` that fires on load.
+
+   **What is left**, in order, because each depends on the one before:
+   - **Component-level hooks.** The two moments already exist and were verified:
+     an instance is born at `instances.entry(…).or_insert_with(…)` and dies at
+     `instances.retain(|_, i| i.touched)`, both in `rux-style`. What is missing
+     is reporting those moments out of the build and running the bodies in the
+     dying instance's own scope. A component declaring a hook is **warned**
+     today rather than silently ignored.
+   - **Enter/leave**, which needs a leaving subtree to outlive its removal.
+     `Animator::apply` already runs after the build and before the layout, which
+     is the natural place to re-insert one; the animator would hold the
+     departing subtree and drop it when its animation ends.
+   - **Route transitions**, on top of that and never before it.
 7. **`rux build`, for web and Windows only.** Moved out of v0.6 on 2026-08-11
    to sit here, at the end, after the language has stopped moving. Two targets
    and no more: a static web bundle, which is close to what the playground

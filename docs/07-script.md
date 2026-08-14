@@ -58,6 +58,40 @@ Both are document-level: a component's own `computed` and `effect` lines are
 stripped rather than run. See [As Built](./05-as-built.md) for the detail on
 both.
 
+## Lifecycle
+
+**`mounted { … }`** runs once, after the first tree exists. **`unmounted { … }`**
+runs when the document stops being the one on screen, which is the window
+closing or a hot reload replacing it.
+
+```rux
+<script>
+  let level = signal(0);
+  mounted   { level = host::last_saved(); }
+  unmounted { host::save(level); }
+</script>
+```
+
+Blocks, not functions, matching `effect { }`. A hook is not something the author
+calls, and giving it a callable name would invite exactly that. Several blocks
+of the same kind run in the order written.
+
+`mounted` runs **after** the effects, so a hook reading a signal sees what the
+effects decided, and it runs **exactly once**, which is the whole difference
+between it and an `effect` that happens to fire on load. Whatever it writes
+reaches the first frame: it deliberately runs after the tree exists rather than
+during construction, or the screen would show the value the hook was written to
+replace.
+
+`unmounted` runs for its side effect. Nothing is done with what it writes,
+because by then there is no tree for a write to reach. It runs at most once even
+if teardown is reached twice, so a document closed by a reload and then by the
+window does not save twice.
+
+> **Not supported inside a component yet.** A component that declares either is
+> warned rather than ignored, since a hook that silently never runs is the exact
+> failure the dev overlay exists to catch.
+
 ## Functions
 
 A function sees the scope it was written in, and can read and write it.

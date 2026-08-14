@@ -74,6 +74,15 @@ pub struct Document {
     computeds: Vec<Computed>,
     /// `effect` blocks, with what each read when it last ran.
     effects: Vec<Effect>,
+    /// The document's own `mounted` / `unmounted` bodies.
+    hooks: Hooks,
+    /// Whether the document's `mounted` bodies have run.
+    ///
+    /// A flag rather than "run it during construction", because a hook that
+    /// writes a signal must do so *after* the first tree exists, or it writes
+    /// into a build that has already been laid out and the screen shows the
+    /// value from before the hook ran.
+    mounted_ran: bool,
     /// Where navigation has been, and where it is in that. See [`History`].
     history: History,
     /// The scroll offsets the next frame should adopt, set by a navigation and
@@ -574,7 +583,7 @@ impl Document {
         let base = path.parent().unwrap_or_else(|| Path::new("."));
         resolve_style_includes(&mut sfc, base)?;
         let (main_script, imports) = extract_imports(&sfc.script);
-        let (main_script, computeds, effects) = extract_reactives(&main_script);
+        let (main_script, computeds, effects, hooks) = extract_reactives(&main_script);
 
         let mut components = HashMap::new();
         let mut combined_script = main_script;
@@ -593,7 +602,18 @@ impl Document {
             let (comp_script, _nested) = extract_imports(&comp_sfc.script);
             // A component's own computed/effect declarations are not
             // supported yet; strip them so the merged script still compiles.
-            let (comp_script, _c, _e) = extract_reactives(&comp_script);
+            let (comp_script, _c, _e, comp_hooks) = extract_reactives(&comp_script);
+            // Nor are its lifecycle hooks, yet. Said out loud rather than
+            // stripped in silence: a `mounted` block that never runs is exactly
+            // the failure the dev overlay exists to catch, and a component is
+            // where someone would most expect the hook to work.
+            if !comp_hooks.is_empty() {
+                rux_style::warn_stylesheet(format!(
+                    "`{}` declares a lifecycle hook, which is not supported inside a component \
+                     yet; it will not run. Document-level `mounted` / `unmounted` do work.",
+                    import.tag
+                ));
+            }
             // Only its *functions* join the shared engine. Its `let`s do not:
             // they are the state each instance gets a private copy of, so
             // merging them here would put one shared variable behind every
@@ -637,6 +657,8 @@ impl Document {
             instances,
             computeds,
             effects,
+            hooks,
+            mounted_ran: false,
             history: History::default(),
             pending_scroll: None,
             metrics: Vec::new(),
@@ -670,7 +692,7 @@ impl Document {
             warn_unresolvable_include(path);
         }
         let (main_script, _imports) = extract_imports(&sfc.script);
-        let (main_script, computeds, effects) = extract_reactives(&main_script);
+        let (main_script, computeds, effects, hooks) = extract_reactives(&main_script);
         rux_script::set_routes(rux_style::named_routes(&sfc.template));
         let mut engine = build_engine(&main_script).map_err(LoadError::plain)?;
         let mut instances = Instances::new();
@@ -697,6 +719,8 @@ impl Document {
             instances,
             computeds,
             effects,
+            hooks,
+            mounted_ran: false,
             history: History::default(),
             pending_scroll: None,
             metrics: Vec::new(),
@@ -1653,12 +1677,53 @@ impl Document {
             self.effects[i].deps = reads;
             writes.extend(wrote);
         }
+        // `mounted` runs after the effects and after the first tree exists.
+        //
+        // The order matters and is not arbitrary: an effect establishes what a
+        // value *is*, while `mounted` reacts to the document being on screen, so
+        // a hook that reads a signal should see what the effects decided. It
+        // runs exactly once, which is the whole difference from an `effect`, and
+        // is why it needs a flag rather than a dependency set.
+        writes.extend(self.run_mounted());
         self.diagnostics.warnings.extend(collect_warnings());
         if !writes.is_empty() {
-            // An effect that set something on load has to be reflected, or the
-            // first frame shows the state it was written to replace.
+            // An effect or hook that set something on load has to be reflected,
+            // or the first frame shows the state it was written to replace.
             self.apply_change_depth(&writes, 1);
         }
+    }
+
+    /// Run the document's `mounted` bodies, once, reporting what they wrote.
+    fn run_mounted(&mut self) -> HashSet<String> {
+        if self.mounted_ran {
+            return HashSet::new();
+        }
+        self.mounted_ran = true;
+        let mut writes = HashSet::new();
+        for body in self.hooks.mounted.clone() {
+            let (_, wrote) = self.engine.run_effect_tracked(&body);
+            writes.extend(wrote);
+        }
+        writes
+    }
+
+    /// Run the document's `unmounted` bodies.
+    ///
+    /// Called when this document stops being the one on screen: the window is
+    /// closing, or a hot-reload is about to replace it. Nothing is done with
+    /// what the bodies write, because there is no longer a tree for a write to
+    /// reach; the point of the hook is the side effect (`host::save(…)`), not
+    /// the state.
+    ///
+    /// Safe to call more than once: the bodies are taken, so a second call runs
+    /// nothing. A document torn down twice, once by a reload and once by the
+    /// window closing, must not save twice.
+    pub fn unmount(&mut self) {
+        let bodies = std::mem::take(&mut self.hooks.unmounted);
+        for body in bodies {
+            let _ = self.engine.run_effect_tracked(&body);
+        }
+        self.diagnostics.warnings.extend(collect_warnings());
     }
 
     /// Bring the computeds up to date, adding any that actually changed to
@@ -1843,7 +1908,8 @@ struct Effect {
     deps: HashSet<String>,
 }
 
-/// Pull `computed` and `effect` declarations out of a script.
+/// Pull `computed`, `effect`, `mounted` and `unmounted` declarations out of a
+/// script.
 ///
 /// Returns the script rhai should see, with every consumed line replaced by a
 /// blank one so line numbers still match the file: a warning pointing at the
@@ -1851,10 +1917,12 @@ struct Effect {
 ///
 /// `computed x = expr;` becomes `let x = expr;`, which is what makes a computed
 /// an ordinary signal, initialised in declaration order alongside the rest.
-fn extract_reactives(script: &str) -> (String, Vec<Computed>, Vec<Effect>) {
+fn extract_reactives(script: &str) -> (String, Vec<Computed>, Vec<Effect>, Hooks) {
     let mut cleaned = String::new();
     let mut computeds = Vec::new();
     let mut effects = Vec::new();
+    let mut mounted: Vec<String> = Vec::new();
+    let mut unmounted: Vec<String> = Vec::new();
 
     let lines: Vec<&str> = script.lines().collect();
     let mut i = 0;
@@ -1882,52 +1950,97 @@ fn extract_reactives(script: &str) -> (String, Vec<Computed>, Vec<Effect>) {
             }
         }
 
-        if trimmed == "effect {" || trimmed.starts_with("effect {") {
-            // Take the block by counting braces, so an effect can hold an `if`.
-            let mut depth = 0i32;
-            let mut body = String::new();
-            let mut j = i;
-            let mut closed = false;
-            while j < lines.len() {
-                let l = lines[j];
-                for c in l.chars() {
-                    match c {
-                        '{' => depth += 1,
-                        '}' => depth -= 1,
-                        _ => {}
+        // `effect { … }`, `mounted { … }`, `unmounted { … }`: three blocks that
+        // differ only in when the body runs, so they are taken the same way.
+        if let Some(keyword) = ["effect", "mounted", "unmounted"]
+            .into_iter()
+            .find(|k| trimmed == format!("{k} {{") || trimmed.starts_with(&format!("{k} {{")))
+        {
+            match take_block(&lines, i) {
+                Some((body, next)) => {
+                    // Keep the file's line numbering, so a warning still points
+                    // at the line it came from.
+                    for _ in i..next {
+                        cleaned.push('\n');
                     }
+                    match keyword {
+                        "effect" => effects.push(Effect { body, deps: HashSet::new() }),
+                        "mounted" => mounted.push(body),
+                        _ => unmounted.push(body),
+                    }
+                    i = next;
+                    continue;
                 }
-                let start = if j == i { l.find('{').map(|p| p + 1).unwrap_or(0) } else { 0 };
-                body.push_str(&l[start..]);
-                body.push('\n');
-                cleaned.push('\n'); // keep the file's line numbering
-                j += 1;
-                if depth <= 0 {
-                    closed = true;
+                None => {
+                    // Unterminated: leave it to rhai to complain, with its lines.
+                    rux_style::warn_stylesheet(format!(
+                        "a `{keyword} {{` block is never closed; it was ignored"
+                    ));
                     break;
                 }
             }
-            if closed {
-                // Drop the trailing `}` the loop consumed with the last line.
-                let body = body.trim_end();
-                let body = body.strip_suffix('}').unwrap_or(body).to_string();
-                effects.push(Effect { body, deps: HashSet::new() });
-                i = j;
-                continue;
-            }
-            // Unterminated: leave it to rhai to complain about, with its lines.
-            rux_style::warn_stylesheet(
-                "an `effect {` block is never closed; it was ignored".to_string(),
-            );
-            i = j;
-            continue;
         }
 
         cleaned.push_str(line);
         cleaned.push('\n');
         i += 1;
     }
-    (cleaned, computeds, effects)
+    (cleaned, computeds, effects, Hooks { mounted, unmounted })
+}
+
+/// The lifecycle bodies a script declared.
+///
+/// Blocks rather than named functions, matching `effect { }`. Full lexical
+/// scoping (v0.7) removed the original reason for that, which was that a named
+/// `fn` could not mutate a signal, so the choice was re-made on its merits: a
+/// hook is not something the author calls, and giving it a callable name would
+/// invite exactly that.
+///
+/// A script may declare more than one of each. They run in the order written,
+/// which is the only order that is not arbitrary.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Hooks {
+    pub mounted: Vec<String>,
+    pub unmounted: Vec<String>,
+}
+
+impl Hooks {
+    pub fn is_empty(&self) -> bool {
+        self.mounted.is_empty() && self.unmounted.is_empty()
+    }
+}
+
+/// Take a `keyword { … }` block starting at line `i`, returning its body and
+/// the line after it.
+///
+/// Braces are counted rather than matched to the first `}`, so a block can hold
+/// an `if` or a loop. `None` means the block is never closed.
+fn take_block(lines: &[&str], i: usize) -> Option<(String, usize)> {
+    let mut depth = 0i32;
+    let mut body = String::new();
+    let mut j = i;
+    while j < lines.len() {
+        let line = lines[j];
+        for c in line.chars() {
+            match c {
+                '{' => depth += 1,
+                '}' => depth -= 1,
+                _ => {}
+            }
+        }
+        // The opening line contributes only what follows its `{`.
+        let start = if j == i { line.find('{').map(|p| p + 1).unwrap_or(0) } else { 0 };
+        body.push_str(&line[start..]);
+        body.push('\n');
+        j += 1;
+        if depth <= 0 {
+            // Drop the closing `}` the last line brought with it.
+            let body = body.trim_end();
+            let body = body.strip_suffix('}').unwrap_or(body).to_string();
+            return Some((body, j));
+        }
+    }
+    None
 }
 
 /// Whether `s` is a plain identifier, so `computed 2 + 2 = x;` is left for rhai
@@ -3923,6 +4036,86 @@ mod tests {
         assert!(doc.apply_handler(&tap));
         assert_eq!(text(&doc), "2");
         assert!(doc.diagnostics().warnings.is_empty(), "{:?}", doc.diagnostics());
+    }
+
+    /// `mounted { }` runs once, after the first tree exists, and what it writes
+    /// reaches the screen.
+    ///
+    /// The second half is the one worth testing. A hook that ran before the
+    /// first build would write into a tree that has already been laid out, and
+    /// the window would show the value the hook was written to replace.
+    #[test]
+    fn mounted_runs_once_and_reaches_the_screen() {
+        let doc = Document::from_source(
+            "<template><screen><text>{{ greeting }}</text></screen></template>
+             <script>
+               let greeting = signal(\"…\");
+               mounted { greeting = \"ready\"; }
+             </script>",
+        )
+        .expect("load");
+
+        assert_eq!(text_of(&doc.root).join(""), "ready", "the hook wrote before the first paint");
+        assert!(doc.diagnostics().warnings.is_empty(), "{:?}", doc.diagnostics());
+    }
+
+    /// It runs *once*, which is the whole difference from an `effect`.
+    #[test]
+    fn mounted_does_not_re_run_when_its_signals_change() {
+        let mut doc = Document::from_source(
+            "<template><screen><text @tap=\"n++\">{{ runs }}/{{ n }}</text></screen></template>
+             <script>
+               let n = signal(0);
+               let runs = signal(0);
+               mounted { runs++; n++; }
+             </script>",
+        )
+        .expect("load");
+        assert_eq!(text_of(&doc.root).join(""), "1/1");
+
+        // Tapping changes `n`, which `mounted` both read and wrote. An `effect`
+        // would fire again here; a hook must not.
+        let tap = doc.root.children[0].on_tap.clone().expect("a handler");
+        assert!(doc.apply_handler(&tap));
+        assert_eq!(text_of(&doc.root).join(""), "1/2", "`runs` did not move");
+    }
+
+    /// Several blocks run in the order they were written, which is the only
+    /// order that is not arbitrary.
+    #[test]
+    fn several_mounted_blocks_run_in_order() {
+        let doc = Document::from_source(
+            "<template><screen><text>{{ trail }}</text></screen></template>
+             <script>
+               let trail = signal(\"\");
+               mounted { trail += \"a\"; }
+               mounted { trail += \"b\"; }
+             </script>",
+        )
+        .expect("load");
+        assert_eq!(text_of(&doc.root).join(""), "ab");
+    }
+
+    /// `unmounted { }` runs when the document stops being the one on screen,
+    /// and not before. Running it twice must not repeat the side effect.
+    #[test]
+    fn unmounted_runs_on_teardown_and_only_once() {
+        let mut doc = Document::from_source(
+            "<template><screen><text>{{ saves }}</text></screen></template>
+             <script>
+               let saves = signal(0);
+               unmounted { saves++; }
+             </script>",
+        )
+        .expect("load");
+        assert_eq!(text_of(&doc.root).join(""), "0", "not run while the document is alive");
+
+        doc.unmount();
+        assert_eq!(doc.engine_mut().get_string("saves"), "1");
+        // A document torn down by a reload and then by the window closing must
+        // not save twice.
+        doc.unmount();
+        assert_eq!(doc.engine_mut().get_string("saves"), "1");
     }
 
     /// A clean document reports nothing, so the overlay stays out of the way.
