@@ -1158,7 +1158,12 @@ fn to_taffy(style: &Style, vp: (f32, f32)) -> taffy::Style {
                 (Some(l), _) => to_dim(l, vp),
                 // `flex-shrink: 0` says "keep my size", don't clamp behind the
                 // author's back; let it overflow and let the parent clip it.
-                (None, None) if style.shrink != 0.0 => percent(1.0),
+                // `1.0_f32` spelled out: an unsuffixed float literal here makes
+                // rustc fall back to f32 through a trait bound it warns about,
+                // and that fallback is due to become a hard error. Only newer
+                // toolchains than the one used on Windows report it, so it
+                // surfaced from CI rather than locally.
+                (None, None) if style.shrink != 0.0 => percent(1.0_f32),
                 (None, _) => auto(),
             },
             height: style.max_height.map(|l| to_dim(l, vp)).unwrap_or(auto()),
