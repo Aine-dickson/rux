@@ -47,11 +47,17 @@ jobs:
 
       # The GPU crates need these to build on a bare runner, even though
       # nothing here opens a window: the tests are headless.
+      #
+      # libfontconfig1-dev is not optional and not about windowing: on Linux the
+      # text stack reaches fontconfig through yeslogic-fontconfig-sys, whose
+      # build script calls pkg-config and panics outright when it is missing.
+      # Windows finds its fonts another way, so this gap exists only here and
+      # only ever appears on a runner.
       - name: System dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y libx11-dev libxkbcommon-dev libwayland-dev \
-            libxcursor-dev libxrandr-dev libxi-dev
+            libxcursor-dev libxrandr-dev libxi-dev libfontconfig1-dev
 
       - name: Verify
         run: ./scripts/release.sh verify
