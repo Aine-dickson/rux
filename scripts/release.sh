@@ -98,7 +98,14 @@ gate_build() {
   }
   local warnings
   warnings="$(echo "$out" | grep -c '^warning' || true)"
-  [[ "$warnings" == "0" ]] || die "cargo build emitted $warnings warning(s); releases go out warning-clean"
+  # Print them, do not just count them. A bare count is unactionable when the
+  # warning only happens on a platform you are not sitting at: v0.6.0's CI said
+  # "emitted 2 warning(s)" from a Linux runner and there was no way to learn
+  # what they were without another push.
+  if [[ "$warnings" != "0" ]]; then
+    echo "$out" | grep -A 6 '^warning' >&2
+    die "cargo build emitted $warnings warning(s); releases go out warning-clean"
+  fi
   ok "cargo build is warning-clean, and the lockfile matches"
 }
 
