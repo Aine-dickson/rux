@@ -1,6 +1,8 @@
 # Cargo configuration.
 #
-# The wasm32 flag exists for the browser build (the /learn playground). `ahash`,
+# The wasm32 flag exists for the browser build: `rux-web`, compiled to wasm and
+# served at /playground/, which /learn links to from every worked example.
+# `ahash`,
 # pulled in by both lightningcss and rhai, depends on `getrandom` 0.3, which
 # refuses to build for wasm32-unknown-unknown unless a backend is named
 # explicitly. Enabling the crate's `wasm_js` *feature* is not sufficient on its
