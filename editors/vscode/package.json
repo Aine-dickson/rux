@@ -1,6 +1,6 @@
 {
   "name": "ruxlang",
-  "displayName": "Rux",
+  "displayName": "Ruxlang",
   "description": "Syntax highlighting, completions, tag auto-closing, formatting and diagnostics for the Rux UI language (.rux files).",
   "version": "0.3.0",
   "publisher": "Ruxlang",
