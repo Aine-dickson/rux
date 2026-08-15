@@ -11,11 +11,13 @@
   "repository": {
 
     "section-template": {
-      "begin": "(<)(template)\\s*(>)",
+      "comment": "Tolerant of attributes for the reason given on `section-style`, even though `<template>` takes none today. An unmatched section costs the file its highlighting.",
+      "begin": "(<)(template)((?:\\s+[^<>]*?)?)\\s*(>)",
       "beginCaptures": {
         "1": { "name": "punctuation.definition.tag.begin.rux" },
         "2": { "name": "entity.name.tag.section.rux" },
-        "3": { "name": "punctuation.definition.tag.end.rux" }
+        "3": { "patterns": [{ "include": "#tag-attributes" }] },
+        "4": { "name": "punctuation.definition.tag.end.rux" }
       },
       "end": "(</)(template)\\s*(>)",
       "endCaptures": {
@@ -27,11 +29,13 @@
     },
 
     "section-style": {
-      "begin": "(<)(style)\\s*(>)",
+      "comment": "The attribute group is not decoration: `<style src=\"theme.css\">` is how an external stylesheet is included, and a begin pattern demanding `>` straight after the name failed to match it. The top level of this grammar is only the three sections, so a section that does not match leaves its whole contents unscoped and the file looks unhighlighted.",
+      "begin": "(<)(style)((?:\\s+[^<>]*?)?)\\s*(>)",
       "beginCaptures": {
         "1": { "name": "punctuation.definition.tag.begin.rux" },
         "2": { "name": "entity.name.tag.section.rux" },
-        "3": { "name": "punctuation.definition.tag.end.rux" }
+        "3": { "patterns": [{ "include": "#tag-attributes" }] },
+        "4": { "name": "punctuation.definition.tag.end.rux" }
       },
       "end": "(</)(style)\\s*(>)",
       "endCaptures": {
@@ -43,11 +47,13 @@
     },
 
     "section-script": {
-      "begin": "(<)(script)\\s*(>)",
+      "comment": "Tolerant of attributes for the reason given on `section-style`.",
+      "begin": "(<)(script)((?:\\s+[^<>]*?)?)\\s*(>)",
       "beginCaptures": {
         "1": { "name": "punctuation.definition.tag.begin.rux" },
         "2": { "name": "entity.name.tag.section.rux" },
-        "3": { "name": "punctuation.definition.tag.end.rux" }
+        "3": { "patterns": [{ "include": "#tag-attributes" }] },
+        "4": { "name": "punctuation.definition.tag.end.rux" }
       },
       "end": "(</)(script)\\s*(>)",
       "endCaptures": {
@@ -263,7 +269,8 @@
     },
 
     "script-keyword": {
-      "match": "\\b(if|else|for|in|while|loop|return|break|continue|switch|throw|try|catch|import|as|private)\\b",
+      "comment": "`use` is Rux's import statement and was missing, so it rendered as plain text next to a coloured `let` on the following line. `import` is rhai's word for it; Rux does not use it, but it costs nothing to colour.",
+      "match": "\\b(use|if|else|for|in|while|loop|return|break|continue|switch|throw|try|catch|import|as|private)\\b",
       "name": "keyword.control.rux"
     },
 

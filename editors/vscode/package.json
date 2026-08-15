@@ -2,7 +2,7 @@
   "name": "rux",
   "displayName": "Rux",
   "description": "Syntax highlighting, formatting and diagnostics for the Rux UI language (.rux files).",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "publisher": "aine-dickson",
   "license": "MIT OR Apache-2.0",
   "repository": {

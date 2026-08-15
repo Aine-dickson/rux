@@ -53,6 +53,10 @@ Other:
 Exit codes: 0 clean, 1 problems found, 2 the request itself was wrong.
 ";
 
+/// What bare `rux` runs. Only present inside a checkout of this repo, which is
+/// why a missing one is explained rather than left to panic.
+const DEFAULT_APP: &str = "examples/battery.rux";
+
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
 
@@ -80,11 +84,34 @@ fn main() -> ExitCode {
             eprintln!("rux: unknown option `{flag}`\n\n{USAGE}");
             ExitCode::from(2)
         }
-        None => run(PathBuf::from("examples/battery.rux"), &[]),
+        None => run(PathBuf::from(DEFAULT_APP), &[]),
     }
 }
 
 fn run(path: PathBuf, args: &[String]) -> ExitCode {
+    // Checked here rather than left to the runtime, which starts a file watcher
+    // on the path and panics when there is nothing to watch.
+    //
+    // Bare `rux` defaults to `examples/battery.rux`, which exists only inside a
+    // checkout of this repo. So for everyone who installed from crates.io, the
+    // first command they typed produced a stack trace out of the watcher. A
+    // missing file is an ordinary mistake and must not read like a bug in Rux.
+    if !path.exists() {
+        eprintln!("rux: `{}` does not exist\n", path.display());
+        if path == PathBuf::from(DEFAULT_APP) {
+            eprintln!(
+                "That is the default, and it only exists inside a checkout of the Rux\n\
+                 repository. Name a file to run:\n\n    rux app.rux\n"
+            );
+        }
+        eprintln!("{USAGE}");
+        return ExitCode::from(2);
+    }
+    if path.is_dir() {
+        eprintln!("rux: `{}` is a directory, not a document", path.display());
+        return ExitCode::from(2);
+    }
+
     let mut route = None;
     let mut rest = args.iter();
     while let Some(arg) = rest.next() {
