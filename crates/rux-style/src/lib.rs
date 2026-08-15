@@ -304,6 +304,9 @@ fn bind_locals(src: &str, locals: &Locals) -> String {
 /// top-level script that gives each instance its private state.
 struct Component {
     template: Element,
+    /// Its own rules, with the document's merged in ahead of them unless
+    /// either side said `<style scoped>`. Merged once at load; see
+    /// `build_styled_tree_stateful`.
     rules: Vec<Rule>,
     /// The component's own `let` declarations, run once per instance. Its `fn`
     /// definitions are not here: those are shared, merged into the one engine,
@@ -869,14 +872,38 @@ pub fn build_styled_tree_stateful(
     // would point confidently at the wrong place. Unplaced is the honest answer
     // until warnings carry a file as well as a line.
     let rules = parse_document_rules(sfc, viewport);
+
+    // The document's stylesheet reaches the components it uses. Before this, a
+    // component saw only its own `<style>`, so a shared look had to be
+    // `<style src="theme.css">` in every single component file, and that is the
+    // wall people hit first on a real app.
+    //
+    // Two opt-outs, both spelled `<style scoped>`: on the document, "my rules
+    // stay in my markup"; on a component, "I own my appearance, do not style
+    // me from outside".
+    //
+    // Merged here, once per load, rather than per build. A component is
+    // expanded once per instance per frame, so concatenating rule lists at
+    // expansion time would repeat the whole stylesheet for every row of a list
+    // on every keystroke.
+    //
+    // Document rules come first so a component's own rules win a tie, which is
+    // CSS's own order: same specificity, later wins.
+    let cascading: &[Rule] = if sfc.style_scoped { &[] } else { &rules };
     let comps: Components = components
         .iter()
         .map(|(tag, c)| {
+            let own = parse_component_rules(c, viewport);
+            let merged = if c.style_scoped {
+                own
+            } else {
+                cascading.iter().cloned().chain(own).collect()
+            };
             (
                 tag.clone(),
                 Component {
                     template: c.template.clone(),
-                    rules: parse_component_rules(c, viewport),
+                    rules: merged,
                     script: component_statements(&c.script),
                 },
             )
@@ -1825,6 +1852,81 @@ fn is_honored(property: &str) -> bool {
     HONORED_PROPERTIES.contains(&property)
 }
 
+/// Properties whose value is nothing but lengths, so every token in them can be
+/// checked without tripping over a keyword, a colour or a duration.
+///
+/// Shorthands that mix kinds are deliberately absent. `border: 2px solid #f00`
+/// and `transition: opacity 200ms ease` would each report their own non-length
+/// tokens as broken, and a warning that cries wolf is worse than none.
+const LENGTH_ONLY_PROPERTIES: &[&str] = &[
+    "width", "height", "min-width", "max-width", "min-height", "max-height",
+    "padding", "padding-top", "padding-right", "padding-bottom", "padding-left",
+    "margin", "margin-top", "margin-right", "margin-bottom", "margin-left",
+    "gap", "row-gap", "column-gap",
+    "top", "right", "bottom", "left",
+    "border-radius", "border-top-left-radius", "border-top-right-radius",
+    "border-bottom-right-radius", "border-bottom-left-radius",
+    "border-width", "border-top-width", "border-right-width",
+    "border-bottom-width", "border-left-width",
+    "letter-spacing", "word-spacing", "font-size",
+];
+
+/// Warn, once per property and value, that a length was written and not
+/// understood.
+///
+/// This is the other half of the `rem` fix. Before it, a unit the runtime did
+/// not honor made the whole declaration vanish with nothing said, so
+/// `padding: 2rem` looked exactly like `padding` having no effect at all, and
+/// the only way to find out was to try `px` and see the layout move. An
+/// unhonored *property* has warned for a long time; an unhonored *value* did
+/// not.
+fn warn_unparseable_lengths(props: &HashMap<String, String>) {
+    for (property, value) in props {
+        if !LENGTH_ONLY_PROPERTIES.contains(&property.as_str()) {
+            continue;
+        }
+        for token in value.split_whitespace() {
+            // Keywords (`auto`, `none`, `inherit`, `fit-content`) are legitimate
+            // here and are not lengths.
+            if token.chars().all(|c| c.is_ascii_alphabetic() || c == '-') {
+                continue;
+            }
+            if parse_len(token).is_some() {
+                continue;
+            }
+            warn_once(format!(
+                "`{property}: {token}` is not a length Rux understands, so the \
+                 declaration is ignored. Use px, %, rem, em, vw or vh."
+            ));
+        }
+    }
+}
+
+/// Warn at most once per distinct message, for the life of the process.
+///
+/// A stylesheet is reparsed on every tree rebuild, which is every keystroke in
+/// an input, so an undeduplicated warning here would fill the overlay.
+fn warn_once(message: String) {
+    use std::collections::HashSet;
+    use std::sync::{Mutex, OnceLock};
+    static SEEN: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    let seen = SEEN.get_or_init(|| Mutex::new(HashSet::new()));
+    let Ok(mut seen) = seen.lock() else { return };
+    if seen.insert(message.clone()) {
+        warn(message);
+    }
+}
+
+/// The property names [`warn_if_unhonored`] accepts, for anything outside the
+/// runtime that needs to offer them: `rux vocab`, and through it the editor's
+/// CSS completions. Exposing the same slice the warning consults is the point.
+/// A completion list built from a second, hand-kept copy would eventually offer
+/// a property the runtime then warns does nothing, which is worse than offering
+/// nothing at all.
+pub fn honored_properties() -> &'static [&'static str] {
+    HONORED_PROPERTIES
+}
+
 /// Warn, once per property name, for the life of the process, that a parsed
 /// declaration is not honored. Deduped so a whole-tree rebuild (which reparses
 /// every sheet) doesn't repeat the same line on every keystroke.
@@ -2309,6 +2411,27 @@ fn build_node(
         }
     }
 
+    // Resolve `em` here, for the same reason `var()` is resolved here: every
+    // length parser would otherwise have to learn about font size, and most of
+    // them are reached with no element in hand. `interpret` takes a property map
+    // and nothing else.
+    //
+    // `font-size` resolves first and against the *inherited* size, because that
+    // is what `em` means on the property that defines it: `font-size: 1.5em` is
+    // one and a half times the parent's, not its own.
+    let own_font_size = props
+        .get("font-size")
+        .and_then(|v| parse_px_len(first(v), inherited.font_size))
+        .unwrap_or(inherited.font_size);
+    for value in props.values_mut() {
+        if value.contains("em") {
+            *value = resolve_em(value, own_font_size);
+        }
+    }
+    // After `var()` and `em` are resolved, so a variable holding a bad length is
+    // reported as the length it turned out to be rather than as `var(--x)`.
+    warn_unparseable_lengths(&props);
+
     let style = interpret(&props);
     // A `@tap` handler runs later, in global scope, where the `r-for` loop
     // variable no longer exists, so `@tap="picked = item"` would see `item`
@@ -2340,10 +2463,9 @@ fn build_node(
         .get("color")
         .and_then(|v| parse_color(v))
         .unwrap_or(inherited.color);
-    let font_size = props
-        .get("font-size")
-        .and_then(|v| parse_px(first(v)))
-        .unwrap_or(inherited.font_size);
+    // Already resolved above, against the inherited size, so that the `em` pass
+    // had something to resolve against.
+    let font_size = own_font_size;
     // `font-family` is stored as the raw CSS list; parley parses it and does the
     // fallback. An empty/`inherit` value falls back to the inherited family.
     let font_family = props
@@ -4012,10 +4134,86 @@ fn first(s: &str) -> &str {
     s.split_whitespace().next().unwrap_or(s)
 }
 
-fn parse_px(s: &str) -> Option<f32> {
+/// Rewrite every `<number>em` in a declaration value into its pixel equivalent.
+///
+/// Done as a pass over the value rather than inside each length parser, the
+/// same way `var()` is, because `em` needs the element's font size and the
+/// parsers are reached without one.
+///
+/// `rem` is deliberately left alone: it is absolute against the root size, the
+/// parsers already understand it, and rewriting it here would mean matching the
+/// `em` inside `rem` and getting the wrong number.
+fn resolve_em(value: &str, font_size: f32) -> String {
+    let bytes = value.as_bytes();
+    let mut out = String::with_capacity(value.len());
+    let mut i = 0;
+    while i < value.len() {
+        // A candidate starts at a digit or a `.` that begins a number, and only
+        // when the previous character cannot make it part of a longer word.
+        let starts_number = bytes[i].is_ascii_digit()
+            || (bytes[i] == b'.' && bytes.get(i + 1).is_some_and(u8::is_ascii_digit));
+        let boundary = i == 0 || !(bytes[i - 1].is_ascii_alphanumeric() || bytes[i - 1] == b'.');
+        if !(starts_number && boundary) {
+            out.push(value[i..].chars().next().unwrap());
+            i += value[i..].chars().next().unwrap().len_utf8();
+            continue;
+        }
+
+        let mut j = i;
+        while j < value.len() && (bytes[j].is_ascii_digit() || bytes[j] == b'.') {
+            j += 1;
+        }
+        // `2em` yes, `2rem` no (the `r` belongs to the number's unit, not to a
+        // preceding token), and `2ems` no.
+        let is_em = value[j..].starts_with("em")
+            && !bytes.get(j + 2).is_some_and(|c| c.is_ascii_alphanumeric());
+        match value[i..j].parse::<f32>() {
+            Ok(n) if is_em => {
+                out.push_str(&format!("{}px", n * font_size));
+                i = j + 2;
+            }
+            _ => {
+                out.push_str(&value[i..j]);
+                i = j;
+            }
+        }
+    }
+    out
+}
+
+/// A length that resolves to absolute pixels: `px`, `rem`, `em`, or a bare
+/// number.
+///
+/// This exists because `padding: 1rem` used to be dropped on the floor. The
+/// px-only parser was reached by padding, margin, gap, border widths, corner
+/// radii, `letter-spacing`, `box-shadow` and `translate()`, while `width` and
+/// `height` went through [`parse_len`], which has understood `rem` all along.
+/// So `width: 2rem` worked, `padding: 2rem` silently did nothing, and there was
+/// no warning to tell them apart.
+///
+/// `em` is relative to `font_size`, which is the element's own resolved size
+/// (its `font-size` if it declares one, otherwise the inherited one). That is
+/// why this takes a parameter at all, and why `font-size` itself must resolve
+/// against the *inherited* size rather than its own.
+///
+/// The `filter` guards `rem`: `strip_suffix("em")` matches the tail of `rem`
+/// too, and without it `1rem` would be read as `1r` em and fail to parse.
+fn parse_px_len(s: &str, font_size: f32) -> Option<f32> {
     let s = s.trim();
-    let s = s.strip_suffix("px").unwrap_or(s);
-    s.parse::<f32>().ok()
+    if let Some(n) = s.strip_suffix("rem") {
+        return n.trim().parse::<f32>().ok().map(|v| v * REM_PX);
+    }
+    if let Some(n) = s.strip_suffix("em") {
+        return n.trim().parse::<f32>().ok().map(|v| v * font_size);
+    }
+    let n = s.strip_suffix("px").unwrap_or(s);
+    n.parse::<f32>().ok()
+}
+
+/// Lengths against the root font size, for the handful of places with no
+/// element in hand (shorthand sub-values reached before the size is known).
+fn parse_px(s: &str) -> Option<f32> {
+    parse_px_len(s, REM_PX)
 }
 
 /// One `rem` in pixels (root font size).
@@ -4484,6 +4682,128 @@ mod tests {
             .find(|w| w.message.contains("float"))
             .expect("the component's unhonored property is still reported");
         assert_eq!(float.line, None, "but without a line from another file");
+    }
+
+    /// Build a document with one component and return the component's root node.
+    fn component_root(doc: &str, comp: &str) -> super::LayoutNode {
+        let main = rux_parser::parse_sfc(doc).expect("document parses");
+        let component = rux_parser::parse_sfc(comp).expect("component parses");
+        let mut components = HashMap::new();
+        components.insert("chip".to_string(), component);
+        let mut engine = Builder::new().build("").expect("engine");
+        let root = build_styled_tree(&main, &components, &mut engine).expect("builds");
+        // <screen> -> the expanded component's root.
+        root.children.into_iter().next().expect("the component rendered")
+    }
+
+    const DOC: &str = "<template>\n  <screen class=\"app\"><chip /></screen>\n</template>\n\
+                       <style>\n  .chip { width: 120px; }\n</style>\n\
+                       <script>\nuse components::chip;\n</script>\n";
+
+    /// A document's stylesheet reaches the components it uses.
+    ///
+    /// Before this, a component saw only its own `<style>`, so sharing a look
+    /// meant repeating `<style src="theme.css">` in every component file. That
+    /// is the wall people hit first on a real app.
+    #[test]
+    fn a_documents_rules_reach_its_components() {
+        let chip = "<template>\n  <view class=\"chip\"></view>\n</template>\n";
+        let node = component_root(DOC, chip);
+        assert_eq!(
+            node.style.width,
+            Some(Len::Px(120.0)),
+            "the document's `.chip` rule did not reach the component"
+        );
+    }
+
+    /// `<style scoped>` on the component means "I own my appearance".
+    #[test]
+    fn a_scoped_component_is_not_styled_from_outside() {
+        let chip = "<template>\n  <view class=\"chip\"></view>\n</template>\n\
+                    <style scoped>\n  .chip { height: 40px; }\n</style>\n";
+        let node = component_root(DOC, chip);
+        assert_eq!(node.style.height, Some(Len::Px(40.0)), "its own rule still applies");
+        assert_eq!(node.style.width, None, "`scoped` did not keep the document out");
+    }
+
+    /// `<style scoped>` on the document means "my rules stay in my markup".
+    #[test]
+    fn a_scoped_document_does_not_style_its_components() {
+        let doc = "<template>\n  <screen class=\"app\"><chip /></screen>\n</template>\n\
+                   <style scoped>\n  .chip { width: 120px; }\n</style>\n\
+                   <script>\nuse components::chip;\n</script>\n";
+        let chip = "<template>\n  <view class=\"chip\"></view>\n</template>\n";
+        assert_eq!(component_root(doc, chip).style.width, None);
+    }
+
+    /// Same specificity, later wins, which is CSS's own rule. The component's
+    /// rules are appended after the document's, so a component can override the
+    /// look it inherits without resorting to a more specific selector.
+    #[test]
+    fn a_components_own_rule_beats_the_one_it_inherits() {
+        let chip = "<template>\n  <view class=\"chip\"></view>\n</template>\n\
+                    <style>\n  .chip { width: 200px; }\n</style>\n";
+        assert_eq!(component_root(DOC, chip).style.width, Some(Len::Px(200.0)));
+    }
+
+    /// `padding: 1rem` used to be dropped on the floor, with no warning.
+    ///
+    /// `width` went through `parse_len`, which has understood `rem` since it was
+    /// written, while padding, margin, gap, border widths and corner radii went
+    /// through a px-only parser. So `width: 2rem` worked and `padding: 2rem`
+    /// silently did nothing, which is the worst possible pair of behaviours: the
+    /// unit is obviously supported, so the failure reads as a layout bug.
+    #[test]
+    fn rem_is_honored_by_every_length_property() {
+        let mut p = HashMap::new();
+        p.insert("padding".to_string(), "1rem 2rem".to_string());
+        p.insert("margin-left".to_string(), "0.5rem".to_string());
+        p.insert("gap".to_string(), "1rem".to_string());
+        p.insert("border-radius".to_string(), "0.5rem".to_string());
+        p.insert("border-width".to_string(), "0.125rem".to_string());
+        p.insert("width".to_string(), "10rem".to_string());
+
+        let st = interpret(&p);
+        assert_eq!((st.padding.top, st.padding.right), (16.0, 32.0), "padding shorthand");
+        assert_eq!(st.margin.left, 8.0, "per-side longhand");
+        assert_eq!(st.gap, 16.0);
+        assert_eq!(st.radius, [8.0, 8.0, 8.0, 8.0]);
+        assert_eq!(st.border.top, 2.0);
+        assert_eq!(st.width, Some(Len::Px(160.0)), "width already worked; it must still");
+    }
+
+    /// `em` is resolved in a pass before `interpret`, against the element's own
+    /// resolved font size, so it has to be tested through that pass rather than
+    /// through `interpret` directly.
+    #[test]
+    fn em_resolves_against_the_font_size_and_leaves_rem_alone() {
+        use super::resolve_em;
+        assert_eq!(resolve_em("1em", 20.0), "20px");
+        assert_eq!(resolve_em("1em 2em", 10.0), "10px 20px");
+        assert_eq!(resolve_em("0.5em", 32.0), "16px");
+
+        // The trap: `strip_suffix("em")` also matches the tail of `rem`, so a
+        // careless pass turns `1rem` into `1r` + em and either fails or, worse,
+        // resolves it against the font size.
+        assert_eq!(resolve_em("1rem", 20.0), "1rem", "rem must survive untouched");
+        assert_eq!(resolve_em("1rem 2em", 10.0), "1rem 20px");
+
+        // Words that merely contain the letters are not lengths.
+        assert_eq!(resolve_em("system-ui", 16.0), "system-ui");
+        assert_eq!(resolve_em("2emu", 16.0), "2emu");
+        assert_eq!(resolve_em("#12em34", 16.0), "#12em34", "not at a token boundary");
+    }
+
+    /// `font-size` in `em` means "times the inherited size", not its own, so it
+    /// has to resolve before the pass that uses it.
+    #[test]
+    fn font_size_in_em_is_relative_to_the_inherited_size() {
+        use super::parse_px_len;
+        assert_eq!(parse_px_len("1.5em", 16.0), Some(24.0));
+        assert_eq!(parse_px_len("2rem", 16.0), Some(32.0));
+        assert_eq!(parse_px_len("2rem", 40.0), Some(32.0), "rem ignores the element");
+        assert_eq!(parse_px_len("12px", 16.0), Some(12.0));
+        assert_eq!(parse_px_len("12", 16.0), Some(12.0), "bare numbers still parse");
     }
 
     #[test]

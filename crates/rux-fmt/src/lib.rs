@@ -61,6 +61,15 @@ const VOID_TAGS: &[&str] = &[
     "wbr",
 ];
 
+/// The tags in [`VOID_TAGS`], for anything outside the formatter that has to
+/// agree with it about what never nests: `rux vocab`, and through it the
+/// editor's tag auto-closing, which must not write `</image>` after an
+/// `<image src="…">`. This is the same drift the doc comment above describes,
+/// caught once in the JS formatter and worth not repeating in the JS editor.
+pub fn void_tags() -> &'static [&'static str] {
+    VOID_TAGS
+}
+
 /// Format `text`, using `unit` for one indent level (`"  "`, `"    "`, `"\t"`…).
 ///
 /// The `<template>` and `<script>` sections are only re-indented, nothing on a
