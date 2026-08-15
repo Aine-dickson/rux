@@ -3,7 +3,7 @@
   "displayName": "Rux",
   "description": "Syntax highlighting, completions, tag auto-closing, formatting and diagnostics for the Rux UI language (.rux files).",
   "version": "0.3.0",
-  "publisher": "aine-dickson",
+  "publisher": "Ruxlang",
   "license": "MIT OR Apache-2.0",
   "repository": {
     "type": "git",
