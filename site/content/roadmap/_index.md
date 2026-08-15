@@ -90,21 +90,21 @@ monitors of different DPI, if available.
 - **Any ephemeral UI state that does not survive a rebuild** (see below).
 
 ### Shake-down progress (2026-07-15)
-- ✅ `list.rux`, `gallery.rux` made responsive; `gallery` is now a `flex-wrap`
+- **Done.** `list.rux`, `gallery.rux` made responsive; `gallery` is now a `flex-wrap`
   grid. `dashboard.rux` cleaned up into a dark-themed `1fr 1fr 1fr` grid demo.
-- ✅ Driven on screen: `gallery`, `list`, `form`, `dashboard`. Three
+- **Done.** Driven on screen: `gallery`, `list`, `form`, `dashboard`. Three
   test-invisible bugs found and fixed (see the CSS section below for the two
   layout ones; the `r-for` `@tap` one is there too).
-- ✅ **Minimize/restore: verified clean**: no panic when the surface goes to
+- **Done.** **Minimize/restore: verified clean**: no panic when the surface goes to
   zero, editing/caret resume correctly on restore.
-- ✅ Blinking caret added (user request): 530ms, solid while typing.
-- ✅ `minmax(0, 1fr)` grid tracks added (user request, after the dashboard's
+- **Done.** Blinking caret added (user request): 530ms, solid while typing.
+- **Done.** `minmax(0, 1fr)` grid tracks added (user request, after the dashboard's
   `1fr` columns overflowed a narrow window, expected CSS but ungraceful):
   `Track::MinMax` → taffy `minmax()`, a paren-aware `parse_tracks`. Lets tracks
   shrink below content instead of overflowing. `dashboard.rux` now uses it.
-- ⏳ **`ScaleFactorChanged` / cross-DPI drag: still unverified**: needs a
+- **Pending.** **`ScaleFactorChanged` / cross-DPI drag: still unverified**: needs a
   second monitor (deferred to the week of 2026-07-20).
-- ⏳ `battery.rux` (the fixed-width control) not re-driven yet.
+- **Pending.** `battery.rux` (the fixed-width control) not re-driven yet.
 
 ### 4. Then tag `v0.1`
 Only once the above is clean, specifically **do not tag until the cross-DPI
@@ -125,15 +125,15 @@ A focused input now has a **selection, not just a caret**. `rux_runtime::Focus`
 carries `model` + `caret` + `anchor`; the range between them is the selection, and
 `apply_focus` re-applies both after every rebuild: one restore pass, not two.
 
-- ✅ **Drag-select** (press anchors, drag extends), **double-click** selects a
+- **Done.** **Drag-select** (press anchors, drag extends), **double-click** selects a
   word (`DOUBLE_CLICK` window + `TAP_SLOP`).
-- ✅ **Shift+movement** extends from the anchor; a movement without Shift
+- **Done.** **Shift+movement** extends from the anchor; a movement without Shift
   collapses. Typing/pasting/Backspace/Delete replace the selection.
-- ✅ **Ctrl+A / C / X / V** against the real system clipboard (`arboard`, with
+- **Done.** **Ctrl+A / C / X / V** against the real system clipboard (`arboard`, with
   `image-data` off). A multi-line paste into a single-line input keeps the first
   line only. No clipboard → a warning at startup and copy/paste no-ops, rather
   than a crash.
-- ✅ **The highlight** is painted behind the glyphs in the focus-ring blue (no
+- **Done.** **The highlight** is painted behind the glyphs in the focus-ring blue (no
   `::selection` yet, so it isn't author-controlled).
 
 **The trap worth remembering:** parley's `Selection::geometry` returns rects laid
@@ -151,26 +151,26 @@ a textarea would focus the textarea instead of picking the option.
 **Not done:** word-wise movement (Ctrl+arrows), triple-click line-select,
 drag-and-drop of selected text, `::selection` styling, middle-click paste on X11.
 
-### 2. The last two input types: ✅ mostly done (2026-07-16)
-- ✅ **`type="textarea"`**: a multi-line text input. It's the ordinary text
+### 2. The last two input types: mostly done (2026-07-16)
+- **Done.** **`type="textarea"`**: a multi-line text input. It's the ordinary text
   input plus a `multiline` flag on the node → `FocusRegion`; the shell inserts a
   newline on Enter (single-line inputs still ignore it), and the value wraps.
-- ✅ **`type="select"`**: evaluates `:options` to strings at build time
+- **Done.** **`type="select"`**: evaluates `:options` to strings at build time
   (`Node.options`), exposed as a `SelectRegion`. The shell owns the open state
   (`open_select`, survives rebuilds), draws the dropdown as an overlay appended
   on top of the scene, hit-tests the rows itself (`dropdown_row`), writes the
   chosen value back to the model, and closes on any other tap. Guarded by a
   `rux-style` test; driven in `examples/form-controls.rux`.
-- ✅ **checkbox/radio keyboard-reachability (2026-07-17)**: the layout now emits
+- **Done.** **checkbox/radio keyboard-reachability (2026-07-17)**: the layout now emits
   `Layout.focusables` (a document-ordered `FocusItem` list: text inputs, buttons,
   toggles, selects). The shell keeps a `focus_index`; **Tab**/**Shift+Tab** move a
   focus ring through them (tapping syncs it too), a focused text input edits, and
   a focused button/checkbox/radio activates on **Space/Enter** (select opens).
-- ✅ **Input polish (2026-07-17, from testing):** inputs default to `width:100%`
+- **Done.** **Input polish (2026-07-17, from testing):** inputs default to `width:100%`
   (they were hugging their text and shrinking as you typed); single-line inputs
   are `nowrap` + clip; textarea gets Up/Down caret movement; the dropdown is
   restyled as one floating panel (shadow, selected pill, separators).
-- ⏳ **Still open:** select has no keyboard list navigation or native mobile
+- **Still open:** select has no keyboard list navigation or native mobile
   picker; a select's `cursor: pointer` doesn't apply (selects aren't `@tap` hit
   regions); text inputs don't scroll horizontally (long single lines clip).
 
@@ -178,25 +178,25 @@ drag-and-drop of selected text, `::selection` styling, middle-click paste on X11
 
 Scrolling was wheel-only and vertical-only. Now:
 
-- ✅ **Horizontal scrolling.** The offset is a two-axis `rux_layout::Offset`, and a
+- **Done.** **Horizontal scrolling.** The offset is a two-axis `rux_layout::Offset`, and a
   scroller reports `content_width`/`content_height` and a `max` on each axis, so a
   box scrolls whichever way its content actually overflows. Shift+wheel (and a
   horizontal wheel) scroll sideways.
-- ✅ **Scrollbars.** An overlay on the box's trailing edge, drawn *over* the
+- **Done.** **Scrollbars.** An overlay on the box's trailing edge, drawn *over* the
   content (a scroller clips its children, so a bar inside the subtree would be
   clipped away). A bar only exists on an axis with travel; the thumb is the box's
   fraction of the content, floored so it stays grabbable; with both axes live the
   tracks stop short of the corner. Paint and hit-testing share `bar_track` /
   `bar_thumb`, so what you see is what you can grab.
-- ✅ **Drag.** A press on a thumb starts a drag and never becomes a tap on the
+- **Done.** **Drag.** A press on a thumb starts a drag and never becomes a tap on the
   content beneath it; pointer travel down the *track* maps to the content's travel
   through its full range.
-- ✅ **Touch.** A finger drags the content itself. **Unverified: no touch
+- **Done.** **Touch.** A finger drags the content itself. **Unverified: no touch
   hardware here**; it is the one part of this item nobody has driven.
-- ✅ **Keyboard.** Arrows, PageUp/PageDown, Home/End scroll the box under the
+- **Done.** **Keyboard.** Arrows, PageUp/PageDown, Home/End scroll the box under the
   pointer, reached only after a focused input has declined the key, so it can't
   steal a caret key.
-- ✅ **Scroll-into-view.** Tab to something below the fold and its box scrolls to
+- **Done.** **Scroll-into-view.** Tab to something below the fold and its box scrolls to
   show it (`scroll_focus_into_view`, beside the other restore passes).
 
 **Found by driving it, invisible to the tests:** the horizontal thumb was painted
@@ -242,7 +242,7 @@ likely to make Rux feel like a toy, so it gets real scope.
 
 **First, two things that are bugs, not gaps**: both now **fixed** (2026-07-15):
 
-- ✅ **`>`, `+`, `~` were treated as descendant combinators.** `parse_selector`
+- **Done.** **`>`, `+`, `~` were treated as descendant combinators.** `parse_selector`
   skipped the token, so `.card > text` matched *any* descendant `text`, and the
   wrong elements, silently. Fixed: `parse_selector` now records a `Combinator`
   between each pair of compounds (a bare space is descendant), and a recursive
@@ -254,7 +254,7 @@ likely to make Rux feel like a toy, so it gets real scope.
   where descendant would) plus an end-to-end test and a lightningcss
   serialization round-trip. Known limitation: sibling combinators don't see the
   synthetic `checked` class on a preceding sibling.
-- ✅ **`cursor` was ignored.** Now honored: `Style.cursor` (`rux-layout`), mapped
+- **Done.** **`cursor` was ignored.** Now honored: `Style.cursor` (`rux-layout`), mapped
   from `cursor: pointer` in `interpret`, carried on `HitRegion`, and applied by
   the shell's `update_cursor` on `CursorMoved` (topmost region under the pointer
   wins; the window is only touched when the shape changes). Because it rides on
@@ -266,24 +266,24 @@ likely to make Rux feel like a toy, so it gets real scope.
 
 | Property | Backed by | Status |
 |---|---|---|
-| `align-self`, `justify-self`, `align-content`, `justify-items` | taffy | ✅ done 2026-07-16 |
-| `row-gap` / `column-gap` | taffy | ✅ done 2026-07-16 |
-| `aspect-ratio` | taffy | ✅ done 2026-07-16 |
-| `position: relative\|absolute` + `top`/`right`/`bottom`/`left` | taffy (`Position`, `inset`) | ✅ done 2026-07-16 |
-| CSS named colours (`red`, `teal`, …) | our `parse_color` | ✅ done 2026-07-16 |
+| `align-self`, `justify-self`, `align-content`, `justify-items` | taffy | done 2026-07-16 |
+| `row-gap` / `column-gap` | taffy | done 2026-07-16 |
+| `aspect-ratio` | taffy | done 2026-07-16 |
+| `position: relative\|absolute` + `top`/`right`/`bottom`/`left` | taffy (`Position`, `inset`) | done 2026-07-16 |
+| CSS named colours (`red`, `teal`, …) | our `parse_color` | done 2026-07-16 |
 | `flex-flow` | taffy | n/a |
-| `grid-column` / `grid-row` (+ `-start`/`-end`) | taffy (`GridPlacement`) | ✅ done 2026-07-16 (`1 / 3`, `span n`, `-1`; no named lines) |
-| `grid-auto-flow`, `grid-auto-rows/columns` | taffy | ✅ done 2026-07-16 |
-| per-corner `border-radius` | kurbo (`RoundedRectRadii`) | ✅ done 2026-07-16 |
-| `letter-spacing`, `word-spacing` | parley | ✅ done 2026-07-16 |
-| `font-style: italic` | parley | ✅ done 2026-07-16 |
-| `white-space: nowrap\|pre` | parley (`TextWrapMode`) | ✅ done 2026-07-16 |
-| `line-height` | parley (`LineHeight`) | ✅ done 2026-07-16 |
-| `text-decoration` (underline/strikethrough) | our own line-drawing off `RunMetrics` | ✅ done 2026-07-16 |
-| `box-shadow` | vello (`draw_blurred_rounded_rect`) | ✅ done 2026-07-16 (single outer; inset parsed, not drawn) |
-| linear/radial `gradient` backgrounds | peniko `Gradient` | ✅ done 2026-07-16 |
-| `transform` (translate/scale/rotate) | kurbo `Affine` | ✅ done 2026-07-16 (visual only; hit regions not transformed) |
-| `background-image: url(…)` | our `ImageCache` | ✅ done 2026-07-16 (cover-sized, clipped; no repeat/size/position) |
+| `grid-column` / `grid-row` (+ `-start`/`-end`) | taffy (`GridPlacement`) | done 2026-07-16 (`1 / 3`, `span n`, `-1`; no named lines) |
+| `grid-auto-flow`, `grid-auto-rows/columns` | taffy | done 2026-07-16 |
+| per-corner `border-radius` | kurbo (`RoundedRectRadii`) | done 2026-07-16 |
+| `letter-spacing`, `word-spacing` | parley | done 2026-07-16 |
+| `font-style: italic` | parley | done 2026-07-16 |
+| `white-space: nowrap\|pre` | parley (`TextWrapMode`) | done 2026-07-16 |
+| `line-height` | parley (`LineHeight`) | done 2026-07-16 |
+| `text-decoration` (underline/strikethrough) | our own line-drawing off `RunMetrics` | done 2026-07-16 |
+| `box-shadow` | vello (`draw_blurred_rounded_rect`) | done 2026-07-16 (single outer; inset parsed, not drawn) |
+| linear/radial `gradient` backgrounds | peniko `Gradient` | done 2026-07-16 |
+| `transform` (translate/scale/rotate) | kurbo `Affine` | done 2026-07-16 (visual only; hit regions not transformed) |
+| `background-image: url(…)` | our `ImageCache` | done 2026-07-16 (cover-sized, clipped; no repeat/size/position) |
 
 Mapped this round: the four alignment self/content properties, per-axis gaps,
 `aspect-ratio`, `position`+inset (absolute rides taffy's resolved location, so
@@ -348,7 +348,7 @@ change everywhere. `rux_paint::text_style(&TextContent)` builds the struct and i
 shared by the painter and the shell. Proven headless (letter-spacing widens a
 run; nowrap keeps one line) and driven in `examples/fonts.rux`.
 
-**`font-family`: ✅ done 2026-07-16.** Was the single most visible gap (you
+**`font-family`: done 2026-07-16.** Was the single most visible gap (you
 could not choose a font at all). Now a raw CSS list flows as
 `TextContent.font_family` (a new inheriting text property, alongside
 `color`/`font-size`) and reaches parley as `FontFamily::Source`, which parses the
@@ -367,7 +367,7 @@ and driven in `examples/fonts.rux`.
   resolution pass in the cascade.
 - **`@media` queries**: the honest way to make examples responsive, rather than
   hand-tuning `max-width` per screen.
-- ~~**Pseudo-classes** (`:hover`, `:active`, `:focus`, `:checked`)~~: ✅ done
+- ~~**Pseudo-classes** (`:hover`, `:active`, `:focus`, `:checked`)~~: done
   2026-07-25; see the v0.4 section.
 - **`!important`, `inherit`/`initial`**: cascade completeness.
 - **`text-overflow: ellipsis`**: needs measure-and-truncate; parley won't do it
@@ -377,7 +377,7 @@ and driven in `examples/fonts.rux`.
 - **`box-sizing`**: taffy sizes border-box; `content-box` needs real work.
 
 **Also worth doing while in here:** *say something* when a declaration is ignored.
-✅ **Done (2026-07-15):** `warn_if_unhonored` prints one line per unhonored
+**Done (2026-07-15):** `warn_if_unhonored` prints one line per unhonored
 property (`rux: CSS property \`box-shadow\` is parsed but not yet honored, so it
 will have no effect`), deduped for the life of the process via a `static` set so
 the whole-tree rebuild doesn't repeat it every keystroke. The honored set is the
@@ -414,15 +414,15 @@ the controlled-state opt-in**: a `value`/`on-*` binding on scrollers and statefu
 controls (the `r-model` idea, extended), added where a real example wants to own
 the value. Decided 2026-07-18 as the middle path; it does *not* reorder the
 reactivity core, only layers on top. See [Ephemeral UI state in the
-rationale](/why/#ephemeral-ui-state-automatic-by-default-controllable-by-opt-in).
+rationale](/reference/rationale/#ephemeral-ui-state-automatic-by-default-controllable-by-opt-in).
 
-- ✅ **Tracking primitives (`rux-script`)**: `eval_value_tracked` returns a
+- **Done.** **Tracking primitives (`rux-script`)**: `eval_value_tracked` returns a
   binding's value *and* its signal deps (locals/params filtered out);
   `run_handler_tracked` returns the signals a handler changed. Headless-tested
   (`tracks_binding_dependencies`, `tracks_handler_writes`). Purely additive: the
   rebuild path is untouched, so nothing regresses. No UI surface yet; that arrives
   when it drives in-place patching (next step).
-- ✅ **Binding registry + in-place patch (mechanism)**: `build_styled_tree_tracked`
+- **Done.** **Binding registry + in-place patch (mechanism)**: `build_styled_tree_tracked`
   threads a child-index *path* through the builder and returns a `BindingRegistry`:
   the patchable `{{ }}` text bindings (path + raw template + `r-for` locals + signal
   deps) and the `structural` set (signals read by any non-text site: directives,
@@ -432,26 +432,26 @@ rationale](/why/#ephemeral-ui-state-automatic-by-default-controllable-by-opt-in)
   `structural`, leaving the caller to `rebuild()`. Kept `LayoutNode` reactivity-free
   The registry lives in `rux-style`/`rux-runtime`. Headless-tested
   (`patch_updates_text_and_preserves_caret`, `patch_declines_on_structural_change`).
-- ✅ **Shell wired + input values patch in place**: `@tap` handlers
+- **Done.** **Shell wired + input values patch in place**: `@tap` handlers
   (`apply_handler`) and input edits (`apply_edit`) run tracked and patch in place,
   rebuilding only on a structural change. Input *values* are now a patchable
   `ValueBinding` (path + model + placeholder/colors), so **keystrokes no longer
   rebuild** unless the signal is also read structurally (e.g. by an `r-if`).
   `RUX_TRACE=1` prints `patched` vs `rebuilt` per change. Headless tests cover
   value-in-place, placeholder fallback, and the structural decline.
-- ✅ **`r-show` in place (structural slice 1)**: flips `hidden` only, no shape
+- **Done.** **`r-show` in place (structural slice 1)**: flips `hidden` only, no shape
   change, no path invalidation: a `ShowBinding` re-evaluates the condition and
   rewrites the bool. Headless-tested both ways.
 - **`r-if` / `r-for` in place: the reconciliation engine (slice 2, the big one).**
   These change tree *shape*, which the positional-path registry can't survive
   (an insert/remove shifts every later node's path).
-  1. ✅ **Slice 2a, capture (done, additive).** A template-path (AST element-child
+  1. **Done.** **Slice 2a, capture (done, additive).** A template-path (AST element-child
      indices) is threaded alongside the tree-path through
      `build_node`/`build_children`/`expand_component`; `build_children` returns the
      structural deps it saw, and `build_node` records a `StructuralParent`
      (tree-path + template-path + deps) for any parent holding structural children.
      Structural changes still full-rebuild, so no behavior change yet. Tested.
-  2. ✅ **Slice 2b, reconcile-and-splice (done, headless-tested; still to be driven).**
+  2. **Done.** **Slice 2b, reconcile-and-splice (done, headless-tested; still to be driven).**
      Took the lower-risk route: `Document::reconcile` builds a fresh tree (reusing
      `build_styled_tree_tracked`), splices only the affected structural subtrees into
      the live one, and re-applies focus *scoped* to those subtrees; `resolve_images`
@@ -465,7 +465,7 @@ rationale](/why/#ephemeral-ui-state-automatic-by-default-controllable-by-opt-in)
      (cheap at these sizes) rather than rebuilding just the slot, but it preserves
      ephemeral state, which is the point. Inputs that are *siblings* of an r-if (same
      parent) are still restored by the scoped `apply_focus`, not persistence.
-  3. ✅ **Toggles reconcile (checkbox/radio).** A toggle changes only its own node
+  3. **Done.** **Toggles reconcile (checkbox/radio).** A toggle changes only its own node
      (the synthetic `checked` class → style + mark), no shape change: `Toggle::of`
      carries the checked state's deps, the toggle branch records a `ToggleBinding`
      (node path + deps), and `reconcile` splices just that node from the fresh
@@ -473,10 +473,10 @@ rationale](/why/#ephemeral-ui-state-automatic-by-default-controllable-by-opt-in)
      Tested. (Radios group by their shared `r-model` signal, with no `name` attribute;
      a radio is checked when `signal == value`, and selecting one un-checks the
      rest.)
-  4. ✅ **`:src` / `:options` patch in place.** Value-like: an `AttrBinding` (path +
+  4. **Done.** **`:src` / `:options` patch in place.** Value-like: an `AttrBinding` (path +
      expr + deps) rewrites `node.image.src` (then `resolve_images`) or
      `node.options`, no shape change, out of `reg.structural`. Tested.
-  5. ✅ **Component props reconcile: the restore-pass category is closed.** A prop
+  5. **Done.** **Component props reconcile: the restore-pass category is closed.** A prop
      change re-expands the instance subtree: `expand_component` records a
      `ComponentBinding` (path + prop deps), and `reconcile` splices the whole subtree
      + scoped focus. `note_structural` is removed: **`reg.structural` is now always
@@ -490,7 +490,7 @@ rationale](/why/#ephemeral-ui-state-automatic-by-default-controllable-by-opt-in)
        pass**: the stale-caret *category*. The whole-tree `apply_focus` in
        `rebuild()` is now unreachable from interactions (kept as a safety fallback,
        `patch` never returns false).
-  6. ✅ **Driven & verified (2026-07-19).** Reactivity driven in the window and
+  6. **Done.** **Driven & verified (2026-07-19).** Reactivity driven in the window and
      confirmed working, with caret/selection/scroll undisturbed when something elsewhere
      changes. The "not done until driven" gate for v0.3.2 is cleared, so the
      reactivity work is genuinely done, not just headless-green.
@@ -504,7 +504,7 @@ label toggles the checkbox/radio. Runs inside the build, so it survives a reconc
 **Not covered:** focusing a *text* input from its label (a text input has no `@tap`;
 needs a shell focus-by-id path), and `role="label"` semantics for accessibility.
 Both are follow-ups. (Radios still group by shared `r-model`, not `name`.)
-- ⏳ **Then delete `apply_focus`**: once no structural change rebuilds, a fresh
+- **Pending.** **Then delete `apply_focus`**: once no structural change rebuilds, a fresh
   tree is never made mid-session, so caret/selection live on the persistent tree
   and the restore pass drops. (`apply_focus` stays only as the *set-caret*
   mechanism `set_focus` calls on focus moves.) Toggle `checked`-class in place is a
@@ -512,7 +512,7 @@ Both are follow-ups. (Radios still group by shared `r-model`, not `name`.)
 
 ### Vue-style `:` attribute bindings: `:class`, `:style`, `:attr`
 
-**✅ Done, full Vue parity (2026-07-19):**
+**Done, full Vue parity (2026-07-19):**
 - **`:class`**: string, array, and **object/conditional** (`#{ active: cond }` →
   keys whose value is truthy), fed into the cascade.
 - **`:style`**: string and **object** (`#{ background: c }`) inline CSS at highest
@@ -594,7 +594,7 @@ surviving, and controlled state is an **opt-in** for values the author wants to 
 **This does not reorder the reactivity work**: build the reactivity core first
 (below); add the controlled-state opt-in as an additive binding afterward, where a
 real example needs it. Full argument:
-[Rationale → Ephemeral UI state](/why/#ephemeral-ui-state-automatic-by-default-controllable-by-opt-in).
+[Rationale → Ephemeral UI state](/reference/rationale/#ephemeral-ui-state-automatic-by-default-controllable-by-opt-in).
 
 ### What that means for v0.2: the standing debt
 Selection, hover, drag and scroll-into-view are all ephemeral UI state. **Each one
@@ -633,17 +633,17 @@ grammar in a second format.
 
 ### Progress (2026-07-18): grammar + wiring done, `zola build` verify pending
 
-- ✅ **Grammar written**, self-contained (design decision below resolved that way):
+- **Done.** **Grammar written**, self-contained (design decision below resolved that way):
   `editors/vscode/syntaxes/rux.tmLanguage.json`, copied to `site/syntaxes/`. Scopes
   all three sections and the Rux tokens (`{{ }}`, `r-for`/`r-if`/`r-model`, `@tap`,
   `:prop`, `signal`).
-- ✅ **Wired**: `extra_grammars` added to `site/config.toml`; VS Code extension
+- **Done.** **Wired**: `extra_grammars` added to `site/config.toml`; VS Code extension
   scaffolded (`package.json`, `language-configuration.json`, `README.md`).
-- ✅ **Verified via the real tokenizer**: ran all 18 examples through
+- **Done.** **Verified via the real tokenizer**: ran all 18 examples through
   `vscode-textmate` + `vscode-oniguruma` (the engine VS Code uses) and inspected
   scopes: every section and Rux token colors correctly; combinators / `@media` /
   `:hover` / `var()` confirmed on a synthetic case. No exceptions across the sweep.
-- ⏳ **Still to do before tagging v0.3.0:** `cd site && zola build` (no `zola`
+- **Pending.** **Still to do before tagging v0.3.0:** `cd site && zola build` (no `zola`
   binary in the dev env used, so it must run where Zola 0.22.1 is installed) and **look**
   at a rendered `.rux` block; then install the `.vsix` and open a `.rux` file. The
   standing rule: not done until driven.
@@ -723,17 +723,17 @@ subcommand** first (serving CLI users), then have a thin VS Code extension shell
 to it. Today `rux` only runs an app (`rux [path]`, `crates/rux-cli`); these add
 subcommands.
 
-### Tier 0: declarative + a stopgap formatter (✅ done 2026-07-18)
+### Tier 0: declarative + a stopgap formatter (done 2026-07-18)
 
 Ships with coloring.
-- ✅ **Snippets** (`snippets/rux.json`): component scaffold, section blocks,
+- **Done.** **Snippets** (`snippets/rux.json`): component scaffold, section blocks,
   `r-for`/`r-if`/`r-model`, `signal`, `@tap`, interpolation, common elements.
-- ✅ **Folding** of the three sections + **HTML-style tag indentation**
+- **Done.** **Folding** of the three sections + **HTML-style tag indentation**
   (`indentationRules`, `onEnterRules`) and bracket/quote auto-close, in
   `language-configuration.json`.
-- ✅ **File icon**: `.rux` files show the Rux mark via `contributes.languages.icon`
+- **Done.** **File icon**: `.rux` files show the Rux mark via `contributes.languages.icon`
   (shown when the active file-icon theme falls back to language icons; Seti does).
-- ✅ **Basic Format Document** (`Shift+Alt+F`): a bracket/tag-aware **re-indenter**
+- **Done.** **Basic Format Document** (`Shift+Alt+F`): a bracket/tag-aware **re-indenter**
   in a plain-JS `extension.js` (no build toolchain). **Superseded in v0.5**: the
   JS copy is gone and the extension shells out to `rux fmt`, which is one
   implementation instead of two that had already drifted. What is left of the
@@ -783,7 +783,7 @@ Nothing here is committed to a specific Friday yet; this is the ordered pool the
 v0.4.x point-releases draw from. Reactivity landing in v0.3 is what unblocks the
 first item.
 
-1. **Pseudo-classes** (`:hover`, `:focus`, `:active`, `:checked`): ✅ **done
+1. **Pseudo-classes** (`:hover`, `:focus`, `:active`, `:checked`): **done
    2026-07-25, driven & verified in the window.** All four match; they stack, carry
    class-level specificity, and work anywhere in a chain (`.card:hover .title`).
 
@@ -811,7 +811,7 @@ first item.
      compatibility (examples and docs are migrated to `:checked`); entering or
      leaving *all* interactive boxes re-cascades from the root rather than a
      sub-path, which is correct but coarser than the sibling-to-sibling case.
-2. **CSS custom properties + `var()`**: ✅ **done 2026-07-25, driven & verified.**
+2. **CSS custom properties + `var()`**: **done 2026-07-25, driven & verified.**
    `--name` declarations inherit like `color`; `var()` is substituted into every
    declaration *after* the cascade and inline styles merge, so every property gets
    variables without its parser knowing they exist. Fallbacks, variables defined in
@@ -825,7 +825,7 @@ first item.
    attribute and the expression share the `"` delimiter. `decode_entities` moved to
    `rux-parser` and now runs as attributes are read (`&quot;` works), with
    `rux-style` reusing it rather than keeping a second table.
-3. **`@media` queries**: ✅ **done 2026-07-26, driven & verified.** Rules inside a
+3. **`@media` queries**: **done 2026-07-26, driven & verified.** Rules inside a
    non-matching block are simply never emitted, so matching, cascade and
    specificity are untouched: a block adds no specificity, and the order counter
    runs across blocks so a later `@media` rule beats an earlier plain one.
@@ -842,7 +842,7 @@ first item.
    the old and new size and re-cascades only if that vector differs, so a resize
    crossing no breakpoint does nothing, and a document without `@media` never
    re-cascades. `examples/responsive.rux` drives it.
-4. **Error surfacing / dev overlay**: ✅ **done 2026-07-26, driven & verified.**
+4. **Error surfacing / dev overlay**: **done 2026-07-26, driven & verified.**
    A broken file no longer opens an empty window: the shell paints a dev overlay
    above everything (including a dropdown) with the failure, and a **failed
    hot-reload keeps the last good tree on screen** and marks it stale, so a typo
@@ -872,7 +872,7 @@ first item.
    property instead of erroring, so `{{ user.nmae }}` is still silently empty.
    That is now recorded as the **second motivator for the rhai fork** (Further out
    → item 3), beside the signal-mutation constraint.
-5. **Accessibility**: ✅ **done 2026-07-26, driven & verified.** `role=` now means
+5. **Accessibility**: **done 2026-07-26, driven & verified.** `role=` now means
    something to assistive technology, not just to selectors: Rux publishes a real
    accessibility tree via `accesskit` + `accesskit_winit` (0.24 / 0.33, which share
    our exact winit 0.30, no duplicate winit).
@@ -919,14 +919,14 @@ self-contained-vs-`source.css` decision).
 - **True inline text flow.** Two `<text>` siblings stack; they cannot share a
   line. taffy has no inline formatting context, so this needs our own line-breaker
   over parley, a real project, not a patch.
-- ~~**Error surfacing.**~~ ✅ Resolved 2026-07-26: there is a dev overlay. A bad
+- ~~**Error surfacing.**~~ Resolved 2026-07-26: there is a dev overlay. A bad
   `.rux` file shows the error (with line/column) instead of an empty screen, a
   failed hot-reload keeps the last good UI, and dead CSS / failed expressions are
   listed in-window. Remaining: no line numbers on CSS warnings, no `rux check`.
-- ~~**`:checked` and other pseudo-classes.**~~ ✅ Resolved 2026-07-25: `:hover`,
+- ~~**`:checked` and other pseudo-classes.**~~ Resolved 2026-07-25: `:hover`,
   `:focus`, `:active` and `:checked` all match. The synthetic `checked` class
   survives one more release for compatibility, then goes.
-- ~~**Accessibility.**~~ ✅ Resolved 2026-07-26: a real `accesskit` tree is
+- ~~**Accessibility.**~~ Resolved 2026-07-26: a real `accesskit` tree is
   published (roles, names, values, checked state, bounds), verified through UI
   Automation. Remaining: action requests aren't dispatched, the tree is flat, and
   there are no live regions.
@@ -1293,7 +1293,7 @@ way. This milestone is where Rux stops being stock rhai.
    the most visible thing missing from a UI toolkit that is otherwise usable.
    Sequenced *after* the fork rather than mixed into it, and in tiers, because
    they differ enormously in cost:
-   - **`transition` on style changes** first and alone. ✅ **Built.** It fires
+   - **`transition` on style changes** first and alone. **Built.** It fires
      when a node's computed style changes between builds, from a signal or from
      a pseudo-class flipping, so the tree shape never changes and enter/leave
      never arises. This is the case almost every app wants. The clock it needed
@@ -1302,7 +1302,7 @@ way. This milestone is where Rux stops being stock rhai.
      third deadline on the same scheduler, which keeps the property that matters
      on a phone: an idle app sleeps instead of burning frames, and frames stop
      the moment a transition lands. See
-     [Transitions](/reference/#honored-css) for the surface, and
+     [Transitions](/reference/css/) for the surface, and
      `examples/transition.rux`.
    - **Enter and leave** second, and it shares a foundation with lifecycle
      hooks: both need a subtree to outlive its removal from the tree.

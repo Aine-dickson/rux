@@ -13,19 +13,65 @@ through v0.5 releases, which the [Roadmap](./06-roadmap.md) lists.
 
 ---
 
+## Starting a project
+
+```bash
+cargo install ruxlang
+rux new my-app
+cd my-app
+rux run
+```
+
+`rux new` writes a project that runs as it stands, and it is the answer to
+"where do things go", which nothing else documented:
+
+```
+my-app/
+  app.rux            the entry point: <template>, <style>, <script>
+  components/
+    task.rux         imported by `use components::task;`
+  assets/            images; `src` resolves relative to the .rux file
+  README.md
+  .gitignore
+```
+
+Both conventions are ones the runtime already followed: `use components::task;`
+names `components/task.rux`, and an `<image src="assets/logo.png">` resolves
+from the document's own directory rather than from wherever `rux` was run. The
+scaffold checks clean and is already formatted the way `rux fmt` writes, so the
+first `rux fmt` in a new project changes nothing.
+
+**A workspace is a directory containing `app.rux` or `index.rux`.** That is the
+whole definition. There is no manifest file: a `rux.toml` would have to carry a
+window title, an icon and a target, and each of those is a decision `rux build`
+owns and has not made yet. If one arrives, `rux new` is where it gets written.
+
 ## Running it
 
 Rux is on crates.io, so the shortest path needs no clone at all:
 
 ```bash
-cargo install ruxlang
-rux run app.rux
+rux run                         # the workspace's app.rux or index.rux
+rux run app.rux                 # or a named file
+rux app.rux                     # the same, said shorter
 ```
+
+`rux run` with no file looks for `app.rux`, then `index.rux`, in the current
+directory and then in every parent, so it works from `components/` the way
+`git` does. Only `app.rux` is generated; `index.rux` is accepted because the
+web habit is strong and someone will reach for it.
+
+**Bare `rux` prints the usage**, the way `cargo` and `git` do. A tool that
+launches a GUI when invoked with no arguments is a surprise, and this one used
+to do something worse: it defaulted to `examples/battery.rux`, a path that
+exists only in a checkout of this repo, so the first thing typed after
+`cargo install ruxlang` was a panic out of the file watcher. `rux run` with
+nothing to run says what it looked for and how to make one.
 
 From a checkout of this repo, with the examples to hand:
 
 ```bash
-cargo run                          # examples/battery.rux (default)
+cargo run -- examples/battery.rux  # a bare `cargo run` now prints the usage
 cargo run -- examples/form.rux     # inputs + two-way binding + overflow-wrap
 cargo run -- examples/list.rux     # a scrolling list (wheel, drag the bar, Tab)
 cargo run -- examples/scroll.rux   # horizontal + both-axes scrolling, scrollbars
@@ -115,6 +161,27 @@ Walking a directory **skips components**, the files whose template root is not
 `<screen>`. A component's `{{ prop }}` values come from whoever uses it, so
 loading one on its own reports every prop as undefined. Naming a component
 explicitly checks it anyway, since that was asked for on purpose.
+
+## Telling an editor what the runtime understands
+
+```bash
+rux vocab                       # elements, attributes, directives, honored CSS
+```
+
+JSON on stdout, for editors. The VS Code extension offers completions from it,
+and the two lists that a crate already owns are read from that crate rather than
+copied: the CSS properties are the same slice the unhonored-property warning
+consults, and the void tags are the same one the formatter indents by. So the
+guarantee is that **if the editor offers it, it works**, and a property honored
+in a later release reaches completions without anyone remembering to update a
+second list.
+
+The extension also ships a generated copy, so completions work before
+`cargo install ruxlang` has finished; `scripts/sync-vocabulary.sh --check`
+regenerates it and is a release gate. That gate exists because this exact drift
+already shipped: the extension's own void-tag list was inherited from HTML,
+which has `img` and not Rux's `<image>`, and over-indented everything after an
+`<image src="…">` for two releases.
 
 ## Crates
 
@@ -324,6 +391,39 @@ focus to that button, as any tap on a button does.
 **Still keyed by model alone:** `type="select"`. A `<select>` inside an `r-for`
 has the same ambiguity inputs had. Driven in `examples/keyed-list.rux`.
 
+**A document's rules reach its components.** A `<style>` block styles its own
+markup *and* the components the document uses, so a look is written once at the
+top instead of imported into every component file:
+
+```xml
+<!-- app.rux -->
+<style>
+  .chip { padding: 0.75rem; border-radius: 8px; background: #a6e3a1; }
+</style>
+```
+```xml
+<!-- components/chip.rux: no <style> at all, and still green -->
+<template><view class="chip"><text>{{ label }}</text></view></template>
+```
+
+A component's own rules are applied **after** the ones it inherits, so it wins a
+tie without needing a more specific selector, which is CSS's own order.
+
+`<style scoped>` opts out, and means the same thing from either side:
+
+- On a **component**: "I own my appearance." Nothing from outside styles it.
+- On a **document**: "my rules stay in my markup." They reach no component.
+
+> **This changed in v0.7.** A component used to see only its own `<style>`, so
+> sharing a palette meant repeating `<style src="theme.css">` in every single
+> component. If a component and its caller happen to use the same class name and
+> you want the old isolation, that is what `scoped` is for.
+
+**Custom properties already cascaded**, before and after this change: a
+`--brand` defined on the document has always been readable as `var(--brand)`
+inside a component, because variables inherit down the tree rather than being
+matched by a selector.
+
 **External stylesheets:** `<style src="…">` pulls in one or more `.css` files,
 so a palette can be shared instead of pasted into every document:
 ```html
@@ -388,7 +488,20 @@ re-cascades at all. Driven in `examples/responsive.rux`.
 `flex: 1` means `1 1 0%` (CSS's shorthand defaults), not `1 1 auto`.
 `opacity` fades the node **and its subtree** as one layer.
 `background`/`border` work on `<text>` nodes, not just containers.
-**Units:** `px`, `%`, `rem` (=16px), `vw`, `vh`/`dvh`.
+**Units:** `px`, `%`, `rem` (=16px), `em`, `vw`, `vh`/`dvh`.
+
+`em` is relative to the element's own resolved `font-size`, and on `font-size`
+itself it is relative to the inherited one, which is what it means in CSS. It is
+resolved in a pass before the properties are interpreted, the same way `var()`
+is, so it works anywhere a length does.
+
+> **`rem` and `em` did not reach the box model before v0.7.** `width` and
+> `height` understood `rem` from the start, while `padding`, `margin`, `gap`,
+> border widths, corner radii, `letter-spacing`, `box-shadow` and `translate()`
+> went through a px-only parser and **dropped the declaration silently**. So
+> `width: 2rem` worked, `padding: 2rem` did nothing, and nothing said why. `%`
+> is still only honored where the list below says so; it is not a box-model
+> unit.
 
 `font-family` takes a CSS list (`font-family: "Inter", sans-serif`), and parley
 parses it and does name-matching + fallback; the generic families (`serif`,
@@ -1149,7 +1262,7 @@ for the reasons under "Checking a file without opening a window".
 > Fine-grained reactivity **shipped in v0.3**: a signal change now patches only
 > the bindings that read it, and the wholesale rebuild no longer fires. This list
 > claimed otherwise until 2026-07-26. If a gap here reads as more pessimistic
-> than the [release blog](https://ruxlang.dev/blog/), trust the blog and fix this
+> than the [release blog](/blog/), trust the blog and fix this
 > file.
 
 ---

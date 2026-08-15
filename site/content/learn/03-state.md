@@ -60,7 +60,7 @@ This looks completely reasonable and does not work:
 <script>
   let count = signal(0);
 
-  fn add() {           // ✗ `count` is not visible in here
+  fn add() {           // WRONG: `count` is not visible in here
     count = count + 1;
   }
 </script>

@@ -54,7 +54,7 @@ Three sections, six element types, real CSS, gesture events, signals. No layout 
 
 ## Status
 
-> ⚠️ **The runtime is BUILT (M0–M9 complete), plus scrolling, images, a real
+> **The runtime is BUILT (M0–M9 complete), plus scrolling, images, a real
 > input caret, checkbox/radio, opacity, and the full flex model.** Docs 01–04
 > below describe the original *design intent* and have **drifted from the
 > implementation** in places (notably: rhai functions can't mutate state, the

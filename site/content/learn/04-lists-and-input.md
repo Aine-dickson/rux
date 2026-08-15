@@ -87,7 +87,7 @@ And the empty state gets a real condition:
 Now tick a row off. The obvious handler is:
 
 ```rux
-<view class="row" r-for="t in items" @tap="t.done = !t.done">   <!-- ✗ does nothing -->
+<view class="row" r-for="t in items" @tap="t.done = !t.done">   <!-- WRONG: does nothing -->
 ```
 
 It does nothing at all. No error, no change.
@@ -100,7 +100,7 @@ in as a literal value, because by the time you tap, the loop is long over. So
 The same is true of rhai's own `for` loop, for the same reason:
 
 ```rux
-@tap="for t in items { t.done = true; }"    <!-- ✗ also a copy -->
+@tap="for t in items { t.done = true; }"    <!-- WRONG: also a copy -->
 ```
 
 **Writes have to go through the signal, by index:**

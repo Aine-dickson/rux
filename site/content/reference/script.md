@@ -1,7 +1,7 @@
 +++
 title = "Script"
 description = "The script language: state, functions, values, the element API, and every way it differs from rhai and from JavaScript."
-weight = 2
+weight = 6
 +++
 
 <!-- GENERATED FROM docs/07-script.md BY site/sync-docs.sh. DO NOT EDIT HERE. -->

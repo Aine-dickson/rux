@@ -18,7 +18,12 @@
   --accent-ink: #11111b;
   --green: #a6e3a1;
 
-  --measure: 68ch;
+  /* The reading measure for running prose. 68ch is the classic advice and it
+     was too narrow here: these pages are mostly not running prose. They are
+     shell transcripts, CSS property tables and `.rux` listings, and those wrap
+     or scroll long before a paragraph would, so the column was sized for the
+     rarest thing on the page. */
+  --measure: 80ch;
   --radius: 12px;
 }
 
@@ -288,7 +293,10 @@ pre code {
   display: grid;
   grid-template-columns: 232px minmax(0, 1fr);
   gap: 40px;
-  max-width: 1080px;
+  /* Wide enough for the sidebar plus a full-measure body. At 1080px the body
+     was clipped below its own max-width, so widening the measure alone would
+     have changed nothing on a docs page. */
+  max-width: 1240px;
   margin: 0 auto;
   padding: 40px 24px 72px;
 }

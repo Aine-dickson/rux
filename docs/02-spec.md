@@ -1,6 +1,6 @@
 # 02. Spec
 
-> ⚠️ **This is the v0.1 design surface, not the built surface.** Several things
+> **This is the v0.1 design surface, not the built surface.** Several things
 > here were never implemented (non-text `<input>` types, `<image>` rendering,
 > real scrolling) and some were implemented differently (the inline/block model
 > was removed; grid was added; rhai functions can't mutate state). See
@@ -360,11 +360,11 @@ What reloads live vs. what needs a rebuild. The practical contract for authors:
 
 | You edit… | Result |
 |---|---|
-| `<template>` markup | ✅ live repaint |
-| `<style>` CSS | ✅ live repaint |
-| `<script>` logic (rhai) | ✅ live, state re-initialized |
-| Which host fn a handler calls | ✅ live |
-| The **host** (compiled Rust), new capability or changed native fn | ❌ rebuild |
+| `<template>` markup | live repaint |
+| `<style>` CSS | live repaint |
+| `<script>` logic (rhai) | live, state re-initialized |
+| Which host fn a handler calls | live |
+| The **host** (compiled Rust), new capability or changed native fn | needs a rebuild |
 
 Parse/eval errors in any live section surface as a **dev overlay** in the window,
 not a crash (the accepted cost of runtime documents; see the
