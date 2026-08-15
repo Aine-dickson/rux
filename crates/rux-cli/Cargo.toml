@@ -32,3 +32,6 @@ rux-runtime.workspace = true
 # `rux fmt` is the one implementation of the re-indenter, replacing the copy the
 # VS Code extension used to carry in JavaScript.
 rux-fmt.workspace = true
+# `rux vocab` prints the honored-CSS list for the editor's completions, and it
+# has to be *the* list the unhonored-property warning consults, not a copy.
+rux-style.workspace = true

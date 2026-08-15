@@ -84,6 +84,40 @@ gate_post() {
 gate_docs_synced() {
   ./site/sync-docs.sh --check >/dev/null || die "site/ is out of sync with docs/; run ./site/sync-docs.sh"
   ok "generated site pages match docs/"
+
+  # Zola validates `@/page.md` links and ignores absolute ones, which is every
+  # link `sync-docs.sh` writes. Eleven dead anchors into `/why/` shipped and
+  # stayed live under a green build because of that, so this is checked here
+  # instead. See the note at the top of site/check-links.py.
+  local py=""
+  for candidate in python3 python; do
+    command -v "$candidate" >/dev/null 2>&1 && { py="$candidate"; break; }
+  done
+  if [[ -n "$py" ]]; then
+    "$py" site/check-links.py >/dev/null || die "the site has broken internal links; run $py site/check-links.py"
+    ok "every internal site link resolves"
+  else
+    ok "generated site pages match docs/ (no python, link check skipped)"
+  fi
+}
+
+gate_editor() {
+  # The extension's completions come from `rux vocab`, so a property honored in
+  # `crates/rux-style` and not regenerated here is a property the editor will
+  # not offer. Same class of drift as the docs gate above, and the reason it is
+  # a gate at all is that this drift already shipped once: the extension's
+  # hand-kept void-tag list missed `<image>` for two releases.
+  ./scripts/sync-vocabulary.sh --check >/dev/null \
+    || die "editors/vscode/vocabulary.json is stale; run ./scripts/sync-vocabulary.sh"
+  # Pure functions over a string, no framework and no node_modules. A directory
+  # argument does not resolve on Windows, so the file is named.
+  if command -v node >/dev/null 2>&1; then
+    node --test editors/vscode/test/context.test.js >/dev/null \
+      || die "the VS Code extension's tests fail"
+    ok "extension vocabulary current, extension tests pass"
+  else
+    ok "extension vocabulary current (node absent, tests skipped)"
+  fi
 }
 
 gate_build() {
@@ -145,6 +179,7 @@ gate_wasm() {
 # The gates that are true of a healthy tree on any day, release or not.
 run_verify() {
   gate_docs_synced
+  gate_editor
   gate_build
   gate_tests
   gate_wasm

@@ -1,0 +1,94 @@
+{
+  "version": "0.7.0-dev",
+  "elements": [
+    { "name": "screen", "detail": "the root element of a document", "doc": "The root of a `.rux` document. A component whose template root is `<screen>` is a page; anything else is a fragment." },
+    { "name": "view", "detail": "a box; the generic container", "doc": "A generic box, the element most markup is made of. Defaults to `display: block`, so give it `display: flex` to lay its children out." },
+    { "name": "text", "detail": "a run of text", "doc": "A run of text. Two `<text>` siblings **stack**: there is no inline flow, so they do not share a line. `role=\"heading\"` announces it as a heading." },
+    { "name": "image", "detail": "an image from a file", "doc": "`src` resolves relative to the `.rux` file, not the working directory. PNG, JPEG, GIF and WebP. With no CSS size it lays out at its intrinsic pixel size." },
+    { "name": "button", "detail": "a tappable box, announced as a button", "doc": "A tappable box. `<view @tap>` is the same thing to the layout; `<button>` says so to the accessibility tree." },
+    { "name": "input", "detail": "text field, textarea, select, checkbox or radio", "doc": "A text field by default. `type=\"textarea\"` is multiline, `type=\"select\"` a combo box, `type=\"checkbox\"` and `type=\"radio\"` carry live checked state. Bind it with `r-model`." },
+    { "name": "slot", "detail": "a component's hole for the caller's children", "doc": "Renders whatever the caller wrote between the component's tags. Children written inside `<slot>…</slot>` are the default, used when the caller passed nothing." },
+    { "name": "router", "detail": "renders the one matching route", "doc": "Renders the first `<route>` whose path matches. Leaves no box of its own: the matched view expands in its place." },
+    { "name": "route", "detail": "maps a path to a component", "doc": "`<route path=\"/crew/:id\" view=\"crew-detail\" />`. Routes are tried in the order written and the first match wins, so `fallback` can sit anywhere among them." }
+  ],
+  "globalAttributes": [
+    { "name": "class", "detail": "CSS classes", "doc": "Space-separated class names, matched by `.name` selectors. `:class` is the bound form." },
+    { "name": "id", "detail": "unique id", "doc": "Matched by `#name` selectors, and by `query(\"#name\")` from script." },
+    { "name": "style", "detail": "inline declarations", "doc": "Inline CSS for this element. `:style` is the bound form." },
+    { "name": "role", "detail": "accessibility role", "doc": "Honored for selectors (`[role=\"heading\"]`) and for the accessibility tree. Matches case-insensitively." },
+    { "name": "to", "detail": "make this element a link", "doc": "Tapping navigates to this path, the element announces as a link, and it matches `:current` when it names the path you are on. `:to` is the bound form." }
+  ],
+  "directives": [
+    { "name": "r-for", "detail": "repeat this element per item", "doc": "`r-for=\"item in items\"`. Pair it with `r-key` so reconciliation can match rows across a change." },
+    { "name": "r-key", "detail": "identity for a repeated row", "doc": "`r-key=\"item.id\"`. Without it a keyed change is a rebuild, and input state inside a row moves to the wrong row." },
+    { "name": "r-if", "detail": "render only when true", "doc": "`r-if=\"count > 0\"`. The element and its subtree are absent, not hidden, when false." },
+    { "name": "r-elif", "detail": "an else-if branch", "doc": "Follows an `r-if` sibling. The first branch whose condition holds renders." },
+    { "name": "r-else", "detail": "the fallback branch", "doc": "Follows an `r-if` or `r-elif` sibling, and renders when none of them held." },
+    { "name": "r-show", "detail": "hide without removing", "doc": "`r-show=\"expanded\"`. The element stays in the tree and keeps its state; it is only not painted. Prefer `r-if` when the subtree is expensive." },
+    { "name": "r-model", "detail": "two-way bind an input", "doc": "`r-model=\"name\"` on an `<input>`: typing writes the signal, and writing the signal updates the field." }
+  ],
+  "elementAttributes": {
+    "image": [
+      { "name": "src", "detail": "path, relative to this .rux file", "doc": "Resolved relative to the document, not the working directory. `:src` binds an expression." },
+      { "name": "alt", "detail": "accessible description", "doc": "What the image is, for the accessibility tree." }
+    ],
+    "input": [
+      { "name": "type", "detail": "text | textarea | select | checkbox | radio", "doc": "Omitted means a single-line text field." },
+      { "name": "placeholder", "detail": "text shown while empty", "doc": "Shown until the field has a value. Not a label." },
+      { "name": "value", "detail": "the field's value", "doc": "The literal starting value. For state that changes, use `r-model`." },
+      { "name": "checked", "detail": "checkbox / radio state", "doc": "Live state for `type=\"checkbox\"` and `type=\"radio\"`, and matched by the `:checked` pseudo-class." },
+      { "name": "name", "detail": "radio group", "doc": "Radios sharing a `name` are one group, so choosing one clears the others." },
+      { "name": "options", "detail": "the choices for a select", "doc": "For `type=\"select\"`. `:options` binds an array." }
+    ],
+    "route": [
+      { "name": "path", "detail": "the path to match", "doc": "`/crew/:id` captures `id` and hands it to the view as a prop. A pattern must match the whole path." },
+      { "name": "view", "detail": "the component to render", "doc": "Names an imported component, the same name its tag would use." },
+      { "name": "fallback", "detail": "match anything unmatched", "doc": "Valueless. Renders when no other route matched, wherever it sits among them." }
+    ],
+    "router": [
+      { "name": "restore-scroll", "detail": "restore scroll position on Back", "doc": "Puts a page back where it was when you return to it." }
+    ],
+    "text": [
+      { "name": "for", "detail": "label another element", "doc": "Names the `id` of the element this text labels, so the accessibility tree pairs them." }
+    ]
+  },
+  "scriptGlobals": [
+    { "name": "signal", "detail": "signal(value)", "doc": "Declare a piece of reactive state." },
+    { "name": "computed", "detail": "computed(|| expr)", "doc": "A value derived from other signals, recomputed when they change." },
+    { "name": "effect", "detail": "effect(|| …)", "doc": "Run when the signals it reads change." },
+    { "name": "mounted", "detail": "mounted { … }", "doc": "Runs once the document is on screen. Document level today; a component declaring one is warned." },
+    { "name": "unmounted", "detail": "unmounted { … }", "doc": "Runs when the document stops being the one on screen." },
+    { "name": "query", "detail": "query(\"selector\")", "doc": "Find an element by CSS selector, in a handler, against the frame already laid out." },
+    { "name": "navigate", "detail": "navigate(path)", "doc": "Go to a path, leaving the current one in the history." },
+    { "name": "replace", "detail": "replace(path)", "doc": "Go to a path *without* a history entry. The only correct way to redirect." },
+    { "name": "back", "detail": "back()", "doc": "Walk back through the history." },
+    { "name": "forward", "detail": "forward()", "doc": "Walk forward through the history." },
+    { "name": "path_for", "detail": "path_for(\"route\", #{ … })", "doc": "Build a path from a named route and its parameters." },
+    { "name": "emit", "detail": "emit(\"name\", payload)", "doc": "A component telling its caller something happened." },
+    { "name": "print", "detail": "print(x)", "doc": "Printf-debugging. Reaches the dev overlay, not just stderr." },
+    { "name": "debug", "detail": "debug(x)", "doc": "Like `print`, with the value's structure shown." }
+  ],
+  "voidTags": [
+    "image", "input", "area", "base", "br", "col",
+    "embed", "hr", "img", "link", "meta", "param",
+    "source", "track", "wbr"
+  ],
+  "cssProperties": [
+    "display", "width", "height", "gap", "min-width", "max-width",
+    "min-height", "max-height", "padding", "padding-top", "padding-right", "padding-bottom",
+    "padding-left", "margin", "margin-top", "margin-right", "margin-bottom", "margin-left",
+    "border", "border-width", "border-color", "border-radius", "border-top-left-radius", "border-top-right-radius",
+    "border-bottom-right-radius", "border-bottom-left-radius", "border-top", "border-right", "border-bottom", "border-left",
+    "border-top-width", "border-right-width", "border-bottom-width", "border-left-width", "overflow", "overflow-x",
+    "overflow-y", "opacity", "cursor", "box-shadow", "transform", "transition",
+    "flex", "flex-grow", "flex-shrink", "flex-basis", "flex-wrap", "flex-direction",
+    "justify-content", "align-items", "align-self", "justify-self", "justify-items", "align-content",
+    "row-gap", "column-gap", "grid-template-columns", "grid-template-rows", "grid-column", "grid-row",
+    "grid-column-start", "grid-column-end", "grid-row-start", "grid-row-end", "grid-auto-flow", "grid-auto-rows",
+    "grid-auto-columns", "position", "top", "right", "bottom", "left",
+    "aspect-ratio", "background", "background-color", "background-image", "color", "font-size",
+    "font-weight", "font-family", "font-style", "text-align", "letter-spacing", "word-spacing",
+    "line-height", "white-space", "text-decoration", "text-decoration-line", "overflow-wrap", "word-wrap",
+    "word-break"
+  ]
+}
