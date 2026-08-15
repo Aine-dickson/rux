@@ -436,6 +436,11 @@ const SCOPES: &[(&str, &str)] = &[
     ("storage", "hl-keyword"),
     ("entity.name.tag", "hl-tag"),
     ("entity.name.function", "hl-function"),
+    // `use components::header;`. The grammar gives this its own scope so a real
+    // editor theme can colour a namespace as a namespace; here it takes the tag
+    // colour, because what the path actually names is the tag `<header>`, and
+    // this palette has no separate namespace colour worth adding one for.
+    ("entity.name.namespace", "hl-tag"),
     ("entity.other.attribute-name.class", "hl-selector"),
     ("entity.other.attribute-name.id", "hl-selector"),
     ("entity.other.attribute-name.pseudo-class", "hl-selector"),

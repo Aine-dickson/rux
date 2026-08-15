@@ -2,6 +2,19 @@
 
 Editor support for `.rux` files:
 
+- **Completions**, offered from what the runtime actually understands. In
+  `<template>`: elements, the components this file imported with
+  `use components::…`, the directives, and each element's own attributes. In
+  `<style>`: **only the CSS properties Rux honors**, which is the completion a
+  general CSS extension cannot give you, because Rux honors a subset and warns
+  about the rest. In `<script>`: `signal`, `computed`, `effect`, the router
+  calls and the rest of the globals. The lists come from `rux vocab`, so if the
+  editor offers it, it works.
+- **Tag auto-closing**: finishing `<view>` writes `</view>` and leaves the
+  cursor between them, and typing `</` completes the nearest tag still open.
+  Void elements (`<image>`, `<input>`) never get a closing tag. Turn it off with
+  `rux.autoClosingTags`.
+
 - **Syntax coloring**: the `<template>`, `<style>` and `<script>` sections and the
   Rux-specific tokens inside them (`{{ }}` interpolation, `r-for` / `r-if` /
   `r-model` directives, `@tap` handlers, `:prop` bindings, `signal(...)`).

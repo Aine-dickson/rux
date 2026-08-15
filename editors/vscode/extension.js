@@ -1,5 +1,5 @@
-// Rux VS Code extension: formatting and diagnostics, both by shelling out to
-// the `rux` binary.
+// Rux VS Code extension: completions, tag auto-closing, formatting and
+// diagnostics. The last two shell out to the `rux` binary.
 //
 // This file used to carry its own re-indenter, a port of the one in
 // `crates/rux-fmt`. Two implementations of the same rules drifted within a week:
@@ -14,6 +14,9 @@
 
 const { spawnSync } = require('child_process');
 const path = require('path');
+const autoclose = require('./autoclose');
+const completion = require('./completion');
+const vocabulary = require('./vocabulary');
 
 /** Configured path to the `rux` binary. */
 function ruxPath(vscode) {
@@ -64,6 +67,18 @@ function activate(context) {
   const noticeMissingBinary = makeMissingBinaryNotice(vscode);
   const diagnostics = vscode.languages.createDiagnosticCollection('rux');
   context.subscriptions.push(diagnostics);
+
+  // ── Completions and tag auto-closing ───────────────────────────────────────
+  // Both read the vocabulary, which is bundled with the extension so that they
+  // work before the binary is installed, and refreshed from `rux vocab` when it
+  // is there so that someone on a branch build gets their branch's vocabulary.
+  // This is the one place the binary is optional: a missing `rux` costs newer
+  // completions, not completions.
+  vocabulary.refreshFromBinary((args) => runRux(vscode, args, undefined, undefined));
+  context.subscriptions.push(
+    completion.register(vscode),
+    autoclose.register(vscode, context)
+  );
 
   // ── Formatting ─────────────────────────────────────────────────────────────
   // The document is piped in rather than read from disk, because what needs

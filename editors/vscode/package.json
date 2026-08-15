@@ -1,8 +1,8 @@
 {
   "name": "rux",
   "displayName": "Rux",
-  "description": "Syntax highlighting, formatting and diagnostics for the Rux UI language (.rux files).",
-  "version": "0.2.0",
+  "description": "Syntax highlighting, completions, tag auto-closing, formatting and diagnostics for the Rux UI language (.rux files).",
+  "version": "0.3.0",
   "publisher": "aine-dickson",
   "license": "MIT OR Apache-2.0",
   "repository": {
@@ -29,6 +29,11 @@
           "type": "boolean",
           "default": true,
           "markdownDescription": "Report problems from `rux check` as you open and save `.rux` files."
+        },
+        "rux.autoClosingTags": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Write the closing tag when you finish an opening one, and complete `</`. Void elements (`<image>`, `<input>`) are never given a closing tag."
         }
       }
     },
