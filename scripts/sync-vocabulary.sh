@@ -44,7 +44,12 @@ if [[ ! -s "$generated" ]]; then
 fi
 
 if [[ "${1:-}" == "--check" ]]; then
-  if ! diff -u "$out" "$generated" > /dev/null 2>&1; then
+  # Compared with the carriage returns stripped, not raw. With
+  # `core.autocrlf=true` the checked-out copy has CRLF and the freshly built
+  # one has LF, so a raw `diff` calls this stale on every Windows run whether or
+  # not anything drifted. `site/sync-docs.sh` hit exactly this and works around
+  # it with `git diff`; the same trap, one script later.
+  if ! diff -u <(tr -d '\r' < "$out") <(tr -d '\r' < "$generated") > /dev/null 2>&1; then
     echo "editors/vscode/vocabulary.json is out of date." >&2
     echo "The runtime's vocabulary changed and the extension's copy did not." >&2
     echo "Run ./scripts/sync-vocabulary.sh and commit the result." >&2

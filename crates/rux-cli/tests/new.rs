@@ -227,6 +227,19 @@ fn every_subcommand_has_a_tooling_page() {
     }
 }
 
+/// A directory where a document was expected is the third shape of the same
+/// crash: the runtime starts a file watcher on the path and panics.
+#[test]
+fn a_directory_is_not_a_document() {
+    let scratch = Scratch::new("dir");
+    std::fs::create_dir_all(scratch.path().join("somewhere")).unwrap();
+    let (code, _, stderr) = run(scratch.path(), &["run", "somewhere"]);
+
+    assert_eq!(code, 2);
+    assert!(!stderr.contains("panicked"), "still panicking: {stderr}");
+    assert!(stderr.contains("is a directory"), "stderr: {stderr}");
+}
+
 #[test]
 fn index_rux_is_accepted_as_an_entry_point() {
     let scratch = Scratch::new("index");
