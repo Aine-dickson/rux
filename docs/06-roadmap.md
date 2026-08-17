@@ -1299,8 +1299,10 @@ way. This milestone is where Rux stops being stock rhai.
    - **Route transitions last**, never first. They *are* the enter/leave
      problem, so building them for the router alone means writing a bespoke
      animator and throwing it away.
-6. **Lifecycle hooks**, `mounted` and `unmounted`. **Document level is done**;
-   component level is not, and enter/leave is not.
+6. **Lifecycle hooks**, `mounted` and `unmounted`. **Document and component
+   level are both done** (2026-08-17), along with `setInterval` and with
+   `computed` / `effect` inside a component. Enter/leave is what is left, and it
+   is waiting on the tier 2 ownership decision rather than on effort.
 
    The premise this was planned under has expired and the decision was re-made
    rather than inherited. Hooks were to be inline blocks *because* a named `fn`
@@ -1313,13 +1315,15 @@ way. This milestone is where Rux stops being stock rhai.
    one of their own. `mounted` runs after the effects and exactly once, which is
    the only thing separating it from an `effect` that fires on load.
 
+   **What was built for the component level**, since the shape is worth
+   recording: the build reports each instance that appeared or was pruned
+   through a lifecycle sink, and the runtime runs the bodies afterwards, never
+   during a build. `unmounted` never fires unless `mounted` fired, so an
+   instance created by one build and dropped by the next runs neither; and when
+   one build swaps two components, the leaver's `unmounted` runs before the
+   arriver's `mounted`.
+
    **What is left**, in order, because each depends on the one before:
-   - **Component-level hooks.** The two moments already exist and were verified:
-     an instance is born at `instances.entry(…).or_insert_with(…)` and dies at
-     `instances.retain(|_, i| i.touched)`, both in `rux-style`. What is missing
-     is reporting those moments out of the build and running the bodies in the
-     dying instance's own scope. A component declaring a hook is **warned**
-     today rather than silently ignored.
    - **Enter/leave**, which needs a leaving subtree to outlive its removal.
      `Animator::apply` already runs after the build and before the layout, which
      is the natural place to re-insert one; the animator would hold the
