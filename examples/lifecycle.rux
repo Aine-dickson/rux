@@ -1,0 +1,60 @@
+<template>
+  <screen class="app">
+    <text class="title">mounted and unmounted</text>
+    <text class="lead">A component's hooks run per instance: `mounted` the first time an instance is expanded onto the screen, `unmounted` at the last moment its state can still be read. Close the cards and the marks you left survive them, because the leaving instance wrote them out on its way.</text>
+
+    <view class="row" r-if="open">
+      <session :label="&quot;left card&quot;" />
+      <session :label="&quot;right card&quot;" />
+    </view>
+    <text class="empty" r-if="!open">both cards are closed</text>
+
+    <view class="btn" @tap="open = !open">
+      <text class="btn-label" r-if="open">close the cards</text>
+      <text class="btn-label" r-if="!open">open the cards</text>
+    </view>
+
+    <text class="foot">instances opened so far: {{ opens }}</text>
+    <text class="foot">last card to leave: {{ saved }}, holding {{ savedMarks }} marks</text>
+  </screen>
+</template>
+
+<style>
+  .app {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    padding: 28px;
+    background: #1e1e2e;
+  }
+
+  .title { color: #cdd6f4; font-size: 22px; font-weight: 700; }
+  .lead { color: #9399b2; font-size: 13px; max-width: 620px; }
+  .foot { color: #9399b2; font-size: 13px; }
+  .empty { color: #6c7086; font-size: 13px; height: 24px; }
+  .row { display: flex; gap: 14px; align-items: flex-start; }
+
+  .btn {
+    padding: 8px 14px;
+    background: #89b4fa;
+    border-radius: 8px;
+    cursor: pointer;
+    max-width: 180px;
+  }
+
+  .btn:hover { background: #b4befe; }
+  .btn-label { color: #11111b; font-size: 12px; font-weight: 700; }
+</style>
+
+<script>
+  use components::session;
+
+  let open = signal(true);
+
+  // Written by the components, not by this file: a hook runs in its own
+  // instance's scope, and a document signal it does not shadow is how anything
+  // it learned gets out.
+  let opens = signal(0);
+  let saved = signal("nothing yet");
+  let savedMarks = signal(0);
+</script>

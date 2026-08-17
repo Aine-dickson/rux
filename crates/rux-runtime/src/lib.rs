@@ -76,6 +76,24 @@ pub struct Document {
     effects: Vec<Effect>,
     /// The document's own `mounted` / `unmounted` bodies.
     hooks: Hooks,
+    /// Each component's `mounted` / `unmounted` bodies, by tag. Shared by every
+    /// instance of that component, the same way its functions are: the code is
+    /// one thing, the scope it runs in is per instance.
+    component_hooks: HashMap<String, Hooks>,
+    /// Instance keys whose mount has been drained.
+    ///
+    /// The pairing rule, and it is not bookkeeping for its own sake: a build can
+    /// create an instance that the *next* build prunes before either hook has
+    /// run, and firing `unmounted` for something that was never announced as
+    /// mounted would run a save for a thing that was never on screen. An
+    /// instance is in here from its mount being drained until its unmount is.
+    mounted_instances: HashSet<String>,
+    /// Whether a lifecycle drain is already running.
+    ///
+    /// A `mounted` body that writes a signal rebuilds, and a rebuild can mount
+    /// something else. That is a loop worth running, but only once: the drain is
+    /// a loop already, so a nested call would run the same bodies twice.
+    settling: bool,
     /// Whether the document's `mounted` bodies have run.
     ///
     /// A flag rather than "run it during construction", because a hook that
@@ -586,6 +604,7 @@ impl Document {
         let (main_script, computeds, effects, hooks) = extract_reactives(&main_script);
 
         let mut components = HashMap::new();
+        let mut component_hooks: HashMap<String, Hooks> = HashMap::new();
         let mut combined_script = main_script;
         for import in imports {
             let comp_path = base.join(&import.file);
@@ -603,17 +622,17 @@ impl Document {
             // A component's own computed/effect declarations are not
             // supported yet; strip them so the merged script still compiles.
             let (comp_script, _c, _e, comp_hooks) = extract_reactives(&comp_script);
-            // Nor are its lifecycle hooks, yet. Said out loud rather than
-            // stripped in silence: a `mounted` block that never runs is exactly
-            // the failure the dev overlay exists to catch, and a component is
-            // where someone would most expect the hook to work.
+            // Its lifecycle hooks are kept, per component, and run per instance.
+            //
+            // The stripping is not cosmetic: `components` stores the parsed
+            // component, and `rux-style` runs its script through `init_scope` to
+            // create each instance's state. A `mounted { … }` block left in
+            // there is not a declaration, it is a statement rhai would try to
+            // execute once per instance at creation.
             if !comp_hooks.is_empty() {
-                rux_style::warn_stylesheet(format!(
-                    "`{}` declares a lifecycle hook, which is not supported inside a component \
-                     yet; it will not run. Document-level `mounted` / `unmounted` do work.",
-                    import.tag
-                ));
+                component_hooks.insert(import.tag.clone(), comp_hooks);
             }
+            comp_sfc.script = comp_script.clone();
             // Only its *functions* join the shared engine. Its `let`s do not:
             // they are the state each instance gets a private copy of, so
             // merging them here would put one shared variable behind every
@@ -658,6 +677,9 @@ impl Document {
             computeds,
             effects,
             hooks,
+            component_hooks,
+            mounted_instances: HashSet::new(),
+            settling: false,
             mounted_ran: false,
             history: History::default(),
             pending_scroll: None,
@@ -720,6 +742,11 @@ impl Document {
             computeds,
             effects,
             hooks,
+            // No imports were resolved here, so there are no components and
+            // nothing can declare a component hook.
+            component_hooks: HashMap::new(),
+            mounted_instances: HashSet::new(),
+            settling: false,
             mounted_ran: false,
             history: History::default(),
             pending_scroll: None,
@@ -877,6 +904,9 @@ impl Document {
             }
         }
         self.registry = fresh_reg;
+        // A restyle is a whole build, so it creates and prunes instances like any
+        // other even though only some subtrees are spliced in.
+        self.settle_lifecycle(0);
     }
 
     /// Rebuild the layout tree from the engine's current state.
@@ -898,6 +928,10 @@ impl Document {
             // wrong.
             self.diagnostics.warnings = collect_warnings();
             self.collect_prints();
+            // After the tree is in place, never during the build: a hook body is
+            // author code, and it must not run while the tree it will look at is
+            // half expanded.
+            self.settle_lifecycle(0);
         }
     }
 
@@ -1092,6 +1126,9 @@ impl Document {
             }
         }
         self.registry = fresh_reg;
+        // The reconcile path is where an `r-if` actually opens and closes, so it
+        // is where most mounts and unmounts are found.
+        self.settle_lifecycle(0);
     }
 
     /// Apply an input edit (a keystroke's new value for `model`) and reflect it the
@@ -1637,7 +1674,17 @@ impl Document {
         }
 
         if !changed.is_empty() {
+            // The document signals first, through the reactive pipeline, so
+            // computeds refresh and effects fire.
             self.apply_change(&changed);
+            if moved {
+                // A patch is driven by which document signals changed, and an
+                // instance's own names are not among them: a handler that wrote
+                // both used to show the document's half and leave its own half
+                // stale on screen. The rebuild is the only thing that reads
+                // instance state again.
+                self.rebuild();
+            }
             return true;
         }
         if moved {
@@ -1691,6 +1738,11 @@ impl Document {
             // or the first frame shows the state it was written to replace.
             self.apply_change_depth(&writes, 1);
         }
+        // Every instance the first build created is a mount, and the document's
+        // own hook goes first: it is the outermost thing on screen, and it is
+        // what an instance's hook is most likely to read.
+        self.settle_lifecycle(1);
+        self.diagnostics.warnings.extend(collect_warnings());
     }
 
     /// Run the document's `mounted` bodies, once, reporting what they wrote.
@@ -1705,6 +1757,103 @@ impl Document {
             writes.extend(wrote);
         }
         writes
+    }
+
+    /// Run the `mounted` and `unmounted` bodies of every component instance the
+    /// builds since the last drain created or dropped.
+    ///
+    /// A loop rather than a single pass: a `mounted` body that writes a signal
+    /// rebuilds, and that rebuild can open an `r-if` over another component,
+    /// which mounts in turn. Bounded on the same terms as an event chain, since
+    /// two components whose hooks mount each other would otherwise not stop.
+    ///
+    /// **Unmounts run before mounts.** When an `r-if` swaps one component for
+    /// another in a single build, the leaver's `unmounted` is what saves the
+    /// state the arriver's `mounted` may read, and the other order hands the
+    /// arriver the value from before the swap.
+    fn settle_lifecycle(&mut self, depth: usize) {
+        const MAX_LIFECYCLE_ROUNDS: usize = 8;
+        // The bodies below rebuild, and a rebuild drains again. Re-entering here
+        // would run the same hooks twice; the loop this call is already inside
+        // will pick up whatever those rebuilds produced.
+        if self.settling {
+            return;
+        }
+        self.settling = true;
+        let mut round = 0;
+        loop {
+            let (mounts, unmounts) = rux_style::take_lifecycle();
+            if mounts.is_empty() && unmounts.is_empty() {
+                break;
+            }
+            round += 1;
+            if round > MAX_LIFECYCLE_ROUNDS {
+                rux_script::warn_script(format!(
+                    "component lifecycle hooks are still mounting things after \
+                     {MAX_LIFECYCLE_ROUNDS} rounds and have been stopped; a `mounted` block is \
+                     probably writing a signal that mounts another component"
+                ));
+                break;
+            }
+
+            let mut writes: HashSet<String> = HashSet::new();
+            for gone in unmounts {
+                // Never announced as mounted, so it is not announced as
+                // unmounted either: it came and went inside one drain and never
+                // reached the screen the hooks are about.
+                if !self.mounted_instances.remove(&gone.key) {
+                    continue;
+                }
+                let bodies = self
+                    .component_hooks
+                    .get(&gone.tag)
+                    .map(|h| h.unmounted.clone())
+                    .unwrap_or_default();
+                for body in bodies {
+                    // Run in the dead instance's own scope. What it writes to
+                    // its own names goes nowhere, which is correct: the instance
+                    // is gone. What it writes to a document signal is the point.
+                    let (_, changed) = self.engine.run_scoped_handler(&body, &gone.locals);
+                    for (event, _) in rux_script::take_emissions() {
+                        rux_script::warn_script(format!(
+                            "`emit(\"{event}\")` from `unmounted` has nobody to receive it: the \
+                             instance is already gone, and so is the caller's listener"
+                        ));
+                    }
+                    writes.extend(changed);
+                }
+            }
+
+            for fresh in mounts {
+                // Gone again already: a later build in this same drain pruned
+                // it. Running its body now would run it in the document's scope,
+                // because there is no instance left to scope it to, and every
+                // name it mentions would be undefined.
+                if !self.instances.contains_key(&fresh.key) {
+                    continue;
+                }
+                self.mounted_instances.insert(fresh.key.clone());
+                let bodies = self
+                    .component_hooks
+                    .get(&fresh.tag)
+                    .map(|h| h.mounted.clone())
+                    .unwrap_or_default();
+                for body in bodies {
+                    // The instance is still live, so this is an ordinary handler
+                    // run in its scope: state written back, emissions delivered
+                    // to the caller, changes applied. A hook is only special in
+                    // *when* it runs.
+                    self.dispatch_handler(&body, Some(&fresh.key), depth + 1);
+                }
+            }
+
+            if !writes.is_empty() {
+                // `unmounted` writes ride the same change-depth guard an effect's
+                // do; the round counter above is what bounds the mounting.
+                self.apply_change_depth(&writes, depth as u32 + 1);
+            }
+        }
+        self.settling = false;
     }
 
     /// Run the document's `unmounted` bodies.
@@ -4116,6 +4265,196 @@ mod tests {
         // not save twice.
         doc.unmount();
         assert_eq!(doc.engine_mut().get_string("saves"), "1");
+    }
+
+    /// A component's `mounted` runs in *its own* instance's scope, once per
+    /// instance, and what it writes reaches the screen.
+    ///
+    /// The per-instance part is the whole point: two `<card>`s are two scopes,
+    /// so the hook has to run twice and write two different variables.
+    #[test]
+    fn component_mounted_runs_per_instance() {
+        let doc = with_component(
+            "<template><view><text>{{ label }}:{{ ready }}</text></view></template>\n\
+             <script>\nlet ready = signal(\"no\");\nmounted { ready = \"yes\"; }\n</script>",
+            "<template><screen>\
+               <card :label=\"&quot;a&quot;\" /><card :label=\"&quot;b&quot;\" />\
+             </screen></template>\n\
+             <script>\nuse components::card;\n</script>",
+        );
+        let shown = text_of(&doc.root).join("|");
+        assert!(shown.contains("a:yes"), "the first instance mounted: {shown}");
+        assert!(shown.contains("b:yes"), "and so did the second: {shown}");
+    }
+
+    /// The block is a declaration, not a statement: it must be stripped before
+    /// the component's script is run to create an instance's state.
+    ///
+    /// Left in, `mounted { … }` is a line rhai executes once per instance at
+    /// creation, which both runs the hook at the wrong moment and can fail to
+    /// compile the state it was supposed to be declaring alongside.
+    #[test]
+    fn a_component_hook_is_not_part_of_its_state_script() {
+        let doc = with_component(
+            "<template><view><text>{{ count }}</text></view></template>\n\
+             <script>\nlet count = signal(7);\nmounted { count = count + 1; }\n</script>",
+            "<template><screen><card /></screen></template>\n\
+             <script>\nuse components::card;\n</script>",
+        );
+        let instance = doc.instances.values().next().expect("one instance");
+        assert!(
+            instance.state.iter().any(|(n, _)| n == "count"),
+            "the state survived the stripping: {:?}",
+            instance.state
+        );
+        assert_eq!(text_of(&doc.root).join(""), "8", "and the hook ran exactly once");
+    }
+
+    /// `unmounted` fires when the instance leaves, not when the document does,
+    /// and it can still read what the instance was holding.
+    ///
+    /// This is the hook's reason to exist: the last moment the state is
+    /// readable is the only moment it can be saved.
+    #[test]
+    fn component_unmounted_fires_when_the_instance_leaves() {
+        let mut doc = with_component(
+            "<template><view><text>{{ note }}</text></view></template>\n\
+             <script>\nlet note = signal(\"draft\");\nunmounted { saved = note; }\n</script>",
+            "<template><screen>\
+               <text>{{ saved }}</text>\
+               <card r-if=\"open\" />\
+             </screen></template>\n\
+             <script>\nuse components::card;\nlet open = signal(true);\n\
+             let saved = signal(\"nothing\");\n</script>",
+        );
+        assert_eq!(doc.engine_mut().get_string("saved"), "nothing", "not while it is on screen");
+        assert_eq!(doc.instances.len(), 1);
+
+        assert!(doc.apply_handler("open = false"), "closing the r-if rebuilt");
+        assert!(doc.instances.is_empty(), "the instance was pruned");
+        assert_eq!(
+            doc.engine_mut().get_string("saved"),
+            "draft",
+            "and its `unmounted` read the state it was holding as it went"
+        );
+    }
+
+    /// A hook fires on the transition, never on a rebuild that changed nothing
+    /// about which instances exist.
+    #[test]
+    fn a_rebuild_does_not_re_fire_a_component_hook() {
+        let mut doc = with_component(
+            "<template><view><text>{{ runs }}</text></view></template>\n\
+             <script>\nlet runs = signal(0);\nmounted { runs++; }\n</script>",
+            "<template><screen>\
+               <text>{{ n }}</text>\
+               <card />\
+             </screen></template>\n\
+             <script>\nuse components::card;\nlet n = signal(0);\n</script>",
+        );
+        assert!(text_of(&doc.root).join("|").contains('1'), "mounted once on load");
+
+        // A document signal moving rebuilds the tree; the instance is reached
+        // again, which is not a mount.
+        assert!(doc.apply_handler("n = 1"));
+        let instance = doc.instances.values().next().expect("still one instance");
+        let runs = instance.state.iter().find(|(n, _)| n == "runs").map(|(_, v)| v.to_display());
+        assert_eq!(runs.as_deref(), Some("1"), "still one run: {:?}", instance.state);
+    }
+
+    /// Leaving and coming back is a new instance, so the hook runs again and
+    /// the state starts fresh. Anything meant to outlive the visit belongs in a
+    /// document signal, which is the rule components already follow.
+    #[test]
+    fn coming_back_mounts_a_new_instance() {
+        let mut doc = with_component(
+            "<template><view><text>{{ runs }}</text></view></template>\n\
+             <script>\nlet runs = signal(0);\nmounted { runs++; total++; }\n</script>",
+            "<template><screen>\
+               <text>total {{ total }}</text>\
+               <card r-if=\"open\" />\
+             </screen></template>\n\
+             <script>\nuse components::card;\nlet open = signal(true);\n\
+             let total = signal(0);\n</script>",
+        );
+        assert_eq!(doc.engine_mut().get_string("total"), "1");
+
+        assert!(doc.apply_handler("open = false"));
+        assert!(doc.apply_handler("open = true"));
+        assert_eq!(
+            doc.engine_mut().get_string("total"),
+            "2",
+            "the second visit is a second mount"
+        );
+    }
+
+    /// A handler that writes a document signal *and* its own instance's state
+    /// must show both. Patching the document signal in place says nothing about
+    /// the instance's own names, so the component's own text went stale.
+    ///
+    /// Found by the lifecycle example, where writing both is the normal shape of
+    /// a `mounted` body: tell the document you are here, and remember something
+    /// locally. It was never specific to hooks; an `@tap` did the same.
+    #[test]
+    fn a_handler_that_writes_both_shows_both() {
+        let mut doc = with_component(
+            "<template><view>\
+               <text>{{ mine }}</text>\
+               <view @tap=\"mine = mine + 1; theirs = theirs + 1\"><text>go</text></view>\
+             </view></template>\n\
+             <script>\nlet mine = signal(0);\n</script>",
+            "<template><screen><text>{{ theirs }}</text><card /></screen></template>\n\
+             <script>\nuse components::card;\nlet theirs = signal(0);\n</script>",
+        );
+        let button = doc.root.children[1]
+            .children
+            .iter()
+            .find(|c| c.on_tap.is_some())
+            .expect("a tappable box")
+            .clone();
+        let (src, instance) = (button.on_tap.clone().unwrap(), button.instance.clone());
+        assert!(doc.apply_handler_in(&src, instance.as_deref()));
+
+        let shown = text_of(&doc.root).join("|");
+        assert!(shown.contains('1'), "the document signal moved: {shown}");
+        assert!(
+            shown.matches('1').count() >= 2,
+            "and so did the component's own state: {shown}"
+        );
+    }
+
+    /// An instance created by one build and pruned by the next, before either
+    /// hook was drained, runs neither and warns about nothing.
+    ///
+    /// Found in the window: a document `mounted` that closes an `r-if` does
+    /// exactly this. The mount body used to run with no instance to scope it to,
+    /// which meant it ran against the document and reported every one of the
+    /// component's own names as undefined.
+    #[test]
+    fn an_instance_that_never_settled_runs_no_hooks() {
+        let doc = with_component(
+            "<template><view><text>{{ mine }}</text></view></template>\n\
+             <script>\nlet mine = signal(0);\n\
+             mounted { opens++; mine = opens; }\n\
+             unmounted { saved = \"left\"; }\n</script>",
+            "<template><screen>\
+               <text>{{ opens }}:{{ saved }}</text>\
+               <card r-if=\"open\" />\
+             </screen></template>\n\
+             <script>\nuse components::card;\nlet open = signal(true);\n\
+             let opens = signal(0);\nlet saved = signal(\"nothing\");\n\
+             mounted { open = false; }\n</script>",
+        );
+        assert_eq!(
+            text_of(&doc.root).join(""),
+            "0:nothing",
+            "neither hook ran for an instance that never settled"
+        );
+        assert!(
+            doc.diagnostics().is_empty(),
+            "and nothing was reported as undefined: {:?}",
+            doc.diagnostics()
+        );
     }
 
     /// A clean document reports nothing, so the overlay stays out of the way.

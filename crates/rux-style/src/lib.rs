@@ -323,6 +323,13 @@ struct Component {
 /// decide.
 #[derive(Clone, Debug, Default)]
 pub struct Instance {
+    /// Which component this is an instance of.
+    ///
+    /// Carried on the instance rather than looked up from the template, because
+    /// the moment it is needed is the moment the template no longer mentions it:
+    /// an instance that has just been pruned still has to say whose `unmounted`
+    /// body to run.
+    pub tag: String,
     pub state: Vec<(String, Value)>,
     pub props: Vec<(String, Value)>,
     /// What the caller wrote as `@event="…"` on the tag: the bodies to run when
@@ -353,6 +360,53 @@ pub struct Instance {
 /// Every live component instance, by identity. Owned by the runtime so it
 /// outlives the tree, which is rebuilt constantly.
 pub type Instances = HashMap<String, Instance>;
+
+// ── Component lifecycle ─────────────────────────────────────────────────────
+
+/// A component instance that appeared or disappeared during a build.
+///
+/// The build is the only place both facts are known, and it is the wrong place
+/// to *act* on them: running a hook body here would run author code in the
+/// middle of expanding a tree. So the build reports, and the runtime decides.
+#[derive(Clone, Debug)]
+pub struct Lifecycle {
+    /// The instance's key, so the runtime can run a `mounted` body in the scope
+    /// of an instance that is still in the map.
+    pub key: String,
+    /// Whose hook bodies to run.
+    pub tag: String,
+    /// The scope the body should run in, carried only for an unmount: by the
+    /// time the runtime looks, the instance is gone from the map, and its
+    /// `unmounted` body has to run against the names it was written for. State
+    /// first and props after, so a prop of the same name wins, which is the
+    /// order the instance itself was expanded with.
+    pub locals: Vec<(String, Value)>,
+}
+
+thread_local! {
+    /// Instances created and pruned by the current build, in build order.
+    ///
+    /// A sink rather than a return value: three public build entry points share
+    /// this path, and threading a report out of all of them would change every
+    /// signature for a thing only one caller wants. Drained by
+    /// [`take_lifecycle`], on the same terms as the warning sink above.
+    static MOUNTS: std::cell::RefCell<Vec<Lifecycle>> = const { std::cell::RefCell::new(Vec::new()) };
+    static UNMOUNTS: std::cell::RefCell<Vec<Lifecycle>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Take what the last build mounted and unmounted, emptying both sinks.
+///
+/// Mounts come back outermost-first, the order the template expands in: an
+/// inner component is only reached through its parent, so the parent's
+/// `mounted` cannot usefully run second on the first build anyway. Unmounts are
+/// in whatever order the map pruned them, which is not observable: a dead
+/// instance's body cannot see another dead instance.
+pub fn take_lifecycle() -> (Vec<Lifecycle>, Vec<Lifecycle>) {
+    (
+        MOUNTS.with(|m| std::mem::take(&mut *m.borrow_mut())),
+        UNMOUNTS.with(|u| std::mem::take(&mut *u.borrow_mut())),
+    )
+}
 
 /// A component instance's identity: where it sits in the template, and which
 /// `r-for` row it is in.
@@ -946,7 +1000,23 @@ pub fn build_styled_tree_stateful(
         None, // and is not inside any row
     );
     link_labels(&mut node);
-    instances.retain(|_, instance| instance.touched);
+    instances.retain(|key, instance| {
+        if !instance.touched {
+            // Its state goes with it: this is the last moment it exists, and an
+            // `unmounted` body that could not read what the instance was holding
+            // could not save it either, which is most of what the hook is for.
+            let mut locals = std::mem::take(&mut instance.state);
+            locals.extend(instance.props.iter().cloned());
+            UNMOUNTS.with(|u| {
+                u.borrow_mut().push(Lifecycle {
+                    key: key.clone(),
+                    tag: instance.tag.clone(),
+                    locals,
+                })
+            });
+        }
+        instance.touched
+    });
     Ok((node, reg))
 }
 
@@ -2948,11 +3018,27 @@ fn expand_component(
     // rebuilds: the tree is thrown away constantly, and a component's state
     // must not be.
     let key = instance_key(tpl_path, row);
+    // Asked before the entry, because `or_insert_with` will not say afterwards
+    // whether it ran, and "did this instance exist a moment ago" is exactly what
+    // a mount is.
+    let fresh = !instances.contains_key(&key);
     let entry = instances.entry(key.clone()).or_insert_with(|| Instance {
+        tag: el.tag.clone(),
         state: engine.init_scope(&component.script),
         ..Instance::default()
     });
     entry.touched = true;
+    if fresh {
+        MOUNTS.with(|m| {
+            m.borrow_mut().push(Lifecycle {
+                key: key.clone(),
+                tag: el.tag.clone(),
+                // Still in the map, so the runtime reads its scope from there
+                // and sees whatever the rest of this build did to it.
+                locals: Vec::new(),
+            })
+        });
+    }
     entry.props = props.clone();
     // Listeners and the calling instance are the caller's, so like props they
     // are re-derived on every build rather than kept.

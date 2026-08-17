@@ -88,9 +88,40 @@ because by then there is no tree for a write to reach. It runs at most once even
 if teardown is reached twice, so a document closed by a reload and then by the
 window does not save twice.
 
-> **Not supported inside a component yet.** A component that declares either is
-> warned rather than ignored, since a hook that silently never runs is the exact
-> failure the dev overlay exists to catch.
+### Inside a component
+
+A component may declare both, and they run **per instance**, in that instance's
+own scope. Two `<card>` tags on a page are two instances, so each runs its own
+`mounted` and each writes its own state.
+
+```rux
+<script>
+  let draft = signal("");
+
+  mounted   { opened = opened + 1; }
+  unmounted { saved = draft; }
+</script>
+```
+
+An instance mounts the first time a build expands it, and unmounts when a build
+stops reaching it: an `r-if` closing over it, its `r-for` row going away, or a
+route being left. Leaving and coming back is a **new** instance, so the hooks run
+again and the state starts fresh. Anything meant to outlive a visit belongs in a
+document signal, which is the rule component state already follows.
+
+`unmounted` is the last moment the instance's state can be read, which is what
+makes saving from it possible at all. What it writes to its own names goes
+nowhere, since the instance is gone; what it writes to a document signal is the
+point.
+
+Two guarantees are worth stating, because both are cases the runtime has to go
+out of its way to get right:
+
+- **`unmounted` never runs without `mounted` having run.** An instance created by
+  one build and dropped by the next, before either hook was reached, runs
+  neither: it was never on screen in the sense the hooks are about.
+- **Unmounts run before mounts** when one build swaps one component for another,
+  so the leaver has saved before the arriver reads.
 
 ## Functions
 

@@ -125,3 +125,11 @@ change. Driven in `examples/events.rux`.
 
 Still not supported inside a component: `computed` and `effect`, which are
 stripped.
+
+`mounted` and `unmounted` are supported, and run per instance in that instance's
+own scope. The build is the only place that knows an instance has appeared or
+gone, and the wrong place to act on it, so it reports both and the runtime runs
+the bodies after the tree is in place. An instance dropped before either hook was
+reached runs neither, and when one build swaps two components the leaver's
+`unmounted` runs before the arriver's `mounted`. Driven in
+`examples/lifecycle.rux`.
