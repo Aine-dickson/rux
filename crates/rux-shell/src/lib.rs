@@ -3590,7 +3590,19 @@ impl ApplicationHandler<RuxEvent> for App {
             }
             // Event-driven: we only paint in response to a redraw request, which
             // is issued on resume, resize, reload, and tap, not every frame.
-            WindowEvent::RedrawRequested => self.render(),
+            WindowEvent::RedrawRequested => {
+                self.render();
+                // A `tap()` or `focus()` asked for by something that is not an
+                // input event has nowhere else to be picked up: the only other
+                // drain runs after a handler the shell itself dispatched. A
+                // `mounted` hook that focuses a field at startup queued its
+                // request before the window had ever seen an event, and it sat
+                // in the queue forever. Here rather than at load, because both
+                // requests are answered against a laid-out frame: before the
+                // first layout there are no focusables to focus and no hit
+                // regions to tap.
+                self.adopt_element_requests();
+            }
             _ => {}
         }
     }

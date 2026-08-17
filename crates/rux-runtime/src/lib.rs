@@ -1742,6 +1742,10 @@ impl Document {
         // own hook goes first: it is the outermost thing on screen, and it is
         // what an instance's hook is most likely to read.
         self.settle_lifecycle(1);
+        // A hook that asked to focus or tap something queued it the way a
+        // handler does, and a queue nobody drains is the same as no feature at
+        // all. The shell picks these up after the first frame is laid out.
+        let _ = self.apply_element_actions();
         self.diagnostics.warnings.extend(collect_warnings());
     }
 
@@ -1751,12 +1755,20 @@ impl Document {
             return HashSet::new();
         }
         self.mounted_ran = true;
-        let mut writes = HashSet::new();
-        for body in self.hooks.mounted.clone() {
-            let (_, wrote) = self.engine.run_effect_tracked(&body);
-            writes.extend(wrote);
-        }
-        writes
+        // Inside the element resolver, like a handler. A hook is the one place
+        // besides a tap where reaching for an element is the obvious thing to
+        // write (focus the first field when the screen opens), and without this
+        // `query()` refuses on the grounds that it is not in a handler, which
+        // from the author's side is a distinction without a difference.
+        let resolver = self.element_resolver();
+        rux_script::with_elements(resolver, || {
+            let mut writes = HashSet::new();
+            for body in self.hooks.mounted.clone() {
+                let (_, wrote) = self.engine.run_effect_tracked(&body);
+                writes.extend(wrote);
+            }
+            writes
+        })
     }
 
     /// Run the `mounted` and `unmounted` bodies of every component instance the
@@ -1809,11 +1821,15 @@ impl Document {
                     .get(&gone.tag)
                     .map(|h| h.unmounted.clone())
                     .unwrap_or_default();
+                let resolver = self.element_resolver();
                 for body in bodies {
                     // Run in the dead instance's own scope. What it writes to
                     // its own names goes nowhere, which is correct: the instance
                     // is gone. What it writes to a document signal is the point.
-                    let (_, changed) = self.engine.run_scoped_handler(&body, &gone.locals);
+                    let resolver = resolver.clone();
+                    let (_, changed) = rux_script::with_elements(resolver, || {
+                        self.engine.run_scoped_handler(&body, &gone.locals)
+                    });
                     for (event, _) in rux_script::take_emissions() {
                         rux_script::warn_script(format!(
                             "`emit(\"{event}\")` from `unmounted` has nobody to receive it: the \
@@ -1852,6 +1868,10 @@ impl Document {
                 // do; the round counter above is what bounds the mounting.
                 self.apply_change_depth(&writes, depth as u32 + 1);
             }
+            // Whatever the bodies asked of an element, on the same terms a
+            // handler gets: queued here, delivered by the shell against the next
+            // laid-out frame.
+            let _ = self.apply_element_actions();
         }
         self.settling = false;
     }
@@ -4455,6 +4475,33 @@ mod tests {
             "and nothing was reported as undefined: {:?}",
             doc.diagnostics()
         );
+    }
+
+    /// A hook can reach for an element, and what it asks for is queued for the
+    /// shell exactly as a handler's request is.
+    ///
+    /// `query()` is handler-only, because a *binding* that read the tree would
+    /// rebuild the tree it read. A hook is not a binding, and focusing the first
+    /// field when a screen opens is the obvious thing to want, so it runs inside
+    /// the same resolver a tap does.
+    #[test]
+    fn a_mounted_hook_can_reach_for_an_element() {
+        let mut doc = Document::from_source(
+            "<template><screen>\
+               <view class=\"go\" @tap=\"n = n + 1\"><text>go</text></view>\
+             </screen></template>
+             <script>
+               let n = signal(0);
+               mounted { query(\".go\")[0].tap(); }
+             </script>",
+        )
+        .expect("load");
+        assert!(
+            doc.diagnostics().is_empty(),
+            "query() is allowed here: {:?}",
+            doc.diagnostics()
+        );
+        assert_eq!(doc.take_taps().len(), 1, "and the tap is queued for the shell");
     }
 
     /// A clean document reports nothing, so the overlay stays out of the way.
