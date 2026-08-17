@@ -80,6 +80,8 @@ pub struct Document {
     /// instance of that component, the same way its functions are: the code is
     /// one thing, the scope it runs in is per instance.
     component_hooks: HashMap<String, Hooks>,
+    /// Live intervals, in the order they were started. See [`Timer`].
+    timers: Vec<Timer>,
     /// Instance keys whose mount has been drained.
     ///
     /// The pairing rule, and it is not bookkeeping for its own sake: a build can
@@ -678,6 +680,7 @@ impl Document {
             effects,
             hooks,
             component_hooks,
+            timers: Vec::new(),
             mounted_instances: HashSet::new(),
             settling: false,
             mounted_ran: false,
@@ -745,6 +748,7 @@ impl Document {
             // No imports were resolved here, so there are no components and
             // nothing can declare a component hook.
             component_hooks: HashMap::new(),
+            timers: Vec::new(),
             mounted_instances: HashSet::new(),
             settling: false,
             mounted_ran: false,
@@ -1214,6 +1218,8 @@ impl Document {
         // off have finished. A handler that navigates and then writes a signal
         // would otherwise render the old route with the new state in it.
         let acted = self.apply_element_actions();
+        // Timers the handler started or cleared, owned by whoever ran it.
+        self.apply_timer_requests(instance);
         self.apply_navigations() || acted || ran
     }
 
@@ -1746,6 +1752,9 @@ impl Document {
         // handler does, and a queue nobody drains is the same as no feature at
         // all. The shell picks these up after the first frame is laid out.
         let _ = self.apply_element_actions();
+        // A document `mounted` starting the app's clock is the obvious use, so
+        // its timers are picked up here too, owned by the document.
+        self.apply_timer_requests(None);
         self.diagnostics.warnings.extend(collect_warnings());
     }
 
@@ -1769,6 +1778,99 @@ impl Document {
             }
             writes
         })
+    }
+
+    /// Take the timer starts and cancels a script just asked for, attributing
+    /// any new interval to the instance whose handler asked.
+    ///
+    /// Ownership by instance is the rule that makes an interval safe: a timer
+    /// outliving the component that started it would go on running a body
+    /// against state nobody can see, which is the shape of every leak this kind
+    /// of API has ever had.
+    fn apply_timer_requests(&mut self, instance: Option<&str>) {
+        for request in rux_script::take_timer_requests() {
+            match request {
+                rux_script::TimerRequest::Start { id, ms, body } => {
+                    // A non-positive period would fire every frame forever and
+                    // is more likely a mistake than an intent.
+                    // `<=` rather than `!(ms > 0.0)`, which also refuses a NaN
+                    // period, since a comparison against NaN is false either
+                    // way and a timer that can never be due is not one.
+                    if ms <= 0.0 || ms.is_nan() {
+                        rux_script::warn_script(format!(
+                            "setInterval({ms}) never runs: a period has to be more than 0ms"
+                        ));
+                        continue;
+                    }
+                    self.timers.push(Timer {
+                        id,
+                        ms,
+                        body,
+                        instance: instance.map(str::to_string),
+                        next: None,
+                    });
+                }
+                rux_script::TimerRequest::Cancel(id) => self.timers.retain(|t| t.id != id),
+            }
+        }
+    }
+
+    /// When the next interval is due, given what the clock says now.
+    ///
+    /// `None` means no timer is running and the window may sleep, which is the
+    /// same contract the animator's `apply` returns on and the property that
+    /// keeps an idle Rux app at zero frames.
+    pub fn timer_deadline(&mut self, now_ms: f64) -> Option<f64> {
+        let mut soonest: Option<f64> = None;
+        for timer in &mut self.timers {
+            // First sighting: a timer starts counting from when the clock was
+            // first read, not from when the handler that made it ran, because
+            // the document has no clock of its own to have read then.
+            let due = *timer.next.get_or_insert(now_ms + timer.ms);
+            soonest = Some(soonest.map_or(due, |s: f64| s.min(due)));
+        }
+        soonest
+    }
+
+    /// Run every interval that is due, and say whether anything ran.
+    ///
+    /// A body is dispatched exactly as a tap on the element that started it
+    /// would be, in its own instance's scope, so it can move that instance's
+    /// state and the document's alike.
+    pub fn fire_timers(&mut self, now_ms: f64) -> bool {
+        // A timer whose clock has never been read starts counting from here, so
+        // firing without having asked for the deadline first cannot silently
+        // never run. It is still not due until a full period has passed.
+        for timer in &mut self.timers {
+            timer.next.get_or_insert(now_ms + timer.ms);
+        }
+        let due: Vec<(f64, String, Option<String>)> = self
+            .timers
+            .iter()
+            .filter(|t| t.next.map(|n| n <= now_ms).unwrap_or(false))
+            .map(|t| (t.id, t.body.clone(), t.instance.clone()))
+            .collect();
+        if due.is_empty() {
+            return false;
+        }
+        // Rescheduled from now rather than from when it was due, so a window
+        // that was asleep or a machine that stalled does not wake up owing a
+        // burst of catch-up runs.
+        for timer in &mut self.timers {
+            if timer.next.map(|n| n <= now_ms).unwrap_or(false) {
+                timer.next = Some(now_ms + timer.ms);
+            }
+        }
+        let mut ran = false;
+        for (id, body, instance) in due {
+            // Cancelled by an earlier body in this same batch: `clearInterval`
+            // has to win, or a timer could clear itself and still run.
+            if !self.timers.iter().any(|t| t.id == id) {
+                continue;
+            }
+            ran |= self.apply_handler_in(&body, instance.as_deref());
+        }
+        ran
     }
 
     /// Run the `mounted` and `unmounted` bodies of every component instance the
@@ -1813,6 +1915,10 @@ impl Document {
                 // Never announced as mounted, so it is not announced as
                 // unmounted either: it came and went inside one drain and never
                 // reached the screen the hooks are about.
+                // Whatever it had ticking goes with it. This is the guarantee
+                // that makes an interval inside a component safe to write at
+                // all: it cannot outlive the state it was written against.
+                self.timers.retain(|t| t.instance.as_deref() != Some(gone.key.as_str()));
                 if !self.mounted_instances.remove(&gone.key) {
                     continue;
                 }
@@ -1837,6 +1943,19 @@ impl Document {
                         ));
                     }
                     writes.extend(changed);
+                    // An `unmounted` body may clear a timer, which is
+                    // redundant (the instance's timers were just taken) and
+                    // harmless. Starting one is neither: there is no instance
+                    // left to own it, so it would tick forever against a scope
+                    // that no longer exists.
+                    for request in rux_script::take_timer_requests() {
+                        if let rux_script::TimerRequest::Start { ms, .. } = request {
+                            rux_script::warn_script(format!(
+                                "setInterval({ms}) in `unmounted` never runs: the instance it \
+                                 would belong to is already gone"
+                            ));
+                        }
+                    }
                 }
             }
 
@@ -1860,6 +1979,9 @@ impl Document {
                     // to the caller, changes applied. A hook is only special in
                     // *when* it runs.
                     self.dispatch_handler(&body, Some(&fresh.key), depth + 1);
+                    // `mounted` is where an interval is most naturally started,
+                    // and it belongs to the instance that started it.
+                    self.apply_timer_requests(Some(&fresh.key));
                 }
             }
 
@@ -1888,6 +2010,9 @@ impl Document {
     /// nothing. A document torn down twice, once by a reload and once by the
     /// window closing, must not save twice.
     pub fn unmount(&mut self) {
+        // Nothing may keep ticking against a document that is going away, and
+        // the hook bodies below run last precisely so a save sees final state.
+        self.timers.clear();
         let bodies = std::mem::take(&mut self.hooks.unmounted);
         for body in bodies {
             let _ = self.engine.run_effect_tracked(&body);
@@ -2177,6 +2302,23 @@ impl Hooks {
     pub fn is_empty(&self) -> bool {
         self.mounted.is_empty() && self.unmounted.is_empty()
     }
+}
+
+/// One running interval.
+///
+/// The body is text, dispatched like a handler when the timer comes due; see
+/// [`rux_script::TimerRequest`] for why it cannot be a callable. `instance` is
+/// who owns it, and `None` means the document does.
+#[derive(Clone, Debug)]
+struct Timer {
+    id: f64,
+    ms: f64,
+    body: String,
+    instance: Option<String>,
+    /// When it is next due, or `None` until the clock has been read once. The
+    /// document has no clock of its own, so a timer cannot know its first
+    /// deadline at the moment it is created.
+    next: Option<f64>,
 }
 
 /// Take a `keyword { … }` block starting at line `i`, returning its body and
@@ -4502,6 +4644,91 @@ mod tests {
             doc.diagnostics()
         );
         assert_eq!(doc.take_taps().len(), 1, "and the tap is queued for the shell");
+    }
+
+    /// An interval ticks on its period, and the document sleeps between ticks:
+    /// the deadline is what the shell waits on, and nothing runs before it.
+    #[test]
+    fn an_interval_ticks_on_its_period() {
+        let mut doc = Document::from_source(
+            "<template><screen><text>{{ ticks }}</text></screen></template>
+             <script>
+               let ticks = signal(0);
+               mounted { setInterval(1000) { ticks++; } }
+             </script>",
+        )
+        .expect("load");
+        assert_eq!(doc.timer_deadline(0.0), Some(1000.0), "due one period from the first look");
+        assert!(!doc.fire_timers(999.0), "nothing runs early");
+        assert!(doc.fire_timers(1000.0), "and the tick runs when it is due");
+        assert_eq!(text_of(&doc.root).join(""), "1");
+        assert_eq!(doc.timer_deadline(1000.0), Some(2000.0), "rescheduled from now");
+    }
+
+    /// The handle is the point: an interval has to be stoppable on a condition,
+    /// which is the whole reason it is not spelled as a declaration.
+    #[test]
+    fn an_interval_can_be_cleared_by_its_handle() {
+        let mut doc = Document::from_source(
+            "<template><screen><text>{{ ticks }}</text></screen></template>
+             <script>
+               let ticks = signal(0);
+               let timer = signal(0);
+               mounted { timer = setInterval(100) { ticks++; if ticks >= 2 { clearInterval(timer); } } }
+             </script>",
+        )
+        .expect("load");
+        // The shell reads the deadline before it sleeps, which is what starts
+        // the timer's clock.
+        assert_eq!(doc.timer_deadline(0.0), Some(100.0));
+        doc.fire_timers(100.0);
+        doc.fire_timers(200.0);
+        assert_eq!(text_of(&doc.root).join(""), "2", "two ticks, then it stopped itself");
+        assert_eq!(doc.timer_deadline(200.0), None, "and the window can sleep again");
+        assert!(!doc.fire_timers(10_000.0), "however long it waits");
+    }
+
+    /// An interval started by a component dies with that component's instance.
+    ///
+    /// This is what makes one safe to write inside a component at all: a timer
+    /// outliving its instance would run a body against state nobody can reach.
+    #[test]
+    fn an_interval_dies_with_its_instance() {
+        let mut doc = with_component(
+            "<template><view><text>{{ own }}</text></view></template>\n\
+             <script>\nlet own = signal(0);\n\
+             mounted { setInterval(50) { own++; beats++; } }\n</script>",
+            "<template><screen>\
+               <text>{{ beats }}</text>\
+               <card r-if=\"open\" />\
+             </screen></template>\n\
+             <script>\nuse components::card;\nlet open = signal(true);\n\
+             let beats = signal(0);\n</script>",
+        );
+        assert_eq!(doc.timer_deadline(0.0), Some(50.0), "the instance started one");
+        assert!(doc.fire_timers(50.0), "the instance's timer ticks");
+        assert_eq!(doc.engine_mut().get_string("beats"), "1");
+
+        assert!(doc.apply_handler("open = false"), "close the r-if");
+        assert_eq!(doc.timer_deadline(50.0), None, "the timer went with the instance");
+        assert!(!doc.fire_timers(10_000.0));
+        assert_eq!(doc.engine_mut().get_string("beats"), "1", "and never ticked again");
+    }
+
+    /// A period of zero would fire every frame forever, so it is refused out
+    /// loud rather than accepted and regretted.
+    #[test]
+    fn an_interval_needs_a_real_period() {
+        let doc = Document::from_source(
+            "<template><screen><text>{{ n }}</text></screen></template>
+             <script>
+               let n = signal(0);
+               mounted { setInterval(0) { n++; } }
+             </script>",
+        )
+        .expect("load");
+        let problems = format!("{:?}", doc.diagnostics());
+        assert!(problems.contains("more than 0ms"), "said out loud: {problems}");
     }
 
     /// A clean document reports nothing, so the overlay stays out of the way.

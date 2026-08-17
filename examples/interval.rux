@@ -1,0 +1,64 @@
+<template>
+  <screen class="app">
+    <text class="title">setInterval, with a handle</text>
+    <text class="lead">An interval is started with a period and a block, and hands back a handle. The handle is the point: a timer you cannot stop on a condition is a timer you cannot use. One started inside a component belongs to that instance and stops when the instance goes, with nothing to remember to clean up.</text>
+
+    <text class="count">{{ seconds }}</text>
+    <text class="foot" r-if="running">counting, and it stops itself at 5</text>
+    <text class="foot" r-if="!running">stopped</text>
+
+    <view class="btn" @tap="restart()">
+      <text class="btn-label">start again</text>
+    </view>
+  </screen>
+</template>
+
+<style>
+  .app {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    padding: 28px;
+    background: #1e1e2e;
+  }
+
+  .title { color: #cdd6f4; font-size: 22px; font-weight: 700; }
+  .lead { color: #9399b2; font-size: 13px; max-width: 620px; }
+  .count { color: #a6e3a1; font-size: 48px; font-weight: 700; }
+  .foot { color: #9399b2; font-size: 13px; }
+
+  .btn {
+    padding: 8px 14px;
+    background: #89b4fa;
+    border-radius: 8px;
+    cursor: pointer;
+    max-width: 140px;
+  }
+
+  .btn:hover { background: #b4befe; }
+  .btn-label { color: #11111b; font-size: 12px; font-weight: 700; }
+</style>
+
+<script>
+  let seconds = signal(0);
+  let running = signal(true);
+  let timer = signal(0);
+
+  fn restart() {
+    // Clearing a handle that names nothing is harmless, so this needs no guard.
+    clearInterval(timer);
+    seconds = 0;
+    running = true;
+    timer = setInterval(1000) {
+      seconds++;
+      if seconds >= 5 {
+        clearInterval(timer);
+        running = false;
+      }
+    }
+  }
+
+  mounted {
+    restart();
+  }
+</script>

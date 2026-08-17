@@ -377,7 +377,7 @@ impl Builder {
         self.engine
             .register_static_module("host", self.host.into());
 
-        let ast = self.engine.compile(script).map_err(|e| e.to_string())?;
+        let ast = self.engine.compile(rewrite_intervals(script)).map_err(|e| e.to_string())?;
         let mut scope = Scope::new();
         self.engine
             .run_ast_with_scope(&mut scope, &ast)
@@ -567,6 +567,35 @@ fn register_js_names(engine: &mut RhaiEngine) {
             Ok(())
         },
     );
+
+    // `setInterval(ms) { … }`, which reaches here already rewritten by
+    // [`rewrite_intervals`] into `__interval(ms, "body")`. The rewrite is what
+    // lets the body be a block in the source and text by the time it is stored;
+    // see [`TimerRequest`] for why it cannot be a callable.
+    //
+    // The id comes back immediately, so `let t = setInterval(…) { … }` binds a
+    // handle in the same statement that starts the timer. The runtime has not
+    // seen the request yet at that point, which is fine: nothing can fire until
+    // the handler this is running inside has finished.
+    // The period arrives as whatever the author wrote, and `1000` is an integer
+    // in rhai: Rux kept both numeric types rather than going all-f64, so a
+    // registration typed to `f64` alone would not be found at all.
+    engine.register_fn("__interval", |ms: Dynamic, body: ImmutableString| -> f64 {
+        let ms = num(&ms);
+        let id = NEXT_TIMER_ID.with(|n| {
+            let id = n.get();
+            n.set(id + 1.0);
+            id
+        });
+        TIMER_REQUESTS.with(|t| {
+            t.borrow_mut().push(TimerRequest::Start { id, ms, body: body.to_string() })
+        });
+        id
+    });
+
+    engine.register_fn("clearInterval", |id: Dynamic| {
+        TIMER_REQUESTS.with(|t| t.borrow_mut().push(TimerRequest::Cancel(num(&id))));
+    });
 
     // Printf-debugging, which the script tier had no way to do at all.
     //
@@ -761,6 +790,34 @@ thread_local! {
 /// Take the events emitted since the last call, emptying the sink.
 pub fn take_emissions() -> Vec<(String, Option<Value>)> {
     EMISSIONS.with(|e| std::mem::take(&mut *e.borrow_mut()))
+}
+
+/// What a script asked of the timers.
+///
+/// The body travels as **text**, like every other piece of Rux that runs later:
+/// an `@tap`, a lifecycle hook, a component listener. A callable would read
+/// better and would not work, because a closure called after the fact writes to
+/// its own captured copies and cannot move a signal, which for an interval is
+/// the entire point of having one.
+#[derive(Clone, Debug, PartialEq)]
+pub enum TimerRequest {
+    Start { id: f64, ms: f64, body: String },
+    /// `clearInterval(id)`. An id that names nothing is ignored: clearing a
+    /// timer twice, or clearing one whose instance has already taken it away,
+    /// is ordinary rather than a mistake.
+    Cancel(f64),
+}
+
+thread_local! {
+    static TIMER_REQUESTS: RefCell<Vec<TimerRequest>> = const { RefCell::new(Vec::new()) };
+    /// Handed out in order. Never reused, so a stale handle held by a script
+    /// cannot come to name somebody else's timer later.
+    static NEXT_TIMER_ID: std::cell::Cell<f64> = const { std::cell::Cell::new(1.0) };
+}
+
+/// Take the timer starts and cancels asked for since the last call.
+pub fn take_timer_requests() -> Vec<TimerRequest> {
+    TIMER_REQUESTS.with(|t| std::mem::take(&mut *t.borrow_mut()))
 }
 
 /// One navigation asked for by a script: where to go, or which way along the
@@ -1085,6 +1142,132 @@ fn rux_phrasing(message: &str) -> String {
 /// Nothing is lost by dropping it. The expression is already quoted in the
 /// message, and a position within a string the reader can see is not worth the
 /// cost of looking like a file position.
+/// Rewrite `setInterval(<args>) { <body> }` into `__interval(<args>, "<body>")`.
+///
+/// A call with a block after it is not rhai syntax and never will be, so the
+/// block is lifted into a string argument before anything tries to compile it.
+/// The alternative was `setInterval(fn, ms)` with a real callable, which reads
+/// better and does not work: see [`TimerRequest`].
+///
+/// Applied at every compile site, so the form works the same in a document
+/// script, a component script, a lifecycle hook and an `@tap` handler. A source
+/// with no `setInterval` in it is returned untouched.
+fn rewrite_intervals(src: &str) -> String {
+    if !src.contains("setInterval") {
+        return src.to_string();
+    }
+    let bytes: Vec<char> = src.chars().collect();
+    let mut out = String::with_capacity(src.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if !starts_call(&bytes, i) {
+            out.push(bytes[i]);
+            i += 1;
+            continue;
+        }
+        // `setInterval(` … `)`, then optional whitespace, then `{` … `}`.
+        let open = i + "setInterval".len();
+        let Some(close) = matching(&bytes, open, '(', ')') else {
+            out.push(bytes[i]);
+            i += 1;
+            continue;
+        };
+        let mut j = close + 1;
+        while j < bytes.len() && bytes[j].is_whitespace() {
+            j += 1;
+        }
+        // No block after it: leave the text alone rather than guess. It will
+        // fail to compile as an unknown function, which says more than a
+        // rewrite of something that was not the form this handles.
+        if j >= bytes.len() || bytes[j] != '{' {
+            out.push(bytes[i]);
+            i += 1;
+            continue;
+        }
+        let Some(end) = matching(&bytes, j, '{', '}') else {
+            out.push(bytes[i]);
+            i += 1;
+            continue;
+        };
+        let args: String = bytes[open + 1..close].iter().collect();
+        let body: String = bytes[j + 1..end].iter().collect();
+        out.push_str("__interval(");
+        out.push_str(args.trim());
+        out.push_str(", \"");
+        out.push_str(&escape_for_rhai(&body));
+        out.push_str("\")");
+        i = end + 1;
+    }
+    out
+}
+
+/// Whether `setInterval(` starts here and is not the tail of a longer name.
+fn starts_call(chars: &[char], i: usize) -> bool {
+    const NAME: &str = "setInterval";
+    if i + NAME.len() >= chars.len() {
+        return false;
+    }
+    if !chars[i..i + NAME.len()].iter().eq(NAME.chars().collect::<Vec<_>>().iter()) {
+        return false;
+    }
+    if chars[i + NAME.len()] != '(' {
+        return false;
+    }
+    // `mySetInterval(…)` is somebody else's function.
+    i == 0 || !(chars[i - 1].is_alphanumeric() || chars[i - 1] == '_' || chars[i - 1] == '.')
+}
+
+/// The index of the delimiter closing the one at `from`, skipping over string
+/// literals so a brace inside `"{"` does not count.
+fn matching(chars: &[char], from: usize, open: char, close: char) -> Option<usize> {
+    let mut depth = 0usize;
+    let mut quote: Option<char> = None;
+    let mut i = from;
+    while i < chars.len() {
+        let c = chars[i];
+        match quote {
+            Some(q) => {
+                if c == '\\' {
+                    i += 2;
+                    continue;
+                }
+                if c == q {
+                    quote = None;
+                }
+            }
+            None => {
+                if c == '"' || c == '\'' {
+                    quote = Some(c);
+                } else if c == open {
+                    depth += 1;
+                } else if c == close {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Some(i);
+                    }
+                }
+            }
+        }
+        i += 1;
+    }
+    None
+}
+
+/// Put a block body inside a rhai string literal without changing what it says.
+fn escape_for_rhai(body: &str) -> String {
+    let mut out = String::with_capacity(body.len() + 8);
+    for c in body.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\r' => {}
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
 fn strip_rhai_position(message: &str) -> String {
     let trimmed = message.trim_end();
     // Only the exact trailing shape is removed, so a message that merely ends
@@ -1116,7 +1299,7 @@ impl Engine {
     /// Evaluate `src` (an expression or statements) with `locals` temporarily in
     /// scope. Script functions are available. Returns the resulting value.
     fn eval(&mut self, src: &str, locals: &[(String, Value)]) -> Option<Dynamic> {
-        let ast = match self.engine.compile(src) {
+        let ast = match self.engine.compile(rewrite_intervals(src)) {
             Ok(ast) => ast,
             Err(e) => {
                 // A `{{ }}` or `@tap` that doesn't compile used to evaluate to
@@ -1228,7 +1411,7 @@ impl Engine {
     /// nothing at all, silently, because nothing compiles a handler until the
     /// moment it is tapped.
     pub fn check_syntax(&self, src: &str) -> Result<(), String> {
-        self.engine.compile(src).map(|_| ()).map_err(|e| rux_phrasing(&e.to_string()))
+        self.engine.compile(rewrite_intervals(src)).map(|_| ()).map_err(|e| rux_phrasing(&e.to_string()))
     }
 
     pub fn run_handler_tracked(&mut self, src: &str) -> HashSet<String> {
@@ -1313,7 +1496,7 @@ impl Engine {
     /// that could read the app's signals by name would be coupled to the app it
     /// was first written for, and could not be used twice.
     pub fn init_scope(&mut self, script: &str) -> Vec<(String, Value)> {
-        let ast = match self.engine.compile(script) {
+        let ast = match self.engine.compile(rewrite_intervals(script)) {
             Ok(ast) => ast,
             Err(e) => {
                 warn(format!(
@@ -1354,7 +1537,7 @@ impl Engine {
         let before: HashMap<String, Option<Value>> =
             names.iter().map(|n| (n.clone(), self.read_signal(n))).collect();
 
-        let ast = match self.engine.compile(src) {
+        let ast = match self.engine.compile(rewrite_intervals(src)) {
             Ok(ast) => ast,
             Err(e) => {
                 warn(format!(

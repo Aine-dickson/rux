@@ -3644,13 +3644,28 @@ impl ApplicationHandler<RuxEvent> for App {
             }
         }
 
+        // The fourth clock: an interval a script started. Time is passed in as
+        // milliseconds rather than read here, the same contract the animator
+        // has, so the runtime stays testable without a window and correct on the
+        // web where `Instant` is not what the event loop runs on.
+        let now = self.epoch.elapsed().as_secs_f64() * 1000.0;
+        if self.document.fire_timers(now) {
+            self.request_redraw();
+        }
+        let timer = self.document.timer_deadline(now).map(|due| {
+            // Back into the event loop's own clock. The floor keeps a period
+            // that has already slipped past from asking to wait a negative time.
+            Instant::now() + Duration::from_secs_f64(((due - now) / 1000.0).max(0.0))
+        });
+
         // Wake for whichever clock is due first. With none running, wait
         // indefinitely for a real event, as before.
         let long_press = match self.touch_text {
             Some(TouchText::Pending { deadline, .. }) => Some(deadline),
             _ => None,
         };
-        match [self.blink_deadline, long_press, self.anim_deadline].into_iter().flatten().min() {
+        match [self.blink_deadline, long_press, self.anim_deadline, timer].into_iter().flatten().min()
+        {
             Some(next) => event_loop.set_control_flow(ControlFlow::WaitUntil(next)),
             None => event_loop.set_control_flow(ControlFlow::Wait),
         }

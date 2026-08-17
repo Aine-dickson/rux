@@ -123,6 +123,46 @@ out of its way to get right:
 - **Unmounts run before mounts** when one build swaps one component for another,
   so the leaver has saved before the arriver reads.
 
+## Intervals
+
+`setInterval(ms) { … }` runs a block on a period and hands back a handle.
+`clearInterval(handle)` stops it.
+
+```rux
+<script>
+  let seconds = signal(0);
+  let timer = signal(0);
+
+  mounted {
+    timer = setInterval(1000) {
+      seconds++;
+      if seconds >= 5 { clearInterval(timer); }
+    }
+  }
+</script>
+```
+
+The handle is why this is a call and not a declaration like `effect { }`: a timer
+that cannot be stopped on a condition cannot be used, and unlike a hook, an
+interval has something to hand back. Clearing a handle that names nothing is
+harmless, so restarting needs no guard.
+
+**An interval belongs to whoever started it.** Started inside a component, it
+belongs to that instance and stops when the instance goes, with nothing to
+remember to clean up: a timer outliving its component would run a body against
+state nobody can reach. Started at document level it lives as long as the
+document. Starting one from `unmounted` warns, since there is no longer an
+instance for it to belong to.
+
+A period has to be more than zero, and a running interval is one of the clocks
+the window wakes for. Nothing is running between ticks, so an app whose timers
+are all stopped goes back to using no CPU at all.
+
+The block is a block, not a callback. A function value called later writes to its
+own captured copies and cannot move a signal, which for an interval would defeat
+the purpose; the body is carried as text and run exactly as a handler is, the
+same as `@tap` and the lifecycle hooks.
+
 ## Functions
 
 A function sees the scope it was written in, and can read and write it.
