@@ -54,9 +54,12 @@ declared above it and not below.
 subscribes to what it actually read on its last run, and is never woken by its
 own writes.
 
-Both are document-level: a component's own `computed` and `effect` lines are
-stripped rather than run. See [As Built](./05-as-built.md) for the detail on
-both.
+Both work inside a component too, and there they run **per instance**, in that
+instance's own scope. Two `<card>` tags are two instances, so each holds its own
+computed value and each runs its own effect. A component computed may read a
+document signal and re-reads it when that signal moves; an instance's computeds
+and effects are dropped when the instance is, so nothing left behind can be woken
+by a signal later. See [As Built](./05-as-built.md) for the detail on both.
 
 ## Lifecycle
 

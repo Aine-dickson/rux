@@ -80,6 +80,15 @@ pub struct Document {
     /// instance of that component, the same way its functions are: the code is
     /// one thing, the scope it runs in is per instance.
     component_hooks: HashMap<String, Hooks>,
+    /// Each component's `computed` and `effect` declarations, by tag. Shared
+    /// like its functions are; the scope each runs in is per instance.
+    component_computeds: HashMap<String, Vec<Computed>>,
+    component_effects: HashMap<String, Vec<Effect>>,
+    /// The live copies, by instance key, each carrying its own dependency set.
+    /// Created when an instance mounts and dropped when it is pruned, so an
+    /// instance that is gone cannot be woken by a signal.
+    instance_computeds: HashMap<String, Vec<Computed>>,
+    instance_effects: HashMap<String, Vec<Effect>>,
     /// Live intervals, in the order they were started. See [`Timer`].
     timers: Vec<Timer>,
     /// Instance keys whose mount has been drained.
@@ -607,6 +616,8 @@ impl Document {
 
         let mut components = HashMap::new();
         let mut component_hooks: HashMap<String, Hooks> = HashMap::new();
+        let mut component_computeds: HashMap<String, Vec<Computed>> = HashMap::new();
+        let mut component_effects: HashMap<String, Vec<Effect>> = HashMap::new();
         let mut combined_script = main_script;
         for import in imports {
             let comp_path = base.join(&import.file);
@@ -623,7 +634,33 @@ impl Document {
             let (comp_script, _nested) = extract_imports(&comp_sfc.script);
             // A component's own computed/effect declarations are not
             // supported yet; strip them so the merged script still compiles.
-            let (comp_script, _c, _e, comp_hooks) = extract_reactives(&comp_script);
+            let (comp_script, comp_computeds, comp_effects, comp_hooks) =
+                extract_reactives(&comp_script);
+            // A component's `computed` lines are evaluated per instance, in that
+            // instance's scope, as part of expanding it; its `effect` blocks are
+            // run per instance and subscribe to what they read. Both are kept by
+            // tag, like the hooks and like the component's functions: the
+            // declaration is shared, the scope it runs in is not.
+            // A computed is declared in the instance's script as a placeholder
+            // rather than as its own expression. Creating an instance runs that
+            // script in a scope of its own, without the document's signals, so a
+            // computed that reads one would fail there, and a failure takes the
+            // whole script with it: the instance would come up with *no* state
+            // at all. The real value is computed at mount, before the tree that
+            // shows it is built.
+            let mut comp_script = comp_script;
+            for computed in &comp_computeds {
+                comp_script = comp_script.replace(
+                    &format!("let {} = {};", computed.name, computed.expr),
+                    &format!("let {} = 0;", computed.name),
+                );
+            }
+            if !comp_computeds.is_empty() {
+                component_computeds.insert(import.tag.clone(), comp_computeds);
+            }
+            if !comp_effects.is_empty() {
+                component_effects.insert(import.tag.clone(), comp_effects);
+            }
             // Its lifecycle hooks are kept, per component, and run per instance.
             //
             // The stripping is not cosmetic: `components` stores the parsed
@@ -680,6 +717,10 @@ impl Document {
             effects,
             hooks,
             component_hooks,
+            component_computeds,
+            component_effects,
+            instance_computeds: HashMap::new(),
+            instance_effects: HashMap::new(),
             timers: Vec::new(),
             mounted_instances: HashSet::new(),
             settling: false,
@@ -746,8 +787,12 @@ impl Document {
             effects,
             hooks,
             // No imports were resolved here, so there are no components and
-            // nothing can declare a component hook.
+            // nothing can declare a component hook, computed or effect.
             component_hooks: HashMap::new(),
+            component_computeds: HashMap::new(),
+            component_effects: HashMap::new(),
+            instance_computeds: HashMap::new(),
+            instance_effects: HashMap::new(),
             timers: Vec::new(),
             mounted_instances: HashSet::new(),
             settling: false,
@@ -1662,6 +1707,13 @@ impl Document {
             }
         }
 
+        // A handler that moved this instance's state has moved whatever its
+        // computeds derive from, and those are read by the build that is about
+        // to happen.
+        if moved {
+            moved |= self.refresh_instance_computeds(None);
+        }
+
         // Deliver whatever the handler emitted. After the state write-back
         // above, so a listener that rebuilds rebuilds against the state the
         // handler left, not the state it started from.
@@ -1778,6 +1830,120 @@ impl Document {
             }
             writes
         })
+    }
+
+    /// Re-evaluate every instance computed whose dependencies were touched, in
+    /// its own instance's scope, and say whether any of them moved.
+    ///
+    /// `None` means refresh all of them, which is what a freshly mounted
+    /// instance needs: nothing has changed yet, and the point is to establish
+    /// the value and find out what it reads.
+    ///
+    /// A component's `computed` is already a plain `let` in the instance's
+    /// script, so it exists as ordinary instance state from the moment the
+    /// instance is created. What was missing was ever recomputing it, which is
+    /// all this does.
+    fn refresh_instance_computeds(&mut self, changed: Option<&HashSet<String>>) -> bool {
+        let keys: Vec<String> = self.instance_computeds.keys().cloned().collect();
+        let mut moved = false;
+        for key in keys {
+            let Some(list) = self.instance_computeds.get(&key).cloned() else { continue };
+            let Some(instance) = self.instances.get(&key) else { continue };
+            let mut locals = instance.state.clone();
+            locals.extend(instance.props.iter().cloned());
+            for (i, computed) in list.iter().enumerate() {
+                let stale = match changed {
+                    // Its own dependencies, or nothing yet known about them: a
+                    // computed that has never run has no dependency set, and
+                    // skipping it would leave it stale forever.
+                    Some(changed) => computed.deps.is_empty() || !computed.deps.is_disjoint(changed),
+                    None => true,
+                };
+                if !stale {
+                    continue;
+                }
+                let (value, deps) = self.engine.eval_value_tracked(&computed.expr, &locals);
+                if let Some(list) = self.instance_computeds.get_mut(&key) {
+                    if let Some(slot) = list.get_mut(i) {
+                        slot.deps = deps;
+                    }
+                }
+                let Some(value) = value else { continue };
+                let Some(instance) = self.instances.get_mut(&key) else { continue };
+                let Some(slot) = instance.state.iter_mut().find(|(n, _)| *n == computed.name) else {
+                    continue;
+                };
+                if slot.1 != value {
+                    slot.1 = value.clone();
+                    moved = true;
+                    // Later computeds in the same component may read this one,
+                    // so the scope they are evaluated against has to carry it.
+                    if let Some(local) = locals.iter_mut().find(|(n, _)| *n == computed.name) {
+                        local.1 = value;
+                    }
+                }
+            }
+        }
+        moved
+    }
+
+    /// Run every instance effect whose dependencies were touched, in its own
+    /// instance's scope, and report the *document* signals they wrote.
+    ///
+    /// Instance state the effect wrote is written straight back, the same way a
+    /// handler's is; only the document's signals have to travel back out, since
+    /// those are what the change pipeline reasons about.
+    fn run_instance_effects(
+        &mut self,
+        changed: Option<&HashSet<String>>,
+    ) -> (HashSet<String>, bool) {
+        let keys: Vec<String> = self.instance_effects.keys().cloned().collect();
+        let mut writes = HashSet::new();
+        let mut moved = false;
+        for key in keys {
+            let Some(list) = self.instance_effects.get(&key).cloned() else { continue };
+            for (i, effect) in list.iter().enumerate() {
+                let stale = match changed {
+                    Some(changed) => !effect.deps.is_disjoint(changed),
+                    None => true,
+                };
+                if !stale {
+                    continue;
+                }
+                let Some(instance) = self.instances.get(&key) else { continue };
+                let mut locals = instance.state.clone();
+                locals.extend(instance.props.iter().cloned());
+                let state_names: Vec<String> =
+                    instance.state.iter().map(|(n, _)| n.clone()).collect();
+                let (after, wrote, mut reads) =
+                    self.engine.run_scoped_effect(&effect.body, &locals);
+                // An effect is never woken by its own writes, exactly as at
+                // document level: assigning resolves the name, so the tracker
+                // sees a write as a read too and the effect would re-trigger
+                // itself every time.
+                reads.retain(|n| !wrote.contains(n));
+                if let Some(list) = self.instance_effects.get_mut(&key) {
+                    if let Some(slot) = list.get_mut(i) {
+                        slot.deps = reads;
+                    }
+                }
+                if let Some(instance) = self.instances.get_mut(&key) {
+                    for (name, value) in after {
+                        if !state_names.contains(&name) {
+                            continue;
+                        }
+                        if let Some(slot) = instance.state.iter_mut().find(|(n, _)| *n == name) {
+                            if slot.1 != value {
+                                slot.1 = value;
+                                moved = true;
+                            }
+                        }
+                    }
+                }
+                writes.extend(wrote);
+            }
+        }
+        (writes, moved)
     }
 
     /// Take the timer starts and cancels a script just asked for, attributing
@@ -1919,6 +2085,11 @@ impl Document {
                 // that makes an interval inside a component safe to write at
                 // all: it cannot outlive the state it was written against.
                 self.timers.retain(|t| t.instance.as_deref() != Some(gone.key.as_str()));
+                // Its computeds and effects go too. An effect left behind would
+                // still be woken by a document signal and would run against a
+                // scope that no longer exists.
+                self.instance_computeds.remove(&gone.key);
+                self.instance_effects.remove(&gone.key);
                 if !self.mounted_instances.remove(&gone.key) {
                     continue;
                 }
@@ -1968,6 +2139,32 @@ impl Document {
                     continue;
                 }
                 self.mounted_instances.insert(fresh.key.clone());
+                // The instance gets its own copies, with their own dependency
+                // sets, before any hook runs: a `mounted` body reading a
+                // computed should see the value, not the initial `let`.
+                if let Some(list) = self.component_computeds.get(&fresh.tag) {
+                    self.instance_computeds.insert(fresh.key.clone(), list.clone());
+                }
+                if let Some(list) = self.component_effects.get(&fresh.tag) {
+                    self.instance_effects.insert(fresh.key.clone(), list.clone());
+                }
+                // Establish both, which is also how each finds out what it
+                // reads: a subscription comes from having read something.
+                self.refresh_instance_computeds(None);
+                let (effect_writes, _) = self.run_instance_effects(None);
+                if !effect_writes.is_empty() {
+                    self.apply_change_depth(&effect_writes, depth as u32 + 1);
+                }
+                // Both wrote into instance state *after* the build that will be
+                // painted, so the tree still holds the placeholder a computed
+                // starts as and whatever an effect replaced. Rebuilt here, which
+                // is before the frame is presented, so this is invisible rather
+                // than a flash of the wrong value.
+                if self.instance_computeds.contains_key(&fresh.key)
+                    || self.instance_effects.contains_key(&fresh.key)
+                {
+                    self.rebuild();
+                }
                 let bodies = self
                     .component_hooks
                     .get(&fresh.tag)
@@ -2079,11 +2276,27 @@ impl Document {
         const MAX_EFFECT_ROUNDS: u32 = 8;
         let mut changed = changed.clone();
         self.refresh_computed(&mut changed);
-        let patched = self.patch(&changed);
+        // An instance's own computeds are refreshed before the tree is touched,
+        // for the same reason the document's are: a binding that reads one must
+        // read what this change made it, not what it was.
+        let instance_moved = self.refresh_instance_computeds(Some(&changed));
+        // A patch is chosen by which document signals moved, and instance state
+        // is not among them, so a computed that moved has to force the rebuild
+        // itself or the screen keeps the old number.
+        let patched = !instance_moved && self.patch(&changed);
         if !patched {
             self.rebuild();
         }
-        let writes = self.run_effects(&changed);
+        let mut writes = self.run_effects(&changed);
+        let (instance_writes, instance_state_moved) = self.run_instance_effects(Some(&changed));
+        writes.extend(instance_writes);
+        // An instance effect that wrote only its own state moved nothing the
+        // change pipeline reasons about, so nothing below would put it on the
+        // screen. Its computeds may derive from what it just wrote, too.
+        if instance_state_moved {
+            self.refresh_instance_computeds(None);
+            self.rebuild();
+        }
         if !writes.is_empty() {
             if depth + 1 >= MAX_EFFECT_ROUNDS {
                 let mut names: Vec<&str> = writes.iter().map(String::as_str).collect();
@@ -4729,6 +4942,97 @@ mod tests {
         .expect("load");
         let problems = format!("{:?}", doc.diagnostics());
         assert!(problems.contains("more than 0ms"), "said out loud: {problems}");
+    }
+
+    /// A component's `computed` tracks that instance's own state, and two
+    /// instances hold two different answers.
+    #[test]
+    fn a_component_computed_tracks_its_own_instance() {
+        let mut doc = with_component(
+            "<template><view>\
+               <text>{{ label }}:{{ total }}</text>\
+               <view @tap=\"qty = qty + 1\"><text>more</text></view>\
+             </view></template>\n\
+             <script>\nlet qty = signal(2);\nlet price = signal(3);\n\
+             computed total = qty * price;\n</script>",
+            "<template><screen>\
+               <card :label=\"&quot;a&quot;\" /><card :label=\"&quot;b&quot;\" />\
+             </screen></template>\n\
+             <script>\nuse components::card;\n</script>",
+        );
+        let shown = text_of(&doc.root).join("|");
+        assert!(shown.contains("a:6") && shown.contains("b:6"), "both start at 2x3: {shown}");
+
+        // Tap the first card only.
+        let button = doc.root.children[0]
+            .children
+            .iter()
+            .find(|c| c.on_tap.is_some())
+            .expect("a tappable box")
+            .clone();
+        let (src, instance) = (button.on_tap.clone().unwrap(), button.instance.clone());
+        assert!(doc.apply_handler_in(&src, instance.as_deref()));
+
+        let shown = text_of(&doc.root).join("|");
+        assert!(shown.contains("a:9"), "the tapped instance recomputed: {shown}");
+        assert!(shown.contains("b:6"), "and the other one did not: {shown}");
+    }
+
+    /// A component computed may read a document signal, and re-reads it when
+    /// that signal moves.
+    #[test]
+    fn a_component_computed_follows_a_document_signal() {
+        let mut doc = with_component(
+            "<template><view><text>{{ shown }}</text></view></template>\n\
+             <script>\nlet factor = signal(2);\ncomputed shown = base * factor;\n</script>",
+            "<template><screen><card /></screen></template>\n\
+             <script>\nuse components::card;\nlet base = signal(5);\n</script>",
+        );
+        assert_eq!(text_of(&doc.root).join(""), "10");
+        assert!(doc.apply_handler("base = 7"));
+        assert_eq!(text_of(&doc.root).join(""), "14", "the document signal reached it");
+    }
+
+    /// A component's `effect` runs on load and again when what it read moves,
+    /// in its own instance's scope.
+    #[test]
+    fn a_component_effect_runs_per_instance() {
+        let mut doc = with_component(
+            "<template><view><text>{{ seen }}</text></view></template>\n\
+             <script>\nlet seen = signal(\"\");\n\
+             effect { seen = \"saw \" + theme; }\n</script>",
+            "<template><screen><card /></screen></template>\n\
+             <script>\nuse components::card;\nlet theme = signal(\"dark\");\n</script>",
+        );
+        assert_eq!(text_of(&doc.root).join(""), "saw dark", "established on mount");
+        assert!(doc.apply_handler("theme = \"light\""));
+        assert_eq!(text_of(&doc.root).join(""), "saw light", "and re-ran on the change");
+    }
+
+    /// Both go with the instance. An effect left behind would still be woken by
+    /// a document signal and would run against a scope that is gone.
+    #[test]
+    fn instance_reactives_die_with_the_instance() {
+        let mut doc = with_component(
+            "<template><view><text>{{ seen }}</text></view></template>\n\
+             <script>\nlet seen = signal(0);\n\
+             effect { seen = theme; runs++; }\n</script>",
+            "<template><screen>\
+               <text>{{ runs }}</text>\
+               <card r-if=\"open\" />\
+             </screen></template>\n\
+             <script>\nuse components::card;\nlet open = signal(true);\n\
+             let theme = signal(1);\nlet runs = signal(0);\n</script>",
+        );
+        assert_eq!(doc.engine_mut().get_string("runs"), "1", "ran once on mount");
+
+        assert!(doc.apply_handler("open = false"));
+        assert!(doc.apply_handler("theme = 2"));
+        assert_eq!(
+            doc.engine_mut().get_string("runs"),
+            "1",
+            "the effect went with the instance"
+        );
     }
 
     /// A clean document reports nothing, so the overlay stays out of the way.

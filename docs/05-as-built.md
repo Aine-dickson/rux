@@ -961,8 +961,19 @@ Together with props this closes the loop: state can stay in the component that
 owns it instead of being hoisted into the document so the document can see it
 change. Driven in `examples/events.rux`.
 
-Still not supported inside a component: `computed` and `effect`, which are
-stripped.
+`computed` and `effect` work inside a component, per instance and in that
+instance's own scope. A computed is declared in the instance's script as a
+placeholder rather than as its own expression, because creating an instance runs
+that script in a scope without the document's signals: a computed reading one
+would fail there, and a failed script takes the instance's whole state with it.
+The real value is computed at mount, before the tree that shows it is built.
+
+The rest is dependency bookkeeping the document already does, kept per instance:
+a computed re-reads when what it read moves, an effect re-runs on the same terms
+and is never woken by its own writes, and both are dropped when the instance is.
+One thing is specific to instances: a computed or effect that writes only
+instance state has moved nothing the change pipeline reasons about, so it forces
+the rebuild itself rather than leaving the old value on screen.
 
 `mounted` and `unmounted` are supported, and run per instance in that instance's
 own scope. The build is the only place that knows an instance has appeared or

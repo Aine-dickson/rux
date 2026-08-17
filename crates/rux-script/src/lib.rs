@@ -1581,6 +1581,27 @@ impl Engine {
         (after, changed)
     }
 
+    /// [`run_scoped_handler`](Self::run_scoped_handler), also reporting what the
+    /// body **read**.
+    ///
+    /// An effect inside a component needs all three answers: its own instance's
+    /// state afterwards, which document signals it moved, and what it read, since
+    /// what it read is what it is subscribed to. A handler needs only the first
+    /// two, which is why the plain form does not pay for the tracking.
+    pub fn run_scoped_effect(
+        &mut self,
+        src: &str,
+        locals: &[(String, Value)],
+    ) -> (Vec<(String, Value)>, HashSet<String>, HashSet<String>) {
+        READS.with(|r| *r.borrow_mut() = Some(HashSet::new()));
+        let (after, changed) = self.run_scoped_handler(src, locals);
+        let mut reads = READS.with(|r| r.borrow_mut().take()).unwrap_or_default();
+        // Only document signals are subscriptions. An instance's own names are
+        // not: they change through a handler, which rebuilds anyway.
+        reads.retain(|n| self.signals.contains(n));
+        (after, changed, reads)
+    }
+
     /// Re-evaluate a computed's expression and store the result under its name.
     ///
     /// Returns whether the value actually changed, and what it read. Only a real

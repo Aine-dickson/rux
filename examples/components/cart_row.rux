@@ -1,0 +1,64 @@
+<template>
+  <view class="row">
+    <text class="name">{{ label }}</text>
+    <view class="stepper">
+      <view class="btn" @tap="qty = qty - 1"><text class="btn-label">-</text></view>
+      <text class="qty">{{ qty }}</text>
+      <view class="btn" @tap="qty = qty + 1"><text class="btn-label">+</text></view>
+    </view>
+    <text class="line">{{ line }}</text>
+    <text class="note">{{ note }}</text>
+  </view>
+</template>
+
+<style>
+  .row {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 14px 16px;
+    background: #313244;
+    border: 2px solid #45475a;
+    border-radius: 10px;
+    width: 240px;
+  }
+
+  .name { color: #cdd6f4; font-size: 14px; font-weight: 700; }
+  .stepper { display: flex; align-items: center; gap: 10px; }
+  .qty { color: #cdd6f4; font-size: 16px; width: 28px; text-align: center; }
+  .line { color: #a6e3a1; font-size: 20px; font-weight: 700; }
+  .note { color: #6c7086; font-size: 12px; }
+
+  .btn {
+    width: 26px;
+    height: 26px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: #45475a;
+    border-radius: 6px;
+    cursor: pointer;
+  }
+
+  .btn:hover { background: #585b70; }
+  .btn-label { color: #cdd6f4; font-size: 14px; font-weight: 700; }
+</style>
+
+<script>
+  let qty = signal(1);
+  let note = signal("");
+
+  // Per instance: each row multiplies its own quantity by the price it was
+  // handed, and `currency` is the document's, read straight through.
+  computed line = currency + (qty * price);
+
+  // Also per instance, and subscribed to what it read: the document's `sale`
+  // moves and every row re-runs this against its own state.
+  effect {
+    if sale {
+      note = "on sale, " + qty + " in the basket";
+    } else {
+      note = qty + " in the basket";
+    }
+  }
+</script>
