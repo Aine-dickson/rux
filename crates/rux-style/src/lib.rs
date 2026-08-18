@@ -3893,6 +3893,30 @@ fn arm_swap(
     deps: &mut HashSet<String>,
 ) {
     let Some(decl) = decl else { return };
+    // Give the element a stable identity for the animator.
+    //
+    // The animator names an unkeyed node by its position among its siblings, so
+    // anything appearing or disappearing *above* a swapping element renames it,
+    // and a rename is a first sight: the track is dropped, the element settles
+    // wherever the build put it, and a drag in progress jumps. Reported from the
+    // window as the drag working with the panel open and reverting to the old
+    // behaviour with it closed, which is exactly a sibling coming and going.
+    //
+    // The swap key is already stable across all of that, being a template path,
+    // so it is the identity to lend. Only when the element has none of its own:
+    // an `r-for` row's `r-key` is a better answer and is set by the caller.
+    if node.key.is_none() {
+        let (path, row) = key;
+        let mut id = String::from("swap:");
+        for seg in path {
+            id.push_str(&seg.to_string());
+            id.push('.');
+        }
+        if let Some(row) = row {
+            id.push_str(row);
+        }
+        node.key = Some(id);
+    }
     match decl {
         SwapDecl::Bound(expr) => {
             // Read outside the borrow of `swaps`: evaluating can run author code.

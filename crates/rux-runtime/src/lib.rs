@@ -6603,6 +6603,36 @@ mod swap_tests {
         );
     }
 
+    /// A swapping element keeps one identity while its siblings come and go.
+    ///
+    /// The animator names an unkeyed node by its position among its siblings, so
+    /// a sibling appearing above a swapping element renames it, and a rename is
+    /// a first sight: the track is dropped and a drag in progress jumps. Found
+    /// in the window, where a drag behaved with a panel open above the card and
+    /// reverted to the old jump with it closed.
+    #[test]
+    fn a_swapping_element_keeps_its_identity_when_a_sibling_leaves() {
+        let mut doc = Document::from_source(
+            "<template><screen>\
+               <text r-if=\"top\" class=\"top\">top</text>\
+               <text r-if=\"card\" r-transition class=\"card\">card</text>\
+             </screen></template>\n\
+             <style>\n.card { opacity: 1; transition: opacity 200ms; }\n</style>\n\
+             <script>\nlet top = signal(true);\nlet card = signal(true);\n</script>",
+        )
+        .expect("builds");
+        let key_with = doc.root.children[1].key.clone();
+        assert!(key_with.is_some(), "the swapping element is given an identity");
+
+        // Drop the sibling above it: its index moves, its identity must not.
+        assert!(doc.apply_handler("top = false"));
+        assert_eq!(text_of(&doc.root), vec!["card"], "it is the only one left");
+        assert_eq!(
+            doc.root.children[0].key, key_with,
+            "same identity at a different index, so the animator keeps its track"
+        );
+    }
+
     /// Without `r-transition` nothing is held: the old behaviour, exactly.
     #[test]
     fn an_unmarked_element_still_disappears_at_once() {
