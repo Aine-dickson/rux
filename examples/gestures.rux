@@ -1,0 +1,57 @@
+<template>
+  <screen class="app">
+    <text class="title">the pointer vocabulary</text>
+    <text class="lead">Five events beyond tap. Press and hold the pad, flick it, or drag it around. Every event is handed the fingers that are down, so the count below is real multi-touch on a phone and always 1 with a mouse.</text>
+
+    <view class="pad"
+          @press="log = &quot;press at &quot; + event.x + &quot;,&quot; + event.y; fingers = event.touches.length"
+          @release="log = &quot;release&quot;"
+          @longpress="log = &quot;long press, held still&quot;"
+          @swipe="log = &quot;swipe &quot; + event.direction + &quot; by &quot; + event.dx"
+          @drag="log = &quot;drag &quot; + event.phase; dx = event.dx; dy = event.dy">
+      <text class="pad-label">press, hold, flick or drag me</text>
+    </view>
+
+    <text class="read">{{ log }}</text>
+    <text class="foot">fingers on the last press: {{ fingers }}</text>
+    <text class="foot">last drag offset: {{ dx }}, {{ dy }}</text>
+  </screen>
+</template>
+
+<style>
+  .app {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    padding: 28px;
+    background: #1e1e2e;
+  }
+
+  .title { color: #cdd6f4; font-size: 22px; font-weight: 700; }
+  .lead { color: #9399b2; font-size: 13px; max-width: 620px; }
+  .read { color: #a6e3a1; font-size: 18px; font-weight: 700; }
+  .foot { color: #9399b2; font-size: 13px; }
+
+  .pad {
+    width: 320px;
+    height: 160px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: #313244;
+    border: 2px solid #45475a;
+    border-radius: 12px;
+    cursor: pointer;
+  }
+
+  .pad:hover { background: #45475a; }
+  .pad:active { background: #585b70; }
+  .pad-label { color: #cdd6f4; font-size: 13px; }
+</style>
+
+<script>
+  let log = signal("nothing yet");
+  let fingers = signal(0);
+  let dx = signal(0);
+  let dy = signal(0);
+</script>

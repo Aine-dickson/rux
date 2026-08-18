@@ -694,6 +694,9 @@ pub struct Node {
     pub tick: Option<Rgba>,
     pub children: Vec<Node>,
     pub on_tap: Option<String>,
+    /// `@press`, `@release`, `@longpress`, `@swipe`, `@drag`. Empty for almost
+    /// every node, so a `Vec` rather than five more `Option<String>` fields.
+    pub gestures: Vec<(Gesture, String)>,
     /// `r-model` signal name for `<input>` nodes (focus target + edit binding).
     pub model: Option<String>,
     /// `type="textarea"`: a multi-line text input, `Enter` inserts a newline.
@@ -745,6 +748,7 @@ impl Node {
             tick: None,
             children: Vec::new(),
             on_tap: None,
+            gestures: Vec::new(),
             model: None,
             multiline: false,
             options: None,
@@ -767,6 +771,7 @@ impl Node {
             tick: None,
             children: Vec::new(),
             on_tap: None,
+            gestures: Vec::new(),
             model: None,
             multiline: false,
             options: None,
@@ -789,6 +794,7 @@ impl Node {
             tick: None,
             children: Vec::new(),
             on_tap: None,
+            gestures: Vec::new(),
             model: None,
             multiline: false,
             options: None,
@@ -942,6 +948,41 @@ impl ScrollRegion {
     }
 }
 
+/// One thing a finger can do to an element, beyond tapping it.
+///
+/// `@tap` stays separate because it is not a pointer event: it is the finished
+/// gesture, it is what a keyboard activation produces, and it is what `tap()`
+/// from script synthesises. Everything here is raw pointer traffic.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Gesture {
+    /// A finger or button went down on this element.
+    Press,
+    /// It came up again, whether or not it stayed still enough to be a tap.
+    Release,
+    /// It stayed down, and still, for long enough.
+    LongPress,
+    /// It travelled far enough in one direction and left. Discrete: it reports
+    /// once, at the end, with a direction.
+    Swipe,
+    /// It is moving with the button or finger down. Reports at the start, on
+    /// every move, and at the end.
+    Drag,
+}
+
+impl Gesture {
+    /// The attribute that declares it, without the `@`.
+    pub fn from_attr(name: &str) -> Option<Self> {
+        match name {
+            "press" => Some(Gesture::Press),
+            "release" => Some(Gesture::Release),
+            "longpress" => Some(Gesture::LongPress),
+            "swipe" => Some(Gesture::Swipe),
+            "drag" => Some(Gesture::Drag),
+            _ => None,
+        }
+    }
+}
+
 /// An absolutely-positioned tappable region, carrying its `@tap` handler source.
 #[derive(Clone, Debug)]
 pub struct HitRegion {
@@ -949,7 +990,11 @@ pub struct HitRegion {
     pub y: f32,
     pub width: f32,
     pub height: f32,
-    pub on_tap: String,
+    /// The `@tap` body, if the element has one. A region may exist without it:
+    /// an element with only `@drag` still has to be found by a hit test.
+    pub on_tap: Option<String>,
+    /// The pointer handlers this element declared, by gesture.
+    pub gestures: Vec<(Gesture, String)>,
     /// The `cursor` for this region, so the shell can set the pointer shape when
     /// it hovers here. Carried on the hit region because that is the geometry the
     /// shell already hit-tests; a `cursor` on a non-tappable box is not honored.
@@ -1463,7 +1508,7 @@ fn build(
     tree: &mut TaffyTree<TextContent>,
     node: &Node,
     paint: &mut Vec<(NodeId, PaintKind)>,
-    handlers: &mut Vec<(NodeId, String, Cursor, Option<String>)>,
+    handlers: &mut Vec<(NodeId, Option<String>, Vec<(Gesture, String)>, Cursor, Option<String>)>,
     models: &mut Vec<Bound>,
     focus_labels: &mut Vec<(NodeId, String, Option<String>)>,
     hidden: &mut Vec<NodeId>,
@@ -1577,8 +1622,16 @@ fn build(
         ));
         id
     };
-    if let Some(handler) = &node.on_tap {
-        handlers.push((id, handler.clone(), node.style.cursor, node.instance.clone()));
+    // A hit region is needed for anything a pointer can reach, not only for a
+    // `@tap`: an element with just `@drag` still has to be found by a hit test.
+    if node.on_tap.is_some() || !node.gestures.is_empty() {
+        handlers.push((
+            id,
+            node.on_tap.clone(),
+            node.gestures.clone(),
+            node.style.cursor,
+            node.instance.clone(),
+        ));
     }
     if let Some(model) = &node.model {
         models.push(Bound {
@@ -1621,7 +1674,7 @@ fn collect(
     origin_x: f32,
     origin_y: f32,
     paint: &[(NodeId, PaintKind)],
-    handlers: &[(NodeId, String, Cursor, Option<String>)],
+    handlers: &[(NodeId, Option<String>, Vec<(Gesture, String)>, Cursor, Option<String>)],
     models: &[Bound],
     focus_labels: &[(NodeId, String, Option<String>)],
     hidden: &[NodeId],
@@ -1803,13 +1856,16 @@ fn collect(
         });
     }
 
-    if let Some((_, handler, cursor, instance)) = handlers.iter().find(|(nid, ..)| *nid == id) {
+    if let Some((_, handler, gestures, cursor, instance)) =
+        handlers.iter().find(|(nid, ..)| *nid == id)
+    {
         out.hits.push(HitRegion {
             x,
             y,
             width: layout.size.width,
             height: layout.size.height,
             on_tap: handler.clone(),
+            gestures: gestures.clone(),
             cursor: *cursor,
             instance: instance.clone(),
         });
@@ -1892,9 +1948,15 @@ fn collect(
                 scroll: inside_scroll,
             });
         }
-    } else if let Some((_, handler, _, instance)) = handlers.iter().find(|(nid, ..)| *nid == id) {
+    } else if let Some((_, Some(handler), _, _, instance)) =
+        handlers.iter().find(|(nid, ..)| *nid == id)
+    {
         // A button / checkbox / radio (anything with a `@tap` handler) is
         // keyboard-reachable: Space or Enter runs the same handler as a tap.
+        //
+        // Only `@tap`. A keyboard has no pointer, so an element that declares
+        // only `@drag` has nothing a key could stand in for, and offering Enter
+        // as a fake drag would be worse than leaving it alone.
         out.focusables.push(FocusItem {
             x,
             y,

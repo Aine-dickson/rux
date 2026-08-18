@@ -2543,6 +2543,23 @@ fn build_node(
     let on_tap = el.attr("@tap").map(|h| bind_locals(h, locals)).or_else(|| {
         to.as_ref().map(|p| format!("navigate({})", Value::Text(p.clone()).to_rhai_literal()))
     });
+    // The pointer handlers, in the order the vocabulary lists them rather than
+    // the order they happen to be written, so two elements with the same set
+    // dispatch in the same order.
+    let gestures: Vec<(rux_layout::Gesture, String)> = [
+        ("press", rux_layout::Gesture::Press),
+        ("release", rux_layout::Gesture::Release),
+        ("longpress", rux_layout::Gesture::LongPress),
+        ("swipe", rux_layout::Gesture::Swipe),
+        ("drag", rux_layout::Gesture::Drag),
+    ]
+    .into_iter()
+    .filter_map(|(name, kind)| {
+        // An `r-for` local is baked in the same way a `@tap`'s is: the body runs
+        // long after the build that could still see the row.
+        el.attr(&format!("@{name}")).map(|h| (kind, bind_locals(h, locals)))
+    })
+    .collect();
     // r-show="false" keeps the layout slot but paints nothing. It only flips
     // `hidden`, never the shape, so it's patchable: record it and a change rewrites
     // the bool in place.
@@ -2686,6 +2703,7 @@ fn build_node(
             },
         );
         node.on_tap = on_tap;
+        node.gestures = gestures;
         node.hidden = hidden;
         node.id = el.attr("id").map(str::to_string);
         node.label_for = el.attr("for").map(str::to_string);
@@ -2866,6 +2884,7 @@ fn build_node(
         node.multiline = multiline;
         node.options = options;
         node.on_tap = on_tap;
+        node.gestures = gestures;
         node.hidden = hidden;
         node.id = el.attr("id").map(str::to_string);
         node.label_for = el.attr("for").map(str::to_string);
@@ -2937,6 +2956,7 @@ fn build_node(
         tick: None,
         children,
         on_tap,
+        gestures,
         model: None,
         multiline: false,
         options: None,
@@ -4918,6 +4938,26 @@ mod tests {
     use super::{build_styled_tree, build_styled_tree_tracked, interpolate_tracked, interpret, Len, Locals};
     use rux_script::{Builder, Engine};
     use std::collections::HashMap;
+
+    /// The pointer attributes reach the node, in the vocabulary's order rather
+    /// than the order they happen to be written, and an `r-for` local is baked
+    /// into the body the way a `@tap`'s is.
+    #[test]
+    fn gesture_attributes_reach_the_node() {
+        use rux_layout::Gesture;
+        let src = "<template><screen>                     <view @drag=\"a()\" @press=\"b()\" @longpress=\"c()\" />                   </screen></template>";
+        let sfc = rux_parser::parse_sfc(src).expect("parses");
+        let mut engine = Builder::new().build("").expect("engine");
+        let tree = build_styled_tree(&sfc, &HashMap::new(), &mut engine).expect("builds");
+        let node = &tree.children[0];
+        let kinds: Vec<Gesture> = node.gestures.iter().map(|(g, _)| *g).collect();
+        assert_eq!(
+            kinds,
+            vec![Gesture::Press, Gesture::LongPress, Gesture::Drag],
+            "declared order does not decide dispatch order"
+        );
+        assert!(node.on_tap.is_none(), "a pointer handler is not a tap");
+    }
 
     /// Every kind of CSS warning must land on the line the reader can see, not
     /// on a line counted from the start of the `<style>` block. Getting this

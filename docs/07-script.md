@@ -126,9 +126,50 @@ out of its way to get right:
 - **Unmounts run before mounts** when one build swaps one component for another,
   so the leaver has saved before the arriver reads.
 
-## What a tap hands you
+## The pointer vocabulary
 
-A `@tap` handler has an `event` in scope:
+Beyond `@tap`, five events report what a finger or a button is doing:
+
+| Attribute | Fires |
+|---|---|
+| `@press` | the moment a finger or button goes down on the element |
+| `@release` | when it comes up, whether or not it stayed still enough to be a tap |
+| `@longpress` | once, after it has been held still for half a second |
+| `@swipe` | once at the end of a press that travelled far enough, fast enough |
+| `@drag` | at the start of a drag, on every move, and at the end |
+
+`@tap` is deliberately not one of them. It is the finished gesture rather than
+raw pointer traffic: a keyboard activation produces one, and so does `tap()`
+from script, neither of which has a pointer at all.
+
+```rux
+<view class="pad"
+      @press="held = true"
+      @release="held = false"
+      @swipe="if event.direction == &quot;left&quot; { next() }"
+      @drag="offset = event.dx">
+```
+
+`@swipe` adds `event.direction`, one of `left`, `right`, `up` or `down`, chosen
+by the dominant axis so a slightly diagonal flick still means what the hand
+meant, plus `event.dx` and `event.dy`.
+
+`@drag` adds `event.phase`, one of `start`, `move` or `end`, and `event.dx` /
+`event.dy`, the distance from where the drag began. The start is not the press:
+a press that never moves is not a drag.
+
+**A `@drag` claims the finger.** While a drag is running, the page under it does
+not scroll. An explicit handler beats an implicit gesture, which is the simple
+half of that rule; whether the scroll can take the finger back mid-gesture is
+not decided, and waits for real touch hardware to argue with.
+
+**A long press and a swipe are exclusive with a drag**, because they describe
+the same press differently: one that moved is not resting, and one that is being
+dragged has already been claimed.
+
+## What an event hands you
+
+Every handler above, and `@tap` too, has an `event` in scope:
 
 ```rux
 <view class="card" @tap="mark(event.x, event.y)">

@@ -96,6 +96,11 @@ const ELEMENTS: &[Entry] = &[
 
 /// Attributes that mean something on any element.
 const GLOBAL_ATTRIBUTES: &[Entry] = &[
+    Entry { name: "@press", detail: "a finger or button went down", doc: "Runs when a press lands on this element. `event.x` / `event.y` are relative to the element; `event.touches` lists every finger down." },
+    Entry { name: "@release", detail: "the press came up", doc: "Runs on release, whether or not the press stayed still enough to be a tap." },
+    Entry { name: "@longpress", detail: "the press rested", doc: "Runs once, after the press has been held still for half a second." },
+    Entry { name: "@swipe", detail: "a flick, with a direction", doc: "Runs once at the end of a press that travelled far enough, fast enough. `event.direction` is `left`, `right`, `up` or `down`, and `event.dx` / `event.dy` are how far it came." },
+    Entry { name: "@drag", detail: "the pointer is moving", doc: "Runs at the start of a drag, on every move, and at the end. `event.phase` says which, `event.dx` / `event.dy` are the distance from where it began. A `@drag` claims the finger, so the page under it does not scroll." },
     Entry { name: "class", detail: "CSS classes", doc: "Space-separated class names, matched by `.name` selectors. `:class` is the bound form." },
     Entry { name: "id", detail: "unique id", doc: "Matched by `#name` selectors, and by `query(\"#name\")` from script." },
     Entry { name: "style", detail: "inline declarations", doc: "Inline CSS for this element. `:style` is the bound form." },

@@ -289,6 +289,52 @@ const BAR_MIN_THUMB: f32 = 24.0;
 /// One line of scroll travel, the wheel's unit, and the arrow keys'.
 const LINE: f32 = 24.0;
 
+/// A press in progress on an element that declared pointer handlers.
+///
+/// Held from the press to the release, because every gesture except `@press` is
+/// decided by what happens *after* the finger lands: a release is a release, a
+/// long press is one that stayed still, a swipe is one that travelled and left,
+/// and a drag is one that is still travelling.
+#[derive(Clone, Debug)]
+struct GesturePress {
+    /// The element's top-left in logical px, so every coordinate handed to a
+    /// handler is relative to the element it was written on.
+    origin: (f32, f32),
+    handlers: Vec<(rux_layout::Gesture, String)>,
+    instance: Option<String>,
+    /// Where the press landed, logical px, in the same frame as `origin`.
+    start: (f32, f32),
+    at: Instant,
+    /// Whether `@drag` has already been told the drag began. A drag reports
+    /// start, then moves, then end, and the start is not the press: a press
+    /// that never moves is not a drag at all.
+    dragging: bool,
+    /// A long press fires once. Without this it would fire on every wake-up
+    /// while the finger rested.
+    long_fired: bool,
+}
+
+/// The fields a drag or swipe adds to the event: which part of the gesture this
+/// is, and how far it has come from where it started.
+fn phase(
+    name: &str,
+    start: (f32, f32),
+    fx: f32,
+    fy: f32,
+) -> Vec<(String, rux_reactive::Value)> {
+    use rux_reactive::Value;
+    vec![
+        ("phase".to_string(), Value::Text(name.to_string())),
+        ("dx".to_string(), Value::Number((fx - start.0) as f64)),
+        ("dy".to_string(), Value::Number((fy - start.1) as f64)),
+    ]
+}
+
+/// How far a press has to travel to count as a swipe, in logical px, and how
+/// long it may take. A slow drag that ends far away is a drag, not a swipe.
+const SWIPE_DISTANCE: f32 = 40.0;
+const SWIPE_TIME: Duration = Duration::from_millis(600);
+
 /// Which axis a scrollbar (or a drag on one) belongs to.
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Axis2 {
@@ -1020,6 +1066,12 @@ struct App {
     bar_drag: Option<BarDrag>,
     /// Where the finger last was during a touch drag, in logical px.
     touch: Option<(f32, f32)>,
+    /// The pointer handlers of whatever is being pressed, and what has happened
+    /// to that press so far. `None` when nothing is held, or when the press
+    /// landed on something with no pointer handlers at all.
+    gesture: Option<GesturePress>,
+    /// When the held press becomes a long one, if anything is listening.
+    gesture_deadline: Option<Instant>,
     /// Every finger currently down, in logical px, in the order they landed.
     ///
     /// A list rather than one position, because a hand has more than one finger
@@ -1157,6 +1209,8 @@ impl App {
             scrolls: Vec::new(),
             offsets: Vec::new(),
             bar_drag: None,
+            gesture: None,
+            gesture_deadline: None,
             points: Vec::new(),
             touch: None,
             focused: None,
@@ -1974,8 +2028,11 @@ impl App {
             .hits
             .iter()
             .rev()
-            .find(|h| h.contains(px as f32, py as f32))
-            .map(|h| (h.on_tap.clone(), h.instance.clone(), (h.x, h.y)));
+            // Only regions that actually have a `@tap`: an element with just
+            // `@drag` is hit-testable but is not a tap target, and letting it
+            // swallow the tap would hide the button underneath it.
+            .find(|h| h.on_tap.is_some() && h.contains(px as f32, py as f32))
+            .map(|h| (h.on_tap.clone().unwrap_or_default(), h.instance.clone(), (h.x, h.y)));
 
         if let Some((src, instance, origin)) = handler {
             // Patch in place when the change is display-only; rebuild only when it
@@ -1990,6 +2047,117 @@ impl App {
             }
             self.adopt_element_requests();
         }
+    }
+
+    /// Begin tracking a press for the pointer handlers, and fire `@press`.
+    ///
+    /// Called from both the mouse and the touchscreen, with the position already
+    /// in logical pixels, so the two cannot drift apart in what a gesture means.
+    fn begin_gesture(&mut self, fx: f32, fy: f32) {
+        let found = self
+            .hits
+            .iter()
+            .rev()
+            .find(|h| !h.gestures.is_empty() && h.contains(fx, fy))
+            .map(|h| (h.gestures.clone(), h.instance.clone(), (h.x, h.y)));
+        let Some((handlers, instance, origin)) = found else {
+            self.gesture = None;
+            self.gesture_deadline = None;
+            return;
+        };
+        let listening_long = handlers.iter().any(|(g, _)| *g == rux_layout::Gesture::LongPress);
+        self.gesture = Some(GesturePress {
+            origin,
+            handlers,
+            instance,
+            start: (fx, fy),
+            at: Instant::now(),
+            dragging: false,
+            long_fired: false,
+        });
+        // Only armed when something is listening, so a page full of ordinary
+        // buttons still sleeps between events.
+        self.gesture_deadline = listening_long.then(|| Instant::now() + LONG_PRESS);
+        self.fire_gesture(rux_layout::Gesture::Press, fx, fy, Vec::new());
+    }
+
+    /// Follow a press that is moving: start or continue a drag, and give up on
+    /// the long press once the finger has wandered.
+    fn move_gesture(&mut self, fx: f32, fy: f32) {
+        let Some(press) = self.gesture.clone() else { return };
+        let travelled = (fx - press.start.0).hypot(fy - press.start.1);
+        if travelled > TAP_SLOP as f32 {
+            // It has moved, so it is no longer resting.
+            self.gesture_deadline = None;
+        }
+        if !press.handlers.iter().any(|(g, _)| *g == rux_layout::Gesture::Drag) {
+            return;
+        }
+        if !press.dragging {
+            if travelled <= TAP_SLOP as f32 {
+                return;
+            }
+            if let Some(g) = self.gesture.as_mut() {
+                g.dragging = true;
+            }
+            self.fire_gesture(rux_layout::Gesture::Drag, fx, fy, phase("start", press.start, fx, fy));
+            return;
+        }
+        self.fire_gesture(rux_layout::Gesture::Drag, fx, fy, phase("move", press.start, fx, fy));
+    }
+
+    /// End a press: `@release` always, then the one thing it turned out to be.
+    fn end_gesture(&mut self, fx: f32, fy: f32) {
+        let Some(press) = self.gesture.take() else {
+            self.gesture_deadline = None;
+            return;
+        };
+        self.gesture_deadline = None;
+        // Put it back for the duration of the dispatches below, so a handler
+        // reading the element's origin still gets the right frame.
+        self.gesture = Some(press.clone());
+
+        self.fire_gesture(rux_layout::Gesture::Release, fx, fy, Vec::new());
+
+        let (dx, dy) = (fx - press.start.0, fy - press.start.1);
+        if press.dragging {
+            self.fire_gesture(rux_layout::Gesture::Drag, fx, fy, phase("end", press.start, fx, fy));
+        } else if dx.hypot(dy) >= SWIPE_DISTANCE && press.at.elapsed() <= SWIPE_TIME {
+            // The dominant axis decides, which is what makes a slightly diagonal
+            // flick still mean what the hand meant.
+            let direction = if dx.abs() > dy.abs() {
+                if dx > 0.0 { "right" } else { "left" }
+            } else if dy > 0.0 {
+                "down"
+            } else {
+                "up"
+            };
+            let mut extra = phase("end", press.start, fx, fy);
+            extra.retain(|(k, _)| k != "phase");
+            extra.push(("direction".to_string(), rux_reactive::Value::Text(direction.to_string())));
+            self.fire_gesture(rux_layout::Gesture::Swipe, fx, fy, extra);
+        }
+        self.gesture = None;
+    }
+
+    /// Run the handler for one gesture, if the pressed element declared it.
+    fn fire_gesture(
+        &mut self,
+        kind: rux_layout::Gesture,
+        fx: f32,
+        fy: f32,
+        extra: Vec<(String, rux_reactive::Value)>,
+    ) {
+        let Some(press) = self.gesture.clone() else { return };
+        let Some((_, body)) = press.handlers.iter().find(|(g, _)| *g == kind) else { return };
+        let mut event = self.pointer_event(fx, fy, press.origin);
+        if let rux_reactive::Value::Map(fields) = &mut event {
+            fields.extend(extra);
+        }
+        if self.document.apply_handler_with_event(body, press.instance.as_deref(), &event) {
+            self.request_redraw();
+        }
+        self.adopt_element_requests();
     }
 
     /// What a handler is handed as `event`: where the pointer is, and every
@@ -3456,6 +3624,12 @@ impl ApplicationHandler<RuxEvent> for App {
             }
             WindowEvent::CursorMoved { position, .. } => {
                 self.pointer = (position.x, position.y);
+                let scale = self.scale();
+                let here = ((position.x / scale) as f32, (position.y / scale) as f32);
+                if let Some(p) = self.points.iter_mut().find(|(id, _)| *id == 0) {
+                    p.1 = here;
+                }
+                self.move_gesture(here.0, here.1);
                 if self.bar_drag.is_some() {
                     self.drag_scrollbar(self.pointer);
                 } else if self.text_drag {
@@ -3493,6 +3667,12 @@ impl ApplicationHandler<RuxEvent> for App {
                         // not this one turned out to be a tap.
                         self.points.retain(|(id, _)| *id != touch.id);
                         self.points.push((touch.id, here));
+                        // First finger down owns the gesture. A second one joins
+                        // the `touches` list every handler reads, rather than
+                        // starting a competing press.
+                        if self.points.len() == 1 {
+                            self.begin_gesture(here.0, here.1);
+                        }
                         // Same order as the mouse: the dev overlay is above
                         // everything, so a finger on it arms a dismiss rather
                         // than reaching the app it is covering. The short-circuit
@@ -3509,6 +3689,16 @@ impl ApplicationHandler<RuxEvent> for App {
                         self.pointer = at;
                         if let Some(p) = self.points.iter_mut().find(|(id, _)| *id == touch.id) {
                             p.1 = here;
+                        }
+                        self.move_gesture(here.0, here.1);
+                        // The axis claim, in its first form: an element that
+                        // declared `@drag` takes the finger, and the page under
+                        // it does not scroll while that drag is running. An
+                        // explicit handler beats an implicit gesture; the finer
+                        // rule (whether the loser can take over later) waits for
+                        // real hardware to argue with.
+                        if self.gesture.as_ref().is_some_and(|g| g.dragging) {
+                            return;
                         }
                         if self.bar_drag.is_some() {
                             self.drag_scrollbar(at);
@@ -3541,6 +3731,7 @@ impl ApplicationHandler<RuxEvent> for App {
                         // finger that caused the event is part of the event, so
                         // it is removed once, at the end of this arm.
                         let lifted = touch.id;
+                        self.end_gesture(here.0, here.1);
                         // Each of the three below leaves early, and a finger
                         // that is not removed on every path out of here is one
                         // the next event still believes is down.
@@ -3572,6 +3763,10 @@ impl ApplicationHandler<RuxEvent> for App {
                         self.touch = None;
                         self.press = None;
                         self.points.retain(|(id, _)| *id != touch.id);
+                        // A cancelled touch is not a release: nothing fires, and
+                        // the press is simply forgotten.
+                        self.gesture = None;
+                        self.gesture_deadline = None;
                         self.bar_drag = None;
                         self.text_drag = false;
                         // Dropping this also disarms a pending long press, so a
@@ -3629,6 +3824,11 @@ impl ApplicationHandler<RuxEvent> for App {
                 // held, so a handler written for a phone reads the same here.
                 self.points.clear();
                 self.points.push((0, here));
+                // The pointer handlers see the press even when it also starts a
+                // selection or a scrollbar drag: those are the shell's, this is
+                // the app's, and an element that asked for `@press` asked for
+                // every press on it.
+                self.begin_gesture(here.0, here.1);
                 if self.overlay_covers_physical(self.pointer) {
                     self.press = Some(self.pointer);
                 } else if !self.press_scrollbar(self.pointer) && !self.press_text(self.pointer) {
@@ -3658,7 +3858,14 @@ impl ApplicationHandler<RuxEvent> for App {
                         self.dispatch_tap(px, py);
                     }
                 }
-                // After the tap, because the button that caused it is part of it.
+                let scale = self.scale();
+                let here = (
+                    (self.pointer.0 / scale) as f32,
+                    (self.pointer.1 / scale) as f32,
+                );
+                self.end_gesture(here.0, here.1);
+                // After the tap and the gestures, because the button that caused
+                // them is part of them.
                 self.points.clear();
             }
             // Event-driven: we only paint in response to a redraw request, which
@@ -3706,6 +3913,22 @@ impl ApplicationHandler<RuxEvent> for App {
             }
         }
 
+        // A press that has rested long enough, on an element that asked. The
+        // deadline is cleared either way, so it fires once and a finger that
+        // stays down does not fire it again on every wake-up.
+        if let Some(deadline) = self.gesture_deadline {
+            if Instant::now() >= deadline {
+                self.gesture_deadline = None;
+                let resting = self.gesture.as_ref().map(|g| (g.start, g.long_fired));
+                if let Some((start, false)) = resting {
+                    if let Some(g) = self.gesture.as_mut() {
+                        g.long_fired = true;
+                    }
+                    self.fire_gesture(rux_layout::Gesture::LongPress, start.0, start.1, Vec::new());
+                }
+            }
+        }
+
         // The third clock, and the only one that is a frame rather than a state
         // change: something is mid-transition and the next frame is due. The
         // deadline is cleared here because `render` sets the following one, and
@@ -3737,7 +3960,10 @@ impl ApplicationHandler<RuxEvent> for App {
             Some(TouchText::Pending { deadline, .. }) => Some(deadline),
             _ => None,
         };
-        match [self.blink_deadline, long_press, self.anim_deadline, timer].into_iter().flatten().min()
+        match [self.blink_deadline, long_press, self.anim_deadline, timer, self.gesture_deadline]
+            .into_iter()
+            .flatten()
+            .min()
         {
             Some(next) => event_loop.set_control_flow(ControlFlow::WaitUntil(next)),
             None => event_loop.set_control_flow(ControlFlow::Wait),
