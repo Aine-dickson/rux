@@ -61,6 +61,67 @@ under [Tooling](/tooling/), along with how to set up the VS Code extension.
 - [Accessibility](/reference/accessibility/): The real accessibility tree, the roles elements map to, and what a screen reader is told.
 - [Errors](/reference/errors/): What happens when a document will not load, and what the overlay shows.
 
+### The pointer vocabulary
+
+Beyond `@tap`, five attributes report what a finger or button is doing:
+`@press`, `@release`, `@longpress`, `@swipe` and `@drag`. `@tap` is deliberately
+not one of them: it is the finished gesture, it is what a keyboard activation
+produces and what `tap()` from script synthesises, and none of those has a
+pointer at all. So an element with only `@drag` is hit-tested but is not a tap
+target and is not keyboard-activatable, and it does not swallow a tap meant for
+what is under it.
+
+Every handler, `@tap` included, is handed an `event`:
+
+| Field | What it is |
+|---|---|
+| `x`, `y` | the pointer, relative to the element the handler is on |
+| `pageX`, `pageY` | the same point, relative to the window |
+| `touches` | every finger down, each with `id`, `x`, `y` |
+
+`touches` is **a list even when there is one finger**, and a mouse counts as one
+finger with `id` 0. That shape is the point: a two-finger gesture can arrive
+later without changing what any handler already written reads.
+
+`@swipe` adds `direction`, chosen by the dominant axis. `@drag` adds `phase`
+(`start`, `move`, `end`). Both add two distances, named so neither can be read
+as the other: `totalX` / `totalY` from where the press landed, and `moveX` /
+`moveY` from the previous event. Following a finger wants the first; velocity
+and flick detection want the second.
+
+**A drag that ends as a flick also fires `@swipe`.** They are not rivals: a page
+that follows the finger still has to be told, at the end, whether the hand meant
+to throw it, which is how a reversible transition decides whether to commit.
+They were exclusive at first, and that made `@swipe` unreachable on any element
+that also declared `@drag`, since movement starts the drag first. A long press
+stays exclusive, because a press that moved is not resting.
+
+**A `@drag` claims the finger**: the page under it does not scroll while the
+drag runs. That is the settled half of the axis-claim rule. Whether a scroll can
+take the finger back mid-gesture is deliberately undecided until there is touch
+hardware to argue with.
+
+**A laptop touchpad reaches the app as a mouse**, so it reports one finger
+however many are on the pad. Only a touchscreen, or a browser's touch emulation
+against the wasm build, exercises the list.
+
+**Touch text has its own gestures**, added in v0.5.1 and confirmed on hardware.
+Until then a finger dragged across text *selected*, because touch was routed
+down the same press/drag/release path a mouse takes, which is the desktop model
+and not what a phone does:
+
+- **drag** on text moves the caret along the path;
+- **long press** (500 ms) selects the word under the finger;
+- **long press then drag** extends the selection from that word.
+
+The long press is therefore the only gesture that selects, which is what frees a
+drag to mean something else. The decision is one-way: a press that moves before
+the timer is a caret drag and cannot become a selection however long the finger
+then rests, so a drag never turns into a selection halfway through. A resting
+finger raises no events, so the press deadline is a second clock in
+`about_to_wait` beside the caret blink. The mouse is unchanged and still
+drag-selects.
+
 ## Gotchas (these will bite)
 
 1. **String literals in attributes need single-quoted attrs:**

@@ -131,6 +131,12 @@ impl Animator {
 
     /// One transitioning node, one frame.
     fn node_frame(&mut self, node: &mut Node, path: &[Seg], now: f64, wake: &mut Option<f64>) {
+        // A swap someone else is driving: position is a function of their value
+        // and not of the clock at all. Nothing here waits for it, and nothing
+        // here ends it either, because a driven swap can travel back the way it
+        // came and finishing it is the runtime's call rather than the
+        // animator's.
+        let driven = node.style.swap_progress;
         let specs = specs_of(&node.style.transitions);
         let state = self.nodes.entry(path.to_vec()).or_default();
         state.touched = true;
@@ -152,8 +158,18 @@ impl Animator {
             // it was rebuilt to the same target) or a new authored value.
             let target = if close(&authored, &track.written) { track.target } else { authored };
             if !close(&target, &track.target) {
-                let current = track.value_at(now);
+                let current = match driven {
+                    Some(t) => track.value_at_progress(t),
+                    None => track.value_at(now),
+                };
                 *track = Track::starting(current, target, *spec, now);
+            }
+
+            if let Some(t) = driven {
+                let value = track.value_at_progress(t);
+                write(node, *prop, value);
+                track.written = value;
+                continue;
             }
 
             if track.active {
@@ -218,6 +234,17 @@ impl Track {
             track.written = target;
         }
         track
+    }
+
+    /// Where this track sits at a progress somebody else chose, 0 being the
+    /// value the swap started from and 1 the value it is heading for.
+    ///
+    /// The declared duration is ignored here, and that is the division of
+    /// labour: `transition` says *which* properties take part in a swap, and
+    /// the driver says how far along it is.
+    fn value_at_progress(&self, t: f32) -> AnimValue {
+        let eased = self.easing.eval(t.clamp(0.0, 1.0));
+        lerp(&self.from, &self.target, eased).unwrap_or(self.target)
     }
 
     fn value_at(&self, now: f64) -> AnimValue {
@@ -429,6 +456,46 @@ mod tests {
             easing: Easing::Linear,
         }];
         Node::new(style)
+    }
+
+    /// A node carrying `swap_progress` is positioned by that value and not by
+    /// the clock: it does not move when time passes, and it does move when the
+    /// value does. This is what lets a finger drive an enter/leave swap.
+    #[test]
+    fn a_driven_swap_follows_its_progress_and_not_the_clock() {
+        let mut anim = Animator::new();
+        let mut node = fading(1.0, 300.0);
+        assert_eq!(anim.apply(&mut node, 0.0), None, "settled where it was built");
+
+        // The swap opens: the build now asks for 0, and hands over progress.
+        node.style.opacity = 0.0;
+        node.style.swap_progress = Some(0.25);
+        assert_eq!(anim.apply(&mut node, 0.0), None, "driven, so nothing to wake for");
+        assert!(
+            (node.style.opacity - 0.75).abs() < 1e-4,
+            "a quarter of the way from 1 to 0: {}",
+            node.style.opacity
+        );
+
+        // Time alone moves it nowhere.
+        node.style.opacity = 0.0;
+        node.style.swap_progress = Some(0.25);
+        let _ = anim.apply(&mut node, 10_000.0);
+        assert!(
+            (node.style.opacity - 0.75).abs() < 1e-4,
+            "still a quarter of the way, ten seconds later: {}",
+            node.style.opacity
+        );
+
+        // And it can travel back the way it came, which a clock cannot do.
+        node.style.opacity = 0.0;
+        node.style.swap_progress = Some(0.1);
+        let _ = anim.apply(&mut node, 10_100.0);
+        assert!(
+            (node.style.opacity - 0.9).abs() < 1e-4,
+            "reversed: {}",
+            node.style.opacity
+        );
     }
 
     #[test]

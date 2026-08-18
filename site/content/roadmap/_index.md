@@ -1795,11 +1795,14 @@ here.
    optional, and it lands when packaging does: a window title, an icon and a
    target have nowhere to live until there is an artifact to put them in, and
    inventing the file first would commit the output format by accident.
-7. **The full gesture vocabulary**, if it has not already landed: `@longpress`,
-   `@press` / `@release`, `@swipe` and continuous `@drag`, each reporting its
-   touch points rather than one synthesised pointer. Decided 2026-08-18. The
-   shell tracks a single finger today, so multi-touch is new work rather than
-   exposure of what exists.
+7. **Multi-touch, on hardware.** The gesture vocabulary itself landed in v0.7
+   (`@press`, `@release`, `@longpress`, `@swipe`, `@drag`), and every event
+   already reports a *list* of touch points rather than one synthesised pointer.
+   What v0.8 owes it is a second finger: the shell tracks each id winit gives
+   it, but no desktop here can produce two, and nothing yet interprets a pinch
+   or a rotate. The axis-claim rule is half-settled for the same reason: a
+   `@drag` claims the finger, and whether a scroll can take it back mid-gesture
+   waits for a real screen.
 
 ### v0.9: text, and the long tail
 

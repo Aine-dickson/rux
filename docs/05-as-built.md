@@ -730,8 +730,53 @@ rather than a reason to call it done. In a browser the canvas also needs
 `touch-action: none`, or the page claims the gesture and the runtime never sees
 a drag.
 
-**Not done:** no kinetic or inertial fling after the finger lifts, no
-multi-touch, and no pinch zoom.
+**Not done:** no kinetic or inertial fling after the finger lifts, and no pinch
+zoom. Multi-touch is *reported* (see the pointer vocabulary below) but nothing
+in the runtime interprets a second finger yet.
+
+### The pointer vocabulary
+
+Beyond `@tap`, five attributes report what a finger or button is doing:
+`@press`, `@release`, `@longpress`, `@swipe` and `@drag`. `@tap` is deliberately
+not one of them: it is the finished gesture, it is what a keyboard activation
+produces and what `tap()` from script synthesises, and none of those has a
+pointer at all. So an element with only `@drag` is hit-tested but is not a tap
+target and is not keyboard-activatable, and it does not swallow a tap meant for
+what is under it.
+
+Every handler, `@tap` included, is handed an `event`:
+
+| Field | What it is |
+|---|---|
+| `x`, `y` | the pointer, relative to the element the handler is on |
+| `pageX`, `pageY` | the same point, relative to the window |
+| `touches` | every finger down, each with `id`, `x`, `y` |
+
+`touches` is **a list even when there is one finger**, and a mouse counts as one
+finger with `id` 0. That shape is the point: a two-finger gesture can arrive
+later without changing what any handler already written reads.
+
+`@swipe` adds `direction`, chosen by the dominant axis. `@drag` adds `phase`
+(`start`, `move`, `end`). Both add two distances, named so neither can be read
+as the other: `totalX` / `totalY` from where the press landed, and `moveX` /
+`moveY` from the previous event. Following a finger wants the first; velocity
+and flick detection want the second.
+
+**A drag that ends as a flick also fires `@swipe`.** They are not rivals: a page
+that follows the finger still has to be told, at the end, whether the hand meant
+to throw it, which is how a reversible transition decides whether to commit.
+They were exclusive at first, and that made `@swipe` unreachable on any element
+that also declared `@drag`, since movement starts the drag first. A long press
+stays exclusive, because a press that moved is not resting.
+
+**A `@drag` claims the finger**: the page under it does not scroll while the
+drag runs. That is the settled half of the axis-claim rule. Whether a scroll can
+take the finger back mid-gesture is deliberately undecided until there is touch
+hardware to argue with.
+
+**A laptop touchpad reaches the app as a mouse**, so it reports one finger
+however many are on the pad. Only a touchscreen, or a browser's touch emulation
+against the wasm build, exercises the list.
 
 **Touch text has its own gestures**, added in v0.5.1 and confirmed on hardware.
 Until then a finger dragged across text *selected*, because touch was routed

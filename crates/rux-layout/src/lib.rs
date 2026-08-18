@@ -507,6 +507,14 @@ pub struct Style {
     /// and how. Empty for almost every node, and free when it is: the animator
     /// only remembers nodes that declare one.
     pub transitions: Vec<Transition>,
+    /// How far through an enter/leave swap this element is, when something
+    /// other than the clock is driving it (a finger, normally).
+    ///
+    /// It rides on the node rather than being looked up because the animator
+    /// identifies nodes by key-path and swaps are identified by template path;
+    /// carrying the value with the element it belongs to avoids having to keep
+    /// those two agreeing.
+    pub swap_progress: Option<f32>,
 }
 
 impl Default for Style {
@@ -556,6 +564,7 @@ impl Default for Style {
             inset: [None; 4],
             aspect_ratio: None,
             transitions: Vec::new(),
+            swap_progress: None,
         }
     }
 }

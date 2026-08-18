@@ -6214,6 +6214,145 @@ mod swap_tests {
         );
     }
 
+    /// A keyed row removed from the middle of a list is held on screen while it
+    /// animates, and held *where it was* rather than at the end.
+    ///
+    /// Position is the part that is easy to get wrong and obvious on screen: a
+    /// row that leaves from the middle and reappears at the bottom to fade out
+    /// looks like a bug in the list, not a transition.
+    #[test]
+    fn a_departed_row_is_held_in_the_place_it_left() {
+        let mut doc = Document::from_source(
+            "<template><screen>\
+               <text r-for=\"n in items\" r-key=\"n\" r-transition class=\"row\">{{ n }}</text>\
+             </screen></template>\n\
+             <style>\n.row { opacity: 1; transition: opacity 200ms; }\n\
+             .row:leave-to { opacity: 0; }\n</style>\n\
+             <script>\nlet items = signal([\"a\", \"b\", \"c\"]);\n</script>",
+        )
+        .expect("builds");
+        assert_eq!(text_of(&doc.root), vec!["a", "b", "c"]);
+
+        // Drop the middle one.
+        assert!(doc.apply_handler("items = [\"a\", \"c\"]"), "the collection changed");
+        assert_eq!(
+            text_of(&doc.root),
+            vec!["a", "b", "c"],
+            "b is still on screen, and still between a and c"
+        );
+
+        let _ = doc.advance_swaps(0.0);
+        assert_eq!(text_of(&doc.root), vec!["a", "b", "c"], "still leaving");
+        assert_eq!(doc.advance_swaps(200.0), None, "the swap is over");
+        assert_eq!(text_of(&doc.root), vec!["a", "c"], "and now b is gone");
+    }
+
+    /// A row added to a list wears `:enter-from` for one build, the same rule
+    /// an `r-if` follows.
+    #[test]
+    fn an_added_row_enters() {
+        let mut doc = Document::from_source(
+            "<template><screen>\
+               <text r-for=\"n in items\" r-key=\"n\" r-transition class=\"row\">{{ n }}</text>\
+             </screen></template>\n\
+             <style>\n.row { opacity: 1; transition: opacity 200ms; }\n\
+             .row:enter-from { opacity: 0; }\n</style>\n\
+             <script>\nlet items = signal([\"a\"]);\n</script>",
+        )
+        .expect("builds");
+        assert!(doc.apply_handler("items = [\"a\", \"b\"]"));
+        assert_eq!(text_of(&doc.root), vec!["a", "b"]);
+        assert_eq!(doc.root.children[1].style.opacity, 0.0, "b arrives at :enter-from");
+        assert_eq!(doc.root.children[0].style.opacity, 1.0, "a was already there");
+
+        let _ = doc.advance_swaps(0.0);
+        assert_eq!(doc.root.children[1].style.opacity, 1.0, "and lets go of it");
+    }
+
+    /// `r-transition` on an unkeyed list says so rather than animating the
+    /// wrong row: without a key a removal and a reorder look identical.
+    #[test]
+    fn an_unkeyed_animated_list_warns() {
+        let doc = Document::from_source(
+            "<template><screen>\
+               <text r-for=\"n in items\" r-transition>{{ n }}</text>\
+             </screen></template>\n\
+             <script>\nlet items = signal([\"a\"]);\n</script>",
+        )
+        .expect("builds anyway");
+        assert!(
+            doc.diagnostics.warnings.iter().any(|w| w.message.contains("needs `r-key`")),
+            "it names the missing piece: {:?}",
+            doc.diagnostics.warnings
+        );
+    }
+
+    /// A bound swap does not finish on time, however much of it passes: only
+    /// the author's value ends it.
+    ///
+    /// Positioning belongs to the animator and is tested there; what the
+    /// runtime owns is holding the element and deciding when the swap is over.
+    #[test]
+    fn a_bound_swap_never_finishes_on_the_clock() {
+        let mut doc = Document::from_source(
+            "<template><screen>\
+               <text r-if=\"open\" :r-transition=\"p\" class=\"panel\">hello</text>\
+             </screen></template>\n\
+             <style>\n.panel { opacity: 1; transition: opacity 300ms; }\n\
+             .panel:leave-to { opacity: 0; }\n</style>\n\
+             <script>\nlet open = signal(true);\nlet p = signal(0);\n</script>",
+        )
+        .expect("builds");
+        assert!(doc.apply_handler("open = false"), "the swap opens");
+
+        // A quarter of the way out, and there it stays.
+        assert!(doc.apply_handler("p = 0.25"));
+        assert_eq!(doc.advance_swaps(0.0), None, "nothing is waiting on a clock");
+        assert_eq!(doc.advance_swaps(100_000.0), None, "and time alone never ends it");
+        assert_eq!(text_of(&doc.root).join(""), "hello", "still held, however long");
+
+        // The progress reaches the node, which is how the animator hears about
+        // it: the two are identified differently and this is the bridge.
+        assert_eq!(doc.root.children[0].style.swap_progress, Some(0.25));
+
+        assert!(doc.apply_handler("p = 0.75"));
+        assert_eq!(doc.root.children[0].style.swap_progress, Some(0.75));
+        assert_eq!(text_of(&doc.root).join(""), "hello", "and still held");
+    }
+
+    /// Released short of the end, a bound swap abandons and the element stays.
+    /// Released past it, the swap commits and the element goes.
+    ///
+    /// Reversibility is the argument that chose the live pair over a snapshot:
+    /// a corpse cannot be resurrected, and this is the test that would fail if
+    /// it were one.
+    #[test]
+    fn a_bound_swap_can_change_its_mind() {
+        let source = "<template><screen>\
+               <text r-if=\"open\" :r-transition=\"p\" class=\"panel\">hello</text>\
+             </screen></template>\n\
+             <style>\n.panel { opacity: 1; transition: opacity 300ms; }\n\
+             .panel:leave-to { opacity: 0; }\n</style>\n\
+             <script>\nlet open = signal(true);\nlet p = signal(0);\n</script>";
+
+        // Dragged out a third of the way, then let go: the author puts the
+        // condition back and drives progress home to 0.
+        let mut doc = Document::from_source(source).expect("builds");
+        assert!(doc.apply_handler("open = false"));
+        assert!(doc.apply_handler("p = 0.33"));
+        assert!(doc.apply_handler("open = true; p = 0"), "changed its mind");
+        let _ = doc.advance_swaps(0.0);
+        assert_eq!(text_of(&doc.root).join(""), "hello", "never left");
+        assert_eq!(doc.root.children[0].style.opacity, 1.0, "and is fully back");
+
+        // Dragged all the way: it commits.
+        let mut doc = Document::from_source(source).expect("builds");
+        assert!(doc.apply_handler("open = false"));
+        assert!(doc.apply_handler("p = 1"));
+        let _ = doc.advance_swaps(0.0);
+        assert_eq!(text_of(&doc.root).join(""), "", "gone, because progress arrived");
+    }
+
     /// Without `r-transition` nothing is held: the old behaviour, exactly.
     #[test]
     fn an_unmarked_element_still_disappears_at_once() {

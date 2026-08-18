@@ -48,6 +48,7 @@ pages=(
   "01-rationale.md|reference/rationale.md|Design rationale|17|The four laws, the element audit, and the decisions behind them, with the tradeoffs each one accepted."
   "06-roadmap.md|roadmap/_index.md|Roadmap|4|Where Rux goes next: milestones, the release cadence, and what is deliberately not being built."
   "04-architecture.md|contribute/_index.md|Architecture|5|How a .rux file becomes pixels, and which crate owns which stage."
+  "08-user-tests.md|contribute/user-tests.md|User test cases|6|What a person actually drove for each feature, on what hardware, and what those runs found."
 )
 
 # Sections of a doc that become pages of their own.

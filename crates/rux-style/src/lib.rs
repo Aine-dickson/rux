@@ -384,7 +384,7 @@ pub enum Phase {
 /// Which side of a swap one built element is on, and whether this is the first
 /// build since it opened. Decided by [`Swaps::resolve`], since that is the only
 /// place both facts are known.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SwapSide {
     pub phase: Phase,
     pub first: bool,
@@ -454,6 +454,15 @@ pub struct Swaps {
     /// What the build now running has emitted, promoted to `shown` at the end.
     building: HashSet<SwapKey>,
     pending: HashMap<SwapKey, Swap>,
+    /// The locals each keyed row of an animated `r-for` was last built with,
+    /// and where in the list it sat.
+    ///
+    /// A departing row is the case an `r-if` does not have: by the time the row
+    /// is leaving, its item is gone from the collection, so there is nothing
+    /// left to build it from unless it was kept. Only lists that actually
+    /// declare `r-transition` pay for this, since it is a clone per row per
+    /// build and a list nobody is animating should not be charged for one.
+    rows: HashMap<SwapKey, (usize, Vec<(String, Value)>)>,
 }
 
 impl Swaps {
@@ -488,6 +497,42 @@ impl Swaps {
         self.pending.retain(|_, s| s.touched);
     }
 
+    /// Remember what a row of an animated `r-for` was built with, so it can
+    /// still be built after it has left the collection.
+    fn remember_row(&mut self, key: &SwapKey, index: usize, locals: Vec<(String, Value)>) {
+        self.rows.insert(key.clone(), (index, locals));
+    }
+
+    /// The rows of one animated `r-for` that the collection no longer has, as
+    /// `(index, key, locals)` ready to build, oldest position first.
+    ///
+    /// Owned rather than borrowed because the caller needs `&mut self` again to
+    /// build them, which is also what opens their swaps.
+    fn departed_rows(
+        &self,
+        tpl: &[usize],
+        present: &[String],
+    ) -> Vec<(usize, String, Vec<(String, Value)>)> {
+        let mut out: Vec<(usize, String, Vec<(String, Value)>)> = self
+            .rows
+            .iter()
+            .filter(|((path, key), _)| {
+                path == tpl && key.as_ref().is_some_and(|k| !present.contains(k))
+            })
+            .map(|((_, key), (index, locals))| {
+                (*index, key.clone().unwrap_or_default(), locals.clone())
+            })
+            .collect();
+        out.sort_by_key(|(index, _, _)| *index);
+        out
+    }
+
+    /// Forget a row for good. Called when its leaving swap commits, so the
+    /// remembered locals do not outlive the row they describe.
+    fn forget_row(&mut self, key: &SwapKey) {
+        self.rows.remove(key);
+    }
+
     /// Whether an entering swap is still holding `:enter-from` and so needs one
     /// more build to let go of it.
     ///
@@ -508,6 +553,7 @@ impl Swaps {
         if let Some(swap) = self.pending.remove(key) {
             if swap.phase == Phase::Leaving {
                 self.shown.remove(key);
+                self.forget_row(key);
             }
         }
     }
@@ -574,7 +620,10 @@ impl Swaps {
             // a finger able to change its mind.
             swap.phase = if wanted { Phase::Entering } else { Phase::Leaving };
             swap.builds = swap.builds.saturating_add(1);
-            let side = SwapSide { phase: swap.phase, first: swap.builds == 1 };
+            let side = SwapSide {
+                phase: swap.phase,
+                first: swap.builds == 1,
+            };
             self.building.insert(key.clone());
             return Some(Some(side));
         }
@@ -3751,6 +3800,7 @@ fn parse_for(expr: &str) -> Option<(&str, &str)> {
 /// two sides *look* like is CSS, on `:enter-from` and `:leave-to`, because that
 /// is where the rest of an element's appearance is written and a transform is
 /// not a different kind of thing.
+#[derive(Clone, Copy)]
 enum SwapDecl<'a> {
     /// `r-transition`: the swap runs on the clock, for as long as the element's
     /// own `transition` declarations say. Nothing else to write.
@@ -3785,7 +3835,7 @@ fn swap_duration(style: &Style) -> f32 {
 fn arm_swap(
     swaps: &mut Swaps,
     key: &SwapKey,
-    node: &LayoutNode,
+    node: &mut LayoutNode,
     decl: Option<SwapDecl<'_>>,
     engine: &mut Engine,
     locals: &Locals,
@@ -3802,6 +3852,10 @@ fn arm_swap(
                 swap.progress = progress.clamp(0.0, 1.0);
                 swap.moved |= swap.progress > 0.0;
                 swap.driver = Driver::Bound(expr.to_string());
+                // Onto the node here rather than through the next build: the
+                // value was read this build, and a frame of lag in something a
+                // finger is dragging is a frame of lag you can see.
+                node.style.swap_progress = Some(swap.progress);
             }
         }
         SwapDecl::Clock => {
@@ -4024,16 +4078,30 @@ fn build_children(
                     // `r-key` names what a row *is*, so the runtime can follow it
                     // when the list reorders instead of tracking slots.
                     let key_expr = el.attr("r-key");
+                    let anim = swap_decl(el);
+                    if anim.is_some() && key_expr.is_none() {
+                        // Without a key there is no identity to hold a departing
+                        // row by, and no way to tell a removal from a reorder.
+                        // Animating anyway would animate whichever row happened
+                        // to land in the vacated slot.
+                        warn(format!(
+                            "`r-transition` on <{}> needs `r-key` on the same element: a row \
+                             that has left the collection can only be held on screen if there \
+                             is something to identify it by",
+                            el.tag
+                        ));
+                    }
+                    let animated = anim.is_some() && key_expr.is_some();
                     let mut seen_keys: Vec<String> = Vec::new();
+                    // The key is evaluated *before* the row is built, because
+                    // everything inside the row is identified by it: an input's
+                    // focus, its `:focus` styling and the binding that reads its
+                    // value all need to know which row they are in while they
+                    // are being recorded.
+                    let mut plan: Vec<(Option<String>, Locals)> = Vec::new();
                     for item in items {
                         let mut child_locals = locals.clone();
                         child_locals.push((var.to_string(), item));
-                        let cp = child_path(&out);
-                        // The key is evaluated *before* the row is built, because
-                        // everything inside the row is identified by it: an
-                        // input's focus, its `:focus` styling and the binding
-                        // that reads its value all need to know which row they
-                        // are in while they are being recorded.
                         let key = key_expr.map(|expr| {
                             let key = engine.eval_display(expr, &child_locals);
                             if key.is_empty() {
@@ -4054,14 +4122,50 @@ fn build_children(
                             }
                             key
                         });
+                        plan.push((key, child_locals));
+                    }
+                    // Rows the collection has dropped are spliced back in at the
+                    // position they held, not appended: a row leaving from the
+                    // middle of a list has to animate out where it was.
+                    if animated {
+                        for (index, key, row_locals) in swaps.departed_rows(&ctp, &seen_keys) {
+                            let at = index.min(plan.len());
+                            plan.insert(at, (Some(key), row_locals));
+                        }
+                    }
+                    for (index, (key, child_locals)) in plan.into_iter().enumerate() {
+                        let skey: SwapKey = (ctp.clone(), key.clone());
+                        // In the collection iff its key survived the diff; a row
+                        // that is only in the plan because it was spliced back in
+                        // is the one that is leaving.
+                        let wanted = key.as_ref().is_some_and(|k| seen_keys.contains(k));
+                        let side = if animated {
+                            match swaps.resolve(&skey, wanted, true) {
+                                Some(side) => side,
+                                // Its leaving swap has committed; the row goes.
+                                None => continue,
+                            }
+                        } else {
+                            None
+                        };
+                        if animated && wanted {
+                            swaps.remember_row(&skey, index, child_locals.clone());
+                        }
+                        let cp = child_path(&out);
                         let mut node = build_node(
                             el, rules, comps, ancestors, &prev, inherited, engine, &child_locals,
                             &cp, &ctp, reg, state, instances, swaps, instance, slot, outlet,
                             // An unkeyed row inherits whatever row it is nested
                             // in, which is normally nothing.
                             key.as_deref().or(row),
-                            None,
+                            side,
                         );
+                        if animated {
+                            arm_swap(
+                                swaps, &skey, &mut node, anim, engine, &child_locals,
+                                &mut structural_deps,
+                            );
+                        }
                         node.key = key;
                         out.push(node);
                         prev.push(ElemDesc::of(el));
@@ -4086,8 +4190,8 @@ fn build_children(
             let anim = swap_decl(el);
             if let Some(side) = swaps.resolve(&key, chain_satisfied, anim.is_some()) {
                 let cp = child_path(&out);
-                let node = build_node(el, rules, comps, ancestors, &prev, inherited, engine, locals, &cp, &ctp, reg, state, instances, swaps, instance, slot, outlet, row, side);
-                arm_swap(swaps, &key, &node, anim, engine, locals, &mut structural_deps);
+                let mut node = build_node(el, rules, comps, ancestors, &prev, inherited, engine, locals, &cp, &ctp, reg, state, instances, swaps, instance, slot, outlet, row, side);
+                arm_swap(swaps, &key, &mut node, anim, engine, locals, &mut structural_deps);
                 out.push(node);
                 prev.push(ElemDesc::of(el));
             }
@@ -4106,8 +4210,8 @@ fn build_children(
             let anim = swap_decl(el);
             if let Some(side) = swaps.resolve(&key, taken, anim.is_some()) {
                 let cp = child_path(&out);
-                let node = build_node(el, rules, comps, ancestors, &prev, inherited, engine, locals, &cp, &ctp, reg, state, instances, swaps, instance, slot, outlet, row, side);
-                arm_swap(swaps, &key, &node, anim, engine, locals, &mut structural_deps);
+                let mut node = build_node(el, rules, comps, ancestors, &prev, inherited, engine, locals, &cp, &ctp, reg, state, instances, swaps, instance, slot, outlet, row, side);
+                arm_swap(swaps, &key, &mut node, anim, engine, locals, &mut structural_deps);
                 out.push(node);
                 prev.push(ElemDesc::of(el));
             }
@@ -4119,8 +4223,8 @@ fn build_children(
             let anim = swap_decl(el);
             if let Some(side) = swaps.resolve(&key, taken, anim.is_some()) {
                 let cp = child_path(&out);
-                let node = build_node(el, rules, comps, ancestors, &prev, inherited, engine, locals, &cp, &ctp, reg, state, instances, swaps, instance, slot, outlet, row, side);
-                arm_swap(swaps, &key, &node, anim, engine, locals, &mut structural_deps);
+                let mut node = build_node(el, rules, comps, ancestors, &prev, inherited, engine, locals, &cp, &ctp, reg, state, instances, swaps, instance, slot, outlet, row, side);
+                arm_swap(swaps, &key, &mut node, anim, engine, locals, &mut structural_deps);
                 out.push(node);
                 prev.push(ElemDesc::of(el));
             }
