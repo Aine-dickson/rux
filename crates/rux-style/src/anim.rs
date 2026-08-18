@@ -165,16 +165,28 @@ impl Animator {
             // The tree holds either our own last write (nothing was rebuilt, or
             // it was rebuilt to the same target) or a new authored value.
             let target = if close(&authored, &track.written) { track.target } else { authored };
+            // Where the element is *now*, which is where any restart has to
+            // begin from.
+            //
+            // For a track that has been driven this must be what was last
+            // written, and the distinction is the whole of a released swipe. Its
+            // deadline was set when the swap opened and is long past by the time
+            // a finger lets go, so `value_at(now)` would answer "finished" and
+            // the element would jump to the far end before travelling back. The
+            // clock is meaningless for something a hand has been holding.
+            let current = if track.driven {
+                track.written
+            } else if let Some(t) = driven {
+                track.value_at_progress(t)
+            } else {
+                track.value_at(now)
+            };
             if !close(&target, &track.target) {
-                let current = match driven {
-                    Some(t) => track.value_at_progress(t),
-                    None => track.value_at(now),
-                };
                 *track = Track::starting(current, target, *spec, now);
             } else if driven.is_none() && track.driven {
-                // Just handed back to the clock: pick the interpolation up from
-                // where the drag left it and run the rest on time.
-                let current = track.written;
+                // Handed back to the clock with the target unmoved: pick the
+                // interpolation up from where the drag left it and run the rest
+                // on time.
                 *track = Track::starting(current, track.target, *spec, now);
             }
 
@@ -259,9 +271,16 @@ impl Track {
     /// The declared duration is ignored here, and that is the division of
     /// labour: `transition` says *which* properties take part in a swap, and
     /// the driver says how far along it is.
+    ///
+    /// **The easing is ignored too, and that is not an oversight.** An easing is
+    /// a *timing* function: it maps elapsed time onto progress. A driver that
+    /// supplies progress directly has already done that job, and running the
+    /// curve over it again means the element does not track the hand holding it.
+    /// With `ease-out`, a third of the way through a drag put the element nearly
+    /// two thirds of the way gone, which reads as the thing being destroyed
+    /// before the gesture is finished.
     fn value_at_progress(&self, t: f32) -> AnimValue {
-        let eased = self.easing.eval(t.clamp(0.0, 1.0));
-        lerp(&self.from, &self.target, eased).unwrap_or(self.target)
+        lerp(&self.from, &self.target, t.clamp(0.0, 1.0)).unwrap_or(self.target)
     }
 
     fn value_at(&self, now: f64) -> AnimValue {
@@ -556,6 +575,75 @@ mod tests {
         node.style.opacity = 0.0;
         let _ = anim.apply(&mut node, 600.0);
         assert!((node.style.opacity - 0.0).abs() < 1e-4, "arrived: {}", node.style.opacity);
+    }
+
+    /// A reversed drag starts back from **where the finger left it**, not from
+    /// the far end.
+    ///
+    /// The bug this pins was reported from the window and is invisible to the
+    /// other tests: on reversal the target moves (`:leave-to` back to the base
+    /// style) on the *same frame* that the driver lets go. The target-moved
+    /// branch then restarted the interpolation from `value_at(now)`, and `now`
+    /// was long past a deadline set when the swap opened, so it answered "you
+    /// have finished" and the element jumped to fully gone before travelling
+    /// home. It read as the thing being destroyed and a fresh one flying back.
+    #[test]
+    fn a_reversed_drag_starts_from_where_the_finger_left_it() {
+        let mut anim = Animator::new();
+        let mut node = fading(1.0, 300.0);
+        assert_eq!(anim.apply(&mut node, 0.0), None);
+
+        // Dragged a third of the way out, over a while, so the swap's own
+        // deadline is comfortably in the past.
+        node.style.opacity = 0.0;
+        node.style.swap_progress = Some(0.33);
+        let _ = anim.apply(&mut node, 2_000.0);
+        assert!((node.style.opacity - 0.67).abs() < 1e-3, "{}", node.style.opacity);
+
+        // Released short of the threshold: the author puts the condition back,
+        // so the target returns to the base style, and hands progress to the
+        // clock. Both land on the same frame.
+        node.style.opacity = 1.0;
+        node.style.swap_progress = None;
+        let _ = anim.apply(&mut node, 2_000.0);
+        assert!(
+            (node.style.opacity - 0.67).abs() < 1e-3,
+            "it sets off from where it was, not from gone: {}",
+            node.style.opacity
+        );
+
+        // And walks home from there rather than appearing at the other end.
+        node.style.opacity = 1.0;
+        let _ = anim.apply(&mut node, 2_150.0);
+        let half = node.style.opacity;
+        assert!(half > 0.67 && half < 1.0, "on its way back: {half}");
+    }
+
+    /// Driven progress is **not** eased. An easing maps time onto progress, and
+    /// a driver has already supplied progress, so easing it again means the
+    /// element does not track the hand holding it.
+    #[test]
+    fn a_driven_swap_tracks_its_progress_one_to_one() {
+        let mut anim = Animator::new();
+        let mut style = Style { opacity: 1.0, ..Style::default() };
+        style.transitions = vec![Transition {
+            property: AnimProp::Opacity,
+            duration: 300.0,
+            delay: 0.0,
+            // Deliberately a curve with a lot of shape to it.
+            easing: Easing::EASE_OUT,
+        }];
+        let mut node = Node::new(style);
+        assert_eq!(anim.apply(&mut node, 0.0), None);
+
+        node.style.opacity = 0.0;
+        node.style.swap_progress = Some(0.25);
+        let _ = anim.apply(&mut node, 0.0);
+        assert!(
+            (node.style.opacity - 0.75).abs() < 1e-4,
+            "a quarter dragged is a quarter moved, not {} (eased would be ~0.45)",
+            node.style.opacity
+        );
     }
 
     #[test]
