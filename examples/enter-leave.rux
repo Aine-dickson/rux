@@ -17,12 +17,7 @@
          and how long they take is the element's own `transition`. -->
     <view class="panel" r-if="panel" r-transition>
       <text class="panel-title">a panel</text>
-      <text class="panel-body">
-        It slides up and fades in on the way in, and back down on the way out.
-        Nothing here knows a swap is happening: the two sides are ordinary
-        rules, and the walk between them is the same transition machinery a
-        hover uses.
-      </text>
+      <text class="panel-body">It slides up and fades in on the way in, and back down on the way out. Nothing here knows a swap is happening: the two sides are ordinary rules, and the walk between them is the same transition machinery a hover uses.</text>
     </view>
 
     <!-- A swap can be driven by something other than the clock. `:r-transition`
@@ -30,26 +25,22 @@
          card follows the finger. Let go past half way and it commits; let go
          short of it and the swap runs backwards and the card comes home. -->
     <view class="card" r-if="card" :r-transition="dismiss"
-          @drag="onDrag(event)">
-      <text class="card-title">drag me sideways</text>
-      <text class="card-body">
-        Past half way, this card leaves. Short of it, it settles back where it
-        started. The swap is the same one the buttons above use; only what is
-        driving it is different.
-      </text>
-    </view>
-    <view class="restore" r-if="!card" @tap="card = true; dismiss = null">
-      <text class="btn-text">bring the card back</text>
-    </view>
+    @drag="onDrag(event)">
+    <text class="card-title">drag me sideways</text>
+    <text class="card-body">Past half way, this card leaves. Short of it, it settles back where it started. The swap is the same one the buttons above use; only what is driving it is different.</text>
+  </view>
+  <view class="restore" r-if="!card" @tap="card = true; dismiss = null">
+    <text class="btn-text">bring the card back</text>
+  </view>
 
-    <!-- A chain animates branch by branch, so the two states cross over. -->
-    <view class="banner good" r-if="banner" r-transition>
-      <text class="banner-text">saved</text>
-    </view>
-    <view class="banner idle" r-else r-transition>
-      <text class="banner-text">nothing to save</text>
-    </view>
-  </screen>
+  <!-- A chain animates branch by branch, so the two states cross over. -->
+  <view class="banner good" r-if="banner" r-transition>
+    <text class="banner-text">saved</text>
+  </view>
+  <view class="banner idle" r-else r-transition>
+    <text class="banner-text">nothing to save</text>
+  </view>
+</screen>
 </template>
 
 <style>
@@ -71,11 +62,12 @@
     border-radius: 8px;
     transition: background 150ms ease-out;
   }
+
   .btn:hover { background: #45475a; }
   .btn-text { color: #cdd6f4; font-size: 14px; }
-
   /* The element's own `transition` is what a swap lasts. One place to write a
      duration, so the swap and the walk cannot disagree about it. */
+
   .panel {
     display: flex;
     flex-direction: column;
@@ -91,7 +83,6 @@
   /* Where it comes in from, and where it goes out to. Both are just styles. */
   .panel:enter-from { opacity: 0; transform: translateY(-16px); }
   .panel:leave-to { opacity: 0; transform: translateY(-16px); }
-
   .panel-title { color: #cdd6f4; font-size: 16px; font-weight: 700; }
   .panel-body { color: #a6adc8; font-size: 14px; line-height: 20px; }
 
@@ -113,7 +104,6 @@
      again when the drag lets go. */
   .card:leave-to { opacity: 0; transform: translateX(320px); }
   .card:enter-from { opacity: 0; transform: translateX(320px); }
-
   .card-title { color: #cdd6f4; font-size: 16px; font-weight: 700; }
   .card-body { color: #bac2de; font-size: 14px; line-height: 20px; }
 
@@ -131,10 +121,10 @@
     transform: translateX(0px);
     transition: opacity 250ms ease-out, transform 250ms ease-out;
   }
+
   .banner-text { color: #1e1e2e; font-size: 14px; font-weight: 700; }
   .good { background: #a6e3a1; }
   .idle { background: #6c7086; }
-
   /* The two branches enter and leave in opposite directions, so they slide
      past one another rather than both arriving from the same side. */
   .good:enter-from { opacity: 0; transform: translateX(24px); }
