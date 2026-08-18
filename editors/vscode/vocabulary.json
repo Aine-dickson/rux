@@ -5,6 +5,7 @@
     { "name": "view", "detail": "a box; the generic container", "doc": "A generic box, the element most markup is made of. Defaults to `display: block`, so give it `display: flex` to lay its children out." },
     { "name": "text", "detail": "a run of text", "doc": "A run of text. Two `<text>` siblings **stack**: there is no inline flow, so they do not share a line. `role=\"heading\"` announces it as a heading." },
     { "name": "image", "detail": "an image from a file", "doc": "`src` resolves relative to the `.rux` file, not the working directory. PNG, JPEG, GIF and WebP. With no CSS size it lays out at its intrinsic pixel size." },
+    { "name": "path", "detail": "vector geometry from SVG path data", "doc": "`d` is SVG path data, in the element's own coordinates. Paint is CSS, not attributes: `fill`, `stroke`, `stroke-width`, `stroke-linecap`, `stroke-linejoin`, `fill-rule`. With no CSS size it lays out at the size of its own geometry. `:d` binds an expression, and two paths with the same command sequence animate between one another under `transition: d`." },
     { "name": "button", "detail": "a tappable box, announced as a button", "doc": "A tappable box. `<view @tap>` is the same thing to the layout; `<button>` says so to the accessibility tree." },
     { "name": "input", "detail": "text field, textarea, select, checkbox or radio", "doc": "A text field by default. `type=\"textarea\"` is multiline, `type=\"select\"` a combo box, `type=\"checkbox\"` and `type=\"radio\"` carry live checked state. Bind it with `r-model`." },
     { "name": "slot", "detail": "a component's hole for the caller's children", "doc": "Renders whatever the caller wrote between the component's tags. Children written inside `<slot>…</slot>` are the default, used when the caller passed nothing." },
@@ -37,6 +38,10 @@
     "image": [
       { "name": "src", "detail": "path, relative to this .rux file", "doc": "Resolved relative to the document, not the working directory. `:src` binds an expression." },
       { "name": "alt", "detail": "accessible description", "doc": "What the image is, for the accessibility tree." }
+    ],
+    "path": [
+      { "name": "d", "detail": "SVG path data", "doc": "The full SVG grammar: `M L H V C S Q T A Z`, absolute or relative. Coordinates are in the element's own box. `:d` binds an expression." },
+      { "name": "alt", "detail": "accessible description", "doc": "What the drawing shows. Without it the path is treated as decoration and left out of the accessibility tree." }
     ],
     "input": [
       { "name": "type", "detail": "text | textarea | select | checkbox | radio", "doc": "Omitted means a single-line text field." },
@@ -75,9 +80,9 @@
     { "name": "debug", "detail": "debug(x)", "doc": "Like `print`, with the value's structure shown." }
   ],
   "voidTags": [
-    "image", "input", "router-view", "area", "base", "br",
-    "col", "embed", "hr", "img", "link", "meta",
-    "param", "source", "track", "wbr"
+    "image", "input", "path", "router-view", "area", "base",
+    "br", "col", "embed", "hr", "img", "link",
+    "meta", "param", "source", "track", "wbr"
   ],
   "cssProperties": [
     "display", "width", "height", "gap", "min-width", "max-width",
@@ -95,6 +100,7 @@
     "aspect-ratio", "background", "background-color", "background-image", "color", "font-size",
     "font-weight", "font-family", "font-style", "text-align", "letter-spacing", "word-spacing",
     "line-height", "white-space", "text-decoration", "text-decoration-line", "overflow-wrap", "word-wrap",
-    "word-break"
+    "word-break", "fill", "fill-rule", "stroke", "stroke-width", "stroke-linecap",
+    "stroke-linejoin"
   ]
 }
