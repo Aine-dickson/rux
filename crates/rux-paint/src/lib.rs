@@ -30,7 +30,10 @@
 
 use std::collections::HashMap;
 
-use rux_layout::{Background, Corners, Gradient, GradientKind, Paint, Rgba, TextAlign, TextContent, TextWrap};
+use rux_layout::{
+    Background, Corners, FillRule, Gradient, GradientKind, LineCap, LineJoin, Paint, PathCmd, Rgba,
+    TextAlign, TextContent, TextWrap,
+};
 use rux_text::{Align, TextEngine, TextStyle, Wrap};
 use vello::kurbo::{Affine, BezPath, Cap, Join, Point, Rect, RoundedRect, RoundedRectRadii, Stroke, Vec2};
 use vello::peniko::{
@@ -336,6 +339,59 @@ pub fn build_scene(
                     .with_caps(Cap::Round)
                     .with_join(Join::Round);
                 scene.stroke(&stroke, cur, to_color(t.color), None, &path);
+            }
+            // <path>: the geometry, offset to where layout put the element,
+            // filled then stroked. Fill first because that is the order SVG
+            // paints in and it is the one that looks right: a stroke is a
+            // border on the shape and belongs over its own fill, not under it.
+            Paint::Path(p) => {
+                let mut path = BezPath::new();
+                let (ox, oy) = (p.x as f64, p.y as f64);
+                for c in &p.content.commands {
+                    match *c {
+                        PathCmd::Move { x, y } => path.move_to((ox + x as f64, oy + y as f64)),
+                        PathCmd::Curve {
+                            x1,
+                            y1,
+                            x2,
+                            y2,
+                            x,
+                            y,
+                        } => path.curve_to(
+                            (ox + x1 as f64, oy + y1 as f64),
+                            (ox + x2 as f64, oy + y2 as f64),
+                            (ox + x as f64, oy + y as f64),
+                        ),
+                        PathCmd::Close => path.close_path(),
+                    }
+                }
+                if path.is_empty() {
+                    continue;
+                }
+                if let Some(c) = p.paint.fill {
+                    let rule = match p.paint.fill_rule {
+                        FillRule::NonZero => Fill::NonZero,
+                        FillRule::EvenOdd => Fill::EvenOdd,
+                    };
+                    scene.fill(rule, cur, to_color(c), None, &path);
+                }
+                // A zero width is not a hairline. CSS says a zero-width border
+                // is no border, and a stroke should not be the one place where
+                // asking for nothing draws something.
+                if let (Some(c), true) = (p.paint.stroke, p.paint.stroke_width > 0.0) {
+                    let stroke = Stroke::new(p.paint.stroke_width as f64)
+                        .with_caps(match p.paint.cap {
+                            LineCap::Butt => Cap::Butt,
+                            LineCap::Round => Cap::Round,
+                            LineCap::Square => Cap::Square,
+                        })
+                        .with_join(match p.paint.join {
+                            LineJoin::Miter => Join::Miter,
+                            LineJoin::Round => Join::Round,
+                            LineJoin::Bevel => Join::Bevel,
+                        });
+                    scene.stroke(&stroke, cur, to_color(c), None, &path);
+                }
             }
             // Scale the decoded pixels to fill the box layout gave the element.
             Paint::Image(img) => {

@@ -58,7 +58,9 @@ pub enum Pending {
 const VOID_TAGS: &[&str] = &[
     // `<router-view />` never nests: what goes in it comes from the route
     // matched below, not from anything written between the tags.
-    "image", "input", "router-view", //
+    // `<path>` holds its geometry in an attribute, so it has nothing to nest
+    // and closing it would only ever be noise.
+    "image", "input", "path", "router-view", //
     "area", "base", "br", "col", "embed", "hr", "img", "link", "meta", "param", "source", "track",
     "wbr",
 ];

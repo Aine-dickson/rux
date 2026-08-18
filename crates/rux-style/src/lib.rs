@@ -22,6 +22,7 @@ use rux_layout::{
     TextWrap, Track, TrackSide,
 };
 use rux_layout::{AnimProp, Easing, GradientKind, GridFlow, Transform, Transition};
+use rux_layout::{FillRule, LineCap, LineJoin, PathContent};
 use rux_parser::{Element, Node as TplNode, Sfc};
 use rux_reactive::Value;
 /// Re-exported so the runtime and the shell can name a warning without
@@ -2299,6 +2300,10 @@ const HONORED_PROPERTIES: &[&str] = &[
     "letter-spacing", "word-spacing", "line-height", "white-space",
     "text-decoration", "text-decoration-line",
     "overflow-wrap", "word-wrap", "word-break",
+    // <path>. Paint is CSS rather than attributes because that is where the
+    // rest of an element's appearance is written, and it is what gives a path
+    // `:hover`, `:class` and `transition` on the day it lands.
+    "fill", "fill-rule", "stroke", "stroke-width", "stroke-linecap", "stroke-linejoin",
 ];
 
 fn is_honored(property: &str) -> bool {
@@ -3092,6 +3097,49 @@ fn build_node(
         return node;
     }
 
+    // <path d=…>: vector geometry, drawn with the `fill` and `stroke` the
+    // cascade resolved. The geometry is an attribute and the paint is CSS, and
+    // the split is not arbitrary: paint belongs in the cascade because that is
+    // where every other appearance in Rux is written, and geometry belongs in
+    // an attribute because a data-driven path is computed per row and the
+    // cascade is the wrong place for a value that changes with the data.
+    if el.tag == "path" {
+        let d = el
+            .attr(":d")
+            .map(|e| {
+                let (v, deps) = engine.eval_display_tracked(e, locals);
+                // A rebuild rather than a patch. Changing `d` can change the
+                // element's size, since a path given no CSS box takes the size
+                // of its own geometry, so there is no in-place edit that is
+                // always correct. It is also what lets a shape animate at all:
+                // the animator compares a node against what it was on the
+                // previous build, and a patched attribute never reaches it.
+                reg.structural.extend(deps);
+                v
+            })
+            .or_else(|| el.attr("d").map(str::to_string))
+            .unwrap_or_default();
+        let mut node = LayoutNode::path(style, PathContent::parse(&d));
+        node.on_tap = on_tap;
+        node.gestures = gestures;
+        node.hidden = hidden;
+        node.id = el.attr("id").map(str::to_string);
+        node.instance = instance.map(|i| i.to_string());
+        // A drawing is an image as far as assistive technology is concerned:
+        // something to be described, not read. Without a description it is
+        // decoration and is better left out of the tree than announced as an
+        // unnamed graphic.
+        node.access = Access {
+            role: el
+                .attr("alt")
+                .map(|_| AccessRole::Image)
+                .unwrap_or(AccessRole::None),
+            label: el.attr("alt").map(str::to_string),
+            ..Access::default()
+        };
+        return node;
+    }
+
     // <input>: a box bound to a signal via r-model.
     //
     // `type=checkbox|radio` are tap-toggles, not text fields: they get no focus
@@ -3328,6 +3376,7 @@ fn build_node(
         style,
         text: None,
         image: None,
+        path: None,
         tick: None,
         children,
         on_tap,
@@ -4439,6 +4488,7 @@ fn interpret(p: &HashMap<String, String>) -> Style {
     st.padding = box_sides(p, "padding");
     st.margin = box_sides(p, "margin");
     interpret_border(p, &mut st);
+    interpret_path_paint(p, &mut st);
     if let Some(v) = p.get("gap") {
         if let Some(px) = parse_px(first(v)) {
             st.gap = px;
@@ -4967,6 +5017,11 @@ fn parse_anim_prop(s: &str) -> Option<AnimProp> {
         "background-color" | "background" => AnimProp::BackgroundColor,
         "color" => AnimProp::Color,
         "border-color" => AnimProp::BorderColor,
+        "fill" => AnimProp::Fill,
+        "stroke" => AnimProp::Stroke,
+        "stroke-width" => AnimProp::StrokeWidth,
+        // The geometry itself, spelled as SVG spells the attribute.
+        "d" => AnimProp::PathData,
         "border-width" | "border" => AnimProp::BorderWidth,
         "border-radius" => AnimProp::BorderRadius,
         "width" => AnimProp::Width,
@@ -5422,6 +5477,55 @@ fn box_sides(p: &HashMap<String, String>, prop: &str) -> Sides {
         }
     }
     sides
+}
+
+/// Parse the `<path>` paint properties.
+///
+/// `fill` defaults to opaque black and `stroke` to nothing, which is SVG's
+/// pair of defaults and is why a `<path>` with geometry and no paint still
+/// draws. `none` is spelled the way SVG spells it and is the only way to turn
+/// a fill off; an unreadable colour leaves the property alone rather than
+/// blanking it, so a typo shows the previous value rather than an empty box.
+fn interpret_path_paint(p: &HashMap<String, String>, st: &mut Style) {
+    if let Some(v) = p.get("fill") {
+        st.fill = if v.trim().eq_ignore_ascii_case("none") {
+            None
+        } else {
+            parse_color(v).or(st.fill)
+        };
+    }
+    if let Some(v) = p.get("stroke") {
+        st.stroke = if v.trim().eq_ignore_ascii_case("none") {
+            None
+        } else {
+            parse_color(v).or(st.stroke)
+        };
+    }
+    if let Some(v) = p.get("stroke-width") {
+        if let Some(px) = parse_px(first(v)) {
+            st.stroke_width = px;
+        }
+    }
+    if let Some(v) = p.get("stroke-linecap") {
+        st.stroke_linecap = match v.trim() {
+            "round" => LineCap::Round,
+            "square" => LineCap::Square,
+            _ => LineCap::Butt,
+        };
+    }
+    if let Some(v) = p.get("stroke-linejoin") {
+        st.stroke_linejoin = match v.trim() {
+            "round" => LineJoin::Round,
+            "bevel" => LineJoin::Bevel,
+            _ => LineJoin::Miter,
+        };
+    }
+    if let Some(v) = p.get("fill-rule") {
+        st.fill_rule = match v.trim() {
+            "evenodd" | "even-odd" => FillRule::EvenOdd,
+            _ => FillRule::NonZero,
+        };
+    }
 }
 
 /// Parse `border` box-model props: `border`, `border-width`, `border-color`,

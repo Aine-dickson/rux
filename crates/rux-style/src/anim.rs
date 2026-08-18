@@ -19,6 +19,7 @@
 
 use std::collections::HashMap;
 
+use rux_layout::PathCmd;
 use rux_layout::{AnimProp, Background, Easing, Len, Node, Rgba, Sides, Transition};
 
 /// How soon to ask for the next frame while something is in flight. The shell
@@ -39,7 +40,11 @@ enum Seg {
 }
 
 /// A value being interpolated. One variant per shape of thing, not per property.
-#[derive(Clone, Copy, Debug)]
+///
+/// Not `Copy`, because path geometry is a list. Everything else here still is,
+/// and the clones this costs are one per animating property per frame, on the
+/// nodes that declared a transition and no others.
+#[derive(Clone, Debug)]
 enum AnimValue {
     Num(f32),
     Color(Rgba),
@@ -49,6 +54,10 @@ enum AnimValue {
     Insets([Option<Len>; 4]),
     /// An affine `transform`.
     Mat([f32; 6]),
+    /// `<path>` geometry. Interpolates against another path with the same
+    /// command sequence and jumps otherwise, which is the rule every other
+    /// value here already follows.
+    Path(Vec<PathCmd>),
 }
 
 /// What one property of one node is doing.
@@ -164,7 +173,7 @@ impl Animator {
 
             // The tree holds either our own last write (nothing was rebuilt, or
             // it was rebuilt to the same target) or a new authored value.
-            let target = if close(&authored, &track.written) { track.target } else { authored };
+            let target = if close(&authored, &track.written) { track.target.clone() } else { authored };
             // Where the element is *now*, which is where any restart has to
             // begin from.
             //
@@ -175,24 +184,24 @@ impl Animator {
             // the element would jump to the far end before travelling back. The
             // clock is meaningless for something a hand has been holding.
             let current = if track.driven {
-                track.written
+                track.written.clone()
             } else if let Some(t) = driven {
                 track.value_at_progress(t)
             } else {
                 track.value_at(now)
             };
             if !close(&target, &track.target) {
-                *track = Track::starting(current, target, *spec, now);
+                *track = Track::starting(current, target.clone(), *spec, now);
             } else if driven.is_none() && track.driven {
                 // Handed back to the clock with the target unmoved: pick the
                 // interpolation up from where the drag left it and run the rest
                 // on time.
-                *track = Track::starting(current, track.target, *spec, now);
+                *track = Track::starting(current, track.target.clone(), *spec, now);
             }
 
             if let Some(t) = driven {
                 let value = track.value_at_progress(t);
-                write(node, *prop, value);
+                write(node, *prop, value.clone());
                 track.written = value;
                 track.driven = true;
                 continue;
@@ -204,7 +213,7 @@ impl Animator {
                 if now >= track.end_ms {
                     track.active = false;
                 }
-                write(node, *prop, value);
+                write(node, *prop, value.clone());
                 track.written = value;
                 // The frame that lands on the target is the last one: it is
                 // painted, and then there is nothing left to wake for. Before
@@ -226,8 +235,8 @@ impl Track {
     /// A property that is not animating: it is showing what was asked for.
     fn settled(value: AnimValue) -> Self {
         Self {
-            target: value,
-            written: value,
+            target: value.clone(),
+            written: value.clone(),
             from: value,
             start_ms: 0.0,
             end_ms: 0.0,
@@ -240,9 +249,9 @@ impl Track {
     fn starting(from: AnimValue, target: AnimValue, spec: Transition, now: f64) -> Self {
         let start = now + spec.delay as f64;
         let mut track = Self {
-            target,
-            written: from,
-            from,
+            target: target.clone(),
+            written: from.clone(),
+            from: from.clone(),
             start_ms: start,
             end_ms: start + spec.duration.max(0.0) as f64,
             easing: spec.easing,
@@ -253,7 +262,7 @@ impl Track {
         // deleting the declaration, and a zero-length interpolation would be a
         // division by zero here.
         if !track.active {
-            track.written = target;
+            track.written = target.clone();
         }
         // Two values that cannot be interpolated (a colour becoming a gradient,
         // `10px` becoming `50%`) jump. Better an honest jump than a frame of
@@ -280,19 +289,19 @@ impl Track {
     /// two thirds of the way gone, which reads as the thing being destroyed
     /// before the gesture is finished.
     fn value_at_progress(&self, t: f32) -> AnimValue {
-        lerp(&self.from, &self.target, t.clamp(0.0, 1.0)).unwrap_or(self.target)
+        lerp(&self.from, &self.target, t.clamp(0.0, 1.0)).unwrap_or_else(|| self.target.clone())
     }
 
     fn value_at(&self, now: f64) -> AnimValue {
         if !self.active || now <= self.start_ms {
-            return self.from;
+            return self.from.clone();
         }
         if now >= self.end_ms {
-            return self.target;
+            return self.target.clone();
         }
         let t = (now - self.start_ms) / (self.end_ms - self.start_ms);
         let eased = self.easing.eval(t as f32);
-        lerp(&self.from, &self.target, eased).unwrap_or(self.target)
+        lerp(&self.from, &self.target, eased).unwrap_or_else(|| self.target.clone())
     }
 }
 
@@ -338,6 +347,13 @@ fn read(node: &Node, prop: AnimProp) -> Option<AnimValue> {
         // is what makes `transform: scale(1.05)` on hover animate from nothing.
         AnimProp::Transform => AnimValue::Mat(st.transform.unwrap_or(IDENTITY)),
         AnimProp::Inset => AnimValue::Insets(st.inset),
+        // `fill: none` is an absence rather than a transparent colour, so there
+        // is nothing to walk between and the change lands at once. Fading a
+        // fill out is `transparent`, which is a colour and does interpolate.
+        AnimProp::Fill => AnimValue::Color(st.fill?),
+        AnimProp::Stroke => AnimValue::Color(st.stroke?),
+        AnimProp::StrokeWidth => AnimValue::Num(st.stroke_width),
+        AnimProp::PathData => AnimValue::Path(node.path.as_ref()?.commands.clone()),
     })
 }
 
@@ -366,6 +382,18 @@ fn write(node: &mut Node, prop: AnimProp, value: AnimValue) {
         }
         (AnimProp::Transform, AnimValue::Mat(m)) => st.transform = Some(m),
         (AnimProp::Inset, AnimValue::Insets(i)) => st.inset = i,
+        (AnimProp::Fill, AnimValue::Color(c)) => st.fill = Some(c),
+        (AnimProp::Stroke, AnimValue::Color(c)) => st.stroke = Some(c),
+        (AnimProp::StrokeWidth, AnimValue::Num(v)) => st.stroke_width = v.max(0.0),
+        (AnimProp::PathData, AnimValue::Path(cmds)) => {
+            if let Some(path) = node.path.as_mut() {
+                // The commands only. `d` stays as the author wrote it, because
+                // it is the identity a later build compares against, and
+                // rewriting it to whatever this frame interpolated to would
+                // make every frame look like a fresh authored change.
+                path.commands = cmds;
+            }
+        }
         // A value of the wrong shape for its property cannot be produced:
         // `read` and `lerp` both preserve the variant.
         _ => {}
@@ -411,6 +439,7 @@ fn lerp(a: &AnimValue, b: &AnimValue, t: f32) -> Option<AnimValue> {
             AnimValue::Mat(m)
         }
         (AnimValue::Len(x), AnimValue::Len(y)) => AnimValue::Len(lerp_len(*x, *y, t)?),
+        (AnimValue::Path(x), AnimValue::Path(y)) => AnimValue::Path(rux_layout::path::lerp(x, y, t)?),
         (AnimValue::Insets(x), AnimValue::Insets(y)) => {
             let mut out = [None; 4];
             for i in 0..4 {

@@ -255,6 +255,19 @@ pub enum AnimProp {
     Transform,
     /// `top`/`right`/`bottom`/`left` as a unit.
     Inset,
+    /// `<path>` paint: the colour inside, the colour of the outline, and how
+    /// thick the outline is.
+    Fill,
+    Stroke,
+    StrokeWidth,
+    /// `d`: the path's geometry itself.
+    ///
+    /// The one animatable property that is not a style property, because
+    /// geometry is an attribute. It is here anyway, and reached through the
+    /// node rather than through the style, because an author asking for a
+    /// shape to morph is asking for exactly what `transition` means everywhere
+    /// else and should not have to learn a second word for it.
+    PathData,
 }
 
 impl AnimProp {
@@ -275,6 +288,10 @@ impl AnimProp {
         AnimProp::FontSize,
         AnimProp::Transform,
         AnimProp::Inset,
+        AnimProp::Fill,
+        AnimProp::Stroke,
+        AnimProp::StrokeWidth,
+        AnimProp::PathData,
     ];
 
     /// The CSS name, for diagnostics.
@@ -295,6 +312,10 @@ impl AnimProp {
             AnimProp::FontSize => "font-size",
             AnimProp::Transform => "transform",
             AnimProp::Inset => "inset",
+            AnimProp::Fill => "fill",
+            AnimProp::Stroke => "stroke",
+            AnimProp::StrokeWidth => "stroke-width",
+            AnimProp::PathData => "d",
         }
     }
 }
@@ -518,6 +539,50 @@ pub struct Style {
     /// carrying the value with the element it belongs to avoids having to keep
     /// those two agreeing.
     pub swap_progress: Option<f32>,
+    /// `fill`: the colour inside a `<path>`. `None` is `fill: none`.
+    ///
+    /// It defaults to opaque black rather than to nothing, which is SVG's rule
+    /// and is the right first-five-minutes behaviour: a `<path>` written with
+    /// geometry and no paint at all draws, instead of leaving an author staring
+    /// at an empty box wondering which of the two they got wrong.
+    pub fill: Option<Rgba>,
+    /// `stroke`: the colour of the outline. `None` is no outline, which is the
+    /// default, again as SVG has it.
+    pub stroke: Option<Rgba>,
+    /// `stroke-width`, in px.
+    pub stroke_width: f32,
+    /// `stroke-linecap` / `stroke-linejoin`: how an open end and a corner are
+    /// finished.
+    pub stroke_linecap: LineCap,
+    pub stroke_linejoin: LineJoin,
+    /// `fill-rule`: how a self-overlapping path decides what is inside.
+    pub fill_rule: FillRule,
+}
+
+/// How the open end of a stroke is finished.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum LineCap {
+    #[default]
+    Butt,
+    Round,
+    Square,
+}
+
+/// How a corner between two stroked segments is finished.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum LineJoin {
+    #[default]
+    Miter,
+    Round,
+    Bevel,
+}
+
+/// How a path that overlaps itself decides what counts as inside.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum FillRule {
+    #[default]
+    NonZero,
+    EvenOdd,
 }
 
 impl Default for Style {
@@ -568,6 +633,12 @@ impl Default for Style {
             aspect_ratio: None,
             transitions: Vec::new(),
             swap_progress: None,
+            fill: Some(Rgba::new(0.0, 0.0, 0.0, 1.0)),
+            stroke: None,
+            stroke_width: 1.0,
+            stroke_linecap: LineCap::Butt,
+            stroke_linejoin: LineJoin::Miter,
+            fill_rule: FillRule::NonZero,
         }
     }
 }
@@ -700,6 +771,9 @@ pub struct Node {
     pub text: Option<TextContent>,
     /// `<image src=…>`.
     pub image: Option<ImageContent>,
+    /// `<path d=…>`: vector geometry in the element's own box, drawn with the
+    /// `fill` and `stroke` its style resolved to.
+    pub path: Option<PathContent>,
     /// A checkmark stroked to fill this box, in the given colour. Drawn as a
     /// path rather than a font glyph, since ✓ is whatever the system font happens to
     /// ship, which is not a control mark.
@@ -757,6 +831,7 @@ impl Node {
             style,
             text: None,
             image: None,
+            path: None,
             tick: None,
             children: Vec::new(),
             on_tap: None,
@@ -780,6 +855,7 @@ impl Node {
             style,
             text: Some(text),
             image: None,
+            path: None,
             tick: None,
             children: Vec::new(),
             on_tap: None,
@@ -803,6 +879,36 @@ impl Node {
             style,
             text: None,
             image: Some(image),
+            path: None,
+            tick: None,
+            children: Vec::new(),
+            on_tap: None,
+            gestures: Vec::new(),
+            model: None,
+            multiline: false,
+            options: None,
+            hidden: false,
+            id: None,
+            label_for: None,
+            focus_model: None,
+            state_path: None,
+            access: Access::default(),
+            instance: None,
+            key: None,
+        }
+    }
+
+    /// A `<path>` leaf.
+    ///
+    /// Its geometry is in the element's own coordinates, so the box CSS gives
+    /// it is what the drawing sits in. Nothing about the path changes the box:
+    /// see the note on `PaintKind::Path` for why that is the whole design.
+    pub fn path(style: Style, path: PathContent) -> Self {
+        Self {
+            style,
+            text: None,
+            image: None,
+            path: Some(path),
             tick: None,
             children: Vec::new(),
             on_tap: None,
@@ -862,6 +968,15 @@ pub struct PaintTick {
     pub color: Rgba,
 }
 
+/// Vector geometry, positioned at its laid-out box's content corner.
+#[derive(Clone, Debug)]
+pub struct PaintPath {
+    pub x: f32,
+    pub y: f32,
+    pub content: PathContent,
+    pub paint: PathPaint,
+}
+
 /// An image scaled to fill its laid-out box.
 #[derive(Clone, Debug)]
 pub struct PaintImage {
@@ -878,6 +993,7 @@ pub enum Paint {
     Rect(PaintRect),
     Text(PaintText),
     Image(PaintImage),
+    Path(PaintPath),
     Tick(PaintTick),
     /// A blurred `box-shadow`, drawn behind its box. Geometry already has the
     /// offset and spread applied.
@@ -1260,6 +1376,24 @@ enum PaintKind {
     Text(TextContent),
     Image(ImageContent),
     Tick(Rgba),
+    /// Vector geometry with the paint properties its style resolved to.
+    ///
+    /// The paint travels with the geometry rather than being looked up later
+    /// because `fill` and `stroke` are ordinary cascaded properties: they can
+    /// come from a `:hover`, from a `:class`, or from halfway through a
+    /// `transition`, and the value that matters is the one this frame computed.
+    Path(PathContent, PathPaint),
+}
+
+/// The resolved paint for one `<path>`, lifted off the style at build time.
+#[derive(Clone, Copy, Debug)]
+pub struct PathPaint {
+    pub fill: Option<Rgba>,
+    pub fill_rule: FillRule,
+    pub stroke: Option<Rgba>,
+    pub stroke_width: f32,
+    pub cap: LineCap,
+    pub join: LineJoin,
 }
 
 fn to_dim(l: Len, vp: (f32, f32)) -> Dimension {
@@ -1701,6 +1835,49 @@ fn build(
         ));
         paint.push((id, PaintKind::Image(ic.clone())));
         id
+    } else if let Some(pc) = &node.path {
+        // A path given no CSS size takes the size of its own geometry, the way
+        // an <image> takes its intrinsic pixels. That makes the common case
+        // (paste some path data, see it) work with no box to write, and the
+        // geometry is in the element's own coordinates either way: naming a
+        // width does not rescale the drawing, it changes the box the drawing
+        // sits in. Scaling is `transform`, which every other element already
+        // uses for the same thing.
+        let mut ts = to_taffy(&node.style, vp);
+        let bounds = pc.bounds();
+        if node.style.width.is_none() {
+            ts.size.width = length(bounds.map_or(0.0, |b| b.2.max(0.0)));
+        }
+        if node.style.height.is_none() {
+            ts.size.height = length(bounds.map_or(0.0, |b| b.3.max(0.0)));
+        }
+        let id = tree.new_leaf(ts).expect("taffy path leaf");
+        paint.push((
+            id,
+            PaintKind::Box {
+                bg: node.style.background.clone(),
+                radius: node.style.radius,
+                border_width: node.style.border.top,
+                border_color: node.style.border_color,
+                clip: node.style.overflow != Overflow::Visible,
+                shadow: node.style.box_shadow,
+            },
+        ));
+        paint.push((
+            id,
+            PaintKind::Path(
+                pc.clone(),
+                PathPaint {
+                    fill: node.style.fill,
+                    fill_rule: node.style.fill_rule,
+                    stroke: node.style.stroke,
+                    stroke_width: node.style.stroke_width,
+                    cap: node.style.stroke_linecap,
+                    join: node.style.stroke_linejoin,
+                },
+            ),
+        ));
+        id
     } else {
         let children: Vec<NodeId> = node
             .children
@@ -1922,6 +2099,17 @@ fn collect(
                 height: layout.size.height,
                 content: ic.clone(),
             })),
+            // From the content corner, not the border corner, so padding moves
+            // the drawing the way it moves text rather than being ignored.
+            PaintKind::Path(pc, pp) => {
+                let (cx, cy, _, _) = content_box(layout);
+                out.paints.push(Paint::Path(PaintPath {
+                    x: x + cx,
+                    y: y + cy,
+                    content: pc.clone(),
+                    paint: *pp,
+                }))
+            }
         }
     }
 

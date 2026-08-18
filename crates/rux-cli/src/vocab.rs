@@ -60,6 +60,11 @@ const ELEMENTS: &[Entry] = &[
               its intrinsic pixel size.",
     },
     Entry {
+        name: "path",
+        detail: "vector geometry from SVG path data",
+        doc: "`d` is SVG path data, in the element's own coordinates. Paint is               CSS, not attributes: `fill`, `stroke`, `stroke-width`,               `stroke-linecap`, `stroke-linejoin`, `fill-rule`. With no CSS size               it lays out at the size of its own geometry. `:d` binds an               expression, and two paths with the same command sequence animate               between one another under `transition: d`.",
+    },
+    Entry {
         name: "button",
         detail: "a tappable box, announced as a button",
         doc: "A tappable box. `<view @tap>` is the same thing to the layout; \
@@ -129,6 +134,13 @@ const ELEMENT_ATTRIBUTES: &[(&str, &[Entry])] = &[
         &[
             Entry { name: "src", detail: "path, relative to this .rux file", doc: "Resolved relative to the document, not the working directory. `:src` binds an expression." },
             Entry { name: "alt", detail: "accessible description", doc: "What the image is, for the accessibility tree." },
+        ],
+    ),
+    (
+        "path",
+        &[
+            Entry { name: "d", detail: "SVG path data", doc: "The full SVG grammar: `M L H V C S Q T A Z`, absolute or relative. Coordinates are in the element's own box. `:d` binds an expression." },
+            Entry { name: "alt", detail: "accessible description", doc: "What the drawing shows. Without it the path is treated as decoration and left out of the accessibility tree." },
         ],
     ),
     (
