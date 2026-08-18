@@ -984,11 +984,7 @@ impl Document {
             return None;
         }
         let (wake, finished) = self.swaps.advance(now_ms);
-        // An entering element is still wearing `:enter-from`, and the build that
-        // takes it off is what starts the animation. Nothing else would ask for
-        // that build: the condition already changed and will not change again.
-        let settling = self.swaps.needs_settling();
-        if finished || settling {
+        if finished {
             // The tree changes when a swap commits: a leaving element stops
             // being built, which is also when its instance stops being touched
             // and so when `unmounted` fires. That is the pairing the live pair
@@ -996,12 +992,36 @@ impl Document {
             // does it.
             self.rebuild();
         }
-        // Ask for the settling frame promptly; the animator's own floor keeps
-        // that from becoming a busy loop.
-        if settling {
+        // An entering element still wearing `:enter-from` needs one more build,
+        // but **not from here**: see [`settle_swaps`] for why that build must
+        // wait for the frame after.
+        if self.swaps.needs_settling() {
             return Some(wake.map_or(0.0, |w| w.min(0.0)));
         }
         wake
+    }
+
+    /// Let an entering element drop `:enter-from`, **after** the frame that
+    /// painted it wearing it.
+    ///
+    /// This is a separate call, and the separation is the whole point. An
+    /// entering element is built once at `:enter-from` and once at its real
+    /// style, and the animator walks between the two; but it can only do that
+    /// if it *saw* the first one. Run this in the same breath as the commit,
+    /// before the paint, and the `:enter-from` build is replaced before it ever
+    /// reaches the screen: the animator's first sight of the element is its
+    /// final style, it settles there, and nothing animates in. The element
+    /// appears at its destination and only the departing half moves, which is
+    /// exactly how it was reported.
+    ///
+    /// So the caller paints first, then calls this, then asks for one more
+    /// frame. Returns whether anything changed.
+    pub fn settle_swaps(&mut self) -> bool {
+        if !self.swaps.needs_settling() {
+            return false;
+        }
+        self.rebuild();
+        true
     }
 
     /// Rebuild the layout tree from the engine's current state.
@@ -6223,13 +6243,29 @@ mod swap_tests {
         assert_eq!(doc.root.children[0].style.opacity, 0.0, "first build: wearing :enter-from");
 
         // The runtime asks for the settling frame itself rather than waiting for
-        // an event that is never coming.
+        // an event that is never coming...
         assert_eq!(doc.advance_swaps(0.0), Some(0.0), "a frame is due now");
+        // ...but `advance_swaps` must NOT be the thing that takes it off. It
+        // runs before the paint, so dropping `:enter-from` here would replace
+        // the entering build before it was ever drawn: the animator's first
+        // sight of the element would be its final style, it would settle there,
+        // and nothing would animate in. Reported from the window as "a page
+        // renders first and then the transition happens after I have already
+        // seen it in the final position".
+        assert_eq!(
+            doc.root.children[0].style.opacity,
+            0.0,
+            "still wearing it: this frame is the one that gets painted"
+        );
+
+        // The frame after, once it has been drawn, is when it lets go.
+        assert!(doc.settle_swaps(), "there was something to settle");
         assert_eq!(
             doc.root.children[0].style.opacity,
             1.0,
-            "second build: taken off, so the target has moved and tier 1 has              something to animate"
+            "now the target has moved and tier 1 has something to animate"
         );
+        assert!(!doc.settle_swaps(), "and only once");
     }
 
     /// A keyed row removed from the middle of a list is held on screen while it
@@ -6284,7 +6320,9 @@ mod swap_tests {
         assert_eq!(doc.root.children[0].style.opacity, 1.0, "a was already there");
 
         let _ = doc.advance_swaps(0.0);
-        assert_eq!(doc.root.children[1].style.opacity, 1.0, "and lets go of it");
+        assert_eq!(doc.root.children[1].style.opacity, 0.0, "still worn for the painted frame");
+        assert!(doc.settle_swaps(), "and dropped by the frame after");
+        assert_eq!(doc.root.children[1].style.opacity, 1.0, "which is what animates it in");
     }
 
     /// `r-transition` on an unkeyed list says so rather than animating the

@@ -3995,6 +3995,15 @@ impl ApplicationHandler<RuxEvent> for App {
             }
         }
 
+        // An entering element has now been painted wearing `:enter-from`, so it
+        // can let go of it and the animator has somewhere to walk from. This
+        // happens *here*, after the frame, rather than in `render` beside the
+        // commit: doing it there replaces the `:enter-from` build before it is
+        // ever drawn, and the element simply appears at its destination.
+        if self.document.settle_swaps() {
+            self.request_redraw();
+        }
+
         // The fourth clock: an interval a script started. Time is passed in as
         // milliseconds rather than read here, the same contract the animator
         // has, so the runtime stays testable without a window and correct on the
