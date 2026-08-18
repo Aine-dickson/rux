@@ -1248,6 +1248,26 @@ impl Document {
     /// not a signal, so the binding registry has nothing to look it up by, and
     /// claiming otherwise would mean bindings quietly missing updates. A
     /// component is a subtree, so the rebuild is bounded in practice.
+    /// [`apply_handler_in`](Self::apply_handler_in), with an `event` in scope.
+    ///
+    /// The payload is the same mechanism a component's `emit` already uses: the
+    /// value is written into the body as a literal, so the handler reads
+    /// `event.x` without the engine needing to know what a pointer is.
+    ///
+    /// What a pointer event carries is decided here rather than in the shell,
+    /// because it is a language surface: a **list of touch points**, one per
+    /// finger, never a single synthesised pointer. A one-finger event is that
+    /// list with one entry in it, so pinch and two-finger gestures arrive later
+    /// without changing what any existing handler is handed.
+    pub fn apply_handler_with_event(
+        &mut self,
+        src: &str,
+        instance: Option<&str>,
+        event: &rux_reactive::Value,
+    ) -> bool {
+        self.apply_handler_in(&with_event(src, Some(event)), instance)
+    }
+
     pub fn apply_handler_in(&mut self, src: &str, instance: Option<&str>) -> bool {
         // Anything emitted before this handler was not emitted *by* it: a build
         // evaluates every binding, and a stray `emit` in one of those would
@@ -5224,6 +5244,72 @@ use components::detail;
             "1",
             "the effect went with the instance"
         );
+    }
+
+    /// A handler is handed `event`, and what a pointer event carries is a list
+    /// of touch points rather than one synthesised pointer.
+    ///
+    /// The list is the contract: a one-finger event is that list with one entry,
+    /// so a two-finger gesture arrives later without changing what any existing
+    /// handler reads.
+    #[test]
+    fn a_handler_is_handed_its_touch_points() {
+        let mut doc = Document::from_source(
+            "<template><screen><text>{{ report }}</text></screen></template>
+             <script>
+               let report = signal(\"\");
+               fn note(e) { report = e.touches.length + \" at \" + e.x + \",\" + e.y; }
+             </script>",
+        )
+        .expect("load");
+        let event = Value::Map(vec![
+            ("x".to_string(), Value::Number(12.0)),
+            ("y".to_string(), Value::Number(4.0)),
+            (
+                "touches".to_string(),
+                Value::List(vec![
+                    Value::Map(vec![
+                        ("id".to_string(), Value::Number(0.0)),
+                        ("x".to_string(), Value::Number(12.0)),
+                        ("y".to_string(), Value::Number(4.0)),
+                    ]),
+                    Value::Map(vec![
+                        ("id".to_string(), Value::Number(1.0)),
+                        ("x".to_string(), Value::Number(30.0)),
+                        ("y".to_string(), Value::Number(9.0)),
+                    ]),
+                ]),
+            ),
+        ]);
+        assert!(doc.apply_handler_with_event("note(event)", None, &event));
+        assert_eq!(text_of(&doc.root).join(""), "2 at 12,4");
+    }
+
+    /// Each point says which finger it is, so a handler can follow one across a
+    /// gesture rather than guessing from position.
+    #[test]
+    fn a_touch_point_carries_its_own_id() {
+        let mut doc = Document::from_source(
+            "<template><screen><text>{{ report }}</text></screen></template>
+             <script>
+               let report = signal(\"\");
+             </script>",
+        )
+        .expect("load");
+        let event = Value::Map(vec![
+            ("x".to_string(), Value::Number(0.0)),
+            ("y".to_string(), Value::Number(0.0)),
+            (
+                "touches".to_string(),
+                Value::List(vec![Value::Map(vec![
+                    ("id".to_string(), Value::Number(7.0)),
+                    ("x".to_string(), Value::Number(1.0)),
+                    ("y".to_string(), Value::Number(2.0)),
+                ])]),
+            ),
+        ]);
+        assert!(doc.apply_handler_with_event("report = \"finger \" + event.touches[0].id", None, &event));
+        assert_eq!(text_of(&doc.root).join(""), "finger 7");
     }
 
     /// A clean document reports nothing, so the overlay stays out of the way.

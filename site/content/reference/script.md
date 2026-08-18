@@ -133,6 +133,31 @@ out of its way to get right:
 - **Unmounts run before mounts** when one build swaps one component for another,
   so the leaver has saved before the arriver reads.
 
+## What a tap hands you
+
+A `@tap` handler has an `event` in scope:
+
+```rux
+<view class="card" @tap="mark(event.x, event.y)">
+```
+
+`event.x` and `event.y` are **relative to the element the handler is on**, in
+logical pixels, because that is the frame you are thinking in: half way across a
+card is `event.x > width / 2` wherever the card sits on screen.
+
+`event.touches` is every finger that is down, each with its own `id`, `x` and
+`y` in that same frame:
+
+```rux
+<view @tap="report = event.touches.length + \" fingers\"">
+```
+
+**A list even when there is one finger**, and a mouse counts as one finger with
+`id` 0, so a handler written for a phone reads the same on a desktop. That shape
+is deliberate: a two-finger gesture arrives later without changing what any
+handler already written reads. A finger outside the element has negative
+coordinates rather than being left out.
+
 ## Intervals
 
 `setInterval(ms) { … }` runs a block on a period and hands back a handle.

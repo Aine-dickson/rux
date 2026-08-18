@@ -1020,6 +1020,13 @@ struct App {
     bar_drag: Option<BarDrag>,
     /// Where the finger last was during a touch drag, in logical px.
     touch: Option<(f32, f32)>,
+    /// Every finger currently down, in logical px, in the order they landed.
+    ///
+    /// A list rather than one position, because a hand has more than one finger
+    /// and a handler is handed all of them. The mouse contributes a single point
+    /// with id 0 while a button is held, so a handler written for a phone reads
+    /// the same on a desktop.
+    points: Vec<(u64, (f32, f32))>,
     /// The `r-model` of the currently focused input, if any.
     focused: Option<String>,
     /// The `r-key` of the row that input is in, when it is inside an `r-for`.
@@ -1150,6 +1157,7 @@ impl App {
             scrolls: Vec::new(),
             offsets: Vec::new(),
             bar_drag: None,
+            points: Vec::new(),
             touch: None,
             focused: None,
             focused_row: None,
@@ -1967,20 +1975,54 @@ impl App {
             .iter()
             .rev()
             .find(|h| h.contains(px as f32, py as f32))
-            .map(|h| (h.on_tap.clone(), h.instance.clone()));
+            .map(|h| (h.on_tap.clone(), h.instance.clone(), (h.x, h.y)));
 
-        if let Some((src, instance)) = handler {
+        if let Some((src, instance, origin)) = handler {
             // Patch in place when the change is display-only; rebuild only when it
             // touches structure/attributes/input values. Either way, repaint.
             //
             // The instance travels with the handler because two instances of one
             // component carry identical handler text: the string alone cannot
             // say whose state to run it against.
-            if self.document.apply_handler_in(&src, instance.as_deref()) {
+            let event = self.pointer_event(fx, fy, origin);
+            if self.document.apply_handler_with_event(&src, instance.as_deref(), &event) {
                 self.request_redraw();
             }
             self.adopt_element_requests();
         }
+    }
+
+    /// What a handler is handed as `event`: where the pointer is, and every
+    /// finger that is down.
+    ///
+    /// Coordinates are **relative to the element the handler is on**, in logical
+    /// pixels, because that is the frame an author is thinking in: half way
+    /// across a card is `event.x > width / 2`, whatever the card's position on
+    /// screen. `touches` is the whole hand, in the same frame, so a finger
+    /// outside the element is simply negative rather than missing.
+    ///
+    /// A list even when there is one finger, and a mouse counted as one finger
+    /// with id 0. The shape does not change when a second finger arrives, which
+    /// is the point: pinch and rotate can be added later without rewriting what
+    /// every existing handler reads.
+    fn pointer_event(&self, fx: f32, fy: f32, origin: (f32, f32)) -> rux_reactive::Value {
+        use rux_reactive::Value;
+        let touches: Vec<Value> = self
+            .points
+            .iter()
+            .map(|(id, (x, y))| {
+                Value::Map(vec![
+                    ("id".to_string(), Value::Number(*id as f64)),
+                    ("x".to_string(), Value::Number((x - origin.0) as f64)),
+                    ("y".to_string(), Value::Number((y - origin.1) as f64)),
+                ])
+            })
+            .collect();
+        Value::Map(vec![
+            ("x".to_string(), Value::Number((fx - origin.0) as f64)),
+            ("y".to_string(), Value::Number((fy - origin.1) as f64)),
+            ("touches".to_string(), Value::List(touches)),
+        ])
     }
 
     /// Apply a `focus()` or `blur()` a handler asked for.
@@ -3446,6 +3488,11 @@ impl ApplicationHandler<RuxEvent> for App {
                         // Every helper below reads it.
                         self.pointer = at;
                         self.touch = Some(here);
+                        // Recorded before anything decides what this press means,
+                        // so a handler sees every finger that is down whether or
+                        // not this one turned out to be a tap.
+                        self.points.retain(|(id, _)| *id != touch.id);
+                        self.points.push((touch.id, here));
                         // Same order as the mouse: the dev overlay is above
                         // everything, so a finger on it arms a dismiss rather
                         // than reaching the app it is covering. The short-circuit
@@ -3460,6 +3507,9 @@ impl ApplicationHandler<RuxEvent> for App {
                     }
                     TouchPhase::Moved => {
                         self.pointer = at;
+                        if let Some(p) = self.points.iter_mut().find(|(id, _)| *id == touch.id) {
+                            p.1 = here;
+                        }
                         if self.bar_drag.is_some() {
                             self.drag_scrollbar(at);
                         } else if let Some(state) = self.touch_text {
@@ -3487,16 +3537,26 @@ impl ApplicationHandler<RuxEvent> for App {
                     TouchPhase::Ended => {
                         self.pointer = at;
                         self.touch = None;
+                        // Lifted *after* the dispatch below would be wrong: the
+                        // finger that caused the event is part of the event, so
+                        // it is removed once, at the end of this arm.
+                        let lifted = touch.id;
+                        // Each of the three below leaves early, and a finger
+                        // that is not removed on every path out of here is one
+                        // the next event still believes is down.
                         if self.bar_drag.take().is_some() {
+                            self.points.retain(|(id, _)| *id != lifted);
                             return;
                         }
                         if std::mem::take(&mut self.text_drag) {
+                            self.points.retain(|(id, _)| *id != lifted);
                             return;
                         }
                         // A finger lifting off text has already had its effect,
                         // whichever gesture it turned out to be, and must not
                         // also reach the app as a tap.
                         if self.touch_text.take().is_some() {
+                            self.points.retain(|(id, _)| *id != lifted);
                             return;
                         }
                         // A finger wanders more than a mouse, but the slop that
@@ -3506,10 +3566,12 @@ impl ApplicationHandler<RuxEvent> for App {
                                 self.dispatch_tap(at.0, at.1);
                             }
                         }
+                        self.points.retain(|(id, _)| *id != lifted);
                     }
                     TouchPhase::Cancelled => {
                         self.touch = None;
                         self.press = None;
+                        self.points.retain(|(id, _)| *id != touch.id);
                         self.bar_drag = None;
                         self.text_drag = false;
                         // Dropping this also disarms a pending long press, so a
@@ -3558,6 +3620,15 @@ impl ApplicationHandler<RuxEvent> for App {
                 // an input starts a text selection: neither becomes a tap on the
                 // content under it. A press on the dev overlay is none of those,
                 // it just arms the tap that dismisses it.
+                let scale = self.scale();
+                let here = (
+                    (self.pointer.0 / scale) as f32,
+                    (self.pointer.1 / scale) as f32,
+                );
+                // A mouse is one finger with id 0 for as long as its button is
+                // held, so a handler written for a phone reads the same here.
+                self.points.clear();
+                self.points.push((0, here));
                 if self.overlay_covers_physical(self.pointer) {
                     self.press = Some(self.pointer);
                 } else if !self.press_scrollbar(self.pointer) && !self.press_text(self.pointer) {
@@ -3587,6 +3658,8 @@ impl ApplicationHandler<RuxEvent> for App {
                         self.dispatch_tap(px, py);
                     }
                 }
+                // After the tap, because the button that caused it is part of it.
+                self.points.clear();
             }
             // Event-driven: we only paint in response to a redraw request, which
             // is issued on resume, resize, reload, and tap, not every frame.
