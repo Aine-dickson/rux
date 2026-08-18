@@ -34,6 +34,18 @@ An unverifiable case is recorded as unverifiable, with the reason. A gap that is
 written down is a gap someone can close; a gap that is assumed to be covered is
 the one that ships.
 
+**Write the cases before the release, not after it.** Standing rule as of
+2026-08-19. Every capability a release adds gets its cases written here *while
+it is being built*, pointing at what the new thing can now do, so there is a
+list for a person to drive **before** the release goes out rather than a record
+assembled afterwards from what happened to be tried. A case written afterwards
+only ever documents what somebody thought to look at; a case written up front
+is the thing that gets looked at.
+
+The cases below are therefore a mix: outcomes where the run has happened, and
+**open** where it is waiting for a person. Open cases are release-blocking in
+the sense that shipping with them untouched is a decision, not an oversight.
+
 ---
 
 ## v0.7
@@ -80,6 +92,26 @@ the one that ships.
 | Swipe | desktop touchpad | **Found a bug.** Unreachable: swipe and drag were exclusive, so any element declaring both could never swipe. A drag that ends as a flick now fires `@swipe` too |
 | Which frame the coordinates are in | desktop touchpad | **Found a design gap.** Only element-local and cumulative distances existed; `pageX` / `pageY` and per-event `moveX` / `moveY` were added, and `dx` / `dy` renamed to `totalX` / `totalY` because `d`-anything reads as "since last" to half its readers |
 | More than one finger | **unverified** | A laptop touchpad reaches the app as a mouse and reports one finger however many are on it. Needs a touchscreen, or Edge with CDP touch emulation against the wasm build |
+
+### Enter, leave and route transitions (2026-08-18/19)
+
+Everything here is new in v0.7. The first five were driven and each one found
+something; the rest are written for a person and are **open**.
+
+| Case | Hardware | Outcome |
+|---|---|---|
+| A panel opening and closing with `r-transition` | desktop, window | Passed: caught mid-leave, faded and moved, with the card below sliding up behind it |
+| A card dragged sideways under `:r-transition`, released past the threshold | desktop mouse | Passed: commits and the card goes |
+| The same, released short of the threshold | desktop mouse | **Found two bugs.** The reversal set off from the far end rather than from where the finger left it, because the track's deadline had long expired; and driven progress was being run through the CSS easing, so the card outran the hand. Both fixed |
+| A navigation with `r-transition` on the `<router>` | desktop, window | **Found a bug.** The incoming page appeared at its final position and only the outgoing half moved: the settling rebuild ran before the paint, so the `:enter-from` frame was never drawn and the animator's first sight was the final style |
+| A page mid-navigation, looked at closely | desktop, window | **Found a bug.** The incoming page was invisible at `opacity: 0` but its scrollbar drew at full strength over the outgoing page. Scrollbars, focus rings and hit regions were all drawn outside the content's transform and opacity |
+| Dragging the card with the panel above it closed | desktop mouse | **Found a bug.** The old jump came back: the animator names an unkeyed node by its sibling index, so a sibling leaving renamed the card and dropped its track mid-drag |
+| A departing element's space, and what fills it | desktop, window | **Found a bug.** The space was handed over at the *start* of the swap, so what followed jumped up while the element was still on screen. Now the author decides, and the default is to keep the place until it commits |
+| Tapping a page while it is still transitioning | **open** | The fix is in (hit regions follow the transform) but nobody has tapped a moving page. It failed silently before: the tap landed where the page used to be |
+| A keyed `r-for` row removed from the middle of a list | **open** | Built and tested, never watched. The row should animate out where it sat, not from the bottom |
+| Two banners in an `r-if` / `r-else` chain crossing over | **open** | They are authored to leave in opposite directions and did not appear to, because both held their space; expected to read as a crossover now |
+| A route transition driven by a drag rather than the clock | **open** | `:r-transition` works on `<router>`, so a navigation can follow a finger. Never tried; no example does it yet |
+| Any of it on a touchscreen | **unverified** | Every run above was a mouse. A drag-driven swap is the case that most wants a real finger, and the axis claim has never met one |
 
 ## Standing gaps
 
