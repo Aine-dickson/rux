@@ -489,6 +489,30 @@ struct Slot<'a> {
     rules: &'a [Rule],
 }
 
+/// What a `<router-view />` deeper in a route's view still has to render.
+///
+/// Threaded like [`Slot`], and for the same reason: the element that decides the
+/// content and the element that places it are in different files. A slot is
+/// filled by the caller's markup; an outlet is filled by the route that matched
+/// under this one.
+#[derive(Clone, Copy)]
+struct Outlet<'a> {
+    /// The links below the one being rendered, outermost first.
+    rest: &'a [Link<'a>],
+    /// Every parameter the whole chain captured. The same set reaches every
+    /// view in it, so a leaf sees what its parent matched.
+    params: &'a Locals,
+    /// The path that matched, for instance bookkeeping.
+    current: &'a str,
+    /// The template path of the `<router>` this chain belongs to, so each view
+    /// in the chain gets an identity that survives a rebuild.
+    router_tpl: &'a [usize],
+    /// Set when an outlet actually renders a link. A route with children whose
+    /// view never places a `<router-view />` would otherwise lose the child in
+    /// silence, which is the failure this project keeps closing off.
+    used: &'a std::cell::Cell<bool>,
+}
+
 /// An element's element children, skipping text nodes. Text between tags is
 /// handled by the text-binding path, not by the child builder.
 fn element_children(el: &Element) -> Vec<&Element> {
@@ -997,6 +1021,7 @@ pub fn build_styled_tree_stateful(
         instances,
         None, // the root is not inside a component
         None, // the document root has no caller, so no slot content
+        None, // and no route chain: the router itself starts one
         None, // and is not inside any row
     );
     link_labels(&mut node);
@@ -2364,6 +2389,7 @@ fn build_node(
     // The component instance this element is inside, None at document level.
     instance: Option<&str>,
     slot: Option<Slot>,
+    outlet: Option<Outlet>,
     // The `r-key` of the `r-for` row this element is inside, `None` outside one.
     // Half the identity of anything in a list: `r-model` is recorded as written,
     // so every row of a list otherwise looks like the same input.
@@ -2374,6 +2400,9 @@ fn build_node(
         return expand_component(
             el, component, comps, inherited, engine, locals, path, tpl_path, reg, state, rules,
             instances, instance, row, &Locals::new(), None,
+            // An ordinary component tag is not a route view, so a
+            // `<router-view />` inside it has no chain and says so.
+            None,
         );
     }
 
@@ -2883,8 +2912,11 @@ fn build_node(
         instances,
         instance,
         // A `<slot>` deeper inside a component still fills from the same call
-        // site, so the slot travels down with everything else.
+        // site, so the slot travels down with everything else. So does the
+        // outlet: a `<router-view />` may sit any number of boxes deep in the
+        // view that places it.
         slot,
+        outlet,
         row,
     );
     ancestors.pop();
@@ -2971,6 +3003,10 @@ fn expand_component(
     // The path this was expanded under, when a `<router>` chose it. Recorded so
     // leaving the route can drop the instance's state.
     route: Option<&str>,
+    // The rest of the matched route chain, when this *is* a route's view. An
+    // ordinary component tag gets `None` and its `<router-view />`, if it wrote
+    // one, says so.
+    outlet: Option<Outlet>,
 ) -> LayoutNode {
     let mut props: Locals = Vec::new();
     let mut prop_deps: HashSet<String> = HashSet::new();
@@ -3069,6 +3105,9 @@ fn expand_component(
         instances,
         Some(key.as_str()),
         Some(slot),
+        // Only a route's own view is handed the rest of the chain; an ordinary
+        // component tag is given `None` by its caller.
+        outlet,
         // A component expanded inside a row is still inside that row.
         row,
     )
@@ -3111,6 +3150,199 @@ fn match_route(pattern: &str, path: &str) -> Option<Locals> {
     Some(params)
 }
 
+/// One link of a matched route chain: which `<route>` it is, where it sits
+/// among its siblings, and what its own pattern captured.
+struct Link<'a> {
+    index: usize,
+    route: &'a Element,
+    params: Locals,
+}
+
+/// The `<route>` children of a `<route>` or a `<router>`, in written order.
+fn child_routes(el: &Element) -> Vec<&Element> {
+    element_children(el).into_iter().filter(|r| r.tag == "route").collect()
+}
+
+/// Match one level of routes against `rest`, and every level below it.
+///
+/// The chain returned consumes `rest` **entirely**: a route with no children has
+/// to account for every segment itself, exactly as before, and a route with
+/// children may take a prefix and hand what is left to them. A branch whose
+/// children cannot finish the job fails, and the next sibling is tried, which is
+/// what makes `/crew/x/y` fall through to a fallback rather than half-matching
+/// `/crew/:id`.
+///
+/// A child pattern is **relative** unless it begins with `/`, which is
+/// vue-router's rule and the reason a section can be moved by editing one line.
+/// An absolute child is matched against `whole` instead.
+///
+/// Order decides, not specificity. Routes are written in one template here
+/// rather than assembled from several files, so what is read top to bottom is
+/// what happens; ranking would be a second system to hold in your head.
+fn match_level<'a>(
+    routes: &[&'a Element],
+    rest: &[&str],
+    whole: &[&str],
+) -> Option<Vec<Link<'a>>> {
+    for (index, route) in routes.iter().enumerate() {
+        // A fallback carries no pattern; it is tried only after everything else.
+        let Some(pattern) = route.attr("path") else { continue };
+        let absolute = pattern.starts_with('/');
+        let against: &[&str] = if absolute { whole } else { rest };
+        let Some((params, taken)) = take_prefix(pattern, against) else { continue };
+        let remainder = &against[taken..];
+
+        let children = child_routes(route);
+        let link = Link { index, route: *route, params };
+        if children.is_empty() {
+            // A leaf must land exactly, which is the rule as it has always been.
+            if remainder.is_empty() {
+                return Some(vec![link]);
+            }
+            continue;
+        }
+        if let Some(mut deeper) = match_level(&children, remainder, whole) {
+            let mut chain = vec![link];
+            chain.append(&mut deeper);
+            return Some(chain);
+        }
+        // Nothing below took the rest. With nothing left to take, the parent
+        // alone is the match: `/crew` renders the list with an empty outlet,
+        // and an index child (`path=""`) is what fills it when there is one.
+        if remainder.is_empty() {
+            return Some(vec![link]);
+        }
+    }
+    // Only now: a fallback at this level, which is what a path that matched a
+    // parent but nothing under it lands on.
+    routes.iter().enumerate().find(|(_, r)| r.attr("fallback").is_some()).map(|(index, r)| {
+        vec![Link { index, route: *r, params: Locals::new() }]
+    })
+}
+
+/// Match `pattern` against the front of `segments`, returning what it captured
+/// and how many segments it used. An empty pattern is the index route and takes
+/// nothing.
+fn take_prefix(pattern: &str, segments: &[&str]) -> Option<(Locals, usize)> {
+    let pat: Vec<&str> = pattern.split('/').filter(|p| !p.is_empty()).collect();
+    if pat.len() > segments.len() {
+        return None;
+    }
+    let mut params: Locals = Vec::new();
+    for (p, c) in pat.iter().zip(segments.iter()) {
+        match p.strip_prefix(':') {
+            // A parameter takes whatever sits in that position, decoded: a value
+            // that had to be escaped to go into the URL has to come back out as
+            // what it was, or a view is handed `a%2Fb`.
+            Some(name) => {
+                params.push((name.to_string(), Value::Text(rux_script::percent_decode(c))))
+            }
+            None if p == c => {}
+            None => return None,
+        }
+    }
+    Some((params, pat.len()))
+}
+
+/// Split a path into its segments, dropping the empties a leading or trailing
+/// slash leaves behind.
+fn path_segments(s: &str) -> Vec<&str> {
+    s.split('/').filter(|p| !p.is_empty()).collect()
+}
+
+/// The chain of `<route>` elements the router renders for `path`, if any.
+fn match_router<'a>(router: &'a Element, path: &str) -> Option<Vec<Link<'a>>> {
+    let segments = path_segments(path);
+    let routes = child_routes(router);
+    match_level(&routes, &segments, &segments)
+}
+
+/// Every parameter the whole matched chain captured, merged outermost first.
+///
+/// Merged rather than per-level, because a child view routinely needs the `:id`
+/// its parent captured, and having to thread it down by hand is what makes
+/// nested routes annoying everywhere else.
+fn chain_params(chain: &[Link]) -> Locals {
+    let mut merged: Locals = Vec::new();
+    for link in chain {
+        for (name, value) in &link.params {
+            // Deeper wins on a collision: it is the more specific of the two,
+            // and a name repeated down a chain is almost always a mistake worth
+            // resolving in favour of the thing nearest the leaf.
+            merged.retain(|(n, _)| n != name);
+            merged.push((name.clone(), value.clone()));
+        }
+    }
+    merged
+}
+
+/// Expand the first link of `chain`, handing the rest to whatever
+/// `<router-view />` its view places.
+///
+/// Shared by the `<router>` branch and by `<router-view />` itself, because from
+/// the second link down they are the same operation: render this view, and pass
+/// on what is left.
+#[allow(clippy::too_many_arguments)]
+fn expand_chain(
+    chain: &[Link],
+    params: &Locals,
+    current: &str,
+    comps: &Components,
+    inherited: &Inherited,
+    engine: &mut Engine,
+    locals: &Locals,
+    path: &[usize],
+    router_tpl: &[usize],
+    reg: &mut BindingRegistry,
+    state: &InteractionState,
+    rules: &[Rule],
+    instances: &mut Instances,
+    instance: Option<&str>,
+    row: Option<&str>,
+) -> Option<LayoutNode> {
+    let link = chain.first()?;
+    let Some(view) = link.route.attr("view") else {
+        warn(format!(
+            "<route path=\"{current}\"> has no `view`, so there is nothing to render for it"
+        ));
+        return None;
+    };
+    let Some(component) = comps.get(view) else {
+        warn(format!(
+            "<route> names the view `{view}`, which is not imported; add \
+             `use components::{view};` to the script"
+        ));
+        return None;
+    };
+    // Identity is where the route sits in the template, one step per level, so
+    // two views at different depths never collide and a view keeps its instance
+    // while a sibling below it changes.
+    let mut tpl = router_tpl.to_vec();
+    tpl.push(link.index);
+
+    let rest = &chain[1..];
+    let used = std::cell::Cell::new(false);
+    let outlet = Outlet { rest, params, current, router_tpl: &tpl, used: &used };
+
+    // The `<route>` element stands in for the component tag, so any `:prop`
+    // written on it is passed through as well, and the captured parameters of
+    // the *whole* chain join them.
+    let node = expand_component(
+        link.route, component, comps, inherited, engine, locals, path, &tpl, reg, state, rules,
+        instances, instance, row, params, Some(current), Some(outlet),
+    );
+
+    // A route with children whose view never places an outlet would drop that
+    // child in silence, which is the failure this project keeps closing off.
+    if !rest.is_empty() && !used.get() {
+        warn(format!(
+            "`{view}` has a nested <route> but no <router-view /> to put it in, so nothing under \
+             it can render"
+        ));
+    }
+    Some(node)
+}
+
 /// What the routes in `template` capture from `path`, without building anything.
 ///
 /// The matched view already receives its parameters as props, and that is
@@ -3127,13 +3359,10 @@ fn match_route(pattern: &str, path: &str) -> Option<Locals> {
 /// the document.
 pub fn route_params(template: &Element, path: &str) -> Vec<(String, Value)> {
     let Some(router) = find_router(template) else { return Vec::new() };
-    element_children(router)
-        .into_iter()
-        .filter(|r| r.tag == "route")
-        // A fallback route captures nothing, which is why this looks only at
-        // patterns: there is nothing in `/nowhere` to name.
-        .find_map(|r| match_route(r.attr("path")?, path))
-        .unwrap_or_default()
+    // The whole chain's parameters, not just the level that matched first: a
+    // breadcrumb outside the router needs the `:id` a child captured as much as
+    // the view does.
+    match_router(router, path).map(|chain| chain_params(&chain)).unwrap_or_default()
 }
 
 /// The document's `<router>`, wherever in the template it was written.
@@ -3152,11 +3381,35 @@ fn find_router(el: &Element) -> Option<&Element> {
 /// scheme.
 pub fn named_routes(template: &Element) -> Vec<(String, String)> {
     let Some(router) = find_router(template) else { return Vec::new() };
-    element_children(router)
-        .into_iter()
-        .filter(|r| r.tag == "route")
-        .filter_map(|r| Some((r.attr("name")?.to_string(), r.attr("path")?.to_string())))
-        .collect()
+    let mut out = Vec::new();
+    collect_named(&child_routes(router), "", &mut out);
+    out
+}
+
+/// Walk a level of routes, building each one's **full** pattern from its
+/// ancestors' as it goes.
+///
+/// Without this a name on a child route is unusable: `path_for` would look up
+/// `:id` and build `/grace`, which is not where anything lives. Naming the leaf
+/// and letting the resolver walk up is how the name survives the section being
+/// moved, which is the whole reason a route has a name rather than a path
+/// written out in every link that leads to it.
+fn collect_named(routes: &[&Element], prefix: &str, out: &mut Vec<(String, String)>) {
+    for route in routes {
+        let Some(pattern) = route.attr("path") else { continue };
+        let full = if pattern.starts_with('/') {
+            pattern.to_string()
+        } else if pattern.is_empty() {
+            // The index child stands for its parent's own path.
+            prefix.to_string()
+        } else {
+            format!("{}/{}", prefix.trim_end_matches('/'), pattern.trim_start_matches('/'))
+        };
+        if let Some(name) = route.attr("name") {
+            out.push((name.to_string(), full.clone()));
+        }
+        collect_named(&child_routes(route), &full, out);
+    }
 }
 
 /// Whether the router remembers where each page was scrolled to.
@@ -3195,6 +3448,7 @@ fn build_children(
     instances: &mut Instances,
     instance: Option<&str>,
     slot: Option<Slot>,
+    outlet: Option<Outlet>,
     row: Option<&str>,
 ) -> (Vec<LayoutNode>, HashSet<String>) {
     let mut out = Vec::new();
@@ -3248,7 +3502,7 @@ fn build_children(
                         // `<slot>` is not a place to put the outer one's content.
                         out.push(build_node(
                             child, s.rules, comps, ancestors, &prev, inherited, engine, s.locals,
-                            &cp, &ctp, reg, state, instances, instance, None, row,
+                            &cp, &ctp, reg, state, instances, instance, None, None, row,
                         ));
                         prev.push(ElemDesc::of(child));
                     }
@@ -3270,11 +3524,44 @@ fn build_children(
                         ctp.push(si);
                         out.push(build_node(
                             child, rules, comps, ancestors, &prev, inherited, engine, locals, &cp,
-                            &ctp, reg, state, instances, instance, slot, row,
+                            &ctp, reg, state, instances, instance, slot, outlet, row,
                         ));
                         prev.push(ElemDesc::of(child));
                     }
                 }
+            }
+            continue;
+        }
+
+        // `<router-view />` is where a nested route's view lands. Like `<slot>`
+        // it leaves no box of its own, and like `<slot>` the content comes from
+        // somewhere else: from the route matched *under* the one whose view this
+        // is, rather than from the caller's markup.
+        if el.tag == "router-view" {
+            in_chain = false;
+            match outlet {
+                Some(o) => {
+                    if let Some(link) = o.rest.first() {
+                        o.used.set(true);
+                        let cp = child_path(&out);
+                        if let Some(node) = expand_chain(
+                            o.rest, o.params, o.current, comps, inherited, engine, locals, &cp,
+                            o.router_tpl, reg, state, rules, instances, instance, row,
+                        ) {
+                            prev.push(ElemDesc::of(link.route));
+                            out.push(node);
+                        }
+                    }
+                    // Nothing left in the chain is ordinary, not a mistake: it
+                    // is what `/crew` means when the list has children but the
+                    // path names none of them. An index route (`path=""`) is how
+                    // an author fills that.
+                }
+                None => warn(
+                    "`<router-view />` renders the route matched below this one, and this is not \
+                     a route's view, so there is nothing for it to show"
+                        .to_string(),
+                ),
             }
             continue;
         }
@@ -3301,50 +3588,21 @@ fn build_children(
                     ));
                 }
             }
-            // First match wins, so routes are tried in the order they are
-            // written and a fallback can sit anywhere among them.
-            let matched = routes.iter().enumerate().find_map(|(ri, r)| {
-                if r.tag != "route" {
-                    return None;
-                }
-                let params = match_route(r.attr("path")?, &current)?;
-                Some((ri, *r, params))
-            });
-            let chosen = matched.or_else(|| {
-                routes
-                    .iter()
-                    .enumerate()
-                    .find(|(_, r)| r.tag == "route" && r.attr("fallback").is_some())
-                    .map(|(ri, r)| (ri, *r, Locals::new()))
-            });
-
-            match chosen {
-                Some((ri, route_el, params)) => {
-                    let Some(view) = route_el.attr("view") else {
-                        warn(format!(
-                            "<route path=\"{current}\"> has no `view`, so there is nothing to \
-                             render for it"
-                        ));
-                        continue;
-                    };
-                    let Some(component) = comps.get(view) else {
-                        warn(format!(
-                            "<route> names the view `{view}`, which is not imported; add \
-                             `use components::{view};` to the script"
-                        ));
-                        continue;
-                    };
+            // The whole chain at once: the outermost view is rendered here and
+            // each one below it is rendered by the `<router-view />` in the view
+            // above. First match wins at every level, so routes are tried in the
+            // order they are written and a fallback can sit anywhere among them.
+            match match_router(el, &current) {
+                Some(chain) => {
+                    let params = chain_params(&chain);
                     let cp = child_path(&out);
-                    let mut rtp = ctp.clone();
-                    rtp.push(ri);
-                    // The `<route>` element stands in for the component tag, so
-                    // any `:prop` written on it is passed through as well, and
-                    // the captured parameters join them.
-                    out.push(expand_component(
-                        route_el, component, comps, inherited, engine, locals, &cp, &rtp, reg,
-                        state, rules, instances, instance, row, &params, Some(&current),
-                    ));
-                    prev.push(ElemDesc::of(route_el));
+                    if let Some(node) = expand_chain(
+                        &chain, &params, &current, comps, inherited, engine, locals, &cp, &ctp,
+                        reg, state, rules, instances, instance, row,
+                    ) {
+                        prev.push(ElemDesc::of(chain[0].route));
+                        out.push(node);
+                    }
                 }
                 None => {
                     // Every path should render something. A router with nothing
@@ -3406,7 +3664,7 @@ fn build_children(
                         });
                         let mut node = build_node(
                             el, rules, comps, ancestors, &prev, inherited, engine, &child_locals,
-                            &cp, &ctp, reg, state, instances, instance, slot,
+                            &cp, &ctp, reg, state, instances, instance, slot, outlet,
                             // An unkeyed row inherits whatever row it is nested
                             // in, which is normally nothing.
                             key.as_deref().or(row),
@@ -3428,7 +3686,7 @@ fn build_children(
             chain_satisfied = v;
             if chain_satisfied {
                 let cp = child_path(&out);
-                out.push(build_node(el, rules, comps, ancestors, &prev, inherited, engine, locals, &cp, &ctp, reg, state, instances, instance, slot, row));
+                out.push(build_node(el, rules, comps, ancestors, &prev, inherited, engine, locals, &cp, &ctp, reg, state, instances, instance, slot, outlet, row));
                 prev.push(ElemDesc::of(el));
             }
             continue;
@@ -3444,7 +3702,7 @@ fn build_children(
             if taken {
                 chain_satisfied = true;
                 let cp = child_path(&out);
-                out.push(build_node(el, rules, comps, ancestors, &prev, inherited, engine, locals, &cp, &ctp, reg, state, instances, instance, slot, row));
+                out.push(build_node(el, rules, comps, ancestors, &prev, inherited, engine, locals, &cp, &ctp, reg, state, instances, instance, slot, outlet, row));
                 prev.push(ElemDesc::of(el));
             }
             continue;
@@ -3452,7 +3710,7 @@ fn build_children(
         if el.attr("r-else").is_some() {
             if in_chain && !chain_satisfied {
                 let cp = child_path(&out);
-                out.push(build_node(el, rules, comps, ancestors, &prev, inherited, engine, locals, &cp, &ctp, reg, state, instances, instance, slot, row));
+                out.push(build_node(el, rules, comps, ancestors, &prev, inherited, engine, locals, &cp, &ctp, reg, state, instances, instance, slot, outlet, row));
                 prev.push(ElemDesc::of(el));
             }
             in_chain = false;
@@ -3462,7 +3720,7 @@ fn build_children(
         // A plain element ends any active chain.
         in_chain = false;
         let cp = child_path(&out);
-        out.push(build_node(el, rules, comps, ancestors, &prev, inherited, engine, locals, &cp, &ctp, reg, state, instances, instance, slot, row));
+        out.push(build_node(el, rules, comps, ancestors, &prev, inherited, engine, locals, &cp, &ctp, reg, state, instances, instance, slot, outlet, row));
         prev.push(ElemDesc::of(el));
     }
     (out, structural_deps)

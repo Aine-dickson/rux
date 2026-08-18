@@ -139,7 +139,7 @@ const ELEMENT_ATTRIBUTES: &[(&str, &[Entry])] = &[
     (
         "route",
         &[
-            Entry { name: "path", detail: "the path to match", doc: "`/crew/:id` captures `id` and hands it to the view as a prop. A pattern must match the whole path." },
+            Entry { name: "path", detail: "the path to match", doc: "`/crew/:id` captures `id` and hands it to the view as a prop. A child route's path is relative to its parent, and `path=\"\"` is the index route that fills the parent's outlet at the parent's own path." },
             Entry { name: "view", detail: "the component to render", doc: "Names an imported component, the same name its tag would use." },
             Entry { name: "fallback", detail: "match anything unmatched", doc: "Valueless. Renders when no other route matched, wherever it sits among them." },
         ],

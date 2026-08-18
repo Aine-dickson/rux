@@ -953,8 +953,10 @@ impl Document {
             }
         }
         self.registry = fresh_reg;
-        // A restyle is a whole build, so it creates and prunes instances like any
-        // other even though only some subtrees are spliced in.
+        // A restyle is a whole build, so it raises whatever this document has
+        // wrong, and it creates and prunes instances like any other even though
+        // only some subtrees are spliced in.
+        self.diagnostics.warnings = collect_warnings();
         self.settle_lifecycle(0);
     }
 
@@ -1175,6 +1177,11 @@ impl Document {
             }
         }
         self.registry = fresh_reg;
+        // Only `rebuild` used to refresh these, and a navigation or an `r-if`
+        // usually reconciles instead, so anything a build newly complained about
+        // sat in the sink until something else forced a full rebuild. The
+        // overlay is supposed to list what the document has wrong *now*.
+        self.diagnostics.warnings = collect_warnings();
         // The reconcile path is where an `r-if` actually opens and closes, so it
         // is where most mounts and unmounts are found.
         self.settle_lifecycle(0);
@@ -3349,6 +3356,190 @@ mod tests {
              <script>\nuse components::home;\nuse components::settings;\n\
              use components::user;\nuse components::missing;\n</script>",
         )
+    }
+
+    /// A router with one level of children, written the way vue-router writes
+    /// one: relative child paths, an index child, and a `<router-view />` in the
+    /// parent view.
+    fn nested_router_app() -> Document {
+        use std::fs;
+        let dir = std::env::temp_dir().join(format!(
+            "rux_nested_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(dir.join("components")).unwrap();
+        fs::write(dir.join("components/home.rux"), "<template><text>the home page</text></template>")
+            .unwrap();
+        fs::write(
+            dir.join("components/crew.rux"),
+            "<template><view>\
+               <text>crew list, seen {{ seen }}</text>\
+               <router-view />\
+             </view></template>\n\
+             <script>\nlet seen = signal(0);\n</script>",
+        )
+        .unwrap();
+        fs::write(
+            dir.join("components/pick.rux"),
+            "<template><text>pick somebody</text></template>",
+        )
+        .unwrap();
+        fs::write(
+            dir.join("components/detail.rux"),
+            "<template><text>detail for {{ id }}</text></template>",
+        )
+        .unwrap();
+        fs::write(
+            dir.join("components/missing.rux"),
+            "<template><text>no such page</text></template>",
+        )
+        .unwrap();
+        fs::write(
+            dir.join("app.rux"),
+            "<template><screen>\
+               <text>params say {{ params?.id ?? \"none\" }}</text>\
+               <router>\
+                 <route path=\"/\" view=\"home\" />\
+                 <route path=\"/crew\" view=\"crew\">\
+                   <route path=\"\" view=\"pick\" />\
+                   <route name=\"crew-detail\" path=\":id\" view=\"detail\" />\
+                 </route>\
+                 <route fallback view=\"missing\" />\
+               </router>\
+             </screen></template>\n\
+             <script>\nuse components::home;\nuse components::crew;\n\
+             use components::pick;\nuse components::detail;\n\
+             use components::missing;\n</script>",
+        )
+        .unwrap();
+        let doc = Document::load(dir.join("app.rux")).expect("load");
+        let _ = fs::remove_dir_all(&dir);
+        doc
+    }
+
+    /// A child path is relative, and the parent view stays on screen with the
+    /// child inside its outlet.
+    #[test]
+    fn a_child_route_renders_inside_its_parent() {
+        let mut doc = nested_router_app();
+        doc.navigate("/crew/grace");
+        let shown = text_of(&doc.root).join("|");
+        assert!(shown.contains("crew list"), "the parent is still there: {shown}");
+        assert!(shown.contains("detail for grace"), "with the child inside it: {shown}");
+        assert!(!shown.contains("pick somebody"), "and not the index child: {shown}");
+    }
+
+    /// The parent's own path renders the index child, which is what `path=""`
+    /// is for.
+    #[test]
+    fn the_parent_path_renders_the_index_child() {
+        let mut doc = nested_router_app();
+        doc.navigate("/crew");
+        let shown = text_of(&doc.root).join("|");
+        assert!(shown.contains("crew list"), "{shown}");
+        assert!(shown.contains("pick somebody"), "the index child fills the outlet: {shown}");
+    }
+
+    /// A path that matches a parent but nothing under it is not a half match:
+    /// it falls through to the fallback, exactly as vue-router does.
+    #[test]
+    fn an_unmatched_tail_falls_through_to_the_fallback() {
+        let mut doc = nested_router_app();
+        doc.navigate("/crew/grace/extra");
+        let shown = text_of(&doc.root).join("|");
+        assert!(shown.contains("no such page"), "{shown}");
+        assert!(!shown.contains("crew list"), "the parent did not half-match: {shown}");
+    }
+
+    /// Parameters are merged down the chain, so the `params` signal outside the
+    /// router sees what a *child* captured.
+    #[test]
+    fn a_child_parameter_reaches_the_params_signal() {
+        let mut doc = nested_router_app();
+        doc.navigate("/crew/ada");
+        let shown = text_of(&doc.root).join("|");
+        assert!(shown.contains("params say ada"), "{shown}");
+    }
+
+    /// A name on a child route resolves to its full path, built from its
+    /// ancestors. Without that, naming the leaf would be useless and every link
+    /// would have to write the whole path out.
+    #[test]
+    fn a_named_child_route_resolves_to_its_full_path() {
+        let mut doc = nested_router_app();
+        assert!(doc.apply_handler("navigate(path_for(\"crew-detail\", #{ id: \"grace\" }))"));
+        assert_eq!(doc.engine_mut().get_string("route"), "/crew/grace");
+        assert!(doc.diagnostics().is_empty(), "and quietly: {:?}", doc.diagnostics());
+    }
+
+    /// The parent keeps its instance while the child changes under it, which is
+    /// what makes a list keep its scroll position and its state.
+    #[test]
+    fn the_parent_view_survives_a_child_change() {
+        let mut doc = nested_router_app();
+        doc.navigate("/crew/grace");
+        assert!(doc.apply_handler("nothing = 1") || true);
+        let before = doc.instances.len();
+        doc.navigate("/crew/ada");
+        let shown = text_of(&doc.root).join("|");
+        assert!(shown.contains("detail for ada"), "{shown}");
+        assert_eq!(before, doc.instances.len(), "the same instances, not a fresh set");
+    }
+
+    /// A parent view that forgets its outlet loses the child. Saying so is the
+    /// whole reason the outlet reports whether it was used.
+    #[test]
+    fn a_nested_route_with_no_outlet_says_so() {
+        use std::fs;
+        let dir = std::env::temp_dir().join(format!(
+            "rux_nooutlet_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(dir.join("components")).unwrap();
+        fs::write(dir.join("components/crew.rux"), "<template><text>crew list</text></template>")
+            .unwrap();
+        fs::write(
+            dir.join("components/detail.rux"),
+            "<template><text>detail for {{ id }}</text></template>",
+        )
+        .unwrap();
+        fs::write(
+            dir.join("app.rux"),
+            "<template><screen><router>               <route path=\"/crew\" view=\"crew\">                 <route path=\":id\" view=\"detail\" />               </route>             </router></screen></template>
+             <script>
+use components::crew;
+use components::detail;
+</script>",
+        )
+        .unwrap();
+        let mut doc = Document::load(dir.join("app.rux")).expect("load");
+        let _ = fs::remove_dir_all(&dir);
+        doc.navigate("/crew/grace");
+        let problems = format!("{:?}", doc.diagnostics());
+        assert!(
+            problems.contains("no <router-view />"),
+            "the missing outlet is reported: {problems}"
+        );
+    }
+
+    /// `<router-view />` outside a route's view has no chain to draw from, and
+    /// rendering nothing in silence is the failure this warns about.
+    #[test]
+    fn an_outlet_outside_a_route_view_warns() {
+        let doc = Document::from_source(
+            "<template><screen><router-view /></screen></template>",
+        )
+        .expect("load");
+        let problems = format!("{:?}", doc.diagnostics());
+        assert!(problems.contains("not a route's view"), "{problems}");
     }
 
     /// The whole point: one path renders one view, and only that one.

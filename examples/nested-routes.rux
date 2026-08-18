@@ -1,0 +1,59 @@
+<template>
+  <screen class="app">
+    <text class="title">nested routes</text>
+    <text class="lead">A route may contain routes. The parent's view places a router-view where they render, so the list stays on screen while the panel inside it changes. A child path is relative, and path="" is the index route that fills the outlet at the parent's own path.</text>
+
+    <view class="nav">
+      <text class="link" to="/">home</text>
+      <text class="link" to="/crew">crew</text>
+      <text class="link" to="/nowhere">a bad path</text>
+    </view>
+
+    <router>
+      <route path="/" view="crew-pick" />
+      <route path="/crew" view="crew-section">
+        <route path="" view="crew-pick" />
+        <route name="crew-member" path=":id" view="crew-member" />
+      </route>
+      <route fallback view="crew-lost" />
+    </router>
+
+    <text class="foot">path: {{ route }}</text>
+    <text class="foot">params from the whole chain: {{ params?.id ?? "none" }}</text>
+    <text class="foot">path_for("crew-member", #{ id: "ada" }) is {{ path_for("crew-member", #{ id: "ada" }) }}</text>
+  </screen>
+</template>
+
+<style>
+  .app {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    padding: 28px;
+    background: #1e1e2e;
+  }
+
+  .title { color: #cdd6f4; font-size: 22px; font-weight: 700; }
+  .lead { color: #9399b2; font-size: 13px; max-width: 620px; }
+  .foot { color: #9399b2; font-size: 13px; }
+  .nav { display: flex; gap: 10px; }
+
+  .link {
+    padding: 6px 12px;
+    background: #45475a;
+    border-radius: 8px;
+    color: #cdd6f4;
+    font-size: 13px;
+    cursor: pointer;
+  }
+
+  .link:hover { background: #585b70; }
+  .link:current { background: #89b4fa; color: #11111b; font-weight: 700; }
+</style>
+
+<script>
+  use components::crew_section;
+  use components::crew_pick;
+  use components::crew_member;
+  use components::crew_lost;
+</script>

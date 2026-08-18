@@ -56,7 +56,9 @@ pub enum Pending {
 /// The HTML names are kept because they cost nothing and pasted markup is
 /// common.
 const VOID_TAGS: &[&str] = &[
-    "image", "input", //
+    // `<router-view />` never nests: what goes in it comes from the route
+    // matched below, not from anything written between the tags.
+    "image", "input", "router-view", //
     "area", "base", "br", "col", "embed", "hr", "img", "link", "meta", "param", "source", "track",
     "wbr",
 ];

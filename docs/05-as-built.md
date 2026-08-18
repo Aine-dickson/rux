@@ -1007,8 +1007,42 @@ rebuilding the document.
 
 **Parameters.** A `:name` segment matches anything and is handed to the view as
 a prop, so `/crew/grace` reaches `crew-detail` with `id` set to `"grace"`. A
-pattern must match the whole path, not a prefix, or `/` would match everything.
-A trailing slash is not a difference.
+match must account for the whole path, not just its front, or `/` would match
+everything. A trailing slash is not a difference.
+
+**Nested routes.** A `<route>` may contain `<route>` children, and the parent's
+view places a `<router-view />` where they render:
+```xml
+<router>
+  <route path="/" view="home-page" />
+  <route path="/crew" view="crew-list">
+    <route path=""            view="crew-empty" />
+    <route name="crew-detail" path=":id" view="crew-detail" />
+  </route>
+  <route fallback view="lost-page" />
+</router>
+```
+A child path is **relative** unless it begins with `/`, so a section can be moved
+by editing one line. `path=""` is the index route: it fills the outlet at the
+parent's own path, and without one `/crew` renders the list with an empty outlet
+rather than an error. `<router-view />` leaves no box of its own, like `<slot>`.
+
+The parent **stays mounted** while the child changes under it, so a list keeps
+its state and its scroll position as you move between the things it lists.
+
+Parameters are **merged down the chain**: a child view sees what its parent
+captured, and the `params` signal outside the router sees what a child captured.
+A name resolves to its **full** path, built from its ancestors, so
+`path_for("crew-detail", #{ id: "grace" })` returns `/crew/grace` from a name
+written on the child.
+
+A path that matches a parent but nothing under it is not a half match: the whole
+branch fails and the next sibling is tried, ending at the fallback. That is why
+`/crew/grace/extra` lands on `lost-page` rather than on the crew list.
+
+Two mistakes are reported rather than rendered as silence: a route with children
+whose view never places a `<router-view />`, and a `<router-view />` in something
+that is not a route's view.
 
 **Links.** `to="/path"` makes an element tap to that path, announce as a link
 rather than a button, and match `:current` when it names the path you are on,
