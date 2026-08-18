@@ -264,7 +264,8 @@ combinators: descendant (`.a .b`), child (`.a > .b`), next-sibling (`.a + .b`),
 subsequent-sibling (`.a ~ .b`).
 
 **Pseudo-classes:** `:hover`, `:focus`, `:active`, `:checked`, `:current` (a
-link whose `to` names the path you are on). They stack
+link whose `to` names the path you are on), and `:enter-from` / `:leave-to`
+(the two sides of an enter/leave swap, below). They stack
 (`.btn:hover:active`), count as class-level specificity, and work anywhere in a
 chain, `.card:hover .title` recolours the title while the pointer is over the
 card. `:hover`/`:active` hold for the whole chain under the pointer, as in CSS;
@@ -304,9 +305,9 @@ Three limits, all of them deliberate:
 - **A value that has no midpoint jumps.** `10px` → `50%` needs a layout to
   resolve, and a colour becoming a gradient has no halfway. Same-unit lengths
   interpolate; anything else lands at once.
-- **Nothing animates on the way in or out.** A node arrives at its authored
-  style, and a node the build stops reaching is simply gone. Enter/leave is the
-  next tier, and it shares its machinery with the `unmounted` lifecycle hook.
+- **Enter and leave are opt-in.** Unmarked, a node still arrives at its
+  authored style and a node the build stops reaching is simply gone. Add
+  `r-transition` to animate the way in and out; see below.
 - **`transition` does not inherit**, exactly as in CSS. A parent's `color`
   change does not animate a child's text; put the transition on the element
   whose style is moving.
@@ -315,6 +316,62 @@ An app with no transitions running is still fully event-driven: it sleeps
 waiting for real events and renders nothing. Frames are scheduled only while
 something is actually in flight, and stop the frame it lands. Driven in
 `examples/transition.rux`.
+
+**Enter and leave:** `r-transition` on an element with `r-if` (or on a keyed
+`r-for` row) says that its arrival and departure are animated. What the two
+sides look like is CSS, on `:enter-from` and `:leave-to`; how long the swap
+lasts is the element's own `transition`.
+```rux
+<view class="panel" r-if="open" r-transition>…</view>
+```
+```css
+.panel { opacity: 1; transform: translateY(0px);
+         transition: opacity 300ms ease-out, transform 300ms ease-out; }
+.panel:enter-from { opacity: 0; transform: translateY(-16px); }
+.panel:leave-to   { opacity: 0; transform: translateY(-16px); }
+```
+The two sides are ordinary rules and the walk between them is the same
+machinery a `:hover` uses. `:enter-from` is worn for one frame and dropped by
+the next, which is what turns an arrival into an ordinary style change;
+`:leave-to` is held from the moment the swap opens until it commits.
+
+While a swap is pending **both branches are really there**: laid out, styled,
+and still updating. That is why the condition changing back mid-swap reverses
+the swap instead of stacking a second one, and why a departing component's
+`unmounted` fires when the swap **commits** rather than when it starts. A
+cancelled swap never fired one.
+
+On a list, `r-transition` needs `r-key` on the same element and says so if it
+is missing: without a key there is nothing to hold a departing row by, and a
+removal and a reorder are the same picture. A row that leaves from the middle
+of a list animates out **where it was**, not at the end.
+
+**Driving a swap yourself:** `:r-transition="expr"` hands progress to the
+author instead of the clock. The expression is re-read every build and yields
+0 to 1: reaching 1 commits the swap and returning to 0 abandons it. That is
+what binds a swap to a finger, and it is why both branches have to be live: a
+swap that can change its mind cannot be a snapshot of a departed tree.
+```rux
+<view class="card" r-if="card" :r-transition="dismiss" @drag="onDrag(event)">…</view>
+```
+```rux
+if event.phase == "start" { card = false; dismiss = 0; }
+else if event.phase == "move" { dismiss = event.totalX / 240; }
+else if dismiss > 0.45 { dismiss = 1; }        // commit
+else { card = true; dismiss = null; }          // and settle back
+```
+Yielding **`null` hands the swap back to the clock**, which runs the rest of
+the declared duration from wherever the drag let go. That is how a released
+finger settles instead of snapping. Under a bound driver the declared duration
+does not set the pace; it still says which properties take part, and it takes
+over again on the handover.
+
+The condition is yours throughout. Abandoning a swap does not put it back:
+the release handler that decides to abandon is the same one that restores the
+condition, so what is on screen and what the signal says never disagree.
+
+Route transitions are not built on this yet, and neither is a third tier of
+keyframes. Driven in `examples/enter-leave.rux`.
 
 **Computed values:** `computed name = expr;` in `<script>` declares derived
 state, written once and readable anywhere a signal is:

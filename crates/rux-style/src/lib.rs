@@ -3847,7 +3847,21 @@ fn arm_swap(
             // Read outside the borrow of `swaps`: evaluating can run author code.
             let (value, read) = engine.eval_value_tracked(expr, locals);
             deps.extend(read);
-            let progress = value.and_then(|v| v.as_number()).unwrap_or(0.0) as f32;
+            let Some(progress) = value.and_then(|v| v.as_number()) else {
+                // Not a number: the author is handing the swap back to the
+                // clock, which is how a released finger settles. It runs out
+                // its declared duration from wherever the drag left it, rather
+                // than snapping to an end the finger never reached.
+                let duration = swap_duration(&node.style);
+                if let Some(swap) = swaps.pending.get_mut(key) {
+                    if let Driver::Bound(_) = swap.driver {
+                        swap.driver = Driver::Clock { duration, end_ms: None };
+                    }
+                }
+                node.style.swap_progress = None;
+                return;
+            };
+            let progress = progress as f32;
             if let Some(swap) = swaps.pending.get_mut(key) {
                 swap.progress = progress.clamp(0.0, 1.0);
                 swap.moved |= swap.progress > 0.0;

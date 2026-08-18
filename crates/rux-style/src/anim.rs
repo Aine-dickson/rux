@@ -69,6 +69,14 @@ struct Track {
     end_ms: f64,
     easing: Easing,
     active: bool,
+    /// Whether the last frame positioned this track from someone else's
+    /// progress rather than from the clock.
+    ///
+    /// Handing a swap back to the clock has to *restart* the interpolation from
+    /// where the drag left it. Without this the track still holds the deadline
+    /// it was given when the swap opened, that deadline is long past, and the
+    /// element jumps to the end instead of settling into it.
+    driven: bool,
 }
 
 #[derive(Default)]
@@ -163,14 +171,21 @@ impl Animator {
                     None => track.value_at(now),
                 };
                 *track = Track::starting(current, target, *spec, now);
+            } else if driven.is_none() && track.driven {
+                // Just handed back to the clock: pick the interpolation up from
+                // where the drag left it and run the rest on time.
+                let current = track.written;
+                *track = Track::starting(current, track.target, *spec, now);
             }
 
             if let Some(t) = driven {
                 let value = track.value_at_progress(t);
                 write(node, *prop, value);
                 track.written = value;
+                track.driven = true;
                 continue;
             }
+            track.driven = false;
 
             if track.active {
                 let value = track.value_at(now);
@@ -206,6 +221,7 @@ impl Track {
             end_ms: 0.0,
             easing: Easing::Linear,
             active: false,
+            driven: false,
         }
     }
 
@@ -219,6 +235,7 @@ impl Track {
             end_ms: start + spec.duration.max(0.0) as f64,
             easing: spec.easing,
             active: spec.duration > 0.0,
+            driven: false,
         };
         // `transition: opacity 0s` is how CSS turns a transition off without
         // deleting the declaration, and a zero-length interpolation would be a
@@ -496,6 +513,49 @@ mod tests {
             "reversed: {}",
             node.style.opacity
         );
+    }
+
+    /// Handing a driven swap back to the clock settles from where the drag left
+    /// it, rather than jumping to the end.
+    ///
+    /// The jump is what happens if the track keeps the deadline it was given
+    /// when the swap opened: by the time a finger lets go that deadline is long
+    /// past, so every remaining frame reads as "already finished".
+    #[test]
+    fn a_swap_handed_back_to_the_clock_settles_from_where_it_is() {
+        let mut anim = Animator::new();
+        let mut node = fading(1.0, 100.0);
+        assert_eq!(anim.apply(&mut node, 0.0), None);
+
+        // Dragged 40% of the way out and held there for a while.
+        node.style.opacity = 0.0;
+        node.style.swap_progress = Some(0.4);
+        let _ = anim.apply(&mut node, 500.0);
+        assert!((node.style.opacity - 0.6).abs() < 1e-4, "{}", node.style.opacity);
+
+        // Let go: no progress any more, so the clock takes over from 0.6.
+        node.style.opacity = 0.0;
+        node.style.swap_progress = None;
+        let wake = anim.apply(&mut node, 500.0);
+        assert!(wake.is_some(), "it is animating again, so a frame is due");
+        assert!(
+            (node.style.opacity - 0.6).abs() < 1e-4,
+            "still where the finger left it on the handover frame: {}",
+            node.style.opacity
+        );
+
+        // Half of the declared 100ms later, half of the *remaining* distance.
+        node.style.opacity = 0.0;
+        let _ = anim.apply(&mut node, 550.0);
+        assert!(
+            node.style.opacity > 0.25 && node.style.opacity < 0.35,
+            "settling, not jumped: {}",
+            node.style.opacity
+        );
+
+        node.style.opacity = 0.0;
+        let _ = anim.apply(&mut node, 600.0);
+        assert!((node.style.opacity - 0.0).abs() < 1e-4, "arrived: {}", node.style.opacity);
     }
 
     #[test]

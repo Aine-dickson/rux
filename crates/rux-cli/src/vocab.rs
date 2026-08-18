@@ -119,6 +119,7 @@ const DIRECTIVES: &[Entry] = &[
     Entry { name: "r-else", detail: "the fallback branch", doc: "Follows an `r-if` or `r-elif` sibling, and renders when none of them held." },
     Entry { name: "r-show", detail: "hide without removing", doc: "`r-show=\"expanded\"`. The element stays in the tree and keeps its state; it is only not painted. Prefer `r-if` when the subtree is expensive." },
     Entry { name: "r-model", detail: "two-way bind an input", doc: "`r-model=\"name\"` on an `<input>`: typing writes the signal, and writing the signal updates the field." },
+    Entry { name: "r-transition", detail: "animate the way in and out", doc: "On an `r-if` branch or a keyed `r-for` row: the element is held on screen while it leaves. Style the two sides with `:enter-from` and `:leave-to`; the element's own `transition` sets how long. `:r-transition=\"expr\"` hands progress to you instead, 0 to 1." },
 ];
 
 /// Attributes that only mean something on one element.
