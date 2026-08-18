@@ -1,0 +1,178 @@
+<template>
+  <screen class="app">
+    <text class="title">a chart drawn from a signal</text>
+    <text class="lead">The line is a `&lt;path&gt;` whose `d` is built in script from the readings below. Add a reading and the geometry is rebuilt; because the shape declares `transition: d`, it walks to the new line instead of cutting to it.</text>
+
+    <view class="frame">
+      <!-- The band under the line and the line itself are the same points,
+           twice: one path closed down to the baseline and filled, one left open
+           and stroked. Two elements rather than one, because a fill and a
+           stroke of the same path cannot want different geometry otherwise. -->
+      <path class="band" :d="area(readings)" />
+      <path class="line" :d="line(readings)" alt="the readings so far, as a line" />
+    </view>
+
+    <view class="row">
+      <view class="btn" @tap="add()">
+        <text class="btn-text">add a reading</text>
+      </view>
+      <view class="btn" @tap="drop()">
+        <text class="btn-text">drop the last</text>
+      </view>
+      <view class="btn" @tap="jolt()">
+        <text class="btn-text">jolt them all</text>
+      </view>
+    </view>
+
+    <text class="foot">{{ readings.length }} readings, peak {{ peak }}</text>
+  </screen>
+</template>
+
+<style>
+  .app {
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+    padding: 28px;
+    background: #1e1e2e;
+  }
+
+  .title { color: #cdd6f4; font-size: 22px; font-weight: 700; }
+  .lead { color: #9399b2; font-size: 13px; max-width: 560px; }
+  .foot { color: #9399b2; font-size: 13px; }
+  .row { display: flex; align-items: center; gap: 10px; }
+
+  .btn {
+    padding: 10px 16px;
+    background: #313244;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: background 150ms ease-out;
+  }
+
+  .btn:hover { background: #45475a; }
+  .btn-text { color: #cdd6f4; font-size: 14px; }
+  /* The paths are positioned by the frame, so they need a box to sit in and a
+     size to be measured against. Both are given an explicit width and height
+     rather than being left to their own geometry, since a chart whose box
+     changed with its data would move the buttons under it every time a reading
+     arrived. */
+
+  .frame {
+    position: relative;
+    width: 480px;
+    height: 200px;
+    padding: 10px;
+    background: #181825;
+    border-radius: 12px;
+  }
+
+  .band, .line { position: absolute; width: 480px; height: 180px; }
+  /* The geometry itself is animatable, so a redraw walks. Two paths
+     interpolate when their command sequences match, which is exactly what
+     happens when a reading's value changes and the point count does not. */
+
+  .band {
+    fill: #89b4fa;
+    opacity: 0.18;
+    stroke: none;
+    transition: d 400ms ease-out;
+  }
+
+  .line {
+    fill: none;
+    stroke: #89b4fa;
+    stroke-width: 3px;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    transition: d 400ms ease-out, stroke 300ms ease-out;
+  }
+</style>
+
+<script>
+  let readings = signal([12, 48, 30, 66, 40, 78, 52]);
+
+  computed peak = high(readings);
+
+  fn high(list) {
+    let top = 0;
+    for v in list {
+      if v > top { top = v; }
+    }
+    top
+  }
+
+  /* Where a reading sits inside the 480 by 180 box, with x spread evenly and y
+     measured from the bottom. Written once so the line and the band cannot
+     disagree about it, which they would the moment one of them was edited. */
+  fn points(list) {
+    let out = [];
+    let n = list.length;
+    if n < 2 { return out; }
+    for i in 0..n {
+      let x = i * 480 / (n - 1);
+      let y = 180 - list[i] * 170 / 100;
+      out.push([x, y]);
+    }
+    out
+  }
+
+  /* `M` then one `L` per reading. Straight segments, because the parser turns
+     every line into a cubic anyway and a smoothed line would hide the data. */
+  fn line(list) {
+    let p = points(list);
+    if p.length < 2 { return ""; }
+    let d = "M " + p[0][0] + " " + p[0][1];
+    for i in 1..p.length {
+      d += " L " + p[i][0] + " " + p[i][1];
+    }
+    d
+  }
+
+  /* The same line, taken down to the baseline and closed. Note that this has
+     two more commands than the line does, which is fine: the two never
+     interpolate against each other, only against their own previous selves. */
+  fn area(list) {
+    let p = points(list);
+    if p.length < 2 { return ""; }
+    let d = "M " + p[0][0] + " 180 L " + p[0][0] + " " + p[0][1];
+    for i in 1..p.length {
+      d += " L " + p[i][0] + " " + p[i][1];
+    }
+    d + " L " + p[p.length - 1][0] + " 180 Z"
+  }
+
+  fn add() {
+    let next = readings;
+    /* Something that looks like a reading rather than a random number: a walk
+       from the last one, kept inside the box. */
+    let last = next[next.length - 1];
+    let step = (next.length * 37 % 61) - 30;
+    let v = last + step;
+    if v < 5 { v = 5; }
+    if v > 98 { v = 98; }
+    next.push(v);
+    readings = next;
+  }
+
+  fn drop() {
+    let next = readings;
+    if next.length > 2 {
+      next.remove(next.length - 1);
+      readings = next;
+    }
+  }
+
+  /* Every reading moves and the point count does not, so the whole line walks
+     to its new shape. This is the case `transition: d` exists for. */
+  fn jolt() {
+    let next = [];
+    for i in 0..readings.length {
+      let v = readings[i] + ((i * 53 % 71) - 35);
+      if v < 5 { v = 5; }
+      if v > 98 { v = 98; }
+      next.push(v);
+    }
+    readings = next;
+  }
+</script>

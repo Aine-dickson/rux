@@ -49,6 +49,7 @@ under [Tooling](/tooling/), along with how to set up the VS Code extension.
 
 - [Elements](/reference/elements/): The six elements the runtime renders, plus slot, router and route.
 - [Layout](/reference/layout/): Everything defaults to block; use display: flex. Hug, fill, and why inline flow is gone.
+- [Paths](/reference/paths/): SVG path data as an element: the d attribute, paint as CSS, and shapes that morph.
 - [Honored CSS](/reference/css/): The authoritative list of properties the runtime interprets, plus selectors, pseudo-classes and transitions.
 - [Reactivity](/reference/reactivity/): Signals, computed values, effects, and what re-runs when one changes.
 - [Inputs](/reference/inputs/): Text fields, textarea, select, checkbox and radio, and two-way binding with r-model.

@@ -6,7 +6,7 @@ weight = 2
 
 <!-- GENERATED FROM docs/05-as-built.md BY site/sync-docs.sh. DO NOT EDIT HERE. -->
 
-`<screen>` `<view>` `<text>` `<image>` `<button>` `<input>` + imported
+`<screen>` `<view>` `<text>` `<image>` `<path>` `<button>` `<input>` + imported
 components as custom tags, plus two that render no box of their own: `<slot>`
 (a component's hole for the caller's children) and `<router>`/`<route>` (see
 [Routing](/reference/routing/)). `role=` is honored for **selectors and semantics**

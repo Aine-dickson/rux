@@ -269,3 +269,103 @@ fn the_element_query_example_measures_and_focuses() {
     doc.apply_handler("reveal_end()");
     assert_eq!(doc.take_reveals().len(), 1, "one element asked to be revealed");
 }
+
+/// Drive the chart example: the line really is built from the readings, and it
+/// really is rebuilt when they change.
+///
+/// This is the test standing in for a person looking at the window. `rux check`
+/// never runs a script, so a `d` expression that returned nonsense would check
+/// clean and draw nothing, and "the example loads" would still be true.
+#[test]
+fn the_chart_example_draws_its_readings() {
+    fn paths(node: &rux_layout::Node, out: &mut Vec<rux_layout::PathContent>) {
+        if let Some(p) = &node.path {
+            out.push(p.clone());
+        }
+        for child in &node.children {
+            paths(child, out);
+        }
+    }
+    let all = |doc: &Document| {
+        let mut v = Vec::new();
+        paths(&doc.root, &mut v);
+        v
+    };
+
+    let mut doc = Document::load(examples_dir().join("chart.rux")).expect("loads");
+    let before = all(&doc);
+    assert_eq!(before.len(), 2, "the band and the line");
+    for p in &before {
+        assert!(
+            !p.commands.is_empty(),
+            "a path with no geometry is an empty box: d was {:?}",
+            p.d
+        );
+    }
+    // Seven readings: a move and six lines, each line one cubic.
+    let line = before.iter().find(|p| !p.d.contains('Z')).expect("the open line");
+    assert_eq!(line.commands.len(), 7, "one command per reading: {:?}", line.d);
+
+    // Add one, and the geometry follows.
+    assert!(doc.apply_handler("add()"), "the tap changed state");
+    let after = all(&doc);
+    let line2 = after.iter().find(|p| !p.d.contains('Z')).expect("the open line");
+    assert_eq!(line2.commands.len(), 8, "the new reading is drawn: {:?}", line2.d);
+    assert_ne!(line.d, line2.d, "and the geometry actually changed");
+
+    // Jolt moves every reading without changing how many there are, which is
+    // the case `transition: d` exists for: same sequence, so it interpolates.
+    let jolted = {
+        assert!(doc.apply_handler("jolt()"));
+        all(&doc)
+    };
+    let line3 = jolted.iter().find(|p| !p.d.contains('Z')).expect("the open line");
+    assert_eq!(line3.commands.len(), 8, "the count held");
+    assert_ne!(line2.d, line3.d, "and the values moved");
+    assert!(
+        rux_layout::path::lerp(&line2.commands, &line3.commands, 0.5).is_some(),
+        "so the two interpolate, which is what makes the redraw walk"
+    );
+}
+
+/// Drive the morph example: the three shapes really do share a command
+/// sequence, so each one really can become the next.
+///
+/// The example's whole claim is that a square and a circle interpolate. If a
+/// shape were ever edited into a different number of commands the morph would
+/// silently become a cut, which is exactly the kind of rot nobody notices.
+#[test]
+fn the_morph_example_shapes_interpolate() {
+    fn paths(node: &rux_layout::Node, out: &mut Vec<rux_layout::PathContent>) {
+        if let Some(p) = &node.path {
+            out.push(p.clone());
+        }
+        for child in &node.children {
+            paths(child, out);
+        }
+    }
+
+    let mut doc = Document::load(examples_dir().join("morph.rux")).expect("loads");
+    let mut shapes = Vec::new();
+    paths(&doc.root, &mut shapes);
+    // The big one, plus the strip of three below it.
+    assert_eq!(shapes.len(), 4, "the shape and the three glyphs");
+    // A move, four curves and a close, for every one of them.
+    for s in &shapes {
+        assert_eq!(s.commands.len(), 6, "six commands: {:?}", s.d);
+    }
+    for pair in shapes.windows(2) {
+        assert!(
+            rux_layout::path::lerp(&pair[0].commands, &pair[1].commands, 0.5).is_some(),
+            "every shape interpolates against every other, or the morph is a cut"
+        );
+    }
+
+    // Walking on really does change which shape is drawn.
+    let first = shapes[0].d.clone();
+    assert!(doc.apply_handler("at = (at + 1) % shapes.length"));
+    let mut next = Vec::new();
+    paths(&doc.root, &mut next);
+    assert_ne!(first, next[0].d, "the tap swapped the shape");
+    assert_eq!(next[0].commands.len(), 6, "and the new one still parses");
+}

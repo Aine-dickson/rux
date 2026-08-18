@@ -31,6 +31,8 @@ overflow / overflow-x / overflow-y   (hidden|clip = clip; auto|scroll = scroll;
                                       both axes together; x and y can't differ)
 overflow-wrap (break-word), word-break (break-all)
 cursor (pointer, on @tap boxes only)
+fill, fill-rule, stroke, stroke-width, stroke-linecap, stroke-linejoin
+  (<path> only; see above)
 ```
 **Selectors:** tag, `.class`, `#id`, `[role="…"]`, compounds, and all four
 combinators: descendant (`.a .b`), child (`.a > .b`), next-sibling (`.a + .b`),
@@ -68,8 +70,9 @@ supported.
 
 **Animatable:** `opacity`, `background-color`, `color`, `border-color`,
 `border-width`, `border-radius`, `width`, `height`, `padding`, `margin`, `gap`,
-`font-size`, `transform`, and the insets (`top`/`right`/`bottom`/`left`, which
-animate together). Naming anything else warns and lists what is animatable,
+`font-size`, `transform`, the insets (`top`/`right`/`bottom`/`left`, which
+animate together), and on a `<path>`: `fill`, `stroke`, `stroke-width` and `d`,
+the geometry itself. Naming anything else warns and lists what is animatable,
 rather than leaving you with an element that silently never moves. A longhand of
 an animatable shorthand (`padding-left`) is pointed at the shorthand: the four
 sides animate as a unit.

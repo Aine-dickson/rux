@@ -72,6 +72,8 @@ splits=(
   # Single-quoted: this heading contains backticks, which a double-quoted shell
   # string would run as a command.
   '05-as-built.md|### Layout: **use `display: flex`**|reference/layout.md|Layout|3|Everything defaults to block; use display: flex. Hug, fill, and why inline flow is gone.'
+  # Single-quoted for the backticks, as above.
+  '05-as-built.md|### `<path>`: vector geometry|reference/paths.md|Paths|16|SVG path data as an element: the d attribute, paint as CSS, and shapes that morph.'
   "05-as-built.md|### Honored CSS|reference/css.md|Honored CSS|4|The authoritative list of properties the runtime interprets, plus selectors, pseudo-classes and transitions."
   "05-as-built.md|### Reactivity & script|reference/reactivity.md|Reactivity|5|Signals, computed values, effects, and what re-runs when one changes."
   "05-as-built.md|### Inputs|reference/inputs.md|Inputs|7|Text fields, textarea, select, checkbox and radio, and two-way binding with r-model."

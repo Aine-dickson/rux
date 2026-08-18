@@ -1384,9 +1384,40 @@ way. This milestone is where Rux stops being stock rhai.
    actually developed and tested on. **No `.msi`, no `.app`, no `.apk`.**
    Mobile packaging waits for v0.8, where mobile itself lives.
 
+11. **Paths as an element.** ✅ **BUILT 2026-08-19.** The user's idea from
+    2026-08-13, added to this milestone on 2026-08-19 rather than left waiting.
+    `<path d="…">` takes the full SVG path grammar and draws Bézier geometry,
+    which the renderer could always do and the language could never say: vello
+    is a path renderer and `rux-paint` was already building a `BezPath` for the
+    underline rule. A UI language limited to boxes and images has a visible
+    ceiling, and only the language was under it.
+
+    The decisions, all the user's: **geometry in the `d` attribute** (`:d` to
+    bind it), because a data-driven path is computed per row and the cascade is
+    the wrong place for a value that changes with the data; **the whole SVG
+    grammar including arcs**, so path data pasted from a design tool works;
+    and **both** a live chart and a morphing shape as the first examples, which
+    is what put shape interpolation in scope rather than leaving it to a
+    follow-up.
+
+    Paint is CSS rather than attributes, which is the one call that was not
+    forced: `fill`, `stroke` and the rest belong in the cascade because that is
+    where every other appearance in Rux is written, and putting them there is
+    what gives a path `:hover`, `:class`, `:enter-from` and `transition` on the
+    day it lands. `transition: d` then animates the shape itself, under the
+    rule tier 1 already states for lengths: same sequence of commands
+    interpolates, anything else jumps.
+
+    Deferred deliberately: **no `viewBox`**, a second coordinate system that can
+    be added later and not removed later; and no resampling of mismatched
+    shapes, because guessing a correspondence produces a fold as often as a
+    morph. See `/reference/paths/`.
+
 The ordering within this milestone is the point: the fork changes what a script
 can do, animation and hooks both build on that, and packaging commits to an
-output format only once nothing above it is still moving.
+output format only once nothing above it is still moving. Paths came in late and
+sit outside that chain: they touch the paint path and nothing the rest of the
+milestone depends on.
 
 #### The fork: `rux-rhai`
 

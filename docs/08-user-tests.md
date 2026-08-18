@@ -106,6 +106,33 @@ something; the rest are written for a person and are **open**.
 | A route transition driven by a drag rather than the clock | **open** | `:r-transition` works on `<router>`, so a navigation can follow a finger. Never tried; no example does it yet |
 | Any of it on a touchscreen | **unverified** | Every run above was a mouse. A drag-driven swap is the case that most wants a real finger, and the axis claim has never met one |
 
+### `<path>`, vector geometry (2026-08-19)
+
+New in v0.7 and added mid-milestone at the user's request. **Every case here is
+open**, and for one reason worth stating rather than burying: **screen capture
+from the agent environment returned pure black on this machine today**, for a
+known-good example as well as for the new one, so nothing below has been *seen*
+by anybody yet. What has been done instead is to assert it, which is not the
+same thing and is why these are open rather than passed.
+
+| Case | Hardware | Outcome |
+|---|---|---|
+| Open `examples/morph.rux` and tap through square, circle, blob | **open** | The shape should *walk* between the three, not cut. It is the whole claim of `transition: d`. A cut means the command sequences stopped matching |
+| Watch the fill and the outline during that walk | **open** | The colour and the stroke width animate alongside the geometry, on the blob's `:class`. They are ordinary transitions on ordinary properties and should arrive together, not in two stages |
+| Open `examples/chart.rux` and tap "jolt them all" | **open** | Every reading moves and the count does not, so the line should travel to its new shape rather than jump |
+| Tap "add a reading", then "drop the last" | **open** | The point count changes, so the sequences no longer match and the line is *expected to jump*. Confirming the jump matters as much as confirming the walk: it is the documented rule, not a bug |
+| Look at the filled band under the line | **open** | The band and the line are two paths over the same points. They should stay registered with one another through a redraw, and the fill should sit under its own stroke |
+| Paste real path data from a design tool into a `<path>` | **open** | Arcs, smooth continuations and relative commands all parse, and the tests say the geometry is right. Whether a genuine exported icon *looks* right has never been tried |
+| A path with `alt=` under a screen reader | **unverified** | It reports as an image with that label, and without `alt` it is left out of the tree as decoration. Never driven with assistive technology |
+| Any of it at a non-1x DPI, or on a phone | **unverified** | Geometry is in logical pixels like every other length, so it should scale with the scene. No device |
+
+What is asserted rather than seen, so that the gap is legible: 19 tests over the
+`d` grammar, including that an arc really lands on its ellipse and that a square
+and a circle share a command sequence; and two tests that load the shipped
+examples, drive them the way the buttons do, and check the geometry that comes
+out. See `crates/rux-layout/tests/path_data.rs` and the two path cases in
+`crates/rux-runtime/tests/examples.rs`.
+
 ## Standing gaps
 
 Cases nothing here can currently exercise. They are the shape of what v0.8 has
@@ -116,3 +143,7 @@ to prove.
 - **The axis claim in full**: a `@drag` claims the finger, but whether a scroll
   can take it back mid-gesture needs a real screen to have an opinion about.
 - **Native pickers, safe areas, orientation, density**: no device.
+- **Looking at the window at all, from the agent environment**: screen capture
+  came back pure black on 2026-08-19, for a known-good example as much as for a
+  new one, so it is the capture path and not any one feature. Every visual claim
+  made that day is an assertion, not an observation.
