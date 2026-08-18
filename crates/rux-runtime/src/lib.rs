@@ -6409,6 +6409,46 @@ mod swap_tests {
         assert_eq!(text_of(&doc.root).join(""), "", "gone, because progress arrived");
     }
 
+    /// A bound swap whose expression is `null` from the outset runs on the
+    /// clock for the element's declared duration.
+    ///
+    /// One binding serving both drivers is the shape an author reaches for as
+    /// soon as a screen can be changed by a tap *and* by a finger: a tab bar
+    /// and a swipe back, driving the same page swap. `null` until something
+    /// grabs it means "the clock owns this", and the clock has to be told how
+    /// long. It was not: a swap opens at zero duration and the driver's arming
+    /// fills it in, and the `null` path only filled it in for a swap that had
+    /// already been bound. A swap that had only ever been null therefore ran
+    /// for 0ms, so a tap-driven navigation simply cut, and only a *second*
+    /// navigation, after a drag had once set the driver, animated at all.
+    #[test]
+    fn a_bound_swap_that_was_never_driven_still_runs_on_the_clock() {
+        let mut doc = Document::from_source(
+            "<template><screen>\
+               <text r-if=\"open\" :r-transition=\"p\" class=\"panel\">hello</text>\
+             </screen></template>\n\
+             <style>\n.panel { opacity: 1; transition: opacity 300ms; }\n\
+             .panel:leave-to { opacity: 0; }\n</style>\n\
+             <script>\nlet open = signal(true);\nlet p = signal(null);\n</script>",
+        )
+        .expect("builds");
+        assert!(doc.apply_handler("open = false"), "the swap opens");
+
+        // Held, and waiting on a clock rather than on an author who is never
+        // going to write a number.
+        assert!(doc.advance_swaps(0.0).is_some(), "a clock is running it");
+        assert_eq!(text_of(&doc.root).join(""), "hello", "still on screen");
+
+        // Halfway through the declared 300ms it is still there. This is the
+        // assertion the bug failed: at zero duration it had gone by now.
+        assert!(doc.advance_swaps(150.0).is_some(), "still going");
+        assert_eq!(text_of(&doc.root).join(""), "hello", "half a duration in");
+
+        // And it ends when the duration says, not before and not never.
+        let _ = doc.advance_swaps(300.0);
+        assert_eq!(text_of(&doc.root).join(""), "", "gone on time");
+    }
+
     /// Two route views, so a navigation has something to swap between.
     fn routed(app: &str) -> Document {
         use std::fs;

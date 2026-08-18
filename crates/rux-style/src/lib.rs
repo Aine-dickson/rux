@@ -3929,8 +3929,25 @@ fn arm_swap(
                 // than snapping to an end the finger never reached.
                 let duration = swap_duration(&node.style);
                 if let Some(swap) = swaps.pending.get_mut(key) {
-                    if let Driver::Bound(_) = swap.driver {
-                        swap.driver = Driver::Clock { duration, end_ms: None };
+                    match &mut swap.driver {
+                        // Already running on the clock: leave the deadline
+                        // alone, or every build would push the end further
+                        // away and it would never arrive.
+                        Driver::Clock { end_ms: Some(_), .. } => {}
+                        // A swap that opened while the expression was already
+                        // holding `null` is a clock swap nobody has told the
+                        // duration to: a swap opens at zero and the caller
+                        // fills it in, and this is that caller. Without this it
+                        // runs for 0ms and the change simply appears. That is
+                        // the shape an author writes when one binding serves
+                        // both drivers, `:r-transition="progress"` with
+                        // `progress` null until a finger touches it, which is
+                        // how a page swap animates on a tap and follows a hand
+                        // on a drag without declaring the swap twice.
+                        Driver::Clock { duration: d, .. } => *d = duration,
+                        Driver::Bound(_) => {
+                            swap.driver = Driver::Clock { duration, end_ms: None };
+                        }
                     }
                 }
                 node.style.swap_progress = None;
