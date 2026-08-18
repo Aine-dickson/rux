@@ -3,19 +3,16 @@
     <nav-bar />
 
     <!-- Only the matched route renders, and the router leaves no box of its own
-         behind. The `<view>` around it is not the router's doing: while a
-         navigation animates there are two real pages at once, and this is the
-         box they are both measured against, so the one on its way out can be
-         lifted out of the flow and sit on top of the one coming in. -->
-    <view class="pages">
-      <router r-transition>
-        <route path="/" view="home-page" />
-        <route path="/crew" view="crew-list" :crew="crew" />
-        <route name="crew-detail" path="/crew/:id" view="crew-detail" :crew="crew" />
-        <route path="/about" view="about-page" />
-        <route fallback view="lost-page" />
-      </router>
-    </view>
+         behind. While a navigation animates there are two real pages at once,
+         and the one on its way out is lifted out of the flow so the one coming
+         in takes its place rather than queueing below it. -->
+    <router r-transition>
+      <route path="/" view="home-page" />
+      <route path="/crew" view="crew-list" :crew="crew" />
+      <route name="crew-detail" path="/crew/:id" view="crew-detail" :crew="crew" />
+      <route path="/about" view="about-page" />
+      <route fallback view="lost-page" />
+    </router>
 
     <!-- Back and Forward, greyed out when there is nowhere to go. This is what
          `can_go_back` is for: disabling a control is a class, and a class reads
@@ -102,26 +99,16 @@
      is one page showing different data, so `/crew/grace` to `/crew/kim` updates
      in place rather than crossing over. */
   .page { opacity: 1; transform: translateX(0px); transition: opacity 220ms ease-out, transform 220ms ease-out; }
-  /* The box the two pages share while a navigation is running. */
-  .pages { display: flex; flex-direction: column; }
   /* The page on its way out is taken out of the flow, so the two pages occupy
      the same place instead of stacking. Without this the incoming page sits
      below the outgoing one and you watch an empty gap being held open for it,
      which is far more visible than the transition itself. `:leave-to` holds
      from the moment the swap opens, so this applies for the whole of it.
 
-     An absolutely positioned box is placed against its **parent**, so the
-     wrapper above is what makes this land in the right place rather than at the
-     top of the window. */
-
-  .page:leave-to {
-    position: absolute;
-    left: 0;
-    right: 0;
-    opacity: 0;
-    transform: translateX(-28px);
-  }
-
+     Naming no inset is deliberate: a box taken out of the flow keeps the place
+     it would have had, so this needs no wrapper to be measured against and no
+     coordinates to be told. */
+  .page:leave-to { position: absolute; opacity: 0; transform: translateX(-28px); }
   .page:enter-from { opacity: 0; transform: translateX(28px); }
 </style>
 

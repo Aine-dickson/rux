@@ -82,7 +82,7 @@
 
   /* Where it comes in from, and where it goes out to. Both are just styles. */
   .panel:enter-from { opacity: 0; transform: translateY(-16px); }
-  .panel:leave-to { opacity: 0; transform: translateY(-16px); }
+  .panel:leave-to { position: absolute; opacity: 0; transform: translateY(-16px); }
   .panel-title { color: #cdd6f4; font-size: 16px; font-weight: 700; }
   .panel-body { color: #a6adc8; font-size: 14px; line-height: 20px; }
 
@@ -102,7 +102,10 @@
   /* Under a bound driver the duration above is not what decides the pace, the
      finger is. It still says which properties take part, and it takes over
      again when the drag lets go. */
-  .card:leave-to { opacity: 0; transform: translateX(320px); }
+  /* Out of the flow on the way out, so the card does not hold its space open
+     while it leaves and whatever follows it does not wait for it. Naming no
+     inset keeps it exactly where it stood. */
+  .card:leave-to { position: absolute; opacity: 0; transform: translateX(320px); }
   .card:enter-from { opacity: 0; transform: translateX(320px); }
   .card-title { color: #cdd6f4; font-size: 16px; font-weight: 700; }
   .card-body { color: #bac2de; font-size: 14px; line-height: 20px; }
@@ -128,9 +131,9 @@
   /* The two branches enter and leave in opposite directions, so they slide
      past one another rather than both arriving from the same side. */
   .good:enter-from { opacity: 0; transform: translateX(24px); }
-  .good:leave-to { opacity: 0; transform: translateX(-24px); }
+  .good:leave-to { position: absolute; opacity: 0; transform: translateX(-24px); }
   .idle:enter-from { opacity: 0; transform: translateX(-24px); }
-  .idle:leave-to { opacity: 0; transform: translateX(24px); }
+  .idle:leave-to { position: absolute; opacity: 0; transform: translateX(24px); }
 </style>
 
 <script>
