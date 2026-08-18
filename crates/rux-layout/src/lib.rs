@@ -1006,6 +1006,14 @@ impl Gesture {
 /// An absolutely-positioned tappable region, carrying its `@tap` handler source.
 #[derive(Clone, Debug)]
 pub struct HitRegion {
+    /// The `transform` in force where this box sits.
+    ///
+    /// The rect itself is untransformed, because that is what the layout
+    /// produced. Testing a point against it without undoing the transform means
+    /// a tap on a sliding element lands where the element *used* to be, which
+    /// is a correctness bug rather than a cosmetic one: mid-transition the
+    /// wrong thing responds, or nothing does.
+    pub transform: Option<Transform>,
     pub x: f32,
     pub y: f32,
     pub width: f32,
@@ -1027,6 +1035,17 @@ pub struct HitRegion {
 
 impl HitRegion {
     pub fn contains(&self, px: f32, py: f32) -> bool {
+        // Undo the transform on the *point* rather than transforming the rect:
+        // a rotated or skewed box is no longer a rectangle, and the inverse
+        // point test stays correct for every affine.
+        let (px, py) = match self.transform {
+            Some(m) => match invert(m) {
+                Some(inv) => apply(inv, px, py),
+                // Collapsed to nothing: there is no area left to hit.
+                None => return false,
+            },
+            None => (px, py),
+        };
         px >= self.x && px <= self.x + self.width && py >= self.y && py <= self.y + self.height
     }
 }
@@ -1473,6 +1492,29 @@ fn to_align_content(j: Justify) -> AlignContent {
     }
 }
 
+/// The inverse of an affine, or `None` when it collapses (zero determinant).
+fn invert(m: Transform) -> Option<Transform> {
+    let [a, b, c, d, e, f] = m;
+    let det = a * d - b * c;
+    if det.abs() < 1e-9 {
+        return None;
+    }
+    let inv = 1.0 / det;
+    Some([
+        d * inv,
+        -b * inv,
+        -c * inv,
+        a * inv,
+        (c * f - d * e) * inv,
+        (b * e - a * f) * inv,
+    ])
+}
+
+/// A point through an affine.
+fn apply(m: Transform, x: f32, y: f32) -> (f32, f32) {
+    (m[0] * x + m[2] * y + m[4], m[1] * x + m[3] * y + m[5])
+}
+
 /// `outer * inner`, both as kurbo's `[a, b, c, d, e, f]`.
 ///
 /// Needed because a transform is now *accumulated* as well as pushed: the paint
@@ -1915,6 +1957,7 @@ fn collect(
         handlers.iter().find(|(nid, ..)| *nid == id)
     {
         out.hits.push(HitRegion {
+            transform: child_xform,
             x,
             y,
             width: layout.size.width,
@@ -2239,4 +2282,50 @@ pub fn layout_scrolled(
         &scrolls, &transforms, &states, &access, &paths, offsets, vp, None, None, 1.0, &mut out,
     );
     out
+}
+
+#[cfg(test)]
+mod hit_transform_tests {
+    use super::*;
+
+    fn region(m: Option<Transform>) -> HitRegion {
+        HitRegion {
+            transform: m,
+            x: 100.0,
+            y: 100.0,
+            width: 50.0,
+            height: 20.0,
+            on_tap: None,
+            gestures: Vec::new(),
+            cursor: Cursor::default(),
+            instance: None,
+        }
+    }
+
+    /// A hit region follows the transform its box is drawn through.
+    ///
+    /// Silent when wrong: the tap simply lands on whatever else is there, or on
+    /// nothing, and the element looks unresponsive rather than misplaced.
+    #[test]
+    fn a_transformed_region_is_hit_where_it_is_drawn() {
+        let plain = region(None);
+        assert!(plain.contains(110.0, 110.0), "inside");
+        assert!(!plain.contains(210.0, 110.0), "100px to the right is outside");
+
+        // The same box slid 100px right: kurbo order is [a, b, c, d, e, f].
+        let slid = region(Some([1.0, 0.0, 0.0, 1.0, 100.0, 0.0]));
+        assert!(
+            !slid.contains(110.0, 110.0),
+            "where it used to be is no longer where it is"
+        );
+        assert!(slid.contains(210.0, 110.0), "it is hit where it is drawn");
+    }
+
+    /// A box scaled to nothing has no area to hit.
+    #[test]
+    fn a_collapsed_region_cannot_be_hit() {
+        let gone = region(Some([0.0, 0.0, 0.0, 0.0, 0.0, 0.0]));
+        assert!(!gone.contains(110.0, 110.0));
+        assert!(!gone.contains(0.0, 0.0));
+    }
 }
