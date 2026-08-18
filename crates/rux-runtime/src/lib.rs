@@ -984,13 +984,22 @@ impl Document {
             return None;
         }
         let (wake, finished) = self.swaps.advance(now_ms);
-        if finished {
+        // An entering element is still wearing `:enter-from`, and the build that
+        // takes it off is what starts the animation. Nothing else would ask for
+        // that build: the condition already changed and will not change again.
+        let settling = self.swaps.needs_settling();
+        if finished || settling {
             // The tree changes when a swap commits: a leaving element stops
             // being built, which is also when its instance stops being touched
             // and so when `unmounted` fires. That is the pairing the live pair
             // was chosen for, and it costs nothing here because pruning already
             // does it.
             self.rebuild();
+        }
+        // Ask for the settling frame promptly; the animator's own floor keeps
+        // that from becoming a busy loop.
+        if settling {
+            return Some(wake.map_or(0.0, |w| w.min(0.0)));
         }
         wake
     }
@@ -6171,6 +6180,38 @@ mod swap_tests {
         assert_eq!(text_of(&doc.root).join(""), "hello", "never left");
         // One swap, not two, and it is now entering.
         assert_eq!(doc.swaps.pending().count(), 1, "reversed, not stacked");
+    }
+
+    /// `:enter-from` is worn for exactly one build and taken off by the next,
+    /// and the runtime asks for that next build itself.
+    ///
+    /// The failure this pins is silent rather than loud: hold `:enter-from` a
+    /// build too long and the element simply sits at its entering offset,
+    /// looking like a layout bug rather than a stuck animation.
+    #[test]
+    fn enter_from_is_worn_for_one_build_and_then_dropped() {
+        let mut doc = Document::from_source(
+            "<template><screen>\
+               <text r-if=\"open\" r-transition class=\"panel\">hello</text>\
+             </screen></template>\n\
+             <style>\n.panel { opacity: 1; transition: opacity 200ms; }\n\
+             .panel:enter-from { opacity: 0; }\n</style>\n\
+             <script>\nlet open = signal(false);\n</script>",
+        )
+        .expect("builds");
+        assert_eq!(text_of(&doc.root).join(""), "", "not on screen yet");
+
+        assert!(doc.apply_handler("open = true"), "the condition changed");
+        assert_eq!(doc.root.children[0].style.opacity, 0.0, "first build: wearing :enter-from");
+
+        // The runtime asks for the settling frame itself rather than waiting for
+        // an event that is never coming.
+        assert_eq!(doc.advance_swaps(0.0), Some(0.0), "a frame is due now");
+        assert_eq!(
+            doc.root.children[0].style.opacity,
+            1.0,
+            "second build: taken off, so the target has moved and tier 1 has              something to animate"
+        );
     }
 
     /// Without `r-transition` nothing is held: the old behaviour, exactly.

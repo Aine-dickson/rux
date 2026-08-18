@@ -1,0 +1,103 @@
+<template>
+  <screen class="app">
+    <text class="title">enter and leave</text>
+    <text class="hint">Tap a button · an element that arrives or departs is animated on its way</text>
+
+    <view class="row">
+      <view class="btn" @tap="panel = !panel">
+        <text class="btn-text">toggle the panel</text>
+      </view>
+      <view class="btn" @tap="banner = !banner">
+        <text class="btn-text">toggle the banner</text>
+      </view>
+    </view>
+
+    <!-- `r-transition` says this element's arrival and departure are animated.
+         What the two sides look like is CSS, on `:enter-from` and `:leave-to`,
+         and how long they take is the element's own `transition`. -->
+    <view class="panel" r-if="panel" r-transition>
+      <text class="panel-title">a panel</text>
+      <text class="panel-body">
+        It slides up and fades in on the way in, and back down on the way out.
+        Nothing here knows a swap is happening: the two sides are ordinary
+        rules, and the walk between them is the same transition machinery a
+        hover uses.
+      </text>
+    </view>
+
+    <!-- A chain animates branch by branch, so the two states cross over. -->
+    <view class="banner good" r-if="banner" r-transition>
+      <text class="banner-text">saved</text>
+    </view>
+    <view class="banner idle" r-else r-transition>
+      <text class="banner-text">nothing to save</text>
+    </view>
+  </screen>
+</template>
+
+<style>
+  .app {
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+    padding: 32px;
+    background: #1e1e2e;
+  }
+
+  .title { color: #cdd6f4; font-size: 22px; font-weight: 700; }
+  .hint { color: #6c7086; font-size: 13px; }
+  .row { display: flex; align-items: center; gap: 12px; }
+
+  .btn {
+    padding: 10px 16px;
+    background: #313244;
+    border-radius: 8px;
+    transition: background 150ms ease-out;
+  }
+  .btn:hover { background: #45475a; }
+  .btn-text { color: #cdd6f4; font-size: 14px; }
+
+  /* The element's own `transition` is what a swap lasts. One place to write a
+     duration, so the swap and the walk cannot disagree about it. */
+  .panel {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 20px;
+    background: #313244;
+    border-radius: 12px;
+    opacity: 1;
+    transform: translateY(0px);
+    transition: opacity 300ms ease-out, transform 300ms ease-out;
+  }
+
+  /* Where it comes in from, and where it goes out to. Both are just styles. */
+  .panel:enter-from { opacity: 0; transform: translateY(-16px); }
+  .panel:leave-to { opacity: 0; transform: translateY(-16px); }
+
+  .panel-title { color: #cdd6f4; font-size: 16px; font-weight: 700; }
+  .panel-body { color: #a6adc8; font-size: 14px; line-height: 20px; }
+
+  .banner {
+    padding: 12px 16px;
+    border-radius: 8px;
+    opacity: 1;
+    transform: translateX(0px);
+    transition: opacity 250ms ease-out, transform 250ms ease-out;
+  }
+  .banner-text { color: #1e1e2e; font-size: 14px; font-weight: 700; }
+  .good { background: #a6e3a1; }
+  .idle { background: #6c7086; }
+
+  /* The two branches enter and leave in opposite directions, so they slide
+     past one another rather than both arriving from the same side. */
+  .good:enter-from { opacity: 0; transform: translateX(24px); }
+  .good:leave-to { opacity: 0; transform: translateX(-24px); }
+  .idle:enter-from { opacity: 0; transform: translateX(-24px); }
+  .idle:leave-to { opacity: 0; transform: translateX(24px); }
+</style>
+
+<script>
+  let panel = signal(true);
+  let banner = signal(false);
+</script>

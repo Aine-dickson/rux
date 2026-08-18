@@ -418,10 +418,13 @@ pub struct Swap {
     /// Progress 0..=1, only meaningful under [`Driver::Bound`]; the clock driver
     /// leaves the interpolation to the animator and never reads this.
     pub progress: f32,
-    /// Whether the element has been built even once since the swap opened.
-    /// `:enter-from` is held while this is false, and for no longer: holding it
-    /// a second frame would mean the target never moves and nothing animates.
-    pub built: bool,
+    /// How many builds this swap has been through.
+    ///
+    /// `:enter-from` is held on the first and dropped on the second, and that
+    /// asymmetry is the whole trick: the drop is an ordinary style change, which
+    /// is what tier 1 already animates. Holding it a second build would mean the
+    /// target never moves and nothing would ever animate at all.
+    pub builds: u32,
     /// The row's loop variables, captured when a keyed `r-for` row starts
     /// leaving. By then the item is gone from the collection, so this is the
     /// only remaining way to build the row it used to render.
@@ -483,6 +486,17 @@ impl Swaps {
     pub fn end(&mut self) {
         self.shown = std::mem::take(&mut self.building);
         self.pending.retain(|_, s| s.touched);
+    }
+
+    /// Whether an entering swap is still holding `:enter-from` and so needs one
+    /// more build to let go of it.
+    ///
+    /// Easy to miss and fatal without: the frame that *drops* `:enter-from` is
+    /// the one that starts the animation, and nothing else would ask for it. A
+    /// condition change rebuilds once; without this the element would sit at its
+    /// entering offset forever.
+    pub fn needs_settling(&self) -> bool {
+        self.pending.values().any(|s| s.phase == Phase::Entering && s.builds < 2)
     }
 
     /// The swap is over: drop it and let the build's decision stand.
@@ -559,8 +573,8 @@ impl Swaps {
             // opening a second one. This is what makes a swap that is bound to
             // a finger able to change its mind.
             swap.phase = if wanted { Phase::Entering } else { Phase::Leaving };
-            let side = SwapSide { phase: swap.phase, first: !swap.built };
-            swap.built = true;
+            swap.builds = swap.builds.saturating_add(1);
+            let side = SwapSide { phase: swap.phase, first: swap.builds == 1 };
             self.building.insert(key.clone());
             return Some(Some(side));
         }
@@ -580,10 +594,10 @@ impl Swaps {
                 phase,
                 driver: Driver::Clock { duration: 0.0, end_ms: None },
                 progress: 0.0,
-                built: true,
                 locals: Vec::new(),
                 touched: true,
                 moved: false,
+                builds: 1,
             },
         );
         self.building.insert(key.clone());
