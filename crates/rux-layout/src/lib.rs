@@ -1492,6 +1492,29 @@ fn to_align_content(j: Justify) -> AlignContent {
     }
 }
 
+/// Every absolutely positioned box that has no insets of its own, with its
+/// parent, so its static position can be discovered and then pinned.
+///
+/// A box that *does* name an inset is asking to be placed against its parent
+/// and is left alone: that is what `top: 0` means and it already works.
+fn collect_statics(
+    tree: &TaffyTree<TextContent>,
+    id: NodeId,
+    out: &mut Vec<(NodeId, NodeId)>,
+) {
+    for child in tree.children(id).expect("children") {
+        let st = tree.style(child).expect("style");
+        let none_named = st.inset.left == auto()
+            && st.inset.right == auto()
+            && st.inset.top == auto()
+            && st.inset.bottom == auto();
+        if st.position == taffy::Position::Absolute && none_named {
+            out.push((id, child));
+        }
+        collect_statics(tree, child, out);
+    }
+}
+
 /// The inverse of an affine, or `None` when it collapses (zero determinant).
 fn invert(m: Transform) -> Option<Transform> {
     let [a, b, c, d, e, f] = m;
@@ -2224,13 +2247,30 @@ pub fn layout_scrolled(
     };
     tree.set_style(root_id, root_style).expect("set root style");
 
-    tree.compute_layout_with_measure(
-        root_id,
-        Size {
-            width: AvailableSpace::Definite(avail_w),
-            height: AvailableSpace::Definite(avail_h),
-        },
-        |known, available, id, ctx, _style| {
+    // An absolutely positioned box with no insets sits at its **static**
+    // position in CSS: where it would have been in normal flow. taffy has no
+    // such concept and puts it at the parent's content-box origin instead, so
+    // such a box jumped to the top-left of its parent. That is what made a
+    // departing page fly up over the nav bar, and it is why a route transition
+    // needed a wrapper box to look right at all.
+    //
+    // So it is laid out twice. The first pass leaves it in the flow, which is
+    // what discovers where it would have been; the second pins it there and
+    // takes it out. The cost is one extra layout, and only when such a box
+    // exists at all, which is normally never and during a swap is brief.
+    let mut statics: Vec<(NodeId, NodeId)> = Vec::new();
+    collect_statics(&tree, root_id, &mut statics);
+    for (_, id) in &statics {
+        let mut st = tree.style(*id).expect("style").clone();
+        st.position = taffy::Position::Relative;
+        tree.set_style(*id, st).expect("in flow for the first pass");
+    }
+
+    let mut measure_fn = |known: Size<Option<f32>>,
+                          available: Size<AvailableSpace>,
+                          id: NodeId,
+                          ctx: Option<&mut TextContent>,
+                          _style: &taffy::Style| {
             if let (Some(w), Some(h)) = (known.width, known.height) {
                 return Size { width: w, height: h };
             }
@@ -2272,9 +2312,38 @@ pub fn layout_scrolled(
                     height: 0.0,
                 },
             }
-        },
-    )
-    .expect("compute layout");
+        };
+
+    let space = Size {
+        width: AvailableSpace::Definite(avail_w),
+        height: AvailableSpace::Definite(avail_h),
+    };
+    tree.compute_layout_with_measure(root_id, space, &mut measure_fn)
+        .expect("compute layout");
+
+    if !statics.is_empty() {
+        // Where each one landed while it was still in the flow, pinned as an
+        // inset.
+        //
+        // Both are measured from the parent's **border** box, so they are in
+        // the same frame and the location transfers straight across. This was
+        // worth checking rather than assuming: taking the parent's padding off
+        // as well (on the theory that insets run from the padding box, as the
+        // CSS spec says of the containing block) moved every such box one
+        // padding up and left, which is exactly the kind of near-miss that
+        // reads as a layout bug rather than a wrong rule.
+        for (parent, id) in &statics {
+            let here = tree.layout(*id).expect("layout").location;
+            let _ = parent;
+            let mut st = tree.style(*id).expect("style").clone();
+            st.position = taffy::Position::Absolute;
+            st.inset.left = length(here.x);
+            st.inset.top = length(here.y);
+            tree.set_style(*id, st).expect("pinned where it stood");
+        }
+        tree.compute_layout_with_measure(root_id, space, &mut measure_fn)
+            .expect("compute layout again");
+    }
 
     let mut out = Layout::default();
     collect(
