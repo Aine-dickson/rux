@@ -28,6 +28,9 @@
 //! stack into this crate would put shaping under layout, and the shell already
 //! owns one.
 
+pub mod path;
+pub use path::{PathCmd, PathContent};
+
 use std::collections::HashMap;
 
 use taffy::prelude::*;
