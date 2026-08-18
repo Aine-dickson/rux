@@ -341,6 +341,14 @@ the swap instead of stacking a second one, and why a departing component's
 `unmounted` fires when the swap **commits** rather than when it starts. A
 cancelled swap never fired one.
 
+**Whether a departing element keeps its place is yours to say.** Left alone it
+stays in the flow until the swap commits, so nothing below it moves while it is
+still on screen. Giving `:leave-to` a `position: absolute` hands its space over
+at the *start* of the swap instead, which is what a page swap wants, since the
+arriving page should take that space rather than queue below it. A box taken out
+of the flow and naming no inset keeps the place it would have had, so it needs
+no coordinates and no wrapper to be measured against.
+
 On a list, `r-transition` needs `r-key` on the same element and says so if it
 is missing: without a key there is nothing to hold a departing row by, and a
 removal and a reorder are the same picture. A row that leaves from the middle

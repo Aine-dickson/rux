@@ -29,7 +29,11 @@
     <text class="card-title">drag me sideways</text>
     <text class="card-body">Past half way, this card leaves. Short of it, it settles back where it started. The swap is the same one the buttons above use; only what is driving it is different.</text>
   </view>
-  <view class="restore" r-if="!card" @tap="card = true; dismiss = null">
+  <!-- `gone`, not `!card`. Turning the condition off is what opens the swap, so
+       it goes false the instant the drag starts and anything reading it would
+       appear while the card is still on screen being dragged. What this button
+       is about is the swap having *committed*. -->
+  <view class="restore" r-if="gone" @tap="card = true; gone = false; dismiss = null">
     <text class="btn-text">bring the card back</text>
   </view>
 
@@ -105,7 +109,12 @@
   /* Out of the flow on the way out, so the card does not hold its space open
      while it leaves and whatever follows it does not wait for it. Naming no
      inset keeps it exactly where it stood. */
-  .card:leave-to { position: absolute; opacity: 0; transform: translateX(320px); }
+  /* Deliberately still in the flow, unlike the router's pages. Taking a box out
+     of the flow hands its space over at the *start* of the swap, which is right
+     when something is arriving to fill it and wrong when nothing is: everything
+     below would jump up while the card is still sitting there being dragged.
+     It keeps its place until it commits. */
+  .card:leave-to { opacity: 0; transform: translateX(320px); }
   .card:enter-from { opacity: 0; transform: translateX(320px); }
   .card-title { color: #cdd6f4; font-size: 16px; font-weight: 700; }
   .card-body { color: #bac2de; font-size: 14px; line-height: 20px; }
@@ -146,6 +155,9 @@
      finger settles instead of snapping. */
   let dismiss = signal(0);
 
+  /* Whether the card has actually left, as opposed to being mid-swap. */
+  let gone = signal(false);
+
   fn onDrag(event) {
     if event.phase == "start" {
       /* Turning the condition off is what opens the swap. The card does not
@@ -161,6 +173,7 @@
     } else {
       if dismiss > 0.45 {
         dismiss = 1;
+        gone = true;
       } else {
         /* Changed its mind. The condition comes back, which reverses the swap,
            and handing progress back to the clock walks it home from wherever
