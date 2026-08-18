@@ -1334,10 +1334,15 @@ way. This milestone is where Rux stops being stock rhai.
    arriver's `mounted`.
 
    **What is left**, in order, because each depends on the one before:
-   - **Enter/leave**, which needs a leaving subtree to outlive its removal.
-     `Animator::apply` already runs after the build and before the layout, which
-     is the natural place to re-insert one; the animator would hold the
-     departing subtree and drop it when its animation ends.
+   - **Enter/leave**, built as a **builder-owned live pair** (decided
+     2026-08-18). While a swap is pending the build emits *both* branches and
+     the animator supplies only progress and the per-side transforms. Not a
+     snapshot held by the animator: two real, laid-out, still-updating trees,
+     because a swipe is reversible and a corpse cannot be resurrected, and
+     because under builder ownership both instances stay reached by the build,
+     so pruning keeps working and `unmounted` fires at commit rather than at
+     removal. The cost, accepted knowingly, is that it touches the build path,
+     instance pruning and the router.
    - **Route transitions**, on top of that and never before it.
 7. **`rux build`, for web and Windows only.** Moved out of v0.6 on 2026-08-11
    to sit here, at the end, after the language has stopped moving. Two targets
@@ -1766,6 +1771,14 @@ beginning, and there is not one line of mobile code in the repo. Four releases
 have all been desktop. This milestone either makes the claim true or it comes
 out of the pitch.
 
+**The point of it is the developer experience, not only the target** (decided
+2026-08-18). Building for a phone must not drag a Rux user through Android
+Studio and Gradle; if a toolchain is needed, that is Rux's problem to hide
+rather than theirs to learn. Compile time and machine load count as part of
+whether this milestone worked, at development time and at build time alike. How
+is deliberately left open until the milestone is reached rather than guessed
+here.
+
 1. **Android and iOS**, through winit and wgpu, which both support them. The
    wasm work in v0.5 is a useful rehearsal: it already forced the shell to stop
    assuming a filesystem, a blocking main thread and a system clipboard.
@@ -1775,6 +1788,18 @@ out of the pitch.
    currently a drawn dropdown.
 4. **Safe areas, orientation, density.** `@media (orientation)` already exists
    from v0.4, which helps.
+5. **Splash screens.** Raised 2026-08-18 and undesigned; a phone app that shows
+   nothing while it starts looks broken, and this is the milestone that finds
+   out what Rux should do about it.
+6. **`rux.toml`**, with `rux build`. A manifest is genuinely needed rather than
+   optional, and it lands when packaging does: a window title, an icon and a
+   target have nowhere to live until there is an artifact to put them in, and
+   inventing the file first would commit the output format by accident.
+7. **The full gesture vocabulary**, if it has not already landed: `@longpress`,
+   `@press` / `@release`, `@swipe` and continuous `@drag`, each reporting its
+   touch points rather than one synthesised pointer. Decided 2026-08-18. The
+   shell tracks a single finger today, so multi-touch is new work rather than
+   exposure of what exists.
 
 ### v0.9: text, and the long tail
 
