@@ -361,6 +361,236 @@ pub struct Instance {
 /// outlives the tree, which is rebuilt constantly.
 pub type Instances = HashMap<String, Instance>;
 
+// ── Enter/leave ─────────────────────────────────────────────────────────────
+
+/// What identifies a swap across builds.
+///
+/// The **template** path, not the tree path. A leaving element's tree path moves
+/// as siblings around it come and go, so keying on it would lose the swap the
+/// moment a neighbour changed. The template path is fixed by the source file.
+/// The second half is the `r-key` of the row, `None` for an `r-if`.
+pub type SwapKey = (Vec<usize>, Option<String>);
+
+/// Which side of a swap an element is on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Phase {
+    /// The build has just started asking for this element.
+    Entering,
+    /// The build has stopped asking for this element, and it is on screen only
+    /// because the swap is holding it there.
+    Leaving,
+}
+
+/// Which side of a swap one built element is on, and whether this is the first
+/// build since it opened. Decided by [`Swaps::resolve`], since that is the only
+/// place both facts are known.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SwapSide {
+    pub phase: Phase,
+    pub first: bool,
+}
+
+/// Where a swap's progress comes from.
+#[derive(Clone, Debug)]
+pub enum Driver {
+    /// Wall time. The build records only the *duration*, read from the
+    /// element's own `transition` declarations, so there is one place a
+    /// duration is written and it is the CSS. Whoever owns the clock turns that
+    /// into `end_ms` the first frame it sees the swap: the build has no time
+    /// source and must not grow one.
+    Clock { duration: f32, end_ms: Option<f64> },
+    /// An author expression, re-read every build, yielding 0..=1. Reaching 1
+    /// commits and reaching 0 abandons. This is what binds a swap to a finger.
+    Bound(String),
+}
+
+/// One swap in flight.
+///
+/// Its whole job is to make the build emit an element the build would otherwise
+/// have dropped, and to say which of `:enter-from` / `:leave-to` is held while
+/// it does. The interpolation itself is tier 1's: an entering element is styled
+/// `:enter-from` for exactly one frame, so the frame after is an ordinary style
+/// change and `transition` animates it with no knowledge that a swap happened.
+#[derive(Clone, Debug)]
+pub struct Swap {
+    pub phase: Phase,
+    pub driver: Driver,
+    /// Progress 0..=1, only meaningful under [`Driver::Bound`]; the clock driver
+    /// leaves the interpolation to the animator and never reads this.
+    pub progress: f32,
+    /// Whether the element has been built even once since the swap opened.
+    /// `:enter-from` is held while this is false, and for no longer: holding it
+    /// a second frame would mean the target never moves and nothing animates.
+    pub built: bool,
+    /// The row's loop variables, captured when a keyed `r-for` row starts
+    /// leaving. By then the item is gone from the collection, so this is the
+    /// only remaining way to build the row it used to render.
+    pub locals: Vec<(String, Value)>,
+    /// Whether the build now running has reached this swap. Same rule, and the
+    /// same reason, as [`Instance::touched`].
+    pub touched: bool,
+    /// Whether a bound swap's progress has ever been off zero.
+    ///
+    /// Without it a bound swap abandons on the frame it opens: it starts at 0,
+    /// and 0 is also where abandoning is decided. Nothing to do with a clock
+    /// swap, which has a deadline instead of an end value.
+    pub moved: bool,
+}
+
+/// Every swap in flight, and what the last build showed. Owned by the runtime
+/// beside [`Instances`], because like an instance a swap outlives the tree it
+/// appears in.
+///
+/// `shown` is the half that is easy to forget and impossible to do without: a
+/// swap opens on the *difference* between what the last build emitted and what
+/// this one asks for, and the tree cannot report the first of those, having been
+/// thrown away. Nothing else in the build remembers a structural decision.
+#[derive(Clone, Debug, Default)]
+pub struct Swaps {
+    shown: HashSet<SwapKey>,
+    /// What the build now running has emitted, promoted to `shown` at the end.
+    building: HashSet<SwapKey>,
+    pending: HashMap<SwapKey, Swap>,
+}
+
+impl Swaps {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Whether anything is mid-swap, so the caller can skip the work entirely.
+    pub fn is_empty(&self) -> bool {
+        self.pending.is_empty()
+    }
+
+    pub fn pending(&self) -> impl Iterator<Item = (&SwapKey, &Swap)> {
+        self.pending.iter()
+    }
+
+    /// Start a build. Clears the per-build marks, the same bookkeeping
+    /// [`Instance::touched`] does and for the same reason.
+    pub fn begin(&mut self) {
+        self.building.clear();
+        for swap in self.pending.values_mut() {
+            swap.touched = false;
+        }
+    }
+
+    /// Finish a build: what it emitted becomes what is shown, and a swap the
+    /// build never reached is one whose element is gone for a reason that has
+    /// nothing to do with animation (an ancestor closed over it), so it goes
+    /// too rather than holding a subtree nothing is drawing.
+    pub fn end(&mut self) {
+        self.shown = std::mem::take(&mut self.building);
+        self.pending.retain(|_, s| s.touched);
+    }
+
+    /// The swap is over: drop it and let the build's decision stand.
+    ///
+    /// A leaving element also leaves `shown`. Forgetting that half is a loop
+    /// rather than a glitch: the next build would compare "not wanted" against
+    /// "was shown", see a difference, and open the very same swap again.
+    fn finish(&mut self, key: &SwapKey) {
+        if let Some(swap) = self.pending.remove(key) {
+            if swap.phase == Phase::Leaving {
+                self.shown.remove(key);
+            }
+        }
+    }
+
+    /// Advance every swap against the clock and finish the ones that are done.
+    ///
+    /// Returns how long until the next one needs looking at again, and whether
+    /// anything finished (which changes the tree, so the caller has to rebuild).
+    /// A **delay**, not a deadline, because that is what the animator returns
+    /// and the shell folds the two into one wait. A `None` means nothing is in
+    /// flight and the app can sleep, the same property the animator protects:
+    /// an idle Rux app must not burn frames.
+    pub fn advance(&mut self, now_ms: f64) -> (Option<f64>, bool) {
+        let mut done: Vec<SwapKey> = Vec::new();
+        let mut wake: Option<f64> = None;
+        for (key, swap) in self.pending.iter_mut() {
+            match &mut swap.driver {
+                Driver::Clock { duration, end_ms } => {
+                    let end = *end_ms.get_or_insert(now_ms + *duration as f64);
+                    if now_ms >= end {
+                        done.push(key.clone());
+                    } else {
+                        let delay = end - now_ms;
+                        wake = Some(wake.map_or(delay, |w: f64| w.min(delay)));
+                    }
+                }
+                // The author owns progress, so there is no deadline to wait on:
+                // the next build is what moves it, and the two ends are where
+                // the swap is over. Reaching 1 commits, returning to 0 abandons.
+                Driver::Bound(_) => {
+                    if swap.progress >= 1.0 || (swap.moved && swap.progress <= 0.0) {
+                        done.push(key.clone());
+                    }
+                }
+            }
+        }
+        let finished = !done.is_empty();
+        for key in &done {
+            self.finish(key);
+        }
+        (wake, finished)
+    }
+
+    /// Decide what to do with one structural element this build, and record it.
+    ///
+    /// `wanted` is what the condition (or the collection) says. The return is
+    /// whether to emit it at all, and if so which side it is on.
+    fn resolve(&mut self, key: &SwapKey, wanted: bool, animated: bool) -> Option<Option<SwapSide>> {
+        if !animated {
+            // No `r-transition`: the old behaviour exactly, and no bookkeeping
+            // beyond recording what was shown, so an element that gains the
+            // attribute later does not think it has been there all along.
+            if wanted {
+                self.building.insert(key.clone());
+            }
+            self.pending.remove(key);
+            return wanted.then_some(None);
+        }
+        let was = self.shown.contains(key);
+        if let Some(swap) = self.pending.get_mut(key) {
+            swap.touched = true;
+            // The condition changing back mid-swap reverses it rather than
+            // opening a second one. This is what makes a swap that is bound to
+            // a finger able to change its mind.
+            swap.phase = if wanted { Phase::Entering } else { Phase::Leaving };
+            let side = SwapSide { phase: swap.phase, first: !swap.built };
+            swap.built = true;
+            self.building.insert(key.clone());
+            return Some(Some(side));
+        }
+        if wanted == was {
+            if wanted {
+                self.building.insert(key.clone());
+            }
+            return wanted.then_some(None);
+        }
+        // A change with no swap yet: open one. The caller fills in the driver,
+        // which it can only do once it has built the element and can read its
+        // `transition` declarations.
+        let phase = if wanted { Phase::Entering } else { Phase::Leaving };
+        self.pending.insert(
+            key.clone(),
+            Swap {
+                phase,
+                driver: Driver::Clock { duration: 0.0, end_ms: None },
+                progress: 0.0,
+                built: true,
+                locals: Vec::new(),
+                touched: true,
+                moved: false,
+            },
+        );
+        self.building.insert(key.clone());
+        Some(Some(SwapSide { phase, first: true }))
+    }
+}
+
 // ── Component lifecycle ─────────────────────────────────────────────────────
 
 /// A component instance that appeared or disappeared during a build.
@@ -712,7 +942,9 @@ pub fn build_styled_tree(
     engine: &mut Engine,
 ) -> Result<LayoutNode, String> {
     let mut instances = Instances::new();
-    build_styled_tree_tracked(sfc, components, engine, &mut instances).map(|(node, _)| node)
+    let mut swaps = Swaps::new();
+    build_styled_tree_tracked(sfc, components, engine, &mut instances, &mut swaps)
+        .map(|(node, _)| node)
 }
 
 /// Recompute a text binding's string against the engine's current state, what
@@ -920,12 +1152,14 @@ pub fn build_styled_tree_tracked(
     components: &HashMap<String, Sfc>,
     engine: &mut Engine,
     instances: &mut Instances,
+    swaps: &mut Swaps,
 ) -> Result<(LayoutNode, BindingRegistry), String> {
     build_styled_tree_stateful(
         sfc,
         components,
         engine,
         instances,
+        swaps,
         &InteractionState::default(),
         Viewport::default(),
     )
@@ -940,6 +1174,7 @@ pub fn build_styled_tree_stateful(
     components: &HashMap<String, Sfc>,
     engine: &mut Engine,
     instances: &mut Instances,
+    swaps: &mut Swaps,
     state: &InteractionState,
     viewport: Viewport,
 ) -> Result<(LayoutNode, BindingRegistry), String> {
@@ -996,6 +1231,9 @@ pub fn build_styled_tree_stateful(
     for instance in instances.values_mut() {
         instance.touched = false;
     }
+    // Same bookkeeping for swaps, and paired here rather than at the callers so
+    // that no build can forget half of it.
+    swaps.begin();
 
     let mut ancestors: Vec<AncNode> = Vec::new();
     let locals = Locals::new();
@@ -1019,10 +1257,12 @@ pub fn build_styled_tree_stateful(
         &mut reg,
         state,
         instances,
+        swaps,
         None, // the root is not inside a component
         None, // the document root has no caller, so no slot content
         None, // and no route chain: the router itself starts one
         None, // and is not inside any row
+        None, // and the root never swaps: there is no build without it
     );
     link_labels(&mut node);
     instances.retain(|key, instance| {
@@ -1042,6 +1282,11 @@ pub fn build_styled_tree_stateful(
         }
         instance.touched
     });
+    // After the instance sweep: an instance pruned by this build has already
+    // had its `unmounted` queued, and a swap holding an element on screen kept
+    // that element's instance `touched`, which is exactly why the pair is
+    // builder-owned rather than a snapshot the animator holds.
+    swaps.end();
     Ok((node, reg))
 }
 
@@ -1123,6 +1368,13 @@ enum Pseudo {
     Active,
     Checked,
     Current,
+    /// The side an element starts from as it enters. Held for the element's
+    /// first frame only, so the frame after is an ordinary style change and
+    /// `transition` animates it without knowing a swap happened.
+    EnterFrom,
+    /// The side an element ends at as it leaves. Held from the moment the swap
+    /// opens until it commits, so it is a target the whole way.
+    LeaveTo,
     Unknown(String),
 }
 
@@ -1139,6 +1391,12 @@ pub struct ElemStates {
     /// This element's `to` names the path we are on. Resolved at build time from
     /// the `route` signal, like `checked` and unlike the pointer states.
     pub current: bool,
+    /// This element is entering and this is its first frame. Resolved at build
+    /// time from [`Swaps`], like `current` and unlike the pointer states.
+    pub enter_from: bool,
+    /// This element is leaving: the build no longer asks for it, and it is on
+    /// screen only because a swap is holding it there.
+    pub leave_to: bool,
 }
 
 /// The interaction state the *shell* owns, handed to the build so pseudo-class
@@ -1192,6 +1450,8 @@ impl Pseudo {
             "active" => Self::Active,
             "checked" => Self::Checked,
             "current" => Self::Current,
+            "enter-from" => Self::EnterFrom,
+            "leave-to" => Self::LeaveTo,
             other => Self::Unknown(other.to_string()),
         }
     }
@@ -1203,6 +1463,8 @@ impl Pseudo {
             Self::Active => s.active,
             Self::Checked => s.checked,
             Self::Current => s.current,
+            Self::EnterFrom => s.enter_from,
+            Self::LeaveTo => s.leave_to,
             // Fails closed, see the type docs.
             Self::Unknown(_) => false,
         }
@@ -2386,6 +2648,7 @@ fn build_node(
     reg: &mut BindingRegistry,
     state: &InteractionState,
     instances: &mut Instances,
+    swaps: &mut Swaps,
     // The component instance this element is inside, None at document level.
     instance: Option<&str>,
     slot: Option<Slot>,
@@ -2394,12 +2657,16 @@ fn build_node(
     // Half the identity of anything in a list: `r-model` is recorded as written,
     // so every row of a list otherwise looks like the same input.
     row: Option<&str>,
+    // Which side of a swap this element is on, `None` when it is not swapping.
+    // Only ever `Some` for the element carrying `r-transition`; its descendants
+    // inherit the visual effect through the cascade, not through this.
+    swap: Option<SwapSide>,
 ) -> LayoutNode {
     // A custom-element tag expands its imported component in place.
     if let Some(component) = comps.get(&el.tag) {
         return expand_component(
             el, component, comps, inherited, engine, locals, path, tpl_path, reg, state, rules,
-            instances, instance, row, &Locals::new(), None,
+            instances, swaps, instance, row, &Locals::new(), None,
             // An ordinary component tag is not a route view, so a
             // `<router-view />` inside it has no chain and says so.
             None,
@@ -2421,6 +2688,12 @@ fn build_node(
     // survives a reconcile that moves nodes around.
     desc.states.hover = state.hovers(path);
     desc.states.active = state.activates(path);
+    // The swap states. `:enter-from` is held for the first frame only, and that
+    // asymmetry is the whole trick: dropping it next frame turns the swap into an
+    // ordinary style change, which is exactly what tier 1 already animates.
+    desc.states.enter_from =
+        swap.is_some_and(|s| s.phase == Phase::Entering && s.first);
+    desc.states.leave_to = swap.is_some_and(|s| s.phase == Phase::Leaving);
     // Both halves, or every row of a list matches at once: they all carry the
     // same `r-model` text, so the model alone cannot pick one out.
     desc.states.focus = match (&state.focused_model, el.attr("r-model")) {
@@ -2929,6 +3202,7 @@ fn build_node(
         reg,
         state,
         instances,
+        swaps,
         instance,
         // A `<slot>` deeper inside a component still fills from the same call
         // site, so the slot travels down with everything else. So does the
@@ -3014,6 +3288,7 @@ fn expand_component(
     // The caller's stylesheet, for whatever it wrote between the tags.
     caller_rules: &[Rule],
     instances: &mut Instances,
+    swaps: &mut Swaps,
     // The instance the *caller* is in, which is where a listener body belongs.
     caller: Option<&str>,
     row: Option<&str>,
@@ -3123,6 +3398,7 @@ fn expand_component(
         reg,
         state,
         instances,
+        swaps,
         Some(key.as_str()),
         Some(slot),
         // Only a route's own view is handed the rest of the chain; an ordinary
@@ -3130,6 +3406,9 @@ fn expand_component(
         outlet,
         // A component expanded inside a row is still inside that row.
         row,
+        // The swap, if any, belongs to the tag that carried `r-transition`, and
+        // that is the caller's element, not the component's root.
+        None,
     )
 }
 
@@ -3317,6 +3596,7 @@ fn expand_chain(
     state: &InteractionState,
     rules: &[Rule],
     instances: &mut Instances,
+    swaps: &mut Swaps,
     instance: Option<&str>,
     row: Option<&str>,
 ) -> Option<LayoutNode> {
@@ -3349,7 +3629,7 @@ fn expand_chain(
     // the *whole* chain join them.
     let node = expand_component(
         link.route, component, comps, inherited, engine, locals, path, &tpl, reg, state, rules,
-        instances, instance, row, params, Some(current), Some(outlet),
+        instances, swaps, instance, row, params, Some(current), Some(outlet),
     );
 
     // A route with children whose view never places an outlet would drop that
@@ -3451,6 +3731,83 @@ fn parse_for(expr: &str) -> Option<(&str, &str)> {
 }
 
 /// Build a sequence of element children, applying the structural directives
+/// How an element declares that its appearance and disappearance are animated.
+///
+/// The declaration says where progress comes from and nothing else. What the
+/// two sides *look* like is CSS, on `:enter-from` and `:leave-to`, because that
+/// is where the rest of an element's appearance is written and a transform is
+/// not a different kind of thing.
+enum SwapDecl<'a> {
+    /// `r-transition`: the swap runs on the clock, for as long as the element's
+    /// own `transition` declarations say. Nothing else to write.
+    Clock,
+    /// `:r-transition="expr"`: the author owns progress, `expr` yielding 0..=1
+    /// and re-read every build. Reaching 1 commits and reaching 0 abandons, so
+    /// a swap bound to a finger can change its mind, which is the whole reason
+    /// the pair is live rather than a snapshot.
+    Bound(&'a str),
+}
+
+fn swap_decl(el: &Element) -> Option<SwapDecl<'_>> {
+    if let Some(expr) = el.attr(":r-transition") {
+        return Some(SwapDecl::Bound(expr));
+    }
+    el.attr("r-transition").map(|_| SwapDecl::Clock)
+}
+
+/// How long the longest declared transition on this element runs, delay
+/// included. This is what a clock-driven swap lasts, so that an author who
+/// writes `transition: transform 300ms` gets a 300ms swap without saying so
+/// twice and without the two ever disagreeing.
+fn swap_duration(style: &Style) -> f32 {
+    style.transitions.iter().map(|t| t.delay + t.duration).fold(0.0, f32::max)
+}
+
+/// Fill in a freshly opened swap's driver, and refresh a bound one's progress.
+///
+/// Split out of [`Swaps::resolve`] because it needs the *built* node: a clock
+/// swap's duration is read from the computed style, which does not exist until
+/// the element has been through the cascade.
+fn arm_swap(
+    swaps: &mut Swaps,
+    key: &SwapKey,
+    node: &LayoutNode,
+    decl: Option<SwapDecl<'_>>,
+    engine: &mut Engine,
+    locals: &Locals,
+    deps: &mut HashSet<String>,
+) {
+    let Some(decl) = decl else { return };
+    match decl {
+        SwapDecl::Bound(expr) => {
+            // Read outside the borrow of `swaps`: evaluating can run author code.
+            let (value, read) = engine.eval_value_tracked(expr, locals);
+            deps.extend(read);
+            let progress = value.and_then(|v| v.as_number()).unwrap_or(0.0) as f32;
+            if let Some(swap) = swaps.pending.get_mut(key) {
+                swap.progress = progress.clamp(0.0, 1.0);
+                swap.moved |= swap.progress > 0.0;
+                swap.driver = Driver::Bound(expr.to_string());
+            }
+        }
+        SwapDecl::Clock => {
+            let duration = swap_duration(&node.style);
+            if let Some(swap) = swaps.pending.get_mut(key) {
+                match &mut swap.driver {
+                    // Already running: leave the deadline alone, or every build
+                    // during the swap would push the end further away and it
+                    // would never arrive.
+                    Driver::Clock { end_ms: Some(_), .. } => {}
+                    Driver::Clock { duration: d, .. } => *d = duration,
+                    Driver::Bound(_) => {
+                        swap.driver = Driver::Clock { duration, end_ms: None };
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// `r-for` (repeat) and `r-if`/`r-elif`/`r-else` (conditional chains).
 #[allow(clippy::too_many_arguments)]
 fn build_children(
@@ -3466,6 +3823,7 @@ fn build_children(
     reg: &mut BindingRegistry,
     state: &InteractionState,
     instances: &mut Instances,
+    swaps: &mut Swaps,
     instance: Option<&str>,
     slot: Option<Slot>,
     outlet: Option<Outlet>,
@@ -3522,7 +3880,7 @@ fn build_children(
                         // `<slot>` is not a place to put the outer one's content.
                         out.push(build_node(
                             child, s.rules, comps, ancestors, &prev, inherited, engine, s.locals,
-                            &cp, &ctp, reg, state, instances, instance, None, None, row,
+                            &cp, &ctp, reg, state, instances, swaps, instance, None, None, row, None,
                         ));
                         prev.push(ElemDesc::of(child));
                     }
@@ -3544,7 +3902,7 @@ fn build_children(
                         ctp.push(si);
                         out.push(build_node(
                             child, rules, comps, ancestors, &prev, inherited, engine, locals, &cp,
-                            &ctp, reg, state, instances, instance, slot, outlet, row,
+                            &ctp, reg, state, instances, swaps, instance, slot, outlet, row, None,
                         ));
                         prev.push(ElemDesc::of(child));
                     }
@@ -3566,7 +3924,7 @@ fn build_children(
                         let cp = child_path(&out);
                         if let Some(node) = expand_chain(
                             o.rest, o.params, o.current, comps, inherited, engine, locals, &cp,
-                            o.router_tpl, reg, state, rules, instances, instance, row,
+                            o.router_tpl, reg, state, rules, instances, swaps, instance, row,
                         ) {
                             prev.push(ElemDesc::of(link.route));
                             out.push(node);
@@ -3618,7 +3976,7 @@ fn build_children(
                     let cp = child_path(&out);
                     if let Some(node) = expand_chain(
                         &chain, &params, &current, comps, inherited, engine, locals, &cp, &ctp,
-                        reg, state, rules, instances, instance, row,
+                        reg, state, rules, instances, swaps, instance, row,
                     ) {
                         prev.push(ElemDesc::of(chain[0].route));
                         out.push(node);
@@ -3684,10 +4042,11 @@ fn build_children(
                         });
                         let mut node = build_node(
                             el, rules, comps, ancestors, &prev, inherited, engine, &child_locals,
-                            &cp, &ctp, reg, state, instances, instance, slot, outlet,
+                            &cp, &ctp, reg, state, instances, swaps, instance, slot, outlet,
                             // An unkeyed row inherits whatever row it is nested
                             // in, which is normally nothing.
                             key.as_deref().or(row),
+                            None,
                         );
                         node.key = key;
                         out.push(node);
@@ -3699,14 +4058,23 @@ fn build_children(
         }
 
         // r-if / r-elif conditions are structural reads too.
+        //
+        // Each branch of a chain asks `Swaps` what to do rather than acting on
+        // its condition directly, because a branch that has just become false
+        // still has to be built while it animates out. Without `r-transition`
+        // the answer is always the condition itself.
         if let Some(cond) = el.attr("r-if") {
             in_chain = true;
             let (v, deps) = engine.eval_bool_tracked(cond, locals);
             structural_deps.extend(deps);
             chain_satisfied = v;
-            if chain_satisfied {
+            let key: SwapKey = (ctp.clone(), row.map(str::to_string));
+            let anim = swap_decl(el);
+            if let Some(side) = swaps.resolve(&key, chain_satisfied, anim.is_some()) {
                 let cp = child_path(&out);
-                out.push(build_node(el, rules, comps, ancestors, &prev, inherited, engine, locals, &cp, &ctp, reg, state, instances, instance, slot, outlet, row));
+                let node = build_node(el, rules, comps, ancestors, &prev, inherited, engine, locals, &cp, &ctp, reg, state, instances, swaps, instance, slot, outlet, row, side);
+                arm_swap(swaps, &key, &node, anim, engine, locals, &mut structural_deps);
+                out.push(node);
                 prev.push(ElemDesc::of(el));
             }
             continue;
@@ -3719,18 +4087,27 @@ fn build_children(
             } else {
                 false
             };
-            if taken {
-                chain_satisfied = true;
+            chain_satisfied |= taken;
+            let key: SwapKey = (ctp.clone(), row.map(str::to_string));
+            let anim = swap_decl(el);
+            if let Some(side) = swaps.resolve(&key, taken, anim.is_some()) {
                 let cp = child_path(&out);
-                out.push(build_node(el, rules, comps, ancestors, &prev, inherited, engine, locals, &cp, &ctp, reg, state, instances, instance, slot, outlet, row));
+                let node = build_node(el, rules, comps, ancestors, &prev, inherited, engine, locals, &cp, &ctp, reg, state, instances, swaps, instance, slot, outlet, row, side);
+                arm_swap(swaps, &key, &node, anim, engine, locals, &mut structural_deps);
+                out.push(node);
                 prev.push(ElemDesc::of(el));
             }
             continue;
         }
         if el.attr("r-else").is_some() {
-            if in_chain && !chain_satisfied {
+            let taken = in_chain && !chain_satisfied;
+            let key: SwapKey = (ctp.clone(), row.map(str::to_string));
+            let anim = swap_decl(el);
+            if let Some(side) = swaps.resolve(&key, taken, anim.is_some()) {
                 let cp = child_path(&out);
-                out.push(build_node(el, rules, comps, ancestors, &prev, inherited, engine, locals, &cp, &ctp, reg, state, instances, instance, slot, outlet, row));
+                let node = build_node(el, rules, comps, ancestors, &prev, inherited, engine, locals, &cp, &ctp, reg, state, instances, swaps, instance, slot, outlet, row, side);
+                arm_swap(swaps, &key, &node, anim, engine, locals, &mut structural_deps);
+                out.push(node);
                 prev.push(ElemDesc::of(el));
             }
             in_chain = false;
@@ -3740,7 +4117,7 @@ fn build_children(
         // A plain element ends any active chain.
         in_chain = false;
         let cp = child_path(&out);
-        out.push(build_node(el, rules, comps, ancestors, &prev, inherited, engine, locals, &cp, &ctp, reg, state, instances, instance, slot, outlet, row));
+        out.push(build_node(el, rules, comps, ancestors, &prev, inherited, engine, locals, &cp, &ctp, reg, state, instances, swaps, instance, slot, outlet, row, None));
         prev.push(ElemDesc::of(el));
     }
     (out, structural_deps)
@@ -5401,7 +5778,7 @@ mod tests {
         let mut engine = Builder::new().build(&sfc.script).unwrap();
         let mut instances = super::Instances::new();
         let (_root, reg) =
-            build_styled_tree_tracked(&sfc, &HashMap::new(), &mut engine, &mut instances).unwrap();
+            build_styled_tree_tracked(&sfc, &HashMap::new(), &mut engine, &mut instances, &mut crate::Swaps::new()).unwrap();
 
         assert_eq!(reg.structural_parents.len(), 1, "the screen is the one structural parent");
         let sp = &reg.structural_parents[0];
@@ -5871,6 +6248,7 @@ mod tests {
             &HashMap::new(),
             &mut engine,
             &mut instances,
+            &mut crate::Swaps::new(),
             &InteractionState::default(),
             viewport,
         )
@@ -6141,6 +6519,8 @@ mod tests {
             active: false,
             checked: true,
             current: false,
+            enter_from: false,
+            leave_to: false,
         };
         assert!(hits_state("input:focus", "input", s));
         assert!(hits_state("input:checked", "input", s));
@@ -6167,6 +6547,8 @@ mod tests {
             active: true,
             checked: true,
             current: true,
+            enter_from: true,
+            leave_to: true,
         };
         assert!(!hits_state(".box:disabled", ".box", all_on));
         assert!(!hits_state(".box:nth-child(2)", ".box", all_on));
@@ -6343,7 +6725,7 @@ mod tests {
         let mut engine = Builder::new().build(&sfc.script).unwrap();
         let mut instances = super::Instances::new();
         let (_, reg) =
-            super::build_styled_tree_tracked(&sfc, &HashMap::new(), &mut engine, &mut instances)
+            super::build_styled_tree_tracked(&sfc, &HashMap::new(), &mut engine, &mut instances, &mut crate::Swaps::new())
                 .unwrap();
         reg.elements
     }

@@ -302,8 +302,12 @@ struct GesturePress {
     origin: (f32, f32),
     handlers: Vec<(rux_layout::Gesture, String)>,
     instance: Option<String>,
-    /// Where the press landed, logical px, in the same frame as `origin`.
+    /// Where the press landed, in window-global logical px.
     start: (f32, f32),
+    /// Where it was on the previous move, so a handler can be told how far it
+    /// came *this* event as well as how far in total. Velocity and flick
+    /// detection want the former; following a finger wants the latter.
+    last: (f32, f32),
     at: Instant,
     /// Whether `@drag` has already been told the drag began. A drag reports
     /// start, then moves, then end, and the start is not the press: a press
@@ -314,19 +318,29 @@ struct GesturePress {
     long_fired: bool,
 }
 
-/// The fields a drag or swipe adds to the event: which part of the gesture this
-/// is, and how far it has come from where it started.
-fn phase(
+/// The fields a drag or swipe adds: which part of the gesture this is, how far
+/// it has come in total, and how far it came this event.
+///
+/// Two distances rather than one, and named so they cannot be confused.
+/// `totalX` is measured from where the press landed, which is what following a
+/// finger wants: assign it and the thing tracks the hand with no bookkeeping.
+/// `moveX` is measured from the previous move, which is what velocity and flick
+/// detection want. Calling either of them `dx` invites each reader to assume the
+/// other one.
+fn drag_fields(
     name: &str,
     start: (f32, f32),
+    last: (f32, f32),
     fx: f32,
     fy: f32,
 ) -> Vec<(String, rux_reactive::Value)> {
     use rux_reactive::Value;
     vec![
         ("phase".to_string(), Value::Text(name.to_string())),
-        ("dx".to_string(), Value::Number((fx - start.0) as f64)),
-        ("dy".to_string(), Value::Number((fy - start.1) as f64)),
+        ("totalX".to_string(), Value::Number((fx - start.0) as f64)),
+        ("totalY".to_string(), Value::Number((fy - start.1) as f64)),
+        ("moveX".to_string(), Value::Number((fx - last.0) as f64)),
+        ("moveY".to_string(), Value::Number((fy - last.1) as f64)),
     ]
 }
 
@@ -2071,6 +2085,7 @@ impl App {
             handlers,
             instance,
             start: (fx, fy),
+            last: (fx, fy),
             at: Instant::now(),
             dragging: false,
             long_fired: false,
@@ -2100,10 +2115,25 @@ impl App {
             if let Some(g) = self.gesture.as_mut() {
                 g.dragging = true;
             }
-            self.fire_gesture(rux_layout::Gesture::Drag, fx, fy, phase("start", press.start, fx, fy));
-            return;
+            self.fire_gesture(
+                rux_layout::Gesture::Drag,
+                fx,
+                fy,
+                drag_fields("start", press.start, press.last, fx, fy),
+            );
+        } else {
+            self.fire_gesture(
+                rux_layout::Gesture::Drag,
+                fx,
+                fy,
+                drag_fields("move", press.start, press.last, fx, fy),
+            );
         }
-        self.fire_gesture(rux_layout::Gesture::Drag, fx, fy, phase("move", press.start, fx, fy));
+        // After the dispatch, so this event's `moveX` is measured against where
+        // the pointer was when the *previous* one ran.
+        if let Some(g) = self.gesture.as_mut() {
+            g.last = (fx, fy);
+        }
     }
 
     /// End a press: `@release` always, then the one thing it turned out to be.
@@ -2121,8 +2151,19 @@ impl App {
 
         let (dx, dy) = (fx - press.start.0, fy - press.start.1);
         if press.dragging {
-            self.fire_gesture(rux_layout::Gesture::Drag, fx, fy, phase("end", press.start, fx, fy));
-        } else if dx.hypot(dy) >= SWIPE_DISTANCE && press.at.elapsed() <= SWIPE_TIME {
+            self.fire_gesture(
+                rux_layout::Gesture::Drag,
+                fx,
+                fy,
+                drag_fields("end", press.start, press.last, fx, fy),
+            );
+        }
+        // A drag that ended as a flick is **also** a swipe. They are not rivals:
+        // a page that follows the finger still has to be told, at the end,
+        // whether the hand meant to throw it. Making them exclusive meant an
+        // element with both handlers could never fire the swipe, which is
+        // exactly what happened the first time this was tried by hand.
+        if dx.hypot(dy) >= SWIPE_DISTANCE && press.at.elapsed() <= SWIPE_TIME {
             // The dominant axis decides, which is what makes a slightly diagonal
             // flick still mean what the hand meant.
             let direction = if dx.abs() > dy.abs() {
@@ -2132,7 +2173,8 @@ impl App {
             } else {
                 "up"
             };
-            let mut extra = phase("end", press.start, fx, fy);
+            let mut extra = drag_fields("end", press.start, press.last, fx, fy);
+            // A swipe has no phases: it happens once, when it is already over.
             extra.retain(|(k, _)| k != "phase");
             extra.push(("direction".to_string(), rux_reactive::Value::Text(direction.to_string())));
             self.fire_gesture(rux_layout::Gesture::Swipe, fx, fy, extra);
@@ -2189,6 +2231,11 @@ impl App {
         Value::Map(vec![
             ("x".to_string(), Value::Number((fx - origin.0) as f64)),
             ("y".to_string(), Value::Number((fy - origin.1) as f64)),
+            // The same point in the window's own frame. Needed whenever the
+            // element cannot be the frame of reference: a drag whose element is
+            // moving under the finger, or anything comparing two elements.
+            ("pageX".to_string(), Value::Number(fx as f64)),
+            ("pageY".to_string(), Value::Number(fy as f64)),
             ("touches".to_string(), Value::List(touches)),
         ])
     }
@@ -3056,7 +3103,15 @@ impl App {
         // animator hands back when it next needs a frame, or `None` to say the
         // window can go back to sleep.
         let now = self.epoch.elapsed().as_secs_f64() * 1000.0;
-        let next = self.anim.apply(&mut self.document.root, now);
+        // Enter/leave first: a swap that has just finished stops its element
+        // being built, and there is nothing to interpolate into a node that is
+        // about to leave the tree. It rebuilds when one commits, which is also
+        // where the departing element's `unmounted` fires.
+        let swap_next = self.document.advance_swaps(now);
+        let next = match (self.anim.apply(&mut self.document.root, now), swap_next) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        };
         self.anim_deadline = next.map(|ms| {
             Instant::now() + Duration::from_secs_f64(ms.max(rux_runtime::FRAME_MS) / 1000.0)
         });

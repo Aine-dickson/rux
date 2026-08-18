@@ -1,20 +1,22 @@
 <template>
   <screen class="app">
     <text class="title">the pointer vocabulary</text>
-    <text class="lead">Five events beyond tap. Press and hold the pad, flick it, or drag it around. Every event is handed the fingers that are down, so the count below is real multi-touch on a phone and always 1 with a mouse.</text>
+    <text class="lead">Five events beyond tap. Press and hold the pad, flick it, or drag it around. With a mouse or a touchpad: hold the button, move quickly and let go, and you get both a drag and a swipe. The finger count is always 1 unless the hardware is a real touchscreen, because a touchpad reaches the app as a mouse.</text>
 
     <view class="pad"
-          @press="log = &quot;press at &quot; + event.x + &quot;,&quot; + event.y; fingers = event.touches.length"
+          @press="log = &quot;press at &quot; + event.x + &quot;,&quot; + event.y; fingers = event.touches.length; page = event.pageX + &quot;,&quot; + event.pageY"
           @release="log = &quot;release&quot;"
           @longpress="log = &quot;long press, held still&quot;"
-          @swipe="log = &quot;swipe &quot; + event.direction + &quot; by &quot; + event.dx"
-          @drag="log = &quot;drag &quot; + event.phase; dx = event.dx; dy = event.dy">
+          @swipe="flick = &quot;swiped &quot; + event.direction + &quot;, &quot; + event.totalX + &quot; across&quot;"
+          @drag="log = &quot;drag &quot; + event.phase + &quot;: total &quot; + event.totalX + &quot;,&quot; + event.totalY + &quot; move &quot; + event.moveX + &quot;,&quot; + event.moveY; dx = event.totalX; dy = event.totalY">
       <text class="pad-label">press, hold, flick or drag me</text>
     </view>
 
     <text class="read">{{ log }}</text>
+    <text class="read">{{ flick }}</text>
     <text class="foot">fingers on the last press: {{ fingers }}</text>
-    <text class="foot">last drag offset: {{ dx }}, {{ dy }}</text>
+    <text class="foot">last drag total: {{ dx }}, {{ dy }}</text>
+    <text class="foot">where the press landed in the window: {{ page }}</text>
   </screen>
 </template>
 
@@ -51,6 +53,8 @@
 
 <script>
   let log = signal("nothing yet");
+  let flick = signal("no swipe yet");
+  let page = signal("");
   let fingers = signal(0);
   let dx = signal(0);
   let dy = signal(0);

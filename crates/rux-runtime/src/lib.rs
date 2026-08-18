@@ -31,7 +31,7 @@ use rux_layout::{Node as LayoutNode, Offset};
 use rux_parser::{Sfc, StyleInclude};
 use rux_reactive::Value;
 use rux_script::{Builder, Engine};
-use rux_style::{BindingRegistry, Instances};
+use rux_style::{BindingRegistry, Instances, Swaps};
 /// Re-exported so the shell can hand pointer/focus state and the window size in
 /// without depending on `rux-style` directly.
 pub use rux_reactive::json_string;
@@ -69,6 +69,9 @@ pub struct Document {
     /// Every component instance's private state, kept here because the tree it
     /// belongs to is rebuilt constantly and the state must not be.
     instances: Instances,
+    /// Enter/leave swaps in flight, and what the last build showed. Beside
+    /// `instances` and for the same reason: a swap has to outlive the tree.
+    swaps: Swaps,
     /// `computed` declarations, in declaration order, so one may read another
     /// declared above it and a single pass refreshes them all.
     computeds: Vec<Computed>,
@@ -687,7 +690,8 @@ impl Document {
         rux_script::set_routes(rux_style::named_routes(&sfc.template));
         let mut engine = build_engine(&combined_script).map_err(LoadError::plain)?;
         let mut instances = Instances::new();
-        let (mut root, registry) = rux_style::build_styled_tree_tracked(&sfc, &components, &mut engine, &mut instances)
+        let mut swaps = Swaps::new();
+        let (mut root, registry) = rux_style::build_styled_tree_tracked(&sfc, &components, &mut engine, &mut instances, &mut swaps)
             .map_err(LoadError::plain)?;
         resolve_images(&mut root, base);
         // Before the warnings are drained below, so a handler that cannot
@@ -722,6 +726,7 @@ impl Document {
             instance_computeds: HashMap::new(),
             instance_effects: HashMap::new(),
             timers: Vec::new(),
+            swaps,
             mounted_instances: HashSet::new(),
             settling: false,
             mounted_ran: false,
@@ -762,8 +767,9 @@ impl Document {
         rux_script::set_routes(rux_style::named_routes(&sfc.template));
         let mut engine = build_engine(&main_script).map_err(LoadError::plain)?;
         let mut instances = Instances::new();
+        let mut swaps = Swaps::new();
         let (mut root, registry) =
-            rux_style::build_styled_tree_tracked(&sfc, &HashMap::new(), &mut engine, &mut instances)
+            rux_style::build_styled_tree_tracked(&sfc, &HashMap::new(), &mut engine, &mut instances, &mut swaps)
                 .map_err(LoadError::plain)?;
         let base = PathBuf::from(".");
         resolve_images(&mut root, &base);
@@ -794,6 +800,7 @@ impl Document {
             instance_computeds: HashMap::new(),
             instance_effects: HashMap::new(),
             timers: Vec::new(),
+            swaps,
             mounted_instances: HashSet::new(),
             settling: false,
             mounted_ran: false,
@@ -937,6 +944,7 @@ impl Document {
             &self.components,
             &mut self.engine,
             &mut self.instances,
+            &mut self.swaps,
             &self.state,
             self.viewport,
         ) else {
@@ -960,6 +968,33 @@ impl Document {
         self.settle_lifecycle(0);
     }
 
+    /// Advance enter/leave swaps against the clock, rebuilding when one of them
+    /// commits and its element must stop (or start) being built.
+    ///
+    /// Returns when the next swap needs looking at, or `None` when none is in
+    /// flight. The shell folds that into the same deadline set as the caret
+    /// blink, the long press, the animator and the intervals, so an app with
+    /// nothing swapping still sleeps.
+    ///
+    /// Time comes in rather than being read, the rule the animator already
+    /// follows: it makes this testable without a window, and correct on the web
+    /// where `Instant` is not the event loop's clock.
+    pub fn advance_swaps(&mut self, now_ms: f64) -> Option<f64> {
+        if self.swaps.is_empty() {
+            return None;
+        }
+        let (wake, finished) = self.swaps.advance(now_ms);
+        if finished {
+            // The tree changes when a swap commits: a leaving element stops
+            // being built, which is also when its instance stops being touched
+            // and so when `unmounted` fires. That is the pairing the live pair
+            // was chosen for, and it costs nothing here because pruning already
+            // does it.
+            self.rebuild();
+        }
+        wake
+    }
+
     /// Rebuild the layout tree from the engine's current state.
     pub fn rebuild(&mut self) {
         if let Ok((mut root, registry)) = rux_style::build_styled_tree_stateful(
@@ -967,6 +1002,7 @@ impl Document {
             &self.components,
             &mut self.engine,
             &mut self.instances,
+            &mut self.swaps,
             &self.state,
             self.viewport,
         ) {
@@ -1129,6 +1165,7 @@ impl Document {
             &self.components,
             &mut self.engine,
             &mut self.instances,
+            &mut self.swaps,
             &self.state,
             self.viewport,
         ) else {
@@ -2725,7 +2762,7 @@ mod tests {
 
     /// Every string the tree renders, for a failure message that says what was
     /// actually on screen rather than dumping the whole node.
-    fn text_of(node: &LayoutNode) -> Vec<String> {
+    pub(super) fn text_of(node: &LayoutNode) -> Vec<String> {
         let mut out: Vec<String> = node.text.iter().map(|t| t.text.clone()).collect();
         for child in &node.children {
             out.extend(text_of(child));
@@ -6074,3 +6111,80 @@ use components::detail;
     }
 }
 
+
+#[cfg(test)]
+mod swap_tests {
+    use super::tests::text_of;
+    use super::*;
+
+    /// The whole enter/leave loop on an `r-if`, in one test: the element is held
+    /// on screen after the condition turns it off, styled by `:leave-to` while
+    /// it is, and gone once the clock passes the duration its own `transition`
+    /// declared.
+    #[test]
+    fn a_leaving_element_is_held_until_its_transition_is_over() {
+        let mut doc = Document::from_source(
+            "<template><screen>\
+               <text r-if=\"open\" r-transition class=\"panel\">hello</text>\
+             </screen></template>\n\
+             <style>\n.panel { opacity: 1; transition: opacity 200ms; }\n\
+             .panel:leave-to { opacity: 0; }\n</style>\n\
+             <script>\nlet open = signal(true);\n</script>",
+        )
+        .expect("builds");
+        assert_eq!(text_of(&doc.root).join(""), "hello", "on screen to start with");
+
+        assert!(doc.apply_handler("open = false"), "the condition changed");
+        assert_eq!(
+            text_of(&doc.root).join(""),
+            "hello",
+            "still built: the swap is holding it there, which is the feature"
+        );
+
+        // The clock starts on the first frame the driver sees the swap, not at
+        // the build: the build has no clock, on purpose.
+        assert_eq!(doc.advance_swaps(1000.0), Some(200.0), "its own 200ms, from now");
+        assert_eq!(text_of(&doc.root).join(""), "hello", "not yet");
+        assert_eq!(doc.advance_swaps(1100.0), Some(100.0), "half way: 100ms still to run");
+        assert_eq!(text_of(&doc.root).join(""), "hello", "still not yet");
+
+        assert_eq!(doc.advance_swaps(1200.0), None, "nothing left in flight");
+        assert_eq!(text_of(&doc.root).join(""), "", "and now it is gone");
+    }
+
+    /// The condition coming back mid-swap reverses the swap rather than opening
+    /// a second one. This is the property the live pair exists for: a swap that
+    /// can change its mind.
+    #[test]
+    fn a_swap_reverses_instead_of_stacking() {
+        let mut doc = Document::from_source(
+            "<template><screen>\
+               <text r-if=\"open\" r-transition class=\"panel\">hello</text>\
+             </screen></template>\n\
+             <style>\n.panel { transition: opacity 200ms; }\n</style>\n\
+             <script>\nlet open = signal(true);\n</script>",
+        )
+        .expect("builds");
+        assert!(doc.apply_handler("open = false"));
+        let _ = doc.advance_swaps(50.0);
+        assert!(doc.apply_handler("open = true"), "changed its mind");
+        assert_eq!(text_of(&doc.root).join(""), "hello", "never left");
+        // One swap, not two, and it is now entering.
+        assert_eq!(doc.swaps.pending().count(), 1, "reversed, not stacked");
+    }
+
+    /// Without `r-transition` nothing is held: the old behaviour, exactly.
+    #[test]
+    fn an_unmarked_element_still_disappears_at_once() {
+        let mut doc = Document::from_source(
+            "<template><screen>\
+               <text r-if=\"open\">hello</text>\
+             </screen></template>\n\
+             <script>\nlet open = signal(true);\n</script>",
+        )
+        .expect("builds");
+        assert!(doc.apply_handler("open = false"));
+        assert_eq!(text_of(&doc.root).join(""), "", "gone immediately");
+        assert_eq!(doc.advance_swaps(0.0), None, "and nothing is in flight");
+    }
+}

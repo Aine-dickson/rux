@@ -152,20 +152,33 @@ from script, neither of which has a pointer at all.
 
 `@swipe` adds `event.direction`, one of `left`, `right`, `up` or `down`, chosen
 by the dominant axis so a slightly diagonal flick still means what the hand
-meant, plus `event.dx` and `event.dy`.
+meant.
 
-`@drag` adds `event.phase`, one of `start`, `move` or `end`, and `event.dx` /
-`event.dy`, the distance from where the drag began. The start is not the press:
-a press that never moves is not a drag.
+`@drag` adds `event.phase`, one of `start`, `move` or `end`. The start is not
+the press: a press that never moves is not a drag.
+
+Both carry **two distances**, named so they cannot be mistaken for one another:
+
+| Field | Measured from |
+|---|---|
+| `event.totalX`, `event.totalY` | where the press landed |
+| `event.moveX`, `event.moveY` | where the pointer was on the previous event |
+
+`totalX` is what following a finger wants: assign it and the thing tracks the
+hand with no bookkeeping. `moveX` is what velocity and flick detection want.
+
+**A drag that ends as a flick also fires `@swipe`.** The two are not rivals: a
+page that follows the finger still has to be told, at the end, whether the hand
+meant to throw it, and that is exactly how a reversible page transition decides
+whether to commit.
 
 **A `@drag` claims the finger.** While a drag is running, the page under it does
 not scroll. An explicit handler beats an implicit gesture, which is the simple
 half of that rule; whether the scroll can take the finger back mid-gesture is
 not decided, and waits for real touch hardware to argue with.
 
-**A long press and a swipe are exclusive with a drag**, because they describe
-the same press differently: one that moved is not resting, and one that is being
-dragged has already been claimed.
+**A long press is exclusive with the other two.** A press that moved is not
+resting, so once the pointer wanders past the tap slop the long press is off.
 
 ## What an event hands you
 
@@ -179,6 +192,10 @@ Every handler above, and `@tap` too, has an `event` in scope:
 logical pixels, because that is the frame you are thinking in: half way across a
 card is `event.x > width / 2` wherever the card sits on screen.
 
+`event.pageX` and `event.pageY` are the same point in the **window's** frame,
+for when the element cannot be the frame of reference: a drag whose element is
+moving under the finger, or anything comparing two elements' positions.
+
 `event.touches` is every finger that is down, each with its own `id`, `x` and
 `y` in that same frame:
 
@@ -187,7 +204,9 @@ card is `event.x > width / 2` wherever the card sits on screen.
 ```
 
 **A list even when there is one finger**, and a mouse counts as one finger with
-`id` 0, so a handler written for a phone reads the same on a desktop. That shape
+`id` 0, so a handler written for a phone reads the same on a desktop. A laptop
+touchpad reaches the app as a mouse, so it reports one finger too however many
+are on the pad: only real touch hardware fills this list. That shape
 is deliberate: a two-finger gesture arrives later without changing what any
 handler already written reads. A finger outside the element has negative
 coordinates rather than being left out.
