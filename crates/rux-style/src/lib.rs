@@ -371,6 +371,16 @@ pub type Instances = HashMap<String, Instance>;
 /// The second half is the `r-key` of the row, `None` for an `r-if`.
 pub type SwapKey = (Vec<usize>, Option<String>);
 
+/// The loop variables one `r-for` row was built with.
+pub type RowLocals = Vec<(String, Value)>;
+
+/// A row of an animated list as remembered: where it sat, and what built it.
+type RememberedRow = (usize, RowLocals);
+
+/// A row that has left the collection but is still on screen: its position, its
+/// key, and enough to build it with now that its item is gone.
+type DepartedRow = (usize, String, RowLocals);
+
 /// Which side of a swap an element is on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Phase {
@@ -428,7 +438,7 @@ pub struct Swap {
     /// The row's loop variables, captured when a keyed `r-for` row starts
     /// leaving. By then the item is gone from the collection, so this is the
     /// only remaining way to build the row it used to render.
-    pub locals: Vec<(String, Value)>,
+    pub locals: RowLocals,
     /// Whether the build now running has reached this swap. Same rule, and the
     /// same reason, as [`Instance::touched`].
     pub touched: bool,
@@ -462,7 +472,7 @@ pub struct Swaps {
     /// left to build it from unless it was kept. Only lists that actually
     /// declare `r-transition` pay for this, since it is a clone per row per
     /// build and a list nobody is animating should not be charged for one.
-    rows: HashMap<SwapKey, (usize, Vec<(String, Value)>)>,
+    rows: HashMap<SwapKey, RememberedRow>,
 }
 
 impl Swaps {
@@ -499,7 +509,7 @@ impl Swaps {
 
     /// Remember what a row of an animated `r-for` was built with, so it can
     /// still be built after it has left the collection.
-    fn remember_row(&mut self, key: &SwapKey, index: usize, locals: Vec<(String, Value)>) {
+    fn remember_row(&mut self, key: &SwapKey, index: usize, locals: RowLocals) {
         self.rows.insert(key.clone(), (index, locals));
     }
 
@@ -512,8 +522,8 @@ impl Swaps {
         &self,
         tpl: &[usize],
         present: &[String],
-    ) -> Vec<(usize, String, Vec<(String, Value)>)> {
-        let mut out: Vec<(usize, String, Vec<(String, Value)>)> = self
+    ) -> Vec<DepartedRow> {
+        let mut out: Vec<DepartedRow> = self
             .rows
             .iter()
             .filter(|((path, key), _)| {
