@@ -1544,7 +1544,25 @@ impl Document {
         // it: going from `/user/7` to `/user/12` expands the *same* view at the
         // same template position, so the build reaches that instance and keeps
         // it. Only the recorded route can tell the two visits apart.
-        self.instances.retain(|_, i| i.route.as_deref().is_none_or(|r| r == path));
+        // Two things this used to get wrong. It dropped the instance without
+        // queueing its `unmounted`, so a route view's hook never fired at all;
+        // and it dropped it immediately, which under a route transition would
+        // take the state out from under a page that is still animating out.
+        let swaps = &self.swaps;
+        self.instances.retain(|key, i| {
+            let Some(route) = i.route.as_deref() else { return true };
+            if route == path || swaps.holds_route(route) {
+                return true;
+            }
+            let mut locals = std::mem::take(&mut i.state);
+            locals.extend(i.props.iter().cloned());
+            rux_style::queue_unmount(rux_style::Lifecycle {
+                key: key.clone(),
+                tag: i.tag.clone(),
+                locals,
+            });
+            false
+        });
         let moved = self.publish_route(&location);
         if !moved {
             return false;
@@ -6351,6 +6369,200 @@ mod swap_tests {
         assert!(doc.apply_handler("p = 1"));
         let _ = doc.advance_swaps(0.0);
         assert_eq!(text_of(&doc.root).join(""), "", "gone, because progress arrived");
+    }
+
+    /// Two route views, so a navigation has something to swap between.
+    fn routed(app: &str) -> Document {
+        use std::fs;
+        let dir = std::env::temp_dir().join(format!(
+            "rux_route_swap_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(dir.join("components")).unwrap();
+        fs::write(
+            dir.join("components/home.rux"),
+            "<template><view class=\"page\"><text>home</text></view></template>",
+        )
+        .unwrap();
+        fs::write(
+            dir.join("components/about.rux"),
+            "<template><view class=\"page\"><text>about</text></view></template>",
+        )
+        .unwrap();
+        fs::write(dir.join("app.rux"), app).unwrap();
+        let doc = Document::load(dir.join("app.rux")).expect("load");
+        let _ = fs::remove_dir_all(&dir);
+        doc
+    }
+
+    const ROUTED_APP: &str = "<template><screen>\
+           <router r-transition>\
+             <route path=\"/\" view=\"home\" />\
+             <route path=\"/about\" view=\"about\" />\
+           </router>\
+         </screen></template>\n\
+         <style>\n.page { opacity: 1; transition: opacity 200ms; }\n\
+         .page:leave-to { opacity: 0; }\n</style>\n\
+         <script>\nuse components::home;\nuse components::about;\n</script>";
+
+    /// Navigating with `r-transition` on the `<router>` holds the page being
+    /// left on screen beside the page being entered, and lets go when the swap
+    /// commits.
+    ///
+    /// The point of building this on enter/leave rather than as a one-off: the
+    /// router contributes the identity (the matched path) and nothing else.
+    #[test]
+    fn a_navigation_holds_the_outgoing_page() {
+        let mut doc = routed(ROUTED_APP);
+        assert_eq!(text_of(&doc.root), vec!["home"]);
+
+        assert!(doc.apply_handler("navigate(\"/about\")"), "navigated");
+        assert_eq!(
+            text_of(&doc.root),
+            vec!["home", "about"],
+            "both pages are really there, outgoing first so the new one paints over it"
+        );
+
+        let _ = doc.advance_swaps(0.0);
+        assert_eq!(text_of(&doc.root), vec!["home", "about"], "still crossing");
+        assert_eq!(doc.advance_swaps(200.0), None, "the swap is over");
+        assert_eq!(text_of(&doc.root), vec!["about"], "and home is gone");
+    }
+
+    /// Navigating back before the swap commits reverses it rather than leaving
+    /// the first page stranded on screen.
+    #[test]
+    fn navigating_back_mid_swap_does_not_strand_a_page() {
+        let mut doc = routed(ROUTED_APP);
+        assert!(doc.apply_handler("navigate(\"/about\")"));
+        let _ = doc.advance_swaps(0.0);
+        assert!(doc.apply_handler("navigate(\"/\")"), "back again, mid swap");
+
+        let _ = doc.advance_swaps(50.0);
+        let _ = doc.advance_swaps(1000.0);
+        assert_eq!(text_of(&doc.root), vec!["home"], "one page, and the right one");
+    }
+
+    /// Without `r-transition` on the router, a navigation replaces the page at
+    /// once: exactly the old behaviour.
+    #[test]
+    fn an_unmarked_router_still_swaps_instantly() {
+        let mut doc = routed(&ROUTED_APP.replace("<router r-transition>", "<router>"));
+        assert_eq!(text_of(&doc.root), vec!["home"]);
+        assert!(doc.apply_handler("navigate(\"/about\")"));
+        assert_eq!(text_of(&doc.root), vec!["about"], "replaced, not held");
+        assert_eq!(doc.advance_swaps(0.0), None, "nothing in flight");
+    }
+
+    /// The outgoing page's `unmounted` fires when the swap **commits**, not when
+    /// the navigation starts.
+    ///
+    /// This is the check that settled the whole design. Under a snapshot the
+    /// page is removed the moment you navigate, so a cancelled navigation would
+    /// already have run a save hook for a page you never left. Under a live pair
+    /// it falls out of instance pruning for free, because the build keeps
+    /// reaching the outgoing instance the whole time.
+    #[test]
+    fn the_outgoing_pages_unmounted_waits_for_the_commit() {
+        use std::fs;
+        let dir = std::env::temp_dir().join(format!(
+            "rux_route_unmount_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(dir.join("components")).unwrap();
+        fs::write(
+            dir.join("components/home.rux"),
+            "<template><view class=\"page\"><text>home</text></view></template>\n\
+             <script>\nunmounted { left = \"yes\"; }\n</script>",
+        )
+        .unwrap();
+        fs::write(
+            dir.join("components/about.rux"),
+            "<template><view class=\"page\"><text>about</text></view></template>",
+        )
+        .unwrap();
+        fs::write(
+            dir.join("app.rux"),
+            "<template><screen>\
+               <router r-transition>\
+                 <route path=\"/\" view=\"home\" />\
+                 <route path=\"/about\" view=\"about\" />\
+               </router>\
+             </screen></template>\n\
+             <style>\n.page { opacity: 1; transition: opacity 200ms; }\n\
+             .page:leave-to { opacity: 0; }\n</style>\n\
+             <script>\nuse components::home;\nuse components::about;\n\
+             let left = signal(\"no\");\n</script>",
+        )
+        .unwrap();
+        let mut doc = Document::load(dir.join("app.rux")).expect("load");
+        let _ = fs::remove_dir_all(&dir);
+
+        assert!(doc.apply_handler("navigate(\"/about\")"), "navigated");
+        assert_eq!(
+            doc.engine_mut().get_string("left"),
+            "no",
+            "not yet: the page is still on screen animating out"
+        );
+
+        let _ = doc.advance_swaps(0.0);
+        assert_eq!(doc.engine_mut().get_string("left"), "no", "still not");
+
+        assert_eq!(doc.advance_swaps(200.0), None, "the swap commits");
+        assert_eq!(doc.engine_mut().get_string("left"), "yes", "and now it fires");
+    }
+
+    /// A route view's `unmounted` fires when you navigate away, with no
+    /// transition involved at all.
+    ///
+    /// This was broken and nothing had noticed. The `<route>` element stands in
+    /// for the component tag when a view is expanded, so every route view was
+    /// filed under the tag `route`; everything an instance looks up afterwards
+    /// is keyed by that tag, so route views silently had **no** `mounted`, no
+    /// `unmounted`, no `computed` and no `effect`. Found while checking what
+    /// route transitions do to the lifecycle, which is the argument for
+    /// building them on the same machinery rather than beside it.
+    #[test]
+    fn a_route_view_runs_its_unmounted_at_all() {
+        use std::fs;
+        let dir = std::env::temp_dir().join(format!(
+            "rux_rt_base_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+        ));
+        fs::create_dir_all(dir.join("components")).unwrap();
+        fs::write(dir.join("components/home.rux"),
+            "<template><view><text>home</text></view></template>\n\
+             <script>\nunmounted { left = \"yes\"; }\n</script>").unwrap();
+        fs::write(dir.join("components/about.rux"),
+            "<template><view><text>about</text></view></template>").unwrap();
+        fs::write(dir.join("app.rux"),
+            "<template><screen>\
+               <router>\
+                 <route path=\"/\" view=\"home\" />\
+                 <route path=\"/about\" view=\"about\" />\
+               </router>\
+             </screen></template>\n\
+             <script>\nuse components::home;\nuse components::about;\n\
+             let left = signal(\"no\");\n</script>").unwrap();
+        let mut doc = Document::load(dir.join("app.rux")).expect("load");
+        let _ = fs::remove_dir_all(&dir);
+        assert!(doc.apply_handler("navigate(\"/about\")"));
+        assert_eq!(text_of(&doc.root), vec!["about"]);
+        assert_eq!(
+            doc.engine_mut().get_string("left"),
+            "yes",
+            "the view's own hook ran, so it was filed under its own tag"
+        );
     }
 
     /// Without `r-transition` nothing is held: the old behaviour, exactly.

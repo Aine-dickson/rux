@@ -537,6 +537,20 @@ impl Swaps {
         out
     }
 
+    /// Whether a swap is currently holding the page at `path` on screen.
+    ///
+    /// The router drops a route's instances as it leaves that route, which would
+    /// take the state out from under a page that is still animating out. This is
+    /// what tells it to wait.
+    pub fn holds_route(&self, path: &str) -> bool {
+        self.rows.iter().any(|(key, (_, locals))| {
+            self.pending.contains_key(key)
+                && locals.iter().any(|(name, value)| {
+                    name == "path" && value.to_display() == path
+                })
+        })
+    }
+
     /// Forget a row for good. Called when its leaving swap commits, so the
     /// remembered locals do not outlive the row they describe.
     fn forget_row(&mut self, key: &SwapKey) {
@@ -704,6 +718,15 @@ thread_local! {
 /// `mounted` cannot usefully run second on the first build anyway. Unmounts are
 /// in whatever order the map pruned them, which is not observable: a dead
 /// instance's body cannot see another dead instance.
+/// Queue an `unmounted` for an instance the *runtime* is dropping.
+///
+/// The build queues its own as it prunes, but the router drops a route's views
+/// on the way out of that route, before any build runs, and that removal used
+/// to bypass the sink entirely: a route view's `unmounted` never fired at all.
+pub fn queue_unmount(entry: Lifecycle) {
+    UNMOUNTS.with(|u| u.borrow_mut().push(entry));
+}
+
 pub fn take_lifecycle() -> (Vec<Lifecycle>, Vec<Lifecycle>) {
     (
         MOUNTS.with(|m| std::mem::take(&mut *m.borrow_mut())),
@@ -2743,6 +2766,11 @@ fn build_node(
             // An ordinary component tag is not a route view, so a
             // `<router-view />` inside it has no chain and says so.
             None,
+            // Here the element *is* the component tag.
+            &el.tag,
+            // A component tag carrying `r-if` and `r-transition` swaps like any
+            // other element; the side lands on the component's root.
+            swap,
         );
     }
 
@@ -3375,6 +3403,20 @@ fn expand_component(
     // ordinary component tag gets `None` and its `<router-view />`, if it wrote
     // one, says so.
     outlet: Option<Outlet>,
+    // What the component is *called*, which is not always `el.tag`.
+    //
+    // For a route's view the element standing in for the component tag is the
+    // `<route>` itself, so recording `el.tag` filed every route view under the
+    // tag `route`. Everything an instance looks up afterwards is keyed by this:
+    // its `mounted` / `unmounted` bodies, its `computed`s and its `effect`s. So
+    // a route view silently had none of them, which is the kind of failure this
+    // project keeps closing off.
+    comp_tag: &str,
+    // Which side of a swap this expansion is on. For an ordinary component tag
+    // it is whatever the *caller's* element carries; for a route's view there is
+    // no caller element and the view itself is the thing swapping, so the
+    // pseudo-classes land on the component's own root either way.
+    swap: Option<SwapSide>,
 ) -> LayoutNode {
     let mut props: Locals = Vec::new();
     let mut prop_deps: HashSet<String> = HashSet::new();
@@ -3427,7 +3469,7 @@ fn expand_component(
     // a mount is.
     let fresh = !instances.contains_key(&key);
     let entry = instances.entry(key.clone()).or_insert_with(|| Instance {
-        tag: el.tag.clone(),
+        tag: comp_tag.to_string(),
         state: engine.init_scope(&component.script),
         ..Instance::default()
     });
@@ -3436,7 +3478,7 @@ fn expand_component(
         MOUNTS.with(|m| {
             m.borrow_mut().push(Lifecycle {
                 key: key.clone(),
-                tag: el.tag.clone(),
+                tag: comp_tag.to_string(),
                 // Still in the map, so the runtime reads its scope from there
                 // and sees whatever the rest of this build did to it.
                 locals: Vec::new(),
@@ -3479,9 +3521,7 @@ fn expand_component(
         outlet,
         // A component expanded inside a row is still inside that row.
         row,
-        // The swap, if any, belongs to the tag that carried `r-transition`, and
-        // that is the caller's element, not the component's root.
-        None,
+        swap,
     )
 }
 
@@ -3672,6 +3712,7 @@ fn expand_chain(
     swaps: &mut Swaps,
     instance: Option<&str>,
     row: Option<&str>,
+    swap: Option<SwapSide>,
 ) -> Option<LayoutNode> {
     let link = chain.first()?;
     let Some(view) = link.route.attr("view") else {
@@ -3702,7 +3743,7 @@ fn expand_chain(
     // the *whole* chain join them.
     let node = expand_component(
         link.route, component, comps, inherited, engine, locals, path, &tpl, reg, state, rules,
-        instances, swaps, instance, row, params, Some(current), Some(outlet),
+        instances, swaps, instance, row, params, Some(current), Some(outlet), view, swap,
     );
 
     // A route with children whose view never places an outlet would drop that
@@ -4017,6 +4058,9 @@ fn build_children(
                         if let Some(node) = expand_chain(
                             o.rest, o.params, o.current, comps, inherited, engine, locals, &cp,
                             o.router_tpl, reg, state, rules, instances, swaps, instance, row,
+                            // A nested outlet is not itself a swap; the swap, if
+                            // any, belongs to the `<router>` that chose the chain.
+                            None,
                         ) {
                             prev.push(ElemDesc::of(link.route));
                             out.push(node);
@@ -4062,14 +4106,81 @@ fn build_children(
             // each one below it is rendered by the `<router-view />` in the view
             // above. First match wins at every level, so routes are tried in the
             // order they are written and a fallback can sit anywhere among them.
-            match match_router(el, &current) {
+            // A route transition is the enter/leave problem with the matched
+            // path as the identity, so it is the same machinery rather than a
+            // second one: the page being left is held on screen by a swap while
+            // the page being entered builds beside it.
+            let anim = swap_decl(el);
+            let matched = match_router(el, &current);
+            // **Which route matched, not which path.** Two paths that match the
+            // same route (`/user/7` and `/user/12`) are one page showing
+            // different data, so they update in place rather than swapping,
+            // which is what every router does with a reused component. It also
+            // avoids a collision that would otherwise be silent: instance
+            // identity is the route's position in the template, so two
+            // simultaneous expansions of the *same* route would share one
+            // instance and one set of state.
+            let here = matched.as_ref().map(|c| c[0].index.to_string());
+            if anim.is_some() {
+                // The outgoing pages first, so the incoming one paints over
+                // them. A page is rebuilt from the path it was on, which is the
+                // one thing remembered about it while it was current.
+                let present: Vec<String> = here.iter().cloned().collect();
+                for (_, old_key, old_locals) in swaps.departed_rows(&ctp, &present) {
+                    let key: SwapKey = (ctp.clone(), Some(old_key));
+                    let old_path = old_locals
+                        .iter()
+                        .find(|(n, _)| n == "path")
+                        .map(|(_, v)| v.to_display())
+                        .unwrap_or_default();
+                    let Some(chain) = match_router(el, &old_path) else {
+                        // The route it was on no longer matches, which a hot
+                        // reload can do mid-swap. Let it go rather than hold a
+                        // page nothing can build.
+                        swaps.finish(&key);
+                        continue;
+                    };
+                    let Some(side) = swaps.resolve(&key, false, true) else { continue };
+                    let params = chain_params(&chain);
+                    let cp = child_path(&out);
+                    if let Some(mut node) = expand_chain(
+                        &chain, &params, &old_path, comps, inherited, engine, locals, &cp, &ctp,
+                        reg, state, rules, instances, swaps, instance, row, side,
+                    ) {
+                        arm_swap(swaps, &key, &mut node, anim, engine, locals, &mut structural_deps);
+                        prev.push(ElemDesc::of(chain[0].route));
+                        out.push(node);
+                    }
+                }
+            }
+            match matched {
                 Some(chain) => {
                     let params = chain_params(&chain);
                     let cp = child_path(&out);
-                    if let Some(node) = expand_chain(
+                    let key: SwapKey = (ctp.clone(), here);
+                    let side = if anim.is_some() {
+                        // Remember the path this page is on, so that when it
+                        // stops being current there is still something to
+                        // rebuild it from.
+                        swaps.remember_row(
+                            &key,
+                            0,
+                            vec![("path".to_string(), Value::Text(current.clone()))],
+                        );
+                        swaps.resolve(&key, true, true).flatten()
+                    } else {
+                        None
+                    };
+                    if let Some(mut node) = expand_chain(
                         &chain, &params, &current, comps, inherited, engine, locals, &cp, &ctp,
-                        reg, state, rules, instances, swaps, instance, row,
+                        reg, state, rules, instances, swaps, instance, row, side,
                     ) {
+                        if anim.is_some() {
+                            arm_swap(
+                                swaps, &key, &mut node, anim, engine, locals,
+                                &mut structural_deps,
+                            );
+                        }
                         prev.push(ElemDesc::of(chain[0].route));
                         out.push(node);
                     }
