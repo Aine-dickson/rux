@@ -44,6 +44,17 @@
   <view class="banner idle" r-else r-transition>
     <text class="banner-text">nothing to save</text>
   </view>
+
+  <!-- On a row, `r-transition` needs `r-key` on the same element and says so
+       if it is missing: without a key there is nothing to hold a departing row
+       by, and a removal and a reorder are the same picture. Take one from the
+       middle and watch where it leaves from. -->
+  <text class="hint">Tap a task to drop it. Take one from the middle, not the end.</text>
+  <view class="list">
+    <view class="task" r-for="t in tasks" r-key="t.id" r-transition @tap="drop(t.id)">
+      <text class="task-text">{{ t.text }}</text>
+    </view>
+  </view>
 </screen>
 </template>
 
@@ -143,6 +154,37 @@
   .good:leave-to { position: absolute; opacity: 0; transform: translateX(-24px); }
   .idle:enter-from { opacity: 0; transform: translateX(-24px); }
   .idle:leave-to { position: absolute; opacity: 0; transform: translateX(24px); }
+
+  .list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    max-width: 420px;
+  }
+
+  .task {
+    padding: 12px 16px;
+    background: #313244;
+    border-radius: 8px;
+    cursor: pointer;
+    opacity: 1;
+    transform: translateX(0px);
+    transition: opacity 260ms ease-out, transform 260ms ease-out;
+  }
+
+  .task:hover { background: #45475a; }
+  .task-text { color: #cdd6f4; font-size: 14px; }
+  /* Out of the flow on the way out, which is the opposite call from the card
+     above and for the opposite reason. Nothing is arriving to fill a dropped
+     row, so the rows below should close the gap while the departing one is
+     still crossing it. Left in the flow they would wait, and the whole list
+     would jump the moment it committed.
+
+     Naming no inset is what keeps it where it sat: a box taken out of the flow
+     holds the place it would have had, so a row removed from the middle leaves
+     from the middle rather than from the end of the list. */
+  .task:leave-to { position: absolute; opacity: 0; transform: translateX(72px); }
+  .task:enter-from { opacity: 0; transform: translateX(-72px); }
 </style>
 
 <script>
@@ -157,6 +199,29 @@
 
   /* Whether the card has actually left, as opposed to being mid-swap. */
   let gone = signal(false);
+
+  /* Long enough that there is a middle to take a row out of. */
+  let tasks = signal([
+      #{ id: "tanks",   text: "check the tanks" },
+      #{ id: "heading", text: "log the heading" },
+      #{ id: "watch",   text: "wake the second watch" },
+      #{ id: "aerial",  text: "stow the aerial" },
+      #{ id: "log",     text: "close the log" },
+  ]);
+
+  /* Rebuilt rather than filtered. `filter` would be a method call, and a method
+     call does not capture the scope it was written in, so its closure could not
+     see `id`. A plain call does capture, which is what lets this one read and
+     write `tasks` at all. */
+  fn drop(id) {
+    let left = [];
+    for t in tasks {
+      if t.id != id {
+        left.push(t);
+      }
+    }
+    tasks = left;
+  }
 
   fn onDrag(event) {
     if event.phase == "start" {

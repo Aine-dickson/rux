@@ -2,17 +2,41 @@
   <screen class="app">
     <nav-bar />
 
+    <!-- Slow motion, so a navigation lasts long enough to be looked at and
+         long enough to be interrupted. Tapping a page that is still moving is
+         the case worth trying: the hit region follows the transform, so the tap
+         lands where the control is drawn rather than where it started. -->
+    <view class="controls">
+      <view class="step" :class="#{ dead: slow }" @tap="slow = true">
+        <text class="step-label">slow motion</text>
+      </view>
+      <view class="step" :class="#{ dead: !slow }" @tap="slow = false">
+        <text class="step-label">normal speed</text>
+      </view>
+    </view>
+
     <!-- Only the matched route renders, and the router leaves no box of its own
          behind. While a navigation animates there are two real pages at once,
          and the one on its way out is lifted out of the flow so the one coming
-         in takes its place rather than queueing below it. -->
-    <router r-transition>
-      <route path="/" view="home-page" />
-      <route path="/crew" view="crew-list" :crew="crew" />
-      <route name="crew-detail" path="/crew/:id" view="crew-detail" :crew="crew" />
-      <route path="/about" view="about-page" />
-      <route fallback view="lost-page" />
-    </router>
+         in takes its place rather than queueing below it.
+
+         The drag is on this wrapper rather than on the router, because a
+         <router> leaves no box to hit. An element carrying only `@drag` is not
+         a tap target and does not swallow a tap meant for what is under it, so
+         everything inside the page is still reachable. -->
+    <view class="stage" :class="#{ slow: slow }" @drag="onSwipe(event)">
+      <!-- One binding, both drivers. `swipe` is null except while a finger has
+           hold of it, and a swap handed a non-number runs on the clock, so a
+           tab tap animates and a drag follows the hand without the swap being
+           declared twice. -->
+      <router :r-transition="swipe">
+        <route path="/" view="home-page" />
+        <route path="/crew" view="crew-list" :crew="crew" />
+        <route name="crew-detail" path="/crew/:id" view="crew-detail" :crew="crew" />
+        <route path="/about" view="about-page" />
+        <route fallback view="lost-page" />
+      </router>
+    </view>
 
     <!-- Back and Forward, greyed out when there is nowhere to go. This is what
          `can_go_back` is for: disabling a control is a class, and a class reads
@@ -63,6 +87,10 @@
 
   .path { color: #6c7086; font-size: 12px; font-weight: 700; }
   .history { display: flex; align-items: center; gap: 10px; }
+  .controls { display: flex; align-items: center; gap: 10px; }
+  /* The wrapper the drag lives on. It takes the width so the pages inside are
+     laid out exactly as they were when they were the screen's own children. */
+  .stage { width: 100%; }
 
   .step {
     padding: 5px 12px;
@@ -110,6 +138,10 @@
      coordinates to be told. */
   .page:leave-to { position: absolute; opacity: 0; transform: translateX(-28px); }
   .page:enter-from { opacity: 0; transform: translateX(28px); }
+  /* Slow enough to interrupt. A document's rules style the components it uses,
+     so `.page` here is the very node each view declares as its own root, and a
+     class on the wrapper can reach it. */
+  .stage.slow .page { transition: opacity 1400ms ease-out, transform 1400ms ease-out; }
 </style>
 
 <script>
@@ -134,4 +166,56 @@
       #{ id: "mary",    name: "Mary",    job: "aeronautics" },
       #{ id: "dorothy", name: "Dorothy", job: "supervisor" },
   ]);
+
+  // Slow motion, so a navigation can be looked at and interrupted.
+  let slow = signal(false);
+
+  // Progress for the page swap, `null` unless a finger has hold of it. A swap
+  // handed a non-number runs on the clock for its declared duration, so this
+  // one binding covers both the tab tap and the drag.
+  let swipe = signal(null);
+
+  // Whether this drag turned out to be a back gesture. A drag is not one until
+  // it has moved rightwards far enough to mean it.
+  let backing = signal(false);
+
+  // Swipe from the left to go back, the way a phone does it.
+  //
+  // The navigation itself is what opens the swap, exactly as flipping `r-if`
+  // opens the card's swap in `enter-leave.rux`: the page being left is held on
+  // screen beside the page being entered, and progress decides where the pair
+  // sits between them.
+  fn onSwipe(event) {
+    if event.phase == "start" {
+      backing = false;
+    } else if event.phase == "move" {
+      // Nothing happens on the way to the threshold. Navigating on the first
+      // pixel would mean any drag at all, in any direction, changed the page
+      // on the chance that it became a back gesture.
+      if !backing && event.totalX > 16 && can_go_back {
+        backing = true;
+        back();
+        swipe = 0;
+      }
+      if backing {
+        let p = (event.totalX - 16) / 280;
+        if p < 0 { p = 0; }
+        if p > 1 { p = 1; }
+        swipe = p;
+      }
+    } else if backing {
+      backing = false;
+      if swipe > 0.4 {
+        // Far enough to mean it. Handing progress back to the clock lets the
+        // rest of it run out rather than snapping to an end the finger never
+        // reached.
+        swipe = null;
+      } else {
+        // Changed its mind. Restoring the route is what reverses the swap, and
+        // the clock walks it home from wherever the hand let go.
+        forward();
+        swipe = null;
+      }
+    }
+  }
 </script>
