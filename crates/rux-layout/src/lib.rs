@@ -934,6 +934,17 @@ impl Offset {
 /// as long as the tree's shape is, which is what the shell keys offsets by.
 #[derive(Clone, Debug)]
 pub struct ScrollRegion {
+    /// The accumulated `transform` in force where this box sits, and the
+    /// accumulated `opacity`.
+    ///
+    /// Scrollbars and focus rings are drawn *outside* the paint list, over the
+    /// content, because a scroller clips its own children and would eat them.
+    /// That means they do not inherit the transform and opacity stack the paint
+    /// list carries, and until these were recorded they did not follow at all:
+    /// a page transitioning at `opacity: 0` still showed its scrollbar at full
+    /// strength, sitting over whatever it was transitioning away from.
+    pub transform: Option<Transform>,
+    pub alpha: f32,
     pub id: usize,
     pub x: f32,
     pub y: f32,
@@ -1119,6 +1130,10 @@ pub struct AccessNode {
 /// (for the focus ring) plus how the shell should act on it.
 #[derive(Clone, Debug)]
 pub struct FocusItem {
+    /// See [`ScrollRegion::transform`]: a ring is drawn over the content and so
+    /// has to be told what the content is being drawn through.
+    pub transform: Option<Transform>,
+    pub alpha: f32,
     pub x: f32,
     pub y: f32,
     pub width: f32,
@@ -1458,6 +1473,24 @@ fn to_align_content(j: Justify) -> AlignContent {
     }
 }
 
+/// `outer * inner`, both as kurbo's `[a, b, c, d, e, f]`.
+///
+/// Needed because a transform is now *accumulated* as well as pushed: the paint
+/// list nests its matrices, but a scrollbar drawn outside that list has to be
+/// handed one matrix that already means the same thing.
+fn compose(outer: Transform, inner: Transform) -> Transform {
+    let [a1, b1, c1, d1, e1, f1] = outer;
+    let [a2, b2, c2, d2, e2, f2] = inner;
+    [
+        a1 * a2 + c1 * b2,
+        b1 * a2 + d1 * b2,
+        a1 * c2 + c1 * d2,
+        b1 * c2 + d1 * d2,
+        a1 * e2 + c1 * f2 + e1,
+        b1 * e2 + d1 * f2 + f1,
+    ]
+}
+
 fn to_inset(l: Option<Len>, vp: (f32, f32)) -> LengthPercentageAuto {
     match l {
         None => auto(),
@@ -1698,6 +1731,10 @@ fn collect(
     // The nearest scroller above this node, so a focus ring can be clipped to
     // the box that clips everything else in it.
     inside_scroll: Option<usize>,
+    // The `transform` and `opacity` accumulated from the ancestors, so anything
+    // drawn outside the paint list can be drawn through the same lens.
+    xform: Option<Transform>,
+    dim: f32,
     out: &mut Layout,
 ) {
     let layout = tree.layout(id).expect("layout");
@@ -1729,10 +1766,19 @@ fn collect(
     // coords; bake in the origin (CSS default: the box centre) so it applies to
     // absolute coordinates directly.
     let transform = transforms.iter().find(|(nid, _)| *nid == id).map(|(_, m)| *m);
+    // What the subtree, and anything drawn on its behalf outside the paint
+    // list, is seen through.
+    let mut child_xform = xform;
     if let Some(m) = transform {
         let (ox, oy) = (x + layout.size.width / 2.0, y + layout.size.height / 2.0);
-        out.paints.push(Paint::PushTransform(centre_transform(m, ox, oy)));
+        let baked = centre_transform(m, ox, oy);
+        out.paints.push(Paint::PushTransform(baked));
+        child_xform = Some(match xform {
+            Some(outer) => compose(outer, baked),
+            None => baked,
+        });
     }
+    let child_dim = dim * alpha;
 
     let mut clip = false;
     let mut clip_radius = [0.0; 4];
@@ -1894,6 +1940,8 @@ fn collect(
                 options: options.clone(),
             });
             out.focusables.push(FocusItem {
+                transform: child_xform,
+                alpha: child_dim,
                 x,
                 y,
                 width: fw,
@@ -1944,6 +1992,8 @@ fn collect(
                 scroll_id: scrolls.contains(&id).then(|| out.scrolls.len()),
             });
             out.focusables.push(FocusItem {
+                transform: child_xform,
+                alpha: child_dim,
                 x,
                 y,
                 width: fw,
@@ -1967,6 +2017,8 @@ fn collect(
         // only `@drag` has nothing a key could stand in for, and offering Enter
         // as a fake drag would be worse than leaving it alone.
         out.focusables.push(FocusItem {
+            transform: child_xform,
+            alpha: child_dim,
             x,
             y,
             width: fw,
@@ -2002,6 +2054,8 @@ fn collect(
         };
         shift = offsets.get(sid).copied().unwrap_or_default().clamp_to(max);
         out.scrolls.push(ScrollRegion {
+            transform: child_xform,
+            alpha: child_dim,
             id: sid,
             x,
             y,
@@ -2033,6 +2087,8 @@ fn collect(
             offsets,
             vp,
             child_scroll,
+            child_xform,
+            child_dim,
             out,
         );
     }
@@ -2180,7 +2236,7 @@ pub fn layout_scrolled(
     let mut out = Layout::default();
     collect(
         &tree, root_id, 0.0, 0.0, &paint, &handlers, &models, &focus_labels, &hidden, &opacities,
-        &scrolls, &transforms, &states, &access, &paths, offsets, vp, None, &mut out,
+        &scrolls, &transforms, &states, &access, &paths, offsets, vp, None, None, 1.0, &mut out,
     );
     out
 }

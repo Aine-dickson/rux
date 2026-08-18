@@ -408,11 +408,20 @@ fn bar_thumb(r: &ScrollRegion, offset: Offset, axis: Axis2) -> Option<(f32, f32,
     })
 }
 
+/// A layout `Transform` as a kurbo `Affine`, identity when there is none. The
+/// coefficients are already in the same order.
+fn to_affine(m: Option<rux_layout::Transform>) -> Affine {
+    match m {
+        Some(t) => Affine::new([t[0] as f64, t[1] as f64, t[2] as f64, t[3] as f64, t[4] as f64, t[5] as f64]),
+        None => Affine::IDENTITY,
+    }
+}
+
 /// Paint items for every visible scrollbar: a faint track with a lighter thumb,
 /// drawn over the content so a scroller's own clip can't eat them.
-fn scrollbar_paints(scrolls: &[ScrollRegion], offsets: &[Offset]) -> Vec<Paint> {
-    let track_bg = Rgba::new(1.0, 1.0, 1.0, 0.05);
-    let thumb_bg = Rgba::new(0.80, 0.84, 0.96, 0.35); // #cdd6f4 at 35%
+fn scrollbar_paints(scrolls: &[ScrollRegion], offsets: &[Offset], alpha: f32) -> Vec<Paint> {
+    let track_bg = Rgba::new(1.0, 1.0, 1.0, 0.05 * alpha);
+    let thumb_bg = Rgba::new(0.80, 0.84, 0.96, 0.35 * alpha); // #cdd6f4 at 35%
     let mut out = Vec::new();
     for r in scrolls {
         let offset = offsets.get(r.id).copied().unwrap_or_default();
@@ -454,7 +463,7 @@ fn scrollbar_paints(scrolls: &[ScrollRegion], offsets: &[Offset]) -> Vec<Paint> 
 /// ring on a row scrolled out of a list draws over whatever is above the list.
 /// The ring is allowed the 2px it sits outside its element by, so a focused row
 /// flush with the top of its container still shows one.
-fn focus_ring(item: &FocusItem, within: Option<&ScrollRegion>) -> Vec<Paint> {
+fn focus_ring(item: &FocusItem, within: Option<&ScrollRegion>, alpha: f32) -> Vec<Paint> {
     let ring = Paint::Rect(PaintRect {
         x: item.x - 2.0,
         y: item.y - 2.0,
@@ -463,7 +472,7 @@ fn focus_ring(item: &FocusItem, within: Option<&ScrollRegion>) -> Vec<Paint> {
         background: None,
         radius: [7.0; 4],
         border_width: 2.0,
-        border_color: Some(Rgba::new(0.54, 0.71, 0.98, 1.0)), // #89b4fa
+        border_color: Some(Rgba::new(0.54, 0.71, 0.98, alpha)), // #89b4fa
     });
     let Some(r) = within else { return vec![ring] };
     // Scrolled entirely out of view: draw nothing rather than a ring clipped to
@@ -3272,17 +3281,36 @@ impl App {
         // Scrollbars go over the content: they're an overlay on the box's own
         // trailing edge, and a scroller clips its children, so they can't be
         // painted as part of the subtree.
-        let bars = scrollbar_paints(&layout.scrolls, offsets);
-        if !bars.is_empty() {
+        //
+        // Being outside the subtree, they are also outside its `transform` and
+        // `opacity`, and that showed: a page transitioning at `opacity: 0` drew
+        // its scrollbar at full strength over the page it was leaving, and a
+        // scrollbar on a sliding page stayed where the page used to be. So each
+        // region is drawn through the lens its own box is drawn through, one
+        // bar at a time, since two scrollers can be under different transforms.
+        for region in &layout.scrolls {
+            if region.alpha <= 0.001 {
+                continue;
+            }
+            let bars = scrollbar_paints(std::slice::from_ref(region), offsets, region.alpha);
+            if bars.is_empty() {
+                continue;
+            }
             let scene = rux_paint::build_scene(&bars, text, images, false);
-            state.scene.append(&scene, Some(Affine::scale(scale)));
+            state.scene.append(&scene, Some(Affine::scale(scale) * to_affine(region.transform)));
         }
 
-        // A keyboard focus ring, drawn over the content (but under a dropdown).
+        // A keyboard focus ring, drawn over the content (but under a dropdown),
+        // and through the same lens for the same reason.
         if let Some(item) = focus_index.and_then(|i| layout.focusables.get(i)) {
-            let within = item.scroll.and_then(|s| layout.scrolls.get(s));
-            let ring = rux_paint::build_scene(&focus_ring(item, within), text, images, false);
-            state.scene.append(&ring, Some(Affine::scale(scale)));
+            if item.alpha > 0.001 {
+                let within = item.scroll.and_then(|s| layout.scrolls.get(s));
+                let ring =
+                    rux_paint::build_scene(&focus_ring(item, within, item.alpha), text, images, false);
+                state
+                    .scene
+                    .append(&ring, Some(Affine::scale(scale) * to_affine(item.transform)));
+            }
         }
 
         // The selection toolbar, over the content while something is selected.
@@ -4839,6 +4867,8 @@ mod tests {
 
     fn focusable(y: f32, scroll: Option<usize>) -> FocusItem {
         FocusItem {
+            transform: None,
+            alpha: 1.0,
             x: 40.0,
             y,
             width: 200.0,
@@ -4850,6 +4880,8 @@ mod tests {
 
     fn scroller() -> ScrollRegion {
         ScrollRegion {
+            transform: None,
+            alpha: 1.0,
             id: 0,
             x: 30.0,
             y: 100.0,
@@ -4865,7 +4897,7 @@ mod tests {
     /// plain rectangle, as it always was.
     #[test]
     fn a_focus_ring_outside_a_scroller_is_unclipped() {
-        assert_eq!(focus_ring(&focusable(150.0, None), None).len(), 1);
+        assert_eq!(focus_ring(&focusable(150.0, None), None, 1.0).len(), 1);
     }
 
     /// The ring is painted as its own scene after the document's, so it never
@@ -4876,7 +4908,7 @@ mod tests {
     /// above it.
     #[test]
     fn a_focus_ring_inside_a_scroller_is_clipped_to_it() {
-        let paints = focus_ring(&focusable(150.0, Some(0)), Some(&scroller()));
+        let paints = focus_ring(&focusable(150.0, Some(0)), Some(&scroller()), 1.0);
         assert_eq!(paints.len(), 3, "a clip, the ring, and the matching pop");
         assert!(matches!(paints[0], Paint::PushClip { .. }), "{:?}", paints[0]);
         assert!(matches!(paints[2], Paint::PopClip), "{:?}", paints[2]);
@@ -4887,12 +4919,12 @@ mod tests {
     /// a focused element that happens to be off-screen.
     #[test]
     fn a_focus_ring_scrolled_out_of_view_is_not_drawn() {
-        let above = focus_ring(&focusable(-90.0, Some(0)), Some(&scroller()));
+        let above = focus_ring(&focusable(-90.0, Some(0)), Some(&scroller()), 1.0);
         assert!(above.is_empty(), "scrolled off the top: {above:?}");
-        let below = focus_ring(&focusable(400.0, Some(0)), Some(&scroller()));
+        let below = focus_ring(&focusable(400.0, Some(0)), Some(&scroller()), 1.0);
         assert!(below.is_empty(), "scrolled off the bottom: {below:?}");
         // And one straddling the edge is still drawn, clipped.
-        let edge = focus_ring(&focusable(90.0, Some(0)), Some(&scroller()));
+        let edge = focus_ring(&focusable(90.0, Some(0)), Some(&scroller()), 1.0);
         assert_eq!(edge.len(), 3, "partly visible, so still drawn: {edge:?}");
     }
 
@@ -4937,6 +4969,8 @@ mod tests {
     /// A 200x200 box holding 500px-tall content: it scrolls down, not sideways.
     fn tall() -> ScrollRegion {
         ScrollRegion {
+            transform: None,
+            alpha: 1.0,
             id: 0,
             x: 0.0,
             y: 0.0,
