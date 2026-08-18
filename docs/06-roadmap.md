@@ -1295,14 +1295,15 @@ way. This milestone is where Rux stops being stock rhai.
      [Transitions](./05-as-built.md#honored-css) for the surface, and
      `examples/transition.rux`.
    - **Enter and leave** second, and it shares a foundation with lifecycle
-     hooks: both need a subtree to outlive its removal from the tree.
+     hooks: both need a subtree to outlive its removal from the tree. **Built**
+     2026-08-18, see item 6.
    - **Route transitions last**, never first. They *are* the enter/leave
      problem, so building them for the router alone means writing a bespoke
      animator and throwing it away.
 6. **Lifecycle hooks**, `mounted` and `unmounted`. **Document and component
    level are both done** (2026-08-17), along with `setInterval` and with
-   `computed` / `effect` inside a component. Enter/leave is what is left, and it
-   is waiting on the tier 2 ownership decision rather than on effort.
+   `computed` / `effect` inside a component. **Enter/leave landed 2026-08-18**;
+   route transitions are what is left.
 
    The premise this was planned under has expired and the decision was re-made
    rather than inherited. Hooks were to be inline blocks *because* a named `fn`
@@ -1323,16 +1324,44 @@ way. This milestone is where Rux stops being stock rhai.
    one build swaps two components, the leaver's `unmounted` runs before the
    arriver's `mounted`.
 
-   **What is left**, in order, because each depends on the one before:
-   - **Enter/leave**, built as a **builder-owned live pair** (decided
-     2026-08-18). While a swap is pending the build emits *both* branches and
-     the animator supplies only progress and the per-side transforms. Not a
-     snapshot held by the animator: two real, laid-out, still-updating trees,
-     because a swipe is reversible and a corpse cannot be resurrected, and
-     because under builder ownership both instances stay reached by the build,
-     so pruning keeps working and `unmounted` fires at commit rather than at
-     removal. The cost, accepted knowingly, is that it touches the build path,
-     instance pruning and the router.
+   **Enter/leave: BUILT 2026-08-18**, as the **builder-owned live pair**
+   decided the same day. While a swap is pending the build emits *both*
+   branches: two real, laid-out, still-updating trees rather than a snapshot
+   held by the animator, because a swipe is reversible and a corpse cannot be
+   resurrected. Under builder ownership both instances stay reached by the
+   build, so pruning kept working untouched and `unmounted` fires at commit
+   rather than at removal, which is the behaviour a cancelled swipe needs.
+
+   **The authoring surface, decided 2026-08-18 by the user** after weighing a
+   Vue-style `<transition>` wrapper and a script-driven pair against it:
+   `r-transition` marks the element, and the two sides are **CSS**, on the new
+   `:enter-from` and `:leave-to` pseudo-classes. Nothing new to learn if you
+   know how the rest of an element's appearance is written, no non-rendering
+   wrapper element, and no convention-based class names. It fits the grain:
+   `:current` was already a build-time pseudo-class, so there was a precedent
+   for resolving one from state rather than from the shell.
+
+   **The payoff of that choice, which was not the reason for it:** tier 1
+   needed almost no change. `:enter-from` is worn for one build and dropped by
+   the next, and that drop is an ordinary style change, which is exactly what
+   `transition` already animates. Enter/leave turned out to be *build* work
+   rather than animator work.
+
+   **What it cost, as predicted:** the build path and the identity bookkeeping.
+   `Swaps` has to remember what the **last** build showed, since a swap opens on
+   the difference between that and what this build asks for and the tree cannot
+   report the first of those. Keyed `r-for` rows needed more: a departing row's
+   item is already gone from the collection, so the row's locals and its
+   position are remembered too, and a row leaving from the middle of a list is
+   spliced back in where it sat rather than appended.
+
+   **Progress can be driven, not just timed**, which is the half the live pair
+   was really chosen for: `:r-transition="expr"` hands progress to the author,
+   0 to 1, so a `@drag` can drive a swap and change its mind. Yielding `null`
+   hands it back to the clock, which is how a released finger settles rather
+   than snapping. Driven in `examples/enter-leave.rux`.
+
+   **What is left:**
    - **Route transitions**, on top of that and never before it.
 7. **`rux build`, for web and Windows only.** Moved out of v0.6 on 2026-08-11
    to sit here, at the end, after the language has stopped moving. Two targets
