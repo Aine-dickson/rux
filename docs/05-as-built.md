@@ -370,8 +370,27 @@ The condition is yours throughout. Abandoning a swap does not put it back:
 the release handler that decides to abandon is the same one that restores the
 condition, so what is on screen and what the signal says never disagree.
 
-Route transitions are not built on this yet, and neither is a third tier of
-keyframes. Driven in `examples/enter-leave.rux`.
+**Route transitions** are the same feature again: `r-transition` on the
+`<router>` animates a navigation, holding the page being left on screen beside
+the page being entered.
+```rux
+<router r-transition>
+  <route path="/" view="home-page" />
+  <route path="/crew/:id" view="crew-detail" />
+</router>
+```
+```css
+.page:enter-from { opacity: 0; transform: translateX(28px); }
+.page:leave-to   { opacity: 0; transform: translateX(-28px); }
+```
+The identity is **which route matched, not which path**. Two paths matching the
+same route (`/crew/grace` and `/crew/kim`) are one page showing different data,
+so they update in place rather than crossing over, the same way a router reuses
+a component. The outgoing page's `unmounted` runs when the transition
+**commits**, so a navigation that reverses mid-swap never fires one.
+
+A third tier, keyframes, is not built. Driven in `examples/enter-leave.rux` and
+`examples/router.rux`.
 
 **Computed values:** `computed name = expr;` in `<script>` declares derived
 state, written once and readable anywhere a signal is:

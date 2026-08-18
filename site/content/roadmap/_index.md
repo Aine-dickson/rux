@@ -1309,7 +1309,8 @@ way. This milestone is where Rux stops being stock rhai.
      2026-08-18, see item 6.
    - **Route transitions last**, never first. They *are* the enter/leave
      problem, so building them for the router alone means writing a bespoke
-     animator and throwing it away.
+     animator and throwing it away. **Built** 2026-08-18, last as planned, and
+     they cost one identity decision rather than an animator.
 6. **Lifecycle hooks**, `mounted` and `unmounted`. **Document and component
    level are both done** (2026-08-17), along with `setInterval` and with
    `computed` / `effect` inside a component. **Enter/leave landed 2026-08-18**;
@@ -1371,8 +1372,21 @@ way. This milestone is where Rux stops being stock rhai.
    hands it back to the clock, which is how a released finger settles rather
    than snapping. Driven in `examples/enter-leave.rux`.
 
-   **What is left:**
-   - **Route transitions**, on top of that and never before it.
+   **Route transitions: BUILT 2026-08-18**, on top of it and not beside it,
+   which is the sequencing rule this milestone kept insisting on. The router
+   contributes the identity (**which route matched**, not which path, so a
+   param-only navigation updates in place) and nothing else; the tests passed
+   first time. That is the return on not having built them for the router
+   alone.
+
+   **It found a bug with nothing to do with animation.** A route view ran no
+   lifecycle at all: no `mounted`, no `unmounted`, no `computed`, no `effect`.
+   The `<route>` element stands in for the component tag when a view is
+   expanded, so every route view was filed under the tag `route`, and
+   everything an instance looks up afterwards is keyed by that tag. Nothing had
+   noticed because nothing had asked. Leaving a route also dropped its
+   instances without queueing their `unmounted`, bypassing the lifecycle sink.
+   Both fixed.
 7. **`rux build`, for web and Windows only.** Moved out of v0.6 on 2026-08-11
    to sit here, at the end, after the language has stopped moving. Two targets
    and no more: a static web bundle, which is close to what the playground

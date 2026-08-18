@@ -4,7 +4,7 @@
 
     <!-- Only the matched route renders, and the router leaves no box of its own
          behind: the page below sits directly in this column. -->
-    <router>
+    <router r-transition>
       <route path="/" view="home-page" />
       <route path="/crew" view="crew-list" :crew="crew" />
       <route name="crew-detail" path="/crew/:id" view="crew-detail" :crew="crew" />
@@ -90,6 +90,24 @@
 
   .lost:hover { border-color: #f38ba8; }
   .lost-label { color: #6c7086; font-size: 12px; }
+
+  /* `r-transition` on the <router> animates a navigation. While one is running
+     both pages are really on screen: the one being left is held there until its
+     transition finishes, and only then does it stop being built (which is also
+     when its `unmounted` runs).
+
+     Every view's root carries `.page`, so one pair of rules covers all of them.
+     Navigating between two paths that match the *same* route is not a swap, it
+     is one page showing different data, so `/crew/grace` to `/crew/kim` updates
+     in place rather than crossing over. */
+  .page {
+    opacity: 1;
+    transform: translateX(0px);
+    transition: opacity 220ms ease-out, transform 220ms ease-out;
+  }
+
+  .page:enter-from { opacity: 0; transform: translateX(28px); }
+  .page:leave-to { opacity: 0; transform: translateX(-28px); }
 </style>
 
 <script>
