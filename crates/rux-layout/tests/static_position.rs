@@ -93,3 +93,48 @@ fn a_named_inset_still_positions_against_the_parent() {
     // the fact the static-position pass depends on.
     assert_eq!(pinned.y, 0.0, "`top: 0` is the parent's border edge, as before");
 }
+
+/// Two out-of-flow siblings with no insets land in the *same* place.
+///
+/// Neither occupies space, so neither can push the other down: the static
+/// position of the second is where it would have stood in normal flow, and in
+/// a flow that the first one has already left, that is the top.
+///
+/// Found by looking at `examples/chart.rux`, where a filled band and the line
+/// over it are two absolutely positioned paths over the same points. The line
+/// was drawn a whole band's height below the band, out of the frame entirely
+/// and across the buttons underneath it.
+#[test]
+fn two_out_of_flow_siblings_do_not_stack() {
+    let mut screen = Node::new(Style {
+        display: Display::Flex,
+        axis: Axis::Column,
+        padding: Sides::uniform(30.0),
+        ..Default::default()
+    });
+    for _ in 0..2 {
+        let mut b = box_of(40.0, 50.0, Position::Absolute);
+        b.style.background = Some(Background::Color(Rgba::new(1.0, 0.0, 0.0, 1.0)));
+        screen.children.push(b);
+    }
+
+    let mut measure = |_: &TextContent, _: Option<f32>| (50.0, 20.0);
+    let rects: Vec<PaintRect> = layout(&screen, 1000.0, 800.0, &mut measure)
+        .paints
+        .into_iter()
+        .filter_map(|p| match p {
+            Paint::Rect(r) => Some(r),
+            _ => None,
+        })
+        .filter(|r| r.width == 40.0)
+        .collect();
+
+    assert_eq!(rects.len(), 2, "both boxes painted");
+    assert_eq!(
+        rects[0].y, rects[1].y,
+        "an out-of-flow box holds no space, so it cannot push its out-of-flow \
+         sibling down: {} then {}",
+        rects[0].y, rects[1].y
+    );
+    assert_eq!(rects[0].y, 30.0, "and both sit at the content origin");
+}

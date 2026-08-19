@@ -2449,13 +2449,33 @@ pub fn layout_scrolled(
     // what discovers where it would have been; the second pins it there and
     // takes it out. The cost is one extra layout, and only when such a box
     // exists at all, which is normally never and during a swap is brief.
+    //
+    // **Only one out-of-flow sibling goes back in the flow at a time**, which
+    // is the whole reason for the `rounds` below. Putting them all back at once
+    // measures each one against the others, and a box that holds no space
+    // cannot push its sibling down: two of them landed a whole box apart
+    // instead of on top of one another. Seen in `examples/chart.rux`, where a
+    // filled band and the line over it are two absolutely positioned paths over
+    // the same points, and the line was drawn a band's height below the band,
+    // outside the frame entirely.
+    //
+    // Siblings are the only ones that interfere, so the number of passes is the
+    // most no-inset absolute children any single parent has: one in almost
+    // every document, two for a chart, and never the total.
     let mut statics: Vec<(NodeId, NodeId)> = Vec::new();
     collect_statics(&tree, root_id, &mut statics);
-    for (_, id) in &statics {
-        let mut st = tree.style(*id).expect("style").clone();
-        st.position = taffy::Position::Relative;
-        tree.set_style(*id, st).expect("in flow for the first pass");
+    // Each one's index among its own parent's statics, which is the pass it
+    // gets to be in the flow for.
+    let mut rounds: Vec<usize> = Vec::with_capacity(statics.len());
+    {
+        let mut seen: HashMap<NodeId, usize> = HashMap::new();
+        for (parent, _) in &statics {
+            let n = seen.entry(*parent).or_insert(0);
+            rounds.push(*n);
+            *n += 1;
+        }
     }
+    let passes = rounds.iter().copied().max().map_or(0, |m| m + 1);
 
     let mut measure_fn = |known: Size<Option<f32>>,
                           available: Size<AvailableSpace>,
@@ -2513,23 +2533,34 @@ pub fn layout_scrolled(
         .expect("compute layout");
 
     if !statics.is_empty() {
-        // Where each one landed while it was still in the flow, pinned as an
-        // inset.
-        //
-        // Both are measured from the parent's **border** box, so they are in
-        // the same frame and the location transfers straight across. This was
-        // worth checking rather than assuming: taking the parent's padding off
-        // as well (on the theory that insets run from the padding box, as the
-        // CSS spec says of the containing block) moved every such box one
-        // padding up and left, which is exactly the kind of near-miss that
-        // reads as a layout bug rather than a wrong rule.
-        for (parent, id) in &statics {
-            let here = tree.layout(*id).expect("layout").location;
-            let _ = parent;
+        // One pass per round. In round `k` the k-th static child of every
+        // parent is in the flow and all the others are out of it, which is
+        // exactly the arrangement its static position is defined against.
+        let mut found: Vec<(f32, f32)> = vec![(0.0, 0.0); statics.len()];
+        for round in 0..passes {
+            for (i, (_, id)) in statics.iter().enumerate() {
+                let mut st = tree.style(*id).expect("style").clone();
+                st.position = if rounds[i] == round {
+                    taffy::Position::Relative
+                } else {
+                    taffy::Position::Absolute
+                };
+                tree.set_style(*id, st).expect("one of them back in the flow");
+            }
+            tree.compute_layout_with_measure(root_id, space, &mut measure_fn)
+                .expect("discover the static positions");
+            for (i, (_, id)) in statics.iter().enumerate() {
+                if rounds[i] == round {
+                    let here = tree.layout(*id).expect("layout").location;
+                    found[i] = (here.x, here.y);
+                }
+            }
+        }
+        for (i, (_, id)) in statics.iter().enumerate() {
             let mut st = tree.style(*id).expect("style").clone();
             st.position = taffy::Position::Absolute;
-            st.inset.left = length(here.x);
-            st.inset.top = length(here.y);
+            st.inset.left = length(found[i].0);
+            st.inset.top = length(found[i].1);
             tree.set_style(*id, st).expect("pinned where it stood");
         }
         tree.compute_layout_with_measure(root_id, space, &mut measure_fn)

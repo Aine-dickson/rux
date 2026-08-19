@@ -60,14 +60,14 @@
 
   .frame {
     position: relative;
-    width: 480px;
-    height: 200px;
+    width: 340px;
+    height: 170px;
     padding: 10px;
     background: #181825;
     border-radius: 12px;
   }
 
-  .band, .line { position: absolute; width: 480px; height: 180px; }
+  .band, .line { position: absolute; width: 340px; height: 150px; }
   /* The geometry itself is animatable, so a redraw walks. Two paths
      interpolate when their command sequences match, which is exactly what
      happens when a reading's value changes and the point count does not. */
@@ -102,7 +102,7 @@
     top
   }
 
-  /* Where a reading sits inside the 480 by 180 box, with x spread evenly and y
+  /* Where a reading sits inside the 340 by 150 box, with x spread evenly and y
      measured from the bottom. Written once so the line and the band cannot
      disagree about it, which they would the moment one of them was edited. */
   fn points(list) {
@@ -110,8 +110,8 @@
     let n = list.length;
     if n < 2 { return out; }
     for i in 0..n {
-      let x = i * 480 / (n - 1);
-      let y = 180 - list[i] * 170 / 100;
+      let x = i * 340 / (n - 1);
+      let y = 150 - list[i] * 140 / 100;
       out.push([x, y]);
     }
     out
@@ -135,11 +135,11 @@
   fn area(list) {
     let p = points(list);
     if p.length < 2 { return ""; }
-    let d = "M " + p[0][0] + " 180 L " + p[0][0] + " " + p[0][1];
+    let d = "M " + p[0][0] + " 150 L " + p[0][0] + " " + p[0][1];
     for i in 1..p.length {
       d += " L " + p[i][0] + " " + p[i][1];
     }
-    d + " L " + p[p.length - 1][0] + " 180 Z"
+    d + " L " + p[p.length - 1][0] + " 150 Z"
   }
 
   fn add() {

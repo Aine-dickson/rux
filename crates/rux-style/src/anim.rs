@@ -491,6 +491,37 @@ fn close(a: &AnimValue, b: &AnimValue) -> bool {
             (None, None) => true,
             _ => false,
         }),
+        // Command by command, and the shapes must agree on the commands
+        // themselves: a curve is never close to a move.
+        //
+        // **A missing arm here does not degrade, it freezes.** This is the
+        // guard that tells our own last write apart from a fresh authored
+        // value, so falling through to `false` means every frame decides the
+        // author has just changed the geometry, restarts the track, and sets
+        // the target to whatever this frame had already interpolated to. The
+        // shape sets off, converges on itself and stops. Found by watching
+        // `examples/morph.rux` do exactly that, with the whole suite green.
+        (AnimValue::Path(x), AnimValue::Path(y)) => {
+            x.len() == y.len()
+                && x.iter().zip(y).all(|(p, q)| match (p, q) {
+                    (PathCmd::Move { x: ax, y: ay }, PathCmd::Move { x: bx, y: by }) => {
+                        near(*ax, *bx) && near(*ay, *by)
+                    }
+                    (
+                        PathCmd::Curve { x1: a1, y1: b1, x2: a2, y2: b2, x: ax, y: ay },
+                        PathCmd::Curve { x1: c1, y1: d1, x2: c2, y2: d2, x: bx, y: by },
+                    ) => {
+                        near(*a1, *c1)
+                            && near(*b1, *d1)
+                            && near(*a2, *c2)
+                            && near(*b2, *d2)
+                            && near(*ax, *bx)
+                            && near(*ay, *by)
+                    }
+                    (PathCmd::Close, PathCmd::Close) => true,
+                    _ => false,
+                })
+        }
         _ => false,
     }
 }
@@ -521,6 +552,64 @@ mod tests {
             easing: Easing::Linear,
         }];
         Node::new(style)
+    }
+
+    /// A shape keeps walking across frames where nothing was rebuilt.
+    ///
+    /// The regression test for a freeze found by *watching* `examples/morph.rux`
+    /// while the whole suite was green. Between builds the tree holds the
+    /// animator's own last write, so `read` hands back an interpolated shape
+    /// rather than the authored one. `close` is what tells those apart, and
+    /// with no `Path` arm it answered "not close" every frame: the animator
+    /// decided the author had changed the geometry, restarted the track, and
+    /// set the target to the value it had itself just written. The square set
+    /// off towards the circle, converged on wherever it had reached, and
+    /// stopped there for good.
+    ///
+    /// The shape of the bug is the point: a missing comparison arm does not
+    /// make an animation slightly wrong, it stops it dead partway.
+    #[test]
+    fn a_morphing_shape_does_not_stall_on_its_own_output() {
+        use rux_layout::PathContent;
+
+        let mut style = Style::default();
+        style.transitions = vec![Transition {
+            property: AnimProp::PathData,
+            duration: 400.0,
+            delay: 0.0,
+            easing: Easing::Linear,
+        }];
+        let square = PathContent::parse("M 50 0 L 100 0 L 100 100 L 0 100 L 0 0 Z");
+        let circle = PathContent::parse(
+            "M 50 0 A 50 50 0 0 1 100 50 A 50 50 0 0 1 50 100 A 50 50 0 0 1 0 50 A 50 50 0 0 1 50 0 Z",
+        );
+        let mut node = Node::path(style, square.clone());
+
+        let mut anim = Animator::new();
+        assert_eq!(anim.apply(&mut node, 0.0), None, "settled as built");
+
+        // The build asks for the circle. From here on nothing rebuilds, which
+        // is the whole point: the tree carries the animator's own output.
+        node.path = Some(circle.clone());
+        anim.apply(&mut node, 0.0);
+
+        let at = |n: &Node| n.path.as_ref().unwrap().commands.clone();
+        let quarter = {
+            anim.apply(&mut node, 100.0);
+            at(&node)
+        };
+        assert_ne!(quarter, square.commands, "it set off");
+        assert_ne!(quarter, circle.commands, "and is not there yet");
+
+        // The frame that used to freeze. `read` sees `quarter`, which the
+        // animator wrote, not the circle the author asked for.
+        anim.apply(&mut node, 200.0);
+        let half = at(&node);
+        assert_ne!(half, quarter, "it kept going rather than stalling");
+
+        // And it arrives, on time.
+        anim.apply(&mut node, 400.0);
+        assert_eq!(at(&node), circle.commands, "the walk finished at the circle");
     }
 
     /// A node carrying `swap_progress` is positioned by that value and not by
