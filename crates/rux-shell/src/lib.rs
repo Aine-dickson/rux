@@ -3216,14 +3216,18 @@ impl App {
             let Some(m) = layout.metrics.iter().find(|e| e.path == path) else {
                 continue;
             };
-            // The innermost scroller containing it. `scrolls` is in tree order,
-            // so the last match is the deepest one, and that is the one whose
-            // offset actually moves this element.
-            let Some(region) = layout.scrolls.iter().rfind(|s| {
-                m.x >= s.x && m.y >= s.y && m.x <= s.x + s.width && m.y <= s.y + s.height
-            }) else {
+            // The innermost scroller containing it, matched against the
+            // scroller's *content* rather than the part of it on screen. See
+            // `containing_scroller`: the visible-rect test failed for exactly
+            // the element a reveal is usually asked about, the one below the
+            // fold, so a list that scrolled itself to its newest row did
+            // nothing at all.
+            let Some(at) =
+                rux_layout::containing_scroller(&layout.scrolls, offsets, m.x, m.y)
+            else {
                 continue;
             };
+            let region = &layout.scrolls[at];
             // The rect is already shifted by the current offset, so the
             // correction is the overhang, not an absolute position.
             let off = &mut offsets[region.id];

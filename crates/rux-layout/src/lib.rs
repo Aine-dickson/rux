@@ -1040,6 +1040,34 @@ pub struct Offset {
     pub y: f32,
 }
 
+/// Which scroller a box belongs to, for `scrollIntoView`.
+///
+/// **By content, not by what is currently on screen.** The obvious test is
+/// whether the scroller's visible rectangle contains the box, and it is wrong in
+/// exactly the case the call exists for: an element scrolled past the bottom
+/// sits *outside* that rectangle, so no scroller claims it and nothing moves.
+/// A message list that reveals its newest row silently did nothing, and the only
+/// reveals that worked were the ones already a nudge away from being visible.
+///
+/// So the comparison is against the scroller's content extent, which is where
+/// its children actually are. `x`/`y` on a region are already shifted by the
+/// current offset, so the content starts one offset *above* the visible edge.
+///
+/// The innermost match wins, `scrolls` being in tree order, which is the one
+/// whose offset moves this box.
+pub fn containing_scroller(
+    scrolls: &[ScrollRegion],
+    offsets: &[Offset],
+    x: f32,
+    y: f32,
+) -> Option<usize> {
+    scrolls.iter().rposition(|s| {
+        let off = offsets.get(s.id).copied().unwrap_or_default();
+        let (cx, cy) = (s.x - off.x, s.y - off.y);
+        x >= cx && y >= cy && x <= cx + s.content_width && y <= cy + s.content_height
+    })
+}
+
 impl Offset {
     pub fn clamp_to(self, max: Offset) -> Offset {
         Offset {
@@ -2618,5 +2646,92 @@ mod hit_transform_tests {
         let gone = region(Some([0.0, 0.0, 0.0, 0.0, 0.0, 0.0]));
         assert!(!gone.contains(110.0, 110.0));
         assert!(!gone.contains(0.0, 0.0));
+    }
+}
+
+#[cfg(test)]
+mod reveal_tests {
+    use super::*;
+
+    /// A 300px-tall scroller holding 900px of content, scrolled to the top.
+    fn thread() -> Vec<ScrollRegion> {
+        vec![ScrollRegion {
+            transform: None,
+            alpha: 1.0,
+            id: 0,
+            x: 20.0,
+            y: 100.0,
+            width: 400.0,
+            height: 300.0,
+            content_width: 400.0,
+            content_height: 900.0,
+            max: Offset { x: 0.0, y: 600.0 },
+        }]
+    }
+
+    /// The case the whole function exists for: a row **below the fold** still
+    /// belongs to the scroller that holds it.
+    ///
+    /// Matching on the scroller's visible rectangle instead answers "no
+    /// scroller", so the reveal is dropped and a list asked to scroll to its
+    /// newest row does nothing at all. That shipped, and only driving a message
+    /// list in the window found it: every reveal that worked was of an element
+    /// already a nudge away from being visible.
+    #[test]
+    fn an_element_past_the_bottom_still_has_a_scroller() {
+        let scrolls = thread();
+        let offsets = vec![Offset { x: 0.0, y: 0.0 }];
+        // 880px down the content, which is 580px below the visible bottom edge.
+        assert_eq!(containing_scroller(&scrolls, &offsets, 30.0, 980.0), Some(0));
+    }
+
+    /// And one above the top, which is the same failure in the other direction:
+    /// scrolled down, the rows already read are outside the visible band.
+    #[test]
+    fn an_element_above_the_top_still_has_a_scroller() {
+        // The scroller's own box does not move when its content does, so `y`
+        // stays at 100 and the offset is what puts the content above it: the
+        // content now runs from -500 to 400.
+        let scrolls = thread();
+        let offsets = vec![Offset { x: 0.0, y: 600.0 }];
+        assert_eq!(containing_scroller(&scrolls, &offsets, 30.0, -450.0), Some(0));
+    }
+
+    /// Something genuinely outside is still outside, so the fix did not simply
+    /// make every scroller claim everything.
+    #[test]
+    fn a_box_outside_the_content_belongs_to_no_scroller() {
+        let scrolls = thread();
+        let offsets = vec![Offset { x: 0.0, y: 0.0 }];
+        assert_eq!(
+            containing_scroller(&scrolls, &offsets, 30.0, 50.0),
+            None,
+            "above where the content starts"
+        );
+        assert_eq!(
+            containing_scroller(&scrolls, &offsets, 500.0, 200.0),
+            None,
+            "off to the side of it"
+        );
+    }
+
+    /// Nested scrollers: the innermost one is the one whose offset moves the box.
+    #[test]
+    fn the_innermost_scroller_wins() {
+        let mut scrolls = thread();
+        scrolls.push(ScrollRegion {
+            transform: None,
+            alpha: 1.0,
+            id: 1,
+            x: 30.0,
+            y: 150.0,
+            width: 200.0,
+            height: 100.0,
+            content_width: 200.0,
+            content_height: 400.0,
+            max: Offset { x: 0.0, y: 300.0 },
+        });
+        let offsets = vec![Offset { x: 0.0, y: 0.0 }, Offset { x: 0.0, y: 0.0 }];
+        assert_eq!(containing_scroller(&scrolls, &offsets, 40.0, 500.0), Some(1));
     }
 }
