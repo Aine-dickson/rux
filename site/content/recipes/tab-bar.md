@@ -165,6 +165,11 @@ covers every page inside it, so a whole section can be closed off in one line.
 Guards are synchronous: there are no promises in the script language, so a guard
 decides from state that is already there. Fetch first, then navigate.
 
+**A guard that fails refuses.** It is the one place in Rux where an expression
+that blows up does not fall back to something harmless, and the reason is that a
+guard has no harmless answer: `guard="user.is_admin"` while `user` is still
+loading would otherwise admit everyone and look exactly like a working app.
+
 ## Identity is which route matched
 
 Two paths that match the same route are one page showing different data, so

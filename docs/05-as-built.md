@@ -1475,6 +1475,17 @@ A guard that redirects to the path it was asked about has allowed it. A circle o
 redirects is cut off after eight and reported, the same bound and the same reason
 as an `emit` chain.
 
+**A guard that fails to evaluate refuses**, and this is the one place in Rux
+where a failing expression does not fall back to something harmless. Everywhere
+else the document carries on with a benign default: an `r-if` goes false, a
+`{{ }}` goes empty. A guard has no benign default, because its two answers are
+"let them in" and "do not", and the reason anyone writes one is the second.
+`guard="user.is_admin"` with `user` still loading is syntactically fine, so the
+load-time check passes; before this it admitted everybody, warned into the
+overlay, and looked exactly like a working app. The cost is that the route is
+unreachable until the guard is fixed, and the overlay names the expression and
+the reason.
+
 **Guards are synchronous.** There are no promises in the script language, so a
 guard cannot await a network answer; it decides from state that is already there.
 Fetch first, then navigate.

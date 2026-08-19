@@ -1467,7 +1467,8 @@ impl Document {
     ///
     /// The answers are vue-router's, because that is where the mental model
     /// comes from: **`false` cancels**, **a string redirects**, and anything
-    /// else allows. Anything else deliberately includes `()`, which is what a
+    /// else allows. A guard that **fails to evaluate** cancels as well; see the
+    /// arm below for why that is not the same rule as everywhere else. Anything else deliberately includes `()`, which is what a
     /// guard body with no explicit answer evaluates to, and what an `if` with no
     /// `else` returns. Treating an absent answer as a refusal would make the
     /// natural shape (`if !user { return "/login"; }`) block every navigation it
@@ -1486,7 +1487,26 @@ impl Document {
                 Some(Value::Text(path)) if !path.trim().is_empty() => {
                     return Verdict::Redirect(path);
                 }
-                _ => {}
+                // **A guard that fails refuses.** Every other expression in Rux
+                // reports and falls back to something harmless: an `r-if` goes
+                // false, a `{{ }}` goes empty. A guard has no harmless fallback,
+                // because the two answers are "let them in" and "do not", and
+                // the reason anyone writes one is the second. So the failure
+                // that would otherwise read as consent is a refusal instead:
+                // `user.is_admin` with `user` still loading admitted everybody
+                // and looked exactly like a working app.
+                //
+                // The route is then unreachable until it is fixed, which is the
+                // cost, and the overlay names the expression and the reason.
+                None => {
+                    rux_script::warn_script(format!(
+                        "the guard `{expr}` failed, so the navigation to `{to}` was refused; a                          guard that cannot answer is treated as a refusal rather than as consent"
+                    ));
+                    return Verdict::Block;
+                }
+                // Anything it *could* evaluate and that is not a refusal or a
+                // path allows, `()` included. See the doc comment.
+                Some(_) => {}
             }
         }
         Verdict::Allow

@@ -265,3 +265,33 @@ fn a_guard_that_cannot_compile_is_reported_at_load() {
         doc.diagnostics().warnings
     );
 }
+
+/// **A guard that fails refuses.** It is the one place in Rux where a failing
+/// expression does not fall back to something harmless.
+///
+/// Everywhere else an expression that blows up is reported and the document
+/// carries on with a benign default: an `r-if` goes false, a `{{ }}` goes empty.
+/// A guard has no benign default, because its two answers are "let them in" and
+/// "do not", and the reason anyone writes one is the second. `user.is_admin`
+/// with `user` still loading used to admit everybody, warn into the overlay, and
+/// look exactly like a working app.
+#[test]
+fn a_guard_that_cannot_answer_refuses() {
+    let mut doc = app(
+        &[("home", HOME), ("vault", ABOUT)],
+        r#"<router>
+             <route path="/" view="home" />
+             <route path="/vault" view="vault" guard="user.is_admin" />
+           </router>"#,
+        // Syntactically fine, so the load-time check passes; it blows up when it
+        // runs, because there is no `user` yet.
+        "let user = signal(());\n",
+    );
+    assert!(!doc.navigate("/vault"), "refused rather than admitted");
+    assert_eq!(doc.route(), "/", "and did not move");
+    assert!(
+        doc.diagnostics().warnings.iter().any(|w| w.message.contains("refused")),
+        "and said so: {:?}",
+        doc.diagnostics().warnings
+    );
+}
