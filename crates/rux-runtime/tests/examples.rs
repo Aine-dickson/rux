@@ -14,15 +14,26 @@ fn examples_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples")
 }
 
-fn example_files() -> Vec<PathBuf> {
-    let mut files: Vec<PathBuf> = std::fs::read_dir(examples_dir())
-        .expect("examples/ is readable")
+fn rux_files_in(dir: &Path) -> Vec<PathBuf> {
+    let mut files: Vec<PathBuf> = std::fs::read_dir(dir)
+        .unwrap_or_else(|e| panic!("{} is readable: {e}", dir.display()))
         .filter_map(|entry| {
             let path = entry.ok()?.path();
             (path.extension()? == "rux").then_some(path)
         })
         .collect();
     files.sort();
+    files
+}
+
+/// Every app in `examples/`, plus the recipes, which live in a directory of
+/// their own and were not covered until they were added here.
+///
+/// Only apps: `components/` is skipped in both places, since a component file
+/// is not a document and does not load as one.
+fn example_files() -> Vec<PathBuf> {
+    let mut files = rux_files_in(&examples_dir());
+    files.extend(rux_files_in(&examples_dir().join("recipes")));
     assert!(!files.is_empty(), "found no examples to check");
     files
 }
@@ -368,4 +379,100 @@ fn the_morph_example_shapes_interpolate() {
     paths(&doc.root, &mut next);
     assert_ne!(first, next[0].d, "the tap swapped the shape");
     assert_eq!(next[0].commands.len(), 6, "and the new one still parses");
+}
+
+
+/// The recipes are the pages that tell someone how to build a thing, so their
+/// code has to be code that works. Each one is driven the way its page says to
+/// drive it.
+///
+/// `/learn` has had this since it shipped and for the same reason: a tutorial
+/// whose examples have quietly stopped working is worse than no tutorial, since
+/// the reader assumes the mistake is theirs.
+mod recipes {
+    use super::*;
+
+    fn recipe(name: &str) -> Document {
+        Document::load(examples_dir().join("recipes").join(name))
+            .unwrap_or_else(|e| panic!("{name} loads: {e:?}"))
+    }
+
+    fn texts(node: &rux_layout::Node) -> Vec<String> {
+        let mut out: Vec<String> = node.text.iter().map(|t| t.text.clone()).collect();
+        for child in &node.children {
+            out.extend(texts(child));
+        }
+        out
+    }
+
+    fn shows(doc: &Document, needle: &str) -> bool {
+        texts(&doc.root).iter().any(|t| t.contains(needle))
+    }
+
+    /// Sending adds a row, clears the field, and asks to be scrolled to.
+    ///
+    /// The reveal is the half worth asserting: the recipe's whole claim is that
+    /// the thread follows its newest message, and the request is the only part
+    /// of that a document can see. Where it *lands* is the shell's, and is what
+    /// `rux_layout::containing_scroller` covers.
+    #[test]
+    fn the_message_list_sends_and_asks_to_be_revealed() {
+        let mut doc = recipe("message-list.rux");
+        assert!(doc.apply_handler("draft = \"a new one\""), "typed");
+        assert!(doc.apply_handler("send()"), "sent");
+        assert!(shows(&doc, "a new one"), "the message is on screen");
+        assert_eq!(
+            doc.take_reveals().len(),
+            1,
+            "and the list asked to be scrolled to its anchor"
+        );
+    }
+
+    /// An empty draft sends nothing, which is the guard every composer needs and
+    /// the one most likely to be left out.
+    #[test]
+    fn the_message_list_will_not_send_nothing() {
+        let mut doc = recipe("message-list.rux");
+        let before = texts(&doc.root).len();
+        assert!(doc.apply_handler("draft = \"   \""), "whitespace only");
+        // `apply_handler` reports whether anything moved, and nothing did: the
+        // guard returns before the push, so this is the assertion rather than a
+        // thing to unwrap.
+        assert!(!doc.apply_handler("send()"), "sending nothing changes nothing");
+        assert_eq!(texts(&doc.root).len(), before, "and added no row");
+    }
+
+    /// Navigating holds the outgoing page beside the incoming one, which is the
+    /// behaviour the recipe's `position: absolute` line exists to cope with.
+    #[test]
+    fn the_tab_bar_holds_both_pages_during_a_swap() {
+        let mut doc = recipe("tab-bar.rux");
+        assert!(shows(&doc, "inbox"), "starts on the index route");
+        assert!(doc.apply_handler("navigate(\"/drafts\")"), "navigated");
+        assert!(shows(&doc, "inbox"), "the page being left is still built");
+        assert!(shows(&doc, "drafts"), "and the one arriving is too");
+        // Past the 240ms the style declares, the swap commits and it is gone.
+        let _ = doc.advance_swaps(0.0);
+        let _ = doc.advance_swaps(400.0);
+        assert!(!shows(&doc, "not inside the router"), "the outgoing page has gone");
+    }
+
+    /// The modal opens, the scrim dismisses, and Cancel and Delete are told
+    /// apart. The swallow on the dialog is a hit-test fact and so belongs to the
+    /// window, not here.
+    #[test]
+    fn the_modal_opens_and_both_answers_close_it() {
+        let mut doc = recipe("modal.rux");
+        assert!(!shows(&doc, "Delete the archive?"), "closed to begin with");
+
+        assert!(doc.apply_handler("open = true"), "opened");
+        assert!(shows(&doc, "Delete the archive?"), "the dialog is on screen");
+
+        assert!(doc.apply_handler("dismiss()"), "dismissed");
+        assert!(shows(&doc, "left alone"), "and said so");
+
+        assert!(doc.apply_handler("open = true"), "opened again");
+        assert!(doc.apply_handler("confirm()"), "confirmed");
+        assert!(shows(&doc, "archive deleted"), "the other answer is different");
+    }
 }

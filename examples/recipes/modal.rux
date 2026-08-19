@@ -1,0 +1,152 @@
+<template>
+  <screen class="app">
+    <text class="title">a modal</text>
+    <text class="lead">A dialog over a scrim, both animated, dismissed by tapping the scrim or by Cancel. The page behind it stays exactly where it was.</text>
+
+    <view class="btn" @tap="open = true">
+      <text class="btn-label">delete the archive</text>
+    </view>
+
+    <text class="result">{{ result }}</text>
+
+    <!-- Filler, so there is something to see the scrim laid over, and so the
+         page behind is visibly not moved by the dialog arriving. -->
+    <view class="filler" r-for="n in [1, 2, 3, 4]">
+      <text class="filler-text">a row of the page underneath</text>
+    </view>
+
+    <!-- The scrim is the whole modal. Positioned over everything, it is what
+         takes the tap that dismisses, and `r-transition` on it animates the
+         scrim and the dialog together as one arrival.
+
+         There is no `position: fixed` in Rux, so the cover is `absolute` and
+         the box it is measured against is the nearest positioned ancestor.
+         That is what `position: relative` on `.app` below is for, and giving
+         the scrim all four insets is what makes it the same size. -->
+    <view class="scrim" r-if="open" r-transition @tap="dismiss()">
+      <!-- **The dialog needs its own `@tap` and it does nothing on purpose.**
+           A tap goes to the topmost element that *has a handler* and stops
+           there: there is no propagation, so there is nothing to stop. A box
+           with no handler is not a tap target at all, so without this line a
+           tap on the dialog falls straight through to the scrim behind it and
+           closes the thing you were trying to use.
+
+           It is not free. A `@tap` box is an interactive element, so the dialog
+           takes the focus ring when it is tapped and becomes a Tab stop that
+           does nothing. There is no way to say "tappable but not focusable"
+           today. Worth knowing before deciding a scrim should dismiss at all:
+           a Cancel button costs nothing and needs no swallow. -->
+      <view class="dialog" @tap="0">
+        <text class="dialog-title">Delete the archive?</text>
+        <text class="dialog-body">Everything in it goes with it. This cannot be undone, which is the only reason it is worth asking.</text>
+        <view class="dialog-row">
+          <view class="btn quiet" @tap="dismiss()">
+            <text class="btn-label">cancel</text>
+          </view>
+          <view class="btn danger" @tap="confirm()">
+            <text class="btn-label">delete</text>
+          </view>
+        </view>
+      </view>
+    </view>
+  </screen>
+</template>
+
+<style>
+  .app {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    padding: 20px;
+    background: #1e1e2e;
+    /* What the scrim's insets are measured against. Without it the scrim would
+       climb to the screen, which happens to be the same box here and would stop
+       being so the moment this modal was written inside anything else. */
+    position: relative;
+  }
+
+  .title { color: #cdd6f4; font-size: 22px; font-weight: 700; }
+  .lead { color: #a6adc8; font-size: 13px; line-height: 20px; }
+  .result { color: #a6e3a1; font-size: 13px; height: 18px; }
+
+  .filler { width: 100%; padding: 12px; background: #313244; border-radius: 8px; }
+  .filler-text { color: #6c7086; font-size: 13px; }
+
+  .btn {
+    padding: 10px 16px;
+    background: #89b4fa;
+    border-radius: 10px;
+    cursor: pointer;
+    align-self: flex-start;
+  }
+
+  .btn:hover { background: #b4befe; }
+  .btn-label { color: #1e1e2e; font-size: 13px; font-weight: 700; }
+  .quiet { background: #45475a; }
+  .quiet:hover { background: #585b70; }
+  .quiet .btn-label { color: #cdd6f4; }
+  .danger { background: #f38ba8; }
+  .danger:hover { background: #eba0ac; }
+
+  /* Fixed to the window and given every inset, so it covers whatever is under
+     it regardless of where in the template it was written. The flex centring
+     is what puts the dialog in the middle. */
+  .scrim {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: #11111bcc;
+    opacity: 1;
+    transition: opacity 180ms ease-out;
+  }
+
+  /* The scrim fades. Note what is *not* here: no `position: absolute` on
+     `:leave-to`. A departing box keeps the place it would have had, and this
+     one is already out of the flow, so it has no place to give up and nothing
+     below it to disturb. That rule is for a box that was in the flow. */
+  .scrim:enter-from { opacity: 0; }
+  .scrim:leave-to { opacity: 0; }
+
+  .dialog {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    width: 340px;
+    padding: 20px;
+    background: #313244;
+    border: 2px solid #45475a;
+    border-radius: 14px;
+    transform: translateY(0px) scale(1);
+    transition: transform 180ms ease-out;
+  }
+
+  /* The dialog moves while the scrim fades. Two elements, two rules, one swap:
+     the swap is opened by the `r-if` on the scrim, and everything inside it is
+     carried along by the same `:enter-from` / `:leave-to` pass. */
+  .scrim:enter-from .dialog { transform: translateY(12px) scale(0.96); }
+  .scrim:leave-to .dialog { transform: translateY(12px) scale(0.96); }
+
+  .dialog-title { color: #cdd6f4; font-size: 17px; font-weight: 700; }
+  .dialog-body { color: #a6adc8; font-size: 13px; line-height: 20px; }
+  .dialog-row { display: flex; flex-direction: row; gap: 8px; justify-content: flex-end; }
+</style>
+
+<script>
+  let open = signal(false);
+  let result = signal("");
+
+  fn dismiss() {
+    open = false;
+    result = "left alone";
+  }
+
+  fn confirm() {
+    open = false;
+    result = "archive deleted";
+  }
+</script>

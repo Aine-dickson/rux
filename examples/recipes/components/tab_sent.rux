@@ -1,0 +1,6 @@
+<template>
+  <view class="page">
+    <text class="page-title">sent</text>
+    <text class="page-body">The page you came from is still on screen while this one arrives. Both are real, which is what makes a crossfade possible and what makes the stacking below worth knowing about.</text>
+  </view>
+</template>

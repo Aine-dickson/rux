@@ -77,6 +77,7 @@ reference half does not wait: `docs/05-as-built.md` describes the tip.
 
 | Trap | What actually happens, and why it is right | Destination | Status |
 |---|---|---|---|
+| A box that exists only to **swallow** a tap takes a focus ring and a Tab stop | A tap goes to the topmost element with a handler and stops there, so a scrim that dismisses needs the dialog over it to be a tap target of its own or the tap falls through. That much is right. The cost is that a `@tap` box is an interactive element by definition, so the swallow is focusable, and there is no way to say "tappable but not focusable". Found writing the modal recipe | `/reference/touch/`, and the modal recipe says it | open |
 | An element with only `@drag` does not respond to a tap | `@tap` is the finished gesture and is what a keyboard activation produces, so a drag-only element is deliberately not a tap target and does not swallow a tap meant for what is under it | `/reference/touch/` says it; worth an example | partly |
 | A document grows past the window and simply clips | Nothing scrolls unless told to. `overflow-y: auto` is the answer, and the example that outgrew its window is the argument for saying so early | `/reference/scrolling/`, and `/learn` | open |
 | A component and its caller sharing a class name now collide | Document rules style the components they use, chosen deliberately in v0.7. `<style scoped>` is the opt-out, and means the same thing from either side | `/reference/components/` | open |

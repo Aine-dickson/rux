@@ -1394,6 +1394,28 @@ way. This milestone is where Rux stops being stock rhai.
    actually developed and tested on. **No `.msi`, no `.app`, no `.apk`.**
    Mobile packaging waits for v0.8, where mobile itself lives.
 
+8. **The VS Code extension on the Marketplace.** ✅ **PUBLISHED 2026-08-19**,
+   at 0.3.0, so the first listing carries completions and tag auto-closing
+   rather than the stale 0.2.1 that was packaged earlier. Open VSX is still
+   unresolved and is not a blocker.
+
+9. **Recipes, keyed by what you are building.** ✅ **BUILT 2026-08-19**, at
+   `/recipes/`: a message list, a tab bar and a modal, each a working file under
+   `examples/recipes/` and each under test.
+
+   The shape was decided by `docs/09-author-notes.md` rather than by guessing at
+   a topic list. Most entries in that register are the same thing: a rule that
+   is right in isolation whose *consequence* turns up somewhere the author was
+   not looking. A list of rules cannot teach a consequence, and a worked example
+   can, so each recipe is built around the one or two places its pattern goes
+   wrong, with the reason it is not a bug.
+
+   Writing them found two engine defects and one gap, none of which the suite
+   had an opinion about: `scrollIntoView` did nothing for any element below the
+   fold, `position: fixed` is not honored at all, and a box that exists only to
+   swallow a tap becomes a focus stop with no way to opt out. The first is
+   fixed, the second is now written down, the third is an open author note.
+
 11. **Paths as an element.** ✅ **BUILT 2026-08-19.** The user's idea from
     2026-08-13, added to this milestone on 2026-08-19 rather than left waiting.
     `<path d="…">` takes the full SVG path grammar and draws Bézier geometry,

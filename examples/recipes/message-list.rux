@@ -1,0 +1,179 @@
+<template>
+  <screen class="app">
+    <text class="title">a message list</text>
+    <text class="lead">A list that grows at the bottom and stays there. Send a few, then scroll up and send another: the view follows the newest message without taking the scroll away from you mid-read.</text>
+
+    <!-- The scroller is this box, not the screen. Nothing in Rux scrolls until
+         something is told to, and the thing told is the box with the overflow,
+         so `.thread` is what gets the height and the bar. Give the height to
+         the screen instead and the list grows past the window and clips. -->
+    <view class="thread">
+      <!-- The rows live in a box of their own, and that box is what makes the
+           anchor below work. See the comment on the anchor. -->
+      <view class="rows">
+        <!-- `r-key` is doing two jobs. It is what lets a row animate in,
+             because without an identity an insert and a reorder are the same
+             picture; and it is what keeps the rows above a new one from being
+             rebuilt, so a message you are reading does not flicker when one
+             arrives. -->
+        <view class="msg" :class="#{ mine: m.mine }" r-for="m in messages" r-key="m.id" r-transition>
+          <text class="who">{{ m.who }}</text>
+          <text class="body">{{ m.text }}</text>
+        </view>
+      </view>
+
+      <!-- The anchor: no content, and there only to be scrolled to.
+
+           Two things about it are load-bearing. **It has to already exist**,
+           because `query` reads the tree that is on screen, which is the one
+           from before the handler ran, so a message just pushed onto the list
+           has no element yet and cannot be asked for.
+
+           And **it has to sit at a position that does not move**, which is why
+           the rows are wrapped above. `query` hands back a *path*, a position
+           among siblings, not an identity. Put the anchor directly after the
+           `r-for` and every new message pushes it along by one, so the path
+           captured before the rebuild names whatever slid into its place, and
+           the list scrolls to a message somewhere in the middle instead of to
+           the end. Nothing reports this: the reveal lands on a real element,
+           just not the one that was asked for. -->
+      <view class="anchor"></view>
+    </view>
+
+    <view class="composer">
+      <input class="field" r-model="draft" placeholder="say something…" @submit="send()" />
+      <view class="send" :class="#{ dead: draft.trim() == &quot;&quot; }" @tap="send()">
+        <text class="send-label">send</text>
+      </view>
+    </view>
+
+    <view class="composer">
+      <view class="send" @tap="reply()">
+        <text class="send-label">a message arrives</text>
+      </view>
+    </view>
+  </screen>
+</template>
+
+<style>
+  .app {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    padding: 20px;
+    background: #1e1e2e;
+    height: 100%;
+  }
+
+  .title { color: #cdd6f4; font-size: 22px; font-weight: 700; }
+  .lead { color: #a6adc8; font-size: 13px; line-height: 20px; }
+
+  /* The two lines that make a scroller: a height it cannot exceed, and
+     permission to overflow. Without the height there is nothing to overflow,
+     and the box simply grows. */
+  .thread {
+    display: flex;
+    flex-direction: column;
+    /* `align-items` on a flex parent defaults to `flex-start` here, not CSS's
+       `stretch`, so a child hugs its content unless it is told to fill. Leave
+       this out and the thread is only as wide as its longest message, which
+       looks like a bug in the scroller and is not one. */
+    width: 100%;
+    height: 300px;
+    overflow-y: auto;
+    padding: 12px;
+    background: #181825;
+    border-radius: 12px;
+  }
+
+  /* The gap lives here now rather than on `.thread`, so the anchor is not
+     pushed a gap's width away from the last message. */
+  .rows { display: flex; flex-direction: column; gap: 8px; width: 100%; }
+
+  .msg {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 8px 12px;
+    background: #313244;
+    border-radius: 10px;
+    max-width: 320px;
+    opacity: 1;
+    transition: opacity 180ms ease-out, transform 180ms ease-out;
+  }
+
+  /* A row arrives from just below where it lands, which reads as coming up out
+     of the composer. There is no `:leave-to` here on purpose: nothing removes a
+     message, so a leaving rule would be a rule nobody can reach. */
+  .msg:enter-from { opacity: 0; transform: translateY(10px); }
+
+  .mine { background: #45475a; align-self: flex-end; }
+
+  .who { color: #89b4fa; font-size: 11px; font-weight: 700; }
+  .body { color: #cdd6f4; font-size: 14px; line-height: 20px; }
+
+  /* Height rather than nothing: a zero-height box is still laid out, but giving
+     it the gap's worth of room means the newest message clears the bottom edge
+     instead of sitting flush against it. */
+  .anchor { height: 4px; }
+
+  .composer { display: flex; flex-direction: row; gap: 8px; align-items: center; width: 100%; }
+
+  .field {
+    flex: 1;
+    padding: 10px 12px;
+    background: #313244;
+    border: 2px solid #45475a;
+    border-radius: 10px;
+    color: #cdd6f4;
+    font-size: 14px;
+  }
+
+  .field:focus { border-color: #89b4fa; }
+
+  .send {
+    padding: 10px 16px;
+    background: #89b4fa;
+    border-radius: 10px;
+    cursor: pointer;
+  }
+
+  .send:hover { background: #b4befe; }
+  .send-label { color: #1e1e2e; font-size: 13px; font-weight: 700; }
+  .dead { background: #45475a; }
+  .dead .send-label { color: #6c7086; }
+</style>
+
+<script>
+  let draft = signal("");
+  let nextId = signal(3);
+  let messages = signal([
+    #{ id: 1, who: "ada", text: "The scroller is the box with the overflow, not the screen.", mine: false },
+    #{ id: 2, who: "you", text: "And the list keeps its own height.", mine: true },
+  ]);
+
+  // Push, then scroll. The order matters less than it looks: `scrollIntoView`
+  // does not move anything itself, it asks the host to, and the host acts after
+  // the tree has been rebuilt with the new row in it.
+  fn send() {
+    let text = draft.trim();
+    if text == "" { return; }
+    messages.push(#{ id: nextId, who: "you", text: text, mine: true });
+    nextId++;
+    draft = "";
+    toBottom();
+  }
+
+  fn reply() {
+    messages.push(#{ id: nextId, who: "ada", text: "Message number " + nextId + ", arriving while you read.", mine: false });
+    nextId++;
+    toBottom();
+  }
+
+  fn toBottom() {
+    let anchor = query(".anchor");
+    if anchor.length > 0 {
+      anchor[0].scrollIntoView();
+    }
+  }
+</script>
