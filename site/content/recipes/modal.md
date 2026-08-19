@@ -27,16 +27,11 @@ One `r-if`, one swap. The scrim is what covers the page, what takes the tap that
 dismisses, and what the `r-transition` is written on, so the scrim and
 everything inside it arrive and leave as a single animation.
 
-## There is no `position: fixed`
-
-Rux honors `relative` and `absolute`. A cover is `absolute` with all four
-insets, and the box it is measured against is the nearest positioned ancestor:
+## A cover is `fixed`
 
 ```css
-.app { position: relative; }
-
 .scrim {
-  position: absolute;
+  position: fixed;
   top: 0; left: 0; right: 0; bottom: 0;
   display: flex;
   align-items: center;
@@ -44,11 +39,18 @@ insets, and the box it is measured against is the nearest positioned ancestor:
 }
 ```
 
-`position: relative` on the screen is what makes the insets mean "the whole
-app". Leave it off and the scrim climbs to whatever *is* positioned above it,
-which here happens to be the same box and would stop being so the moment this
-modal were written inside anything else. Say it, and where the modal sits in the
-template stops mattering.
+`fixed` measures against the window rather than against a box, so where the
+modal is written stops mattering: it can sit at the end of the template, where
+it reads as an afterthought, because it is one. A fixed box is also outside
+every scroller, so a modal opened over a scrolled list does not drift when the
+list moves underneath it.
+
+`absolute` would also work here, and would be the answer if you wanted the cover
+to stop at some box rather than at the window. It measures against the nearest
+ancestor that is **not** `position: static`, which is CSS's rule: `static` is the
+default and is the one value that is not a containing block. So a cover that
+should fill a panel wants `position: relative` on that panel, and nothing in
+between needs to say anything.
 
 The flex centring is what puts the dialog in the middle. A scrim is one of the
 few places `align-items: center` earns its keep.

@@ -2388,6 +2388,9 @@ pub fn honored_properties() -> &'static [&'static str] {
 /// Warn, once per property name, for the life of the process, that a parsed
 /// declaration is not honored. Deduped so a whole-tree rebuild (which reparses
 /// every sheet) doesn't repeat the same line on every keystroke.
+/// The inset longhands, in `Style::inset` order (top, right, bottom, left).
+const INSETS: [&str; 4] = ["top", "right", "bottom", "left"];
+
 fn warn_if_unhonored(property: &str) {
     use std::collections::HashSet;
     use std::sync::{Mutex, OnceLock};
@@ -4634,11 +4637,42 @@ fn interpret(p: &HashMap<String, String>) -> Style {
     }
     if let Some(v) = p.get("position") {
         st.position = match v.trim() {
-            "absolute" | "fixed" => Position::Absolute,
-            _ => Position::Relative,
+            "static" => Position::Static,
+            "relative" => Position::Relative,
+            "absolute" => Position::Absolute,
+            "fixed" => Position::Fixed,
+            // Not built. `relative` is the closest thing that is: a sticky box
+            // is in flow and offset from where it sits, right up until the
+            // scroll threshold it has no way to notice.
+            "sticky" => {
+                warn(
+                    "`position: sticky` is not honored yet, so this box behaves as                      `relative` and will not pin when its scroller passes it"
+                        .to_string(),
+                );
+                Position::Relative
+            }
+            other => {
+                // Every value used to fall through to `relative`, so a typo was
+                // a box that quietly stayed where it was and an author who could
+                // not tell a misspelling from a rule that does nothing.
+                warn(format!(
+                    "`position: {other}` is not a value Rux knows; use `static`, `relative`,                      `absolute` or `fixed`"
+                ));
+                Position::Static
+            }
         };
+        // A fixed box with nothing to pin it to lands in the window's top-left
+        // corner, which is a legal answer to what was written and never what was
+        // meant. Absolute has the same shape and a real use for it: with no
+        // insets it keeps its static position, which is what `:leave-to` wants.
+        if st.position == Position::Fixed && !p.keys().any(|k| INSETS.contains(&k.as_str())) {
+            warn(
+                "`position: fixed` with no `top`, `right`, `bottom` or `left` pins this box to                  the top-left of the window; name at least one inset"
+                    .to_string(),
+            );
+        }
     }
-    for (i, side) in ["top", "right", "bottom", "left"].iter().enumerate() {
+    for (i, side) in INSETS.iter().enumerate() {
         if let Some(v) = p.get(*side) {
             st.inset[i] = if first(v) == "auto" { None } else { parse_len(first(v)) };
         }

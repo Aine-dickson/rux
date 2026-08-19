@@ -62,6 +62,309 @@ under [Tooling](/tooling/), along with how to set up the VS Code extension.
 - [Accessibility](/reference/accessibility/): The real accessibility tree, the roles elements map to, and what a screen reader is told.
 - [Errors](/reference/errors/): What happens when a document will not load, and what the overlay shows.
 
+### `position`, and which box an out-of-flow one is measured against
+
+All four of `static`, `relative`, `absolute` and `fixed` mean what CSS says.
+`sticky` is not built and warns.
+
+**`static` is the default and is the only value that is not a containing block.**
+That is the rule that gives the other three their meaning: an `absolute` box is
+measured against its nearest ancestor that is *not* static, so a wrapper with no
+`position` of its own is passed straight over, and `position: relative` on the
+box you actually mean is what claims it. Its `inset` is ignored, which is the
+whole difference between `static` and `relative`.
+
+**This used to be wrong, and silently.** The default was `relative`, which made
+*every* box a containing block, which made "against the nearest positioned
+ancestor" and "against the parent" the same sentence. They are not, and an
+author writing `position: relative` on the right box as CSS requires was being
+ignored and getting the right answer anyway. Only an unpositioned wrapper in
+between told them apart. `fixed` was silently treated as `absolute`, so it
+scrolled away with its ancestor; `sticky` and `static` were silently treated as
+`relative`, so `static` even honored insets; and a misspelled value was
+`relative` too, so a typo and a rule that does nothing looked identical.
+
+**`fixed` is against the window**, whatever it is written inside, and it is
+outside every scroller, so it does not move when one scrolls. A fixed box with
+no inset named lands in the window's top-left corner and warns, since that is a
+legal answer to what was written and never what was meant.
+
+**An out-of-flow box that names no inset keeps its static position**, which is
+where it would have sat in its parent's flow, so it stays with its parent rather
+than travelling to a containing block. That is what `:leave-to { position:
+absolute }` relies on, and it is why a departing element needs no coordinates.
+
+The containing block is the ancestor's **padding box**, so padding on it does not
+push an out-of-flow child inwards.
+
+Not done: a `transform` on an ancestor does not make it a containing block for
+`fixed`, as CSS says it should.
+
+**Whether a departing element keeps its place is yours to say.** Left alone it
+stays in the flow until the swap commits, so nothing below it moves while it is
+still on screen. Giving `:leave-to` a `position: absolute` hands its space over
+at the *start* of the swap instead, which is what a page swap wants, since the
+arriving page should take that space rather than queue below it. A box taken out
+of the flow and naming no inset keeps the place it would have had, so it needs
+no coordinates and no wrapper to be measured against.
+
+On a list, `r-transition` needs `r-key` on the same element and says so if it
+is missing: without a key there is nothing to hold a departing row by, and a
+removal and a reorder are the same picture. A row that leaves from the middle
+of a list animates out **where it was**, not at the end.
+
+**Driving a swap yourself:** `:r-transition="expr"` hands progress to the
+author instead of the clock. The expression is re-read every build and yields
+0 to 1: reaching 1 commits the swap and returning to 0 abandons it. That is
+what binds a swap to a finger, and it is why both branches have to be live: a
+swap that can change its mind cannot be a snapshot of a departed tree.
+```rux
+<view class="card" r-if="card" :r-transition="dismiss" @drag="onDrag(event)">…</view>
+```
+```rux
+if event.phase == "start" { card = false; dismiss = 0; }
+else if event.phase == "move" { dismiss = event.totalX / 240; }
+else if dismiss > 0.45 { dismiss = 1; }        // commit
+else { card = true; dismiss = null; }          // and settle back
+```
+Yielding **`null` hands the swap back to the clock**, which runs the rest of
+the declared duration from wherever the drag let go. That is how a released
+finger settles instead of snapping. Under a bound driver the declared duration
+does not set the pace; it still says which properties take part, and it takes
+over again on the handover.
+
+The condition is yours throughout. Abandoning a swap does not put it back:
+the release handler that decides to abandon is the same one that restores the
+condition, so what is on screen and what the signal says never disagree.
+
+**Route transitions** are the same feature again: `r-transition` on the
+`<router>` animates a navigation, holding the page being left on screen beside
+the page being entered.
+```rux
+<router r-transition>
+  <route path="/" view="home-page" />
+  <route path="/crew/:id" view="crew-detail" />
+</router>
+```
+```css
+.page:enter-from { opacity: 0; transform: translateX(28px); }
+.page:leave-to   { opacity: 0; transform: translateX(-28px); }
+```
+The identity is **which route matched, not which path**. Two paths matching the
+same route (`/crew/grace` and `/crew/kim`) are one page showing different data,
+so they update in place rather than crossing over, the same way a router reuses
+a component. The outgoing page's `unmounted` runs when the transition
+**commits**, so a navigation that reverses mid-swap never fires one.
+
+A third tier, keyframes, is not built. Driven in `examples/enter-leave.rux` and
+`examples/router.rux`.
+
+**Computed values:** `computed name = expr;` in `<script>` declares derived
+state, written once and readable anywhere a signal is:
+```rux
+let qty = signal(2);
+let price = signal(12);
+computed subtotal = qty * price;
+computed total = subtotal + subtotal / 10;   // may read the one above it
+```
+A computed *is* a signal: the line is rewritten to a plain `let`, so `{{ total }}`
+tracks it like any other, and it re-evaluates when what it reads changes. Only a
+real change propagates, so a computed landing on the same answer patches nothing.
+
+Refreshing is **one pass in declaration order**, so a computed may read
+computeds declared above it and not below. That is a deliberate limit rather
+than a fixpoint loop, which would turn a circular typo into a hang.
+
+**Effects:** `effect { … }` runs statements when what they read changes, **and
+once on load**, so an effect can establish something rather than only react to a
+later edit:
+```rux
+effect {
+  status = if total > 100 { "over budget" } else { "ok" };
+}
+```
+An effect subscribes to what it actually read on its last run, so a signal it
+never touched does not wake it, and a conditional branch changes what it
+watches.
+
+**An effect is never woken by its own writes.** Assigning to a signal also
+resolves its name, so the tracker cannot tell the write from a read; without
+this rule every effect that wrote anything would re-trigger itself. The cost is
+that an effect writing `x` will not re-run when something *else* changes `x`,
+which is the right way round: that effect is the one deciding what `x` is.
+Effects that feed *each other* still cycle; that is stopped after 8 rounds and
+reported in the overlay rather than hung on.
+
+Both are document-level today: a component's own `computed`/`effect` lines are
+stripped, not run. Driven in `examples/computed.rux`.
+
+**Keyed lists:** `r-key` on the same element as `r-for` says what a row *is*,
+rather than where it sits:
+```html
+<view r-for="item in items" r-key="item.id"> … </view>
+```
+The key is evaluated once per row with that row's loop variable in scope.
+Duplicate keys warn (two rows claiming one identity is worse than none), and so
+does an `r-key` on an element with no `r-for`.
+
+**A key is what makes an input inside a list work at all.** An `r-model` is
+stored **as written**, so every row of a list carries the same one, and an
+identity taken from it alone cannot tell two rows apart. Everything that
+addresses an input is now `(model, row key)`: the caret and selection, `:focus`
+matching, and the value the shell reads and writes. Before this, focusing one
+row put a caret in **all** of them and lit every row's `:focus` rule at once.
+
+The value is read and written **in the row's own scope**, using the loop
+variables captured where the input was built, so a model may mention the loop
+variable:
+```html
+<input r-for="item in items" r-key="item.id"
+       r-model="items[item.at.to_int()].note" />
+```
+Writing goes through an assignment rather than setting a scope variable, so an
+`r-model` that is a path (`user.name`, `items[0].note`) now writes through to
+the real target. It previously created a variable *named* `user.name` and left
+`user` untouched, in or out of a list.
+
+Two consequences worth knowing. Numbers are f64, so an index needs `to_int()`.
+And the caret follows its row across a reorder with nothing to remap, because
+the identity *is* the row; tapping a button to reorder still moves keyboard
+focus to that button, as any tap on a button does.
+
+**Still keyed by model alone:** `type="select"`. A `<select>` inside an `r-for`
+has the same ambiguity inputs had. Driven in `examples/keyed-list.rux`.
+
+**A document's rules reach its components.** A `<style>` block styles its own
+markup *and* the components the document uses, so a look is written once at the
+top instead of imported into every component file:
+
+```xml
+<!-- app.rux -->
+<style>
+  .chip { padding: 0.75rem; border-radius: 8px; background: #a6e3a1; }
+</style>
+```
+```xml
+<!-- components/chip.rux: no <style> at all, and still green -->
+<template><view class="chip"><text>{{ label }}</text></view></template>
+```
+
+A component's own rules are applied **after** the ones it inherits, so it wins a
+tie without needing a more specific selector, which is CSS's own order.
+
+`<style scoped>` opts out, and means the same thing from either side:
+
+- On a **component**: "I own my appearance." Nothing from outside styles it.
+- On a **document**: "my rules stay in my markup." They reach no component.
+
+> **This changed in v0.7.** A component used to see only its own `<style>`, so
+> sharing a palette meant repeating `<style src="theme.css">` in every single
+> component. If a component and its caller happen to use the same class name and
+> you want the old isolation, that is what `scoped` is for.
+
+**Custom properties already cascaded**, before and after this change: a
+`--brand` defined on the document has always been readable as `var(--brand)`
+inside a component, because variables inherit down the tree rather than being
+matched by a selector.
+
+**External stylesheets:** `<style src="…">` pulls in one or more `.css` files,
+so a palette can be shared instead of pasted into every document:
+```html
+<style src="palette.css, cards.css">
+  .app { background: var(--bg); }   /* the document's own rules, as before */
+</style>
+```
+Paths are relative to the **file that names them**, the same rule as `use`
+imports and `<image src>`, so a component's include is relative to the
+component. Comma-separated, in the order written.
+
+Included sheets cascade **before** the `<style>` body, so a rule in the
+document beats a rule of the same specificity in the include. That is what
+makes including a palette useful: you pull one in to override part of it, and
+needing `!important` to do so would mean the include had been layered on top
+instead of underneath.
+
+A stylesheet that is not there **fails the load**, like a missing component,
+and the overlay names the path. A document that quietly renders unstyled reads
+as a layout bug, which is a much longer walk back to a typo. Editing an
+included `.css` hot-reloads the window, same as editing the `.rux`.
+
+The playground is the exception: it has source text and no file, so there is
+nothing for a path to be relative to and nothing to read. An include there is
+ignored, with a warning saying exactly that. Driven in
+`examples/shared-style.rux`, which shares `examples/palette.css`.
+
+**Custom properties + `var()`:** `--name: value` declarations **inherit** down the
+tree (like `color`), so a palette declared once is readable anywhere below:
+```css
+.app        { --brand: #89b4fa; --radius: 10px; }
+.btn        { background: var(--brand); border-radius: var(--radius); }
+.app.light  { --brand: #1e66f5; }   /* same sheet, different values */
+```
+Substitution happens after the cascade *and* inline styles merge, so `var()` works
+in every property, in `style=` and in `:style`. Supported: fallbacks
+(`var(--x, 12px)`, including fallbacks with their own parens), variables defined
+in terms of other variables, and overriding a variable on any element to retheme
+its subtree. A cycle terminates rather than hanging.
+
+An **undefined** variable with no fallback makes the declaration invalid, so it is
+dropped (as in CSS) and warned about once. Driven in `examples/theme.rux`, which
+swaps a whole palette with one `:class`.
+
+**`@media` queries:** evaluated against the window's **logical** size.
+```css
+@media (max-width: 600px) { .row { flex-direction: column; } }
+@media screen and (min-width: 400px) and (max-width: 600px) { … }
+@media (max-width: 400px), (min-width: 1000px) { … }   /* alternatives */
+@media (orientation: portrait) { … }
+```
+Supported features: `min-`/`max-width`, `min-`/`max-height`, `orientation`, the
+`screen`/`all` types, `and` chains and comma alternatives. A block adds **no
+specificity**: rules inside it cascade by ordinary source order, so a later
+`@media` rule beats an earlier plain one, and `#id` still beats a `.class` in a
+media block. Anything else (`min-resolution`, `not …`, `(hover)`) warns once and
+never applies.
+
+Resizing re-cascades **only when a query changes answer**: dragging a window
+edge within a breakpoint costs nothing, and a document with no `@media` never
+re-cascades at all. Driven in `examples/responsive.rux`.
+`flex: 1` means `1 1 0%` (CSS's shorthand defaults), not `1 1 auto`.
+`opacity` fades the node **and its subtree** as one layer.
+`background`/`border` work on `<text>` nodes, not just containers.
+**Units:** `px`, `%`, `rem` (=16px), `em`, `vw`, `vh`/`dvh`.
+
+`em` is relative to the element's own resolved `font-size`, and on `font-size`
+itself it is relative to the inherited one, which is what it means in CSS. It is
+resolved in a pass before the properties are interpreted, the same way `var()`
+is, so it works anywhere a length does.
+
+> **`rem` and `em` did not reach the box model before v0.7.** `width` and
+> `height` understood `rem` from the start, while `padding`, `margin`, `gap`,
+> border widths, corner radii, `letter-spacing`, `box-shadow` and `translate()`
+> went through a px-only parser and **dropped the declaration silently**. So
+> `width: 2rem` worked, `padding: 2rem` did nothing, and nothing said why. `%`
+> is still only honored where the list below says so; it is not a box-model
+> unit.
+
+`font-family` takes a CSS list (`font-family: "Inter", sans-serif`), and parley
+parses it and does name-matching + fallback; the generic families (`serif`,
+`sans-serif`, `monospace`, …) always resolve. It **inherits**, like `color` and
+`font-size`. `color`/`font-size`/`font-family` are the three inheriting text
+properties.
+
+Anything else is **parsed but not honored**: but no longer *silently*: the
+runtime now prints one line per unhonored property (`rux: CSS property
+\`box-shadow\` is parsed but not yet honored …`), once each. Notably absent:
+`line-height`, `position` (`static`, `relative`, `absolute` and `fixed` are all
+honored; only `sticky` is not, and it now says so rather than pretending to be
+`relative` in silence), `box-shadow`, gradients, `transform`, and CSS
+variables.
+
+Colours accept `#hex` (3/6/8-digit), `rgb()`/`rgba()`, and the full CSS named-
+colour list (`red`, `rebeccapurple`, …). The named list matters because
+lightningcss *minifies* hex to keywords (`#ff0000` → `red`), so without it a
+plain `color: #ff0000` would fall back to the default.
+
 ### The pointer vocabulary
 
 Beyond `@tap`, five attributes report what a finger or button is doing:

@@ -192,14 +192,41 @@ pub enum Cursor {
     Pointer,
 }
 
-/// `position`. `Relative` is the normal in-flow box (the default); `Absolute`
-/// takes the box out of flow and positions it by its `inset` against the
-/// nearest positioned ancestor.
+/// `position`, with CSS's meanings.
+///
+/// `Static` is the default and the only value that is **not** a containing
+/// block: it is the normal in-flow box, and its `inset` is ignored. `Relative`
+/// is in flow too but offset by its inset, and it *is* a containing block.
+/// `Absolute` is out of flow, positioned by its inset against the nearest
+/// non-static ancestor. `Fixed` is out of flow against the window, and does not
+/// move when an ancestor scrolls.
+///
+/// **The default used to be `Relative`**, which made every box a containing
+/// block, which in turn made "against the nearest positioned ancestor" and
+/// "against the parent" the same sentence. They are not the same sentence, and
+/// an author who wrote `position: relative` on the box they meant, as CSS
+/// requires, was being ignored and getting the right answer anyway. Only a
+/// wrapper in between revealed it.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub enum Position {
     #[default]
+    Static,
     Relative,
     Absolute,
+    Fixed,
+}
+
+impl Position {
+    /// Whether a box with this `position` is a containing block, so an
+    /// out-of-flow descendant's insets are measured against it.
+    pub fn is_containing_block(self) -> bool {
+        self != Position::Static
+    }
+
+    /// Whether the box is taken out of the flow.
+    pub fn is_out_of_flow(self) -> bool {
+        matches!(self, Position::Absolute | Position::Fixed)
+    }
 }
 
 /// Corner radii in CSS order, top-left, top-right, bottom-right, bottom-left.
@@ -628,7 +655,7 @@ impl Default for Style {
             box_shadow: None,
             transform: None,
             cursor: Cursor::Default,
-            position: Position::Relative,
+            position: Position::Static,
             inset: [None; 4],
             aspect_ratio: None,
             transitions: Vec::new(),
@@ -1537,14 +1564,20 @@ fn to_taffy(style: &Style, vp: (f32, f32)) -> taffy::Style {
         justify_items: style.justify_items.map(to_align_items),
         align_content: style.align_content.map(to_align_content),
         position: match style.position {
-            Position::Relative => taffy::Position::Relative,
-            Position::Absolute => taffy::Position::Absolute,
+            Position::Static | Position::Relative => taffy::Position::Relative,
+            Position::Absolute | Position::Fixed => taffy::Position::Absolute,
         },
-        inset: Rect {
-            left: to_inset(style.inset[3], vp),
-            right: to_inset(style.inset[1], vp),
-            top: to_inset(style.inset[0], vp),
-            bottom: to_inset(style.inset[2], vp),
+        // A static box ignores its insets, which is the rule that makes `static`
+        // worth having rather than being a synonym for `relative`.
+        inset: if style.position == Position::Static {
+            Rect { left: auto(), right: auto(), top: auto(), bottom: auto() }
+        } else {
+            Rect {
+                left: to_inset(style.inset[3], vp),
+                right: to_inset(style.inset[1], vp),
+                top: to_inset(style.inset[0], vp),
+                bottom: to_inset(style.inset[2], vp),
+            }
         },
         aspect_ratio: style.aspect_ratio,
         // taffy needs to know the box scrolls: it then sizes the box from its own
@@ -1680,6 +1713,21 @@ fn collect_statics(
     }
 }
 
+/// Whether this box has to be laid out under its **containing block** rather
+/// than under its parent, and whether it is `fixed` (so only the window will do).
+///
+/// Only when at least one inset is named. With all four `auto` the box keeps its
+/// **static position**, which is defined as where it would have sat in its
+/// parent's flow, so its parent is exactly where it has to be laid out and
+/// moving it would lose the very thing it is asking for.
+fn hoists(style: &Style) -> Option<bool> {
+    if !style.position.is_out_of_flow() {
+        return None;
+    }
+    let named = style.inset.iter().any(Option::is_some);
+    named.then_some(style.position == Position::Fixed)
+}
+
 /// The inverse of an affine, or `None` when it collapses (zero determinant).
 fn invert(m: Transform) -> Option<Transform> {
     let [a, b, c, d, e, f] = m;
@@ -1805,6 +1853,19 @@ fn build(
     // The `r-key` of the row this node is inside, inherited by everything under
     // it. A keyed node starts a new row; nothing else changes it.
     row: Option<&str>,
+    // Out-of-flow boxes waiting for their containing block, as `(id, fixed)`.
+    //
+    // taffy positions an absolute child against its *parent*, and CSS positions
+    // it against the nearest non-static ancestor, so the two agree only when
+    // those are the same box. They are made the same box here: such a child is
+    // built but withheld from its parent's child list, carried up this vector,
+    // and handed to the first ancestor that is a containing block. A `fixed` box
+    // is withheld from all of them and taken by the root.
+    //
+    // Doing it in the tree rather than by correcting coordinates afterwards is
+    // what makes the *size* right too: `left: 0; right: 0` means "as wide as the
+    // containing block", which is a question only the layout can answer.
+    hoisted: &mut Vec<(NodeId, bool)>,
 ) -> NodeId {
     let own_cap = width_cap(&node.style, cap, vp);
     let child_cap = inner_cap(&node.style, own_cap);
@@ -1907,16 +1968,39 @@ fn build(
         ));
         id
     } else {
-        let children: Vec<NodeId> = node
+        let mark = hoisted.len();
+        let mut children: Vec<NodeId> = node
             .children
             .iter()
             .enumerate()
-            .map(|(i, c)| {
+            .filter_map(|(i, c)| {
                 let mut cp = path.to_vec();
                 cp.push(i);
-                build(tree, c, paint, handlers, models, focus_labels, hidden, opacities, scrolls, transforms, states, access, &cp, paths, vp, child_cap, caps, row)
+                let cid = build(tree, c, paint, handlers, models, focus_labels, hidden, opacities, scrolls, transforms, states, access, &cp, paths, vp, child_cap, caps, row, hoisted);
+                match hoists(&c.style) {
+                    Some(fixed) => {
+                        hoisted.push((cid, fixed));
+                        None
+                    }
+                    None => Some(cid),
+                }
             })
             .collect();
+        // This box is a containing block, so the absolute descendants that came
+        // up from its subtree stop here. `fixed` ones carry on to the root.
+        //
+        // They go on the end, which is also where CSS paints them: a positioned
+        // descendant is drawn over its containing block's in-flow content.
+        if node.style.position.is_containing_block() {
+            let mut i = mark;
+            while i < hoisted.len() {
+                if hoisted[i].1 {
+                    i += 1;
+                } else {
+                    children.push(hoisted.remove(i).0);
+                }
+            }
+        }
         let id = if children.is_empty() {
             tree.new_leaf(to_taffy(&node.style, vp)).expect("taffy leaf")
         } else {
@@ -2435,6 +2519,7 @@ pub fn layout_scrolled(
     let mut paths = Vec::new();
     let vp = (avail_w, avail_h);
     let mut caps: HashMap<NodeId, f32> = HashMap::new();
+    let mut hoisted: Vec<(NodeId, bool)> = Vec::new();
     let root_id = build(
         &mut tree,
         root,
@@ -2456,7 +2541,17 @@ pub fn layout_scrolled(
         Some(avail_w),
         &mut caps,
         None, // the root is not inside any row
+        &mut hoisted,
     );
+
+    // The root is the initial containing block, so it takes whatever is still
+    // looking for one: every `fixed` box, and any absolute box with no
+    // non-static ancestor. It is also the window, which is what makes `fixed`
+    // mean fixed, since a box parented to the root is outside every scroller and
+    // so is never shifted by one.
+    for (id, _) in hoisted.drain(..) {
+        tree.add_child(root_id, id).expect("the root takes what is left");
+    }
 
     // Force the root to fill the viewport so a `screen` always covers the window.
     let mut root_style = to_taffy(&root.style, vp);

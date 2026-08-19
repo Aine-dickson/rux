@@ -305,7 +305,7 @@ grid-template-columns, grid-template-rows
 grid-column, grid-row (+ -start/-end)   (1 / 3, span 2, -1; no named lines)
 grid-auto-flow, grid-auto-rows, grid-auto-columns
 transform (translate/scale/rotate; visual only; hit regions aren't transformed)
-position (relative|absolute) + top/right/bottom/left, aspect-ratio
+position (static|relative|absolute|fixed) + top/right/bottom/left, aspect-ratio
 width, height, min/max-width, min/max-height
 padding, margin        (shorthand 1–4 values + -top/-right/-bottom/-left)
 border, border-width, border-color, border-<side>, border-<side>-width
@@ -406,6 +406,44 @@ and still updating. That is why the condition changing back mid-swap reverses
 the swap instead of stacking a second one, and why a departing component's
 `unmounted` fires when the swap **commits** rather than when it starts. A
 cancelled swap never fired one.
+
+### `position`, and which box an out-of-flow one is measured against
+
+All four of `static`, `relative`, `absolute` and `fixed` mean what CSS says.
+`sticky` is not built and warns.
+
+**`static` is the default and is the only value that is not a containing block.**
+That is the rule that gives the other three their meaning: an `absolute` box is
+measured against its nearest ancestor that is *not* static, so a wrapper with no
+`position` of its own is passed straight over, and `position: relative` on the
+box you actually mean is what claims it. Its `inset` is ignored, which is the
+whole difference between `static` and `relative`.
+
+**This used to be wrong, and silently.** The default was `relative`, which made
+*every* box a containing block, which made "against the nearest positioned
+ancestor" and "against the parent" the same sentence. They are not, and an
+author writing `position: relative` on the right box as CSS requires was being
+ignored and getting the right answer anyway. Only an unpositioned wrapper in
+between told them apart. `fixed` was silently treated as `absolute`, so it
+scrolled away with its ancestor; `sticky` and `static` were silently treated as
+`relative`, so `static` even honored insets; and a misspelled value was
+`relative` too, so a typo and a rule that does nothing looked identical.
+
+**`fixed` is against the window**, whatever it is written inside, and it is
+outside every scroller, so it does not move when one scrolls. A fixed box with
+no inset named lands in the window's top-left corner and warns, since that is a
+legal answer to what was written and never what was meant.
+
+**An out-of-flow box that names no inset keeps its static position**, which is
+where it would have sat in its parent's flow, so it stays with its parent rather
+than travelling to a containing block. That is what `:leave-to { position:
+absolute }` relies on, and it is why a departing element needs no coordinates.
+
+The containing block is the ancestor's **padding box**, so padding on it does not
+push an out-of-flow child inwards.
+
+Not done: a `transform` on an ancestor does not make it a containing block for
+`fixed`, as CSS says it should.
 
 **Whether a departing element keeps its place is yours to say.** Left alone it
 stays in the flow until the swap commits, so nothing below it moves while it is
@@ -662,8 +700,10 @@ properties.
 Anything else is **parsed but not honored**: but no longer *silently*: the
 runtime now prints one line per unhonored property (`rux: CSS property
 \`box-shadow\` is parsed but not yet honored …`), once each. Notably absent:
-`line-height`, `position` (relative/absolute *is* honored; `sticky`/`fixed` are
-not), `box-shadow`, gradients, `transform`, and CSS variables.
+`line-height`, `position` (`static`, `relative`, `absolute` and `fixed` are all
+honored; only `sticky` is not, and it now says so rather than pretending to be
+`relative` in silence), `box-shadow`, gradients, `transform`, and CSS
+variables.
 
 Colours accept `#hex` (3/6/8-digit), `rgb()`/`rgba()`, and the full CSS named-
 colour list (`red`, `rebeccapurple`, …). The named list matters because

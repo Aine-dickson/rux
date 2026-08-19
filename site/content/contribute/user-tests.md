@@ -174,7 +174,19 @@ point of writing them: three defects came out of three ordinary patterns.
 | Any of the three, first render | desktop, window | **Found a silent half-rule, again.** `align-items` defaults to `flex-start` rather than CSS's `stretch`, so a scroller with no `width: 100%` is as wide as its longest row: it works perfectly and looks broken. All three recipes now say the width out loud |
 | `examples/recipes/tab-bar.rux`: tap along the bar, frame caught mid-navigation | desktop, window | Passed. Both pages on screen at once and **overlaid rather than queued**, the outgoing sliding left as the incoming slides in from the right, the bar outside the router unmoved, and `:current` following the route |
 | `examples/recipes/modal.rux`: open it, tap the dialog, then tap the scrim | desktop, window | Passed, and **found what the swallow costs**. Tapping the dialog does not dismiss, which is the `@tap="0"` doing its job, but the dialog takes the focus ring and becomes a Tab stop that does nothing. There is no way to say "tappable but not focusable". Filed as an open author note. Tapping the scrim dismisses, and the page behind never moves |
-| `position: fixed` on the scrim | desktop, window | Not honored, and not a bug: the honored set is `relative` and `absolute`. A cover is `absolute` against a positioned ancestor. Nothing said so anywhere, and the recipe now does |
+| `position: fixed` on the scrim | desktop, window | **Not honored, and worse than a limit: silent.** `fixed` was mapped straight to `absolute`, so a cover scrolled away with its ancestor and nothing said a word. Chasing it found three more silent answers and a divergence, all fixed the same day; see below |
+
+### `position`, all four values (2026-08-19)
+
+Asked directly whether the limit could be lifted instead of embraced. It was not
+a limit, it was four silent wrong answers and a divergence nobody had noticed.
+
+| Case | Hardware | Outcome |
+|---|---|---|
+| What `position: fixed` actually did | reading the parser | `"absolute" \| "fixed" => Position::Absolute`. Silently absolute, so it scrolled away with its ancestor. `sticky` and `static` fell through to `relative`, so `static` even honored insets, and **so did every typo**: `position: absolut` was a box that quietly stayed where it was |
+| Which box an `absolute` one is measured against | headless, `rux-layout` | **Found the divergence, and it was in a page shipped an hour earlier.** Screen (positioned, 600x400) > wrapper (unpositioned, 200x100) > cover with all insets `0` laid the cover out at 200x100. Rux measured against the **parent**, CSS measures against the nearest non-static ancestor. Invisible until then because the *default* was `relative`, so every box was a containing block and the two rules gave the same answer for a direct child. Every example that uses insets already wrote `position: relative` on the box it meant, out of CSS habit, and was being ignored |
+| All four values after the fix | desktop, window, `examples/position.rux` | Passed. The cover skips a `static` wrapper and fills the `.frame` that claims it; an `absolute` badge inside a scroller rides the content out of sight; a `fixed` badge stays exactly put through eight wheel notches. `static` ignores its insets and `relative` honors them |
+| The animation examples, which rely on inset-less absolutes | desktop, window | No regression. `:leave-to { position: absolute }` names no inset, so it keeps its static position and stays with its parent rather than travelling to a containing block. The tab-bar recipe's pages still overlay rather than queue |
 
 ## Standing gaps
 

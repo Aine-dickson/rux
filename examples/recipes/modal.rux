@@ -19,10 +19,11 @@
          takes the tap that dismisses, and `r-transition` on it animates the
          scrim and the dialog together as one arrival.
 
-         There is no `position: fixed` in Rux, so the cover is `absolute` and
-         the box it is measured against is the nearest positioned ancestor.
-         That is what `position: relative` on `.app` below is for, and giving
-         the scrim all four insets is what makes it the same size. -->
+         `position: fixed` covers the window rather than a box, so where the
+         modal is written stops mattering: it can sit at the end of the template
+         where it reads as an afterthought, because it is one. A fixed box is
+         also outside every scroller, so a modal opened over a scrolled list
+         does not drift when the list moves. -->
     <view class="scrim" r-if="open" r-transition @tap="dismiss()">
       <!-- **The dialog needs its own `@tap` and it does nothing on purpose.**
            A tap goes to the topmost element that *has a handler* and stops
@@ -59,10 +60,6 @@
     gap: 12px;
     padding: 20px;
     background: #1e1e2e;
-    /* What the scrim's insets are measured against. Without it the scrim would
-       climb to the screen, which happens to be the same box here and would stop
-       being so the moment this modal was written inside anything else. */
-    position: relative;
   }
 
   .title { color: #cdd6f4; font-size: 22px; font-weight: 700; }
@@ -92,7 +89,7 @@
      it regardless of where in the template it was written. The flex centring
      is what puts the dialog in the middle. */
   .scrim {
-    position: absolute;
+    position: fixed;
     top: 0;
     left: 0;
     right: 0;
