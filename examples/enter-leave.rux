@@ -37,12 +37,22 @@
     <text class="btn-text">bring the card back</text>
   </view>
 
-  <!-- A chain animates branch by branch, so the two states cross over. -->
-  <view class="banner good" r-if="banner" r-transition>
-    <text class="banner-text">saved</text>
-  </view>
-  <view class="banner idle" r-else r-transition>
-    <text class="banner-text">nothing to save</text>
+  <!-- A chain animates branch by branch, and both branches are really there
+       while the swap runs, so they can cross over. The wrapper is what makes
+       that a crossover rather than a queue: a departing box with no inset keeps
+       the place it would have had, and with both branches live the place the
+       `r-else` would have had is *below* the `r-if`. Pinning the leaver to the
+       wrapper's own origin is what puts the two in the same spot.
+
+       The router does not need this only because it builds the outgoing page
+       first, so the page on its way out is the one standing at the top. -->
+  <view class="banners">
+    <view class="banner good" r-if="banner" r-transition>
+      <text class="banner-text">saved</text>
+    </view>
+    <view class="banner idle" r-else r-transition>
+      <text class="banner-text">nothing to save</text>
+    </view>
   </view>
 
   <!-- On a row, `r-transition` needs `r-key` on the same element and says so
@@ -59,12 +69,16 @@
 </template>
 
 <style>
+  /* The example outgrew the window once it had a list in it, so it scrolls.
+     Everything below has to be reachable to be driven. */
+
   .app {
     display: flex;
     flex-direction: column;
     gap: 20px;
     padding: 32px;
     background: #1e1e2e;
+    overflow-y: auto;
   }
 
   .title { color: #cdd6f4; font-size: 22px; font-weight: 700; }
@@ -137,7 +151,23 @@
     max-width: 200px;
   }
 
+  /* The box the two branches share. It needs a height of its own, because
+     while the swap runs one of the two is out of the flow and the other is
+     arriving, and a wrapper that hugged its content would change height under
+     them. */
+  /* `flex-shrink: 0` because the box holds no content of its own: both banners
+     are out of the flow, so a shrunk wrapper would let them spill over whatever
+     came next rather than getting shorter with it. */
+
+  .banners {
+    position: relative;
+    height: 44px;
+    width: 100%;
+    flex-shrink: 0;
+  }
+
   .banner {
+    position: absolute;
     padding: 12px 16px;
     border-radius: 8px;
     opacity: 1;
@@ -151,9 +181,22 @@
   /* The two branches enter and leave in opposite directions, so they slide
      past one another rather than both arriving from the same side. */
   .good:enter-from { opacity: 0; transform: translateX(24px); }
-  .good:leave-to { position: absolute; opacity: 0; transform: translateX(-24px); }
+
+  .good:leave-to {
+    top: 0;
+    left: 0;
+    opacity: 0;
+    transform: translateX(-24px);
+  }
+
   .idle:enter-from { opacity: 0; transform: translateX(-24px); }
-  .idle:leave-to { position: absolute; opacity: 0; transform: translateX(24px); }
+
+  .idle:leave-to {
+    top: 0;
+    left: 0;
+    opacity: 0;
+    transform: translateX(24px);
+  }
 
   .list {
     display: flex;
