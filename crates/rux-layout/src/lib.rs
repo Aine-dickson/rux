@@ -197,6 +197,9 @@ pub enum Cursor {
 /// `Static` is the default and the only value that is **not** a containing
 /// block: it is the normal in-flow box, and its `inset` is ignored. `Relative`
 /// is in flow too but offset by its inset, and it *is* a containing block.
+/// `Sticky` is in flow like `relative`, but its inset is a **threshold** rather
+/// than an offset: it stays where it was laid out until its scroller reaches
+/// that edge, then rides along it, and stops again at the end of its parent.
 /// `Absolute` is out of flow, positioned by its inset against the nearest
 /// non-static ancestor. `Fixed` is out of flow against the window, and does not
 /// move when an ancestor scrolls.
@@ -212,6 +215,7 @@ pub enum Position {
     #[default]
     Static,
     Relative,
+    Sticky,
     Absolute,
     Fixed,
 }
@@ -219,6 +223,10 @@ pub enum Position {
 impl Position {
     /// Whether a box with this `position` is a containing block, so an
     /// out-of-flow descendant's insets are measured against it.
+    ///
+    /// Not the whole rule: a box with a `transform` is a containing block too,
+    /// whatever its `position`, and for `fixed` descendants as well as absolute
+    /// ones. See the hoisting in `build`.
     pub fn is_containing_block(self) -> bool {
         self != Position::Static
     }
@@ -226,6 +234,11 @@ impl Position {
     /// Whether the box is taken out of the flow.
     pub fn is_out_of_flow(self) -> bool {
         matches!(self, Position::Absolute | Position::Fixed)
+    }
+
+    /// Whether the box is pinned against its scroller at paint time.
+    pub fn is_sticky(self) -> bool {
+        self == Position::Sticky
     }
 }
 
@@ -1564,12 +1577,15 @@ fn to_taffy(style: &Style, vp: (f32, f32)) -> taffy::Style {
         justify_items: style.justify_items.map(to_align_items),
         align_content: style.align_content.map(to_align_content),
         position: match style.position {
-            Position::Static | Position::Relative => taffy::Position::Relative,
+            Position::Static | Position::Relative | Position::Sticky => taffy::Position::Relative,
             Position::Absolute | Position::Fixed => taffy::Position::Absolute,
         },
         // A static box ignores its insets, which is the rule that makes `static`
-        // worth having rather than being a synonym for `relative`.
-        inset: if style.position == Position::Static {
+        // worth having rather than being a synonym for `relative`. A sticky box
+        // ignores them *here* for a different reason: its insets say where it
+        // stops, not where it starts, and applying them as offsets would move it
+        // before anything had scrolled.
+        inset: if matches!(style.position, Position::Static | Position::Sticky) {
             Rect { left: auto(), right: auto(), top: auto(), bottom: auto() }
         } else {
             Rect {
@@ -1713,6 +1729,53 @@ fn collect_statics(
     }
 }
 
+/// Where a `sticky` box actually paints, given where it was laid out.
+///
+/// Sticky is the one `position` that is not answered by the layout: the box
+/// keeps its place in the flow, and its insets are **thresholds** rather than
+/// offsets. It sits where it was put until its scroller's edge reaches that
+/// threshold, then travels along the edge, and stops again when its parent runs
+/// out from under it. That last clamp is the half that makes a list of sections
+/// work: a heading rides the top of the scroller until the next section arrives
+/// and pushes it off, rather than sitting there over the wrong rows.
+///
+/// Nothing else moves, which is also CSS: a sticky box occupies its original
+/// space the whole time, so its siblings do not reflow as it travels.
+///
+/// `view` is the scroller's visible rectangle, `holder` the box the sticky one
+/// sits in, and both are in the same window coordinates as `rect`.
+fn stick(
+    rect: (f32, f32, f32, f32),
+    inset: [Option<f32>; 4],
+    view: (f32, f32, f32, f32),
+    holder: (f32, f32, f32, f32),
+) -> (f32, f32) {
+    let (x, y, w, h) = rect;
+    let (vx, vy, vw, vh) = view;
+    let (hx, hy, hw, hh) = holder;
+    let (mut nx, mut ny) = (x, y);
+
+    if let Some(top) = inset[0] {
+        ny = ny.max(vy + top);
+    }
+    if let Some(bottom) = inset[2] {
+        ny = ny.min(vy + vh - bottom - h);
+    }
+    if let Some(left) = inset[3] {
+        nx = nx.max(vx + left);
+    }
+    if let Some(right) = inset[1] {
+        nx = nx.min(vx + vw - right - w);
+    }
+
+    // Never outside the box it belongs to. The `max` after the `min` matters:
+    // when the holder is shorter than the sticky box there is no valid position
+    // and the top edge is the least surprising answer.
+    ny = ny.min(hy + hh - h).max(hy);
+    nx = nx.min(hx + hw - w).max(hx);
+    (nx, ny)
+}
+
 /// Whether this box has to be laid out under its **containing block** rather
 /// than under its parent, and whether it is `fixed` (so only the window will do).
 ///
@@ -1853,6 +1916,8 @@ fn build(
     // The `r-key` of the row this node is inside, inherited by everything under
     // it. A keyed node starts a new row; nothing else changes it.
     row: Option<&str>,
+    // Sticky boxes and their thresholds, resolved to px, in `inset` order.
+    stickies: &mut Vec<(NodeId, [Option<f32>; 4])>,
     // Out-of-flow boxes waiting for their containing block, as `(id, fixed)`.
     //
     // taffy positions an absolute child against its *parent*, and CSS positions
@@ -1976,7 +2041,7 @@ fn build(
             .filter_map(|(i, c)| {
                 let mut cp = path.to_vec();
                 cp.push(i);
-                let cid = build(tree, c, paint, handlers, models, focus_labels, hidden, opacities, scrolls, transforms, states, access, &cp, paths, vp, child_cap, caps, row, hoisted);
+                let cid = build(tree, c, paint, handlers, models, focus_labels, hidden, opacities, scrolls, transforms, states, access, &cp, paths, vp, child_cap, caps, row, stickies, hoisted);
                 match hoists(&c.style) {
                     Some(fixed) => {
                         hoisted.push((cid, fixed));
@@ -1986,15 +2051,28 @@ fn build(
                 }
             })
             .collect();
-        // This box is a containing block, so the absolute descendants that came
-        // up from its subtree stop here. `fixed` ones carry on to the root.
+        // This box is a containing block, so the out-of-flow descendants that
+        // came up from its subtree stop here.
+        //
+        // **A `transform` makes a containing block for both kinds**, whatever
+        // the box's own `position` says, which is CSS's rule and the reason
+        // `position: fixed` famously stops being fixed inside a transformed
+        // parent. It is not an oddity to work around: a transform moves the
+        // whole subtree, so there is no way to hold a descendant still against
+        // the window while its ancestor slides, and pretending otherwise would
+        // mean drawing it somewhere the transform says it is not.
+        //
+        // Without a transform, only a non-static box claims anything, and only
+        // the absolute ones: `fixed` carries on to the root.
         //
         // They go on the end, which is also where CSS paints them: a positioned
         // descendant is drawn over its containing block's in-flow content.
-        if node.style.position.is_containing_block() {
+        let transformed = node.style.transform.is_some();
+        if transformed || node.style.position.is_containing_block() {
             let mut i = mark;
             while i < hoisted.len() {
-                if hoisted[i].1 {
+                let carries_on = hoisted[i].1 && !transformed;
+                if carries_on {
                     i += 1;
                 } else {
                     children.push(hoisted.remove(i).0);
@@ -2056,6 +2134,21 @@ fn build(
     if node.style.overflow == Overflow::Scroll {
         scrolls.push(id);
     }
+    if node.style.position.is_sticky() {
+        // Resolved to px here, where the viewport is in hand, so `collect` can
+        // compare them against window coordinates without carrying units.
+        let px = |l: Option<Len>| match l {
+            None => None,
+            Some(Len::Px(v)) => Some(v),
+            Some(Len::Pct(p)) => Some(vp.1 * p / 100.0),
+            Some(Len::Vw(v)) => Some(vp.0 * v / 100.0),
+            Some(Len::Vh(v)) => Some(vp.1 * v / 100.0),
+        };
+        stickies.push((
+            id,
+            [px(node.style.inset[0]), px(node.style.inset[1]), px(node.style.inset[2]), px(node.style.inset[3])],
+        ));
+    }
     if let Some(path) = &node.state_path {
         states.push((id, path.clone()));
     }
@@ -2085,6 +2178,11 @@ fn collect(
     paths: &[(NodeId, Vec<usize>)],
     offsets: &[Offset],
     vp: (f32, f32),
+    stickies: &[(NodeId, [Option<f32>; 4])],
+    // The box this node sits in, as `(x, y, width, height)` in window
+    // coordinates. Only `sticky` reads it, to stop travelling when its parent
+    // runs out from under it.
+    holder: (f32, f32, f32, f32),
     // The nearest scroller above this node, so a focus ring can be clipped to
     // the box that clips everything else in it.
     inside_scroll: Option<usize>,
@@ -2095,8 +2193,32 @@ fn collect(
     out: &mut Layout,
 ) {
     let layout = tree.layout(id).expect("layout");
-    let x = origin_x + layout.location.x;
-    let y = origin_y + layout.location.y;
+    let mut x = origin_x + layout.location.x;
+    let mut y = origin_y + layout.location.y;
+
+    // `sticky` is resolved here rather than in the layout, because it is a
+    // question about the scroll offset and the layout does not know one. Done
+    // before anything is recorded, so the box's paint, its hit region, its
+    // metrics and its children all move together: a sticky header you can see
+    // but cannot tap would be worse than one that does not stick.
+    if let Some((_, inset)) = stickies.iter().find(|(nid, _)| *nid == id) {
+        // Against the scroller it is inside; with none, against the window,
+        // which is what a sticky box in an unscrolled document sits in.
+        let view = match inside_scroll.and_then(|sid| out.scrolls.get(sid)) {
+            Some(s) => (s.x, s.y, s.width, s.height),
+            None => (0.0, 0.0, vp.0, vp.1),
+        };
+        let (nx, ny) = stick(
+            (x, y, layout.size.width, layout.size.height),
+            *inset,
+            view,
+            holder,
+        );
+        x = nx;
+        y = ny;
+    }
+    let x = x;
+    let y = y;
 
     // r-show=false: the node kept its layout slot but paints nothing (nor its
     // subtree, nor its hit regions).
@@ -2436,7 +2558,19 @@ fn collect(
         });
     }
 
-    for child in tree.children(id).expect("children") {
+    // In-flow children first, sticky ones after, because a positioned box paints
+    // over its in-flow siblings and a sticky one is positioned. Without this a
+    // sticky heading is drawn *before* the rows it is meant to sit over, so the
+    // content scrolls straight through it and the heading is unreadable exactly
+    // when it is doing its job. Found by looking, not by the tests: every
+    // assertion about geometry passed.
+    //
+    // Ordering here also puts the sticky box on top for hit testing, since the
+    // topmost hit region wins and later means topmost.
+    let kids = tree.children(id).expect("children");
+    let (stuck, flowing): (Vec<NodeId>, Vec<NodeId>) =
+        kids.iter().partition(|c| stickies.iter().any(|(nid, _)| nid == *c));
+    for child in flowing.into_iter().chain(stuck) {
         collect(
             tree,
             child,
@@ -2455,6 +2589,11 @@ fn collect(
             paths,
             offsets,
             vp,
+            stickies,
+            // Children of this node are held by this node, measured where the
+            // scroll has put it, so a sticky grandchild stops at the same edge a
+            // reader sees.
+            (x - shift.x, y - shift.y, layout.size.width, layout.size.height),
             child_scroll,
             child_xform,
             child_dim,
@@ -2519,6 +2658,7 @@ pub fn layout_scrolled(
     let mut paths = Vec::new();
     let vp = (avail_w, avail_h);
     let mut caps: HashMap<NodeId, f32> = HashMap::new();
+    let mut stickies: Vec<(NodeId, [Option<f32>; 4])> = Vec::new();
     let mut hoisted: Vec<(NodeId, bool)> = Vec::new();
     let root_id = build(
         &mut tree,
@@ -2541,6 +2681,7 @@ pub fn layout_scrolled(
         Some(avail_w),
         &mut caps,
         None, // the root is not inside any row
+        &mut stickies,
         &mut hoisted,
     );
 
@@ -2693,7 +2834,10 @@ pub fn layout_scrolled(
     let mut out = Layout::default();
     collect(
         &tree, root_id, 0.0, 0.0, &paint, &handlers, &models, &focus_labels, &hidden, &opacities,
-        &scrolls, &transforms, &states, &access, &paths, offsets, vp, None, None, 1.0, &mut out,
+        &scrolls, &transforms, &states, &access, &paths, offsets, vp, &stickies,
+        // The root is held by the window.
+        (0.0, 0.0, vp.0, vp.1),
+        None, None, 1.0, &mut out,
     );
     out
 }

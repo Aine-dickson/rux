@@ -15,7 +15,7 @@ grid-template-columns, grid-template-rows
 grid-column, grid-row (+ -start/-end)   (1 / 3, span 2, -1; no named lines)
 grid-auto-flow, grid-auto-rows, grid-auto-columns
 transform (translate/scale/rotate; visual only; hit regions aren't transformed)
-position (static|relative|absolute|fixed) + top/right/bottom/left, aspect-ratio
+position (static|relative|sticky|absolute|fixed) + top/right/bottom/left, aspect-ratio
 width, height, min/max-width, min/max-height
 padding, margin        (shorthand 1–4 values + -top/-right/-bottom/-left)
 border, border-width, border-color, border-<side>, border-<side>-width

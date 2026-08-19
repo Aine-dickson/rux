@@ -4670,22 +4670,13 @@ fn interpret(p: &HashMap<String, String>) -> Style {
             "relative" => Position::Relative,
             "absolute" => Position::Absolute,
             "fixed" => Position::Fixed,
-            // Not built. `relative` is the closest thing that is: a sticky box
-            // is in flow and offset from where it sits, right up until the
-            // scroll threshold it has no way to notice.
-            "sticky" => {
-                warn(
-                    "`position: sticky` is not honored yet, so this box behaves as                      `relative` and will not pin when its scroller passes it"
-                        .to_string(),
-                );
-                Position::Relative
-            }
+            "sticky" => Position::Sticky,
             other => {
                 // Every value used to fall through to `relative`, so a typo was
                 // a box that quietly stayed where it was and an author who could
                 // not tell a misspelling from a rule that does nothing.
                 warn(format!(
-                    "`position: {other}` is not a value Rux knows; use `static`, `relative`,                      `absolute` or `fixed`"
+                    "`position: {other}` is not a value Rux knows; use `static`, `relative`,                      `sticky`, `absolute` or `fixed`"
                 ));
                 Position::Static
             }
@@ -4694,11 +4685,15 @@ fn interpret(p: &HashMap<String, String>) -> Style {
         // corner, which is a legal answer to what was written and never what was
         // meant. Absolute has the same shape and a real use for it: with no
         // insets it keeps its static position, which is what `:leave-to` wants.
-        if st.position == Position::Fixed && !p.keys().any(|k| INSETS.contains(&k.as_str())) {
-            warn(
+        if matches!(st.position, Position::Fixed | Position::Sticky)
+            && !p.keys().any(|k| INSETS.contains(&k.as_str()))
+        {
+            let what = if st.position == Position::Sticky {
+                "`position: sticky` with no `top`, `right`, `bottom` or `left` has no edge to                  stick to, so it will never move; name at least one inset"
+            } else {
                 "`position: fixed` with no `top`, `right`, `bottom` or `left` pins this box to                  the top-left of the window; name at least one inset"
-                    .to_string(),
-            );
+            };
+            warn(what.to_string());
         }
     }
     for (i, side) in INSETS.iter().enumerate() {

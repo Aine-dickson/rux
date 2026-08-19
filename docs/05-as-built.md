@@ -305,7 +305,7 @@ grid-template-columns, grid-template-rows
 grid-column, grid-row (+ -start/-end)   (1 / 3, span 2, -1; no named lines)
 grid-auto-flow, grid-auto-rows, grid-auto-columns
 transform (translate/scale/rotate; visual only; hit regions aren't transformed)
-position (static|relative|absolute|fixed) + top/right/bottom/left, aspect-ratio
+position (static|relative|sticky|absolute|fixed) + top/right/bottom/left, aspect-ratio
 width, height, min/max-width, min/max-height
 padding, margin        (shorthand 1–4 values + -top/-right/-bottom/-left)
 border, border-width, border-color, border-<side>, border-<side>-width
@@ -409,8 +409,8 @@ cancelled swap never fired one.
 
 ### `position`, and which box an out-of-flow one is measured against
 
-All four of `static`, `relative`, `absolute` and `fixed` mean what CSS says.
-`sticky` is not built and warns.
+All five of `static`, `relative`, `sticky`, `absolute` and `fixed` mean what CSS
+says.
 
 **`static` is the default and is the only value that is not a containing block.**
 That is the rule that gives the other three their meaning: an `absolute` box is
@@ -432,7 +432,31 @@ scrolled away with its ancestor; `sticky` and `static` were silently treated as
 **`fixed` is against the window**, whatever it is written inside, and it is
 outside every scroller, so it does not move when one scrolls. A fixed box with
 no inset named lands in the window's top-left corner and warns, since that is a
-legal answer to what was written and never what was meant.
+legal answer to what was written and never what was meant. A sticky box with no
+inset warns for the same reason: it has no edge to stick to and will never
+move.
+
+**A `transform` makes a containing block**, whatever the box's own `position`
+says, and for `fixed` descendants as well as absolute ones. This is CSS's rule
+and the reason `position: fixed` stops being fixed inside a transformed parent.
+It is not an oddity to work around: a transform moves the whole subtree, so
+there is no way to hold a descendant still against the window while its ancestor
+slides. (CSS gives `filter`, `perspective`, `will-change` and `contain` the same
+power; none of those is honored here, so `transform` is the only one that can.)
+
+**`sticky` is in flow, and its insets are thresholds rather than offsets.** The
+box sits where it was laid out until its scroller's edge reaches the threshold,
+then rides that edge, and stops again when its own parent runs out from under
+it. That last clamp is what makes a list of sections work: a heading rides the
+top until the next section arrives and pushes it off, rather than sitting over
+the wrong rows. With no scroller above it, the window is what it sticks to.
+
+Nothing else moves while it travels: a sticky box keeps its original space the
+whole time, so its siblings do not reflow. It is resolved at paint time, because
+it is a question about the scroll offset and the layout does not know one, and
+its hit region and metrics move with it. A sticky box paints **over** its
+in-flow siblings, as a positioned box does; `relative` boxes are not reordered,
+which is a divergence.
 
 **An out-of-flow box that names no inset keeps its static position**, which is
 where it would have sat in its parent's flow, so it stays with its parent rather
@@ -441,9 +465,6 @@ absolute }` relies on, and it is why a departing element needs no coordinates.
 
 The containing block is the ancestor's **padding box**, so padding on it does not
 push an out-of-flow child inwards.
-
-Not done: a `transform` on an ancestor does not make it a containing block for
-`fixed`, as CSS says it should.
 
 **Whether a departing element keeps its place is yours to say.** Left alone it
 stays in the flow until the swap commits, so nothing below it moves while it is
@@ -700,10 +721,8 @@ properties.
 Anything else is **parsed but not honored**: but no longer *silently*: the
 runtime now prints one line per unhonored property (`rux: CSS property
 \`box-shadow\` is parsed but not yet honored …`), once each. Notably absent:
-`line-height`, `position` (`static`, `relative`, `absolute` and `fixed` are all
-honored; only `sticky` is not, and it now says so rather than pretending to be
-`relative` in silence), `box-shadow`, gradients, `transform`, and CSS
-variables.
+`line-height`, `box-shadow`, gradients, `transform`, and CSS variables.
+`position` is no longer among them: all five values are honored.
 
 Colours accept `#hex` (3/6/8-digit), `rgb()`/`rgba()`, and the full CSS named-
 colour list (`red`, `rebeccapurple`, …). The named list matters because

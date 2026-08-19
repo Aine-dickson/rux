@@ -1,7 +1,7 @@
 <template>
   <screen class="app">
     <text class="title">position</text>
-    <text class="lead">All four values, and the two that used to be silent. Scroll the list: the fixed badge stays put, the absolute one goes with the content.</text>
+    <text class="lead">All four values, and the two that used to be silent. Scroll the list: the fixed badge stays put, the sticky headings ride the top and hand over, and the absolute one goes with the content.</text>
 
     <view class="frame">
       <!-- No `position` on this wrapper, so it is `static`, so it is not a
@@ -12,7 +12,12 @@
     </view>
 
     <view class="scroller">
-      <view class="row" r-for="n in rows"><text class="row-text">row {{ n }}</text></view>
+      <!-- Sticky: in flow until the scroller's top edge reaches it, then riding
+           that edge, then pushed off by the end of its own section. -->
+      <view class="section" r-for="s in sections">
+        <view class="head"><text class="head-text">{{ s.name }}</text></view>
+        <view class="row" r-for="n in s.rows"><text class="row-text">{{ s.name }} row {{ n }}</text></view>
+      </view>
       <!-- Out of the flow but inside the scroller, so it travels with it. -->
       <view class="rider"><text class="tag">absolute: rides the content</text></view>
     </view>
@@ -66,7 +71,19 @@
     border-radius: 10px;
   }
 
-  .row { padding: 10px 14px; }
+  .section { display: flex; flex-direction: column; width: 100%; flex-shrink: 0; }
+
+  .head {
+    position: sticky;
+    top: 0;
+    width: 100%;
+    flex-shrink: 0;
+    padding: 8px 14px;
+    background: #89b4fa;
+  }
+  .head-text { color: #1e1e2e; font-size: 13px; font-weight: 700; }
+
+  .row { padding: 10px 14px; flex-shrink: 0; }
   .row-text { color: #cdd6f4; font-size: 14px; }
 
   .rider {
@@ -89,5 +106,9 @@
 </style>
 
 <script>
-  let rows = signal([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]);
+  let sections = signal([
+    #{ name: "first", rows: [1, 2, 3, 4, 5, 6] },
+    #{ name: "second", rows: [1, 2, 3, 4, 5, 6] },
+    #{ name: "third", rows: [1, 2, 3, 4, 5, 6] },
+  ]);
 </script>

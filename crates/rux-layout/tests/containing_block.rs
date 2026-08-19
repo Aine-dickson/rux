@@ -193,3 +193,40 @@ fn no_insets_still_means_where_it_would_have_been() {
     // 10px of screen padding, then below the 60px-tall sibling.
     assert_eq!(at, (10.0, 70.0), "where it would have been, not at an origin");
 }
+
+/// **A `transform` makes a containing block**, whatever the box's own
+/// `position` says, and for `fixed` descendants as well as absolute ones.
+///
+/// This is CSS's rule and the reason `position: fixed` famously stops being
+/// fixed inside a transformed parent. It is not an oddity to work around: a
+/// transform moves the whole subtree, so there is no way to hold a descendant
+/// still against the window while its ancestor slides, and pretending otherwise
+/// would mean drawing it somewhere the transform says it is not.
+#[test]
+fn a_transform_is_a_containing_block_for_both() {
+    let with_transform = |cover: Position| {
+        let mut screen = Node::new(Style { display: Display::Flex, axis: Axis::Column, ..Default::default() });
+        let mut wrapper = Node::new(Style {
+            display: Display::Flex,
+            // Says nothing about `position`, so it is `static`, and would be
+            // skipped were it not for the transform.
+            transform: Some([1.0, 0.0, 0.0, 1.0, 0.0, 0.0]),
+            width: Some(Len::Px(200.0)),
+            height: Some(Len::Px(100.0)),
+            ..Default::default()
+        });
+        wrapper.children.push(covering(cover));
+        screen.children.push(wrapper);
+        let mut measure = |_: &TextContent, _: Option<f32>| (0.0, 0.0);
+        layout(&screen, 600.0, 400.0, &mut measure)
+            .paints
+            .into_iter()
+            .find_map(|p| match p {
+                Paint::Rect(r) if is_red(&r) => Some((r.width, r.height)),
+                _ => None,
+            })
+            .expect("painted")
+    };
+    assert_eq!(with_transform(Position::Absolute), (200.0, 100.0), "absolute is claimed");
+    assert_eq!(with_transform(Position::Fixed), (200.0, 100.0), "and so is fixed");
+}
