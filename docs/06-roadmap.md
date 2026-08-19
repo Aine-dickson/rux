@@ -1910,7 +1910,20 @@ here.
    optional, and it lands when packaging does: a window title, an icon and a
    target have nowhere to live until there is an artifact to put them in, and
    inventing the file first would commit the output format by accident.
-7. **Multi-touch, on hardware.** The gesture vocabulary itself landed in v0.7
+7. **Distribution that does not need a Rust toolchain.** Added 2026-08-19,
+   and it belongs here rather than later because it is the *same argument* this
+   milestone already makes about Gradle, pointed at ourselves: today the only
+   way to get Rux is `cargo install ruxlang`, which needs rustup, for a language
+   whose pitch is no JS, no DSL and no toolchain. That is plausibly a larger
+   adoption barrier than the missing phone.
+
+   It cannot precede `rux build`, because a toolchain you cannot build with is
+   not worth installing, which is why the two sit in one milestone. Shapes worth
+   costing when it is reached: prebuilt binaries on the GitHub release, and then
+   whichever of winget, scoop, Homebrew, npm and a `curl | sh` installer are
+   cheap to keep green. crates.io stays; it stops being the *only* door.
+
+8. **Multi-touch, on hardware.** The gesture vocabulary itself landed in v0.7
    (`@press`, `@release`, `@longpress`, `@swipe`, `@drag`), and every event
    already reports a *list* of touch points rather than one synthesised pointer.
    What v0.8 owes it is a second finger: the shell tracks each id winit gives
@@ -1919,7 +1932,7 @@ here.
    `@drag` claims the finger, and whether a scroll can take it back mid-gesture
    waits for a real screen.
 
-### v0.9: text, and the long tail
+### v0.9: text, depth, and the CSS pass
 
 1. **True inline text flow**, the standing known ceiling. Two `<text>` siblings
    cannot share a line, so bold inside a sentence is impossible. taffy has no
@@ -1929,10 +1942,167 @@ here.
    drag-and-drop of a selection, `::selection` styling.
 3. **Scrolling gaps**: click-on-track paging, scrollbar hover and fade,
    independent `overflow-x` / `overflow-y`, `overscroll-behavior`.
-4. **CSS long tail**: per-side border colours (`border-top-color` and friends;
-   the shorthand and `border-color` are honored, the per-side colours are not).
+4. **The CSS pass**, widened from "long tail" on 2026-08-19. Per-side border
+   colours are the smallest of it. The audit below lists what a component set
+   actually needs and Rux does not honor: **`z-index`** (nothing at all, and
+   there are now five position values), `calc()`, `filter` / `backdrop-filter`,
+   `::before` / `::after`, and the structural pseudo-classes `:nth-child`,
+   `:not()`, `:first-child`, `:disabled`. `text-overflow: ellipsis` is already
+   tracked and needs measure-and-truncate.
+
    ~~`position: sticky` and `fixed`~~ **done in v0.7**, along with `static` and a
    `transform` that makes a containing block, so all five values are honored.
+
+5. **Generate the honored-CSS matrix from `rux-style`.** Moved out of "worth
+   deciding early" and put *beside* the CSS pass deliberately: landing thirty
+   properties against a hand-maintained reference means the documentation rots
+   faster than the code lands. On 2026-08-19 a single afternoon found three
+   published claims that had been false for a release or more, one of them since
+   v0.6.0. This makes that class of error impossible rather than rarer.
+
+6. **Physics.** Kinetic scrolling is v0.8's; this is the rest. The animator
+   already has two drivers, `Clock` and `Bound`, and a spring is a natural
+   third, so this is smaller than it sounds: the architecture takes it without a
+   redesign. Momentum, rubber-banding and spring easing all fall out of one
+   driver.
+
+7. **Audio.** Deliberately split from video, which is not in this milestone.
+   Audio is an output stream and probably a script call rather than an element,
+   since a sound effect is an action and not a box. Video is decode plus frames
+   into wgpu textures, is platform-specific per OS, and doing it before mobile
+   has settled means doing it twice; it is listed under v0.10 for that reason.
+
+### v0.10: authoring
+
+**Opened 2026-08-19.** A milestone rather than three bullets bolted onto v0.9,
+because these three are one theme and they are coupled: what makes it pleasant
+and fast to build a real UI in Rux.
+
+1. **`rux-lsp`**, pulled down from v1.0. It never needed a frozen language:
+   diagnostics already exist as `rux check`, and the extension is published, so
+   this is exactly when a language server starts paying. Go-to-definition,
+   hover, completion, and `rux check`'s diagnostics in the editor.
+
+2. **A component set, with flavours.** The user's design, 2026-08-19: the
+   components page carries a **switch, or a tab with flavour options**, so a
+   reader picks the styling they want and takes that version. shadcn and
+   flowbite are the reference points for the shape of the thing.
+
+   That resolves the Tailwind question rather than answering it. It had been
+   framed as a fork in the road, a curated utility set generated into Rux CSS
+   versus a real Tailwind pass that drags in the Node toolchain. As a **flavour
+   it is neither**: Tailwind becomes one option a component is offered in, next
+   to plain Rux CSS, and the choice moves from the project to the reader. The
+   Node question only ever bit the *real-pass* branch, and a flavour does not
+   need one.
+
+3. **Video.** Held back from v0.9 with audio for the reason given there: decode
+   plus wgpu texture import is platform-specific, so it wants mobile settled.
+   It is also the item most able to eat a milestone alone, and a janky video
+   element is worse than none.
+
+**Why a component set belongs before 1.0 rather than after it**, which is the
+user's argument and the strongest reason this milestone exists: building one
+*exercises* the language the way nothing else has. It is the first thing that
+uses every feature together, at the scale someone else would use them, and it
+will surface the undesirable patterns accumulated from v0.1 through v0.9 while
+they can still be changed. Ship 1.0 first and those patterns are frozen into the
+version that promises not to break. This is the same argument as
+[user tests](./08-user-tests.md) and [author notes](./09-author-notes.md), one
+level up: driving a feature finds what testing it does not, and building a
+library finds what driving a feature does not.
+
+---
+
+### The unplanned surface, audited 2026-08-19
+
+**Asked for directly: what will we need before 1.0 that nothing has a slot for?**
+Found by searching the tree rather than by listing what UI toolkits usually
+have, so each line below is a checked absence and not a guess. The count in
+brackets is how many times the term appears in `docs/` and `crates/`.
+
+**None of this is scheduled.** It is written here so a future session does not
+rediscover it late, which is the whole point of the register.
+
+#### Accessibility and preference: nothing at all
+
+- **`prefers-reduced-motion` (0, 0).** v0.7 shipped a whole animation system and
+  there is no way to turn it down. An OS-level "reduce motion" setting is an
+  accessibility requirement rather than a nicety, and for some people motion is
+  a medical problem and not a taste. The animator is the single place that has
+  to honor it, so this is small, and it is **the most disproportionate item in
+  this list**: near-zero cost, and shipping 1.0 without it is indefensible.
+- **`prefers-color-scheme` (0, 0).** `@media` has existed since v0.4, so this is
+  a small addition, and dark mode is table stakes now.
+- **Live regions (`aria-live`, 0).** The accessibility tree exists, but nothing
+  can *announce* a change, so a screen-reader user gets no notice of anything
+  that happens without their input.
+
+#### Internationalization: nothing at all
+
+- **No `direction`, no RTL, no bidi, no locale (0, 0).** parley can very likely
+  do the shaping; the language cannot say it. This one is much cheaper before
+  1.0 than after, because it reaches into layout rather than sitting beside it:
+  flex direction, insets, text alignment and scroll direction all change
+  meaning, and retrofitting it across a frozen API is the kind of job that does
+  not get done.
+
+#### CSS a component set will need
+
+Listed as v0.9 item 4, and repeated here because the component set in v0.10 is
+what *depends* on them:
+
+- **`z-index` (1, 1)**, and the one mention is the v0.1 spec's design intent
+  plus a string in the shell's hidden IME input. **Not honored at all.** Paint
+  order today is tree order plus two hand-written reorderings (out-of-flow
+  hoisting and the sticky pass). Dropdowns, tooltips and layered modals cannot
+  be built reliably without it.
+- **`calc()` (0)**, `filter` / `backdrop-filter` (0), `::before` / `::after` (0),
+  `object-fit` (0).
+- **`:nth-child`, `:not()`, `:first-child`, `:disabled`** never match, and
+  `05-as-built` says so.
+
+#### Application-shaped gaps
+
+- **No async, anywhere.** No promises, no `fetch`, no I/O from script. Every
+  real app fetches something. Today the answer is "write a `host::` function",
+  which means the app author writes Rust, which contradicts the pitch that Rux
+  is for people who do not want to. **This is the largest unplanned item and it
+  may deserve a milestone of its own**: it touches the script tier, the
+  reactivity graph (what re-runs when an answer arrives), lifecycle (what
+  happens if it arrives after unmount), and route guards, which are synchronous
+  today precisely because there is nothing to await.
+- **No storage (0).** Nothing survives a restart.
+- **No list virtualization.** Every row of a list is built. Fine at twenty rows
+  on a desktop; a phone with two thousand is v0.8's problem to discover.
+- **No portal / teleport (0, 0).** `position: fixed` in v0.7 covers much of what
+  a portal is usually reached for, but a dropdown inside `overflow: hidden`
+  still cannot escape its clip.
+- **No error boundary.** A failing expression is reported and the document
+  carries on; an author cannot catch one and show a fallback for that subtree.
+- **No drag and drop**, which follows from `@tap` being the vocabulary rather
+  than pointer events. Recorded already, unscheduled still.
+- **No multiple windows, no file dialogs.**
+
+#### Already flagged, and worth pulling forward rather than leaving in "worth
+deciding early"
+
+- **`host::` is unrestricted**, and native is not sandboxed at all. A security
+  posture is the hardest thing to retrofit after a freeze, because changing it
+  is by definition a breaking change.
+- **No test story for app authors.** Thirty-six test binaries here; nothing for
+  someone writing a `.rux` file.
+- **The honored-CSS matrix is hand-maintained.** Now scheduled as v0.9 item 5.
+
+#### The shape of it
+
+Three of these are big enough to move the plan rather than fit in it: **async**,
+**internationalization**, and **`host::` sandboxing**. The first two are cheaper
+before 1.0 by a wide margin, and the third is not really optional. If the answer
+is that they do not fit, the honest response is another milestone rather than a
+1.0 that quietly means "1.0 for one language, one thread and one trusted file".
+
+---
 
 ### v1.0: freeze
 
