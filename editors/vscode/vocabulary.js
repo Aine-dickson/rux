@@ -56,6 +56,26 @@ const EMPTY = {
 function refreshFromBinary(runRux) {
   if (liveAsked) return;
   liveAsked = true;
+
+  // Ask what the binary supports before asking it for anything.
+  //
+  // `rux vocab` on a binary that predates the subcommand is not a no-op. The
+  // CLI treats an unrecognised first argument as a path to run, because
+  // `rux app.rux` is the form every doc teaches, so `vocab` is read as a
+  // document name. On 0.6.0 that **opens a GUI window** and exits 0, which is
+  // both invisible to an exit-code check and the worst possible outcome:
+  // opening a `.rux` file in the editor launched a Rux window.
+  //
+  // `--help` is safe on every version ever published: it prints and exits, and
+  // no version has ever done anything else with it.
+  let help;
+  try {
+    help = runRux(['--help']);
+  } catch (e) {
+    return;
+  }
+  if (!help || !help.ok || !(help.stdout || '').includes('vocab')) return;
+
   let result;
   try {
     result = runRux(['vocab']);
@@ -65,9 +85,6 @@ function refreshFromBinary(runRux) {
   if (!result || !result.ok || result.code !== 0) return;
   try {
     const parsed = JSON.parse(result.stdout);
-    // An older `rux` predates `vocab` and exits 2 with an empty stdout, which
-    // JSON.parse rejects and we have already returned from. A newer one that
-    // printed something shaped wrong is worth ignoring just as quietly.
     if (parsed && Array.isArray(parsed.elements) && parsed.elements.length) {
       live = parsed;
     }
