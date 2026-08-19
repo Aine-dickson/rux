@@ -212,6 +212,25 @@ impl Animator {
                 let value = track.value_at(now);
                 if now >= track.end_ms {
                     track.active = false;
+                    // **A finished track rests at its target, not where it set
+                    // off from.** `value_at` answers with `from` once `active`
+                    // is false, and without this line `from` stays whatever the
+                    // animation began at, so the *next* transition on this node
+                    // sets off from a value it left long ago.
+                    //
+                    // The symptom is a second animation that does not happen. A
+                    // route view faded in 0 -> 1, finished, and then on the next
+                    // navigation was asked to leave: `current` came back as 0,
+                    // so the leave ran 0 -> 0 and the page vanished in a single
+                    // frame. Reported as "the very first routing cross fades and
+                    // any proceeding ones don't", which is exactly the shape of
+                    // it: the first leave is of a node whose track came from
+                    // `Track::settled`, where `from` and `target` agree.
+                    //
+                    // It is not only enter/leave. Anything that animates and
+                    // then animates back (a hover leaving, a class going off)
+                    // was setting off from the wrong end.
+                    track.from = track.target.clone();
                 }
                 write(node, *prop, value.clone());
                 track.written = value;
@@ -552,6 +571,53 @@ mod tests {
             easing: Easing::Linear,
         }];
         Node::new(style)
+    }
+
+    /// A node that has finished one transition sets off from where it *ended*
+    /// when the next one starts, not from where the first one began.
+    ///
+    /// The regression test for the bug a person found by navigating twice:
+    /// "the very first routing cross fades and any proceeding ones don't". A
+    /// finished track kept `from` at its original start, and `value_at` answers
+    /// with `from` once the track is no longer active, so the second transition
+    /// was handed a stale current value. For a route view that had faded in
+    /// 0 to 1, the leave was then asked to run 0 to 0, and the page disappeared
+    /// in one frame instead of fading.
+    ///
+    /// The first navigation worked and hid it: that page's track came from
+    /// `Track::settled`, where `from` and `target` are the same value.
+    #[test]
+    fn a_second_transition_starts_from_where_the_first_ended() {
+        let mut anim = Animator::new();
+        let mut node = fading(0.0, 300.0);
+        // Settles at 0, the way an entering element arrives.
+        assert_eq!(anim.apply(&mut node, 0.0), None);
+
+        // Fade in, and let it finish completely.
+        node.style.opacity = 1.0;
+        anim.apply(&mut node, 0.0);
+        anim.apply(&mut node, 300.0);
+        assert!((node.style.opacity - 1.0).abs() < 1e-4, "arrived at 1");
+        // One more frame past the end, which is where the track goes inactive.
+        anim.apply(&mut node, 400.0);
+        assert!((node.style.opacity - 1.0).abs() < 1e-4, "and stays at 1");
+
+        // Now ask it to leave. The very first animated frame must be at the top
+        // of the fade, not at the bottom.
+        node.style.opacity = 0.0;
+        anim.apply(&mut node, 400.0);
+        assert!(
+            (node.style.opacity - 1.0).abs() < 1e-4,
+            "the leave sets off from 1, not from the 0 it faded in from: got {}",
+            node.style.opacity
+        );
+
+        // And it really travels, rather than sitting at either end.
+        anim.apply(&mut node, 550.0);
+        let mid = node.style.opacity;
+        assert!(mid > 0.1 && mid < 0.9, "halfway out, got {mid}");
+        anim.apply(&mut node, 700.0);
+        assert!(node.style.opacity < 1e-4, "and finishes at 0");
     }
 
     /// A shape keeps walking across frames where nothing was rebuilt.
