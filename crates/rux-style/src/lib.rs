@@ -2766,7 +2766,7 @@ fn build_node(
     // A custom-element tag expands its imported component in place.
     if let Some(component) = comps.get(&el.tag) {
         return expand_component(
-            el, component, comps, inherited, engine, locals, path, tpl_path, reg, state, rules,
+            el, component, comps, ancestors, inherited, engine, locals, path, tpl_path, reg, state, rules,
             instances, swaps, instance, row, &Locals::new(), None,
             // An ordinary component tag is not a route view, so a
             // `<router-view />` inside it has no chain and says so.
@@ -3428,6 +3428,14 @@ fn expand_component(
     el: &Element,
     component: &Component,
     comps: &Components,
+    // The chain above the component tag.
+    //
+    // Handed in rather than started empty, because a document's rules style the
+    // components it uses and half a cascade is worse than none: `.page` reached
+    // a component's root and `.stage.slow .page` silently did not, so a rule
+    // that looked like it applied simply never fired. Found by turning on the
+    // router example's slow motion and watching a navigation run at full speed.
+    caller_ancestors: &[AncNode],
     inherited: &Inherited,
     engine: &mut Engine,
     parent_locals: &Locals,
@@ -3546,8 +3554,10 @@ fn expand_component(
     locals.extend(props);
 
     // The component expands in place at this element's path, so its root node
-    // takes the same path; its bindings are recorded relative to it.
-    let mut ancestors: Vec<AncNode> = Vec::new();
+    // takes the same path; its bindings are recorded relative to it, and it
+    // inherits the caller's ancestor chain so a descendant selector written
+    // outside can reach it.
+    let mut ancestors: Vec<AncNode> = caller_ancestors.to_vec();
     build_node(
         &component.template,
         &component.rules,
@@ -3749,6 +3759,9 @@ fn expand_chain(
     params: &Locals,
     current: &str,
     comps: &Components,
+    // The chain above the `<router>`, so a rule written outside it can reach a
+    // page. See `expand_component`.
+    caller_ancestors: &[AncNode],
     inherited: &Inherited,
     engine: &mut Engine,
     locals: &Locals,
@@ -3791,7 +3804,7 @@ fn expand_chain(
     // written on it is passed through as well, and the captured parameters of
     // the *whole* chain join them.
     let node = expand_component(
-        link.route, component, comps, inherited, engine, locals, path, &tpl, reg, state, rules,
+        link.route, component, comps, caller_ancestors, inherited, engine, locals, path, &tpl, reg, state, rules,
         instances, swaps, instance, row, params, Some(current), Some(outlet), view, swap,
     );
 
@@ -4146,7 +4159,7 @@ fn build_children(
                         o.used.set(true);
                         let cp = child_path(&out);
                         if let Some(node) = expand_chain(
-                            o.rest, o.params, o.current, comps, inherited, engine, locals, &cp,
+                            o.rest, o.params, o.current, comps, ancestors, inherited, engine, locals, &cp,
                             o.router_tpl, reg, state, rules, instances, swaps, instance, row,
                             // A nested outlet is not itself a swap; the swap, if
                             // any, belongs to the `<router>` that chose the chain.
@@ -4234,7 +4247,7 @@ fn build_children(
                     let params = chain_params(&chain);
                     let cp = child_path(&out);
                     if let Some(mut node) = expand_chain(
-                        &chain, &params, &old_path, comps, inherited, engine, locals, &cp, &ctp,
+                        &chain, &params, &old_path, comps, ancestors, inherited, engine, locals, &cp, &ctp,
                         reg, state, rules, instances, swaps, instance, row, side,
                     ) {
                         arm_swap(swaps, &key, &mut node, anim, engine, locals, &mut structural_deps);
@@ -4262,7 +4275,7 @@ fn build_children(
                         None
                     };
                     if let Some(mut node) = expand_chain(
-                        &chain, &params, &current, comps, inherited, engine, locals, &cp, &ctp,
+                        &chain, &params, &current, comps, ancestors, inherited, engine, locals, &cp, &ctp,
                         reg, state, rules, instances, swaps, instance, row, side,
                     ) {
                         if anim.is_some() {

@@ -107,38 +107,48 @@ something; the rest are written for a person and are **open**.
 | A page mid-navigation, looked at closely | desktop, window | **Found a bug.** The incoming page was invisible at `opacity: 0` but its scrollbar drew at full strength over the outgoing page. Scrollbars, focus rings and hit regions were all drawn outside the content's transform and opacity |
 | Dragging the card with the panel above it closed | desktop mouse | **Found a bug.** The old jump came back: the animator names an unkeyed node by its sibling index, so a sibling leaving renamed the card and dropped its track mid-drag |
 | A departing element's space, and what fills it | desktop, window | **Found a bug.** The space was handed over at the *start* of the swap, so what followed jumped up while the element was still on screen. Now the author decides, and the default is to keep the place until it commits |
-| Tapping a page while it is still transitioning | **open** | `examples/router.rux` has a **slow motion** toggle now, because a 220ms navigation cannot be interrupted by a hand. Turn it on, tap a crew row, then tap something on the page arriving. The fix is in (hit regions follow the transform) and it failed silently before: the tap landed where the page used to be |
-| A keyed `r-for` row removed from the middle of a list | **open** | `examples/enter-leave.rux` has a task list now; there was nothing to drive before. Tap a row in the **middle**. It should leave from where it sat while the rows below close the gap behind it, not animate from the end of the list |
-| Two banners in an `r-if` / `r-else` chain crossing over | **open** | They are authored to leave in opposite directions and did not appear to, because both held their space; expected to read as a crossover now |
-| A route transition driven by a drag rather than the clock | **open** | Built into `examples/router.rux`: drag rightwards anywhere on the page to go back, past half way to commit and short of it to change your mind. Writing it **found a bug** first, that a swap handed `null` from the outset never got told its duration and so ran for 0ms |
+| Tapping a page while it is still transitioning | desktop mouse, slow motion | Passed. Tapped a crew row while the crew page was still sliding in, and it opened `/crew/grace`. The hit region followed the transform, which is what used to fail silently: the tap landed where the page had been |
+| A keyed `r-for` row removed from the middle of a list | desktop, window | Passed. Tapped the middle of five: it faded and slid right **from where it sat**, while the two rows below it moved up behind it. Not from the end of the list |
+| Two banners in an `r-if` / `r-else` chain crossing over | desktop, window | **Found that the example was wrong, not the engine.** They queued: "saved" arrived in place and "nothing to save" departed *below* it. Both branches are live during a swap, so the place the `r-else` would have had is after the `r-if`, and a departing box with no inset keeps the place it would have had. The router escapes this only because it builds the outgoing page first. A shared positioned box with the leaver pinned to its origin is what makes it a crossover |
+| A route transition driven by a drag rather than the clock | desktop mouse | Passed. Dragged rightwards across the detail page: the navigation opened at the threshold, both pages moved with the hand, and it committed on release with `go forward` correctly lit. **Writing it found a bug** first: a swap handed `null` from the outset was never told its duration and ran for 0ms, so a tab-driven navigation cut instead of animating |
 | Any of it on a touchscreen | **unverified** | Every run above was a mouse. A drag-driven swap is the case that most wants a real finger, and the axis claim has never met one |
 
 ### `<path>`, vector geometry (2026-08-19)
 
-New in v0.7 and added mid-milestone at the user's request. **Every case here is
-open**, and for one reason worth stating rather than burying: **screen capture
-from the agent environment returned pure black on this machine today**, for a
-known-good example as well as for the new one, so nothing below has been *seen*
-by anybody yet. What has been done instead is to assert it, which is not the
-same thing and is why these are open rather than passed.
+New in v0.7 and added mid-milestone at the user's request. Driven in the window
+the same day, once the screen was unlocked. **Three of the first four cases
+found a bug**, none of which the 615 passing tests had an opinion about, and two
+of the three stopped something dead rather than making it slightly wrong.
 
 | Case | Hardware | Outcome |
 |---|---|---|
-| Open `examples/morph.rux` and tap through square, circle, blob | **open** | The shape should *walk* between the three, not cut. It is the whole claim of `transition: d`. A cut means the command sequences stopped matching |
-| Watch the fill and the outline during that walk | **open** | The colour and the stroke width animate alongside the geometry, on the blob's `:class`. They are ordinary transitions on ordinary properties and should arrive together, not in two stages |
-| Open `examples/chart.rux` and tap "jolt them all" | **open** | Every reading moves and the count does not, so the line should travel to its new shape rather than jump |
-| Tap "add a reading", then "drop the last" | **open** | The point count changes, so the sequences no longer match and the line is *expected to jump*. Confirming the jump matters as much as confirming the walk: it is the documented rule, not a bug |
-| Look at the filled band under the line | **open** | The band and the line are two paths over the same points. They should stay registered with one another through a redraw, and the fill should sit under its own stroke |
-| Paste real path data from a design tool into a `<path>` | **open** | Arcs, smooth continuations and relative commands all parse, and the tests say the geometry is right. Whether a genuine exported icon *looks* right has never been tried |
-| A path with `alt=` under a screen reader | **unverified** | It reports as an image with that label, and without `alt` it is left out of the tree as decoration. Never driven with assistive technology |
-| Any of it at a non-1x DPI, or on a phone | **unverified** | Geometry is in logical pixels like every other length, so it should scale with the scene. No device |
+| Tap through square, circle and blob in `examples/morph.rux` | desktop, window | **Found a bug, and it needed eyes.** The square set off towards the circle and **froze partway**, and stayed frozen. `close` had no arm for path geometry, so it fell through to "not close" every frame; that comparison is what tells the animator's own last write apart from a fresh authored value, so every frame decided the author had changed the shape, restarted the track, and set the target to what it had itself just written. Adding a variant to `AnimValue` means extending that guard and nothing forces you to |
+| Watch the fill and the outline during the walk | desktop, window | Passed: the blob arrives warm yellow with a thicker outline, and the colour and width travel with the geometry rather than in two stages |
+| Look at the filled band under the line in `examples/chart.rux` | desktop, window | **Found a layout bug.** The line was drawn a whole band's height **below** its band, outside the frame and across the buttons. The static-position pass put every no-inset absolute box back in the flow *at once* to discover where each would have stood, which measures each against the others; a box that holds no space cannot push its sibling down. Now one goes back at a time |
+| Tap "jolt them all" | desktop, window | Passed, after the two fixes above: every reading moves and the count does not, so the whole line travels to its new shape |
+| Tap "add a reading" | desktop, window | Passed, and the **jump is the point**. The point count changes, so the sequences no longer match and the line cuts. That is the documented rule, and an example that only showed the walk would hide half of the contract |
+| Read path data with arcs, smooth continuations and relative commands | desktop, window | Passed: the circle is four quarter-turn arcs and draws as a true circle, and the wave is `C` followed by `S` |
+| Paste a real exported icon from a design tool | **open** | The grammar is complete and tested, but no genuine tool export has been through it |
+| A path with `alt=` under a screen reader | **unverified** | It reports as an image with that label, and without `alt` it is left out as decoration. Never driven with assistive technology |
+| Any of it on a phone | **unverified** | Geometry is in logical pixels like every other length, so it should scale with the scene. No device |
 
-What is asserted rather than seen, so that the gap is legible: 19 tests over the
-`d` grammar, including that an arc really lands on its ellipse and that a square
-and a circle share a command sequence; and two tests that load the shipped
-examples, drive them the way the buttons do, and check the geometry that comes
-out. See `crates/rux-layout/tests/path_data.rs` and the two path cases in
-`crates/rux-runtime/tests/examples.rs`.
+One example flaw worth recording separately, because it was authoring and not
+the engine: the chart was written 480 logical pixels wide and the default window
+is narrower, so it ran off the right edge. A drawing does not resize with its
+box, deliberately, which means a fixed-coordinate path has to be written to fit.
+
+### Slow motion, and what it exposed (2026-08-19)
+
+| Case | Hardware | Outcome |
+|---|---|---|
+| Turn on slow motion in `examples/router.rux` and navigate | desktop, window | **Found a bug, and a silent one.** The navigation ran at full speed: `.stage.slow .page` never matched. A component tag expanded with an **empty ancestor chain**, so a document's simple selector (`.page`) reached a component root and a descendant selector did not. Rules cascading into components was settled in v0.7 and only half of it worked. The caller's chain is handed in now, and `<style scoped>` still keeps the caller out |
+| The same navigation once it was fixed | desktop, window | Passed: both pages on screen at once, the outgoing one fading and sliding left while the incoming one arrives from the right, and the nav bar outside the router unchanged |
+
+This is the fourth time this project has shipped a rule that applied to only
+half of what it claimed (`rem` honored by half the box model, a swipe made
+unreachable by a drag, decorations drawn outside their transform, and now the
+cascade). Every one of them was silent, and every one was found by a person
+looking rather than by the suite.
 
 ## Standing gaps
 
@@ -150,7 +160,8 @@ to prove.
 - **The axis claim in full**: a `@drag` claims the finger, but whether a scroll
   can take it back mid-gesture needs a real screen to have an opinion about.
 - **Native pickers, safe areas, orientation, density**: no device.
-- **Looking at the window at all, from the agent environment**: screen capture
-  came back pure black on 2026-08-19, for a known-good example as much as for a
-  new one, so it is the capture path and not any one feature. Every visual claim
-  made that day is an assertion, not an observation.
+- **A locked screen captures as pure black.** Not a standing gap, but worth
+  knowing: on 2026-08-19 every screenshot came back black until the user
+  unlocked the machine, including one of a known-good example. Run the control
+  before concluding a feature is broken, and if the control is black too, it is
+  the screen and not the code.
