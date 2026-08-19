@@ -236,5 +236,7 @@ as an `emit` chain.
 guard cannot await a network answer; it decides from state that is already there.
 Fetch first, then navigate.
 
-Not built: a guard is not compiled at load the way a `@tap` handler is, so a
-syntax error in one is found when it runs.
+A guard is compiled at load, on the same terms as a `@tap` handler, so a syntax
+error in one is reported without anyone having to navigate. It hides longer than
+a handler otherwise would: nobody taps a guard, so a broken one is found by
+whoever navigates, and what they see is a link that does nothing.

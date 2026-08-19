@@ -152,8 +152,8 @@ pub struct Document {
     pub root: LayoutNode,
 }
 
-/// Compile every event handler in a template once, at load, and warn about any
-/// that could not be compiled at all.
+/// Compile every event handler and route guard in a template once, at load, and
+/// warn about any that could not be compiled at all.
 ///
 /// Nothing compiles a handler until the moment it is tapped, so a handler with a
 /// syntax error used to reach the window, sit there looking like a button, and
@@ -174,6 +174,17 @@ fn check_handlers(template: &rux_parser::Element, engine: &rux_script::Engine) {
         }
         if let Err(why) = engine.check_syntax(value) {
             rux_script::warn_script(format!("`{name}` handler will never run: {why}"));
+        }
+    }
+    // A `guard` is author code on the same terms, and it hides longer than a
+    // handler does: nobody taps a guard, so a broken one is found by whoever
+    // navigates, and what they see is a link that does nothing.
+    if let Some(guard) = template.attr("guard").filter(|g| !g.trim().is_empty()) {
+        if let Err(why) = engine.check_syntax(guard) {
+            rux_script::warn_script(format!(
+                "the `guard` on <{}> will never run, so it can refuse nothing: {why}",
+                template.tag
+            ));
         }
     }
     for child in &template.children {

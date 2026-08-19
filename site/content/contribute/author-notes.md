@@ -71,7 +71,6 @@ reference half does not wait: `docs/05-as-built.md` describes the tip.
 | Trap | What actually happens, and why it is right | Destination | Status |
 |---|---|---|---|
 | A closure passed to `filter` / `map` **cannot see the surrounding scope** | A method call passes its receiver by reference and the scope cannot also be borrowed, so method dispatch does not capture. A plain call does. The workaround is a loop, or lifting what the closure needs into a parameter | `/reference/script/` documents the rule for functions; **not for closures inside method calls** | open |
-| A route guard's expression is **not** compiled at load, unlike a `@tap` | Handlers are compiled when the document loads so a broken one is reported rather than waiting to be tapped. Guards are not, so a syntax error in a guard is found when someone navigates. Worth closing rather than teaching | `/reference/routing/`, and it should just be fixed | open |
 | There is no ternary | `cond ? a : b` does not exist. Use `:class='#{ name: expr }'` or `r-if` | `/reference/script/` | open |
 
 ### Layout and events

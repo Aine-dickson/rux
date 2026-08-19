@@ -1423,8 +1423,8 @@ way. This milestone is where Rux stops being stock rhai.
     Lexical scoping was named above as load-bearing for exactly this, and it
     was: a guard is an ordinary expression reading ordinary signals.
 
-    Not done: a guard is not compiled at load the way a `@tap` handler is, so a
-    syntax error in one waits to be discovered by whoever navigates.
+    Guards are compiled at load like handlers, so a broken one is reported
+    without anyone navigating.
 
 11. **Paths as an element.** ✅ **BUILT 2026-08-19.** The user's idea from
     2026-08-13, added to this milestone on 2026-08-19 rather than left waiting.

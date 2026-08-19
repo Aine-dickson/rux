@@ -244,3 +244,24 @@ fn a_guard_that_redirects_to_itself_is_an_allow() {
     assert!(doc.navigate("/about"), "allowed");
     assert_eq!(doc.route(), "/about");
 }
+
+/// A broken guard is reported **at load**, on the same terms as a `@tap`.
+///
+/// It hides longer than a handler does: nobody taps a guard, so a broken one is
+/// found by whoever navigates, and what they see is a link that does nothing.
+#[test]
+fn a_guard_that_cannot_compile_is_reported_at_load() {
+    let doc = app(
+        &[("home", HOME), ("about", ABOUT)],
+        r#"<router>
+             <route path="/" view="home" />
+             <route path="/about" view="about" guard="unlocked ? 1 : 2" />
+           </router>"#,
+        "let unlocked = signal(false);\n",
+    );
+    assert!(
+        doc.diagnostics().warnings.iter().any(|w| w.message.contains("guard")),
+        "reported without anyone navigating: {:?}",
+        doc.diagnostics().warnings
+    );
+}
