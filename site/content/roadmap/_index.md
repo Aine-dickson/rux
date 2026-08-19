@@ -1913,6 +1913,21 @@ here.
    currently a drawn dropdown.
 4. **Safe areas, orientation, density.** `@media (orientation)` already exists
    from v0.4, which helps.
+
+   **And the other two environment queries, added 2026-08-19:
+   `prefers-reduced-motion` and `prefers-color-scheme`.** They are here rather
+   than in a later milestone because they are *the same kind of thing* as safe
+   areas and density: a question asked of the operating system, answered
+   differently per platform, and surfaced as `@media`. This milestone builds
+   that plumbing once; adding two more queries to it costs almost nothing, and
+   adding them later means going back into every platform's integration.
+
+   `prefers-reduced-motion` is the urgent half. v0.7 shipped a whole animation
+   system with no way to turn it down, and the animator is the single place that
+   has to honor it, so the cost is close to zero. For some people motion is a
+   medical problem rather than a preference, which is why this is not filed as
+   polish. `prefers-color-scheme` is the same shape and pays for itself the day
+   it lands.
 5. **Splash screens.** Raised 2026-08-18 and undesigned; a phone app that shows
    nothing while it starts looks broken, and this is the milestone that finds
    out what Rux should do about it.
@@ -1948,11 +1963,30 @@ here.
    cannot share a line, so bold inside a sentence is impossible. taffy has no
    inline formatting context, so this is our own line-breaker over parley: a
    real project, and the reason it has never fitted in a weekly slot.
-2. **Text editing gaps**: word-wise movement, triple-click line select,
+
+2. **Bidirectional text and `direction`, designed into item 1 rather than after
+   it.** Added 2026-08-19, and the coupling is the whole point: Rux has no RTL,
+   no bidi, no `direction` and no locale at all today. A line-breaker written
+   without bidi in mind is a line-breaker that gets written twice, and the
+   second time it is load-bearing for everything already shipped on top of it.
+   Doing them together is the difference between one hard project and one hard
+   project plus a rewrite.
+
+   It reaches past text into layout, which is the other reason it cannot wait
+   for 1.0: `direction` changes what flex order, insets, text alignment and
+   scroll direction *mean*. Retrofitting that across an API which has promised
+   not to break is the kind of job that never gets done, and the result is a
+   toolkit that quietly only serves left-to-right languages.
+3. **Text editing gaps**: word-wise movement, triple-click line select,
    drag-and-drop of a selection, `::selection` styling.
-3. **Scrolling gaps**: click-on-track paging, scrollbar hover and fade,
+4. **Scrolling gaps**: click-on-track paging, scrollbar hover and fade,
    independent `overflow-x` / `overflow-y`, `overscroll-behavior`.
-4. **The CSS pass**, widened from "long tail" on 2026-08-19. Per-side border
+
+   **And list virtualization**, added 2026-08-19. Every row of a list is built
+   today, which is fine at twenty rows on a desktop and is what v0.8 will
+   discover on a phone with two thousand. It belongs beside the scrolling work
+   because it is the same subsystem answering the same question.
+5. **The CSS pass**, widened from "long tail" on 2026-08-19. Per-side border
    colours are the smallest of it. The audit below lists what a component set
    actually needs and Rux does not honor: **`z-index`** (nothing at all, and
    there are now five position values), `calc()`, `filter` / `backdrop-filter`,
@@ -1963,30 +1997,102 @@ here.
    ~~`position: sticky` and `fixed`~~ **done in v0.7**, along with `static` and a
    `transform` that makes a containing block, so all five values are honored.
 
-5. **Generate the honored-CSS matrix from `rux-style`.** Moved out of "worth
+6. **Generate the honored-CSS matrix from `rux-style`.** Moved out of "worth
    deciding early" and put *beside* the CSS pass deliberately: landing thirty
    properties against a hand-maintained reference means the documentation rots
    faster than the code lands. On 2026-08-19 a single afternoon found three
    published claims that had been false for a release or more, one of them since
    v0.6.0. This makes that class of error impossible rather than rarer.
 
-6. **Physics.** Kinetic scrolling is v0.8's; this is the rest. The animator
+7. **Physics.** Kinetic scrolling is v0.8's; this is the rest. The animator
    already has two drivers, `Clock` and `Bound`, and a spring is a natural
    third, so this is smaller than it sounds: the architecture takes it without a
    redesign. Momentum, rubber-banding and spring easing all fall out of one
    driver.
 
-7. **Audio.** Deliberately split from video, which is not in this milestone.
+8. **Audio.** Deliberately split from video, which is not in this milestone.
    Audio is an output stream and probably a script call rather than an element,
    since a sound effect is an action and not a box. Video is decode plus frames
    into wgpu textures, is platform-specific per OS, and doing it before mobile
-   has settled means doing it twice; it is listed under v0.10 for that reason.
+   has settled means doing it twice; it is listed under v0.11 for that reason.
 
-### v0.10: authoring
+9. **Live regions.** The accessibility tree has existed since v0.4, and nothing
+   can *announce* a change through it, so a screen-reader user gets no notice of
+   anything that happens without their input: a toast, a validation message, a
+   list that finished loading. This extends a tree that already exists rather
+   than building one.
 
-**Opened 2026-08-19.** A milestone rather than three bullets bolted onto v0.9,
-because these three are one theme and they are coupled: what makes it pleasant
-and fast to build a real UI in Rux.
+10. **Portal**, if `z-index` does not remove the need. Item 5 brings `z-index`,
+    and `position: fixed` arrived in v0.7, which together cover most of what a
+    portal is normally reached for. What neither covers is escaping an
+    ancestor's `overflow: hidden`, which is exactly where a dropdown in a
+    scrolling panel lives. Decide it after `z-index` lands, not before.
+
+### v0.10: data, and the outside world
+
+**Opened 2026-08-19, and inserted *before* authoring rather than after it.** The
+placement is the argument, so it goes first.
+
+Rux has **no async of any kind**: no promises, no `fetch`, no I/O from script.
+Every real app talks to something. The only answer today is "write a `host::`
+function", which means the app author writes Rust, which is precisely the thing
+the pitch says they will not have to do. Of everything left before 1.0 this is
+the largest single hole, and it is the one most likely to be met on someone's
+first serious afternoon with the language.
+
+**Why it comes before the component set, and not with it.** Async is the last
+big *API-shaping* change on the list. It reaches into four places that already
+have contracts:
+
+- the **script tier**, which has no notion of a value that is not there yet;
+- the **reactivity graph**, which has to decide what re-runs when an answer
+  arrives, and what a binding shows while it has not;
+- **lifecycle**, since `mounted` is exactly where a fetch starts, and the
+  instance may be gone before it returns;
+- **route guards**, which are synchronous *because there is nothing to await*.
+  "Check the session before entering `/admin`" is the canonical guard and it is
+  the canonical async operation, so this contract changes.
+
+A component library built on top of those contracts before they move is a
+component library that moves with them. And 1.0 means the API stops breaking, so
+the largest remaining breaking change wants slack in front of it, not to be the
+last thing in before the freeze.
+
+1. **Async in the script tier.** Shape deliberately undecided here: whether it
+   is promises, a suspend-and-resume handler, or a signal that is "loading" until
+   it is not, is a design question worth reaching with the rest of the milestone
+   in view rather than guessing now. What is decided is that the *author* writes
+   it, not a Rust programmer on their behalf.
+2. **What it does when it returns.** The reactivity, lifecycle and guard
+   contracts above, revisited together rather than one at a time.
+3. **Storage.** Nothing survives a restart today.
+4. **Error boundaries.** A failing expression is reported and the document
+   carries on; an author cannot catch one and show a fallback for that subtree.
+   Once a document talks to a network this stops being a nicety, because the
+   most common failure is no longer a typo.
+5. **File dialogs**, and whatever else "the outside world" turns out to mean
+   once there is a way to wait for an answer.
+6. **A capability model for `host::`.** Recorded under "worth deciding early"
+   since before v0.5 and unscheduled until now. It is scheduled *here* because
+   this is the milestone where the risk stops being theoretical: a `.rux` file
+   that can reach the network and the filesystem is a `.rux` file you should not
+   run because someone linked it. The browser build is sandboxed by wasm and so
+   is safe by accident; native is not sandboxed at all. Designing the boundary
+   in the same milestone that creates the reason for it is far cheaper than
+   retrofitting one after 1.0, when tightening it is by definition a break.
+
+---
+
+### v0.11: authoring
+
+**Opened 2026-08-19 as v0.10; renumbered to v0.11 the same day** when async was
+given a milestone of its own and placed in front of it. The reason is in v0.10's
+opening: async is the last big API-shaping change, it moves the contracts a
+component library would sit on, and a library built before it moves with it.
+
+A milestone rather than three bullets bolted onto v0.9, because these three are
+one theme and they are coupled: what makes it pleasant and fast to build a real
+UI in Rux.
 
 1. **`rux-lsp`**, pulled down from v1.0. It never needed a frozen language:
    diagnostics already exist as `rux check`, and the extension is published, so
@@ -2031,10 +2137,20 @@ Found by searching the tree rather than by listing what UI toolkits usually
 have, so each line below is a checked absence and not a guess. The count in
 brackets is how many times the term appears in `docs/` and `crates/`.
 
-**None of this is scheduled.** It is written here so a future session does not
-rediscover it late, which is the whole point of the register.
+**Everything in this audit was scheduled the same day**, which is what it was
+for. Each heading now says where it went. What is left genuinely unscheduled is
+gathered at the end, and it is short.
+
+The audit is kept rather than folded into the milestones because the *finding*
+is worth as much as the fix: every one of these was invisible until someone went
+looking, and the next session should expect the same to be true of whatever it
+has not looked for yet.
 
 #### Accessibility and preference: nothing at all
+
+➡️ **Scheduled**: the two `@media` queries into **v0.8**, beside safe areas and
+density, because they are the same question asked of the same operating system.
+Live regions into **v0.9**, beside the rest of the accessibility work.
 
 - **`prefers-reduced-motion` (0, 0).** v0.7 shipped a whole animation system and
   there is no way to turn it down. An OS-level "reduce motion" setting is an
@@ -2050,6 +2166,9 @@ rediscover it late, which is the whole point of the register.
 
 #### Internationalization: nothing at all
 
+➡️ **Scheduled into v0.9, coupled to the line-breaker.** A line-breaker written
+without bidi in mind is a line-breaker written twice.
+
 - **No `direction`, no RTL, no bidi, no locale (0, 0).** parley can very likely
   do the shaping; the language cannot say it. This one is much cheaper before
   1.0 than after, because it reaches into layout rather than sitting beside it:
@@ -2058,6 +2177,9 @@ rediscover it late, which is the whole point of the register.
   not get done.
 
 #### CSS a component set will need
+
+➡️ **Scheduled as v0.9 item 5**, and it is a hard dependency of the component set
+in v0.11 rather than a nice-to-have.
 
 Listed as v0.9 item 4, and repeated here because the component set in v0.10 is
 what *depends* on them:
@@ -2073,6 +2195,10 @@ what *depends* on them:
   `05-as-built` says so.
 
 #### Application-shaped gaps
+
+➡️ **Mostly scheduled into the new v0.10.** Async, storage, error boundaries,
+file dialogs and the `host::` capability model are that milestone; list
+virtualization and portal went to v0.9 beside the subsystems they belong to.
 
 - **No async, anywhere.** No promises, no `fetch`, no I/O from script. Every
   real app fetches something. Today the answer is "write a `host::` function",
@@ -2104,13 +2230,33 @@ deciding early"
   someone writing a `.rux` file.
 - **The honored-CSS matrix is hand-maintained.** Now scheduled as v0.9 item 5.
 
-#### The shape of it
+#### What the audit changed
 
-Three of these are big enough to move the plan rather than fit in it: **async**,
-**internationalization**, and **`host::` sandboxing**. The first two are cheaper
-before 1.0 by a wide margin, and the third is not really optional. If the answer
-is that they do not fit, the honest response is another milestone rather than a
-1.0 that quietly means "1.0 for one language, one thread and one trusted file".
+Three items were big enough to move the plan rather than fit in it, and they did:
+
+- **Async got a milestone of its own**, the new v0.10, and was placed *before*
+  authoring rather than after. It is the last big API-shaping change, it moves
+  contracts that a component library would sit on, and 1.0 means the API stops
+  breaking, so the largest remaining break wants slack in front of it.
+- **Internationalization was coupled to the line-breaker** in v0.9 instead of
+  being listed beside it, because the order is not a preference: bidi designed
+  in is one hard project, bidi retrofitted is that project plus a rewrite.
+- **`host::` sandboxing was split.** The capability model is designed in v0.10,
+  the milestone that creates the risk, and the default it ships with is a 1.0
+  question, because that default is the promise being frozen.
+
+Without those moves, 1.0 would have quietly meant "1.0 for one language, one
+thread, and one trusted file".
+
+#### Still unscheduled, and deliberately
+
+- **Drag and drop.** Follows from `@tap` being the vocabulary rather than
+  pointer events, and wants the axis-claim rule settled on hardware first
+  (v0.8). A sortable list is a *component*, so v0.11 is where the need will
+  actually be felt; leave it until something asks.
+- **Multiple windows.** No demand has appeared, and it is a large change to the
+  shell for a want nobody has expressed yet.
+- **`@keyframes`** (animation tier 3), still "skip until asked" from v0.7.
 
 ---
 
@@ -2125,7 +2271,26 @@ is that they do not fit, the honest response is another milestone rather than a
    1.0 means the spec and the runtime agree again.
 3. **`rux-lsp`** (Tier 2): go-to-definition, hover, completion, diagnostics
    from `rux check`.
-4. **TailwindCSS**, if it still looks worth it. See below.
+4. ~~**TailwindCSS**, if it still looks worth it.~~ **Resolved 2026-08-19**: it
+   is a *flavour* on the component set in v0.11, not a project-level decision,
+   so there is nothing left to decide here. See that milestone.
+
+5. **Harden `host::` against the capability model designed in v0.10.** The
+   design lands there because that is the milestone that creates the risk; the
+   *default* it ships with, and what an unmarked file may do, is a 1.0 question,
+   because it is the promise being frozen.
+
+6. **Close the author-notes register.** [`09-author-notes.md`](./09-author-notes.md)
+   is behaviour that is correct and still surprises, each row tracked with the
+   page it has to be explained on. Every entry is a 1.0 blocker by the rule that
+   shipping a language whose correct behaviour reliably surprises people is the
+   same defect wearing a different coat. Closing a row means going and writing
+   the sentence, not deciding it is obvious.
+
+7. **A test story for app authors.** The runtime has thirty-six test binaries;
+   somebody writing a `.rux` file has nothing. "How do I test this screen"
+   needs a better answer than "open it and look" before 1.0 tells people to
+   build things they intend to maintain.
 
 ---
 
