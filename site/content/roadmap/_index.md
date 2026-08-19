@@ -1939,7 +1939,10 @@ here.
    drag-and-drop of a selection, `::selection` styling.
 3. **Scrolling gaps**: click-on-track paging, scrollbar hover and fade,
    independent `overflow-x` / `overflow-y`, `overscroll-behavior`.
-4. **CSS long tail**: per-side border colours, `position: sticky` and `fixed`.
+4. **CSS long tail**: per-side border colours (`border-top-color` and friends;
+   the shorthand and `border-color` are honored, the per-side colours are not).
+   ~~`position: sticky` and `fixed`~~ **done in v0.7**, along with `static` and a
+   `transform` that makes a containing block, so all five values are honored.
 
 ### v1.0: freeze
 
