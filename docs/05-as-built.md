@@ -7,9 +7,13 @@ for the *why*, but the implementation has diverged from them in places. Where
 they disagree, **this document wins**. Divergences are called out below. For what
 is *not* built yet and in what order, see [Roadmap](./06-roadmap.md).
 
-Last updated: 2026-08-08, for **v0.5.0**. The original M0–M9 milestones that
-built the runtime are all complete; everything since has shipped in the v0.2
-through v0.5 releases, which the [Roadmap](./06-roadmap.md) lists.
+This document says what each rule *does*. For how to build a particular piece of
+an app, with the consequences of those rules worked through on a real file, see
+the recipes at `/recipes/`: a message list, a tab bar and a modal.
+
+Last updated: 2026-08-19, for **v0.7**. The original M0–M9 milestones that built
+the runtime are all complete; everything since has shipped in the v0.2 through
+v0.6 releases, which the [Roadmap](./06-roadmap.md) lists.
 
 ---
 

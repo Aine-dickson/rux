@@ -218,3 +218,43 @@ test('the bundled vocabulary is loadable and honest', () => {
   assert.equal(vocabulary.isVoid('image'), true);
   assert.equal(vocabulary.isVoid('view'), false);
 });
+
+// ── the binary probe ─────────────────────────────────────────────────────────
+
+test('vocab is not asked for unless the binary lists it', () => {
+  // Reloading the module resets its once-per-session latch.
+  const path = require('node:path');
+  const fresh = () => {
+    delete require.cache[require.resolve('../vocabulary')];
+    return require('../vocabulary');
+  };
+
+  // A binary that predates `rux vocab`. The real 0.6.0 reads `vocab` as a
+  // document name, OPENS A WINDOW and exits 0, so an exit-code check does not
+  // save you: the only safe move is not to run it.
+  let calls = [];
+  let v = fresh();
+  v.refreshFromBinary((args) => {
+    calls.push(args.join(' '));
+    return { ok: true, code: 0, stdout: 'Usage:\n  rux run <app.rux>\n  rux fmt\n', stderr: '' };
+  });
+  assert.deepEqual(calls, ['--help'], 'asked for vocab on a binary that has none');
+
+  // A binary that does list it gets asked.
+  calls = [];
+  v = fresh();
+  v.refreshFromBinary((args) => {
+    calls.push(args.join(' '));
+    if (args[0] === '--help') {
+      return { ok: true, code: 0, stdout: 'Usage:\n  rux vocab   Print what the runtime understands\n', stderr: '' };
+    }
+    return { ok: true, code: 0, stdout: JSON.stringify({ elements: [{ name: 'view' }] }), stderr: '' };
+  });
+  assert.deepEqual(calls, ['--help', 'vocab'], 'did not follow up with vocab');
+
+  // A missing binary is silent, not a crash.
+  calls = [];
+  v = fresh();
+  v.refreshFromBinary(() => { throw new Error('ENOENT'); });
+  assert.equal(v.elements().length > 0, true, 'the bundled vocabulary still loads');
+});
