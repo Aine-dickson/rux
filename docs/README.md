@@ -52,6 +52,7 @@ Three sections, six element types, real CSS, gesture events, signals. No layout 
 | **[Script](./07-script.md)** | **The script language in depth**: state, functions, values, the element API, and every way it differs from rhai and from JavaScript. Rux forks rhai, so rhai's own docs are no longer correct on their own. |
 | [Roadmap](./06-roadmap.md) | *What's next*: the v0.1 shake-down, v0.2 (inputs and polish), v0.3 (fine-grained reactivity). Start here if you're picking the work up. |
 | [User test cases](./08-user-tests.md) | *What a person actually drove*, per feature and per release, on what hardware, and what those runs found. Every feature records its cases here; almost every expensive bug in Rux was found this way rather than by CI. |
+| [Author notes](./09-author-notes.md) | *What is not a bug and has to be taught*: behaviour that is correct and still catches authors out, each tracked with the page it has to be explained on. Every entry is a v1.0 blocker. |
 
 ## Status
 
