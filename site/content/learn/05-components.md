@@ -74,8 +74,13 @@ inside `row.rux`, and its CSS styles its own subtree and nothing else.
 That is why the tap handler stays in the parent, on a wrapper `<view>`: the
 handler needs `items`, which the component cannot reach. The component receives
 two plain values and decides how they look. It is a slightly awkward split here
-and a very useful one as an app grows: a component can never quietly reach
-into state it doesn't own.
+and a very useful one as an app grows: a component can never quietly reach into
+state it doesn't own.
+
+The other way round is `emit`, which is how a component tells its caller
+something happened without being handed the state to change. A row could
+`emit("toggle")` and let the parent decide what that means. This chapter keeps
+the wrapper, because one idea at a time.
 
 Editing `row.rux` hot-reloads the running window just like the main file.
 
@@ -104,22 +109,30 @@ The most useful next step is to break it. A few that are worth the time:
 ## Where the edges are
 
 Rux is `0.x` and honest about it. Things you will run into if you keep going,
-as of **v0.4.0**:
+as of **v0.7**:
 
 - **No true inline text flow.** Two `<text>` elements cannot share a line, so
-  bold inside a sentence is not expressible. This is the largest gap.
-- **A component takes props but cannot emit events or render children**, which
-  is why the tap handler above had to stay in the parent.
-- **No `fn` that mutates state**, as [chapter 3](@/learn/03-state.md) covered.
-- **No index in `r-for`**, and reordering a list re-renders more rows than a
-  keyed diff would.
-- **No effects or computed values.** A `{{ }}` expression is the only
-  "computed" there is.
+  bold inside a sentence is not expressible. This is still the largest gap.
+- **No index in `r-for`.** `r-for="t in items"` gives you the item and not its
+  position, so an indexed write goes through `items[i]` with `i` from a range.
+- **A closure passed to a method cannot capture** the surrounding scope, which
+  [chapter 3](@/learn/03-state.md) covers. A plain call can.
+- **No promises, and no async anything.** Everything a handler does happens
+  before the next frame.
+- **`position: sticky` and the rest of `position` are honored, but a
+  `transform` on an ancestor captures `fixed` descendants**, as in a browser.
 
-The [reference](@/reference/_index.md) has the exact honored-CSS set and the
-full gap list; the [roadmap](@/roadmap/_index.md) has the order they get fixed
-in, and the [blog](@/blog/_index.md) covers each release as it lands.
+Things that used to be on this list and are not any more, in case you have read
+older material: a `fn` **can** read and write state (v0.7), a component **can**
+emit events and render children through `<slot>`, and `computed` and `effect`
+both exist, per component instance as well as per document.
 
-If you build something with this, or hit an edge that isn't written down,
-[the contribute page](@/contribute/_index.md) is the way in. It is a tour of
-how a `.rux` file becomes pixels, and which crate owns which stage.
+## Where to go next
+
+- The **[recipes](@/recipes/_index.md)** are the next thing to read if you want
+  to build something specific: a message list, a tab bar, a modal, each a
+  working file written around the part of the pattern that surprises people.
+- The **[reference](@/reference/_index.md)** has the exact honored-CSS set and
+  the full list of what is and is not built.
+- The **[roadmap](@/roadmap/_index.md)** has the order the gaps get closed in,
+  and the **[blog](@/blog/_index.md)** covers each release as it lands.

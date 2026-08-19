@@ -1,6 +1,6 @@
 +++
 title = "State that changes"
-description = "Signals, interpolation, tap handlers, and the one rule about functions that trips up everybody."
+description = "Signals, interpolation, tap handlers, and functions that can change state."
 weight = 3
 +++
 
@@ -48,52 +48,67 @@ Every interaction prints the path it took: `patched in place (no rebuild)` or
 `rebuilt (structural)`. Display changes patch; changes that add or remove nodes
 (`r-if` flipping, a list growing) reconcile just that subtree.
 
-## The rule that catches everyone
+## Functions
 
-This is the single biggest trap in Rux, so it gets its own heading:
-
-> **A rhai `fn` cannot read or write a signal.**
-
-This looks completely reasonable and does not work:
+A `fn` sees the scope it was written in, and can read and write it. So the
+obvious thing works:
 
 ```rux
 <script>
   let count = signal(0);
 
-  fn add() {           // WRONG: `count` is not visible in here
+  fn add() {
     count = count + 1;
   }
 </script>
-
-<button @tap="add()">  <!-- runs, changes nothing, reports no error -->
+```
+```rux
+<button @tap="add()">
 ```
 
-It is a constraint of stock rhai: a function body gets its own scope and the
-globals are not in it. So:
+That is worth a sentence of history, because it is new. Until v0.7 a `fn` got
+its own scope with none of your signals in it, so `add()` ran, changed nothing,
+and reported no error, and every handler in every example had to be written
+inline. If you have read older Rux material telling you to keep `fn`s pure, that
+is what it was about, and it no longer applies.
 
-- **State changes go inline in the handler.** `@tap="count = count + 1"`.
-  Handlers can be several statements: `@tap='a = 1; b = 2'` is fine, and so is
-  an `if`.
-- **Script `fn`s must be pure**: take arguments, return a value, touch no
-  state. `fn label(n) { if n == 1 { "task" } else { "tasks" } }`, called as
-  `{{ label(count) }}`. That works, and is the right home for display logic.
-- **Anything heavier belongs in Rust**, as a `host::` function.
+Inline still works and is still right for one-liners: `@tap="count = count + 1"`
+needs no function. Handlers take several statements too, and an `if`. Reach for
+a `fn` when the handler stops fitting on a line, or when two handlers want the
+same thing.
 
-If a tap seems to do nothing, this is the first thing to check. Lifting the
-restriction needs a rhai fork, and it is on the roadmap.
+### The one that still catches people
+
+A closure passed to a **method** cannot see the surrounding scope:
+
+```rux
+fn tally() {
+  // WRONG: `done` is not visible inside the closure
+  items.filter(|t| t.done == done).len()
+}
+```
+
+A method call passes its receiver by reference, and the scope cannot be borrowed
+at the same time, so method dispatch does not capture. A plain call does. Lift
+what the closure needs into a parameter, or use a loop.
 
 ## Quoting
 
-Handlers are attributes, and rhai wants real string literals, so:
+Handlers are attributes, and the script wants real string literals, so an
+expression containing a string needs the quotes kept apart. Two ways, both fine:
 
 ```rux
-<button @tap='name = ""'>      <!-- single-quoted attribute, "" inside -->
+<button @tap='name = ""'>                <!-- single-quoted attribute -->
+<button @tap="name = &quot;&quot;">      <!-- entity inside a double-quoted one -->
 ```
 
-Use **single quotes on the attribute** whenever the expression contains a
-string. Rux does not decode HTML entities, and rhai reads `'x'` as a character
-rather than a string, so the alternatives don't work. You will see this
-throughout the next chapter.
+HTML entities are decoded, so `&quot;` is a real double quote by the time the
+script sees it. The examples in this repository lean on it, because an attribute
+that already contains single quotes has no other way out.
+
+What does **not** work is `'x'`: the script reads single quotes as a **character**,
+not a string, which is rhai's rule and not something Rux changes. So
+`@tap="name = 'ada'"` is an error rather than an assignment.
 
 ## `r-if`
 

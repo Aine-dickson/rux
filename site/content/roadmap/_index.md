@@ -1387,12 +1387,14 @@ way. This milestone is where Rux stops being stock rhai.
    noticed because nothing had asked. Leaving a route also dropped its
    instances without queueing their `unmounted`, bypassing the lifecycle sink.
    Both fixed.
-7. **`rux build`, for web and Windows only.** Moved out of v0.6 on 2026-08-11
-   to sit here, at the end, after the language has stopped moving. Two targets
-   and no more: a static web bundle, which is close to what the playground
-   already produces, and a Windows executable, which is the platform Rux is
-   actually developed and tested on. **No `.msi`, no `.app`, no `.apk`.**
-   Mobile packaging waits for v0.8, where mobile itself lives.
+7. **`rux build`.** ➡️ **MOVED TO v0.8** by the user on 2026-08-19, and it is
+   the **first** thing v0.8 handles. The reason is scope, not readiness: this
+   milestone's plan was a web bundle and a Windows executable, and the targets
+   that matter are **web, desktop and mobile**, which is v0.8's subject. Cutting
+   packaging in half here and finishing it there would mean designing the output
+   format twice. **Embedded is a consideration and not a target**: it is named
+   so the format is not shaped in a way that shuts the door, and no work starts
+   on it.
 
 8. **The VS Code extension on the Marketplace.** ✅ **PUBLISHED 2026-08-19**,
    at 0.3.0, so the first listing carries completions and tag auto-closing
@@ -1881,6 +1883,13 @@ checking a document must not require one: `query` resolves, the handle exists,
 and the metrics are absent.
 
 ### v0.8: mobile
+
+**First item, moved here from v0.7 on 2026-08-19: `rux build`.** Three primary
+targets, **web, desktop and mobile**, designed together rather than in two
+halves, because an output format settled for two of them and then stretched to
+the third is a format designed twice. **Embedded is a consideration, not a
+target**: named so the design does not shut the door on it, with no work
+starting there.
 
 The README has said "desktop first, then mobile and embedded" since the
 beginning, and there is not one line of mobile code in the repo. Four releases

@@ -49,15 +49,46 @@ fn every_lesson_file_loads() {
 
 /// Step 3's claim: a tap handler that assigns to a signal updates the binding
 /// that reads it, and `r-if` removes the empty state.
+///
+/// The handler is now `add()`, a `fn` that writes a signal, which is the chapter's
+/// headline change for v0.7 and the thing the chapter used to say was impossible.
 #[test]
 fn step3_tap_updates_the_binding() {
     let mut doc = load("03-state.rux");
     assert!(find_text(&doc.root, "0 added"));
     assert!(find_text(&doc.root, "Nothing yet."), "r-if shows the empty state at 0");
 
-    assert!(doc.apply_handler("count = count + 1"), "handler reported a change");
+    assert!(doc.apply_handler("add()"), "the function reported a change");
     assert!(find_text(&doc.root, "1 added"), "the tally re-rendered");
     assert!(!find_text(&doc.root, "Nothing yet."), "r-if dropped the empty state");
+}
+
+/// **A `fn` can write a signal**, which chapter 3 used to say was impossible and
+/// now teaches as the ordinary way to write a handler.
+///
+/// Asserted separately from the tap above, because if this ever stops working
+/// the chapter is wrong in the direction that wastes the most of a reader's
+/// time: the old text at least told them not to try.
+#[test]
+fn step3_a_function_can_write_a_signal() {
+    let mut doc = load("03-state.rux");
+    assert!(find_text(&doc.root, "0 added"));
+    assert!(doc.apply_handler("add()"), "calling it changed something");
+    assert!(find_text(&doc.root, "1 added"), "and the change reached the screen");
+    assert!(doc.apply_handler("add()"), "twice");
+    assert!(find_text(&doc.root, "2 added"), "it reads what it wrote last time");
+}
+
+/// The trap chapter 3 puts in place of the old one: a closure passed to a
+/// **method** cannot see the surrounding scope, while a plain call can.
+///
+/// If this ever starts working, the chapter's callout is wrong and has to go.
+#[test]
+fn step3_a_closure_in_a_method_call_cannot_capture() {
+    let mut doc = load("03-state.rux");
+    // `count` is a document signal; the closure is passed to `filter`, a method.
+    let captured = doc.apply_handler("count = [1, 2, 3].filter(|n| n == count).len()");
+    assert!(!captured, "the method's closure could not see `count`, so nothing moved");
 }
 
 /// Step 4's claims, in the order the guide makes them.

@@ -8,9 +8,10 @@
       <text class="tally">{{ count }} added</text>
     </view>
 
-    <!-- State changes go INLINE in the handler. A rhai `fn` cannot reach a
-         signal, so `@tap="add()"` would run and silently change nothing. -->
-    <button class="add" @tap="count = count + 1">
+    <!-- A `fn` sees the scope it was written in and can write it, so a handler
+         can be a function call. Inline works too, and is right for one-liners:
+         `@tap="count = count + 1"` needs no function at all. -->
+    <button class="add" @tap="add()">
       <text class="addlabel">Add one</text>
     </button>
 
@@ -52,4 +53,8 @@
 
 <script>
   let count = signal(0);
+
+  fn add() {
+    count = count + 1;
+  }
 </script>
