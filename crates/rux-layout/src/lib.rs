@@ -2590,10 +2590,20 @@ fn collect(
             offsets,
             vp,
             stickies,
-            // Children of this node are held by this node, measured where the
-            // scroll has put it, so a sticky grandchild stops at the same edge a
-            // reader sees.
-            (x - shift.x, y - shift.y, layout.size.width, layout.size.height),
+            // The box this node's children are held by, measured where the
+            // scroll has put it.
+            //
+            // For a **scroller** that is its *content* box, not the visible one:
+            // its children live down the whole scrollable length, and clamping a
+            // sticky one to the 200px on screen would pin it to a band that is
+            // itself sliding, so it would drift instead of sticking. Everywhere
+            // else the two are the same box.
+            (
+                x - shift.x,
+                y - shift.y,
+                layout.content_size.width.max(layout.size.width),
+                layout.content_size.height.max(layout.size.height),
+            ),
             child_scroll,
             child_xform,
             child_dim,

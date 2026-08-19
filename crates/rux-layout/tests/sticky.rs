@@ -192,3 +192,83 @@ fn with_no_scroller_it_sticks_to_the_window() {
         .expect("painted");
     assert_eq!(y, 10.0, "held at its threshold below the window's top");
 }
+
+/// **Two sticky headings do not interact, and the hand-over is emergent.**
+///
+/// It looks as though an arriving heading shoves the one at the top out of the
+/// way. Nothing of the sort happens: neither box can see the other. Each is
+/// clamped to its own section, and section one's bottom edge is exactly where
+/// section two's heading begins, so "clamped to the bottom of my section" and
+/// "pushed by the next heading" describe the same pixel.
+///
+/// The consequence is the one worth knowing, and it is the next test.
+#[test]
+fn the_hand_over_is_each_heading_clamped_to_its_own_section() {
+    let heads = headings_at(380.0);
+    // Section one ends at 400 - 380 = 20, so its heading is clamped to -20.
+    // Section two's heading is simply in flow, arriving at 20.
+    assert_eq!(heads[0].0, -20.0, "clamped to the end of its own section");
+    assert_eq!(heads[1].0, 20.0, "still in flow, not yet stuck to anything");
+    assert_eq!(
+        heads[1].0 - heads[0].0,
+        heads[0].1,
+        "exactly one heading apart, which is what reads as a shove"
+    );
+}
+
+/// And the corollary: **flat siblings do not hand over, they pile up.**
+///
+/// Headings written as siblings of the rows, with no section box around each
+/// group, are all clamped to the scroller itself, so every one of them pins at
+/// the same edge and they sit on top of each other. The wrapper per section is
+/// not tidiness, it is the thing that makes the effect work at all.
+#[test]
+fn without_a_box_each_they_pile_up_at_the_same_edge() {
+    let mut scroller = Node::new(Style {
+        display: Display::Flex,
+        axis: Axis::Column,
+        overflow: Overflow::Scroll,
+        width: Some(Len::Px(300.0)),
+        height: Some(Len::Px(200.0)),
+        ..Default::default()
+    });
+    for _ in 0..2 {
+        let mut head = Node::new(Style {
+            position: Position::Sticky,
+            inset: [Some(Len::Px(0.0)), None, None, None],
+            height: Some(Len::Px(40.0)),
+            width: Some(Len::Px(300.0)),
+            shrink: 0.0,
+            background: red(),
+            ..Default::default()
+        });
+        head.style.position = Position::Sticky;
+        scroller.children.push(head);
+        let mut body = row(360.0);
+        body.style.shrink = 0.0;
+        scroller.children.push(body);
+    }
+
+    let mut screen =
+        Node::new(Style { display: Display::Flex, axis: Axis::Column, ..Default::default() });
+    screen.children.push(scroller);
+
+    let mut measure = |_: &TextContent, _: Option<f32>| (0.0, 0.0);
+    // Far enough down that both headings have reached the edge: the first
+    // passed it long ago, the second has just arrived.
+    let heads: Vec<f32> =
+        layout_scrolled(&screen, 600.0, 400.0, &[Offset { x: 0.0, y: 500.0 }], &mut measure)
+            .paints
+            .into_iter()
+            .filter_map(|p| match p {
+                Paint::Rect(r)
+                    if matches!(r.background, Some(Background::Color(c)) if c.r > 0.5) =>
+                {
+                    Some(r.y)
+                }
+                _ => None,
+            })
+            .collect();
+    assert_eq!(heads[0], 0.0, "the first pins to the scroller and stays");
+    assert_eq!(heads[1], 0.0, "and so does the second, on top of it");
+}

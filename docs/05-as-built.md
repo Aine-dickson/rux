@@ -447,7 +447,18 @@ power; none of those is honored here, so `transform` is the only one that can.)
 **`sticky` is in flow, and its insets are thresholds rather than offsets.** The
 box sits where it was laid out until its scroller's edge reaches the threshold,
 then rides that edge, and stops again when its own parent runs out from under
-it. That last clamp is what makes a list of sections work: a heading rides the
+it. Inside a scroller the parent to stop at is the scroller's **content** box,
+not the part of it on screen, which is itself sliding.
+
+**Two sticky boxes never interact.** A list of sections looks as though an
+arriving heading shoves the one at the top out of the way; neither can see the
+other. Each is clamped to its own section, and one section's bottom edge is
+exactly where the next section's heading begins, so "clamped to the end of my
+section" and "pushed by the next heading" describe the same pixel. The
+consequence is worth knowing before writing one: headings that are flat siblings
+of the rows, with no box around each group, are all clamped to the scroller
+instead, so they pin at the same edge and pile up on each other. The wrapper per
+section is not tidiness, it is what makes the hand-over happen. That last clamp is what makes a list of sections work: a heading rides the
 top until the next section arrives and pushes it off, rather than sitting over
 the wrong rows. With no scroller above it, the window is what it sticks to.
 
