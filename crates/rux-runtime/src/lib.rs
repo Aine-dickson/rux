@@ -2817,6 +2817,18 @@ mod tests {
         out
     }
 
+    /// The **effective** opacity of the node whose subtree holds `needle`, with
+    /// every ancestor's folded in, which is what the paint stack actually
+    /// composites. Reading one node's own `opacity` answers about the wrong box:
+    /// the value is declared on the page's root and the text sits under it.
+    pub(super) fn opacity_of(node: &LayoutNode, inherited: f32, needle: &str) -> Option<f32> {
+        let here = inherited * node.style.opacity;
+        if node.text.as_ref().is_some_and(|t| t.text.contains(needle)) {
+            return Some(here);
+        }
+        node.children.iter().find_map(|c| opacity_of(c, here, needle))
+    }
+
     fn find_text(node: &LayoutNode, needle: &str) -> bool {
         if let Some(t) = &node.text {
             if t.text.contains(needle) {
@@ -6161,7 +6173,7 @@ use components::detail;
 
 #[cfg(test)]
 mod swap_tests {
-    use super::tests::text_of;
+    use super::tests::{opacity_of, text_of};
     use super::*;
 
     /// The whole enter/leave loop on an `r-if`, in one test: the element is held
@@ -6509,6 +6521,98 @@ mod swap_tests {
         assert_eq!(text_of(&doc.root), vec!["home", "about"], "still crossing");
         assert_eq!(doc.advance_swaps(200.0), None, "the swap is over");
         assert_eq!(text_of(&doc.root), vec!["about"], "and home is gone");
+    }
+
+    /// The page being left is **visible while it leaves**: it starts where it
+    /// was, travels the whole declared duration, and is near its target on the
+    /// frame the swap commits.
+    ///
+    /// This is the test the suite did not have, and its absence is why a page
+    /// that left at `opacity: 0` from the first frame went unnoticed through a
+    /// release: every other enter/leave test asks the tree *which* elements are
+    /// there, and this one asks what they look like. Nothing in the runtime
+    /// ever drove [`Animator`], so nothing here had an opinion about a value.
+    ///
+    /// The frame order matters and is the shell's, not a convenient one:
+    /// `advance_swaps`, then the animator, then read (that is where the paint
+    /// goes), and only then `settle_swaps`, which runs after the frame. Read
+    /// after the settle and every value is the freshly built authored one, so
+    /// the departing page reads `0` throughout and the test would assert the
+    /// bug rather than the fix.
+    #[test]
+    fn a_leaving_page_is_visible_for_its_whole_transition() {
+        const SLOW: &str = "<template><screen>               <router r-transition>                 <route path=\"/\" view=\"home\" />                 <route path=\"/about\" view=\"about\" />               </router>             </screen></template>
+             <style>
+.page { opacity: 1; transition: opacity 1400ms; }
+             .page:leave-to { opacity: 0; }
+             .page:enter-from { opacity: 0; }
+</style>
+             <script>
+use components::home;
+use components::about;
+</script>";
+
+        let mut doc = routed(SLOW);
+        let mut anim = Animator::new();
+        let frame = |doc: &mut Document, anim: &mut Animator, now: f64| {
+            let _ = doc.advance_swaps(now);
+            let _ = anim.apply(&mut doc.root, now);
+            let painted = opacity_of(&doc.root, 1.0, "home");
+            let _ = doc.settle_swaps();
+            painted
+        };
+
+        // The document's first page enters too, so let that finish: a leave
+        // measured over an unfinished enter is measuring the enter.
+        // Long enough for the whole 1400ms, in frames of `FRAME_MS`, with room
+        // to spare rather than a count that has to be re-derived if either
+        // number changes.
+        let frames = (2.0 * 1400.0 / FRAME_MS) as usize;
+        for i in 0..frames {
+            frame(&mut doc, &mut anim, i as f64 * FRAME_MS);
+        }
+        let settled = frames as f64 * FRAME_MS;
+        assert!(doc.apply_handler("navigate(\"/about\")"), "navigated");
+
+        let mut samples: Vec<(f64, f32)> = Vec::new();
+        let mut gone_at = None;
+        for i in 0..frames {
+            let now = settled + i as f64 * FRAME_MS;
+            match frame(&mut doc, &mut anim, now) {
+                Some(o) => samples.push((now - settled, o)),
+                None => {
+                    gone_at = Some(now - settled);
+                    break;
+                }
+            }
+        }
+
+        let gone_at = gone_at.expect("the leaving page commits and stops being built");
+        assert!(
+            gone_at >= 1400.0 && gone_at < 1400.0 + 2.0 * FRAME_MS,
+            "the swap lasts the duration the style declared, not less: went at {gone_at}ms"
+        );
+
+        let (_, first) = samples[0];
+        assert!(
+            first > 0.95,
+            "the page being left starts where it was, rather than jumping to              `:leave-to` on the first frame: {first}"
+        );
+        let (_, half) = *samples
+            .iter()
+            .min_by(|(a, _), (b, _)| {
+                (a - 700.0).abs().partial_cmp(&(b - 700.0).abs()).unwrap()
+            })
+            .expect("a sample near the halfway point");
+        assert!(
+            (0.15..0.85).contains(&half),
+            "halfway through it is halfway out, so the leave is something you              can see: {half}"
+        );
+        let (_, last) = *samples.last().expect("a last painted frame");
+        assert!(
+            last < 0.05,
+            "and it is at its target when it is taken away, so there is no pop              at the end: {last}"
+        );
     }
 
     /// Navigating back before the swap commits reverses it rather than leaving
