@@ -1406,6 +1406,26 @@ way. This milestone is where Rux stops being stock rhai.
    swallow a tap becomes a focus stop with no way to opt out. The first is
    fixed, the second is now written down, the third is an open author note.
 
+10. **Route guards.** ✅ **BUILT 2026-08-19**, at the user's direction, having
+    been deferred past this milestone earlier. `guard="expr"` on a `<router>` or
+    a `<route>`, with vue-router's answers: `false` cancels, a string redirects,
+    anything else allows, and anything else includes `()` so a guard that falls
+    off the end has consented.
+
+    **They run before the history moves**, which is what makes them worth having
+    on the route rather than in the page: a refused navigation leaves no entry
+    behind and opens no route transition, and by the time a page could refuse to
+    render itself both have already happened. It follows that Back, Forward and
+    a deep link go through them as well, and that is the half that would have
+    been easy to leave out, because every test written by hand navigates
+    forwards.
+
+    Lexical scoping was named above as load-bearing for exactly this, and it
+    was: a guard is an ordinary expression reading ordinary signals.
+
+    Not done: a guard is not compiled at load the way a `@tap` handler is, so a
+    syntax error in one waits to be discovered by whoever navigates.
+
 11. **Paths as an element.** ✅ **BUILT 2026-08-19.** The user's idea from
     2026-08-13, added to this milestone on 2026-08-19 rather than left waiting.
     `<path d="…">` takes the full SVG path grammar and draws Bézier geometry,

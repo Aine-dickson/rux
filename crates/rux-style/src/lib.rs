@@ -3844,6 +3844,35 @@ pub fn route_params(template: &Element, path: &str) -> Vec<(String, Value)> {
     match_router(router, path).map(|chain| chain_params(&chain)).unwrap_or_default()
 }
 
+/// The guards standing between the document and `path`, outermost first, each
+/// with the parameters its own level captured.
+///
+/// The `<router>`'s own guard runs on every navigation; a `<route>`'s runs when
+/// that route is part of what matched, so a guard on a section covers every page
+/// inside it without being written on each one. Outermost first, because a
+/// section's guard is the coarser question ("may you be in this section at all")
+/// and answering it second would mean running the finer one for a place you were
+/// never going to reach.
+///
+/// A path that matches nothing has no route guards, only the router's. There is
+/// nothing to protect, and the fallback view is the answer.
+pub fn route_guards(template: &Element, path: &str) -> Vec<(String, Vec<(String, Value)>)> {
+    let Some(router) = find_router(template) else { return Vec::new() };
+    let mut out = Vec::new();
+    if let Some(g) = router.attr("guard") {
+        out.push((g.to_string(), Vec::new()));
+    }
+    let Some(chain) = match_router(router, path) else { return out };
+    for depth in 0..chain.len() {
+        let Some(g) = chain[depth].route.attr("guard") else { continue };
+        // What this level and everything above it captured, so a guard on
+        // `/crew/:id` can read `id` and decide about that member rather than
+        // about the section.
+        out.push((g.to_string(), chain_params(&chain[..=depth])));
+    }
+    out
+}
+
 /// The document's `<router>`, wherever in the template it was written.
 fn find_router(el: &Element) -> Option<&Element> {
     if el.tag == "router" {

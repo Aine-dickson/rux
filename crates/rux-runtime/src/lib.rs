@@ -195,6 +195,14 @@ struct History {
     at: usize,
 }
 
+/// What a route guard said about a navigation.
+#[derive(Clone, Debug, PartialEq)]
+enum Verdict {
+    Allow,
+    Block,
+    Redirect(String),
+}
+
 /// One place the user has been: where it was, and how far down it they were.
 ///
 /// The scroll offsets belong to the *entry* rather than to the route, which is
@@ -279,6 +287,15 @@ impl History {
         self.entries.truncate(self.at + 1);
         self.entries[self.at] = Entry::new(path);
         true
+    }
+
+    /// Where the entry at `index` goes, without moving there.
+    ///
+    /// A guard has to be asked *before* the history moves, and Back and Forward
+    /// know their destination only as an index, so this is how the question gets
+    /// a path to ask about.
+    fn peek(&self, index: usize) -> Option<&str> {
+        self.entries.get(index).map(|e| e.location.as_str())
     }
 
     /// Step back, if there is anywhere to step back to.
@@ -1417,12 +1434,98 @@ impl Document {
         self.history.current()
     }
 
+    /// How many redirects a chain of guards may make before it is called a loop.
+    ///
+    /// The same bound, and the same reason, as the `emit` and `tap` chains: a
+    /// guard that redirects to a page whose guard redirects back is a mistake
+    /// anyone can make in two lines, and hanging the window is a bad way to
+    /// report it.
+    const GUARD_REDIRECTS: usize = 8;
+
+    /// Ask the guards standing in front of `to` whether the document may go
+    /// there, and if not, where instead.
+    ///
+    /// Guards run **before the history moves**, which is the whole point: a
+    /// cancelled navigation must leave no entry behind and must not open a
+    /// route transition, and both of those have already happened by the time a
+    /// page could refuse to render itself.
+    ///
+    /// `to` and `from` are in scope, along with whatever parameters the guard's
+    /// own level captured, so a guard on `/crew/:id` can decide about that
+    /// member rather than only about the section.
+    ///
+    /// The answers are vue-router's, because that is where the mental model
+    /// comes from: **`false` cancels**, **a string redirects**, and anything
+    /// else allows. Anything else deliberately includes `()`, which is what a
+    /// guard body with no explicit answer evaluates to, and what an `if` with no
+    /// `else` returns. Treating an absent answer as a refusal would make the
+    /// natural shape (`if !user { return "/login"; }`) block every navigation it
+    /// did not object to.
+    fn ask_guards(&mut self, to: &str) -> Verdict {
+        let from = self.route().to_string();
+        let guards = rux_style::route_guards(&self.sfc.template, to);
+        for (expr, params) in guards {
+            let mut locals: Vec<(String, Value)> = vec![
+                ("to".to_string(), Value::Text(to.to_string())),
+                ("from".to_string(), Value::Text(from.clone())),
+            ];
+            locals.extend(params);
+            match self.engine.eval_value(&expr, &locals) {
+                Some(Value::Bool(false)) => return Verdict::Block,
+                Some(Value::Text(path)) if !path.trim().is_empty() => {
+                    return Verdict::Redirect(path);
+                }
+                _ => {}
+            }
+        }
+        Verdict::Allow
+    }
+
+    /// Put `to` through the guards and follow any redirects, returning where the
+    /// document should actually go, or `None` if it may not go anywhere.
+    fn resolve_route(&mut self, to: &str) -> Option<String> {
+        let mut target = to.to_string();
+        for _ in 0..Self::GUARD_REDIRECTS {
+            match self.ask_guards(&target) {
+                Verdict::Allow => return Some(target),
+                Verdict::Block => {
+                    self.surface_guard_warnings();
+                    return None;
+                }
+                // A guard naming where it already is has allowed it, whatever it
+                // meant to say. Following it would be the shortest possible loop.
+                Verdict::Redirect(next) if next == target => return Some(target),
+                Verdict::Redirect(next) => target = next,
+            }
+        }
+        rux_script::warn_script(format!(
+            "a route guard redirected {} times without settling, starting from `{to}`; the              guards are sending each other in a circle",
+            Self::GUARD_REDIRECTS
+        ));
+        self.surface_guard_warnings();
+        None
+    }
+
+    /// Put what the guards said into the overlay, on the path where nothing else
+    /// will.
+    ///
+    /// A navigation that goes ahead ends in a rebuild, and the rebuild drains
+    /// the sinks like any other. A **refused** one does not rebuild at all, so a
+    /// guard that failed to evaluate, or a circle of redirects, would raise a
+    /// warning into a sink nobody reads and the screen would simply not change
+    /// with no explanation anywhere.
+    fn surface_guard_warnings(&mut self) {
+        self.diagnostics.warnings.extend(collect_warnings());
+    }
+
     /// Go to `path`, recording it in the history.
     ///
     /// Returns whether anything changed, so the shell knows whether to repaint.
     /// Navigating to where we already are changes nothing, which is what makes
     /// tapping the current link in a nav bar a no-op rather than a rebuild.
     pub fn navigate(&mut self, path: &str) -> bool {
+        let Some(path) = self.resolve_route(path) else { return false };
+        let path = path.as_str();
         if !self.history.push(path) {
             return false;
         }
@@ -1441,7 +1544,10 @@ impl Document {
     /// Called before the first frame. Calling it later would silently discard
     /// wherever the user had got to.
     pub fn start_at(&mut self, path: &str) -> bool {
-        self.history = History::starting_at(path);
+        // A deep link is the case an auth guard most needs to catch: arriving
+        // straight at `/admin` from a URL bar skips every link in the app.
+        let path = self.resolve_route(path).unwrap_or_else(|| "/".to_string());
+        self.history = History::starting_at(&path);
         self.set_scroll_intent(None);
         self.show_current_route()
     }
@@ -1462,11 +1568,41 @@ impl Document {
     /// document moved; `false` means the index was out of range or already
     /// current, and the caller's history has drifted from this one.
     pub fn go_to(&mut self, index: usize) -> bool {
+        if !self.guarded_step(index) {
+            return false;
+        }
         if !self.history.go_to(index) {
             return false;
         }
         self.restore_scroll_here();
         self.show_current_route()
+    }
+
+    /// Ask the guards about the entry a Back, Forward or `go_to` would land on.
+    ///
+    /// Returns whether the step may happen. A **redirect** is taken here rather
+    /// than handed back, because a step through the history has no path of its
+    /// own to redirect: it lands where it lands. So a guard that redirects a
+    /// Back sends the document there as an arrival, and the step itself does not
+    /// happen.
+    ///
+    /// Guarding these at all is the half that is easy to leave out. A guard
+    /// written on `navigate` alone protects nothing: Back reaches the same page
+    /// without going through it, and Back is how anyone leaves a login screen.
+    fn guarded_step(&mut self, index: usize) -> bool {
+        let Some(to) = self.history.peek(index).map(str::to_string) else {
+            // Out of range. Let the history method refuse it and say so its own
+            // way, rather than inventing a second answer here.
+            return true;
+        };
+        match self.resolve_route(&to) {
+            Some(target) if target == to => true,
+            Some(target) => {
+                self.navigate(&target);
+                false
+            }
+            None => false,
+        }
     }
 
     /// Go to `path` *instead of* where we are, overwriting the current entry.
@@ -1475,6 +1611,8 @@ impl Document {
     /// the history, so Back would land on it and be redirected forward again,
     /// which reads as the Back button being broken.
     pub fn replace(&mut self, path: &str) -> bool {
+        let Some(path) = self.resolve_route(path) else { return false };
+        let path = path.as_str();
         if !self.history.replace(path) {
             return false;
         }
@@ -1485,6 +1623,12 @@ impl Document {
 
     /// Step back through the history. Returns whether there was anywhere to go.
     pub fn back(&mut self) -> bool {
+        if self.history.at == 0 {
+            return false;
+        }
+        if !self.guarded_step(self.history.at - 1) {
+            return false;
+        }
         if !self.history.back() {
             return false;
         }
@@ -1494,6 +1638,9 @@ impl Document {
 
     /// Step forward again. Returns whether there was anywhere to go.
     pub fn forward(&mut self) -> bool {
+        if !self.guarded_step(self.history.at + 1) {
+            return false;
+        }
         if !self.history.forward() {
             return false;
         }

@@ -194,5 +194,47 @@ ids only line up when the tree has the same shape, and an entry is always one
 route: by the time the offsets are read back, the shape is the one they were
 recorded against.
 
-Not built: nested routes (a layout component with a `<router />` in its slot
-covers most of that), and route guards.
+**Route guards.** `guard="expr"` on a `<router>` runs on every navigation; on a
+`<route>` it runs whenever that route is part of what matched, so a guard on a
+section covers every page inside it without being written on each one. Outermost
+first: a section's guard is the coarser question, and answering it second would
+mean running the finer one for a place you were never going to reach.
+
+The answers are vue-router's: **`false` cancels**, **a string redirects to that
+path**, and **anything else allows**. Anything else includes `()`, which is what
+a guard body with no explicit answer evaluates to, so the usual shape is object
+or say nothing:
+
+```rux
+<route path="/sent" view="outbox" guard="gate()" />
+```
+```rux
+fn gate() {
+  if !signed_in {
+    return "/login";
+  }
+}
+```
+
+`to` and `from` are in scope, along with whatever parameters the guard's own
+level captured, so a guard on `/crew/:id` can read `id` and decide about that
+member rather than only about the section.
+
+**A guard runs before the history moves**, which is the whole reason it is here
+rather than in a page: a refused navigation leaves no entry behind and opens no
+route transition, and by the time a page could refuse to render itself both have
+already happened. It follows that **Back, Forward and a deep link go through
+guards too**. A guard written on `navigate` alone would protect nothing, since
+Back reaches the same page without passing it, and Back is how anyone leaves a
+login screen.
+
+A guard that redirects to the path it was asked about has allowed it. A circle of
+redirects is cut off after eight and reported, the same bound and the same reason
+as an `emit` chain.
+
+**Guards are synchronous.** There are no promises in the script language, so a
+guard cannot await a network answer; it decides from state that is already there.
+Fetch first, then navigate.
+
+Not built: a guard is not compiled at load the way a `@tap` handler is, so a
+syntax error in one is found when it runs.

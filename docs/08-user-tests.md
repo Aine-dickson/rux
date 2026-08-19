@@ -181,6 +181,14 @@ a limit, it was four silent wrong answers and a divergence nobody had noticed.
 | All four values after the fix | desktop, window, `examples/position.rux` | Passed. The cover skips a `static` wrapper and fills the `.frame` that claims it; an `absolute` badge inside a scroller rides the content out of sight; a `fixed` badge stays exactly put through eight wheel notches. `static` ignores its insets and `relative` honors them |
 | The animation examples, which rely on inset-less absolutes | desktop, window | No regression. `:leave-to { position: absolute }` names no inset, so it keeps its static position and stays with its parent rather than travelling to a containing block. The tab-bar recipe's pages still overlay rather than queue |
 
+### Route guards (2026-08-19)
+
+| Case | Hardware | Outcome |
+|---|---|---|
+| Tap a guarded tab while it is locked, then unlock and tap again | desktop, window, `examples/recipes/tab-bar.rux` | Passed. Locked, the tab redirects to the sign-in page and `:current` stays off the tab that was refused, because the router really is somewhere else. Unlocked, the same tap goes through and the page crosses normally |
+| Back and Forward through a shut guard | headless | Passed, and this is the half worth having a test for. A guard written on `navigate` alone protects nothing: Back reaches the same page without passing it, and Back is how anyone leaves a login screen. Leaving a guarded page is not the guard's business and is still allowed |
+| A refused navigation's warning | headless | **Found a gap while testing.** A refused navigation does no rebuild, and the rebuild is what drains the warning sinks, so a circle of redirects raised a warning that nothing would ever read and the screen simply did not change. The refusal path drains them itself now |
+
 ## Standing gaps
 
 Cases nothing here can currently exercise. They are the shape of what v0.8 has

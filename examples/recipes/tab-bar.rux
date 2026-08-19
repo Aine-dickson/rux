@@ -17,6 +17,11 @@
       <view class="tab" to="/sent"><text class="tab-label">sent</text></view>
     </view>
 
+    <view class="lock" @tap="unlocked = !unlocked">
+      <text class="lock-label" r-if="unlocked">lock /sent</text>
+      <text class="lock-label" r-else>unlock /sent</text>
+    </view>
+
     <!-- The stage is a positioned box with a height of its own. It has to be
          both: `position: relative` is what the departing page is pinned to, and
          a height is what stops the box collapsing at the moment the only page
@@ -25,7 +30,11 @@
       <router r-transition>
         <route path="/" view="tab-inbox" />
         <route path="/drafts" view="tab-drafts" />
-        <route path="/sent" view="tab-sent" />
+        <!-- A guard is asked before the history moves, so a refusal leaves no
+             entry behind and opens no transition. `false` cancels, a path
+             redirects, anything else allows. -->
+        <route path="/sent" view="tab-sent" guard="gate()" />
+        <route path="/locked" view="tab-locked" />
       </router>
     </view>
   </screen>
@@ -55,6 +64,10 @@
     background: #181825;
     border-radius: 12px;
   }
+
+  .lock { align-self: flex-start; padding: 8px 14px; background: #45475a; border-radius: 9px; cursor: pointer; }
+  .lock:hover { background: #585b70; }
+  .lock-label { color: #cdd6f4; font-size: 13px; font-weight: 700; }
 
   .tab { padding: 10px 18px; border-radius: 9px; cursor: pointer; }
   .tab:hover { background: #313244; }
@@ -105,5 +118,18 @@
   use components::tab_inbox;
   use components::tab_drafts;
   use components::tab_sent;
+  use components::tab_locked;
+
+  // What the guard on /sent reads.
+  let unlocked = signal(false);
+
+  // The shape a guard is usually written in: object, or say nothing. Falling
+  // off the end evaluates to `()`, which is an allow, so the only path that has
+  // to be spelled out is the one that refuses.
+  fn gate() {
+    if !unlocked {
+      return "/locked";
+    }
+  }
 
 </script>

@@ -1,6 +1,6 @@
 +++
 title = "A tab bar"
-description = "Three tabs over one router, with pages that cross rather than queue: to= and :current, and the one CSS line that stops a route transition stacking."
+description = "Three tabs over one router, with pages that cross rather than queue: to= and :current, the one CSS line that stops a route transition stacking, and a guard on a tab."
 weight = 2
 +++
 
@@ -128,6 +128,42 @@ So it becomes an explicit handler:
 with `dir` driving a class on the stage. That is a real trade: you give up
 `:current` and the link semantics and have to keep an index yourself. Worth it
 for a phone-style tab bar, not worth it for three tabs on a desktop.
+
+## Keeping someone out of a tab
+
+A `guard` on a route decides whether a navigation to it may happen:
+
+```rux
+<route path="/sent" view="outbox" guard="gate()" />
+<route path="/locked" view="sign-in" />
+```
+
+```rux
+fn gate() {
+  if !unlocked {
+    return "/locked";
+  }
+}
+```
+
+`false` cancels, a string redirects to that path, and **anything else allows**,
+including `()`. That last part is what makes the shape above work: a function
+that falls off the end has said nothing, and saying nothing is consent, so the
+only branch you have to write is the one that objects.
+
+**The guard runs before the history moves.** That is the whole reason it lives on
+the route rather than in the page: a refused navigation leaves no entry behind
+and opens no transition, whereas a page that refuses to render itself has already
+been navigated to. It follows that Back, Forward and a deep link go through
+guards as well. A guard that only covered `navigate` would protect nothing, since
+Back reaches the same page without passing it, and Back is how anyone leaves a
+sign-in screen.
+
+A guard on the `<router>` runs on every navigation, and a guard on a parent route
+covers every page inside it, so a whole section can be closed off in one line.
+
+Guards are synchronous: there are no promises in the script language, so a guard
+decides from state that is already there. Fetch first, then navigate.
 
 ## Identity is which route matched
 
