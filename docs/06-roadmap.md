@@ -1936,10 +1936,10 @@ here.
 
 ### v1.0: freeze
 
-1. **`rux build`, the rest of it.** The web bundle and the Windows executable
-   moved to v0.7; what stays here is what genuinely needs a language that has
-   stopped moving: installer formats, an app bundle, and a platform matrix
-   wider than the one machine Rux is developed on.
+1. **`rux build`, the rest of it.** Building for web, desktop and mobile moved
+   to **v0.8**, where it is the first item; what stays here is what genuinely
+   needs a language that has stopped moving: installer formats, an app bundle,
+   and a platform matrix wider than the one machine Rux is developed on.
 2. **Re-derive the spec.** `docs/02-spec.md` describes itself as the v0.1
    design surface, not the built surface, and is published only as history.
    1.0 means the spec and the runtime agree again.
@@ -1955,7 +1955,13 @@ Things that are not scheduled above but that change the plan if the answer is
 not what we assume.
 
 - **Packaging: v1.0 → v0.6 (2026-08-09) → v0.7, after the script tier
-  (2026-08-11).** Settled. The argument for moving it out of v1.0 stands and has
+  (2026-08-11) → v0.8, first item (2026-08-19).** The last move is the user's
+  and is about *scope*, not readiness: v0.7's plan was a web bundle and a
+  Windows executable, and the targets that matter are web, desktop and mobile,
+  which is v0.8's subject. Cutting packaging in half and finishing it a
+  milestone later would mean designing the output format twice. Embedded is
+  named there as a consideration rather than a target, so the format is not
+  shaped in a way that shuts the door on it. The argument for moving it out of v1.0 stands and has
   not been revisited: nobody can build something real with Rux until they can
   hand the result to someone else, and narrowing to web and Windows with no
   installer formats means nothing durable gets frozen.
