@@ -155,6 +155,20 @@ unreachable by a drag, decorations drawn outside their transform, and now the
 cascade). Every one of them was silent, and every one was found by a person
 looking rather than by the suite.
 
+### Recipes (2026-08-19)
+
+Every recipe was driven in the window before its page was written, which is the
+point of writing them: three defects came out of three ordinary patterns.
+
+| Case | Hardware | Outcome |
+|---|---|---|
+| `examples/recipes/message-list.rux`: send, and make a message arrive six times | desktop, window | **Found a bug in `scrollIntoView`.** The list did not follow its newest row and said nothing. The shell chose which scroller to move by asking whose *visible* rectangle held the element, so a row past the bottom belonged to no scroller and the reveal was dropped. Only reveals already a nudge from being visible worked. Matched against the scroller's content now, and the list follows |
+| The same list, before the rows were wrapped | desktop, window | **Found an author trap, not a bug.** `query` hands back a path, which is a position among siblings. With the anchor written straight after the `r-for`, every new message pushed it along one, so the captured path named whatever slid into its place and the thread scrolled to the middle. It lands on a real element, just not the one asked for, so nothing reports it. Fixed by wrapping the rows so the anchor's position cannot move |
+| Any of the three, first render | desktop, window | **Found a silent half-rule, again.** `align-items` defaults to `flex-start` rather than CSS's `stretch`, so a scroller with no `width: 100%` is as wide as its longest row: it works perfectly and looks broken. All three recipes now say the width out loud |
+| `examples/recipes/tab-bar.rux`: tap along the bar, frame caught mid-navigation | desktop, window | Passed. Both pages on screen at once and **overlaid rather than queued**, the outgoing sliding left as the incoming slides in from the right, the bar outside the router unmoved, and `:current` following the route |
+| `examples/recipes/modal.rux`: open it, tap the dialog, then tap the scrim | desktop, window | Passed, and **found what the swallow costs**. Tapping the dialog does not dismiss, which is the `@tap="0"` doing its job, but the dialog takes the focus ring and becomes a Tab stop that does nothing. There is no way to say "tappable but not focusable". Filed as an open author note. Tapping the scrim dismisses, and the page behind never moves |
+| `position: fixed` on the scrim | desktop, window | Not honored, and not a bug: the honored set is `relative` and `absolute`. A cover is `absolute` against a positioned ancestor. Nothing said so anywhere, and the recipe now does |
+
 ## Standing gaps
 
 Cases nothing here can currently exercise. They are the shape of what v0.8 has
