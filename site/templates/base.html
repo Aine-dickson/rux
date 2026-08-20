@@ -50,34 +50,122 @@
   <script defer src="{{ get_url(path='search.js') }}"
           data-search-index="{{ get_url(path='search_index.en.json') }}"></script>
 
-  {# Put a "Try it" link on every runnable Rux block, carrying the code to the
-     playground in the URL hash.
+  {# Controls on every prose code block: Copy always, and Try it on the Rux
+     blocks that are whole documents.
 
      Done here from the rendered block rather than at build time on purpose:
-     the code shown is then provably the code that runs, with no second copy to
-     fall out of step. Blocks without a <template> are fragments that would only
-     produce a parse error, so they are skipped. #}
+     the code copied and the code run are then provably the code shown, with no
+     second copy to fall out of step. Blocks without a <template> are fragments
+     that would only produce a parse error in the playground, so they get Copy
+     and not Try it.
+
+     Both controls are appended to the <pre>, never to the <code>, so that
+     `code.textContent` stays exactly the snippet. A button placed inside the
+     code element would copy its own label along with the code. #}
   <script>
     (function () {
       var PLAYGROUND = "{{ get_url(path='@/playground.md') }}";
-      document.querySelectorAll("pre > code[data-lang]").forEach(function (code) {
-        if ((code.dataset.lang || "").toLowerCase() !== "rux") return;
-        var src = code.textContent;
-        if (src.indexOf("<template>") === -1) return;
 
+      /* Clipboard writes need a secure context. The site is https and a local
+         `zola serve` is 127.0.0.1, which counts, but a site opened over plain
+         http on a LAN address does not, and there the async API is simply
+         absent. The textarea fallback is deprecated and still works everywhere,
+         which is the right trade for a button whose whole job is one string. */
+      function copyText(text) {
+        if (navigator.clipboard && window.isSecureContext) {
+          return navigator.clipboard.writeText(text);
+        }
+        return new Promise(function (resolve, reject) {
+          var area = document.createElement("textarea");
+          area.value = text;
+          /* Off-screen rather than hidden: a display:none textarea cannot be
+             selected, so the copy would silently do nothing. */
+          area.setAttribute("readonly", "");
+          area.style.position = "absolute";
+          area.style.left = "-9999px";
+          document.body.appendChild(area);
+          area.select();
+          var ok = false;
+          try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
+          document.body.removeChild(area);
+          ok ? resolve() : reject(new Error("copy refused"));
+        });
+      }
+
+      /* Select the block, so the fallback message is true rather than merely
+         encouraging: telling someone to press Ctrl+C while nothing is selected
+         copies whatever was on the clipboard already. */
+      function selectCode(code) {
+        var range = document.createRange();
+        range.selectNodeContents(code);
+        var selection = window.getSelection();
+        selection.removeAllRanges();
+        selection.addRange(range);
+      }
+
+      function copyButton(code, source) {
+        var button = document.createElement("button");
+        button.type = "button";
+        button.className = "codebtn copy";
+        button.textContent = "Copy";
+        button.setAttribute("aria-label", "Copy this code");
+
+        var restore = null;
+        button.addEventListener("click", function () {
+          copyText(source).then(function () {
+            button.textContent = "Copied";
+            button.classList.add("done");
+          }, function () {
+            /* Saying nothing would be worse than saying it failed: the reader
+               would paste whatever was on the clipboard before. */
+            selectCode(code);
+            button.textContent = "Press Ctrl+C";
+            button.classList.add("failed");
+          });
+          clearTimeout(restore);
+          restore = setTimeout(function () {
+            button.textContent = "Copy";
+            button.classList.remove("done", "failed");
+          }, 1600);
+        });
+        return button;
+      }
+
+      function tryItLink(source) {
         var link = document.createElement("a");
-        link.className = "tryit";
+        link.className = "codebtn tryit";
         link.textContent = "Try it";
         link.rel = "nofollow";
-        // base64 of the UTF-8 bytes: .rux is mostly punctuation, so percent
-        // encoding would be both enormous and unreadable.
-        var bytes = new TextEncoder().encode(src);
+        /* base64 of the UTF-8 bytes: .rux is mostly punctuation, so percent
+           encoding would be both enormous and unreadable. */
+        var bytes = new TextEncoder().encode(source);
         var bin = "";
         bytes.forEach(function (b) { bin += String.fromCharCode(b); });
         link.href = PLAYGROUND + "#" + btoa(bin);
+        return link;
+      }
 
-        code.parentElement.classList.add("has-tryit");
-        code.parentElement.appendChild(link);
+      /* Scoped to `.prose`, and that is load-bearing rather than tidy. The
+         playground's editor is a `<textarea>` with a highlighted `<pre><code>`
+         behind it for colour, so a bare `pre > code` selector would put a Copy
+         button inside the overlay the caret is aligned against. `.prose` is the
+         article wrapper, which the playground page does not use. */
+      document.querySelectorAll(".prose pre > code").forEach(function (code) {
+        var pre = code.parentElement;
+        var source = code.textContent;
+        if (!source.trim()) return;
+
+        var tools = document.createElement("div");
+        tools.className = "code-tools";
+        tools.appendChild(copyButton(code, source));
+
+        var isRux = (code.dataset.lang || "").toLowerCase() === "rux";
+        if (isRux && source.indexOf("<template>") !== -1) {
+          tools.appendChild(tryItLink(source));
+        }
+
+        pre.classList.add("has-tools");
+        pre.appendChild(tools);
       });
     })();
   </script>

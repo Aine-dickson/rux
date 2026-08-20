@@ -85,6 +85,16 @@ gate_docs_synced() {
   ./site/sync-docs.sh --check >/dev/null || die "site/ is out of sync with docs/; run ./site/sync-docs.sh"
   ok "generated site pages match docs/"
 
+  # A fence that says it is a file has to be that file. `/recipes/message-list/`
+  # headed a 53-line abridgement of a 179-line example "The whole file", which
+  # was a documentation nit right up until every fence grew a Copy button and a
+  # Try it link: both hand the fence to the playground, so a reader copying "the
+  # whole file" got an unstyled screen that looks exactly like a broken renderer.
+  # Running the page's own code in a desktop window rendered it the same way,
+  # which is how it was pinned on the page rather than the runtime.
+  ./site/sync-examples.sh --check >/dev/null     || die "a code fence does not match the file it names; run ./site/sync-examples.sh"
+  ok "every fence that names a file carries that file"
+
   # Zola validates `@/page.md` links and ignores absolute ones, which is every
   # link `sync-docs.sh` writes. Eleven dead anchors into `/why/` shipped and
   # stayed live under a green build because of that, so this is checked here
@@ -109,14 +119,28 @@ gate_editor() {
   # hand-kept void-tag list missed `<image>` for two releases.
   ./scripts/sync-vocabulary.sh --check >/dev/null \
     || die "editors/vscode/vocabulary.json is stale; run ./scripts/sync-vocabulary.sh"
+  # The TextMate grammar has two consumers: VS Code, and Zola's highlighter on
+  # the website, which reads its own copy under `site/`. They are the same file
+  # and nothing but a line in a README kept them the same file, so a grammar
+  # edit that coloured the editor and not the docs stayed invisible until
+  # somebody happened to look at a code fence.
+  #
+  # Compared with the carriage returns stripped, for the reason
+  # `sync-vocabulary.sh --check` documents at length: with `core.autocrlf=true`
+  # a raw `diff` calls the two copies different on every Windows run.
+  if ! diff -u <(tr -d '\r' < editors/vscode/syntaxes/rux.tmLanguage.json) \
+               <(tr -d '\r' < site/syntaxes/rux.tmLanguage.json) >/dev/null 2>&1; then
+    die "site/syntaxes/rux.tmLanguage.json is stale; copy editors/vscode/syntaxes/rux.tmLanguage.json over it"
+  fi
   # Pure functions over a string, no framework and no node_modules. A directory
-  # argument does not resolve on Windows, so the file is named.
+  # argument does not resolve on Windows, so the files are globbed instead,
+  # which also means a new test file runs here without this line being edited.
   if command -v node >/dev/null 2>&1; then
-    node --test editors/vscode/test/context.test.js >/dev/null \
+    node --test editors/vscode/test/*.test.js >/dev/null \
       || die "the VS Code extension's tests fail"
-    ok "extension vocabulary current, extension tests pass"
+    ok "extension vocabulary and grammar current, extension tests pass"
   else
-    ok "extension vocabulary current (node absent, tests skipped)"
+    ok "extension vocabulary and grammar current (node absent, tests skipped)"
   fi
 }
 
