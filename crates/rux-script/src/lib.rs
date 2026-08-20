@@ -13,7 +13,7 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use rhai::{Dynamic, Engine as RhaiEngine, EvalAltResult, ImmutableString, Module, Scope, AST};
+use rhai::{Dynamic, Engine as RhaiEngine, EvalAltResult, ImmutableString, Module, Position, Scope, AST};
 use rux_reactive::{Value, Warning};
 
 thread_local! {
@@ -197,6 +197,48 @@ impl Default for Builder {
     }
 }
 
+/// A script that would not compile or would not run, with the position kept.
+///
+/// `line` and `column` are **relative to the script that was compiled**, which
+/// is not the file: a `.rux` document's `<script>` starts part-way down, and
+/// the runtime strips `use` and reactive declarations before compiling. Whoever
+/// knows that offset is responsible for adding it, which is
+/// `Document::load_checked`. Reporting a section-relative number as though it
+/// were a file position is the bug this type exists to make hard.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ScriptError {
+    pub message: String,
+    pub line: Option<usize>,
+    pub column: Option<usize>,
+}
+
+impl ScriptError {
+    fn at(message: String, position: Position) -> Self {
+        Self { message, line: position.line(), column: position.position() }
+    }
+
+    /// A failure with nothing to point at.
+    pub fn plain(message: String) -> Self {
+        Self { message, line: None, column: None }
+    }
+}
+
+impl std::fmt::Display for ScriptError {
+    /// The sentence rhai produced, unchanged, so anything that used to do
+    /// `.to_string()` on the old `String` error reads exactly as it did.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for ScriptError {}
+
+impl From<ScriptError> for String {
+    fn from(e: ScriptError) -> String {
+        e.message
+    }
+}
+
 impl Builder {
     pub fn new() -> Self {
         let mut engine = RhaiEngine::new();
@@ -373,15 +415,27 @@ impl Builder {
     }
 
     /// Compile and initialize the script, producing a ready [`Engine`].
-    pub fn build(mut self, script: &str) -> Result<Engine, String> {
+    ///
+    /// The error keeps the position rhai reported. It used to be flattened with
+    /// `e.to_string()` here, which left the line and column readable only as
+    /// prose inside the sentence, and every consumer downstream had `None` for
+    /// both: `rux check --format json` emitted `"line": null` and the editor
+    /// put the squiggle on line 1. See [`ScriptError`].
+    pub fn build(mut self, script: &str) -> Result<Engine, ScriptError> {
         self.engine
             .register_static_module("host", self.host.into());
 
-        let ast = self.engine.compile(rewrite_intervals(script)).map_err(|e| e.to_string())?;
+        let ast = self
+            .engine
+            .compile(rewrite_intervals(script))
+            .map_err(|e| ScriptError::at(explain(&e.to_string()), e.1))?;
         let mut scope = Scope::new();
         self.engine
             .run_ast_with_scope(&mut scope, &ast)
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| {
+                let at = e.position();
+                ScriptError::at(explain(&e.to_string()), at)
+            })?;
         let funcs = ast.clone_functions_only();
 
         // The top-level `let` bindings are the app's signals. The set is fixed

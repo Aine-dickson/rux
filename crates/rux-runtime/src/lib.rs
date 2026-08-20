@@ -596,6 +596,44 @@ impl LoadError {
         Self { message, file: None, line: None, column: None, parse: false }
     }
 
+    /// A script failure, moved from section coordinates into file ones.
+    ///
+    /// `script_line` is the 1-based file line the `<script>` body starts on, so
+    /// a rhai line of 1 is that line, not line 1 of the file. Getting this
+    /// wrong is worse than having no position at all: the reader trusts the
+    /// squiggle and looks in the wrong place, which is exactly what happened
+    /// while every script error was reported as `line: null` and drawn at the
+    /// top of the file.
+    ///
+    /// The message carries no position of its own: `explain` strips rhai's
+    /// trailing "(line L, position C)" and the numbers travel in the fields
+    /// instead, so the sentence and the squiggle cannot disagree. They did
+    /// before, and the sentence was the one people believed.
+    fn in_script(
+        e: rux_script::ScriptError,
+        script_line: usize,
+        main_script_lines: usize,
+        file: Option<&Path>,
+    ) -> Self {
+        // Only this document's own script can be pointed at. Past that the
+        // compiled text is appended component functions, whose lines belong to
+        // another file entirely; mapping them here would produce a confident
+        // number for a place that does not exist. No position, as before.
+        let line = e
+            .line
+            .filter(|l| *l <= main_script_lines)
+            .map(|l| l + script_line - 1);
+        Self {
+            message: e.message.clone(),
+            file: file.map(Path::to_path_buf),
+            line,
+            // A column with no line is drawn against the top of the file, which
+            // is the very thing this is fixing.
+            column: line.and(e.column),
+            parse: false,
+        }
+    }
+
     /// `file` is `None` when the source did not come from one, which is the
     /// playground's case: it has a buffer, not a path.
     fn parse(err: rux_parser::ParseError, file: Option<&Path>) -> Self {
@@ -649,6 +687,11 @@ impl Document {
         let mut component_hooks: HashMap<String, Hooks> = HashMap::new();
         let mut component_computeds: HashMap<String, Vec<Computed>> = HashMap::new();
         let mut component_effects: HashMap<String, Vec<Effect>> = HashMap::new();
+        // How much of `combined_script` is *this* file's `<script>`. Component
+        // functions are appended below, and a position inside one of those maps
+        // to no line of this document at all, so the mapping has to know where
+        // its own script stops.
+        let main_script_lines = main_script.lines().count();
         let mut combined_script = main_script;
         for import in imports {
             let comp_path = base.join(&import.file);
@@ -716,7 +759,11 @@ impl Document {
         // Before the first build: a `:to` calling `path_for` is evaluated
         // during that build, so the names have to be known by then.
         rux_script::set_routes(rux_style::named_routes(&sfc.template));
-        let mut engine = build_engine(&combined_script).map_err(LoadError::plain)?;
+        // The position rhai reported is relative to the compiled script; the
+        // file is `script_line` further down. That offset is this function's to
+        // add, because it is the only place that knows both numbers.
+        let mut engine = build_engine(&combined_script)
+            .map_err(|e| LoadError::in_script(e, sfc.script_line, main_script_lines, Some(path)))?;
         let mut instances = Instances::new();
         let mut swaps = Swaps::new();
         let (mut root, registry) = rux_style::build_styled_tree_tracked(&sfc, &components, &mut engine, &mut instances, &mut swaps)
@@ -793,7 +840,12 @@ impl Document {
         let (main_script, _imports) = extract_imports(&sfc.script);
         let (main_script, computeds, effects, hooks) = extract_reactives(&main_script);
         rux_script::set_routes(rux_style::named_routes(&sfc.template));
-        let mut engine = build_engine(&main_script).map_err(LoadError::plain)?;
+        // Same mapping as `load_checked`, and the playground is the case that
+        // most wants it: this is the only error surface it has. Nothing is
+        // appended here, so the whole compiled text is the document's script.
+        let main_script_lines = main_script.lines().count();
+        let mut engine = build_engine(&main_script)
+            .map_err(|e| LoadError::in_script(e, sfc.script_line, main_script_lines, None))?;
         let mut instances = Instances::new();
         let mut swaps = Swaps::new();
         let (mut root, registry) =
@@ -2944,7 +2996,12 @@ fn extract_imports(script: &str) -> (String, Vec<Import>) {
                     .map(|s| s.replace('_', "-"))
                     .unwrap_or_default();
                 imports.push(Import { tag, file });
-                continue; // strip the import line
+                // A blank line rather than no line. Dropping it shifted every
+                // line below by one, so rhai's positions no longer matched the
+                // section and a script error could not be placed in the file.
+                // Blank lines are inert to the compiler and free here.
+                cleaned.push('\n');
+                continue;
             }
         }
         cleaned.push_str(line);
@@ -2955,7 +3012,7 @@ fn extract_imports(script: &str) -> (String, Vec<Import>) {
 
 /// Build the script engine and register host functions (the native-capability
 /// boundary; a real app registers its own here).
-fn build_engine(script: &str) -> Result<Engine, String> {
+fn build_engine(script: &str) -> Result<Engine, rux_script::ScriptError> {
     let mut builder = Builder::new();
     builder.host_number("full", || 100.0);
     let mut engine = builder.build(script)?;
