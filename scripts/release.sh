@@ -299,7 +299,12 @@ cmd_open_next() {
   step "opening $line at ${next}-dev, from the $from capsule"
   git switch -qc "$line" "$from"
   sed -i -E "s/^version = \"[0-9.]+\"/version = \"$next-dev\"/" Cargo.toml
-  sed -i -E "s/^(rux-[a-z]+ = \{ version = )\"[0-9.]+\"/\1\"$next-dev\"/" Cargo.toml
+  # Matched on `path = "crates/`, not on the dependency's name, for the reason
+  # gate_version spells out: `rhai = { package = "rux-rhai", … }` is a
+  # workspace crate declared under an alias, and a name-shaped rule cannot see
+  # it. This one could not, so opening a line left that dependency asking for
+  # the version just released, and the gate refused the whole command.
+  sed -i -E "/path = \"crates\//s/(version = )\"[0-9.]+\"/\1\"$next-dev\"/" Cargo.toml
   gate_version "$next-dev"
   relock
   git commit -aqm "Open the $next line
