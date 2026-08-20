@@ -2,8 +2,8 @@
   "name": "ruxlang",
   "displayName": "Ruxlang",
   "icon": "icon.png",
-  "description": "Syntax highlighting, completions, tag auto-closing, formatting and diagnostics for the Rux UI language (.rux files).",
-  "version": "0.3.1",
+  "description": "Syntax highlighting, completions, hover docs, go to definition, an outline, tag auto-closing, formatting and diagnostics for the Rux UI language (.rux files).",
+  "version": "0.4.0",
   "publisher": "Ruxlang",
   "license": "MIT OR Apache-2.0",
   "repository": {
@@ -17,6 +17,9 @@
     "Programming Languages"
   ],
   "main": "./extension.js",
+  "activationEvents": [
+    "onLanguage:rux"
+  ],
   "contributes": {
     "configuration": {
       "title": "Rux",
@@ -31,6 +34,19 @@
           "default": true,
           "markdownDescription": "Report problems from `rux check` as you open and save `.rux` files."
         },
+        "rux.format.indent": {
+          "type": "string",
+          "default": "auto",
+          "enum": ["auto", "editor", "2", "4", "tab"],
+          "enumDescriptions": [
+            "Let `rux fmt` decide, which is what `rux fmt` on the command line and in CI will do. Two spaces today.",
+            "Use the editor's own tab size. Note that this can disagree with `rux fmt --check`.",
+            "Two spaces.",
+            "Four spaces.",
+            "One tab."
+          ],
+          "markdownDescription": "Indent width for Format Document. `auto` asks `rux fmt` for nothing and lets the binary decide, so the editor and `rux fmt --check` cannot disagree. Anything else overrides it."
+        },
         "rux.autoClosingTags": {
           "type": "boolean",
           "default": true,
@@ -41,8 +57,13 @@
     "languages": [
       {
         "id": "rux",
-        "aliases": ["Rux", "rux"],
-        "extensions": [".rux"],
+        "aliases": [
+          "Rux",
+          "rux"
+        ],
+        "extensions": [
+          ".rux"
+        ],
         "configuration": "./language-configuration.json",
         "icon": {
           "light": "./icons/rux-mark.svg",
@@ -57,11 +78,80 @@
         "path": "./syntaxes/rux.tmLanguage.json"
       }
     ],
-    "snippets": [
+    "commands": [
       {
-        "language": "rux",
-        "path": "./snippets/rux.json"
+        "command": "rux.showVocabulary",
+        "title": "Show Vocabulary Source",
+        "category": "Rux"
+      },
+      {
+        "command": "rux.run",
+        "title": "Run Rux File",
+        "category": "Rux",
+        "icon": "$(play)"
+      },
+      {
+        "command": "rux.check",
+        "title": "Check Rux File",
+        "category": "Rux"
+      },
+      {
+        "command": "rux.diagnose",
+        "title": "Diagnose Editor Support At Cursor",
+        "category": "Rux"
       }
-    ]
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "rux.run",
+          "when": "resourceLangId == rux",
+          "group": "navigation@1"
+        },
+        {
+          "command": "rux.check",
+          "when": "resourceLangId == rux",
+          "group": "navigation@2"
+        },
+        {
+          "command": "rux.diagnose",
+          "when": "resourceLangId == rux",
+          "group": "navigation@3"
+        }
+      ],
+      "explorer/context": [
+        {
+          "command": "rux.run",
+          "when": "resourceExtname == .rux",
+          "group": "navigation@1"
+        },
+        {
+          "command": "rux.check",
+          "when": "resourceExtname == .rux",
+          "group": "navigation@2"
+        }
+      ],
+      "editor/title/run": [
+        {
+          "command": "rux.run",
+          "when": "resourceLangId == rux",
+          "group": "navigation@1"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "rux.run",
+          "when": "resourceLangId == rux"
+        },
+        {
+          "command": "rux.check",
+          "when": "resourceLangId == rux"
+        },
+        {
+          "command": "rux.diagnose",
+          "when": "resourceLangId == rux"
+        }
+      ]
+    }
   }
 }
