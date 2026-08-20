@@ -16,6 +16,19 @@ A milestone (v0.3, v0.4, …) can span several Friday **point-releases**; each F
 must still ship something coherent and demoable on its own. A new *minor* (v0.4.0)
 opens only once the previous milestone's whole scope is done.
 
+**Reaffirmed 2026-08-20, and it is the normal case from v0.8 on.** The milestones
+from here are each larger than a week: v0.8 alone is packaging, a manifest,
+native pickers, safe areas, two environment queries and splash screens, and no
+single Friday holds that. So v0.8 ships as **v0.8.x**, v0.9 as v0.9.x, and so on,
+with each Friday taking whatever coherent slice has actually moved.
+
+The slicing is **emergent rather than planned**. The point releases are not
+numbered in advance and given scope, because that turns a cadence into a schedule
+and a schedule into a thing to miss. What ships on a Friday is decided by how far
+the milestone got that week, subject to the standing rule that it has to stand up
+on its own and be worth a post. A milestone closes, and its minor is done, when
+its whole scope is done, however many Fridays that took.
+
 - **v0.3**: two tracks, both under this banner. Ships across Fridays as v0.3.x:
   - `v0.3.0`: `.rux` syntax coloring (self-contained; ships first).
   - `v0.3.1`: reactivity groundwork (subscriptions + delete the `apply_focus`
@@ -1880,7 +1893,19 @@ and the metrics are absent.
 
 ### v0.8: mobile
 
-**First item, moved here from v0.7 on 2026-08-19: `rux build`.** Three primary
+**Ships as v0.8.x across several Fridays**, per the cadence above. The slices are
+not numbered in advance; each Friday takes whatever has coherently moved.
+
+**`prefers-reduced-motion` goes first, ahead of `rux build`** (user, 2026-08-20).
+It is item 4 below on grounds of *plumbing*, since it shares the operating-system
+question with safe areas and density, but it is first on grounds of *urgency*:
+v0.7 shipped a whole animation system that never asks whether the person using it
+wants less motion, and for some people that is a medical problem rather than a
+taste. It is also the cheapest thing in the milestone. Packaging is the long pole
+and would otherwise bury it for weeks.
+
+**First item of the milestone's bulk, moved here from v0.7 on 2026-08-19:
+`rux build`.** Three primary
 targets, **web, desktop and mobile**, designed together rather than in two
 halves, because an output format settled for two of them and then stretched to
 the third is a format designed twice. **Embedded is a consideration, not a
