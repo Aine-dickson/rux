@@ -1,5 +1,5 @@
 {
-  "version": "0.7.0-dev",
+  "version": "0.7.0",
   "elements": [
     { "name": "screen", "detail": "the root element of a document", "doc": "The root of a `.rux` document. A component whose template root is `<screen>` is a page; anything else is a fragment." },
     { "name": "view", "detail": "a box; the generic container", "doc": "A generic box, the element most markup is made of. Defaults to `display: block`, so give it `display: flex` to lay its children out." },
