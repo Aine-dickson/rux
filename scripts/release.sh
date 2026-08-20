@@ -239,6 +239,14 @@ cmd_freeze() {
   gate_version "$version"
   relock
 
+  # The vocabulary the extension ships carries the workspace version, so
+  # dropping `-dev` makes the committed copy stale by definition. `relock` is
+  # here for exactly the same reason and was not enough on its own: the first
+  # v0.7.0 freeze packed the capsule, ran the gates, and failed on a file the
+  # freeze itself had just invalidated. Anything the version number reaches has
+  # to be regenerated between the drop and the gates, not by hand afterwards.
+  ./scripts/sync-vocabulary.sh >/dev/null     || die "could not regenerate the extension vocabulary after the version drop"
+
   # The post is packed as a draft. Zola builds future-dated pages, so a date
   # alone will not hold it; `draft = true` is what keeps it unpublished, and
   # `ship` is what flips it.
