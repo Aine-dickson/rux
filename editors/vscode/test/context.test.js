@@ -1,6 +1,6 @@
 // Tests for the scanning the editor features are built on.
 //
-// Run with `node --test editors/vscode/test`. There is no test framework and no
+// Run with `node --test` from `editors/vscode`. There is no test framework and no
 // `node_modules`: these are pure functions over a string, and the point of
 // keeping them pure was so they could be tested without booting VS Code.
 //

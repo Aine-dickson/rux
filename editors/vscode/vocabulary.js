@@ -43,8 +43,16 @@ const EMPTY = {
   directives: [],
   elementAttributes: {},
   scriptGlobals: [],
+  pseudoClasses: [],
   voidTags: [],
   cssProperties: [],
+  cssValues: {},
+  cssPropertyDocs: [],
+  animatableProperties: [],
+  easings: [],
+  elementProperties: [],
+  elementMethods: [],
+  valueMethods: [],
 };
 
 /**
@@ -93,8 +101,36 @@ function refreshFromBinary(runRux) {
   }
 }
 
+/**
+ * The vocabulary in force: the binary's answers, with the bundled copy filling
+ * any field the binary did not emit.
+ *
+ * This used to be `live || baked`, all or nothing, and that is wrong whenever
+ * **the extension is newer than the binary** — which is the normal case while
+ * both are being developed, and it happened here. `cssPropertyDocs` was added
+ * to the extension and to `rux vocab` together, but the `rux` on PATH had been
+ * built an hour earlier. It emitted every other field, so it won outright, and
+ * the property descriptions the extension shipped with were discarded. The
+ * completion list fell back to "honored by the runtime" with no explanation
+ * available anywhere.
+ *
+ * Per field, the binary still wins whenever it says anything, so a branch build
+ * with a new element or a dropped CSS property is still authoritative about it.
+ * What it cannot do any more is silently remove a whole capability by being old.
+ */
 function current() {
-  return live || readBaked();
+  const baked = readBaked();
+  if (!live) return baked;
+
+  const merged = { ...baked };
+  for (const [key, value] of Object.entries(live)) {
+    const empty =
+      value === undefined ||
+      value === null ||
+      (Array.isArray(value) && value.length === 0);
+    if (!empty) merged[key] = value;
+  }
+  return merged;
 }
 
 /** Element entries: `{ name, detail, doc }`. */
@@ -128,6 +164,44 @@ function cssProperties() {
 }
 
 /**
+ * The keyword values for one property, or `[]` for a property whose values are
+ * not a closed set.
+ *
+ * Empty is the honest answer for `width` and `color`: a list of guesses there
+ * would be worse than none, because it would read as the whole set.
+ */
+function cssValues(property) {
+  return (current().cssValues || {})[property] || [];
+}
+
+/**
+ * What one CSS property does, as `{ name, detail, doc }`, or `null`.
+ *
+ * `detail` is the one-line effect, `doc` says where it applies and how Rux
+ * differs from CSS. The completion list used to show "honored by the runtime"
+ * for every property, which tells the reader the editor approves of the word
+ * and nothing about what setting it will do.
+ */
+function cssProperty(name) {
+  return (current().cssPropertyDocs || []).find((p) => p.name === name) || null;
+}
+
+/** The pseudo-classes a selector may name, as `{ name, detail, doc }`. */
+function pseudoClasses() {
+  return current().pseudoClasses || [];
+}
+
+/** What `transition` can name. Anything else in a `transition` does nothing. */
+function animatableProperties() {
+  return current().animatableProperties || [];
+}
+
+/** The easing keywords, for the third slot of a `transition`. */
+function easings() {
+  return current().easings || [];
+}
+
+/**
  * Tags that never nest, so nothing should ever write a closing tag for them.
  * `image` is in here and `img` is too; the HTML names cost nothing and pasted
  * markup is common.
@@ -136,19 +210,62 @@ function isVoid(tag) {
   return (current().voidTags || []).includes(tag);
 }
 
+/**
+ * What an element handle from `query()` offers: its readable properties, then
+ * its actions.
+ *
+ * Two lists rather than one because they behave differently and the difference
+ * is the thing worth teaching: a property is a read of the frame already on
+ * screen, and an action is recorded and applied after the handler returns.
+ */
+function elementMembers() {
+  const c = current();
+  return (c.elementProperties || [])
+    .map((e) => ({ ...e, kind: 'property' }))
+    .concat((c.elementMethods || []).map((e) => ({ ...e, kind: 'method' })));
+}
+
+/**
+ * Methods on strings and arrays: JavaScript's names, which is not a detail.
+ * rhai's own string methods share some of these spellings and mutate in place,
+ * and Rux shadows them with returning versions.
+ */
+function valueMethods() {
+  return current().valueMethods || [];
+}
+
 /** Which copy is in use, for the status shown in `Rux: Show Vocabulary`. */
 function source() {
   return live ? `rux vocab (${live.version || 'unknown version'})` : 'bundled with the extension';
 }
 
+/**
+ * Set the "live" vocabulary directly, for the merge test.
+ *
+ * The merge is the part with a history of being wrong, and driving it through
+ * `refreshFromBinary` would mean faking a subprocess to test a pure function.
+ */
+function __setLiveForTest(value) {
+  live = value;
+  liveAsked = true;
+}
+
 module.exports = {
   refreshFromBinary,
+  __setLiveForTest,
   elements,
   globalAttributes,
   directives,
   attributesFor,
   scriptGlobals,
   cssProperties,
+  cssValues,
+  cssProperty,
+  pseudoClasses,
+  animatableProperties,
+  easings,
+  elementMembers,
+  valueMethods,
   isVoid,
   source,
 };

@@ -24,17 +24,29 @@
   },
   "template section": {
     "prefix": "template",
-    "body": ["<template>", "  $0", "</template>"],
+    "body": [
+      "<template>",
+      "  $0",
+      "</template>"
+    ],
     "description": "A <template> section."
   },
   "style section": {
     "prefix": "style",
-    "body": ["<style>", "  $0", "</style>"],
+    "body": [
+      "<style>",
+      "  $0",
+      "</style>"
+    ],
     "description": "A <style> section."
   },
   "script section": {
     "prefix": "script",
-    "body": ["<script>", "  $0", "</script>"],
+    "body": [
+      "<script>",
+      "  $0",
+      "</script>"
+    ],
     "description": "A <script> section."
   },
   "signal": {
@@ -44,7 +56,11 @@
   },
   "fn helper": {
     "prefix": "fn",
-    "body": ["fn ${1:name}(${2:arg}) {", "  $0", "}"],
+    "body": [
+      "fn ${1:name}(${2:arg}) {",
+      "  $0",
+      "}"
+    ],
     "description": "A script helper function."
   },
   "r-for loop": {
@@ -79,12 +95,142 @@
   },
   "view element": {
     "prefix": "view",
-    "body": ["<view class=\"${1:row}\">", "  $0", "</view>"],
+    "body": [
+      "<view class=\"${1:row}\">",
+      "  $0",
+      "</view>"
+    ],
     "description": "A layout container."
   },
   "button element": {
     "prefix": "button",
-    "body": ["<button class=\"${1:btn}\" @tap=\"${2:expr}\">", "  <text>${3:Label}</text>", "</button>"],
+    "body": [
+      "<button class=\"${1:btn}\" @tap=\"${2:expr}\">",
+      "  <text>${3:Label}</text>",
+      "</button>"
+    ],
     "description": "A tappable button."
+  },
+  "path element": {
+    "prefix": "path",
+    "body": "<path class=\"${1:mark}\" d=\"${2:M 0 0 L 24 0 L 12 20 Z}\" alt=\"${3:what it shows}\" />",
+    "description": "Vector geometry. Paint it with `fill` / `stroke` in CSS, not with attributes."
+  },
+  "path, bound": {
+    "prefix": "pathbound",
+    "body": "<path class=\"${1:mark}\" :d=\"${2:expr}\" />",
+    "description": "A path whose geometry is an expression. Two paths with the same command sequence morph under `transition: d`."
+  },
+  "router": {
+    "prefix": "router",
+    "body": [
+      "<router>",
+      "  <route path=\"/\" view=\"${1:home}\" />",
+      "  <route path=\"/${2:thing}/:id\" view=\"${3:detail}\" />",
+      "  <route view=\"${4:not-found}\" fallback />",
+      "</router>"
+    ],
+    "description": "A router and its routes. First match wins, and `fallback` may sit anywhere among them."
+  },
+  "guarded route": {
+    "prefix": "guard",
+    "body": "<route path=\"${1:/account}\" view=\"${2:account}\" guard=\"${3:signed_in}\" />",
+    "description": "A route that refuses. `false` cancels, a string redirects, anything else allows. Runs before the history moves, so Back goes through it too."
+  },
+  "link": {
+    "prefix": "to",
+    "body": "<${1:text} to=\"${2:/path}\">$0</${1:text}>",
+    "description": "A link. It matches `:current` when it names the path you are on."
+  },
+  "r-transition": {
+    "prefix": "rtransition",
+    "body": [
+      "<${1:view} class=\"${2:panel}\" r-if=\"${3:open}\" r-transition>",
+      "  $0",
+      "</${1:view}>"
+    ],
+    "description": "An element animated in and out. Style the two ends with `:enter-from` and `:leave-to`, and set the duration with the element's own `transition`."
+  },
+  "transition rules": {
+    "prefix": "transitionrules",
+    "body": [
+      ".${1:panel} {",
+      "  transition: ${2:opacity} ${3:200ms} ${4:ease-out};",
+      "}",
+      ".${1:panel}:enter-from {",
+      "  ${2:opacity}: ${5:0};",
+      "}",
+      ".${1:panel}:leave-to {",
+      "  ${2:opacity}: ${5:0};",
+      "}"
+    ],
+    "description": "The three rules an `r-transition` needs: the duration on the element, and the hidden end on each side."
+  },
+  "sticky heading": {
+    "prefix": "sticky",
+    "body": [
+      ".${1:heading} {",
+      "  position: sticky;",
+      "  top: ${2:0};",
+      "}"
+    ],
+    "description": "A box that rides its scroller's edge, then clamps to its own parent. Needs at least one inset or it never moves."
+  },
+  "computed": {
+    "prefix": "computed",
+    "body": "computed ${1:name} = ${2:expr};",
+    "description": "Derived state. A declaration, not a call: there is no computed(|| ...). Refreshed in declaration order."
+  },
+  "effect": {
+    "prefix": "effect",
+    "body": [
+      "effect {",
+      "  $0",
+      "}"
+    ],
+    "description": "Runs when what it read changes, and once on load. A block, not a call."
+  },
+  "mounted": {
+    "prefix": "mounted",
+    "body": [
+      "mounted {",
+      "  $0",
+      "}"
+    ],
+    "description": "Runs once the document is on screen."
+  },
+  "query": {
+    "prefix": "query",
+    "body": "let ${1:el} = query(\"${2:#id}\");",
+    "description": "Find an element by CSS selector, in a handler, against the frame already laid out."
+  },
+  "use import": {
+    "prefix": "use",
+    "body": "use ${1:components}::${2:name};",
+    "description": "Import a component. `components::crew_detail` is `components/crew_detail.rux`, written `<crew-detail>`."
+  },
+  "emit": {
+    "prefix": "emit",
+    "body": "emit(\"${1:name}\", ${2:payload});",
+    "description": "A component telling its caller something happened. The caller listens with `@name`."
+  },
+  "slot": {
+    "prefix": "slot",
+    "body": [
+      "<slot>",
+      "  ${1:<text>default content</text>}",
+      "</slot>"
+    ],
+    "description": "Where the caller's children land. What is written inside is the default."
+  },
+  "select input": {
+    "prefix": "rselect",
+    "body": "<input type=\"select\" r-model=\"${1:choice}\" :options=\"${2:options}\" />",
+    "description": "A combo box bound to a signal."
+  },
+  "checkbox input": {
+    "prefix": "rcheckbox",
+    "body": "<input type=\"checkbox\" r-model=\"${1:on}\" />",
+    "description": "A checkbox. Its live state is matched by `:checked`."
   }
 }
