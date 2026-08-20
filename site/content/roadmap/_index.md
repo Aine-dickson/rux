@@ -1401,6 +1401,12 @@ way. This milestone is where Rux stops being stock rhai.
    rather than the stale 0.2.1 that was packaged earlier. Open VSX is still
    unresolved and is not a blocker.
 
+   **v0.7 ships 0.4.0**, the listing's second version. Everything between 0.3.1
+   and 0.4.10 was local `dev-install.sh` churn during v0.7 testing and reached
+   nobody, so the public line reads 0.3.0 then 0.4.0. It adds hover, go to
+   definition, an outline, completions drawn from the open document, and a
+   component tag that no longer takes the same colour as a built-in element.
+
 9. **Recipes, keyed by what you are building.** ✅ **BUILT 2026-08-19**, at
    `/recipes/`: a message list, a tab bar and a modal, each a working file under
    `examples/recipes/` and each under test.

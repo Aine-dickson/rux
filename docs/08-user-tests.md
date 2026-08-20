@@ -194,6 +194,254 @@ a limit, it was four silent wrong answers and a divergence nobody had noticed.
 | A guard that is syntactically fine and blows up when it runs | headless | **Found a fail-open hole, from a question rather than a test.** Asked whether guards not being compiled at load was a problem or a choice; checking properly showed the compile gap was only half of it. `guard="user.is_admin"` with `user` null warned into the overlay **and let the navigation through**, so a broken auth guard admitted everyone and the app looked fine. A failing guard refuses now, the user's call, and it is the one place in Rux where a failing expression has no benign fallback |
 | A refused navigation's warning | headless | **Found a gap while testing.** A refused navigation does no rebuild, and the rebuild is what drains the warning sinks, so a circle of redirects raised a warning that nothing would ever read and the screen simply did not change. The refusal path drains them itself now |
 
+### The playground against the v0.7 candidate (2026-08-19)
+
+Driving the site locally while building an app against the v0.7 candidate.
+
+| Case | Hardware | Outcome |
+|---|---|---|
+| Paste `examples/recipes/message-list.rux` into `/playground/` | desktop, browser, local `zola serve` | **Found a mismatch that is live on the deployed site, not a local artifact.** `Unknown operator: '++'` at line 12. The playground is pinned to the latest *release* tag by `site.yml`; `/recipes/` and `/reference/` describe the **tip**. So a recipe copied from the page it is documented on fails in the tool sitting next to it |
+| How the failure reads | desktop, browser | The error is large, red, and says the operator does not exist. The version, `v0.6.1`, and the words "error, showing last good" are small grey text in the opposite corner. Nothing connects the two, so it reads as a broken example rather than an old runtime |
+| How much of the recipes section this covers | reading the three files | **All of it.** Every recipe has a `fn` body that writes a signal, which needs v0.7 lexical scoping; `message-list` also uses `++` and `query()`. Fixing the operator alone would not make one of them run. The recipes are not partly ahead of the playground, they are entirely ahead of it |
+| Rebuild the bundle from the branch and reload | desktop, browser | Passed. `cargo build -p rux-web --target wasm32-unknown-unknown --profile wasm-release` then `wasm-bindgen --target web --no-typescript --out-dir site/static/wasm …` puts `0.7.0-dev` behind the badge and the recipe runs. `site/static/wasm/` is gitignored, so this is a local override and changes nothing about what deploys |
+
+**Settled the same day, by the user: local builds track the tip, CI builds
+track the tag.** `site.yml` had said the playground runs the last release "so it
+demonstrates what /learn and /reference describe instead of unreleased work".
+That reasoning holds for `/learn`, which tracks releases, and was false for the
+other two: `/reference/` is generated from `docs/05-as-built.md`, which
+describes the tip, and `/recipes/` tracks the tip by design.
+
+`site/build-playground.sh` is now the one implementation of the build.
+`--from-tag` is what CI passes, so the deployed site still shows what a visitor
+can install; a developer running it bare gets the tip, so the recipes they are
+writing run in the playground beside them. The two modes cannot drift on
+anything except the flag, which is the point of there being one script.
+
+Two things the script does that the inline CI step did not: it reads
+wasm-bindgen's version out of **the lockfile of the tree being built** (under
+`--from-tag` that is the tag's lockfile, not main's, and an older tag can
+resolve an older wasm-bindgen), and it confirms the emitted binary actually
+carries the version it was asked to build. A wasm-bindgen step that silently
+reuses a stale `--out-dir` is otherwise indistinguishable from a successful one,
+which is the exact confusion this whole arrangement exists to end.
+
+### "The whole file" was not the whole file (2026-08-19)
+
+Driving the message-list recipe in the playground on the v0.7 bundle. The user's
+read was that the output "isn't what a desktop window would give us".
+
+| Case | Hardware | Outcome |
+|---|---|---|
+| The recipe, as the page offers it, in the playground | desktop, browser | No bubbles, no thread panel, `.who` not blue, composer spread edge to edge. Nothing like the recipe it illustrates |
+| **The same source in a desktop window** | desktop, window, `rux.exe` from the branch | **Identical, pixel for pixel.** So the playground is faithful and the renderer is fine; the source is what differs. This is the measurement that turned a suspected wasm-fidelity bug into a documentation bug in one step |
+| The repo's `examples/recipes/message-list.rux` in a window | desktop, window | The recipe as intended: bubbles, panel, right-aligned `.mine`, blue `.who`, the reply button |
+| Diffing the two sources | reading | The page's fence, headed **"The whole file"**, is **53 lines of a 179-line file**. No `.app` rule, no `.title` / `.lead`, no bubble backgrounds, no reply button. The prose three lines below said so, and nobody reads a caveat under a heading that says "whole" |
+| Which other pages do this | reading all of `site/content` | Only this one. `modal` and `tab-bar` show snippets throughout and never claim otherwise, and the three `/learn/` fences are self-contained documents |
+
+**Why it stopped being a nit.** It was a documentation imprecision for as long as
+a fence was something you read. It became a defect the day every fence grew a
+Copy button and a Try it link: both hand the fence straight to the playground,
+so a reader copying "the whole file" gets an unstyled screen that looks exactly
+like a broken renderer.
+
+**Fixed**: `site/sync-examples.sh` fills any fence marked
+`<!-- FROM: <path> -->` from that file, `--check` fails on drift, and
+`gate_docs_synced` runs it. The examples are already under test, so a
+hand-copied second version on the page was a copy of tested code that nothing
+tested. Same drift this repo has now been bitten by three times: the extension's
+void-tag list, the site's grammar copy, and this.
+
+**Method note.** The window capture walked straight into the trap
+[[driving-the-window-headlessly]] already records: a `$hwnd` named `$h` collides
+with a `-H` height parameter, because PowerShell variable names are
+case-insensitive. The window was sized to the handle value and clamped to 65535
+tall, and the capture "succeeded".
+
+### Writing a real app against the 0.4.0 extension (2026-08-19)
+
+The user built a WhatsApp-shaped header in their own workspace, which is the
+first time the extension has been driven by someone writing Rux rather than by
+its own tests. Four findings, none of which any test had an opinion about.
+
+| Case | Outcome |
+|---|---|
+| Typing a `justify-content` value | The values **were** offered, buried among `script`, `signal`, `slot`, `sticky`, `style`. All 31 snippets were contributed statically through `package.json`, which has no concept of a section, so every one was offered in every section. A working value list read as a broken one |
+| A script error's squiggle | Drawn at **line 1 of the file** while the message said "(line 1, position 19)" and the error was on line 26. `rux check --format json` reported `"line": null`: the position existed only as prose inside the sentence, and it was **script-relative** |
+| `signal()` with no argument | "Function not found: signal ()" for a function that plainly exists. `rux_phrasing` has translated this into Rux's vocabulary since it was written, and was applied to every *expression* failure and never to the *load* one |
+| Completing a name the file declared | Nothing. The vocabulary knew every name the runtime provides and none the author had just written, so the list went quiet exactly where it should have been most useful |
+
+**All four fixed.**
+
+- Snippets are served from the completion provider, filtered by section, and a
+  test asserts every one is placed. The `contributes.snippets` entry is gone.
+- `ScriptError` carries rhai's position; `extract_imports` now leaves a blank
+  line where it strips a `use` so the numbers still line up (it dropped the line
+  before, shifting everything below by one); `Document::load_checked` adds
+  `Sfc::script_line`, which had existed and never been read by anything. The
+  mapping **refuses** to place a position past the end of the document's own
+  script, because past that point the compiled text is appended component
+  functions and a confident wrong number is worse than none.
+- `explain` is applied to load errors, so it reads "there is no function
+  `signal` taking 0 arguments" at 12:19.
+- The editor scans the document for `let` / `computed` / `fn`, ranks those above
+  everything the runtime provides, and offers them in `<script>`, in `{{ … }}`,
+  in `:bound` attributes and in handlers. An `r-for` row variable comes with
+  them. After a `.`, an element handle from `query()` offers its own members and
+  everything else offers the string and array methods.
+
+**An open design question for the user**, not a defect: `signal()` with no
+argument is an error. `signal("")` is the fix and the message now says so, but
+whether an empty `signal()` should mean an empty value is a call worth making
+rather than leaving to whoever hits it next.
+
+**Seen once and not reproduced**: one `cargo test` run reported 1 failure in a
+12-test suite, and seven subsequent runs of the same combination were clean.
+Not diagnosed. The warning sinks are process-wide and `check_file` already
+clears them for exactly that reason, so a parallel-run race is the suspicion and
+not more than that.
+
+### The extension never activated (2026-08-20)
+
+Found while the user was driving the 0.4.x extension in their own app. Six
+rounds of "the fix does not work" against code that was demonstrably correct
+when called directly.
+
+**`activationEvents` was absent from `package.json`, and had been since 0.3.0,
+the version published to the Marketplace.** With no activation event VS Code
+never calls `activate()`, so completions, hover, diagnostics, formatting and
+every command lived behind a function nothing invoked.
+
+**Why it stayed hidden for three versions:** the *declarative* contributions
+need no activation. The TextMate grammar coloured every file, and
+`contributes.snippets` answered completions from a static JSON list. Together
+those look exactly like a working, if thin, extension. The user's first report
+this session, "no CSS completions, just `script`/`signal`/`slot`/`sticky`", was
+that static snippet list being the **only** thing answering. Removing the static
+snippets in favour of a section-aware provider took even that away, which is why
+the symptom got worse right after a fix that was correct.
+
+**The lesson is about the evidence, not the bug.** Every check that was run
+(unit tests, driving the provider through a stand-in for the VS Code API,
+inspecting the installed files on disk) tested code that was never reached. The
+one check that would have caught it was asking whether `activate()` ran at all.
+A provider verified in isolation says nothing about whether the editor calls it.
+
+Also fixed in the same pass, all found by the user:
+
+| Finding | Fix |
+|---|---|
+| A dot on a value of unknown type offered `charAt`, `map`, `join`. `let handle = setInterval(2000) { … }` is a timer handle | The receiver's kind is inferred from its declaration, and **unknown offers nothing**. Guessing endorses calls that cannot work, the same failure as offering an unhonored CSS property |
+| An older `rux` on PATH silently stripped capabilities the extension shipped with | `current()` was `live \|\| baked`, all or nothing. It merges per field now, so a binary built before a feature cannot remove it |
+| `computed` was not colourable as a keyword | It sat in the same grammar rule as `signal(` and `query(`, which ends in a `(?=\s*\()` lookahead. A declaration has no parenthesis. `effect { … }` had it too |
+| A template literal's text and its `${…}` looked identical | Backtick strings were not strings at all in the grammar. Now a string, with the holes highlighted as code |
+| CSS property help said only "honored by the runtime" | All 97 describe what they do, with a worked example, gated so none can be added undocumented |
+| No selector completion in `<style>` | `.` and `#` offer what the template actually uses; a bare word offers element tags |
+| `use` and selectors gave no hover | Both answer now, and a selector says when **nothing in the template has it**, which is the silent dead-rule case |
+
+**Method note, recorded because it cost the most.** Editing JavaScript through a
+shell heredoc turned `` in a regex into a literal backspace (U+0008) three
+separate times. The file parsed, the regex compiled, and it matched nothing.
+`editors/vscode/test/sources.test.js` fails on any stray control character now.
+
+### Three extension symptoms still open at 0.4.8 (2026-08-20)
+
+Left open deliberately rather than closed on an assumption. The user reports,
+after a confirmed 0.4.8 install: component tags still coloured as elements,
+`length` still showing the `query()` text, and no hover on a declared variable.
+
+**None of the three reproduces here.** Driven through the registered providers
+against the user's own file, `search_item` hovers as a signal holding an array,
+`length` reads from the value methods, and the grammar scopes `<side-panel>` as
+a component and `<view>` as an element.
+
+**The clue worth starting from:** the component colour is pure TextMate grammar.
+It needs no activation, no binary, and no provider. A grammar change failing to
+land while a behavioural one apparently lands says the editor is not loading the
+artifact that was installed, and points away from the features entirely.
+
+Ruled out along the way, each having been a genuine cause earlier:
+`activationEvents` absent since 0.3.0; a same-version reinstall not replacing a
+running extension; an uninstall leaving its directory behind; and a stale `rux`
+on PATH overriding the extension's vocabulary per field.
+
+**What this cost, and why:** more than six rounds of "the fix does not work"
+against fixes that were real. Every verification ran against the working tree or
+an isolated provider call, and neither is what the editor loads. No evidence was
+ever collected from the user's side until a diagnostic command was written, far
+too late. `scripts/dev-install.sh` now rebuilds the binary, regenerates the
+vocabulary, bumps the version, wipes the old install and reinstalls in one step,
+and `--check` reports whether the four moving parts agree.
+
+### The three extension symptoms, all closed (2026-08-20)
+
+The first of the three above is closed, and the answer rules out the theory the
+entry above it was built on.
+
+The grammar had been scoping component tags as `entity.name.tag.component.rux`
+since 0.4.8, and that is a correct, distinct TextMate scope. It was reaching the
+editor the whole time. **A theme resolves a scope through its prefixes**, and no
+stock theme has ever heard of `.component`, so every one of them matched the
+`entity.name.tag` rule underneath and painted `<header/>` exactly the colour of
+`<screen>`. In Abyss, the theme in use, both came out `#225588`.
+
+So the artifact was loading. The distinction existed in the grammar file, in the
+crate's scope table, and on the website. It existed nowhere on screen, in the
+one place it had been asked for.
+
+Components are now scoped `support.class.component.rux`, which is what Vue and
+Svelte use and what themes colour on its own.
+
+**Why every test passed through this.** `rux-highlight` resolves a scope by
+longest matching prefix in its own table, where `entity.name.tag.component` duly
+beat `entity.name.tag`. Rux's renderer and a VS Code theme resolve the same
+scope by opposite rules, so the crate's tests could not have caught it and the
+site was genuinely right the whole time. There is now a test that reads the
+grammar directly and refuses a component scope that begins with the element
+scope, whatever either happens to be.
+
+**The other two, and they were one bug.** No hover on a declared variable and no
+completion of one had the same cause, found by sweeping hover across every
+offset of the user's real files rather than sampling a few: `declarations()`
+returned nothing at all on either file.
+
+The three declaration patterns in `locals.js` are anchored with `$`. In
+JavaScript, `$` without the `m` flag matches at the end of the string or before
+a final newline, and never before a carriage return; `.` does not match one
+either, so the lazy group in the `let` pattern could not step over it to reach
+the anchor. The section body was split on the newline alone, so every line of a
+CRLF file arrived with a carriage return still on it and **not one declaration
+in the file matched**. Completion offered only the globals, hover answered
+nothing on a name the author had just typed, and no error was raised anywhere.
+`.rux` files on Windows are CRLF, which is to say this was the normal case and
+not an edge of it.
+
+The outline kept working throughout, and that was the tell nobody read: it scans
+with `/m` and no `$`, so it was the one feature the carriage return could not
+reach.
+
+**Why the whole suite passed.** Every fixture in it was written in a JS string
+literal with `
+`. A fixture set that only spells documents one way cannot test
+the way the users' documents are actually spelled. `test/line-endings.test.js`
+now runs declarations, inference, completion, hover and loop scoping over the
+same document in both endings, and asserts the two agree; six of its cases fail
+without the fix.
+
+**And the verification was worse than the bug.** This session reported the two
+as not reproducing, on the strength of a harness run that normalised the endings
+away: a string replace meant to disable that normalisation silently did not
+match, the output looked the same as the run before it, and it was read as
+proof. An unasserted edit to a test harness is not evidence. The instruction is
+now: reproduce from the user's file bytes, and assert that the bytes under test
+are the bytes on disk.
+
+**A second lying instrument, found on the way.** `dev-install.sh --check` reported
+0.4.8 installed while VS Code was running 0.4.9. It listed the extensions
+directory and took the first entry, and an install leaves the previous version's
+directory behind. It now reads VS Code's own `extensions.json`, and names the
+leftovers rather than being fooled by them.
+
 ## Standing gaps
 
 Cases nothing here can currently exercise. They are the shape of what v0.8 has
