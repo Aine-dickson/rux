@@ -435,6 +435,18 @@ const SCOPES: &[(&str, &str)] = &[
     ("keyword", "hl-keyword"),
     ("storage", "hl-keyword"),
     ("entity.name.tag", "hl-tag"),
+    // A component tag is somebody's file, not the language. Rux's elements are
+    // a closed set, so the grammar can tell them apart without reading the
+    // `use` lines, and the distinction is worth a colour: it is the difference
+    // between markup you can look up in the reference and markup you have to
+    // go and open.
+    //
+    // `support.class`, not `entity.name.tag.component`, because a TextMate
+    // scope inherits every rule written for its prefixes. Here that only cost
+    // an entry in this table; in VS Code it cost the feature, because the
+    // theme matched `entity.name.tag` and coloured a component exactly like a
+    // `<view>`.
+    ("support.class.component", "hl-component"),
     ("entity.name.function", "hl-function"),
     // `use components::header;`. The grammar gives this its own scope so a real
     // editor theme can colour a namespace as a namespace; here it takes the tag
