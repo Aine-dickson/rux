@@ -2385,6 +2385,32 @@ pub fn honored_properties() -> &'static [&'static str] {
     HONORED_PROPERTIES
 }
 
+/// The pseudo-classes a selector may name, for the same reason
+/// [`honored_properties`] is public: the editor completes `:` in a selector
+/// from this, and an unknown pseudo-class fails closed (it matches nothing),
+/// so offering one that does not exist would be offering a rule that silently
+/// never applies.
+///
+/// [`Pseudo::parse`] is the owner. `honored_pseudo_classes_all_parse` below
+/// holds the two in step, which is the same arrangement `is_honored` and
+/// `HONORED_PROPERTIES` have.
+pub fn honored_pseudo_classes() -> &'static [&'static str] {
+    HONORED_PSEUDO_CLASSES
+}
+
+const HONORED_PSEUDO_CLASSES: &[&str] =
+    &["hover", "focus", "active", "checked", "current", "enter-from", "leave-to"];
+
+/// The properties `transition` can name, in the order `all` expands them.
+///
+/// Owned by [`rux_layout::AnimProp`], which is where the interpolation for each
+/// one lives, so this is a projection of that list rather than a second copy.
+/// `all` is prepended because it is legal to write and is not a variant of the
+/// expansion.
+pub fn animatable_properties() -> Vec<&'static str> {
+    std::iter::once(AnimProp::All.name()).chain(AnimProp::EVERY.iter().map(|p| p.name())).collect()
+}
+
 /// Warn, once per property name, for the life of the process, that a parsed
 /// declaration is not honored. Deduped so a whole-tree rebuild (which reparses
 /// every sheet) doesn't repeat the same line on every keystroke.
@@ -5784,6 +5810,39 @@ mod tests {
     use super::{build_styled_tree, build_styled_tree_tracked, interpolate_tracked, interpret, Len, Locals};
     use rux_script::{Builder, Engine};
     use std::collections::HashMap;
+
+    /// `honored_pseudo_classes` is what the editor completes `:` from, and
+    /// `Pseudo::parse` is what actually matches. A name in the first that the
+    /// second does not know would be a completion for a rule that never fires,
+    /// which is the one failure mode the whole vocabulary arrangement exists to
+    /// prevent.
+    #[test]
+    fn honored_pseudo_classes_all_parse() {
+        use super::{honored_pseudo_classes, Pseudo};
+        for name in honored_pseudo_classes() {
+            assert!(
+                !matches!(Pseudo::parse(name), Pseudo::Unknown(_)),
+                "`:{name}` is offered as a completion and `Pseudo::parse` does not know it"
+            );
+        }
+        assert!(
+            matches!(Pseudo::parse("first-child"), Pseudo::Unknown(_)),
+            "a pseudo-class Rux does not implement must still parse as Unknown"
+        );
+    }
+
+    /// The same pairing for `transition`'s values.
+    #[test]
+    fn animatable_properties_all_parse() {
+        use super::{animatable_properties, parse_anim_prop};
+        for name in animatable_properties() {
+            assert!(
+                parse_anim_prop(name).is_some(),
+                "`transition: {name}` is offered and `parse_anim_prop` rejects it"
+            );
+        }
+        assert!(parse_anim_prop("float").is_none());
+    }
 
     /// The pointer attributes reach the node, in the vocabulary's order rather
     /// than the order they happen to be written, and an `r-for` local is baked
