@@ -390,7 +390,7 @@ EOF
 # publish: crates.io, from the tag and nothing else
 # ---------------------------------------------------------------------------
 #
-# The eleven published crates, in dependency order. `cargo publish --dry-run`
+# The twelve published crates, in dependency order. `cargo publish --dry-run`
 # resolves against the *real* index, so a crate cannot be checked until
 # everything it depends on is genuinely up: publishing is a staircase, not a
 # batch, and each layer waits for the one below to appear.
@@ -493,7 +493,7 @@ cmd_publish() {
   if (( execute )); then
     cat <<EOF
 
-  All eleven are up. Check the rendered page for ruxlang: it is the one crate
+  All twelve are up. Check the rendered page for ruxlang: it is the one crate
   with a readme, and it is what anyone finding Rux by search reads first.
       https://crates.io/crates/ruxlang
 EOF
