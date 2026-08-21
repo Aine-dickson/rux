@@ -1,0 +1,294 @@
+<template>
+  <screen class="app">
+    <text class="title">enter and leave</text>
+    <text class="hint">Tap a button · an element that arrives or departs is animated on its way</text>
+
+    <view class="row">
+      <view class="btn" @tap="panel = !panel">
+        <text class="btn-text">toggle the panel</text>
+      </view>
+      <view class="btn" @tap="banner = !banner">
+        <text class="btn-text">toggle the banner</text>
+      </view>
+    </view>
+
+    <!-- `r-transition` says this element's arrival and departure are animated.
+         What the two sides look like is CSS, on `:enter-from` and `:leave-to`,
+         and how long they take is the element's own `transition`. -->
+    <view class="panel" r-if="panel" r-transition>
+      <text class="panel-title">a panel</text>
+      <text class="panel-body">It slides up and fades in on the way in, and back down on the way out. Nothing here knows a swap is happening: the two sides are ordinary rules, and the walk between them is the same transition machinery a hover uses.</text>
+    </view>
+
+    <!-- A swap can be driven by something other than the clock. `:r-transition`
+         hands progress to the author, 0 to 1, and a `@drag` writes it, so the
+         card follows the finger. Let go past half way and it commits; let go
+         short of it and the swap runs backwards and the card comes home. -->
+    <view class="card" r-if="card" :r-transition="dismiss"
+    @drag="onDrag(event)">
+    <text class="card-title">drag me sideways</text>
+    <text class="card-body">Past half way, this card leaves. Short of it, it settles back where it started. The swap is the same one the buttons above use; only what is driving it is different.</text>
+  </view>
+  <!-- `gone`, not `!card`. Turning the condition off is what opens the swap, so
+       it goes false the instant the drag starts and anything reading it would
+       appear while the card is still on screen being dragged. What this button
+       is about is the swap having *committed*. -->
+  <view class="restore" r-if="gone" @tap="card = true; gone = false; dismiss = null">
+    <text class="btn-text">bring the card back</text>
+  </view>
+
+  <!-- A chain animates branch by branch, and both branches are really there
+       while the swap runs, so they can cross over. The wrapper is what makes
+       that a crossover rather than a queue: a departing box with no inset keeps
+       the place it would have had, and with both branches live the place the
+       `r-else` would have had is *below* the `r-if`. Pinning the leaver to the
+       wrapper's own origin is what puts the two in the same spot.
+
+       The router does not need this only because it builds the outgoing page
+       first, so the page on its way out is the one standing at the top. -->
+  <view class="banners">
+    <view class="banner good" r-if="banner" r-transition>
+      <text class="banner-text">saved</text>
+    </view>
+    <view class="banner idle" r-else r-transition>
+      <text class="banner-text">nothing to save</text>
+    </view>
+  </view>
+
+  <!-- On a row, `r-transition` needs `r-key` on the same element and says so
+       if it is missing: without a key there is nothing to hold a departing row
+       by, and a removal and a reorder are the same picture. Take one from the
+       middle and watch where it leaves from. -->
+  <text class="hint">Tap a task to drop it. Take one from the middle, not the end.</text>
+  <view class="list">
+    <view class="task" r-for="t in tasks" r-key="t.id" r-transition @tap="drop(t.id)">
+      <text class="task-text">{{ t.text }}</text>
+    </view>
+  </view>
+</screen>
+</template>
+
+<style>
+  /* The example outgrew the window once it had a list in it, so it scrolls.
+     Everything below has to be reachable to be driven. */
+
+  .app {
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+    padding: 32px;
+    background: #1e1e2e;
+    overflow-y: auto;
+  }
+
+  .title { color: #cdd6f4; font-size: 22px; font-weight: 700; }
+  .hint { color: #6c7086; font-size: 13px; }
+  .row { display: flex; align-items: center; gap: 12px; }
+
+  .btn {
+    padding: 10px 16px;
+    background: #313244;
+    border-radius: 8px;
+    transition: background 150ms ease-out;
+  }
+
+  .btn:hover { background: #45475a; }
+  .btn-text { color: #cdd6f4; font-size: 14px; }
+  /* The element's own `transition` is what a swap lasts. One place to write a
+     duration, so the swap and the walk cannot disagree about it. */
+
+  .panel {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 20px;
+    background: #313244;
+    border-radius: 12px;
+    opacity: 1;
+    transform: translateY(0px);
+    transition: opacity 300ms ease-out, transform 300ms ease-out;
+  }
+
+  /* Where it comes in from, and where it goes out to. Both are just styles. */
+  .panel:enter-from { opacity: 0; transform: translateY(-16px); }
+  .panel:leave-to { position: absolute; opacity: 0; transform: translateY(-16px); }
+  .panel-title { color: #cdd6f4; font-size: 16px; font-weight: 700; }
+  .panel-body { color: #a6adc8; font-size: 14px; line-height: 20px; }
+
+  .card {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    max-width: 420px;
+    padding: 20px;
+    background: #45475a;
+    border-radius: 12px;
+    opacity: 1;
+    transform: translateX(0px);
+    transition: opacity 250ms ease-out, transform 250ms ease-out;
+  }
+
+  /* Under a bound driver the duration above is not what decides the pace, the
+     finger is. It still says which properties take part, and it takes over
+     again when the drag lets go. */
+  /* Out of the flow on the way out, so the card does not hold its space open
+     while it leaves and whatever follows it does not wait for it. Naming no
+     inset keeps it exactly where it stood. */
+  /* Deliberately still in the flow, unlike the router's pages. Taking a box out
+     of the flow hands its space over at the *start* of the swap, which is right
+     when something is arriving to fill it and wrong when nothing is: everything
+     below would jump up while the card is still sitting there being dragged.
+     It keeps its place until it commits. */
+  .card:leave-to { opacity: 0; transform: translateX(320px); }
+  .card:enter-from { opacity: 0; transform: translateX(320px); }
+  .card-title { color: #cdd6f4; font-size: 16px; font-weight: 700; }
+  .card-body { color: #bac2de; font-size: 14px; line-height: 20px; }
+
+  .restore {
+    padding: 10px 16px;
+    background: #313244;
+    border-radius: 8px;
+    max-width: 200px;
+  }
+
+  /* The box the two branches share. It needs a height of its own, because
+     while the swap runs one of the two is out of the flow and the other is
+     arriving, and a wrapper that hugged its content would change height under
+     them. */
+  /* `flex-shrink: 0` because the box holds no content of its own: both banners
+     are out of the flow, so a shrunk wrapper would let them spill over whatever
+     came next rather than getting shorter with it. */
+
+  .banners {
+    position: relative;
+    height: 44px;
+    width: 100%;
+    flex-shrink: 0;
+  }
+
+  .banner {
+    position: absolute;
+    padding: 12px 16px;
+    border-radius: 8px;
+    opacity: 1;
+    transform: translateX(0px);
+    transition: opacity 250ms ease-out, transform 250ms ease-out;
+  }
+
+  .banner-text { color: #1e1e2e; font-size: 14px; font-weight: 700; }
+  .good { background: #a6e3a1; }
+  .idle { background: #6c7086; }
+  /* The two branches enter and leave in opposite directions, so they slide
+     past one another rather than both arriving from the same side. */
+  .good:enter-from { opacity: 0; transform: translateX(24px); }
+
+  .good:leave-to {
+    top: 0;
+    left: 0;
+    opacity: 0;
+    transform: translateX(-24px);
+  }
+
+  .idle:enter-from { opacity: 0; transform: translateX(-24px); }
+
+  .idle:leave-to {
+    top: 0;
+    left: 0;
+    opacity: 0;
+    transform: translateX(24px);
+  }
+
+  .list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    max-width: 420px;
+  }
+
+  .task {
+    padding: 12px 16px;
+    background: #313244;
+    border-radius: 8px;
+    cursor: pointer;
+    opacity: 1;
+    transform: translateX(0px);
+    transition: opacity 260ms ease-out, transform 260ms ease-out;
+  }
+
+  .task:hover { background: #45475a; }
+  .task-text { color: #cdd6f4; font-size: 14px; }
+  /* Out of the flow on the way out, which is the opposite call from the card
+     above and for the opposite reason. Nothing is arriving to fill a dropped
+     row, so the rows below should close the gap while the departing one is
+     still crossing it. Left in the flow they would wait, and the whole list
+     would jump the moment it committed.
+
+     Naming no inset is what keeps it where it sat: a box taken out of the flow
+     holds the place it would have had, so a row removed from the middle leaves
+     from the middle rather than from the end of the list. */
+  .task:leave-to { position: absolute; opacity: 0; transform: translateX(72px); }
+  .task:enter-from { opacity: 0; transform: translateX(-72px); }
+</style>
+
+<script>
+  let panel = signal(true);
+  let banner = signal(false);
+  let card = signal(true);
+
+  /* Progress for the card's swap. A number between 0 and 1 puts the swap
+     exactly there; `null` hands it back to the clock, which is how a released
+     finger settles instead of snapping. */
+  let dismiss = signal(0);
+
+  /* Whether the card has actually left, as opposed to being mid-swap. */
+  let gone = signal(false);
+
+  /* Long enough that there is a middle to take a row out of. */
+  let tasks = signal([
+      #{ id: "tanks",   text: "check the tanks" },
+      #{ id: "heading", text: "log the heading" },
+      #{ id: "watch",   text: "wake the second watch" },
+      #{ id: "aerial",  text: "stow the aerial" },
+      #{ id: "log",     text: "close the log" },
+  ]);
+
+  /* Rebuilt rather than filtered. `filter` would be a method call, and a method
+     call does not capture the scope it was written in, so its closure could not
+     see `id`. A plain call does capture, which is what lets this one read and
+     write `tasks` at all. */
+  fn drop(id) {
+    let left = [];
+    for t in tasks {
+      if t.id != id {
+        left.push(t);
+      }
+    }
+    tasks = left;
+  }
+
+  fn onDrag(event) {
+    if event.phase == "start" {
+      /* Turning the condition off is what opens the swap. The card does not
+         disappear: the build keeps emitting it while the swap is pending, and
+         that is the whole point of a live pair. */
+      card = false;
+      dismiss = 0;
+    } else if event.phase == "move" {
+      let p = event.totalX / 240;
+      if p < 0 { p = 0; }
+      if p > 1 { p = 1; }
+      dismiss = p;
+    } else {
+      if dismiss > 0.45 {
+        dismiss = 1;
+        gone = true;
+      } else {
+        /* Changed its mind. The condition comes back, which reverses the swap,
+           and handing progress back to the clock walks it home from wherever
+           the finger let go. */
+        card = true;
+        dismiss = null;
+      }
+    }
+  }
+</script>

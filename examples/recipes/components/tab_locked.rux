@@ -1,0 +1,6 @@
+<template>
+  <view class="page">
+    <text class="page-title">sign in</text>
+    <text class="page-body">The guard on /sent sent you here instead. Unlock it above and try the tab again: the guard is asked before the history moves, so /sent never entered it and Back does not walk into a page you were refused.</text>
+  </view>
+</template>

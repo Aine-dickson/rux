@@ -289,6 +289,66 @@ const BAR_MIN_THUMB: f32 = 24.0;
 /// One line of scroll travel, the wheel's unit, and the arrow keys'.
 const LINE: f32 = 24.0;
 
+/// A press in progress on an element that declared pointer handlers.
+///
+/// Held from the press to the release, because every gesture except `@press` is
+/// decided by what happens *after* the finger lands: a release is a release, a
+/// long press is one that stayed still, a swipe is one that travelled and left,
+/// and a drag is one that is still travelling.
+#[derive(Clone, Debug)]
+struct GesturePress {
+    /// The element's top-left in logical px, so every coordinate handed to a
+    /// handler is relative to the element it was written on.
+    origin: (f32, f32),
+    handlers: Vec<(rux_layout::Gesture, String)>,
+    instance: Option<String>,
+    /// Where the press landed, in window-global logical px.
+    start: (f32, f32),
+    /// Where it was on the previous move, so a handler can be told how far it
+    /// came *this* event as well as how far in total. Velocity and flick
+    /// detection want the former; following a finger wants the latter.
+    last: (f32, f32),
+    at: Instant,
+    /// Whether `@drag` has already been told the drag began. A drag reports
+    /// start, then moves, then end, and the start is not the press: a press
+    /// that never moves is not a drag at all.
+    dragging: bool,
+    /// A long press fires once. Without this it would fire on every wake-up
+    /// while the finger rested.
+    long_fired: bool,
+}
+
+/// The fields a drag or swipe adds: which part of the gesture this is, how far
+/// it has come in total, and how far it came this event.
+///
+/// Two distances rather than one, and named so they cannot be confused.
+/// `totalX` is measured from where the press landed, which is what following a
+/// finger wants: assign it and the thing tracks the hand with no bookkeeping.
+/// `moveX` is measured from the previous move, which is what velocity and flick
+/// detection want. Calling either of them `dx` invites each reader to assume the
+/// other one.
+fn drag_fields(
+    name: &str,
+    start: (f32, f32),
+    last: (f32, f32),
+    fx: f32,
+    fy: f32,
+) -> Vec<(String, rux_reactive::Value)> {
+    use rux_reactive::Value;
+    vec![
+        ("phase".to_string(), Value::Text(name.to_string())),
+        ("totalX".to_string(), Value::Number((fx - start.0) as f64)),
+        ("totalY".to_string(), Value::Number((fy - start.1) as f64)),
+        ("moveX".to_string(), Value::Number((fx - last.0) as f64)),
+        ("moveY".to_string(), Value::Number((fy - last.1) as f64)),
+    ]
+}
+
+/// How far a press has to travel to count as a swipe, in logical px, and how
+/// long it may take. A slow drag that ends far away is a drag, not a swipe.
+const SWIPE_DISTANCE: f32 = 40.0;
+const SWIPE_TIME: Duration = Duration::from_millis(600);
+
 /// Which axis a scrollbar (or a drag on one) belongs to.
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Axis2 {
@@ -348,11 +408,20 @@ fn bar_thumb(r: &ScrollRegion, offset: Offset, axis: Axis2) -> Option<(f32, f32,
     })
 }
 
+/// A layout `Transform` as a kurbo `Affine`, identity when there is none. The
+/// coefficients are already in the same order.
+fn to_affine(m: Option<rux_layout::Transform>) -> Affine {
+    match m {
+        Some(t) => Affine::new([t[0] as f64, t[1] as f64, t[2] as f64, t[3] as f64, t[4] as f64, t[5] as f64]),
+        None => Affine::IDENTITY,
+    }
+}
+
 /// Paint items for every visible scrollbar: a faint track with a lighter thumb,
 /// drawn over the content so a scroller's own clip can't eat them.
-fn scrollbar_paints(scrolls: &[ScrollRegion], offsets: &[Offset]) -> Vec<Paint> {
-    let track_bg = Rgba::new(1.0, 1.0, 1.0, 0.05);
-    let thumb_bg = Rgba::new(0.80, 0.84, 0.96, 0.35); // #cdd6f4 at 35%
+fn scrollbar_paints(scrolls: &[ScrollRegion], offsets: &[Offset], alpha: f32) -> Vec<Paint> {
+    let track_bg = Rgba::new(1.0, 1.0, 1.0, 0.05 * alpha);
+    let thumb_bg = Rgba::new(0.80, 0.84, 0.96, 0.35 * alpha); // #cdd6f4 at 35%
     let mut out = Vec::new();
     for r in scrolls {
         let offset = offsets.get(r.id).copied().unwrap_or_default();
@@ -394,7 +463,7 @@ fn scrollbar_paints(scrolls: &[ScrollRegion], offsets: &[Offset]) -> Vec<Paint> 
 /// ring on a row scrolled out of a list draws over whatever is above the list.
 /// The ring is allowed the 2px it sits outside its element by, so a focused row
 /// flush with the top of its container still shows one.
-fn focus_ring(item: &FocusItem, within: Option<&ScrollRegion>) -> Vec<Paint> {
+fn focus_ring(item: &FocusItem, within: Option<&ScrollRegion>, alpha: f32) -> Vec<Paint> {
     let ring = Paint::Rect(PaintRect {
         x: item.x - 2.0,
         y: item.y - 2.0,
@@ -403,7 +472,7 @@ fn focus_ring(item: &FocusItem, within: Option<&ScrollRegion>) -> Vec<Paint> {
         background: None,
         radius: [7.0; 4],
         border_width: 2.0,
-        border_color: Some(Rgba::new(0.54, 0.71, 0.98, 1.0)), // #89b4fa
+        border_color: Some(Rgba::new(0.54, 0.71, 0.98, alpha)), // #89b4fa
     });
     let Some(r) = within else { return vec![ring] };
     // Scrolled entirely out of view: draw nothing rather than a ring clipped to
@@ -685,6 +754,9 @@ const OVERLAY_LINE_H: f32 = 20.0;
 const OVERLAY_TITLE_H: f32 = 26.0;
 /// Warnings listed before the panel stops and says how many are left.
 const OVERLAY_MAX_WARNINGS: usize = 6;
+/// Printed lines get their own cap, so a chatty `print` in a binding cannot
+/// crowd out the warnings that share the panel with it.
+const OVERLAY_MAX_PRINTS: usize = 6;
 
 /// Paint items for the dev overlay: what is wrong with the document, drawn over
 /// the app.
@@ -713,8 +785,21 @@ fn overlay_paints(diag: &rux_runtime::Diagnostics, path: &Path, width: f32) -> O
     let ink = Rgba::new(0.95, 0.95, 0.97, 1.0);
     let muted = Rgba::new(0.78, 0.78, 0.84, 1.0);
 
+    // A panel that is only carrying `print` output is not reporting a problem,
+    // so it does not wear a problem's colours. Amber for a document with nothing
+    // wrong would train the eye to ignore amber.
+    let print_bg = Rgba::new(0.11, 0.14, 0.22, 0.97); // deep slate
+    let print_edge = Rgba::new(0.53, 0.71, 0.98, 1.0); // #89b4fa-ish
+    let print_ink = Rgba::new(0.72, 0.82, 0.99, 1.0);
+
     let is_error = diag.error.is_some();
-    let (bg, edge) = if is_error { (error_bg, error_edge) } else { (warn_bg, warn_edge) };
+    let (bg, edge) = if is_error {
+        (error_bg, error_edge)
+    } else if diag.warnings.is_empty() {
+        (print_bg, print_edge)
+    } else {
+        (warn_bg, warn_edge)
+    };
 
     // Wrap the message text to the panel width so a long error is readable
     // rather than clipped at the edge.
@@ -747,10 +832,30 @@ fn overlay_paints(diag: &rux_runtime::Diagnostics, path: &Path, width: f32) -> O
         ));
     }
 
-    let title = match (&diag.error, diag.warnings.len()) {
-        (Some(_), 0) => format!("rux: {} failed to load", file_name(path)),
-        (Some(_), n) => format!("rux: {} failed to load  ·  {n} warning(s)", file_name(path)),
-        (None, n) => format!("rux: {n} warning(s) in {}", file_name(path)),
+    // `print(…)` output, last, so a real problem is never pushed off the top of
+    // the panel by debugging chatter. Marked with `›` rather than the warnings'
+    // `•`, and inked differently, because the two lists mean opposite things:
+    // one is the document telling you it is broken, the other is you asking it a
+    // question.
+    let prints_shown = diag.prints.len().min(OVERLAY_MAX_PRINTS);
+    for line in &diag.prints[..prints_shown] {
+        lines.extend(
+            wrap_overlay(&format!("› {line}"), text_w).into_iter().map(|l| (l, print_ink)),
+        );
+    }
+    if diag.prints.len() > prints_shown {
+        lines.push((
+            format!("… and {} more printed (full list on stderr)", diag.prints.len() - prints_shown),
+            muted,
+        ));
+    }
+
+    let title = match (&diag.error, diag.warnings.len(), diag.prints.len()) {
+        (Some(_), 0, _) => format!("rux: {} failed to load", file_name(path)),
+        (Some(_), n, _) => format!("rux: {} failed to load  ·  {n} warning(s)", file_name(path)),
+        (None, 0, p) => format!("rux: {p} printed from {}", file_name(path)),
+        (None, n, 0) => format!("rux: {n} warning(s) in {}", file_name(path)),
+        (None, n, p) => format!("rux: {n} warning(s), {p} printed in {}", file_name(path)),
     };
     // The panel covers the app it is describing, and there was no way to move it
     // out of the way. It says so rather than leaving the gesture to be guessed
@@ -972,6 +1077,10 @@ struct App {
     /// Boxes styled by `:hover`/`:active`, from the most recent layout. Empty
     /// unless the document actually uses a pointer-state rule.
     states: Vec<StateRegion>,
+    /// Every laid-out node's box, keyed by tree path, from the most recent
+    /// layout. What turns a `query()` handle into a point, so `tap()` can be
+    /// dispatched through the same coordinate path a finger takes.
+    metrics: Vec<rux_layout::NodeMetrics>,
     /// Scroll offset per scrollable box, in tree order. Survives the rebuild
     /// that follows every state change, so a list doesn't jump back to the top
     /// when you tap something in it.
@@ -980,6 +1089,19 @@ struct App {
     bar_drag: Option<BarDrag>,
     /// Where the finger last was during a touch drag, in logical px.
     touch: Option<(f32, f32)>,
+    /// The pointer handlers of whatever is being pressed, and what has happened
+    /// to that press so far. `None` when nothing is held, or when the press
+    /// landed on something with no pointer handlers at all.
+    gesture: Option<GesturePress>,
+    /// When the held press becomes a long one, if anything is listening.
+    gesture_deadline: Option<Instant>,
+    /// Every finger currently down, in logical px, in the order they landed.
+    ///
+    /// A list rather than one position, because a hand has more than one finger
+    /// and a handler is handed all of them. The mouse contributes a single point
+    /// with id 0 while a button is held, so a handler written for a phone reads
+    /// the same on a desktop.
+    points: Vec<(u64, (f32, f32))>,
     /// The `r-model` of the currently focused input, if any.
     focused: Option<String>,
     /// The `r-key` of the row that input is in, when it is inside an `r-for`.
@@ -1043,6 +1165,20 @@ struct App {
     /// When the caret next toggles. `None` when no input is focused, so an idle
     /// window stays fully event-driven with no timer.
     blink_deadline: Option<Instant>,
+    /// Per-node memory of what each transitioned property is showing, and the
+    /// only thing that knows a style change should be walked rather than jumped.
+    ///
+    /// It lives here rather than in the document for the reason every other
+    /// per-frame fact does: a build throws the tree away and rebuilds it, so
+    /// anything remembering the *previous* frame has to outlive the tree.
+    anim: rux_runtime::Animator,
+    /// When the next animation frame is due. `None` when nothing is animating,
+    /// which is what lets an idle app go back to waiting on real events.
+    anim_deadline: Option<Instant>,
+    /// The zero the animator's clock counts from. The animator takes a plain
+    /// `f64` of milliseconds rather than an `Instant` so it stays testable and
+    /// works unchanged on the web.
+    epoch: Instant,
     /// Current pointer position (physical pixels).
     pointer: (f64, f64),
     /// Where the left button was pressed, if it is currently down.
@@ -1096,6 +1232,9 @@ impl App {
             scrolls: Vec::new(),
             offsets: Vec::new(),
             bar_drag: None,
+            gesture: None,
+            gesture_deadline: None,
+            points: Vec::new(),
             touch: None,
             focused: None,
             focused_row: None,
@@ -1116,10 +1255,14 @@ impl App {
                 .ok(),
             caret_visible: true,
             blink_deadline: None,
+            anim: rux_runtime::Animator::new(),
+            anim_deadline: None,
+            epoch: Instant::now(),
             pointer: (0.0, 0.0),
             press: None,
             cursor: CursorIcon::Default,
             states: Vec::new(),
+            metrics: Vec::new(),
             #[cfg(target_arch = "wasm32")]
             mirrored: None,
         }
@@ -1908,20 +2051,285 @@ impl App {
             .hits
             .iter()
             .rev()
-            .find(|h| h.contains(px as f32, py as f32))
-            .map(|h| (h.on_tap.clone(), h.instance.clone()));
+            // Only regions that actually have a `@tap`: an element with just
+            // `@drag` is hit-testable but is not a tap target, and letting it
+            // swallow the tap would hide the button underneath it.
+            .find(|h| h.on_tap.is_some() && h.contains(px as f32, py as f32))
+            .map(|h| (h.on_tap.clone().unwrap_or_default(), h.instance.clone(), (h.x, h.y)));
 
-        if let Some((src, instance)) = handler {
+        if let Some((src, instance, origin)) = handler {
             // Patch in place when the change is display-only; rebuild only when it
             // touches structure/attributes/input values. Either way, repaint.
             //
             // The instance travels with the handler because two instances of one
             // component carry identical handler text: the string alone cannot
             // say whose state to run it against.
-            if self.document.apply_handler_in(&src, instance.as_deref()) {
+            let event = self.pointer_event(fx, fy, origin);
+            if self.document.apply_handler_with_event(&src, instance.as_deref(), &event) {
                 self.request_redraw();
             }
+            self.adopt_element_requests();
         }
+    }
+
+    /// Begin tracking a press for the pointer handlers, and fire `@press`.
+    ///
+    /// Called from both the mouse and the touchscreen, with the position already
+    /// in logical pixels, so the two cannot drift apart in what a gesture means.
+    fn begin_gesture(&mut self, fx: f32, fy: f32) {
+        let found = self
+            .hits
+            .iter()
+            .rev()
+            .find(|h| !h.gestures.is_empty() && h.contains(fx, fy))
+            .map(|h| (h.gestures.clone(), h.instance.clone(), (h.x, h.y)));
+        let Some((handlers, instance, origin)) = found else {
+            self.gesture = None;
+            self.gesture_deadline = None;
+            return;
+        };
+        let listening_long = handlers.iter().any(|(g, _)| *g == rux_layout::Gesture::LongPress);
+        self.gesture = Some(GesturePress {
+            origin,
+            handlers,
+            instance,
+            start: (fx, fy),
+            last: (fx, fy),
+            at: Instant::now(),
+            dragging: false,
+            long_fired: false,
+        });
+        // Only armed when something is listening, so a page full of ordinary
+        // buttons still sleeps between events.
+        self.gesture_deadline = listening_long.then(|| Instant::now() + LONG_PRESS);
+        self.fire_gesture(rux_layout::Gesture::Press, fx, fy, Vec::new());
+    }
+
+    /// Follow a press that is moving: start or continue a drag, and give up on
+    /// the long press once the finger has wandered.
+    fn move_gesture(&mut self, fx: f32, fy: f32) {
+        let Some(press) = self.gesture.clone() else { return };
+        let travelled = (fx - press.start.0).hypot(fy - press.start.1);
+        if travelled > TAP_SLOP as f32 {
+            // It has moved, so it is no longer resting.
+            self.gesture_deadline = None;
+        }
+        if !press.handlers.iter().any(|(g, _)| *g == rux_layout::Gesture::Drag) {
+            return;
+        }
+        if !press.dragging {
+            if travelled <= TAP_SLOP as f32 {
+                return;
+            }
+            if let Some(g) = self.gesture.as_mut() {
+                g.dragging = true;
+            }
+            self.fire_gesture(
+                rux_layout::Gesture::Drag,
+                fx,
+                fy,
+                drag_fields("start", press.start, press.last, fx, fy),
+            );
+        } else {
+            self.fire_gesture(
+                rux_layout::Gesture::Drag,
+                fx,
+                fy,
+                drag_fields("move", press.start, press.last, fx, fy),
+            );
+        }
+        // After the dispatch, so this event's `moveX` is measured against where
+        // the pointer was when the *previous* one ran.
+        if let Some(g) = self.gesture.as_mut() {
+            g.last = (fx, fy);
+        }
+    }
+
+    /// End a press: `@release` always, then the one thing it turned out to be.
+    fn end_gesture(&mut self, fx: f32, fy: f32) {
+        let Some(press) = self.gesture.take() else {
+            self.gesture_deadline = None;
+            return;
+        };
+        self.gesture_deadline = None;
+        // Put it back for the duration of the dispatches below, so a handler
+        // reading the element's origin still gets the right frame.
+        self.gesture = Some(press.clone());
+
+        self.fire_gesture(rux_layout::Gesture::Release, fx, fy, Vec::new());
+
+        let (dx, dy) = (fx - press.start.0, fy - press.start.1);
+        if press.dragging {
+            self.fire_gesture(
+                rux_layout::Gesture::Drag,
+                fx,
+                fy,
+                drag_fields("end", press.start, press.last, fx, fy),
+            );
+        }
+        // A drag that ended as a flick is **also** a swipe. They are not rivals:
+        // a page that follows the finger still has to be told, at the end,
+        // whether the hand meant to throw it. Making them exclusive meant an
+        // element with both handlers could never fire the swipe, which is
+        // exactly what happened the first time this was tried by hand.
+        if dx.hypot(dy) >= SWIPE_DISTANCE && press.at.elapsed() <= SWIPE_TIME {
+            // The dominant axis decides, which is what makes a slightly diagonal
+            // flick still mean what the hand meant.
+            let direction = if dx.abs() > dy.abs() {
+                if dx > 0.0 { "right" } else { "left" }
+            } else if dy > 0.0 {
+                "down"
+            } else {
+                "up"
+            };
+            let mut extra = drag_fields("end", press.start, press.last, fx, fy);
+            // A swipe has no phases: it happens once, when it is already over.
+            extra.retain(|(k, _)| k != "phase");
+            extra.push(("direction".to_string(), rux_reactive::Value::Text(direction.to_string())));
+            self.fire_gesture(rux_layout::Gesture::Swipe, fx, fy, extra);
+        }
+        self.gesture = None;
+    }
+
+    /// Run the handler for one gesture, if the pressed element declared it.
+    fn fire_gesture(
+        &mut self,
+        kind: rux_layout::Gesture,
+        fx: f32,
+        fy: f32,
+        extra: Vec<(String, rux_reactive::Value)>,
+    ) {
+        let Some(press) = self.gesture.clone() else { return };
+        let Some((_, body)) = press.handlers.iter().find(|(g, _)| *g == kind) else { return };
+        let mut event = self.pointer_event(fx, fy, press.origin);
+        if let rux_reactive::Value::Map(fields) = &mut event {
+            fields.extend(extra);
+        }
+        if self.document.apply_handler_with_event(body, press.instance.as_deref(), &event) {
+            self.request_redraw();
+        }
+        self.adopt_element_requests();
+    }
+
+    /// What a handler is handed as `event`: where the pointer is, and every
+    /// finger that is down.
+    ///
+    /// Coordinates are **relative to the element the handler is on**, in logical
+    /// pixels, because that is the frame an author is thinking in: half way
+    /// across a card is `event.x > width / 2`, whatever the card's position on
+    /// screen. `touches` is the whole hand, in the same frame, so a finger
+    /// outside the element is simply negative rather than missing.
+    ///
+    /// A list even when there is one finger, and a mouse counted as one finger
+    /// with id 0. The shape does not change when a second finger arrives, which
+    /// is the point: pinch and rotate can be added later without rewriting what
+    /// every existing handler reads.
+    fn pointer_event(&self, fx: f32, fy: f32, origin: (f32, f32)) -> rux_reactive::Value {
+        use rux_reactive::Value;
+        let touches: Vec<Value> = self
+            .points
+            .iter()
+            .map(|(id, (x, y))| {
+                Value::Map(vec![
+                    ("id".to_string(), Value::Number(*id as f64)),
+                    ("x".to_string(), Value::Number((x - origin.0) as f64)),
+                    ("y".to_string(), Value::Number((y - origin.1) as f64)),
+                ])
+            })
+            .collect();
+        Value::Map(vec![
+            ("x".to_string(), Value::Number((fx - origin.0) as f64)),
+            ("y".to_string(), Value::Number((fy - origin.1) as f64)),
+            // The same point in the window's own frame. Needed whenever the
+            // element cannot be the frame of reference: a drag whose element is
+            // moving under the finger, or anything comparing two elements.
+            ("pageX".to_string(), Value::Number(fx as f64)),
+            ("pageY".to_string(), Value::Number(fy as f64)),
+            ("touches".to_string(), Value::List(touches)),
+        ])
+    }
+
+    /// Apply a `focus()` or `blur()` a handler asked for.
+    ///
+    /// Through `set_focus_range`, the shell's one focus funnel, rather than by
+    /// letting the document set its own focus directly. The document owns the
+    /// caret; the shell separately owns which input keystrokes reach, the IME
+    /// state, the blink timer and the text scroll. Setting only the first paints
+    /// a caret in an input that then ignores every key, which is exactly what
+    /// shipped until the window was driven by hand.
+    fn adopt_focus_request(&mut self) {
+        if let Some(request) = self.document.take_focus_request() {
+            self.set_focus_range(request);
+            self.request_redraw();
+        }
+    }
+
+    /// Apply everything a handler asked to do to an element: any `tap()` first,
+    /// then the focus it settled on.
+    ///
+    /// Taps are drained in a bounded loop because a synthetic tap runs a
+    /// handler, and that handler may tap something else. A button that taps
+    /// itself is a loop with no exit, so it is cut off with the same reasoning
+    /// (and the same wording) as the `emit` chain limit rather than hanging the
+    /// window.
+    ///
+    /// Focus is adopted *after* the taps, because a tap moves focus itself: a
+    /// handler that taps something and then focuses an input means the focus,
+    /// and applying them the other way round would let the tap overwrite it.
+    fn adopt_element_requests(&mut self) {
+        const MAX_TAP_DEPTH: usize = 8;
+        for round in 0.. {
+            let taps = self.document.take_taps();
+            if taps.is_empty() {
+                break;
+            }
+            if round >= MAX_TAP_DEPTH {
+                rux_runtime::warn_script(format!(
+                    "a tap() chain is still going after {MAX_TAP_DEPTH} rounds and has been \
+                     stopped; an element is probably tapping something that taps it back"
+                ));
+                break;
+            }
+            for path in taps {
+                self.synthesize_tap(&path);
+            }
+        }
+        self.adopt_focus_request();
+    }
+
+    /// Press an element as a finger would, at the centre of its box.
+    ///
+    /// Routed through the *same* `press_text` + `dispatch_tap` a real pointer
+    /// takes, rather than reaching for the element's `@tap` body directly. A
+    /// press is not one action: it follows a link, toggles a checkbox, opens a
+    /// select, moves keyboard focus and puts the caret in a text input, and
+    /// every one of those lives in a different place. Going through the pointer
+    /// path means a synthetic tap cannot drift from a real one, because it is a
+    /// real one.
+    ///
+    /// It hit-tests like a real tap too, so the topmost element at that point
+    /// wins. Tapping something covered by a dropdown taps the dropdown, exactly
+    /// as a finger would, and an element with no box in the last frame (hidden,
+    /// or never laid out) cannot be tapped at all.
+    fn synthesize_tap(&mut self, path: &[usize]) {
+        let Some(m) = self.metrics.iter().find(|e| e.path == path).cloned() else {
+            rux_runtime::warn_script(
+                "tap() was called on an element with no box on screen, so nothing was tapped"
+                    .to_string(),
+            );
+            return;
+        };
+        // `dispatch_tap` takes physical pixels and divides by the scale; the
+        // metrics are logical, so they have to be scaled back up on the way in.
+        let scale = self.scale();
+        let x = (m.x + m.width / 2.0) as f64 * scale;
+        let y = (m.y + m.height / 2.0) as f64 * scale;
+        // Press first, which is where a tap on a text input is handled and
+        // where a selection would start, then release, which is what runs a
+        // handler. Both halves, or tapping an input would move no caret.
+        self.press_text((x, y));
+        self.dispatch_tap(x, y);
+        self.request_redraw();
     }
 
     /// Apply a key to the focused input's bound signal, then rebuild + repaint.
@@ -2285,6 +2693,7 @@ impl App {
         match self.focusables.get(index).map(|f| f.kind.clone()) {
             Some(FocusKind::Activate { on_tap, instance }) => {
                 self.document.apply_handler_in(&on_tap, instance.as_deref());
+                self.adopt_element_requests();
                 self.request_redraw();
             }
             Some(FocusKind::Select { model, row, .. }) => {
@@ -2697,6 +3106,24 @@ impl App {
         // or a mouse button.
         #[cfg(target_arch = "wasm32")]
         self.sync_url();
+        // Transitions are folded in here, after the build that changed the
+        // styles and before the layout that measures them, so a box animating
+        // its width is laid out at the width it is actually showing. The
+        // animator hands back when it next needs a frame, or `None` to say the
+        // window can go back to sleep.
+        let now = self.epoch.elapsed().as_secs_f64() * 1000.0;
+        // Enter/leave first: a swap that has just finished stops its element
+        // being built, and there is nothing to interpolate into a node that is
+        // about to leave the tree. It rebuilds when one commits, which is also
+        // where the departing element's `unmounted` fires.
+        let swap_next = self.document.advance_swaps(now);
+        let next = match (self.anim.apply(&mut self.document.root, now), swap_next) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        };
+        self.anim_deadline = next.map(|ms| {
+            Instant::now() + Duration::from_secs_f64(ms.max(rux_runtime::FRAME_MS) / 1000.0)
+        });
         let caret_visible = self.caret_visible;
         // Split borrows so the text engine (used both to measure during layout
         // and to draw during paint) doesn't conflict with the render state.
@@ -2715,6 +3142,7 @@ impl App {
             scrolls,
             offsets,
             states,
+            metrics,
             overlay_dismissed,
             overlay_rect,
             caret,
@@ -2773,6 +3201,52 @@ impl App {
         // after the clamp, so what is stored is a position that exists.
         document.record_scroll(offsets);
 
+        // Hand this frame's geometry back, so a handler that runs before the
+        // next one can ask where things are. One frame stale by construction:
+        // these are the boxes currently on screen, which is what a script
+        // asking "where is this" means.
+        document.set_metrics(layout.metrics.clone());
+
+        // `scrollIntoView()`: nudge the containing scroller until the element is
+        // inside it. Applied here because the offsets are the shell's, and taken
+        // after `set_metrics` so a reveal asked for by the handler that just ran
+        // is resolved against the frame it was looking at.
+        let mut revealed = false;
+        for path in document.take_reveals() {
+            let Some(m) = layout.metrics.iter().find(|e| e.path == path) else {
+                continue;
+            };
+            // The innermost scroller containing it, matched against the
+            // scroller's *content* rather than the part of it on screen. See
+            // `containing_scroller`: the visible-rect test failed for exactly
+            // the element a reveal is usually asked about, the one below the
+            // fold, so a list that scrolled itself to its newest row did
+            // nothing at all.
+            let Some(at) =
+                rux_layout::containing_scroller(&layout.scrolls, offsets, m.x, m.y)
+            else {
+                continue;
+            };
+            let region = &layout.scrolls[at];
+            // The rect is already shifted by the current offset, so the
+            // correction is the overhang, not an absolute position.
+            let off = &mut offsets[region.id];
+            if m.y < region.y {
+                off.y -= region.y - m.y;
+            } else if m.y + m.height > region.y + region.height {
+                off.y += (m.y + m.height) - (region.y + region.height);
+            }
+            *off = off.clamp_to(region.max);
+            revealed = true;
+        }
+        // The corrected offset takes effect on the next layout, so ask for one.
+        // Through `state` rather than `self.request_redraw()`: `self` is already
+        // split-borrowed here so the text engine and the render state can be
+        // held at once.
+        if revealed {
+            state.window.request_redraw();
+        }
+
         // Keep the focused single-line input's caret inside its box.
         //
         // Done here, once per frame, rather than at each place the caret moves:
@@ -2811,17 +3285,36 @@ impl App {
         // Scrollbars go over the content: they're an overlay on the box's own
         // trailing edge, and a scroller clips its children, so they can't be
         // painted as part of the subtree.
-        let bars = scrollbar_paints(&layout.scrolls, offsets);
-        if !bars.is_empty() {
+        //
+        // Being outside the subtree, they are also outside its `transform` and
+        // `opacity`, and that showed: a page transitioning at `opacity: 0` drew
+        // its scrollbar at full strength over the page it was leaving, and a
+        // scrollbar on a sliding page stayed where the page used to be. So each
+        // region is drawn through the lens its own box is drawn through, one
+        // bar at a time, since two scrollers can be under different transforms.
+        for region in &layout.scrolls {
+            if region.alpha <= 0.001 {
+                continue;
+            }
+            let bars = scrollbar_paints(std::slice::from_ref(region), offsets, region.alpha);
+            if bars.is_empty() {
+                continue;
+            }
             let scene = rux_paint::build_scene(&bars, text, images, false);
-            state.scene.append(&scene, Some(Affine::scale(scale)));
+            state.scene.append(&scene, Some(Affine::scale(scale) * to_affine(region.transform)));
         }
 
-        // A keyboard focus ring, drawn over the content (but under a dropdown).
+        // A keyboard focus ring, drawn over the content (but under a dropdown),
+        // and through the same lens for the same reason.
         if let Some(item) = focus_index.and_then(|i| layout.focusables.get(i)) {
-            let within = item.scroll.and_then(|s| layout.scrolls.get(s));
-            let ring = rux_paint::build_scene(&focus_ring(item, within), text, images, false);
-            state.scene.append(&ring, Some(Affine::scale(scale)));
+            if item.alpha > 0.001 {
+                let within = item.scroll.and_then(|s| layout.scrolls.get(s));
+                let ring =
+                    rux_paint::build_scene(&focus_ring(item, within, item.alpha), text, images, false);
+                state
+                    .scene
+                    .append(&ring, Some(Affine::scale(scale) * to_affine(item.transform)));
+            }
         }
 
         // The selection toolbar, over the content while something is selected.
@@ -2889,6 +3382,7 @@ impl App {
 
         *hits = layout.hits;
         *focuses = layout.focuses;
+        *metrics = layout.metrics.clone();
         // A field that is no longer in the tree must not stay focused. Nothing
         // dropped focus when its input went away: only a web source reload ever
         // cleared it, so navigating off a page you had been typing on left the
@@ -3217,6 +3711,12 @@ impl ApplicationHandler<RuxEvent> for App {
             }
             WindowEvent::CursorMoved { position, .. } => {
                 self.pointer = (position.x, position.y);
+                let scale = self.scale();
+                let here = ((position.x / scale) as f32, (position.y / scale) as f32);
+                if let Some(p) = self.points.iter_mut().find(|(id, _)| *id == 0) {
+                    p.1 = here;
+                }
+                self.move_gesture(here.0, here.1);
                 if self.bar_drag.is_some() {
                     self.drag_scrollbar(self.pointer);
                 } else if self.text_drag {
@@ -3249,6 +3749,17 @@ impl ApplicationHandler<RuxEvent> for App {
                         // Every helper below reads it.
                         self.pointer = at;
                         self.touch = Some(here);
+                        // Recorded before anything decides what this press means,
+                        // so a handler sees every finger that is down whether or
+                        // not this one turned out to be a tap.
+                        self.points.retain(|(id, _)| *id != touch.id);
+                        self.points.push((touch.id, here));
+                        // First finger down owns the gesture. A second one joins
+                        // the `touches` list every handler reads, rather than
+                        // starting a competing press.
+                        if self.points.len() == 1 {
+                            self.begin_gesture(here.0, here.1);
+                        }
                         // Same order as the mouse: the dev overlay is above
                         // everything, so a finger on it arms a dismiss rather
                         // than reaching the app it is covering. The short-circuit
@@ -3263,6 +3774,19 @@ impl ApplicationHandler<RuxEvent> for App {
                     }
                     TouchPhase::Moved => {
                         self.pointer = at;
+                        if let Some(p) = self.points.iter_mut().find(|(id, _)| *id == touch.id) {
+                            p.1 = here;
+                        }
+                        self.move_gesture(here.0, here.1);
+                        // The axis claim, in its first form: an element that
+                        // declared `@drag` takes the finger, and the page under
+                        // it does not scroll while that drag is running. An
+                        // explicit handler beats an implicit gesture; the finer
+                        // rule (whether the loser can take over later) waits for
+                        // real hardware to argue with.
+                        if self.gesture.as_ref().is_some_and(|g| g.dragging) {
+                            return;
+                        }
                         if self.bar_drag.is_some() {
                             self.drag_scrollbar(at);
                         } else if let Some(state) = self.touch_text {
@@ -3290,16 +3814,27 @@ impl ApplicationHandler<RuxEvent> for App {
                     TouchPhase::Ended => {
                         self.pointer = at;
                         self.touch = None;
+                        // Lifted *after* the dispatch below would be wrong: the
+                        // finger that caused the event is part of the event, so
+                        // it is removed once, at the end of this arm.
+                        let lifted = touch.id;
+                        self.end_gesture(here.0, here.1);
+                        // Each of the three below leaves early, and a finger
+                        // that is not removed on every path out of here is one
+                        // the next event still believes is down.
                         if self.bar_drag.take().is_some() {
+                            self.points.retain(|(id, _)| *id != lifted);
                             return;
                         }
                         if std::mem::take(&mut self.text_drag) {
+                            self.points.retain(|(id, _)| *id != lifted);
                             return;
                         }
                         // A finger lifting off text has already had its effect,
                         // whichever gesture it turned out to be, and must not
                         // also reach the app as a tap.
                         if self.touch_text.take().is_some() {
+                            self.points.retain(|(id, _)| *id != lifted);
                             return;
                         }
                         // A finger wanders more than a mouse, but the slop that
@@ -3309,10 +3844,16 @@ impl ApplicationHandler<RuxEvent> for App {
                                 self.dispatch_tap(at.0, at.1);
                             }
                         }
+                        self.points.retain(|(id, _)| *id != lifted);
                     }
                     TouchPhase::Cancelled => {
                         self.touch = None;
                         self.press = None;
+                        self.points.retain(|(id, _)| *id != touch.id);
+                        // A cancelled touch is not a release: nothing fires, and
+                        // the press is simply forgotten.
+                        self.gesture = None;
+                        self.gesture_deadline = None;
                         self.bar_drag = None;
                         self.text_drag = false;
                         // Dropping this also disarms a pending long press, so a
@@ -3361,6 +3902,20 @@ impl ApplicationHandler<RuxEvent> for App {
                 // an input starts a text selection: neither becomes a tap on the
                 // content under it. A press on the dev overlay is none of those,
                 // it just arms the tap that dismisses it.
+                let scale = self.scale();
+                let here = (
+                    (self.pointer.0 / scale) as f32,
+                    (self.pointer.1 / scale) as f32,
+                );
+                // A mouse is one finger with id 0 for as long as its button is
+                // held, so a handler written for a phone reads the same here.
+                self.points.clear();
+                self.points.push((0, here));
+                // The pointer handlers see the press even when it also starts a
+                // selection or a scrollbar drag: those are the shell's, this is
+                // the app's, and an element that asked for `@press` asked for
+                // every press on it.
+                self.begin_gesture(here.0, here.1);
                 if self.overlay_covers_physical(self.pointer) {
                     self.press = Some(self.pointer);
                 } else if !self.press_scrollbar(self.pointer) && !self.press_text(self.pointer) {
@@ -3390,10 +3945,31 @@ impl ApplicationHandler<RuxEvent> for App {
                         self.dispatch_tap(px, py);
                     }
                 }
+                let scale = self.scale();
+                let here = (
+                    (self.pointer.0 / scale) as f32,
+                    (self.pointer.1 / scale) as f32,
+                );
+                self.end_gesture(here.0, here.1);
+                // After the tap and the gestures, because the button that caused
+                // them is part of them.
+                self.points.clear();
             }
             // Event-driven: we only paint in response to a redraw request, which
             // is issued on resume, resize, reload, and tap, not every frame.
-            WindowEvent::RedrawRequested => self.render(),
+            WindowEvent::RedrawRequested => {
+                self.render();
+                // A `tap()` or `focus()` asked for by something that is not an
+                // input event has nowhere else to be picked up: the only other
+                // drain runs after a handler the shell itself dispatched. A
+                // `mounted` hook that focuses a field at startup queued its
+                // request before the window had ever seen an event, and it sat
+                // in the queue forever. Here rather than at load, because both
+                // requests are answered against a laid-out frame: before the
+                // first layout there are no focusables to focus and no hit
+                // regions to tap.
+                self.adopt_element_requests();
+            }
             _ => {}
         }
     }
@@ -3424,13 +4000,67 @@ impl ApplicationHandler<RuxEvent> for App {
             }
         }
 
-        // Wake for whichever clock is due first. With neither running, wait
+        // A press that has rested long enough, on an element that asked. The
+        // deadline is cleared either way, so it fires once and a finger that
+        // stays down does not fire it again on every wake-up.
+        if let Some(deadline) = self.gesture_deadline {
+            if Instant::now() >= deadline {
+                self.gesture_deadline = None;
+                let resting = self.gesture.as_ref().map(|g| (g.start, g.long_fired));
+                if let Some((start, false)) = resting {
+                    if let Some(g) = self.gesture.as_mut() {
+                        g.long_fired = true;
+                    }
+                    self.fire_gesture(rux_layout::Gesture::LongPress, start.0, start.1, Vec::new());
+                }
+            }
+        }
+
+        // The third clock, and the only one that is a frame rather than a state
+        // change: something is mid-transition and the next frame is due. The
+        // deadline is cleared here because `render` sets the following one, and
+        // sets none once the animation has landed.
+        if let Some(deadline) = self.anim_deadline {
+            if Instant::now() >= deadline {
+                self.anim_deadline = None;
+                self.request_redraw();
+            }
+        }
+
+        // An entering element has now been painted wearing `:enter-from`, so it
+        // can let go of it and the animator has somewhere to walk from. This
+        // happens *here*, after the frame, rather than in `render` beside the
+        // commit: doing it there replaces the `:enter-from` build before it is
+        // ever drawn, and the element simply appears at its destination.
+        if self.document.settle_swaps() {
+            self.request_redraw();
+        }
+
+        // The fourth clock: an interval a script started. Time is passed in as
+        // milliseconds rather than read here, the same contract the animator
+        // has, so the runtime stays testable without a window and correct on the
+        // web where `Instant` is not what the event loop runs on.
+        let now = self.epoch.elapsed().as_secs_f64() * 1000.0;
+        if self.document.fire_timers(now) {
+            self.request_redraw();
+        }
+        let timer = self.document.timer_deadline(now).map(|due| {
+            // Back into the event loop's own clock. The floor keeps a period
+            // that has already slipped past from asking to wait a negative time.
+            Instant::now() + Duration::from_secs_f64(((due - now) / 1000.0).max(0.0))
+        });
+
+        // Wake for whichever clock is due first. With none running, wait
         // indefinitely for a real event, as before.
         let long_press = match self.touch_text {
             Some(TouchText::Pending { deadline, .. }) => Some(deadline),
             _ => None,
         };
-        match [self.blink_deadline, long_press].into_iter().flatten().min() {
+        match [self.blink_deadline, long_press, self.anim_deadline, timer, self.gesture_deadline]
+            .into_iter()
+            .flatten()
+            .min()
+        {
             Some(next) => event_loop.set_control_flow(ControlFlow::WaitUntil(next)),
             None => event_loop.set_control_flow(ControlFlow::Wait),
         }
@@ -4241,6 +4871,8 @@ mod tests {
 
     fn focusable(y: f32, scroll: Option<usize>) -> FocusItem {
         FocusItem {
+            transform: None,
+            alpha: 1.0,
             x: 40.0,
             y,
             width: 200.0,
@@ -4252,6 +4884,8 @@ mod tests {
 
     fn scroller() -> ScrollRegion {
         ScrollRegion {
+            transform: None,
+            alpha: 1.0,
             id: 0,
             x: 30.0,
             y: 100.0,
@@ -4267,7 +4901,7 @@ mod tests {
     /// plain rectangle, as it always was.
     #[test]
     fn a_focus_ring_outside_a_scroller_is_unclipped() {
-        assert_eq!(focus_ring(&focusable(150.0, None), None).len(), 1);
+        assert_eq!(focus_ring(&focusable(150.0, None), None, 1.0).len(), 1);
     }
 
     /// The ring is painted as its own scene after the document's, so it never
@@ -4278,7 +4912,7 @@ mod tests {
     /// above it.
     #[test]
     fn a_focus_ring_inside_a_scroller_is_clipped_to_it() {
-        let paints = focus_ring(&focusable(150.0, Some(0)), Some(&scroller()));
+        let paints = focus_ring(&focusable(150.0, Some(0)), Some(&scroller()), 1.0);
         assert_eq!(paints.len(), 3, "a clip, the ring, and the matching pop");
         assert!(matches!(paints[0], Paint::PushClip { .. }), "{:?}", paints[0]);
         assert!(matches!(paints[2], Paint::PopClip), "{:?}", paints[2]);
@@ -4289,12 +4923,12 @@ mod tests {
     /// a focused element that happens to be off-screen.
     #[test]
     fn a_focus_ring_scrolled_out_of_view_is_not_drawn() {
-        let above = focus_ring(&focusable(-90.0, Some(0)), Some(&scroller()));
+        let above = focus_ring(&focusable(-90.0, Some(0)), Some(&scroller()), 1.0);
         assert!(above.is_empty(), "scrolled off the top: {above:?}");
-        let below = focus_ring(&focusable(400.0, Some(0)), Some(&scroller()));
+        let below = focus_ring(&focusable(400.0, Some(0)), Some(&scroller()), 1.0);
         assert!(below.is_empty(), "scrolled off the bottom: {below:?}");
         // And one straddling the edge is still drawn, clipped.
-        let edge = focus_ring(&focusable(90.0, Some(0)), Some(&scroller()));
+        let edge = focus_ring(&focusable(90.0, Some(0)), Some(&scroller()), 1.0);
         assert_eq!(edge.len(), 3, "partly visible, so still drawn: {edge:?}");
     }
 
@@ -4319,6 +4953,7 @@ mod tests {
             error: Some("parse error".into()),
             stale: true,
             warnings: dismissed.warnings.clone(),
+            prints: Vec::new(),
         };
         assert!(
             overlay_visible(&now_broken, Some(&dismissed)),
@@ -4338,6 +4973,8 @@ mod tests {
     /// A 200x200 box holding 500px-tall content: it scrolls down, not sideways.
     fn tall() -> ScrollRegion {
         ScrollRegion {
+            transform: None,
+            alpha: 1.0,
             id: 0,
             x: 0.0,
             y: 0.0,

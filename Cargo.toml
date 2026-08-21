@@ -14,6 +14,9 @@ members = [
     "crates/rux-fmt",
     "crates/rux-reactive",
     "crates/rux-script",
+    # A fork of rhai, vendored rather than patched: see crates/rux-rhai/DIVERGENCE.md
+    # for what is actually different and why.
+    "crates/rux-rhai",
 ]
 
 [workspace.package]
@@ -26,7 +29,7 @@ edition = "2021"
 # Every crate in the workspace ships together under one version. It sat at 0.1.0
 # through the v0.2 and v0.3 tags; reconciled onto the 0.4 line here, because a
 # wrong version is unfixable once it is on crates.io (yank ≠ unpublish).
-version = "0.6.1"
+version = "0.7.0"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/Aine-dickson/rux"
 homepage = "https://ruxlang.dev"
@@ -61,16 +64,21 @@ strip = true
 #
 # The version must match `[workspace.package] version` exactly. `RELEASING.md`
 # step 4 covers both.
-rux-parser = { version = "0.6.1", path = "crates/rux-parser" }
-rux-reactive = { version = "0.6.1", path = "crates/rux-reactive" }
-rux-text = { version = "0.6.1", path = "crates/rux-text" }
-rux-layout = { version = "0.6.1", path = "crates/rux-layout" }
-rux-fmt = { version = "0.6.1", path = "crates/rux-fmt" }
-rux-script = { version = "0.6.1", path = "crates/rux-script" }
-rux-paint = { version = "0.6.1", path = "crates/rux-paint" }
-rux-style = { version = "0.6.1", path = "crates/rux-style" }
-rux-runtime = { version = "0.6.1", path = "crates/rux-runtime" }
-rux-shell = { version = "0.6.1", path = "crates/rux-shell" }
+rux-parser = { version = "0.7.0", path = "crates/rux-parser" }
+rux-reactive = { version = "0.7.0", path = "crates/rux-reactive" }
+rux-text = { version = "0.7.0", path = "crates/rux-text" }
+rux-layout = { version = "0.7.0", path = "crates/rux-layout" }
+rux-fmt = { version = "0.7.0", path = "crates/rux-fmt" }
+rux-script = { version = "0.7.0", path = "crates/rux-script" }
+# Declared under the name `rhai`, so every `use rhai::…` in `rux-script` keeps
+# working and the fork is a one-line swap rather than a rename spread through the
+# script tier. What it is is not hidden: the package name is `rux-rhai` and it is
+# right here in the workspace.
+rhai = { package = "rux-rhai", version = "0.7.0", path = "crates/rux-rhai" }
+rux-paint = { version = "0.7.0", path = "crates/rux-paint" }
+rux-style = { version = "0.7.0", path = "crates/rux-style" }
+rux-runtime = { version = "0.7.0", path = "crates/rux-runtime" }
+rux-shell = { version = "0.7.0", path = "crates/rux-shell" }
 # Not published (see its own `publish = false`), so it needs no version: nothing
 # on crates.io will ever have to resolve it.
 rux-highlight = { path = "crates/rux-highlight" }

@@ -18,7 +18,12 @@
   --accent-ink: #11111b;
   --green: #a6e3a1;
 
-  --measure: 68ch;
+  /* The reading measure for running prose. 68ch is the classic advice and it
+     was too narrow here: these pages are mostly not running prose. They are
+     shell transcripts, CSS property tables and `.rux` listings, and those wrap
+     or scroll long before a paragraph would, so the column was sized for the
+     rarest thing on the page. */
+  --measure: 80ch;
   --radius: 12px;
 }
 
@@ -288,7 +293,10 @@ pre code {
   display: grid;
   grid-template-columns: 232px minmax(0, 1fr);
   gap: 40px;
-  max-width: 1080px;
+  /* Wide enough for the sidebar plus a full-measure body. At 1080px the body
+     was clipped below its own max-width, so widening the measure alone would
+     have changed nothing on a docs page. */
+  max-width: 1240px;
   margin: 0 auto;
   padding: 40px 24px 72px;
 }
@@ -549,6 +557,10 @@ pre code {
 .hl-keyword   { color: #ff8f40; }
 .hl-operator  { color: #f29668; }
 .hl-tag       { color: #39bae6; }
+/* A component tag is somebody's file, not one of Rux's ten elements. Warmer
+   than the element blue, so a template shows at a glance which tags you can
+   look up in the reference and which you have to go and open. */
+.hl-component { color: #ffb454; }
 .hl-function  { color: #ffb454; }
 .hl-attr      { color: #ffb454; }
 .hl-directive { color: #ff8f40; }
@@ -654,13 +666,25 @@ button.pg-diag:focus-visible {
   color: #ffd0a8;
 }
 
-/* "Try it" on a runnable code block. Positioned against the <pre>, which the
-   script marks with .has-tryit so only those blocks become containers. */
-.prose pre.has-tryit { position: relative; }
-.tryit {
+/* The toolbar on a prose code block: Copy, and Try it on the runnable ones.
+   Positioned against the <pre>, which the script marks with .has-tools so only
+   blocks that got a toolbar become containers. */
+.prose pre.has-tools { position: relative; }
+.code-tools {
   position: absolute;
   top: 8px;
   right: 10px;
+  display: flex;
+  gap: 6px;
+  /* The toolbar sits over the code, and a long first line runs under it. Fading
+     it in on hover would hide it from touch, where there is no hover, so it
+     stays visible and is merely quiet until pointed at. */
+  opacity: 0.72;
+}
+.prose pre.has-tools:hover .code-tools,
+.code-tools:focus-within { opacity: 1; }
+
+.codebtn {
   padding: 3px 10px;
   background: var(--raised);
   border: 1px solid var(--line);
@@ -668,9 +692,28 @@ button.pg-diag:focus-visible {
   color: var(--ink-dim);
   font-family: ui-sans-serif, system-ui, sans-serif;
   font-size: 12px;
+  line-height: 1.5;
   text-decoration: none;
+  cursor: pointer;
 }
-.tryit:hover { color: var(--ink); border-color: var(--accent); }
+.codebtn:hover { color: var(--ink); border-color: var(--accent); }
+.codebtn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  color: var(--ink);
+}
+/* The label swaps between "Copy", "Copied" and "Press Ctrl+C", so the button
+   must not resize under the pointer as it does. */
+button.codebtn.copy { min-width: 92px; }
+button.codebtn.copy.done { color: var(--accent); border-color: var(--accent); }
+button.codebtn.copy.failed { color: var(--ink); }
+
+@media (max-width: 560px) {
+  /* Two buttons and a narrow block: the code underneath matters more than the
+     chrome, so the labels tighten rather than the toolbar wrapping. */
+  .codebtn { padding: 3px 8px; font-size: 11px; }
+  button.codebtn.copy { min-width: 84px; }
+}
 
 @media (max-width: 860px) {
   .pg { padding: 24px 20px 56px; }

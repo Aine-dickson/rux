@@ -1,0 +1,61 @@
+<template>
+  <screen class="app">
+    <text class="title">the pointer vocabulary</text>
+    <text class="lead">Five events beyond tap. Press and hold the pad, flick it, or drag it around. With a mouse or a touchpad: hold the button, move quickly and let go, and you get both a drag and a swipe. The finger count is always 1 unless the hardware is a real touchscreen, because a touchpad reaches the app as a mouse.</text>
+
+    <view class="pad"
+          @press="log = &quot;press at &quot; + event.x + &quot;,&quot; + event.y; fingers = event.touches.length; page = event.pageX + &quot;,&quot; + event.pageY"
+          @release="log = &quot;release&quot;"
+          @longpress="log = &quot;long press, held still&quot;"
+          @swipe="flick = &quot;swiped &quot; + event.direction + &quot;, &quot; + event.totalX + &quot; across&quot;"
+          @drag="log = &quot;drag &quot; + event.phase + &quot;: total &quot; + event.totalX + &quot;,&quot; + event.totalY + &quot; move &quot; + event.moveX + &quot;,&quot; + event.moveY; dx = event.totalX; dy = event.totalY">
+      <text class="pad-label">press, hold, flick or drag me</text>
+    </view>
+
+    <text class="read">{{ log }}</text>
+    <text class="read">{{ flick }}</text>
+    <text class="foot">fingers on the last press: {{ fingers }}</text>
+    <text class="foot">last drag total: {{ dx }}, {{ dy }}</text>
+    <text class="foot">where the press landed in the window: {{ page }}</text>
+  </screen>
+</template>
+
+<style>
+  .app {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    padding: 28px;
+    background: #1e1e2e;
+  }
+
+  .title { color: #cdd6f4; font-size: 22px; font-weight: 700; }
+  .lead { color: #9399b2; font-size: 13px; max-width: 620px; }
+  .read { color: #a6e3a1; font-size: 18px; font-weight: 700; }
+  .foot { color: #9399b2; font-size: 13px; }
+
+  .pad {
+    width: 320px;
+    height: 160px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: #313244;
+    border: 2px solid #45475a;
+    border-radius: 12px;
+    cursor: pointer;
+  }
+
+  .pad:hover { background: #45475a; }
+  .pad:active { background: #585b70; }
+  .pad-label { color: #cdd6f4; font-size: 13px; }
+</style>
+
+<script>
+  let log = signal("nothing yet");
+  let flick = signal("no swipe yet");
+  let page = signal("");
+  let fingers = signal(0);
+  let dx = signal(0);
+  let dy = signal(0);
+</script>

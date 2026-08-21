@@ -7,7 +7,7 @@
       <input class="field" r-model="name" placeholder="your name" />
 
       <view class="row">
-        <button class="btn" @tap="taps = taps + 1">
+        <button class="btn" @tap="taps++">
           <text class="btn-label">Tap me</text>
         </button>
         <text class="count">{{ taps }}</text>

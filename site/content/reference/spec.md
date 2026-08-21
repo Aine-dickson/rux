@@ -1,13 +1,13 @@
 +++
 title = "Design surface (v0.1)"
 description = "The original v0.1 spec, kept as design history. Not a description of the built runtime."
-weight = 2
+weight = 16
 +++
 
 <!-- GENERATED FROM docs/02-spec.md BY site/sync-docs.sh. DO NOT EDIT HERE. -->
 
 
-> ⚠️ **This is the v0.1 design surface, not the built surface.** Several things
+> **This is the v0.1 design surface, not the built surface.** Several things
 > here were never implemented (non-text `<input>` types, `<image>` rendering,
 > real scrolling) and some were implemented differently (the inline/block model
 > was removed; grid was added; rhai functions can't mutate state). See
@@ -15,7 +15,7 @@ weight = 2
 
 The formal reference for Rux v0.1. This is the source of truth we architect and build against. It describes the language surface, not the runtime implementation
 (that comes later). Every rule here traces to a law in the
-[rationale](/why/).
+[rationale](/reference/rationale/).
 
 > **Status:** v0.1 design. Syntax is settled; anything marked _deferred_ is
 > intentionally out of scope for the first build.
@@ -232,7 +232,7 @@ reported in dev mode), not errors.
 Units: `px`, `%`, `rem`, `fr` (grid), and unitless where CSS allows. Colors: hex,
 `rgb[a]()`, named. `display: grid` and its properties are **partially** honored
 in v0.1 (single-axis tracks); full grid and `display: table` are _deferred_ (the
-[table story](/why/#the-element-audit)).
+[table story](/reference/rationale/#the-element-audit)).
 
 Styles may be inline in `<style>` or imported (see [modules](#modules-reuse)).
 
@@ -241,7 +241,7 @@ Styles may be inline in `<style>` or imported (see [modules](#modules-reuse)).
 ## Scripting and the host
 
 Logic lives in two tiers (Law 4, and the
-[decision](/why/#two-tier-logic-rhai-script-over-a-compiled-rust-host)):
+[decision](/reference/rationale/#two-tier-logic-rhai-script-over-a-compiled-rust-host)):
 
 ### Script tier: `<script>`, interpreted `rhai`
 
@@ -296,7 +296,7 @@ Rules of the contract:
 ## Reactivity
 
 Reactivity is a **core primitive** (not ecosystem; see the
-[decision](/why/#reactivity-is-a-core-primitive-state-management-is-ecosystem)).
+[decision](/reference/rationale/#reactivity-is-a-core-primitive-state-management-is-ecosystem)).
 The model is fine-grained signals (Leptos/Solid style): a binding *is* a
 subscription; there is no virtual-DOM diffing.
 
@@ -367,15 +367,15 @@ What reloads live vs. what needs a rebuild. The practical contract for authors:
 
 | You edit… | Result |
 |---|---|
-| `<template>` markup | ✅ live repaint |
-| `<style>` CSS | ✅ live repaint |
-| `<script>` logic (rhai) | ✅ live, state re-initialized |
-| Which host fn a handler calls | ✅ live |
-| The **host** (compiled Rust), new capability or changed native fn | ❌ rebuild |
+| `<template>` markup | live repaint |
+| `<style>` CSS | live repaint |
+| `<script>` logic (rhai) | live, state re-initialized |
+| Which host fn a handler calls | live |
+| The **host** (compiled Rust), new capability or changed native fn | needs a rebuild |
 
 Parse/eval errors in any live section surface as a **dev overlay** in the window,
 not a crash (the accepted cost of runtime documents; see the
-[rationale](/why/#runtime-documents-over-compile-time-components)).
+[rationale](/reference/rationale/#runtime-documents-over-compile-time-components)).
 
 ---
 

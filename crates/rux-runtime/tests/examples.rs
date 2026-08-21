@@ -14,15 +14,26 @@ fn examples_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples")
 }
 
-fn example_files() -> Vec<PathBuf> {
-    let mut files: Vec<PathBuf> = std::fs::read_dir(examples_dir())
-        .expect("examples/ is readable")
+fn rux_files_in(dir: &Path) -> Vec<PathBuf> {
+    let mut files: Vec<PathBuf> = std::fs::read_dir(dir)
+        .unwrap_or_else(|e| panic!("{} is readable: {e}", dir.display()))
         .filter_map(|entry| {
             let path = entry.ok()?.path();
             (path.extension()? == "rux").then_some(path)
         })
         .collect();
     files.sort();
+    files
+}
+
+/// Every app in `examples/`, plus the recipes, which live in a directory of
+/// their own and were not covered until they were added here.
+///
+/// Only apps: `components/` is skipped in both places, since a component file
+/// is not a document and does not load as one.
+fn example_files() -> Vec<PathBuf> {
+    let mut files = rux_files_in(&examples_dir());
+    files.extend(rux_files_in(&examples_dir().join("recipes")));
     assert!(!files.is_empty(), "found no examples to check");
     files
 }
@@ -174,4 +185,294 @@ fn every_example_is_warning_free() {
         "examples raise warnings the dev overlay will show:\n{}",
         noisy.join("\n")
     );
+}
+
+/// The keyed-list example's `order()` and `rotate()` still say what they said.
+///
+/// Both were rewritten in v0.7 to use the JS-named collection methods and an
+/// arrow function, which turned a six-line loop into one line. `rux check` only
+/// reports warnings, so nothing else in the suite would notice if the shorter
+/// version quietly produced a different string, and the whole point of the
+/// example is that rows keep their identity across a reorder.
+#[test]
+fn the_keyed_list_example_still_orders_correctly() {
+    fn texts(node: &rux_layout::Node) -> Vec<String> {
+        let mut out: Vec<String> = node.text.iter().map(|t| t.text.clone()).collect();
+        for child in &node.children {
+            out.extend(texts(child));
+        }
+        out
+    }
+    let order = |doc: &Document| {
+        texts(&doc.root)
+            .into_iter()
+            .find(|t| t.starts_with("Order: "))
+            .expect("the footer line")
+    };
+
+    let mut doc = Document::load(examples_dir().join("keyed-list.rux")).expect("loads");
+    assert_eq!(order(&doc), "Order: one, two, three");
+
+    // Rotating moves the last row to the front, and `order()` reports it.
+    let tap = {
+        fn find(node: &rux_layout::Node) -> Option<&rux_layout::Node> {
+            if node.on_tap.is_some() {
+                return Some(node);
+            }
+            node.children.iter().find_map(find)
+        }
+        find(&doc.root).expect("a rotate button").on_tap.clone().unwrap()
+    };
+    assert!(doc.apply_handler(&tap));
+    assert_eq!(order(&doc), "Order: three, one, two");
+}
+
+/// Drive the element-query example the way a person would, so the feature it
+/// demonstrates is proven rather than merely parsed.
+///
+/// `rux check` loads every example but runs no handler, and every interesting
+/// thing here happens in one. Without this, the example could go on checking
+/// clean long after `query()` stopped answering.
+#[test]
+fn the_element_query_example_measures_and_focuses() {
+    fn texts(node: &rux_layout::Node) -> Vec<String> {
+        let mut out: Vec<String> = node.text.iter().map(|t| t.text.clone()).collect();
+        for child in &node.children {
+            out.extend(texts(child));
+        }
+        out
+    }
+    let said = |doc: &Document, needle: &str| {
+        texts(&doc.root).iter().any(|t| t.contains(needle))
+    };
+
+    let mut doc = Document::load(examples_dir().join("element-query.rux")).expect("loads");
+
+    // Counting needs no layout: it is a fact about the tree, not the frame.
+    assert!(doc.apply_handler("count()"), "the tap changed state");
+    assert!(said(&doc, "2 cards"), "counted them: {:?}", texts(&doc.root));
+    assert!(said(&doc, ".card.wide"), "and read the classes back");
+    assert!(said(&doc, "id two"), "and the id");
+
+    // Measuring does need one. Stand in for the shell: lay the tree out and
+    // hand the metrics back, which is what the shell does every frame.
+    let mut measure = |tc: &rux_layout::TextContent, _: Option<f32>| {
+        (tc.text.chars().count() as f32 * 8.0, 16.0)
+    };
+    let layout = rux_layout::layout(&doc.root, 1000.0, 800.0, &mut measure);
+    doc.set_metrics(layout.metrics);
+
+    assert!(doc.apply_handler("measure()"));
+    assert!(
+        said(&doc, "the wide card is 220 x 64"),
+        "the wide card's own box, not the plain one's: {:?}",
+        texts(&doc.root)
+    );
+
+    // Focus reaches the input, and blur gives it up.
+    doc.apply_handler("focus_note()");
+    let asked = doc.take_focus_request().expect("focus() asked for focus");
+    assert_eq!(asked.expect("for an element, not a blur").model, "note");
+    doc.apply_handler("blur()");
+    assert_eq!(doc.take_focus_request(), Some(None), "and blur asked to drop it");
+
+    // Scrolling is the shell's to apply, so the document queues it.
+    doc.apply_handler("reveal_end()");
+    assert_eq!(doc.take_reveals().len(), 1, "one element asked to be revealed");
+}
+
+/// Drive the chart example: the line really is built from the readings, and it
+/// really is rebuilt when they change.
+///
+/// This is the test standing in for a person looking at the window. `rux check`
+/// never runs a script, so a `d` expression that returned nonsense would check
+/// clean and draw nothing, and "the example loads" would still be true.
+#[test]
+fn the_chart_example_draws_its_readings() {
+    fn paths(node: &rux_layout::Node, out: &mut Vec<rux_layout::PathContent>) {
+        if let Some(p) = &node.path {
+            out.push(p.clone());
+        }
+        for child in &node.children {
+            paths(child, out);
+        }
+    }
+    let all = |doc: &Document| {
+        let mut v = Vec::new();
+        paths(&doc.root, &mut v);
+        v
+    };
+
+    let mut doc = Document::load(examples_dir().join("chart.rux")).expect("loads");
+    let before = all(&doc);
+    assert_eq!(before.len(), 2, "the band and the line");
+    for p in &before {
+        assert!(
+            !p.commands.is_empty(),
+            "a path with no geometry is an empty box: d was {:?}",
+            p.d
+        );
+    }
+    // Seven readings: a move and six lines, each line one cubic.
+    let line = before.iter().find(|p| !p.d.contains('Z')).expect("the open line");
+    assert_eq!(line.commands.len(), 7, "one command per reading: {:?}", line.d);
+
+    // Add one, and the geometry follows.
+    assert!(doc.apply_handler("add()"), "the tap changed state");
+    let after = all(&doc);
+    let line2 = after.iter().find(|p| !p.d.contains('Z')).expect("the open line");
+    assert_eq!(line2.commands.len(), 8, "the new reading is drawn: {:?}", line2.d);
+    assert_ne!(line.d, line2.d, "and the geometry actually changed");
+
+    // Jolt moves every reading without changing how many there are, which is
+    // the case `transition: d` exists for: same sequence, so it interpolates.
+    let jolted = {
+        assert!(doc.apply_handler("jolt()"));
+        all(&doc)
+    };
+    let line3 = jolted.iter().find(|p| !p.d.contains('Z')).expect("the open line");
+    assert_eq!(line3.commands.len(), 8, "the count held");
+    assert_ne!(line2.d, line3.d, "and the values moved");
+    assert!(
+        rux_layout::path::lerp(&line2.commands, &line3.commands, 0.5).is_some(),
+        "so the two interpolate, which is what makes the redraw walk"
+    );
+}
+
+/// Drive the morph example: the three shapes really do share a command
+/// sequence, so each one really can become the next.
+///
+/// The example's whole claim is that a square and a circle interpolate. If a
+/// shape were ever edited into a different number of commands the morph would
+/// silently become a cut, which is exactly the kind of rot nobody notices.
+#[test]
+fn the_morph_example_shapes_interpolate() {
+    fn paths(node: &rux_layout::Node, out: &mut Vec<rux_layout::PathContent>) {
+        if let Some(p) = &node.path {
+            out.push(p.clone());
+        }
+        for child in &node.children {
+            paths(child, out);
+        }
+    }
+
+    let mut doc = Document::load(examples_dir().join("morph.rux")).expect("loads");
+    let mut shapes = Vec::new();
+    paths(&doc.root, &mut shapes);
+    // The big one, plus the strip of three below it.
+    assert_eq!(shapes.len(), 4, "the shape and the three glyphs");
+    // A move, four curves and a close, for every one of them.
+    for s in &shapes {
+        assert_eq!(s.commands.len(), 6, "six commands: {:?}", s.d);
+    }
+    for pair in shapes.windows(2) {
+        assert!(
+            rux_layout::path::lerp(&pair[0].commands, &pair[1].commands, 0.5).is_some(),
+            "every shape interpolates against every other, or the morph is a cut"
+        );
+    }
+
+    // Walking on really does change which shape is drawn.
+    let first = shapes[0].d.clone();
+    assert!(doc.apply_handler("at = (at + 1) % shapes.length"));
+    let mut next = Vec::new();
+    paths(&doc.root, &mut next);
+    assert_ne!(first, next[0].d, "the tap swapped the shape");
+    assert_eq!(next[0].commands.len(), 6, "and the new one still parses");
+}
+
+
+/// The recipes are the pages that tell someone how to build a thing, so their
+/// code has to be code that works. Each one is driven the way its page says to
+/// drive it.
+///
+/// `/learn` has had this since it shipped and for the same reason: a tutorial
+/// whose examples have quietly stopped working is worse than no tutorial, since
+/// the reader assumes the mistake is theirs.
+mod recipes {
+    use super::*;
+
+    fn recipe(name: &str) -> Document {
+        Document::load(examples_dir().join("recipes").join(name))
+            .unwrap_or_else(|e| panic!("{name} loads: {e:?}"))
+    }
+
+    fn texts(node: &rux_layout::Node) -> Vec<String> {
+        let mut out: Vec<String> = node.text.iter().map(|t| t.text.clone()).collect();
+        for child in &node.children {
+            out.extend(texts(child));
+        }
+        out
+    }
+
+    fn shows(doc: &Document, needle: &str) -> bool {
+        texts(&doc.root).iter().any(|t| t.contains(needle))
+    }
+
+    /// Sending adds a row, clears the field, and asks to be scrolled to.
+    ///
+    /// The reveal is the half worth asserting: the recipe's whole claim is that
+    /// the thread follows its newest message, and the request is the only part
+    /// of that a document can see. Where it *lands* is the shell's, and is what
+    /// `rux_layout::containing_scroller` covers.
+    #[test]
+    fn the_message_list_sends_and_asks_to_be_revealed() {
+        let mut doc = recipe("message-list.rux");
+        assert!(doc.apply_handler("draft = \"a new one\""), "typed");
+        assert!(doc.apply_handler("send()"), "sent");
+        assert!(shows(&doc, "a new one"), "the message is on screen");
+        assert_eq!(
+            doc.take_reveals().len(),
+            1,
+            "and the list asked to be scrolled to its anchor"
+        );
+    }
+
+    /// An empty draft sends nothing, which is the guard every composer needs and
+    /// the one most likely to be left out.
+    #[test]
+    fn the_message_list_will_not_send_nothing() {
+        let mut doc = recipe("message-list.rux");
+        let before = texts(&doc.root).len();
+        assert!(doc.apply_handler("draft = \"   \""), "whitespace only");
+        // `apply_handler` reports whether anything moved, and nothing did: the
+        // guard returns before the push, so this is the assertion rather than a
+        // thing to unwrap.
+        assert!(!doc.apply_handler("send()"), "sending nothing changes nothing");
+        assert_eq!(texts(&doc.root).len(), before, "and added no row");
+    }
+
+    /// Navigating holds the outgoing page beside the incoming one, which is the
+    /// behaviour the recipe's `position: absolute` line exists to cope with.
+    #[test]
+    fn the_tab_bar_holds_both_pages_during_a_swap() {
+        let mut doc = recipe("tab-bar.rux");
+        assert!(shows(&doc, "inbox"), "starts on the index route");
+        assert!(doc.apply_handler("navigate(\"/drafts\")"), "navigated");
+        assert!(shows(&doc, "inbox"), "the page being left is still built");
+        assert!(shows(&doc, "drafts"), "and the one arriving is too");
+        // Past the 240ms the style declares, the swap commits and it is gone.
+        let _ = doc.advance_swaps(0.0);
+        let _ = doc.advance_swaps(400.0);
+        assert!(!shows(&doc, "not inside the router"), "the outgoing page has gone");
+    }
+
+    /// The modal opens, the scrim dismisses, and Cancel and Delete are told
+    /// apart. The swallow on the dialog is a hit-test fact and so belongs to the
+    /// window, not here.
+    #[test]
+    fn the_modal_opens_and_both_answers_close_it() {
+        let mut doc = recipe("modal.rux");
+        assert!(!shows(&doc, "Delete the archive?"), "closed to begin with");
+
+        assert!(doc.apply_handler("open = true"), "opened");
+        assert!(shows(&doc, "Delete the archive?"), "the dialog is on screen");
+
+        assert!(doc.apply_handler("dismiss()"), "dismissed");
+        assert!(shows(&doc, "left alone"), "and said so");
+
+        assert!(doc.apply_handler("open = true"), "opened again");
+        assert!(doc.apply_handler("confirm()"), "confirmed");
+        assert!(shows(&doc, "archive deleted"), "the other answer is different");
+    }
 }

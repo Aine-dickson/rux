@@ -28,6 +28,9 @@
 //! stack into this crate would put shaping under layout, and the shell already
 //! owns one.
 
+pub mod path;
+pub use path::{PathCmd, PathContent};
+
 use std::collections::HashMap;
 
 use taffy::prelude::*;
@@ -189,14 +192,54 @@ pub enum Cursor {
     Pointer,
 }
 
-/// `position`. `Relative` is the normal in-flow box (the default); `Absolute`
-/// takes the box out of flow and positions it by its `inset` against the
-/// nearest positioned ancestor.
+/// `position`, with CSS's meanings.
+///
+/// `Static` is the default and the only value that is **not** a containing
+/// block: it is the normal in-flow box, and its `inset` is ignored. `Relative`
+/// is in flow too but offset by its inset, and it *is* a containing block.
+/// `Sticky` is in flow like `relative`, but its inset is a **threshold** rather
+/// than an offset: it stays where it was laid out until its scroller reaches
+/// that edge, then rides along it, and stops again at the end of its parent.
+/// `Absolute` is out of flow, positioned by its inset against the nearest
+/// non-static ancestor. `Fixed` is out of flow against the window, and does not
+/// move when an ancestor scrolls.
+///
+/// **The default used to be `Relative`**, which made every box a containing
+/// block, which in turn made "against the nearest positioned ancestor" and
+/// "against the parent" the same sentence. They are not the same sentence, and
+/// an author who wrote `position: relative` on the box they meant, as CSS
+/// requires, was being ignored and getting the right answer anyway. Only a
+/// wrapper in between revealed it.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub enum Position {
     #[default]
+    Static,
     Relative,
+    Sticky,
     Absolute,
+    Fixed,
+}
+
+impl Position {
+    /// Whether a box with this `position` is a containing block, so an
+    /// out-of-flow descendant's insets are measured against it.
+    ///
+    /// Not the whole rule: a box with a `transform` is a containing block too,
+    /// whatever its `position`, and for `fixed` descendants as well as absolute
+    /// ones. See the hoisting in `build`.
+    pub fn is_containing_block(self) -> bool {
+        self != Position::Static
+    }
+
+    /// Whether the box is taken out of the flow.
+    pub fn is_out_of_flow(self) -> bool {
+        matches!(self, Position::Absolute | Position::Fixed)
+    }
+
+    /// Whether the box is pinned against its scroller at paint time.
+    pub fn is_sticky(self) -> bool {
+        self == Position::Sticky
+    }
 }
 
 /// Corner radii in CSS order, top-left, top-right, bottom-right, bottom-left.
@@ -207,6 +250,193 @@ pub type Corners = [f32; 4];
 /// `Affine` order: `x' = a·x + c·y + e`, `y' = b·x + d·y + f`). Translations are
 /// in logical px; the origin is applied at paint time (CSS default: box centre).
 pub type Transform = [f32; 6];
+
+/// One `transition` entry: which property animates when it changes, for how
+/// long, after what delay, and on which curve.
+///
+/// The style itself only carries the *declaration*. Nothing here knows what the
+/// property's value was a frame ago; that memory belongs to whoever is driving
+/// the clock, since it is per-frame state and the style is rebuilt from scratch
+/// on every build.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Transition {
+    pub property: AnimProp,
+    /// Milliseconds. A duration of `0` means the change lands immediately, which
+    /// is how CSS disables a transition without removing the declaration.
+    pub duration: f32,
+    pub delay: f32,
+    pub easing: Easing,
+}
+
+/// A property that can be transitioned.
+///
+/// One variant per *field* of [`Style`], not per CSS longhand: `padding` is a
+/// [`Sides`] and animates as a unit, so `transition: padding-left` is rejected
+/// with a diagnostic rather than quietly animating all four sides. The set is
+/// deliberately small; everything in it is a value that means something when
+/// interpolated halfway.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum AnimProp {
+    /// `all`: stands for every other variant whose value actually changed.
+    All,
+    Opacity,
+    BackgroundColor,
+    /// Text colour, which lives on the node's own text content.
+    Color,
+    BorderColor,
+    BorderWidth,
+    BorderRadius,
+    Width,
+    Height,
+    Padding,
+    Margin,
+    Gap,
+    FontSize,
+    Transform,
+    /// `top`/`right`/`bottom`/`left` as a unit.
+    Inset,
+    /// `<path>` paint: the colour inside, the colour of the outline, and how
+    /// thick the outline is.
+    Fill,
+    Stroke,
+    StrokeWidth,
+    /// `d`: the path's geometry itself.
+    ///
+    /// The one animatable property that is not a style property, because
+    /// geometry is an attribute. It is here anyway, and reached through the
+    /// node rather than through the style, because an author asking for a
+    /// shape to morph is asking for exactly what `transition` means everywhere
+    /// else and should not have to learn a second word for it.
+    PathData,
+}
+
+impl AnimProp {
+    /// Every property `all` expands to, in a fixed order so a frame's work is
+    /// deterministic.
+    pub const EVERY: &'static [AnimProp] = &[
+        AnimProp::Opacity,
+        AnimProp::BackgroundColor,
+        AnimProp::Color,
+        AnimProp::BorderColor,
+        AnimProp::BorderWidth,
+        AnimProp::BorderRadius,
+        AnimProp::Width,
+        AnimProp::Height,
+        AnimProp::Padding,
+        AnimProp::Margin,
+        AnimProp::Gap,
+        AnimProp::FontSize,
+        AnimProp::Transform,
+        AnimProp::Inset,
+        AnimProp::Fill,
+        AnimProp::Stroke,
+        AnimProp::StrokeWidth,
+        AnimProp::PathData,
+    ];
+
+    /// The CSS name, for diagnostics.
+    pub fn name(self) -> &'static str {
+        match self {
+            AnimProp::All => "all",
+            AnimProp::Opacity => "opacity",
+            AnimProp::BackgroundColor => "background-color",
+            AnimProp::Color => "color",
+            AnimProp::BorderColor => "border-color",
+            AnimProp::BorderWidth => "border-width",
+            AnimProp::BorderRadius => "border-radius",
+            AnimProp::Width => "width",
+            AnimProp::Height => "height",
+            AnimProp::Padding => "padding",
+            AnimProp::Margin => "margin",
+            AnimProp::Gap => "gap",
+            AnimProp::FontSize => "font-size",
+            AnimProp::Transform => "transform",
+            AnimProp::Inset => "inset",
+            AnimProp::Fill => "fill",
+            AnimProp::Stroke => "stroke",
+            AnimProp::StrokeWidth => "stroke-width",
+            AnimProp::PathData => "d",
+        }
+    }
+}
+
+/// A timing function. The named curves are the CSS keywords, and all of them are
+/// the same cubic Bézier underneath, so there is one evaluator to be wrong in.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Easing {
+    Linear,
+    /// `cubic-bezier(x1, y1, x2, y2)`; the keywords resolve to these.
+    Bezier(f32, f32, f32, f32),
+}
+
+impl Easing {
+    pub const EASE: Easing = Easing::Bezier(0.25, 0.1, 0.25, 1.0);
+    pub const EASE_IN: Easing = Easing::Bezier(0.42, 0.0, 1.0, 1.0);
+    pub const EASE_OUT: Easing = Easing::Bezier(0.0, 0.0, 0.58, 1.0);
+    pub const EASE_IN_OUT: Easing = Easing::Bezier(0.42, 0.0, 0.58, 1.0);
+
+    /// Map linear progress `t` (0..=1) to eased progress.
+    ///
+    /// The curve is parametric in a third variable: `x` and `y` are both cubics
+    /// in `s`, and `t` is an `x`. So invert `x(s) = t` first (Newton, falling
+    /// back to bisection when the derivative goes flat), then read `y(s)`.
+    pub fn eval(self, t: f32) -> f32 {
+        let (x1, y1, x2, y2) = match self {
+            Easing::Linear => return t,
+            Easing::Bezier(x1, y1, x2, y2) => (x1, y1, x2, y2),
+        };
+        if t <= 0.0 || t >= 1.0 {
+            return t;
+        }
+        let s = solve_bezier_x(t, x1, x2);
+        bezier(s, y1, y2)
+    }
+}
+
+/// A unit cubic Bézier's coordinate at parameter `s`, with the endpoints pinned
+/// at 0 and 1: `3(1-s)²s·p1 + 3(1-s)s²·p2 + s³`.
+fn bezier(s: f32, p1: f32, p2: f32) -> f32 {
+    let u = 1.0 - s;
+    3.0 * u * u * s * p1 + 3.0 * u * s * s * p2 + s * s * s
+}
+
+/// Derivative of [`bezier`] with respect to `s`.
+fn bezier_slope(s: f32, p1: f32, p2: f32) -> f32 {
+    let u = 1.0 - s;
+    3.0 * u * u * p1 + 6.0 * u * s * (p2 - p1) + 3.0 * s * s * (1.0 - p2)
+}
+
+/// Find `s` such that `x(s) == t`.
+fn solve_bezier_x(t: f32, x1: f32, x2: f32) -> f32 {
+    let mut s = t; // x is near-linear for the usual curves, so t is a good start
+    for _ in 0..8 {
+        let err = bezier(s, x1, x2) - t;
+        if err.abs() < 1e-5 {
+            return s;
+        }
+        let slope = bezier_slope(s, x1, x2);
+        if slope.abs() < 1e-5 {
+            break; // flat: Newton would step off to nowhere
+        }
+        s -= err / slope;
+    }
+    // Bisection, which cannot diverge, for the curves Newton gives up on.
+    let (mut lo, mut hi) = (0.0f32, 1.0f32);
+    let mut s = t.clamp(0.0, 1.0);
+    for _ in 0..20 {
+        let x = bezier(s, x1, x2);
+        if (x - t).abs() < 1e-5 {
+            break;
+        }
+        if x > t {
+            hi = s;
+        } else {
+            lo = s;
+        }
+        s = (lo + hi) / 2.0;
+    }
+    s
+}
 
 /// `grid-auto-flow`: how auto-placed items fill the implicit grid.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -337,6 +567,62 @@ pub struct Style {
     pub inset: [Option<Len>; 4],
     /// `aspect-ratio` (width / height).
     pub aspect_ratio: Option<f32>,
+    /// `transition`: which of this node's properties animate when they change,
+    /// and how. Empty for almost every node, and free when it is: the animator
+    /// only remembers nodes that declare one.
+    pub transitions: Vec<Transition>,
+    /// How far through an enter/leave swap this element is, when something
+    /// other than the clock is driving it (a finger, normally).
+    ///
+    /// It rides on the node rather than being looked up because the animator
+    /// identifies nodes by key-path and swaps are identified by template path;
+    /// carrying the value with the element it belongs to avoids having to keep
+    /// those two agreeing.
+    pub swap_progress: Option<f32>,
+    /// `fill`: the colour inside a `<path>`. `None` is `fill: none`.
+    ///
+    /// It defaults to opaque black rather than to nothing, which is SVG's rule
+    /// and is the right first-five-minutes behaviour: a `<path>` written with
+    /// geometry and no paint at all draws, instead of leaving an author staring
+    /// at an empty box wondering which of the two they got wrong.
+    pub fill: Option<Rgba>,
+    /// `stroke`: the colour of the outline. `None` is no outline, which is the
+    /// default, again as SVG has it.
+    pub stroke: Option<Rgba>,
+    /// `stroke-width`, in px.
+    pub stroke_width: f32,
+    /// `stroke-linecap` / `stroke-linejoin`: how an open end and a corner are
+    /// finished.
+    pub stroke_linecap: LineCap,
+    pub stroke_linejoin: LineJoin,
+    /// `fill-rule`: how a self-overlapping path decides what is inside.
+    pub fill_rule: FillRule,
+}
+
+/// How the open end of a stroke is finished.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum LineCap {
+    #[default]
+    Butt,
+    Round,
+    Square,
+}
+
+/// How a corner between two stroked segments is finished.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum LineJoin {
+    #[default]
+    Miter,
+    Round,
+    Bevel,
+}
+
+/// How a path that overlaps itself decides what counts as inside.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum FillRule {
+    #[default]
+    NonZero,
+    EvenOdd,
 }
 
 impl Default for Style {
@@ -382,9 +668,17 @@ impl Default for Style {
             box_shadow: None,
             transform: None,
             cursor: Cursor::Default,
-            position: Position::Relative,
+            position: Position::Static,
             inset: [None; 4],
             aspect_ratio: None,
+            transitions: Vec::new(),
+            swap_progress: None,
+            fill: Some(Rgba::new(0.0, 0.0, 0.0, 1.0)),
+            stroke: None,
+            stroke_width: 1.0,
+            stroke_linecap: LineCap::Butt,
+            stroke_linejoin: LineJoin::Miter,
+            fill_rule: FillRule::NonZero,
         }
     }
 }
@@ -517,12 +811,18 @@ pub struct Node {
     pub text: Option<TextContent>,
     /// `<image src=…>`.
     pub image: Option<ImageContent>,
+    /// `<path d=…>`: vector geometry in the element's own box, drawn with the
+    /// `fill` and `stroke` its style resolved to.
+    pub path: Option<PathContent>,
     /// A checkmark stroked to fill this box, in the given colour. Drawn as a
     /// path rather than a font glyph, since ✓ is whatever the system font happens to
     /// ship, which is not a control mark.
     pub tick: Option<Rgba>,
     pub children: Vec<Node>,
     pub on_tap: Option<String>,
+    /// `@press`, `@release`, `@longpress`, `@swipe`, `@drag`. Empty for almost
+    /// every node, so a `Vec` rather than five more `Option<String>` fields.
+    pub gestures: Vec<(Gesture, String)>,
     /// `r-model` signal name for `<input>` nodes (focus target + edit binding).
     pub model: Option<String>,
     /// `type="textarea"`: a multi-line text input, `Enter` inserts a newline.
@@ -571,9 +871,11 @@ impl Node {
             style,
             text: None,
             image: None,
+            path: None,
             tick: None,
             children: Vec::new(),
             on_tap: None,
+            gestures: Vec::new(),
             model: None,
             multiline: false,
             options: None,
@@ -593,9 +895,11 @@ impl Node {
             style,
             text: Some(text),
             image: None,
+            path: None,
             tick: None,
             children: Vec::new(),
             on_tap: None,
+            gestures: Vec::new(),
             model: None,
             multiline: false,
             options: None,
@@ -615,9 +919,40 @@ impl Node {
             style,
             text: None,
             image: Some(image),
+            path: None,
             tick: None,
             children: Vec::new(),
             on_tap: None,
+            gestures: Vec::new(),
+            model: None,
+            multiline: false,
+            options: None,
+            hidden: false,
+            id: None,
+            label_for: None,
+            focus_model: None,
+            state_path: None,
+            access: Access::default(),
+            instance: None,
+            key: None,
+        }
+    }
+
+    /// A `<path>` leaf.
+    ///
+    /// Its geometry is in the element's own coordinates, so the box CSS gives
+    /// it is what the drawing sits in. Nothing about the path changes the box:
+    /// see the note on `PaintKind::Path` for why that is the whole design.
+    pub fn path(style: Style, path: PathContent) -> Self {
+        Self {
+            style,
+            text: None,
+            image: None,
+            path: Some(path),
+            tick: None,
+            children: Vec::new(),
+            on_tap: None,
+            gestures: Vec::new(),
             model: None,
             multiline: false,
             options: None,
@@ -673,6 +1008,15 @@ pub struct PaintTick {
     pub color: Rgba,
 }
 
+/// Vector geometry, positioned at its laid-out box's content corner.
+#[derive(Clone, Debug)]
+pub struct PaintPath {
+    pub x: f32,
+    pub y: f32,
+    pub content: PathContent,
+    pub paint: PathPaint,
+}
+
 /// An image scaled to fill its laid-out box.
 #[derive(Clone, Debug)]
 pub struct PaintImage {
@@ -689,6 +1033,7 @@ pub enum Paint {
     Rect(PaintRect),
     Text(PaintText),
     Image(PaintImage),
+    Path(PaintPath),
     Tick(PaintTick),
     /// A blurred `box-shadow`, drawn behind its box. Geometry already has the
     /// offset and spread applied.
@@ -735,6 +1080,34 @@ pub struct Offset {
     pub y: f32,
 }
 
+/// Which scroller a box belongs to, for `scrollIntoView`.
+///
+/// **By content, not by what is currently on screen.** The obvious test is
+/// whether the scroller's visible rectangle contains the box, and it is wrong in
+/// exactly the case the call exists for: an element scrolled past the bottom
+/// sits *outside* that rectangle, so no scroller claims it and nothing moves.
+/// A message list that reveals its newest row silently did nothing, and the only
+/// reveals that worked were the ones already a nudge away from being visible.
+///
+/// So the comparison is against the scroller's content extent, which is where
+/// its children actually are. `x`/`y` on a region are already shifted by the
+/// current offset, so the content starts one offset *above* the visible edge.
+///
+/// The innermost match wins, `scrolls` being in tree order, which is the one
+/// whose offset moves this box.
+pub fn containing_scroller(
+    scrolls: &[ScrollRegion],
+    offsets: &[Offset],
+    x: f32,
+    y: f32,
+) -> Option<usize> {
+    scrolls.iter().rposition(|s| {
+        let off = offsets.get(s.id).copied().unwrap_or_default();
+        let (cx, cy) = (s.x - off.x, s.y - off.y);
+        x >= cx && y >= cy && x <= cx + s.content_width && y <= cy + s.content_height
+    })
+}
+
 impl Offset {
     pub fn clamp_to(self, max: Offset) -> Offset {
         Offset {
@@ -748,6 +1121,17 @@ impl Offset {
 /// as long as the tree's shape is, which is what the shell keys offsets by.
 #[derive(Clone, Debug)]
 pub struct ScrollRegion {
+    /// The accumulated `transform` in force where this box sits, and the
+    /// accumulated `opacity`.
+    ///
+    /// Scrollbars and focus rings are drawn *outside* the paint list, over the
+    /// content, because a scroller clips its own children and would eat them.
+    /// That means they do not inherit the transform and opacity stack the paint
+    /// list carries, and until these were recorded they did not follow at all:
+    /// a page transitioning at `opacity: 0` still showed its scrollbar at full
+    /// strength, sitting over whatever it was transitioning away from.
+    pub transform: Option<Transform>,
+    pub alpha: f32,
     pub id: usize,
     pub x: f32,
     pub y: f32,
@@ -771,14 +1155,61 @@ impl ScrollRegion {
     }
 }
 
+/// One thing a finger can do to an element, beyond tapping it.
+///
+/// `@tap` stays separate because it is not a pointer event: it is the finished
+/// gesture, it is what a keyboard activation produces, and it is what `tap()`
+/// from script synthesises. Everything here is raw pointer traffic.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Gesture {
+    /// A finger or button went down on this element.
+    Press,
+    /// It came up again, whether or not it stayed still enough to be a tap.
+    Release,
+    /// It stayed down, and still, for long enough.
+    LongPress,
+    /// It travelled far enough in one direction and left. Discrete: it reports
+    /// once, at the end, with a direction.
+    Swipe,
+    /// It is moving with the button or finger down. Reports at the start, on
+    /// every move, and at the end.
+    Drag,
+}
+
+impl Gesture {
+    /// The attribute that declares it, without the `@`.
+    pub fn from_attr(name: &str) -> Option<Self> {
+        match name {
+            "press" => Some(Gesture::Press),
+            "release" => Some(Gesture::Release),
+            "longpress" => Some(Gesture::LongPress),
+            "swipe" => Some(Gesture::Swipe),
+            "drag" => Some(Gesture::Drag),
+            _ => None,
+        }
+    }
+}
+
 /// An absolutely-positioned tappable region, carrying its `@tap` handler source.
 #[derive(Clone, Debug)]
 pub struct HitRegion {
+    /// The `transform` in force where this box sits.
+    ///
+    /// The rect itself is untransformed, because that is what the layout
+    /// produced. Testing a point against it without undoing the transform means
+    /// a tap on a sliding element lands where the element *used* to be, which
+    /// is a correctness bug rather than a cosmetic one: mid-transition the
+    /// wrong thing responds, or nothing does.
+    pub transform: Option<Transform>,
     pub x: f32,
     pub y: f32,
     pub width: f32,
     pub height: f32,
-    pub on_tap: String,
+    /// The `@tap` body, if the element has one. A region may exist without it:
+    /// an element with only `@drag` still has to be found by a hit test.
+    pub on_tap: Option<String>,
+    /// The pointer handlers this element declared, by gesture.
+    pub gestures: Vec<(Gesture, String)>,
     /// The `cursor` for this region, so the shell can set the pointer shape when
     /// it hovers here. Carried on the hit region because that is the geometry the
     /// shell already hit-tests; a `cursor` on a non-tappable box is not honored.
@@ -791,6 +1222,17 @@ pub struct HitRegion {
 
 impl HitRegion {
     pub fn contains(&self, px: f32, py: f32) -> bool {
+        // Undo the transform on the *point* rather than transforming the rect:
+        // a rotated or skewed box is no longer a rectangle, and the inverse
+        // point test stays correct for every affine.
+        let (px, py) = match self.transform {
+            Some(m) => match invert(m) {
+                Some(inv) => apply(inv, px, py),
+                // Collapsed to nothing: there is no area left to hit.
+                None => return false,
+            },
+            None => (px, py),
+        };
         px >= self.x && px <= self.x + self.width && py >= self.y && py <= self.y + self.height
     }
 }
@@ -894,6 +1336,10 @@ pub struct AccessNode {
 /// (for the focus ring) plus how the shell should act on it.
 #[derive(Clone, Debug)]
 pub struct FocusItem {
+    /// See [`ScrollRegion::transform`]: a ring is drawn over the content and so
+    /// has to be told what the content is being drawn through.
+    pub transform: Option<Transform>,
+    pub alpha: f32,
     pub x: f32,
     pub y: f32,
     pub width: f32,
@@ -942,6 +1388,24 @@ pub struct Layout {
     pub states: Vec<StateRegion>,
     /// Elements exposed to assistive technology, in document order.
     pub access: Vec<AccessNode>,
+    /// Where every laid-out node ended up, for `query()` to read back.
+    pub metrics: Vec<NodeMetrics>,
+}
+
+/// One node's laid-out box, keyed by the same child-index path the binding
+/// registry and the element index use.
+///
+/// Absolute window pixels with any scroll offset already applied, which is what
+/// a script asking "where is this" means. A node hidden by `r-show="false"` has
+/// no entry: it reserves layout space but is not on screen, and geometry is a
+/// property of what is actually shown.
+#[derive(Clone, Debug, PartialEq)]
+pub struct NodeMetrics {
+    pub path: Vec<usize>,
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
 }
 
 /// A node's content box, as an offset from its border-box origin plus a size.
@@ -980,6 +1444,24 @@ enum PaintKind {
     Text(TextContent),
     Image(ImageContent),
     Tick(Rgba),
+    /// Vector geometry with the paint properties its style resolved to.
+    ///
+    /// The paint travels with the geometry rather than being looked up later
+    /// because `fill` and `stroke` are ordinary cascaded properties: they can
+    /// come from a `:hover`, from a `:class`, or from halfway through a
+    /// `transition`, and the value that matters is the one this frame computed.
+    Path(PathContent, PathPaint),
+}
+
+/// The resolved paint for one `<path>`, lifted off the style at build time.
+#[derive(Clone, Copy, Debug)]
+pub struct PathPaint {
+    pub fill: Option<Rgba>,
+    pub fill_rule: FillRule,
+    pub stroke: Option<Rgba>,
+    pub stroke_width: f32,
+    pub cap: LineCap,
+    pub join: LineJoin,
 }
 
 fn to_dim(l: Len, vp: (f32, f32)) -> Dimension {
@@ -1095,14 +1577,23 @@ fn to_taffy(style: &Style, vp: (f32, f32)) -> taffy::Style {
         justify_items: style.justify_items.map(to_align_items),
         align_content: style.align_content.map(to_align_content),
         position: match style.position {
-            Position::Relative => taffy::Position::Relative,
-            Position::Absolute => taffy::Position::Absolute,
+            Position::Static | Position::Relative | Position::Sticky => taffy::Position::Relative,
+            Position::Absolute | Position::Fixed => taffy::Position::Absolute,
         },
-        inset: Rect {
-            left: to_inset(style.inset[3], vp),
-            right: to_inset(style.inset[1], vp),
-            top: to_inset(style.inset[0], vp),
-            bottom: to_inset(style.inset[2], vp),
+        // A static box ignores its insets, which is the rule that makes `static`
+        // worth having rather than being a synonym for `relative`. A sticky box
+        // ignores them *here* for a different reason: its insets say where it
+        // stops, not where it starts, and applying them as offsets would move it
+        // before anything had scrolled.
+        inset: if matches!(style.position, Position::Static | Position::Sticky) {
+            Rect { left: auto(), right: auto(), top: auto(), bottom: auto() }
+        } else {
+            Rect {
+                left: to_inset(style.inset[3], vp),
+                right: to_inset(style.inset[1], vp),
+                top: to_inset(style.inset[0], vp),
+                bottom: to_inset(style.inset[2], vp),
+            }
         },
         aspect_ratio: style.aspect_ratio,
         // taffy needs to know the box scrolls: it then sizes the box from its own
@@ -1215,6 +1706,132 @@ fn to_align_content(j: Justify) -> AlignContent {
     }
 }
 
+/// Every absolutely positioned box that has no insets of its own, with its
+/// parent, so its static position can be discovered and then pinned.
+///
+/// A box that *does* name an inset is asking to be placed against its parent
+/// and is left alone: that is what `top: 0` means and it already works.
+fn collect_statics(
+    tree: &TaffyTree<TextContent>,
+    id: NodeId,
+    out: &mut Vec<(NodeId, NodeId)>,
+) {
+    for child in tree.children(id).expect("children") {
+        let st = tree.style(child).expect("style");
+        let none_named = st.inset.left == auto()
+            && st.inset.right == auto()
+            && st.inset.top == auto()
+            && st.inset.bottom == auto();
+        if st.position == taffy::Position::Absolute && none_named {
+            out.push((id, child));
+        }
+        collect_statics(tree, child, out);
+    }
+}
+
+/// Where a `sticky` box actually paints, given where it was laid out.
+///
+/// Sticky is the one `position` that is not answered by the layout: the box
+/// keeps its place in the flow, and its insets are **thresholds** rather than
+/// offsets. It sits where it was put until its scroller's edge reaches that
+/// threshold, then travels along the edge, and stops again when its parent runs
+/// out from under it. That last clamp is the half that makes a list of sections
+/// work: a heading rides the top of the scroller until the next section arrives
+/// and pushes it off, rather than sitting there over the wrong rows.
+///
+/// Nothing else moves, which is also CSS: a sticky box occupies its original
+/// space the whole time, so its siblings do not reflow as it travels.
+///
+/// `view` is the scroller's visible rectangle, `holder` the box the sticky one
+/// sits in, and both are in the same window coordinates as `rect`.
+fn stick(
+    rect: (f32, f32, f32, f32),
+    inset: [Option<f32>; 4],
+    view: (f32, f32, f32, f32),
+    holder: (f32, f32, f32, f32),
+) -> (f32, f32) {
+    let (x, y, w, h) = rect;
+    let (vx, vy, vw, vh) = view;
+    let (hx, hy, hw, hh) = holder;
+    let (mut nx, mut ny) = (x, y);
+
+    if let Some(top) = inset[0] {
+        ny = ny.max(vy + top);
+    }
+    if let Some(bottom) = inset[2] {
+        ny = ny.min(vy + vh - bottom - h);
+    }
+    if let Some(left) = inset[3] {
+        nx = nx.max(vx + left);
+    }
+    if let Some(right) = inset[1] {
+        nx = nx.min(vx + vw - right - w);
+    }
+
+    // Never outside the box it belongs to. The `max` after the `min` matters:
+    // when the holder is shorter than the sticky box there is no valid position
+    // and the top edge is the least surprising answer.
+    ny = ny.min(hy + hh - h).max(hy);
+    nx = nx.min(hx + hw - w).max(hx);
+    (nx, ny)
+}
+
+/// Whether this box has to be laid out under its **containing block** rather
+/// than under its parent, and whether it is `fixed` (so only the window will do).
+///
+/// Only when at least one inset is named. With all four `auto` the box keeps its
+/// **static position**, which is defined as where it would have sat in its
+/// parent's flow, so its parent is exactly where it has to be laid out and
+/// moving it would lose the very thing it is asking for.
+fn hoists(style: &Style) -> Option<bool> {
+    if !style.position.is_out_of_flow() {
+        return None;
+    }
+    let named = style.inset.iter().any(Option::is_some);
+    named.then_some(style.position == Position::Fixed)
+}
+
+/// The inverse of an affine, or `None` when it collapses (zero determinant).
+fn invert(m: Transform) -> Option<Transform> {
+    let [a, b, c, d, e, f] = m;
+    let det = a * d - b * c;
+    if det.abs() < 1e-9 {
+        return None;
+    }
+    let inv = 1.0 / det;
+    Some([
+        d * inv,
+        -b * inv,
+        -c * inv,
+        a * inv,
+        (c * f - d * e) * inv,
+        (b * e - a * f) * inv,
+    ])
+}
+
+/// A point through an affine.
+fn apply(m: Transform, x: f32, y: f32) -> (f32, f32) {
+    (m[0] * x + m[2] * y + m[4], m[1] * x + m[3] * y + m[5])
+}
+
+/// `outer * inner`, both as kurbo's `[a, b, c, d, e, f]`.
+///
+/// Needed because a transform is now *accumulated* as well as pushed: the paint
+/// list nests its matrices, but a scrollbar drawn outside that list has to be
+/// handed one matrix that already means the same thing.
+fn compose(outer: Transform, inner: Transform) -> Transform {
+    let [a1, b1, c1, d1, e1, f1] = outer;
+    let [a2, b2, c2, d2, e2, f2] = inner;
+    [
+        a1 * a2 + c1 * b2,
+        b1 * a2 + d1 * b2,
+        a1 * c2 + c1 * d2,
+        b1 * c2 + d1 * d2,
+        a1 * e2 + c1 * f2 + e1,
+        b1 * e2 + d1 * f2 + f1,
+    ]
+}
+
 fn to_inset(l: Option<Len>, vp: (f32, f32)) -> LengthPercentageAuto {
     match l {
         None => auto(),
@@ -1274,7 +1891,7 @@ fn build(
     tree: &mut TaffyTree<TextContent>,
     node: &Node,
     paint: &mut Vec<(NodeId, PaintKind)>,
-    handlers: &mut Vec<(NodeId, String, Cursor, Option<String>)>,
+    handlers: &mut Vec<(NodeId, Option<String>, Vec<(Gesture, String)>, Cursor, Option<String>)>,
     models: &mut Vec<Bound>,
     focus_labels: &mut Vec<(NodeId, String, Option<String>)>,
     hidden: &mut Vec<NodeId>,
@@ -1283,6 +1900,14 @@ fn build(
     transforms: &mut Vec<(NodeId, Transform)>,
     states: &mut Vec<(NodeId, Vec<usize>)>,
     access: &mut Vec<(NodeId, Access, Option<String>)>,
+    // Where this node sits, and where every node's path is collected.
+    //
+    // Computed here rather than in `collect` on purpose: this walker recurses
+    // over `node.children` directly, so a child's index is its index. `collect`
+    // walks taffy ids, where the same assumption is only *probably* true, and a
+    // mismatch there would hand back confident, wrong geometry.
+    path: &[usize],
+    paths: &mut Vec<(NodeId, Vec<usize>)>,
     vp: (f32, f32),
     // `cap` is the widest this node can end up, from the constraint chain above
     // it; `caps` is where each text leaf's own cap is left for the measure hook.
@@ -1291,6 +1916,21 @@ fn build(
     // The `r-key` of the row this node is inside, inherited by everything under
     // it. A keyed node starts a new row; nothing else changes it.
     row: Option<&str>,
+    // Sticky boxes and their thresholds, resolved to px, in `inset` order.
+    stickies: &mut Vec<(NodeId, [Option<f32>; 4])>,
+    // Out-of-flow boxes waiting for their containing block, as `(id, fixed)`.
+    //
+    // taffy positions an absolute child against its *parent*, and CSS positions
+    // it against the nearest non-static ancestor, so the two agree only when
+    // those are the same box. They are made the same box here: such a child is
+    // built but withheld from its parent's child list, carried up this vector,
+    // and handed to the first ancestor that is a containing block. A `fixed` box
+    // is withheld from all of them and taken by the root.
+    //
+    // Doing it in the tree rather than by correcting coordinates afterwards is
+    // what makes the *size* right too: `left: 0; right: 0` means "as wide as the
+    // containing block", which is a question only the layout can answer.
+    hoisted: &mut Vec<(NodeId, bool)>,
 ) -> NodeId {
     let own_cap = width_cap(&node.style, cap, vp);
     let child_cap = inner_cap(&node.style, own_cap);
@@ -1349,12 +1989,96 @@ fn build(
         ));
         paint.push((id, PaintKind::Image(ic.clone())));
         id
+    } else if let Some(pc) = &node.path {
+        // A path given no CSS size takes the size of its own geometry, the way
+        // an <image> takes its intrinsic pixels. That makes the common case
+        // (paste some path data, see it) work with no box to write, and the
+        // geometry is in the element's own coordinates either way: naming a
+        // width does not rescale the drawing, it changes the box the drawing
+        // sits in. Scaling is `transform`, which every other element already
+        // uses for the same thing.
+        let mut ts = to_taffy(&node.style, vp);
+        let bounds = pc.bounds();
+        if node.style.width.is_none() {
+            ts.size.width = length(bounds.map_or(0.0, |b| b.2.max(0.0)));
+        }
+        if node.style.height.is_none() {
+            ts.size.height = length(bounds.map_or(0.0, |b| b.3.max(0.0)));
+        }
+        let id = tree.new_leaf(ts).expect("taffy path leaf");
+        paint.push((
+            id,
+            PaintKind::Box {
+                bg: node.style.background.clone(),
+                radius: node.style.radius,
+                border_width: node.style.border.top,
+                border_color: node.style.border_color,
+                clip: node.style.overflow != Overflow::Visible,
+                shadow: node.style.box_shadow,
+            },
+        ));
+        paint.push((
+            id,
+            PaintKind::Path(
+                pc.clone(),
+                PathPaint {
+                    fill: node.style.fill,
+                    fill_rule: node.style.fill_rule,
+                    stroke: node.style.stroke,
+                    stroke_width: node.style.stroke_width,
+                    cap: node.style.stroke_linecap,
+                    join: node.style.stroke_linejoin,
+                },
+            ),
+        ));
+        id
     } else {
-        let children: Vec<NodeId> = node
+        let mark = hoisted.len();
+        let mut children: Vec<NodeId> = node
             .children
             .iter()
-            .map(|c| build(tree, c, paint, handlers, models, focus_labels, hidden, opacities, scrolls, transforms, states, access, vp, child_cap, caps, row))
+            .enumerate()
+            .filter_map(|(i, c)| {
+                let mut cp = path.to_vec();
+                cp.push(i);
+                let cid = build(tree, c, paint, handlers, models, focus_labels, hidden, opacities, scrolls, transforms, states, access, &cp, paths, vp, child_cap, caps, row, stickies, hoisted);
+                match hoists(&c.style) {
+                    Some(fixed) => {
+                        hoisted.push((cid, fixed));
+                        None
+                    }
+                    None => Some(cid),
+                }
+            })
             .collect();
+        // This box is a containing block, so the out-of-flow descendants that
+        // came up from its subtree stop here.
+        //
+        // **A `transform` makes a containing block for both kinds**, whatever
+        // the box's own `position` says, which is CSS's rule and the reason
+        // `position: fixed` famously stops being fixed inside a transformed
+        // parent. It is not an oddity to work around: a transform moves the
+        // whole subtree, so there is no way to hold a descendant still against
+        // the window while its ancestor slides, and pretending otherwise would
+        // mean drawing it somewhere the transform says it is not.
+        //
+        // Without a transform, only a non-static box claims anything, and only
+        // the absolute ones: `fixed` carries on to the root.
+        //
+        // They go on the end, which is also where CSS paints them: a positioned
+        // descendant is drawn over its containing block's in-flow content.
+        let transformed = node.style.transform.is_some();
+        if transformed || node.style.position.is_containing_block() {
+            let mut i = mark;
+            while i < hoisted.len() {
+                let carries_on = hoisted[i].1 && !transformed;
+                if carries_on {
+                    i += 1;
+                } else {
+                    children.push(hoisted.remove(i).0);
+                }
+            }
+        }
         let id = if children.is_empty() {
             tree.new_leaf(to_taffy(&node.style, vp)).expect("taffy leaf")
         } else {
@@ -1375,8 +2099,16 @@ fn build(
         ));
         id
     };
-    if let Some(handler) = &node.on_tap {
-        handlers.push((id, handler.clone(), node.style.cursor, node.instance.clone()));
+    // A hit region is needed for anything a pointer can reach, not only for a
+    // `@tap`: an element with just `@drag` still has to be found by a hit test.
+    if node.on_tap.is_some() || !node.gestures.is_empty() {
+        handlers.push((
+            id,
+            node.on_tap.clone(),
+            node.gestures.clone(),
+            node.style.cursor,
+            node.instance.clone(),
+        ));
     }
     if let Some(model) = &node.model {
         models.push(Bound {
@@ -1402,9 +2134,25 @@ fn build(
     if node.style.overflow == Overflow::Scroll {
         scrolls.push(id);
     }
+    if node.style.position.is_sticky() {
+        // Resolved to px here, where the viewport is in hand, so `collect` can
+        // compare them against window coordinates without carrying units.
+        let px = |l: Option<Len>| match l {
+            None => None,
+            Some(Len::Px(v)) => Some(v),
+            Some(Len::Pct(p)) => Some(vp.1 * p / 100.0),
+            Some(Len::Vw(v)) => Some(vp.0 * v / 100.0),
+            Some(Len::Vh(v)) => Some(vp.1 * v / 100.0),
+        };
+        stickies.push((
+            id,
+            [px(node.style.inset[0]), px(node.style.inset[1]), px(node.style.inset[2]), px(node.style.inset[3])],
+        ));
+    }
     if let Some(path) = &node.state_path {
         states.push((id, path.clone()));
     }
+    paths.push((id, path.to_vec()));
     if node.access.role.is_meaningful() {
         access.push((id, node.access.clone(), node.model.clone()));
     }
@@ -1418,7 +2166,7 @@ fn collect(
     origin_x: f32,
     origin_y: f32,
     paint: &[(NodeId, PaintKind)],
-    handlers: &[(NodeId, String, Cursor, Option<String>)],
+    handlers: &[(NodeId, Option<String>, Vec<(Gesture, String)>, Cursor, Option<String>)],
     models: &[Bound],
     focus_labels: &[(NodeId, String, Option<String>)],
     hidden: &[NodeId],
@@ -1427,16 +2175,50 @@ fn collect(
     transforms: &[(NodeId, Transform)],
     states: &[(NodeId, Vec<usize>)],
     access: &[(NodeId, Access, Option<String>)],
+    paths: &[(NodeId, Vec<usize>)],
     offsets: &[Offset],
     vp: (f32, f32),
+    stickies: &[(NodeId, [Option<f32>; 4])],
+    // The box this node sits in, as `(x, y, width, height)` in window
+    // coordinates. Only `sticky` reads it, to stop travelling when its parent
+    // runs out from under it.
+    holder: (f32, f32, f32, f32),
     // The nearest scroller above this node, so a focus ring can be clipped to
     // the box that clips everything else in it.
     inside_scroll: Option<usize>,
+    // The `transform` and `opacity` accumulated from the ancestors, so anything
+    // drawn outside the paint list can be drawn through the same lens.
+    xform: Option<Transform>,
+    dim: f32,
     out: &mut Layout,
 ) {
     let layout = tree.layout(id).expect("layout");
-    let x = origin_x + layout.location.x;
-    let y = origin_y + layout.location.y;
+    let mut x = origin_x + layout.location.x;
+    let mut y = origin_y + layout.location.y;
+
+    // `sticky` is resolved here rather than in the layout, because it is a
+    // question about the scroll offset and the layout does not know one. Done
+    // before anything is recorded, so the box's paint, its hit region, its
+    // metrics and its children all move together: a sticky header you can see
+    // but cannot tap would be worse than one that does not stick.
+    if let Some((_, inset)) = stickies.iter().find(|(nid, _)| *nid == id) {
+        // Against the scroller it is inside; with none, against the window,
+        // which is what a sticky box in an unscrolled document sits in.
+        let view = match inside_scroll.and_then(|sid| out.scrolls.get(sid)) {
+            Some(s) => (s.x, s.y, s.width, s.height),
+            None => (0.0, 0.0, vp.0, vp.1),
+        };
+        let (nx, ny) = stick(
+            (x, y, layout.size.width, layout.size.height),
+            *inset,
+            view,
+            holder,
+        );
+        x = nx;
+        y = ny;
+    }
+    let x = x;
+    let y = y;
 
     // r-show=false: the node kept its layout slot but paints nothing (nor its
     // subtree, nor its hit regions).
@@ -1463,10 +2245,19 @@ fn collect(
     // coords; bake in the origin (CSS default: the box centre) so it applies to
     // absolute coordinates directly.
     let transform = transforms.iter().find(|(nid, _)| *nid == id).map(|(_, m)| *m);
+    // What the subtree, and anything drawn on its behalf outside the paint
+    // list, is seen through.
+    let mut child_xform = xform;
     if let Some(m) = transform {
         let (ox, oy) = (x + layout.size.width / 2.0, y + layout.size.height / 2.0);
-        out.paints.push(Paint::PushTransform(centre_transform(m, ox, oy)));
+        let baked = centre_transform(m, ox, oy);
+        out.paints.push(Paint::PushTransform(baked));
+        child_xform = Some(match xform {
+            Some(outer) => compose(outer, baked),
+            None => baked,
+        });
     }
+    let child_dim = dim * alpha;
 
     let mut clip = false;
     let mut clip_radius = [0.0; 4];
@@ -1542,6 +2333,17 @@ fn collect(
                 height: layout.size.height,
                 content: ic.clone(),
             })),
+            // From the content corner, not the border corner, so padding moves
+            // the drawing the way it moves text rather than being ignored.
+            PaintKind::Path(pc, pp) => {
+                let (cx, cy, _, _) = content_box(layout);
+                out.paints.push(Paint::Path(PaintPath {
+                    x: x + cx,
+                    y: y + cy,
+                    content: pc.clone(),
+                    paint: *pp,
+                }))
+            }
         }
     }
 
@@ -1575,6 +2377,18 @@ fn collect(
         });
     }
 
+    // Emitted after the `hidden` check above, so an `r-show="false"` subtree has
+    // no metrics at all rather than metrics nobody can see.
+    if let Some((_, path)) = paths.iter().find(|(nid, _)| *nid == id) {
+        out.metrics.push(NodeMetrics {
+            path: path.clone(),
+            x,
+            y,
+            width: layout.size.width,
+            height: layout.size.height,
+        });
+    }
+
     // Emitted for any box a `:hover`/`:active` rule could style, tappable or not,
     // unlike `cursor`, pointer-state styling is not limited to `@tap` boxes.
     if let Some((_, path)) = states.iter().find(|(nid, _)| *nid == id) {
@@ -1587,13 +2401,17 @@ fn collect(
         });
     }
 
-    if let Some((_, handler, cursor, instance)) = handlers.iter().find(|(nid, ..)| *nid == id) {
+    if let Some((_, handler, gestures, cursor, instance)) =
+        handlers.iter().find(|(nid, ..)| *nid == id)
+    {
         out.hits.push(HitRegion {
+            transform: child_xform,
             x,
             y,
             width: layout.size.width,
             height: layout.size.height,
             on_tap: handler.clone(),
+            gestures: gestures.clone(),
             cursor: *cursor,
             instance: instance.clone(),
         });
@@ -1613,6 +2431,8 @@ fn collect(
                 options: options.clone(),
             });
             out.focusables.push(FocusItem {
+                transform: child_xform,
+                alpha: child_dim,
                 x,
                 y,
                 width: fw,
@@ -1663,6 +2483,8 @@ fn collect(
                 scroll_id: scrolls.contains(&id).then(|| out.scrolls.len()),
             });
             out.focusables.push(FocusItem {
+                transform: child_xform,
+                alpha: child_dim,
                 x,
                 y,
                 width: fw,
@@ -1676,10 +2498,18 @@ fn collect(
                 scroll: inside_scroll,
             });
         }
-    } else if let Some((_, handler, _, instance)) = handlers.iter().find(|(nid, ..)| *nid == id) {
+    } else if let Some((_, Some(handler), _, _, instance)) =
+        handlers.iter().find(|(nid, ..)| *nid == id)
+    {
         // A button / checkbox / radio (anything with a `@tap` handler) is
         // keyboard-reachable: Space or Enter runs the same handler as a tap.
+        //
+        // Only `@tap`. A keyboard has no pointer, so an element that declares
+        // only `@drag` has nothing a key could stand in for, and offering Enter
+        // as a fake drag would be worse than leaving it alone.
         out.focusables.push(FocusItem {
+            transform: child_xform,
+            alpha: child_dim,
             x,
             y,
             width: fw,
@@ -1715,6 +2545,8 @@ fn collect(
         };
         shift = offsets.get(sid).copied().unwrap_or_default().clamp_to(max);
         out.scrolls.push(ScrollRegion {
+            transform: child_xform,
+            alpha: child_dim,
             id: sid,
             x,
             y,
@@ -1726,7 +2558,19 @@ fn collect(
         });
     }
 
-    for child in tree.children(id).expect("children") {
+    // In-flow children first, sticky ones after, because a positioned box paints
+    // over its in-flow siblings and a sticky one is positioned. Without this a
+    // sticky heading is drawn *before* the rows it is meant to sit over, so the
+    // content scrolls straight through it and the heading is unreadable exactly
+    // when it is doing its job. Found by looking, not by the tests: every
+    // assertion about geometry passed.
+    //
+    // Ordering here also puts the sticky box on top for hit testing, since the
+    // topmost hit region wins and later means topmost.
+    let kids = tree.children(id).expect("children");
+    let (stuck, flowing): (Vec<NodeId>, Vec<NodeId>) =
+        kids.iter().partition(|c| stickies.iter().any(|(nid, _)| nid == *c));
+    for child in flowing.into_iter().chain(stuck) {
         collect(
             tree,
             child,
@@ -1742,9 +2586,27 @@ fn collect(
             transforms,
             states,
             access,
+            paths,
             offsets,
             vp,
+            stickies,
+            // The box this node's children are held by, measured where the
+            // scroll has put it.
+            //
+            // For a **scroller** that is its *content* box, not the visible one:
+            // its children live down the whole scrollable length, and clamping a
+            // sticky one to the 200px on screen would pin it to a band that is
+            // itself sliding, so it would drift instead of sticking. Everywhere
+            // else the two are the same box.
+            (
+                x - shift.x,
+                y - shift.y,
+                layout.content_size.width.max(layout.size.width),
+                layout.content_size.height.max(layout.size.height),
+            ),
             child_scroll,
+            child_xform,
+            child_dim,
             out,
         );
     }
@@ -1803,8 +2665,11 @@ pub fn layout_scrolled(
     let mut transforms = Vec::new();
     let mut states = Vec::new();
     let mut access = Vec::new();
+    let mut paths = Vec::new();
     let vp = (avail_w, avail_h);
     let mut caps: HashMap<NodeId, f32> = HashMap::new();
+    let mut stickies: Vec<(NodeId, [Option<f32>; 4])> = Vec::new();
+    let mut hoisted: Vec<(NodeId, bool)> = Vec::new();
     let root_id = build(
         &mut tree,
         root,
@@ -1818,13 +2683,26 @@ pub fn layout_scrolled(
         &mut transforms,
         &mut states,
         &mut access,
+        &[], // the root's own path is empty
+        &mut paths,
         vp,
         // The root is forced to the viewport below, so that is the widest
         // anything can be.
         Some(avail_w),
         &mut caps,
         None, // the root is not inside any row
+        &mut stickies,
+        &mut hoisted,
     );
+
+    // The root is the initial containing block, so it takes whatever is still
+    // looking for one: every `fixed` box, and any absolute box with no
+    // non-static ancestor. It is also the window, which is what makes `fixed`
+    // mean fixed, since a box parented to the root is outside every scroller and
+    // so is never shifted by one.
+    for (id, _) in hoisted.drain(..) {
+        tree.add_child(root_id, id).expect("the root takes what is left");
+    }
 
     // Force the root to fill the viewport so a `screen` always covers the window.
     let mut root_style = to_taffy(&root.style, vp);
@@ -1834,13 +2712,50 @@ pub fn layout_scrolled(
     };
     tree.set_style(root_id, root_style).expect("set root style");
 
-    tree.compute_layout_with_measure(
-        root_id,
-        Size {
-            width: AvailableSpace::Definite(avail_w),
-            height: AvailableSpace::Definite(avail_h),
-        },
-        |known, available, id, ctx, _style| {
+    // An absolutely positioned box with no insets sits at its **static**
+    // position in CSS: where it would have been in normal flow. taffy has no
+    // such concept and puts it at the parent's content-box origin instead, so
+    // such a box jumped to the top-left of its parent. That is what made a
+    // departing page fly up over the nav bar, and it is why a route transition
+    // needed a wrapper box to look right at all.
+    //
+    // So it is laid out twice. The first pass leaves it in the flow, which is
+    // what discovers where it would have been; the second pins it there and
+    // takes it out. The cost is one extra layout, and only when such a box
+    // exists at all, which is normally never and during a swap is brief.
+    //
+    // **Only one out-of-flow sibling goes back in the flow at a time**, which
+    // is the whole reason for the `rounds` below. Putting them all back at once
+    // measures each one against the others, and a box that holds no space
+    // cannot push its sibling down: two of them landed a whole box apart
+    // instead of on top of one another. Seen in `examples/chart.rux`, where a
+    // filled band and the line over it are two absolutely positioned paths over
+    // the same points, and the line was drawn a band's height below the band,
+    // outside the frame entirely.
+    //
+    // Siblings are the only ones that interfere, so the number of passes is the
+    // most no-inset absolute children any single parent has: one in almost
+    // every document, two for a chart, and never the total.
+    let mut statics: Vec<(NodeId, NodeId)> = Vec::new();
+    collect_statics(&tree, root_id, &mut statics);
+    // Each one's index among its own parent's statics, which is the pass it
+    // gets to be in the flow for.
+    let mut rounds: Vec<usize> = Vec::with_capacity(statics.len());
+    {
+        let mut seen: HashMap<NodeId, usize> = HashMap::new();
+        for (parent, _) in &statics {
+            let n = seen.entry(*parent).or_insert(0);
+            rounds.push(*n);
+            *n += 1;
+        }
+    }
+    let passes = rounds.iter().copied().max().map_or(0, |m| m + 1);
+
+    let mut measure_fn = |known: Size<Option<f32>>,
+                          available: Size<AvailableSpace>,
+                          id: NodeId,
+                          ctx: Option<&mut TextContent>,
+                          _style: &taffy::Style| {
             if let (Some(w), Some(h)) = (known.width, known.height) {
                 return Size { width: w, height: h };
             }
@@ -1882,14 +2797,190 @@ pub fn layout_scrolled(
                     height: 0.0,
                 },
             }
-        },
-    )
-    .expect("compute layout");
+        };
+
+    let space = Size {
+        width: AvailableSpace::Definite(avail_w),
+        height: AvailableSpace::Definite(avail_h),
+    };
+    tree.compute_layout_with_measure(root_id, space, &mut measure_fn)
+        .expect("compute layout");
+
+    if !statics.is_empty() {
+        // One pass per round. In round `k` the k-th static child of every
+        // parent is in the flow and all the others are out of it, which is
+        // exactly the arrangement its static position is defined against.
+        let mut found: Vec<(f32, f32)> = vec![(0.0, 0.0); statics.len()];
+        for round in 0..passes {
+            for (i, (_, id)) in statics.iter().enumerate() {
+                let mut st = tree.style(*id).expect("style").clone();
+                st.position = if rounds[i] == round {
+                    taffy::Position::Relative
+                } else {
+                    taffy::Position::Absolute
+                };
+                tree.set_style(*id, st).expect("one of them back in the flow");
+            }
+            tree.compute_layout_with_measure(root_id, space, &mut measure_fn)
+                .expect("discover the static positions");
+            for (i, (_, id)) in statics.iter().enumerate() {
+                if rounds[i] == round {
+                    let here = tree.layout(*id).expect("layout").location;
+                    found[i] = (here.x, here.y);
+                }
+            }
+        }
+        for (i, (_, id)) in statics.iter().enumerate() {
+            let mut st = tree.style(*id).expect("style").clone();
+            st.position = taffy::Position::Absolute;
+            st.inset.left = length(found[i].0);
+            st.inset.top = length(found[i].1);
+            tree.set_style(*id, st).expect("pinned where it stood");
+        }
+        tree.compute_layout_with_measure(root_id, space, &mut measure_fn)
+            .expect("compute layout again");
+    }
 
     let mut out = Layout::default();
     collect(
         &tree, root_id, 0.0, 0.0, &paint, &handlers, &models, &focus_labels, &hidden, &opacities,
-        &scrolls, &transforms, &states, &access, offsets, vp, None, &mut out,
+        &scrolls, &transforms, &states, &access, &paths, offsets, vp, &stickies,
+        // The root is held by the window.
+        (0.0, 0.0, vp.0, vp.1),
+        None, None, 1.0, &mut out,
     );
     out
+}
+
+#[cfg(test)]
+mod hit_transform_tests {
+    use super::*;
+
+    fn region(m: Option<Transform>) -> HitRegion {
+        HitRegion {
+            transform: m,
+            x: 100.0,
+            y: 100.0,
+            width: 50.0,
+            height: 20.0,
+            on_tap: None,
+            gestures: Vec::new(),
+            cursor: Cursor::default(),
+            instance: None,
+        }
+    }
+
+    /// A hit region follows the transform its box is drawn through.
+    ///
+    /// Silent when wrong: the tap simply lands on whatever else is there, or on
+    /// nothing, and the element looks unresponsive rather than misplaced.
+    #[test]
+    fn a_transformed_region_is_hit_where_it_is_drawn() {
+        let plain = region(None);
+        assert!(plain.contains(110.0, 110.0), "inside");
+        assert!(!plain.contains(210.0, 110.0), "100px to the right is outside");
+
+        // The same box slid 100px right: kurbo order is [a, b, c, d, e, f].
+        let slid = region(Some([1.0, 0.0, 0.0, 1.0, 100.0, 0.0]));
+        assert!(
+            !slid.contains(110.0, 110.0),
+            "where it used to be is no longer where it is"
+        );
+        assert!(slid.contains(210.0, 110.0), "it is hit where it is drawn");
+    }
+
+    /// A box scaled to nothing has no area to hit.
+    #[test]
+    fn a_collapsed_region_cannot_be_hit() {
+        let gone = region(Some([0.0, 0.0, 0.0, 0.0, 0.0, 0.0]));
+        assert!(!gone.contains(110.0, 110.0));
+        assert!(!gone.contains(0.0, 0.0));
+    }
+}
+
+#[cfg(test)]
+mod reveal_tests {
+    use super::*;
+
+    /// A 300px-tall scroller holding 900px of content, scrolled to the top.
+    fn thread() -> Vec<ScrollRegion> {
+        vec![ScrollRegion {
+            transform: None,
+            alpha: 1.0,
+            id: 0,
+            x: 20.0,
+            y: 100.0,
+            width: 400.0,
+            height: 300.0,
+            content_width: 400.0,
+            content_height: 900.0,
+            max: Offset { x: 0.0, y: 600.0 },
+        }]
+    }
+
+    /// The case the whole function exists for: a row **below the fold** still
+    /// belongs to the scroller that holds it.
+    ///
+    /// Matching on the scroller's visible rectangle instead answers "no
+    /// scroller", so the reveal is dropped and a list asked to scroll to its
+    /// newest row does nothing at all. That shipped, and only driving a message
+    /// list in the window found it: every reveal that worked was of an element
+    /// already a nudge away from being visible.
+    #[test]
+    fn an_element_past_the_bottom_still_has_a_scroller() {
+        let scrolls = thread();
+        let offsets = vec![Offset { x: 0.0, y: 0.0 }];
+        // 880px down the content, which is 580px below the visible bottom edge.
+        assert_eq!(containing_scroller(&scrolls, &offsets, 30.0, 980.0), Some(0));
+    }
+
+    /// And one above the top, which is the same failure in the other direction:
+    /// scrolled down, the rows already read are outside the visible band.
+    #[test]
+    fn an_element_above_the_top_still_has_a_scroller() {
+        // The scroller's own box does not move when its content does, so `y`
+        // stays at 100 and the offset is what puts the content above it: the
+        // content now runs from -500 to 400.
+        let scrolls = thread();
+        let offsets = vec![Offset { x: 0.0, y: 600.0 }];
+        assert_eq!(containing_scroller(&scrolls, &offsets, 30.0, -450.0), Some(0));
+    }
+
+    /// Something genuinely outside is still outside, so the fix did not simply
+    /// make every scroller claim everything.
+    #[test]
+    fn a_box_outside_the_content_belongs_to_no_scroller() {
+        let scrolls = thread();
+        let offsets = vec![Offset { x: 0.0, y: 0.0 }];
+        assert_eq!(
+            containing_scroller(&scrolls, &offsets, 30.0, 50.0),
+            None,
+            "above where the content starts"
+        );
+        assert_eq!(
+            containing_scroller(&scrolls, &offsets, 500.0, 200.0),
+            None,
+            "off to the side of it"
+        );
+    }
+
+    /// Nested scrollers: the innermost one is the one whose offset moves the box.
+    #[test]
+    fn the_innermost_scroller_wins() {
+        let mut scrolls = thread();
+        scrolls.push(ScrollRegion {
+            transform: None,
+            alpha: 1.0,
+            id: 1,
+            x: 30.0,
+            y: 150.0,
+            width: 200.0,
+            height: 100.0,
+            content_width: 200.0,
+            content_height: 400.0,
+            max: Offset { x: 0.0, y: 300.0 },
+        });
+        let offsets = vec![Offset { x: 0.0, y: 0.0 }, Offset { x: 0.0, y: 0.0 }];
+        assert_eq!(containing_scroller(&scrolls, &offsets, 40.0, 500.0), Some(1));
+    }
 }

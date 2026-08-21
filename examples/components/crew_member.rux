@@ -1,0 +1,11 @@
+<template>
+  <view class="panel">
+    <text class="t">{{ id }}</text>
+    <text class="s">rendered by the child route, inside the list's outlet</text>
+  </view>
+</template>
+<style>
+  .panel { display: flex; flex-direction: column; gap: 4px; padding: 12px; background: #1e1e2e; border-radius: 8px; }
+  .t { color: #a6e3a1; font-size: 18px; font-weight: 700; }
+  .s { color: #6c7086; font-size: 12px; }
+</style>

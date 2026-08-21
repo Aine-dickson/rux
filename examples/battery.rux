@@ -7,13 +7,13 @@
       <text class="warn" r-if="level < 20">Low battery</text>
 
       <view class="row">
-        <button class="btn" @tap="level = level - 1">
+        <button class="btn" @tap="drain()">
           <text class="btnlabel">-</text>
         </button>
-        <button class="btn" @tap="level = level + 1">
+        <button class="btn" @tap="charge()">
           <text class="btnlabel">+</text>
         </button>
-        <button class="btn wide" @tap="level = host::full()">
+        <button class="btn wide" @tap="fill()">
           <text class="btnlabel">Full</text>
         </button>
       </view>
@@ -77,9 +77,20 @@
 
 <script>
   // Tap -/+ to change level; "Full" calls the native host::full() capability.
-  // `hours()` is a pure helper used in a binding. `ticks` drives the r-for row.
-  // (rhai functions can't mutate shared state, so state changes stay inline.)
+  //
+  // The handlers are named functions, not inline statements. A function reads
+  // and writes the state around it, so `level--` in here moves the same signal
+  // the bindings above read, and the screen follows. That is also what makes
+  // the bounds check worth having: an inline handler can only be a statement,
+  // while a function can decide not to act.
   let level = signal(82);
   let ticks = signal(["one", "two", "three"]);
+
+  fn drain() { if level > 0 { level-- } }
+  fn charge() { if level < 100 { level++ } }
+  fn fill() { level = host::full() }
+
+  // A helper used in a binding rather than a handler: it answers a question
+  // instead of changing anything.
   fn hours(n) { n / 10 }
 </script>

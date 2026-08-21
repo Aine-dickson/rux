@@ -83,22 +83,17 @@
   // Renumbering is by index, not `for row in out`: rhai's for-loop hands you a
   // copy of each element, so assigning to it changes nothing.
   fn rotate(list) {
-    let out = [list[list.len - 1]];
-    for i in 0..(list.len - 1) {
+    let out = [list[list.length - 1]];
+    for i in 0..(list.length - 1) {
       out.push(list[i]);
     }
-    for i in 0..out.len {
+    for i in 0..out.length {
       out[i].at = i;
     }
     out
   }
 
-  fn order(list) {
-    let names = "";
-    for i in 0..list.len {
-      if i > 0 { names += ", "; }
-      names += list[i].id;
-    }
-    names
-  }
+  // `.length`, `.map` and `.join` are the names they have in JS, and an arrow
+  // function is a closure. The loop this replaced was six lines.
+  fn order(list) { list.map(row => row.id).join(", ") }
 </script>

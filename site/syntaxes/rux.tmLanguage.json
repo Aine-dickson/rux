@@ -2,296 +2,749 @@
   "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
   "name": "Rux",
   "scopeName": "source.rux",
-  "fileTypes": ["rux"],
+  "fileTypes": [
+    "rux"
+  ],
   "patterns": [
-    { "include": "#section-template" },
-    { "include": "#section-style" },
-    { "include": "#section-script" }
+    {
+      "include": "#section-template"
+    },
+    {
+      "include": "#section-style"
+    },
+    {
+      "include": "#section-script"
+    }
   ],
   "repository": {
-
     "section-template": {
       "comment": "Tolerant of attributes for the reason given on `section-style`, even though `<template>` takes none today. An unmatched section costs the file its highlighting.",
       "begin": "(<)(template)((?:\\s+[^<>]*?)?)\\s*(>)",
       "beginCaptures": {
-        "1": { "name": "punctuation.definition.tag.begin.rux" },
-        "2": { "name": "entity.name.tag.section.rux" },
-        "3": { "patterns": [{ "include": "#tag-attributes" }] },
-        "4": { "name": "punctuation.definition.tag.end.rux" }
+        "1": {
+          "name": "punctuation.definition.tag.begin.rux"
+        },
+        "2": {
+          "name": "entity.name.tag.section.rux"
+        },
+        "3": {
+          "patterns": [
+            {
+              "include": "#tag-attributes"
+            }
+          ]
+        },
+        "4": {
+          "name": "punctuation.definition.tag.end.rux"
+        }
       },
       "end": "(</)(template)\\s*(>)",
       "endCaptures": {
-        "1": { "name": "punctuation.definition.tag.begin.rux" },
-        "2": { "name": "entity.name.tag.section.rux" },
-        "3": { "name": "punctuation.definition.tag.end.rux" }
+        "1": {
+          "name": "punctuation.definition.tag.begin.rux"
+        },
+        "2": {
+          "name": "entity.name.tag.section.rux"
+        },
+        "3": {
+          "name": "punctuation.definition.tag.end.rux"
+        }
       },
-      "patterns": [{ "include": "#template-content" }]
+      "patterns": [
+        {
+          "include": "#template-content"
+        }
+      ]
     },
-
     "section-style": {
       "comment": "The attribute group is not decoration: `<style src=\"theme.css\">` is how an external stylesheet is included, and a begin pattern demanding `>` straight after the name failed to match it. The top level of this grammar is only the three sections, so a section that does not match leaves its whole contents unscoped and the file looks unhighlighted.",
       "begin": "(<)(style)((?:\\s+[^<>]*?)?)\\s*(>)",
       "beginCaptures": {
-        "1": { "name": "punctuation.definition.tag.begin.rux" },
-        "2": { "name": "entity.name.tag.section.rux" },
-        "3": { "patterns": [{ "include": "#tag-attributes" }] },
-        "4": { "name": "punctuation.definition.tag.end.rux" }
+        "1": {
+          "name": "punctuation.definition.tag.begin.rux"
+        },
+        "2": {
+          "name": "entity.name.tag.section.rux"
+        },
+        "3": {
+          "patterns": [
+            {
+              "include": "#tag-attributes"
+            }
+          ]
+        },
+        "4": {
+          "name": "punctuation.definition.tag.end.rux"
+        }
       },
       "end": "(</)(style)\\s*(>)",
       "endCaptures": {
-        "1": { "name": "punctuation.definition.tag.begin.rux" },
-        "2": { "name": "entity.name.tag.section.rux" },
-        "3": { "name": "punctuation.definition.tag.end.rux" }
+        "1": {
+          "name": "punctuation.definition.tag.begin.rux"
+        },
+        "2": {
+          "name": "entity.name.tag.section.rux"
+        },
+        "3": {
+          "name": "punctuation.definition.tag.end.rux"
+        }
       },
-      "patterns": [{ "include": "#css" }]
+      "patterns": [
+        {
+          "include": "#css"
+        }
+      ]
     },
-
     "section-script": {
       "comment": "Tolerant of attributes for the reason given on `section-style`.",
       "begin": "(<)(script)((?:\\s+[^<>]*?)?)\\s*(>)",
       "beginCaptures": {
-        "1": { "name": "punctuation.definition.tag.begin.rux" },
-        "2": { "name": "entity.name.tag.section.rux" },
-        "3": { "patterns": [{ "include": "#tag-attributes" }] },
-        "4": { "name": "punctuation.definition.tag.end.rux" }
+        "1": {
+          "name": "punctuation.definition.tag.begin.rux"
+        },
+        "2": {
+          "name": "entity.name.tag.section.rux"
+        },
+        "3": {
+          "patterns": [
+            {
+              "include": "#tag-attributes"
+            }
+          ]
+        },
+        "4": {
+          "name": "punctuation.definition.tag.end.rux"
+        }
       },
       "end": "(</)(script)\\s*(>)",
       "endCaptures": {
-        "1": { "name": "punctuation.definition.tag.begin.rux" },
-        "2": { "name": "entity.name.tag.section.rux" },
-        "3": { "name": "punctuation.definition.tag.end.rux" }
-      },
-      "patterns": [{ "include": "#script-body" }]
-    },
-
-    "template-content": {
-      "patterns": [
-        { "include": "#html-comment" },
-        { "include": "#interpolation" },
-        { "include": "#tag" }
-      ]
-    },
-
-    "html-comment": {
-      "name": "comment.block.html.rux",
-      "begin": "<!--",
-      "beginCaptures": { "0": { "name": "punctuation.definition.comment.rux" } },
-      "end": "-->",
-      "endCaptures": { "0": { "name": "punctuation.definition.comment.rux" } }
-    },
-
-    "interpolation": {
-      "name": "meta.interpolation.rux",
-      "begin": "\\{\\{",
-      "beginCaptures": { "0": { "name": "punctuation.section.interpolation.begin.rux" } },
-      "end": "\\}\\}",
-      "endCaptures": { "0": { "name": "punctuation.section.interpolation.end.rux" } },
-      "contentName": "meta.embedded.expression.rux",
-      "patterns": [{ "include": "#script-expression" }]
-    },
-
-    "tag": {
-      "begin": "(</?)([a-zA-Z][\\w.-]*)",
-      "beginCaptures": {
-        "1": { "name": "punctuation.definition.tag.begin.rux" },
-        "2": { "name": "entity.name.tag.rux" }
-      },
-      "end": "(/?>)",
-      "endCaptures": { "1": { "name": "punctuation.definition.tag.end.rux" } },
-      "patterns": [{ "include": "#tag-attributes" }]
-    },
-
-    "tag-attributes": {
-      "patterns": [
-        { "include": "#directive-attribute" },
-        { "include": "#plain-attribute" }
-      ]
-    },
-
-    "directive-attribute": {
-      "comment": "r-for / r-if / r-model, @event handlers, and :prop bindings. The value is a Rux script expression.",
-      "patterns": [
-        {
-          "begin": "(@[\\w-]+|:[\\w-]+|r-[\\w-]+)(=)(\")",
-          "beginCaptures": {
-            "1": { "name": "entity.other.attribute-name.directive.rux" },
-            "2": { "name": "punctuation.separator.key-value.rux" },
-            "3": { "name": "punctuation.definition.string.begin.rux" }
-          },
-          "end": "(\")",
-          "endCaptures": { "1": { "name": "punctuation.definition.string.end.rux" } },
-          "contentName": "meta.embedded.expression.rux",
-          "patterns": [{ "include": "#script-expression" }]
+        "1": {
+          "name": "punctuation.definition.tag.begin.rux"
         },
+        "2": {
+          "name": "entity.name.tag.section.rux"
+        },
+        "3": {
+          "name": "punctuation.definition.tag.end.rux"
+        }
+      },
+      "patterns": [
         {
-          "begin": "(@[\\w-]+|:[\\w-]+|r-[\\w-]+)(=)(')",
-          "beginCaptures": {
-            "1": { "name": "entity.other.attribute-name.directive.rux" },
-            "2": { "name": "punctuation.separator.key-value.rux" },
-            "3": { "name": "punctuation.definition.string.begin.rux" }
-          },
-          "end": "(')",
-          "endCaptures": { "1": { "name": "punctuation.definition.string.end.rux" } },
-          "contentName": "meta.embedded.expression.rux",
-          "patterns": [{ "include": "#script-expression" }]
+          "include": "#script-body"
         }
       ]
     },
-
+    "template-content": {
+      "patterns": [
+        {
+          "include": "#html-comment"
+        },
+        {
+          "include": "#interpolation"
+        },
+        {
+          "include": "#tag-element"
+        },
+        {
+          "include": "#tag"
+        }
+      ]
+    },
+    "html-comment": {
+      "name": "comment.block.html.rux",
+      "begin": "<!--",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.rux"
+        }
+      },
+      "end": "-->",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.rux"
+        }
+      }
+    },
+    "interpolation": {
+      "name": "meta.interpolation.rux",
+      "begin": "\\{\\{",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.section.interpolation.begin.rux"
+        }
+      },
+      "end": "\\}\\}",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.section.interpolation.end.rux"
+        }
+      },
+      "contentName": "meta.embedded.expression.rux",
+      "patterns": [
+        {
+          "include": "#script-expression"
+        }
+      ]
+    },
+    "tag": {
+      "begin": "(</?)([a-zA-Z][\\w.-]*)",
+      "beginCaptures": {
+        "1": {
+          "name": "punctuation.definition.tag.begin.rux"
+        },
+        "2": {
+          "name": "support.class.component.rux"
+        }
+      },
+      "end": "(/?>)",
+      "endCaptures": {
+        "1": {
+          "name": "punctuation.definition.tag.end.rux"
+        }
+      },
+      "patterns": [
+        {
+          "include": "#tag-attributes"
+        }
+      ],
+      "comment": "Any tag the element rule above did not claim, which by construction is a component: Rux's elements are a closed set, so a name outside it is somebody's file. Two rules rather than one alternation with two capture groups, because the highlighter scoped only the second branch of that and left every element uncoloured. The scope is `support.class`, not an `entity.name.tag.*` refinement, and that is the whole point: a TextMate scope inherits every theme rule written for its prefixes, so `entity.name.tag.component.rux` took the plain tag colour in every stock theme and the distinction existed only in the grammar file. `support.class` is what Vue and Svelte scope a component tag to, and themes colour it apart from a tag."
+    },
+    "tag-attributes": {
+      "patterns": [
+        {
+          "include": "#directive-attribute"
+        },
+        {
+          "include": "#plain-attribute"
+        }
+      ]
+    },
+    "directive-attribute": {
+      "comment": "r-for / r-if / r-model, @event handlers, :prop bindings, and a route `guard`. The value is a Rux script expression in every case.",
+      "patterns": [
+        {
+          "begin": "(@[\\w-]+|:[\\w-]+|r-[\\w-]+|guard)(=)(\")",
+          "beginCaptures": {
+            "1": {
+              "name": "entity.other.attribute-name.directive.rux"
+            },
+            "2": {
+              "name": "punctuation.separator.key-value.rux"
+            },
+            "3": {
+              "name": "punctuation.definition.string.begin.rux"
+            }
+          },
+          "end": "(\")",
+          "endCaptures": {
+            "1": {
+              "name": "punctuation.definition.string.end.rux"
+            }
+          },
+          "contentName": "meta.embedded.expression.rux",
+          "patterns": [
+            {
+              "include": "#script-expression"
+            }
+          ]
+        },
+        {
+          "begin": "(@[\\w-]+|:[\\w-]+|r-[\\w-]+|guard)(=)(')",
+          "beginCaptures": {
+            "1": {
+              "name": "entity.other.attribute-name.directive.rux"
+            },
+            "2": {
+              "name": "punctuation.separator.key-value.rux"
+            },
+            "3": {
+              "name": "punctuation.definition.string.begin.rux"
+            }
+          },
+          "end": "(')",
+          "endCaptures": {
+            "1": {
+              "name": "punctuation.definition.string.end.rux"
+            }
+          },
+          "contentName": "meta.embedded.expression.rux",
+          "patterns": [
+            {
+              "include": "#script-expression"
+            }
+          ]
+        }
+      ]
+    },
     "plain-attribute": {
       "patterns": [
-        { "match": "\\b([a-zA-Z][\\w-]*)(?=\\s*=)", "name": "entity.other.attribute-name.rux" },
-        { "match": "\\b([a-zA-Z][\\w-]*)\\b", "name": "entity.other.attribute-name.rux" },
-        { "name": "string.quoted.double.rux", "begin": "\"", "beginCaptures": { "0": { "name": "punctuation.definition.string.begin.rux" } }, "end": "\"", "endCaptures": { "0": { "name": "punctuation.definition.string.end.rux" } } },
-        { "name": "string.quoted.single.rux", "begin": "'", "beginCaptures": { "0": { "name": "punctuation.definition.string.begin.rux" } }, "end": "'", "endCaptures": { "0": { "name": "punctuation.definition.string.end.rux" } } }
+        {
+          "match": "\\b([a-zA-Z][\\w-]*)(?=\\s*=)",
+          "name": "entity.other.attribute-name.rux"
+        },
+        {
+          "match": "\\b([a-zA-Z][\\w-]*)\\b",
+          "name": "entity.other.attribute-name.rux"
+        },
+        {
+          "name": "string.quoted.double.rux",
+          "begin": "\"",
+          "beginCaptures": {
+            "0": {
+              "name": "punctuation.definition.string.begin.rux"
+            }
+          },
+          "end": "\"",
+          "endCaptures": {
+            "0": {
+              "name": "punctuation.definition.string.end.rux"
+            }
+          }
+        },
+        {
+          "name": "string.quoted.single.rux",
+          "begin": "'",
+          "beginCaptures": {
+            "0": {
+              "name": "punctuation.definition.string.begin.rux"
+            }
+          },
+          "end": "'",
+          "endCaptures": {
+            "0": {
+              "name": "punctuation.definition.string.end.rux"
+            }
+          }
+        }
       ]
     },
-
     "css": {
       "patterns": [
-        { "include": "#css-comment" },
-        { "include": "#css-at-rule" },
-        { "include": "#css-selector" },
-        { "include": "#css-block" }
+        {
+          "include": "#css-comment"
+        },
+        {
+          "include": "#css-at-rule"
+        },
+        {
+          "include": "#css-selector"
+        },
+        {
+          "include": "#css-block"
+        }
       ]
     },
-
     "css-block": {
       "begin": "\\{",
-      "beginCaptures": { "0": { "name": "punctuation.section.property-list.begin.css.rux" } },
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.section.property-list.begin.css.rux"
+        }
+      },
       "end": "\\}",
-      "endCaptures": { "0": { "name": "punctuation.section.property-list.end.css.rux" } },
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.section.property-list.end.css.rux"
+        }
+      },
       "patterns": [
-        { "include": "#css-comment" },
-        { "include": "#css-declaration" },
-        { "include": "#css-selector" },
-        { "include": "#css-block" }
+        {
+          "include": "#css-comment"
+        },
+        {
+          "include": "#css-declaration"
+        },
+        {
+          "include": "#css-selector"
+        },
+        {
+          "include": "#css-block"
+        }
       ]
     },
-
     "css-comment": {
       "name": "comment.block.css.rux",
       "begin": "/\\*",
       "end": "\\*/"
     },
-
     "css-at-rule": {
       "match": "(@)([a-zA-Z-]+)",
       "name": "keyword.control.at-rule.css.rux"
     },
-
     "css-selector": {
       "patterns": [
-        { "match": "\\.[a-zA-Z_][\\w-]*", "name": "entity.other.attribute-name.class.css.rux" },
-        { "match": "#[a-zA-Z_][\\w-]*", "name": "entity.other.attribute-name.id.css.rux" },
-        { "match": "(::?)([a-zA-Z-]+)", "name": "entity.other.attribute-name.pseudo-class.css.rux" },
-        { "match": "[>+~]", "name": "keyword.operator.combinator.css.rux" }
+        {
+          "match": "\\.[a-zA-Z_][\\w-]*",
+          "name": "entity.other.attribute-name.class.css.rux"
+        },
+        {
+          "match": "#[a-zA-Z_][\\w-]*",
+          "name": "entity.other.attribute-name.id.css.rux"
+        },
+        {
+          "match": "(::?)([a-zA-Z-]+)",
+          "name": "entity.other.attribute-name.pseudo-class.css.rux"
+        },
+        {
+          "match": "[>+~]",
+          "name": "keyword.operator.combinator.css.rux"
+        }
       ]
     },
-
     "css-declaration": {
       "begin": "([a-zA-Z-]+)(\\s*)(:)",
       "beginCaptures": {
-        "1": { "name": "support.type.property-name.css.rux" },
-        "3": { "name": "punctuation.separator.key-value.css.rux" }
+        "1": {
+          "name": "support.type.property-name.css.rux"
+        },
+        "3": {
+          "name": "punctuation.separator.key-value.css.rux"
+        }
       },
       "end": "(;)|(?=\\})",
-      "endCaptures": { "1": { "name": "punctuation.terminator.rule.css.rux" } },
-      "patterns": [{ "include": "#css-value" }]
+      "endCaptures": {
+        "1": {
+          "name": "punctuation.terminator.rule.css.rux"
+        }
+      },
+      "patterns": [
+        {
+          "include": "#css-value"
+        }
+      ]
     },
-
     "css-value": {
       "patterns": [
-        { "include": "#css-comment" },
-        { "match": "#[0-9a-fA-F]{3,8}\\b", "name": "constant.other.color.rgb-value.css.rux" },
-        { "match": "\\b([a-zA-Z-]+)(?=\\()", "name": "support.function.css.rux" },
-        { "match": "!important\\b", "name": "keyword.other.important.css.rux" },
-        { "match": "(-?\\d+(?:\\.\\d+)?)(px|em|rem|%|vh|vw|vmin|vmax|deg|turn|rad|fr|s|ms|pt)?\\b", "name": "constant.numeric.css.rux" },
-        { "name": "string.quoted.double.css.rux", "begin": "\"", "end": "\"" },
-        { "name": "string.quoted.single.css.rux", "begin": "'", "end": "'" },
-        { "match": "\\b(solid|dashed|dotted|none|auto|flex|grid|block|inline|row|column|center|start|end|wrap|nowrap|pointer|relative|absolute|fixed|hidden|visible|scroll|bold|italic|underline|cover|contain|transparent)\\b", "name": "support.constant.property-value.css.rux" }
+        {
+          "include": "#css-comment"
+        },
+        {
+          "match": "#[0-9a-fA-F]{3,8}\\b",
+          "name": "constant.other.color.rgb-value.css.rux"
+        },
+        {
+          "match": "\\b([a-zA-Z-]+)(?=\\()",
+          "name": "support.function.css.rux"
+        },
+        {
+          "match": "!important\\b",
+          "name": "keyword.other.important.css.rux"
+        },
+        {
+          "match": "(-?\\d+(?:\\.\\d+)?)(px|em|rem|%|vh|vw|vmin|vmax|deg|turn|rad|fr|s|ms|pt)?\\b",
+          "name": "constant.numeric.css.rux"
+        },
+        {
+          "name": "string.quoted.double.css.rux",
+          "begin": "\"",
+          "end": "\""
+        },
+        {
+          "name": "string.quoted.single.css.rux",
+          "begin": "'",
+          "end": "'"
+        },
+        {
+          "match": "\\b(solid|dashed|dotted|none|auto|flex|grid|block|inline|row|column|dense|center|start|end|flex-start|flex-end|space-between|space-around|stretch|wrap|nowrap|wrap-reverse|pointer|default|static|relative|sticky|absolute|fixed|hidden|clip|visible|scroll|bold|lighter|bolder|normal|italic|oblique|pre|underline|line-through|justify|left|right|break-word|break-all|anywhere|content|initial|cover|contain|transparent|linear|ease|ease-in|ease-out|ease-in-out|nonzero|evenodd|butt|round|square|miter|bevel)\\b",
+          "name": "support.constant.property-value.css.rux"
+        }
       ]
     },
-
     "script-body": {
       "patterns": [
-        { "include": "#script-comment" },
-        { "include": "#script-storage" },
-        { "include": "#script-keyword" },
-        { "include": "#script-boolean" },
-        { "include": "#script-signal" },
-        { "include": "#script-string" },
-        { "include": "#script-number" },
-        { "include": "#script-function-call" },
-        { "include": "#script-operator" }
+        {
+          "include": "#script-comment"
+        },
+        {
+          "include": "#script-declaration"
+        },
+        {
+          "include": "#script-storage"
+        },
+        {
+          "include": "#script-use-path"
+        },
+        {
+          "include": "#script-keyword"
+        },
+        {
+          "include": "#script-boolean"
+        },
+        {
+          "include": "#script-lifecycle"
+        },
+        {
+          "include": "#script-signal"
+        },
+        {
+          "include": "#script-string"
+        },
+        {
+          "include": "#script-number"
+        },
+        {
+          "include": "#script-function-call"
+        },
+        {
+          "include": "#script-operator"
+        },
+        {
+          "include": "#script-identifier"
+        }
       ]
     },
-
+    "script-use-path": {
+      "comment": "The path in `use components::header;`. Coloured apart from an ordinary identifier because it names a FILE (components/header.rux) and, from that, a tag (<header>). Listed before #script-keyword so it claims the `use` first and can colour the path with it.",
+      "match": "\\b(use)\\s+([A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)*)",
+      "captures": {
+        "1": {
+          "name": "keyword.control.import.rux"
+        },
+        "2": {
+          "name": "entity.name.namespace.rux"
+        }
+      }
+    },
     "script-expression": {
       "patterns": [
-        { "include": "#script-comment" },
-        { "include": "#script-keyword" },
-        { "include": "#script-boolean" },
-        { "include": "#script-signal" },
-        { "include": "#script-string" },
-        { "include": "#script-number" },
-        { "include": "#script-function-call" },
-        { "include": "#script-operator" }
+        {
+          "include": "#script-comment"
+        },
+        {
+          "include": "#script-declaration"
+        },
+        {
+          "include": "#script-keyword"
+        },
+        {
+          "include": "#script-boolean"
+        },
+        {
+          "include": "#script-lifecycle"
+        },
+        {
+          "include": "#script-signal"
+        },
+        {
+          "include": "#script-string"
+        },
+        {
+          "include": "#script-number"
+        },
+        {
+          "include": "#script-function-call"
+        },
+        {
+          "include": "#script-operator"
+        },
+        {
+          "include": "#script-identifier"
+        }
       ]
     },
-
     "script-comment": {
       "patterns": [
-        { "name": "comment.line.double-slash.rux", "begin": "//", "end": "$" },
-        { "name": "comment.block.rux", "begin": "/\\*", "end": "\\*/" }
+        {
+          "name": "comment.line.double-slash.rux",
+          "begin": "//",
+          "end": "$"
+        },
+        {
+          "name": "comment.block.rux",
+          "begin": "/\\*",
+          "end": "\\*/"
+        }
       ]
     },
-
     "script-string": {
       "patterns": [
         {
           "name": "string.quoted.double.rux",
           "begin": "\"",
           "end": "\"",
-          "patterns": [{ "match": "\\\\.", "name": "constant.character.escape.rux" }]
+          "patterns": [
+            {
+              "match": "\\\\.",
+              "name": "constant.character.escape.rux"
+            }
+          ]
+        },
+        {
+          "name": "string.quoted.single.rux",
+          "begin": "'",
+          "end": "'",
+          "patterns": [
+            {
+              "match": "\\\\.",
+              "name": "constant.character.escape.rux"
+            }
+          ]
+        },
+        {
+          "comment": "A backtick template literal. The whole run is a string, and the `${…}` holes inside it are code: without this the literal text and the interpolated expression were coloured identically, so `${search_item} I don't` gave no clue which half was a value.",
+          "name": "string.template.rux",
+          "begin": "`",
+          "end": "`",
+          "beginCaptures": {
+            "0": {
+              "name": "punctuation.definition.string.begin.rux"
+            }
+          },
+          "endCaptures": {
+            "0": {
+              "name": "punctuation.definition.string.end.rux"
+            }
+          },
+          "patterns": [
+            {
+              "match": "\\\\.",
+              "name": "constant.character.escape.rux"
+            },
+            {
+              "name": "meta.template.expression.rux",
+              "begin": "\\$\\{",
+              "end": "\\}",
+              "beginCaptures": {
+                "0": {
+                  "name": "punctuation.definition.template-expression.begin.rux"
+                }
+              },
+              "endCaptures": {
+                "0": {
+                  "name": "punctuation.definition.template-expression.end.rux"
+                }
+              },
+              "contentName": "meta.embedded.line.rux",
+              "patterns": [
+                {
+                  "include": "#script-boolean"
+                },
+                {
+                  "include": "#script-signal"
+                },
+                {
+                  "include": "#script-string"
+                },
+                {
+                  "include": "#script-number"
+                },
+                {
+                  "include": "#script-function-call"
+                },
+                {
+                  "include": "#script-operator"
+                },
+                {
+                  "include": "#script-identifier"
+                }
+              ]
+            }
+          ]
         }
       ]
     },
-
     "script-number": {
       "match": "\\b(-?\\d+(?:\\.\\d+)?)\\b",
       "name": "constant.numeric.rux"
     },
-
     "script-boolean": {
       "match": "\\b(true|false)\\b",
       "name": "constant.language.rux"
     },
-
     "script-keyword": {
       "comment": "`use` is Rux's import statement and was missing, so it rendered as plain text next to a coloured `let` on the following line. `import` is rhai's word for it; Rux does not use it, but it costs nothing to colour.",
       "match": "\\b(use|if|else|for|in|while|loop|return|break|continue|switch|throw|try|catch|import|as|private)\\b",
       "name": "keyword.control.rux"
     },
-
     "script-storage": {
       "match": "\\b(let|const|fn)\\b",
       "name": "storage.type.rux"
     },
-
-    "script-signal": {
-      "match": "\\b(signal)\\b(?=\\s*\\()",
+    "script-lifecycle": {
+      "comment": "`mounted { … }`, `unmounted { … }` and `effect { … }` are blocks rather than calls, so #script-signal's lookahead for `(` never reaches them.",
+      "match": "\\b(mounted|unmounted|effect)\\b(?=\\s*\\{)",
       "name": "support.function.builtin.rux"
     },
-
+    "script-signal": {
+      "comment": "`computed` and `effect` are NOT here on purpose. This rule ends in a `(?=\\s*\\()` lookahead, so it only ever matches a call; `computed name = expr;` is a declaration and `effect { … }` is a block, and both went uncoloured for as long as they were listed here. They live in #script-declaration and #script-lifecycle now.",
+      "match": "\\b(signal|query|navigate|replace|back|forward|path_for|emit|print|debug|blur|setInterval|clearInterval)\\b(?=\\s*\\()",
+      "name": "support.function.builtin.rux"
+    },
     "script-function-call": {
       "match": "\\b([a-zA-Z_]\\w*)\\s*(?=\\()",
       "name": "entity.name.function.rux"
     },
-
     "script-operator": {
       "match": "(==|!=|<=|>=|&&|\\|\\||[-+*/%=<>!])",
       "name": "keyword.operator.rux"
+    },
+    "script-declaration": {
+      "comment": "The declared name gets a scope of its own so a variable is identifiable by sight. `computed` is a keyword here rather than a function, which is the whole difference between what the language has and what it looked like it had.",
+      "patterns": [
+        {
+          "comment": "`computed name = expr;` — a declaration, not a call.",
+          "match": "\\b(computed)\\s+([A-Za-z_]\\w*)",
+          "captures": {
+            "1": {
+              "name": "storage.type.rux"
+            },
+            "2": {
+              "name": "variable.other.declaration.rux"
+            }
+          }
+        },
+        {
+          "comment": "`fn name(a, b)` — the name is the function being defined.",
+          "match": "\\b(fn)\\s+([A-Za-z_]\\w*)",
+          "captures": {
+            "1": {
+              "name": "storage.type.function.rux"
+            },
+            "2": {
+              "name": "entity.name.function.rux"
+            }
+          }
+        },
+        {
+          "match": "\\b(let|const)\\s+([A-Za-z_]\\w*)",
+          "captures": {
+            "1": {
+              "name": "storage.type.rux"
+            },
+            "2": {
+              "name": "variable.other.declaration.rux"
+            }
+          }
+        }
+      ]
+    },
+    "script-identifier": {
+      "comment": "A bare name, so a variable reference is identifiable by sight and not only where it is declared. This must be LAST in any pattern list: every more specific rule (keyword, builtin, function call) is tried first and only what is left over is a plain variable. Inside a `${…}` hole it is what stops the expression inheriting the enclosing string colour, which made the interpolated value and the literal text look identical.",
+      "match": "\\b[A-Za-z_]\\w*\\b",
+      "name": "variable.other.rux"
+    },
+    "tag-element": {
+      "begin": "(</?)(screen|view|text|image|path|button|input|slot|router|route)(?![\\w.-])",
+      "beginCaptures": {
+        "1": {
+          "name": "punctuation.definition.tag.begin.rux"
+        },
+        "2": {
+          "name": "entity.name.tag.rux"
+        }
+      },
+      "end": "(/?>)",
+      "endCaptures": {
+        "1": {
+          "name": "punctuation.definition.tag.end.rux"
+        }
+      },
+      "patterns": [
+        {
+          "include": "#tag-attributes"
+        }
+      ],
+      "comment": "Rux's ten elements, matched whole so `views` is not `view`. Everything else falls through to #tag and is coloured as a component, which is the single most useful distinction in a template: markup you can look up in the reference, against markup you have to go and open."
     }
   }
 }

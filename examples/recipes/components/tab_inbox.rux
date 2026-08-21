@@ -1,0 +1,6 @@
+<template>
+  <view class="page">
+    <text class="page-title">inbox</text>
+    <text class="page-body">Each tab is a route, and each route names a component. The bar that switched to this one is not inside the router, so it did not re-render to get here.</text>
+  </view>
+</template>

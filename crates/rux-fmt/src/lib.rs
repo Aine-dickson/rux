@@ -56,10 +56,23 @@ pub enum Pending {
 /// The HTML names are kept because they cost nothing and pasted markup is
 /// common.
 const VOID_TAGS: &[&str] = &[
-    "image", "input", //
+    // `<router-view />` never nests: what goes in it comes from the route
+    // matched below, not from anything written between the tags.
+    // `<path>` holds its geometry in an attribute, so it has nothing to nest
+    // and closing it would only ever be noise.
+    "image", "input", "path", "router-view", //
     "area", "base", "br", "col", "embed", "hr", "img", "link", "meta", "param", "source", "track",
     "wbr",
 ];
+
+/// The tags in [`VOID_TAGS`], for anything outside the formatter that has to
+/// agree with it about what never nests: `rux vocab`, and through it the
+/// editor's tag auto-closing, which must not write `</image>` after an
+/// `<image src="…">`. This is the same drift the doc comment above describes,
+/// caught once in the JS formatter and worth not repeating in the JS editor.
+pub fn void_tags() -> &'static [&'static str] {
+    VOID_TAGS
+}
 
 /// Format `text`, using `unit` for one indent level (`"  "`, `"    "`, `"\t"`…).
 ///

@@ -1,0 +1,135 @@
+<template>
+  <screen class="app">
+    <text class="title">a tab bar</text>
+    <text class="lead">Three tabs over one router. Tap along the bar and back again: the page slides in from the side you came from, and the bar itself never moves.</text>
+
+    <!-- The bar is **outside** the router, and that is the whole reason it
+         does not flicker. Only the matched view is swapped, so anything written
+         out here is built once and left alone by every navigation.
+
+         `to=` is the whole link: it taps to that path, announces as a link
+         rather than a button, and matches `:current` when it names the path you
+         are on. So there is no `active` signal to keep in step, and nothing
+         that can drift out of step with where the router actually is. -->
+    <view class="bar">
+      <view class="tab" to="/"><text class="tab-label">inbox</text></view>
+      <view class="tab" to="/drafts"><text class="tab-label">drafts</text></view>
+      <view class="tab" to="/sent"><text class="tab-label">sent</text></view>
+    </view>
+
+    <view class="lock" @tap="unlocked = !unlocked">
+      <text class="lock-label" r-if="unlocked">lock /sent</text>
+      <text class="lock-label" r-else>unlock /sent</text>
+    </view>
+
+    <!-- The stage is a positioned box with a height of its own. It has to be
+         both: `position: relative` is what the departing page is pinned to, and
+         a height is what stops the box collapsing at the moment the only page
+         still in the flow is the one on its way out. -->
+    <view class="stage">
+      <router r-transition>
+        <route path="/" view="tab-inbox" />
+        <route path="/drafts" view="tab-drafts" />
+        <!-- A guard is asked before the history moves, so a refusal leaves no
+             entry behind and opens no transition. `false` cancels, a path
+             redirects, anything else allows. -->
+        <route path="/sent" view="tab-sent" guard="gate()" />
+        <route path="/locked" view="tab-locked" />
+      </router>
+    </view>
+  </screen>
+</template>
+
+<style>
+  .app {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    padding: 20px;
+    background: #1e1e2e;
+  }
+
+  .title { color: #cdd6f4; font-size: 22px; font-weight: 700; }
+  .lead { color: #a6adc8; font-size: 13px; line-height: 20px; }
+
+  /* `width: 100%` on both boxes below, because `align-items` defaults to
+     `flex-start` rather than CSS's `stretch`: a child of a flex column hugs its
+     content unless it is told to fill. */
+  .bar {
+    display: flex;
+    flex-direction: row;
+    gap: 6px;
+    width: 100%;
+    padding: 6px;
+    background: #181825;
+    border-radius: 12px;
+  }
+
+  .lock { align-self: flex-start; padding: 8px 14px; background: #45475a; border-radius: 9px; cursor: pointer; }
+  .lock:hover { background: #585b70; }
+  .lock-label { color: #cdd6f4; font-size: 13px; font-weight: 700; }
+
+  .tab { padding: 10px 18px; border-radius: 9px; cursor: pointer; }
+  .tab:hover { background: #313244; }
+  .tab-label { color: #a6adc8; font-size: 14px; font-weight: 700; }
+  /* `:current` is the router's own answer to "is this the tab we are on", so
+     the highlight cannot disagree with the page. */
+  .tab:current { background: #89b4fa; }
+  .tab:current:hover { background: #89b4fa; }
+  .tab:current .tab-label { color: #1e1e2e; }
+
+  /* `position: relative` gives the departing page something to be pinned to,
+     and the height keeps the stage from collapsing while it is pinned. */
+  .stage {
+    position: relative;
+    width: 100%;
+    height: 180px;
+    overflow: hidden;
+    background: #181825;
+    border-radius: 12px;
+  }
+
+  .page {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 18px;
+    opacity: 1;
+    transform: translateX(0px);
+    transition: opacity 240ms ease-out, transform 240ms ease-out;
+  }
+
+  /* **This is the line the recipe exists for.** Both pages are really on screen
+     during a navigation, and a departing box with no inset keeps the place it
+     would have had, which is *below* the arriving one. Left alone the two
+     queue, the stage jumps to twice its height, and the effect is far more
+     visible than the transition. Taking the leaver out of the flow hands its
+     space over at the start of the swap instead, so the pair overlap. */
+  .page:leave-to { position: absolute; top: 0; left: 0; right: 0; opacity: 0; transform: translateX(-40px); }
+  .page:enter-from { opacity: 0; transform: translateX(40px); }
+
+  /* Every navigation slides the same way here. Sliding *back* when you move
+     left along the bar needs the direction known before the swap opens, which
+     means an explicit `@tap="dir = -1; navigate(…)"` instead of `to=`, since
+     `to=` navigates without giving anything a chance to run first. */
+</style>
+
+<script>
+  use components::tab_inbox;
+  use components::tab_drafts;
+  use components::tab_sent;
+  use components::tab_locked;
+
+  // What the guard on /sent reads.
+  let unlocked = signal(false);
+
+  // The shape a guard is usually written in: object, or say nothing. Falling
+  // off the end evaluates to `()`, which is an allow, so the only path that has
+  // to be spelled out is the one that refuses.
+  fn gate() {
+    if !unlocked {
+      return "/locked";
+    }
+  }
+
+</script>

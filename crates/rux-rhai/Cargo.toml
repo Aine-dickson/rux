@@ -1,0 +1,135 @@
+# A fork of rhai 1.25.1, carrying the language changes Rux needs and nothing
+# else. See DIVERGENCE.md for what has actually been changed and why, and
+# docs/06-roadmap.md for the reasoning behind forking at all.
+#
+# Authorship, licence and repository fields below name rhai's authors and rhai's
+# repository, because that is whose work this is. Only `name`, `version`,
+# `description` and `homepage` identify it as the Rux fork. The `keywords` and
+# `categories` are trimmed rather than copied, since publishing under rhai's
+# search terms would put a fork nobody should depend on directly in front of
+# people looking for the real thing.
+#
+# The package is published because it has to be: every Rux crate publishes, and
+# `cargo publish` rejects a path dependency without a version. It is not an
+# invitation to use it. The supported entry point is the `ruxlang` crate.
+
+[package]
+name = "rux-rhai"
+description = "Rux's fork of the rhai scripting engine. Internal to Rux; use the upstream `rhai` crate instead."
+homepage = "https://ruxlang.dev"
+
+# rhai's, unchanged: this is their code.
+authors = ["Jonathan Turner", "Lukáš Hozda", "Stephen Chung", "jhwgh1968"]
+repository = "https://github.com/rhaiscript/rhai"
+license = "MIT OR Apache-2.0"
+
+# The workspace version, not rhai's. Every Rux crate ships together under one
+# version, and a fork tracking two version lines at once would be unreadable:
+# `rux-rhai 1.25.1` says nothing about which Rux it belongs to, and bumping it to
+# `1.25.2` would claim an upstream release that does not exist. Which rhai this
+# came from is recorded in DIVERGENCE.md, where it can carry the detail a version
+# number cannot.
+version.workspace = true
+edition.workspace = true
+
+# Deliberately narrow, and deliberately not rhai's. Publishing under rhai's own
+# search terms ("scripting", "scripting-engine", "scripting-language") would put
+# a fork nobody should depend on directly in front of people looking for the real
+# thing. These say what it is: a piece of Rux.
+keywords = ["rux", "ui"]
+categories = ["gui"]
+
+rust-version = "1.66.0"
+readme = "README.md"
+include = ["/src/**/*", "/Cargo.toml", "/README.md", "/DIVERGENCE.md", "LICENSE*"]
+
+# The package is `rux-rhai`; the library it builds is still `rhai`.
+#
+# Not cosmetic. Upstream's several hundred doc-tests are written as `use
+# rhai::…`, and a doc-test is compiled as an external crate against the library
+# *target* name, so renaming the target would silently drop every one of them,
+# which is exactly the test coverage a fork most needs to keep. It also means the
+# `use rhai::…` lines throughout `rux-script` are untouched by the swap.
+#
+# This block must stay below every `[package]` key: a table header ends the table
+# above it, so `[lib]` placed mid-package quietly turns the keys after it into
+# `lib.readme`, `lib.include` and `lib.rust-version`, which Cargo ignores.
+[lib]
+name = "rhai"
+
+# Clippy is off for this crate. It is upstream's code, held as close to upstream
+# as possible so that a rebase is a merge rather than an argument, and every lint
+# fixed here would be a change carrying no divergence behind it: cost at every
+# release, for tidiness in code Rux does not own. Rux's own crates are linted
+# normally, and the rules in DIVERGENCE.md still apply to anything changed here.
+[lints.clippy]
+all = { level = "allow", priority = -1 }
+cargo = { level = "allow", priority = -1 }
+
+# Upstream's dependency set, unchanged. `rhai_codegen` is still the published
+# crate: it is a proc-macro for registering Rust functions and has nothing to do
+# with the language changes this fork carries, so forking it too would be cost
+# with no divergence behind it.
+[dependencies]
+smallvec = { version = "1.7.0", default-features = false, features = ["union", "const_new", "const_generics"] }
+thin-vec = { version = "0.2.13", default-features = false }
+ahash = { version = "0.8.4", default-features = false, features = ["compile-time-rng"] }
+num-traits = { version = "0.2.14", default-features = false }
+once_cell = { version = "1.20.1", default-features = false, features = ["race", "portable-atomic", "alloc"] }
+bitflags = { version = "2.3.3", default-features = false }
+smartstring = { version = "1.0.0", default-features = false }
+rhai_codegen = { version = "3.2.0" }
+
+no-std-compat = { git = "https://gitlab.com/jD91mZM2/no-std-compat.git", version = "0.4.1", default-features = false, features = ["alloc"], optional = true }
+libm = { version = "0.2.0", default-features = false, optional = true }
+hashbrown = { version = "0.16.0", optional = true }
+core-error = { version = "0.0.0", default-features = false, features = ["alloc"], optional = true }
+serde = { version = "1.0.136", default-features = false, features = ["derive", "alloc"], optional = true }
+serde_json = { version = "1.0.45", default-features = false, features = ["alloc"], optional = true }
+unicode-xid = { version = "0.2.0", default-features = false, optional = true }
+rust_decimal = { version = "1.24.0", default-features = false, features = ["maths"], optional = true }
+getrandom = { version = "0.3.4", optional = true }
+document-features = { version = "0.2.0", optional = true }
+arbitrary = { version = "1.3.2", optional = true, features = ["derive"] }
+
+[target.'cfg(target_family = "wasm")'.dependencies]
+web-time = { version = "1.1.0" }
+
+# Upstream's feature set, minus the ones that only served rhai's own binaries and
+# examples (`bin-features`, `rustyline`, `fuzz`). Rux uses `default`; the rest are
+# kept so a rebase against upstream is a content merge rather than a re-derivation
+# of this file.
+[features]
+default = ["std", "ahash/runtime-rng"]
+std = ["once_cell/std", "ahash/std", "num-traits/std", "smartstring/std"]
+
+sync = ["no-std-compat?/compat_sync", "rhai_codegen/sync"]
+decimal = ["rust_decimal"]
+serde = ["dep:serde", "smartstring/serde", "smallvec/serde", "thin-vec/serde"]
+unicode-xid-ident = ["unicode-xid"]
+metadata = ["serde", "serde_json", "rhai_codegen/metadata", "smartstring/serde"]
+internals = []
+debugging = ["internals"]
+
+f32_float = []
+only_i32 = []
+only_i64 = []
+
+no_float = []
+no_index = []
+no_object = []
+no_time = []
+no_function = ["no_closure"]
+no_closure = []
+no_module = []
+no_custom_syntax = []
+
+unchecked = []
+no_position = []
+no_optimize = []
+
+no_std = ["no-std-compat", "num-traits/libm", "core-error", "libm", "hashbrown", "no_time"]
+wasm-bindgen = ["getrandom/wasm_js"]
+
+unstable = []
+testing-environ = []

@@ -17,106 +17,20 @@ for the *why*, but the implementation has diverged from them in places. Where
 they disagree, **this document wins**. Divergences are called out below. For what
 is *not* built yet and in what order, see [Roadmap](/roadmap/).
 
-Last updated: 2026-08-08, for **v0.5.0**. The original M0–M9 milestones that
-built the runtime are all complete; everything since has shipped in the v0.2
-through v0.5 releases, which the [Roadmap](/roadmap/) lists.
+This document says what each rule *does*. For how to build a particular piece of
+an app, with the consequences of those rules worked through on a real file, see
+the recipes at `/recipes/`: a message list, a tab bar and a modal.
+
+Last updated: 2026-08-19, for **v0.7**. The original M0–M9 milestones that built
+the runtime are all complete; everything since has shipped in the v0.2 through
+v0.6 releases, which the [Roadmap](/roadmap/) lists.
 
 ---
 
-## Running it
+## The `rux` command
 
-Rux is on crates.io, so the shortest path needs no clone at all:
-
-```bash
-cargo install ruxlang
-rux run app.rux
-```
-
-From a checkout of this repo, with the examples to hand:
-
-```bash
-cargo run                          # examples/battery.rux (default)
-cargo run -- examples/form.rux     # inputs + two-way binding + overflow-wrap
-cargo run -- examples/list.rux     # a scrolling list (wheel, drag the bar, Tab)
-cargo run -- examples/scroll.rux   # horizontal + both-axes scrolling, scrollbars
-cargo run -- examples/selection.rux # drag-select, double-click, Ctrl+A/C/X/V
-cargo run -- examples/gallery.rux  # images, opacity, flex-shrink, clipping
-cargo run -- examples/dashboard.rux
-```
-
-Edit any `.rux` file (including imported components) and it **hot-reloads**: no
-rebuild. Only changing the compiled Rust host requires `cargo run` again.
-
-## Formatting
-
-```bash
-rux fmt                         # every .rux under the current directory, in place
-rux fmt app.rux                 # or a named file or directory
-rux fmt --check .               # change nothing; exit non-zero if a file would
-rux fmt --indent 4 app.rux      # one indent level: spaces, or `tab` (default 2)
-rux fmt -                       # read stdin, write stdout (what an editor uses)
-```
-
-`<template>` and `<script>` are only **re-indented**: nothing on a line is
-rewritten, wrapped or reordered, because a `@tap` handler is rhai and
-rearranging someone's expressions is not a formatter's business. `<style>` *is*
-formatted, one space before `{`, long rules broken one declaration per line,
-short ones (up to three) kept inline. Line endings are preserved.
-
-This is the one implementation. The VS Code extension used to carry its own copy
-in JavaScript and the two drifted: the JS list of non-nesting tags came from
-HTML, which has `img` but not Rux's `<image>`, so everything after an `<image
-src="…">` without a self-closing slash was indented one level too deep. The
-extension now shells out to `rux fmt`.
-
-> **The shipped `examples/` are not formatted to this.** All 28 differ, about
-> half on indent width and half on CSS, which inlines rules of up to three
-> declarations that the examples write expanded. Running the formatter over them
-> is a real decision (the expanded form may read better when teaching) and has
-> not been made.
-
-## Checking a file without opening a window
-
-```bash
-rux check                       # every .rux under the current directory
-rux check examples              # or a named file or directory
-rux check --deny-warnings .     # warnings fail too, which is what CI wants
-rux check --format json .       # for an editor to turn into squiggles
-```
-
-Output is `path:line:col: severity: message`, the shape every compiler emits and
-every editor and CI log already parses. Exit codes: **0** clean, **1** problems
-found, **2** the request itself was wrong (no such path, unknown flag).
-
-It loads through the same code the window does, so it cannot disagree with the
-runtime about what a valid file is. **Errors** are failures to load and carry a
-line and column. **Warnings** are the things the dev overlay lists.
-
-**CSS warnings carry a line**, in the file's own numbering rather than the
-`<style>` block's. An unhonored property reports the line of the *declaration*,
-so an expanded rule sends you to the property and not to its selector.
-Selector-level warnings (an unknown pseudo-class) and unsupported `@media`
-conditions report the line of the rule, which is where they are written.
-
-There is no column. lightningcss locates a rule and gives the declarations
-inside it no position of their own, so the declaration's line is recovered by
-scanning the source forward from the rule, stopping at the closing brace. That
-finds the line but not the offset within it.
-
-Two kinds are still unplaced, deliberately rather than by omission:
-
-- **Expression failures** (`{{ user.nmae }}`, a broken `@tap`). An expression
-  comes from a template attribute or a `{{ }}` span and the template parser does
-  not record where each one started.
-- **Anything from a component's CSS.** A component's rules live in a *different*
-  file, and a warning carries a line but not a file, so a line from the
-  component's numbering would point confidently at the wrong part of whichever
-  document imported it. A wrong line is worse than none.
-
-Walking a directory **skips components**, the files whose template root is not
-`<screen>`. A component's `{{ prop }}` values come from whoever uses it, so
-loading one on its own reports every prop as undefined. Naming a component
-explicitly checks it anyway, since that was asked for on purpose.
+Creating a project, running it, checking it and formatting it each have a page
+under [Tooling](/tooling/), along with how to set up the VS Code extension.
 
 ## Crates
 
@@ -137,78 +51,149 @@ explicitly checks it anyway, since that was asked for on purpose.
 
 ## What works
 
-### Elements
-`<screen>` `<view>` `<text>` `<image>` `<button>` `<input>` + imported
-components as custom tags, plus two that render no box of their own: `<slot>`
-(a component's hole for the caller's children) and `<router>`/`<route>` (see
-[Routing](#routing)). `role=` is honored for **selectors and semantics**
-(and matches **case-insensitively**: `role="Heading"` matches `[role="heading"]`).
+- [Elements](/reference/elements/): The six elements the runtime renders, plus slot, router and route.
+- [Layout](/reference/layout/): Everything defaults to block; use display: flex. Hug, fill, and why inline flow is gone.
+- [Paths](/reference/paths/): SVG path data as an element: the d attribute, paint as CSS, and shapes that morph.
+- [Honored CSS](/reference/css/): The authoritative list of properties the runtime interprets, plus selectors, pseudo-classes and transitions.
+- [Reactivity](/reference/reactivity/): Signals, computed values, effects, and what re-runs when one changes.
+- [Inputs](/reference/inputs/): Text fields, textarea, select, checkbox and radio, and two-way binding with r-model.
+- [Text input](/reference/text-input/): The caret, the soft keyboard, and IME composition for text that is not typed one key at a time.
+- [Touch](/reference/touch/): What a finger does today, and why @tap is the whole vocabulary.
+- [Selection](/reference/selection/): Drag-select, double-click, and the clipboard keys.
+- [Scrolling](/reference/scrolling/): Scrollers, scrollbars, and the ways a scroll can be driven.
+- [Components](/reference/components/): Importing a file as a tag, props, slots, events, and what a component cannot see.
+- [Routing](/reference/routing/): Routes, parameters, named routes, links, and the fact that the path is an ordinary signal.
+- [Accessibility](/reference/accessibility/): The real accessibility tree, the roles elements map to, and what a screen reader is told.
+- [Errors](/reference/errors/): What happens when a document will not load, and what the overlay shows.
 
-`<image src="assets/logo.png">`: `src` resolves **relative to the .rux file**
-(not the working directory), and `:src` binds an expression. With no CSS size it
-lays out at the file's intrinsic pixel size; a `width`/`height` scales it to fit.
-Formats: PNG, JPEG, GIF, WebP. A missing file logs to stderr and paints nothing.
+### `position`, and which box an out-of-flow one is measured against
 
-### Layout: **use `display: flex`**
-> **DIVERGENCE from docs 01–04.** The inline/block-by-role model was **built and
-> then deliberately removed**. taffy has no inline text-flow, so inline elements
-> hugged inside flex parents but filled inside block ones (full-width buttons),
-> confusing. It's gone.
+All five of `static`, `relative`, `sticky`, `absolute` and `fixed` mean what CSS
+says.
 
-- **Everything defaults to `display: block`.** Block containers make children fill.
-- **Use `display: flex` for layout.** Flex cross-axis defaults to **flex-start**
-  (children hug), not CSS's `stretch`, which is a deliberate divergence for ergonomics.
-- **Hug means `fit-content`**: a box with no `width` is clamped to its parent's
-  inner width, so it can't burst out of a narrower parent. An explicit `width` (or
-  `flex-shrink: 0`) is your call and *will* overflow, so clip it with `overflow: hidden`.
-- `display: grid` works (`grid-template-columns` / `-rows`: `1fr`, `px`, `auto`).
-- No inline text flow: two `<text>` siblings **stack**, they don't share a line.
-- **Lengths are logical pixels.** Layout and taps run in logical space and the
-  scene is scaled to the display's DPI, so `16px` is the same physical size on a
-  1x and a 2x screen.
+**`static` is the default and is the only value that is not a containing block.**
+That is the rule that gives the other three their meaning: an `absolute` box is
+measured against its nearest ancestor that is *not* static, so a wrapper with no
+`position` of its own is passed straight over, and `position: relative` on the
+box you actually mean is what claims it. Its `inset` is ignored, which is the
+whole difference between `static` and `relative`.
 
-### Honored CSS
+**This used to be wrong, and silently.** The default was `relative`, which made
+*every* box a containing block, which made "against the nearest positioned
+ancestor" and "against the parent" the same sentence. They are not, and an
+author writing `position: relative` on the right box as CSS requires was being
+ignored and getting the right answer anyway. Only an unpositioned wrapper in
+between told them apart. `fixed` was silently treated as `absolute`, so it
+scrolled away with its ancestor; `sticky` and `static` were silently treated as
+`relative`, so `static` even honored insets; and a misspelled value was
+`relative` too, so a typo and a rule that does nothing looked identical.
+
+**`fixed` is against the window**, whatever it is written inside, and it is
+outside every scroller, so it does not move when one scrolls. A fixed box with
+no inset named lands in the window's top-left corner and warns, since that is a
+legal answer to what was written and never what was meant. A sticky box with no
+inset warns for the same reason: it has no edge to stick to and will never
+move.
+
+**A `transform` makes a containing block**, whatever the box's own `position`
+says, and for `fixed` descendants as well as absolute ones. This is CSS's rule
+and the reason `position: fixed` stops being fixed inside a transformed parent.
+It is not an oddity to work around: a transform moves the whole subtree, so
+there is no way to hold a descendant still against the window while its ancestor
+slides. (CSS gives `filter`, `perspective`, `will-change` and `contain` the same
+power; none of those is honored here, so `transform` is the only one that can.)
+
+**`sticky` is in flow, and its insets are thresholds rather than offsets.** The
+box sits where it was laid out until its scroller's edge reaches the threshold,
+then rides that edge, and stops again when its own parent runs out from under
+it. Inside a scroller the parent to stop at is the scroller's **content** box,
+not the part of it on screen, which is itself sliding.
+
+**Two sticky boxes never interact.** A list of sections looks as though an
+arriving heading shoves the one at the top out of the way; neither can see the
+other. Each is clamped to its own section, and one section's bottom edge is
+exactly where the next section's heading begins, so "clamped to the end of my
+section" and "pushed by the next heading" describe the same pixel. The
+consequence is worth knowing before writing one: headings that are flat siblings
+of the rows, with no box around each group, are all clamped to the scroller
+instead, so they pin at the same edge and pile up on each other. The wrapper per
+section is not tidiness, it is what makes the hand-over happen. That last clamp is what makes a list of sections work: a heading rides the
+top until the next section arrives and pushes it off, rather than sitting over
+the wrong rows. With no scroller above it, the window is what it sticks to.
+
+Nothing else moves while it travels: a sticky box keeps its original space the
+whole time, so its siblings do not reflow. It is resolved at paint time, because
+it is a question about the scroll offset and the layout does not know one, and
+its hit region and metrics move with it. A sticky box paints **over** its
+in-flow siblings, as a positioned box does; `relative` boxes are not reordered,
+which is a divergence.
+
+**An out-of-flow box that names no inset keeps its static position**, which is
+where it would have sat in its parent's flow, so it stays with its parent rather
+than travelling to a containing block. That is what `:leave-to { position:
+absolute }` relies on, and it is why a departing element needs no coordinates.
+
+The containing block is the ancestor's **padding box**, so padding on it does not
+push an out-of-flow child inwards.
+
+**Whether a departing element keeps its place is yours to say.** Left alone it
+stays in the flow until the swap commits, so nothing below it moves while it is
+still on screen. Giving `:leave-to` a `position: absolute` hands its space over
+at the *start* of the swap instead, which is what a page swap wants, since the
+arriving page should take that space rather than queue below it. A box taken out
+of the flow and naming no inset keeps the place it would have had, so it needs
+no coordinates and no wrapper to be measured against.
+
+On a list, `r-transition` needs `r-key` on the same element and says so if it
+is missing: without a key there is nothing to hold a departing row by, and a
+removal and a reorder are the same picture. A row that leaves from the middle
+of a list animates out **where it was**, not at the end.
+
+**Driving a swap yourself:** `:r-transition="expr"` hands progress to the
+author instead of the clock. The expression is re-read every build and yields
+0 to 1: reaching 1 commits the swap and returning to 0 abandons it. That is
+what binds a swap to a finger, and it is why both branches have to be live: a
+swap that can change its mind cannot be a snapshot of a departed tree.
+```rux
+<view class="card" r-if="card" :r-transition="dismiss" @drag="onDrag(event)">…</view>
 ```
-display (block|flex|grid|inline|none)
-flex-direction, justify-content, align-items, gap, row-gap, column-gap
-align-self, justify-self, justify-items, align-content
-flex-grow, flex-shrink, flex-basis, flex-wrap, flex (shorthand)
-grid-template-columns, grid-template-rows
-grid-column, grid-row (+ -start/-end)   (1 / 3, span 2, -1; no named lines)
-grid-auto-flow, grid-auto-rows, grid-auto-columns
-transform (translate/scale/rotate; visual only; hit regions aren't transformed)
-position (relative|absolute) + top/right/bottom/left, aspect-ratio
-width, height, min/max-width, min/max-height
-padding, margin        (shorthand 1–4 values + -top/-right/-bottom/-left)
-border, border-width, border-color, border-<side>, border-<side>-width
-background / background-color / background-image, opacity
-  (colour, linear-/radial-gradient, or url(…) image, cover-sized, clipped to corners)
-box-shadow (single, outer; inset parsed but not drawn)
-border-radius (1–4 diagonal shorthand + per-corner -top-left/-top-right/…)
-color, font-size, font-weight, font-family, font-style (italic), text-align
-letter-spacing, word-spacing, line-height, white-space (nowrap|pre)
-text-decoration (underline / line-through)                (color: hex, rgb()/rgba(), CSS names)
-overflow / overflow-x / overflow-y   (hidden|clip = clip; auto|scroll = scroll;
-                                      both axes together; x and y can't differ)
-overflow-wrap (break-word), word-break (break-all)
-cursor (pointer, on @tap boxes only)
+```rux
+if event.phase == "start" { card = false; dismiss = 0; }
+else if event.phase == "move" { dismiss = event.totalX / 240; }
+else if dismiss > 0.45 { dismiss = 1; }        // commit
+else { card = true; dismiss = null; }          // and settle back
 ```
-**Selectors:** tag, `.class`, `#id`, `[role="…"]`, compounds, and all four
-combinators: descendant (`.a .b`), child (`.a > .b`), next-sibling (`.a + .b`),
-subsequent-sibling (`.a ~ .b`).
+Yielding **`null` hands the swap back to the clock**, which runs the rest of
+the declared duration from wherever the drag let go. That is how a released
+finger settles instead of snapping. Under a bound driver the declared duration
+does not set the pace; it still says which properties take part, and it takes
+over again on the handover.
 
-**Pseudo-classes:** `:hover`, `:focus`, `:active`, `:checked`, `:current` (a
-link whose `to` names the path you are on). They stack
-(`.btn:hover:active`), count as class-level specificity, and work anywhere in a
-chain, `.card:hover .title` recolours the title while the pointer is over the
-card. `:hover`/`:active` hold for the whole chain under the pointer, as in CSS;
-`:active` is press-to-release and drops if you drag off the element; `:focus`
-matches the input holding the caret. Driven in `examples/pseudo.rux`.
+The condition is yours throughout. Abandoning a swap does not put it back:
+the release handler that decides to abandon is the same one that restores the
+condition, so what is on screen and what the signal says never disagree.
 
-Any *other* pseudo-class (`:disabled`, `:nth-child(…)`, `::selection`) **never
-matches**, and says so once on stderr. Before this existed the `:` was silently
-dropped, so `.box:hover` parsed as `.box` and applied *unconditionally*, failing
-closed is the safer half of that trade.
+**Route transitions** are the same feature again: `r-transition` on the
+`<router>` animates a navigation, holding the page being left on screen beside
+the page being entered.
+```rux
+<router r-transition>
+  <route path="/" view="home-page" />
+  <route path="/crew/:id" view="crew-detail" />
+</router>
+```
+```css
+.page:enter-from { opacity: 0; transform: translateX(28px); }
+.page:leave-to   { opacity: 0; transform: translateX(-28px); }
+```
+The identity is **which route matched, not which path**. Two paths matching the
+same route (`/crew/grace` and `/crew/kim`) are one page showing different data,
+so they update in place rather than crossing over, the same way a router reuses
+a component. The outgoing page's `unmounted` runs when the transition
+**commits**, so a navigation that reverses mid-swap never fires one.
+
+A third tier, keyframes, is not built. Driven in `examples/enter-leave.rux` and
+`examples/router.rux`.
 
 **Computed values:** `computed name = expr;` in `<script>` declares derived
 state, written once and readable anywhere a signal is:
@@ -285,6 +270,39 @@ focus to that button, as any tap on a button does.
 **Still keyed by model alone:** `type="select"`. A `<select>` inside an `r-for`
 has the same ambiguity inputs had. Driven in `examples/keyed-list.rux`.
 
+**A document's rules reach its components.** A `<style>` block styles its own
+markup *and* the components the document uses, so a look is written once at the
+top instead of imported into every component file:
+
+```xml
+<!-- app.rux -->
+<style>
+  .chip { padding: 0.75rem; border-radius: 8px; background: #a6e3a1; }
+</style>
+```
+```xml
+<!-- components/chip.rux: no <style> at all, and still green -->
+<template><view class="chip"><text>{{ label }}</text></view></template>
+```
+
+A component's own rules are applied **after** the ones it inherits, so it wins a
+tie without needing a more specific selector, which is CSS's own order.
+
+`<style scoped>` opts out, and means the same thing from either side:
+
+- On a **component**: "I own my appearance." Nothing from outside styles it.
+- On a **document**: "my rules stay in my markup." They reach no component.
+
+> **This changed in v0.7.** A component used to see only its own `<style>`, so
+> sharing a palette meant repeating `<style src="theme.css">` in every single
+> component. If a component and its caller happen to use the same class name and
+> you want the old isolation, that is what `scoped` is for.
+
+**Custom properties already cascaded**, before and after this change: a
+`--brand` defined on the document has always been readable as `var(--brand)`
+inside a component, because variables inherit down the tree rather than being
+matched by a selector.
+
 **External stylesheets:** `<style src="…">` pulls in one or more `.css` files,
 so a palette can be shared instead of pasted into every document:
 ```html
@@ -349,7 +367,20 @@ re-cascades at all. Driven in `examples/responsive.rux`.
 `flex: 1` means `1 1 0%` (CSS's shorthand defaults), not `1 1 auto`.
 `opacity` fades the node **and its subtree** as one layer.
 `background`/`border` work on `<text>` nodes, not just containers.
-**Units:** `px`, `%`, `rem` (=16px), `vw`, `vh`/`dvh`.
+**Units:** `px`, `%`, `rem` (=16px), `em`, `vw`, `vh`/`dvh`.
+
+`em` is relative to the element's own resolved `font-size`, and on `font-size`
+itself it is relative to the inherited one, which is what it means in CSS. It is
+resolved in a pass before the properties are interpreted, the same way `var()`
+is, so it works anywhere a length does.
+
+> **`rem` and `em` did not reach the box model before v0.7.** `width` and
+> `height` understood `rem` from the start, while `padding`, `margin`, `gap`,
+> border widths, corner radii, `letter-spacing`, `box-shadow` and `translate()`
+> went through a px-only parser and **dropped the declaration silently**. So
+> `width: 2rem` worked, `padding: 2rem` did nothing, and nothing said why. `%`
+> is still only honored where the list below says so; it is not a box-model
+> unit.
 
 `font-family` takes a CSS list (`font-family: "Inter", sans-serif`), and parley
 parses it and does name-matching + fallback; the generic families (`serif`,
@@ -360,124 +391,57 @@ properties.
 Anything else is **parsed but not honored**: but no longer *silently*: the
 runtime now prints one line per unhonored property (`rux: CSS property
 \`box-shadow\` is parsed but not yet honored …`), once each. Notably absent:
-`line-height`, `position` (relative/absolute *is* honored; `sticky`/`fixed` are
-not), `box-shadow`, gradients, `transform`, and CSS variables.
+`line-height`, `box-shadow`, gradients, `transform`, and CSS variables.
+`position` is no longer among them: all five values are honored.
 
 Colours accept `#hex` (3/6/8-digit), `rgb()`/`rgba()`, and the full CSS named-
 colour list (`red`, `rebeccapurple`, …). The named list matters because
 lightningcss *minifies* hex to keywords (`#ff0000` → `red`), so without it a
 plain `color: #ff0000` would fall back to the default.
 
-### Reactivity & script
-- `<script>` is **rhai**. `let x = signal(v)` declares state (numbers coerce to float).
-- `{{ expr }}` interpolation; `r-if` / `r-elif` / `r-else`, `r-for="x in list"`, `r-show`.
-- `@tap="…"` handlers.
-- `host::fn()` calls into compiled Rust (registered in `rux-runtime::build_engine`).
+### The pointer vocabulary
 
-> **DIVERGENCE / IMPORTANT:** **rhai functions cannot read or mutate global
-> state.** The guide's `fn drain() { level.update(...) }` **does not work**.
-> - State changes go **inline** in handlers: `@tap="level = level - 1"`.
-> - Script `fn`s must be **pure** (take args, return values): `{{ hours(level) }}`.
-> - Anything heavier belongs in a **`host::`** function.
+Beyond `@tap`, five attributes report what a finger or button is doing:
+`@press`, `@release`, `@longpress`, `@swipe` and `@drag`. `@tap` is deliberately
+not one of them: it is the finished gesture, it is what a keyboard activation
+produces and what `tap()` from script synthesises, and none of those has a
+pointer at all. So an element with only `@drag` is hit-tested but is not a tap
+target and is not keyboard-activatable, and it does not swallow a tap meant for
+what is under it.
 
-### Inputs
-`<input r-model="sig" placeholder="…">`: tap to focus, type to edit. There is a
-real **caret**: tapping puts it where you tapped, ←/→ move it, Home/End jump,
-Backspace/Delete cut either side of it, and typing inserts at it. Esc unfocuses.
-Every edit writes the signal, so `{{ }}` updates live. Placeholder shows when
-empty. The caret survives the rebuild that follows each keystroke.
+Every handler, `@tap` included, is handed an `event`:
 
-Inputs **fill their slot** (default `width: 100%`) rather than hug their text, so
-a field doesn't shrink as you type, and single-line inputs **never wrap** and
-**clip** overflow (no horizontal scroll yet).
+| Field | What it is |
+|---|---|
+| `x`, `y` | the pointer, relative to the element the handler is on |
+| `pageX`, `pageY` | the same point, relative to the window |
+| `touches` | every finger down, each with `id`, `x`, `y` |
 
-`<input type="textarea" r-model="sig">` is the same, but **Enter inserts a
-newline** (single-line inputs ignore it), the value wraps across lines,
-**Up/Down move the caret between lines**, and it **scrolls vertically**: the
-wheel scrolls it and typing keeps the caret in view.
+`touches` is **a list even when there is one finger**, and a mouse counts as one
+finger with `id` 0. That shape is the point: a two-finger gesture can arrive
+later without changing what any handler already written reads.
 
-`<input type="select" r-model="sig" :options="list">` shows the bound value and,
-on tap, opens a **dropdown** of the `:options` (evaluated to strings), a floating
-panel with a shadow, the current value picked out as a pill, and separators.
-Tapping a row writes it back to the signal; any other tap closes it. The open
-state lives in the shell and survives rebuilds (like scroll offsets).
-`background-size` and native mobile pickers are not done.
+`@swipe` adds `direction`, chosen by the dominant axis. `@drag` adds `phase`
+(`start`, `move`, `end`). Both add two distances, named so neither can be read
+as the other: `totalX` / `totalY` from where the press landed, and `moveX` /
+`moveY` from the previous event. Following a finger wants the first; velocity
+and flick detection want the second.
 
-**Keyboard focus:** **Tab** / **Shift+Tab** move a focus ring through every
-interactive element (text/textarea/select inputs, buttons, checkboxes, radios) in
-document order; tapping one also moves the ring there. A focused text input edits;
-a focused **button/checkbox/radio** activates on **Space/Enter** (running the same
-handler as a tap); a focused **select** opens on Space/Enter. So checkboxes and
-radios are now keyboard-reachable, not tap-only.
+**A drag that ends as a flick also fires `@swipe`.** They are not rivals: a page
+that follows the finger still has to be told, at the end, whether the hand meant
+to throw it, which is how a reversible transition decides whether to commit.
+They were exclusive at first, and that made `@swipe` unreachable on any element
+that also declared `@drag`, since movement starts the drag first. A long press
+stays exclusive, because a press that moved is not resting.
 
-`<input type="checkbox" r-model="flag">` and
-`<input type="radio" r-model="choice" value="pro">` are **tap-toggles**: no focus,
-no keyboard. They write the bound signal through the ordinary handler path
-(`flag = !flag`, `choice = "pro"`), so an authored `@tap` overrides them.
+**A `@drag` claims the finger**: the page under it does not scroll while the
+drag runs. That is the settled half of the axis-claim rule. Whether a scroll can
+take the finger back mid-gesture is deliberately undecided until there is touch
+hardware to argue with.
 
-A ticked box matches **`:checked`**:
-```css
-.box          { background: #313244; border: 2px #45475a solid; color: #cdd6f4; }
-.box:checked  { background: #a6e3a1; color: #ffffff; }   /* white tick on green */
-```
-It *also* still carries the synthetic **`checked` class** that predated the
-pseudo-class, so stylesheets written against `.box.checked` keep working. That is
-deprecated and goes away in a later release, write `:checked`.
-The mark is drawn in the box's own `color`: a **stroked checkmark** for a checkbox
-(a path, not a ✓ glyph, since a glyph is whatever the system font ships and reads as a
-letter), a dot for a radio. Keep the checked `border` a shade apart from the
-checked `background`, or the ring dissolves into the fill. A radio is **round** unless you give it a `border-radius` (and a
-huge radius like `9999px` is clamped to a circle, so that's how you re-round one
-that inherited a radius from another class).
-
-### Text input and composition
-Typing is not only key presses. Anything past unaccented Latin is *composed*:
-a dead key and a vowel make one accented character, and a CJK keyboard spells a
-character out of several keystrokes, showing the half-finished result as it goes.
-The shell asks the platform for those events with `set_ime_allowed` whenever a
-text field is focused, and parks the candidate window under the caret with
-`set_ime_cursor_area` so the list of characters to choose from does not cover the
-text it is being chosen for.
-
-Composed text is written straight into the bound signal as it is typed, which is
-what a browser does to an `<input>`'s value mid-composition, so it renders
-through the ordinary text path. `Focus` carries the byte range that is still
-provisional and the painter underlines it. A composition can be abandoned as
-well as committed: clicking away, tabbing off, or the input method detaching all
-put the field back exactly as it was before composing started. While one is
-running the input method owns the keyboard, and raw key presses are ignored, or
-every letter would be typed twice.
-
-On the web none of that applies, because a browser will not raise a phone's
-on-screen keyboard for a `<canvas>`. There the shell keeps a real `<input>` laid
-over the field it is editing, invisible and `pointer-events: none` so taps still
-reach the canvas and still move the caret, focused only in response to the tap
-that focused the field. It holds the real text rather than acting as an event
-sink, which hands composition, autocorrect, dictation and the keyboard's own
-backspace to the browser; the shell copies the value back into the signal. This
-happens only on touch devices, because focusing it takes DOM focus off the canvas
-where winit listens for keys.
-
-The sharp edge there is that a browser counts a caret in UTF-16 code units and
-Rux indexes strings by bytes. They agree only on ASCII, an emoji being 4 bytes
-and 2 code units, so the conversion is done explicitly and tested rather than
-assumed.
-
-### Touch
-A finger takes the same path as the mouse: it taps buttons and toggles, focuses
-inputs, drags a scrollbar thumb, drags out a text selection, and scrolls content
-directly when it grabs something that is none of those. A drag that stays inside
-the tap slop is still a tap.
-
-Touch went a long time doing only the scrolling half, because there was no touch
-hardware here to try it on. It was found within a minute of the playground being
-opened on a phone, so treat "no hardware" as a reason to be suspicious of a path
-rather than a reason to call it done. In a browser the canvas also needs
-`touch-action: none`, or the page claims the gesture and the runtime never sees
-a drag.
-
-**Not done:** no kinetic or inertial fling after the finger lifts, no
-multi-touch, and no pinch zoom.
+**A laptop touchpad reaches the app as a mouse**, so it reports one finger
+however many are on the pad. Only a touchscreen, or a browser's touch emulation
+against the wasm build, exercises the list.
 
 **Touch text has its own gestures**, added in v0.5.1 and confirmed on hardware.
 Until then a finger dragged across text *selected*, because touch was routed
@@ -496,479 +460,16 @@ finger raises no events, so the press deadline is a second clock in
 `about_to_wait` beside the caret blink. The mouse is unchanged and still
 drag-selects.
 
-### Selection & clipboard
-A focused input has a **selection**, not just a caret: `Focus` carries a `caret`
-and an `anchor`, and the range between them is selected (`anchor == caret` means
-nothing is). Both are re-applied after every rebuild, like the caret.
-
-- **Drag** across text to select; **double-click** selects a word.
-- **Shift** + a movement (arrows, Home/End, Up/Down in a textarea) extends from
-  the anchor; the same movement without Shift collapses the selection.
-- Typing, pasting, Backspace and Delete **replace** the selection.
-- **Ctrl+A** select all · **Ctrl+C** copy · **Ctrl+X** cut · **Ctrl+V** paste
-  (via `arboard`, the real system clipboard). Pasting several lines into a
-  single-line input keeps only the first.
-
-**A single-line input scrolls horizontally to keep its caret in view**, added in
-v0.5.1. Before that the caret walked out of the box and was clipped away, so a
-field could not be used at all once its value outgrew its width: not by typing,
-arrows, End, a tap or a drag, on any platform. The cause was that an input is
-given `overflow: clip` while a textarea is given `overflow: scroll`, and only
-the latter produces a scroll region for `scroll_caret_into_view` to move.
-
-The offset moves only when the caret would otherwise fall outside, so the text
-does not slide under a caret that is already visible, and it is clamped so the
-field never scrolls past the start nor leaves a gap after the end. Hit testing
-applies the same offset, or a tap in a scrolled field would land a character out
-by exactly the scroll distance.
-
-The highlight is painted behind the glyphs in the focus-ring blue: **not
-author-controlled**: there is no `::selection` yet. Its rectangles come from
-parley, but only their *horizontal* extent: the vertical position is recomputed
-from our own leading-trimmed line stepping, since parley's line pitch isn't ours
-(see `rux-text::selection_rects`).
-
-**A selection toolbar** appears above the focused field whenever something is
-selected (below it when there is no room above), offering **Copy**, **Cut**,
-**Paste** and **Select all**. It runs the same four actions the Ctrl shortcuts
-do, not a second copy of them.
-
-It exists because on a phone there is no Ctrl+C, and in a browser there was no
-clipboard at all: `arboard` is a desktop-only dependency. The browser's *own*
-copy bubble cannot be used either, whatever the selection says. The hidden
-`<input>` is `pointer-events: none`, `opacity: 0` and one pixel square, so the
-browser never sees a selection gesture on it, and setting the range from code
-does not raise native selection UI. That was verified on a phone rather than
-assumed. Before v0.5.1 the only thing that worked was paste, and only because
-the keyboard writes into the hidden input directly, arriving as an ordinary
-`input` event that never touched clipboard code.
-
-On the web the toolbar goes through `navigator.clipboard`. Writing is fired and
-forgotten. Reading cannot be: the API is a promise and may prompt for
-permission, so a paste is *started* by the tap and applied later, when the read
-resolves. A refused prompt is silent, since declining is a decision rather than
-a fault. A press on the toolbar is refused by the text press handler, or moving
-the caret would collapse the selection the button is about to act on.
-
-The selection is also kept in step with the hidden input in both directions as
-of v0.5.1: a drag on the canvas is written out, and a range set in the input is
-read back, including which end the caret is at (`selectionStart`/`End` are
-ordered, so `selectionDirection` carries it).
-
-**Limits:** no word-wise movement (Ctrl+arrows moves by character), no
-triple-click line-select, no drag-and-drop of selected text, no middle-click
-paste on X11, and a `select` has no arrow-key list navigation or native mobile
-picker.
-
-### Scrolling
-`overflow: auto | scroll` makes a box scroll **on whichever axis its content
-overflows**: vertical, horizontal, or both. It scrolls by:
-
-- **wheel** (Shift+wheel, or a horizontal wheel, scrolls sideways),
-- **dragging a scrollbar thumb**,
-- **touch**: a finger drags the content itself,
-- **keyboard**: arrows, PageUp/PageDown, Home/End scroll the box **under the
-  pointer**, when no input has focus.
-
-**Scrollbars** are an overlay on the box's trailing edge: they appear only on an
-axis that actually has travel, the thumb is the box's fraction of the content (to
-a grabbable floor), and when both axes scroll the tracks stop short of the corner.
-They are drawn *over* the content, because a scroller clips its children so they can't
-be part of the subtree, and drawn from the same geometry the drag hit-tests, so
-they can't disagree.
-
-**Scroll-into-view** runs on Tab: focusing something below the fold scrolls its
-box far enough to show it (typing in a textarea does the same for the caret).
-
-Offsets live in the shell keyed by the scroller's index in tree order, so they
-survive the whole-tree rebuild, so tapping a row doesn't scroll the list to the top.
-A press on a thumb never becomes a tap on the content beneath it.
-
-**Not done:** no click-on-track paging, no kinetic/inertial touch fling, no
-scrollbar hover/fade states, no `scrollbar-width`/`scrollbar-color`, no
-`overscroll-behavior`, and `overflow-x`/`overflow-y` can't yet differ (one
-`overflow` governs both axes).
-
-### Components
-```rust
-<script> use components::stat; </script>       // → components/stat.rux
-```
-```xml
-<stat :label="title" :value="level" />         // props evaluated in caller scope
-```
-Component instances are isolated (only props are visible inside). Their CSS styles
-their own subtree. Editing a component hot-reloads.
-
-**Components are a desktop feature today.** `use components::stat;` names a
-*file*, and the web build has no filesystem to read it from: a document run in
-a browser is handed no components, so every component tag renders nothing and
-every `<route>` warns that its view is not imported. Bundling components into a
-web build is `rux build`'s job. Nothing about the component model itself is
-web-specific, so this is a packaging gap rather than a design one.
-
-**Slots.** A `<slot />` in a component's template renders whatever the caller
-wrote between the tags, so a component can wrap markup it has never seen:
-```xml
-<!-- components/panel.rux -->
-<view class="panel">
-  <text>{{ title }}</text>
-  <slot><text>nothing here yet</text></slot>   <!-- children = the default -->
-</view>
-```
-```xml
-<panel :title="&quot;stats&quot;">
-  <text class="stat">{{ count }}</text>        <!-- this file's signal, this file's CSS -->
-</panel>
-```
-Slot content belongs to the **caller**: it reads the caller's signals (the
-component cannot see the caller's own instance state), is styled by the
-caller's stylesheet, and its
-handlers run in the caller's scope. Only its position comes from the component.
-An unfilled slot falls back to its own children, as in HTML. A `<slot>` emits no
-box of its own, so a component adds no wrapper nobody wrote.
-
-Before this, children written between the tags were **silently dropped**, which
-made every component a fixed shape: no cards, panels, modals or layout wrappers.
-Driven in `examples/slots.rux`.
-
-**A component has its own state.** Its `<script>`'s top-level `let`s run **once
-per instance**, so three `<counter>` elements are three counts:
-```rux
-<!-- components/counter.rux -->
-<view @tap="count = count + step"><text>{{ count }}</text></view>
-<script> let count = signal(0); </script>   <!-- private to each instance -->
-```
-The isolation is about **declarations, and it runs one way**. A component's
-`<script>` executes in a scope of its own, so its `let`s are private: the
-document cannot read them, and the same name declared on both sides is two
-different variables, the component's winning inside it.
-
-What the component's **template and handlers** see is wider. They are evaluated
-against the document's scope with the instance's own names pushed on top, so a
-document signal the component does not shadow is visible to `{{ }}` and can be
-assigned in a `@tap`:
-```rux
-<!-- components/card.rux: `theme` is the document's, not this file's -->
-<view @tap="theme = &quot;dark&quot;"><text>theme is {{ theme }}</text></view>
-```
-This is deliberate and the router depends on it: `{{ route }}` works inside a
-route view, which is a component. It is also the coupling a component author
-should be aware of, since a component reading a name it never declared will only
-work in an app that happens to declare it. Anything a component means to be told
-should come in as a **prop**, and anything it means to report should go out as an
-**event**. Reaching for a document signal by name is available, not recommended.
-
-Only `fn` definitions are shared with the document's engine, because a function
-is code and state is not. A handler carries its instance from the cascade to the
-shell, so the identical handler text in two instances still writes to the right
-one. Props are re-derived from the caller on every build and are **not**
-writable from inside: assigning to one would look like it worked and be
-forgotten on the next build.
-
-A change to instance state **rebuilds** rather than patches, since the state is
-not a signal and the binding registry has nothing to look it up by. A component
-is a subtree, so it is bounded, but it is coarser than a signal change. Driven
-in `examples/component-state.rux`.
-
-**An instance lives as long as it is on screen.** A component closed over by an
-`r-if`, or a row that leaves an `r-for`, loses its state, and shows up new if it
-comes back. Every build walks the whole template, so what a build does not reach
-is what has gone. This is the same rule a route view already followed, and until
-now it was the *only* place that followed it: a hidden component used to keep
-its state for the life of the process and hand it back on the way in, and the
-instance map only ever grew. Anything meant to outlive being hidden belongs in a
-document signal.
-
-**Events.** A component tells its caller that something happened with `emit`,
-and the caller listens with `@event` on the tag:
-```rux
-<!-- components/stepper.rux -->
-<view @tap="count = count + 1; emit(&quot;change&quot;, 1)"><text>{{ count }}</text></view>
-<script> let count = signal(0); </script>
-```
-```xml
-<stepper @change="total = total + event" />    <!-- payload arrives as `event` -->
-```
-The body of a listener is the **caller's** code and runs in the caller's scope,
-the same rule slot content follows: a component with its own `total` cannot be
-written to by mistake. `emit` with no payload leaves `event` undeclared rather
-than defining it empty. An event nobody listens to is ignored, so a component
-can offer more events than any one caller wants. An `emit` outside a component
-has no caller and warns.
-
-A listener is carried as text and never evaluated at build time, which is why it
-is `@event` and not a prop: a prop is evaluated on every build, and a statement
-that ran once per build would be the opposite of an event. A payload is read
-where `emit` is written, so `emit("change", 0 - count); count = 0` reports the
-count it had. A chain of components emitting at each other is stopped after 8
-rounds with a warning.
-
-Together with props this closes the loop: state can stay in the component that
-owns it instead of being hoisted into the document so the document can see it
-change. Driven in `examples/events.rux`.
-
-Still not supported inside a component: `computed` and `effect`, which are
-stripped.
-
-### Routing
-
-A `<router>` renders the one `<route>` whose path matches, and a route maps a
-path to a component, so a page is a component like any other:
-```xml
-<router>
-  <route path="/"          view="home-page" />
-  <route path="/crew"      view="crew-list" :crew="crew" />
-  <route path="/crew/:id"  view="crew-detail" :crew="crew" />
-  <route fallback          view="lost-page" />
-</router>
-```
-Like `<slot>`, a router leaves **no box of its own** behind: the matched view
-expands in its place. Routes are tried in the order written and the first match
-wins, so a `fallback` can sit anywhere among them. A path nothing matches and no
-fallback catches renders nothing, and warns.
-
-**The path is an ordinary signal called `route`.** That is the whole design:
-`{{ route }}`, `r-if="route == \"/about\""` and `:class` already understand
-navigation, and a route change reconciles the router's subtree rather than
-rebuilding the document.
-
-**Parameters.** A `:name` segment matches anything and is handed to the view as
-a prop, so `/crew/grace` reaches `crew-detail` with `id` set to `"grace"`. A
-pattern must match the whole path, not a prefix, or `/` would match everything.
-A trailing slash is not a difference.
-
-**Links.** `to="/path"` makes an element tap to that path, announce as a link
-rather than a button, and match `:current` when it names the path you are on,
-which is how a nav bar shows where you are:
-```css
-.tab:current { background: #89b4fa; color: #11111b; }
-```
-`:to="…"` is the computed form, for a list whose every row links somewhere
-different (`:to="&quot;/crew/&quot; + member.id"`). An explicit `@tap` wins over
-both, so a link can still do something else on the way.
-
-**Parameters are also readable from outside the matched view**, as `params`:
-```xml
-<text r-if="params.id != ()">viewing: {{ params.id }}</text>
-```
-The view gets them as props, which is enough for the view. It is not enough for
-a title bar or a breadcrumb, which sit in the document's own layout and are not
-the matched view. `params` empties when a route captures nothing, rather than
-keeping the last page's answer.
-
-**History.** `navigate("/path")`, `replace("/path")`, `back()` and `forward()`
-are callable from any handler. History is one list with a cursor, so going back
-and then somewhere new drops what was ahead. Navigating to where you already are
-is not a visit, or tapping the current tab would fill the history with repeats.
-On the desktop, **Alt+Left / Alt+Right** and the mouse's side buttons walk it.
-
-`replace` goes somewhere *instead of* where you are, overwriting the current
-entry, and it is what a redirect needs rather than a nicety. Redirect with
-`navigate` and the redirecting page stays in the history, so Back lands on it
-and is redirected forward again: the Back button appears broken and nothing in
-userland can fix it.
-
-**`can_go_back` and `can_go_forward`** are signals, so a history button can grey
-itself out:
-```xml
-<view class="step" :class="#{ dead: !can_go_back }" @tap="back()">
-```
-Signals rather than functions because what they are for is disabling a control,
-and disabling a control is a class, and a class reads signals.
-
-**Query strings** are read through a `query` map, and are not part of the path:
-```xml
-<text>looking for {{ query.q }}</text>   <!-- /search?q=dark+mode -->
-```
-`route` stays `/search`, so every `route == "/search"` already written keeps
-meaning what it says. A query is an argument to a page rather than a different
-page, so it takes no part in matching either. The history stores the whole
-address, so going back to a search restores what was being searched for. `+` is
-a space and `%xx` is decoded; a key with no `=` is present and empty; a repeated
-key keeps the first.
-
-**Named routes.** A path is written into every link that leads to it, so a URL
-scheme that can never be changed afterwards is not much of a scheme. Name a
-route and build its path with `path_for`:
-```xml
-<route name="crew-detail" path="/crew/:id" view="crew-detail" />
-...
-<view :to="path_for(&quot;crew-detail&quot;, #{ id: member.id })">
-```
-It returns a **string**, so it composes with `to`, `:to`, `navigate` and
-`replace` rather than needing a second form of each. Values matching a `:name`
-segment fill it; whatever is left over becomes a query string, which is what
-makes `path_for("search", #{ q: "rust" })` work for a route with no parameters
-at all. Values are escaped on the way in and unescaped on the way out, so an id
-containing a `/` survives the round trip. A missing parameter or an unknown name
-warns, and produces a path that visibly does not work: landing on the fallback
-page is a bug you can see, and landing on the wrong record is not.
-
-`route`, `params`, `query`, `can_go_back` and `can_go_forward` are all provided,
-and all reserved: a script declaring one is warned rather than quietly
-overwritten.
-
-**A route's view starts fresh when you return to it.** Instance state is keyed by
-template position, so *keeping* it across a visit is what would happen by
-accident; anything meant to outlive a visit belongs in a document signal. Driven
-in `examples/router.rux`.
-
-**An app can open on a page other than its first one**, which is what a link
-someone shared arrives as. On the desktop that is a flag:
-```text
-rux run app.rux --route /crew/grace
-```
-The arrival page is the *first* page, not the second: there is no `/` behind it,
-because no one visited one, so Back has nowhere to go. Saving the file while a
-page other than `/` is showing now reloads onto that page instead of jumping
-home, so an edit to a page three taps in can actually be seen.
-
-**On the web the URL bar is the app's address bar**, if the page hands it over:
-```js
-start(canvas, source, "/");     // served at the root of a domain
-start(canvas, source, "/app/"); // served from a subdirectory
-start(canvas, source);          // leave the URL alone
-```
-The base is subtracted from the URL, so an app is written the same way wherever
-it is deployed: the route is `/crew`, the URL is `/app/crew`. With a base given,
-opening a URL opens that route, navigating adds a history entry, and the
-browser's own Back and Forward walk the app, including a long-press that jumps
-several entries at once. Each entry carries its position in the history, which
-is what makes a multi-entry jump one move rather than a guess about direction.
-
-Passing no base leaves the URL untouched, and that is the default on purpose:
-the playground runs documents written by whoever is typing into them, and one of
-them containing a `<router>` must not be able to rewrite the address of the page
-hosting it.
-
-> **A `<router>` cannot render a route view on the web yet.** A route's view is
-> a component, a component is loaded from a file, and a browser has no
-> filesystem: the web entry point is handed no components at all, so every
-> `<route>` warns that its view is not imported and the router renders nothing.
-> The URL half above is built and works, and `route` is an ordinary signal, so
-> `r-if="route == &quot;/about&quot;"` does work on the web today. What is
-> missing is the bundling of components into a web build, which is what
-> `rux build` is for. Until then, treat the router as desktop-only.
-
-**Scroll restoration** is on, and `<router restore-scroll="false">` turns it off.
-The flag means **remember**, not *always restore*: a page you open starts at the
-top, and a page you go **back** to comes back where you left it. Which of the
-two you get is decided by how you arrived rather than by a preference, which is
-what every platform does. A flag meaning "always restore" would drop you into
-the middle of a page you had just opened for the first time, which reads as a
-bug. Turned off, every arrival is the top. A redirect through `replace` is an
-arrival, not a return, so it lands at the top too.
-
-Offsets are stored on the **history entry**, not on the route. A scroll region
-is identified by its position among the scrolling boxes in tree order, so those
-ids only line up when the tree has the same shape, and an entry is always one
-route: by the time the offsets are read back, the shape is the one they were
-recorded against.
-
-Not built: nested routes (a layout component with a `<router />` in its slot
-covers most of that), and route guards.
-
-### Accessibility
-
-Rux publishes a real accessibility tree through **accesskit**, so a screen reader
-(Narrator/UI Automation on Windows, AT-SPI on Linux, NSAccessibility on macOS)
-can enumerate and describe the UI. Roles are resolved during the build, where the
-tag and `type=` are still known:
-
-| Markup | Role |
-|---|---|
-| `<text>` | Label (`role="heading"` → Heading) |
-| `<view @tap>` / `<button>` | Button, **named by the text inside it** |
-| `to="/path"` on anything | Link, so navigating is announced as going somewhere |
-| `<input>` | TextInput · `type="textarea"` → MultilineTextInput · `type="select"` → ComboBox |
-| `<input type="checkbox">` / `="radio"` | CheckBox / RadioButton, with live **checked** state |
-| `<image alt="…">` | Image |
-| a scrolling box | ScrollView |
-| `role="…"` on anything | that role, overriding the implicit one |
-
-**The accessible name** comes from, in order: an authored `label="…"` (or `alt=`
-on an image), then a `<text for="…">` pointing at the element's `id`, then, for
-inputs only, the `placeholder` as a last resort. A hint never outranks a real
-label. Controls also expose their **value**, and the platform's focus follows the
-focused input.
-
-```xml
-<text for="email">Email address</text>
-<input id="email" r-model="email" placeholder="you@example.com" />
-<!-- announces as: "Email address, edit" -->
-```
-
-Plain layout boxes are **not** exposed, a tree full of anonymous groups is worse
-than a short one. `r-show="false"` elements are absent from the tree, not merely
-invisible. The whole tree is rebuilt per frame but only published while assistive
-technology is actually attached, so it costs nothing otherwise.
-
-**Not done:** accesskit *action requests* (a screen reader asking to click or
-focus an element) are received but not yet dispatched into the app; there is no
-nesting/landmark structure (the tree is flat under the window); and live-region
-announcements are unimplemented.
-
-### Errors & the dev overlay
-
-Mistakes are shown **in the window**, not only on a stderr nobody running a GUI
-app is watching.
-
-- **A file that won't load** opens the window with a red panel naming the file and
-  the failure. Parse errors carry a **line and column**, numbered against the whole
-  `.rux` file (not the `<template>` section), so they line up with the editor
-  gutter: `parse error at line 6, column 16: mismatched closing tag: expected
-  </view>, found </vieww>`.
-- **A hot-reload that fails keeps the last good UI on screen** and says so
-  (*"showing the last version that loaded"*), so a typo mid-edit neither blanks
-  the window nor passes unnoticed. Fixing the file clears the overlay; the window
-  keeps its size and pointer state across the reload.
-- **A document that builds but has dead CSS** gets a quieter amber panel listing
-  what does nothing: unhonored properties, unknown pseudo-classes, undefined
-  `var()`s, unsupported `@media` conditions, and **expressions that failed**, `expression \`dubble(n)\` failed: Function not found: dubble`. Long lists are
-  capped at six with a count of the rest; everything still goes to stderr.
-  CSS warnings are prefixed with the line they are on (`line 11: …`).
-- **Tapping the panel dismisses it**, and it says so. The panel covers the app it
-  is describing, which was a problem when the thing you needed to look at was
-  underneath. The dismissal is remembered against *those* diagnostics, so it
-  lasts exactly as long as the document's problems are the same ones: fix a
-  warning, or introduce an error, and the panel comes straight back. A press
-  landing on the panel does not reach the app under it either.
-
-Every shipped example is checked to load **warning-free**, so a noisy overlay in
-`examples/` is a test failure.
-
-**The browser playground shows the same diagnostics**, in the page rather than
-only on the canvas. `rux-web`'s `diagnose(source)` sets the document and returns
-the error (with line and column) and every warning (with its line) as JSON; the
-page lists them under the editor and each one that knows its line is a button
-that selects that line. It runs on load as well as on Run, since a shared link
-carries its source in the URL hash.
-
-> The deployed page is built from `main` while the runtime it loads is pinned to
-> the latest **tag**, so the page has to keep working against a build that
-> predates its own features. It feature-detects `diagnose` and falls back to the
-> older `setSource`, which reports an error and no warnings. The fallback is
-> only removable once a deployed build actually carries `diagnose`, which means
-> after the tag exists *and* the site has been rebuilt against it: pushing a tag
-> deploys nothing on its own, since the workflow fires on pushes to `main`.
-
-**Known limits:** rhai returns `()` for a missing *map property*, rather than
-erroring, so `{{ user.nmae }}` still renders empty with nothing reported (a
-missing *function* or variable does report). That one is rhai's semantics, not
-ours, it is tracked as a motivator for the planned rhai fork in
-[Roadmap](/roadmap/) (Further out → *Script documentation*). Expression
-failures and anything from a component's CSS are still reported without a line,
-for the reasons under "Checking a file without opening a window".
-
----
-
 ## Gotchas (these will bite)
 
 1. **String literals in attributes need single-quoted attrs:**
    `@tap='name = ""'`, `r-if='city != ""'`. We do **not** decode HTML entities,
    and rhai treats `'x'` as a *char*, not a string.
 2. **`use` must be alone on its own line** in `<script>`.
-3. **rhai `fn`s can't touch globals** (see above). The single biggest trap.
+3. **A `fn` called in method style cannot see the surrounding scope.**
+   `helper(thing)` reaches the state around it; `thing.helper()` does not. This
+   is all that is left of what used to be the single biggest trap here, "rhai
+   `fn`s can't touch globals", which v0.7 removed (see above).
 4. **`text-align` needs a box wider than the text** (set a width, or the element
    must fill), or there's nothing to align within.
 5. **A scroll container needs a bounded height** (`height`, `max-height`, or a
@@ -1005,14 +506,14 @@ for the reasons under "Checking a file without opening a window".
 > Fine-grained reactivity **shipped in v0.3**: a signal change now patches only
 > the bindings that read it, and the wholesale rebuild no longer fires. This list
 > claimed otherwise until 2026-07-26. If a gap here reads as more pessimistic
-> than the [release blog](https://ruxlang.dev/blog/), trust the blog and fix this
+> than the [release blog](/blog/), trust the blog and fix this
 > file.
 
 ---
 
 ## Where the design docs are still right
 
-The [rationale](/why/)'s core laws still hold and still guide changes:
+The [rationale](/reference/rationale/)'s core laws still hold and still guide changes:
 **layout lives in CSS, not markup** (no `<Padding>`/`<Center>` widgets); **reuse
 mature crates**; **keep the element set tiny**. The [architecture](/contribute/)
 pipeline (parse → cascade → layout → paint → present, with a file watcher) is

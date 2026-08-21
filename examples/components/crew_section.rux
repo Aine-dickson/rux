@@ -1,0 +1,45 @@
+<template>
+  <view class="section">
+    <text class="head">crew ({{ names.length }})</text>
+    <view class="tabs">
+      <text class="tab" r-for="name in names" :key="name" :to="&quot;/crew/&quot; + name">{{ name }}</text>
+    </view>
+    <text class="hint">this list is the parent view; it keeps its own state while the panel below changes</text>
+    <text class="hint">looked at {{ looks }} so far</text>
+    <router-view />
+  </view>
+</template>
+
+<style>
+  .section {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 16px;
+    background: #313244;
+    border: 2px solid #45475a;
+    border-radius: 10px;
+    width: 420px;
+  }
+
+  .head { color: #cdd6f4; font-size: 16px; font-weight: 700; }
+  .tabs { display: flex; gap: 8px; }
+  .hint { color: #6c7086; font-size: 12px; }
+
+  .tab {
+    padding: 5px 10px;
+    background: #45475a;
+    border-radius: 6px;
+    color: #cdd6f4;
+    font-size: 13px;
+    cursor: pointer;
+  }
+
+  .tab:hover { background: #585b70; }
+  .tab:current { background: #89b4fa; color: #11111b; font-weight: 700; }
+</style>
+
+<script>
+  let names = signal(["grace", "ada", "katherine"]);
+  let looks = signal(0);
+</script>

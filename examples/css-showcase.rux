@@ -11,7 +11,7 @@
     <!-- position: absolute + inset, pinned inside a relative box -->
     <view class="stage" :style="`background: ${stage_color}`">
       <view class="badge">
-        <text>{{ colors.len() }}</text>
+        <text>{{ colors.length }}</text>
       </view>
       <button class="tap" @tap='colors.push(new_color); new_color = "";'>
         <text>Tap to add {{new_color}}</text>

@@ -21,13 +21,19 @@ use rux_layout::{
     Len, Node as LayoutNode, Overflow, Position, Rgba, Sides, Style, TextAlign, TextContent,
     TextWrap, Track, TrackSide,
 };
-use rux_layout::{GradientKind, GridFlow, Transform};
+use rux_layout::{AnimProp, Easing, GradientKind, GridFlow, Transform, Transition};
+use rux_layout::{FillRule, LineCap, LineJoin, PathContent};
 use rux_parser::{Element, Node as TplNode, Sfc};
 use rux_reactive::Value;
 /// Re-exported so the runtime and the shell can name a warning without
 /// depending on `rux-reactive` directly, the same way `Viewport` travels.
 pub use rux_reactive::Warning;
 use rux_script::Engine;
+
+/// Transitions, which live between a build and the layout rather than inside
+/// either. See [`anim::Animator`].
+mod anim;
+pub use anim::{Animator, FRAME_MS};
 
 /// Loop-variable bindings introduced by `r-for`, layered as a scope stack and
 /// injected into the script engine for each evaluation.
@@ -267,6 +273,12 @@ pub struct BindingRegistry {
     /// one of these means the runtime must rebuild rather than patch. (Empty now,
     /// kept as a safety net for any future non-reconcilable binding.)
     pub structural: HashSet<String>,
+    /// Every built node as a selector sees it, for `query()` from script.
+    ///
+    /// Not reactivity, unlike everything above it, and it rides here because a
+    /// build already threads this struct everywhere a node is produced. See
+    /// [`ElementIndex`].
+    pub elements: ElementIndex,
 }
 
 
@@ -293,6 +305,9 @@ fn bind_locals(src: &str, locals: &Locals) -> String {
 /// top-level script that gives each instance its private state.
 struct Component {
     template: Element,
+    /// Its own rules, with the document's merged in ahead of them unless
+    /// either side said `<style scoped>`. Merged once at load; see
+    /// `build_styled_tree_stateful`.
     rules: Vec<Rule>,
     /// The component's own `let` declarations, run once per instance. Its `fn`
     /// definitions are not here: those are shared, merged into the one engine,
@@ -309,6 +324,13 @@ struct Component {
 /// decide.
 #[derive(Clone, Debug, Default)]
 pub struct Instance {
+    /// Which component this is an instance of.
+    ///
+    /// Carried on the instance rather than looked up from the template, because
+    /// the moment it is needed is the moment the template no longer mentions it:
+    /// an instance that has just been pruned still has to say whose `unmounted`
+    /// body to run.
+    pub tag: String,
     pub state: Vec<(String, Value)>,
     pub props: Vec<(String, Value)>,
     /// What the caller wrote as `@event="…"` on the tag: the bodies to run when
@@ -339,6 +361,379 @@ pub struct Instance {
 /// Every live component instance, by identity. Owned by the runtime so it
 /// outlives the tree, which is rebuilt constantly.
 pub type Instances = HashMap<String, Instance>;
+
+// ── Enter/leave ─────────────────────────────────────────────────────────────
+
+/// What identifies a swap across builds.
+///
+/// The **template** path, not the tree path. A leaving element's tree path moves
+/// as siblings around it come and go, so keying on it would lose the swap the
+/// moment a neighbour changed. The template path is fixed by the source file.
+/// The second half is the `r-key` of the row, `None` for an `r-if`.
+pub type SwapKey = (Vec<usize>, Option<String>);
+
+/// The loop variables one `r-for` row was built with.
+pub type RowLocals = Vec<(String, Value)>;
+
+/// A row of an animated list as remembered: where it sat, and what built it.
+type RememberedRow = (usize, RowLocals);
+
+/// A row that has left the collection but is still on screen: its position, its
+/// key, and enough to build it with now that its item is gone.
+type DepartedRow = (usize, String, RowLocals);
+
+/// Which side of a swap an element is on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Phase {
+    /// The build has just started asking for this element.
+    Entering,
+    /// The build has stopped asking for this element, and it is on screen only
+    /// because the swap is holding it there.
+    Leaving,
+}
+
+/// Which side of a swap one built element is on, and whether this is the first
+/// build since it opened. Decided by [`Swaps::resolve`], since that is the only
+/// place both facts are known.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SwapSide {
+    pub phase: Phase,
+    pub first: bool,
+}
+
+/// Where a swap's progress comes from.
+#[derive(Clone, Debug)]
+pub enum Driver {
+    /// Wall time. The build records only the *duration*, read from the
+    /// element's own `transition` declarations, so there is one place a
+    /// duration is written and it is the CSS. Whoever owns the clock turns that
+    /// into `end_ms` the first frame it sees the swap: the build has no time
+    /// source and must not grow one.
+    Clock { duration: f32, end_ms: Option<f64> },
+    /// An author expression, re-read every build, yielding 0..=1. Reaching 1
+    /// commits and reaching 0 abandons. This is what binds a swap to a finger.
+    Bound(String),
+}
+
+/// One swap in flight.
+///
+/// Its whole job is to make the build emit an element the build would otherwise
+/// have dropped, and to say which of `:enter-from` / `:leave-to` is held while
+/// it does. The interpolation itself is tier 1's: an entering element is styled
+/// `:enter-from` for exactly one frame, so the frame after is an ordinary style
+/// change and `transition` animates it with no knowledge that a swap happened.
+#[derive(Clone, Debug)]
+pub struct Swap {
+    pub phase: Phase,
+    pub driver: Driver,
+    /// Progress 0..=1, only meaningful under [`Driver::Bound`]; the clock driver
+    /// leaves the interpolation to the animator and never reads this.
+    pub progress: f32,
+    /// How many builds this swap has been through.
+    ///
+    /// `:enter-from` is held on the first and dropped on the second, and that
+    /// asymmetry is the whole trick: the drop is an ordinary style change, which
+    /// is what tier 1 already animates. Holding it a second build would mean the
+    /// target never moves and nothing would ever animate at all.
+    pub builds: u32,
+    /// The row's loop variables, captured when a keyed `r-for` row starts
+    /// leaving. By then the item is gone from the collection, so this is the
+    /// only remaining way to build the row it used to render.
+    pub locals: RowLocals,
+    /// Whether the build now running has reached this swap. Same rule, and the
+    /// same reason, as [`Instance::touched`].
+    pub touched: bool,
+    /// Whether a bound swap's progress has ever been off zero.
+    ///
+    /// Without it a bound swap abandons on the frame it opens: it starts at 0,
+    /// and 0 is also where abandoning is decided. Nothing to do with a clock
+    /// swap, which has a deadline instead of an end value.
+    pub moved: bool,
+}
+
+/// Every swap in flight, and what the last build showed. Owned by the runtime
+/// beside [`Instances`], because like an instance a swap outlives the tree it
+/// appears in.
+///
+/// `shown` is the half that is easy to forget and impossible to do without: a
+/// swap opens on the *difference* between what the last build emitted and what
+/// this one asks for, and the tree cannot report the first of those, having been
+/// thrown away. Nothing else in the build remembers a structural decision.
+#[derive(Clone, Debug, Default)]
+pub struct Swaps {
+    shown: HashSet<SwapKey>,
+    /// What the build now running has emitted, promoted to `shown` at the end.
+    building: HashSet<SwapKey>,
+    pending: HashMap<SwapKey, Swap>,
+    /// The locals each keyed row of an animated `r-for` was last built with,
+    /// and where in the list it sat.
+    ///
+    /// A departing row is the case an `r-if` does not have: by the time the row
+    /// is leaving, its item is gone from the collection, so there is nothing
+    /// left to build it from unless it was kept. Only lists that actually
+    /// declare `r-transition` pay for this, since it is a clone per row per
+    /// build and a list nobody is animating should not be charged for one.
+    rows: HashMap<SwapKey, RememberedRow>,
+}
+
+impl Swaps {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Whether anything is mid-swap, so the caller can skip the work entirely.
+    pub fn is_empty(&self) -> bool {
+        self.pending.is_empty()
+    }
+
+    pub fn pending(&self) -> impl Iterator<Item = (&SwapKey, &Swap)> {
+        self.pending.iter()
+    }
+
+    /// Start a build. Clears the per-build marks, the same bookkeeping
+    /// [`Instance::touched`] does and for the same reason.
+    pub fn begin(&mut self) {
+        self.building.clear();
+        for swap in self.pending.values_mut() {
+            swap.touched = false;
+        }
+    }
+
+    /// Finish a build: what it emitted becomes what is shown, and a swap the
+    /// build never reached is one whose element is gone for a reason that has
+    /// nothing to do with animation (an ancestor closed over it), so it goes
+    /// too rather than holding a subtree nothing is drawing.
+    pub fn end(&mut self) {
+        self.shown = std::mem::take(&mut self.building);
+        self.pending.retain(|_, s| s.touched);
+    }
+
+    /// Remember what a row of an animated `r-for` was built with, so it can
+    /// still be built after it has left the collection.
+    fn remember_row(&mut self, key: &SwapKey, index: usize, locals: RowLocals) {
+        self.rows.insert(key.clone(), (index, locals));
+    }
+
+    /// The rows of one animated `r-for` that the collection no longer has, as
+    /// `(index, key, locals)` ready to build, oldest position first.
+    ///
+    /// Owned rather than borrowed because the caller needs `&mut self` again to
+    /// build them, which is also what opens their swaps.
+    fn departed_rows(
+        &self,
+        tpl: &[usize],
+        present: &[String],
+    ) -> Vec<DepartedRow> {
+        let mut out: Vec<DepartedRow> = self
+            .rows
+            .iter()
+            .filter(|((path, key), _)| {
+                path == tpl && key.as_ref().is_some_and(|k| !present.contains(k))
+            })
+            .map(|((_, key), (index, locals))| {
+                (*index, key.clone().unwrap_or_default(), locals.clone())
+            })
+            .collect();
+        out.sort_by_key(|(index, _, _)| *index);
+        out
+    }
+
+    /// Whether a swap is currently holding the page at `path` on screen.
+    ///
+    /// The router drops a route's instances as it leaves that route, which would
+    /// take the state out from under a page that is still animating out. This is
+    /// what tells it to wait.
+    pub fn holds_route(&self, path: &str) -> bool {
+        self.rows.iter().any(|(key, (_, locals))| {
+            self.pending.contains_key(key)
+                && locals.iter().any(|(name, value)| {
+                    name == "path" && value.to_display() == path
+                })
+        })
+    }
+
+    /// Forget a row for good. Called when its leaving swap commits, so the
+    /// remembered locals do not outlive the row they describe.
+    fn forget_row(&mut self, key: &SwapKey) {
+        self.rows.remove(key);
+    }
+
+    /// Whether an entering swap is still holding `:enter-from` and so needs one
+    /// more build to let go of it.
+    ///
+    /// Easy to miss and fatal without: the frame that *drops* `:enter-from` is
+    /// the one that starts the animation, and nothing else would ask for it. A
+    /// condition change rebuilds once; without this the element would sit at its
+    /// entering offset forever.
+    pub fn needs_settling(&self) -> bool {
+        self.pending.values().any(|s| s.phase == Phase::Entering && s.builds < 2)
+    }
+
+    /// The swap is over: drop it and let the build's decision stand.
+    ///
+    /// A leaving element also leaves `shown`. Forgetting that half is a loop
+    /// rather than a glitch: the next build would compare "not wanted" against
+    /// "was shown", see a difference, and open the very same swap again.
+    fn finish(&mut self, key: &SwapKey) {
+        if let Some(swap) = self.pending.remove(key) {
+            if swap.phase == Phase::Leaving {
+                self.shown.remove(key);
+                self.forget_row(key);
+            }
+        }
+    }
+
+    /// Advance every swap against the clock and finish the ones that are done.
+    ///
+    /// Returns how long until the next one needs looking at again, and whether
+    /// anything finished (which changes the tree, so the caller has to rebuild).
+    /// A **delay**, not a deadline, because that is what the animator returns
+    /// and the shell folds the two into one wait. A `None` means nothing is in
+    /// flight and the app can sleep, the same property the animator protects:
+    /// an idle Rux app must not burn frames.
+    pub fn advance(&mut self, now_ms: f64) -> (Option<f64>, bool) {
+        let mut done: Vec<SwapKey> = Vec::new();
+        let mut wake: Option<f64> = None;
+        for (key, swap) in self.pending.iter_mut() {
+            match &mut swap.driver {
+                Driver::Clock { duration, end_ms } => {
+                    let end = *end_ms.get_or_insert(now_ms + *duration as f64);
+                    if now_ms >= end {
+                        done.push(key.clone());
+                    } else {
+                        let delay = end - now_ms;
+                        wake = Some(wake.map_or(delay, |w: f64| w.min(delay)));
+                    }
+                }
+                // The author owns progress, so there is no deadline to wait on:
+                // the next build is what moves it, and the two ends are where
+                // the swap is over. Reaching 1 commits, returning to 0 abandons.
+                Driver::Bound(_) => {
+                    if swap.progress >= 1.0 || (swap.moved && swap.progress <= 0.0) {
+                        done.push(key.clone());
+                    }
+                }
+            }
+        }
+        let finished = !done.is_empty();
+        for key in &done {
+            self.finish(key);
+        }
+        (wake, finished)
+    }
+
+    /// Decide what to do with one structural element this build, and record it.
+    ///
+    /// `wanted` is what the condition (or the collection) says. The return is
+    /// whether to emit it at all, and if so which side it is on.
+    fn resolve(&mut self, key: &SwapKey, wanted: bool, animated: bool) -> Option<Option<SwapSide>> {
+        if !animated {
+            // No `r-transition`: the old behaviour exactly, and no bookkeeping
+            // beyond recording what was shown, so an element that gains the
+            // attribute later does not think it has been there all along.
+            if wanted {
+                self.building.insert(key.clone());
+            }
+            self.pending.remove(key);
+            return wanted.then_some(None);
+        }
+        let was = self.shown.contains(key);
+        if let Some(swap) = self.pending.get_mut(key) {
+            swap.touched = true;
+            // The condition changing back mid-swap reverses it rather than
+            // opening a second one. This is what makes a swap that is bound to
+            // a finger able to change its mind.
+            swap.phase = if wanted { Phase::Entering } else { Phase::Leaving };
+            swap.builds = swap.builds.saturating_add(1);
+            let side = SwapSide {
+                phase: swap.phase,
+                first: swap.builds == 1,
+            };
+            self.building.insert(key.clone());
+            return Some(Some(side));
+        }
+        if wanted == was {
+            if wanted {
+                self.building.insert(key.clone());
+            }
+            return wanted.then_some(None);
+        }
+        // A change with no swap yet: open one. The caller fills in the driver,
+        // which it can only do once it has built the element and can read its
+        // `transition` declarations.
+        let phase = if wanted { Phase::Entering } else { Phase::Leaving };
+        self.pending.insert(
+            key.clone(),
+            Swap {
+                phase,
+                driver: Driver::Clock { duration: 0.0, end_ms: None },
+                progress: 0.0,
+                locals: Vec::new(),
+                touched: true,
+                moved: false,
+                builds: 1,
+            },
+        );
+        self.building.insert(key.clone());
+        Some(Some(SwapSide { phase, first: true }))
+    }
+}
+
+// ── Component lifecycle ─────────────────────────────────────────────────────
+
+/// A component instance that appeared or disappeared during a build.
+///
+/// The build is the only place both facts are known, and it is the wrong place
+/// to *act* on them: running a hook body here would run author code in the
+/// middle of expanding a tree. So the build reports, and the runtime decides.
+#[derive(Clone, Debug)]
+pub struct Lifecycle {
+    /// The instance's key, so the runtime can run a `mounted` body in the scope
+    /// of an instance that is still in the map.
+    pub key: String,
+    /// Whose hook bodies to run.
+    pub tag: String,
+    /// The scope the body should run in, carried only for an unmount: by the
+    /// time the runtime looks, the instance is gone from the map, and its
+    /// `unmounted` body has to run against the names it was written for. State
+    /// first and props after, so a prop of the same name wins, which is the
+    /// order the instance itself was expanded with.
+    pub locals: Vec<(String, Value)>,
+}
+
+thread_local! {
+    /// Instances created and pruned by the current build, in build order.
+    ///
+    /// A sink rather than a return value: three public build entry points share
+    /// this path, and threading a report out of all of them would change every
+    /// signature for a thing only one caller wants. Drained by
+    /// [`take_lifecycle`], on the same terms as the warning sink above.
+    static MOUNTS: std::cell::RefCell<Vec<Lifecycle>> = const { std::cell::RefCell::new(Vec::new()) };
+    static UNMOUNTS: std::cell::RefCell<Vec<Lifecycle>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Take what the last build mounted and unmounted, emptying both sinks.
+///
+/// Mounts come back outermost-first, the order the template expands in: an
+/// inner component is only reached through its parent, so the parent's
+/// `mounted` cannot usefully run second on the first build anyway. Unmounts are
+/// in whatever order the map pruned them, which is not observable: a dead
+/// instance's body cannot see another dead instance.
+/// Queue an `unmounted` for an instance the *runtime* is dropping.
+///
+/// The build queues its own as it prunes, but the router drops a route's views
+/// on the way out of that route, before any build runs, and that removal used
+/// to bypass the sink entirely: a route view's `unmounted` never fired at all.
+pub fn queue_unmount(entry: Lifecycle) {
+    UNMOUNTS.with(|u| u.borrow_mut().push(entry));
+}
+
+pub fn take_lifecycle() -> (Vec<Lifecycle>, Vec<Lifecycle>) {
+    (
+        MOUNTS.with(|m| std::mem::take(&mut *m.borrow_mut())),
+        UNMOUNTS.with(|u| std::mem::take(&mut *u.borrow_mut())),
+    )
+}
 
 /// A component instance's identity: where it sits in the template, and which
 /// `r-for` row it is in.
@@ -419,6 +814,30 @@ struct Slot<'a> {
     children: &'a [&'a Element],
     locals: &'a Locals,
     rules: &'a [Rule],
+}
+
+/// What a `<router-view />` deeper in a route's view still has to render.
+///
+/// Threaded like [`Slot`], and for the same reason: the element that decides the
+/// content and the element that places it are in different files. A slot is
+/// filled by the caller's markup; an outlet is filled by the route that matched
+/// under this one.
+#[derive(Clone, Copy)]
+struct Outlet<'a> {
+    /// The links below the one being rendered, outermost first.
+    rest: &'a [Link<'a>],
+    /// Every parameter the whole chain captured. The same set reaches every
+    /// view in it, so a leaf sees what its parent matched.
+    params: &'a Locals,
+    /// The path that matched, for instance bookkeeping.
+    current: &'a str,
+    /// The template path of the `<router>` this chain belongs to, so each view
+    /// in the chain gets an identity that survives a rebuild.
+    router_tpl: &'a [usize],
+    /// Set when an outlet actually renders a link. A route with children whose
+    /// view never places a `<router-view />` would otherwise lose the child in
+    /// silence, which is the failure this project keeps closing off.
+    used: &'a std::cell::Cell<bool>,
 }
 
 /// An element's element children, skipping text nodes. Text between tags is
@@ -620,7 +1039,9 @@ pub fn build_styled_tree(
     engine: &mut Engine,
 ) -> Result<LayoutNode, String> {
     let mut instances = Instances::new();
-    build_styled_tree_tracked(sfc, components, engine, &mut instances).map(|(node, _)| node)
+    let mut swaps = Swaps::new();
+    build_styled_tree_tracked(sfc, components, engine, &mut instances, &mut swaps)
+        .map(|(node, _)| node)
 }
 
 /// Recompute a text binding's string against the engine's current state, what
@@ -828,12 +1249,14 @@ pub fn build_styled_tree_tracked(
     components: &HashMap<String, Sfc>,
     engine: &mut Engine,
     instances: &mut Instances,
+    swaps: &mut Swaps,
 ) -> Result<(LayoutNode, BindingRegistry), String> {
     build_styled_tree_stateful(
         sfc,
         components,
         engine,
         instances,
+        swaps,
         &InteractionState::default(),
         Viewport::default(),
     )
@@ -848,6 +1271,7 @@ pub fn build_styled_tree_stateful(
     components: &HashMap<String, Sfc>,
     engine: &mut Engine,
     instances: &mut Instances,
+    swaps: &mut Swaps,
     state: &InteractionState,
     viewport: Viewport,
 ) -> Result<(LayoutNode, BindingRegistry), String> {
@@ -858,14 +1282,38 @@ pub fn build_styled_tree_stateful(
     // would point confidently at the wrong place. Unplaced is the honest answer
     // until warnings carry a file as well as a line.
     let rules = parse_document_rules(sfc, viewport);
+
+    // The document's stylesheet reaches the components it uses. Before this, a
+    // component saw only its own `<style>`, so a shared look had to be
+    // `<style src="theme.css">` in every single component file, and that is the
+    // wall people hit first on a real app.
+    //
+    // Two opt-outs, both spelled `<style scoped>`: on the document, "my rules
+    // stay in my markup"; on a component, "I own my appearance, do not style
+    // me from outside".
+    //
+    // Merged here, once per load, rather than per build. A component is
+    // expanded once per instance per frame, so concatenating rule lists at
+    // expansion time would repeat the whole stylesheet for every row of a list
+    // on every keystroke.
+    //
+    // Document rules come first so a component's own rules win a tie, which is
+    // CSS's own order: same specificity, later wins.
+    let cascading: &[Rule] = if sfc.style_scoped { &[] } else { &rules };
     let comps: Components = components
         .iter()
         .map(|(tag, c)| {
+            let own = parse_component_rules(c, viewport);
+            let merged = if c.style_scoped {
+                own
+            } else {
+                cascading.iter().cloned().chain(own).collect()
+            };
             (
                 tag.clone(),
                 Component {
                     template: c.template.clone(),
-                    rules: parse_component_rules(c, viewport),
+                    rules: merged,
                     script: component_statements(&c.script),
                 },
             )
@@ -880,6 +1328,9 @@ pub fn build_styled_tree_stateful(
     for instance in instances.values_mut() {
         instance.touched = false;
     }
+    // Same bookkeeping for swaps, and paired here rather than at the callers so
+    // that no build can forget half of it.
+    swaps.begin();
 
     let mut ancestors: Vec<AncNode> = Vec::new();
     let locals = Locals::new();
@@ -903,12 +1354,36 @@ pub fn build_styled_tree_stateful(
         &mut reg,
         state,
         instances,
+        swaps,
         None, // the root is not inside a component
         None, // the document root has no caller, so no slot content
+        None, // and no route chain: the router itself starts one
         None, // and is not inside any row
+        None, // and the root never swaps: there is no build without it
     );
     link_labels(&mut node);
-    instances.retain(|_, instance| instance.touched);
+    instances.retain(|key, instance| {
+        if !instance.touched {
+            // Its state goes with it: this is the last moment it exists, and an
+            // `unmounted` body that could not read what the instance was holding
+            // could not save it either, which is most of what the hook is for.
+            let mut locals = std::mem::take(&mut instance.state);
+            locals.extend(instance.props.iter().cloned());
+            UNMOUNTS.with(|u| {
+                u.borrow_mut().push(Lifecycle {
+                    key: key.clone(),
+                    tag: instance.tag.clone(),
+                    locals,
+                })
+            });
+        }
+        instance.touched
+    });
+    // After the instance sweep: an instance pruned by this build has already
+    // had its `unmounted` queued, and a swap holding an element on screen kept
+    // that element's instance `touched`, which is exactly why the pair is
+    // builder-owned rather than a snapshot the animator holds.
+    swaps.end();
     Ok((node, reg))
 }
 
@@ -990,6 +1465,13 @@ enum Pseudo {
     Active,
     Checked,
     Current,
+    /// The side an element starts from as it enters. Held for the element's
+    /// first frame only, so the frame after is an ordinary style change and
+    /// `transition` animates it without knowing a swap happened.
+    EnterFrom,
+    /// The side an element ends at as it leaves. Held from the moment the swap
+    /// opens until it commits, so it is a target the whole way.
+    LeaveTo,
     Unknown(String),
 }
 
@@ -1006,6 +1488,12 @@ pub struct ElemStates {
     /// This element's `to` names the path we are on. Resolved at build time from
     /// the `route` signal, like `checked` and unlike the pointer states.
     pub current: bool,
+    /// This element is entering and this is its first frame. Resolved at build
+    /// time from [`Swaps`], like `current` and unlike the pointer states.
+    pub enter_from: bool,
+    /// This element is leaving: the build no longer asks for it, and it is on
+    /// screen only because a swap is holding it there.
+    pub leave_to: bool,
 }
 
 /// The interaction state the *shell* owns, handed to the build so pseudo-class
@@ -1059,6 +1547,8 @@ impl Pseudo {
             "active" => Self::Active,
             "checked" => Self::Checked,
             "current" => Self::Current,
+            "enter-from" => Self::EnterFrom,
+            "leave-to" => Self::LeaveTo,
             other => Self::Unknown(other.to_string()),
         }
     }
@@ -1070,6 +1560,8 @@ impl Pseudo {
             Self::Active => s.active,
             Self::Checked => s.checked,
             Self::Current => s.current,
+            Self::EnterFrom => s.enter_from,
+            Self::LeaveTo => s.leave_to,
             // Fails closed, see the type docs.
             Self::Unknown(_) => false,
         }
@@ -1101,6 +1593,113 @@ struct Rule {
     decls: Vec<(String, String)>,
 }
 
+/// One built node, as a selector can see it: what it is, and where it sits.
+///
+/// Recorded during the build because that is the only moment both facts are
+/// known together. The cascade computes an [`ElemDesc`] for every element and
+/// then drops it, and [`crate::LayoutNode`] deliberately keeps only `id` and
+/// `key`, the two it needs for `for=` and reconciliation. Without this, a
+/// selector run after the build has nothing to match against: the tree has
+/// forgotten its own tags and classes.
+#[derive(Debug, Clone)]
+struct ElementEntry {
+    desc: ElemDesc,
+    path: Vec<usize>,
+}
+
+/// One node a selector matched: where it is, and what it is.
+///
+/// The identity a caller acts on is the `path`; the rest is what script can
+/// read back without needing the tree itself, which it has no access to.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ElementMatch {
+    pub path: Vec<usize>,
+    pub tag: String,
+    pub id: Option<String>,
+    pub classes: Vec<String>,
+}
+
+/// Every built node in document order, enough to run a selector over the tree.
+///
+/// Ancestors and preceding siblings are *not* stored per entry. They are
+/// recoverable from the paths alone, since a node's ancestors are exactly the
+/// entries whose path is a strict prefix of its own, and reconstructing them on
+/// demand costs nothing next to storing every ancestor chain twice over.
+///
+/// Built on every build and dropped with the tree. A document that never calls
+/// `query` pays only for the push.
+#[derive(Clone, Debug, Default)]
+pub struct ElementIndex {
+    entries: Vec<ElementEntry>,
+}
+
+impl ElementIndex {
+    fn push(&mut self, desc: ElemDesc, path: &[usize]) {
+        self.entries.push(ElementEntry { desc, path: path.to_vec() });
+    }
+
+    /// Every node matching `selector`, in document order.
+    ///
+    /// `None` when the selector does not parse, which the caller reports as a
+    /// diagnostic: a selector that cannot be read matches nothing, and silently
+    /// returning an empty list is the failure mode this project keeps killing.
+    pub fn query(&self, selector: &str) -> Option<Vec<ElementMatch>> {
+        let (chain, combs, _) = parse_selector(selector)?;
+        let mut out = Vec::new();
+        for entry in &self.entries {
+            let (ancestors, prev) = self.context_of(entry);
+            if matches_chain(&chain, &combs, &entry.desc, &ancestors, &prev) {
+                out.push(ElementMatch {
+                    path: entry.path.clone(),
+                    tag: entry.desc.tag.clone(),
+                    id: entry.desc.id.clone(),
+                    classes: entry.desc.classes.clone(),
+                });
+            }
+        }
+        Some(out)
+    }
+
+    /// The ancestor chain (root-first) and preceding siblings of one entry,
+    /// rebuilt from paths. Matching needs both: `.a > .b` walks ancestors and
+    /// `.a + .b` walks siblings, and an ancestor's own preceding siblings ride
+    /// along in [`AncNode::prev`] so a sibling combinator above a descendant hop
+    /// still resolves.
+    fn context_of(&self, entry: &ElementEntry) -> (Vec<AncNode>, Vec<ElemDesc>) {
+        let ancestors = (1..entry.path.len())
+            .map(|depth| {
+                let at = &entry.path[..depth];
+                AncNode {
+                    desc: self.at(at).cloned().unwrap_or_else(ElemDesc::unknown),
+                    prev: self.siblings_before(at),
+                }
+            })
+            .collect();
+        (ancestors, self.siblings_before(&entry.path))
+    }
+
+    fn at(&self, path: &[usize]) -> Option<&ElemDesc> {
+        self.entries.iter().find(|e| e.path == path).map(|e| &e.desc)
+    }
+
+    /// The rendered siblings preceding `path`, in document order. A sibling
+    /// shares the parent prefix and sits at a lower index.
+    fn siblings_before(&self, path: &[usize]) -> Vec<ElemDesc> {
+        let Some((&last, parent)) = path.split_last() else {
+            return Vec::new();
+        };
+        self.entries
+            .iter()
+            .filter(|e| {
+                e.path.len() == path.len()
+                    && e.path.starts_with(parent)
+                    && e.path[parent.len()] < last
+            })
+            .map(|e| e.desc.clone())
+            .collect()
+    }
+}
+
 /// The matchable identity of a template element.
 #[derive(Debug, Clone)]
 struct ElemDesc {
@@ -1122,6 +1721,21 @@ struct AncNode {
 }
 
 impl ElemDesc {
+    /// A stand-in for a path the index has no entry for. Its empty tag matches
+    /// no tag selector and it carries no id or class, so it satisfies a bare
+    /// descendant hop and nothing more specific. Reachable only if a built node
+    /// sits under a path no element was recorded at, which no current build
+    /// produces; it exists so a gap degrades a match rather than panicking.
+    fn unknown() -> Self {
+        Self {
+            tag: String::new(),
+            id: None,
+            classes: Vec::new(),
+            role: None,
+            states: ElemStates::default(),
+        }
+    }
+
     fn of(el: &Element) -> Self {
         Self {
             tag: el.tag.clone(),
@@ -1668,6 +2282,7 @@ const HONORED_PROPERTIES: &[&str] = &[
     "border-top", "border-right", "border-bottom", "border-left",
     "border-top-width", "border-right-width", "border-bottom-width", "border-left-width",
     "overflow", "overflow-x", "overflow-y", "opacity", "cursor", "box-shadow", "transform",
+    "transition",
     // Flex / grid
     "flex", "flex-grow", "flex-shrink", "flex-basis", "flex-wrap", "flex-direction",
     "justify-content", "align-items", "align-self", "justify-self", "justify-items",
@@ -1685,15 +2300,123 @@ const HONORED_PROPERTIES: &[&str] = &[
     "letter-spacing", "word-spacing", "line-height", "white-space",
     "text-decoration", "text-decoration-line",
     "overflow-wrap", "word-wrap", "word-break",
+    // <path>. Paint is CSS rather than attributes because that is where the
+    // rest of an element's appearance is written, and it is what gives a path
+    // `:hover`, `:class` and `transition` on the day it lands.
+    "fill", "fill-rule", "stroke", "stroke-width", "stroke-linecap", "stroke-linejoin",
 ];
 
 fn is_honored(property: &str) -> bool {
     HONORED_PROPERTIES.contains(&property)
 }
 
+/// Properties whose value is nothing but lengths, so every token in them can be
+/// checked without tripping over a keyword, a colour or a duration.
+///
+/// Shorthands that mix kinds are deliberately absent. `border: 2px solid #f00`
+/// and `transition: opacity 200ms ease` would each report their own non-length
+/// tokens as broken, and a warning that cries wolf is worse than none.
+const LENGTH_ONLY_PROPERTIES: &[&str] = &[
+    "width", "height", "min-width", "max-width", "min-height", "max-height",
+    "padding", "padding-top", "padding-right", "padding-bottom", "padding-left",
+    "margin", "margin-top", "margin-right", "margin-bottom", "margin-left",
+    "gap", "row-gap", "column-gap",
+    "top", "right", "bottom", "left",
+    "border-radius", "border-top-left-radius", "border-top-right-radius",
+    "border-bottom-right-radius", "border-bottom-left-radius",
+    "border-width", "border-top-width", "border-right-width",
+    "border-bottom-width", "border-left-width",
+    "letter-spacing", "word-spacing", "font-size",
+];
+
+/// Warn, once per property and value, that a length was written and not
+/// understood.
+///
+/// This is the other half of the `rem` fix. Before it, a unit the runtime did
+/// not honor made the whole declaration vanish with nothing said, so
+/// `padding: 2rem` looked exactly like `padding` having no effect at all, and
+/// the only way to find out was to try `px` and see the layout move. An
+/// unhonored *property* has warned for a long time; an unhonored *value* did
+/// not.
+fn warn_unparseable_lengths(props: &HashMap<String, String>) {
+    for (property, value) in props {
+        if !LENGTH_ONLY_PROPERTIES.contains(&property.as_str()) {
+            continue;
+        }
+        for token in value.split_whitespace() {
+            // Keywords (`auto`, `none`, `inherit`, `fit-content`) are legitimate
+            // here and are not lengths.
+            if token.chars().all(|c| c.is_ascii_alphabetic() || c == '-') {
+                continue;
+            }
+            if parse_len(token).is_some() {
+                continue;
+            }
+            warn_once(format!(
+                "`{property}: {token}` is not a length Rux understands, so the \
+                 declaration is ignored. Use px, %, rem, em, vw or vh."
+            ));
+        }
+    }
+}
+
+/// Warn at most once per distinct message, for the life of the process.
+///
+/// A stylesheet is reparsed on every tree rebuild, which is every keystroke in
+/// an input, so an undeduplicated warning here would fill the overlay.
+fn warn_once(message: String) {
+    use std::collections::HashSet;
+    use std::sync::{Mutex, OnceLock};
+    static SEEN: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    let seen = SEEN.get_or_init(|| Mutex::new(HashSet::new()));
+    let Ok(mut seen) = seen.lock() else { return };
+    if seen.insert(message.clone()) {
+        warn(message);
+    }
+}
+
+/// The property names [`warn_if_unhonored`] accepts, for anything outside the
+/// runtime that needs to offer them: `rux vocab`, and through it the editor's
+/// CSS completions. Exposing the same slice the warning consults is the point.
+/// A completion list built from a second, hand-kept copy would eventually offer
+/// a property the runtime then warns does nothing, which is worse than offering
+/// nothing at all.
+pub fn honored_properties() -> &'static [&'static str] {
+    HONORED_PROPERTIES
+}
+
+/// The pseudo-classes a selector may name, for the same reason
+/// [`honored_properties`] is public: the editor completes `:` in a selector
+/// from this, and an unknown pseudo-class fails closed (it matches nothing),
+/// so offering one that does not exist would be offering a rule that silently
+/// never applies.
+///
+/// [`Pseudo::parse`] is the owner. `honored_pseudo_classes_all_parse` below
+/// holds the two in step, which is the same arrangement `is_honored` and
+/// `HONORED_PROPERTIES` have.
+pub fn honored_pseudo_classes() -> &'static [&'static str] {
+    HONORED_PSEUDO_CLASSES
+}
+
+const HONORED_PSEUDO_CLASSES: &[&str] =
+    &["hover", "focus", "active", "checked", "current", "enter-from", "leave-to"];
+
+/// The properties `transition` can name, in the order `all` expands them.
+///
+/// Owned by [`rux_layout::AnimProp`], which is where the interpolation for each
+/// one lives, so this is a projection of that list rather than a second copy.
+/// `all` is prepended because it is legal to write and is not a variant of the
+/// expansion.
+pub fn animatable_properties() -> Vec<&'static str> {
+    std::iter::once(AnimProp::All.name()).chain(AnimProp::EVERY.iter().map(|p| p.name())).collect()
+}
+
 /// Warn, once per property name, for the life of the process, that a parsed
 /// declaration is not honored. Deduped so a whole-tree rebuild (which reparses
 /// every sheet) doesn't repeat the same line on every keystroke.
+/// The inset longhands, in `Style::inset` order (top, right, bottom, left).
+const INSETS: [&str; 4] = ["top", "right", "bottom", "left"];
+
 fn warn_if_unhonored(property: &str) {
     use std::collections::HashSet;
     use std::sync::{Mutex, OnceLock};
@@ -2055,19 +2778,33 @@ fn build_node(
     reg: &mut BindingRegistry,
     state: &InteractionState,
     instances: &mut Instances,
+    swaps: &mut Swaps,
     // The component instance this element is inside, None at document level.
     instance: Option<&str>,
     slot: Option<Slot>,
+    outlet: Option<Outlet>,
     // The `r-key` of the `r-for` row this element is inside, `None` outside one.
     // Half the identity of anything in a list: `r-model` is recorded as written,
     // so every row of a list otherwise looks like the same input.
     row: Option<&str>,
+    // Which side of a swap this element is on, `None` when it is not swapping.
+    // Only ever `Some` for the element carrying `r-transition`; its descendants
+    // inherit the visual effect through the cascade, not through this.
+    swap: Option<SwapSide>,
 ) -> LayoutNode {
     // A custom-element tag expands its imported component in place.
     if let Some(component) = comps.get(&el.tag) {
         return expand_component(
-            el, component, comps, inherited, engine, locals, path, tpl_path, reg, state, rules,
-            instances, instance, row, &Locals::new(), None,
+            el, component, comps, ancestors, inherited, engine, locals, path, tpl_path, reg, state, rules,
+            instances, swaps, instance, row, &Locals::new(), None,
+            // An ordinary component tag is not a route view, so a
+            // `<router-view />` inside it has no chain and says so.
+            None,
+            // Here the element *is* the component tag.
+            &el.tag,
+            // A component tag carrying `r-if` and `r-transition` swaps like any
+            // other element; the side lands on the component's root.
+            swap,
         );
     }
 
@@ -2086,6 +2823,12 @@ fn build_node(
     // survives a reconcile that moves nodes around.
     desc.states.hover = state.hovers(path);
     desc.states.active = state.activates(path);
+    // The swap states. `:enter-from` is held for the first frame only, and that
+    // asymmetry is the whole trick: dropping it next frame turns the swap into an
+    // ordinary style change, which is exactly what tier 1 already animates.
+    desc.states.enter_from =
+        swap.is_some_and(|s| s.phase == Phase::Entering && s.first);
+    desc.states.leave_to = swap.is_some_and(|s| s.phase == Phase::Leaving);
     // Both halves, or every row of a list matches at once: they all carry the
     // same `r-model` text, so the model alone cannot pick one out.
     desc.states.focus = match (&state.focused_model, el.attr("r-model")) {
@@ -2121,6 +2864,13 @@ fn build_node(
             desc.classes.extend(class_list(&v));
         }
     }
+
+    // Record what this node is before the cascade consumes it. Placed after
+    // `:class` and the pseudo-states for the same reason `state_path` is: a
+    // dynamically applied class is a class, and `query(".open")` has to agree
+    // with what the stylesheet matched a moment earlier or the two disagree
+    // about the same document.
+    reg.elements.push(desc.clone(), path);
 
     // Set on every node this build produces, so the shell gets a region to hit-test
     // (see `pointer_state_sensitive`). Computed after `:class`, so dynamically
@@ -2168,6 +2918,27 @@ fn build_node(
         }
     }
 
+    // Resolve `em` here, for the same reason `var()` is resolved here: every
+    // length parser would otherwise have to learn about font size, and most of
+    // them are reached with no element in hand. `interpret` takes a property map
+    // and nothing else.
+    //
+    // `font-size` resolves first and against the *inherited* size, because that
+    // is what `em` means on the property that defines it: `font-size: 1.5em` is
+    // one and a half times the parent's, not its own.
+    let own_font_size = props
+        .get("font-size")
+        .and_then(|v| parse_px_len(first(v), inherited.font_size))
+        .unwrap_or(inherited.font_size);
+    for value in props.values_mut() {
+        if value.contains("em") {
+            *value = resolve_em(value, own_font_size);
+        }
+    }
+    // After `var()` and `em` are resolved, so a variable holding a bad length is
+    // reported as the length it turned out to be rather than as `var(--x)`.
+    warn_unparseable_lengths(&props);
+
     let style = interpret(&props);
     // A `@tap` handler runs later, in global scope, where the `r-for` loop
     // variable no longer exists, so `@tap="picked = item"` would see `item`
@@ -2180,6 +2951,23 @@ fn build_node(
     let on_tap = el.attr("@tap").map(|h| bind_locals(h, locals)).or_else(|| {
         to.as_ref().map(|p| format!("navigate({})", Value::Text(p.clone()).to_rhai_literal()))
     });
+    // The pointer handlers, in the order the vocabulary lists them rather than
+    // the order they happen to be written, so two elements with the same set
+    // dispatch in the same order.
+    let gestures: Vec<(rux_layout::Gesture, String)> = [
+        ("press", rux_layout::Gesture::Press),
+        ("release", rux_layout::Gesture::Release),
+        ("longpress", rux_layout::Gesture::LongPress),
+        ("swipe", rux_layout::Gesture::Swipe),
+        ("drag", rux_layout::Gesture::Drag),
+    ]
+    .into_iter()
+    .filter_map(|(name, kind)| {
+        // An `r-for` local is baked in the same way a `@tap`'s is: the body runs
+        // long after the build that could still see the row.
+        el.attr(&format!("@{name}")).map(|h| (kind, bind_locals(h, locals)))
+    })
+    .collect();
     // r-show="false" keeps the layout slot but paints nothing. It only flips
     // `hidden`, never the shape, so it's patchable: record it and a change rewrites
     // the bool in place.
@@ -2199,10 +2987,9 @@ fn build_node(
         .get("color")
         .and_then(|v| parse_color(v))
         .unwrap_or(inherited.color);
-    let font_size = props
-        .get("font-size")
-        .and_then(|v| parse_px(first(v)))
-        .unwrap_or(inherited.font_size);
+    // Already resolved above, against the inherited size, so that the `em` pass
+    // had something to resolve against.
+    let font_size = own_font_size;
     // `font-family` is stored as the raw CSS list; parley parses it and does the
     // fallback. An empty/`inherit` value falls back to the inherited family.
     let font_family = props
@@ -2324,6 +3111,7 @@ fn build_node(
             },
         );
         node.on_tap = on_tap;
+        node.gestures = gestures;
         node.hidden = hidden;
         node.id = el.attr("id").map(str::to_string);
         node.label_for = el.attr("for").map(str::to_string);
@@ -2333,6 +3121,49 @@ fn build_node(
         node.access = Access {
             role: explicit_access_role(el).unwrap_or(AccessRole::Image),
             label: authored_label(el),
+            ..Access::default()
+        };
+        return node;
+    }
+
+    // <path d=…>: vector geometry, drawn with the `fill` and `stroke` the
+    // cascade resolved. The geometry is an attribute and the paint is CSS, and
+    // the split is not arbitrary: paint belongs in the cascade because that is
+    // where every other appearance in Rux is written, and geometry belongs in
+    // an attribute because a data-driven path is computed per row and the
+    // cascade is the wrong place for a value that changes with the data.
+    if el.tag == "path" {
+        let d = el
+            .attr(":d")
+            .map(|e| {
+                let (v, deps) = engine.eval_display_tracked(e, locals);
+                // A rebuild rather than a patch. Changing `d` can change the
+                // element's size, since a path given no CSS box takes the size
+                // of its own geometry, so there is no in-place edit that is
+                // always correct. It is also what lets a shape animate at all:
+                // the animator compares a node against what it was on the
+                // previous build, and a patched attribute never reaches it.
+                reg.structural.extend(deps);
+                v
+            })
+            .or_else(|| el.attr("d").map(str::to_string))
+            .unwrap_or_default();
+        let mut node = LayoutNode::path(style, PathContent::parse(&d));
+        node.on_tap = on_tap;
+        node.gestures = gestures;
+        node.hidden = hidden;
+        node.id = el.attr("id").map(str::to_string);
+        node.instance = instance.map(|i| i.to_string());
+        // A drawing is an image as far as assistive technology is concerned:
+        // something to be described, not read. Without a description it is
+        // decoration and is better left out of the tree than announced as an
+        // unnamed graphic.
+        node.access = Access {
+            role: el
+                .attr("alt")
+                .map(|_| AccessRole::Image)
+                .unwrap_or(AccessRole::None),
+            label: el.attr("alt").map(str::to_string),
             ..Access::default()
         };
         return node;
@@ -2504,6 +3335,7 @@ fn build_node(
         node.multiline = multiline;
         node.options = options;
         node.on_tap = on_tap;
+        node.gestures = gestures;
         node.hidden = hidden;
         node.id = el.attr("id").map(str::to_string);
         node.label_for = el.attr("for").map(str::to_string);
@@ -2548,10 +3380,14 @@ fn build_node(
         reg,
         state,
         instances,
+        swaps,
         instance,
         // A `<slot>` deeper inside a component still fills from the same call
-        // site, so the slot travels down with everything else.
+        // site, so the slot travels down with everything else. So does the
+        // outlet: a `<router-view />` may sit any number of boxes deep in the
+        // view that places it.
         slot,
+        outlet,
         row,
     );
     ancestors.pop();
@@ -2569,9 +3405,11 @@ fn build_node(
         style,
         text: None,
         image: None,
+        path: None,
         tick: None,
         children,
         on_tap,
+        gestures,
         model: None,
         multiline: false,
         options: None,
@@ -2619,6 +3457,14 @@ fn expand_component(
     el: &Element,
     component: &Component,
     comps: &Components,
+    // The chain above the component tag.
+    //
+    // Handed in rather than started empty, because a document's rules style the
+    // components it uses and half a cascade is worse than none: `.page` reached
+    // a component's root and `.stage.slow .page` silently did not, so a rule
+    // that looked like it applied simply never fired. Found by turning on the
+    // router example's slow motion and watching a navigation run at full speed.
+    caller_ancestors: &[AncNode],
     inherited: &Inherited,
     engine: &mut Engine,
     parent_locals: &Locals,
@@ -2629,6 +3475,7 @@ fn expand_component(
     // The caller's stylesheet, for whatever it wrote between the tags.
     caller_rules: &[Rule],
     instances: &mut Instances,
+    swaps: &mut Swaps,
     // The instance the *caller* is in, which is where a listener body belongs.
     caller: Option<&str>,
     row: Option<&str>,
@@ -2638,6 +3485,24 @@ fn expand_component(
     // The path this was expanded under, when a `<router>` chose it. Recorded so
     // leaving the route can drop the instance's state.
     route: Option<&str>,
+    // The rest of the matched route chain, when this *is* a route's view. An
+    // ordinary component tag gets `None` and its `<router-view />`, if it wrote
+    // one, says so.
+    outlet: Option<Outlet>,
+    // What the component is *called*, which is not always `el.tag`.
+    //
+    // For a route's view the element standing in for the component tag is the
+    // `<route>` itself, so recording `el.tag` filed every route view under the
+    // tag `route`. Everything an instance looks up afterwards is keyed by this:
+    // its `mounted` / `unmounted` bodies, its `computed`s and its `effect`s. So
+    // a route view silently had none of them, which is the kind of failure this
+    // project keeps closing off.
+    comp_tag: &str,
+    // Which side of a swap this expansion is on. For an ordinary component tag
+    // it is whatever the *caller's* element carries; for a route's view there is
+    // no caller element and the view itself is the thing swapping, so the
+    // pseudo-classes land on the component's own root either way.
+    swap: Option<SwapSide>,
 ) -> LayoutNode {
     let mut props: Locals = Vec::new();
     let mut prop_deps: HashSet<String> = HashSet::new();
@@ -2685,11 +3550,27 @@ fn expand_component(
     // rebuilds: the tree is thrown away constantly, and a component's state
     // must not be.
     let key = instance_key(tpl_path, row);
+    // Asked before the entry, because `or_insert_with` will not say afterwards
+    // whether it ran, and "did this instance exist a moment ago" is exactly what
+    // a mount is.
+    let fresh = !instances.contains_key(&key);
     let entry = instances.entry(key.clone()).or_insert_with(|| Instance {
+        tag: comp_tag.to_string(),
         state: engine.init_scope(&component.script),
         ..Instance::default()
     });
     entry.touched = true;
+    if fresh {
+        MOUNTS.with(|m| {
+            m.borrow_mut().push(Lifecycle {
+                key: key.clone(),
+                tag: comp_tag.to_string(),
+                // Still in the map, so the runtime reads its scope from there
+                // and sees whatever the rest of this build did to it.
+                locals: Vec::new(),
+            })
+        });
+    }
     entry.props = props.clone();
     // Listeners and the calling instance are the caller's, so like props they
     // are re-derived on every build rather than kept.
@@ -2702,8 +3583,10 @@ fn expand_component(
     locals.extend(props);
 
     // The component expands in place at this element's path, so its root node
-    // takes the same path; its bindings are recorded relative to it.
-    let mut ancestors: Vec<AncNode> = Vec::new();
+    // takes the same path; its bindings are recorded relative to it, and it
+    // inherits the caller's ancestor chain so a descendant selector written
+    // outside can reach it.
+    let mut ancestors: Vec<AncNode> = caller_ancestors.to_vec();
     build_node(
         &component.template,
         &component.rules,
@@ -2718,10 +3601,15 @@ fn expand_component(
         reg,
         state,
         instances,
+        swaps,
         Some(key.as_str()),
         Some(slot),
+        // Only a route's own view is handed the rest of the chain; an ordinary
+        // component tag is given `None` by its caller.
+        outlet,
         // A component expanded inside a row is still inside that row.
         row,
+        swap,
     )
 }
 
@@ -2762,6 +3650,204 @@ fn match_route(pattern: &str, path: &str) -> Option<Locals> {
     Some(params)
 }
 
+/// One link of a matched route chain: which `<route>` it is, where it sits
+/// among its siblings, and what its own pattern captured.
+struct Link<'a> {
+    index: usize,
+    route: &'a Element,
+    params: Locals,
+}
+
+/// The `<route>` children of a `<route>` or a `<router>`, in written order.
+fn child_routes(el: &Element) -> Vec<&Element> {
+    element_children(el).into_iter().filter(|r| r.tag == "route").collect()
+}
+
+/// Match one level of routes against `rest`, and every level below it.
+///
+/// The chain returned consumes `rest` **entirely**: a route with no children has
+/// to account for every segment itself, exactly as before, and a route with
+/// children may take a prefix and hand what is left to them. A branch whose
+/// children cannot finish the job fails, and the next sibling is tried, which is
+/// what makes `/crew/x/y` fall through to a fallback rather than half-matching
+/// `/crew/:id`.
+///
+/// A child pattern is **relative** unless it begins with `/`, which is
+/// vue-router's rule and the reason a section can be moved by editing one line.
+/// An absolute child is matched against `whole` instead.
+///
+/// Order decides, not specificity. Routes are written in one template here
+/// rather than assembled from several files, so what is read top to bottom is
+/// what happens; ranking would be a second system to hold in your head.
+fn match_level<'a>(
+    routes: &[&'a Element],
+    rest: &[&str],
+    whole: &[&str],
+) -> Option<Vec<Link<'a>>> {
+    for (index, route) in routes.iter().enumerate() {
+        // A fallback carries no pattern; it is tried only after everything else.
+        let Some(pattern) = route.attr("path") else { continue };
+        let absolute = pattern.starts_with('/');
+        let against: &[&str] = if absolute { whole } else { rest };
+        let Some((params, taken)) = take_prefix(pattern, against) else { continue };
+        let remainder = &against[taken..];
+
+        let children = child_routes(route);
+        let link = Link { index, route: *route, params };
+        if children.is_empty() {
+            // A leaf must land exactly, which is the rule as it has always been.
+            if remainder.is_empty() {
+                return Some(vec![link]);
+            }
+            continue;
+        }
+        if let Some(mut deeper) = match_level(&children, remainder, whole) {
+            let mut chain = vec![link];
+            chain.append(&mut deeper);
+            return Some(chain);
+        }
+        // Nothing below took the rest. With nothing left to take, the parent
+        // alone is the match: `/crew` renders the list with an empty outlet,
+        // and an index child (`path=""`) is what fills it when there is one.
+        if remainder.is_empty() {
+            return Some(vec![link]);
+        }
+    }
+    // Only now: a fallback at this level, which is what a path that matched a
+    // parent but nothing under it lands on.
+    routes.iter().enumerate().find(|(_, r)| r.attr("fallback").is_some()).map(|(index, r)| {
+        vec![Link { index, route: *r, params: Locals::new() }]
+    })
+}
+
+/// Match `pattern` against the front of `segments`, returning what it captured
+/// and how many segments it used. An empty pattern is the index route and takes
+/// nothing.
+fn take_prefix(pattern: &str, segments: &[&str]) -> Option<(Locals, usize)> {
+    let pat: Vec<&str> = pattern.split('/').filter(|p| !p.is_empty()).collect();
+    if pat.len() > segments.len() {
+        return None;
+    }
+    let mut params: Locals = Vec::new();
+    for (p, c) in pat.iter().zip(segments.iter()) {
+        match p.strip_prefix(':') {
+            // A parameter takes whatever sits in that position, decoded: a value
+            // that had to be escaped to go into the URL has to come back out as
+            // what it was, or a view is handed `a%2Fb`.
+            Some(name) => {
+                params.push((name.to_string(), Value::Text(rux_script::percent_decode(c))))
+            }
+            None if p == c => {}
+            None => return None,
+        }
+    }
+    Some((params, pat.len()))
+}
+
+/// Split a path into its segments, dropping the empties a leading or trailing
+/// slash leaves behind.
+fn path_segments(s: &str) -> Vec<&str> {
+    s.split('/').filter(|p| !p.is_empty()).collect()
+}
+
+/// The chain of `<route>` elements the router renders for `path`, if any.
+fn match_router<'a>(router: &'a Element, path: &str) -> Option<Vec<Link<'a>>> {
+    let segments = path_segments(path);
+    let routes = child_routes(router);
+    match_level(&routes, &segments, &segments)
+}
+
+/// Every parameter the whole matched chain captured, merged outermost first.
+///
+/// Merged rather than per-level, because a child view routinely needs the `:id`
+/// its parent captured, and having to thread it down by hand is what makes
+/// nested routes annoying everywhere else.
+fn chain_params(chain: &[Link]) -> Locals {
+    let mut merged: Locals = Vec::new();
+    for link in chain {
+        for (name, value) in &link.params {
+            // Deeper wins on a collision: it is the more specific of the two,
+            // and a name repeated down a chain is almost always a mistake worth
+            // resolving in favour of the thing nearest the leaf.
+            merged.retain(|(n, _)| n != name);
+            merged.push((name.clone(), value.clone()));
+        }
+    }
+    merged
+}
+
+/// Expand the first link of `chain`, handing the rest to whatever
+/// `<router-view />` its view places.
+///
+/// Shared by the `<router>` branch and by `<router-view />` itself, because from
+/// the second link down they are the same operation: render this view, and pass
+/// on what is left.
+#[allow(clippy::too_many_arguments)]
+fn expand_chain(
+    chain: &[Link],
+    params: &Locals,
+    current: &str,
+    comps: &Components,
+    // The chain above the `<router>`, so a rule written outside it can reach a
+    // page. See `expand_component`.
+    caller_ancestors: &[AncNode],
+    inherited: &Inherited,
+    engine: &mut Engine,
+    locals: &Locals,
+    path: &[usize],
+    router_tpl: &[usize],
+    reg: &mut BindingRegistry,
+    state: &InteractionState,
+    rules: &[Rule],
+    instances: &mut Instances,
+    swaps: &mut Swaps,
+    instance: Option<&str>,
+    row: Option<&str>,
+    swap: Option<SwapSide>,
+) -> Option<LayoutNode> {
+    let link = chain.first()?;
+    let Some(view) = link.route.attr("view") else {
+        warn(format!(
+            "<route path=\"{current}\"> has no `view`, so there is nothing to render for it"
+        ));
+        return None;
+    };
+    let Some(component) = comps.get(view) else {
+        warn(format!(
+            "<route> names the view `{view}`, which is not imported; add \
+             `use components::{view};` to the script"
+        ));
+        return None;
+    };
+    // Identity is where the route sits in the template, one step per level, so
+    // two views at different depths never collide and a view keeps its instance
+    // while a sibling below it changes.
+    let mut tpl = router_tpl.to_vec();
+    tpl.push(link.index);
+
+    let rest = &chain[1..];
+    let used = std::cell::Cell::new(false);
+    let outlet = Outlet { rest, params, current, router_tpl: &tpl, used: &used };
+
+    // The `<route>` element stands in for the component tag, so any `:prop`
+    // written on it is passed through as well, and the captured parameters of
+    // the *whole* chain join them.
+    let node = expand_component(
+        link.route, component, comps, caller_ancestors, inherited, engine, locals, path, &tpl, reg, state, rules,
+        instances, swaps, instance, row, params, Some(current), Some(outlet), view, swap,
+    );
+
+    // A route with children whose view never places an outlet would drop that
+    // child in silence, which is the failure this project keeps closing off.
+    if !rest.is_empty() && !used.get() {
+        warn(format!(
+            "`{view}` has a nested <route> but no <router-view /> to put it in, so nothing under \
+             it can render"
+        ));
+    }
+    Some(node)
+}
+
 /// What the routes in `template` capture from `path`, without building anything.
 ///
 /// The matched view already receives its parameters as props, and that is
@@ -2778,13 +3864,39 @@ fn match_route(pattern: &str, path: &str) -> Option<Locals> {
 /// the document.
 pub fn route_params(template: &Element, path: &str) -> Vec<(String, Value)> {
     let Some(router) = find_router(template) else { return Vec::new() };
-    element_children(router)
-        .into_iter()
-        .filter(|r| r.tag == "route")
-        // A fallback route captures nothing, which is why this looks only at
-        // patterns: there is nothing in `/nowhere` to name.
-        .find_map(|r| match_route(r.attr("path")?, path))
-        .unwrap_or_default()
+    // The whole chain's parameters, not just the level that matched first: a
+    // breadcrumb outside the router needs the `:id` a child captured as much as
+    // the view does.
+    match_router(router, path).map(|chain| chain_params(&chain)).unwrap_or_default()
+}
+
+/// The guards standing between the document and `path`, outermost first, each
+/// with the parameters its own level captured.
+///
+/// The `<router>`'s own guard runs on every navigation; a `<route>`'s runs when
+/// that route is part of what matched, so a guard on a section covers every page
+/// inside it without being written on each one. Outermost first, because a
+/// section's guard is the coarser question ("may you be in this section at all")
+/// and answering it second would mean running the finer one for a place you were
+/// never going to reach.
+///
+/// A path that matches nothing has no route guards, only the router's. There is
+/// nothing to protect, and the fallback view is the answer.
+pub fn route_guards(template: &Element, path: &str) -> Vec<(String, Vec<(String, Value)>)> {
+    let Some(router) = find_router(template) else { return Vec::new() };
+    let mut out = Vec::new();
+    if let Some(g) = router.attr("guard") {
+        out.push((g.to_string(), Vec::new()));
+    }
+    let Some(chain) = match_router(router, path) else { return out };
+    for depth in 0..chain.len() {
+        let Some(g) = chain[depth].route.attr("guard") else { continue };
+        // What this level and everything above it captured, so a guard on
+        // `/crew/:id` can read `id` and decide about that member rather than
+        // about the section.
+        out.push((g.to_string(), chain_params(&chain[..=depth])));
+    }
+    out
 }
 
 /// The document's `<router>`, wherever in the template it was written.
@@ -2803,11 +3915,35 @@ fn find_router(el: &Element) -> Option<&Element> {
 /// scheme.
 pub fn named_routes(template: &Element) -> Vec<(String, String)> {
     let Some(router) = find_router(template) else { return Vec::new() };
-    element_children(router)
-        .into_iter()
-        .filter(|r| r.tag == "route")
-        .filter_map(|r| Some((r.attr("name")?.to_string(), r.attr("path")?.to_string())))
-        .collect()
+    let mut out = Vec::new();
+    collect_named(&child_routes(router), "", &mut out);
+    out
+}
+
+/// Walk a level of routes, building each one's **full** pattern from its
+/// ancestors' as it goes.
+///
+/// Without this a name on a child route is unusable: `path_for` would look up
+/// `:id` and build `/grace`, which is not where anything lives. Naming the leaf
+/// and letting the resolver walk up is how the name survives the section being
+/// moved, which is the whole reason a route has a name rather than a path
+/// written out in every link that leads to it.
+fn collect_named(routes: &[&Element], prefix: &str, out: &mut Vec<(String, String)>) {
+    for route in routes {
+        let Some(pattern) = route.attr("path") else { continue };
+        let full = if pattern.starts_with('/') {
+            pattern.to_string()
+        } else if pattern.is_empty() {
+            // The index child stands for its parent's own path.
+            prefix.to_string()
+        } else {
+            format!("{}/{}", prefix.trim_end_matches('/'), pattern.trim_start_matches('/'))
+        };
+        if let Some(name) = route.attr("name") {
+            out.push((name.to_string(), full.clone()));
+        }
+        collect_named(&child_routes(route), &full, out);
+    }
 }
 
 /// Whether the router remembers where each page was scrolled to.
@@ -2829,6 +3965,143 @@ fn parse_for(expr: &str) -> Option<(&str, &str)> {
 }
 
 /// Build a sequence of element children, applying the structural directives
+/// How an element declares that its appearance and disappearance are animated.
+///
+/// The declaration says where progress comes from and nothing else. What the
+/// two sides *look* like is CSS, on `:enter-from` and `:leave-to`, because that
+/// is where the rest of an element's appearance is written and a transform is
+/// not a different kind of thing.
+#[derive(Clone, Copy)]
+enum SwapDecl<'a> {
+    /// `r-transition`: the swap runs on the clock, for as long as the element's
+    /// own `transition` declarations say. Nothing else to write.
+    Clock,
+    /// `:r-transition="expr"`: the author owns progress, `expr` yielding 0..=1
+    /// and re-read every build. Reaching 1 commits and reaching 0 abandons, so
+    /// a swap bound to a finger can change its mind, which is the whole reason
+    /// the pair is live rather than a snapshot.
+    Bound(&'a str),
+}
+
+fn swap_decl(el: &Element) -> Option<SwapDecl<'_>> {
+    if let Some(expr) = el.attr(":r-transition") {
+        return Some(SwapDecl::Bound(expr));
+    }
+    el.attr("r-transition").map(|_| SwapDecl::Clock)
+}
+
+/// How long the longest declared transition on this element runs, delay
+/// included. This is what a clock-driven swap lasts, so that an author who
+/// writes `transition: transform 300ms` gets a 300ms swap without saying so
+/// twice and without the two ever disagreeing.
+fn swap_duration(style: &Style) -> f32 {
+    style.transitions.iter().map(|t| t.delay + t.duration).fold(0.0, f32::max)
+}
+
+/// Fill in a freshly opened swap's driver, and refresh a bound one's progress.
+///
+/// Split out of [`Swaps::resolve`] because it needs the *built* node: a clock
+/// swap's duration is read from the computed style, which does not exist until
+/// the element has been through the cascade.
+fn arm_swap(
+    swaps: &mut Swaps,
+    key: &SwapKey,
+    node: &mut LayoutNode,
+    decl: Option<SwapDecl<'_>>,
+    engine: &mut Engine,
+    locals: &Locals,
+    deps: &mut HashSet<String>,
+) {
+    let Some(decl) = decl else { return };
+    // Give the element a stable identity for the animator.
+    //
+    // The animator names an unkeyed node by its position among its siblings, so
+    // anything appearing or disappearing *above* a swapping element renames it,
+    // and a rename is a first sight: the track is dropped, the element settles
+    // wherever the build put it, and a drag in progress jumps. Reported from the
+    // window as the drag working with the panel open and reverting to the old
+    // behaviour with it closed, which is exactly a sibling coming and going.
+    //
+    // The swap key is already stable across all of that, being a template path,
+    // so it is the identity to lend. Only when the element has none of its own:
+    // an `r-for` row's `r-key` is a better answer and is set by the caller.
+    if node.key.is_none() {
+        let (path, row) = key;
+        let mut id = String::from("swap:");
+        for seg in path {
+            id.push_str(&seg.to_string());
+            id.push('.');
+        }
+        if let Some(row) = row {
+            id.push_str(row);
+        }
+        node.key = Some(id);
+    }
+    match decl {
+        SwapDecl::Bound(expr) => {
+            // Read outside the borrow of `swaps`: evaluating can run author code.
+            let (value, read) = engine.eval_value_tracked(expr, locals);
+            deps.extend(read);
+            let Some(progress) = value.and_then(|v| v.as_number()) else {
+                // Not a number: the author is handing the swap back to the
+                // clock, which is how a released finger settles. It runs out
+                // its declared duration from wherever the drag left it, rather
+                // than snapping to an end the finger never reached.
+                let duration = swap_duration(&node.style);
+                if let Some(swap) = swaps.pending.get_mut(key) {
+                    match &mut swap.driver {
+                        // Already running on the clock: leave the deadline
+                        // alone, or every build would push the end further
+                        // away and it would never arrive.
+                        Driver::Clock { end_ms: Some(_), .. } => {}
+                        // A swap that opened while the expression was already
+                        // holding `null` is a clock swap nobody has told the
+                        // duration to: a swap opens at zero and the caller
+                        // fills it in, and this is that caller. Without this it
+                        // runs for 0ms and the change simply appears. That is
+                        // the shape an author writes when one binding serves
+                        // both drivers, `:r-transition="progress"` with
+                        // `progress` null until a finger touches it, which is
+                        // how a page swap animates on a tap and follows a hand
+                        // on a drag without declaring the swap twice.
+                        Driver::Clock { duration: d, .. } => *d = duration,
+                        Driver::Bound(_) => {
+                            swap.driver = Driver::Clock { duration, end_ms: None };
+                        }
+                    }
+                }
+                node.style.swap_progress = None;
+                return;
+            };
+            let progress = progress as f32;
+            if let Some(swap) = swaps.pending.get_mut(key) {
+                swap.progress = progress.clamp(0.0, 1.0);
+                swap.moved |= swap.progress > 0.0;
+                swap.driver = Driver::Bound(expr.to_string());
+                // Onto the node here rather than through the next build: the
+                // value was read this build, and a frame of lag in something a
+                // finger is dragging is a frame of lag you can see.
+                node.style.swap_progress = Some(swap.progress);
+            }
+        }
+        SwapDecl::Clock => {
+            let duration = swap_duration(&node.style);
+            if let Some(swap) = swaps.pending.get_mut(key) {
+                match &mut swap.driver {
+                    // Already running: leave the deadline alone, or every build
+                    // during the swap would push the end further away and it
+                    // would never arrive.
+                    Driver::Clock { end_ms: Some(_), .. } => {}
+                    Driver::Clock { duration: d, .. } => *d = duration,
+                    Driver::Bound(_) => {
+                        swap.driver = Driver::Clock { duration, end_ms: None };
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// `r-for` (repeat) and `r-if`/`r-elif`/`r-else` (conditional chains).
 #[allow(clippy::too_many_arguments)]
 fn build_children(
@@ -2844,8 +4117,10 @@ fn build_children(
     reg: &mut BindingRegistry,
     state: &InteractionState,
     instances: &mut Instances,
+    swaps: &mut Swaps,
     instance: Option<&str>,
     slot: Option<Slot>,
+    outlet: Option<Outlet>,
     row: Option<&str>,
 ) -> (Vec<LayoutNode>, HashSet<String>) {
     let mut out = Vec::new();
@@ -2899,7 +4174,7 @@ fn build_children(
                         // `<slot>` is not a place to put the outer one's content.
                         out.push(build_node(
                             child, s.rules, comps, ancestors, &prev, inherited, engine, s.locals,
-                            &cp, &ctp, reg, state, instances, instance, None, row,
+                            &cp, &ctp, reg, state, instances, swaps, instance, None, None, row, None,
                         ));
                         prev.push(ElemDesc::of(child));
                     }
@@ -2921,11 +4196,47 @@ fn build_children(
                         ctp.push(si);
                         out.push(build_node(
                             child, rules, comps, ancestors, &prev, inherited, engine, locals, &cp,
-                            &ctp, reg, state, instances, instance, slot, row,
+                            &ctp, reg, state, instances, swaps, instance, slot, outlet, row, None,
                         ));
                         prev.push(ElemDesc::of(child));
                     }
                 }
+            }
+            continue;
+        }
+
+        // `<router-view />` is where a nested route's view lands. Like `<slot>`
+        // it leaves no box of its own, and like `<slot>` the content comes from
+        // somewhere else: from the route matched *under* the one whose view this
+        // is, rather than from the caller's markup.
+        if el.tag == "router-view" {
+            in_chain = false;
+            match outlet {
+                Some(o) => {
+                    if let Some(link) = o.rest.first() {
+                        o.used.set(true);
+                        let cp = child_path(&out);
+                        if let Some(node) = expand_chain(
+                            o.rest, o.params, o.current, comps, ancestors, inherited, engine, locals, &cp,
+                            o.router_tpl, reg, state, rules, instances, swaps, instance, row,
+                            // A nested outlet is not itself a swap; the swap, if
+                            // any, belongs to the `<router>` that chose the chain.
+                            None,
+                        ) {
+                            prev.push(ElemDesc::of(link.route));
+                            out.push(node);
+                        }
+                    }
+                    // Nothing left in the chain is ordinary, not a mistake: it
+                    // is what `/crew` means when the list has children but the
+                    // path names none of them. An index route (`path=""`) is how
+                    // an author fills that.
+                }
+                None => warn(
+                    "`<router-view />` renders the route matched below this one, and this is not \
+                     a route's view, so there is nothing for it to show"
+                        .to_string(),
+                ),
             }
             continue;
         }
@@ -2952,50 +4263,88 @@ fn build_children(
                     ));
                 }
             }
-            // First match wins, so routes are tried in the order they are
-            // written and a fallback can sit anywhere among them.
-            let matched = routes.iter().enumerate().find_map(|(ri, r)| {
-                if r.tag != "route" {
-                    return None;
-                }
-                let params = match_route(r.attr("path")?, &current)?;
-                Some((ri, *r, params))
-            });
-            let chosen = matched.or_else(|| {
-                routes
-                    .iter()
-                    .enumerate()
-                    .find(|(_, r)| r.tag == "route" && r.attr("fallback").is_some())
-                    .map(|(ri, r)| (ri, *r, Locals::new()))
-            });
-
-            match chosen {
-                Some((ri, route_el, params)) => {
-                    let Some(view) = route_el.attr("view") else {
-                        warn(format!(
-                            "<route path=\"{current}\"> has no `view`, so there is nothing to \
-                             render for it"
-                        ));
+            // The whole chain at once: the outermost view is rendered here and
+            // each one below it is rendered by the `<router-view />` in the view
+            // above. First match wins at every level, so routes are tried in the
+            // order they are written and a fallback can sit anywhere among them.
+            // A route transition is the enter/leave problem with the matched
+            // path as the identity, so it is the same machinery rather than a
+            // second one: the page being left is held on screen by a swap while
+            // the page being entered builds beside it.
+            let anim = swap_decl(el);
+            let matched = match_router(el, &current);
+            // **Which route matched, not which path.** Two paths that match the
+            // same route (`/user/7` and `/user/12`) are one page showing
+            // different data, so they update in place rather than swapping,
+            // which is what every router does with a reused component. It also
+            // avoids a collision that would otherwise be silent: instance
+            // identity is the route's position in the template, so two
+            // simultaneous expansions of the *same* route would share one
+            // instance and one set of state.
+            let here = matched.as_ref().map(|c| c[0].index.to_string());
+            if anim.is_some() {
+                // The outgoing pages first, so the incoming one paints over
+                // them. A page is rebuilt from the path it was on, which is the
+                // one thing remembered about it while it was current.
+                let present: Vec<String> = here.iter().cloned().collect();
+                for (_, old_key, old_locals) in swaps.departed_rows(&ctp, &present) {
+                    let key: SwapKey = (ctp.clone(), Some(old_key));
+                    let old_path = old_locals
+                        .iter()
+                        .find(|(n, _)| n == "path")
+                        .map(|(_, v)| v.to_display())
+                        .unwrap_or_default();
+                    let Some(chain) = match_router(el, &old_path) else {
+                        // The route it was on no longer matches, which a hot
+                        // reload can do mid-swap. Let it go rather than hold a
+                        // page nothing can build.
+                        swaps.finish(&key);
                         continue;
                     };
-                    let Some(component) = comps.get(view) else {
-                        warn(format!(
-                            "<route> names the view `{view}`, which is not imported; add \
-                             `use components::{view};` to the script"
-                        ));
-                        continue;
-                    };
+                    let Some(side) = swaps.resolve(&key, false, true) else { continue };
+                    let params = chain_params(&chain);
                     let cp = child_path(&out);
-                    let mut rtp = ctp.clone();
-                    rtp.push(ri);
-                    // The `<route>` element stands in for the component tag, so
-                    // any `:prop` written on it is passed through as well, and
-                    // the captured parameters join them.
-                    out.push(expand_component(
-                        route_el, component, comps, inherited, engine, locals, &cp, &rtp, reg,
-                        state, rules, instances, instance, row, &params, Some(&current),
-                    ));
-                    prev.push(ElemDesc::of(route_el));
+                    if let Some(mut node) = expand_chain(
+                        &chain, &params, &old_path, comps, ancestors, inherited, engine, locals, &cp, &ctp,
+                        reg, state, rules, instances, swaps, instance, row, side,
+                    ) {
+                        arm_swap(swaps, &key, &mut node, anim, engine, locals, &mut structural_deps);
+                        prev.push(ElemDesc::of(chain[0].route));
+                        out.push(node);
+                    }
+                }
+            }
+            match matched {
+                Some(chain) => {
+                    let params = chain_params(&chain);
+                    let cp = child_path(&out);
+                    let key: SwapKey = (ctp.clone(), here);
+                    let side = if anim.is_some() {
+                        // Remember the path this page is on, so that when it
+                        // stops being current there is still something to
+                        // rebuild it from.
+                        swaps.remember_row(
+                            &key,
+                            0,
+                            vec![("path".to_string(), Value::Text(current.clone()))],
+                        );
+                        swaps.resolve(&key, true, true).flatten()
+                    } else {
+                        None
+                    };
+                    if let Some(mut node) = expand_chain(
+                        &chain, &params, &current, comps, ancestors, inherited, engine, locals, &cp, &ctp,
+                        reg, state, rules, instances, swaps, instance, row, side,
+                    ) {
+                        if anim.is_some() {
+                            arm_swap(
+                                swaps, &key, &mut node, anim, engine, locals,
+                                &mut structural_deps,
+                            );
+                        }
+                        prev.push(ElemDesc::of(chain[0].route));
+                        out.push(node);
+                    }
                 }
                 None => {
                     // Every path should render something. A router with nothing
@@ -3025,16 +4374,30 @@ fn build_children(
                     // `r-key` names what a row *is*, so the runtime can follow it
                     // when the list reorders instead of tracking slots.
                     let key_expr = el.attr("r-key");
+                    let anim = swap_decl(el);
+                    if anim.is_some() && key_expr.is_none() {
+                        // Without a key there is no identity to hold a departing
+                        // row by, and no way to tell a removal from a reorder.
+                        // Animating anyway would animate whichever row happened
+                        // to land in the vacated slot.
+                        warn(format!(
+                            "`r-transition` on <{}> needs `r-key` on the same element: a row \
+                             that has left the collection can only be held on screen if there \
+                             is something to identify it by",
+                            el.tag
+                        ));
+                    }
+                    let animated = anim.is_some() && key_expr.is_some();
                     let mut seen_keys: Vec<String> = Vec::new();
+                    // The key is evaluated *before* the row is built, because
+                    // everything inside the row is identified by it: an input's
+                    // focus, its `:focus` styling and the binding that reads its
+                    // value all need to know which row they are in while they
+                    // are being recorded.
+                    let mut plan: Vec<(Option<String>, Locals)> = Vec::new();
                     for item in items {
                         let mut child_locals = locals.clone();
                         child_locals.push((var.to_string(), item));
-                        let cp = child_path(&out);
-                        // The key is evaluated *before* the row is built, because
-                        // everything inside the row is identified by it: an
-                        // input's focus, its `:focus` styling and the binding
-                        // that reads its value all need to know which row they
-                        // are in while they are being recorded.
                         let key = key_expr.map(|expr| {
                             let key = engine.eval_display(expr, &child_locals);
                             if key.is_empty() {
@@ -3055,13 +4418,50 @@ fn build_children(
                             }
                             key
                         });
+                        plan.push((key, child_locals));
+                    }
+                    // Rows the collection has dropped are spliced back in at the
+                    // position they held, not appended: a row leaving from the
+                    // middle of a list has to animate out where it was.
+                    if animated {
+                        for (index, key, row_locals) in swaps.departed_rows(&ctp, &seen_keys) {
+                            let at = index.min(plan.len());
+                            plan.insert(at, (Some(key), row_locals));
+                        }
+                    }
+                    for (index, (key, child_locals)) in plan.into_iter().enumerate() {
+                        let skey: SwapKey = (ctp.clone(), key.clone());
+                        // In the collection iff its key survived the diff; a row
+                        // that is only in the plan because it was spliced back in
+                        // is the one that is leaving.
+                        let wanted = key.as_ref().is_some_and(|k| seen_keys.contains(k));
+                        let side = if animated {
+                            match swaps.resolve(&skey, wanted, true) {
+                                Some(side) => side,
+                                // Its leaving swap has committed; the row goes.
+                                None => continue,
+                            }
+                        } else {
+                            None
+                        };
+                        if animated && wanted {
+                            swaps.remember_row(&skey, index, child_locals.clone());
+                        }
+                        let cp = child_path(&out);
                         let mut node = build_node(
                             el, rules, comps, ancestors, &prev, inherited, engine, &child_locals,
-                            &cp, &ctp, reg, state, instances, instance, slot,
+                            &cp, &ctp, reg, state, instances, swaps, instance, slot, outlet,
                             // An unkeyed row inherits whatever row it is nested
                             // in, which is normally nothing.
                             key.as_deref().or(row),
+                            side,
                         );
+                        if animated {
+                            arm_swap(
+                                swaps, &skey, &mut node, anim, engine, &child_locals,
+                                &mut structural_deps,
+                            );
+                        }
                         node.key = key;
                         out.push(node);
                         prev.push(ElemDesc::of(el));
@@ -3072,14 +4472,23 @@ fn build_children(
         }
 
         // r-if / r-elif conditions are structural reads too.
+        //
+        // Each branch of a chain asks `Swaps` what to do rather than acting on
+        // its condition directly, because a branch that has just become false
+        // still has to be built while it animates out. Without `r-transition`
+        // the answer is always the condition itself.
         if let Some(cond) = el.attr("r-if") {
             in_chain = true;
             let (v, deps) = engine.eval_bool_tracked(cond, locals);
             structural_deps.extend(deps);
             chain_satisfied = v;
-            if chain_satisfied {
+            let key: SwapKey = (ctp.clone(), row.map(str::to_string));
+            let anim = swap_decl(el);
+            if let Some(side) = swaps.resolve(&key, chain_satisfied, anim.is_some()) {
                 let cp = child_path(&out);
-                out.push(build_node(el, rules, comps, ancestors, &prev, inherited, engine, locals, &cp, &ctp, reg, state, instances, instance, slot, row));
+                let mut node = build_node(el, rules, comps, ancestors, &prev, inherited, engine, locals, &cp, &ctp, reg, state, instances, swaps, instance, slot, outlet, row, side);
+                arm_swap(swaps, &key, &mut node, anim, engine, locals, &mut structural_deps);
+                out.push(node);
                 prev.push(ElemDesc::of(el));
             }
             continue;
@@ -3092,18 +4501,27 @@ fn build_children(
             } else {
                 false
             };
-            if taken {
-                chain_satisfied = true;
+            chain_satisfied |= taken;
+            let key: SwapKey = (ctp.clone(), row.map(str::to_string));
+            let anim = swap_decl(el);
+            if let Some(side) = swaps.resolve(&key, taken, anim.is_some()) {
                 let cp = child_path(&out);
-                out.push(build_node(el, rules, comps, ancestors, &prev, inherited, engine, locals, &cp, &ctp, reg, state, instances, instance, slot, row));
+                let mut node = build_node(el, rules, comps, ancestors, &prev, inherited, engine, locals, &cp, &ctp, reg, state, instances, swaps, instance, slot, outlet, row, side);
+                arm_swap(swaps, &key, &mut node, anim, engine, locals, &mut structural_deps);
+                out.push(node);
                 prev.push(ElemDesc::of(el));
             }
             continue;
         }
         if el.attr("r-else").is_some() {
-            if in_chain && !chain_satisfied {
+            let taken = in_chain && !chain_satisfied;
+            let key: SwapKey = (ctp.clone(), row.map(str::to_string));
+            let anim = swap_decl(el);
+            if let Some(side) = swaps.resolve(&key, taken, anim.is_some()) {
                 let cp = child_path(&out);
-                out.push(build_node(el, rules, comps, ancestors, &prev, inherited, engine, locals, &cp, &ctp, reg, state, instances, instance, slot, row));
+                let mut node = build_node(el, rules, comps, ancestors, &prev, inherited, engine, locals, &cp, &ctp, reg, state, instances, swaps, instance, slot, outlet, row, side);
+                arm_swap(swaps, &key, &mut node, anim, engine, locals, &mut structural_deps);
+                out.push(node);
                 prev.push(ElemDesc::of(el));
             }
             in_chain = false;
@@ -3113,7 +4531,7 @@ fn build_children(
         // A plain element ends any active chain.
         in_chain = false;
         let cp = child_path(&out);
-        out.push(build_node(el, rules, comps, ancestors, &prev, inherited, engine, locals, &cp, &ctp, reg, state, instances, instance, slot, row));
+        out.push(build_node(el, rules, comps, ancestors, &prev, inherited, engine, locals, &cp, &ctp, reg, state, instances, swaps, instance, slot, outlet, row, None));
         prev.push(ElemDesc::of(el));
     }
     (out, structural_deps)
@@ -3141,6 +4559,7 @@ fn interpret(p: &HashMap<String, String>) -> Style {
     st.padding = box_sides(p, "padding");
     st.margin = box_sides(p, "margin");
     interpret_border(p, &mut st);
+    interpret_path_paint(p, &mut st);
     if let Some(v) = p.get("gap") {
         if let Some(px) = parse_px(first(v)) {
             st.gap = px;
@@ -3273,11 +4692,37 @@ fn interpret(p: &HashMap<String, String>) -> Style {
     }
     if let Some(v) = p.get("position") {
         st.position = match v.trim() {
-            "absolute" | "fixed" => Position::Absolute,
-            _ => Position::Relative,
+            "static" => Position::Static,
+            "relative" => Position::Relative,
+            "absolute" => Position::Absolute,
+            "fixed" => Position::Fixed,
+            "sticky" => Position::Sticky,
+            other => {
+                // Every value used to fall through to `relative`, so a typo was
+                // a box that quietly stayed where it was and an author who could
+                // not tell a misspelling from a rule that does nothing.
+                warn(format!(
+                    "`position: {other}` is not a value Rux knows; use `static`, `relative`,                      `sticky`, `absolute` or `fixed`"
+                ));
+                Position::Static
+            }
         };
+        // A fixed box with nothing to pin it to lands in the window's top-left
+        // corner, which is a legal answer to what was written and never what was
+        // meant. Absolute has the same shape and a real use for it: with no
+        // insets it keeps its static position, which is what `:leave-to` wants.
+        if matches!(st.position, Position::Fixed | Position::Sticky)
+            && !p.keys().any(|k| INSETS.contains(&k.as_str()))
+        {
+            let what = if st.position == Position::Sticky {
+                "`position: sticky` with no `top`, `right`, `bottom` or `left` has no edge to                  stick to, so it will never move; name at least one inset"
+            } else {
+                "`position: fixed` with no `top`, `right`, `bottom` or `left` pins this box to                  the top-left of the window; name at least one inset"
+            };
+            warn(what.to_string());
+        }
     }
-    for (i, side) in ["top", "right", "bottom", "left"].iter().enumerate() {
+    for (i, side) in INSETS.iter().enumerate() {
         if let Some(v) = p.get(*side) {
             st.inset[i] = if first(v) == "auto" { None } else { parse_len(first(v)) };
         }
@@ -3296,6 +4741,9 @@ fn interpret(p: &HashMap<String, String>) -> Style {
     }
     if let Some(v) = p.get("transform") {
         st.transform = parse_transform(v);
+    }
+    if let Some(v) = p.get("transition") {
+        st.transitions = parse_transitions(v);
     }
     if let Some(v) = p.get("box-shadow") {
         st.box_shadow = parse_box_shadow(v);
@@ -3569,6 +5017,153 @@ fn split_top_level_commas(value: &str) -> Vec<&str> {
     out
 }
 
+/// Parse a `transition` value: a comma-separated list of entries, each naming a
+/// property and, in any order after it, a duration, an easing and a delay
+/// (`opacity 150ms ease-out, transform .3s`).
+///
+/// CSS's own rule for the two times is positional, not semantic: the *first*
+/// time is the duration and the second is the delay, which is why they are
+/// counted rather than matched.
+///
+/// A property that cannot be animated is dropped with a warning naming it. The
+/// alternative, silently ignoring it, produces an element that simply never
+/// animates and no way to find out why.
+fn parse_transitions(value: &str) -> Vec<Transition> {
+    let mut out = Vec::new();
+    for entry in split_top_level_commas(value) {
+        let entry = entry.trim();
+        if entry.is_empty() || entry.eq_ignore_ascii_case("none") {
+            continue;
+        }
+        let mut property = None;
+        let mut times = Vec::new();
+        let mut easing = None;
+        let mut unknown = None;
+        for token in split_top_level(entry) {
+            if let Some(ms) = parse_time(token) {
+                times.push(ms);
+            } else if let Some(e) = parse_easing(token) {
+                easing = Some(e);
+            } else if property.is_none() && unknown.is_none() {
+                match parse_anim_prop(token) {
+                    Some(p) => property = Some(p),
+                    None => unknown = Some(token.to_string()),
+                }
+            }
+        }
+        if let Some(name) = unknown {
+            warn_stylesheet(anim_prop_help(&name));
+            continue;
+        }
+        // A bare `transition: 200ms` is `all`, as in CSS.
+        let property = property.unwrap_or(AnimProp::All);
+        let duration = times.first().copied().unwrap_or(0.0);
+        let delay = times.get(1).copied().unwrap_or(0.0);
+        out.push(Transition {
+            property,
+            duration,
+            delay,
+            easing: easing.unwrap_or(Easing::EASE),
+        });
+    }
+    out
+}
+
+/// A CSS `<time>`: `250ms`, `.3s`, `0`. Unitless is only legal as zero, and a
+/// bare number that is not zero is not a time at all (it is a stray token), so
+/// it parses as `None` and is ignored rather than being read as seconds.
+fn parse_time(s: &str) -> Option<f32> {
+    let s = s.trim();
+    if let Some(n) = s.strip_suffix("ms") {
+        return n.trim().parse::<f32>().ok();
+    }
+    if let Some(n) = s.strip_suffix('s') {
+        return n.trim().parse::<f32>().ok().map(|v| v * 1000.0);
+    }
+    (s == "0").then_some(0.0)
+}
+
+/// A timing-function keyword or `cubic-bezier(…)`. `step-*` is not supported.
+fn parse_easing(s: &str) -> Option<Easing> {
+    let s = s.trim().to_ascii_lowercase();
+    match s.as_str() {
+        "linear" => return Some(Easing::Linear),
+        "ease" => return Some(Easing::EASE),
+        "ease-in" => return Some(Easing::EASE_IN),
+        "ease-out" => return Some(Easing::EASE_OUT),
+        "ease-in-out" => return Some(Easing::EASE_IN_OUT),
+        _ => {}
+    }
+    let args = s.strip_prefix("cubic-bezier(")?.strip_suffix(')')?;
+    let n: Vec<f32> = args.split(',').filter_map(|a| a.trim().parse::<f32>().ok()).collect();
+    match n[..] {
+        // The x coordinates are the parameter's own axis: outside 0..=1 the
+        // curve is not a function of time any more and cannot be inverted.
+        [x1, y1, x2, y2] if (0.0..=1.0).contains(&x1) && (0.0..=1.0).contains(&x2) => {
+            Some(Easing::Bezier(x1, y1, x2, y2))
+        }
+        _ => None,
+    }
+}
+
+/// A property name in a `transition`, or `None` if it is not animatable.
+fn parse_anim_prop(s: &str) -> Option<AnimProp> {
+    Some(match s.trim().to_ascii_lowercase().as_str() {
+        "all" => AnimProp::All,
+        "opacity" => AnimProp::Opacity,
+        "background-color" | "background" => AnimProp::BackgroundColor,
+        "color" => AnimProp::Color,
+        "border-color" => AnimProp::BorderColor,
+        "fill" => AnimProp::Fill,
+        "stroke" => AnimProp::Stroke,
+        "stroke-width" => AnimProp::StrokeWidth,
+        // The geometry itself, spelled as SVG spells the attribute.
+        "d" => AnimProp::PathData,
+        "border-width" | "border" => AnimProp::BorderWidth,
+        "border-radius" => AnimProp::BorderRadius,
+        "width" => AnimProp::Width,
+        "height" => AnimProp::Height,
+        "padding" => AnimProp::Padding,
+        "margin" => AnimProp::Margin,
+        "gap" => AnimProp::Gap,
+        "font-size" => AnimProp::FontSize,
+        "transform" => AnimProp::Transform,
+        "inset" | "top" | "right" | "bottom" | "left" => AnimProp::Inset,
+        _ => return None,
+    })
+}
+
+/// The diagnostic for a `transition` naming something that cannot animate. A
+/// longhand of a property that *can* gets pointed at the shorthand, because
+/// that is the actual mistake and the fix is one word.
+fn anim_prop_help(name: &str) -> String {
+    let lower = name.to_ascii_lowercase();
+    let shorthand = [
+        ("padding", "padding"),
+        ("margin", "margin"),
+        ("border-", "border-width"),
+        ("row-gap", "gap"),
+        ("column-gap", "gap"),
+    ]
+    .iter()
+    .find(|(prefix, _)| lower.starts_with(prefix) && lower != *prefix)
+    .map(|(_, whole)| *whole);
+    match shorthand {
+        Some(whole) => format!(
+            "`transition: {name}` does nothing: the sides animate together, so \
+             transition `{whole}` instead"
+        ),
+        None => {
+            let animatable: Vec<&str> = AnimProp::EVERY.iter().map(|p| p.name()).collect();
+            format!(
+                "`transition: {name}` does nothing: `{name}` cannot be animated. \
+                 Animatable properties are {}, and `all`",
+                animatable.join(", ")
+            )
+        }
+    }
+}
+
 /// Parse a `transform` function list (`rotate(15deg) translate(4px, 0)`) into a
 /// single affine `[a, b, c, d, e, f]`. Functions compose left-to-right (the
 /// leftmost is outermost). `translate` percentages aren't supported. `None` if
@@ -3726,10 +5321,86 @@ fn first(s: &str) -> &str {
     s.split_whitespace().next().unwrap_or(s)
 }
 
-fn parse_px(s: &str) -> Option<f32> {
+/// Rewrite every `<number>em` in a declaration value into its pixel equivalent.
+///
+/// Done as a pass over the value rather than inside each length parser, the
+/// same way `var()` is, because `em` needs the element's font size and the
+/// parsers are reached without one.
+///
+/// `rem` is deliberately left alone: it is absolute against the root size, the
+/// parsers already understand it, and rewriting it here would mean matching the
+/// `em` inside `rem` and getting the wrong number.
+fn resolve_em(value: &str, font_size: f32) -> String {
+    let bytes = value.as_bytes();
+    let mut out = String::with_capacity(value.len());
+    let mut i = 0;
+    while i < value.len() {
+        // A candidate starts at a digit or a `.` that begins a number, and only
+        // when the previous character cannot make it part of a longer word.
+        let starts_number = bytes[i].is_ascii_digit()
+            || (bytes[i] == b'.' && bytes.get(i + 1).is_some_and(u8::is_ascii_digit));
+        let boundary = i == 0 || !(bytes[i - 1].is_ascii_alphanumeric() || bytes[i - 1] == b'.');
+        if !(starts_number && boundary) {
+            out.push(value[i..].chars().next().unwrap());
+            i += value[i..].chars().next().unwrap().len_utf8();
+            continue;
+        }
+
+        let mut j = i;
+        while j < value.len() && (bytes[j].is_ascii_digit() || bytes[j] == b'.') {
+            j += 1;
+        }
+        // `2em` yes, `2rem` no (the `r` belongs to the number's unit, not to a
+        // preceding token), and `2ems` no.
+        let is_em = value[j..].starts_with("em")
+            && !bytes.get(j + 2).is_some_and(|c| c.is_ascii_alphanumeric());
+        match value[i..j].parse::<f32>() {
+            Ok(n) if is_em => {
+                out.push_str(&format!("{}px", n * font_size));
+                i = j + 2;
+            }
+            _ => {
+                out.push_str(&value[i..j]);
+                i = j;
+            }
+        }
+    }
+    out
+}
+
+/// A length that resolves to absolute pixels: `px`, `rem`, `em`, or a bare
+/// number.
+///
+/// This exists because `padding: 1rem` used to be dropped on the floor. The
+/// px-only parser was reached by padding, margin, gap, border widths, corner
+/// radii, `letter-spacing`, `box-shadow` and `translate()`, while `width` and
+/// `height` went through [`parse_len`], which has understood `rem` all along.
+/// So `width: 2rem` worked, `padding: 2rem` silently did nothing, and there was
+/// no warning to tell them apart.
+///
+/// `em` is relative to `font_size`, which is the element's own resolved size
+/// (its `font-size` if it declares one, otherwise the inherited one). That is
+/// why this takes a parameter at all, and why `font-size` itself must resolve
+/// against the *inherited* size rather than its own.
+///
+/// The `filter` guards `rem`: `strip_suffix("em")` matches the tail of `rem`
+/// too, and without it `1rem` would be read as `1r` em and fail to parse.
+fn parse_px_len(s: &str, font_size: f32) -> Option<f32> {
     let s = s.trim();
-    let s = s.strip_suffix("px").unwrap_or(s);
-    s.parse::<f32>().ok()
+    if let Some(n) = s.strip_suffix("rem") {
+        return n.trim().parse::<f32>().ok().map(|v| v * REM_PX);
+    }
+    if let Some(n) = s.strip_suffix("em") {
+        return n.trim().parse::<f32>().ok().map(|v| v * font_size);
+    }
+    let n = s.strip_suffix("px").unwrap_or(s);
+    n.parse::<f32>().ok()
+}
+
+/// Lengths against the root font size, for the handful of places with no
+/// element in hand (shorthand sub-values reached before the size is known).
+fn parse_px(s: &str) -> Option<f32> {
+    parse_px_len(s, REM_PX)
 }
 
 /// One `rem` in pixels (root font size).
@@ -3903,6 +5574,55 @@ fn box_sides(p: &HashMap<String, String>, prop: &str) -> Sides {
         }
     }
     sides
+}
+
+/// Parse the `<path>` paint properties.
+///
+/// `fill` defaults to opaque black and `stroke` to nothing, which is SVG's
+/// pair of defaults and is why a `<path>` with geometry and no paint still
+/// draws. `none` is spelled the way SVG spells it and is the only way to turn
+/// a fill off; an unreadable colour leaves the property alone rather than
+/// blanking it, so a typo shows the previous value rather than an empty box.
+fn interpret_path_paint(p: &HashMap<String, String>, st: &mut Style) {
+    if let Some(v) = p.get("fill") {
+        st.fill = if v.trim().eq_ignore_ascii_case("none") {
+            None
+        } else {
+            parse_color(v).or(st.fill)
+        };
+    }
+    if let Some(v) = p.get("stroke") {
+        st.stroke = if v.trim().eq_ignore_ascii_case("none") {
+            None
+        } else {
+            parse_color(v).or(st.stroke)
+        };
+    }
+    if let Some(v) = p.get("stroke-width") {
+        if let Some(px) = parse_px(first(v)) {
+            st.stroke_width = px;
+        }
+    }
+    if let Some(v) = p.get("stroke-linecap") {
+        st.stroke_linecap = match v.trim() {
+            "round" => LineCap::Round,
+            "square" => LineCap::Square,
+            _ => LineCap::Butt,
+        };
+    }
+    if let Some(v) = p.get("stroke-linejoin") {
+        st.stroke_linejoin = match v.trim() {
+            "round" => LineJoin::Round,
+            "bevel" => LineJoin::Bevel,
+            _ => LineJoin::Miter,
+        };
+    }
+    if let Some(v) = p.get("fill-rule") {
+        st.fill_rule = match v.trim() {
+            "evenodd" | "even-odd" => FillRule::EvenOdd,
+            _ => FillRule::NonZero,
+        };
+    }
 }
 
 /// Parse `border` box-model props: `border`, `border-width`, `border-color`,
@@ -4091,6 +5811,59 @@ mod tests {
     use rux_script::{Builder, Engine};
     use std::collections::HashMap;
 
+    /// `honored_pseudo_classes` is what the editor completes `:` from, and
+    /// `Pseudo::parse` is what actually matches. A name in the first that the
+    /// second does not know would be a completion for a rule that never fires,
+    /// which is the one failure mode the whole vocabulary arrangement exists to
+    /// prevent.
+    #[test]
+    fn honored_pseudo_classes_all_parse() {
+        use super::{honored_pseudo_classes, Pseudo};
+        for name in honored_pseudo_classes() {
+            assert!(
+                !matches!(Pseudo::parse(name), Pseudo::Unknown(_)),
+                "`:{name}` is offered as a completion and `Pseudo::parse` does not know it"
+            );
+        }
+        assert!(
+            matches!(Pseudo::parse("first-child"), Pseudo::Unknown(_)),
+            "a pseudo-class Rux does not implement must still parse as Unknown"
+        );
+    }
+
+    /// The same pairing for `transition`'s values.
+    #[test]
+    fn animatable_properties_all_parse() {
+        use super::{animatable_properties, parse_anim_prop};
+        for name in animatable_properties() {
+            assert!(
+                parse_anim_prop(name).is_some(),
+                "`transition: {name}` is offered and `parse_anim_prop` rejects it"
+            );
+        }
+        assert!(parse_anim_prop("float").is_none());
+    }
+
+    /// The pointer attributes reach the node, in the vocabulary's order rather
+    /// than the order they happen to be written, and an `r-for` local is baked
+    /// into the body the way a `@tap`'s is.
+    #[test]
+    fn gesture_attributes_reach_the_node() {
+        use rux_layout::Gesture;
+        let src = "<template><screen>                     <view @drag=\"a()\" @press=\"b()\" @longpress=\"c()\" />                   </screen></template>";
+        let sfc = rux_parser::parse_sfc(src).expect("parses");
+        let mut engine = Builder::new().build("").expect("engine");
+        let tree = build_styled_tree(&sfc, &HashMap::new(), &mut engine).expect("builds");
+        let node = &tree.children[0];
+        let kinds: Vec<Gesture> = node.gestures.iter().map(|(g, _)| *g).collect();
+        assert_eq!(
+            kinds,
+            vec![Gesture::Press, Gesture::LongPress, Gesture::Drag],
+            "declared order does not decide dispatch order"
+        );
+        assert!(node.on_tap.is_none(), "a pointer handler is not a tap");
+    }
+
     /// Every kind of CSS warning must land on the line the reader can see, not
     /// on a line counted from the start of the `<style>` block. Getting this
     /// wrong sends someone confidently to the wrong part of their file, which is
@@ -4200,6 +5973,128 @@ mod tests {
         assert_eq!(float.line, None, "but without a line from another file");
     }
 
+    /// Build a document with one component and return the component's root node.
+    fn component_root(doc: &str, comp: &str) -> super::LayoutNode {
+        let main = rux_parser::parse_sfc(doc).expect("document parses");
+        let component = rux_parser::parse_sfc(comp).expect("component parses");
+        let mut components = HashMap::new();
+        components.insert("chip".to_string(), component);
+        let mut engine = Builder::new().build("").expect("engine");
+        let root = build_styled_tree(&main, &components, &mut engine).expect("builds");
+        // <screen> -> the expanded component's root.
+        root.children.into_iter().next().expect("the component rendered")
+    }
+
+    const DOC: &str = "<template>\n  <screen class=\"app\"><chip /></screen>\n</template>\n\
+                       <style>\n  .chip { width: 120px; }\n</style>\n\
+                       <script>\nuse components::chip;\n</script>\n";
+
+    /// A document's stylesheet reaches the components it uses.
+    ///
+    /// Before this, a component saw only its own `<style>`, so sharing a look
+    /// meant repeating `<style src="theme.css">` in every component file. That
+    /// is the wall people hit first on a real app.
+    #[test]
+    fn a_documents_rules_reach_its_components() {
+        let chip = "<template>\n  <view class=\"chip\"></view>\n</template>\n";
+        let node = component_root(DOC, chip);
+        assert_eq!(
+            node.style.width,
+            Some(Len::Px(120.0)),
+            "the document's `.chip` rule did not reach the component"
+        );
+    }
+
+    /// `<style scoped>` on the component means "I own my appearance".
+    #[test]
+    fn a_scoped_component_is_not_styled_from_outside() {
+        let chip = "<template>\n  <view class=\"chip\"></view>\n</template>\n\
+                    <style scoped>\n  .chip { height: 40px; }\n</style>\n";
+        let node = component_root(DOC, chip);
+        assert_eq!(node.style.height, Some(Len::Px(40.0)), "its own rule still applies");
+        assert_eq!(node.style.width, None, "`scoped` did not keep the document out");
+    }
+
+    /// `<style scoped>` on the document means "my rules stay in my markup".
+    #[test]
+    fn a_scoped_document_does_not_style_its_components() {
+        let doc = "<template>\n  <screen class=\"app\"><chip /></screen>\n</template>\n\
+                   <style scoped>\n  .chip { width: 120px; }\n</style>\n\
+                   <script>\nuse components::chip;\n</script>\n";
+        let chip = "<template>\n  <view class=\"chip\"></view>\n</template>\n";
+        assert_eq!(component_root(doc, chip).style.width, None);
+    }
+
+    /// Same specificity, later wins, which is CSS's own rule. The component's
+    /// rules are appended after the document's, so a component can override the
+    /// look it inherits without resorting to a more specific selector.
+    #[test]
+    fn a_components_own_rule_beats_the_one_it_inherits() {
+        let chip = "<template>\n  <view class=\"chip\"></view>\n</template>\n\
+                    <style>\n  .chip { width: 200px; }\n</style>\n";
+        assert_eq!(component_root(DOC, chip).style.width, Some(Len::Px(200.0)));
+    }
+
+    /// `padding: 1rem` used to be dropped on the floor, with no warning.
+    ///
+    /// `width` went through `parse_len`, which has understood `rem` since it was
+    /// written, while padding, margin, gap, border widths and corner radii went
+    /// through a px-only parser. So `width: 2rem` worked and `padding: 2rem`
+    /// silently did nothing, which is the worst possible pair of behaviours: the
+    /// unit is obviously supported, so the failure reads as a layout bug.
+    #[test]
+    fn rem_is_honored_by_every_length_property() {
+        let mut p = HashMap::new();
+        p.insert("padding".to_string(), "1rem 2rem".to_string());
+        p.insert("margin-left".to_string(), "0.5rem".to_string());
+        p.insert("gap".to_string(), "1rem".to_string());
+        p.insert("border-radius".to_string(), "0.5rem".to_string());
+        p.insert("border-width".to_string(), "0.125rem".to_string());
+        p.insert("width".to_string(), "10rem".to_string());
+
+        let st = interpret(&p);
+        assert_eq!((st.padding.top, st.padding.right), (16.0, 32.0), "padding shorthand");
+        assert_eq!(st.margin.left, 8.0, "per-side longhand");
+        assert_eq!(st.gap, 16.0);
+        assert_eq!(st.radius, [8.0, 8.0, 8.0, 8.0]);
+        assert_eq!(st.border.top, 2.0);
+        assert_eq!(st.width, Some(Len::Px(160.0)), "width already worked; it must still");
+    }
+
+    /// `em` is resolved in a pass before `interpret`, against the element's own
+    /// resolved font size, so it has to be tested through that pass rather than
+    /// through `interpret` directly.
+    #[test]
+    fn em_resolves_against_the_font_size_and_leaves_rem_alone() {
+        use super::resolve_em;
+        assert_eq!(resolve_em("1em", 20.0), "20px");
+        assert_eq!(resolve_em("1em 2em", 10.0), "10px 20px");
+        assert_eq!(resolve_em("0.5em", 32.0), "16px");
+
+        // The trap: `strip_suffix("em")` also matches the tail of `rem`, so a
+        // careless pass turns `1rem` into `1r` + em and either fails or, worse,
+        // resolves it against the font size.
+        assert_eq!(resolve_em("1rem", 20.0), "1rem", "rem must survive untouched");
+        assert_eq!(resolve_em("1rem 2em", 10.0), "1rem 20px");
+
+        // Words that merely contain the letters are not lengths.
+        assert_eq!(resolve_em("system-ui", 16.0), "system-ui");
+        assert_eq!(resolve_em("2emu", 16.0), "2emu");
+        assert_eq!(resolve_em("#12em34", 16.0), "#12em34", "not at a token boundary");
+    }
+
+    /// `font-size` in `em` means "times the inherited size", not its own, so it
+    /// has to resolve before the pass that uses it.
+    #[test]
+    fn font_size_in_em_is_relative_to_the_inherited_size() {
+        use super::parse_px_len;
+        assert_eq!(parse_px_len("1.5em", 16.0), Some(24.0));
+        assert_eq!(parse_px_len("2rem", 16.0), Some(32.0));
+        assert_eq!(parse_px_len("2rem", 40.0), Some(32.0), "rem ignores the element");
+        assert_eq!(parse_px_len("12px", 16.0), Some(12.0));
+        assert_eq!(parse_px_len("12", 16.0), Some(12.0), "bare numbers still parse");
+    }
+
     #[test]
     fn box_model_shorthand_sides_and_border() {
         let mut p = HashMap::new();
@@ -4241,6 +6136,73 @@ mod tests {
         assert_eq!(st.shrink, 0.0);
         assert!(st.wrap);
         assert_eq!(st.opacity, 0.45);
+    }
+
+    #[test]
+    fn transition_parses_a_list_in_any_order() {
+        use super::{AnimProp, Easing};
+        let ts = super::parse_transitions("opacity 150ms ease-out, transform .3s 50ms linear");
+        assert_eq!(ts.len(), 2);
+        assert_eq!(ts[0].property, AnimProp::Opacity);
+        assert_eq!(ts[0].duration, 150.0);
+        assert_eq!(ts[0].delay, 0.0);
+        assert_eq!(ts[0].easing, Easing::EASE_OUT);
+        // `.3s` is 300ms, and the *second* time is the delay however it is ordered.
+        assert_eq!(ts[1].property, AnimProp::Transform);
+        assert_eq!(ts[1].duration, 300.0);
+        assert_eq!(ts[1].delay, 50.0);
+        assert_eq!(ts[1].easing, Easing::Linear);
+
+        // A bare time is `all`, and the default curve is `ease`, as in CSS.
+        let ts = super::parse_transitions("200ms");
+        assert_eq!(ts[0].property, AnimProp::All);
+        assert_eq!(ts[0].easing, Easing::EASE);
+
+        // A comma inside cubic-bezier() is not an entry separator.
+        let ts = super::parse_transitions("width 1s cubic-bezier(0.2, 0, 0.1, 1)");
+        assert_eq!(ts.len(), 1);
+        assert_eq!(ts[0].easing, Easing::Bezier(0.2, 0.0, 0.1, 1.0));
+
+        // `none` is not an entry, and an out-of-range bezier x falls back to ease.
+        assert!(super::parse_transitions("none").is_empty());
+        assert_eq!(
+            super::parse_transitions("opacity 1s cubic-bezier(2, 0, 0.1, 1)")[0].easing,
+            Easing::EASE
+        );
+    }
+
+    #[test]
+    fn an_unanimatable_transition_property_warns_instead_of_vanishing() {
+        // The whole point: a property that cannot animate has to say so, or the
+        // author is left with an element that just never moves.
+        let _ = super::take_warnings();
+        assert!(super::parse_transitions("display 1s").is_empty());
+        let warnings = super::take_warnings();
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].message.contains("`display` cannot be animated"));
+
+        // A longhand of an animatable shorthand is pointed at the shorthand.
+        assert!(super::parse_transitions("padding-left 1s").is_empty());
+        let warnings = super::take_warnings();
+        assert!(warnings[0].message.contains("transition `padding` instead"));
+    }
+
+    #[test]
+    fn easing_curves_are_monotonic_and_pinned_at_the_ends() {
+        use super::Easing;
+        for easing in [Easing::Linear, Easing::EASE, Easing::EASE_IN, Easing::EASE_OUT, Easing::EASE_IN_OUT] {
+            assert_eq!(easing.eval(0.0), 0.0);
+            assert_eq!(easing.eval(1.0), 1.0);
+            let mut prev = 0.0;
+            for i in 1..=100 {
+                let y = easing.eval(i as f32 / 100.0);
+                assert!(y >= prev - 1e-3, "{easing:?} went backwards at {i}");
+                prev = y;
+            }
+        }
+        // ease-out is ahead of linear in the first half: that is what "out" means.
+        assert!(Easing::EASE_OUT.eval(0.25) > 0.25);
+        assert!(Easing::EASE_IN.eval(0.25) < 0.25);
     }
 
     #[test]
@@ -4344,7 +6306,7 @@ mod tests {
         let mut engine = Builder::new().build(&sfc.script).unwrap();
         let mut instances = super::Instances::new();
         let (_root, reg) =
-            build_styled_tree_tracked(&sfc, &HashMap::new(), &mut engine, &mut instances).unwrap();
+            build_styled_tree_tracked(&sfc, &HashMap::new(), &mut engine, &mut instances, &mut crate::Swaps::new()).unwrap();
 
         assert_eq!(reg.structural_parents.len(), 1, "the screen is the one structural parent");
         let sp = &reg.structural_parents[0];
@@ -4814,6 +6776,7 @@ mod tests {
             &HashMap::new(),
             &mut engine,
             &mut instances,
+            &mut crate::Swaps::new(),
             &InteractionState::default(),
             viewport,
         )
@@ -5084,6 +7047,8 @@ mod tests {
             active: false,
             checked: true,
             current: false,
+            enter_from: false,
+            leave_to: false,
         };
         assert!(hits_state("input:focus", "input", s));
         assert!(hits_state("input:checked", "input", s));
@@ -5110,6 +7075,8 @@ mod tests {
             active: true,
             checked: true,
             current: true,
+            enter_from: true,
+            leave_to: true,
         };
         assert!(!hits_state(".box:disabled", ".box", all_on));
         assert!(!hits_state(".box:nth-child(2)", ".box", all_on));
@@ -5276,6 +7243,96 @@ mod tests {
         // …and fails when that ancestor has no preceding `.a`.
         let ancestors = [anc("view.b", &["view.x"])];
         assert!(!hits("*.a ~ *.b *.c", "view.c", &ancestors, &[]));
+    }
+
+    // ── The element index ───────────────────────────────────────────────────
+
+    /// Build a document and hand back the index a `query()` would run against.
+    fn indexed(src: &str) -> super::ElementIndex {
+        let sfc = rux_parser::parse_sfc(src).unwrap();
+        let mut engine = Builder::new().build(&sfc.script).unwrap();
+        let mut instances = super::Instances::new();
+        let (_, reg) =
+            super::build_styled_tree_tracked(&sfc, &HashMap::new(), &mut engine, &mut instances, &mut crate::Swaps::new())
+                .unwrap();
+        reg.elements
+    }
+
+    const NESTED: &str = r#"<template><screen>
+        <view class="card"><text class="title">One</text></view>
+        <view class="card wide"><text class="title">Two</text></view>
+    </screen></template>"#;
+
+    /// The whole point of the index: after the build, the tree can still say
+    /// what it is. `LayoutNode` keeps neither tag nor class, so without this
+    /// there is nothing for a selector to match.
+    #[test]
+    fn a_class_selector_finds_every_matching_node() {
+        let index = indexed(NESTED);
+        assert_eq!(index.query(".card").unwrap().len(), 2);
+        assert_eq!(index.query(".title").unwrap().len(), 2);
+        // A compound narrows to the one element carrying both classes.
+        assert_eq!(index.query(".card.wide").unwrap().len(), 1);
+    }
+
+    /// Tag and id come back too, and an id matches at most the one node.
+    #[test]
+    fn tag_and_id_selectors_work_against_the_built_tree() {
+        let index = indexed(
+            r#"<template><screen><view id="panel"><text>Hi</text></view></screen></template>"#,
+        );
+        assert_eq!(index.query("#panel").unwrap().len(), 1);
+        assert_eq!(index.query("text").unwrap().len(), 1);
+        assert!(index.query("#missing").unwrap().is_empty());
+    }
+
+    /// Combinators resolve, which is the part that needs ancestors and
+    /// preceding siblings rebuilt from the paths rather than stored per node.
+    #[test]
+    fn combinators_resolve_from_paths_alone() {
+        let index = indexed(NESTED);
+        // Descendant and child both reach the titles through their card.
+        assert_eq!(index.query(".card .title").unwrap().len(), 2);
+        assert_eq!(index.query(".card > .title").unwrap().len(), 2);
+        // The sibling combinator picks the second card only, since the first
+        // has no preceding `.card`.
+        let after = index.query(".card + .card").unwrap();
+        assert_eq!(after.len(), 1);
+        // …and it is genuinely the later one.
+        assert!(after[0].path > index.query(".card").unwrap()[0].path);
+    }
+
+    /// Results are in document order, which is what makes indexing into a query
+    /// result mean something stable from one build to the next.
+    #[test]
+    fn results_come_back_in_document_order() {
+        let index = indexed(NESTED);
+        let hits: Vec<Vec<usize>> =
+            index.query(".card").unwrap().into_iter().map(|m| m.path).collect();
+        let mut sorted = hits.clone();
+        sorted.sort();
+        assert_eq!(hits, sorted);
+    }
+
+    /// A selector that does not parse is `None`, not an empty list. Silently
+    /// matching nothing is the failure this project keeps closing off.
+    #[test]
+    fn an_unparseable_selector_is_reported_rather_than_empty() {
+        let index = indexed(NESTED);
+        assert!(index.query(">").is_none());
+        // An ordinary selector that simply matches nothing is still `Some`.
+        assert!(index.query(".nope").unwrap().is_empty());
+    }
+
+    /// A dynamically applied `:class` is in the index, so `query` and the
+    /// stylesheet agree about the same document.
+    #[test]
+    fn dynamic_classes_are_indexed_too() {
+        let index = indexed(
+            r#"<template><screen><view :class="cls"><text>x</text></view></screen></template>
+               <script>let cls = "open"</script>"#,
+        );
+        assert_eq!(index.query(".open").unwrap().len(), 1);
     }
 }
 

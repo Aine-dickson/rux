@@ -1,7 +1,7 @@
 +++
 title = "Architecture"
 description = "How a .rux file becomes pixels, and which crate owns which stage."
-weight = 4
+weight = 5
 sort_by = "weight"
 template = "docs-section.html"
 page_template = "docs.html"
@@ -11,7 +11,7 @@ page_template = "docs.html"
 
 
 How the Rux runtime turns a `.rux` file into pixels and keeps them live. The [spec](/reference/spec/) defines *what the language is*; this defines *what we build*.
-Everything here is downstream of the [rationale](/why/), especially [Law 4](/why/#law-4-stay-close-to-rust-dont-pop-the-balloon): **reuse mature Rust crates; write only the glue that is uniquely ours.**
+Everything here is downstream of the [rationale](/reference/rationale/), especially [Law 4](/reference/rationale/#law-4-stay-close-to-rust-don-t-pop-the-balloon): **reuse mature Rust crates; write only the glue that is uniquely ours.**
 
 > **Status:** v0.1 architecture proposal. Concrete crate choices are recommendations, not commitments. The milestone plan is designed so each can be swapped without redesign.
 
@@ -91,7 +91,7 @@ Input: the raw `.rux` text. Output: three parsed artifacts bundled into a **Docu
    - Custom element tags (kebab-case, not one of the six) → **component instantiation** points Output is a tree of `TemplateNode`s where every dynamic piece is already distinguished from static text. Directive expressions are stored as *unparsed source strings* here; they compile against the script scope in Stage 3.
 3. **Style → stylesheet.** Hand the CSS to `lightningcss`; keep its parsed rule list. No evaluation yet.
 4. **Script → program.** Hand the script to `rhai`'s parser; keep the compiled AST. Top-level `let signal(...)` declarations and `fn`s are catalogued so the template compiler can resolve names.
-Parse errors do **not** panic. They produce a `DiagnosticSet` that the [hot-reload](#hot-reload) layer renders as a dev overlay, the accepted cost of [runtime documents](/why/#runtime-documents-over-compile-time-components).
+Parse errors do **not** panic. They produce a `DiagnosticSet` that the [hot-reload](#hot-reload) layer renders as a dev overlay, the accepted cost of [runtime documents](/reference/rationale/#runtime-documents-over-compile-time-components).
 
 ## Stage 2: Cascade
 
@@ -176,7 +176,7 @@ The reverse path: `winit` raw input → our event model → script handlers.
 
 ## The script tier & host bridge
 
-Two tiers, one boundary. See the [decision](/why/#two-tier-logic-rhai-script-over-a-compiled-rust-host).
+Two tiers, one boundary. See the [decision](/reference/rationale/#two-tier-logic-rhai-script-over-a-compiled-rust-host).
 
 - **Script (rhai).** Runs the component's handlers and holds its signals. Each
   component instance gets a `rhai` scope seeded with its top-level `let`s/`fn`s.
@@ -202,7 +202,7 @@ Two tiers, one boundary. See the [decision](/why/#two-tier-logic-rhai-script-ove
 
 ## Hot-reload
 
-The feature that drove the whole [runtime-document decision](/why/#runtime-documents-over-compile-time-components).
+The feature that drove the whole [runtime-document decision](/reference/rationale/#runtime-documents-over-compile-time-components).
 
 - `notify` watches the `.rux` file(s); a short debounce coalesces editor saves.
 - On change, re-run **only the stages the edit affects**:
@@ -275,10 +275,10 @@ Deferred to build-time decisions, flagged so we don't pretend they're solved:
   the eventual `thumbv7em` target.
 - **Event object shape**: the concrete gesture payload passed to handlers
   (`$event`), finalized alongside M6.
-- **Grid/table**: still [deferred](/why/#the-element-audit); revisit
+- **Grid/table**: still [deferred](/reference/rationale/#the-element-audit); revisit
   only after v0.1 ships.
 
 ---
 
-Back to: [README](https://github.com/Aine-dickson/rux/tree/main/docs) · [rationale](/why/) ·
+Back to: [README](https://github.com/Aine-dickson/rux/tree/main/docs) · [rationale](/reference/rationale/) ·
 [spec](/reference/spec/) · [guide](https://github.com/Aine-dickson/rux/blob/main/docs/03-guide.md).

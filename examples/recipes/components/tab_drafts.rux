@@ -1,0 +1,6 @@
+<template>
+  <view class="page">
+    <text class="page-title">drafts</text>
+    <text class="page-body">Nothing in this file knows it is a tab. It is a component that a route happens to name, which is why the same component can be reached from a link, a redirect or the Back button.</text>
+  </view>
+</template>

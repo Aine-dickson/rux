@@ -11,7 +11,7 @@
     <ul id="docs-search-results" class="docs-search-results" hidden></ul>
   </form>
 
-  {% for path in ["learn/_index.md", "reference/_index.md", "roadmap/_index.md", "contribute/_index.md"] %}
+  {% for path in ["learn/_index.md", "recipes/_index.md", "tooling/_index.md", "reference/_index.md", "roadmap/_index.md", "contribute/_index.md"] %}
     {% set section = get_section(path=path) %}
     <p class="docs-nav-group">
       <a href="{{ section.permalink }}"

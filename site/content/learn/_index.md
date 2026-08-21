@@ -73,8 +73,12 @@ obvious thing instead.
 
 ## A note on versions
 
-This guide is written against **Rux v0.4.0**, the current release, and every
-snippet in it is checked by the test suite on each commit. Rux is `0.x` and
-moves weekly, so a feature you read about elsewhere may be newer than this
-guide. The [reference](@/reference/_index.md) is always the authority on what
-the current release honors, and the [blog](@/blog/_index.md) tracks what changed.
+This guide is written against the **current release**, and every snippet in it
+is checked by the test suite on each commit. Rux is `0.x` and moves weekly, so a
+feature you read about elsewhere may be newer than this guide: the
+[reference](@/reference/_index.md) describes the tip and is the authority on what
+is built, and the [blog](@/blog/_index.md) tracks what changed in each release.
+
+Once you have been through this, the [recipes](@/recipes/_index.md) are the next
+thing to read. They are not more language: they are how to build a particular
+piece of an app, written around the part of each pattern that surprises people.

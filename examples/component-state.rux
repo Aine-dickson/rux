@@ -10,7 +10,7 @@
     </view>
 
     <text class="foot">The document's own count, which no counter touches: {{ count }}</text>
-    <view class="btn" @tap="count = count + 1">
+    <view class="btn" @tap="count++">
       <text class="btn-label">document count</text>
     </view>
   </screen>

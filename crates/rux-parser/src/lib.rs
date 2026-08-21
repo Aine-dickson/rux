@@ -91,6 +91,13 @@ pub struct Sfc {
     /// [`Sfc::style_includes`]; a browser, which has neither a filesystem nor a
     /// path to be relative to, warns instead.
     pub style_src: Vec<String>,
+    /// `<style scoped>`: keep these rules to this file's own markup.
+    ///
+    /// Without it, a document's rules also reach the components it uses, so a
+    /// look can be written once at the top instead of imported into every
+    /// component. `scoped` is the opt-out for a component that wants to own its
+    /// appearance completely.
+    pub style_scoped: bool,
     /// Included stylesheets, filled in after parsing by whoever resolved
     /// [`Sfc::style_src`]. Empty when nothing was included, which is the usual
     /// case.
@@ -194,10 +201,17 @@ pub fn parse_sfc(src: &str) -> Result<Sfc, ParseError> {
         section(src, "template").ok_or_else(|| ParseError::new("missing <template> section"))?;
     let (style, style_line) = trimmed_section(src, "style");
     let (script, script_line) = trimmed_section(src, "script");
-    let style_src = section_with_open(src, "style")
-        .and_then(|(_, _, open)| open_tag_attr(&open, "src"))
+    let style_open = section_with_open(src, "style").map(|(_, _, open)| open);
+    let style_src = style_open
+        .as_deref()
+        .and_then(|open| open_tag_attr(open, "src"))
         .map(|v| split_src(&v))
         .unwrap_or_default();
+    // `<style scoped>` keeps a document's rules to its own markup. Without it
+    // they reach the components it uses, which is the default because a shared
+    // look is the common case and repeating an import in every component was
+    // the thing people actually hit.
+    let style_scoped = style_open.as_deref().is_some_and(|open| open_tag_flag(open, "scoped"));
 
     // Positions inside the template are relative to the section; shift them onto
     // the file's lines so a reported line matches the editor's gutter.
@@ -220,6 +234,7 @@ pub fn parse_sfc(src: &str) -> Result<Sfc, ParseError> {
         script,
         script_line,
         style_src,
+        style_scoped,
         style_includes: Vec::new(),
     })
 }
@@ -272,6 +287,29 @@ fn section_with_open(src: &str, name: &str) -> Option<(String, usize, String)> {
 /// attributes, not a document. Quotes are required, because an unquoted path
 /// cannot contain a space and silently truncating one at the space is the kind
 /// of failure that gets blamed on the file being missing.
+/// Whether a valueless attribute is present on an open tag: `<style scoped>`.
+///
+/// Separate from [`open_tag_attr`], which requires an `=` and a quoted value.
+/// A boolean attribute has neither, the same way `<route fallback />` does not.
+fn open_tag_flag(open: &str, name: &str) -> bool {
+    let mut rest = open;
+    while let Some(at) = rest.find(name) {
+        let before_ok = rest[..at].chars().next_back().is_none_or(char::is_whitespace);
+        let after = &rest[at + name.len()..];
+        // Not `scopedish`, and not `scoped="…"`, which is a different thing that
+        // this deliberately does not claim.
+        let after_ok = after
+            .chars()
+            .next()
+            .is_none_or(|c| c.is_whitespace() || c == '>' || c == '/');
+        if before_ok && after_ok {
+            return true;
+        }
+        rest = &rest[at + name.len()..];
+    }
+    false
+}
+
 fn open_tag_attr(open: &str, name: &str) -> Option<String> {
     let mut rest = open;
     loop {

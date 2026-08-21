@@ -1,0 +1,56 @@
+<template>
+  <view class="session">
+    <text class="name">{{ label }}</text>
+    <text class="marks">{{ draft }}</text>
+    <view class="btn" @tap="draft = draft + &quot;.&quot;"><text class="btn-label">leave a mark</text></view>
+    <text class="hint">this is instance number {{ opened }}</text>
+  </view>
+</template>
+
+<style>
+  .session {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 16px;
+    background: #313244;
+    border: 2px solid #45475a;
+    border-radius: 10px;
+    width: 220px;
+  }
+
+  .name { color: #cdd6f4; font-size: 14px; font-weight: 700; }
+  .marks { color: #a6e3a1; font-size: 20px; height: 24px; }
+  .hint { color: #6c7086; font-size: 12px; }
+
+  .btn {
+    padding: 6px 10px;
+    background: #45475a;
+    border-radius: 8px;
+    cursor: pointer;
+  }
+
+  .btn:hover { background: #585b70; }
+  .btn-label { color: #cdd6f4; font-size: 12px; font-weight: 700; }
+</style>
+
+<script>
+  // This instance's own state. Nothing here survives the instance.
+  let draft = signal("");
+  let opened = signal(0);
+
+  // Runs once, the first time this instance is expanded onto the screen. Once
+  // per instance, so two <session> tags run it twice and count two openings.
+  mounted {
+    opens++;
+    opened = opens;
+  }
+
+  // The last moment `draft` can be read: after this the instance is gone and
+  // its state with it. Saving it into a document signal is the whole point of
+  // the hook, and it is why the marks below outlive the card.
+  unmounted {
+    saved = label;
+    savedMarks = draft.length;
+  }
+</script>

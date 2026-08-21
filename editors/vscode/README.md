@@ -2,12 +2,50 @@
 
 Editor support for `.rux` files:
 
+- **Completions**, offered from what the runtime actually understands. In
+  `<template>`: elements, the components this file imported with
+  `use components::…`, the directives, and each element's own attributes. In
+  `<style>`: **only the CSS properties Rux honors**, which is the completion a
+  general CSS extension cannot give you, because Rux honors a subset and warns
+  about the rest. In `<script>`: `signal`, `computed`, `effect`, the router
+  calls and the rest of the globals. The lists come from `rux vocab`, so if the
+  editor offers it, it works.
+- **CSS values, not just property names.** Typing `position:` offers the five
+  values that work, `transition:` offers what can actually be animated (`d`
+  included) and the easings, and a `:` in a selector offers the pseudo-classes
+  Rux matches on. A property whose values are not a closed set, like `width` or
+  `color`, offers nothing rather than a plausible guess. This matters more than
+  it sounds: until v0.7 `position: sticky` parsed, matched nothing and fell
+  through to `relative` without a word, and an unknown pseudo-class still fails
+  that way, as a rule that quietly never applies.
+- **Hover docs** on elements, attributes, directives, pseudo-classes, honored
+  CSS properties and script globals, from the same vocabulary. The completion
+  popup answers these questions once and then takes the answer away.
+- **Go to definition** (`F12`, `Ctrl+Click`) on a `use components::task_card;`
+  path and on the `<task-card>` tag it contributes. Both open
+  `components/task_card.rux`, resolved by the runtime's own rules: relative to
+  the importing file, and with the underscore mapped to the hyphen.
+- **Outline** (`Ctrl+Shift+O`, and the breadcrumb bar): the three sections, then
+  every element carrying a `class` or an `id` named as its selector would be
+  (`view.row.spread`, `text#total`), every rule in the sheet with `@media`
+  owning its own, and the `let` bindings, `fn` declarations and lifecycle blocks
+  in the script.
+- **Tag auto-closing**: finishing `<view>` writes `</view>` and leaves the
+  cursor between them, and typing `</` completes the nearest tag still open.
+  Void elements (`<image>`, `<input>`) never get a closing tag. Turn it off with
+  `rux.autoClosingTags`.
+
 - **Syntax coloring**: the `<template>`, `<style>` and `<script>` sections and the
   Rux-specific tokens inside them (`{{ }}` interpolation, `r-for` / `r-if` /
   `r-model` directives, `@tap` handlers, `:prop` bindings, `signal(...)`).
 - **Snippets**: type `rux` for a full component scaffold; also `template`, `style`,
-  `script`, `signal`, `fn`, `rfor`, `rif`, `rmodel`, `tap`, `interp`, and element
-  tags (`text`, `view`, `button`).
+  `script`, `signal`, `computed`, `effect`, `mounted`, `fn`, `use`, `query`,
+  `emit`, `rfor`, `rif`, `rmodel`, `rselect`, `rcheckbox`, `tap`, `interp`, and
+  element tags (`text`, `view`, `button`, `path`, `slot`, `router`, `to`).
+  For the v0.7 surface: `guard` for a route that refuses, `rtransition` with
+  `transitionrules` for the three rules an enter/leave animation needs, `sticky`
+  for a heading that rides its scroller's edge, and `pathbound` for geometry
+  that morphs.
 - **Folding** of the three sections, HTML-style tag indentation, and bracket/quote
   auto-close.
 - **Format Document** (`Shift+Alt+F`): runs `rux fmt`. It re-indents the
@@ -66,9 +104,18 @@ has. Live diagnostics are a job for the language server.
 
 ```
 cd editors/vscode
-npx @vscode/vsce package     # produces rux-<version>.vsix
-code --install-extension rux-0.2.0.vsix
+npx @vscode/vsce package     # produces ruxlang-<version>.vsix
+code --install-extension ruxlang-0.4.0.vsix
 ```
+
+If a Marketplace copy is already installed, uninstall it first
+(`code --uninstall-extension Ruxlang.ruxlang`); VS Code will otherwise prefer
+whichever version is higher, and a local draft is usually the lower number.
+
+Run `Rux: Show Vocabulary Source` from the command palette to see whether the
+completions are coming from the copy bundled with the extension or from the
+`rux` on your PATH. On a branch build they should say the branch's version, and
+if they do not, the binary is not being found.
 
 Then open any `.rux` file. Publishing to the Marketplace is optional and needs a
 publisher account.

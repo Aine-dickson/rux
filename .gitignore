@@ -11,3 +11,10 @@ Cargo.lock.orig
 # Release artifacts are built on demand, not committed.
 /dist/
 *.vsix
+
+/.claude
+
+# Local editor settings. `.vscode/settings.json` here points `rux.path` at a
+# branch build by absolute path, which is right on one machine and wrong on
+# every other, and it spells out a home directory on a public repo.
+/.vscode/

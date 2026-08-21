@@ -1,0 +1,123 @@
+<template>
+  <screen class="app">
+    <text class="title">one shape becoming another</text>
+    <text class="lead">Tap to walk the shape on. `transition: d` animates the geometry itself, and the rule is the one every other animatable value follows: two paths interpolate when their sequences of commands match, and anything else jumps.</text>
+
+    <view class="stage">
+      <path class="shape" :d="shapes[at].d" :class="#{ warm: shapes[at].warm }" alt="a shape that morphs between a square, a circle and a blob" />
+    </view>
+
+    <view class="row">
+      <view class="btn" @tap="at = (at + 1) % shapes.length">
+        <text class="btn-text">next shape</text>
+      </view>
+      <text class="name">{{ shapes[at].name }}</text>
+    </view>
+
+    <!-- Same three shapes, drawn small and unfilled, so what "the same sequence
+         of commands" means is visible rather than only asserted. Each one is a
+         move, four curves and a close. -->
+    <view class="strip">
+      <path class="glyph" r-for="s in shapes" r-key="s.name" :d="s.d" />
+    </view>
+    <text class="foot">A square written with four sides and a circle written with four quarter-turn arcs have the same sequence, so one becomes the other. Nothing is resampled and no correspondence is guessed: writing two shapes with matching commands is the discipline every morphing tool already imposes.</text>
+  </screen>
+</template>
+
+<style>
+  .app {
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+    padding: 28px;
+    background: #1e1e2e;
+  }
+
+  .title { color: #cdd6f4; font-size: 22px; font-weight: 700; }
+  .lead { color: #9399b2; font-size: 13px; max-width: 560px; }
+  .foot { color: #6c7086; font-size: 12px; max-width: 560px; }
+  .row { display: flex; align-items: center; gap: 14px; }
+  .name { color: #a6e3a1; font-size: 14px; font-weight: 700; }
+
+  .btn {
+    padding: 10px 16px;
+    background: #313244;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: background 150ms ease-out;
+  }
+
+  .btn:hover { background: #45475a; }
+  .btn-text { color: #cdd6f4; font-size: 14px; }
+
+  .stage {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 200px;
+    height: 200px;
+    padding: 50px;
+    background: #181825;
+    border-radius: 16px;
+  }
+
+  /* The geometry, the fill and the outline all animate, and all three are
+     ordinary transitions on ordinary properties. `d` is the only one of them
+     that is not a style property, and it is spelled the same way anyway
+     because an author asking for a shape to morph is asking for exactly what
+     `transition` means everywhere else. */
+
+  .shape {
+    width: 100px;
+    height: 100px;
+    fill: #89b4fa;
+    stroke: #cdd6f4;
+    stroke-width: 2px;
+    stroke-linejoin: round;
+    transition: d 600ms ease-out, fill 600ms ease-out, stroke-width 600ms ease-out;
+  }
+
+  /* Paint is CSS, so a bound `:class` restyles a path exactly as it restyles a
+     box, and the colour walks across with the shape. */
+  .shape.warm { fill: #f9e2af; stroke-width: 5px; }
+  .strip { display: flex; align-items: center; gap: 14px; }
+
+  .glyph {
+    width: 44px;
+    height: 44px;
+    transform: scale(0.44);
+    fill: none;
+    stroke: #6c7086;
+    stroke-width: 4px;
+    stroke-linejoin: round;
+  }
+</style>
+
+<script>
+  /* Three shapes, each a move, four curves and a close. The square's sides are
+     straight and the circle's are quarter-turn arcs, and after parsing both are
+     four cubics, which is what makes them interpolate.
+
+     Every one of them starts at the top middle and runs clockwise. That is not
+     decoration: the correspondence between two shapes is command by command, so
+     a shape that started at a corner would morph by turning inside out. */
+  let shapes = signal([
+      #{
+        name: "a square",
+        warm: false,
+        d: "M 50 0 L 100 0 L 100 100 L 0 100 L 0 0 Z",
+      },
+      #{
+        name: "a circle",
+        warm: false,
+        d: "M 50 0 A 50 50 0 0 1 100 50 A 50 50 0 0 1 50 100 A 50 50 0 0 1 0 50 A 50 50 0 0 1 50 0 Z",
+      },
+      #{
+        name: "a blob",
+        warm: true,
+        d: "M 50 0 C 96 4 108 44 88 64 C 74 78 74 108 44 96 C 18 86 -6 76 4 48 C 12 24 4 6 50 0 Z",
+      },
+  ]);
+
+  let at = signal(0);
+</script>

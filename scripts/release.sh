@@ -54,10 +54,21 @@ gate_version() {
   # Every intra-workspace dependency must match exactly: a plain X.Y.Z
   # requirement does not match an X.Y.Z-dev prerelease, so a half-done bump
   # builds locally and breaks on publish.
+  #
+  # Matched on `path = "crates/`, not on the dependency's name. The name was the
+  # rule until `rhai = { package = "rux-rhai", … }` was added: an intra-workspace
+  # crate can be declared under an alias, so a name-shaped rule silently stops
+  # seeing it, and a dependency this gate cannot see is exactly the one that
+  # ships still saying `-dev`. Every workspace crate has a `crates/` path and no
+  # third-party dependency does, so the path is the honest invariant.
+  #
+  # `rux-highlight` is unversioned (it is `publish = false`), so the `version = `
+  # filter drops it rather than failing it.
   local bad
-  bad="$(grep -nE '^rux-[a-z]+ = \{ version = ' Cargo.toml | grep -v "\"$want\"" || true)"
+  bad="$(grep -nE '^[a-z_-]+ = \{ .*path = "crates/' Cargo.toml \
+         | grep 'version = ' | grep -v "\"$want\"" || true)"
   [[ -z "$bad" ]] || die "workspace.dependencies disagree with the version:"$'\n'"$bad"
-  ok "version is $want, and all rux-* dependencies agree"
+  ok "version is $want, and every workspace dependency agrees"
 }
 
 gate_post() {
@@ -73,6 +84,64 @@ gate_post() {
 gate_docs_synced() {
   ./site/sync-docs.sh --check >/dev/null || die "site/ is out of sync with docs/; run ./site/sync-docs.sh"
   ok "generated site pages match docs/"
+
+  # A fence that says it is a file has to be that file. `/recipes/message-list/`
+  # headed a 53-line abridgement of a 179-line example "The whole file", which
+  # was a documentation nit right up until every fence grew a Copy button and a
+  # Try it link: both hand the fence to the playground, so a reader copying "the
+  # whole file" got an unstyled screen that looks exactly like a broken renderer.
+  # Running the page's own code in a desktop window rendered it the same way,
+  # which is how it was pinned on the page rather than the runtime.
+  ./site/sync-examples.sh --check >/dev/null     || die "a code fence does not match the file it names; run ./site/sync-examples.sh"
+  ok "every fence that names a file carries that file"
+
+  # Zola validates `@/page.md` links and ignores absolute ones, which is every
+  # link `sync-docs.sh` writes. Eleven dead anchors into `/why/` shipped and
+  # stayed live under a green build because of that, so this is checked here
+  # instead. See the note at the top of site/check-links.py.
+  local py=""
+  for candidate in python3 python; do
+    command -v "$candidate" >/dev/null 2>&1 && { py="$candidate"; break; }
+  done
+  if [[ -n "$py" ]]; then
+    "$py" site/check-links.py >/dev/null || die "the site has broken internal links; run $py site/check-links.py"
+    ok "every internal site link resolves"
+  else
+    ok "generated site pages match docs/ (no python, link check skipped)"
+  fi
+}
+
+gate_editor() {
+  # The extension's completions come from `rux vocab`, so a property honored in
+  # `crates/rux-style` and not regenerated here is a property the editor will
+  # not offer. Same class of drift as the docs gate above, and the reason it is
+  # a gate at all is that this drift already shipped once: the extension's
+  # hand-kept void-tag list missed `<image>` for two releases.
+  ./scripts/sync-vocabulary.sh --check >/dev/null \
+    || die "editors/vscode/vocabulary.json is stale; run ./scripts/sync-vocabulary.sh"
+  # The TextMate grammar has two consumers: VS Code, and Zola's highlighter on
+  # the website, which reads its own copy under `site/`. They are the same file
+  # and nothing but a line in a README kept them the same file, so a grammar
+  # edit that coloured the editor and not the docs stayed invisible until
+  # somebody happened to look at a code fence.
+  #
+  # Compared with the carriage returns stripped, for the reason
+  # `sync-vocabulary.sh --check` documents at length: with `core.autocrlf=true`
+  # a raw `diff` calls the two copies different on every Windows run.
+  if ! diff -u <(tr -d '\r' < editors/vscode/syntaxes/rux.tmLanguage.json) \
+               <(tr -d '\r' < site/syntaxes/rux.tmLanguage.json) >/dev/null 2>&1; then
+    die "site/syntaxes/rux.tmLanguage.json is stale; copy editors/vscode/syntaxes/rux.tmLanguage.json over it"
+  fi
+  # Pure functions over a string, no framework and no node_modules. A directory
+  # argument does not resolve on Windows, so the files are globbed instead,
+  # which also means a new test file runs here without this line being edited.
+  if command -v node >/dev/null 2>&1; then
+    node --test editors/vscode/test/*.test.js >/dev/null \
+      || die "the VS Code extension's tests fail"
+    ok "extension vocabulary and grammar current, extension tests pass"
+  else
+    ok "extension vocabulary and grammar current (node absent, tests skipped)"
+  fi
 }
 
 gate_build() {
@@ -105,9 +174,16 @@ relock() {
 }
 
 gate_tests() {
-  cargo test --workspace >/dev/null 2>&1 || die "cargo test --workspace is not green"
+  # Output is kept and shown on failure. Swallowing it turned a one-off cold
+  # -worktree hiccup into "not green" with nothing to act on, which is worse
+  # than the failure itself on a release morning.
+  local out
+  out="$(cargo test --workspace 2>&1)" || {
+    echo "$out" | grep -E '^(error|test result: FAILED|---- .* stdout)' -A 6 | head -40 >&2
+    die "cargo test --workspace is not green"
+  }
   local count
-  count="$(cargo test --workspace 2>&1 | grep -cE '^test .* ok$' || true)"
+  count="$(echo "$out" | grep -cE '^test .* ok$' || true)"
   ok "cargo test --workspace green ($count tests)"
 }
 
@@ -116,14 +192,18 @@ gate_wasm() {
   # the suite compiles for wasm32, so nothing else notices.
   rustup target list --installed | grep -q wasm32-unknown-unknown \
     || { echo "   -- wasm32 target not installed, skipping"; return; }
-  cargo check -p rux-web --target wasm32-unknown-unknown >/dev/null 2>&1 \
-    || die "rux-web does not compile for wasm32; the web build is part of the release"
+  local out
+  out="$(cargo check -p rux-web --target wasm32-unknown-unknown 2>&1)" || {
+    echo "$out" | grep '^error' -A 6 | head -30 >&2
+    die "rux-web does not compile for wasm32; the web build is part of the release"
+  }
   ok "the web build compiles"
 }
 
 # The gates that are true of a healthy tree on any day, release or not.
 run_verify() {
   gate_docs_synced
+  gate_editor
   gate_build
   gate_tests
   gate_wasm
@@ -151,9 +231,21 @@ cmd_freeze() {
   # Releasing is what drops the -dev suffix: between releases the workspace
   # carries X.Y.Z-dev, which is the line being built rather than a release.
   sed -i -E "s/^version = \"$version-dev\"/version = \"$version\"/" Cargo.toml
-  sed -i -E "s/^(rux-[a-z]+ = \{ version = )\"$version-dev\"/\1\"$version\"/" Cargo.toml
+  # The dependency name is deliberately loose here, so an intra-workspace crate
+  # declared under an alias (`rhai = { package = "rux-rhai", … }`) is bumped too.
+  # Precision comes from `"$version-dev"` on the right: nothing outside this
+  # workspace carries that string.
+  sed -i -E "s/^([a-z_-]+ = \{ (package = \"[a-z-]+\", )?version = )\"$version-dev\"/\1\"$version\"/" Cargo.toml
   gate_version "$version"
   relock
+
+  # The vocabulary the extension ships carries the workspace version, so
+  # dropping `-dev` makes the committed copy stale by definition. `relock` is
+  # here for exactly the same reason and was not enough on its own: the first
+  # v0.7.0 freeze packed the capsule, ran the gates, and failed on a file the
+  # freeze itself had just invalidated. Anything the version number reaches has
+  # to be regenerated between the drop and the gates, not by hand afterwards.
+  ./scripts/sync-vocabulary.sh >/dev/null     || die "could not regenerate the extension vocabulary after the version drop"
 
   # The post is packed as a draft. Zola builds future-dated pages, so a date
   # alone will not hold it; `draft = true` is what keeps it unpublished, and
@@ -188,7 +280,10 @@ cmd_open_next() {
   local next="$version"
   # The capsule to continue *from* is the release just packed, not the version
   # being opened. Given explicitly, or the newest capsule there is.
-  local from_version="${3:-}"
+  # $1: the dispatcher passes the trailing argument through, and this function
+  # is reached with it as its first. Reading $3 made "name a capsule
+  # explicitly" unreachable, so it always fell back to the newest one.
+  local from_version="${1:-}"
   local from
   if [[ -n "$from_version" ]]; then
     from="release/v$from_version"
@@ -243,7 +338,9 @@ EOF
 # ---------------------------------------------------------------------------
 
 cmd_ship() {
-  local push="${3:-}"
+  # $2, not $3: the dispatcher hands this function (version, flag). Reading $3
+  # meant `--push` was silently ignored on every release that used it.
+  local push="${2:-}"
   [[ -z "$(git status --porcelain)" ]] || die "working tree is dirty; commit or stash first"
   git rev-parse --verify --quiet "$branch" >/dev/null || die "no capsule branch $branch"
   git rev-parse --verify --quiet "refs/tags/$tag" >/dev/null && die "$tag already exists"
@@ -311,9 +408,18 @@ LAYERS=(
 # Whether this exact version is already on the index. Publishing is a one-way
 # door: a version cannot be replaced, only yanked, so a re-run must skip what
 # it already did rather than fail on it.
+#
+# The User-Agent is required, not politeness: crates.io answers 403 to an API
+# request that does not identify itself, and curl sends none by default here.
+# Without it this function returns false for every crate that exists, which
+# makes `wait_for_index` block for five minutes and then declare a crate it had
+# just published missing. That is exactly how the v0.6.0 publish stalled after
+# its first layer.
+UA="rux-release-script (https://ruxlang.dev)"
+
 on_index() {
   local crate="$1" want="$2" code
-  code="$(curl -s -o /dev/null -w '%{http_code}' \
+  code="$(curl -s -A "$UA" -o /dev/null -w '%{http_code}' \
     "https://crates.io/api/v1/crates/$crate/$want" 2>/dev/null || echo 000)"
   [[ "$code" == "200" ]]
 }
@@ -328,7 +434,10 @@ wait_for_index() {
 }
 
 cmd_publish() {
-  local mode="${3:-}"
+  # $2, not $3. The same off-by-one as cmd_ship, and worse here: it made
+  # `publish --execute` a dry run that exits 0, so a release looked published
+  # and nothing had been.
+  local mode="${2:-}"
   git rev-parse --verify --quiet "refs/tags/$tag" >/dev/null \
     || die "no tag $tag; publish what was shipped, not what is lying around"
 
@@ -394,7 +503,7 @@ case "${1:-}" in
     echo
     ;;
   freeze)    cmd_freeze ;;
-  open-next) cmd_open_next ;;
+  open-next) cmd_open_next "${3:-}" ;;
   check)     cmd_check "$version" ;;
   ship)      cmd_ship "$version" "${3:-}" ;;
   publish)   cmd_publish "$version" "${3:-}" ;;

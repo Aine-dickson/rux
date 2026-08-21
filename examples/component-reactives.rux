@@ -1,0 +1,48 @@
+<template>
+  <screen class="app">
+    <text class="title">computed and effect, inside a component</text>
+    <text class="lead">Each row derives its own line total and writes its own note. Both live in the component's script and run once per instance, in that instance's scope: the steppers move one row's numbers and leave the others alone. The sale switch is a document signal, and every row's effect is subscribed to it because every row read it.</text>
+
+    <view class="rows">
+      <cart-row :label="&quot;flat white&quot;" :price="4" />
+      <cart-row :label="&quot;sourdough&quot;" :price="6" />
+      <cart-row :label="&quot;olive oil&quot;" :price="11" />
+    </view>
+
+    <view class="btn" @tap="sale = !sale">
+      <text class="btn-label">toggle the sale</text>
+    </view>
+  </screen>
+</template>
+
+<style>
+  .app {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    padding: 28px;
+    background: #1e1e2e;
+  }
+
+  .title { color: #cdd6f4; font-size: 22px; font-weight: 700; }
+  .lead { color: #9399b2; font-size: 13px; max-width: 620px; }
+  .rows { display: flex; gap: 14px; align-items: flex-start; }
+
+  .btn {
+    padding: 8px 14px;
+    background: #89b4fa;
+    border-radius: 8px;
+    cursor: pointer;
+    max-width: 160px;
+  }
+
+  .btn:hover { background: #b4befe; }
+  .btn-label { color: #11111b; font-size: 12px; font-weight: 700; }
+</style>
+
+<script>
+  use components::cart_row;
+
+  let currency = signal("$");
+  let sale = signal(false);
+</script>

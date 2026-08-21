@@ -1,7 +1,7 @@
 <template>
   <screen class="app">
     <text class="count">{{ n }}</text>
-    <button class="btn" @tap="n = n + 1">
+    <button class="btn" @tap="n++">
       <text>Add one</text>
     </button>
   </screen>
@@ -31,4 +31,6 @@
 <script>
   // The smallest useful Rux app: a signal, a binding, and a tap handler.
   let n = signal(0);
+  // `n++` is `n = n + 1`. A handler can be any statement, and once it is more
+  // than one, give it a name and call it: see examples/battery.rux.
 </script>

@@ -1,6 +1,6 @@
 # 03. Guide
 
-> ⚠️ **Parts of this guide do not work as written.** It was authored before the
+> **Parts of this guide do not work as written.** It was authored before the
 > runtime existed. Most notably, the `fn drain() { level.update(...) }` pattern
 > **cannot work**: rhai functions can't read or mutate global state; state
 > changes go inline (`@tap="level = level - 1"`) or into a `host::` function.

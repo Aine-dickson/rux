@@ -5,9 +5,9 @@
 
     <view class="row">
       <view class="stepper">
-        <view class="btn" @tap="qty = qty - 1"><text class="btn-label">-</text></view>
+        <view class="btn" @tap="qty--"><text class="btn-label">-</text></view>
         <text class="qty">{{ qty }}</text>
-        <view class="btn" @tap="qty = qty + 1"><text class="btn-label">+</text></view>
+        <view class="btn" @tap="qty++"><text class="btn-label">+</text></view>
       </view>
       <text class="unit">x {{ price }} each</text>
     </view>

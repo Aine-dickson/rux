@@ -1,0 +1,112 @@
+<template>
+  <screen class="app">
+    <text class="title">transitions</text>
+    <text class="hint">Hover a card · tap the switch · a style change is walked, not jumped</text>
+
+    <view class="row">
+      <view class="card lift">
+        <text class="card-title">hover me</text>
+        <text class="card-body">Background, border and lift, 200ms ease-out.</text>
+      </view>
+      <view class="card slow">
+        <text class="card-title">slowly</text>
+        <text class="card-body">The same change over 900ms, so the walk is visible.</text>
+      </view>
+      <view class="card instant">
+        <text class="card-title">no transition</text>
+        <text class="card-body">Unchanged behaviour: the style lands on the next frame.</text>
+      </view>
+    </view>
+
+    <view class="row">
+      <view class="switch" :class="#{ on: on }" @tap="on = !on">
+        <view class="knob"></view>
+      </view>
+      <text class="label">tap: the knob slides and the track fills</text>
+    </view>
+
+    <view class="panel" :class="#{ open: on }">
+      <text class="card-body">Height, padding and opacity together, all from one signal.</text>
+    </view>
+  </screen>
+</template>
+
+<style>
+  .app {
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+    padding: 32px;
+    background: #1e1e2e;
+  }
+
+  .title { color: #cdd6f4; font-size: 22px; font-weight: 700; }
+  .hint { color: #6c7086; font-size: 13px; }
+  .label { color: #a6adc8; font-size: 14px; }
+  .row { display: flex; align-items: center; gap: 16px; }
+
+  /* A transition names the properties to walk and how long to take. It is a
+     property of the element, not of the change: whatever moves an element's
+     style, a signal or a pseudo-class, animates the same way. */
+
+  .card {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    width: 100%;
+    max-width: 230px;
+    padding: 16px;
+    background: #313244;
+    border: 2px solid #313244;
+    border-radius: 10px;
+  }
+
+  .card-title { color: #cdd6f4; font-size: 16px; font-weight: 700; }
+  .card-body { color: #9399b2; font-size: 13px; }
+  .card:hover { background: #45475a; border-color: #89b4fa; transform: translateY(-4px); }
+
+  .lift { transition: background-color 200ms ease-out, border-color 200ms ease-out, transform 200ms ease-out; }
+  .slow { transition: all 900ms ease-in-out; }
+
+  /* The switch: one class flip, three properties. */
+
+  .switch {
+    width: 56px;
+    height: 30px;
+    padding: 3px;
+    background: #45475a;
+    border-radius: 15px;
+    cursor: pointer;
+    transition: background-color 180ms ease-out;
+  }
+
+  .switch.on { background: #a6e3a1; }
+
+  .knob {
+    width: 24px;
+    height: 24px;
+    background: #cdd6f4;
+    border-radius: 12px;
+    transition: transform 180ms ease-out, background-color 180ms ease-out;
+  }
+
+  .switch.on .knob { transform: translateX(26px); background: #11111b; }
+
+  /* Opening: the panel is a strip of nothing until the same signal opens it. */
+
+  .panel {
+    height: 0;
+    padding: 0 16px;
+    overflow: clip;
+    opacity: 0;
+    background: #313244;
+    border-radius: 10px;
+    transition: height 250ms ease-out, padding 250ms ease-out, opacity 250ms ease-out;
+  }
+
+  .panel.open { height: 60px; padding: 16px; opacity: 1; }
+</style>
+
+<script>
+  let on = signal(false);
+</script>
