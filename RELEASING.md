@@ -131,7 +131,7 @@ Plan for that: publish a layer, wait for the index, then dry-run the next.
       `rux-parser`, `rux-reactive`, `rux-text`, `rux-layout`, `rux-fmt`
       → `rux-script`, `rux-paint` → `rux-style` → `rux-runtime`
       → `rux-shell` → `ruxlang`.
-- [ ] Expect throttling: crates.io rate-limits new crate names, so eleven in one
+- [ ] Expect throttling: crates.io rate-limits new crate names, so twelve in one
       sitting will stall partway. That is survivable precisely because the order
       is a staircase, pick up where it stopped.
 - [ ] Double-check the version. **crates.io is a one-way door**: yanking hides a
