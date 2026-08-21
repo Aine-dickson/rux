@@ -397,7 +397,11 @@ EOF
 #
 # rux-web and rux-highlight are `publish = false` on purpose and are not here.
 LAYERS=(
-  "rux-parser rux-reactive rux-text rux-layout rux-fmt"
+  # rux-rhai sits in the first layer because it depends on no workspace crate:
+  # it is a fork of rhai, and its dependencies are all upstream. rux-script
+  # depends on it, so it has to be on the index before the second layer runs,
+  # which the wait at the end of each layer takes care of.
+  "rux-parser rux-reactive rux-text rux-layout rux-fmt rux-rhai"
   "rux-script rux-paint"
   "rux-style"
   "rux-runtime"
