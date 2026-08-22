@@ -2306,6 +2306,12 @@ UI in Rux.
    It is also the item most able to eat a milestone alone, and a janky video
    element is worse than none.
 
+**Icons are the unscheduled prerequisite here.** A component set needs them
+and will otherwise grow its own, so the design note below argues them out
+in one place: which set, what the element looks like, and what fill and
+colour have to mean. It is deliberately not numbered into this milestone
+until the two open questions in it are checked.
+
 **Why a component set belongs before 1.0 rather than after it**, which is the
 user's argument and the strongest reason this milestone exists: building one
 *exercises* the language the way nothing else has. It is the first thing that
@@ -2316,6 +2322,153 @@ version that promises not to break. This is the same argument as
 [user tests](./08-user-tests.md) and [author notes](./09-author-notes.md), one
 level up: driving a feature finds what testing it does not, and building a
 library finds what driving a feature does not.
+
+---
+
+### Icons: pick a set and bundle it (proposed 2026-08-21, unscheduled)
+
+**The user's framing, 2026-08-21:** a simple and fast way to integrate icons is
+something that sells a UI language, and path and SVG shaping is already a Rux
+strength, so the two should meet. The starting proposal was a pipeline that
+converts Lucide to path data. The survey below says the instinct is right and
+the set is wrong.
+
+#### The finding that decides everything else
+
+**Solid and outline are different artwork, not a render mode.** They cannot be
+derived from one another. Tabler's `heart` is the clearest proof, since the two
+variants share a name, a grid, and nothing else:
+
+    outline  M19.5 12.572l-7.5 7.428l-7.5 -7.428a5 5 0 1 1 7.5 -6.566a5 5 0 1 1 7.5 6.572
+    filled   M6.979 3.074a6 6 0 0 1 4.988 1.425l.037 .033l.034 -.03a6 6 0 0 1 ...
+
+Different commands, different point counts, different geometry. So "let the
+author choose solid or outline" is not a switch on the renderer: it is a
+commitment to ship both sets of artwork, and it makes *which icon set* the
+first decision rather than a later one.
+
+#### The survey, 2026-08-21
+
+Checked by fetching the actual SVG files and counting the elements inside them,
+not by reading what each project says about itself. Rux draws `<path>` and
+nothing else, so the element mix is the whole question.
+
+- **Lucide.** ISC, roughly 1,600 icons, a fork of Feather. **Outline only:
+  there is no solid variant.** Mixes `<circle>`, `<rect>`, `<line>` and
+  `<polyline>` in with `<path>`, so it cannot be drawn by Rux without a
+  conversion step first. Weakest candidate on both axes, despite being the
+  obvious name.
+- **Tabler.** MIT, 6,100+ outline icons and 1,053 filled companions on the same
+  24x24 grid at stroke 2. **Path only, in both variants**, checked across
+  `heart`, `camera`, `circle-check`, `settings` and `user`. Nothing to convert.
+- **Phosphor.** MIT, 1,248 icons in six weights (thin, light, regular, bold,
+  fill, duotone), and every icon ships every weight as an enforced project rule
+  rather than as a best effort. **Path only** at every weight. 256x256 viewBox.
+  Duotone is two paths with the lower one at `opacity="0.2"`, so it is one
+  colour and not two.
+
+#### Recommendation
+
+**Tabler or Phosphor. Not Lucide.** The pipeline the proposal was built around
+turns out to be a cost only Lucide imposes, and it buys an icon set that still
+cannot answer the solid-versus-outline question. Either alternative is
+path-only, MIT, and drops in as data with no conversion at all.
+
+Choose between them on what the axis should be: **Phosphor** if the answer is a
+weight scale, which is a better answer than a binary and is uniform across every
+icon; **Tabler** if the answer is breadth, at five times the icon count but with
+filled coverage on only a sixth of the set.
+
+#### Why this is unusually cheap for Rux
+
+Paint is CSS in Rux, and `fill`, `stroke` and `stroke-width` cascade and inherit
+like everything else. An icon therefore takes its colour from the surrounding
+text with no per-icon plumbing, which is exactly the arrangement these sets
+expect when they write `currentColor`. The capability that makes this work
+already shipped in v0.7 as part of `<path>`.
+
+#### The authoring surface
+
+`<icon set="tabler" name="heart" variant="filled" />`, as a built-in element,
+with the set and default variant declared once in `rux.toml`.
+
+**Not an import.** The obvious alternative, shipping a component library file
+that authors `use`, is structurally blocked: imports resolve downward only, with
+no `..` and no `super::`, so a shared icons file cannot live outside the project
+directory and be imported from it. A built-in element sidesteps that entirely,
+and it is also the fastest thing to type, which was the point.
+
+#### Fill, stroke and colour: what the element has to carry
+
+The user's question, and it has a sharper answer than expected. **The variant
+has to carry its own paint defaults**, because the two variants need opposite
+ones and getting it wrong fails loudly in both directions: an outline icon drawn
+with a fill is a black blob, and a solid icon drawn with `fill: none` is
+invisible.
+
+    outline    fill: none;         stroke: <inherited>;  stroke-width: 2
+    solid      fill: <inherited>;  stroke: none
+
+With those as defaults, colour specification is free and needs no new surface:
+overriding either is ordinary CSS, and it cascades, so setting a colour on a
+container colours every icon under it.
+
+Two structural consequences:
+
+- **An icon is often several paths.** Tabler's `camera`, `circle-check`,
+  `settings` and `user` are all two. So `<icon>` expands to more than one
+  `<path>` and has to behave as one styleable unit rather than leaking its
+  internals into the author's selectors.
+- **Duotone needs per-path paint.** Phosphor's duotone weight is two paths where
+  only the lower one is at `opacity: 0.2`. If Phosphor is chosen, the element
+  cannot paint all its children identically, and its generated paths need to be
+  individually addressable. This is the one case that argues for structure
+  inside the element, and it is worth settling before the set is picked rather
+  than after.
+
+#### Two things to verify before scheduling
+
+Both are unverified as of 2026-08-21, and neither is a guess about difficulty.
+They are the two places this could turn out to be blocked.
+
+1. **Sizing to the text.** An icon wants `width: 1em; height: 1em` so it matches
+   the type it sits beside. `em` and `rem` reached only half the box model when
+   they landed, and failed silently where they had not, so whether they work on
+   an element's `width` and `height` needs checking before the element is
+   designed around it. If they do not, icons are stuck at pixel sizes, which is
+   a considerably worse product.
+2. **viewBox normalization.** Tabler is 24x24 and Phosphor is 256x256. Either
+   the path data is scaled once at generation time, or the element carries a
+   per-set scale. The first is simpler and should be preferred unless something
+   forces the second.
+
+#### Where it fits
+
+**After v0.8, and most naturally in v0.11 beside the component set**, which
+needs icons anyway and would otherwise grow its own. The set should not be
+embedded whole: a few hundred KB of path data is nothing on disk and everything
+in a phone bundle, so the generated data wants tree-shaking by usage at build
+time, and that means it wants `rux build` to exist first. Dev mode resolves from
+the full set; a build embeds only the names actually referenced.
+
+#### The licence obligation, which is small and not optional
+
+Tabler and Phosphor are both MIT, Lucide is ISC, and all three require the
+copyright notice to travel with copies. Lucide additionally carries Feather's
+MIT notice for the 100+ icons derived from it. Whichever set is chosen, its
+notice ships in the bundle that carries the icons and is visible in the
+repository. This is easy to forget precisely because the icons arrive as
+generated data rather than as files someone checked in by hand.
+
+#### The part worth selling
+
+`transition: d` already morphs one path into another when the two share a
+sequence of commands. No icon library morphs: menu-to-close, play-to-pause and
+chevron rotation are hand-rolled in every ecosystem. If the generated set keeps
+command sequences aligned where two icons plausibly morph, `<icon>` gets a
+capability the React and Vue icon libraries structurally cannot match. That is a
+stronger pitch than having icons at all, and it costs whatever the alignment
+work costs, which is unknown and should be scoped before it is promised.
 
 ---
 
