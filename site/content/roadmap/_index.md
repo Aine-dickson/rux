@@ -2335,7 +2335,7 @@ library finds what driving a feature does not.
 
 ---
 
-### Icons: pick a set and bundle it (proposed 2026-08-21, unscheduled)
+### Icons: Tabler, bundled (decided 2026-08-21, unscheduled)
 
 **The user's framing, 2026-08-21:** a simple and fast way to integrate icons is
 something that sells a UI language, and path and SVG shaping is already a Rux
@@ -2384,10 +2384,70 @@ turns out to be a cost only Lucide imposes, and it buys an icon set that still
 cannot answer the solid-versus-outline question. Either alternative is
 path-only, MIT, and drops in as data with no conversion at all.
 
-Choose between them on what the axis should be: **Phosphor** if the answer is a
-weight scale, which is a better answer than a binary and is uniform across every
-icon; **Tabler** if the answer is breadth, at five times the icon count but with
-filled coverage on only a sixth of the set.
+**Chosen: Tabler**, on breadth. The reasoning and the numbers are below.
+
+Had the axis been weight rather than breadth, **Phosphor** would have won: six
+weights, uniform across every icon, is a better answer than a binary. It loses
+here on coverage, at 1,248 icons against Tabler's 5,130.
+
+#### Decided 2026-08-21: Tabler
+
+**The user's call, on abundance.** 5,130 outline icons is the widest coverage of
+any candidate, MIT, path only in both variants, on one 24x24 grid at stroke 2,
+with no conversion step between the published files and what Rux draws.
+
+Counted the same day, from the repository rather than from the marketing:
+
+    outline   5,130
+    filled    1,054
+    every one of the 1,054 filled names has an outline counterpart; zero orphans
+
+**Filled is a strict subset, not a parallel set**, and that is the fact the
+element has to be designed around. Roughly four icons in five exist in outline
+only. So the abundance is real and it is outline abundance, which is the right
+trade for a default UI set, but "solid or outline" is not a choice an author can
+make freely across the whole library.
+
+#### What a missing variant does
+
+**`variant="filled"` on an icon with no filled artwork is an error at build
+time, naming the icon. It does not fall back to outline.**
+
+The whole set is known when the build runs, so this is checkable then rather
+than discoverable in the window, and a silent fallback is exactly the failure
+class the language spent v0.7 removing: strict bindings exist because a typo
+that renders *something* is worse than one that stops. An author who wants the
+fallback writes it, and it reads as a decision rather than as luck.
+
+For the same reason **the default variant is outline**, in `rux.toml` and in the
+element. A default of filled would fail on four icons in five.
+
+#### The way forward, in order
+
+1. **Check `1em` sizing first.** Nothing else is worth designing until it is
+   known whether `width: 1em; height: 1em` works on an element. It is the
+   difference between an icon that matches the type beside it and one pinned to
+   pixels, and `em` and `rem` reached only half the box model when they landed.
+   This is a small experiment against the current build, not a feature.
+2. **Write the generator, in the Rux repository, run by nobody but Rux.** It
+   turns Tabler's `icons/outline` and `icons/filled` into one data file keyed by
+   name, each entry carrying the outline paths and the filled paths where they
+   exist. It records the Tabler version it read, and it emits the MIT notice
+   beside the data. Authors never run it and never see Tabler.
+3. **Add `<icon>`**, with `name`, `variant`, and the paint defaults each variant
+   needs. Multi-path icons expand to several `<path>` nodes behind one styleable
+   unit.
+4. **Tree-shake in `rux build`**, which is why this waits for v0.8's packaging
+   to exist. Dev resolves from the full set; a build embeds only the names
+   referenced. 5,130 icons of path data is nothing on disk and unacceptable in
+   a phone bundle.
+5. **Then scope the morph question**, which is the part worth selling and the
+   part whose cost is unknown: how many plausible icon pairs already share a
+   command sequence, and what it would take to align the ones that do not.
+
+Steps 1 and 2 are independent of `rux build` and can happen whenever. Step 3
+wants step 1 answered. Step 4 is the scheduling constraint, and step 5 should
+not be promised publicly until it has been measured.
 
 #### Why this is unusually cheap for Rux
 
