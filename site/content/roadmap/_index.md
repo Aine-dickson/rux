@@ -2496,10 +2496,111 @@ Two structural consequences:
   inside the element, and it is worth settling before the set is picked rather
   than after.
 
-#### Two things to verify before scheduling
+#### Both open questions answered in the window, 2026-08-21
 
-Both are unverified as of 2026-08-21, and neither is a guess about difficulty.
-They are the two places this could turn out to be blocked.
+**1. `em` works, everywhere it needs to. The earlier caution was out of date.**
+
+Driven in the window rather than read out of the source, each `em` box beside
+the `px` box it has to match:
+
+    A  width 1em @32   vs  32px    same
+    B  width 1em @16   vs  16px    same
+    C  width 1rem @32  vs  16px    same   (rem ignores the element, correctly)
+    D  height 2em @32  vs  64px    same
+    E  padding 1em @32 vs  32px    same
+    F  min-width 3em   vs  96px    same
+    G  max-width 2em   vs  64px    same
+
+The mechanism is a `resolve_em` pass that rewrites every property value against
+the element's own resolved font size before any length parser runs, so `em`
+reaches properties no parser was taught about individually. `font-size` resolves
+first, and against the *inherited* size, which is what `em` has to mean on the
+property that defines it. **So an icon can size itself to the text beside it,
+and the design does not have to fall back to pixels.**
+
+**2. Sizing an icon is `transform`, not `width`. This is the real constraint.**
+
+`width` and `height` on a `<path>` set the box the drawing sits in and **do not
+scale the drawing**. The geometry is in the path's own coordinates, `viewBox`
+was deliberately not built, and scaling is `transform` like it is on every other
+element. Confirmed in the window: two hearts in boxes of different sizes drew
+identically, and `transform: scale(3)` was what made one of them larger.
+
+This is already recorded as an open author note, and it decides part of the
+element's design:
+
+- **`<icon>` has to emit a `transform: scale(n)` of its own**, computed from the
+  requested size over the source grid's 24 units. An author writing
+  `width: 1em` on an icon and expecting it to scale would hit exactly the trap
+  the author note describes.
+- The size an author asks for and the scale the element applies are therefore
+  the same decision, which argues for a **`size` attribute** on `<icon>` rather
+  than leaving it to `width` in a stylesheet, where the two would drift apart
+  silently.
+- **`transform-origin` is parsed and not honored**, which the dev overlay warns
+  about. Scaling therefore happens about whatever origin the painter uses, and
+  that has to be checked before an icon's box and its drawing can be made to
+  agree. This is a dependency, not a detail.
+
+#### The morph pitch does not survive its own data
+
+Measured across all 5,130 outline icons, since `transition: d` morphs only when
+two paths share a sequence of commands and cuts otherwise.
+
+    single-path icons                          357 of 5,130   (6%)
+    icons sharing a signature with any other   133 of 5,130   (2%)
+    outline -> filled, same name, same signature   0 of 1,054
+
+Paths per icon runs 1: 357, 2: 946, 3: 1,164, 4: 1,042, 5: 689, and on to eight.
+**Ninety-four per cent of the set is multi-path**, so `<icon>` emitting several
+`<path>` nodes is the normal case rather than the exception.
+
+Of the twelve swaps an author actually reaches for, **three morph and nine cut**:
+
+    chevron-down -> chevron-up      morph
+    chevron-left -> chevron-right   morph
+    arrow-up     -> arrow-down      morph
+    menu-2 -> x, player-play -> player-pause, plus -> minus, sun -> moon,
+    eye -> eye-off, check -> x, volume -> volume-off, lock -> lock-open   cut
+
+The three that work are all **rotations of one shape**, which is to say they are
+the three cases `transform: rotate()` already handles without touching `d` at
+all. Every swap that morphing was supposed to sell, menu into close and play
+into pause first among them, is in the cut column. And the variant swap never
+morphs: **zero of 1,054** outline and filled pairs share a signature, which
+follows from them being different artwork.
+
+Verified in the window as well as in the data: a chevron pair interpolated
+smoothly over 900ms while a heart-to-star swap in the same document was complete
+within 130ms, which is the documented cut and not a defect.
+
+**So the morph capability is real and the pitch built on it was wrong.** Stated
+plainly here because it was nearly promised in a release post.
+
+#### The solution, which is cheap for the same reason the set was
+
+The engine's rule is a constraint on the *data*, and Rux generates the data. So
+alignment is a generator problem rather than a runtime one:
+
+**Emit aligned variants for a curated list of morph pairs.** For each declared
+pair, normalize both sides to a common command sequence at generation time by
+converting to cubic segments and matching counts. The pair then satisfies the
+engine's rule by construction, and the runtime needs no new capability at all.
+
+Scoped deliberately small: the twenty or so swaps a real UI uses, not all 5,130
+icons, whose all-cubic form would bloat the data for pairs nobody will ever
+morph. Multi-path pairs also need their paths matched to each other and their
+leftovers faded, which is why this is a bounded feature with a list rather than
+a property of the whole set.
+
+**What to promise publicly:** icons that inherit their colour and size to the
+text, and a named set of pairs that animate between states. Not "icons morph".
+
+#### The two questions this was gated on (both now answered, above)
+
+Kept as written on the day, because what they were before they were checked is
+part of the record. One turned out fine and one turned out to be the constraint
+the element is designed around.
 
 1. **Sizing to the text.** An icon wants `width: 1em; height: 1em` so it matches
    the type it sits beside. `em` and `rem` reached only half the box model when
