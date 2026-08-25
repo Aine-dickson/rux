@@ -158,16 +158,21 @@ Notes:
 
 - `{{ expr }}` and `:attr` / `r-model` / `r-for` accept **script expressions**
   evaluated in the component's [scope](#scripting-and-the-host).
-- `r-for` supports an index form: `r-for="(item, i) in items"`.
-- Elements in an `r-for` should carry a stable `:key` where identity matters
-  (reordering, animation).
+- `r-for` was designed with an index form, `r-for="(item, i) in items"`.
+  **It was never built.** `r-for` binds exactly one name, and writing the tuple
+  binds a local called `(item, i)` with neither `item` nor `i` in it. The
+  runtime says so from v0.7.1; before that it only reported `i` as undefined.
+- Elements in an `r-for` should carry a stable key where identity matters
+  (reordering, animation). **It shipped as `r-key`, not `:key`**, because it
+  names what a row *is* rather than binding an attribute on it. See
+  [As Built](/reference/).
 - `r-if` removes the element from the tree; `r-show` keeps it and toggles
   visibility, the same distinction Vue draws.
 
 ```xml
 <view role="list" class="feed">
   <view role="listitem" class="tile"
-        r-for="d in devices" :key="d.id" @tap="select(d)">
+        r-for="d in devices" r-key="d.id" @tap="select(d)">
     <text role="heading">{{ d.name }}</text>
     <text role="paragraph" r-if="d.online">online</text>
     <text role="paragraph" r-else>offline</text>

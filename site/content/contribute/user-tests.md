@@ -449,6 +449,39 @@ directory and took the first entry, and an install leaves the previous version's
 directory behind. It now reads VS Code's own `extensions.json`, and names the
 leftovers rather than being fooled by them.
 
+## v0.7.1
+
+### The unhonored-property message, split three ways (2026-08-25)
+
+Driven with `rux check` on one file carrying all three cases at once, which is
+the only way to see that they now read as three different problems.
+
+| Case | Hardware | Outcome |
+|---|---|---|
+| `outline: 1px solid red`, real CSS Rux has not built | desktop, `rux check` | Passed: "real CSS that Rux does not honor yet", and it promises nothing more |
+| `paddding: 8px`, a typo | desktop, `rux check` | Passed: "is not a CSS property Rux knows", and it offered `padding` |
+| `colour: #fff`, the other spelling | desktop, `rux check` | Passed: offered `color`. Worth having, since it is the mistake an author makes once a week |
+| `florble: 3`, invented | desktop, `rux check` | Passed: reported unknown and suggested nothing, rather than reaching for the nearest unrelated name |
+| All five in one file | desktop, `rux check` | Passed: five warnings, each on its own line number |
+
+**Found while writing the reference for it:** the first chapter of `/learn` told
+the reader to add `line-height: 2` and watch the terminal warn. `line-height`
+has been honored since v0.5, so the demonstration printed nothing at all and had
+been wrong through two releases. Nobody drove the tutorial's own instruction.
+
+### The `r-for` tuple form (2026-08-25)
+
+| Case | Hardware | Outcome |
+|---|---|---|
+| `r-for="(pot, index) in pots"` | desktop, `rux check` | Passed: says the form is unsupported and names `pot` and `index` as the two things that do not exist because of it. Before this it only said `index` was undefined and advised declaring it as a signal |
+| The same file's follow-on warnings | desktop, `rux check` | Passed: the two undefined-name warnings still appear and now read as consequences of the first, rather than as the whole story |
+| `r-for="pot in pots"`, the ordinary form | desktop, `rux check` | Passed: silent, which is the half that would turn the fix into noise if it were wrong |
+
+**The spec was where the tuple form came from.** `docs/02-spec.md` said `r-for`
+"supports an index form" and used `:key` in its example, neither of which was
+ever built. An author who reads the reference and writes what it says is not
+making a mistake. Both lines are corrected.
+
 ## Standing gaps
 
 Cases nothing here can currently exercise. They are the shape of what v0.8 has

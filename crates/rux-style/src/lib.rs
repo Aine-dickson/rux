@@ -4085,6 +4085,41 @@ fn parse_for(expr: &str) -> Option<(&str, &str)> {
     Some((var.trim(), coll.trim()))
 }
 
+/// Say so when `r-for` was written with a destructuring or index form.
+///
+/// `r-for` binds exactly **one** name, and [`parse_for`] takes everything left
+/// of ` in ` as that name. So `r-for="(pot, index) in pots"` bound a local
+/// literally called `(pot, index)`, and both `pot` and `index` were then
+/// undefined. What the author saw was the undefined-variable warning for
+/// `index`, advising them to declare it in `<script>` as a signal, advice that
+/// is useless to someone reaching for a loop index and never once said that the
+/// tuple form is not supported.
+///
+/// The name is left bound as written rather than rejected, because the row
+/// still has to build so the rest of the document can be checked. The warning
+/// is the fix: it names what was actually bound, so the second warning about
+/// the undefined name reads as a consequence instead of a mystery.
+fn warn_if_destructuring_for(expr: &str, var: &str) {
+    let looks_like_a_tuple = var.starts_with('(') || var.contains(',');
+    if !looks_like_a_tuple {
+        return;
+    }
+    let names: Vec<&str> = var
+        .trim_start_matches('(')
+        .trim_end_matches(')')
+        .split(',')
+        .map(str::trim)
+        .filter(|n| !n.is_empty())
+        .collect();
+    let first = names.first().copied().unwrap_or("item");
+    warn(format!(
+        "`r-for=\"{expr}\"` binds one name and `{var}` is being taken as that whole name, \
+         so none of {} exists inside the row. `r-for` has no index or destructuring form: \
+         write `r-for=\"{first} in …\"` and reach the rest through `{first}`",
+        names.iter().map(|n| format!("`{n}`")).collect::<Vec<_>>().join(", ")
+    ));
+}
+
 /// Build a sequence of element children, applying the structural directives
 /// How an element declares that its appearance and disappearance are animated.
 ///
@@ -4485,6 +4520,7 @@ fn build_children(
         if let Some(for_expr) = el.attr("r-for") {
             in_chain = false;
             if let Some((var, coll)) = parse_for(for_expr) {
+                warn_if_destructuring_for(for_expr, var);
                 // The collection is a reconcilable read, not a force-rebuild one:
                 // it flows to the parent's structural deps (via the return), not to
                 // `reg.structural`.

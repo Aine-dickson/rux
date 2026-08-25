@@ -3161,6 +3161,50 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
+    /// `r-for` binds one name, so the tuple form bound a local literally called
+    /// `(pot, index)` and left both `pot` and `index` undefined. All an author
+    /// saw was the undefined-variable warning for `index`, telling them to
+    /// declare it in `<script>` as a signal, which is not a thing anyone
+    /// reaching for a loop index can act on. The warning has to say that the
+    /// form itself is unsupported.
+    #[test]
+    fn the_r_for_tuple_form_says_it_is_unsupported() {
+        let _ = take_warnings(); // the sinks are global; start from a known state
+        let doc = Document::from_source(
+            "<template><screen><text r-for=\"(pot, index) in pots\">{{ pot }}</text></screen>\
+             </template>\n<script>let pots = signal([\"a\", \"b\"]);</script>",
+        )
+        .expect("the row still builds, so the rest of the document can be checked");
+        let said = |needle: &str| doc.diagnostics.warnings.iter().any(|w| w.message.contains(needle));
+        assert!(
+            said("no index or destructuring form"),
+            "the warning must name the form, not the symptom: {:?}",
+            doc.diagnostics.warnings
+        );
+        assert!(
+            said("`pot`, `index`"),
+            "and must name what is undefined as a result: {:?}",
+            doc.diagnostics.warnings
+        );
+    }
+
+    /// The ordinary single-name form must stay silent, or the warning above is
+    /// noise on every list in every document.
+    #[test]
+    fn the_ordinary_r_for_form_warns_about_nothing() {
+        let _ = take_warnings();
+        let doc = Document::from_source(
+            "<template><screen><text r-for=\"pot in pots\">{{ pot }}</text></screen></template>\n\
+             <script>let pots = signal([\"a\", \"b\"]);</script>",
+        )
+        .expect("renders");
+        assert!(
+            !doc.diagnostics.warnings.iter().any(|w| w.message.contains("r-for")),
+            "nothing to say about a well-formed loop: {:?}",
+            doc.diagnostics.warnings
+        );
+    }
+
     /// From source there is no file, so there is nothing for the path to be
     /// relative to. The document still renders; it just says what it lost.
     #[test]
