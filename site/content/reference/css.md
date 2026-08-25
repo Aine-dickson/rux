@@ -12,24 +12,33 @@ flex-direction, justify-content, align-items, gap, row-gap, column-gap
 align-self, justify-self, justify-items, align-content
 flex-grow, flex-shrink, flex-basis, flex-wrap, flex (shorthand)
 grid-template-columns, grid-template-rows
-grid-column, grid-row (+ -start/-end)   (1 / 3, span 2, -1; no named lines)
+grid-column, grid-column-start, grid-column-end
+grid-row, grid-row-start, grid-row-end   (1 / 3, span 2, -1; no named lines)
 grid-auto-flow, grid-auto-rows, grid-auto-columns
 transform (translate/scale/rotate; visual only; hit regions aren't transformed)
-position (static|relative|sticky|absolute|fixed) + top/right/bottom/left, aspect-ratio
-width, height, min/max-width, min/max-height
-padding, margin        (shorthand 1–4 values + -top/-right/-bottom/-left)
-border, border-width, border-color, border-<side>, border-<side>-width
-background / background-color / background-image, opacity
+position (static|relative|sticky|absolute|fixed), top, right, bottom, left
+aspect-ratio
+width, height, min-width, max-width, min-height, max-height
+padding, padding-top, padding-right, padding-bottom, padding-left
+margin, margin-top, margin-right, margin-bottom, margin-left
+                       (each shorthand takes 1–4 values)
+border, border-width, border-color
+border-top, border-right, border-bottom, border-left
+border-top-width, border-right-width, border-bottom-width, border-left-width
+background, background-color, background-image, opacity
   (colour, linear-/radial-gradient, or url(…) image, cover-sized, clipped to corners)
 box-shadow (single, outer; inset parsed but not drawn)
 transition (property duration easing delay, comma-separated; see below)
-border-radius (1–4 diagonal shorthand + per-corner -top-left/-top-right/…)
+border-radius (1–4 diagonal shorthand)
+border-top-left-radius, border-top-right-radius
+border-bottom-right-radius, border-bottom-left-radius
 color, font-size, font-weight, font-family, font-style (italic), text-align
 letter-spacing, word-spacing, line-height, white-space (nowrap|pre)
-text-decoration (underline / line-through)                (color: hex, rgb()/rgba(), CSS names)
-overflow / overflow-x / overflow-y   (hidden|clip = clip; auto|scroll = scroll;
+text-decoration, text-decoration-line (underline / line-through; the longhand
+                       wins where both are set)  (color: hex, rgb()/rgba(), CSS names)
+overflow, overflow-x, overflow-y     (hidden|clip = clip; auto|scroll = scroll;
                                       both axes together; x and y can't differ)
-overflow-wrap (break-word), word-break (break-all)
+overflow-wrap (break-word), word-wrap (the legacy alias for it), word-break (break-all)
 cursor (pointer, on @tap boxes only)
 fill, fill-rule, stroke, stroke-width, stroke-linecap, stroke-linejoin
   (<path> only; see above)
