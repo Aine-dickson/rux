@@ -742,11 +742,25 @@ parses it and does name-matching + fallback; the generic families (`serif`,
 `font-size`. `color`/`font-size`/`font-family` are the three inheriting text
 properties.
 
-Anything else is **parsed but not honored**: but no longer *silently*: the
-runtime now prints one line per unhonored property (`rux: CSS property
-\`box-shadow\` is parsed but not yet honored …`), once each. Notably absent:
-`line-height`, `box-shadow`, gradients, `transform`, and CSS variables.
-`position` is no longer among them: all five values are honored.
+Anything else is **parsed but not honored**, and never *silently*: the runtime
+prints one line per unhonored property, once each. It says which of three things
+happened, because they are not the same problem:
+
+| You wrote | It says |
+|---|---|
+| `outline: 1px solid red` | ``CSS property `outline` is real CSS that Rux does not honor yet, so it will have no effect`` |
+| `paddding: 8px` | ``` `paddding` is not a CSS property Rux knows, so it will have no effect. Did you mean `padding`? ``` |
+| `florble: 3` | ``` `florble` is not a CSS property Rux knows, so it will have no effect ``` |
+
+The middle case is the one worth having. Until v0.7.1 a typo got the same "not
+yet honored" line a real unbuilt property got, so it read as a feature on its
+way and an author could wait for a release that was never going to fix it.
+
+Real CSS Rux has not built includes `outline`, `z-index`, `box-sizing`,
+`transform-origin`, `visibility`, `filter`, `text-transform`, `background-size`,
+`list-style` and the `animation` family. `line-height`, `box-shadow`,
+gradients, `transform`, CSS variables and all five `position` values used to be
+on that list and are honored now.
 
 Colours accept `#hex` (3/6/8-digit), `rgb()`/`rgba()`, and the full CSS named-
 colour list (`red`, `rebeccapurple`, …). The named list matters because

@@ -2411,12 +2411,119 @@ pub fn animatable_properties() -> Vec<&'static str> {
     std::iter::once(AnimProp::All.name()).chain(AnimProp::EVERY.iter().map(|p| p.name())).collect()
 }
 
-/// Warn, once per property name, for the life of the process, that a parsed
-/// declaration is not honored. Deduped so a whole-tree rebuild (which reparses
-/// every sheet) doesn't repeat the same line on every keystroke.
 /// The inset longhands, in `Style::inset` order (top, right, bottom, left).
 const INSETS: [&str; 4] = ["top", "right", "bottom", "left"];
 
+/// Real CSS properties Rux parses and does not honor.
+///
+/// This exists to tell two failures apart. `outline` is CSS an author has every
+/// reason to expect, and the honest answer is that Rux has not built it yet;
+/// `paddding` is a typo, and the honest answer is that no such property exists.
+/// Before this list both produced the identical "parsed but not yet honored"
+/// line, so a typo was indistinguishable from a pending feature and read as a
+/// promise the roadmap had never made.
+///
+/// It does not have to be every property CSS defines, and deliberately is not:
+/// a name in neither list is reported as unknown, which is true of the long
+/// tail and useful for the typos. What belongs here is what an author actually
+/// reaches for. Adding a name here is also the first half of honoring it, and
+/// moving it to [`HONORED_PROPERTIES`] is the second.
+const UNIMPLEMENTED_PROPERTIES: &[&str] = &[
+    // Painting and compositing
+    "outline", "outline-color", "outline-offset", "outline-style", "outline-width",
+    "z-index", "filter", "backdrop-filter", "mix-blend-mode", "isolation",
+    "visibility", "clip-path", "mask", "text-shadow",
+    // Boxes
+    "box-sizing", "float", "clear", "order", "inset",
+    "place-items", "place-content", "place-self", "resize",
+    "border-style", "border-top-style", "border-right-style",
+    "border-bottom-style", "border-left-style",
+    // Backgrounds. `background-image` is honored and always covers its box, so
+    // the properties that would size or place it are the common near miss.
+    "background-size", "background-position", "background-repeat",
+    "background-attachment", "background-clip", "background-origin",
+    // Text
+    "text-transform", "text-overflow", "text-indent", "text-decoration-color",
+    "text-decoration-style", "vertical-align", "font-variant", "font-stretch",
+    "direction", "writing-mode", "user-select", "caret-color", "accent-color",
+    "appearance", "list-style", "list-style-type", "list-style-position",
+    // Motion. `transition` is honored; keyframe animation and the origin a
+    // transform turns about are not.
+    "transform-origin", "perspective", "perspective-origin", "will-change",
+    "animation", "animation-name", "animation-duration", "animation-delay",
+    "animation-timing-function", "animation-iteration-count", "animation-direction",
+    "animation-fill-mode", "animation-play-state",
+    // Other layout models
+    "object-fit", "object-position", "pointer-events", "scroll-behavior",
+    "columns", "column-count", "column-width", "table-layout",
+    "border-collapse", "border-spacing", "content",
+];
+
+/// Levenshtein distance, for the did-you-mean below.
+///
+/// Two rows rather than a full matrix: the operands are property names, so this
+/// runs on a warning path against a couple of hundred candidates and there is no
+/// reason to allocate a grid for it.
+fn edit_distance(a: &str, b: &str) -> usize {
+    let b: Vec<char> = b.chars().collect();
+    let mut previous: Vec<usize> = (0..=b.len()).collect();
+    let mut current = vec![0usize; b.len() + 1];
+    for (i, ca) in a.chars().enumerate() {
+        current[0] = i + 1;
+        for (j, &cb) in b.iter().enumerate() {
+            let substitute = previous[j] + usize::from(ca != cb);
+            current[j + 1] = substitute.min(previous[j + 1] + 1).min(current[j] + 1);
+        }
+        std::mem::swap(&mut previous, &mut current);
+    }
+    previous[b.len()]
+}
+
+/// The closest property name to `property`, if one is close enough to be worth
+/// suggesting.
+///
+/// The budget scales with the length of the name written, because a fixed
+/// distance of two is most of a short name and almost none of a long one:
+/// `gap` must not be offered for `top`, while `bordr-radius` should still find
+/// `border-radius`. An honored name beats an unimplemented one at the same
+/// distance, since suggesting something that works beats suggesting something
+/// else that also does nothing.
+fn nearest_property(property: &str) -> Option<&'static str> {
+    let budget = match property.chars().count() {
+        0..=4 => 1,
+        5..=8 => 2,
+        _ => 3,
+    };
+    let mut best: Option<(usize, bool, &'static str)> = None;
+    for (honored, name) in HONORED_PROPERTIES
+        .iter()
+        .map(|n| (true, *n))
+        .chain(UNIMPLEMENTED_PROPERTIES.iter().map(|n| (false, *n)))
+    {
+        let distance = edit_distance(property, name);
+        if distance > budget {
+            continue;
+        }
+        // Ranked on `!honored`, so `false` (an honored name) sorts first and
+        // wins a tie.
+        let candidate = (distance, !honored);
+        if best.is_none_or(|(d, unhonored, _)| candidate < (d, unhonored)) {
+            best = Some((candidate.0, candidate.1, name));
+        }
+    }
+    best.map(|(_, _, name)| name)
+}
+
+/// Warn, once per property name, for the life of the process, that a parsed
+/// declaration is not honored. Deduped so a whole-tree rebuild (which reparses
+/// every sheet) doesn't repeat the same line on every keystroke.
+///
+/// Three outcomes, not one. Honored says nothing; real-but-unbuilt says exactly
+/// that and promises nothing beyond it; an unrecognised name says it is
+/// unrecognised and offers the nearest thing that exists. The single message
+/// this replaced told an author with a typo that their property was "not yet
+/// honored", which sounds like a feature on its way and left them waiting for a
+/// release that was never going to fix it.
 fn warn_if_unhonored(property: &str) {
     use std::collections::HashSet;
     use std::sync::{Mutex, OnceLock};
@@ -2427,8 +2534,22 @@ fn warn_if_unhonored(property: &str) {
     if property.starts_with("--") || is_honored(property) {
         return;
     }
-    let message =
-        format!("CSS property `{property}` is parsed but not yet honored, it will have no effect");
+    let message = if UNIMPLEMENTED_PROPERTIES.contains(&property) {
+        format!(
+            "CSS property `{property}` is real CSS that Rux does not honor yet, so it \
+             will have no effect"
+        )
+    } else {
+        match nearest_property(property) {
+            Some(nearest) => format!(
+                "`{property}` is not a CSS property Rux knows, so it will have no effect. \
+                 Did you mean `{nearest}`?"
+            ),
+            None => {
+                format!("`{property}` is not a CSS property Rux knows, so it will have no effect")
+            }
+        }
+    };
     warn(message.clone());
     let seen = SEEN.get_or_init(|| Mutex::new(HashSet::new()));
     let Ok(mut seen) = seen.lock() else { return };
@@ -5829,6 +5950,53 @@ mod tests {
             matches!(Pseudo::parse("first-child"), Pseudo::Unknown(_)),
             "a pseudo-class Rux does not implement must still parse as Unknown"
         );
+    }
+
+    /// The three states an unhonored property can be in have to stay three.
+    ///
+    /// They were one message for a long time, so `outline` (real CSS, not
+    /// built), `paddding` (a typo) and `florble` (invented) all read as "parsed
+    /// but not yet honored", and an author with a typo waited for a release.
+    #[test]
+    fn unhonored_properties_report_three_different_things() {
+        use super::{nearest_property, is_honored, UNIMPLEMENTED_PROPERTIES};
+
+        // Real CSS, unbuilt: named as such, and never offered as a correction
+        // for itself.
+        assert!(UNIMPLEMENTED_PROPERTIES.contains(&"outline"));
+        assert!(UNIMPLEMENTED_PROPERTIES.contains(&"transform-origin"));
+
+        // A typo finds the property it was reaching for.
+        assert_eq!(nearest_property("paddding"), Some("padding"));
+        assert_eq!(nearest_property("bordr-radius"), Some("border-radius"));
+        assert_eq!(nearest_property("colour"), Some("color"));
+
+        // Invented nonsense suggests nothing rather than reaching for the
+        // nearest unrelated name.
+        assert_eq!(nearest_property("florble"), None);
+
+        // A short name gets a short budget, so one edit still suggests and two
+        // does not. `tap` is a plausible slip for `gap`; `zzz` is not a slip
+        // for anything and must stay silent rather than reach for `gap`.
+        assert_eq!(nearest_property("tap"), Some("gap"));
+        assert_eq!(nearest_property("zzz"), None);
+
+        // Nothing honored should ever reach the warning at all.
+        assert!(is_honored("padding"));
+    }
+
+    /// No name may claim to be both honored and unimplemented. The two lists
+    /// drive different messages, so an overlap would make which one an author
+    /// sees depend on the order the checks happen to run in.
+    #[test]
+    fn honored_and_unimplemented_never_overlap() {
+        use super::{honored_properties, UNIMPLEMENTED_PROPERTIES};
+        for name in UNIMPLEMENTED_PROPERTIES {
+            assert!(
+                !honored_properties().contains(name),
+                "`{name}` is listed as both honored and unimplemented"
+            );
+        }
     }
 
     /// The same pairing for `transition`'s values.

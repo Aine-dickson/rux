@@ -391,11 +391,14 @@ and driven in `examples/fonts.rux`.
 
 **Also worth doing while in here:** *say something* when a declaration is ignored.
 **Done (2026-07-15):** `warn_if_unhonored` prints one line per unhonored
-property (`rux: CSS property \`box-shadow\` is parsed but not yet honored, so it
-will have no effect`), deduped for the life of the process via a `static` set so
-the whole-tree rebuild doesn't repeat it every keystroke. The honored set is the
+property, deduped for the life of the process via a `static` set so the
+whole-tree rebuild doesn't repeat it every keystroke. The honored set is the
 `HONORED_PROPERTIES` list in `rux-style`: **when you honor a new property below,
 add it there too**, or authors get told a working property does nothing.
+**Split into three messages in v0.7.1:** honored says nothing, real CSS Rux has
+not built says so, and an unrecognised name says so and offers the nearest
+property that exists. The second list is `UNIMPLEMENTED_PROPERTIES`, and moving
+a name from it into `HONORED_PROPERTIES` is what honoring one looks like.
 
 **Landmine found doing this (2026-07-15):** named colors beyond
 `black`/`white`/`transparent` are not resolved, and lightningcss *minifies* hex
