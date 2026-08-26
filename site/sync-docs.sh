@@ -44,7 +44,7 @@ pages=(
   # reference sidebar: overview, elements, layout, CSS, reactivity, script, then
   # the rest of the runtime, with the v0.1 design history last.
   "07-script.md|reference/script.md|Script|6|The script language: state, functions, values, the element API, and every way it differs from rhai and from JavaScript."
-  "02-spec.md|reference/spec.md|Design surface (v0.1)|16|The original v0.1 spec, kept as design history. Not a description of the built runtime."
+  "02-spec.md|reference/spec.md|Design surface (v0.1)|16|The original v0.1 spec, kept as design history. Not a description of the built runtime, and parts of it are false."
   "01-rationale.md|reference/rationale.md|Design rationale|17|The four laws, the element audit, and the decisions behind them, with the tradeoffs each one accepted."
   "06-roadmap.md|roadmap/_index.md|Roadmap|4|Where Rux goes next: milestones, the release cadence, and what is deliberately not being built."
   "04-architecture.md|contribute/_index.md|Architecture|5|How a .rux file becomes pixels, and which crate owns which stage."

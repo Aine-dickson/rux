@@ -2290,9 +2290,15 @@ thread, and one trusted file".
    to **v0.8**, where it is the first item; what stays here is what genuinely
    needs a language that has stopped moving: installer formats, an app bundle,
    and a platform matrix wider than the one machine Rux is developed on.
-2. **Re-derive the spec.** `docs/02-spec.md` describes itself as the v0.1
-   design surface, not the built surface, and is published only as history.
-   1.0 means the spec and the runtime agree again.
+2. ~~**Re-derive the spec.**~~ **Resolved 2026-08-25: it is not going to be
+   re-derived.** Bringing `docs/02-spec.md` back into agreement with the
+   runtime would create a *second* reference beside `docs/05-as-built.md`, and
+   two documents both describing the language is precisely how nine shipped
+   features came to be missing from one of them. `02-spec.md` is design history
+   and stays that way; `05-as-built.md` and `07-script.md` are the reference,
+   and every name the editor offers is now checked to appear in them on every
+   `cargo test`. What 1.0 needs is that gate staying green, not a third
+   document to keep in step.
 3. **`rux-lsp`** (Tier 2): go-to-definition, hover, completion, diagnostics
    from `rux check`.
 4. ~~**TailwindCSS**, if it still looks worth it.~~ **Resolved 2026-08-19**: it

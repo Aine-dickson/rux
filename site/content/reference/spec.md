@@ -1,24 +1,42 @@
 +++
 title = "Design surface (v0.1)"
-description = "The original v0.1 spec, kept as design history. Not a description of the built runtime."
+description = "The original v0.1 spec, kept as design history. Not a description of the built runtime, and parts of it are false."
 weight = 16
 +++
 
 <!-- GENERATED FROM docs/02-spec.md BY site/sync-docs.sh. DO NOT EDIT HERE. -->
 
 
-> **This is the v0.1 design surface, not the built surface.** Several things
-> here were never implemented (non-text `<input>` types, `<image>` rendering,
-> real scrolling) and some were implemented differently (the inline/block model
-> was removed; grid was added; rhai functions can't mutate state). See
-> **[As Built](/reference/)** for the current reality.
+> # This is history, not a reference.
+>
+> **Nothing here is checked against the runtime, and a good deal of it is now
+> false.** It is the v0.1 design surface: what Rux was going to be, written
+> before it was built. It is kept because the reasoning is worth having and
+> because [the rationale](/reference/rationale/), [the architecture](/contribute/)
+> and [the roadmap](/roadmap/) all link into it.
+>
+> **If you are writing `.rux` code, you want [As Built](/reference/)** and
+> [Script](/reference/script/). Those two are the reference: every name the editor
+> offers is checked to appear in them, on every `cargo test`. This file is
+> checked against nothing, on purpose.
 
-The formal reference for Rux v0.1. This is the source of truth we architect and build against. It describes the language surface, not the runtime implementation
-(that comes later). Every rule here traces to a law in the
-[rationale](/reference/rationale/).
+Known to be wrong below, and left standing rather than rewritten, because
+rewriting it is what would turn it back into a second reference and start the
+drift over. Two lines are annotated in place rather than left alone, because an
+author actually followed them: the `r-for` index form and `:key`, neither of
+which was ever built.
 
-> **Status:** v0.1 design. Syntax is settled; anything marked _deferred_ is
-> intentionally out of scope for the first build.
+| This says | What shipped |
+|---|---|
+| "exactly **six** elements" | ten: `<path>`, `<slot>`, `<router>` and `<route>` arrived after this was written |
+| `<input type=>` covering `number`, `switch`, `slider`, `date` | `text`, `textarea`, `select`, `checkbox`, `radio` |
+| a capability set per element (`appear`, `scroll`, `load`, `change`, `blur`, `submit`, …) | one gesture vocabulary on every element: `@tap`, `@press`, `@release`, `@longpress`, `@swipe`, `@drag` |
+| `count.get()` / `.set()` / `.update()` | a signal is read and written as an ordinary variable: `count += 1` |
+| "_Deferred:_ slots/children projection" | `<slot>` shipped in v0.6 |
+| the honored CSS subset | 97 properties, listed in [As Built](/reference/) |
+
+Every rule here traces to a law in the [rationale](/reference/rationale/), and that
+is the part that held up.
 
 ## Contents
 
