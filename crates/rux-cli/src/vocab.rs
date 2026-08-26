@@ -876,28 +876,245 @@ mod tests {
         }
     }
 
-    /// The element and attribute tables are declared here because no crate owns
-    /// them yet, so this pins them against the document that describes them.
-    /// A tag added to the runtime and not to `docs/05-as-built.md` fails here,
-    /// which is the cheapest available substitute for a real registry.
+    /// Every name the editor offers, written somewhere in the reference.
+    ///
+    /// **This is the gate the whole vocabulary arrangement was missing.** One
+    /// existed before and checked ten names: the elements, against the first
+    /// 600 characters of one section. Nine shipped features walked past it,
+    /// because it never looked at directives, gestures, pseudo-classes, script
+    /// globals, element attributes or the 97 CSS properties. `<path>` was a
+    /// headline feature of v0.7 and no test anywhere noticed it was missing
+    /// from the reference tables.
+    ///
+    /// The promise being kept is the one the vocabulary exists for: if the
+    /// editor offers it, it works, and if it works, it is written down. A name
+    /// nobody can find is not much better than a name that does not work, and
+    /// the audit that found these took a person an afternoon. This takes 40ms.
+    ///
+    /// The reference is `docs/05-as-built.md` plus `docs/07-script.md`, which
+    /// is the pair the site publishes as the reference. `docs/02-spec.md` is
+    /// deliberately **not** consulted: it is design history, and letting it
+    /// satisfy this gate is what would make it a second reference and start the
+    /// drift again.
     #[test]
-    fn vocabulary_matches_docs() {
-        let docs = std::fs::read_to_string(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/05-as-built.md"),
-        );
-        let Ok(docs) = docs else { return }; // not a checkout; nothing to pin against
-        let Some(section) = docs.split("### Elements").nth(1) else {
-            panic!("`### Elements` is gone from docs/05-as-built.md");
-        };
-        let section: String = section.chars().take(600).collect();
+    fn every_offered_name_is_in_the_reference() {
+        let Some(doc) = DocIndex::read() else { return }; // not a checkout
+        let mut missing: Vec<String> = Vec::new();
+
+        // Elements are written as markup, so `<view` is the form that counts.
+        // A bare `view`, `path`, `slot` or `route` is an ordinary English word
+        // and matching it is how the first audit of this convinced itself the
+        // spec documented four elements it had never heard of.
         for e in ELEMENTS {
-            assert!(
-                section.contains(&format!("`<{}>", e.name))
-                    || section.contains(&format!("<{}>", e.name)),
-                "`<{}>` is offered as a completion but is not in the Elements section of \
-                 docs/05-as-built.md. Add it there, or stop offering it.",
-                e.name
-            );
+            if !doc.tags.contains(e.name) {
+                missing.push(format!("<{}>            (element)", e.name));
+            }
         }
+        for e in GLOBAL_ATTRIBUTES {
+            // The gestures carry their `@`; `class`, `id`, `style`, `role` and
+            // `to` are plain names.
+            let found = match e.name.strip_prefix('@') {
+                Some(bare) => doc.at.contains(bare),
+                None => doc.plain.contains(e.name),
+            };
+            if !found {
+                missing.push(format!("{}            (attribute)", e.name));
+            }
+        }
+        for e in DIRECTIVES {
+            if !doc.plain.contains(e.name) {
+                missing.push(format!("{}            (directive)", e.name));
+            }
+        }
+        for (tag, attrs) in ELEMENT_ATTRIBUTES {
+            for e in *attrs {
+                if !doc.plain.contains(e.name) {
+                    missing.push(format!("{}            (attribute of <{tag}>)", e.name));
+                }
+            }
+        }
+        for e in SCRIPT_GLOBALS {
+            if !doc.plain.contains(e.name) {
+                missing.push(format!("{}            (script global)", e.name));
+            }
+        }
+        for e in ELEMENT_PROPERTIES {
+            if !doc.plain.contains(e.name) {
+                missing.push(format!("{}            (element property)", e.name));
+            }
+        }
+        for e in ELEMENT_METHODS {
+            if !doc.plain.contains(e.name) {
+                missing.push(format!("{}            (element method)", e.name));
+            }
+        }
+        for e in VALUE_METHODS {
+            if !doc.plain.contains(e.name) {
+                missing.push(format!("{}            (value method)", e.name));
+            }
+        }
+        for e in PSEUDO_CLASSES {
+            if !doc.colon.contains(e.name) {
+                missing.push(format!(":{}            (pseudo-class)", e.name));
+            }
+        }
+        // Read from `rux_style`, not from a table here, so honoring a property
+        // and never writing it down fails on the commit that honors it.
+        for name in rux_style::honored_properties() {
+            if !doc.plain.contains(*name) {
+                missing.push(format!("{name}            (CSS property)"));
+            }
+        }
+
+        assert!(
+            missing.is_empty(),
+            "{} name(s) are offered to authors and appear nowhere in docs/05-as-built.md \
+             or docs/07-script.md:\n  {}\n\nWrite them into the reference, or stop \
+             offering them. A name has to be written in code voice (inside backticks or \
+             a fenced block) to count, because that is how the reference names things and \
+             it is what makes an author's search for it succeed.",
+            missing.len(),
+            missing.join("\n  ")
+        );
+    }
+
+    /// The names the reference writes, in code voice.
+    ///
+    /// Only code voice counts: text inside backticks, or inside a fenced block.
+    /// Prose mentioning the word "padding" is not documentation of the
+    /// `padding` property, and an author searching a page for `margin-top`
+    /// is searching for the code form.
+    ///
+    /// Names are collected as whole tokens rather than matched as substrings,
+    /// which is what keeps `border-top` from being satisfied by
+    /// `border-top-width`. That exact false positive inflated the hand audit
+    /// this replaces, in both directions: it hid missing longhands and invented
+    /// missing shorthands.
+    struct DocIndex {
+        /// Bare names: `padding`, `signal`, `r-for`, `trim`.
+        plain: std::collections::HashSet<String>,
+        /// Names written as a tag: the `view` in `<view class="card">`.
+        tags: std::collections::HashSet<String>,
+        /// Names written as an event: the `tap` in `@tap="…"`.
+        at: std::collections::HashSet<String>,
+        /// Names written as a pseudo-class: the `hover` in `.btn:hover`.
+        colon: std::collections::HashSet<String>,
+    }
+
+    impl DocIndex {
+        fn read() -> Option<Self> {
+            let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+            let mut corpus = String::new();
+            for name in ["docs/05-as-built.md", "docs/07-script.md"] {
+                corpus.push_str(&std::fs::read_to_string(root.join(name)).ok()?);
+                corpus.push('\n');
+            }
+            Some(Self::index(&Self::code_voice_only(&corpus)))
+        }
+
+        /// Keep the fenced blocks and the inline spans, drop the prose.
+        ///
+        /// Fences are handled first and line by line, because an inline span
+        /// may not straddle a line while a fenced block is nothing but
+        /// straddling lines. Inside a fence every character counts; outside
+        /// one, only what sits between a pair of backticks does.
+        fn code_voice_only(corpus: &str) -> String {
+            let mut out = String::new();
+            let mut fenced = false;
+            for line in corpus.lines() {
+                if line.trim_start().starts_with("```") {
+                    fenced = !fenced;
+                    continue;
+                }
+                if fenced {
+                    out.push_str(line);
+                    out.push('\n');
+                    continue;
+                }
+                // An odd number of backticks means one is unclosed on this
+                // line; the trailing fragment is prose and is dropped with it.
+                let mut inside = false;
+                for span in line.split('`') {
+                    if inside {
+                        out.push_str(span);
+                        out.push('\n');
+                    }
+                    inside = !inside;
+                }
+            }
+            out
+        }
+
+        fn index(code: &str) -> Self {
+            let mut this = Self {
+                plain: Default::default(),
+                tags: Default::default(),
+                at: Default::default(),
+                colon: Default::default(),
+            };
+            let chars: Vec<char> = code.chars().collect();
+            let is_name = |c: char| c.is_ascii_alphanumeric() || c == '-' || c == '_';
+            let mut i = 0;
+            while i < chars.len() {
+                if !is_name(chars[i]) {
+                    i += 1;
+                    continue;
+                }
+                let start = i;
+                while i < chars.len() && is_name(chars[i]) {
+                    i += 1;
+                }
+                let token: String = chars[start..i].iter().collect();
+                // The character immediately before decides which set it joins.
+                // A space between `:` and the name makes it a CSS value
+                // (`display: flex`), not a pseudo-class, so only an adjacent
+                // marker counts.
+                match start.checked_sub(1).map(|p| chars[p]) {
+                    Some('<') => {
+                        this.tags.insert(token.clone());
+                    }
+                    Some('@') => {
+                        this.at.insert(token.clone());
+                    }
+                    Some(':') => {
+                        this.colon.insert(token.clone());
+                    }
+                    _ => {}
+                }
+                // Every token is also a plain name. A tag is still the word,
+                // and `r-transition` is written both as an attribute and as
+                // prose-in-backticks.
+                this.plain.insert(token);
+            }
+            this
+        }
+    }
+
+    /// The tokenizer has to be right, or the gate above is a rubber stamp that
+    /// passes because everything looks documented. These are the two failures
+    /// that inflated the hand audit it replaces.
+    #[test]
+    fn the_doc_index_reads_code_voice_and_whole_tokens() {
+        let index = DocIndex::index(&DocIndex::code_voice_only(
+            "The word padding in prose does not count.\n\
+             `border-top-width` and `<view>` and `@tap=\"x\"` and `.btn:hover` do.\n\
+             ```\n\
+             margin-left, r-for\n\
+             ```\n",
+        ));
+        // Prose is not documentation.
+        assert!(!index.plain.contains("prose"));
+        // A longhand does not document the shorthand hiding inside it.
+        assert!(index.plain.contains("border-top-width"));
+        assert!(!index.plain.contains("border-top"));
+        // Each marker files the name where it belongs.
+        assert!(index.tags.contains("view"));
+        assert!(index.at.contains("tap"));
+        assert!(index.colon.contains("hover"));
+        // A fenced block counts in full, backticks or not.
+        assert!(index.plain.contains("margin-left"));
+        assert!(index.plain.contains("r-for"));
+        // A tag is a plain name too, or `<view>` would not document `view`.
+        assert!(index.plain.contains("view"));
     }
 }
