@@ -2442,10 +2442,25 @@ fn warn_unparseable_lengths(props: &HashMap<String, String>) {
                 continue;
             }
             if px_only && token.ends_with('%') {
+                // A radius has a workaround that gives exactly what the
+                // percentage was reaching for, so the message names it. A
+                // radius larger than the box is clamped to half the shorter
+                // side, which is what `50%` means on a square, and the author
+                // wanting a pill or a circle is who writes `%` here.
+                //
+                // There is no equivalent for `padding`, `margin` or `gap`, so
+                // they get the plain sentence rather than an invented one.
+                let workaround = if property.ends_with("radius") {
+                    " A radius bigger than the box is clamped to it, so \
+                     `9999px` is how to say \"as round as it goes\"."
+                } else {
+                    ""
+                };
                 warn_once(format!(
-                    "`{property}: {token}` is ignored: `{property}` is resolved before \
-                     there is a box to take a percentage of, so it takes px, rem or em \
-                     and not %."
+                    "`{property}: {token}` is ignored: Rux does not honor a percentage \
+                     on `{property}` yet, because it is resolved to plain pixels before \
+                     there is a box to take a percentage of. It takes px, rem or em.\
+                     {workaround}"
                 ));
                 continue;
             }

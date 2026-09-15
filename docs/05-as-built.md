@@ -348,6 +348,12 @@ interpreter read them with a px-only parser while the length check validated
 with a percentage-capable one: the value was dropped and then pronounced fine.
 Real percentage support for them is scheduled.
 
+**For a pill or a circle, reach for a big radius rather than a percentage.** A
+radius larger than the box is clamped to half its shorter side, so
+`border-radius: 9999px` gives a fully rounded box at any size and is what
+`50%` was reaching for. This is the one case where the missing percentage has an
+exact substitute, and the warning names it.
+
 **Selectors:** tag, `.class`, `#id`, `[role="…"]`, compounds, and all four
 combinators: descendant (`.a .b`), child (`.a > .b`), next-sibling (`.a + .b`),
 subsequent-sibling (`.a ~ .b`).
