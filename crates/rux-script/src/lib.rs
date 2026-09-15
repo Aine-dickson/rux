@@ -852,8 +852,86 @@ pub fn located<T>(line: Option<usize>, f: impl FnOnce() -> T) -> T {
     out
 }
 
+thread_local! {
+    /// The file the thing being built came from, when it is not the document.
+    ///
+    /// Set while an imported component's subtree is built, so a warning raised
+    /// in there names the component's file. Coarser than [`AT_LINE`] on purpose:
+    /// a line changes per attribute, a file changes only at a component
+    /// boundary, so they are two scopes rather than one pair.
+    static IN_FILE: RefCell<Option<std::path::PathBuf>> = const { RefCell::new(None) };
+}
+
+/// Run `f` with any warning it raises attributed to `file`.
+///
+/// Restores what was set before rather than clearing, so a component that uses
+/// another component unwinds to the outer one rather than to the document.
+pub fn in_file<T>(file: Option<std::path::PathBuf>, f: impl FnOnce() -> T) -> T {
+    let previous = IN_FILE.with(|c| c.replace(file));
+    let out = f();
+    IN_FILE.with(|c| c.replace(previous));
+    out
+}
+
+thread_local! {
+    /// Whether a name this document does not declare could still arrive from
+    /// somewhere: a **fragment**, which is to say a component, whose props are
+    /// supplied by whoever uses it.
+    ///
+    /// This exists because **props are not declared**. A component reads
+    /// `{{ label }}` with nothing in its `<script>` saying `label` is expected,
+    /// so a checker looking at that file alone cannot tell a prop from a typo.
+    /// The component `rux new` scaffolds is exactly this shape, and calling its
+    /// props undefined would mean the tool shipping a project that fails its own
+    /// `rux check`.
+    ///
+    /// So the severity depends on whether anything *could* inject the name. A
+    /// page (`<screen>` root) has no caller and nothing can, which makes an
+    /// unknown name definitely wrong. A fragment has a caller, so it stays a
+    /// warning. The real fix is a way to declare a prop, which would make the
+    /// question answerable instead of inferable; it is scheduled, not built.
+    static NAMES_MAY_BE_INJECTED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Say whether undeclared names in this document might be props.
+///
+/// Set once per load, from the document's root element. `rux-runtime` owns the
+/// page/fragment distinction because it is the layer that has the template.
+pub fn set_names_may_be_injected(yes: bool) {
+    NAMES_MAY_BE_INJECTED.with(|c| c.set(yes));
+}
+
+/// Whether a failed expression is definitely wrong or only probably.
+///
+/// Only the undefined-name case is softened, and only for a fragment. Anything
+/// else that fails (a call to nothing, a syntax error, a bad index) is wrong
+/// wherever it is written, because no caller can supply a missing function.
+fn level_for(rhai_message: &str) -> rux_reactive::Level {
+    let undefined_name = rhai_message.starts_with("Variable not found:");
+    if undefined_name && NAMES_MAY_BE_INJECTED.with(std::cell::Cell::get) {
+        rux_reactive::Level::Warning
+    } else {
+        rux_reactive::Level::Error
+    }
+}
+
 fn warn(message: String) {
+    raise(message, rux_reactive::Level::Warning);
+}
+
+/// Raise something that is definitely wrong rather than merely dead.
+///
+/// An expression that cannot compile, or that fails with every local in scope,
+/// is not "ignored" the way an unhonored CSS property is: it is a binding that
+/// can never show anything. `rux check` exits non-zero for these, and it used
+/// to call such a document clean.
+fn error(message: String) {
+    raise(message, rux_reactive::Level::Error);
+}
+
+fn raise(message: String, level: rux_reactive::Level) {
     let at = AT_LINE.with(|l| l.get());
+    let file = IN_FILE.with(|c| c.borrow().clone());
     WARNINGS.with(|w| {
         let mut w = w.borrow_mut();
         // A binding is re-evaluated on every build, and an `r-for` evaluates the
@@ -861,11 +939,14 @@ fn warn(message: String) {
         // Deduped by message *and* line, as the cascade's sink is: the same
         // mistake on two lines is two places to go and fix, and an editor wants
         // a squiggle on each.
-        if !w.iter().any(|existing: &Warning| existing.message == message && existing.line == at) {
+        if !w.iter().any(|existing: &Warning| {
+            existing.message == message && existing.line == at && existing.file == file
+        }) {
             if ECHO.with(|e| e.get()) {
                 eprintln!("rux: {message}");
             }
-            w.push(Warning::maybe_at(message, at));
+            let warning = Warning::maybe_at(message, at).in_file(file);
+            w.push(if level == rux_reactive::Level::Error { warning.as_error() } else { warning });
         }
     });
 }
@@ -906,6 +987,12 @@ pub fn take_warnings() -> Vec<Warning> {
 /// a second sink would let those two disagree about what was said.
 pub fn warn_script(message: impl Into<String>) {
     warn(message.into());
+}
+
+/// Raise a script *error* from outside the engine: something definitely wrong
+/// rather than merely dead. See [`rux_reactive::Level`].
+pub fn error_script(message: impl Into<String>) {
+    error(message.into());
 }
 
 thread_local! {
@@ -1434,7 +1521,7 @@ impl Engine {
                 // A `{{ }}` or `@tap` that doesn't compile used to evaluate to
                 // nothing, silently, the same failure mode as ignored CSS. Record
                 // it so the dev overlay can say what's wrong.
-                warn(format!(
+                error(format!(
                     "expression `{}` failed to compile: {}",
                     trim_expr(src),
                     explain(&e.to_string())
@@ -1453,11 +1540,11 @@ impl Engine {
         match result {
             Ok(value) => Some(value),
             Err(e) => {
-                warn(format!(
-                    "expression `{}` failed: {}",
-                    trim_expr(src),
-                    explain(&e.to_string())
-                ));
+                let raw = e.to_string();
+                raise(
+                    format!("expression `{}` failed: {}", trim_expr(src), explain(&raw)),
+                    level_for(&raw),
+                );
                 None
             }
         }

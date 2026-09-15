@@ -25,26 +25,74 @@
 /// part of the file, which is worse than sending them nowhere. It is `None`
 /// wherever the stage that noticed the problem does not know where it was, and
 /// that is not a placeholder to be filled with a guess.
+/// How bad a thing in the sink is.
+///
+/// Separate from "did the document load", which is what a `LoadError` answers.
+/// A document can build perfectly and still contain something that is simply
+/// wrong rather than merely dead: reading a name that does not exist produces a
+/// binding that can never show anything. The app still runs, so blanking the
+/// window over it would be worse than useless during an edit, but `rux check`
+/// must not call it clean and an editor should not draw it the same colour as
+/// "this CSS property does nothing yet".
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Level {
+    /// Definitely wrong. `rux check` exits non-zero.
+    Error,
+    /// Dead, unhonored, or ignored. Worth saying, not worth failing over.
+    Warning,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Warning {
     pub message: String,
     pub line: Option<usize>,
+    /// The file the problem is in, when that is not the file being checked.
+    ///
+    /// `None` means the document itself, which is the common case and saves
+    /// every raiser having to know its own path. It is `Some` while an imported
+    /// component's subtree is being built, because the line then counts against
+    /// *that* file and reporting it against the importer would send a reader to
+    /// an innocent line in the wrong file. `LoadError` has carried the same
+    /// thing for errors since components landed.
+    pub file: Option<std::path::PathBuf>,
+    /// Whether this is wrong or merely dead. See [`Level`].
+    pub level: Level,
 }
 
 impl Warning {
     /// A warning whose position is not known.
     pub fn new(message: impl Into<String>) -> Self {
-        Self { message: message.into(), line: None }
+        Self { message: message.into(), line: None, file: None, level: Level::Warning }
     }
 
     /// A warning at a known 1-based file line.
     pub fn at(message: impl Into<String>, line: usize) -> Self {
-        Self { message: message.into(), line: Some(line) }
+        Self { message: message.into(), line: Some(line), file: None, level: Level::Warning }
     }
 
     /// Attach `line` if there is one, leaving the warning unplaced otherwise.
     pub fn maybe_at(message: impl Into<String>, line: Option<usize>) -> Self {
-        Self { message: message.into(), line }
+        Self { message: message.into(), line, file: None, level: Level::Warning }
+    }
+
+    /// Say which file this is in, for a warning raised inside an imported
+    /// component. Chained onto whichever constructor above applied.
+    #[must_use]
+    pub fn in_file(mut self, file: Option<std::path::PathBuf>) -> Self {
+        self.file = file;
+        self
+    }
+
+    /// Mark this as definitely wrong rather than merely dead. See [`Level`].
+    #[must_use]
+    pub fn as_error(mut self) -> Self {
+        self.level = Level::Error;
+        self
+    }
+
+    /// Whether this is an error.
+    pub fn is_error(&self) -> bool {
+        self.level == Level::Error
     }
 }
 

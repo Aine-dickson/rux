@@ -35,6 +35,24 @@ app is watching.
   `r-if` or `r-for` lands on the directive rather than on the parent element
   whose loop reads it; and a `{{ }}` lands on the text run rather than on the
   element containing it.
+- **A warning raised inside an imported component names that component's file**,
+  not the document that imported it. Errors have done this since components
+  landed; warnings had nowhere to put it, so they carried the component's line
+  number and the importer's name. That pairing reads as a precise location and
+  is not one, which is worse than saying nothing at all.
+- **Some of these are errors, even though the document built.** A load either
+  works or does not; that is separate from whether what loaded is *right*. An
+  expression that cannot resolve, an `@event` the runtime never dispatches and a
+  value on a valueless directive are all definitely wrong, so `rux check` exits
+  non-zero for them where it used to call the file clean. The window still runs
+  the app: blanking it over a typo mid-edit would be worse than useless.
+
+  **Reading an undefined name is an error in a page and a warning in a
+  fragment.** A page (`<screen>` root) has no caller, so a name it does not
+  declare can come from nowhere. A fragment is a component, and **props are not
+  declared**, so its `{{ label }}` is indistinguishable from a typo when the
+  file is read on its own. A declaration form would make that answerable instead
+  of inferable; until then the severity follows the root element.
 - **Tapping the panel dismisses it**, and it says so. The panel covers the app it
   is describing, which was a problem when the thing you needed to look at was
   underneath. The dismissal is remembered against *those* diagnostics, so it

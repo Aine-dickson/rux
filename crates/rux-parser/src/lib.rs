@@ -72,6 +72,17 @@ fn entity_char(entity: &str) -> Option<char> {
 /// stages; `template` is the parsed root element.
 #[derive(Debug, Clone)]
 pub struct Sfc {
+    /// The file this was parsed from, once somebody who has a filesystem says
+    /// so. Parsing does no IO and is handed a string, so the parser always
+    /// leaves this `None`; `rux-runtime` fills it in, the same arrangement
+    /// [`Sfc::style_includes`] already uses.
+    ///
+    /// It exists so a warning raised while building an imported component can
+    /// name the component's file rather than the document's. Errors have said
+    /// so since components landed (`LoadError::file`); warnings did not, and a
+    /// warning that names the wrong file is worse than one that names none,
+    /// because it comes with a line number the reader will trust.
+    pub file: Option<std::path::PathBuf>,
     pub template: Element,
     pub style: String,
     pub script: String,
@@ -151,6 +162,14 @@ pub struct Attr {
     pub value: String,
     /// The 1-based **file** line, as [`Element::line`].
     pub line: usize,
+    /// Whether an `=` was written at all.
+    ///
+    /// `r-else` and `r-else=""` both leave [`Attr::value`] empty, so without
+    /// this the two are indistinguishable and a value given to an attribute
+    /// that takes none cannot be reported. The directives this matters for
+    /// (`r-else`, and `fallback` on a `<route>`) are exactly the ones an editor
+    /// is most likely to complete *with* an `=""` it should not.
+    pub has_value: bool,
 }
 
 /// A node in the template tree.
@@ -267,6 +286,7 @@ pub fn parse_sfc(src: &str) -> Result<Sfc, ParseError> {
     offset_element_lines(&mut template, lines_before);
 
     Ok(Sfc {
+        file: None,
         template,
         style,
         style_line,
@@ -577,7 +597,8 @@ impl Parser {
                         return Err(self.err(format!("malformed attribute in <{tag}>")));
                     }
                     self.skip_ws();
-                    let value = if self.peek() == Some('=') {
+                    let has_value = self.peek() == Some('=');
+                    let value = if has_value {
                         self.bump();
                         self.skip_ws();
                         // Decoded here: an attribute is quoted with the same `"`
@@ -587,7 +608,7 @@ impl Parser {
                     } else {
                         String::new() // valueless attribute, e.g. `disabled`
                     };
-                    attrs.push(Attr { name, value, line: attr_line });
+                    attrs.push(Attr { name, value, line: attr_line, has_value });
                 }
             }
         }

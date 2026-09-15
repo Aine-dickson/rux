@@ -115,13 +115,23 @@ fn check_file(file: &Path) -> Vec<Diagnostic> {
             .warnings
             .iter()
             .map(|w| Diagnostic {
-                file: file.to_path_buf(),
+                // A warning raised inside a `use`d component names that
+                // component's file, matching what the error path above has done
+                // since components landed. Anything else pairs the component's
+                // line number with the importing file's name, which reads as a
+                // precise location and is not one.
+                file: w.file.clone().unwrap_or_else(|| file.to_path_buf()),
                 line: w.line,
                 // No column: the CSS parser locates a *rule*, not the
                 // declaration inside it, so pointing at a column would be
                 // pointing at the selector.
                 column: None,
-                severity: Severity::Warning,
+                // A document can build and still contain something simply
+                // wrong: an expression that cannot resolve, an `@event` the
+                // runtime never dispatches. Those are errors even though the
+                // load succeeded, and `rux check` used to call such a file
+                // clean and exit 0.
+                severity: if w.is_error() { Severity::Error } else { Severity::Warning },
                 message: w.message.clone(),
             })
             .collect(),

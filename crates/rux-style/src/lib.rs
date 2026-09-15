@@ -71,8 +71,36 @@ fn located<T>(line: Option<usize>, f: impl FnOnce() -> T) -> T {
     out
 }
 
+thread_local! {
+    /// The file the thing being built came from, when it is not the document.
+    ///
+    /// Set while an imported component's subtree is built, so a warning raised
+    /// in there names the component's file. Coarser than [`AT_LINE`] on purpose:
+    /// a line changes per attribute, a file changes only at a component
+    /// boundary, so they are two scopes rather than one pair.
+    static IN_FILE: std::cell::RefCell<Option<std::path::PathBuf>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Run `f` with any warning it raises attributed to `file`.
+///
+/// Restores what was set before rather than clearing, so a component that uses
+/// another component unwinds to the outer one rather than to the document.
+///
+/// Sets the script tier's scope as well as this one. Building a component
+/// raises warnings from both sinks (a rule that does nothing, an expression
+/// that failed) and they are equally the component's, so a reader would have no
+/// way to know that only half of them named the right file.
+pub fn in_file<T>(file: Option<std::path::PathBuf>, f: impl FnOnce() -> T) -> T {
+    let previous = IN_FILE.with(|c| c.replace(file.clone()));
+    let out = rux_script::in_file(file, f);
+    IN_FILE.with(|c| c.replace(previous));
+    out
+}
+
 fn warn(message: String) {
-    let warning = Warning::maybe_at(message, AT_LINE.with(|l| l.get()));
+    let file = IN_FILE.with(|c| c.borrow().clone());
+    let warning = Warning::maybe_at(message, AT_LINE.with(|l| l.get())).in_file(file);
     WARNINGS.with(|w| {
         let mut w = w.borrow_mut();
         // Deduped by message *and* line: the same unhonored property on two
@@ -304,6 +332,11 @@ fn bind_locals(src: &str, locals: &Locals) -> String {
 /// A compiled component: its template root, its own CSS rules, and the
 /// top-level script that gives each instance its private state.
 struct Component {
+    /// The file it was read from, so a warning raised while expanding it names
+    /// that file instead of whoever imported it. `None` for a component that
+    /// came from somewhere with no filesystem, the browser build being the one
+    /// that does.
+    file: Option<std::path::PathBuf>,
     template: Element,
     /// Its own rules, with the document's merged in ahead of them unless
     /// either side said `<style scoped>`. Merged once at load; see
@@ -1312,6 +1345,7 @@ pub fn build_styled_tree_stateful(
             (
                 tag.clone(),
                 Component {
+                    file: c.file.clone(),
                     template: c.template.clone(),
                     rules: merged,
                     script: component_statements(&c.script),
@@ -3772,30 +3806,38 @@ fn expand_component(
     // inherits the caller's ancestor chain so a descendant selector written
     // outside can reach it.
     let mut ancestors: Vec<AncNode> = caller_ancestors.to_vec();
-    build_node(
-        &component.template,
-        &component.rules,
-        comps,
-        &mut ancestors,
-        &[],
-        inherited,
-        engine,
-        &locals,
-        path,
-        tpl_path,
-        reg,
-        state,
-        instances,
-        swaps,
-        Some(key.as_str()),
-        Some(slot),
-        // Only a route's own view is handed the rest of the chain; an ordinary
-        // component tag is given `None` by its caller.
-        outlet,
-        // A component expanded inside a row is still inside that row.
-        row,
-        swap,
-    )
+    // From here down the lines being reported are the *component's* lines, so
+    // the file has to change with them. Only from here: the props above were
+    // written on the caller's element, in the caller's file, and belong to it.
+    // Slot content is the caller's too, but it is built through this subtree,
+    // so it is attributed to the component. That is a smaller error than the
+    // one being fixed and closing it needs a position on the slot's nodes.
+    in_file(component.file.clone(), || {
+        build_node(
+            &component.template,
+            &component.rules,
+            comps,
+            &mut ancestors,
+            &[],
+            inherited,
+            engine,
+            &locals,
+            path,
+            tpl_path,
+            reg,
+            state,
+            instances,
+            swaps,
+            Some(key.as_str()),
+            Some(slot),
+            // Only a route's own view is handed the rest of the chain; an
+            // ordinary component tag is given `None` by its caller.
+            outlet,
+            // A component expanded inside a row is still inside that row.
+            row,
+            swap,
+        )
+    })
 }
 
 /// Match a `<route path="…">` pattern against the current path, capturing the

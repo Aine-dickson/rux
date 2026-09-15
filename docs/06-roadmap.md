@@ -1961,8 +1961,14 @@ not "is it small", it is "did v0.7 say this works".
   same way. Placed at the most specific level available: a handler on its
   attribute's line, an `r-if`/`r-for` on the directive rather than on the parent
   that reads it, a `{{ }}` on its text run.
-- **An undefined variable in a template is a warning, not an error.** Reading a
-  name that does not exist cannot be right, and `rux check` exits 0 on it.
+- ~~**An undefined variable in a template is a warning, not an error.**~~
+  **DONE 2026-09-15**, with one qualification worth keeping. The warning sink
+  gained a level, so a document can build and still report errors, and
+  `rux check` exits non-zero for them. But it is an error only in a **page**:
+  a fragment's undeclared names may be props, because **props are not
+  declared**, and escalating everywhere made `rux new` scaffold a project that
+  failed its own `rux check`. That is the clearest argument yet for a prop
+  declaration form; see the props note above.
 - **"missing `<template>` section" is emitted for an unclosed one.** Verified:
   a file that opens `<template>` and never closes it reports as having no
   template at all. `section_with_open` in `rux-parser` needs `</template>`
@@ -1971,11 +1977,17 @@ not "is it small", it is "did v0.7 say this works".
   false report behind "I typed `@class` and it said the template was missing".
   Three conditions, three messages, exactly as the CSS property warning was
   split.
-- **An unsupported `@` attribute is silently accepted.** `@class="big"` checks
-  clean and does nothing. The gesture vocabulary is fixed and known, so a
-  `@name` outside it should say so.
-- **`r-else=""` is silently accepted.** `r-else` takes no value, and a value on
-  it should be an error.
+- ~~**An unsupported `@` attribute is silently accepted.**~~ **DONE
+  2026-09-15**, as an error, listing the six events that do exist. A component
+  tag is exempt, since `@name` on one is a listener for whatever it emits.
+  **It found a live bug on its first run over the corpus:** the shipped
+  `message-list` recipe carried `@submit="send()"` on its `<input>`, which has
+  never fired once. The send button beside it working is what kept anyone from
+  noticing.
+- ~~**`r-else=""` is silently accepted.**~~ **DONE 2026-09-15**, as an error,
+  covering `fallback` on a `<route>` too. It needed `Attr::has_value` in the
+  parser: `r-else` and `r-else=""` both leave the value empty, so the two were
+  indistinguishable and there was nothing to report.
 - **Arguments are not checked against the function.** Wrong count, wrong shape,
   or none at all where some are wanted, in a script `fn` or a template handler.
 - **`border-radius` with a percentage.** `parse_len` accepts `%`, so this parses;

@@ -176,8 +176,17 @@ pub struct Document {
 ///
 /// Every handler in the template is checked, not only the ones currently on
 /// screen, so a branch behind a false `r-if` is covered too.
-fn check_handlers(template: &rux_parser::Element, engine: &rux_script::Engine) {
-    for rux_parser::Attr { name, value, line } in &template.attrs {
+fn check_handlers(
+    template: &rux_parser::Element,
+    engine: &rux_script::Engine,
+    // Tags that name an imported component. A component takes any `@name` as a
+    // listener for an event it emits, so the fixed gesture vocabulary does not
+    // apply to one and checking against it would flag every custom event in
+    // every app that uses them.
+    component_tags: &std::collections::HashSet<String>,
+) {
+    check_attribute_shapes(template, component_tags);
+    for rux_parser::Attr { name, value, line, .. } in &template.attrs {
         if !name.starts_with('@') || value.trim().is_empty() {
             continue;
         }
@@ -214,7 +223,61 @@ fn check_handlers(template: &rux_parser::Element, engine: &rux_script::Engine) {
     }
     for child in &template.children {
         if let rux_parser::Node::Element(el) = child {
-            check_handlers(el, engine);
+            check_handlers(el, engine, component_tags);
+        }
+    }
+}
+
+/// The events the runtime actually dispatches, without the `@`.
+///
+/// `tap` plus the five in [`rux_layout::Gesture`]. Kept beside the check rather
+/// than derived, because `tap` is not a `Gesture` (it is the finished gesture,
+/// and is also what a keyboard activation produces) and a list of five that
+/// silently means six is worse than a list of six.
+const EVENT_NAMES: &[&str] = &["tap", "press", "release", "longpress", "swipe", "drag"];
+
+/// Attributes that mean something only by being present.
+///
+/// Writing `r-else=""` is not the same mistake as writing `r-else`: it reads as
+/// though a condition were being supplied, and there is nowhere for one to go.
+const VALUELESS_ATTRS: &[&str] = &["r-else", "fallback"];
+
+/// Report attributes that are shaped wrong, as opposed to ones whose expression
+/// is wrong.
+///
+/// Both of these were accepted in silence. `@class="big"` checked clean and did
+/// nothing, which is the same silent-failure class the unhonored-CSS message
+/// exists to close, and it is worse here because the gesture vocabulary is
+/// fixed and known: there is no "not yet honored" to hide behind.
+fn check_attribute_shapes(
+    el: &rux_parser::Element,
+    component_tags: &std::collections::HashSet<String>,
+) {
+    let is_component = component_tags.contains(&el.tag);
+    for attr in &el.attrs {
+        if let Some(event) = attr.name.strip_prefix('@') {
+            // A component's `@name` is a listener for whatever it emits, so any
+            // name is legitimate there.
+            if is_component || EVENT_NAMES.contains(&event) {
+                continue;
+            }
+            rux_script::located(Some(attr.line), || {
+                rux_script::error_script(format!(
+                    "`@{event}` on <{}> is not an event Rux dispatches, so nothing \
+                     will ever run it. The events are {}",
+                    el.tag,
+                    EVENT_NAMES.iter().map(|n| format!("`@{n}`")).collect::<Vec<_>>().join(", ")
+                ));
+            });
+        }
+        if VALUELESS_ATTRS.contains(&attr.name.as_str()) && attr.has_value {
+            rux_script::located(Some(attr.line), || {
+                rux_script::error_script(format!(
+                    "`{}` takes no value, so `{}=\"{}\"` says something that cannot be \
+                     read. Write `{}` on its own",
+                    attr.name, attr.name, attr.value, attr.name
+                ));
+            });
         }
     }
 }
@@ -748,6 +811,10 @@ impl Document {
             })?;
             let mut comp_sfc =
                 rux_parser::parse_sfc(&comp_src).map_err(|e| LoadError::parse(e, Some(&comp_path)))?;
+            // Parsing does no IO, so the parser cannot know this and leaves it
+            // `None`. Filling it in here is what lets a warning raised while
+            // building this component name this file rather than the importer's.
+            comp_sfc.file = Some(comp_path.clone());
             // A component's `src` is relative to the component, not to whoever
             // imported it. Anything else would make a component unusable from a
             // second directory, which is the whole point of having one.
@@ -804,6 +871,12 @@ impl Document {
             components.insert(import.tag, comp_sfc);
         }
 
+        // A document whose root is `<screen>` is a page and has no caller, so a
+        // name it does not declare can come from nowhere. Anything else is a
+        // fragment, which is to say a component, and its undeclared names may be
+        // props the caller supplies. Set before the first build, since that is
+        // when expressions are evaluated.
+        rux_script::set_names_may_be_injected(sfc.template.tag != "screen");
         // Before the first build: a `:to` calling `path_for` is evaluated
         // during that build, so the names have to be known by then.
         rux_script::set_routes(rux_style::named_routes(&sfc.template));
@@ -819,9 +892,17 @@ impl Document {
         resolve_images(&mut root, base);
         // Before the warnings are drained below, so a handler that cannot
         // compile is reported by `rux check` and by the overlay alike.
-        check_handlers(&sfc.template, &engine);
+        let component_tags: std::collections::HashSet<String> =
+            components.keys().cloned().collect();
+        check_handlers(&sfc.template, &engine, &component_tags);
         for component in components.values() {
-            check_handlers(&component.template, &engine);
+            // Its handlers are on its lines, so they are reported against its
+            // file. Without this they carried the component's line number and
+            // the *document's* name, which points a reader confidently at an
+            // unrelated line of a file that is fine.
+            rux_script::in_file(component.file.clone(), || {
+                check_handlers(&component.template, &engine, &component_tags);
+            });
         }
         check_script_functions(&engine);
         let mut doc = Self {
@@ -888,6 +969,9 @@ impl Document {
         }
         let (main_script, _imports) = extract_imports(&sfc.script);
         let (main_script, computeds, effects, hooks) = extract_reactives(&main_script);
+        // Same page/fragment rule as the file loader above: a `<screen>` root
+        // has no caller, so an undeclared name can come from nowhere.
+        rux_script::set_names_may_be_injected(sfc.template.tag != "screen");
         rux_script::set_routes(rux_style::named_routes(&sfc.template));
         // Same mapping as `load_checked`, and the playground is the case that
         // most wants it: this is the only error surface it has. Nothing is
@@ -902,7 +986,8 @@ impl Document {
                 .map_err(LoadError::plain)?;
         let base = PathBuf::from(".");
         resolve_images(&mut root, &base);
-        check_handlers(&sfc.template, &engine);
+        // `from_source` has no filesystem, so it has no components either.
+        check_handlers(&sfc.template, &engine, &std::collections::HashSet::new());
         check_script_functions(&engine);
         let mut doc = Self {
             sfc,
@@ -3252,6 +3337,153 @@ mod tests {
         assert_eq!(line_of("missing_three"), Some(7), "r-for, also read by the parent");
         assert_eq!(line_of("no_such_call"), Some(8), "a handler");
         assert_eq!(line_of("missing_four"), Some(9), "a text interpolation");
+    }
+
+    /// `@class="big"` used to check clean and do nothing.
+    ///
+    /// The gesture vocabulary is fixed and known, so there is no "not honored
+    /// yet" for an `@name` to hide behind: if it is not one of the six, nothing
+    /// will ever run it.
+    #[test]
+    fn an_event_the_runtime_never_dispatches_is_an_error() {
+        let _ = take_warnings();
+        let doc = Document::from_source(
+            "<template><screen><view @class=\"big\">x</view></screen></template>",
+        )
+        .expect("renders anyway");
+        let found = doc
+            .diagnostics
+            .warnings
+            .iter()
+            .find(|w| w.message.contains("@class"))
+            .expect("reported");
+        assert!(found.is_error(), "and as an error, not a shrug: {found:?}");
+        assert!(
+            found.message.contains("@tap") && found.message.contains("@drag"),
+            "the message lists what does exist: {found:?}"
+        );
+    }
+
+    /// A valueless directive given a value says something with nowhere to go.
+    /// `r-else` and `r-else=""` are the same to the parser's `value`, so this
+    /// needs `Attr::has_value` to be visible at all.
+    #[test]
+    fn a_value_on_a_valueless_directive_is_an_error() {
+        let _ = take_warnings();
+        let doc = Document::from_source(
+            "<template><screen><text r-if=\"n > 0\">y</text>\
+             <text r-else=\"\">n</text></screen></template>\n\
+             <script>let n = signal(0);</script>",
+        )
+        .expect("renders anyway");
+        let found = doc
+            .diagnostics
+            .warnings
+            .iter()
+            .find(|w| w.message.contains("takes no value"))
+            .expect("reported");
+        assert!(found.is_error(), "{found:?}");
+
+        // And the correct form says nothing, or the check is noise on every
+        // branch anyone writes.
+        let _ = take_warnings();
+        let fine = Document::from_source(
+            "<template><screen><text r-if=\"n > 0\">y</text>\
+             <text r-else>n</text></screen></template>\n\
+             <script>let n = signal(0);</script>",
+        )
+        .expect("renders");
+        assert!(
+            !fine.diagnostics.warnings.iter().any(|w| w.message.contains("takes no value")),
+            "{:?}",
+            fine.diagnostics.warnings
+        );
+    }
+
+    /// Reading a name that does not exist is an error in a **page**, where
+    /// nothing can supply it, and a warning in a **fragment**, where a caller
+    /// can: props are not declared, so a component's `{{ label }}` is
+    /// indistinguishable from a typo when the file is read on its own.
+    ///
+    /// This is not hypothetical tidiness. The component `rux new` scaffolds
+    /// reads two props and nothing else, so escalating everywhere made the tool
+    /// ship a project that failed its own `rux check`, which is how this rule
+    /// was found.
+    #[test]
+    fn an_undefined_name_is_an_error_in_a_page_and_a_warning_in_a_fragment() {
+        let _ = take_warnings();
+        let page = Document::from_source(
+            "<template><screen><text>{{ absent }}</text></screen></template>",
+        )
+        .expect("renders anyway");
+        let in_page = page
+            .diagnostics
+            .warnings
+            .iter()
+            .find(|w| w.message.contains("absent"))
+            .expect("reported");
+        assert!(in_page.is_error(), "a page has no caller: {in_page:?}");
+
+        let _ = take_warnings();
+        let fragment =
+            Document::from_source("<template><view><text>{{ absent }}</text></view></template>")
+                .expect("renders anyway");
+        let in_fragment = fragment
+            .diagnostics
+            .warnings
+            .iter()
+            .find(|w| w.message.contains("absent"))
+            .expect("still reported");
+        assert!(
+            !in_fragment.is_error(),
+            "a fragment's caller may be passing it as a prop: {in_fragment:?}"
+        );
+    }
+
+    /// A warning from inside an imported component names **that** file.
+    ///
+    /// Errors have done this since components landed (`LoadError::file`);
+    /// warnings had no field for it, so they carried the component's line
+    /// number and the importing document's name. That pairing is worse than
+    /// saying nothing: it looks like a precise location, and it points at
+    /// whatever happens to be on that line of the wrong file. Adding line
+    /// numbers to template warnings is what made it dangerous, so the two
+    /// belong together.
+    #[test]
+    fn a_warning_inside_a_component_names_the_components_file() {
+        use std::fs;
+        let dir = std::env::temp_dir().join(format!("rux_compfile_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("components")).unwrap();
+        // The document is deliberately innocent on the lines the component's
+        // mistakes are on, so a wrong attribution cannot accidentally be right.
+        fs::write(
+            dir.join("app.rux"),
+            "<template>\n  <screen>\n    <text>ok</text>\n    <badge />\n  </screen>\n\
+             </template>\n<script>\nuse components::badge;\n</script>\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.join("components/badge.rux"),
+            "<template>\n  <view>\n    <text>{{ absent_name }}</text>\n  </view>\n</template>\n",
+        )
+        .unwrap();
+
+        let _ = take_warnings();
+        let doc = Document::load(&dir.join("app.rux")).expect("renders anyway");
+        let warning = doc
+            .diagnostics
+            .warnings
+            .iter()
+            .find(|w| w.message.contains("absent_name"))
+            .expect("the failure is reported");
+        assert_eq!(warning.line, Some(3), "the component's line 3");
+        assert_eq!(
+            warning.file.as_deref().and_then(|p| p.file_name()).and_then(|n| n.to_str()),
+            Some("badge.rux"),
+            "and the component's file, not the document that imported it"
+        );
+        let _ = fs::remove_dir_all(&dir);
     }
 
     /// The parser is handed the `<template>` body alone, so it counts from 1 at

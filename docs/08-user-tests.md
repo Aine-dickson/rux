@@ -462,6 +462,38 @@ the reader to add `line-height: 2` and watch the terminal warn. `line-height`
 has been honored since v0.5, so the demonstration printed nothing at all and had
 been wrong through two releases. Nobody drove the tutorial's own instruction.
 
+### Severity, unknown events, and which file (2026-09-15)
+
+| Case | Hardware | Outcome |
+|---|---|---|
+| `{{ nope }}` in a page | desktop, `rux check` | Passed: **error**, exit 1. Was a warning, exit 0 |
+| `{{ label }}` in a component checked on its own | desktop, `rux check` | Passed by staying a **warning**: props are not declared, so it cannot be told from a typo |
+| `@class="big"` on a `<view>` | desktop, `rux check` | Passed: error, listing the six events that exist |
+| `@sent="x"` on a component tag | desktop, `rux check` | Passed by staying silent: that is a listener for an emitted event |
+| `r-else=""` | desktop, `rux check` | Passed: error. Needed `Attr::has_value`, since the value is empty either way |
+| `r-else` on its own | desktop, `rux check` | Passed by staying silent |
+| A warning raised inside an imported component | desktop, `rux check` | Passed: names `components/badge.rux:3`, not `app.rux:3`. It reported the **importer's** name with the **component's** line until this landed |
+| All 47 files in `examples/` | desktop, `rux check` | **Found a real bug**, see below, then clean |
+
+**Two live bugs found by the checks on their first run over the corpus, which is
+the argument for both of them:**
+
+1. **`examples/recipes/message-list.rux` carried `@submit="send()"` on its
+   `<input>`.** An `<input>` raises no events of its own, so pressing Enter had
+   never once sent a message. The send button beside it works, which is what
+   kept it hidden through every release the recipe has shipped in.
+2. **`rux new` scaffolded a project that failed its own `rux check`.** The
+   scaffolded `components/task.rux` reads two props and declares nothing, so
+   making undefined names an error everywhere turned the tool's own output into
+   two errors. That is what produced the page/fragment rule, and it is the
+   strongest argument on record for giving props a declaration.
+
+**Also worth recording as a near miss.** Adding line numbers to template
+warnings the day before had made the multi-file case *more* dangerous, not less:
+warnings from a component carried its line number and the importing document's
+name, so they pointed confidently at an innocent line of the wrong file. It was
+found by asking what happens with an imported template, not by any test.
+
 ### Where a template warning points (2026-09-15)
 
 Driven with `rux check --format json`, which is what the editor reads, against
