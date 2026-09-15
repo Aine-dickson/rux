@@ -15,6 +15,12 @@ weight = 12
 Component instances are isolated (only props are visible inside). Their CSS styles
 their own subtree. Editing a component hot-reloads.
 
+**A `<template>` takes exactly one root element**, in a document and in a
+component alike. Wrap siblings in a `<view>`. Writing several is reported, with
+the line of the second: it used to keep the first and drop the rest in silence,
+and a first root carrying an `r-if` that happened to be false rendered the whole
+component as nothing at all.
+
 **An import is looked for beside the file first, then from the project root.**
 `use components::stat;` in `pages/home.rux` tries `pages/components/stat.rux`,
 and if nothing is there, `components/stat.rux` next to the project's `app.rux`

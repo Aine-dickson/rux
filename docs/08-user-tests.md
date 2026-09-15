@@ -662,6 +662,26 @@ no position, so VS Code drew it on line 1 and pointed at `<template>` for a
 mistake on the last line of `<script>`. `LoadError::at_line` places them now,
 and the import carries the line it was written on.
 
+### A template with more than one root (2026-09-15)
+
+Reported as "`rux run` too doesn't give me the expected UI", against a project
+whose `pages/home.rux` was written as four siblings.
+
+| Case | Hardware | Outcome |
+|---|---|---|
+| A component with three root elements | desktop, `rux run` | **Failed before the fix, in silence.** Only the first root drew. No warning, no overlay, nothing on stderr, and `rux check` clean |
+| The reported project: four roots, the first an `r-if` over an empty list | desktop, `rux run` | **Failed worse.** The first root was the one that rendered, and its condition was false, so the page rendered **nothing at all** and the window showed only the title from `app.rux` |
+| The same, after the fix | desktop, `rux check` | Passed: names the file, the line of the second root, how many there are, the tag that starts the dropped run, and to wrap them in a `<view>` |
+| The error raised through an import | desktop, `rux check app.rux` | Passed: reported against `pages/home.rux`, the file that is actually wrong, not the importer |
+| Every `.rux` in the repo | desktop | Passed: **zero** multi-root templates, so making this an error breaks nothing that exists |
+
+**The rule was real and written down nowhere a reader would look.**
+`docs/02-spec.md` says a template "must contain exactly one root element", and
+that file was reframed in this same patch line as design history, checked
+against nothing. The reference said nothing at all. So the runtime enforced a
+rule by dropping markup, and the only document stating it was the one that
+announces it does not describe the runtime.
+
 ## Standing gaps
 
 Cases nothing here can currently exercise. They are the shape of what v0.8 has

@@ -283,12 +283,42 @@ pub fn parse_sfc(src: &str) -> Result<Sfc, ParseError> {
 
     let mut parser = Parser::new(&template_src);
     let nodes = parser.parse_nodes(None).map_err(|e| e.offset_lines(lines_before))?;
-    let mut template = nodes
+    // Every element at the top of the template, not just the first.
+    //
+    // Taking the first and dropping the rest is what this did, in silence. A
+    // component written with four siblings rendered only the opening one, and
+    // when that one carried an `r-if` that happened to be false, the component
+    // rendered *nothing at all*: a blank screen, no warning, and `rux check`
+    // clean. That is the silent-drop shape this project keeps hunting, and it
+    // cost somebody an afternoon of looking at an empty window.
+    //
+    // The one-root rule itself is real and stays. It was only ever written down
+    // in `docs/02-spec.md`, which is design history and checked against nothing,
+    // so an author reading the actual reference had no way to learn it.
+    let mut roots: Vec<Element> = nodes
         .into_iter()
-        .find_map(|n| match n {
+        .filter_map(|n| match n {
             Node::Element(e) => Some(e),
             Node::Text(..) => None,
         })
+        .collect();
+    if roots.len() > 1 {
+        let extra = &roots[1];
+        return Err(ParseError::at(
+            format!(
+                "<template> has {} root elements, and it takes exactly one. \
+                 `<{}>` and everything after it would be dropped without a word. \
+                 Wrap them in a single `<view>`.",
+                roots.len(),
+                extra.tag
+            ),
+            extra.line,
+            1,
+        )
+        .offset_lines(lines_before));
+    }
+    let mut template = roots
+        .pop()
         .ok_or_else(|| ParseError::new("<template> has no root element"))?;
     // The parser counts from the start of the section it was handed, so every
     // line in the tree is short by however many lines came before `<template>`.
@@ -894,4 +924,40 @@ mod tests {
         // And a file with no `<style>` at all is still perfectly fine.
         assert!(parse_sfc("<template>\n  <screen></screen>\n</template>\n").is_ok());
     }
+    /// A template with more than one root element says so, and says where.
+    ///
+    /// It used to take the first element and drop the rest without a word. A
+    /// component written as four siblings rendered only the first, and when
+    /// that one carried an `r-if` that was false it rendered nothing at all:
+    /// a blank window, no warning, and a clean `rux check`. Reported as "rux run
+    /// doesn't give me the expected UI", which is exactly what a silent drop
+    /// looks like from the outside.
+    #[test]
+    fn a_template_with_two_roots_says_so_instead_of_dropping_one() {
+        let src = "<template>\n  <view><text>one</text></view>\n  <view><text>two</text></view>\n</template>";
+        let err = parse_sfc(src).expect_err("two roots is not a document");
+        assert!(err.message.contains("root elements"), "names the problem: {}", err.message);
+        assert!(err.message.contains("dropped"), "and what it used to cost: {}", err.message);
+        assert_eq!(err.line, Some(3), "points at the second root, not the first");
+    }
+
+    /// The count and the offending tag are both in the message, because "more
+    /// than one" leaves the author counting and the tag is what they search for.
+    #[test]
+    fn the_multi_root_message_names_the_count_and_the_tag() {
+        let src = "<template>\n  <view />\n  <text>x</text>\n  <input />\n</template>";
+        let err = parse_sfc(src).expect_err("three roots");
+        assert!(err.message.contains('3'), "the count: {}", err.message);
+        assert!(err.message.contains("`<text>`"), "the tag that starts the dropped run: {}", err.message);
+    }
+
+    /// One root is still one root, including with comments and stray text
+    /// around it, which are not elements and must not be counted.
+    #[test]
+    fn a_single_root_with_comments_around_it_is_still_one_root() {
+        let src = "<template>\n  <!-- a note -->\n  <view><text>one</text></view>\n</template>";
+        let sfc = parse_sfc(src).expect("one root");
+        assert_eq!(sfc.template.tag, "view");
+    }
+
 }
