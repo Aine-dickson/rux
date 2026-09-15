@@ -177,32 +177,40 @@ pub struct Document {
 /// Every handler in the template is checked, not only the ones currently on
 /// screen, so a branch behind a false `r-if` is covered too.
 fn check_handlers(template: &rux_parser::Element, engine: &rux_script::Engine) {
-    for (name, value) in &template.attrs {
+    for rux_parser::Attr { name, value, line } in &template.attrs {
         if !name.starts_with('@') || value.trim().is_empty() {
             continue;
         }
-        if let Err(why) = engine.check_syntax(value) {
-            rux_script::warn_script(format!("`{name}` handler will never run: {why}"));
-            continue; // it did not compile, so its calls are not worth reading
-        }
-        warn_unknown_calls(engine, value, &format!("the `{name}` handler"));
+        // Placed on the attribute's own line, not the element's. An element here
+        // is routinely written across several lines and the handler is rarely on
+        // the first of them.
+        rux_script::located(Some(*line), || {
+            if let Err(why) = engine.check_syntax(value) {
+                rux_script::warn_script(format!("`{name}` handler will never run: {why}"));
+                return; // it did not compile, so its calls are not worth reading
+            }
+            warn_unknown_calls(engine, value, &format!("the `{name}` handler"));
+        });
     }
     // A `guard` is author code on the same terms, and it hides longer than a
     // handler does: nobody taps a guard, so a broken one is found by whoever
     // navigates, and what they see is a link that does nothing.
     if let Some(guard) = template.attr("guard").filter(|g| !g.trim().is_empty()) {
-        if let Err(why) = engine.check_syntax(guard) {
-            rux_script::warn_script(format!(
-                "the `guard` on <{}> will never run, so it can refuse nothing: {why}",
-                template.tag
-            ));
-        } else {
-            warn_unknown_calls(
-                engine,
-                guard,
-                &format!("the `guard` on <{}>", template.tag),
-            );
-        }
+        let at = template.attr_line("guard");
+        rux_script::located(at, || {
+            if let Err(why) = engine.check_syntax(guard) {
+                rux_script::warn_script(format!(
+                    "the `guard` on <{}> will never run, so it can refuse nothing: {why}",
+                    template.tag
+                ));
+            } else {
+                warn_unknown_calls(
+                    engine,
+                    guard,
+                    &format!("the `guard` on <{}>", template.tag),
+                );
+            }
+        });
     }
     for child in &template.children {
         if let rux_parser::Node::Element(el) = child {
@@ -3201,6 +3209,76 @@ mod tests {
         assert!(err.contains("nope.css"), "names the file that is missing: {err}");
 
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Every warning from a template used to arrive with no line at all, so the
+    /// overlay, `rux check --format json` and the editor gutter all put the
+    /// squiggle at the top of the file: on the `<` of `<template>`, which is
+    /// the one place in the document where nothing is ever wrong.
+    ///
+    /// The lines here are deliberately awkward. `r-if` and `r-for` are read by
+    /// the *parent's* loop, so without placing them they take the parent's
+    /// line; `:class` and `@tap` sit on a later line than the tag they belong
+    /// to, because elements are routinely written across several lines; and a
+    /// `{{ }}` inside an `r-for` row is evaluated once per item, under a
+    /// position the loop itself set.
+    #[test]
+    fn template_warnings_land_on_the_line_that_is_wrong() {
+        let _ = take_warnings();
+        // Written out with explicit newlines so the assertions below can be
+        // read against it: the line numbers are the point of the test.
+        let src = "<template>\n\
+                   \x20 <screen>\n\
+                   \x20   <view r-if=\"missing_one\">a</view>\n\
+                   \x20   <view\n\
+                   \x20       class=\"x\"\n\
+                   \x20       :class=\"missing_two\">b</view>\n\
+                   \x20   <view r-for=\"d in missing_three\"><text>x</text></view>\n\
+                   \x20   <button @tap=\"no_such_call()\">go</button>\n\
+                   \x20   <text>{{ missing_four }}</text>\n\
+                   \x20 </screen>\n\
+                   </template>";
+        let doc = Document::from_source(src).expect("renders anyway");
+        let line_of = |needle: &str| {
+            doc.diagnostics
+                .warnings
+                .iter()
+                .find(|w| w.message.contains(needle))
+                .unwrap_or_else(|| panic!("no warning mentioning {needle}: {:?}", doc.diagnostics.warnings))
+                .line
+        };
+        assert_eq!(line_of("missing_one"), Some(3), "r-if, read by the parent's loop");
+        assert_eq!(line_of("missing_two"), Some(6), ":class, three lines below its tag");
+        assert_eq!(line_of("missing_three"), Some(7), "r-for, also read by the parent");
+        assert_eq!(line_of("no_such_call"), Some(8), "a handler");
+        assert_eq!(line_of("missing_four"), Some(9), "a text interpolation");
+    }
+
+    /// The parser is handed the `<template>` body alone, so it counts from 1 at
+    /// the template's first line and every position is short by whatever came
+    /// before it. A document that opens with `<script>` is the ordinary case,
+    /// not a corner one, and getting the shift wrong would move every squiggle
+    /// in the file by a constant nobody would think to check.
+    #[test]
+    fn lines_are_the_files_lines_not_the_templates() {
+        let _ = take_warnings();
+        let src = "<script>\nlet a = signal(1);\n</script>\n\n\
+                   <style>\n.x { color: red; }\n</style>\n\n\
+                   <template>\n  <screen>\n    <text>{{ missing_here }}</text>\n  </screen>\n\
+                   </template>";
+        let doc = Document::from_source(src).expect("renders anyway");
+        let warning = doc
+            .diagnostics
+            .warnings
+            .iter()
+            .find(|w| w.message.contains("missing_here"))
+            .expect("the failure is reported");
+        assert_eq!(
+            warning.line,
+            Some(11),
+            "`<template>` opens on line 9 and the text is on line 11: {:?}",
+            doc.diagnostics.warnings
+        );
     }
 
     /// A handler calling something that does not exist used to be silent.

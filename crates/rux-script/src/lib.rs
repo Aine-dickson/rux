@@ -827,20 +827,45 @@ thread_local! {
     static WARNINGS: RefCell<Vec<Warning>> = const { RefCell::new(Vec::new()) };
 }
 
+thread_local! {
+    /// The file line the expression being evaluated was written on, if the
+    /// caller knew it.
+    ///
+    /// The same arrangement `rux-style` uses for stylesheet warnings, and
+    /// deliberately the same shape, so that knowing how one works is knowing how
+    /// both do. It is a thread-local rather than a parameter because the path
+    /// from "build this element" to "this expression failed" runs through
+    /// expression evaluation, dependency tracking and `r-for` expansion, none of
+    /// which has any other reason to know what a file is.
+    static AT_LINE: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
+}
+
+/// Run `f` with any warning it raises attributed to `line`.
+///
+/// Restores whatever was set before rather than clearing, so nesting unwinds
+/// correctly: an `r-for` row's `{{ }}` is evaluated inside the element that
+/// carries the loop, and the inner position must not outlive the inner call.
+pub fn located<T>(line: Option<usize>, f: impl FnOnce() -> T) -> T {
+    let previous = AT_LINE.with(|l| l.replace(line));
+    let out = f();
+    AT_LINE.with(|l| l.set(previous));
+    out
+}
+
 fn warn(message: String) {
+    let at = AT_LINE.with(|l| l.get());
     WARNINGS.with(|w| {
         let mut w = w.borrow_mut();
         // A binding is re-evaluated on every build, and an `r-for` evaluates the
         // same expression once per row, so the same failure arrives many times.
-        if !w.iter().any(|existing: &Warning| existing.message == message) {
+        // Deduped by message *and* line, as the cascade's sink is: the same
+        // mistake on two lines is two places to go and fix, and an editor wants
+        // a squiggle on each.
+        if !w.iter().any(|existing: &Warning| existing.message == message && existing.line == at) {
             if ECHO.with(|e| e.get()) {
                 eprintln!("rux: {message}");
             }
-            // Expression failures are still unplaced: an expression comes from a
-            // template attribute or a `{{ }}` span, and the template parser does
-            // not yet record where each of those started. See `rux-reactive`'s
-            // `Warning` on why a guess would be worse than nothing.
-            w.push(Warning::new(message));
+            w.push(Warning::maybe_at(message, at));
         }
     });
 }

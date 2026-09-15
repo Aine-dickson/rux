@@ -24,6 +24,17 @@ app is watching.
   `var()`s, unsupported `@media` conditions, and **expressions that failed**, `expression \`dubble(n)\` failed: Function not found: dubble`. Long lists are
   capped at six with a count of the rest; everything still goes to stderr.
   CSS warnings are prefixed with the line they are on (`line 11: …`).
+- **Template warnings carry their line too**, from v0.7.1. Every one of them
+  used to arrive unplaced, so the overlay, `rux check --format json` and the
+  editor gutter all fell back to the top of the file: the `<` of `<template>`,
+  which is the one place in a document where nothing is ever wrong. The
+  template parser now records a file line for each element, each attribute and
+  each text run, and a warning is attributed to the most specific one that
+  applies. A handler lands on its own attribute's line rather than on the tag's,
+  which matters because elements are routinely written across several lines; an
+  `r-if` or `r-for` lands on the directive rather than on the parent element
+  whose loop reads it; and a `{{ }}` lands on the text run rather than on the
+  element containing it.
 - **Tapping the panel dismisses it**, and it says so. The panel covers the app it
   is describing, which was a problem when the thing you needed to look at was
   underneath. The dismissal is remembered against *those* diagnostics, so it

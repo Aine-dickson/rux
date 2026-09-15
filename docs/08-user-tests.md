@@ -462,6 +462,27 @@ the reader to add `line-height: 2` and watch the terminal warn. `line-height`
 has been honored since v0.5, so the demonstration printed nothing at all and had
 been wrong through two releases. Nobody drove the tutorial's own instruction.
 
+### Where a template warning points (2026-09-15)
+
+Driven with `rux check --format json`, which is what the editor reads, against
+a file whose line numbers were chosen to be awkward.
+
+| Case | Hardware | Outcome |
+|---|---|---|
+| `{{ nope }}` on its own line | desktop, `rux check` | Passed: the text run's line. Was unplaced, so it landed on line 1 |
+| `@tap` three lines below its `<button` | desktop, `rux check` | Passed: the attribute's line, not the tag's |
+| `:class` two lines below its `<view` | desktop, `rux check` | Passed: the attribute's line |
+| `r-if` on a child | desktop, `rux check` | Passed: the directive's line. Read by the *parent's* loop, so it reported the parent's line until it was placed |
+| `r-for` on a child | desktop, `rux check` | Passed, same shape |
+| `{{ }}` inside an `r-for` row | desktop, `rux check` | Passed: the row's text line, once, not once per item |
+| A document opening with `<script>` and `<style>`, template starting on line 9 | desktop, `rux check` | Passed: reported line 11, the file's line, not the template section's line 3 |
+| All 47 files in `examples/` | desktop, `rux check` | Passed, still no warnings at all |
+
+**The old behaviour is worth naming precisely:** every template warning arrived
+with no line, so every consumer fell back to the top of the file. That put the
+squiggle on the `<` of `<template>`, which is the one place in a document where
+nothing is ever wrong.
+
 ### Calls that can never resolve (2026-09-15)
 
 Driven with `rux check` on files carrying each case, and the silent half matters

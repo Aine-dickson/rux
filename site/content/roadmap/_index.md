@@ -1963,11 +1963,14 @@ not "is it small", it is "did v0.7 say this works".
 
 **Claims, so 0.7.x:**
 
-- **Diagnostic positions in `<template>` are wrong.** Errors and warnings anchor
-  to the `<` of the opening `<template>` tag rather than to the expression that
-  raised them, so every squiggle in a template points at line 1. The runtime
-  already tracks positions for stylesheet warnings (`located`, `AT_LINE`); the
-  template path has no equivalent.
+- ~~**Diagnostic positions in `<template>` are wrong.**~~ **DONE 2026-09-15.**
+  Everything from a template arrived unplaced, so every squiggle pointed at the
+  `<` of `<template>`. `rux-parser` now carries a file line on each element,
+  each attribute and each text run, and `rux-script` gained the same
+  `located`/`AT_LINE` arrangement the cascade already had, so the two work the
+  same way. Placed at the most specific level available: a handler on its
+  attribute's line, an `r-if`/`r-for` on the directive rather than on the parent
+  that reads it, a `{{ }}` on its text run.
 - **An undefined variable in a template is a warning, not an error.** Reading a
   name that does not exist cannot be right, and `rux check` exits 0 on it.
 - **"missing `<template>` section" is emitted for an unclosed one.** Verified:

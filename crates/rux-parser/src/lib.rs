@@ -120,24 +120,58 @@ pub struct StyleInclude {
 #[derive(Debug, Clone)]
 pub struct Element {
     pub tag: String,
-    pub attrs: Vec<(String, String)>,
+    pub attrs: Vec<Attr>,
     pub children: Vec<Node>,
+    /// The 1-based **file** line this element's `<` sits on.
+    ///
+    /// File-relative, not section-relative, so it lines up with the editor
+    /// gutter without every reader having to know where `<template>` started.
+    /// [`parse_sfc`] shifts the whole tree once, after parsing, the same way it
+    /// already shifts a [`ParseError`].
+    pub line: usize,
+}
+
+/// One attribute, with the line it was written on.
+///
+/// The line is carried per attribute rather than per element because elements
+/// here are routinely written across several lines:
+///
+/// ```text
+/// <view class="tile"
+///       r-for="d in devices" @tap="select(d)">
+/// ```
+///
+/// A warning about that `@tap` belongs on the second line, and an element-level
+/// line would put it on the first. That is a smaller lie than the one this
+/// replaces, but it is still a lie, and the cost of not telling it is one
+/// `usize`.
+#[derive(Debug, Clone)]
+pub struct Attr {
+    pub name: String,
+    pub value: String,
+    /// The 1-based **file** line, as [`Element::line`].
+    pub line: usize,
 }
 
 /// A node in the template tree.
 #[derive(Debug, Clone)]
 pub enum Node {
     Element(Element),
-    Text(String),
+    /// Text, and the 1-based **file** line it starts on. A `{{ }}` that fails
+    /// is reported against this, which is why the text keeps its position even
+    /// though nothing else about a text node needs one.
+    Text(String, usize),
 }
 
 impl Element {
     /// Value of an attribute by exact name, if present.
     pub fn attr(&self, name: &str) -> Option<&str> {
-        self.attrs
-            .iter()
-            .find(|(k, _)| k == name)
-            .map(|(_, v)| v.as_str())
+        self.attrs.iter().find(|a| a.name == name).map(|a| a.value.as_str())
+    }
+
+    /// The line an attribute was written on, for a warning that is about it.
+    pub fn attr_line(&self, name: &str) -> Option<usize> {
+        self.attrs.iter().find(|a| a.name == name).map(|a| a.line)
     }
 
     /// Whitespace-separated `class` tokens.
@@ -219,13 +253,18 @@ pub fn parse_sfc(src: &str) -> Result<Sfc, ParseError> {
 
     let mut parser = Parser::new(&template_src);
     let nodes = parser.parse_nodes(None).map_err(|e| e.offset_lines(lines_before))?;
-    let template = nodes
+    let mut template = nodes
         .into_iter()
         .find_map(|n| match n {
             Node::Element(e) => Some(e),
-            Node::Text(_) => None,
+            Node::Text(..) => None,
         })
         .ok_or_else(|| ParseError::new("<template> has no root element"))?;
+    // The parser counts from the start of the section it was handed, so every
+    // line in the tree is short by however many lines came before `<template>`.
+    // Shifted once here rather than threaded through the parser, which is the
+    // same trade `offset_lines` already makes for a ParseError.
+    offset_element_lines(&mut template, lines_before);
 
     Ok(Sfc {
         template,
@@ -237,6 +276,24 @@ pub fn parse_sfc(src: &str) -> Result<Sfc, ParseError> {
         style_scoped,
         style_includes: Vec::new(),
     })
+}
+
+/// Move every line in a parsed subtree onto the file's numbering.
+///
+/// See the call site: the parser is handed the `<template>` body alone and so
+/// counts from 1 at its first line, while everything downstream (the overlay,
+/// `rux check --format json`, the editor gutter) means file lines.
+fn offset_element_lines(el: &mut Element, by: usize) {
+    el.line += by;
+    for attr in &mut el.attrs {
+        attr.line += by;
+    }
+    for child in &mut el.children {
+        match child {
+            Node::Element(child) => offset_element_lines(child, by),
+            Node::Text(_, line) => *line += by,
+        }
+    }
 }
 
 /// A section's contents with the surrounding blank space removed, and the
@@ -424,9 +481,15 @@ impl Parser {
                 continue;
             }
             // Text run up to the next '<'.
+            let at = self.line_col(self.pos).0;
             let text = self.read_text();
             if !text.trim().is_empty() {
-                nodes.push(Node::Text(text.trim().to_string()));
+                // The line of the run's first character, not of its first
+                // non-space one. A `{{ }}` sitting on its own line after the
+                // tag is the common shape, and the leading newline is part of
+                // the run, so the trim is counted back out.
+                let skipped = text.chars().take_while(|c| c.is_whitespace()).filter(|c| *c == '\n').count();
+                nodes.push(Node::Text(text.trim().to_string(), at + skipped));
             }
         }
         let _ = parent;
@@ -483,6 +546,9 @@ impl Parser {
     }
 
     fn parse_element(&mut self) -> Result<Element, ParseError> {
+        // Taken before the `<` is consumed, so the line is the one an author
+        // sees the tag begin on.
+        let line = self.line_col(self.pos).0;
         self.bump(); // consume '<'
         let tag = self.read_name();
         if tag.is_empty() {
@@ -498,13 +564,14 @@ impl Parser {
                     self.bump();
                     let children = self.parse_nodes(Some(&tag))?;
                     self.expect_closing(&tag)?;
-                    return Ok(Element { tag, attrs, children });
+                    return Ok(Element { tag, attrs, children, line });
                 }
                 Some('/') if self.starts_with("/>") => {
                     self.pos += 2;
-                    return Ok(Element { tag, attrs, children: Vec::new() });
+                    return Ok(Element { tag, attrs, children: Vec::new(), line });
                 }
                 _ => {
+                    let attr_line = self.line_col(self.pos).0;
                     let name = self.read_attr_name();
                     if name.is_empty() {
                         return Err(self.err(format!("malformed attribute in <{tag}>")));
@@ -520,7 +587,7 @@ impl Parser {
                     } else {
                         String::new() // valueless attribute, e.g. `disabled`
                     };
-                    attrs.push((name, value));
+                    attrs.push(Attr { name, value, line: attr_line });
                 }
             }
         }

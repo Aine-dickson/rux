@@ -847,7 +847,7 @@ fn element_children(el: &Element) -> Vec<&Element> {
         .iter()
         .filter_map(|n| match n {
             TplNode::Element(child) => Some(child),
-            TplNode::Text(_) => None,
+            TplNode::Text(..) => None,
         })
         .collect()
 }
@@ -1420,12 +1420,29 @@ fn interpolate_tracked(
 }
 
 /// The raw concatenated text of an element's direct text children, `{{ }}` spans
+/// The line a `{{ }}` failure inside this element should be reported on.
+///
+/// The first text child that interpolates, since that is what can fail. An
+/// element with several text runs reports them all against the first one that
+/// could go wrong, which is a small imprecision compared with reporting them
+/// against the top of the file. With no interpolation anywhere, the element's
+/// own line, which is what the caller would have used anyway.
+fn text_line(el: &Element) -> usize {
+    el.children
+        .iter()
+        .find_map(|c| match c {
+            TplNode::Text(t, line) if t.contains("{{") => Some(*line),
+            _ => None,
+        })
+        .unwrap_or(el.line)
+}
+
 /// left intact, the template a [`TextBinding`] re-interpolates on change.
 fn text_template(el: &Element) -> String {
     el.children
         .iter()
         .filter_map(|c| match c {
-            TplNode::Text(t) => Some(t.trim()),
+            TplNode::Text(t, _) => Some(t.trim()),
             _ => None,
         })
         .filter(|t| !t.is_empty())
@@ -2885,7 +2902,49 @@ fn matched_props(
 /// `inherited` carries the resolved text properties (`color`/`font-size`/
 /// `font-family`, which inherit); `locals` carries `r-for` loop bindings.
 #[allow(clippy::too_many_arguments)]
+/// Build one element, with every warning raised underneath it attributed to the
+/// line the element was written on.
+///
+/// A wrapper rather than a `located` around the body, because the body has a
+/// dozen early returns and each one would have to remember to restore the
+/// position. Wrapping the call is the one place that cannot be forgotten.
+///
+/// The default is the element's own line, and the places that know better say
+/// so: a handler is placed on its attribute's line, a `{{ }}` on its text
+/// node's. Nesting works because [`rux_script::located`] restores what it
+/// replaced, so a child's line does not outlive the child.
+#[allow(clippy::too_many_arguments)]
 fn build_node(
+    el: &Element,
+    rules: &[Rule],
+    comps: &Components,
+    ancestors: &mut Vec<AncNode>,
+    prev: &[ElemDesc],
+    inherited: &Inherited,
+    engine: &mut Engine,
+    locals: &Locals,
+    path: &[usize],
+    tpl_path: &[usize],
+    reg: &mut BindingRegistry,
+    state: &InteractionState,
+    instances: &mut Instances,
+    swaps: &mut Swaps,
+    instance: Option<&str>,
+    slot: Option<Slot>,
+    outlet: Option<Outlet>,
+    row: Option<&str>,
+    swap: Option<SwapSide>,
+) -> LayoutNode {
+    rux_script::located(Some(el.line), || {
+        build_node_inner(
+            el, rules, comps, ancestors, prev, inherited, engine, locals, path, tpl_path, reg,
+            state, instances, swaps, instance, slot, outlet, row, swap,
+        )
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_node_inner(
     el: &Element,
     rules: &[Rule],
     comps: &Components,
@@ -2979,7 +3038,9 @@ fn build_node(
             value.is_some_and(|v| match_route(to, &v.to_display()).is_some());
     }
     if let Some(expr) = el.attr(":class") {
-        let (value, deps) = engine.eval_value_tracked(expr, locals);
+        let (value, deps) = rux_script::located(el.attr_line(":class"), || {
+            engine.eval_value_tracked(expr, locals)
+        });
         dyn_deps.extend(deps);
         if let Some(v) = value {
             desc.classes.extend(class_list(&v));
@@ -3149,7 +3210,10 @@ fn build_node(
         // template, the locals, and the signals it reads, keyed by this node's
         // path. Only text that actually interpolates is registered.
         let template = text_template(el);
-        let (text, deps) = interpolate_tracked(&template, engine, locals);
+        // Placed on the text itself, which for a multi-line `<text>` is not the
+        // line the tag opened on.
+        let (text, deps) =
+            rux_script::located(Some(text_line(el)), || interpolate_tracked(&template, engine, locals));
         if template.contains("{{") {
             reg.text.push(TextBinding {
                 path: path.to_vec(),
@@ -3628,7 +3692,7 @@ fn expand_component(
     let mut props: Locals = Vec::new();
     let mut prop_deps: HashSet<String> = HashSet::new();
     let mut listeners: Vec<(String, String)> = Vec::new();
-    for (key, expr) in &el.attrs {
+    for rux_parser::Attr { name: key, value: expr, .. } in &el.attrs {
         // `@event="body"` is a listener, not a prop: the body is the caller's
         // code to run *later*, so it is carried as text and never evaluated
         // here. Evaluating it would run the caller's statements at build time,
@@ -4305,10 +4369,12 @@ fn build_children(
         if el.attr("r-key").is_some() && el.attr("r-for").is_none() {
             // A key with nothing to identify. Silently ignoring it would let
             // someone believe their list was keyed when it was not.
-            warn(format!(
-                "`r-key` on <{}> does nothing without `r-for` on the same element",
-                el.tag
-            ));
+            located(el.attr_line("r-key"), || {
+                warn(format!(
+                    "`r-key` on <{}> does nothing without `r-for` on the same element",
+                    el.tag
+                ))
+            });
         }
         // `<slot />` is where the caller's children land. It is not an element
         // of its own: it renders them (or its own children as a fallback) and
@@ -4520,11 +4586,16 @@ fn build_children(
         if let Some(for_expr) = el.attr("r-for") {
             in_chain = false;
             if let Some((var, coll)) = parse_for(for_expr) {
-                warn_if_destructuring_for(for_expr, var);
+                // A directive is read by the *parent's* loop, so without this it
+                // would be reported on the parent's line. It belongs on the line
+                // the directive was written on.
+                let at = el.attr_line("r-for");
+                rux_script::located(at, || warn_if_destructuring_for(for_expr, var));
                 // The collection is a reconcilable read, not a force-rebuild one:
                 // it flows to the parent's structural deps (via the return), not to
                 // `reg.structural`.
-                let (value, deps) = engine.eval_value_tracked(coll, locals);
+                let (value, deps) =
+                    rux_script::located(at, || engine.eval_value_tracked(coll, locals));
                 structural_deps.extend(deps);
                 let items = value.and_then(|v| v.as_list().map(<[Value]>::to_vec));
                 if let Some(items) = items {
@@ -4636,7 +4707,9 @@ fn build_children(
         // the answer is always the condition itself.
         if let Some(cond) = el.attr("r-if") {
             in_chain = true;
-            let (v, deps) = engine.eval_bool_tracked(cond, locals);
+            let (v, deps) = rux_script::located(el.attr_line("r-if"), || {
+                engine.eval_bool_tracked(cond, locals)
+            });
             structural_deps.extend(deps);
             chain_satisfied = v;
             let key: SwapKey = (ctp.clone(), row.map(str::to_string));
@@ -4652,7 +4725,9 @@ fn build_children(
         }
         if let Some(cond) = el.attr("r-elif") {
             let taken = if in_chain && !chain_satisfied {
-                let (v, deps) = engine.eval_bool_tracked(cond, locals);
+                let (v, deps) = rux_script::located(el.attr_line("r-elif"), || {
+                    engine.eval_bool_tracked(cond, locals)
+                });
                 structural_deps.extend(deps);
                 v
             } else {
