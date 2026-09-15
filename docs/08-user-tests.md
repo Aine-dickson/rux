@@ -624,6 +624,26 @@ brings it in names the file, in snake. Both messages now say which spelling the
 place they are complaining about wants, and the import they suggest is one that
 parses.
 
+### `query()` against the root (2026-09-15)
+
+From the claim walk: the post says a handler can read the screen, and the
+reference says `query()` "is the stylesheet's own matcher". It was not, at
+exactly one node.
+
+| Case | Hardware | Outcome |
+|---|---|---|
+| `query(".app .row")` with `.app` on the `<screen>` root | desktop, `rux run` | **Failed before the fix.** Empty, while the identical selector in the stylesheet painted the row red. Two answers about one document |
+| `query(".app > .wrap")`, `query("screen > .wrap")` | desktop, `rux run` | **Failed before the fix**, same cause |
+| `query(".wrap > .row")`, `query(".row > .t")`, `view > text` | desktop, `rux run` | Passed all along: `>` works, which is what made the bug look like something subtler than it was |
+| `query(".row + .row")`, `query(".row ~ .row")` | desktop, `rux run` | Passed all along |
+| `query(".app")`, `query("screen")` | desktop, `rux run` | Passed all along: the root was always **findable**, just never an **ancestor** |
+
+**The root's path is empty, and the ancestor chain was rebuilt from depth 1.**
+So the one node an author is most likely to anchor a selector at was the one
+node that could never appear above anything. `query(".app")` returning 1 while
+`query(".app .row")` returned 0 is the tell, and it is why this reads as a
+selector-support gap rather than an off-by-one.
+
 ## Standing gaps
 
 Cases nothing here can currently exercise. They are the shape of what v0.8 has

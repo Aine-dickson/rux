@@ -1717,7 +1717,12 @@ impl ElementIndex {
     /// along in [`AncNode::prev`] so a sibling combinator above a descendant hop
     /// still resolves.
     fn context_of(&self, entry: &ElementEntry) -> (Vec<AncNode>, Vec<ElemDesc>) {
-        let ancestors = (1..entry.path.len())
+        // From 0, so the root is an ancestor like any other. The root's own
+        // path is empty, and starting at 1 skipped exactly it: `.app .row`
+        // matched nothing from a handler while the stylesheet painted it, so
+        // the two disagreed about the same document. A node at the root gets
+        // `0..0` and still has no ancestors, which is correct.
+        let ancestors = (0..entry.path.len())
             .map(|depth| {
                 let at = &entry.path[..depth];
                 AncNode {
@@ -7710,6 +7715,29 @@ mod tests {
         assert_eq!(after.len(), 1);
         // …and it is genuinely the later one.
         assert!(after[0].path > index.query(".card").unwrap()[0].path);
+    }
+
+    /// The root is an ancestor like any other, which is where this diverged
+    /// from the stylesheet.
+    ///
+    /// `query()` is billed as the stylesheet's own matcher, and a rule written
+    /// `.app .row` painted while the identical selector handed to a handler
+    /// came back empty. The ancestor chain was rebuilt from depth 1, and the
+    /// root's path is empty, so the one node every selector is most likely to
+    /// be anchored at was the one node that could never match.
+    #[test]
+    fn a_selector_anchored_at_the_root_matches() {
+        let index = indexed(
+            r#"<template><screen class="app">
+                 <view class="wrap"><view class="row"><text>One</text></view></view>
+               </screen></template>"#,
+        );
+        assert_eq!(index.query(".app").unwrap().len(), 1, "the root is in the index");
+        assert_eq!(index.query(".app .row").unwrap().len(), 1, "as a descendant");
+        assert_eq!(index.query(".app > .wrap").unwrap().len(), 1, "as a parent");
+        assert_eq!(index.query("screen > .wrap").unwrap().len(), 1, "by tag too");
+        // The root itself has no ancestors, so anchoring above it still fails.
+        assert!(index.query("view > .app").unwrap().is_empty(), "nothing is above the root");
     }
 
     /// Results are in document order, which is what makes indexing into a query
