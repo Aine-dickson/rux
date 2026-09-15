@@ -11,6 +11,9 @@
 // honors a subset and the general answer would be wrong exactly where it
 // matters most.
 
+const fs = require('node:fs');
+const nodePath = require('node:path');
+
 const context = require('./context');
 const vocabulary = require('./vocabulary');
 const locals = require('./locals');
@@ -30,7 +33,9 @@ function register(vscode) {
       const at = inExpr ? context.memberAt(text, offset) : context.wordAt(text, offset);
       if (!at) return undefined;
 
-      const found = lookUp(section, text, at);
+      const docPath =
+        document.uri && document.uri.scheme === 'file' ? document.uri.fsPath : null;
+      const found = lookUp(section, text, at, docPath);
       if (!found) return undefined;
 
       const md = new vscode.MarkdownString();
@@ -45,14 +50,14 @@ function register(vscode) {
 }
 
 /** What `word` means in `section`, or `null` if this is not a word we know. */
-function lookUp(section, text, at) {
+function lookUp(section, text, at, docPath) {
   switch (section) {
     case 'template':
       return inTemplate(text, at);
     case 'style':
       return inStyle(text, at);
     case 'script':
-      return inScript(text, at);
+      return inScript(text, at, docPath);
     default:
       return null;
   }
@@ -340,13 +345,13 @@ const KEYWORDS = {
   continue: { detail: 'skip to the next turn', doc: 'Goes straight to the next iteration.' },
 };
 
-function inScript(text, at) {
+function inScript(text, at, docPath) {
   const keyword = KEYWORDS[at.word];
   if (keyword && isKeywordPosition(text, at)) {
     return { title: at.word, detail: keyword.detail, doc: keyword.doc };
   }
 
-  const imported = inUseStatement(text, at);
+  const imported = inUseStatement(text, at, docPath);
   if (imported) return imported;
 
   // A lambda's parameter: `search_item.map(a => { a.length })`. Not a
@@ -369,6 +374,48 @@ function inScript(text, at) {
 }
 
 /**
+ * Where a `use` path actually lands on disk, said in the hover.
+ *
+ * The hover used to describe what the path *means* and stop there, which reads
+ * as confirmation that it resolves. Someone looking at a red squiggle and a
+ * confident hover on the same line is owed better than two answers, so this one
+ * goes and looks.
+ *
+ * The order is the runtime's: beside the importing file, then from the project
+ * root. If the two ever disagree this line is the one that is wrong.
+ */
+function resolvedImport(docPath, file) {
+  if (!docPath || !file) return null;
+  const here = nodePath.dirname(docPath);
+  const beside = nodePath.join(here, ...file.split('/'));
+  if (exists(beside)) return { path: beside, where: 'beside this file' };
+
+  let dir = here;
+  for (;;) {
+    for (const name of ['app.rux', 'index.rux']) {
+      if (exists(nodePath.join(dir, name))) {
+        const fromRoot = nodePath.join(dir, ...file.split('/'));
+        return exists(fromRoot)
+          ? { path: fromRoot, where: 'from the project root' }
+          : { path: null, where: null, looked: [beside, fromRoot] };
+      }
+    }
+    const up = nodePath.dirname(dir);
+    if (up === dir) return { path: null, where: null, looked: [beside] };
+    dir = up;
+  }
+}
+
+/** Whether a path is a readable file. */
+function exists(p) {
+  try {
+    return fs.statSync(p).isFile();
+  } catch (e) {
+    return false;
+  }
+}
+
+/**
  * The `use` keyword, or any segment of the path after it.
  *
  * Worth answering because the mapping is not guessable from the syntax: the
@@ -376,7 +423,7 @@ function inScript(text, at) {
  * hyphen in the tag, and the tag is the only thing the template ever sees.
  * Three rules, none of them visible in `use components::crew_detail;`.
  */
-function inUseStatement(text, at) {
+function inUseStatement(text, at, docPath) {
   const lineStart = text.lastIndexOf('\n', at.start - 1) + 1;
   let lineEnd = text.indexOf('\n', at.start);
   if (lineEnd === -1) lineEnd = text.length;
@@ -392,20 +439,32 @@ function inUseStatement(text, at) {
   const tag = leaf ? leaf.replace(/_/g, '-') : null;
 
   const shared =
-    'The path names a **file relative to this one**, not a package: ' +
-    '`components::crew_detail` is `components/crew_detail.rux` beside this ' +
-    'file.\n\n**An underscore becomes a hyphen in the tag**, so that one is ' +
-    'written `<crew-detail>`. That is the runtime\'s rule, not a convention.\n\n' +
-    'Imports only reach **downward**, into this file\'s own directory and below. ' +
-    'There is no `super::` and no `..`, so a file in a parent directory cannot ' +
-    'be imported at all.';
+    'The path names a **file**, not a package: `components::crew_detail` is ' +
+    '`components/crew_detail.rux`.\n\n**An underscore becomes a hyphen in the ' +
+    'tag**, so that one is written `<crew-detail>`. That is the runtime\'s rule, ' +
+    'not a convention.\n\nIt is looked for **beside this file first, then from ' +
+    'the project root** (wherever `app.rux` or `index.rux` is), so a page in a ' +
+    'subdirectory can share the components at the root. There is still no ' +
+    '`super::` and no `..`.';
+
+  // Asked of the disk, not inferred. A hover that describes what a path means
+  // reads as confirmation that it resolves, and someone staring at a red
+  // squiggle under a confident hover is owed the difference.
+  const found = resolvedImport(docPath, file);
+  const status = !found
+    ? ''
+    : found.path
+      ? `\n\nResolves to \`${found.path}\`, ${found.where}.`
+      : `\n\n**Nothing of that name is there.** Looked in ` +
+        found.looked.map((l) => `\`${l}\``).join(' and ') +
+        '.';
 
   if (at.word === 'use') {
     return {
       title: 'use',
       detail: 'import a component',
       doc: file
-        ? `Makes \`${file}\` available in this file's template as \`<${tag}>\`.\n\n${shared}`
+        ? `Makes \`${file}\` available in this file's template as \`<${tag}>\`.${status}\n\n${shared}`
         : shared,
     };
   }
@@ -416,10 +475,10 @@ function inUseStatement(text, at) {
       title: at.word,
       detail: isLeaf ? `the component, written <${tag}>` : 'a folder in the path',
       doc: isLeaf
-        ? `\`${file}\`, usable as \`<${tag}>\`.\n\nProps are passed bound ` +
+        ? `\`${file}\`, usable as \`<${tag}>\`.${status}\n\nProps are passed bound ` +
           `(\`:label="title"\`), evaluated in this file's scope; what it sends ` +
           'back arrives as `@name` handlers, from its `emit`.'
-        : `A directory beside this file. The whole path resolves to \`${file}\`.`,
+        : `A directory in the path. The whole path resolves to \`${file}\`.${status}`,
     };
   }
   return null;
