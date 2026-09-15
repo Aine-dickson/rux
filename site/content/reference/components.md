@@ -15,6 +15,21 @@ weight = 12
 Component instances are isolated (only props are visible inside). Their CSS styles
 their own subtree. Editing a component hot-reloads.
 
+**An import is looked for beside the file first, then from the project root.**
+`use components::stat;` in `pages/home.rux` tries `pages/components/stat.rux`,
+and if nothing is there, `components/stat.rux` next to the project's `app.rux`
+or `index.rux`. So a page in a subdirectory can share the components at the root
+rather than keeping a copy of each one beside it.
+
+Beside-first is deliberate: a component that resolves today goes on meaning the
+same file, and the root is only ever a fallback. Outside a project, where no
+`app.rux` or `index.rux` marks the top, there is no root and only the relative
+form applies.
+
+There is still no `super::` and no `..`. The root fallback covers what those
+were being reached for, and a path that can climb is a path that can escape the
+project.
+
 **Components are a desktop feature today.** `use components::stat;` names a
 *file*, and the web build has no filesystem to read it from: a document run in
 a browser is handed no components, so every component tag renders nothing and

@@ -644,6 +644,24 @@ node that could never appear above anything. `query(".app")` returning 1 while
 `query(".app .row")` returned 0 is the tell, and it is why this reads as a
 selector-support gap rather than an off-by-one.
 
+### Reaching a component in a parent directory (2026-09-15)
+
+Reported by the user as the thing that catches them out most often, with a
+screenshot: `pages/home.rux` in a project whose components live at the root.
+
+| Case | Hardware | Outcome |
+|---|---|---|
+| `use components::task;` in `pages/home.rux`, component at `components/task.rux` | desktop, `rux check` + `rux run` | **Failed before the fix**, and the only way out was a second copy of the component beside the page. Now resolves from the project root, and the page renders both rows in the window |
+| The same import with a component **also** at `pages/components/task.rux` | desktop, `rux check` | Passed: the near copy wins. This is the half that had to keep working, or a document that resolves today would quietly start meaning a different file |
+| The same layout with no `app.rux` or `index.rux` anywhere above | desktop, `rux check` | Passed by still failing: nothing marks the top of a project, so there is no root and only the relative form applies |
+| `use components::nope;`, nowhere at all | desktop, `rux check --format json` | Passed: `"line": 6`, and the message names both directories it looked in. It used to be a bare OS error with `"line": null` |
+| `use components::;`, half typed after a completion | desktop, `rux check` | Passed: "this `use` names no component: a path segment is empty". It used to report `reading component .../components/.rux: The system cannot find the path specified`, which describes a path the author never wrote and blames the disk |
+
+**The squiggle was the visible half.** Every one of these errors came back with
+no position, so VS Code drew it on line 1 and pointed at `<template>` for a
+mistake on the last line of `<script>`. `LoadError::at_line` places them now,
+and the import carries the line it was written on.
+
 ## Standing gaps
 
 Cases nothing here can currently exercise. They are the shape of what v0.8 has

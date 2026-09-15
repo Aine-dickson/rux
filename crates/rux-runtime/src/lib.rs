@@ -723,6 +723,23 @@ impl LoadError {
         Self { message, file: None, line: None, column: None, parse: false }
     }
 
+    /// A failure that belongs to one line of a known file.
+    ///
+    /// `parse: false`, because this is not the parser talking and the flattened
+    /// sentence must not grow a "parse error at" prefix it has never had. The
+    /// position travels in the fields, which is what a checker draws the
+    /// squiggle from; an unplaced error is drawn at line 1, pointing at
+    /// `<template>` for a mistake in `<script>`.
+    fn at_line(message: String, line: usize, file: &Path) -> Self {
+        Self {
+            message,
+            file: Some(file.to_path_buf()),
+            line: Some(line),
+            column: None,
+            parse: false,
+        }
+    }
+
     /// A script failure, moved from section coordinates into file ones.
     ///
     /// `script_line` is the 1-based file line the `<script>` body starts on, so
@@ -821,9 +838,38 @@ impl Document {
         let main_script_lines = main_script.lines().count();
         let mut combined_script = main_script;
         for import in imports {
-            let comp_path = base.join(&import.file);
+            // A half-typed `use` names no file, and the filesystem error it
+            // used to produce talked about a path ending in `/.rux`, which is
+            // not something the author wrote.
+            if import.empty_segment {
+                return Err(LoadError::at_line(
+                    "this `use` names no component: a path segment is empty. \
+                     Write `use components::name;`"
+                        .to_string(),
+                    sfc.script_line + import.line - 1,
+                    path,
+                ));
+            }
+            let comp_path = resolve_import(base, &import.file).map_err(|(beside, from_root)| {
+                let mut looked = format!("`{}`", beside.display());
+                if let Some(root) = from_root.filter(|r| *r != beside) {
+                    looked.push_str(&format!(" and `{}`", root.display()));
+                }
+                LoadError::at_line(
+                    format!(
+                        "no component file for `{}`: looked in {looked}",
+                        import.file.trim_end_matches(".rux").replace('/', "::")
+                    ),
+                    sfc.script_line + import.line - 1,
+                    path,
+                )
+            })?;
             let comp_src = std::fs::read_to_string(&comp_path).map_err(|e| {
-                LoadError::plain(format!("reading component {}: {e}", comp_path.display()))
+                LoadError::at_line(
+                    format!("reading component {}: {e}", comp_path.display()),
+                    sfc.script_line + import.line - 1,
+                    path,
+                )
             })?;
             let mut comp_sfc =
                 rux_parser::parse_sfc(&comp_src).map_err(|e| LoadError::parse(e, Some(&comp_path)))?;
@@ -3127,11 +3173,82 @@ fn component_functions(script: &str) -> String {
 }
 
 /// A resolved component import.
+/// The entry points that mark the top of a project, in the order `rux run`
+/// prefers them.
+const WORKSPACE_ENTRIES: [&str; 2] = ["app.rux", "index.rux"];
+
+/// The directory holding this project's entry point, found by walking up from
+/// `from`, or `None` outside a project.
+///
+/// `rux run` already walks up like this so that the tool works from a
+/// subdirectory the way `git` does. Imports need the same notion of a root for
+/// the fallback below.
+fn workspace_root(from: &Path) -> Option<PathBuf> {
+    let mut dir = Some(from);
+    while let Some(current) = dir {
+        if WORKSPACE_ENTRIES.iter().any(|name| current.join(name).is_file()) {
+            return Some(current.to_path_buf());
+        }
+        dir = current.parent();
+    }
+    None
+}
+
+/// Where a `use a::b;` in a file under `base` actually points.
+///
+/// **Beside the importing file first**, which is what Rux has always done and
+/// what keeps a component usable from a second directory. Then, if nothing is
+/// there, **from the project root**, which is what an author means when they
+/// write `use components::task;` in `pages/home.rux`: `components/` is a place
+/// in the project, not a place beside this file.
+///
+/// Relative-first rather than root-first so that no document which resolves
+/// today can start resolving somewhere else. The fallback can only turn a hard
+/// error into a working import.
+///
+/// This is the answer to the trap that had no answer: `use` resolved downward
+/// only, with no `super::` and no `..`, so a file in a subdirectory could not
+/// reach a shared component at all and had to keep its own copy.
+fn resolve_import(base: &Path, file: &str) -> Result<PathBuf, (PathBuf, Option<PathBuf>)> {
+    // Joined a segment at a time rather than as one `a/b.rux` string, so the
+    // result is spelled in the platform's own separator. Joining the whole
+    // thing produced `...\pages\components/task.rux` in every message on
+    // Windows, which reads like two different paths spliced together.
+    let join = |dir: &Path| file.split('/').fold(dir.to_path_buf(), |acc, part| acc.join(part));
+    let beside = join(base);
+    if beside.is_file() {
+        return Ok(beside);
+    }
+    let from_root = workspace_root(base).map(|root| join(&root));
+    if let Some(candidate) = &from_root {
+        if candidate.is_file() {
+            return Ok(candidate.clone());
+        }
+    }
+    // Neither: hand both back so the message can name every place that was
+    // looked, rather than the one the author already knows is empty.
+    Err((beside, from_root))
+}
+
 struct Import {
     /// Custom-element tag (last path segment, `_` → `-`).
     tag: String,
     /// File path relative to the importing document (`a::b` → `a/b.rux`).
     file: String,
+    /// 1-based line **within the script section**, so a failure can be placed
+    /// in the file the way a script error is.
+    ///
+    /// Without it a component that would not load was reported with no position
+    /// at all and drawn at the top of the file, pointing at `<template>` for a
+    /// mistake on the last line of `<script>`.
+    line: usize,
+    /// `use components::;` and friends: the path parses as segments but one of
+    /// them is empty, so it names no file.
+    ///
+    /// Kept as an import rather than dropped, because dropping it hands
+    /// `use components::;` to rhai, which reports it in its own vocabulary. It
+    /// is a half-typed import and deserves to be told so.
+    empty_segment: bool,
 }
 
 /// Split `use a::b;` lines out of a script, returning the cleaned script (which
@@ -3140,7 +3257,7 @@ fn extract_imports(script: &str) -> (String, Vec<Import>) {
     let mut cleaned = String::new();
     let mut imports = Vec::new();
 
-    for line in script.lines() {
+    for (index, line) in script.lines().enumerate() {
         let trimmed = line.trim();
         if let Some(rest) = trimmed.strip_prefix("use ") {
             // A `use` must be its own statement on its own line; a path with
@@ -3149,12 +3266,13 @@ fn extract_imports(script: &str) -> (String, Vec<Import>) {
                 !p.is_empty() && !p.contains(char::is_whitespace) && !p.contains(';')
             }) {
                 let segments: Vec<&str> = path.split("::").collect();
+                let empty_segment = segments.iter().any(|s| s.is_empty());
                 let file = format!("{}.rux", segments.join("/"));
                 let tag = segments
                     .last()
                     .map(|s| s.replace('_', "-"))
                     .unwrap_or_default();
-                imports.push(Import { tag, file });
+                imports.push(Import { tag, file, line: index + 1, empty_segment });
                 // A blank line rather than no line. Dropping it shifted every
                 // line below by one, so rhai's positions no longer matched the
                 // section and a script error could not be placed in the file.
