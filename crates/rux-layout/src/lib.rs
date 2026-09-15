@@ -554,6 +554,17 @@ pub struct Style {
     pub background: Option<Background>,
     /// `border-radius`, per corner (top-left, top-right, bottom-right, bottom-left).
     pub radius: Corners,
+    /// The same four corners when written as a **percentage**, which cannot be
+    /// resolved here: the cascade runs before there is a box. `Some(50.0)` on a
+    /// corner means "half the shorter side", worked out at paint time, and
+    /// overrides that corner's `radius`.
+    ///
+    /// Rux draws circular corners only (see `parse_border_radius`), so there is
+    /// one scalar per corner and a percentage resolves against the **shorter**
+    /// side rather than per axis. On a square that is CSS's answer exactly; on
+    /// an oblong CSS would give an ellipse, which this cannot represent, and
+    /// half the shorter side is the pill an author reaching for `50%` wants.
+    pub radius_pct: [Option<f32>; 4],
     /// `box-shadow` (single, outer). Drawn behind the box's own background.
     pub box_shadow: Option<BoxShadow>,
     /// `transform`: an affine applied to this box and its subtree at paint time.
@@ -665,6 +676,7 @@ impl Default for Style {
             overflow: Overflow::Visible,
             background: None,
             radius: [0.0; 4],
+            radius_pct: [None; 4],
             box_shadow: None,
             transform: None,
             cursor: Cursor::Default,
@@ -1431,11 +1443,40 @@ fn content_box(layout: &taffy::Layout) -> (f32, f32, f32, f32) {
 /// don't each widen this signature.
 pub type Measure<'a> = dyn FnMut(&TextContent, Option<f32>) -> (f32, f32) + 'a;
 
+/// Turn any percentage corners into pixels, now that the box has a size.
+///
+/// A percentage is resolved against the **shorter side**, because Rux draws
+/// circular corners: there is one scalar per corner, so there is no way to say
+/// "half the width horizontally and half the height vertically", which is what
+/// CSS's `50%` means on an oblong. On a square the two answers are identical.
+/// On an oblong CSS draws an ellipse and this draws a pill, which is what
+/// somebody writing `border-radius: 50%` on a button is after.
+///
+/// The value is not clamped here. A radius wider than the box is already
+/// clamped by the rounded-rect builder, which is the same path that makes
+/// `9999px` a reliable way to say "as round as it goes", and clamping twice
+/// would be one place too many to keep in agreement.
+fn resolve_radius(radius: Corners, pct: [Option<f32>; 4], width: f32, height: f32) -> Corners {
+    if pct.iter().all(Option::is_none) {
+        return radius;
+    }
+    let shorter = width.min(height).max(0.0);
+    let mut out = radius;
+    for (i, p) in pct.iter().enumerate() {
+        if let Some(p) = p {
+            out[i] = shorter * p / 100.0;
+        }
+    }
+    out
+}
+
 /// What each taffy node paints.
 enum PaintKind {
     Box {
         bg: Option<Background>,
         radius: Corners,
+        /// Percentage corners, resolved against this box once it has a size.
+        radius_pct: [Option<f32>; 4],
         border_width: f32,
         border_color: Option<Rgba>,
         clip: bool,
@@ -1948,6 +1989,7 @@ fn build(
             PaintKind::Box {
                 bg: node.style.background.clone(),
                 radius: node.style.radius,
+                radius_pct: node.style.radius_pct,
                 border_width: node.style.border.top,
                 border_color: node.style.border_color,
                 clip: node.style.overflow != Overflow::Visible,
@@ -1981,6 +2023,7 @@ fn build(
             PaintKind::Box {
                 bg: node.style.background.clone(),
                 radius: node.style.radius,
+                radius_pct: node.style.radius_pct,
                 border_width: node.style.border.top,
                 border_color: node.style.border_color,
                 clip: node.style.overflow != Overflow::Visible,
@@ -2011,6 +2054,7 @@ fn build(
             PaintKind::Box {
                 bg: node.style.background.clone(),
                 radius: node.style.radius,
+                radius_pct: node.style.radius_pct,
                 border_width: node.style.border.top,
                 border_color: node.style.border_color,
                 clip: node.style.overflow != Overflow::Visible,
@@ -2090,6 +2134,7 @@ fn build(
             PaintKind::Box {
                 bg: node.style.background.clone(),
                 radius: node.style.radius,
+                radius_pct: node.style.radius_pct,
                 // Uniform border for rendering (top width is representative).
                 border_width: node.style.border.top,
                 border_color: node.style.border_color,
@@ -2268,12 +2313,17 @@ fn collect(
             PaintKind::Box {
                 bg,
                 radius,
+                radius_pct,
                 border_width,
                 border_color,
                 clip: c,
                 shadow,
             } => {
                 clip = *c;
+                // Here, and not in the cascade, is the first moment a
+                // percentage has a box to be a percentage of.
+                let radius =
+                    &resolve_radius(*radius, *radius_pct, layout.size.width, layout.size.height);
                 clip_radius = *radius;
                 // The shadow goes down first, so the box's own fill sits on top.
                 // Outer shadows only for now; inset is parsed but not drawn.

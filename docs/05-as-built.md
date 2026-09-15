@@ -323,7 +323,7 @@ background, background-color, background-image, opacity
   (colour, linear-/radial-gradient, or url(…) image, cover-sized, clipped to corners)
 box-shadow (single, outer; inset parsed but not drawn)
 transition (property duration easing delay, comma-separated; see below)
-border-radius (1–4 diagonal shorthand; px/rem/em, not %, see below)
+border-radius (1–4 diagonal shorthand; px/rem/em, and % against the box)
 border-top-left-radius, border-top-right-radius
 border-bottom-right-radius, border-bottom-left-radius
 color, font-size, font-weight, font-family, font-style (italic), text-align
@@ -337,22 +337,31 @@ cursor (pointer, on @tap boxes only)
 fill, fill-rule, stroke, stroke-width, stroke-linecap, stroke-linejoin
   (<path> only; see above)
 ```
-**Percentages need a box, and half of these are resolved before there is one.**
+**Percentages need a box, and most of these are resolved before there is one.**
 `width`, `height`, `min`/`max-*` and the insets become a length that layout
 resolves, so `width: 50%` works. `padding`, `margin`, `gap`/`row-gap`/
-`column-gap`, `border-radius` and its corners, the border widths, `font-size`,
-`letter-spacing` and `word-spacing` are resolved to plain pixels during the
-cascade, where there is no box yet, so a percentage on one of those is
-**ignored and says so**. Until v0.7.1 it was ignored in silence, because the
-interpreter read them with a px-only parser while the length check validated
-with a percentage-capable one: the value was dropped and then pronounced fine.
-Real percentage support for them is scheduled.
+`column-gap`, the border widths, `font-size`, `letter-spacing` and
+`word-spacing` are resolved to plain pixels during the cascade, where there is
+no box yet, so a percentage on one of those is **ignored and says so**. Until
+v0.7.1 it was ignored in silence, because the interpreter read them with a
+px-only parser while the length check validated with a percentage-capable one:
+the value was dropped and then pronounced fine. Real percentage support for them
+is scheduled.
 
-**For a pill or a circle, reach for a big radius rather than a percentage.** A
-radius larger than the box is clamped to half its shorter side, so
-`border-radius: 9999px` gives a fully rounded box at any size and is what
-`50%` was reaching for. This is the one case where the missing percentage has an
-exact substitute, and the warning names it.
+**`border-radius` is the exception, and takes a percentage.** It is the one of
+these that layout never reads: only paint does, and paint knows the box. So
+`border-radius: 50%` is resolved against the laid-out box and a square comes out
+a circle. It works on the corner longhands too, and a longhand in px after a
+shorthand in `%` replaces that corner in both units.
+
+A percentage resolves against the **shorter side**, not per axis. Rux draws
+circular corners (one radius per corner), so `50%` on a 160x60 box is a pill of
+radius 30 rather than the ellipse CSS would draw. On a square the two agree
+exactly, and the pill is what someone writing `50%` on a button is after.
+
+`border-radius: 9999px` still works and still means "as round as it goes", since
+a radius larger than the box is clamped to it. That is what the runtime itself
+uses to draw a radio button.
 
 **Selectors:** tag, `.class`, `#id`, `[role="…"]`, compounds, and all four
 combinators: descendant (`.a .b`), child (`.a > .b`), next-sibling (`.a + .b`),

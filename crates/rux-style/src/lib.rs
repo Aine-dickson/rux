@@ -2408,8 +2408,6 @@ const PX_ONLY_PROPERTIES: &[&str] = &[
     "padding", "padding-top", "padding-right", "padding-bottom", "padding-left",
     "margin", "margin-top", "margin-right", "margin-bottom", "margin-left",
     "gap", "row-gap", "column-gap",
-    "border-radius", "border-top-left-radius", "border-top-right-radius",
-    "border-bottom-right-radius", "border-bottom-left-radius",
     "border-width", "border-top-width", "border-right-width",
     "border-bottom-width", "border-left-width",
     "letter-spacing", "word-spacing", "font-size",
@@ -5102,6 +5100,7 @@ fn interpret(p: &HashMap<String, String>) -> Style {
     // per-corner longhands override.
     if let Some(v) = p.get("border-radius") {
         st.radius = parse_border_radius(v);
+        st.radius_pct = parse_border_radius_pct(v);
     }
     for (i, corner) in [
         "border-top-left-radius",
@@ -5112,8 +5111,18 @@ fn interpret(p: &HashMap<String, String>) -> Style {
     .iter()
     .enumerate()
     {
-        if let Some(px) = p.get(*corner).and_then(|v| parse_px(first(v))) {
+        let Some(written) = p.get(*corner).map(|v| first(v)) else { continue };
+        // A longhand replaces whatever the shorthand said for that corner, in
+        // both units: writing one in px after a shorthand in % has to clear the
+        // percentage, or the corner would keep resolving against the box and
+        // the px would never be seen.
+        if let Some(px) = parse_px(written) {
             st.radius[i] = px;
+            st.radius_pct[i] = None;
+        } else if let Some(pct) =
+            written.strip_suffix('%').and_then(|n| n.trim().parse::<f32>().ok())
+        {
+            st.radius_pct[i] = Some(pct);
         }
     }
     // `auto`/`scroll` scroll (and clip); `hidden`/`clip` only clip. Any axis
@@ -5893,6 +5902,27 @@ fn parse_shorthand_sides(value: &str) -> Sides {
     }
 }
 
+/// The percentage half of `border-radius`, in the same diagonal grouping.
+///
+/// Returned separately from the pixels because the two resolve at different
+/// times: pixels are final here, a percentage needs a box and is worked out at
+/// paint. A corner written in px comes back `None` and keeps whatever
+/// [`parse_border_radius`] gave it.
+fn parse_border_radius_pct(value: &str) -> [Option<f32>; 4] {
+    let horizontal = value.split('/').next().unwrap_or(value);
+    let v: Vec<Option<f32>> = horizontal
+        .split_whitespace()
+        .map(|t| t.strip_suffix('%').and_then(|n| n.trim().parse::<f32>().ok()))
+        .collect();
+    match v.len() {
+        1 => [v[0]; 4],
+        2 => [v[0], v[1], v[0], v[1]],
+        3 => [v[0], v[1], v[2], v[1]],
+        n if n >= 4 => [v[0], v[1], v[2], v[3]],
+        _ => [None; 4],
+    }
+}
+
 /// Parse the `border-radius` shorthand into `[TL, TR, BR, BL]`. Unlike the box
 /// shorthands, border-radius groups by diagonal: 1 value = all; 2 = TL/BR, TR/BL;
 /// 3 = TL, TR/BL, BR; 4 = TL, TR, BR, BL. An elliptical `h / v` form is reduced
@@ -6188,6 +6218,11 @@ mod tests {
     /// thrown away and then pronounced fine, by two functions in this file that
     /// disagreed about what a length is. Reported as `border-radius` not taking
     /// a percentage; it was four properties.
+    ///
+    /// **`border-radius` has since left this list**, because it is the one of
+    /// the four whose percentage has somewhere to resolve: it is not consumed
+    /// by layout, only by paint, and paint knows the box. The other three
+    /// resolve during the cascade and still have nothing to measure against.
     #[test]
     fn a_percentage_where_there_is_no_box_says_so() {
         use super::{parse_len, parse_px, LENGTH_ONLY_PROPERTIES, PX_ONLY_PROPERTIES};
@@ -6208,10 +6243,46 @@ mod tests {
         assert!(!PX_ONLY_PROPERTIES.contains(&"width"));
         assert!(!PX_ONLY_PROPERTIES.contains(&"height"));
         assert!(!PX_ONLY_PROPERTIES.contains(&"top"));
-        // These are the four that were silently dropped.
-        for name in ["padding", "margin", "gap", "border-radius"] {
+        // Three of the four that were silently dropped. Still px-only, still
+        // reported.
+        for name in ["padding", "margin", "gap"] {
             assert!(PX_ONLY_PROPERTIES.contains(&name), "`{name}` takes no percentage");
         }
+        // The fourth takes one now, and must not be warned about.
+        for name in [
+            "border-radius",
+            "border-top-left-radius",
+            "border-top-right-radius",
+            "border-bottom-right-radius",
+            "border-bottom-left-radius",
+        ] {
+            assert!(
+                !PX_ONLY_PROPERTIES.contains(&name),
+                "`{name}` resolves its percentage at paint and must not be reported"
+            );
+        }
+    }
+
+    /// A percentage radius is carried to paint rather than resolved here.
+    #[test]
+    fn a_percentage_radius_is_carried_as_a_percentage() {
+        use super::{parse_border_radius, parse_border_radius_pct};
+
+        // The diagonal grouping is the same in both halves.
+        assert_eq!(parse_border_radius_pct("50%"), [Some(50.0); 4]);
+        assert_eq!(
+            parse_border_radius_pct("50% 0px"),
+            [Some(50.0), None, Some(50.0), None],
+            "a corner in px carries no percentage"
+        );
+        assert_eq!(
+            parse_border_radius_pct("10% 20% 30% 40%"),
+            [Some(10.0), Some(20.0), Some(30.0), Some(40.0)]
+        );
+        // Plain pixels carry none at all, so nothing changes for every document
+        // that never writes a percentage.
+        assert_eq!(parse_border_radius_pct("12px"), [None; 4]);
+        assert_eq!(parse_border_radius("12px"), [12.0; 4]);
     }
 
     /// The three states an unhonored property can be in have to stay three.

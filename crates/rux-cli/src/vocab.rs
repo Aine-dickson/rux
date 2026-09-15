@@ -349,7 +349,7 @@ const CSS_PROPERTY_DOCS: &[Entry] = &[
     Entry { name: "border", detail: "width, style and colour of the outline", doc: "`2px solid #45475a`. The style word is accepted and only the width and colour are drawn." },
     Entry { name: "border-width", detail: "how thick the outline is", doc: "Takes room in the layout, so changing it moves the content inside." },
     Entry { name: "border-color", detail: "what colour the outline is", doc: "Animatable, so it is the usual way to show focus without the box moving." },
-    Entry { name: "border-radius", detail: "how round the corners are", doc: "One to four lengths. Clips the background and the border; it does **not** clip children unless the box also has `overflow: hidden`." },
+    Entry { name: "border-radius", detail: "how round the corners are", doc: "One to four lengths, grouped by diagonal. Takes a percentage, resolved against the box's shorter side, so `50%` rounds a square into a circle and an oblong into a pill. Clips the background and the border; it does **not** clip children unless the box also has `overflow: hidden`." },
     Entry { name: "border-top-left-radius", detail: "roundness of one corner", doc: "Overrides `border-radius` for this corner." },
     Entry { name: "border-top-right-radius", detail: "roundness of one corner", doc: "Overrides `border-radius` for this corner." },
     Entry { name: "border-bottom-right-radius", detail: "roundness of one corner", doc: "Overrides `border-radius` for this corner." },
