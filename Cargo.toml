@@ -74,7 +74,13 @@ rux-script = { version = "0.7.1-dev", path = "crates/rux-script" }
 # working and the fork is a one-line swap rather than a rename spread through the
 # script tier. What it is is not hidden: the package name is `rux-rhai` and it is
 # right here in the workspace.
-rhai = { package = "rux-rhai", version = "0.7.1-dev", path = "crates/rux-rhai" }
+# `internals` is on so the script tier can walk a compiled AST and ask the
+# engine which function names it can resolve. That is what lets a handler be
+# checked for calls that can never work, which a plain `compile` cannot see:
+# rhai resolves a function name when the call runs, so an unknown one is silent
+# until somebody taps the button. The feature exports existing types and pulls
+# in no dependency; `metadata` would have done the same job and costs serde.
+rhai = { package = "rux-rhai", version = "0.7.1-dev", path = "crates/rux-rhai", features = ["internals"] }
 rux-paint = { version = "0.7.1-dev", path = "crates/rux-paint" }
 rux-style = { version = "0.7.1-dev", path = "crates/rux-style" }
 rux-runtime = { version = "0.7.1-dev", path = "crates/rux-runtime" }

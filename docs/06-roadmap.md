@@ -1937,7 +1937,14 @@ not "is it small", it is "did v0.7 say this works".
   the half of the language where a typo costs the most: a handler that does
   nothing looks exactly like a handler that did not fire. It accounts for the
   reported "unknown function is not caught" and the reported "`searching.set(true)`
-  does nothing and never says so" as a single defect. **0.7.x, and first.**
+  does nothing and never says so" as a single defect.
+
+  **DONE 2026-09-15.** Every `@event`, route `guard` and `<script>` `fn` body is
+  walked at load and every call that resolves nowhere is reported. Names only,
+  not argument counts, because a check that flags working code would be worse
+  than the silence. `signal.set(x)` / `signal.get()` are caught by arity instead,
+  since `set` and `get` are registered for arrays and maps and a name check
+  cannot see them. Verified against all 47 example files with no new warnings.
 
   `.set()` in particular is not an invented spelling: `docs/02-spec.md` taught
   it (`count.get()` / `.set()` / `.update()`) and that document was billed as

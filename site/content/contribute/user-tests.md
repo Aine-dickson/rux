@@ -469,6 +469,31 @@ the reader to add `line-height: 2` and watch the terminal warn. `line-height`
 has been honored since v0.5, so the demonstration printed nothing at all and had
 been wrong through two releases. Nobody drove the tutorial's own instruction.
 
+### Calls that can never resolve (2026-09-15)
+
+Driven with `rux check` on files carrying each case, and the silent half matters
+more than the loud half: the whole value of this check is that it is worth
+reading.
+
+| Case | Hardware | Outcome |
+|---|---|---|
+| `@tap="alert(1)"` | desktop, `rux check` | Passed: names the call and says it does not exist. Silent before |
+| `@tap="searching.frobnicate()"` | desktop, `rux check` | Passed |
+| `@tap="searching.set(true)"` | desktop, `rux check` | Passed: named as the pre-v0.3 signal API, with the assignment that replaced it. **Not** reported as a missing function, because `set` is registered for arrays and maps and saying otherwise would be false |
+| `@tap="n = searching.get()"` | desktop, `rux check` | Passed, same shape |
+| `@tap="count.update(...)"` | desktop, `rux check` | Passed, caught by name: `update` is registered nowhere |
+| `@tap="tasks.set(0, &quot;x&quot;)"` on an array signal | desktop, `rux check` | **Passed by staying silent.** This is the registered two-argument `set` and it works |
+| `@tap="tasks.push(&quot;x&quot;)"`, `count += tasks.len()`, `bump()` | desktop, `rux check` | Passed by staying silent |
+| `fn helper() { alert("x") }`, never called | desktop, `rux check` | Passed: a `fn` nobody calls is the quietest place a typo can sit |
+| `fn bump() { helper() }` with `helper` declared **below** it | desktop, `rux check` | Passed by staying silent: that resolves at run time, so warning would be wrong |
+| **All 47 files in `examples/`** | desktop, `rux check` | **Passed with no new warnings**, which is the false-positive measurement this check lives or dies by |
+| 300 handlers in one document | desktop, debug build | 0.37s end to end, so no caching was added for a cost that is not there |
+
+**The `.set()` case is not a typo an author invented.** `docs/02-spec.md` taught
+`count.get()` / `.set()` / `.update()`, and that file was billed as the reference
+until 2026-08-25. Someone who read the docs and wrote it got a handler that did
+nothing and no reason why.
+
 ### The `r-for` tuple form (2026-08-25)
 
 | Case | Hardware | Outcome |

@@ -1588,6 +1588,29 @@ app is watching.
   warning, or introduce an error, and the panel comes straight back. A press
   landing on the panel does not reach the app under it either.
 
+- **A handler or a `fn` that calls something which cannot exist** is reported
+  at load, before anything is tapped. rhai looks a function name up when the
+  call *runs*, so until v0.7.1 `@tap="alert(1)"` compiled clean and did nothing
+  when pressed, while the identical mistake inside `{{ }}` was reported during
+  the build. A dead handler looks exactly like a handler that never fired, so
+  this was the worst place in the language to be quiet. Every `@event`, every
+  route `guard` and every `fn` body in `<script>` is checked, including the ones
+  behind a false `r-if` and the ones nothing calls yet.
+
+  **Names, not argument counts.** A name that is registered nowhere, defined by
+  no `fn` and built into nothing can never resolve under any state, so saying so
+  cannot be a false alarm. Argument counts are a separate question with real
+  traps in them, and a check that flags working code is worse than the silence
+  it replaced.
+
+  One case is reported by shape rather than by name: **`signal.set(x)` and
+  `signal.get()`**, the signal API from before v0.3, which ordinary assignment
+  replaced. Those two escape a name check because `set` and `get` really are
+  registered, on arrays, maps, blobs and strings. What identifies them is the
+  arity: every registered `set` takes two arguments after its receiver, so
+  `tasks.set(0, "x")` on an array signal is legitimate and stays silent, while
+  `searching.set(true)` is the superseded API and nothing else.
+
 Every shipped example is checked to load **warning-free**, so a noisy overlay in
 `examples/` is a test failure.
 

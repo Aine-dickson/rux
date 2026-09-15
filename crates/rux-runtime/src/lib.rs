@@ -161,9 +161,18 @@ pub struct Document {
 /// to tap it while watching stderr. `rux check` did not catch it either, because
 /// checking reuses the loader and the loader never looked.
 ///
-/// Syntax only. A handler legitimately names things that do not exist until it
-/// runs, an `r-for` local or a component's own state, and those are runtime
-/// lookups rather than compile errors, so this cannot cry wolf about them.
+/// Syntax, and the names of the functions called. A handler legitimately names
+/// *variables* that do not exist until it runs, an `r-for` local or a
+/// component's own state, and those are runtime lookups rather than compile
+/// errors, so this cannot cry wolf about them. Functions are not like that:
+/// nothing a row or an instance brings into scope can add a function name, so a
+/// call that resolves nowhere resolves nowhere under every state.
+///
+/// That second half was missing until v0.7.1, and it was the expensive half.
+/// rhai looks a function name up when the call runs, so `@tap="alert(…)"`
+/// compiled clean and did nothing when tapped, while the same mistake inside
+/// `{{ }}` was reported during the build. The two halves of the language
+/// disagreed about whether a typo was worth mentioning.
 ///
 /// Every handler in the template is checked, not only the ones currently on
 /// screen, so a branch behind a false `r-if` is covered too.
@@ -174,7 +183,9 @@ fn check_handlers(template: &rux_parser::Element, engine: &rux_script::Engine) {
         }
         if let Err(why) = engine.check_syntax(value) {
             rux_script::warn_script(format!("`{name}` handler will never run: {why}"));
+            continue; // it did not compile, so its calls are not worth reading
         }
+        warn_unknown_calls(engine, value, &format!("the `{name}` handler"));
     }
     // A `guard` is author code on the same terms, and it hides longer than a
     // handler does: nobody taps a guard, so a broken one is found by whoever
@@ -185,12 +196,41 @@ fn check_handlers(template: &rux_parser::Element, engine: &rux_script::Engine) {
                 "the `guard` on <{}> will never run, so it can refuse nothing: {why}",
                 template.tag
             ));
+        } else {
+            warn_unknown_calls(
+                engine,
+                guard,
+                &format!("the `guard` on <{}>", template.tag),
+            );
         }
     }
     for child in &template.children {
         if let rux_parser::Node::Element(el) = child {
             check_handlers(el, engine);
         }
+    }
+}
+
+/// Report each call in `src` that could never resolve, named by where it is.
+///
+/// One warning per name rather than one per handler, because a handler with two
+/// mistakes in it has two things to fix and a reader who sees one of them will
+/// fix that one and re-run.
+fn warn_unknown_calls(engine: &rux_script::Engine, src: &str, whose: &str) {
+    for problem in engine.unknown_calls(src) {
+        rux_script::warn_script(format!("{whose} {}", problem.describe()));
+    }
+}
+
+/// The same report for the `fn` bodies in `<script>`.
+///
+/// Separate from [`check_handlers`] because it is per document rather than per
+/// element, and because a `fn` nobody has called yet is the quietest place in
+/// the language for a typo to sit: a handler at least fails the moment someone
+/// taps it.
+fn check_script_functions(engine: &rux_script::Engine) {
+    for problem in engine.unknown_calls_in_functions() {
+        rux_script::warn_script(format!("a <script> function {}", problem.describe()));
     }
 }
 
@@ -775,6 +815,7 @@ impl Document {
         for component in components.values() {
             check_handlers(&component.template, &engine);
         }
+        check_script_functions(&engine);
         let mut doc = Self {
             sfc,
             components,
@@ -854,6 +895,7 @@ impl Document {
         let base = PathBuf::from(".");
         resolve_images(&mut root, &base);
         check_handlers(&sfc.template, &engine);
+        check_script_functions(&engine);
         let mut doc = Self {
             sfc,
             components: HashMap::new(),
@@ -3159,6 +3201,119 @@ mod tests {
         assert!(err.contains("nope.css"), "names the file that is missing: {err}");
 
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A handler calling something that does not exist used to be silent.
+    ///
+    /// rhai resolves a function name when the call runs, so the handler
+    /// compiled clean and did nothing when tapped. The same mistake inside
+    /// `{{ }}` was reported during the build, so the language said a typo
+    /// mattered in one half and not the other, and the half it ignored is the
+    /// one where a dead handler looks exactly like a handler that never fired.
+    #[test]
+    fn a_handler_calling_nothing_says_so() {
+        let _ = take_warnings();
+        let doc = Document::from_source(
+            "<template><screen><button @tap=\"alert(1)\">go</button></screen></template>",
+        )
+        .expect("renders anyway");
+        assert!(
+            doc.diagnostics.warnings.iter().any(|w| w.message.contains("calls `alert`")
+                && w.message.contains("does not exist")),
+            "the warning names the call: {:?}",
+            doc.diagnostics.warnings
+        );
+    }
+
+    /// `signal.set(x)` is not an invented spelling: it is what `docs/02-spec.md`
+    /// taught, and that file was billed as the reference until 2026-08-25. It
+    /// escapes the unknown-name check because `set` really is registered, on
+    /// arrays, maps, blobs and strings, so it has to be recognised by its shape
+    /// and reported as the superseded API rather than as a missing function.
+    #[test]
+    fn the_pre_v0_3_signal_api_says_what_replaced_it() {
+        let _ = take_warnings();
+        let doc = Document::from_source(
+            "<template><screen><button @tap=\"searching.set(true)\">go</button></screen>\
+             </template>\n<script>let searching = signal(false);</script>",
+        )
+        .expect("renders anyway");
+        let said = |needle: &str| doc.diagnostics.warnings.iter().any(|w| w.message.contains(needle));
+        assert!(
+            said("`searching.set()`") && said("before v0.3"),
+            "it must name the call and say what happened to it: {:?}",
+            doc.diagnostics.warnings
+        );
+        assert!(
+            !said("does not exist"),
+            "`set` does exist, on arrays and maps, and saying otherwise teaches an \
+             author to distrust the next message: {:?}",
+            doc.diagnostics.warnings
+        );
+    }
+
+    /// A `fn` nobody has called yet is the quietest place a typo can sit: a
+    /// handler at least fails the moment somebody taps it. Functions calling
+    /// each other must still resolve, including one declared below its caller,
+    /// because that works at run time and a warning about it would be wrong.
+    #[test]
+    fn a_script_function_calling_nothing_says_so() {
+        let _ = take_warnings();
+        let doc = Document::from_source(
+            "<template><screen><button @tap=\"bump()\">go</button></screen></template>\n\
+             <script>\
+             let count = signal(0);\
+             fn bump() { count += 1; helper() }\
+             fn helper() { count += 2 }\
+             fn unused() { nonexistent_thing() }\
+             </script>",
+        )
+        .expect("renders");
+        let calls: Vec<_> = doc
+            .diagnostics
+            .warnings
+            .iter()
+            .filter(|w| w.message.contains("calls "))
+            .collect();
+        assert_eq!(calls.len(), 1, "one problem, not one per function: {calls:?}");
+        assert!(
+            calls[0].message.contains("nonexistent_thing"),
+            "and it is the one that cannot resolve: {calls:?}"
+        );
+    }
+
+    /// **The half that matters more than the warnings.** A check that flags
+    /// working code is worse than the silence it replaced, because the value of
+    /// a diagnostic is entirely that it is worth reading.
+    ///
+    /// Each of these is a real call that must stay silent: a two-argument `set`
+    /// on an array signal (the registered one), an ordinary method, a user
+    /// `fn`, an operator, and a signal read the way signals are actually read.
+    #[test]
+    fn handlers_that_work_are_not_warned_about() {
+        let _ = take_warnings();
+        let doc = Document::from_source(
+            "<template><screen>\
+             <button @tap=\"tasks.set(0, &quot;x&quot;)\">a</button>\
+             <button @tap=\"tasks.push(&quot;x&quot;)\">b</button>\
+             <button @tap=\"bump()\">c</button>\
+             <button @tap=\"count = count + 1\">d</button>\
+             <button @tap=\"count += tasks.len()\">e</button>\
+             </screen></template>\n\
+             <script>\
+             let tasks = signal([\"a\"]);\
+             let count = signal(0);\
+             fn bump() { count += 1 }\
+             </script>",
+        )
+        .expect("renders");
+        let noise: Vec<_> = doc
+            .diagnostics
+            .warnings
+            .iter()
+            .filter(|w| w.message.contains("calls "))
+            .collect();
+        assert!(noise.is_empty(), "nothing here is wrong: {noise:?}");
     }
 
     /// `r-for` binds one name, so the tuple form bound a local literally called

@@ -760,6 +760,56 @@ pub const ROUTER_SIGNALS: [&str; 5] =
     [ROUTE_SIGNAL, PARAMS_SIGNAL, QUERY_SIGNAL, CAN_BACK_SIGNAL, CAN_FORWARD_SIGNAL];
 
 /// A live script engine: state in `scope`, script functions in `funcs`.
+/// Something a handler calls that cannot do what it was written to do.
+///
+/// Two shapes, because they are two different mistakes and collapsing them into
+/// one message would repeat the defect this whole check exists to fix: a
+/// message that says "`set` does not exist" about a function that plainly does
+/// teaches an author to distrust the next one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CallProblem {
+    /// No function of this name is registered, defined by a `fn`, or built in.
+    /// Nothing a row or a component instance brings into scope can add one, so
+    /// this can never resolve under any state.
+    NoSuchFunction(String),
+    /// A signal used through the API `docs/02-spec.md` described before v0.3
+    /// replaced it with ordinary assignment.
+    ///
+    /// Reported separately because `set` and `get` **do** exist, on arrays,
+    /// maps, blobs and strings, so the name check cannot see this and a message
+    /// about an unknown function would be false. What makes it safe to report
+    /// is the arity: every registered `set` takes two arguments after its
+    /// receiver and the map's `get` takes one, so a one-argument `set` or a
+    /// no-argument `get` on a signal is the superseded API and nothing else.
+    StaleSignalApi { signal: String, method: String },
+}
+
+impl CallProblem {
+    /// The whole sentence, ready to follow "the `@tap` handler ".
+    ///
+    /// Rendered here rather than by the caller so the runtime, `rux check` and
+    /// anything else that grows a use of this cannot word it three ways.
+    pub fn describe(&self) -> String {
+        match self {
+            Self::NoSuchFunction(name) => format!(
+                "calls `{name}`, which does not exist, so it will do nothing at that \
+                 point when it runs"
+            ),
+            Self::StaleSignalApi { signal, method } => {
+                let fix = match method.as_str() {
+                    "set" => format!("assign to it instead: `{signal} = …`"),
+                    _ => format!("read it by naming it instead: `{signal}`"),
+                };
+                format!(
+                    "calls `{signal}.{method}()`, which was how signals worked before \
+                     v0.3 and has not existed since. It does nothing now, in silence. \
+                     {fix}"
+                )
+            }
+        }
+    }
+}
+
 pub struct Engine {
     engine: RhaiEngine,
     scope: Scope<'static>,
@@ -1466,6 +1516,140 @@ impl Engine {
     /// moment it is tapped.
     pub fn check_syntax(&self, src: &str) -> Result<(), String> {
         self.engine.compile(rewrite_intervals(src)).map(|_| ()).map_err(|e| rux_phrasing(&e.to_string()))
+    }
+
+    /// The functions and methods `src` calls that nothing could ever resolve.
+    ///
+    /// **This is the other half of [`Self::check_syntax`], and the half that was
+    /// missing.** rhai resolves a function *name* when the call runs, not when
+    /// it compiles, so `@tap="alert(…)"` compiles perfectly and does nothing
+    /// when tapped. A `{{ }}` expression is evaluated during the build and
+    /// reports the same mistake immediately, so the two halves of the language
+    /// disagreed about whether a typo was worth mentioning: interpolations said
+    /// so, handlers did not. A handler that does nothing is indistinguishable
+    /// from a handler that never fired, which makes it the worse place to be
+    /// silent.
+    ///
+    /// **Names only, deliberately, and not arity.** A name that is registered
+    /// nowhere, defined by no `fn` and built into nothing can never resolve
+    /// under any state, so saying so cannot be a false alarm. Arity is a
+    /// different question with real traps in it (a method call carries its
+    /// receiver as an argument, operators arrive as calls, a closure is called
+    /// through `call`), and getting it wrong would flag working code. Noise
+    /// here would be worse than the silence being fixed, because the whole
+    /// value of a diagnostic is that it is worth reading.
+    ///
+    /// Variables are left alone for the reason [`Self::check_syntax`] gives: a
+    /// handler legitimately names an `r-for` local or a component's own state
+    /// that does not exist until it runs. Functions are not like that. Nothing
+    /// a row or an instance brings into scope can add a function name.
+    pub fn unknown_calls(&self, src: &str) -> Vec<CallProblem> {
+        let Ok(ast) = self.engine.compile(rewrite_intervals(src)) else {
+            return Vec::new(); // a syntax error is `check_syntax`'s to report
+        };
+        self.unresolvable_calls(&ast)
+    }
+
+    /// The same check, over the `fn` bodies the document declared.
+    ///
+    /// A handler is not the only place a call hides. `fn refresh() { alert(…) }`
+    /// is never compiled against anything until something calls it, and a `fn`
+    /// nothing calls yet is exactly where a typo waits quietest. The bodies are
+    /// already held as [`Self::funcs`] for dispatch, so checking them costs one
+    /// more walk of an AST that is sitting there.
+    ///
+    /// Calls between the document's own functions resolve normally, because
+    /// [`Self::callable_names`] reads the same `AST` this walks: a `fn` may call
+    /// one declared below it, as it may at run time.
+    pub fn unknown_calls_in_functions(&self) -> Vec<CallProblem> {
+        self.unresolvable_calls(&self.funcs)
+    }
+
+    /// The walk both of the above share.
+    fn unresolvable_calls(&self, ast: &AST) -> Vec<CallProblem> {
+        let known = self.callable_names();
+        let mut unknown: Vec<CallProblem> = Vec::new();
+        ast.walk(&mut |path| {
+            let Some(rhai::ASTNode::Expr(expr)) = path.last() else { return true };
+            let mut note = |problem: CallProblem| {
+                if !unknown.contains(&problem) {
+                    unknown.push(problem);
+                }
+            };
+            match expr {
+                rhai::Expr::FnCall(call, ..) | rhai::Expr::MethodCall(call, ..) => {
+                    // An operator reaches the AST as a call (`a + b` is `+`),
+                    // and so does every comparison and index. They resolve
+                    // through the interpreter's own tables rather than by name,
+                    // so asking whether `+` is registered proves nothing.
+                    if call.op_token.is_none() && !known.contains(call.name.as_str()) {
+                        note(CallProblem::NoSuchFunction(call.name.to_string()));
+                    }
+                }
+                // A method call and its receiver are two nodes, and the
+                // receiver is what says whether `set` here is an array's or a
+                // signal's. Both arms are needed: the walk visits the `Dot` and
+                // the `MethodCall` separately, and only the `Dot` has the pair.
+                rhai::Expr::Dot(pair, ..) => {
+                    if let Some(problem) = self.stale_signal_api(&pair.lhs, &pair.rhs) {
+                        note(problem);
+                    }
+                }
+                _ => {}
+            }
+            true
+        });
+        unknown
+    }
+
+    /// `signal.set(x)` and `signal.get()`, which name real functions and still
+    /// cannot work.
+    ///
+    /// These two escape [`Self::unknown_calls`]'s name check because `set` and
+    /// `get` *are* registered: `set` on an array, a map, a blob and a string,
+    /// `get` on a map. So `searching.set(true)` compiles, resolves nothing at
+    /// run time for a bool, and does nothing, in silence. It is the single most
+    /// misleading thing an author can write, because it is what
+    /// `docs/02-spec.md` taught until 2026-08-25.
+    ///
+    /// The arity is what makes this safe to report. Every registered `set`
+    /// takes **two** arguments after the receiver (`tasks.set(0, "x")` on an
+    /// array signal is legitimate and stays silent), and the map's `get` takes
+    /// one. A one-argument `set` or a no-argument `get` on a name that is a
+    /// signal is the v0.3-superseded API and nothing else, so there is no state
+    /// in which it could have worked.
+    fn stale_signal_api(&self, receiver: &rhai::Expr, call: &rhai::Expr) -> Option<CallProblem> {
+        let rhai::Expr::Variable(var, ..) = receiver else { return None };
+        let signal = var.1.as_str();
+        if !self.signals.contains(signal) {
+            return None;
+        }
+        let (rhai::Expr::MethodCall(call, ..) | rhai::Expr::FnCall(call, ..)) = call else {
+            return None;
+        };
+        let stale = matches!((call.name.as_str(), call.args.len()), ("set", 1) | ("get", 0));
+        stale.then(|| CallProblem::StaleSignalApi {
+            signal: signal.to_string(),
+            method: call.name.to_string(),
+        })
+    }
+
+    /// Every function name this engine could resolve a call to.
+    ///
+    /// Three sources, because a call can land in any of them: what the host and
+    /// the script tier registered, what the standard packages bring, and the
+    /// `fn`s the document itself declared. The first two come from the engine,
+    /// which is the same place the interpreter looks, so this cannot drift from
+    /// what would actually happen at run time. The third is the document's own
+    /// `AST`, which is where `fn refresh()` lives.
+    fn callable_names(&self) -> HashSet<String> {
+        let mut names: HashSet<String> = self
+            .engine
+            .collect_fn_metadata(None, |f| Some(f.metadata.name.to_string()), true)
+            .into_iter()
+            .collect();
+        names.extend(self.funcs.iter_functions().map(|f| f.name.to_string()));
+        names
     }
 
     pub fn run_handler_tracked(&mut self, src: &str) -> HashSet<String> {
@@ -2632,4 +2816,5 @@ mod tests {
         assert_eq!(take_warnings().len(), 1);
     }
 }
+
 
