@@ -2380,6 +2380,36 @@ const LENGTH_ONLY_PROPERTIES: &[&str] = &[
     "letter-spacing", "word-spacing", "font-size",
 ];
 
+/// Of those, the ones resolved to **plain pixels at cascade time**, where there
+/// is no box to take a percentage of.
+///
+/// `width` and the insets become a [`Len`], which carries `Pct` and is resolved
+/// during layout against a box that exists by then. These do not: they are
+/// `f32` in [`Style`] by the time layout runs, so a percentage has nothing to
+/// resolve against and `parse_px` returns `None` for it.
+///
+/// Before this list the two halves disagreed. The interpreter read these with
+/// `parse_px`, which drops a percentage, while [`warn_unparseable_lengths`]
+/// validated with `parse_len`, which accepts one. So `padding: 10%`,
+/// `margin: 10%`, `gap: 5%` and `border-radius: 50%` were each dropped on the
+/// floor and then pronounced fine, which is the exact failure shape the length
+/// warning was added to remove. Found from a report that `border-radius` would
+/// not take a percentage; it was four properties, not one.
+///
+/// Supporting percentages here means carrying a `Len` through to paint for the
+/// radius and to layout for the rest. That is a feature, and it is scheduled.
+/// Saying so is the patch.
+const PX_ONLY_PROPERTIES: &[&str] = &[
+    "padding", "padding-top", "padding-right", "padding-bottom", "padding-left",
+    "margin", "margin-top", "margin-right", "margin-bottom", "margin-left",
+    "gap", "row-gap", "column-gap",
+    "border-radius", "border-top-left-radius", "border-top-right-radius",
+    "border-bottom-right-radius", "border-bottom-left-radius",
+    "border-width", "border-top-width", "border-right-width",
+    "border-bottom-width", "border-left-width",
+    "letter-spacing", "word-spacing", "font-size",
+];
+
 /// Warn, once per property and value, that a length was written and not
 /// understood.
 ///
@@ -2400,7 +2430,18 @@ fn warn_unparseable_lengths(props: &HashMap<String, String>) {
             if token.chars().all(|c| c.is_ascii_alphabetic() || c == '-') {
                 continue;
             }
-            if parse_len(token).is_some() {
+            let px_only = PX_ONLY_PROPERTIES.contains(&property.as_str());
+            // Checked with the same parser the property is actually read by, or
+            // the check blesses values the interpreter then throws away.
+            if (px_only && parse_px(token).is_some()) || (!px_only && parse_len(token).is_some()) {
+                continue;
+            }
+            if px_only && token.ends_with('%') {
+                warn_once(format!(
+                    "`{property}: {token}` is ignored: `{property}` is resolved before \
+                     there is a box to take a percentage of, so it takes px, rem or em \
+                     and not %."
+                ));
                 continue;
             }
             warn_once(format!(
@@ -6103,6 +6144,39 @@ mod tests {
             matches!(Pseudo::parse("first-child"), Pseudo::Unknown(_)),
             "a pseudo-class Rux does not implement must still parse as Unknown"
         );
+    }
+
+    /// A percentage on a property that cannot take one is reported, not dropped.
+    ///
+    /// The interpreter reads these with `parse_px`, which has no `%`, while the
+    /// length check validated with `parse_len`, which does. So the value was
+    /// thrown away and then pronounced fine, by two functions in this file that
+    /// disagreed about what a length is. Reported as `border-radius` not taking
+    /// a percentage; it was four properties.
+    #[test]
+    fn a_percentage_where_there_is_no_box_says_so() {
+        use super::{parse_len, parse_px, LENGTH_ONLY_PROPERTIES, PX_ONLY_PROPERTIES};
+
+        // The split is the whole fix: every px-only property must actually be
+        // one the interpreter reads with `parse_px`, and `%` must fail there.
+        for name in PX_ONLY_PROPERTIES {
+            assert!(
+                LENGTH_ONLY_PROPERTIES.contains(name),
+                "`{name}` is px-only and not length-checked at all"
+            );
+        }
+        assert!(parse_px("50%").is_none(), "px-only parsing has no percentage");
+        assert!(parse_len("50%").is_some(), "the Len parser does");
+
+        // `width` resolves during layout, against a box that exists by then, so
+        // it keeps its percentage and must not be caught by this.
+        assert!(!PX_ONLY_PROPERTIES.contains(&"width"));
+        assert!(!PX_ONLY_PROPERTIES.contains(&"height"));
+        assert!(!PX_ONLY_PROPERTIES.contains(&"top"));
+        // These are the four that were silently dropped.
+        for name in ["padding", "margin", "gap", "border-radius"] {
+            assert!(PX_ONLY_PROPERTIES.contains(&name), "`{name}` takes no percentage");
+        }
     }
 
     /// The three states an unhonored property can be in have to stay three.

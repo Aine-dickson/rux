@@ -462,6 +462,34 @@ the reader to add `line-height: 2` and watch the terminal warn. `line-height`
 has been honored since v0.5, so the demonstration printed nothing at all and had
 been wrong through two releases. Nobody drove the tutorial's own instruction.
 
+### Broken sections, argument counts, and percentages (2026-09-15)
+
+| Case | Hardware | Outcome |
+|---|---|---|
+| `<template>` opened, never closed | desktop, `rux check` | Passed: "opened here and never closed", at 1:1. Said "missing <template> section" before, with the author looking straight at the tag |
+| A file with only a `<style>` | desktop, `rux check` | Passed: genuinely missing, and says what a template is for |
+| `<template` with no `>` anywhere | desktop, `rux check` | Passed: "never finished: no `>` after it" |
+| `<style>` opened, never closed | desktop, `rux check` | Passed: an error at line 4. Silently meant "this file has no styles" before, which looks exactly like CSS that does not work |
+| `two(1)` and `two(1,2,3)` where `fn two(a, b)` | desktop, `rux check` | Passed: names the count given and the count wanted |
+| `none(5)` where `fn none()` | desktop, `rux check` | Passed |
+| `two(1, 2)` and `none()` | desktop, `rux check` | Passed by staying silent |
+| `bump_it(2)` in a component, `fn bump_it` in its parent | desktop, `rux check` | **Whole app: silent** (correct, `fn`s are shared). **Component alone: a warning, not an error** (correct, its parent may define it) |
+| `padding: 10%`, `margin: 10%`, `gap: 5%`, `border-radius: 50%` | desktop, `rux check` | Passed: each says it is ignored and why. **All four were silently dropped before** |
+| `width: 50%` | desktop, `rux check` | Passed by staying silent: layout resolves it, so it works |
+| All 47 files in `examples/` | desktop, `rux check` | Clean |
+
+**The percentage report was four properties, not one.** `border-radius: 50%` was
+reported; `padding`, `margin` and `gap` had the same defect and nobody had tried
+them. The cause is two functions in one file disagreeing about what a length is:
+the interpreter reads these with `parse_px`, which has no percentage, while
+`warn_unparseable_lengths` validated with `parse_len`, which does. So the value
+was thrown away and then pronounced fine **by the warning added to stop values
+being thrown away in silence**.
+
+**Still not driven in the window**: whether a radius clamped by a hug-sized
+button's own text is the whole of the other half of that report. It is correct
+behaviour by the CSS rule, and the author note stays open until someone looks.
+
 ### Severity, unknown events, and which file (2026-09-15)
 
 | Case | Hardware | Outcome |

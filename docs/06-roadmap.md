@@ -1969,14 +1969,10 @@ not "is it small", it is "did v0.7 say this works".
   declared**, and escalating everywhere made `rux new` scaffold a project that
   failed its own `rux check`. That is the clearest argument yet for a prop
   declaration form; see the props note above.
-- **"missing `<template>` section" is emitted for an unclosed one.** Verified:
-  a file that opens `<template>` and never closes it reports as having no
-  template at all. `section_with_open` in `rux-parser` needs `</template>`
-  before it will admit the section exists, so a truncated file, a file being
-  edited, and a file genuinely missing the section are one message. This is the
-  false report behind "I typed `@class` and it said the template was missing".
-  Three conditions, three messages, exactly as the CSS property warning was
-  split.
+- ~~**"missing `<template>` section" is emitted for an unclosed one.**~~
+  **DONE 2026-09-15.** Three conditions, three messages, each with the position
+  of the opening tag. An unclosed `<style>` or `<script>` is now an error too,
+  rather than silently meaning "this file has no styles".
 - ~~**An unsupported `@` attribute is silently accepted.**~~ **DONE
   2026-09-15**, as an error, listing the six events that do exist. A component
   tag is exempt, since `@name` on one is a listener for whatever it emits.
@@ -1988,11 +1984,22 @@ not "is it small", it is "did v0.7 say this works".
   covering `fallback` on a `<route>` too. It needed `Attr::has_value` in the
   parser: `r-else` and `r-else=""` both leave the value empty, so the two were
   indistinguishable and there was nothing to report.
-- **Arguments are not checked against the function.** Wrong count, wrong shape,
-  or none at all where some are wanted, in a script `fn` or a template handler.
-- **`border-radius` with a percentage.** `parse_len` accepts `%`, so this parses;
-  what the reporter saw needs driving in the window before it is called a bug or
-  a defence. See the note below on the rounding limit itself.
+- ~~**Arguments are not checked against the function.**~~ **DONE 2026-09-15**,
+  for **count**, and only for the document's own `fn`s: a registered native can
+  be overloaded on types nothing here can see, so checking arity against the
+  whole registry would flag working code. Wrong *shape* is the type-system
+  item and stays scheduled.
+- ~~**`border-radius` with a percentage.**~~ **DONE 2026-09-15, and it was four
+  properties rather than one.** `parse_len` accepts `%` and that is what the
+  length *check* used, while the interpreter reads these with `parse_px`, which
+  does not. So `border-radius: 50%`, `padding: 10%`, `margin: 10%` and
+  `gap: 5%` were each dropped on the floor and then pronounced fine by the very
+  warning added to stop values being dropped in silence. They say so now.
+  **Actually honoring a percentage on them is a feature**, not a patch: these
+  are resolved to plain pixels during the cascade, before any box exists, so it
+  means carrying a length through to layout for most of them and to paint for
+  the radius. Scheduled. The separate half of that report, a radius clamped by a
+  hug-sized button's own text, is correct behaviour and is in the author notes.
 
 **Answered rather than scheduled:**
 

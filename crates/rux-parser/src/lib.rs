@@ -250,8 +250,19 @@ impl std::error::Error for ParseError {}
 
 /// Parse a full `.rux` source into an [`Sfc`].
 pub fn parse_sfc(src: &str) -> Result<Sfc, ParseError> {
-    let (template_src, template_start) =
-        section(src, "template").ok_or_else(|| ParseError::new("missing <template> section"))?;
+    let (template_src, template_start, _) =
+        find_section(src, "template").map_err(|why| section_error(src, "template", why))?;
+    // A `<style>` or `<script>` that is absent is fine and common. One that is
+    // *present and broken* is not: before this, an unclosed `<style>` dropped
+    // every rule in the file with nothing said, which looks exactly like CSS
+    // that does not work.
+    for name in ["style", "script"] {
+        if let Err(why) = find_section(src, name) {
+            if why != SectionProblem::Absent {
+                return Err(section_error(src, name, why));
+            }
+        }
+    }
     let (style, style_line) = trimmed_section(src, "style");
     let (script, script_line) = trimmed_section(src, "script");
     let style_open = section_with_open(src, "style").map(|(_, _, open)| open);
@@ -345,17 +356,86 @@ fn section(src: &str, name: &str) -> Option<(String, usize)> {
 /// runs inside: `<script>` holds rhai and `<style>` holds CSS, and neither is
 /// the XML-shaped grammar.
 fn section_with_open(src: &str, name: &str) -> Option<(String, usize, String)> {
+    find_section(src, name).ok()
+}
+
+/// Why a section could not be read, for the three cases that are not the same
+/// problem.
+///
+/// They produced one message for a long time, and it was the wrong one twice
+/// out of three: a file whose `<template>` was simply never closed reported as
+/// having **no** `<template>` at all. That is the worst shape a parse error
+/// takes, because the author is looking at the tag it says is missing. It shows
+/// up constantly while editing, since a half-typed section is unclosed by
+/// definition.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SectionProblem {
+    /// No `<name` anywhere.
+    Absent,
+    /// `<name` is there and its opening tag never ends: no `>` after it.
+    UnterminatedOpenTag { at: usize },
+    /// The section opens and never closes.
+    Unclosed { at: usize },
+}
+
+/// Find one section, or say precisely what is wrong with it.
+fn find_section(src: &str, name: &str) -> Result<(String, usize, String), SectionProblem> {
     let open = format!("<{name}");
-    let start = src.find(&open)?;
-    let open_end = start + src[start..].find('>')?;
+    let start = src.find(&open).ok_or(SectionProblem::Absent)?;
+    let open_end = start
+        + src[start..]
+            .find('>')
+            .ok_or(SectionProblem::UnterminatedOpenTag { at: start })?;
     let after_open = open_end + 1;
     let close = format!("</{name}>");
-    let end = src[after_open..].find(&close)? + after_open;
-    Some((
+    let end = src[after_open..]
+        .find(&close)
+        .ok_or(SectionProblem::Unclosed { at: start })?
+        + after_open;
+    Ok((
         src[after_open..end].to_string(),
         after_open,
         src[start..open_end].to_string(),
     ))
+}
+
+/// Turn a [`SectionProblem`] into the error an author reads.
+///
+/// `required` separates `<template>`, whose absence is a real error, from
+/// `<style>` and `<script>`, which are optional and whose absence is not. A
+/// section that is *present and broken* is an error either way: silently
+/// dropping every rule in an unclosed `<style>` is the same failure wearing a
+/// quieter coat.
+fn section_error(src: &str, name: &str, problem: SectionProblem) -> ParseError {
+    let at = |offset: usize| {
+        let line = src[..offset].matches('\n').count() + 1;
+        let col = offset - src[..offset].rfind('\n').map_or(0, |i| i + 1) + 1;
+        (line, col)
+    };
+    match problem {
+        SectionProblem::Absent => ParseError::new(format!(
+            "missing <{name}> section: every .rux file needs one, holding a single root element"
+        )),
+        SectionProblem::UnterminatedOpenTag { at: offset } => {
+            let (line, col) = at(offset);
+            ParseError::at(
+                format!("the opening <{name}> tag is never finished: no `>` after it"),
+                line,
+                col,
+            )
+        }
+        SectionProblem::Unclosed { at: offset } => {
+            let (line, col) = at(offset);
+            ParseError::at(
+                format!(
+                    "<{name}> is opened here and never closed: add `</{name}>`. \
+                     The section is not missing, it has no end"
+                ),
+                line,
+                col,
+            )
+        }
+    }
 }
 
 /// Read one attribute's value out of a raw opening tag, `<style src="a.css"`.
@@ -772,5 +852,46 @@ mod tests {
         };
         assert_eq!(input.tag, "input");
         assert_eq!(input.attr("type"), Some("text"));
+    }
+
+    /// The three ways a section can fail are three different problems, and one
+    /// of them used to report as another. A `<template>` that is opened and
+    /// never closed said "missing <template> section", which is the worst shape
+    /// an error takes: the author is looking straight at the tag it says is
+    /// absent, and a half-typed section is unclosed by definition, so it showed
+    /// up constantly while editing.
+    #[test]
+    fn a_broken_section_says_which_way_it_is_broken() {
+        let unclosed = parse_sfc("<template>\n  <screen></screen>\n").unwrap_err();
+        assert!(
+            unclosed.message.contains("never closed"),
+            "not `missing`: {}",
+            unclosed.message
+        );
+        assert_eq!(unclosed.line, Some(1), "and it points at the opening tag");
+
+        let absent = parse_sfc("<style>\n.a { color: red; }\n</style>\n").unwrap_err();
+        assert!(absent.message.contains("missing <template>"), "{}", absent.message);
+
+        let unterminated = parse_sfc("<template").unwrap_err();
+        assert!(
+            unterminated.message.contains("never finished"),
+            "{}",
+            unterminated.message
+        );
+    }
+
+    /// An unclosed `<style>` used to drop every rule in the file in silence,
+    /// which looks exactly like CSS that does not work. A section that is
+    /// *present and broken* is an error even when the section is optional.
+    #[test]
+    fn an_unclosed_optional_section_is_still_an_error() {
+        let err = parse_sfc("<template>\n  <screen></screen>\n</template>\n<style>\n.a{color:red}\n")
+            .unwrap_err();
+        assert!(err.message.contains("<style> is opened here and never closed"), "{}", err.message);
+        assert_eq!(err.line, Some(4));
+
+        // And a file with no `<style>` at all is still perfectly fine.
+        assert!(parse_sfc("<template>\n  <screen></screen>\n</template>\n").is_ok());
     }
 }

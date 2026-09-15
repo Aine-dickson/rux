@@ -289,7 +289,18 @@ fn check_attribute_shapes(
 /// fix that one and re-run.
 fn warn_unknown_calls(engine: &rux_script::Engine, src: &str, whose: &str) {
     for problem in engine.unknown_calls(src) {
-        rux_script::warn_script(format!("{whose} {}", problem.describe()));
+        let message = format!("{whose} {}", problem.describe());
+        // A call that resolves nowhere is definitely wrong in a page, which has
+        // no caller. In a fragment it is only probably wrong: **only `fn`
+        // definitions are shared into the one engine**, so a component's
+        // handler legitimately calls a function its parent declared and it has
+        // never heard of. Read on its own, that component is an incomplete
+        // program, and the same is true of its props.
+        if rux_script::is_fragment() {
+            rux_script::warn_script(message);
+        } else {
+            rux_script::error_script(message);
+        }
     }
 }
 
@@ -301,7 +312,12 @@ fn warn_unknown_calls(engine: &rux_script::Engine, src: &str, whose: &str) {
 /// taps it.
 fn check_script_functions(engine: &rux_script::Engine) {
     for problem in engine.unknown_calls_in_functions() {
-        rux_script::warn_script(format!("a <script> function {}", problem.describe()));
+        let message = format!("a <script> function {}", problem.describe());
+        if rux_script::is_fragment() {
+            rux_script::warn_script(message);
+        } else {
+            rux_script::error_script(message);
+        }
     }
 }
 
@@ -876,7 +892,7 @@ impl Document {
         // fragment, which is to say a component, and its undeclared names may be
         // props the caller supplies. Set before the first build, since that is
         // when expressions are evaluated.
-        rux_script::set_names_may_be_injected(sfc.template.tag != "screen");
+        rux_script::set_is_fragment(sfc.template.tag != "screen");
         // Before the first build: a `:to` calling `path_for` is evaluated
         // during that build, so the names have to be known by then.
         rux_script::set_routes(rux_style::named_routes(&sfc.template));
@@ -971,7 +987,7 @@ impl Document {
         let (main_script, computeds, effects, hooks) = extract_reactives(&main_script);
         // Same page/fragment rule as the file loader above: a `<screen>` root
         // has no caller, so an undeclared name can come from nowhere.
-        rux_script::set_names_may_be_injected(sfc.template.tag != "screen");
+        rux_script::set_is_fragment(sfc.template.tag != "screen");
         rux_script::set_routes(rux_style::named_routes(&sfc.template));
         // Same mapping as `load_checked`, and the playground is the case that
         // most wants it: this is the only error surface it has. Nothing is
@@ -3337,6 +3353,89 @@ mod tests {
         assert_eq!(line_of("missing_three"), Some(7), "r-for, also read by the parent");
         assert_eq!(line_of("no_such_call"), Some(8), "a handler");
         assert_eq!(line_of("missing_four"), Some(9), "a text interpolation");
+    }
+
+    /// Calling a `fn` with the wrong number of arguments fails the moment it
+    /// runs, and in a handler nothing said so.
+    ///
+    /// Checked only for the document's own `fn`s. A registered native can be
+    /// overloaded on types nothing here can see, so the same check against the
+    /// whole registry would flag working code, and a check that does that is
+    /// worse than the silence it replaces.
+    #[test]
+    fn calling_a_fn_with_the_wrong_count_is_reported() {
+        let _ = take_warnings();
+        let doc = Document::from_source(
+            "<template><screen>\
+             <button @tap=\"two(1)\">a</button>\
+             <button @tap=\"two(1, 2, 3)\">b</button>\
+             <button @tap=\"none(5)\">c</button>\
+             <button @tap=\"two(1, 2)\">right</button>\
+             <button @tap=\"none()\">right</button>\
+             </screen></template>\n\
+             <script>let n = signal(0); fn two(a, b) { n = a + b } fn none() { n = 0 }</script>",
+        )
+        .expect("renders anyway");
+        let counts: Vec<&str> = doc
+            .diagnostics
+            .warnings
+            .iter()
+            .filter(|w| w.message.contains("takes"))
+            .map(|w| w.message.as_str())
+            .collect();
+        assert_eq!(counts.len(), 3, "three wrong calls, two right ones: {counts:?}");
+        assert!(
+            counts.iter().any(|m| m.contains("with 1 argument, and `two` takes 2 arguments")),
+            "{counts:?}"
+        );
+        assert!(counts.iter().any(|m| m.contains("with 3 arguments")), "{counts:?}");
+        assert!(
+            counts.iter().any(|m| m.contains("`none` takes 0 arguments")),
+            "{counts:?}"
+        );
+    }
+
+    /// A component's handler may call a `fn` its **parent** declared, because
+    /// only `fn` definitions are shared into the one engine. Read on its own
+    /// that component is an incomplete program, so an unresolvable call there
+    /// stays a warning, exactly as an undefined name does.
+    ///
+    /// Without this, checking any component that calls a shared helper reported
+    /// a function that plainly works as missing.
+    #[test]
+    fn an_unresolvable_call_is_an_error_in_a_page_and_a_warning_in_a_fragment() {
+        let _ = take_warnings();
+        let page = Document::from_source(
+            "<template><screen><button @tap=\"ghost()\">x</button></screen></template>",
+        )
+        .expect("renders anyway");
+        assert!(
+            page.diagnostics
+                .warnings
+                .iter()
+                .find(|w| w.message.contains("ghost"))
+                .expect("reported")
+                .is_error(),
+            "a page has no parent to define it: {:?}",
+            page.diagnostics.warnings
+        );
+
+        let _ = take_warnings();
+        let fragment = Document::from_source(
+            "<template><view><button @tap=\"ghost()\">x</button></view></template>",
+        )
+        .expect("renders anyway");
+        assert!(
+            !fragment
+                .diagnostics
+                .warnings
+                .iter()
+                .find(|w| w.message.contains("ghost"))
+                .expect("still reported")
+                .is_error(),
+            "a parent may declare it: {:?}",
+            fragment.diagnostics.warnings
+        );
     }
 
     /// `@class="big"` used to check clean and do nothing.

@@ -323,7 +323,7 @@ background, background-color, background-image, opacity
   (colour, linear-/radial-gradient, or url(…) image, cover-sized, clipped to corners)
 box-shadow (single, outer; inset parsed but not drawn)
 transition (property duration easing delay, comma-separated; see below)
-border-radius (1–4 diagonal shorthand)
+border-radius (1–4 diagonal shorthand; px/rem/em, not %, see below)
 border-top-left-radius, border-top-right-radius
 border-bottom-right-radius, border-bottom-left-radius
 color, font-size, font-weight, font-family, font-style (italic), text-align
@@ -337,6 +337,17 @@ cursor (pointer, on @tap boxes only)
 fill, fill-rule, stroke, stroke-width, stroke-linecap, stroke-linejoin
   (<path> only; see above)
 ```
+**Percentages need a box, and half of these are resolved before there is one.**
+`width`, `height`, `min`/`max-*` and the insets become a length that layout
+resolves, so `width: 50%` works. `padding`, `margin`, `gap`/`row-gap`/
+`column-gap`, `border-radius` and its corners, the border widths, `font-size`,
+`letter-spacing` and `word-spacing` are resolved to plain pixels during the
+cascade, where there is no box yet, so a percentage on one of those is
+**ignored and says so**. Until v0.7.1 it was ignored in silence, because the
+interpreter read them with a px-only parser while the length check validated
+with a percentage-capable one: the value was dropped and then pronounced fine.
+Real percentage support for them is scheduled.
+
 **Selectors:** tag, `.class`, `#id`, `[role="…"]`, compounds, and all four
 combinators: descendant (`.a .b`), child (`.a > .b`), next-sibling (`.a + .b`),
 subsequent-sibling (`.a ~ .b`).

@@ -782,6 +782,15 @@ pub enum CallProblem {
     /// receiver and the map's `get` takes one, so a one-argument `set` or a
     /// no-argument `get` on a signal is the superseded API and nothing else.
     StaleSignalApi { signal: String, method: String },
+    /// A `fn` this document declared, called with a number of arguments no
+    /// version of it takes.
+    ///
+    /// Only for the document's own functions. A registered native can be
+    /// overloaded on types this has no way to see, and a method call's receiver
+    /// is an argument, so checking arity against the whole registry would flag
+    /// working code. A `fn` in `<script>` has a parameter list that is right
+    /// there in the file, and rhai dispatches it on count alone.
+    WrongArgumentCount { name: String, given: usize, wanted: Vec<usize> },
 }
 
 impl CallProblem {
@@ -795,6 +804,24 @@ impl CallProblem {
                 "calls `{name}`, which does not exist, so it will do nothing at that \
                  point when it runs"
             ),
+            Self::WrongArgumentCount { name, given, wanted } => {
+                let plural = |n: usize| if n == 1 { "argument" } else { "arguments" };
+                let takes = match wanted.as_slice() {
+                    [one] => format!("takes {one} {}", plural(*one)),
+                    many => format!(
+                        "takes {}",
+                        many.iter()
+                            .map(|n| format!("{n} {}", plural(*n)))
+                            .collect::<Vec<_>>()
+                            .join(" or ")
+                    ),
+                };
+                format!(
+                    "calls `{name}` with {given} {}, and `{name}` {takes}, so the call \
+                     fails the moment it runs",
+                    plural(*given)
+                )
+            }
             Self::StaleSignalApi { signal, method } => {
                 let fix = match method.as_str() {
                     "set" => format!("assign to it instead: `{signal} = …`"),
@@ -874,31 +901,46 @@ pub fn in_file<T>(file: Option<std::path::PathBuf>, f: impl FnOnce() -> T) -> T 
 }
 
 thread_local! {
-    /// Whether a name this document does not declare could still arrive from
-    /// somewhere: a **fragment**, which is to say a component, whose props are
-    /// supplied by whoever uses it.
+    /// Whether this document is a **fragment**: a component, whose surroundings
+    /// are supplied by whoever uses it, rather than a page that stands alone.
     ///
-    /// This exists because **props are not declared**. A component reads
-    /// `{{ label }}` with nothing in its `<script>` saying `label` is expected,
-    /// so a checker looking at that file alone cannot tell a prop from a typo.
-    /// The component `rux new` scaffolds is exactly this shape, and calling its
-    /// props undefined would mean the tool shipping a project that fails its own
-    /// `rux check`.
+    /// Two things reach a component from outside, and neither is declared
+    /// anywhere in its own file:
     ///
-    /// So the severity depends on whether anything *could* inject the name. A
-    /// page (`<screen>` root) has no caller and nothing can, which makes an
-    /// unknown name definitely wrong. A fragment has a caller, so it stays a
-    /// warning. The real fix is a way to declare a prop, which would make the
-    /// question answerable instead of inferable; it is scheduled, not built.
-    static NAMES_MAY_BE_INJECTED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// - **Props.** A component reads `{{ label }}` with nothing saying `label`
+    ///   is expected, so a checker reading that file alone cannot tell a prop
+    ///   from a typo.
+    /// - **Functions.** Only `fn` definitions are shared into the one engine,
+    ///   so a component's `@tap="bump_it(2)"` legitimately calls a `fn` its
+    ///   parent declared and it has never heard of.
+    ///
+    /// So a fragment read on its own is an incomplete program, and the things
+    /// it appears to be missing are exactly the things a caller provides. A page
+    /// (`<screen>` root) has no caller, so what is missing there is missing.
+    /// Severity follows that, and only severity: both are still reported.
+    ///
+    /// This is inference standing in for a declaration. `rux new` scaffolds a
+    /// component that reads two props, so escalating everywhere made the tool
+    /// ship a project failing its own `rux check`, which is how the rule was
+    /// found. A way to declare a prop would make the question answerable
+    /// instead; it is scheduled, not built.
+    static IS_FRAGMENT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
-/// Say whether undeclared names in this document might be props.
+/// Say whether this document is a fragment. See [`IS_FRAGMENT`].
 ///
 /// Set once per load, from the document's root element. `rux-runtime` owns the
 /// page/fragment distinction because it is the layer that has the template.
-pub fn set_names_may_be_injected(yes: bool) {
-    NAMES_MAY_BE_INJECTED.with(|c| c.set(yes));
+pub fn set_is_fragment(yes: bool) {
+    IS_FRAGMENT.with(|c| c.set(yes));
+}
+
+/// Whether what this document is missing might be supplied by a caller.
+///
+/// Read by the runtime to decide whether an unresolvable call is an error or a
+/// warning, the same question [`level_for`] answers for an undefined name.
+pub fn is_fragment() -> bool {
+    IS_FRAGMENT.with(std::cell::Cell::get)
 }
 
 /// Whether a failed expression is definitely wrong or only probably.
@@ -908,7 +950,7 @@ pub fn set_names_may_be_injected(yes: bool) {
 /// wherever it is written, because no caller can supply a missing function.
 fn level_for(rhai_message: &str) -> rux_reactive::Level {
     let undefined_name = rhai_message.starts_with("Variable not found:");
-    if undefined_name && NAMES_MAY_BE_INJECTED.with(std::cell::Cell::get) {
+    if undefined_name && is_fragment() {
         rux_reactive::Level::Warning
     } else {
         rux_reactive::Level::Error
@@ -1680,6 +1722,7 @@ impl Engine {
     /// The walk both of the above share.
     fn unresolvable_calls(&self, ast: &AST) -> Vec<CallProblem> {
         let known = self.callable_names();
+        let own = self.own_fn_arities();
         let mut unknown: Vec<CallProblem> = Vec::new();
         ast.walk(&mut |path| {
             let Some(rhai::ASTNode::Expr(expr)) = path.last() else { return true };
@@ -1694,8 +1737,26 @@ impl Engine {
                     // and so does every comparison and index. They resolve
                     // through the interpreter's own tables rather than by name,
                     // so asking whether `+` is registered proves nothing.
-                    if call.op_token.is_none() && !known.contains(call.name.as_str()) {
-                        note(CallProblem::NoSuchFunction(call.name.to_string()));
+                    if call.op_token.is_some() {
+                        return true;
+                    }
+                    let name = call.name.as_str();
+                    if !known.contains(name) {
+                        note(CallProblem::NoSuchFunction(name.to_string()));
+                    } else if let Some(wanted) = own.get(name) {
+                        // A method call carries its receiver as the first
+                        // argument, which is how `x.f(y)` reaches `fn f(a, b)`.
+                        let given = call.args.len()
+                            + usize::from(matches!(expr, rhai::Expr::MethodCall(..)));
+                        if !wanted.contains(&given) {
+                            let mut wanted: Vec<usize> = wanted.iter().copied().collect();
+                            wanted.sort_unstable();
+                            note(CallProblem::WrongArgumentCount {
+                                name: name.to_string(),
+                                given,
+                                wanted,
+                            });
+                        }
                     }
                 }
                 // A method call and its receiver are two nodes, and the
@@ -1744,6 +1805,33 @@ impl Engine {
             signal: signal.to_string(),
             method: call.name.to_string(),
         })
+    }
+
+    /// The parameter counts of the `fn`s this document declared.
+    ///
+    /// A name may appear more than once: rhai dispatches a script function on
+    /// its argument count, so `fn f(a)` and `fn f(a, b)` are two functions and
+    /// both counts are legal.
+    ///
+    /// **A name the host or a package also registered is left out entirely.**
+    /// The native side can be overloaded on types nothing here can see, so a
+    /// count that no `fn` accepts might still be resolved by a native of the
+    /// same name. Dropping those is what keeps this from flagging working code,
+    /// which matters more than catching every case.
+    fn own_fn_arities(&self) -> HashMap<String, HashSet<usize>> {
+        let native: HashSet<String> = self
+            .engine
+            .collect_fn_metadata(None, |f| Some(f.metadata.name.to_string()), true)
+            .into_iter()
+            .collect();
+        let mut arities: HashMap<String, HashSet<usize>> = HashMap::new();
+        for f in self.funcs.iter_functions() {
+            if native.contains(f.name) {
+                continue;
+            }
+            arities.entry(f.name.to_string()).or_default().insert(f.params.len());
+        }
+        arities
     }
 
     /// Every function name this engine could resolve a call to.
