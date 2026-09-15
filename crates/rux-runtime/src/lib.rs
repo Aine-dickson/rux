@@ -2282,6 +2282,14 @@ impl Document {
         // runs exactly once, which is the whole difference from an `effect`, and
         // is why it needs a flag rather than a dependency set.
         writes.extend(self.run_mounted());
+        // Drained here, before anything else can claim it. A timer request sits
+        // in one queue shared by the whole document, and the mounts below take
+        // whatever is pending and attribute it to the instance that just
+        // mounted. A document `mounted` that starts the app's clock while any
+        // component is on the first build would otherwise hand its interval to
+        // that component, and the clock would stop the moment the component
+        // went away.
+        self.apply_timer_requests(None);
         self.diagnostics.warnings.extend(collect_warnings());
         if !writes.is_empty() {
             // An effect or hook that set something on load has to be reflected,
@@ -2296,8 +2304,8 @@ impl Document {
         // handler does, and a queue nobody drains is the same as no feature at
         // all. The shell picks these up after the first frame is laid out.
         let _ = self.apply_element_actions();
-        // A document `mounted` starting the app's clock is the obvious use, so
-        // its timers are picked up here too, owned by the document.
+        // Anything a hook started while settling and nobody claimed belongs to
+        // the document. The document's own request was taken above.
         self.apply_timer_requests(None);
         self.diagnostics.warnings.extend(collect_warnings());
     }
@@ -6076,6 +6084,44 @@ use components::detail;
         assert_eq!(doc.timer_deadline(50.0), None, "the timer went with the instance");
         assert!(!doc.fire_timers(10_000.0));
         assert_eq!(doc.engine_mut().get_string("beats"), "1", "and never ticked again");
+    }
+
+    /// The document's own interval belongs to the document, even when a
+    /// component mounts in the same pass that started it.
+    ///
+    /// Timer requests queue in one place for the whole document, and the mounts
+    /// settled on the first build take whatever is pending. A document `mounted`
+    /// that starts the app's clock while any component is on screen had its
+    /// interval handed to that component, so the clock stopped the first time
+    /// the component went away: a router whose landing page declared a `mounted`
+    /// hook froze the app on the first navigation, with no error anywhere.
+    #[test]
+    fn a_document_interval_is_not_claimed_by_a_component_mounting_beside_it() {
+        let mut doc = with_component(
+            "<template><view><text>card</text></view></template>
+             <script>
+mounted { }
+</script>",
+            "<template><screen>               <text>{{ beats }}</text>               <card r-if=\"open\" />             </screen></template>
+             <script>
+use components::card;
+let open = signal(true);
+             let beats = signal(0);
+             mounted { setInterval(50) { beats++; } }
+</script>",
+        );
+        assert_eq!(doc.timer_deadline(0.0), Some(50.0), "the document started one");
+        assert!(doc.fire_timers(50.0));
+        assert_eq!(doc.engine_mut().get_string("beats"), "1");
+
+        assert!(doc.apply_handler("open = false"), "drop the component beside it");
+        assert_eq!(
+            doc.timer_deadline(50.0),
+            Some(100.0),
+            "the document's clock is still running"
+        );
+        assert!(doc.fire_timers(100.0), "and still ticks");
+        assert_eq!(doc.engine_mut().get_string("beats"), "2");
     }
 
     /// A period of zero would fire every frame forever, so it is refused out

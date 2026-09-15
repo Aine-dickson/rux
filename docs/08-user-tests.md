@@ -581,6 +581,31 @@ nothing and no reason why.
 ever built. An author who reads the reference and writes what it says is not
 making a mistake. Both lines are corrected.
 
+### The document's own interval, beside a component (2026-09-15)
+
+Found while walking the v0.7.0 release post claim by claim, not by any test.
+
+| Case | Hardware | Outcome |
+|---|---|---|
+| Document `mounted` starts `setInterval`, a component with a `mounted` hook is on the first build, the component is then dropped | desktop, `rux run` | **Failed before the fix.** The document's interval stopped, the window went to sleep at zero CPU, and the screen froze with the last frame on it. No error, no warning, no panic |
+| The same, through a `<router>`: the landing route's view declares `mounted`, then navigate away | desktop, `rux run` | **Failed before the fix**, and this is the shape an author meets first. The router rendered nothing and the app stopped responding to its own clock |
+| The same component declaring only `unmounted` | desktop, `rux run` | Passed: the trigger is a `mounted` hook, because that is what the mounts pass drains the queue for |
+| The component mounting *later*, after the interval already existed | desktop, `rux run` | Passed, and this is what made the bug look intermittent |
+| A component's own interval, started in its `mounted` | desktop, `rux run` | Passed both before and after: it still dies with the instance, which is the half a fix here could easily have broken |
+
+**The cause was attribution, not pruning.** Timer requests queue in one place for
+the whole document. `settle_lifecycle` attributes whatever is pending to the
+instance that just mounted, and on the first build it ran *before* the document's
+own request was drained, so the document's clock was handed to the first
+component on screen and pruned with it. The drain moved to directly after
+`mounted` runs.
+
+**The frozen app reads as a crash and is not one.** The process sat at zero CPU,
+`Responding=True`, with the window still painting its last frame. Nothing was
+spinning and nothing had panicked: the runtime had simply stopped asking the
+event loop to wake it. Anything that looks like a hang here is worth measuring
+before it is debugged as one.
+
 ## Standing gaps
 
 Cases nothing here can currently exercise. They are the shape of what v0.8 has
