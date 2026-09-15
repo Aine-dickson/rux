@@ -606,6 +606,24 @@ spinning and nothing had panicked: the runtime had simply stopped asking the
 event loop to wake it. Anything that looks like a hang here is worth measuring
 before it is debugged as one.
 
+### How a `<route>` names its view (2026-09-15)
+
+Found while walking the v0.7.0 release post claim by claim: the probe app for
+the guard claims would not load, and the reason it gave was one the file had
+already done.
+
+| Case | Hardware | Outcome |
+|---|---|---|
+| `view="page_a"` with `use components::page_a;` present | desktop, `rux check` | **Failed before the fix.** Said "which is not imported; add `use components::page_a;` to the script", which is the line sitting two lines below it. Doing what the message says gets the same message back |
+| `view="page-a"` with nothing imported | desktop, `rux check` | **Failed before the fix.** Suggested `use components::page-a;`. Pasting it turns the warning into a hard error looking for `page-a.rux`, a filename no convention here produces |
+| `view="page-a"` with `use components::page_a;` | desktop, `rux check` | Passed, silent. The control, and the spelling that works |
+
+**Two spellings for one component is the trap, and it is real rather than
+avoidable.** A view is named the way its tag is, in kebab, and the `use` that
+brings it in names the file, in snake. Both messages now say which spelling the
+place they are complaining about wants, and the import they suggest is one that
+parses.
+
 ## Standing gaps
 
 Cases nothing here can currently exercise. They are the shape of what v0.8 has

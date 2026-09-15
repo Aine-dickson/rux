@@ -4081,10 +4081,25 @@ fn expand_chain(
         return None;
     };
     let Some(component) = comps.get(view) else {
-        warn(format!(
-            "<route> names the view `{view}`, which is not imported; add \
-             `use components::{view};` to the script"
-        ));
+        // A view is named the way its tag is, in kebab, while the `use` that
+        // brings it in names the file, in snake. Saying "not imported" to
+        // someone who wrote the snake form sends them to add a line their
+        // script already has, and the import spelled with the view's own
+        // hyphens is not a name at all: pasting it looks for `page-a.rux`.
+        let as_tag = view.replace('_', "-");
+        if as_tag != view && comps.get(&as_tag).is_some() {
+            warn(format!(
+                "<route> names the view `{view}`, but a view is named the way its tag is: \
+                 write `view=\"{as_tag}\"`. The `use components::{view};` already in the \
+                 script is what imports it"
+            ));
+        } else {
+            warn(format!(
+                "<route> names the view `{view}`, which is not imported; add \
+                 `use components::{file};` to the script",
+                file = view.replace('-', "_")
+            ));
+        }
         return None;
     };
     // Identity is where the route sits in the template, one step per level, so
