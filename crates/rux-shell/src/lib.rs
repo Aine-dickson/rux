@@ -819,8 +819,23 @@ fn overlay_paints(diag: &rux_runtime::Diagnostics, path: &Path, width: f32) -> O
     // would grow past the window and hide the app it is describing.
     let shown = diag.warnings.len().min(OVERLAY_MAX_WARNINGS);
     for warning in &diag.warnings[..shown] {
+        // A warning raised inside an imported component belongs to that
+        // component, and its line number is a line of *that* file. Showing
+        // `line 9` under a panel headed with the document being run points
+        // confidently at the wrong file, which is worse than saying nothing:
+        // the reader trusts it and goes to look. The file is named whenever it
+        // is not the one in the title.
+        let origin = warning
+            .file
+            .as_deref()
+            .map(file_name)
+            .filter(|name| *name != file_name(path));
+        let text = match origin {
+            Some(name) => format!("• {name} {warning}"),
+            None => format!("• {warning}"),
+        };
         lines.extend(
-            wrap_overlay(&format!("• {warning}"), text_w)
+            wrap_overlay(&text, text_w)
                 .into_iter()
                 .map(|l| (l, if is_error { muted } else { ink })),
         );
@@ -4116,6 +4131,86 @@ fn path_for_route(base: &str, route: &str) -> String {
         return if base.is_empty() { rux_runtime::ROOT_PATH.to_string() } else { base.to_string() };
     }
     format!("{base}{route}")
+}
+
+#[cfg(test)]
+mod overlay_attribution {
+    use super::{overlay_paints, Paint};
+    use std::path::{Path, PathBuf};
+
+    /// Every string the overlay would paint.
+    fn painted(diag: &rux_runtime::Diagnostics, running: &str) -> String {
+        let panel = overlay_paints(diag, Path::new(running), 900.0).expect("a panel");
+        panel
+            .paints
+            .iter()
+            .filter_map(|p| match p {
+                Paint::Text(t) => Some(t.content.text.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn warning(message: &str, line: Option<usize>, file: Option<&str>) -> rux_reactive::Warning {
+        rux_reactive::Warning {
+            message: message.to_string(),
+            line,
+            file: file.map(PathBuf::from),
+            level: rux_reactive::Level::Warning,
+        }
+    }
+
+    /// A warning from an imported component names that component.
+    ///
+    /// The panel is headed with the document being *run*, so `line 9` under a
+    /// title reading `app.rux` pointed confidently at a line of the wrong file.
+    /// Unplaced is vague; placed and wrong is a trap, which is the same lesson
+    /// the line numbers themselves taught.
+    #[test]
+    fn a_warning_from_another_file_says_which() {
+        let diag = rux_runtime::Diagnostics {
+            error: None,
+            stale: false,
+            warnings: vec![warning("`draft` is not defined", Some(9), Some("pages/home.rux"))],
+            prints: vec![],
+        };
+        let text = painted(&diag, "app.rux");
+        assert!(text.contains("home.rux"), "names the file it is really in: {text}");
+        assert!(text.contains("line 9"), "and keeps the line: {text}");
+    }
+
+    /// A warning from the document being run is not labelled, because repeating
+    /// the title on every line is noise.
+    #[test]
+    fn a_warning_from_the_running_document_is_not_labelled() {
+        let diag = rux_runtime::Diagnostics {
+            error: None,
+            stale: false,
+            warnings: vec![warning("`draft` is not defined", Some(9), Some("app.rux"))],
+            prints: vec![],
+        };
+        let text = painted(&diag, "app.rux");
+        let body: Vec<&str> = text.lines().filter(|l| l.starts_with('•')).collect();
+        assert!(!body.is_empty(), "a warning line was painted: {text}");
+        assert!(
+            body.iter().all(|l| !l.contains("app.rux")),
+            "its own file is not repeated on the line: {body:?}"
+        );
+    }
+
+    /// A warning that carries no file at all is still shown, unlabelled.
+    #[test]
+    fn a_warning_with_no_file_is_still_shown() {
+        let diag = rux_runtime::Diagnostics {
+            error: None,
+            stale: false,
+            warnings: vec![warning("a css property is not honored", None, None)],
+            prints: vec![],
+        };
+        let text = painted(&diag, "app.rux");
+        assert!(text.contains("not honored"), "shown: {text}");
+    }
 }
 
 #[cfg(test)]
