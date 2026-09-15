@@ -172,8 +172,15 @@ fn report_summary(files: usize, errors: usize, warnings: usize, skipped: &[PathB
     // alone invents warnings), but skipping in silence is how somebody comes to
     // believe a file was looked at when it never was.
     if !skipped.is_empty() {
-        let names: Vec<String> =
-            skipped.iter().map(|p| p.display().to_string()).collect();
+        // Named, but not all of them: a project can hold dozens of components
+        // and a line listing every one is scrolled past rather than read, which
+        // would put this straight back where it started.
+        const SHOWN: usize = 3;
+        let mut names: Vec<String> =
+            skipped.iter().take(SHOWN).map(|p| p.display().to_string()).collect();
+        if skipped.len() > SHOWN {
+            names.push(format!("and {} more", skipped.len() - SHOWN));
+        }
         eprintln!(
             "rux: skipped {} component{} ({})",
             skipped.len(),

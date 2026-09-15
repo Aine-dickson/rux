@@ -4707,6 +4707,25 @@ fn build_children(
                 // the directive was written on.
                 let at = el.attr_line("r-for");
                 rux_script::located(at, || warn_if_destructuring_for(for_expr, var));
+                // `r-if` on the same element as `r-for` is read by nobody: the
+                // loop expands the element and the condition is never consulted,
+                // so every row renders and the filter silently does nothing.
+                // Said out loud rather than honored, because which one wins is a
+                // real design question (Vue has answered it both ways across two
+                // major versions) and quietly picking an answer here would change
+                // what existing documents render.
+                for name in ["r-if", "r-elif", "r-else", "r-show"] {
+                    if el.attr(name).is_some() {
+                        rux_script::located(el.attr_line(name).or(at), || {
+                            warn(format!(
+                                "`{name}` on the same element as `r-for` does nothing: the loop \
+                                 expands the element and the condition is never read, so every \
+                                 row renders. Filter the collection instead, with a `computed`, \
+                                 or put the `{name}` on a child."
+                            ))
+                        });
+                    }
+                }
                 // The collection is a reconcilable read, not a force-rebuild one:
                 // it flows to the parent's structural deps (via the return), not to
                 // `reg.structural`.

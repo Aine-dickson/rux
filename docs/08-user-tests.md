@@ -682,6 +682,22 @@ against nothing. The reference said nothing at all. So the runtime enforced a
 rule by dropping markup, and the only document stating it was the one that
 announces it does not describe the runtime.
 
+### `r-if` riding on `r-for` (2026-09-15)
+
+Found while writing a routing example to answer a question, which is its own
+small lesson: the example was wrong and the runtime said nothing.
+
+| Case | Hardware | Outcome |
+|---|---|---|
+| `<text r-for="n in nums" r-if="n > 2">` over `[1, 2, 3, 4]` | desktop, `rux run` | **Failed before the fix, in silence.** All four rows rendered. The loop expands the element and the condition is never read, so the filter does nothing and nothing says so |
+| The same after the fix | desktop, `rux check` | Passed: names the directive, says the condition is never read, and gives both ways out (filter with a `computed`, or move it to a child) |
+| All 47 files under `examples/` | desktop, `rux check` | Passed with no new warnings, which is the false-positive measurement this check lives or dies by |
+
+**Reported rather than honored, deliberately.** Which of the two should win is a
+real design question, and Vue has answered it both ways across two major
+versions. Quietly picking an answer here would change what existing documents
+render, which is not a patch's business.
+
 ## Standing gaps
 
 Cases nothing here can currently exercise. They are the shape of what v0.8 has
