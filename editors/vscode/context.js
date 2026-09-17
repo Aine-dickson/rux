@@ -56,6 +56,23 @@ function importedComponents(text) {
 }
 
 /**
+ * The component `name` refers to, written in either spelling, or `undefined`.
+ *
+ * One component has two names and the author chose neither. `use pages::new_task;`
+ * has to be snake, because it names a file; the tag it contributes has to be
+ * kebab, because that is what a custom element looks like. So both are forced,
+ * at opposite ends of the same file, and the runtime takes either of them in
+ * the template (`find_component` in `crates/rux-style`). This is that rule, and
+ * every reader of an import in this extension goes through it rather than
+ * comparing `c.tag === word` and quietly disagreeing with what would run.
+ */
+function componentNamed(text, name) {
+  if (!name) return undefined;
+  const kebab = name.replace(/_/g, '-');
+  return importedComponents(text).find((c) => c.tag === kebab);
+}
+
+/**
  * If `offset` sits inside an unfinished opening tag, describe it.
  *
  * Returns `null` when the cursor is in ordinary content, and otherwise
@@ -430,6 +447,7 @@ module.exports = {
   inTemplateExpression,
   sectionSpan,
   importedComponents,
+  componentNamed,
   openTagAt,
   unclosedTagAt,
   inCssDeclaration,

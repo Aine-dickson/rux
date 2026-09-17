@@ -3,7 +3,7 @@
   "displayName": "Ruxlang",
   "icon": "icon.png",
   "description": "Syntax highlighting, completions, hover docs, go to definition, an outline, tag auto-closing, formatting and diagnostics for the Rux UI language (.rux files).",
-  "version": "0.4.2",
+  "version": "0.4.6",
   "publisher": "Ruxlang",
   "license": "MIT OR Apache-2.0",
   "repository": {
@@ -152,6 +152,24 @@
           "when": "resourceLangId == rux"
         }
       ]
-    }
+    },
+    "semanticTokenTypes": [
+      {
+        "id": "ruxReference",
+        "superType": "class",
+        "description": "A name in `view=\"…\"` or `to=\"…\"` that resolves: an imported component, or a route this project declares. A name that does not resolve is left as an ordinary string, so the colour means the reference is good."
+      }
+    ],
+    "semanticTokenScopes": [
+      {
+        "language": "rux",
+        "scopes": {
+          "ruxReference": [
+            "support.class.component.rux",
+            "support.class"
+          ]
+        }
+      }
+    ]
   }
 }

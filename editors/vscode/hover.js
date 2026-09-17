@@ -82,7 +82,7 @@ function inTemplate(text, at) {
     const element = vocabulary.elements().find((e) => e.name === word);
     if (element) return entry(`<${word}>`, element);
 
-    const component = context.importedComponents(text).find((c) => c.tag === word);
+    const component = context.componentNamed(text, word);
     if (component) {
       return {
         title: `<${word}>`,
@@ -262,7 +262,7 @@ function inSelector(text, at) {
 
   // A component tag written as a selector never matches: a component expands to
   // whatever its own root element is, so its tag never reaches the tree.
-  const component = context.importedComponents(text).find((c) => c.tag === at.word);
+  const component = context.componentNamed(text, at.word);
   if (component) {
     return {
       title: at.word,

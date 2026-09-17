@@ -54,7 +54,7 @@
     ],
     "route": [
       { "name": "path", "detail": "the path to match", "doc": "`/crew/:id` captures `id` and hands it to the view as a prop. A child route's path is relative to its parent, and `path=\"\"` is the index route that fills the parent's outlet at the parent's own path." },
-      { "name": "view", "detail": "the component to render", "doc": "Names an imported component, the same name its tag would use." },
+      { "name": "view", "detail": "the component to render", "doc": "Names an imported component. Either spelling: `view=\"crew-detail\"` as the tag is written, or `view=\"crew_detail\"` as the `use` that imports it is written. They are the same component." },
       { "name": "fallback", "detail": "match anything unmatched", "doc": "Valueless. Renders when no other route matched, wherever it sits among them." },
       { "name": "guard", "detail": "decide whether this route may be entered", "doc": "`guard=\"expr\"`, run whenever this route is part of the match. `false` cancels the navigation, a string redirects to that path, and anything else allows it, `()` included, so a function that falls off the end has consented. Outer guards run first." }
     ],

@@ -25,6 +25,8 @@ const vocabulary = require('./vocabulary');
 // extension context in `activate`, and shadowing that would be worse.
 const context_ = require('./context');
 const locals = require('./locals');
+const comments = require('./comments');
+const semantic = require('./semantic');
 
 /**
  * When this module was loaded into the extension host.
@@ -55,7 +57,9 @@ function stale() {
   for (const name of [
     'extension.js', 'completion.js', 'hover.js', 'locals.js', 'context.js',
     'vocabulary.js', 'vocabulary.json', 'definition.js', 'symbols.js',
-    'snippets.js', 'autoclose.js', 'package.json',
+    'snippets.js', 'autoclose.js', 'comments.js', 'semantic.js', 'routes.js',
+    'project.js',
+    'package.json',
   ]) {
     let at;
     try {
@@ -182,6 +186,12 @@ function activate(context) {
   // This is the one place the binary is optional: a missing `rux` costs newer
   // completions, not completions.
   vocabulary.refreshFromBinary((args) => runRux(vscode, args, undefined, undefined));
+
+  // Where the routes of this project are, for colouring a `to=""`. A link is
+  // written in a page and the routes are written in `app.rux`, so this outlives
+  // any one document; it is emptied when a `.rux` file is saved, which is when
+  // a route can have changed.
+  const routeIndex = new semantic.RouteIndex();
   context.subscriptions.push(
     completion.register(vscode),
     autoclose.register(vscode, context),
@@ -190,7 +200,14 @@ function activate(context) {
     // that refer to each other by name rather than by path.
     hover.register(vscode),
     definition.register(vscode),
-    symbols.register(vscode)
+    symbols.register(vscode),
+    // Which comment Ctrl+/ writes. Three languages in one file, and VS Code
+    // reads one set of comment rules per language, so the rules follow the
+    // cursor. See `comments.js`.
+    comments.register(vscode),
+    // `view=""` and `to=""` hold names rather than text, and a name that
+    // resolves is painted like the thing it names. See `semantic.js`.
+    semantic.register(vscode, routeIndex)
   );
 
   // Which vocabulary is in force. `vocabulary.js` prefers whatever `rux vocab`
@@ -490,7 +507,10 @@ function activate(context) {
 
   context.subscriptions.push(
     vscode.workspace.onDidOpenTextDocument(refresh),
-    vscode.workspace.onDidSaveTextDocument(refresh),
+    vscode.workspace.onDidSaveTextDocument((document) => {
+      if (document.languageId === 'rux') routeIndex.clear();
+      refresh(document);
+    }),
     vscode.workspace.onDidCloseTextDocument((document) => diagnostics.delete(document.uri)),
     vscode.workspace.onDidChangeConfiguration((event) => {
       if (event.affectsConfiguration('rux')) {

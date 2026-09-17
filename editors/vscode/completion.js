@@ -519,31 +519,9 @@ function usePathBeing(text, offset) {
   return m ? m[1] : null;
 }
 
-/** The entry points that mark the top of a project, as `rux run` looks for them. */
-const WORKSPACE_ENTRIES = ['app.rux', 'index.rux'];
-
-/**
- * The directory holding this project's entry point, walking up from `from`.
- *
- * Mirrors `workspace_root` in `rux-runtime`. If the two ever disagree the
- * completion list offers imports that do not resolve, which is the one thing
- * this list must never do.
- */
-function projectRoot(from) {
-  let dir = from;
-  for (;;) {
-    for (const name of WORKSPACE_ENTRIES) {
-      try {
-        if (fs.statSync(path.join(dir, name)).isFile()) return dir;
-      } catch (e) {
-        // not here; keep walking
-      }
-    }
-    const up = path.dirname(dir);
-    if (up === dir) return null;
-    dir = up;
-  }
-}
+// Shared with go-to-definition, which has to agree with this list about where
+// an import points or one of the two is lying about the same line.
+const { projectRoot } = require('./project');
 
 /**
  * The importable names under the path typed so far.
@@ -613,8 +591,20 @@ function importPath(vscode, document, typed) {
       const stem = entry.name.slice(0, -'.rux'.length);
       if (seen.has(stem)) continue;
       seen.add(stem);
-      const item = new vscode.CompletionItem(stem, vscode.CompletionItemKind.Module);
+      // **What is inserted is the snake spelling, whatever the file is called.**
+      // A `use` path is script, and `-` is the subtraction operator: `use
+      // new-task;` reads as `new` minus `task` to a reader and to every other
+      // line in the section. It resolves today only because `use` lines are
+      // lifted out before rhai sees them, which is an accident to lean on rather
+      // than a rule. So a `new-task.rux` is offered as `new_task`, and the
+      // runtime looks for the hyphenated file when the exact one is not there.
+      //
+      // Found by the user 2026-09-15, who had a `new-task.rux` and was handed
+      // `use new-task;` by this list.
+      const asPath = stem.replace(/-/g, '_');
       const tag = stem.replace(/_/g, '-');
+      const item = new vscode.CompletionItem(asPath, vscode.CompletionItemKind.Module);
+      item.insertText = asPath;
       item.detail = base.fromRoot
         ? `component <${tag}>, from the project root`
         : `component <${tag}>`;
@@ -624,12 +614,17 @@ function importPath(vscode, document, typed) {
           `and the runtime looks in both places.`
         : `Imports \`${[...segments, entry.name].join('/')}\`, beside this file.`;
       item.documentation = new vscode.MarkdownString(
-        `${where} Usable as \`<${tag} />\`.\n\n` +
-          (stem.includes('_')
-            ? 'The underscore becomes a hyphen in the tag; that is the runtime\'s rule, not a convention.'
-            : '')
+        `${where} Usable as \`<${tag} />\` or \`<${asPath} />\`.\n\n` +
+          (asPath !== stem
+            ? `The file is \`${entry.name}\`, and the path is written \`${asPath}\`: a ` +
+              '`use` path is script, where `-` is the minus operator. The runtime looks ' +
+              'for the hyphenated file when the underscored one is not there.'
+            : stem.includes('_')
+              ? 'The underscore becomes a hyphen in the tag. A template takes either ' +
+                'spelling; the `use` path has to be the underscored one.'
+              : '')
       );
-      item.sortText = (base.fromRoot ? '2' : '0') + stem;
+      item.sortText = (base.fromRoot ? '2' : '0') + asPath;
       items.push(item);
     }
   }
