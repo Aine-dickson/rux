@@ -35,3 +35,7 @@ rux-fmt.workspace = true
 # `rux vocab` prints the honored-CSS list for the editor's completions, and it
 # has to be *the* list the unhonored-property warning consults, not a copy.
 rux-style.workspace = true
+# For the element list only, and only in a test: `rux vocab` offers the elements
+# and the parser decides what a tag may be, so the two have to be one list. The
+# void-tag list drifted exactly this way once already.
+rux-parser.workspace = true

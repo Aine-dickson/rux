@@ -705,6 +705,80 @@ real design question, and Vue has answered it both ways across two major
 versions. Quietly picking an answer here would change what existing documents
 render, which is not a patch's business.
 
+### Four things a first router app ran into (2026-09-15)
+
+Reported from a tasker app written in the editor: a screenshot of a squiggle
+under `<input>`, one of `Ctrl+/` writing `//` into a template, and the question
+of why `view="new_task"` was accepted when nothing imported it.
+
+| Case | Hardware | Outcome |
+|---|---|---|
+| `<view><input type="text"></view>` | desktop, VS Code + `rux check` | **Failed before the fix.** Parse error, and it named the wrong tag: "mismatched closing tag: expected `</input>`, found `</view>`", against a file whose only mistake was being written the way HTML is |
+| The same after the fix | desktop, `rux check` | Passed: the void tags close themselves, and `<input></input>` now says "`<input>` holds nothing, so it has no closing tag" rather than blaming the enclosing element |
+| `Ctrl+/` in `<template>` | desktop, VS Code | **Failed before the fix, in silence.** Wrote `// <view>`, which is not a comment in markup. In `<style>` it wrote `//`, which is not a comment in CSS either and is dropped by the parser without a word, so a "commented out" rule stayed in force |
+| `Ctrl+/` in each section after the fix | desktop, VS Code | Passed: `<!-- -->` in the template and between sections, `/* */` in the style, `//` in the script |
+| `<route path="/new" view="new_task" />` with no `use` for it | desktop, `rux check` | **Failed before the fix.** Exited 0. The route was not the one being rendered, and only the matched route's view was ever resolved, so the broken page waited for the first navigation to it |
+| The same after the fix | desktop, `rux check` | Passed: an **error** on the `view=`'s own line, said once rather than twice for the route you happen to be standing on |
+| A `to="/typo"` beside a `to="/new"` and a `to="/task/7"` | desktop, `rux check` | Passed: only the typo reported, against `pages/home.rux` and its own line, with the `:id` route matching the concrete path |
+| `view="new_task"` beside its own `use pages::new_task;` | desktop, VS Code | **Failed before the fix, by design.** Accepted the name only in kebab, and told the author to write the other spelling of a name they had already given correctly. Reported as "why am I forced to write new_task as new-task in view=?" |
+| The same after the fix, both spellings, plus `<new_task />` and `<new-task />` | desktop, `rux check` | Passed: either spelling resolves in the template, both file under the one canonical name, and `netask` is still an error |
+| The completion list, against a `new-task.rux` | desktop, VS Code | **Failed before the fix.** Offered the stem verbatim, so it wrote `use new-task;`. That resolves only because `use` lines are lifted out before rhai sees them; one line further down the same text is `new` minus `task`. Reported as "would rust agree with having `-` in any naming" |
+| The same after the fix | desktop, VS Code + `rux check` | Passed: the list inserts `new_task`, `use new_task;` finds `new-task.rux`, and a hyphenated path still resolves but says it reads as subtraction |
+| All 47 files under `examples/` | desktop, `rux check` | Passed with no new findings. The dead-link check found two at first, both in files that link to `/nowhere` **on purpose** to demonstrate `<route fallback>`; running it through the router's own matcher rather than a flattened list of patterns is what fixed that |
+
+**Three of the four were silent, and the fourth pointed at the wrong line.**
+That is the shape worth noticing: none of them was a missing feature. The
+information existed in every case — the void list was already in the formatter,
+the section boundaries were already in the editor's scanner, the imports were
+already in the script — and nothing was asking it at the moment it mattered.
+
+### A component could not use a component (2026-09-15)
+
+Found while testing the fix above, on a copy of the user's own project. Not
+reported by them: their task list was empty, so the symptom read as "no tasks
+yet" rather than as a bug.
+
+| Case | Hardware | Outcome |
+|---|---|---|
+| `components/task.rux` deliberately broken, `app.rux` importing only the pages | desktop, `rux check` | **Failed before the fix, in total silence.** Exit 0. The file was never parsed: `home.rux` imported it and a component's `use` lines were thrown away, so `<task>` matched nothing and expanded to nothing |
+| The same, with `use components::task;` added to `app.rux` | desktop, `rux check` | The breakage appears at once, which is what isolated the cause: the component is only ever loaded through the **document's** imports |
+| `<definitely-not-an-element />` | desktop, `rux check` | **Failed before the fix.** Reported nowhere. This is the silence that hid the one above: a tag was the only name in a template with no way to fail |
+| Both, after the fix | desktop, `rux check` | Passed: a component's imports are followed, and a tag naming nothing is an error that lists Rux's own elements |
+| Two pages, each importing a different `task.rux`, each writing `<task>` | desktop, `rux check` + render | Passed: each renders its own. Under the old flat map the second import replaced the first and one page rendered the other's component |
+| A tag the *document* imports, written inside a component that does not | desktop, `rux check` | Passed: reported. A namespace that leaks is not a namespace |
+| Two files importing each other | desktop, `rux check` | Passed: loads and renders. A worklist, so a cycle is a map lookup rather than a stack overflow |
+| A nested route (`/crew/:id` inside `/crew`) | desktop, `cargo test` | **Caught by the existing suite, not by hand.** Making tags per-file broke it: a route's `view` is named in the file that wrote the `<router>`, and the `<router-view />` placing it is several components deep. Four router tests failed in one run and named the cause |
+| All 47 files under `examples/`, plus all 21 components checked individually | desktop, `rux check` | Passed with no new findings, which is the false-positive measurement the unknown-tag error lives or dies by |
+
+**The silence was load-bearing.** Three separate defects sat on top of one
+missing diagnostic. Nothing reported an unknown tag, so a tag that resolved to
+nothing looked exactly like a tag that resolved to an empty component, which
+looked exactly like an empty list. The fix that matters most here is the
+smallest one.
+
+### An input that could not be typed into, and a border that was not drawn (2026-09-15)
+
+Reported together, from one file: *"I have an issue with my input elements. They
+are uninteractive. Even the css isn't being applied."* Two unrelated defects,
+both silent, and each one made the other harder to see.
+
+| Case | Hardware | Outcome |
+|---|---|---|
+| `<input placeholder="Task title" />`, no `r-model` | desktop, `rux run` | **Failed before the fix, in silence.** The box paints and the placeholder renders, and a tap reaches nothing: the layout makes a focus region only for an input carrying a model, so there is no caret, no keystroke and no value |
+| The same, after the fix | desktop, `rux check` | Passed: an error naming the line and what to write |
+| `input { border-bottom: 0.1rem #00f solid; }` | desktop, `rux run` | **Failed before the fix.** Nothing drawn. The cascade computed `bottom: 1.6`, and paint read `border.top` |
+| `border: 6px solid` (uniform), as the control | desktop, `rux run` | Drawn correctly, which is what isolated the cause: only the uniform case ever worked |
+| `border-top: 6px solid` | desktop, `rux run` | **Failed the other way**: drawn on all four sides |
+| All three after the fix | desktop, `rux run` + screenshot | Passed: bottom-only, four-sided, top-only, each as written |
+| All 47 files under `examples/` | desktop, `rux check` | Passed with no new findings. Every example binds its inputs, and none of them sets an uneven border |
+
+**The cascade was never the problem, which is why it looked like one.** A probe
+printing the computed style showed `border-bottom: 1.6` sitting on the node
+exactly as written, so "the CSS is not applied" was false and the real fault was
+one layer further down, where three of the four sides were dropped on the way
+into `PaintRect`. Reading the computed style is not the same as looking at the
+window, and this is the case that says so.
+
 ## Standing gaps
 
 Cases nothing here can currently exercise. They are the shape of what v0.8 has

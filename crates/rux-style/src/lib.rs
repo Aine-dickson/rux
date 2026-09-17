@@ -112,6 +112,21 @@ fn warn(message: String) {
     });
 }
 
+/// Raise something definitely wrong rather than merely dead, into the same sink.
+///
+/// `rux check` exits non-zero for these, and the dev overlay reds them. The
+/// line is the same [`AT_LINE`] a warning uses, so `located` covers both.
+fn error(message: String) {
+    let file = IN_FILE.with(|c| c.borrow().clone());
+    let raised = Warning::maybe_at(message, AT_LINE.with(|l| l.get())).in_file(file).as_error();
+    WARNINGS.with(|w| {
+        let mut w = w.borrow_mut();
+        if !w.contains(&raised) {
+            w.push(raised);
+        }
+    });
+}
+
 /// Raise a stylesheet warning from outside the cascade.
 ///
 /// The runtime resolves `<style src="…">`, so it is the only layer that can
@@ -871,6 +886,14 @@ struct Outlet<'a> {
     /// view never places a `<router-view />` would otherwise lose the child in
     /// silence, which is the failure this project keeps closing off.
     used: &'a std::cell::Cell<bool>,
+    /// The namespace key of the file that wrote the `<router>`.
+    ///
+    /// A route's `view` is a name in **that** file, and a `<router-view />` is
+    /// usually several components deep by the time it renders the next link. So
+    /// the namespace travels with the chain rather than being whatever file the
+    /// outlet happens to sit in, which is how a nested route came to report its
+    /// own view as "not imported" the moment tags became per-file.
+    router_ns: &'a str,
 }
 
 /// An element's element children, skipping text nodes. Text between tags is
@@ -885,8 +908,84 @@ fn element_children(el: &Element) -> Vec<&Element> {
         .collect()
 }
 
-/// Registered components, keyed by custom-element tag.
+/// Registered components, keyed by whatever the loader made unique per file.
 type Components = HashMap<String, Component>;
+
+/// What one file's markup may name: tag, to the key of the component it means.
+///
+/// Per file rather than per document, because a tag is a **local** name. Two
+/// files may each `use` a different `task.rux` and each write `<task>`, and
+/// before this they shared one flat map, so the second import silently replaced
+/// the first and one of the two files rendered the other's component.
+pub type Namespace = HashMap<String, String>;
+
+/// The namespace of the document itself, which is not a component and so has no
+/// key of its own.
+pub const DOCUMENT_NAMESPACE: &str = "";
+
+thread_local! {
+    /// Every file's namespace, refreshed at the top of each build.
+    static NAMESPACES: std::cell::RefCell<HashMap<String, Namespace>> =
+        std::cell::RefCell::new(HashMap::new());
+
+    /// Whose markup is being built right now: a component's key, or
+    /// [`DOCUMENT_NAMESPACE`].
+    ///
+    /// A thread-local for the same reason `IN_FILE` is one, and with exactly the
+    /// same scope: it changes only at a component boundary, which is one place
+    /// (`expand_component`), while the alternative is a parameter threaded
+    /// through every function in the tree walk that has no other reason to know
+    /// what a file is.
+    static CURRENT_FILE: std::cell::RefCell<String> =
+        const { std::cell::RefCell::new(String::new()) };
+}
+
+/// Build `f` as though its markup were written in the file keyed `key`.
+///
+/// Restores whatever was current before rather than clearing, so nesting
+/// unwinds: a component that uses a component returns to its own namespace and
+/// not to the document's.
+fn in_namespace<T>(key: &str, f: impl FnOnce() -> T) -> T {
+    let previous = CURRENT_FILE.with(|c| c.replace(key.to_string()));
+    let out = f();
+    CURRENT_FILE.with(|c| *c.borrow_mut() = previous);
+    out
+}
+
+/// Look a component up by either spelling, and say which one it really is.
+///
+/// One component has two names and the author did not choose either of them.
+/// `use pages::new_task;` **has** to be snake: it is a Rust-shaped path naming
+/// `pages/new_task.rux`, and `new-task` there is a subtraction. The tag it
+/// contributes **has** to be kebab: that is what a custom element looks like
+/// everywhere else on the web. So the underscore and the hyphen are both
+/// forced, at opposite ends of the same file, and the author is left holding
+/// the difference — which showed up as `view="new_task"` being told to go and
+/// write the other spelling of a name it had already given correctly.
+///
+/// So the template accepts either, and the script stays strict. Nothing is
+/// ambiguous: `extract_imports` maps `_` to `-`, so no import can ever produce
+/// a tag with an underscore in it, and the two spellings can never name two
+/// different components.
+///
+/// The returned name is the **canonical** one, the key the component is
+/// registered under. Everything an instance owns is filed by that name — its
+/// `mounted` body, its `computed`s, its `effect`s — so handing back what the
+/// author typed would give one component two identities and split its state
+/// down the middle of a file.
+/// Looked up in the namespace of the file being built, not in one flat map, so
+/// the same tag may mean different components in two files.
+fn find_component<'a>(comps: &'a Components, name: &str) -> Option<(&'a str, &'a Component)> {
+    let kebab = name.replace('_', "-");
+    let key = NAMESPACES.with(|all| {
+        let all = all.borrow();
+        CURRENT_FILE.with(|here| {
+            let namespace = all.get(&*here.borrow())?;
+            namespace.get(name).or_else(|| namespace.get(&kebab)).cloned()
+        })
+    })?;
+    comps.get_key_value(&key).map(|(key, component)| (key.as_str(), component))
+}
 
 /// Default inherited text colour (`#cdd6f4`) and font size, used at the root
 /// before any `color` / `font-size` rule applies. Text properties inherit.
@@ -1069,11 +1168,12 @@ impl Toggle {
 pub fn build_styled_tree(
     sfc: &Sfc,
     components: &HashMap<String, Sfc>,
+    namespaces: &HashMap<String, Namespace>,
     engine: &mut Engine,
 ) -> Result<LayoutNode, String> {
     let mut instances = Instances::new();
     let mut swaps = Swaps::new();
-    build_styled_tree_tracked(sfc, components, engine, &mut instances, &mut swaps)
+    build_styled_tree_tracked(sfc, components, namespaces, engine, &mut instances, &mut swaps)
         .map(|(node, _)| node)
 }
 
@@ -1280,6 +1380,7 @@ pub fn eval_value_binding(binding: &ValueBinding, engine: &mut Engine) -> (Strin
 pub fn build_styled_tree_tracked(
     sfc: &Sfc,
     components: &HashMap<String, Sfc>,
+    namespaces: &HashMap<String, Namespace>,
     engine: &mut Engine,
     instances: &mut Instances,
     swaps: &mut Swaps,
@@ -1287,6 +1388,7 @@ pub fn build_styled_tree_tracked(
     build_styled_tree_stateful(
         sfc,
         components,
+        namespaces,
         engine,
         instances,
         swaps,
@@ -1302,6 +1404,9 @@ pub fn build_styled_tree_tracked(
 pub fn build_styled_tree_stateful(
     sfc: &Sfc,
     components: &HashMap<String, Sfc>,
+    // Which tags each file may write. See [`Namespace`]: a tag is a local name,
+    // and two files may use the same one for different components.
+    namespaces: &HashMap<String, Namespace>,
     engine: &mut Engine,
     instances: &mut Instances,
     swaps: &mut Swaps,
@@ -1315,6 +1420,17 @@ pub fn build_styled_tree_stateful(
     // would point confidently at the wrong place. Unplaced is the honest answer
     // until warnings carry a file as well as a line.
     let rules = parse_document_rules(sfc, viewport);
+
+    // What a `to=` is checked against. Refreshed per build rather than per load
+    // because hot reload rewrites the routes as readily as anything else, and a
+    // stale table would report a link to a route that now exists.
+    ROUTER.with(|r| *r.borrow_mut() = find_router(&sfc.template).cloned());
+
+    // Whose tags are whose, for the length of this build. The walk starts in the
+    // document's own namespace and `expand_component` switches into each
+    // component's as it enters one.
+    NAMESPACES.with(|n| *n.borrow_mut() = namespaces.clone());
+    CURRENT_FILE.with(|c| *c.borrow_mut() = DOCUMENT_NAMESPACE.to_string());
 
     // The document's stylesheet reaches the components it uses. Before this, a
     // component saw only its own `<style>`, so a shared look had to be
@@ -3065,16 +3181,42 @@ fn build_node_inner(
     // inherit the visual effect through the cascade, not through this.
     swap: Option<SwapSide>,
 ) -> LayoutNode {
-    // A custom-element tag expands its imported component in place.
-    if let Some(component) = comps.get(&el.tag) {
+    // A tag that is neither one of Rux's own elements nor anything this file
+    // imported can never render anything, so it is an error and not a warning.
+    //
+    // It was silent until 2026-09-15, and that silence is what hid a larger bug
+    // for the whole of v0.7: a component's `use` lines were thrown away, so a
+    // tag inside a component matched nothing, expanded to nothing, and left an
+    // empty screen to be read as an empty list. A tag is the one name in a
+    // template with no other way to fail.
+    if !rux_parser::is_element(&el.tag) && find_component(comps, &el.tag).is_none() {
+        located(Some(el.line), || {
+            error(format!(
+                "there is no element or component called `<{}>`. Rux's own elements are {}; \
+                 anything else is a component, and needs a `use` for it in this file's \
+                 <script>",
+                el.tag,
+                rux_parser::element_tags()
+                    .iter()
+                    .map(|t| format!("<{t}>"))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            ))
+        });
+    }
+    // A custom-element tag expands its imported component in place. Written
+    // either way round: `<new-task>` and `<new_task>` are the same component,
+    // see `find_component`.
+    if let Some((tag, component)) = find_component(comps, &el.tag) {
         return expand_component(
             el, component, comps, ancestors, inherited, engine, locals, path, tpl_path, reg, state, rules,
             instances, swaps, instance, row, &Locals::new(), None,
             // An ordinary component tag is not a route view, so a
             // `<router-view />` inside it has no chain and says so.
             None,
-            // Here the element *is* the component tag.
-            &el.tag,
+            // Here the element *is* the component tag, under the name it is
+            // registered by rather than the one this line happens to spell.
+            tag,
             // A component tag carrying `r-if` and `r-transition` swaps like any
             // other element; the side lands on the component's root.
             swap,
@@ -3114,6 +3256,13 @@ fn build_node_inner(
     // Where this element links to, if anywhere. `:to` is the computed form, which
     // is what a list of rows needs: every row links somewhere different, and the
     // path is built from the row's own data.
+    // A written-out `to` names a path the router is supposed to know, so it is
+    // answerable here. `:to` is not: it is built from a row's own data and a
+    // path that exists for row 3 and not for row 4 is a data problem, not a
+    // markup one.
+    if let Some(written) = el.attr("to") {
+        located(el.attr_line("to"), || warn_if_no_such_route(written));
+    }
     let to = el.attr("to").map(str::to_string).or_else(|| {
         let expr = el.attr(":to")?;
         let (value, deps) = engine.eval_value_tracked(expr, locals);
@@ -3526,6 +3675,29 @@ fn build_node_inner(
     if el.tag == "input" {
         let mut style = style;
         let multiline = el.attr("type") == Some("textarea");
+        // An input with nothing bound to it is inert, and was inert in silence.
+        //
+        // `r-model` is not decoration: it is the whole of an input's identity.
+        // The layout only makes a focus region for an input that has one
+        // (`if let Some(model) = &node.model` in `rux-layout`), the shell tracks
+        // focus by the model text, and the value the field shows is read back
+        // out of that signal. Without one the box paints, the placeholder
+        // renders, and a tap reaches nothing: no caret, no keystrokes, no value.
+        //
+        // Reported 2026-09-15 as "my input elements are uninteractive", against
+        // two `<input placeholder="…" />` with no binding. Nothing in the file
+        // was wrong to look at, and nothing anywhere said what was missing.
+        if el.attr("r-model").is_none() {
+            located(Some(el.line), || {
+                error(
+                    "this `<input>` has no `r-model`, so nothing can be typed into it: the \
+                     caret, the keystrokes and the value it shows are all addressed by the \
+                     signal it binds. Write `r-model=\"name\"` and declare `let name = \
+                     signal(\"\")` in <script>"
+                        .to_string(),
+                )
+            });
+        }
         // Inputs are form controls: they fill their slot rather than hug their
         // text (else the box would shrink as you type). A single line clips; a
         // textarea scrolls, so text past the bottom stays reachable.
@@ -3871,7 +4043,11 @@ fn expand_component(
     // Slot content is the caller's too, but it is built through this subtree,
     // so it is attributed to the component. That is a smaller error than the
     // one being fixed and closing it needs a position on the slot's nodes.
+    // And from here down the *tags* are the component's too: `<task>` inside it
+    // means whatever its own `use` says, which is not necessarily what the same
+    // word means in the file that called it.
     in_file(component.file.clone(), || {
+        in_namespace(comp_tag, || {
         build_node(
             &component.template,
             &component.rules,
@@ -3896,6 +4072,7 @@ fn expand_component(
             row,
             swap,
         )
+        })
     })
 }
 
@@ -3947,6 +4124,95 @@ struct Link<'a> {
 /// The `<route>` children of a `<route>` or a `<router>`, in written order.
 fn child_routes(el: &Element) -> Vec<&Element> {
     element_children(el).into_iter().filter(|r| r.tag == "route").collect()
+}
+
+/// Say that `view` names nothing this document imported.
+///
+/// An error rather than a warning: a route whose view is not imported can never
+/// render anything, which is the definition [`error`] carries. It used to be a
+/// warning that only the matched route raised, so `rux check` exited 0 on a
+/// document with a page in it that was already unreachable.
+///
+/// The suggested import is spelled in **snake**, always. A `use` path names a
+/// file, `page-a` is not a path segment anyone can write, and pasting
+/// `use components::page-a;` turns a report into a hard error looking for a
+/// `page-a.rux` that no convention here would ever produce.
+///
+/// There used to be a second message here, for a `view` written in the import's
+/// own spelling: it said "a view is named the way its tag is, write
+/// `view=\"page-a\"`". That message is gone because the case it described is
+/// no longer a mistake — see [`find_component`], which takes either spelling.
+fn report_view_not_imported(view: &str) {
+    error(format!(
+        "<route> names the view `{view}`, which is not imported; add \
+         `use components::{file};` to the script",
+        file = view.replace('-', "_")
+    ));
+}
+
+thread_local! {
+    /// The document's `<router>`, cloned at the top of each build.
+    ///
+    /// Held here rather than passed down because a `to=` is read where an
+    /// element is described, which is nowhere near the `<router>` and has no
+    /// reason to know a document has one. `None` means no router in this
+    /// document, which is the honest answer for a component being checked on
+    /// its own and the reason [`warn_if_no_such_route`] says nothing then.
+    ///
+    /// The subtree itself rather than a list of patterns, so the check runs
+    /// through [`match_router`] and cannot disagree with the router about what
+    /// a path reaches. The first draft compared against a flattened list and
+    /// called every link in `examples/router.rux` dead, because a list of
+    /// patterns has no idea what `<route fallback>` is.
+    static ROUTER: std::cell::RefCell<Option<Element>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Say that `to` names a path this document's router does not reach.
+///
+/// A dead link is silent by construction: tapping it navigates, the router
+/// matches nothing, and the page goes blank with no more explanation than an
+/// empty screen. The address is written in the markup and so are the routes, so
+/// the two can be compared before anyone taps.
+///
+/// A query or fragment is cut off first: `to="/search?q=rust"` is a link to
+/// `/search`, and the router has never matched on anything past the `?`.
+fn warn_if_no_such_route(to: &str) {
+    let path = to.split(['?', '#']).next().unwrap_or(to);
+    let reachable = ROUTER.with(|r| match r.borrow().as_ref() {
+        Some(router) => match_router(router, path).is_some(),
+        // Nothing to check against. A component holds links and no router of
+        // its own, and reporting every one of them would be a check nobody
+        // could leave switched on.
+        None => true,
+    });
+    if !reachable {
+        warn(format!(
+            "`to=\"{to}\"` matches no <route> in this document, so tapping it would leave \
+             the router with nothing to render"
+        ));
+    }
+}
+
+/// Check the `view` of every route in a router, not only the one that matched.
+///
+/// A route is expanded when its path is the one you are on, so until this
+/// existed a `view` naming nothing was silent on every page but its own: the
+/// document loaded, `rux check` called it clean, and the mistake surfaced the
+/// first time somebody navigated there. Whether a name is imported is a fact
+/// about the file rather than about where you are standing in it, so it is
+/// answerable at load, and is answered here.
+///
+/// A route with no `view` at all is left alone: its children are what render,
+/// and a leaf without one already has a message of its own in `expand_chain`.
+fn check_route_views(routes: &[&Element], comps: &Components) {
+    for route in routes {
+        if let Some(view) = route.attr("view") {
+            if !view.trim().is_empty() && find_component(comps, view).is_none() {
+                located(route.attr_line("view"), || report_view_not_imported(view));
+            }
+        }
+        check_route_views(&child_routes(route), comps);
+    }
 }
 
 /// Match one level of routes against `rest`, and every level below it.
@@ -4071,6 +4337,8 @@ fn chain_params(chain: &[Link]) -> Locals {
 #[allow(clippy::too_many_arguments)]
 fn expand_chain(
     chain: &[Link],
+    // See `Outlet::router_ns`.
+    router_ns: &str,
     params: &Locals,
     current: &str,
     comps: &Components,
@@ -4098,26 +4366,14 @@ fn expand_chain(
         ));
         return None;
     };
-    let Some(component) = comps.get(view) else {
-        // A view is named the way its tag is, in kebab, while the `use` that
-        // brings it in names the file, in snake. Saying "not imported" to
-        // someone who wrote the snake form sends them to add a line their
-        // script already has, and the import spelled with the view's own
-        // hyphens is not a name at all: pasting it looks for `page-a.rux`.
-        let as_tag = view.replace('_', "-");
-        if as_tag != view && comps.get(&as_tag).is_some() {
-            warn(format!(
-                "<route> names the view `{view}`, but a view is named the way its tag is: \
-                 write `view=\"{as_tag}\"`. The `use components::{view};` already in the \
-                 script is what imports it"
-            ));
-        } else {
-            warn(format!(
-                "<route> names the view `{view}`, which is not imported; add \
-                 `use components::{file};` to the script",
-                file = view.replace('-', "_")
-            ));
-        }
+    // Either spelling; `view` is what the author wrote and `name` is what the
+    // component is registered as. See `find_component`.
+    let Some((name, component)) = in_namespace(router_ns, || find_component(comps, view)) else {
+        // Reported against the `view=` it was written on, which is also what
+        // lets this share a message with the load-time pass over every route:
+        // warnings dedupe by message, line and file, so the route you happen to
+        // be standing on is not reported twice.
+        located(link.route.attr_line("view"), || report_view_not_imported(view));
         return None;
     };
     // Identity is where the route sits in the template, one step per level, so
@@ -4128,14 +4384,14 @@ fn expand_chain(
 
     let rest = &chain[1..];
     let used = std::cell::Cell::new(false);
-    let outlet = Outlet { rest, params, current, router_tpl: &tpl, used: &used };
+    let outlet = Outlet { rest, params, current, router_tpl: &tpl, used: &used, router_ns };
 
     // The `<route>` element stands in for the component tag, so any `:prop`
     // written on it is passed through as well, and the captured parameters of
     // the *whole* chain join them.
     let node = expand_component(
         link.route, component, comps, caller_ancestors, inherited, engine, locals, path, &tpl, reg, state, rules,
-        instances, swaps, instance, row, params, Some(current), Some(outlet), view, swap,
+        instances, swaps, instance, row, params, Some(current), Some(outlet), name, swap,
     );
 
     // A route with children whose view never places an outlet would drop that
@@ -4555,7 +4811,7 @@ fn build_children(
                         o.used.set(true);
                         let cp = child_path(&out);
                         if let Some(node) = expand_chain(
-                            o.rest, o.params, o.current, comps, ancestors, inherited, engine, locals, &cp,
+                            o.rest, o.router_ns, o.params, o.current, comps, ancestors, inherited, engine, locals, &cp,
                             o.router_tpl, reg, state, rules, instances, swaps, instance, row,
                             // A nested outlet is not itself a swap; the swap, if
                             // any, belongs to the `<router>` that chose the chain.
@@ -4592,6 +4848,14 @@ fn build_children(
             let current = value.map(|v| v.to_display()).unwrap_or_default();
 
             let routes = element_children(el);
+            // Whose file this `<router>` is written in. A route's `view` is a
+            // name in that file, and by the time a nested link renders, the
+            // `<router-view />` placing it is several components deep in files
+            // that have never heard of it. See `Outlet::router_ns`.
+            let router_ns = CURRENT_FILE.with(|c| c.borrow().clone());
+            // Every route's `view`, not just the matched one's: see
+            // `check_route_views`.
+            check_route_views(&child_routes(el), comps);
             for r in &routes {
                 if r.tag != "route" {
                     warn(format!(
@@ -4643,7 +4907,7 @@ fn build_children(
                     let params = chain_params(&chain);
                     let cp = child_path(&out);
                     if let Some(mut node) = expand_chain(
-                        &chain, &params, &old_path, comps, ancestors, inherited, engine, locals, &cp, &ctp,
+                        &chain, &router_ns, &params, &old_path, comps, ancestors, inherited, engine, locals, &cp, &ctp,
                         reg, state, rules, instances, swaps, instance, row, side,
                     ) {
                         arm_swap(swaps, &key, &mut node, anim, engine, locals, &mut structural_deps);
@@ -4671,7 +4935,7 @@ fn build_children(
                         None
                     };
                     if let Some(mut node) = expand_chain(
-                        &chain, &params, &current, comps, ancestors, inherited, engine, locals, &cp, &ctp,
+                        &chain, &router_ns, &params, &current, comps, ancestors, inherited, engine, locals, &cp, &ctp,
                         reg, state, rules, instances, swaps, instance, row, side,
                     ) {
                         if anim.is_some() {
@@ -6207,6 +6471,18 @@ fn parse_hex(hex: &str) -> Option<Rgba> {
 #[cfg(test)]
 mod tests {
     use super::{build_styled_tree, build_styled_tree_tracked, interpolate_tracked, interpret, Len, Locals};
+
+    /// A namespace for a test registry keyed by tag.
+    ///
+    /// The real loader keys components by file and gives each file its own
+    /// namespace; a test that writes one map by hand wants the flat thing that
+    /// used to exist, which is every tag visible to the document under its own
+    /// name.
+    fn flat(components: &HashMap<String, crate::Sfc>) -> HashMap<String, super::Namespace> {
+        let namespace: super::Namespace =
+            components.keys().map(|tag| (tag.clone(), tag.clone())).collect();
+        HashMap::from([(super::DOCUMENT_NAMESPACE.to_string(), namespace)])
+    }
     use rux_script::{Builder, Engine};
     use std::collections::HashMap;
 
@@ -6373,7 +6649,7 @@ mod tests {
         let src = "<template><screen>                     <view @drag=\"a()\" @press=\"b()\" @longpress=\"c()\" />                   </screen></template>";
         let sfc = rux_parser::parse_sfc(src).expect("parses");
         let mut engine = Builder::new().build("").expect("engine");
-        let tree = build_styled_tree(&sfc, &HashMap::new(), &mut engine).expect("builds");
+        let tree = build_styled_tree(&sfc, &HashMap::new(), &HashMap::new(), &mut engine).expect("builds");
         let node = &tree.children[0];
         let kinds: Vec<Gesture> = node.gestures.iter().map(|(g, _)| *g).collect();
         assert_eq!(
@@ -6395,7 +6671,7 @@ mod tests {
         let mut engine = Builder::new().build("").expect("engine");
 
         let _ = super::take_warnings(); // start from a clean sink
-        let _ = build_styled_tree(&sfc, &HashMap::new(), &mut engine).expect("builds");
+        let _ = build_styled_tree(&sfc, &HashMap::new(), &HashMap::new(), &mut engine).expect("builds");
         let warnings = super::take_warnings();
 
         let line_for = |needle: &str| {
@@ -6444,7 +6720,7 @@ mod tests {
         let mut engine = Builder::new().build("").expect("engine");
 
         let _ = super::take_warnings();
-        let _ = build_styled_tree(&sfc, &HashMap::new(), &mut engine).expect("builds");
+        let _ = build_styled_tree(&sfc, &HashMap::new(), &HashMap::new(), &mut engine).expect("builds");
         let warnings = super::take_warnings();
 
         let line_for = |needle: &str| {
@@ -6483,7 +6759,7 @@ mod tests {
         let mut engine = Builder::new().build("").expect("engine");
 
         let _ = super::take_warnings();
-        let _ = build_styled_tree(&main, &components, &mut engine).expect("builds");
+        let _ = build_styled_tree(&main, &components, &flat(&components), &mut engine).expect("builds");
         let warnings = super::take_warnings();
 
         let float = warnings
@@ -6500,7 +6776,7 @@ mod tests {
         let mut components = HashMap::new();
         components.insert("chip".to_string(), component);
         let mut engine = Builder::new().build("").expect("engine");
-        let root = build_styled_tree(&main, &components, &mut engine).expect("builds");
+        let root = build_styled_tree(&main, &components, &flat(&components), &mut engine).expect("builds");
         // <screen> -> the expanded component's root.
         root.children.into_iter().next().expect("the component rendered")
     }
@@ -6826,7 +7102,7 @@ mod tests {
         let mut engine = Builder::new().build(&sfc.script).unwrap();
         let mut instances = super::Instances::new();
         let (_root, reg) =
-            build_styled_tree_tracked(&sfc, &HashMap::new(), &mut engine, &mut instances, &mut crate::Swaps::new()).unwrap();
+            build_styled_tree_tracked(&sfc, &HashMap::new(), &HashMap::new(), &mut engine, &mut instances, &mut crate::Swaps::new()).unwrap();
 
         assert_eq!(reg.structural_parents.len(), 1, "the screen is the one structural parent");
         let sp = &reg.structural_parents[0];
@@ -6929,7 +7205,7 @@ mod tests {
         let src = r#"<template><screen><image src="assets/logo.png" /></screen></template>"#;
         let sfc = rux_parser::parse_sfc(src).unwrap();
         let mut e = Builder::new().build("").unwrap();
-        let root = build_styled_tree(&sfc, &HashMap::new(), &mut e).unwrap();
+        let root = build_styled_tree(&sfc, &HashMap::new(), &HashMap::new(), &mut e).unwrap();
         let img = root.children[0].image.as_ref().expect("image node");
         assert_eq!(img.src, "assets/logo.png");
     }
@@ -6962,7 +7238,7 @@ mod tests {
         "#;
         let sfc = rux_parser::parse_sfc(src).unwrap();
         let mut engine = Builder::new().build(&sfc.script).unwrap();
-        let root = build_styled_tree(&sfc, &HashMap::new(), &mut engine).unwrap();
+        let root = build_styled_tree(&sfc, &HashMap::new(), &HashMap::new(), &mut engine).unwrap();
 
         // 3 views from r-for + exactly one branch (level=10 → the r-elif "mid").
         assert_eq!(root.children.len(), 4);
@@ -6984,7 +7260,7 @@ mod tests {
         "#;
         let sfc = rux_parser::parse_sfc(src).unwrap();
         let mut engine = Builder::new().build(&sfc.script).unwrap();
-        let root = build_styled_tree(&sfc, &HashMap::new(), &mut engine).unwrap();
+        let root = build_styled_tree(&sfc, &HashMap::new(), &HashMap::new(), &mut engine).unwrap();
 
         // The second row's handler must carry its own loop value baked in, not a
         // bare `item` that resolves to nothing when it runs in global scope.
@@ -7011,7 +7287,7 @@ mod tests {
         let sfc = rux_parser::parse_sfc(src).unwrap();
         let mut engine = Builder::new().build(&sfc.script).unwrap();
 
-        let root = build_styled_tree(&sfc, &HashMap::new(), &mut engine).unwrap();
+        let root = build_styled_tree(&sfc, &HashMap::new(), &HashMap::new(), &mut engine).unwrap();
         let input = &root.children[0];
         assert_eq!(input.model.as_deref(), Some("name"), "r-model bound");
         // Empty signal → the placeholder is shown.
@@ -7019,7 +7295,7 @@ mod tests {
 
         // Simulate the shell editing the focused input, then rebuild.
         engine.set_string("name", "Cam");
-        let root = build_styled_tree(&sfc, &HashMap::new(), &mut engine).unwrap();
+        let root = build_styled_tree(&sfc, &HashMap::new(), &HashMap::new(), &mut engine).unwrap();
         let input = &root.children[0];
         assert_eq!(input.children[0].text.as_ref().unwrap().text, "Cam");
     }
@@ -7037,7 +7313,7 @@ mod tests {
                      </script>"#;
         let sfc = rux_parser::parse_sfc(src).unwrap();
         let mut engine = Builder::new().build(&sfc.script).unwrap();
-        let root = build_styled_tree(&sfc, &HashMap::new(), &mut engine).unwrap();
+        let root = build_styled_tree(&sfc, &HashMap::new(), &HashMap::new(), &mut engine).unwrap();
 
         // The select evaluates :options to strings and shows the bound value.
         let select = &root.children[0];
@@ -7075,7 +7351,7 @@ mod tests {
         components.insert("stat".to_string(), stat);
 
         let mut engine = Builder::new().build(&main.script).unwrap();
-        let root = build_styled_tree(&main, &components, &mut engine).unwrap();
+        let root = build_styled_tree(&main, &components, &flat(&components), &mut engine).unwrap();
 
         // screen → (expanded stat) view → text "Battery: 82"
         let view = &root.children[0];
@@ -7128,7 +7404,7 @@ mod tests {
     fn built(src: &str) -> rux_layout::Node {
         let sfc = rux_parser::parse_sfc(src).unwrap();
         let mut engine = Builder::new().build(&sfc.script).unwrap();
-        build_styled_tree(&sfc, &HashMap::new(), &mut engine).unwrap()
+        build_styled_tree(&sfc, &HashMap::new(), &HashMap::new(), &mut engine).unwrap()
     }
 
     /// Every control gets a role a screen reader can announce, derived from what
@@ -7294,6 +7570,7 @@ mod tests {
         let root = super::build_styled_tree_stateful(
             &sfc,
             &HashMap::new(),
+            &HashMap::new(),
             &mut engine,
             &mut instances,
             &mut crate::Swaps::new(),
@@ -7398,7 +7675,7 @@ mod tests {
     fn bg_at(src: &str, path: &[usize]) -> Option<Background> {
         let sfc = rux_parser::parse_sfc(src).unwrap();
         let mut engine = Builder::new().build(&sfc.script).unwrap();
-        let root = build_styled_tree(&sfc, &HashMap::new(), &mut engine).unwrap();
+        let root = build_styled_tree(&sfc, &HashMap::new(), &HashMap::new(), &mut engine).unwrap();
         let mut node = &root;
         for i in path {
             node = &node.children[*i];
@@ -7650,7 +7927,7 @@ mod tests {
         "#;
         let sfc = rux_parser::parse_sfc(src).unwrap();
         let mut engine = Builder::new().build(&sfc.script).unwrap();
-        let root = build_styled_tree(&sfc, &HashMap::new(), &mut engine).unwrap();
+        let root = build_styled_tree(&sfc, &HashMap::new(), &HashMap::new(), &mut engine).unwrap();
 
         let green = |n: &rux_layout::Node| {
             matches!(&n.style.background, Some(rux_layout::Background::Color(c)) if c.g == 1.0)
@@ -7705,7 +7982,7 @@ mod tests {
         "#;
         let sfc = rux_parser::parse_sfc(src).unwrap();
         let mut engine = Builder::new().build("").unwrap();
-        let root = build_styled_tree(&sfc, &HashMap::new(), &mut engine).unwrap();
+        let root = build_styled_tree(&sfc, &HashMap::new(), &HashMap::new(), &mut engine).unwrap();
 
         let direct = root.children[0].text.as_ref().unwrap();
         let nested = root.children[1].children[0].text.as_ref().unwrap();
@@ -7773,7 +8050,7 @@ mod tests {
         let mut engine = Builder::new().build(&sfc.script).unwrap();
         let mut instances = super::Instances::new();
         let (_, reg) =
-            super::build_styled_tree_tracked(&sfc, &HashMap::new(), &mut engine, &mut instances, &mut crate::Swaps::new())
+            super::build_styled_tree_tracked(&sfc, &HashMap::new(), &HashMap::new(), &mut engine, &mut instances, &mut crate::Swaps::new())
                 .unwrap();
         reg.elements
     }

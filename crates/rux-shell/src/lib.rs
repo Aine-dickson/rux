@@ -46,7 +46,8 @@ use std::rc::Rc;
 use notify::{EventKind, RecursiveMode, Watcher};
 use rux_layout::{
     Background, Cursor, FocusItem, FocusKind, FocusRegion, HitRegion,
-    Offset, Paint, PaintRect, PaintText, Rgba, ScrollRegion, SelectRegion, StateRegion, TextAlign,
+    Offset, Paint, PaintRect, PaintText, Rgba, ScrollRegion, SelectRegion, Sides, StateRegion,
+    TextAlign,
     TextContent, TextWrap,
 };
 use rux_runtime::{Document, Focus, InteractionState, Viewport};
@@ -437,7 +438,7 @@ fn scrollbar_paints(scrolls: &[ScrollRegion], offsets: &[Offset], alpha: f32) ->
                 height: th,
                 background: Some(Background::Color(track_bg)),
                 radius: [BAR_W / 2.0; 4],
-                border_width: 0.0,
+                border: Sides::ZERO,
                 border_color: None,
             }));
             out.push(Paint::Rect(PaintRect {
@@ -447,7 +448,7 @@ fn scrollbar_paints(scrolls: &[ScrollRegion], offsets: &[Offset], alpha: f32) ->
                 height: thh,
                 background: Some(Background::Color(thumb_bg)),
                 radius: [BAR_W / 2.0; 4],
-                border_width: 0.0,
+                border: Sides::ZERO,
                 border_color: None,
             }));
         }
@@ -471,7 +472,7 @@ fn focus_ring(item: &FocusItem, within: Option<&ScrollRegion>, alpha: f32) -> Ve
         height: item.height + 4.0,
         background: None,
         radius: [7.0; 4],
-        border_width: 2.0,
+        border: Sides::uniform(2.0),
         border_color: Some(Rgba::new(0.54, 0.71, 0.98, alpha)), // #89b4fa
     });
     let Some(r) = within else { return vec![ring] };
@@ -515,7 +516,7 @@ fn toolbar_paints(field: (f32, f32, f32, f32), viewport: (f32, f32)) -> Vec<Pain
         height: h,
         background: Some(Background::Color(panel_bg)),
         radius: [8.0; 4],
-        border_width: 1.0,
+        border: Sides::uniform(1.0),
         border_color: Some(border),
     }));
 
@@ -530,7 +531,7 @@ fn toolbar_paints(field: (f32, f32, f32, f32), viewport: (f32, f32)) -> Vec<Pain
                 height: bh - 14.0,
                 background: Some(Background::Color(divider)),
                 radius: [0.0; 4],
-                border_width: 0.0,
+                border: Sides::ZERO,
                 border_color: None,
             }));
         }
@@ -576,7 +577,7 @@ fn dropdown_paints(sel: &SelectRegion, value: &str) -> Vec<Paint> {
         height: ph,
         background: Some(Background::Color(panel_bg)),
         radius: [8.0; 4],
-        border_width: 1.0,
+        border: Sides::uniform(1.0),
         border_color: Some(border),
     }));
 
@@ -591,7 +592,7 @@ fn dropdown_paints(sel: &SelectRegion, value: &str) -> Vec<Paint> {
                 height: DROPDOWN_ROW_H - 6.0,
                 background: Some(Background::Color(selected)),
                 radius: [5.0; 4],
-                border_width: 0.0,
+                border: Sides::ZERO,
                 border_color: None,
             }));
         } else if i > 0 {
@@ -603,7 +604,7 @@ fn dropdown_paints(sel: &SelectRegion, value: &str) -> Vec<Paint> {
                 height: 1.0,
                 background: Some(Background::Color(border)),
                 radius: [0.0; 4],
-                border_width: 0.0,
+                border: Sides::ZERO,
                 border_color: None,
             }));
         }
@@ -792,8 +793,17 @@ fn overlay_paints(diag: &rux_runtime::Diagnostics, path: &Path, width: f32) -> O
     let print_edge = Rgba::new(0.53, 0.71, 0.98, 1.0); // #89b4fa-ish
     let print_ink = Rgba::new(0.72, 0.82, 0.99, 1.0);
 
-    let is_error = diag.error.is_some();
-    let (bg, edge) = if is_error {
+    let failed_to_load = diag.error.is_some();
+    // The sink carries a level per entry, and the overlay used to read only
+    // `diag.error`, which is the *load* failing. So a finding the runtime calls
+    // an error — a route naming a view nothing imported, a tag naming nothing —
+    // was counted and coloured here as a warning, while `rux check` and the
+    // editor's squiggle called the same line an error. One finding, two
+    // verdicts, depending on which window you were looking at. Reported
+    // 2026-09-15 from exactly that pair of screenshots.
+    let errors = diag.warnings.iter().filter(|w| w.is_error()).count();
+    let warnings = diag.warnings.len() - errors;
+    let (bg, edge) = if failed_to_load || errors > 0 {
         (error_bg, error_edge)
     } else if diag.warnings.is_empty() {
         (print_bg, print_edge)
@@ -837,7 +847,7 @@ fn overlay_paints(diag: &rux_runtime::Diagnostics, path: &Path, width: f32) -> O
         lines.extend(
             wrap_overlay(&text, text_w)
                 .into_iter()
-                .map(|l| (l, if is_error { muted } else { ink })),
+                .map(|l| (l, if failed_to_load { muted } else { ink })),
         );
     }
     if diag.warnings.len() > shown {
@@ -865,12 +875,24 @@ fn overlay_paints(diag: &rux_runtime::Diagnostics, path: &Path, width: f32) -> O
         ));
     }
 
-    let title = match (&diag.error, diag.warnings.len(), diag.prints.len()) {
-        (Some(_), 0, _) => format!("rux: {} failed to load", file_name(path)),
-        (Some(_), n, _) => format!("rux: {} failed to load  ·  {n} warning(s)", file_name(path)),
-        (None, 0, p) => format!("rux: {p} printed from {}", file_name(path)),
-        (None, n, 0) => format!("rux: {n} warning(s) in {}", file_name(path)),
-        (None, n, p) => format!("rux: {n} warning(s), {p} printed in {}", file_name(path)),
+    // Errors and warnings are counted apart, so the panel agrees with what
+    // `rux check` prints and with what the editor draws. "1 warning(s)" over a
+    // finding the checker calls an error is the whole reason this is a match on
+    // two numbers rather than one.
+    let counted = match (errors, warnings) {
+        (0, 0) => String::new(),
+        (0, n) => format!("{n} warning(s)"),
+        (n, 0) => format!("{n} error(s)"),
+        (e, w) => format!("{e} error(s), {w} warning(s)"),
+    };
+    let title = match (&diag.error, counted.is_empty(), diag.prints.len()) {
+        (Some(_), true, _) => format!("rux: {} failed to load", file_name(path)),
+        (Some(_), false, _) => {
+            format!("rux: {} failed to load  ·  {counted}", file_name(path))
+        }
+        (None, true, p) => format!("rux: {p} printed from {}", file_name(path)),
+        (None, false, 0) => format!("rux: {counted} in {}", file_name(path)),
+        (None, false, p) => format!("rux: {counted}, {p} printed in {}", file_name(path)),
     };
     // The panel covers the app it is describing, and there was no way to move it
     // out of the way. It says so rather than leaving the gesture to be guessed
@@ -898,7 +920,7 @@ fn overlay_paints(diag: &rux_runtime::Diagnostics, path: &Path, width: f32) -> O
         height: panel_h,
         background: Some(Background::Color(bg)),
         radius: [10.0; 4],
-        border_width: 2.0,
+        border: Sides::uniform(2.0),
         border_color: Some(edge),
     }));
     out.push(Paint::Text(PaintText {

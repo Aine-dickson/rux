@@ -159,7 +159,7 @@ const ELEMENT_ATTRIBUTES: &[(&str, &[Entry])] = &[
         "route",
         &[
             Entry { name: "path", detail: "the path to match", doc: "`/crew/:id` captures `id` and hands it to the view as a prop. A child route's path is relative to its parent, and `path=\"\"` is the index route that fills the parent's outlet at the parent's own path." },
-            Entry { name: "view", detail: "the component to render", doc: "Names an imported component, the same name its tag would use." },
+            Entry { name: "view", detail: "the component to render", doc: "Names an imported component. Either spelling: `view=\"crew-detail\"` as the tag is written, or `view=\"crew_detail\"` as the `use` that imports it is written. They are the same component." },
             Entry { name: "fallback", detail: "match anything unmatched", doc: "Valueless. Renders when no other route matched, wherever it sits among them." },
             Entry { name: "guard", detail: "decide whether this route may be entered", doc: "`guard=\"expr\"`, run whenever this route is part of the match. `false` cancels the navigation, a string redirects to that path, and anything else allows it, `()` included, so a function that falls off the end has consented. Outer guards run first." },
         ],
@@ -754,6 +754,32 @@ mod tests {
         assert!(!rux_style::honored_properties().contains(&"float"));
         assert!(rux_fmt::void_tags().contains(&"image"), "the `<image>` bug");
         assert!(!rux_fmt::void_tags().contains(&"view"));
+    }
+
+    /// The elements this prints and the ones the runtime accepts are one list.
+    ///
+    /// They became two answers to one question when an unknown tag became an
+    /// error: the runtime decides what a tag may be, and this decides what the
+    /// editor offers, and a name in one and not the other is either a
+    /// completion that fails to load or an element nobody can find. The same
+    /// drift that put `img` in the void list and left out Rux's `<image>`.
+    ///
+    /// `router-view` is the one deliberate difference: it is a tag Rux defines
+    /// and is documented with the router rather than on its own, so it is in
+    /// the parser's list and not in this one.
+    #[test]
+    fn every_element_offered_is_one_the_runtime_knows() {
+        for element in ELEMENTS {
+            assert!(
+                rux_parser::is_element(element.name),
+                "`<{}>` is offered here and the runtime would call it a component",
+                element.name
+            );
+        }
+        let offered: Vec<&str> = ELEMENTS.iter().map(|e| e.name).collect();
+        let missing: Vec<&&str> =
+            rux_parser::element_tags().iter().filter(|t| !offered.contains(t)).collect();
+        assert_eq!(missing, vec![&"router-view"], "the only element not documented alone");
     }
 
     /// The completion list shows `detail` beside a name, and for a script global

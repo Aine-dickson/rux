@@ -61,6 +61,15 @@ pub struct Sides {
 }
 
 impl Sides {
+    /// All four zero, the common case for a box with no border.
+    pub const ZERO: Self = Self::uniform(0.0);
+
+    /// Whether all four are the same, which is what lets a border be drawn as
+    /// one stroke around a rounded rectangle rather than four filled edges.
+    pub fn is_uniform(&self) -> bool {
+        self.top == self.right && self.right == self.bottom && self.bottom == self.left
+    }
+
     pub const fn uniform(v: f32) -> Self {
         Self {
             top: v,
@@ -995,8 +1004,14 @@ pub struct PaintRect {
     pub height: f32,
     pub background: Option<Background>,
     pub radius: Corners,
-    /// Uniform border width for rendering (0 = none).
-    pub border_width: f32,
+    /// Border width **per side** (all zero = none).
+    ///
+    /// This used to be one `f32` filled from `style.border.top`, so the three
+    /// other sides were computed by the cascade and then thrown away here. A
+    /// `border-bottom: 6px` drew nothing at all, and a `border-top: 6px` drew a
+    /// box on all four sides. Both were silent, and `border-bottom` is offered
+    /// by the editor's completion list, which is supposed to mean it works.
+    pub border: Sides,
     pub border_color: Option<Rgba>,
 }
 
@@ -1477,7 +1492,7 @@ enum PaintKind {
         radius: Corners,
         /// Percentage corners, resolved against this box once it has a size.
         radius_pct: [Option<f32>; 4],
-        border_width: f32,
+        border: Sides,
         border_color: Option<Rgba>,
         clip: bool,
         shadow: Option<BoxShadow>,
@@ -1990,7 +2005,7 @@ fn build(
                 bg: node.style.background.clone(),
                 radius: node.style.radius,
                 radius_pct: node.style.radius_pct,
-                border_width: node.style.border.top,
+                border: node.style.border,
                 border_color: node.style.border_color,
                 clip: node.style.overflow != Overflow::Visible,
                 shadow: node.style.box_shadow,
@@ -2024,7 +2039,7 @@ fn build(
                 bg: node.style.background.clone(),
                 radius: node.style.radius,
                 radius_pct: node.style.radius_pct,
-                border_width: node.style.border.top,
+                border: node.style.border,
                 border_color: node.style.border_color,
                 clip: node.style.overflow != Overflow::Visible,
                 shadow: node.style.box_shadow,
@@ -2055,7 +2070,7 @@ fn build(
                 bg: node.style.background.clone(),
                 radius: node.style.radius,
                 radius_pct: node.style.radius_pct,
-                border_width: node.style.border.top,
+                border: node.style.border,
                 border_color: node.style.border_color,
                 clip: node.style.overflow != Overflow::Visible,
                 shadow: node.style.box_shadow,
@@ -2136,7 +2151,7 @@ fn build(
                 radius: node.style.radius,
                 radius_pct: node.style.radius_pct,
                 // Uniform border for rendering (top width is representative).
-                border_width: node.style.border.top,
+                border: node.style.border,
                 border_color: node.style.border_color,
                 clip: node.style.overflow != Overflow::Visible,
                 shadow: node.style.box_shadow,
@@ -2314,7 +2329,7 @@ fn collect(
                 bg,
                 radius,
                 radius_pct,
-                border_width,
+                border,
                 border_color,
                 clip: c,
                 shadow,
@@ -2340,7 +2355,8 @@ fn collect(
                         color: sh.color,
                     });
                 }
-                let has_border = *border_width > 0.0 && border_color.is_some();
+                let widest = border.top.max(border.right).max(border.bottom).max(border.left);
+                let has_border = widest > 0.0 && border_color.is_some();
                 if bg.is_some() || has_border {
                     out.paints.push(Paint::Rect(PaintRect {
                         x,
@@ -2349,7 +2365,7 @@ fn collect(
                         height: layout.size.height,
                         background: bg.clone(),
                         radius: *radius,
-                        border_width: *border_width,
+                        border: *border,
                         border_color: *border_color,
                     }));
                 }

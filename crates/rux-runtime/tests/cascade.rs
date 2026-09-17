@@ -18,15 +18,27 @@ use std::path::PathBuf;
 
 use rux_runtime::Document;
 
+/// Distinguishes two scratch directories created inside one clock tick. See the
+/// comment where it is used.
+static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
 /// Write a tiny workspace and load it.
 fn load(app: &str, component: &str) -> Document {
     let dir = std::env::temp_dir().join(format!(
-        "rux_cascade_{}_{}",
+        "rux_cascade_{}_{}_{}",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
-            .as_nanos()
+            .as_nanos(),
+        // A counter as well as the clock, because the clock is not enough.
+        // Windows ticks its system time about every 15ms, so `as_nanos()` gives
+        // two tests that start in the same tick the *same* number; with the same
+        // pid that is the same directory, and the first to finish deletes the
+        // other's files out from under a load that is still running. It shows up
+        // as one unrelated test failing about one run in six, with a different
+        // name each time, which is the least debuggable shape a flake has.
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
     ));
     fs::create_dir_all(dir.join("components")).unwrap();
     fs::write(dir.join("components/inner.rux"), component).unwrap();
@@ -137,12 +149,20 @@ fn a_scoped_component_is_still_not_reachable() {
 #[test]
 fn a_descendant_selector_reaches_a_route_view() {
     let dir: PathBuf = std::env::temp_dir().join(format!(
-        "rux_cascade_route_{}_{}",
+        "rux_cascade_route_{}_{}_{}",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
-            .as_nanos()
+            .as_nanos(),
+        // A counter as well as the clock, because the clock is not enough.
+        // Windows ticks its system time about every 15ms, so `as_nanos()` gives
+        // two tests that start in the same tick the *same* number; with the same
+        // pid that is the same directory, and the first to finish deletes the
+        // other's files out from under a load that is still running. It shows up
+        // as one unrelated test failing about one run in six, with a different
+        // name each time, which is the least debuggable shape a flake has.
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
     ));
     fs::create_dir_all(dir.join("components")).unwrap();
     fs::write(

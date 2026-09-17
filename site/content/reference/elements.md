@@ -12,6 +12,16 @@ components as custom tags, plus two that render no box of their own: `<slot>`
 [Routing](/reference/routing/)). `role=` is honored for **selectors and semantics**
 (and matches **case-insensitively**: `role="Heading"` matches `[role="heading"]`).
 
+**An element that holds nothing closes itself.** `<image>`, `<input>`,
+`<path>` and `<router-view>` take no children, so `<input type="text">` is
+complete as written and there is no `</input>` for it to be missing. The slash
+is still legal and is what `examples/` uses. Writing a closing tag for one is an
+error that says so: *"`<input>` holds nothing, so it has no closing tag; delete
+`</input>`"*. Until v0.7.1 the parser demanded the closing tag and, not finding
+it, named whichever closing tag it found next — so `<view><input></view>` was
+reported as "expected `</input>`, found `</view>`", against a file whose only
+mistake was being written the way HTML is written.
+
 `<image src="assets/logo.png">`: `src` resolves **relative to the .rux file**
 (not the working directory), and `:src` binds an expression. With no CSS size it
 lays out at the file's intrinsic pixel size; a `width`/`height` scales it to fit.

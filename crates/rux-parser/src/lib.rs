@@ -13,6 +13,70 @@
 
 use std::fmt;
 
+/// Tags that hold no children, so an opening tag closes itself and a closing
+/// tag is not merely unnecessary but wrong.
+///
+/// `<input type="text">` is the one an author writes by hand, and until this
+/// list reached the parser it was a parse error: the template demanded an
+/// `</input>` that Rux has no such thing as, and the message named the *next*
+/// closing tag it found instead, so `<view><input></view>` was reported as
+/// "expected </input>, found </view>" against a document whose only mistake was
+/// being written the way HTML is.
+///
+/// The same set the formatter indents by and the editor auto-closes by. It
+/// lived in `rux-fmt` first, which is why that crate now re-exports this one
+/// rather than keeping a second copy: the list drifted once already between
+/// Rust and JavaScript (HTML's `img` against Rux's `<image>`), and a third copy
+/// is how it would drift again.
+const VOID_TAGS: &[&str] = &[
+    // `<router-view />` never nests: what goes in it comes from the route
+    // matched below, not from anything written between the tags. `<path>` holds
+    // its geometry in an attribute, so it has nothing to nest.
+    "image", "input", "path", "router-view", //
+    "area", "base", "br", "col", "embed", "hr", "img", "link", "meta", "param", "source", "track",
+    "wbr",
+];
+
+/// Every tag Rux itself defines. Anything else in a template is a component,
+/// which is to say somebody's file.
+///
+/// Held here, beside [`VOID_TAGS`], because both answer the same kind of
+/// question about a name and both have to agree with `rux vocab`: the editor's
+/// completion list and the runtime's unknown-tag error are two readings of one
+/// list, and a second copy is how `<image>` came to be missing from one of them.
+/// `rux-cli` has a test that the vocabulary it prints matches this exactly.
+///
+/// `router-view` is here and is not in the vocabulary's element list, because it
+/// is documented with the router rather than on its own. It is still a tag Rux
+/// defines, which is what this list is for.
+const ELEMENT_TAGS: &[&str] = &[
+    "screen", "view", "text", "image", "path", "button", "input", //
+    "slot", "router", "route", "router-view",
+];
+
+/// Whether `tag` is one of Rux's own elements rather than a component.
+pub fn is_element(tag: &str) -> bool {
+    ELEMENT_TAGS.contains(&tag)
+}
+
+/// The tags in [`is_element`], for anything that has to agree about what Rux
+/// defines: `rux vocab`, and the runtime's "no such tag" error.
+pub fn element_tags() -> &'static [&'static str] {
+    ELEMENT_TAGS
+}
+
+/// Whether `tag` is one that never takes children or a closing tag.
+pub fn is_void(tag: &str) -> bool {
+    VOID_TAGS.contains(&tag)
+}
+
+/// The tags in [`is_void`], for anything that has to agree with the parser
+/// about what never nests: the formatter's indenter, and through `rux vocab`
+/// the editor's tag auto-closing.
+pub fn void_tags() -> &'static [&'static str] {
+    VOID_TAGS
+}
+
 /// Decode the HTML entities an author might write: the named ones (`&amp;`,
 /// `&lt;`, `&gt;`, `&quot;`, `&apos;`, `&nbsp;`) and numeric (`&#38;`, `&#x26;`).
 /// An unrecognised `&…;` is left as written.
@@ -692,6 +756,12 @@ impl Parser {
                 None => return Err(self.err(format!("unclosed tag <{tag}>"))),
                 Some('>') => {
                     self.bump();
+                    // A void tag closes itself. `<input type="text">` is HTML's
+                    // shape and the shape every author reaches for, and Rux has
+                    // no `</input>` for it to be missing.
+                    if is_void(&tag) {
+                        return Ok(Element { tag, attrs, children: Vec::new(), line });
+                    }
                     let children = self.parse_nodes(Some(&tag))?;
                     self.expect_closing(&tag)?;
                     return Ok(Element { tag, attrs, children, line });
@@ -762,6 +832,15 @@ impl Parser {
         self.pos += 2;
         let close = self.read_name();
         if close != tag {
+            // A closing tag for something that never takes one. Saying
+            // "expected </view>, found </input>" here would point at the
+            // enclosing element and describe the wrong mistake: the `</input>`
+            // is not a tag in the wrong place, it is a tag that does not exist.
+            if is_void(&close) {
+                return Err(self.err(format!(
+                    "<{close}> holds nothing, so it has no closing tag; delete </{close}>"
+                )));
+            }
             return Err(self.err(format!(
                 "mismatched closing tag: expected </{tag}>, found </{close}>"
             )));
@@ -778,6 +857,49 @@ impl Parser {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `<input type="text">` is how anyone writes a text field, and Rux has no
+    /// `</input>` for it to be missing. Until void tags reached the parser this
+    /// was a parse error that named the *enclosing* element's closing tag, so a
+    /// correct document was reported as a mismatch.
+    #[test]
+    fn a_void_tag_closes_itself() {
+        let src = "<template>
+  <view>
+    <input type=\"text\">
+  </view>
+</template>";
+        let sfc = parse_sfc(src).expect("parses without a closing </input>");
+        let view = &sfc.template;
+        assert_eq!(view.tag, "view");
+        let Node::Element(input) = &view.children[0] else { panic!("an element") };
+        assert_eq!(input.tag, "input");
+        assert_eq!(input.attr("type"), Some("text"));
+        assert!(input.children.is_empty(), "a void tag holds nothing");
+    }
+
+    /// The slash stays legal: every file in `examples/` is written that way.
+    #[test]
+    fn a_void_tag_may_still_be_written_self_closing() {
+        let src = "<template><view><image src=\"a.png\" /></view></template>";
+        let sfc = parse_sfc(src).expect("parses");
+        let Node::Element(image) = &sfc.template.children[0] else { panic!("an element") };
+        assert_eq!(image.tag, "image");
+    }
+
+    /// And a closing tag for one is named as the mistake it is, rather than
+    /// reported against whatever element happened to enclose it.
+    #[test]
+    fn a_closing_void_tag_says_what_is_wrong_with_it() {
+        let src = "<template><view><input></input></view></template>";
+        let err = parse_sfc(src).expect_err("rejected");
+        assert!(
+            err.message.contains("no closing tag") && err.message.contains("</input>"),
+            "names the tag that does not exist: {}",
+            err.message
+        );
+    }
+
 
     /// The line a section's content starts on, which is what lets a later stage
     /// report a CSS warning against the file's own gutter rather than against an

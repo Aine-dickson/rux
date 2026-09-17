@@ -213,6 +213,16 @@ components as custom tags, plus two that render no box of their own: `<slot>`
 [Routing](#routing)). `role=` is honored for **selectors and semantics**
 (and matches **case-insensitively**: `role="Heading"` matches `[role="heading"]`).
 
+**An element that holds nothing closes itself.** `<image>`, `<input>`,
+`<path>` and `<router-view>` take no children, so `<input type="text">` is
+complete as written and there is no `</input>` for it to be missing. The slash
+is still legal and is what `examples/` uses. Writing a closing tag for one is an
+error that says so: *"`<input>` holds nothing, so it has no closing tag; delete
+`</input>`"*. Until v0.7.1 the parser demanded the closing tag and, not finding
+it, named whichever closing tag it found next — so `<view><input></view>` was
+reported as "expected `</input>`, found `</view>`", against a file whose only
+mistake was being written the way HTML is written.
+
 `<image src="assets/logo.png">`: `src` resolves **relative to the .rux file**
 (not the working directory), and `:src` binds an expression. With no CSS size it
 lays out at the file's intrinsic pixel size; a `width`/`height` scales it to fit.
@@ -347,6 +357,19 @@ v0.7.1 it was ignored in silence, because the interpreter read them with a
 px-only parser while the length check validated with a percentage-capable one:
 the value was dropped and then pronounced fine. Real percentage support for them
 is scheduled.
+
+**A border may differ per side.** `border-bottom: 2px solid #89b4fa` draws under
+the box and nowhere else, which is the underlined-field shape most forms want.
+Until v0.7.1 it drew *nothing*: the cascade computed all four sides, and paint
+carried one width taken from the top, so `border-bottom` was dropped and
+`border-top` was drawn on all four sides. Both silent, and `border-bottom` is
+offered by the editor's completion list, which is supposed to mean it works.
+
+Uniform borders are drawn as one stroke, which is what follows the corner
+radius. Uneven ones are drawn as four filled edges, so where two different
+non-zero widths meet the corner is square rather than mitred diagonally. That
+difference is only visible on a box that sets two adjacent sides to different
+widths.
 
 **`border-radius` is the exception, and takes a percentage.** It is the one of
 these that layout never reads: only paint does, and paint knows the box. So
@@ -908,6 +931,19 @@ handler. The tree is a function of state, and state is how it changes.
 `examples/element-query.rux` demonstrates all of it.
 
 ### Inputs
+
+**`r-model` is not optional.** It is the whole of an input's identity: the
+layout gives a focus region only to an input that carries one, the shell tracks
+the caret by the model text, and the value the field shows is read back out of
+that signal. An `<input placeholder="…" />` with nothing bound paints its box,
+renders its placeholder, and takes no tap, no caret and no keystroke. That was
+silent until v0.7.1 and is now an error naming the line:
+
+```
+this `<input>` has no `r-model`, so nothing can be typed into it: the caret,
+the keystrokes and the value it shows are all addressed by the signal it binds
+```
+
 `<input r-model="sig" placeholder="…">`: tap to focus, type to edit. There is a
 real **caret**: tapping puts it where you tapped, ←/→ move it, Home/End jump,
 Backspace/Delete cut either side of it, and typing inserts at it. Esc unfocuses.
@@ -1171,6 +1207,78 @@ scrollbar hover/fade states, no `scrollbar-width`/`scrollbar-color`, no
 Component instances are isolated (only props are visible inside). Their CSS styles
 their own subtree. Editing a component hot-reloads.
 
+**One component, two spellings, and the template takes either.**
+`use components::crew_detail;` names the file `components/crew_detail.rux` and
+contributes the tag `<crew-detail>`. The `use` **has** to be snake, because it
+is a path and `crew-detail` is not a path segment anyone can write; the tag
+**has** to be kebab, because that is what a custom element looks like. Both are
+forced, at opposite ends of the same file, and the author was left holding the
+difference. So in a `<template>` — as a tag and as a `<route view="…">` alike —
+`crew_detail` and `crew-detail` are the same component and both resolve. In
+`<script>` the `use` path stays strict: it is naming a file.
+
+Nothing is ambiguous, because the import maps `_` to `-` and no import can ever
+contribute a tag with an underscore in it. Whichever spelling is written, the
+component is filed under its **canonical** kebab name, so one component written
+both ways in one file is still one instance with one set of state, and not two
+halves of one.
+
+**And the file may be named either way too.** `use new_task;` finds
+`new_task.rux`, and failing that `new-task.rux`. Exact spelling first at both
+bases, so nothing that resolves today moves; the hyphenated candidate can only
+turn a hard error into a working import. That matters because a file is named
+by a person, and somebody who has been writing `<new-task>` all morning names it
+`new-task.rux`.
+
+**A component may use a component, and a tag is a local name.** Every file's
+`use` lines are read, not just the document's, and each file's markup may write
+only the tags that file imported. So `components/task.rux` can `use` its own
+`components/avatar.rux` without the document knowing, and two pages may each
+`use` a different `task.rux` and each write `<task>` meaning their own.
+
+Until v0.7.1 a component's `use` lines were parsed and then thrown away. Only
+the root document's imports existed, in one flat map, so a component could not
+use a component: the tag matched nothing, expanded to nothing, and said nothing.
+Found on a real project where `pages/home.rux` carried `use components::task;`
+and rendered `<task r-for="t in tasks">`, `app.rux` imported only the pages, and
+the list came up empty in a way that read as *"no tasks yet"*. The flat map had a
+second failure nobody had hit yet: two files importing different components under
+one tag, where the second import silently replaced the first.
+
+Imports are followed as a worklist rather than by recursion, so **two files
+importing each other terminates** rather than overflowing a stack: a file already
+loaded contributes its tag to the importing file's namespace and is not walked
+again. Functions are the deliberate exception and stay shared across every file:
+a component may call a `fn` its caller declared, which is the older rule and what
+`set_is_fragment` exists to keep checkable.
+
+**A tag that names nothing is an error.**
+```
+there is no element or component called `<netask>`. Rux's own elements are
+<screen> <view> <text> <image> <path> <button> <input> <slot> <router> <route>
+<router-view>; anything else is a component, and needs a `use` for it in this
+file's <script>
+```
+It can never render anything, which is the same test `view=` uses. It was silent
+until v0.7.1, and that silence is what hid the nested-import bug above for the
+whole of v0.7: a tag is the one name in a template that had no other way to fail.
+
+**A route's `view` is a name in the file that wrote the `<router>`.** Not in
+whatever component the `<router-view />` sits in, which by the time a nested
+route renders is usually several files away from the one that named it.
+
+**A `use` path with a `-` in it is reported.** It resolves, and has since before
+anyone noticed — `use` lines are lifted out of the script before rhai sees them,
+so the hyphen is never parsed as anything. One line further down the same text
+is `new` minus `task`. A path that would be arithmetic anywhere else in the same
+section is a spelling waiting to break, so it warns and names the snake form,
+which finds the same file. Nothing written that way stops working.
+
+Reported 2026-09-15 as *"why am I forced to write `new_task` as `new-task` in
+`view=`?"*, against a `view="new_task"` whose `use pages::new_task;` sat three
+lines below it. Until then the answer was a message telling the author to go and
+write the other spelling of a name they had already given correctly.
+
 **A `<template>` takes exactly one root element**, in a document and in a
 component alike. Wrap siblings in a `<view>`. Writing several is reported, with
 the line of the second: it used to keep the first and drop the rest in silence,
@@ -1338,6 +1446,24 @@ Like `<slot>`, a router leaves **no box of its own** behind: the matched view
 expands in its place. Routes are tried in the order written and the first match
 wins, so a `fallback` can sit anywhere among them. A path nothing matches and no
 fallback catches renders nothing, and warns.
+
+**Every route's `view` is checked at load, not on arrival.** A route is expanded
+when its path is the one you are on, so a `view` naming nothing used to be
+silent on every page but its own: the document loaded, `rux check` exited 0, and
+the mistake waited for the first navigation there. Whether a name is imported is
+a fact about the file rather than about where you are standing in it, and it is
+reported as an **error** — a page that can never render is wrong, not merely
+dead.
+
+**A `to=` that matches no route is reported too.** A dead link is silent by
+construction: tapping it navigates, the router matches nothing, and the screen
+goes blank with no more explanation than an empty screen. The address is written
+in the markup and so are the routes, so the two are compared before anyone taps.
+Only the written-out `to=` — `:to` is built from a row's own data, and a path
+that exists for row 3 and not for row 4 is a data problem rather than a markup
+one. The check runs through the router's own matcher, so `<route fallback>`
+answers for everything and a document with no `<router>` says nothing at all
+(which is what a component holding links needs).
 
 **The path is an ordinary signal called `route`.** That is the whole design:
 `{{ route }}`, `r-if="route == \"/about\""` and `:class` already understand

@@ -54,6 +54,19 @@ px-only parser while the length check validated with a percentage-capable one:
 the value was dropped and then pronounced fine. Real percentage support for them
 is scheduled.
 
+**A border may differ per side.** `border-bottom: 2px solid #89b4fa` draws under
+the box and nowhere else, which is the underlined-field shape most forms want.
+Until v0.7.1 it drew *nothing*: the cascade computed all four sides, and paint
+carried one width taken from the top, so `border-bottom` was dropped and
+`border-top` was drawn on all four sides. Both silent, and `border-bottom` is
+offered by the editor's completion list, which is supposed to mean it works.
+
+Uniform borders are drawn as one stroke, which is what follows the corner
+radius. Uneven ones are drawn as four filled edges, so where two different
+non-zero widths meet the corner is square rather than mitred diagonally. That
+difference is only visible on a box that sets two adjacent sides to different
+widths.
+
 **`border-radius` is the exception, and takes a percentage.** It is the one of
 these that layout never reads: only paint does, and paint knows the box. So
 `border-radius: 50%` is resolved against the laid-out box and a square comes out

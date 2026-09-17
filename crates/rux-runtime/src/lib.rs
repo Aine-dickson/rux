@@ -31,7 +31,7 @@ use rux_layout::{Node as LayoutNode, Offset};
 use rux_parser::{Sfc, StyleInclude};
 use rux_reactive::Value;
 use rux_script::{Builder, Engine};
-use rux_style::{BindingRegistry, Instances, Swaps};
+use rux_style::{BindingRegistry, Instances, Namespace, Swaps, DOCUMENT_NAMESPACE};
 /// Re-exported so the shell can hand pointer/focus state and the window size in
 /// without depending on `rux-style` directly.
 pub use rux_reactive::json_string;
@@ -47,7 +47,14 @@ pub use rux_script::warn_script;
 /// script engine, and the current tree.
 pub struct Document {
     sfc: Sfc,
+    /// Every component file this document reached, by the key
+    /// [`component_key`] gives it. Flat, because it is a registry and not a
+    /// scope.
     components: HashMap<String, Sfc>,
+    /// The scope: which tags each file may write, and what each one means.
+    /// Keyed the same way, with the document itself under
+    /// [`DOCUMENT_NAMESPACE`].
+    namespaces: HashMap<String, Namespace>,
     engine: Engine,
     /// Directory the document was loaded from, `<image src>` resolves against it.
     base: PathBuf,
@@ -837,100 +844,171 @@ impl Document {
         // its own script stops.
         let main_script_lines = main_script.lines().count();
         let mut combined_script = main_script;
-        for import in imports {
-            // A half-typed `use` names no file, and the filesystem error it
-            // used to produce talked about a path ending in `/.rux`, which is
-            // not something the author wrote.
-            if import.empty_segment {
-                return Err(LoadError::at_line(
-                    "this `use` names no component: a path segment is empty. \
-                     Write `use components::name;`"
-                        .to_string(),
-                    sfc.script_line + import.line - 1,
-                    path,
-                ));
-            }
-            let comp_path = resolve_import(base, &import.file).map_err(|(beside, from_root)| {
-                let mut looked = format!("`{}`", beside.display());
-                if let Some(root) = from_root.filter(|r| *r != beside) {
-                    looked.push_str(&format!(" and `{}`", root.display()));
+        // Every file's imports, not just the document's.
+        //
+        // This used to be one pass over `imports`, with a component's own `use`
+        // lines parsed and then thrown away (`let (comp_script, _nested) = ...`).
+        // So a component could not use a component: the tag matched nothing in
+        // the one shared map, expanded to nothing, and said nothing, unless the
+        // root document happened to import the same file too. Proven on a real
+        // project 2026-09-15, where a `<task>` list rendered empty and read as
+        // "no tasks yet".
+        //
+        // A worklist rather than recursion, so a cycle is a `contains_key` and
+        // not a stack overflow: a file already loaded contributes its tag to the
+        // importing file's namespace and is not walked a second time.
+        let mut namespaces: HashMap<String, Namespace> = HashMap::new();
+        let mut queue: Vec<ImportJob> = vec![ImportJob {
+            owner: DOCUMENT_NAMESPACE.to_string(),
+            owner_path: path.to_path_buf(),
+            owner_script_line: sfc.script_line,
+            base: base.to_path_buf(),
+            imports,
+        }];
+        while let Some(job) = queue.pop() {
+            // What this one file's markup may write. Recorded even when it is
+            // empty, so "imports nothing" and "not in the map" stay one answer.
+            let mut namespace = Namespace::new();
+            for import in job.imports {
+                let at = job.owner_script_line + import.line - 1;
+                // A half-typed `use` names no file, and the filesystem error it
+                // used to produce talked about a path ending in `/.rux`, which is
+                // not something the author wrote.
+                if import.empty_segment {
+                    return Err(LoadError::at_line(
+                        "this `use` names no component: a path segment is empty. \
+                         Write `use components::name;`"
+                            .to_string(),
+                        at,
+                        &job.owner_path,
+                    ));
                 }
-                LoadError::at_line(
-                    format!(
-                        "no component file for `{}`: looked in {looked}",
-                        import.file.trim_end_matches(".rux").replace('/', "::")
-                    ),
-                    sfc.script_line + import.line - 1,
-                    path,
-                )
-            })?;
-            let comp_src = std::fs::read_to_string(&comp_path).map_err(|e| {
-                LoadError::at_line(
-                    format!("reading component {}: {e}", comp_path.display()),
-                    sfc.script_line + import.line - 1,
-                    path,
-                )
-            })?;
-            let mut comp_sfc =
-                rux_parser::parse_sfc(&comp_src).map_err(|e| LoadError::parse(e, Some(&comp_path)))?;
-            // Parsing does no IO, so the parser cannot know this and leaves it
-            // `None`. Filling it in here is what lets a warning raised while
-            // building this component name this file rather than the importer's.
-            comp_sfc.file = Some(comp_path.clone());
-            // A component's `src` is relative to the component, not to whoever
-            // imported it. Anything else would make a component unusable from a
-            // second directory, which is the whole point of having one.
-            let comp_base = comp_path.parent().unwrap_or_else(|| Path::new(".")).to_path_buf();
-            resolve_style_includes(&mut comp_sfc, &comp_base)?;
-            let (comp_script, _nested) = extract_imports(&comp_sfc.script);
-            // A component's own computed/effect declarations are not
-            // supported yet; strip them so the merged script still compiles.
-            let (comp_script, comp_computeds, comp_effects, comp_hooks) =
-                extract_reactives(&comp_script);
-            // A component's `computed` lines are evaluated per instance, in that
-            // instance's scope, as part of expanding it; its `effect` blocks are
-            // run per instance and subscribe to what they read. Both are kept by
-            // tag, like the hooks and like the component's functions: the
-            // declaration is shared, the scope it runs in is not.
-            // A computed is declared in the instance's script as a placeholder
-            // rather than as its own expression. Creating an instance runs that
-            // script in a scope of its own, without the document's signals, so a
-            // computed that reads one would fail there, and a failure takes the
-            // whole script with it: the instance would come up with *no* state
-            // at all. The real value is computed at mount, before the tree that
-            // shows it is built.
-            let mut comp_script = comp_script;
-            for computed in &comp_computeds {
-                comp_script = comp_script.replace(
-                    &format!("let {} = {};", computed.name, computed.expr),
-                    &format!("let {} = 0;", computed.name),
-                );
+                // Reported, not refused: it resolves, and every file written this
+                // way goes on working. See `Import::hyphenated_path` for why it
+                // is worth saying anything at all.
+                if import.hyphenated_path {
+                    let written = import.file.trim_end_matches(".rux").replace('/', "::");
+                    let owner = job.owner_path.clone();
+                    rux_script::in_file(Some(owner), || {
+                        rux_script::located(Some(at), || {
+                            rux_script::warn_script(format!(
+                                "`use {written};` reads as subtraction in script: `-` is the \
+                                 minus operator, and a `use` path is the one place it happens \
+                                 not to be parsed. Write `use {};` - it finds the same file, \
+                                 hyphenated or not",
+                                written.replace('-', "_")
+                            ))
+                        })
+                    });
+                }
+                let comp_path =
+                    resolve_import(&job.base, &import.file).map_err(|(beside, from_root)| {
+                        let mut looked = format!("`{}`", beside.display());
+                        if let Some(root) = from_root.filter(|r| *r != beside) {
+                            looked.push_str(&format!(" and `{}`", root.display()));
+                        }
+                        LoadError::at_line(
+                            format!(
+                                "no component file for `{}`: looked in {looked}",
+                                import.file.trim_end_matches(".rux").replace('/', "::")
+                            ),
+                            at,
+                            &job.owner_path,
+                        )
+                    })?;
+                let key = component_key(&comp_path);
+                // The tag this file may write, and what it resolves to. Recorded
+                // before the load is skipped below, so a second importer of the
+                // same file still gets the tag in its own namespace.
+                namespace.insert(import.tag.clone(), key.clone());
+                // Already loaded, by this file or another. Its own imports are
+                // already queued, and this is also where a cycle stops.
+                if components.contains_key(&key) {
+                    continue;
+                }
+
+                let comp_src = std::fs::read_to_string(&comp_path).map_err(|e| {
+                    LoadError::at_line(
+                        format!("reading component {}: {e}", comp_path.display()),
+                        at,
+                        &job.owner_path,
+                    )
+                })?;
+                let mut comp_sfc = rux_parser::parse_sfc(&comp_src)
+                    .map_err(|e| LoadError::parse(e, Some(&comp_path)))?;
+                // Parsing does no IO, so the parser cannot know this and leaves
+                // it `None`. Filling it in here is what lets a warning raised
+                // while building this component name its file, not the importer's.
+                comp_sfc.file = Some(comp_path.clone());
+                // A component's `src` is relative to the component, not to
+                // whoever imported it. Anything else would make a component
+                // unusable from a second directory, which is the point of one.
+                let comp_base =
+                    comp_path.parent().unwrap_or_else(|| Path::new(".")).to_path_buf();
+                resolve_style_includes(&mut comp_sfc, &comp_base)?;
+                let (comp_script, nested) = extract_imports(&comp_sfc.script);
+                // A component's own computed/effect declarations are not
+                // supported yet; strip them so the merged script still compiles.
+                let (comp_script, comp_computeds, comp_effects, comp_hooks) =
+                    extract_reactives(&comp_script);
+                // Kept by the component's key, like the hooks and like its
+                // functions: the declaration is shared, the scope it runs in is
+                // per instance.
+                //
+                // A computed is declared in the instance's script as a
+                // placeholder rather than as its own expression. Creating an
+                // instance runs that script in a scope of its own, without the
+                // document's signals, so a computed that reads one would fail
+                // there, and a failure takes the whole script with it: the
+                // instance would come up with *no* state at all. The real value
+                // is computed at mount, before the tree that shows it is built.
+                let mut comp_script = comp_script;
+                for computed in &comp_computeds {
+                    comp_script = comp_script.replace(
+                        &format!("let {} = {};", computed.name, computed.expr),
+                        &format!("let {} = 0;", computed.name),
+                    );
+                }
+                if !comp_computeds.is_empty() {
+                    component_computeds.insert(key.clone(), comp_computeds);
+                }
+                if !comp_effects.is_empty() {
+                    component_effects.insert(key.clone(), comp_effects);
+                }
+                // Its lifecycle hooks are kept, per component, and run per
+                // instance.
+                //
+                // The stripping is not cosmetic: `components` stores the parsed
+                // component, and `rux-style` runs its script through `init_scope`
+                // to create each instance's state. A `mounted { ... }` block left
+                // in there is not a declaration, it is a statement rhai would try
+                // to execute once per instance at creation.
+                if !comp_hooks.is_empty() {
+                    component_hooks.insert(key.clone(), comp_hooks);
+                }
+                comp_sfc.script = comp_script.clone();
+                // Only its *functions* join the shared engine. Its `let`s do not:
+                // they are the state each instance gets a private copy of, so
+                // merging them here would put one shared variable behind every
+                // instance, which is exactly the bug that split was fixing.
+                //
+                // Functions stay shared across every file, unlike tags. That is
+                // deliberate and is the older rule: a component may call a `fn`
+                // its caller declared, which `set_is_fragment` exists to keep
+                // checkable.
+                combined_script.push('\n');
+                combined_script.push_str(&component_functions(&comp_script));
+                let comp_script_line = comp_sfc.script_line;
+                components.insert(key.clone(), comp_sfc);
+                queue.push(ImportJob {
+                    owner: key,
+                    owner_path: comp_path,
+                    owner_script_line: comp_script_line,
+                    base: comp_base,
+                    imports: nested,
+                });
             }
-            if !comp_computeds.is_empty() {
-                component_computeds.insert(import.tag.clone(), comp_computeds);
-            }
-            if !comp_effects.is_empty() {
-                component_effects.insert(import.tag.clone(), comp_effects);
-            }
-            // Its lifecycle hooks are kept, per component, and run per instance.
-            //
-            // The stripping is not cosmetic: `components` stores the parsed
-            // component, and `rux-style` runs its script through `init_scope` to
-            // create each instance's state. A `mounted { … }` block left in
-            // there is not a declaration, it is a statement rhai would try to
-            // execute once per instance at creation.
-            if !comp_hooks.is_empty() {
-                component_hooks.insert(import.tag.clone(), comp_hooks);
-            }
-            comp_sfc.script = comp_script.clone();
-            // Only its *functions* join the shared engine. Its `let`s do not:
-            // they are the state each instance gets a private copy of, so
-            // merging them here would put one shared variable behind every
-            // instance, which is exactly the bug this is fixing. `rux-style`
-            // runs the same split and hands the statements to `init_scope`.
-            combined_script.push('\n');
-            combined_script.push_str(&component_functions(&comp_script));
-            components.insert(import.tag, comp_sfc);
+            namespaces.insert(job.owner, namespace);
         }
 
         // A document whose root is `<screen>` is a page and has no caller, so a
@@ -949,27 +1027,34 @@ impl Document {
             .map_err(|e| LoadError::in_script(e, sfc.script_line, main_script_lines, Some(path)))?;
         let mut instances = Instances::new();
         let mut swaps = Swaps::new();
-        let (mut root, registry) = rux_style::build_styled_tree_tracked(&sfc, &components, &mut engine, &mut instances, &mut swaps)
+        let (mut root, registry) = rux_style::build_styled_tree_tracked(&sfc, &components, &namespaces, &mut engine, &mut instances, &mut swaps)
             .map_err(LoadError::plain)?;
         resolve_images(&mut root, base);
         // Before the warnings are drained below, so a handler that cannot
         // compile is reported by `rux check` and by the overlay alike.
-        let component_tags: std::collections::HashSet<String> =
-            components.keys().cloned().collect();
-        check_handlers(&sfc.template, &engine, &component_tags);
-        for component in components.values() {
+        // Which tags are components is a per-file question now, not a
+        // document-wide one: a component takes any `@name` as a listener for an
+        // event it emits, and a tag that is a component in one file may be
+        // nothing at all in the next. Reading it from the whole registry would
+        // excuse a typo'd `@handler` on a tag this file cannot even write.
+        let tags_in = |key: &str| -> std::collections::HashSet<String> {
+            namespaces.get(key).map(|ns| ns.keys().cloned().collect()).unwrap_or_default()
+        };
+        check_handlers(&sfc.template, &engine, &tags_in(DOCUMENT_NAMESPACE));
+        for (key, component) in &components {
             // Its handlers are on its lines, so they are reported against its
             // file. Without this they carried the component's line number and
             // the *document's* name, which points a reader confidently at an
             // unrelated line of a file that is fine.
             rux_script::in_file(component.file.clone(), || {
-                check_handlers(&component.template, &engine, &component_tags);
+                check_handlers(&component.template, &engine, &tags_in(key));
             });
         }
         check_script_functions(&engine);
         let mut doc = Self {
             sfc,
             components,
+            namespaces,
             engine,
             base: base.to_path_buf(),
             focus: None,
@@ -1044,7 +1129,14 @@ impl Document {
         let mut instances = Instances::new();
         let mut swaps = Swaps::new();
         let (mut root, registry) =
-            rux_style::build_styled_tree_tracked(&sfc, &HashMap::new(), &mut engine, &mut instances, &mut swaps)
+            rux_style::build_styled_tree_tracked(
+                &sfc,
+                &HashMap::new(),
+                &HashMap::new(),
+                &mut engine,
+                &mut instances,
+                &mut swaps,
+            )
                 .map_err(LoadError::plain)?;
         let base = PathBuf::from(".");
         resolve_images(&mut root, &base);
@@ -1054,6 +1146,7 @@ impl Document {
         let mut doc = Self {
             sfc,
             components: HashMap::new(),
+            namespaces: HashMap::new(),
             engine,
             base,
             focus: None,
@@ -1219,6 +1312,7 @@ impl Document {
         let Ok((mut fresh_root, fresh_reg)) = rux_style::build_styled_tree_stateful(
             &self.sfc,
             &self.components,
+            &self.namespaces,
             &mut self.engine,
             &mut self.instances,
             &mut self.swaps,
@@ -1306,6 +1400,7 @@ impl Document {
         if let Ok((mut root, registry)) = rux_style::build_styled_tree_stateful(
             &self.sfc,
             &self.components,
+            &self.namespaces,
             &mut self.engine,
             &mut self.instances,
             &mut self.swaps,
@@ -1469,6 +1564,7 @@ impl Document {
         let Ok((mut fresh_root, fresh_reg)) = rux_style::build_styled_tree_stateful(
             &self.sfc,
             &self.components,
+            &self.namespaces,
             &mut self.engine,
             &mut self.instances,
             &mut self.swaps,
@@ -3209,25 +3305,86 @@ fn workspace_root(from: &Path) -> Option<PathBuf> {
 /// This is the answer to the trap that had no answer: `use` resolved downward
 /// only, with no `super::` and no `..`, so a file in a subdirectory could not
 /// reach a shared component at all and had to keep its own copy.
+/// A `use` path is written in snake, and the file may not be.
+///
+/// `use new_task;` has to be snake because it is script: a `-` there is the
+/// subtraction operator everywhere else on the line, and a name that would be
+/// arithmetic one line further down is not a name. But the file beside it is
+/// named by a person, and `new-task.rux` is what a person who has been writing
+/// `<new-task>` all morning tends to type. Those two cannot both be right and
+/// have the author do the reconciling, which is the same split
+/// `find_component` closes on the template side.
+///
+/// So a path that finds nothing is looked for again with its underscores as
+/// hyphens. Tried **last**, after every exact candidate, so this can only turn
+/// a hard error into a working import and never move a document that resolves
+/// today — the same argument the root fallback above is built on.
+fn hyphenated(file: &str) -> Option<String> {
+    let swapped = file.replace('_', "-");
+    (swapped != file).then_some(swapped)
+}
+
+/// What a component file is filed under, once for the whole load.
+///
+/// The **file**, not the tag, because a tag is a local name: two files may each
+/// `use` a different `task.rux` and each write `<task>`, and keying the registry
+/// by tag meant the second import quietly replaced the first. The path is what
+/// is actually unique.
+///
+/// Canonicalised where the filesystem allows it, so the same file reached two
+/// ways is one entry and is loaded once. A path that cannot be canonicalised
+/// (it may have been deleted between resolving and here) falls back to itself,
+/// which is still unique enough to key a map; the separators are normalised so
+/// the fallback cannot disagree with the canonical form about `/` and `\`.
+fn component_key(path: &Path) -> String {
+    let resolved = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    resolved.to_string_lossy().replace('\\', "/")
+}
+
 fn resolve_import(base: &Path, file: &str) -> Result<PathBuf, (PathBuf, Option<PathBuf>)> {
     // Joined a segment at a time rather than as one `a/b.rux` string, so the
     // result is spelled in the platform's own separator. Joining the whole
     // thing produced `...\pages\components/task.rux` in every message on
     // Windows, which reads like two different paths spliced together.
-    let join = |dir: &Path| file.split('/').fold(dir.to_path_buf(), |acc, part| acc.join(part));
-    let beside = join(base);
-    if beside.is_file() {
-        return Ok(beside);
+    let join = |dir: &Path, name: &str| {
+        name.split('/').fold(dir.to_path_buf(), |acc, part| acc.join(part))
+    };
+    let root = workspace_root(base);
+    let beside = join(base, file);
+    let from_root = root.as_ref().map(|r| join(r, file));
+
+    // Exact spelling first, at both bases, then the hyphenated one at both.
+    let mut candidates = vec![Some(beside.clone()), from_root.clone()];
+    if let Some(swapped) = hyphenated(file) {
+        candidates.push(Some(join(base, &swapped)));
+        candidates.push(root.as_ref().map(|r| join(r, &swapped)));
     }
-    let from_root = workspace_root(base).map(|root| join(&root));
-    if let Some(candidate) = &from_root {
+    for candidate in candidates.into_iter().flatten() {
         if candidate.is_file() {
-            return Ok(candidate.clone());
+            return Ok(candidate);
         }
     }
-    // Neither: hand both back so the message can name every place that was
-    // looked, rather than the one the author already knows is empty.
+    // None of them: hand back the two exact ones, which are the paths the
+    // author actually wrote. Listing four spellings of the same miss would make
+    // the message harder to read, not easier.
     Err((beside, from_root))
+}
+
+/// One file's imports, waiting to be walked.
+///
+/// `owner_path` and `owner_script_line` are the *importing* file's, so a bad
+/// `use` inside a component is reported against that component and on its own
+/// line, rather than against whichever document happened to pull it in.
+struct ImportJob {
+    /// The namespace key this file's imports belong to: a component's key, or
+    /// [`DOCUMENT_NAMESPACE`] for the document itself.
+    owner: String,
+    owner_path: PathBuf,
+    owner_script_line: usize,
+    /// The directory its own `use` paths resolve against, which is its own,
+    /// not the document's.
+    base: PathBuf,
+    imports: Vec<Import>,
 }
 
 struct Import {
@@ -3249,6 +3406,15 @@ struct Import {
     /// `use components::;` to rhai, which reports it in its own vocabulary. It
     /// is a half-typed import and deserves to be told so.
     empty_segment: bool,
+    /// The path was written with a `-` in it, as `use new-task;`.
+    ///
+    /// It resolves, and has since before anyone noticed: `use` lines are lifted
+    /// out of the script before rhai ever sees them, so the hyphen is never
+    /// parsed as anything. Put the same text one line further down and it is
+    /// `new` minus `task`. A path that would be arithmetic anywhere else in the
+    /// same section is a spelling waiting to break, so it is reported and the
+    /// snake form named, which finds the same file either way.
+    hyphenated_path: bool,
 }
 
 /// Split `use a::b;` lines out of a script, returning the cleaned script (which
@@ -3267,12 +3433,19 @@ fn extract_imports(script: &str) -> (String, Vec<Import>) {
             }) {
                 let segments: Vec<&str> = path.split("::").collect();
                 let empty_segment = segments.iter().any(|s| s.is_empty());
+                let hyphenated_path = path.contains('-');
                 let file = format!("{}.rux", segments.join("/"));
                 let tag = segments
                     .last()
                     .map(|s| s.replace('_', "-"))
                     .unwrap_or_default();
-                imports.push(Import { tag, file, line: index + 1, empty_segment });
+                imports.push(Import {
+                    tag,
+                    file,
+                    line: index + 1,
+                    empty_segment,
+                    hyphenated_path,
+                });
                 // A blank line rather than no line. Dropping it shifted every
                 // line below by one, so rhai's positions no longer matched the
                 // section and a script error could not be placed in the file.

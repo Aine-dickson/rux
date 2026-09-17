@@ -6,6 +6,19 @@ weight = 7
 
 <!-- GENERATED FROM docs/05-as-built.md BY site/sync-docs.sh. DO NOT EDIT HERE. -->
 
+
+**`r-model` is not optional.** It is the whole of an input's identity: the
+layout gives a focus region only to an input that carries one, the shell tracks
+the caret by the model text, and the value the field shows is read back out of
+that signal. An `<input placeholder="…" />` with nothing bound paints its box,
+renders its placeholder, and takes no tap, no caret and no keystroke. That was
+silent until v0.7.1 and is now an error naming the line:
+
+```
+this `<input>` has no `r-model`, so nothing can be typed into it: the caret,
+the keystrokes and the value it shows are all addressed by the signal it binds
+```
+
 `<input r-model="sig" placeholder="…">`: tap to focus, type to edit. There is a
 real **caret**: tapping puts it where you tapped, ←/→ move it, Home/End jump,
 Backspace/Delete cut either side of it, and typing inserts at it. Esc unfocuses.
