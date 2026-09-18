@@ -177,6 +177,34 @@ const ELEMENT_ATTRIBUTES: &[(&str, &[Entry])] = &[
     ),
 ];
 
+/// Attributes whose value is a **closed set**, so the editor can offer the set
+/// rather than leave the author to guess it from a `detail` line reading
+/// `text | textarea | select | checkbox | radio`.
+///
+/// Keyed by tag, then by attribute, so the answer depends on the element the
+/// cursor is in and not on the attribute name alone.
+///
+/// An attribute absent from this table is not one without values, it is one
+/// whose values are not a closed set: `placeholder` takes any text, `class` any
+/// list of names, `to` any path the router knows.
+///
+/// The same rule as [`CSS_VALUES`]: these are prose written against code, and
+/// `attribute_values_match_their_detail_line` pins each set against the
+/// `detail` the same attribute already advertises, so the two cannot drift.
+const ATTRIBUTE_VALUES: &[(&str, &[(&str, &[Entry])])] = &[(
+    "input",
+    &[(
+        "type",
+        &[
+            Entry { name: "text", detail: "a single-line field", doc: "The default, so `type` may be left off entirely." },
+            Entry { name: "textarea", detail: "a multi-line field", doc: "Enter inserts a newline instead of being ignored, and the box scrolls its own content." },
+            Entry { name: "select", detail: "a dropdown", doc: "Shows the bound value and opens a list on tap. Takes its choices from `:options`." },
+            Entry { name: "checkbox", detail: "a tap-toggle", doc: "No caret and no focus of its own: a tap flips the bound value, and `:checked` matches it. Space or Enter activates it when tabbed to." },
+            Entry { name: "radio", detail: "one of a group", doc: "Radios sharing a `name` are one group, so choosing one clears the others. Carries the chosen value in `value`." },
+        ],
+    )],
+)];
+
 /// The names script can call that are not ordinary rhai. Kept in step with
 /// `docs/07-script.md`, which is the reference for this tier.
 const SCRIPT_GLOBALS: &[Entry] = &[
@@ -553,6 +581,16 @@ pub fn emit() -> i32 {
         entries(&mut out, attrs, 2);
         out.push_str(if i + 1 == ELEMENT_ATTRIBUTES.len() { "\n" } else { ",\n" });
     }
+    out.push_str("  },\n  \"attributeValues\": {\n");
+    for (i, (tag, attrs)) in ATTRIBUTE_VALUES.iter().enumerate() {
+        out.push_str(&format!("    {}: {{\n", quote(tag)));
+        for (j, (attribute, values)) in attrs.iter().enumerate() {
+            out.push_str(&format!("      {}: ", quote(attribute)));
+            entries(&mut out, values, 3);
+            out.push_str(if j + 1 == attrs.len() { "\n" } else { ",\n" });
+        }
+        out.push_str(if i + 1 == ATTRIBUTE_VALUES.len() { "    }\n" } else { "    },\n" });
+    }
     out.push_str("  },\n  \"scriptGlobals\": ");
     entries(&mut out, SCRIPT_GLOBALS, 1);
     out.push_str(",\n  \"elementProperties\": ");
@@ -729,6 +767,39 @@ mod tests {
                 "`{property}` has values in the vocabulary and is not honored"
             );
             assert!(!values.is_empty(), "`{property}` has an empty value list");
+        }
+    }
+
+    /// Every attribute with a value table has to be an attribute that element
+    /// actually takes, and the set offered has to be the same set its `detail`
+    /// line advertises.
+    ///
+    /// The `detail` is what a reader sees in the attribute completion
+    /// (`text | textarea | select | checkbox | radio`) and the table is what the
+    /// value completion offers. Two hand-kept lists of the same thing drift, and
+    /// the way it would show is the editor offering a value its own tooltip does
+    /// not mention.
+    #[test]
+    fn attribute_values_match_their_detail_line() {
+        for (tag, attrs) in ATTRIBUTE_VALUES {
+            let declared = ELEMENT_ATTRIBUTES
+                .iter()
+                .find(|(name, _)| name == tag)
+                .unwrap_or_else(|| panic!("`{tag}` has value tables and is not an element"))
+                .1;
+            for (attribute, values) in *attrs {
+                let entry = declared
+                    .iter()
+                    .find(|e| e.name == *attribute)
+                    .unwrap_or_else(|| panic!("`<{tag} {attribute}>` is not an attribute"));
+                assert!(!values.is_empty(), "`<{tag} {attribute}>` has an empty value list");
+                let advertised: Vec<&str> = entry.detail.split('|').map(str::trim).collect();
+                let offered: Vec<&str> = values.iter().map(|v| v.name).collect();
+                assert_eq!(
+                    advertised, offered,
+                    "`<{tag} {attribute}>` advertises one set and offers another"
+                );
+            }
         }
     }
 

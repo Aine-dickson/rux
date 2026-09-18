@@ -66,6 +66,17 @@
       { "name": "for", "detail": "label another element", "doc": "Names the `id` of the element this text labels, so the accessibility tree pairs them." }
     ]
   },
+  "attributeValues": {
+    "input": {
+      "type": [
+        { "name": "text", "detail": "a single-line field", "doc": "The default, so `type` may be left off entirely." },
+        { "name": "textarea", "detail": "a multi-line field", "doc": "Enter inserts a newline instead of being ignored, and the box scrolls its own content." },
+        { "name": "select", "detail": "a dropdown", "doc": "Shows the bound value and opens a list on tap. Takes its choices from `:options`." },
+        { "name": "checkbox", "detail": "a tap-toggle", "doc": "No caret and no focus of its own: a tap flips the bound value, and `:checked` matches it. Space or Enter activates it when tabbed to." },
+        { "name": "radio", "detail": "one of a group", "doc": "Radios sharing a `name` are one group, so choosing one clears the others. Carries the chosen value in `value`." }
+      ]
+    }
+  },
   "scriptGlobals": [
     { "name": "signal", "detail": "signal(value)", "doc": "Declare a piece of reactive state." },
     { "name": "computed", "detail": "computed name = expr;", "doc": "Derived state, readable anywhere a signal is. A **declaration, not a call**: there is no `computed(|| …)`. Refreshing is one pass in declaration order, so a computed may read one declared above it and not below. Inside a component it runs per instance." },

@@ -55,10 +55,17 @@ function register(vscode) {
 
   // `<` and `/` open the tag lists, space and `:` and `@` the attribute ones,
   // and `-` so `r-` keeps the directive list up rather than dismissing it.
+  //
+  // **The quotes are here because a provider nobody can see does not exist.**
+  // `type="` completed correctly from the first release of it and never once
+  // appeared, because opening a value types a quote and a quote triggered
+  // nothing: the list was reachable only by pressing Ctrl+Space in exactly the
+  // right spot, which is not something an author knows to do. Both quotes, since
+  // `type='text'` is equally legal.
   return vscode.languages.registerCompletionItemProvider(
     'rux',
     provider,
-    '<', '/', ' ', ':', '@', '-', '.', '#'
+    '<', '/', ' ', ':', '@', '-', '.', '#', '"', "'"
   );
 }
 
@@ -85,9 +92,33 @@ function template(vscode, text, offset) {
     return expression(vscode, text, offset);
   }
 
+  // Inside a literal value whose values are a closed set: `type="…"` on an
+  // `<input>` is the one an author meets first. Offered rather than left to the
+  // `detail` line, which reads `text | textarea | select | checkbox | radio`
+  // and is only visible while completing the attribute *name*, one keystroke
+  // before the place the value has to be written.
+  const value = context.attributeValueAt(text, offset);
+  if (value) {
+    const known = vocabulary.attributeValues(value.tag, value.attribute);
+    if (!known.length) return undefined;
+    return known.map((v, i) => attributeValueItem(vscode, v, i));
+  }
+
   const tag = context.openTagAt(text, offset);
   if (!tag) return snippetItems(vscode, 'template');
   return tag.onName ? tags(vscode, text) : attributes(vscode, tag.tag);
+}
+
+/** One value of a closed-set attribute, with what choosing it means. */
+function attributeValueItem(vscode, value, index) {
+  const item = new vscode.CompletionItem(value.name, vscode.CompletionItemKind.EnumMember);
+  item.detail = value.detail;
+  item.documentation = new vscode.MarkdownString(value.doc);
+  // The list is written in the order an author meets them, not alphabetically:
+  // `text` is the default and `radio` the specialist, and sorting would put
+  // `checkbox` first for no reason a reader could see.
+  item.sortText = ORDER.attribute + String(index).padStart(2, '0');
+  return item;
 }
 
 /**

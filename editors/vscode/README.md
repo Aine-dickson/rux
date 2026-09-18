@@ -4,7 +4,12 @@ Editor support for `.rux` files:
 
 - **Completions**, offered from what the runtime actually understands. In
   `<template>`: elements, the components this file imported with
-  `use components::…`, the directives, and each element's own attributes. In
+  `use components::…`, the directives, and each element's own attributes,
+  **including the values an attribute takes when they are a closed set**:
+  `<input type="` offers `text`, `textarea`, `select`, `checkbox` and `radio`,
+  each saying what choosing it does. An attribute whose values are open text
+  offers nothing, so silence there means "anything goes" rather than "nothing
+  works". In
   `<style>`: **only the CSS properties Rux honors**, which is the completion a
   general CSS extension cannot give you, because Rux honors a subset and warns
   about the rest. In `<script>`: `signal`, `computed`, `effect`, the router

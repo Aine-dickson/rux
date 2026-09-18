@@ -43,7 +43,12 @@ const vscode = {
       this.value = value;
     }
   },
-  languages: { registerCompletionItemProvider: (_lang, provider) => provider },
+  languages: {
+    registerCompletionItemProvider: (_lang, provider, ...triggers) => {
+      provider.triggers = triggers;
+      return provider;
+    },
+  },
 };
 
 const provider = completion.register(vscode);
@@ -90,6 +95,61 @@ test('a CSS value list is values, with no snippets mixed in', () => {
   for (const noise of ['script', 'signal', 'slot', 'sticky', 'style']) {
     assert.ok(!offered.includes(noise), `${noise} is a snippet and must not be here`);
   }
+});
+
+test('a quote opens the value list, or nobody ever sees it', () => {
+  // The completion for `type="…"` worked and was invisible for a release: the
+  // only way to open a list is a trigger character, and the character that
+  // opens a value is the quote. Both quotes, since `type='text'` is legal too.
+  assert.ok(provider.triggers.includes('"'), 'a double quote must open the list');
+  assert.ok(provider.triggers.includes("'"), 'and so must a single quote');
+});
+
+test('an input type offers the five kinds and nothing else', () => {
+  const offered = offeredAt('<template><input type="TYPE_VALUE" /></template>', 'TYPE_VALUE');
+  assert.deepEqual(
+    offered,
+    ['text', 'textarea', 'select', 'checkbox', 'radio'],
+    'the five kinds, in the order an author meets them'
+  );
+});
+
+test('a half-typed input type still offers the whole set', () => {
+  // Filtering is the editor's job, not the provider's: returning only the
+  // matches would fight VS Code's own fuzzy matching and lose the list the
+  // moment a character is deleted.
+  const offered = offeredAt('<template><input type="teTYPE_PART" /></template>', 'TYPE_PART');
+  assert.ok(offered.includes('textarea'), 'textarea is still on offer');
+  assert.ok(offered.includes('checkbox'), 'and so is everything else');
+});
+
+test('an attribute with no closed set of values offers nothing', () => {
+  // The important half: silence here means "anything goes", and an offer would
+  // be a claim that these are the placeholders Rux knows about.
+  const offered = offeredAt(
+    '<template><input placeholder="PLACE_VALUE" /></template>',
+    'PLACE_VALUE'
+  );
+  assert.deepEqual(offered, [], `nothing to offer for a free-text value: ${offered}`);
+});
+
+test('a value list is per element, not per attribute name', () => {
+  // `type` on something that is not an input is not an input type. Offering the
+  // five kinds on a `<view type="…">` would be confidently wrong.
+  const offered = offeredAt('<template><view type="OTHER_TAG" /></template>', 'OTHER_TAG');
+  assert.deepEqual(offered, [], `a view has no type values: ${offered}`);
+});
+
+test('a bound type is an expression, not the value list', () => {
+  // `:type="kind"` names a signal, so what is useful there is the document's
+  // own state. Offering `checkbox` inside an expression would be offering a
+  // bare word that does not resolve.
+  const offered = offeredAt(
+    '<template><input :type="BOUND_TYPE" /></template><script>let kind = signal("text");</script>',
+    'BOUND_TYPE'
+  );
+  assert.ok(!offered.includes('checkbox'), `an expression, not a value list: ${offered}`);
+  assert.ok(offered.includes('kind'), 'the document state is what belongs here');
 });
 
 test('rule level offers whole-rule snippets and not property names', () => {

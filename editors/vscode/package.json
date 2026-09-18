@@ -3,7 +3,7 @@
   "displayName": "Ruxlang",
   "icon": "icon.png",
   "description": "Syntax highlighting, completions, hover docs, go to definition, an outline, tag auto-closing, formatting and diagnostics for the Rux UI language (.rux files).",
-  "version": "0.4.6",
+  "version": "0.4.8",
   "publisher": "Ruxlang",
   "license": "MIT OR Apache-2.0",
   "repository": {
@@ -37,7 +37,13 @@
         "rux.format.indent": {
           "type": "string",
           "default": "auto",
-          "enum": ["auto", "editor", "2", "4", "tab"],
+          "enum": [
+            "auto",
+            "editor",
+            "2",
+            "4",
+            "tab"
+          ],
           "enumDescriptions": [
             "Let `rux fmt` decide, which is what `rux fmt` on the command line and in CI will do. Two spaces today.",
             "Use the editor's own tab size. Note that this can disagree with `rux fmt --check`.",
@@ -170,6 +176,14 @@
           ]
         }
       }
-    ]
+    ],
+    "configurationDefaults": {
+      "[rux]": {
+        "editor.quickSuggestions": {
+          "other": true,
+          "strings": true
+        }
+      }
+    }
   }
 }
