@@ -55,6 +55,7 @@ under [Tooling](/tooling/), along with how to set up the VS Code extension.
 - [Layout](/reference/layout/): Everything defaults to block; use display: flex. Hug, fill, and why inline flow is gone.
 - [Paths](/reference/paths/): SVG path data as an element: the d attribute, paint as CSS, and shapes that morph.
 - [Honored CSS](/reference/css/): The authoritative list of properties the runtime interprets, plus selectors, pseudo-classes and transitions.
+- [Where Rux differs from CSS](/reference/css-differences/): The short list of places Rux does not answer the way CSS does, and which kind of difference each one is.
 - [Reactivity](/reference/reactivity/): Signals, computed values, effects, and what re-runs when one changes.
 - [Inputs](/reference/inputs/): Text fields, textarea, select, checkbox and radio, and two-way binding with r-model.
 - [Text input](/reference/text-input/): The caret, the soft keyboard, and IME composition for text that is not typed one key at a time.

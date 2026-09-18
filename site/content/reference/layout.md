@@ -13,7 +13,10 @@ weight = 3
 
 - **Everything defaults to `display: block`.** Block containers make children fill.
 - **Use `display: flex` for layout.** Flex cross-axis defaults to **flex-start**
-  (children hug), not CSS's `stretch`, which is a deliberate divergence for ergonomics.
+  (children hug), not CSS's `stretch`. **This is a divergence Rux intends to
+  drop**: see "Where Rux differs from CSS". Until it does, every flex
+  column needs its own `align-items: stretch` for its children to fill, because
+  `align-items` does not inherit.
 - **Hug means `fit-content`**: a box with no `width` is clamped to its parent's
   inner width, so it can't burst out of a narrower parent. An explicit `width` (or
   `flex-shrink: 0`) is your call and *will* overflow, so clip it with `overflow: hidden`.

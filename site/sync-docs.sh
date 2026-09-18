@@ -76,6 +76,9 @@ splits=(
   # Single-quoted for the backticks, as above.
   '05-as-built.md|### `<path>`: vector geometry|reference/paths.md|Paths|16|SVG path data as an element: the d attribute, paint as CSS, and shapes that morph.'
   "05-as-built.md|### Honored CSS|reference/css.md|Honored CSS|4|The authoritative list of properties the runtime interprets, plus selectors, pseudo-classes and transitions."
+  # Its own page rather than a note inside Layout: the rule is about all of CSS,
+  # and a reader arriving from CSS wants the whole list in one place.
+  "05-as-built.md|### Where Rux differs from CSS|reference/css-differences.md|Where Rux differs from CSS|6|The short list of places Rux does not answer the way CSS does, and which kind of difference each one is."
   "05-as-built.md|### Reactivity & script|reference/reactivity.md|Reactivity|5|Signals, computed values, effects, and what re-runs when one changes."
   "05-as-built.md|### Inputs|reference/inputs.md|Inputs|7|Text fields, textarea, select, checkbox and radio, and two-way binding with r-model."
   "05-as-built.md|### Text input and composition|reference/text-input.md|Text input|8|The caret, the soft keyboard, and IME composition for text that is not typed one key at a time."

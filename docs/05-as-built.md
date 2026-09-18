@@ -299,7 +299,10 @@ Driven in `examples/chart.rux` and `examples/morph.rux`.
 
 - **Everything defaults to `display: block`.** Block containers make children fill.
 - **Use `display: flex` for layout.** Flex cross-axis defaults to **flex-start**
-  (children hug), not CSS's `stretch`, which is a deliberate divergence for ergonomics.
+  (children hug), not CSS's `stretch`. **This is a divergence Rux intends to
+  drop**: see "Where Rux differs from CSS". Until it does, every flex
+  column needs its own `align-items: stretch` for its children to fill, because
+  `align-items` does not inherit.
 - **Hug means `fit-content`**: a box with no `width` is clamped to its parent's
   inner width, so it can't burst out of a narrower parent. An explicit `width` (or
   `flex-shrink: 0`) is your call and *will* overflow, so clip it with `overflow: hidden`.
@@ -308,6 +311,27 @@ Driven in `examples/chart.rux` and `examples/morph.rux`.
 - **Lengths are logical pixels.** Layout and taps run in logical space and the
   scene is scaled to the display's DPI, so `16px` is the same physical size on a
   1x and a 2x screen.
+
+
+### Where Rux differs from CSS
+
+**The rule, set 2026-09-18: Rux's CSS behaves the way real CSS does, defaults
+included, unless a divergence is genuinely necessary.** An author arrives
+knowing CSS, and every place Rux answers differently is something they learn by
+being surprised in the window. Documenting a divergence does not pay for it;
+only necessity does, and "better ergonomics" is not necessity.
+
+So this list is short on purpose, and each entry says which kind it is.
+
+| Difference | Kind | Standing |
+|---|---|---|
+| Flex cross-axis defaults to `flex-start`, not `stretch` | a preference, taken for ergonomics | **To be reverted.** It changes the layout of every existing document, so it is scheduled rather than patched |
+| `border-radius` in percent resolves against the **shorter side**, so `50%` on a 160x60 box is a pill and not CSS's ellipse | a capability: Rux draws one radius per corner and cannot draw an elliptical corner | Keep |
+| No inline text flow: two `<text>` siblings stack instead of sharing a line | a capability: the layout engine has no inline layout, which is why `display: inline` was built and then removed | Keep |
+
+Two things that look like differences and are not: `display` defaults to
+`block`, and `flex: 1` means `1 1 0%`. Both are CSS's own answers.
+
 
 ### Honored CSS
 ```
