@@ -129,7 +129,7 @@ has. Live diagnostics are a job for the language server.
 ```
 cd editors/vscode
 npx @vscode/vsce package     # produces ruxlang-<version>.vsix
-code --install-extension ruxlang-0.4.0.vsix
+code --install-extension ruxlang-0.4.1.vsix
 ```
 
 If a Marketplace copy is already installed, uninstall it first
