@@ -2978,11 +2978,13 @@ impl App {
         self.preedit = None;
         self.write_focused(&value);
         self.scroll_caret_into_view(&value, caret);
-        // The row travels with the model: an input inside an `r-for` is
-        // identified by both, and dropping it here would put the caret in every
-        // row of the list at once.
+        // The row and the instance travel with the model: an input inside an
+        // `r-for` is identified by both, and one inside a component by the
+        // instance as well. Dropping either here would put the caret in every
+        // row of the list, or in every instance of the component, at once.
         let row = self.focused_row.clone();
-        self.set_focus_range(Some(Focus { model, row, caret, anchor, preedit }));
+        let instance = self.focused_instance.clone();
+        self.set_focus_range(Some(Focus { model, row, instance, caret, anchor, preedit }));
     }
 
     /// Park the candidate window under the caret instead of at the window's
