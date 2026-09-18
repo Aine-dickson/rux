@@ -317,13 +317,73 @@ fn warn_unknown_calls(engine: &rux_script::Engine, src: &str, whose: &str) {
 /// element, and because a `fn` nobody has called yet is the quietest place in
 /// the language for a typo to sit: a handler at least fails the moment someone
 /// taps it.
-fn check_script_functions(engine: &rux_script::Engine) {
+fn check_script_functions(
+    engine: &rux_script::Engine,
+    callers: &HashSet<String>,
+    own_script_lines: usize,
+    script_line: usize,
+) {
     for problem in engine.unknown_calls_in_functions() {
         let message = format!("a <script> function {}", problem.describe());
         if rux_script::is_fragment() {
             rux_script::warn_script(message);
         } else {
             rux_script::error_script(message);
+        }
+    }
+    // Names, on weaker terms than calls. A call resolves through a registry
+    // nothing in scope can add to; a name resolves through scope, and in Rux a
+    // function runs in its **caller's** scope, so what is reported is only a
+    // name declared nowhere at all, which no caller can be holding, because
+    // there is no declaration of it to hold.
+    for (name, at) in engine.unknown_names_in_functions(callers, own_script_lines) {
+        // Script-relative to file-relative, the same arithmetic
+        // `LoadError::in_script` does: the `<script>` body starts partway down
+        // the file, and a line drawn without that offset lands in the template.
+        // Reported at line 1 it pointed at `<template>` for a mistake in
+        // `<script>`, which is the shape of wrong this project has already paid
+        // for once.
+        let line = at.map(|l| l + script_line - 1);
+        rux_script::located(line, || {
+            rux_script::error_script(format!(
+                "a <script> function reads `{name}`, which is declared nowhere: \
+                 no caller can have it in scope. Declare it with \
+                 `let {name} = signal(\u{2026})`, or check the spelling"
+            ));
+        });
+    }
+}
+
+/// Every name the template puts in scope for something a handler calls.
+///
+/// Two sources, and both are callers: an `r-for` binds a name for the whole
+/// row, and a handler's own `let`s are in scope inside whatever that handler
+/// goes on to call. Collected from the components too, since a component's
+/// handler calling a shared `fn` is a caller like any other.
+fn names_callers_bring(template: &rux_parser::Element, engine: &rux_script::Engine) -> HashSet<String> {
+    let mut names = HashSet::new();
+    collect_caller_names(template, engine, &mut names);
+    names
+}
+
+fn collect_caller_names(
+    el: &rux_parser::Element,
+    engine: &rux_script::Engine,
+    out: &mut HashSet<String>,
+) {
+    if let Some(expr) = el.attr("r-for") {
+        if let Some((var, _)) = rux_style::parse_for(expr) {
+            out.insert(var.to_string());
+        }
+    }
+    for rux_parser::Attr { name, value, .. } in &el.attrs {
+        if name.starts_with('@') || name == "guard" {
+            out.extend(engine.declared_names(value));
+        }
+    }
+    for child in &el.children {
+        if let rux_parser::Node::Element(child) = child {
+            collect_caller_names(child, engine, out);
         }
     }
 }
@@ -533,6 +593,15 @@ pub struct Focus {
     /// reorders: the identity is the row, not the position, so nothing has to
     /// be remapped afterwards.
     pub row: Option<String>,
+    /// The component instance the focused input was written in, when it is
+    /// inside one, and the scope its model is read and written in.
+    ///
+    /// The third part of an input's identity. `model` and `row` say *which*
+    /// input; this says where its name means anything. A component's state is
+    /// private to the instance, so the same `r-model` text in two instances of
+    /// one component is two different values, and neither of them is a document
+    /// signal.
+    pub instance: Option<String>,
     pub caret: usize,
     pub anchor: usize,
     /// The byte range of an in-progress IME composition, if one is running. The
@@ -549,13 +618,26 @@ impl Focus {
 
     /// The same, in a known `r-for` row.
     pub fn at_row(model: impl Into<String>, row: Option<String>, caret: usize) -> Self {
-        Self { model: model.into(), row, caret, anchor: caret, preedit: None }
+        Self { model: model.into(), row, instance: None, caret, anchor: caret, preedit: None }
     }
 
-    /// Whether this focus is the input bound to `model` in row `row`. Both
-    /// halves matter: a list's rows all share one model.
-    pub fn is(&self, model: &str, row: Option<&str>) -> bool {
-        self.model == model && self.row.as_deref() == row
+    /// The same, in a known component instance.
+    pub fn at_row_in(
+        model: impl Into<String>,
+        row: Option<String>,
+        instance: Option<String>,
+        caret: usize,
+    ) -> Self {
+        Self { instance, ..Self::at_row(model, row, caret) }
+    }
+
+    /// Whether this focus is the input bound to `model` in row `row` of
+    /// `instance`. All three matter: a list's rows all share one model, and so
+    /// do two instances of one component.
+    pub fn is(&self, model: &str, row: Option<&str>, instance: Option<&str>) -> bool {
+        self.model == model
+            && self.row.as_deref() == row
+            && self.instance.as_deref() == instance
     }
 
     /// The selected range, low to high.
@@ -589,7 +671,7 @@ fn apply_focus_in(node: &mut LayoutNode, focus: Option<&Focus>, row: Option<&str
     if node.model.is_some() {
         if let Some(text) = node.children.first_mut().and_then(|c| c.text.as_mut()) {
             let mine = focus.filter(|f| {
-                node.model.as_deref().is_some_and(|m| f.is(m, row))
+                node.model.as_deref().is_some_and(|m| f.is(m, row, node.instance.as_deref()))
             });
             // An empty input shows its placeholder; the caret still sits at 0.
             text.caret = mine.map(|f| f.caret.min(text.text.len()));
@@ -1050,7 +1132,11 @@ impl Document {
                 check_handlers(&component.template, &engine, &tags_in(key));
             });
         }
-        check_script_functions(&engine);
+        let mut callers = names_callers_bring(&sfc.template, &engine);
+        for component in components.values() {
+            callers.extend(names_callers_bring(&component.template, &engine));
+        }
+        check_script_functions(&engine, &callers, main_script_lines, sfc.script_line);
         let mut doc = Self {
             sfc,
             components,
@@ -1142,7 +1228,16 @@ impl Document {
         resolve_images(&mut root, &base);
         // `from_source` has no filesystem, so it has no components either.
         check_handlers(&sfc.template, &engine, &std::collections::HashSet::new());
-        check_script_functions(&engine);
+        // No components here either, so the document's own template is the whole
+        // of what a caller can bring.
+        // Nothing is appended here, so the whole compiled text is this
+        // document's own.
+        check_script_functions(
+            &engine,
+            &names_callers_bring(&sfc.template, &engine),
+            usize::MAX,
+            sfc.script_line,
+        );
         let mut doc = Self {
             sfc,
             components: HashMap::new(),
@@ -1631,7 +1726,7 @@ impl Document {
     /// to a rebuild only when `model` is also read structurally. The caller sets
     /// the caret afterward via [`set_focus`](Self::set_focus).
     pub fn apply_edit(&mut self, model: &str, value: &str) {
-        self.apply_edit_in(model, None, value);
+        self.apply_edit_in(model, None, None, value);
     }
 
     /// [`apply_edit`](Self::apply_edit) for an input in a known `r-for` row.
@@ -1640,19 +1735,106 @@ impl Document {
     /// list it can mention the loop variable, which only exists in that row's
     /// scope. The scope was captured when the input was built, so this looks it
     /// up rather than reconstructing it.
-    pub fn apply_edit_in(&mut self, model: &str, row: Option<&str>, value: &str) {
-        let locals = self.locals_for(model, row);
-        let changed = self.engine.assign_string(model, value, &locals);
-        if changed.is_empty() {
+    /// `instance` is the component the input was written in, and is what makes
+    /// an `r-model` inside a component work at all: its state is private to the
+    /// instance and is not a document signal, so the write has to happen in that
+    /// instance's scope and be handed back to it afterwards, exactly as a
+    /// handler's writes are.
+    pub fn apply_edit_in(
+        &mut self,
+        model: &str,
+        row: Option<&str>,
+        instance: Option<&str>,
+        value: &str,
+    ) {
+        let Some(key) = instance.filter(|k| self.instances.contains_key(*k)) else {
+            let locals = self.locals_for(model, row, None);
+            let changed = self.engine.assign_string(model, value, &locals);
+            if changed.is_empty() {
+                return;
+            }
+            self.apply_change(&changed);
             return;
+        };
+
+        // The same shape as `dispatch_handler`: run the assignment with the
+        // instance's own names in scope, then write back only the names the
+        // instance owns. The value is quoted as a literal, because it is
+        // somebody's typing and may hold a quote or a backslash.
+        let key = key.to_string();
+        let locals = self.scope_for(model, row, Some(&key));
+        let src = format!("{model} = {}", rux_reactive::json_string(value));
+        let (after, changed) = self.engine.run_scoped_handler(&src, &locals);
+        let moved = self.write_back_instance(&key, after);
+
+        if !changed.is_empty() {
+            self.apply_change(&changed);
         }
-        self.apply_change(&changed);
+        if moved {
+            // Instance state is not a signal, so no patch can find it: the
+            // rebuild is the only thing that reads it again. A component is a
+            // subtree, so this is bounded.
+            self.refresh_instance_computeds(None);
+            self.rebuild();
+        }
     }
 
-    /// An input's current value, read in its own row's scope.
-    pub fn value_in(&mut self, model: &str, row: Option<&str>) -> String {
-        let locals = self.locals_for(model, row);
+    /// An input's current value, read in its own row's and instance's scope.
+    pub fn value_in(&mut self, model: &str, row: Option<&str>, instance: Option<&str>) -> String {
+        let locals = self.scope_for(model, row, instance);
         self.engine.get_string_in(model, &locals)
+    }
+
+    /// Everything that was in scope where this input was built: the component
+    /// instance's own state and props, then the `r-for` row's loop variables.
+    ///
+    /// In that order, so a loop variable shadows a state name of the same
+    /// spelling, which is what the nesting on the page says should happen.
+    fn scope_for(
+        &self,
+        model: &str,
+        row: Option<&str>,
+        instance: Option<&str>,
+    ) -> Vec<(String, rux_reactive::Value)> {
+        let mut locals = match instance.and_then(|k| self.instances.get(k)) {
+            Some(entry) => {
+                let mut own = entry.state.clone();
+                own.extend(entry.props.iter().cloned());
+                own
+            }
+            None => Vec::new(),
+        };
+        locals.extend(self.locals_for(model, row, instance));
+        locals
+    }
+
+    /// Hand an instance back the names it owns after something ran in its scope,
+    /// and say whether any of them actually moved.
+    ///
+    /// Only its own state: a prop belongs to the caller, so writing one here
+    /// would look like it worked and be forgotten on the next build. That is the
+    /// same rule handlers follow, and an `r-model` bound to a prop is the case
+    /// it catches.
+    fn write_back_instance(&mut self, key: &str, after: Vec<(String, rux_reactive::Value)>) -> bool {
+        let Some(entry) = self.instances.get(key) else { return false };
+        let state_names: Vec<String> = entry.state.iter().map(|(n, _)| n.clone()).collect();
+        let mut moved = false;
+        for (name, value) in after {
+            if !state_names.contains(&name) {
+                continue;
+            }
+            let slot = self
+                .instances
+                .get_mut(key)
+                .and_then(|i| i.state.iter_mut().find(|(n, _)| *n == name));
+            if let Some(slot) = slot {
+                if slot.1 != value {
+                    slot.1 = value;
+                    moved = true;
+                }
+            }
+        }
+        moved
     }
 
     /// The loop variables that were in scope where this input was built.
@@ -1660,11 +1842,20 @@ impl Document {
     /// Matched on model *and* row, since a list's rows all record the same
     /// model. Empty for an input outside a list, which is the common case and
     /// needs nothing.
-    fn locals_for(&self, model: &str, row: Option<&str>) -> Vec<(String, rux_reactive::Value)> {
+    fn locals_for(
+        &self,
+        model: &str,
+        row: Option<&str>,
+        instance: Option<&str>,
+    ) -> Vec<(String, rux_reactive::Value)> {
         self.registry
             .value
             .iter()
-            .find(|b| b.model == model && b.row.as_deref() == row)
+            .find(|b| {
+                b.model == model
+                    && b.row.as_deref() == row
+                    && b.instance.as_deref() == instance
+            })
             .map(|b| b.locals.clone())
             .unwrap_or_default()
     }
@@ -2248,10 +2439,19 @@ impl Document {
                     // when it is an input, and asking anything else to take
                     // focus is a no-op rather than a silent half-state.
                     let found = node_at(&self.root, &path)
-                        .and_then(|n| n.model.clone().map(|m| (m, n.key.clone())));
-                    if let Some((model, row)) = found {
-                        let caret = self.engine.get_string(&model).chars().count();
-                        self.pending_focus = Some(Some(Focus::at_row(model, row, caret)));
+                        .and_then(|n| {
+                            n.model.clone().map(|m| (m, n.key.clone(), n.instance.clone()))
+                        });
+                    if let Some((model, row, instance)) = found {
+                        // Read in the input's own scope. Read in the document's,
+                        // an input inside a component reported its own model as
+                        // undefined and the caret landed in an empty field.
+                        let caret = self
+                            .value_in(&model, row.as_deref(), instance.as_deref())
+                            .chars()
+                            .count();
+                        self.pending_focus =
+                            Some(Some(Focus::at_row_in(model, row, instance, caret)));
                         acted = true;
                     } else {
                         rux_script::warn_script(
@@ -2322,24 +2522,7 @@ impl Document {
         // Only the component's own names are written back. A prop belongs to the
         // caller: assigning to one inside a component would look like it worked
         // and be forgotten on the next build, which is worse than not allowing it.
-        let state_names: Vec<String> =
-            self.instances[key].state.iter().map(|(n, _)| n.clone()).collect();
-        let mut moved = false;
-        for (name, value) in after {
-            if !state_names.contains(&name) {
-                continue;
-            }
-            let slot = self
-                .instances
-                .get_mut(key)
-                .and_then(|i| i.state.iter_mut().find(|(n, _)| *n == name));
-            if let Some(slot) = slot {
-                if slot.1 != value {
-                    slot.1 = value;
-                    moved = true;
-                }
-            }
-        }
+        let mut moved = self.write_back_instance(key, after);
 
         // A handler that moved this instance's state has moved whatever its
         // computeds derive from, and those are read by the build that is about
@@ -4174,12 +4357,12 @@ mod tests {
     fn selection_paints_only_in_the_focused_input() {
         let mut doc = two_inputs();
 
-        doc.set_focus(Some(Focus { model: "name".into(), row: None, caret: 3, anchor: 1, preedit: None }));
+        doc.set_focus(Some(Focus { model: "name".into(), row: None, instance: None, caret: 3, anchor: 1, preedit: None }));
         assert_eq!(selection_of(&doc.root, "name"), Some((1, 3)));
         assert_eq!(selection_of(&doc.root, "city"), None);
 
         // Dragging leftwards puts the caret *before* the anchor; same range.
-        doc.set_focus(Some(Focus { model: "name".into(), row: None, caret: 1, anchor: 3, preedit: None }));
+        doc.set_focus(Some(Focus { model: "name".into(), row: None, instance: None, caret: 1, anchor: 3, preedit: None }));
         assert_eq!(selection_of(&doc.root, "name"), Some((1, 3)));
     }
 
@@ -4190,10 +4373,10 @@ mod tests {
     fn focus_moves_the_selection_out_of_the_old_input() {
         let mut doc = two_inputs();
 
-        doc.set_focus(Some(Focus { model: "name".into(), row: None, caret: 3, anchor: 0, preedit: None }));
+        doc.set_focus(Some(Focus { model: "name".into(), row: None, instance: None, caret: 3, anchor: 0, preedit: None }));
         assert_eq!(selection_of(&doc.root, "name"), Some((0, 3)));
 
-        doc.set_focus(Some(Focus { model: "city".into(), row: None, caret: 2, anchor: 0, preedit: None }));
+        doc.set_focus(Some(Focus { model: "city".into(), row: None, instance: None, caret: 2, anchor: 0, preedit: None }));
         assert_eq!(selection_of(&doc.root, "name"), None, "old input kept its selection");
         assert_eq!(selection_of(&doc.root, "city"), Some((0, 2)));
 
@@ -4327,12 +4510,12 @@ mod tests {
         .expect("load");
         let model = "rows[row.at.to_int()].note";
 
-        assert_eq!(doc.value_in(model, Some("a")), "alpha");
-        assert_eq!(doc.value_in(model, Some("b")), "bravo", "each row reads its own value");
+        assert_eq!(doc.value_in(model, Some("a"), None), "alpha");
+        assert_eq!(doc.value_in(model, Some("b"), None), "bravo", "each row reads its own value");
 
-        doc.apply_edit_in(model, Some("b"), "bravo!");
-        assert_eq!(doc.value_in(model, Some("b")), "bravo!", "the edit landed");
-        assert_eq!(doc.value_in(model, Some("a")), "alpha", "and only in that row");
+        doc.apply_edit_in(model, Some("b"), None, "bravo!");
+        assert_eq!(doc.value_in(model, Some("b"), None), "bravo!", "the edit landed");
+        assert_eq!(doc.value_in(model, Some("a"), None), "alpha", "and only in that row");
     }
 
     /// An `r-model` that is a path rather than a bare signal is written through
@@ -4346,7 +4529,7 @@ mod tests {
         .expect("load");
 
         doc.apply_edit("user.name", "grace");
-        assert_eq!(doc.value_in("user.name", None), "grace");
+        assert_eq!(doc.value_in("user.name", None, None), "grace");
     }
 
     /// A value containing quotes and backslashes survives being written, since
@@ -4356,7 +4539,7 @@ mod tests {
         let mut doc = two_inputs();
         let awkward = "she said \"hi\" \\ then left";
         doc.apply_edit("name", awkward);
-        assert_eq!(doc.value_in("name", None), awkward);
+        assert_eq!(doc.value_in("name", None, None), awkward);
     }
 
     /// Write a component with a `<slot />` and a document that fills it, in a
@@ -4960,20 +5143,20 @@ use components::detail;
     #[test]
     fn the_history_says_whether_it_can_be_walked() {
         let mut doc = router_app();
-        assert_eq!(doc.value_in("can_go_back", None), "false", "nothing behind the first page");
-        assert_eq!(doc.value_in("can_go_forward", None), "false");
+        assert_eq!(doc.value_in("can_go_back", None, None), "false", "nothing behind the first page");
+        assert_eq!(doc.value_in("can_go_forward", None, None), "false");
 
         doc.navigate("/settings");
-        assert_eq!(doc.value_in("can_go_back", None), "true");
-        assert_eq!(doc.value_in("can_go_forward", None), "false", "nothing ahead of the last page");
+        assert_eq!(doc.value_in("can_go_back", None, None), "true");
+        assert_eq!(doc.value_in("can_go_forward", None, None), "false", "nothing ahead of the last page");
 
         doc.back();
-        assert_eq!(doc.value_in("can_go_back", None), "false");
-        assert_eq!(doc.value_in("can_go_forward", None), "true", "the page just left is ahead");
+        assert_eq!(doc.value_in("can_go_back", None, None), "false");
+        assert_eq!(doc.value_in("can_go_forward", None, None), "true", "the page just left is ahead");
 
         // Somewhere new drops what was ahead, so forward closes again.
         doc.navigate("/user/1");
-        assert_eq!(doc.value_in("can_go_forward", None), "false");
+        assert_eq!(doc.value_in("can_go_forward", None, None), "false");
     }
 
     /// A query is an argument to a page, not a different page. So it does not
@@ -5305,7 +5488,7 @@ use components::detail;
         assert!(find_text(&doc.root, "7"), "the component sees its own: {:?}", text_of(&doc.root));
         // The document's own `{{ count }}` has nothing to read, and says so
         // rather than borrowing the component's.
-        assert_eq!(doc.value_in("count", None), "", "{:?}", text_of(&doc.root));
+        assert_eq!(doc.value_in("count", None, None), "", "{:?}", text_of(&doc.root));
     }
 
     /// The isolation is one-directional, and the docs claimed otherwise. A
@@ -5332,7 +5515,7 @@ use components::detail;
         );
         let card = doc.root.children[0].clone();
         assert!(tap(&mut doc, &card), "the handler wrote a document signal");
-        assert_eq!(doc.value_in("theme", None), "dark");
+        assert_eq!(doc.value_in("theme", None, None), "dark");
         assert!(find_text(&doc.root, "saw dark"), "{:?}", text_of(&doc.root));
     }
 
@@ -5715,7 +5898,7 @@ use components::detail;
     #[test]
     fn selection_survives_a_rebuild() {
         let mut doc = two_inputs();
-        doc.set_focus(Some(Focus { model: "name".into(), row: None, caret: 3, anchor: 1, preedit: None }));
+        doc.set_focus(Some(Focus { model: "name".into(), row: None, instance: None, caret: 3, anchor: 1, preedit: None }));
         doc.rebuild();
         assert_eq!(selection_of(&doc.root, "name"), Some((1, 3)));
         assert_eq!(caret_of(&doc.root, "name"), Some(3));
@@ -5733,6 +5916,7 @@ use components::detail;
         doc.set_focus(Some(Focus {
             model: "name".into(),
             row: None,
+            instance: None,
             caret: 3,
             anchor: 3,
             preedit: Some((1, 3)),
@@ -5754,6 +5938,7 @@ use components::detail;
         doc.set_focus(Some(Focus {
             model: "name".into(),
             row: None,
+            instance: None,
             caret: 2,
             anchor: 2,
             preedit: Some((0, 2)),

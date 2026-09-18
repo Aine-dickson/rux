@@ -1775,6 +1775,106 @@ impl Engine {
         unknown
     }
 
+    /// Names read inside a `fn` body that **nothing anywhere could supply**.
+    ///
+    /// ## Why this is not the obvious check
+    ///
+    /// A `fn` body cannot be checked against its own parameters and locals, the
+    /// way it could in most languages, because of divergence 4 in the fork: in
+    /// Rux **a call runs in the scope it was written in**, so a function sees
+    /// its caller's locals. Driven and confirmed: `fn outer() { let x = 42;
+    /// inner(); }` with `fn inner() { n = x; }` sets `n` to 42. Checking a body
+    /// in isolation would therefore report the single most useful thing the
+    /// fork exists to allow.
+    ///
+    /// So the question asked here is weaker and answerable: **is this name
+    /// declared anywhere at all?** A name that is no signal, no parameter, no
+    /// `let` and no loop variable in this document cannot be in scope under any
+    /// caller, because scope is made of declarations and there is no
+    /// declaration of it to be in. `fn addUser() { Have }` is the shape this
+    /// catches, and it is the shape a typo takes.
+    ///
+    /// `also` is what the *runtime* knows and this crate does not: the names an
+    /// `r-for` row brings in, and the locals of every handler in the template,
+    /// since any of those can be the caller whose scope a body is running in.
+    ///
+    /// ## Reported as an error
+    ///
+    /// Decided by the user, 2026-09-17, looking at the squiggle: a name nothing
+    /// anywhere declares is a mistake, and a caution let `rux check` exit 0 on a
+    /// document that cannot work. What keeps that safe is how narrow the
+    /// question is. This never asks whether a name is in scope *here*, only
+    /// whether it is declared *at all*, and `also` carries the names the runtime
+    /// knows about that this crate cannot see. The measure is the corpus: all 47
+    /// examples and all 21 components alone produce no report.
+    /// `own_script_lines` is how much of the compiled text is **this document's
+    /// own** `<script>`. Every component's `fn`s are appended to it before
+    /// compiling, so the one AST holds functions from several files, and a
+    /// report about a line past that mark belongs to a file this is not
+    /// checking. Naming the wrong file is worse than saying nothing: unplaced is
+    /// vague, placed and wrong is a trap, which this project has already paid
+    /// for once. A component is reported when it is the file being checked.
+    /// Each report carries the **script-relative** line it was read on, which
+    /// the runtime turns into a line in the file. Without one it is drawn at
+    /// the top of the document, pointing at `<template>` for a mistake in
+    /// `<script>`.
+    pub fn unknown_names_in_functions(
+        &self,
+        also: &HashSet<String>,
+        own_script_lines: usize,
+    ) -> Vec<(String, Option<usize>)> {
+        let mut in_scope = declared_in(&self.funcs);
+        in_scope.extend(self.signals.iter().cloned());
+        in_scope.extend(also.iter().cloned());
+
+        let mut unknown: Vec<(String, Option<usize>)> = Vec::new();
+        self.funcs.walk(&mut |path| {
+            let Some(rhai::ASTNode::Expr(rhai::Expr::Variable(var, _, pos))) = path.last() else {
+                return true;
+            };
+            // Past the mark is a component's function, riding in the same AST.
+            if pos.line().is_some_and(|line| line > own_script_lines) {
+                return true;
+            }
+            // A qualified name (`mod::thing`) resolves through a module and not
+            // through any scope, so scope has nothing to say about it.
+            if !var.2.is_empty() {
+                return true;
+            }
+            let name = var.1.as_str();
+            if in_scope.contains(name) {
+                return true;
+            }
+            // A bare name that is really a function is a call the other check
+            // owns, and reporting it here would say the same thing twice in
+            // different words.
+            if self.callable_names().contains(name) {
+                return true;
+            }
+            // One report per name, at the first place it is read: a name
+            // misspelled the same way twice is one thing to fix.
+            if !unknown.iter().any(|(n, _)| n == name) {
+                unknown.push((name.to_string(), pos.line()));
+            }
+            true
+        });
+        unknown
+    }
+
+    /// Every name `src` declares, for handing back as part of `also` above.
+    ///
+    /// A handler is a caller, so its locals are in scope inside whatever it
+    /// calls. Compiling it here rather than in the runtime keeps every piece of
+    /// rhai knowledge on this side of the boundary.
+    pub fn declared_names(&self, src: &str) -> HashSet<String> {
+        match self.engine.compile(rewrite_intervals(src)) {
+            Ok(ast) => declared_in(&ast),
+            // A syntax error is `check_syntax`'s to report, and an AST that does
+            // not exist declares nothing.
+            Err(_) => HashSet::new(),
+        }
+    }
+
     /// `signal.set(x)` and `signal.get()`, which name real functions and still
     /// cannot work.
     ///
@@ -2110,6 +2210,36 @@ impl Engine {
         }
         names.into_iter().filter(|n| self.read_signal(n) != before[n]).collect()
     }
+}
+
+/// Every name an AST declares: `fn` parameters, `let` bindings, and the
+/// variables a `for` loop brings in.
+///
+/// Deliberately flat rather than per-scope. A `let` inside one block does not
+/// really reach a sibling block, but pretending it might is the safe direction
+/// of wrong: it can only make this quieter, never louder, and quiet is the side
+/// a name check has to fail towards.
+fn declared_in(ast: &AST) -> HashSet<String> {
+    let mut names: HashSet<String> = HashSet::new();
+    for f in ast.iter_functions() {
+        names.extend(f.params.iter().map(|p| p.to_string()));
+    }
+    ast.walk(&mut |path| {
+        match path.last() {
+            Some(rhai::ASTNode::Stmt(rhai::Stmt::Var(decl, ..))) => {
+                names.insert(decl.0.name.to_string());
+            }
+            Some(rhai::ASTNode::Stmt(rhai::Stmt::For(loop_, ..))) => {
+                names.insert(loop_.0.name.to_string());
+                if let Some(counter) = &loop_.1 {
+                    names.insert(counter.name.to_string());
+                }
+            }
+            _ => {}
+        }
+        true
+    });
+    names
 }
 
 fn to_dynamic(v: &Value) -> Dynamic {

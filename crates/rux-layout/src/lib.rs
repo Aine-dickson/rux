@@ -1280,6 +1280,14 @@ pub struct FocusRegion {
     /// inputs in one list are indistinguishable and the caret lands in the first
     /// of them whichever one was tapped.
     pub row: Option<String>,
+    /// The component instance this input was written in, when it is inside one.
+    ///
+    /// The third part of its identity, and the one that says *where the model
+    /// means anything*. An `r-model` inside a component names that instance's
+    /// own state, which the document knows nothing about: read it in the
+    /// document's scope and the name resolves to nothing, so the field shows
+    /// empty and every keystroke is written somewhere nobody reads.
+    pub instance: Option<String>,
     /// The input's text box (its laid-out child). The shell needs it to turn a
     /// click into a caret position.
     pub text: Option<PaintText>,
@@ -1310,6 +1318,10 @@ pub struct SelectRegion {
     /// first row's dropdown wherever you tapped, draws it over that row, and
     /// writes the chosen option into it.
     pub row: Option<String>,
+    /// The component instance this select was written in. Same reason as
+    /// [`FocusRegion::instance`]: choosing an option writes the model, and a
+    /// write in the wrong scope lands nowhere.
+    pub instance: Option<String>,
     pub options: Vec<String>,
 }
 
@@ -1393,11 +1405,25 @@ impl FocusItem {
 #[derive(Clone, Debug)]
 pub enum FocusKind {
     /// A text / textarea input: focusing it starts caret editing.
-    Text { model: String, row: Option<String>, multiline: bool, text: Option<PaintText> },
+    Text {
+        model: String,
+        row: Option<String>,
+        /// The component instance the input was written in: the scope its model
+        /// is read and written in. See [`FocusRegion::instance`].
+        instance: Option<String>,
+        multiline: bool,
+        text: Option<PaintText>,
+    },
     /// A button / checkbox / radio: Space or Enter runs its handler.
     Activate { on_tap: String, instance: Option<String> },
     /// A select: Space or Enter opens its dropdown.
-    Select { model: String, row: Option<String>, options: Vec<String> },
+    Select {
+        model: String,
+        row: Option<String>,
+        /// The component instance the select was written in.
+        instance: Option<String>,
+        options: Vec<String>,
+    },
 }
 
 /// The result of laying out a tree: paint items, hit regions, and focus regions,
@@ -1905,6 +1931,9 @@ struct Bound {
     model: String,
     /// The enclosing `r-for` row's key, the other half of an input's identity.
     row: Option<String>,
+    /// The component instance the input was written in, the scope its model is
+    /// resolved in. See [`FocusRegion::instance`].
+    instance: Option<String>,
     multiline: bool,
     options: Option<Vec<String>>,
 }
@@ -2175,6 +2204,7 @@ fn build(
             id,
             model: model.clone(),
             row: row.map(str::to_string),
+            instance: node.instance.clone(),
             multiline: node.multiline,
             options: node.options.clone(),
         });
@@ -2416,6 +2446,14 @@ fn collect(
     // A `for=` label targeting a text input: a focus region at the label's box,
     // carrying the *target's* model, so tapping the label focuses that input.
     if let Some((_, model, row)) = focus_labels.iter().find(|(nid, ..)| *nid == id) {
+        // The scope comes from the input the label points at, not from the
+        // label: `for=` names a model, and a model only means anything where it
+        // was written. A label that finds no such input carries no instance,
+        // which is the same answer as before this field existed.
+        let instance = models
+            .iter()
+            .find(|b| b.model == *model && b.row == *row)
+            .and_then(|b| b.instance.clone());
         out.focuses.push(FocusRegion {
             x,
             y,
@@ -2423,6 +2461,7 @@ fn collect(
             height: layout.size.height,
             model: model.clone(),
             row: row.clone(),
+            instance,
             text: None,
             multiline: false,
             scroll_id: None,
@@ -2494,6 +2533,7 @@ fn collect(
                 height: fh,
                 model: bound.model.clone(),
                 row: bound.row.clone(),
+                instance: bound.instance.clone(),
                 options: options.clone(),
             });
             out.focusables.push(FocusItem {
@@ -2506,6 +2546,7 @@ fn collect(
                 kind: FocusKind::Select {
                     model: bound.model.clone(),
                     row: bound.row.clone(),
+                    instance: bound.instance.clone(),
                     options: options.clone(),
                 },
                 scroll: inside_scroll,
@@ -2542,6 +2583,7 @@ fn collect(
                 height: fh,
                 model: bound.model.clone(),
                 row: bound.row.clone(),
+                instance: bound.instance.clone(),
                 text: text.clone(),
                 multiline: bound.multiline,
                 // The scroll block below assigns ids as `out.scrolls.len()`, so if
@@ -2558,6 +2600,7 @@ fn collect(
                 kind: FocusKind::Text {
                     model: bound.model.clone(),
                     row: bound.row.clone(),
+                    instance: bound.instance.clone(),
                     multiline: bound.multiline,
                     text,
                 },

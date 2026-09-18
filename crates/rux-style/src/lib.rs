@@ -204,6 +204,11 @@ pub struct ValueBinding {
     /// the row's own scope: the expression is recorded as written, so a model
     /// like `items[item.at].note` means nothing without `item` in scope.
     pub row: Option<String>,
+    /// The component instance this input was written in, the third part of its
+    /// identity. Two instances of one component record the same model and the
+    /// same row, so without this the first one's captured scope answered for
+    /// every one of them.
+    pub instance: Option<String>,
     /// Shown (dim) when the value is empty.
     pub placeholder: String,
     /// Text colour when the field has a value.
@@ -1682,6 +1687,10 @@ pub struct InteractionState {
     /// Without it `:focus` matches every row of a list at once, since they all
     /// carry the same `r-model` text.
     pub focused_row: Option<String>,
+    /// The component instance that input is in, when it is inside one. Without
+    /// it `:focus` lights the same input in *every* instance of a component,
+    /// since they all carry the same `r-model` text as well.
+    pub focused_instance: Option<String>,
 }
 
 impl InteractionState {
@@ -3247,7 +3256,11 @@ fn build_node_inner(
     // Both halves, or every row of a list matches at once: they all carry the
     // same `r-model` text, so the model alone cannot pick one out.
     desc.states.focus = match (&state.focused_model, el.attr("r-model")) {
-        (Some(focused), Some(model)) => focused == model && state.focused_row.as_deref() == row,
+        (Some(focused), Some(model)) => {
+            focused == model
+                && state.focused_row.as_deref() == row
+                && state.focused_instance.as_deref() == instance
+        }
         _ => false,
     };
     // `:class`: dynamic classes fed into the cascade (the `checked` pattern,
@@ -3741,6 +3754,7 @@ fn build_node_inner(
                     path: path.to_vec(),
                     model: m.to_string(),
                     row: row.map(str::to_string),
+                    instance: instance.map(str::to_string),
                     placeholder: placeholder.clone(),
                     color,
                     placeholder_color: PLACEHOLDER_COLOR,
@@ -3782,6 +3796,12 @@ fn build_node_inner(
         let mut node = LayoutNode::new(style);
         node.children.push(text_child);
         node.model = model;
+        // An input built inside a component has to carry which one: its model
+        // names that instance's own state, and without this the value was read
+        // and written in the document's scope, where the name does not exist.
+        // The general element branch below has always set it; this one never
+        // did, which is exactly the branch every `r-model` goes through.
+        node.instance = instance.map(str::to_string);
         node.multiline = multiline;
         node.options = options;
         node.on_tap = on_tap;
@@ -4516,7 +4536,12 @@ pub fn restore_scroll(template: &Element) -> bool {
 }
 
 /// Parse `r-for="item in items"` into `(binding, collection_expr)`.
-fn parse_for(expr: &str) -> Option<(&str, &str)> {
+///
+/// Public because the checker needs the same answer: a loop variable is a name
+/// in scope inside anything a row's handler calls, and a second parser for one
+/// `split_once` would eventually disagree with this one about what `r-for`
+/// binds.
+pub fn parse_for(expr: &str) -> Option<(&str, &str)> {
     let (var, coll) = expr.split_once(" in ")?;
     Some((var.trim(), coll.trim()))
 }

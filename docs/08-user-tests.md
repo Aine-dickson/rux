@@ -772,6 +772,67 @@ one layer further down, where three of the four sides were dropped on the way
 into `PaintRect`. Reading the computed style is not the same as looking at the
 window, and this is the case that says so.
 
+### An input inside a component took no text
+
+Reported as "my inputs do not receive values", against `pages/new-task.rux` in
+the user's own tasker app: the first keystroke seemed to register as a space and
+nothing after it arrived at all. A routed `view=` is a component instance, and
+that turned out to be the whole of it.
+
+| Case | Where | Result |
+|---|---|---|
+| `<input r-model>` on a page (`<screen>` root), as the control | desktop, `rux run` + SendKeys | Passed, before and after. The signal updated on every keystroke |
+| `<input r-model>` inside a component | desktop, `rux run` + SendKeys | **Failed before the fix.** The caret painted in the field, three keys went in, nothing was entered. One error on stderr, printed once rather than per keystroke |
+| The same, after the fix | desktop, `rux run` + SendKeys + screenshot | Passed: `Hello` typed, shown in the field, and the component's own signal reads it back |
+| The user's `pages/new-task.rux`, through the router | desktop, `rux run --route /new` + SendKeys | Passed after the fix: `Buy milk` typed into the field that had taken nothing |
+| Two instances of one component | `cargo test` | **Failed before the fix**, and differently: writing one changed what the other read, because the captured build scope was matched on `(model, row)` only |
+| `<input r-model>` bound to a **prop** | `cargo test` | Passed: the edit is dropped rather than half-kept, the same rule handlers follow |
+| All 47 files under `examples/` | desktop, `rux check` | Passed with no new findings |
+
+**Two things were being driven for the first time here.** No `r-model` test in
+the runtime had ever used anything but a `<screen>` root, so the component case
+had no coverage at all; and typing had never been driven headlessly. Injected
+clicks still do not reach the window, but **`SendKeys` does**, which with a
+`mounted` hook calling `focus()` is a complete typing harness.
+
+**The one-line cause sat under the plumbing.** `rux-style` builds an `<input>`
+in a branch of its own, and that branch never set `node.instance`, though the
+general element branch always had. Every input reported "no instance", so
+nothing downstream could have known whose state its model named.
+
+### A name inside a `fn` body that nothing declares
+
+Found in the user's own `pages/new-task.rux` while chasing the input bug: `fn
+addUser() { Have }` passed `rux check` clean, as a page as well as a skipped
+component. The undefined-name check runs when an expression is *evaluated*, and
+a `fn` nobody has called yet is never evaluated.
+
+| Case | Where | Result |
+|---|---|---|
+| `fn add() { Have }` | desktop, `rux check` | **Failed before the fix**: "no problems found". Now a warning naming `Have` |
+| The user's own `pages/new-task.rux` | desktop, `rux check <file>` | Passed after the fix: the same warning, against the file the `fn` is actually in |
+| A `fn` reading a **local of the function that called it** | desktop, `rux run` + `print` | Legal, and driven to be sure: `outer` declares `helper_local = 42`, `inner` reads it, the signal ends at 42. Must stay silent, and does |
+| A `fn` reading a **handler's** local | `cargo test` | Silent: a handler is a caller like any other |
+| A `fn` reading an `r-for` **row variable** | `cargo test` | Silent: the row is in scope for anything the row's handler calls |
+| A component's `fn`, while checking the document | desktop, `rux check` | Silent, deliberately: the component's functions ride in the same compiled text, and the warning would carry the document's name against another file's line |
+| All 47 files under `examples/`, and each of the 21 components alone | desktop, `rux check` | Passed with no new findings, which is the false-positive measure |
+
+**The obvious check would have been wrong**, and that is the finding worth
+keeping. Divergence 4 in the rhai fork makes a call run in the scope it was
+written in, so a `fn` sees its caller's locals. Checking a body against its own
+parameters and `let`s would report the single most useful thing the fork exists
+to allow. The question the check actually asks is the weaker, answerable one:
+**is this name declared anywhere at all?** A name that is no signal, no
+parameter, no `let` and no loop variable anywhere in the document cannot be in
+scope under any caller, because scope is made of declarations and there is no
+declaration of it to be in.
+
+It is an **error**, decided by the user while looking at the squiggle: a name
+declared nowhere cannot resolve under any caller, and calling it a caution let
+`rux check` exit 0 on a document that cannot work. It carries the line the name
+is read on; reported without one it was drawn at the top of the file, pointing
+at `<template>` for a mistake in `<script>`.
+
 ## Standing gaps
 
 Cases nothing here can currently exercise. They are the shape of what v0.8 has

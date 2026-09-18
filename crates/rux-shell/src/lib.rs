@@ -1146,6 +1146,12 @@ struct App {
     /// which row, and it is what keeps the caret with its row when the list is
     /// reordered.
     focused_row: Option<String>,
+    /// The component instance that input was written in, when it is inside one.
+    ///
+    /// The scope its model is read and written in. Without it every keystroke
+    /// was assigned to a document signal of the same name, which in a component
+    /// is nothing at all: the field stayed empty and typing did nothing.
+    focused_instance: Option<String>,
     /// Whether the focused input is a `type="textarea"` (Enter → newline).
     focused_multiline: bool,
     /// The currently open `select` dropdown, as `(r-model, row key)`. Survives
@@ -1156,7 +1162,7 @@ struct App {
     /// one. Keyed by the model alone, tapping row three's select opened row
     /// one's dropdown, drew it over row one, hit-tested the options against row
     /// one's box, and wrote the chosen option into row one.
-    open_select: Option<(String, Option<String>)>,
+    open_select: Option<(String, Option<String>, Option<String>)>,
     /// Caret position in the focused input, as a byte index into its value.
     caret: usize,
     /// Where the current selection started, as a byte index. Equal to `caret`
@@ -1275,6 +1281,7 @@ impl App {
             touch: None,
             focused: None,
             focused_row: None,
+            focused_instance: None,
             focused_multiline: false,
             open_select: None,
             caret: 0,
@@ -1603,7 +1610,11 @@ impl App {
     /// The byte index in `region`'s text nearest a point, in logical px. An empty
     /// input is showing its placeholder, not a value, so its caret belongs at 0.
     fn index_in(&mut self, region: &FocusRegion, px: f32, py: f32) -> usize {
-        let value = self.document.value_in(&region.model, region.row.as_deref());
+        let value = self.document.value_in(
+            &region.model,
+            region.row.as_deref(),
+            region.instance.as_deref(),
+        );
         match region.text.as_ref() {
             Some(t) if !value.is_empty() => {
                 let (tx, ty) = self.text_point(region, t, px, py);
@@ -1649,6 +1660,7 @@ impl App {
         layout: &rux_layout::Layout,
         focused: Option<&str>,
         focused_row: Option<&str>,
+        focused_instance: Option<&str>,
         caret: usize,
         scroll: &mut f32,
         text: &mut rux_text::TextEngine,
@@ -1661,7 +1673,11 @@ impl App {
         let Some(region) = layout
             .focuses
             .iter()
-            .find(|f| f.model == model && f.row.as_deref() == focused_row)
+            .find(|f| {
+                f.model == model
+                    && f.row.as_deref() == focused_row
+                    && f.instance.as_deref() == focused_instance
+            })
         else {
             return *scroll;
         };
@@ -1671,7 +1687,7 @@ impl App {
             *scroll = 0.0;
             return 0.0;
         };
-        let value = document.value_in(model, focused_row);
+        let value = document.value_in(model, focused_row, focused_instance);
         let style = rux_paint::text_style(&t.content);
         let (cx, _, _) = text.caret_geometry(&value, &style, Some(t.width), caret.min(value.len()));
 
@@ -1752,7 +1768,8 @@ impl App {
     /// scroll region instead, and an unfocused field is never scrolled.
     fn text_scroll_for(&self, region: &FocusRegion) -> f32 {
         let focused = self.focused.as_deref() == Some(region.model.as_str())
-            && self.focused_row.as_deref() == region.row.as_deref();
+            && self.focused_row.as_deref() == region.row.as_deref()
+            && self.focused_instance.as_deref() == region.instance.as_deref();
         if focused && !region.multiline { self.text_scroll } else { 0.0 }
     }
 
@@ -1796,7 +1813,7 @@ impl App {
 
         let caret = self.index_in(&region, fx, fy);
         self.text_drag = true;
-        self.set_focus(Some((region.model, region.row, caret)));
+        self.set_focus(Some((region.model, region.row, region.instance, caret)));
         true
     }
 
@@ -1811,7 +1828,11 @@ impl App {
         let Some(region) = self.focuses.iter().rev().find(|f| f.contains(fx, fy)).cloned() else {
             return false;
         };
-        let value = self.document.value_in(&region.model, region.row.as_deref());
+        let value = self.document.value_in(
+            &region.model,
+            region.row.as_deref(),
+            region.instance.as_deref(),
+        );
         let (Some(t), false) = (&region.text, value.is_empty()) else {
             return false;
         };
@@ -1826,6 +1847,7 @@ impl App {
         self.set_focus_range(Some(Focus {
             model: region.model,
             row: region.row,
+            instance: region.instance,
             caret: end,
             anchor: start,
             preedit: None,
@@ -1863,6 +1885,7 @@ impl App {
             self.set_focus_range(Some(Focus {
                 model: region.model,
                 row: region.row,
+                instance: region.instance,
                 caret,
                 anchor: caret,
                 preedit: None,
@@ -1881,6 +1904,7 @@ impl App {
             self.set_focus_range(Some(Focus {
                 model: region.model,
                 row: region.row,
+                instance: region.instance,
                 caret,
                 anchor,
                 preedit: None,
@@ -1939,6 +1963,7 @@ impl App {
             active,
             focused_model: self.document.interaction().focused_model.clone(),
             focused_row: self.document.interaction().focused_row.clone(),
+            focused_instance: self.document.interaction().focused_instance.clone(),
         };
         if self.document.set_interaction(next) {
             self.request_redraw();
@@ -1979,13 +2004,22 @@ impl App {
     }
 
     /// Tell the document which input has focus, so `:focus` rules match it.
-    fn update_focus_state(&mut self, model: Option<String>, row: Option<String>) {
+    fn update_focus_state(
+        &mut self,
+        model: Option<String>,
+        row: Option<String>,
+        instance: Option<String>,
+    ) {
         let mut next = self.document.interaction().clone();
-        if next.focused_model == model && next.focused_row == row {
+        if next.focused_model == model
+            && next.focused_row == row
+            && next.focused_instance == instance
+        {
             return;
         }
         next.focused_model = model;
         next.focused_row = row;
+        next.focused_instance = instance;
         if self.document.set_interaction(next) {
             self.request_redraw();
         }
@@ -2045,17 +2079,22 @@ impl App {
 
         // An open dropdown is on top of everything, so it intercepts taps first:
         // a tap on an option selects it; any other tap just closes the dropdown.
-        if let Some((model, row)) = self.open_select.take() {
+        if let Some((model, row, instance)) = self.open_select.take() {
             if let Some(sel) = self
                 .selects
                 .iter()
-                .find(|s| s.model == model && s.row == row)
+                .find(|s| s.model == model && s.row == row && s.instance == instance)
                 .cloned()
             {
                 for (i, option) in sel.options.iter().enumerate() {
                     let (rx, ry, rw, rh) = dropdown_row(&sel, i);
                     if fx >= rx && fx <= rx + rw && fy >= ry && fy <= ry + rh {
-                        self.document.apply_edit_in(&model, row.as_deref(), option);
+                        self.document.apply_edit_in(
+                            &model,
+                            row.as_deref(),
+                            instance.as_deref(),
+                            option,
+                        );
                         self.request_redraw();
                         return;
                     }
@@ -2072,7 +2111,8 @@ impl App {
 
         // A tap on a closed select opens its dropdown.
         if let Some(sel) = self.selects.iter().find(|s| s.contains(fx, fy)) {
-            self.open_select = Some((sel.model.clone(), sel.row.clone()));
+            self.open_select =
+                Some((sel.model.clone(), sel.row.clone(), sel.instance.clone()));
             self.set_focus(None);
             self.request_redraw();
             return;
@@ -2509,6 +2549,7 @@ impl App {
                 model,
                 // Still the same field being typed into.
                 row: self.focused_row.clone(),
+                instance: self.focused_instance.clone(),
                 caret: new_caret,
                 anchor: new_anchor,
                 preedit: None,
@@ -2540,6 +2581,7 @@ impl App {
         self.set_focus_range(Some(Focus {
             model: model.to_string(),
             row: self.focused_row.clone(),
+            instance: self.focused_instance.clone(),
             caret: value.len(),
             anchor: 0,
             preedit: None,
@@ -2709,13 +2751,16 @@ impl App {
     fn set_keyboard_focus(&mut self, index: Option<usize>) {
         self.focus_index = index;
         match index.and_then(|i| self.focusables.get(i)).map(|f| f.kind.clone()) {
-            Some(FocusKind::Text { model, row, multiline, .. }) => {
+            Some(FocusKind::Text { model, row, instance, multiline, .. }) => {
                 // Read against the field being moved *to*, not the one being
                 // left: focus has not moved yet, so `focused_value` is still the
-                // old field and Tab would drop the caret at its length.
-                let caret = self.document.value_in(&model, row.as_deref()).len();
+                // old field and Tab would drop the caret at its length. In the
+                // field's own scope, or tabbing into an input inside a component
+                // reads an empty string and drops the caret at 0.
+                let caret =
+                    self.document.value_in(&model, row.as_deref(), instance.as_deref()).len();
                 self.focused_multiline = multiline;
-                self.set_focus(Some((model, row, caret)));
+                self.set_focus(Some((model, row, instance, caret)));
             }
             _ => self.set_focus(None),
         }
@@ -2733,8 +2778,8 @@ impl App {
                 self.adopt_element_requests();
                 self.request_redraw();
             }
-            Some(FocusKind::Select { model, row, .. }) => {
-                self.open_select = Some((model, row));
+            Some(FocusKind::Select { model, row, instance, .. }) => {
+                self.open_select = Some((model, row, instance));
                 self.request_redraw();
             }
             _ => {}
@@ -2747,9 +2792,11 @@ impl App {
     /// The row is the `r-key` of the `r-for` row the input is in, and `None`
     /// outside a list. It is half the identity: every row of a list is bound to
     /// the same `r-model` text, so the model alone cannot say which one.
-    fn set_focus(&mut self, focus: Option<(String, Option<String>, usize)>) {
+    fn set_focus(&mut self, focus: Option<(String, Option<String>, Option<String>, usize)>) {
         match focus {
-            Some((model, row, caret)) => self.set_focus_range(Some(Focus::at_row(model, row, caret))),
+            Some((model, row, instance, caret)) => {
+                self.set_focus_range(Some(Focus::at_row_in(model, row, instance, caret)))
+            }
             None => self.set_focus_range(None),
         }
     }
@@ -2764,22 +2811,26 @@ impl App {
     fn focused_value(&mut self) -> String {
         let Some(model) = self.focused.clone() else { return String::new() };
         let row = self.focused_row.clone();
-        self.document.value_in(&model, row.as_deref())
+        let instance = self.focused_instance.clone();
+        self.document.value_in(&model, row.as_deref(), instance.as_deref())
     }
 
     /// Write the focused input's value back, in that same scope.
     fn write_focused(&mut self, value: &str) {
         let Some(model) = self.focused.clone() else { return };
         let row = self.focused_row.clone();
-        self.document.apply_edit_in(&model, row.as_deref(), value);
+        let instance = self.focused_instance.clone();
+        self.document.apply_edit_in(&model, row.as_deref(), instance.as_deref(), value);
     }
 
     /// The focused input's region, matched on both halves of its identity.
     fn focused_region(&self) -> Option<&FocusRegion> {
         let model = self.focused.as_deref()?;
-        self.focuses
-            .iter()
-            .find(|f| f.model == model && f.row.as_deref() == self.focused_row.as_deref())
+        self.focuses.iter().find(|f| {
+            f.model == model
+                && f.row.as_deref() == self.focused_row.as_deref()
+                && f.instance.as_deref() == self.focused_instance.as_deref()
+        })
     }
 
     /// The full-fidelity focus setter: caret, selection anchor *and* composition.
@@ -2797,12 +2848,19 @@ impl App {
         // already scrolled to somewhere the caret is not.
         let same_field = focus
             .as_ref()
-            .is_some_and(|f| f.is(self.focused.as_deref().unwrap_or(""), self.focused_row.as_deref()));
+            .is_some_and(|f| {
+                f.is(
+                    self.focused.as_deref().unwrap_or(""),
+                    self.focused_row.as_deref(),
+                    self.focused_instance.as_deref(),
+                )
+            });
         if !same_field {
             self.text_scroll = 0.0;
         }
         self.focused = focus.as_ref().map(|f| f.model.clone());
         self.focused_row = focus.as_ref().and_then(|f| f.row.clone());
+        self.focused_instance = focus.as_ref().and_then(|f| f.instance.clone());
         self.caret = focus.as_ref().map(|f| f.caret).unwrap_or(0);
         self.anchor = focus.as_ref().map(|f| f.anchor).unwrap_or(0);
         self.document.set_focus(focus);
@@ -2810,7 +2868,8 @@ impl App {
         // halves of its identity, or every row of a list matches at once.
         let model = self.focused.clone();
         let row = self.focused_row.clone();
-        self.update_focus_state(model, row);
+        let instance = self.focused_instance.clone();
+        self.update_focus_state(model, row, instance);
         self.set_ime_enabled(self.focused.is_some());
         self.reset_blink();
         self.request_redraw();
@@ -3016,6 +3075,7 @@ impl App {
         self.set_focus_range(Some(Focus {
             model,
             row: self.focused_row.clone(),
+            instance: self.focused_instance.clone(),
             caret,
             anchor: caret,
             preedit: Some((at, at + text.len())),
@@ -3187,6 +3247,7 @@ impl App {
             text_scroll,
             focused,
             focused_row,
+            focused_instance,
             #[cfg(not(target_arch = "wasm32"))]
             path,
             ..
@@ -3294,6 +3355,7 @@ impl App {
             &layout,
             focused.as_deref(),
             focused_row.as_deref(),
+            focused_instance.as_deref(),
             *caret,
             text_scroll,
             text,
@@ -3362,7 +3424,11 @@ impl App {
                 layout
                     .focuses
                     .iter()
-                    .find(|f| f.model == m && f.row.as_deref() == focused_row.as_deref())
+                    .find(|f| {
+                        f.model == m
+                            && f.row.as_deref() == focused_row.as_deref()
+                            && f.instance.as_deref() == focused_instance.as_deref()
+                    })
             }) {
                 let strip = toolbar_paints(
                     (r.x, r.y, r.width, r.height),
@@ -3374,9 +3440,13 @@ impl App {
         }
 
         // An open `select` draws its dropdown on top of everything else.
-        if let Some((model, row)) = open_select.clone() {
-            if let Some(sel) = layout.selects.iter().find(|s| s.model == model && s.row == row) {
-                let value = document.value_in(&model, row.as_deref());
+        if let Some((model, row, instance)) = open_select.clone() {
+            if let Some(sel) = layout
+                .selects
+                .iter()
+                .find(|s| s.model == model && s.row == row && s.instance == instance)
+            {
+                let value = document.value_in(&model, row.as_deref(), instance.as_deref());
                 let overlay = dropdown_paints(sel, &value);
                 let scene = rux_paint::build_scene(&overlay, text, images, false);
                 state.scene.append(&scene, Some(Affine::scale(scale)));
@@ -3427,15 +3497,19 @@ impl App {
         //
         // It shows up worst on the web, where the hidden `<input>` holds real
         // DOM focus and a phone's on-screen keyboard would stay up over the
-        // page you just moved to. Identity is `(model, row)`, the same pair the
-        // caret uses, or one row of a list would answer for another.
+        // page you just moved to. Identity is `(model, row, instance)`, the same
+        // three the caret uses, or one row of a list would answer for another,
+        // and so would one instance of a component for its twin.
         if let Some(model) = focused.clone() {
-            let still_here = focuses
-                .iter()
-                .any(|f| f.model == model && f.row.as_deref() == focused_row.as_deref());
+            let still_here = focuses.iter().any(|f| {
+                f.model == model
+                    && f.row.as_deref() == focused_row.as_deref()
+                    && f.instance.as_deref() == focused_instance.as_deref()
+            });
             if !still_here {
                 *focused = None;
                 *focused_row = None;
+                *focused_instance = None;
                 *text_scroll = 0.0;
                 #[cfg(target_arch = "wasm32")]
                 if let Some(el) = web_ime_element() {
