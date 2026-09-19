@@ -960,6 +960,29 @@ merely misreporting them. The fix is one rule: a quote opens a string only if
 it closes on the same line. Nothing is lost by it, because neither rhai nor CSS
 lets a string span a newline.
 
+### The machine has the whole toolchain, which is the problem (2026-09-19)
+
+`rux doctor` is the Android toolchain's diagnostic, and the machine it was
+written on has every piece of that toolchain already, installed by Flutter for
+unrelated work. So **a passing run here proves nothing**, and the cases worth
+driving are the absent ones.
+
+| Case | Where | Result |
+|---|---|---|
+| This machine | desktop, `rux doctor` | 7 of 8 found, and it caught a real absence: `aarch64-linux-android` is not installed. Exit 1 |
+| `ANDROID_HOME` at an empty directory | desktop, `rux doctor` | The SDK is found and all six things inside it are missing, each with its own path and its own fix. Exit 1 |
+| No SDK anywhere | `cargo test` | One finding, not eight: there is no point listing six paths inside a directory that does not exist. It names every place it looked and says to set `ANDROID_HOME` |
+| A platform older than the floor | `cargo test` | Reported **unusable**, not missing: `android-21` is installed, correct and no use, and its fix is a different command |
+| `9.0.0` beside `35.0.0` in build-tools | `cargo test` | 35.0.0 wins. Sorted by version component, because every string comparison puts `9.0.0` last and picking it would hand a build a toolchain seven years too old |
+| `rux build --target android` | desktop | Exits 2 and points at `rux doctor`, rather than only refusing |
+
+**A test caught the caveat in the act.** The first version of the empty-SDK
+test asserted that everything under the SDK was missing, and it failed: the JDK
+was found, because this machine has one on `PATH` and the lookup asked the real
+`PATH`. That is precisely the failure the whole module is shaped to avoid, so
+`PATH` became data like everything else, and the test now describes a machine
+rather than this machine.
+
 ## Standing gaps
 
 Cases nothing here can currently exercise. They are the shape of what v0.8 has

@@ -230,6 +230,47 @@ A route parameter is filled with `rux-check` rather than a real value, so a
 page that assumes its parameter names something that exists reports it. That is
 a finding and not an artefact: a deep link carries whatever was typed.
 
+## Checking the machine, not the document
+
+```bash
+rux doctor                      # the Android toolchain: what is here, what is not
+```
+
+Nothing is built. It answers one question: could an Android build happen here,
+and if not, what exactly is missing. Exit 0 when everything is present, 1 when
+something is not, so a setup script can use it and not only a person.
+
+Eight things, each with what a build would do with it: the SDK root (from
+`$ANDROID_HOME`, then `$ANDROID_SDK_ROOT`, then the platform's usual place),
+the command-line tools (`sdkmanager`, which installs the rest), `build-tools`
+(`aapt2`, `zipalign`, `apksigner`), a platform (`android.jar`),
+`platform-tools` (`adb`), an NDK, a JDK, and the Rust target.
+
+**Every finding carries where it was looked for and the one command that fixes
+it.** That is the whole feature. "Mobile without Android Studio" is kept or
+broken by what happens when a piece is absent: `error: aapt2 not found` sends
+someone to a search engine, and a line naming the path and the command does
+not. A tool installed somewhere else and a tool not installed at all are the
+same message in most build systems and are not the same problem.
+
+There is a third answer besides found and missing: **present and unusable**. A
+platform older than API 26 is installed, correct, and no use, and its fix is a
+different command from the one for having none.
+
+**API 26 is the floor**, decided for Vulkan driver dependability under `wgpu`
+rather than taste, and biased high on purpose: lowering a floor later gains
+users in one line, while raising one drops devices from under people who have
+already shipped.
+
+It is **written against paths, not against the machine it was written on**.
+Every lookup takes the roots to search, so the case that matters, a machine
+with none of this installed, is an ordinary test against an empty directory.
+The machine this was built on has the whole toolchain already, put there by
+Flutter for unrelated work, so a passing run on it proves nothing. It still
+found something real: the Rust target was not installed.
+
+`rux build --target android` does not exist yet, and says so, pointing here.
+
 ## Telling an editor what the runtime understands
 
 ```bash

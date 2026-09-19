@@ -115,6 +115,7 @@ strip_only=(
   "05-as-built.md|## Running it"
   "05-as-built.md|## Formatting"
   "05-as-built.md|## Checking a file without opening a window"
+  "05-as-built.md|## Checking the machine, not the document"
   "05-as-built.md|## Telling an editor what the runtime understands"
 )
 

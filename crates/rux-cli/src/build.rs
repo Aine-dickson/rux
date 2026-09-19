@@ -61,9 +61,13 @@ impl Target {
             // Named rather than ignored: both are real targets of this
             // milestone, and "unknown target" would read as if they were never
             // coming.
-            "android" | "ios" => Err(format!(
-                "`{name}` is not built yet. `desktop` is what `rux build` can produce today"
-            )),
+            "android" => Err("`android` is not built yet. `desktop` is what `rux build` can \
+                 produce today.\n\nThe toolchain half is ready to check: `rux doctor` says what \
+                 an Android build will need, what is here, and the one command that installs \
+                 what is not."
+                .to_string()),
+            "ios" => Err("`ios` is not built yet. `desktop` is what `rux build` can produce today"
+                .to_string()),
             other => Err(format!("unknown target `{other}`; the one that exists is `desktop`")),
         }
     }

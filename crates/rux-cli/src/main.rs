@@ -10,6 +10,7 @@
 //! rux check [path...]      report what is wrong with a file or a tree
 //! rux fmt [path...]        re-indent, and format the CSS inside
 //! rux vocab                print the runtime's vocabulary as JSON, for editors
+//! rux doctor               check this machine for the Android toolchain
 //! ```
 //!
 //! `rux app.rux` keeps working because it is what every doc, blog post and
@@ -23,6 +24,7 @@
 //! form defaulted to `examples/battery.rux`, a path that exists only in a
 //! checkout of this repo, so it panicked for everyone else.
 
+mod android;
 mod build;
 mod check;
 mod files;
@@ -51,6 +53,9 @@ Usage:
                              to someone: one executable, in dist/
   rux vocab                  Print what the runtime understands (elements,
                              directives, honored CSS) as JSON, for an editor
+  rux doctor                 Check this machine for the Android toolchain:
+                             what is here, where it is, and the one command
+                             that installs whatever is not
 
 Run options:
   --route <path>             Open on this route instead of `/`, the way a
@@ -102,6 +107,7 @@ fn main() -> ExitCode {
         Some("fmt") => ExitCode::from(format(&args[1..]) as u8),
         Some("new") => ExitCode::from(new::create(&args[1..]) as u8),
         Some("vocab") => ExitCode::from(vocab::emit() as u8),
+        Some("doctor") => ExitCode::from(android::doctor() as u8),
         Some("build") => build_command(&args[1..]),
         Some("run") => match args.get(1).filter(|a| !a.starts_with('-')) {
             Some(path) => run(PathBuf::from(path), &args[2..]),

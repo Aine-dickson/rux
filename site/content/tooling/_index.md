@@ -28,6 +28,10 @@ no Node, no npm, no browser, no system GUI toolkit.
 | [`rux check`](@/tooling/check.md) | Report what is wrong, without opening one |
 | [`rux fmt`](@/tooling/fmt.md) | Re-indent, and format the CSS |
 | [`rux vocab`](@/tooling/vocab.md) | Print what the runtime understands, for editors |
+| [`rux doctor`](@/tooling/doctor.md) | Check this machine for the Android toolchain |
+
+Building for Android needs four things installed once:
+[setting up for Android](@/tooling/android.md).
 
 Bare `rux` prints the usage, the way `cargo` and `git` do.
 
