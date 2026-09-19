@@ -35,26 +35,14 @@ pub const FIRST_ABI: Abi = Abi {
     clang_prefix: "aarch64-linux-android",
 };
 
-/// The four Android ABIs, in the order they matter.
-pub const ABIS: &[Abi] = &[
-    FIRST_ABI,
-    Abi {
-        name: "armeabi-v7a",
-        rust_target: "armv7-linux-androideabi",
-        // The clang driver is spelled `armv7a-`, not `armv7-`: the Rust target
-        // and the NDK disagree about the name of the same architecture, which
-        // is the kind of detail that costs an afternoon when it is guessed.
-        clang_prefix: "armv7a-linux-androideabi",
-    },
-    Abi {
-        name: "x86_64",
-        rust_target: "x86_64-linux-android",
-        clang_prefix: "x86_64-linux-android",
-    },
-    Abi { name: "x86", rust_target: "i686-linux-android", clang_prefix: "i686-linux-android" },
-];
-
 /// One Android ABI, under the three names it goes by.
+///
+/// Only arm64 exists here, because only arm64 is used yet. The other three
+/// (`armeabi-v7a`, `x86_64`, `x86`) arrive when a build produces every ABI,
+/// and one of them carries a trap worth knowing before then: the 32-bit ARM
+/// Rust target is `armv7-linux-androideabi` while the NDK's clang driver for
+/// the same architecture is spelled `armv7a-linux-androideabi`. The two names
+/// differ by one letter and neither side is wrong.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Abi {
     /// What the APK calls it, and what the `.so` is packed under.
