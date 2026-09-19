@@ -833,6 +833,51 @@ declared nowhere cannot resolve under any caller, and calling it a caution let
 is read on; reported without one it was drawn at the top of the file, pointing
 at `<template>` for a mistake in `<script>`.
 
+## v0.8
+
+### The operating system's colour scheme, and a box that would not hide (2026-09-19)
+
+`prefers-color-scheme` was wired to the window and driven by flipping Windows
+between light and dark while the app was running. The probe was a single box,
+red with no query and green under `@media (prefers-color-scheme: dark)`, with a
+`LIGHT` and a `DARK` label switched by `display: none`. Colour rather than
+timing, so a screenshot answers the question on its own.
+
+| Case | Where | Result |
+|---|---|---|
+| Machine in dark mode, app launched | desktop, `rux run` | Green, `DARK`. The startup read is right |
+| Flipped to light with the app running | desktop, screenshot | Red, `LIGHT`, within a second. `WindowEvent::ThemeChanged` arrives and the environment is rebuilt |
+| Flipped back to dark | desktop, screenshot | Green again. It is not a one-way switch |
+| `display: none` on a `<text>`, no query involved | desktop, `rux run` | **Failed**: both labels drawn, one on top of the other |
+
+**The probe found a defect that had nothing to do with the feature.**
+`display: none` reached taffy, which correctly gave the box no size and no
+layout slot, and then the node was painted anyway. On a container that is
+invisible, because a zero-sized box with a background paints nothing anyone can
+see, which is why this survived every example in the repo. On a `<text>` it is
+not: glyphs are drawn from the node's origin whether or not it has a box, so a
+hidden label drew its words at its parent's origin, over whatever was really
+there. Both labels of the probe rendered as one unreadable overlap.
+
+The fix takes the same road as `r-show="false"`, which already meant "paints
+nothing, hit-tests as nothing, and takes its subtree with it". The only
+difference between the two, whether a layout slot is reserved, was already
+settled correctly one step earlier.
+
+**The harness lied once, and the tell was an off-by-one.** Flipping the theme
+by writing the registry and broadcasting `WM_SETTINGCHANGE` by hand reported the
+*previous* answer every time: dark at start, still dark after a flip to light,
+light after a flip back to dark. Nothing was stale in the runtime. winit asks
+uxtheme's `ShouldAppsUseDarkMode`, which caches per process and refreshes when
+uxtheme itself handles that broadcast, and a synthetic broadcast can reach the
+window before the cache has caught up. Sending it twice, a second apart, gives
+the right answer every time. A value that trails one step behind the truth is a
+cache that has not been told, not a wire that is not connected.
+
+**Not yet driven:** the flip made through the Settings app by hand rather than
+by a synthetic broadcast, and reduced motion, `rux build` and the source
+provider from the session before this one.
+
 ## Standing gaps
 
 Cases nothing here can currently exercise. They are the shape of what v0.8 has

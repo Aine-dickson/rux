@@ -354,8 +354,11 @@ swaps a whole palette with one `:class`.
 @media screen and (min-width: 400px) and (max-width: 600px) { … }
 @media (max-width: 400px), (min-width: 1000px) { … }   /* alternatives */
 @media (orientation: portrait) { … }
+@media (prefers-color-scheme: dark) { .app { background: #11111b; } }
+@media (prefers-reduced-motion: reduce) { … }
 ```
-Supported features: `min-`/`max-width`, `min-`/`max-height`, `orientation`, the
+Supported features: `min-`/`max-width`, `min-`/`max-height`, `orientation`,
+`prefers-color-scheme`, `prefers-reduced-motion`, the
 `screen`/`all` types, `and` chains and comma alternatives. A block adds **no
 specificity**: rules inside it cascade by ordinary source order, so a later
 `@media` rule beats an earlier plain one, and `#id` still beats a `.class` in a
@@ -365,6 +368,18 @@ never applies.
 Resizing re-cascades **only when a query changes answer**: dragging a window
 edge within a breakpoint costs nothing, and a document with no `@media` never
 re-cascades at all. Driven in `examples/responsive.rux`.
+
+**The two preference queries are asked of the operating system, not guessed.**
+`prefers-color-scheme` comes from the window's own theme, which every platform
+that has a notion of one answers, and a change made while the app is running
+arrives as an event, so flipping the system between light and dark repaints
+within a frame. `prefers-reduced-motion` is asked of Windows directly, since
+winit exposes nothing for it, and it is re-read when the environment is next
+rebuilt, which is at startup and on a resize: turning that setting off
+mid-session is not noticed until then. A stylesheet that never mentions reduced
+motion is stilled anyway, because honoring only the written query would leave
+almost every app animating at someone who asked it not to.
+
 `flex: 1` means `1 1 0%` (CSS's shorthand defaults), not `1 1 auto`.
 `opacity` fades the node **and its subtree** as one layer.
 `background`/`border` work on `<text>` nodes, not just containers.

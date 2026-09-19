@@ -67,7 +67,7 @@ use winit::application::ApplicationHandler;
 use winit::event::{ElementState, Ime, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{Key, NamedKey};
-use winit::window::{CursorIcon, Window, WindowId};
+use winit::window::{CursorIcon, Theme, Window, WindowId};
 
 /// Events delivered to the winit loop from outside it.
 #[derive(Debug)]
@@ -1984,6 +1984,7 @@ impl App {
         let environment = rux_runtime::Environment {
             viewport,
             reduced_motion: Self::os_reduced_motion(),
+            color_scheme: Self::window_color_scheme(&state.window),
             // The window's scale factor is what a stylesheet would call density,
             // and it is the one environment answer this shell has always known
             // and never passed on.
@@ -2032,6 +2033,24 @@ impl App {
     #[cfg(not(windows))]
     fn os_reduced_motion() -> bool {
         false
+    }
+
+    /// Whether the operating system is asking for light or dark surfaces.
+    ///
+    /// Unlike reduced motion this needs no per-platform code: winit asks the
+    /// window itself, and every platform that has an answer gives one here.
+    /// `None` means the platform has no notion of a theme, and light is the
+    /// honest reading of that: it is what a window with no preference stated
+    /// has always been drawn as.
+    ///
+    /// This does **not** share reduced motion's known limit. A theme changed
+    /// mid-run arrives as [`WindowEvent::ThemeChanged`], so the environment is
+    /// rebuilt the moment the person flips the setting.
+    fn window_color_scheme(window: &Window) -> rux_runtime::ColorScheme {
+        match window.theme() {
+            Some(Theme::Dark) => rux_runtime::ColorScheme::Dark,
+            Some(Theme::Light) | None => rux_runtime::ColorScheme::Light,
+        }
     }
 
     /// The pointer left the window: nothing is hovered or pressed any more.
@@ -3853,6 +3872,14 @@ impl ApplicationHandler<RuxEvent> for App {
                         size.height.max(1),
                     );
                 }
+                self.update_viewport();
+                self.request_redraw();
+            }
+            // The person changed light or dark mode while the app was running.
+            // The window's own theme is already updated by the time this
+            // arrives, so rebuilding the environment from it is enough, and
+            // the document re-cascades only if a query changed answer.
+            WindowEvent::ThemeChanged(_) => {
                 self.update_viewport();
                 self.request_redraw();
             }
