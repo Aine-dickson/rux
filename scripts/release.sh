@@ -307,6 +307,13 @@ cmd_open_next() {
   sed -i -E "/path = \"crates\//s/(version = )\"[0-9.]+\"/\1\"$next-dev\"/" Cargo.toml
   gate_version "$next-dev"
   relock
+
+  # The vocabulary the extension ships carries the workspace version, so the
+  # bump makes the committed copy stale the moment it lands. `freeze` already
+  # regenerates it for exactly this reason; opening a line has the same problem
+  # and did not, so the first gate run on a fresh line failed on a file the
+  # open had just invalidated.
+  ./scripts/sync-vocabulary.sh >/dev/null || die "could not regenerate the extension vocabulary after the version bump"
   git commit -aqm "Open the $next line
 
 Branched from the $from capsule so the released tree is the ancestor of what
