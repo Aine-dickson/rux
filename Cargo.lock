@@ -3150,14 +3150,14 @@ checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
 
 [[package]]
 name = "rux-fmt"
-version = "0.7.1-dev"
+version = "0.7.1"
 dependencies = [
  "rux-parser",
 ]
 
 [[package]]
 name = "rux-highlight"
-version = "0.7.1-dev"
+version = "0.7.1"
 dependencies = [
  "ferroni",
  "serde",
@@ -3166,14 +3166,14 @@ dependencies = [
 
 [[package]]
 name = "rux-layout"
-version = "0.7.1-dev"
+version = "0.7.1"
 dependencies = [
  "taffy",
 ]
 
 [[package]]
 name = "rux-paint"
-version = "0.7.1-dev"
+version = "0.7.1"
 dependencies = [
  "image",
  "rux-layout",
@@ -3183,15 +3183,15 @@ dependencies = [
 
 [[package]]
 name = "rux-parser"
-version = "0.7.1-dev"
+version = "0.7.1"
 
 [[package]]
 name = "rux-reactive"
-version = "0.7.1-dev"
+version = "0.7.1"
 
 [[package]]
 name = "rux-rhai"
-version = "0.7.1-dev"
+version = "0.7.1"
 dependencies = [
  "ahash 0.8.12",
  "arbitrary",
@@ -3217,7 +3217,7 @@ dependencies = [
 
 [[package]]
 name = "rux-runtime"
-version = "0.7.1-dev"
+version = "0.7.1"
 dependencies = [
  "getrandom 0.3.4",
  "image",
@@ -3230,7 +3230,7 @@ dependencies = [
 
 [[package]]
 name = "rux-script"
-version = "0.7.1-dev"
+version = "0.7.1"
 dependencies = [
  "rux-reactive",
  "rux-rhai",
@@ -3238,7 +3238,7 @@ dependencies = [
 
 [[package]]
 name = "rux-shell"
-version = "0.7.1-dev"
+version = "0.7.1"
 dependencies = [
  "accesskit",
  "accesskit_winit",
@@ -3260,7 +3260,7 @@ dependencies = [
 
 [[package]]
 name = "rux-style"
-version = "0.7.1-dev"
+version = "0.7.1"
 dependencies = [
  "lightningcss",
  "rux-layout",
@@ -3271,7 +3271,7 @@ dependencies = [
 
 [[package]]
 name = "rux-text"
-version = "0.7.1-dev"
+version = "0.7.1"
 dependencies = [
  "parley",
  "vello",
@@ -3279,7 +3279,7 @@ dependencies = [
 
 [[package]]
 name = "rux-web"
-version = "0.7.1-dev"
+version = "0.7.1"
 dependencies = [
  "rux-fmt",
  "rux-highlight",
@@ -3292,7 +3292,7 @@ dependencies = [
 
 [[package]]
 name = "ruxlang"
-version = "0.7.1-dev"
+version = "0.7.1"
 dependencies = [
  "rux-fmt",
  "rux-parser",
