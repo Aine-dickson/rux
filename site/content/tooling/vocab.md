@@ -1,7 +1,7 @@
 +++
 title = "rux vocab"
 description = "Print the elements, attributes, directives and honored CSS the runtime understands, as JSON, for editors."
-weight = 5
+weight = 6
 +++
 
 ```bash

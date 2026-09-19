@@ -23,9 +23,11 @@
 //! form defaulted to `examples/battery.rux`, a path that exists only in a
 //! checkout of this repo, so it panicked for everyone else.
 
+mod build;
 mod check;
 mod files;
 mod fmt;
+mod manifest;
 mod new;
 mod vocab;
 
@@ -45,6 +47,8 @@ Usage:
                              (defaults to the current directory)
   rux fmt [path...]          Re-indent files in place, and format their CSS
                              (defaults to the current directory)
+  rux build                  Build the project into something you can hand
+                             to someone: one executable, in dist/
   rux vocab                  Print what the runtime understands (elements,
                              directives, honored CSS) as JSON, for an editor
 
@@ -55,6 +59,14 @@ Run options:
 Check options:
   --format json              Emit diagnostics as JSON, for an editor
   --deny-warnings            Exit non-zero on warnings as well as errors
+
+Build options:
+  --release                  Embed the documents, so the artifact carries
+                             its own contents. Without it the build reads
+                             the project from disk and hot reload works
+  --target <name>            What to build for (default: desktop)
+  --rux-source <dir>         Build against a Rux checkout instead of the
+                             published crates, for tracking the tip
 
 Format options:
   --indent <n|tab>           One indent level: spaces, or a tab (default 2)
@@ -85,6 +97,7 @@ fn main() -> ExitCode {
         Some("fmt") => ExitCode::from(format(&args[1..]) as u8),
         Some("new") => ExitCode::from(new::create(&args[1..]) as u8),
         Some("vocab") => ExitCode::from(vocab::emit() as u8),
+        Some("build") => build_command(&args[1..]),
         Some("run") => match args.get(1).filter(|a| !a.starts_with('-')) {
             Some(path) => run(PathBuf::from(path), &args[2..]),
             // `run` with no file means the same as bare `rux`: the workspace's
@@ -137,6 +150,56 @@ const ENTRIES: &[&str] = &["app.rux", "index.rux"];
 /// A directory holding both names is not an error. `app.rux` wins, silently,
 /// because the alternative is refusing to start over a question the author does
 /// not care about at the moment they asked to run something.
+/// `rux build [--release] [--target <name>] [--rux-source <dir>]`.
+fn build_command(args: &[String]) -> ExitCode {
+    let mut options = build::Options {
+        release: false,
+        target: build::Target::Desktop,
+        rux_source: None,
+    };
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--release" => options.release = true,
+            "--target" => {
+                let Some(name) = args.get(i + 1) else {
+                    eprintln!("rux: --target needs a name, like `--target desktop`");
+                    return ExitCode::from(2);
+                };
+                match build::Target::parse(name) {
+                    Ok(target) => options.target = target,
+                    Err(e) => {
+                        eprintln!("rux: {e}");
+                        return ExitCode::from(2);
+                    }
+                }
+                i += 1;
+            }
+            "--rux-source" => {
+                let Some(dir) = args.get(i + 1) else {
+                    eprintln!("rux: --rux-source needs a directory");
+                    return ExitCode::from(2);
+                };
+                options.rux_source = Some(PathBuf::from(dir));
+                i += 1;
+            }
+            other => {
+                eprintln!("rux: unknown build option `{other}`\n\n{USAGE}");
+                return ExitCode::from(2);
+            }
+        }
+        i += 1;
+    }
+
+    match build::run(options) {
+        Ok(_) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("rux: {e}");
+            ExitCode::from(1)
+        }
+    }
+}
+
 fn entry(from: &Path) -> Option<PathBuf> {
     let mut dir = Some(from);
     while let Some(current) = dir {

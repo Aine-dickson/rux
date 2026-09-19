@@ -1,7 +1,7 @@
 +++
 title = "Editor setup"
 description = "The VS Code extension: syntax coloring, completions from the runtime's own vocabulary, tag auto-closing, formatting and diagnostics."
-weight = 6
+weight = 7
 +++
 
 VS Code has an extension for `.rux` files. It lives in
