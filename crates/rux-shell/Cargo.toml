@@ -52,6 +52,12 @@ accesskit_winit = "0.33.2"
 
 # The browser's stand-ins: a task spawner instead of blocking, and the
 # canvas/console bindings winit and the loader need.
+# Asking Windows whether the person has turned animations off. winit 0.30
+# exposes nothing for it, and this is already in the lockfile several times over
+# by way of winit and arboard, so it costs a feature flag and no build time.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_UI_WindowsAndMessaging"] }
+
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen-futures = "0.4"
 wasm-bindgen = "0.2"

@@ -1539,7 +1539,40 @@ pub fn build_styled_tree_stateful(
     // that element's instance `touched`, which is exactly why the pair is
     // builder-owned rather than a snapshot the animator holds.
     swaps.end();
+    // The safety net, applied last so nothing can add motion after it.
+    //
+    // A stylesheet that never mentions `prefers-reduced-motion` still animates,
+    // and most will never mention it. v0.7 shipped a whole animation system
+    // with no way to be told that the person watching it does not want one, and
+    // for some people motion is a medical problem rather than a taste, so the
+    // default has to be the safe one rather than the pretty one.
+    //
+    // Zeroing rather than removing, because `0` is already how CSS turns a
+    // transition off without deleting the declaration, and it is a state every
+    // consumer downstream already handles: `active` goes false, the value is
+    // written straight to its target, and an `r-transition` whose length is the
+    // sum of its element's durations becomes an instant swap for free.
+    //
+    // An author who wants motion back for a specific thing still has
+    // `@media (prefers-reduced-motion: reduce)` to say so with, which is the
+    // same escape hatch the web gives.
+    if env.reduced_motion {
+        still_the_motion(&mut node);
+    }
     Ok((node, reg))
+}
+
+/// Take the time out of every transition in the tree.
+fn still_the_motion(node: &mut LayoutNode) {
+    for transition in &mut node.style.transitions {
+        transition.duration = 0.0;
+        // The delay goes too. A delay with no duration is a change that waits
+        // and then happens anyway, which is still something moving on a clock.
+        transition.delay = 0.0;
+    }
+    for child in &mut node.children {
+        still_the_motion(child);
+    }
 }
 
 /// Replace `{{ expr }}` spans in `text` with values evaluated by the engine, and
@@ -7781,6 +7814,61 @@ mod tests {
 
         // The default is the ordinary case: full motion, light surfaces.
         assert_eq!(media_matches(css, Environment::sane()), vec![false, true, false, true]);
+    }
+
+    /// A stylesheet that never mentions the preference is stilled anyway.
+    ///
+    /// This is the half that matters. Most stylesheets will never write the
+    /// query, so honouring only the query would leave almost every app
+    /// animating at someone who asked it not to.
+    #[test]
+    fn reduced_motion_takes_the_time_out_of_a_transition_that_never_asked() {
+        let src = r#"<template><screen><view class="target" /></screen></template>
+        <style>
+          .target { opacity: 1; transition: opacity 200ms ease 50ms; }
+        </style>"#;
+
+        let moving = transitions_of(src, Environment::sane());
+        assert_eq!(moving.len(), 1, "the transition should be parsed at all");
+        assert_eq!(moving[0], (200.0, 50.0), "the ordinary case still animates");
+
+        let calm =
+            transitions_of(src, Environment { reduced_motion: true, ..Environment::sane() });
+        assert_eq!(
+            calm,
+            vec![(0.0, 0.0)],
+            "reduced motion should zero the duration and the delay, not drop the declaration"
+        );
+    }
+
+    /// Every `(duration, delay)` in the tree, in document order.
+    fn transitions_of(src: &str, env: Environment) -> Vec<(f32, f32)> {
+        let sfc = rux_parser::parse_sfc(src).unwrap();
+        let mut engine = Builder::new().build(&sfc.script).unwrap();
+        let mut instances = super::Instances::new();
+        let (root, _) = super::build_styled_tree_stateful(
+            &sfc,
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut engine,
+            &mut instances,
+            &mut crate::Swaps::new(),
+            &InteractionState::default(),
+            env,
+        )
+        .unwrap();
+        let mut out = Vec::new();
+        collect_transitions(&root, &mut out);
+        out
+    }
+
+    fn collect_transitions(node: &rux_layout::Node, out: &mut Vec<(f32, f32)>) {
+        for t in &node.style.transitions {
+            out.push((t.duration, t.delay));
+        }
+        for child in &node.children {
+            collect_transitions(child, out);
+        }
     }
 
     /// A value neither half of a preference uses must not match either half.

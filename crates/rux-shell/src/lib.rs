@@ -1981,9 +1981,57 @@ impl App {
             width: (state.surface.config.width as f64 / scale) as f32,
             height: (state.surface.config.height as f64 / scale) as f32,
         };
-        if self.document.set_viewport(viewport) {
+        let environment = rux_runtime::Environment {
+            viewport,
+            reduced_motion: Self::os_reduced_motion(),
+            // The window's scale factor is what a stylesheet would call density,
+            // and it is the one environment answer this shell has always known
+            // and never passed on.
+            density: scale as f32,
+            ..Default::default()
+        };
+        if self.document.set_environment(environment) {
             self.request_redraw();
         }
+    }
+
+    /// Whether the operating system says to reduce motion.
+    ///
+    /// Asked here because winit 0.30 exposes nothing for it and every platform
+    /// answers differently. Windows is `SPI_GETCLIENTAREAANIMATION`, which
+    /// reports whether animation is *enabled*, so reducing motion is its
+    /// negation. Everywhere else the honest answer for now is "no preference
+    /// stated", which is what a platform that has not been taught to ask should
+    /// say rather than guessing.
+    ///
+    /// **Known limit:** this is read when the environment is next rebuilt,
+    /// which is at startup and on a resize. Turning the setting off while an
+    /// app is running is not noticed until then, because Windows announces it
+    /// with `WM_SETTINGCHANGE` and winit does not forward that event.
+    #[cfg(windows)]
+    fn os_reduced_motion() -> bool {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            SystemParametersInfoW, SPI_GETCLIENTAREAANIMATION,
+        };
+        // A Win32 BOOL. Defaulted to "animations on" so that a failed call
+        // leaves motion exactly as it was rather than silently stilling an app.
+        let mut animations_enabled: i32 = 1;
+        let ok = unsafe {
+            SystemParametersInfoW(
+                SPI_GETCLIENTAREAANIMATION,
+                0,
+                (&mut animations_enabled) as *mut i32 as *mut core::ffi::c_void,
+                0,
+            )
+        };
+        ok != 0 && animations_enabled == 0
+    }
+
+    /// Every platform that has not been taught to ask. Saying no preference
+    /// is honest; guessing would be worse than the gap.
+    #[cfg(not(windows))]
+    fn os_reduced_motion() -> bool {
+        false
     }
 
     /// The pointer left the window: nothing is hovered or pressed any more.
