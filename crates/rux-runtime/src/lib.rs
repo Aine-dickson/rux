@@ -24,6 +24,9 @@
 //! window can keep the last good tree on screen and show the overlay instead of
 //! dying on a half-typed edit.
 
+mod source;
+pub use source::{reset_source, set_source, FsSource, MemorySource, Source};
+
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
@@ -756,7 +759,7 @@ pub fn set_stderr_echo(on: bool) {
 /// correct. Going by the root rather than by who imports what also catches a
 /// component that nothing currently uses.
 pub fn is_entry_point(path: impl AsRef<Path>) -> Option<bool> {
-    let src = std::fs::read_to_string(path.as_ref()).ok()?;
+    let src = source::read_text(path.as_ref()).ok()?;
     let sfc = rux_parser::parse_sfc(&src).ok()?;
     Some(sfc.template.tag == "screen")
 }
@@ -768,10 +771,20 @@ fn resolve_images(node: &mut LayoutNode, base: &Path) {
     if let Some(img) = &mut node.image {
         if !img.src.is_empty() {
             let path = base.join(&img.src);
-            if let Ok((w, h)) = image::image_dimensions(&path) {
-                img.intrinsic = (w as f32, h as f32);
-            } else {
-                eprintln!("rux: cannot read image {}", path.display());
+            // Read through the provider rather than by path, because `path` is
+            // a key and not necessarily a file. `image_dimensions` only takes a
+            // path, so the header is parsed from the bytes instead; the format
+            // is guessed the same way, and only the header is touched either
+            // way, since `into_dimensions` stops before the pixels.
+            match source::read_bytes(&path).ok().and_then(|bytes| {
+                image::ImageReader::new(std::io::Cursor::new(bytes))
+                    .with_guessed_format()
+                    .ok()?
+                    .into_dimensions()
+                    .ok()
+            }) {
+                Some((w, h)) => img.intrinsic = (w as f32, h as f32),
+                None => eprintln!("rux: cannot read image {}", path.display()),
             }
             img.src = path.to_string_lossy().into_owned();
         }
@@ -906,7 +919,7 @@ impl Document {
     /// it. [`Document::load`] is this with the structure discarded.
     pub fn load_checked(path: impl AsRef<Path>) -> Result<Self, LoadError> {
         let path = path.as_ref();
-        let src = std::fs::read_to_string(path)
+        let src = source::read_text(path)
             .map_err(|e| LoadError::plain(format!("reading {}: {e}", path.display())))?;
         let mut sfc = rux_parser::parse_sfc(&src).map_err(|e| LoadError::parse(e, Some(path)))?;
 
@@ -1009,7 +1022,7 @@ impl Document {
                     continue;
                 }
 
-                let comp_src = std::fs::read_to_string(&comp_path).map_err(|e| {
+                let comp_src = source::read_text(&comp_path).map_err(|e| {
                     LoadError::at_line(
                         format!("reading component {}: {e}", comp_path.display()),
                         at,
@@ -3199,7 +3212,7 @@ fn resolve_style_includes(sfc: &mut Sfc, base: &Path) -> Result<(), LoadError> {
     let mut includes = Vec::with_capacity(sfc.style_src.len());
     for relative in &sfc.style_src {
         let path = base.join(relative);
-        let css = std::fs::read_to_string(&path).map_err(|e| {
+        let css = source::read_text(&path).map_err(|e| {
             LoadError::plain(format!("reading stylesheet {}: {e}", path.display()))
         })?;
         includes.push(StyleInclude { path: relative.clone(), css });
@@ -3465,7 +3478,7 @@ const WORKSPACE_ENTRIES: [&str; 2] = ["app.rux", "index.rux"];
 fn workspace_root(from: &Path) -> Option<PathBuf> {
     let mut dir = Some(from);
     while let Some(current) = dir {
-        if WORKSPACE_ENTRIES.iter().any(|name| current.join(name).is_file()) {
+        if WORKSPACE_ENTRIES.iter().any(|name| source::exists(&current.join(name))) {
             return Some(current.to_path_buf());
         }
         dir = current.parent();
@@ -3520,7 +3533,7 @@ fn hyphenated(file: &str) -> Option<String> {
 /// which is still unique enough to key a map; the separators are normalised so
 /// the fallback cannot disagree with the canonical form about `/` and `\`.
 fn component_key(path: &Path) -> String {
-    let resolved = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let resolved = source::canonical(path);
     resolved.to_string_lossy().replace('\\', "/")
 }
 
@@ -3543,7 +3556,7 @@ fn resolve_import(base: &Path, file: &str) -> Result<PathBuf, (PathBuf, Option<P
         candidates.push(root.as_ref().map(|r| join(r, &swapped)));
     }
     for candidate in candidates.into_iter().flatten() {
-        if candidate.is_file() {
+        if source::exists(&candidate) {
             return Ok(candidate);
         }
     }
