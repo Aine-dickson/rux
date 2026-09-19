@@ -20,19 +20,14 @@
 //! not a desktop convenience: on Android the dev build serves documents as APK
 //! assets and reloads them over `adb`.
 //!
-//! **KNOWN GAP: a release build does not paint images.** Found by driving one,
-//! not by reasoning about it. The document, its components and its stylesheets
-//! all embed and the layout is right, because every one of those is read
-//! through the runtime's `Source`. An image is read twice: the runtime reads
-//! the header for the intrinsic size, which now goes through the provider, and
-//! `rux-paint` reads the pixels with `image::open` on a path, which inside an
-//! executable is a path to nothing. The window draws an empty box and the
-//! console says `os error 3`.
-//!
-//! It cannot be fixed where it is. `rux-paint` and `rux-runtime` share no
-//! dependency edge, so the provider cannot reach the painter. The shape of the
-//! fix is that the runtime resolves image bytes and hands them over, leaving
-//! the painter reading no paths at all, and it is the same fix Android needs.
+//! Images took a second step to get there, and it was found by driving a build
+//! rather than by reasoning about one. An image is read twice: the runtime
+//! reads the header for the intrinsic size, and `rux-paint` read the pixels
+//! with `image::open` on a path, which inside an executable is a path to
+//! nothing. The first release build laid out correctly and drew empty boxes.
+//! `rux-paint` and `rux-runtime` share no dependency edge, so the fix is a
+//! reader hook in `rux-layout`, which both depend on; see
+//! `rux_layout::set_image_reader`.
 //!
 //! Embedding is possible at all because the runtime stopped reading the disk
 //! directly: a document's files come from a `Source`, and an embedded build

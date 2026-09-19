@@ -71,10 +71,12 @@ The generated crate lives in `.rux-build/`, inside the project. It is
 disposable and is rewritten on every build, so there is nothing in it worth
 editing and nothing in it worth committing.
 
-## Known gap
+## What embeds
 
-A release build does not yet paint images. The layout is correct and an
-`<image>` still takes its natural size, but the pixels are read through a path
-that does not exist inside the executable, so the image draws empty. Documents,
-stylesheets, components and every other part of an app embed correctly. Use a
-dev build where images matter until this is closed.
+Everything the project is made of: the entry document, every component, every
+stylesheet, and every asset, images included. A release build is walked from
+the project directory rather than traced through imports, so an asset named
+only in CSS is carried too.
+
+The one thing not carried is the manifest. `rux.toml` describes the build; it
+is not part of the app.

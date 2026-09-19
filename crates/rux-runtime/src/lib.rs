@@ -919,6 +919,13 @@ impl Document {
     /// it. [`Document::load`] is this with the structure discarded.
     pub fn load_checked(path: impl AsRef<Path>) -> Result<Self, LoadError> {
         let path = path.as_ref();
+        // The painter reads image bytes through this, so that an `<image>`
+        // resolves the same way a component or a stylesheet does. Installed on
+        // every load rather than once, because the provider may have changed
+        // since the last one and the reader closes over whichever is current.
+        rux_layout::set_image_reader(std::rc::Rc::new(|src: &str| {
+            source::read_bytes(Path::new(src)).ok()
+        }));
         let src = source::read_text(path)
             .map_err(|e| LoadError::plain(format!("reading {}: {e}", path.display())))?;
         let mut sfc = rux_parser::parse_sfc(&src).map_err(|e| LoadError::parse(e, Some(path)))?;

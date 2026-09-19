@@ -72,10 +72,20 @@ impl ImageCache {
 }
 
 fn decode(src: &str) -> Option<ImageBrush> {
-    let decoded = image::open(src)
-        .map_err(|e| eprintln!("rux: cannot load image {src}: {e}"))
-        .ok()?
-        .into_rgba8();
+    // Bytes first, path second. The runtime installs a reader that resolves a
+    // `src` the same way it resolves a component or a stylesheet, which is what
+    // lets an embedded build draw at all: inside an executable there is no file
+    // to open. Without a reader this is the filesystem read it always was, so a
+    // bare `rux-paint` test and `rux run` both keep working.
+    let decoded = match rux_layout::read_image_bytes(src) {
+        Some(bytes) => image::load_from_memory(&bytes)
+            .map_err(|e| eprintln!("rux: cannot decode image {src}: {e}"))
+            .ok()?,
+        None => image::open(src)
+            .map_err(|e| eprintln!("rux: cannot load image {src}: {e}"))
+            .ok()?,
+    }
+    .into_rgba8();
     let (width, height) = decoded.dimensions();
     Some(ImageBrush::new(ImageData {
         data: Blob::new(std::sync::Arc::new(decoded.into_raw())),

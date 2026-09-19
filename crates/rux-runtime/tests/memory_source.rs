@@ -36,6 +36,15 @@ fn load_err(msg: &str) -> String {
     }
 }
 
+fn collect_image_srcs(node: &rux_layout::Node, out: &mut Vec<String>) {
+    if let Some(image) = &node.image {
+        out.push(image.src.clone());
+    }
+    for child in &node.children {
+        collect_image_srcs(child, out);
+    }
+}
+
 fn collect_text(node: &rux_layout::Node, out: &mut Vec<String>) {
     if let Some(text) = &node.text {
         out.push(text.text.clone());
@@ -81,6 +90,40 @@ let who = signal("memory");
         texts.iter().any(|t| t == "hello"),
         "the component did not expand: {texts:?}"
     );
+}
+
+/// The painter reads image bytes through a hook the runtime installs, because
+/// `image::open` on a path is exactly what an embedded build cannot do. This
+/// asserts at that seam: after a load, the bytes for an `<image src>` are
+/// reachable without touching a disk.
+///
+/// A real PNG is not needed. The hook's job is to hand over whatever the
+/// provider holds; decoding is `image`'s business and is tested by drawing.
+#[test]
+fn the_painter_can_reach_an_images_bytes_without_a_filesystem() {
+    let _restore = install(
+        MemorySource::new()
+            .with(
+                "app.rux",
+                r#"<template>
+  <screen>
+    <image src="assets/logo.png" />
+  </screen>
+</template>"#,
+            )
+            .with("assets/logo.png", b"not-a-real-png".to_vec()),
+    );
+
+    let doc = Document::load("app.rux").expect("loads");
+
+    // The tree holds the resolved src, which is what the painter is handed.
+    let mut srcs = Vec::new();
+    collect_image_srcs(&doc.root, &mut srcs);
+    let src = srcs.first().expect("the document has an image");
+
+    let bytes = rux_layout::read_image_bytes(src)
+        .expect("the painter should reach the bytes through the installed reader");
+    assert_eq!(bytes, b"not-a-real-png");
 }
 
 #[test]

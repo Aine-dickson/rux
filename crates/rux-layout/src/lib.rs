@@ -713,6 +713,56 @@ pub struct ImageContent {
     pub intrinsic: (f32, f32),
 }
 
+/// How the painter gets an image's bytes.
+///
+/// `rux-paint` used to call `image::open(src)`, which is a filesystem read, and
+/// that is the one thing an embedded build cannot do: `rux build --release`
+/// puts the documents inside the executable, where a path names nothing. The
+/// layout was right and the picture was an empty box.
+///
+/// It could not be fixed where it was. The runtime resolves everything else
+/// through its `Source`, but `rux-paint` and `rux-runtime` share no dependency
+/// edge, so the provider cannot reach the painter. Both depend on this crate,
+/// which is why the hook lives here: it is the only place the two can meet.
+///
+/// The runtime installs a reader when it loads a document, so a path becomes a
+/// key resolved the same way a component or a stylesheet is. Nothing installs
+/// one in a bare `rux-layout` or `rux-paint` test, and the painter falls back
+/// to reading the path, which is what it always did.
+///
+/// Thread-local and lazy, deliberately. The alternative was carrying the bytes
+/// in `ImageContent`, which would read every image on every load whether or not
+/// it is ever drawn, and clone them through every rebuild of the tree. The
+/// painter already caches what it decodes, so it asks once.
+type ImageReader = std::rc::Rc<dyn Fn(&str) -> Option<Vec<u8>>>;
+
+thread_local! {
+    static IMAGE_READER: std::cell::RefCell<Option<ImageReader>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Install the reader the painter asks for image bytes.
+pub fn set_image_reader(reader: ImageReader) {
+    IMAGE_READER.with(|r| *r.borrow_mut() = Some(reader));
+}
+
+/// Forget the reader, so the painter reads paths again.
+pub fn clear_image_reader() {
+    IMAGE_READER.with(|r| *r.borrow_mut() = None);
+}
+
+/// The bytes for `src`, or `None` when no reader is installed or it has none.
+///
+/// `None` and "installed but empty-handed" are deliberately the same answer:
+/// the painter's fallback is to read the path, and a reader that cannot find a
+/// file is in no better position than the painter to say why.
+pub fn read_image_bytes(src: &str) -> Option<Vec<u8>> {
+    // Cloned out of the cell before the call so a reader cannot find the cell
+    // already borrowed.
+    let reader = IMAGE_READER.with(|r| r.borrow().clone())?;
+    reader(src)
+}
+
 /// Text carried by a leaf node.
 #[derive(Clone, Debug)]
 pub struct TextContent {
