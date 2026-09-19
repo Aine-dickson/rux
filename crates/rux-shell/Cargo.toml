@@ -33,18 +33,28 @@ rux-reactive.workspace = true
 # no weight; it just lets our code name the same type winit's API expects.
 web-time = "1.1"
 
-# Native-only platform services. None of these exist in a browser:
-#   pollster   blocks on a future, and a wasm main thread must not block, so the
-#              web build awaits the same futures instead.
-#   notify     watches the filesystem for hot reload; there is no filesystem,
-#              and the playground editor supplies new source directly.
-#   arboard    talks to the OS clipboard; the browser's is async and permissioned.
-#   accesskit  wraps the per-platform accessibility APIs (UI Automation, AT-SPI,
-#              NSAccessibility). The web already has an accessibility tree of its
-#              own and accesskit_winit has no adapter for it.
-# Everything above this line (window, input, focus, layout, paint) is shared.
+# Blocking on a future is native, and a wasm main thread must not block, so the
+# web build awaits the same futures instead. Android blocks exactly as a desktop
+# does, which is why this one is not in the desktop-only list below.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 pollster.workspace = true
+
+# Desktop-only platform services, and "desktop" here means neither a browser nor
+# a phone. Each of these wraps something both of those either lack or spell
+# differently, and the split is three-way rather than native/web because Android
+# is native and still has none of them:
+#   notify     watches the filesystem for hot reload. A browser has no
+#              filesystem, and an APK's documents are assets behind an
+#              AssetManager rather than files anything can watch. Android
+#              reloads over `adb` instead.
+#   arboard    talks to the OS clipboard. The browser's is async and
+#              permissioned; Android's is a Java API reached through JNI.
+#   accesskit  wraps the per-platform accessibility APIs (UI Automation, AT-SPI,
+#              NSAccessibility). The web already has an accessibility tree of
+#              its own, Android has one behind the same JNI, and accesskit_winit
+#              has an adapter for neither.
+# Everything above this line (window, input, focus, layout, paint) is shared.
+[target.'cfg(not(any(target_arch = "wasm32", target_os = "android")))'.dependencies]
 notify = "8.2.0"
 arboard.workspace = true
 accesskit = "0.24.1"
@@ -57,6 +67,20 @@ accesskit_winit = "0.33.2"
 # by way of winit and arboard, so it costs a feature flag and no build time.
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_UI_WindowsAndMessaging"] }
+
+# Android reaches winit through `android-activity`, which is why an Android app
+# is a cdylib exporting `android_main` rather than a binary with a `fn main`.
+#
+# **`native-activity`, not `game-activity`**, and the reason is the milestone's
+# whole promise. GameActivity is the better-supported half of android-activity,
+# but it is delivered as an androidx AAR, and consuming an AAR means Gradle.
+# NativeActivity is part of the platform itself: the manifest names
+# `android.app.NativeActivity`, the system loads the `.so`, and nothing Java is
+# built at any point. Choosing the better-supported backend here would cost
+# exactly the thing v0.8 exists to avoid.
+[target.'cfg(target_os = "android")'.dependencies]
+winit = { workspace = true, features = ["android-native-activity"] }
+android-activity = { version = "0.6", features = ["native-activity"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen-futures = "0.4"

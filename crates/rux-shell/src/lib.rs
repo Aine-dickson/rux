@@ -42,7 +42,7 @@ use std::cell::RefCell;
 #[cfg(target_arch = "wasm32")]
 use std::rc::Rc;
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
 use notify::{EventKind, RecursiveMode, Watcher};
 use rux_layout::{
     Background, Cursor, FocusItem, FocusKind, FocusRegion, HitRegion,
@@ -57,11 +57,11 @@ use vello::util::{RenderContext, RenderSurface};
 use vello::wgpu;
 use vello::wgpu::CurrentSurfaceTexture;
 use vello::{AaConfig, AaSupport, Renderer, RendererOptions, RenderParams, Scene};
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
 use accesskit::{Node as AccessKitNode, NodeId, Role, Toggled, Tree, TreeUpdate};
 // Only the accessibility tree uses these, so they are gated with it rather
 // than sitting unused in the wasm build.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
 use rux_layout::{AccessNode, AccessRole};
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, Ime, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent};
@@ -73,7 +73,7 @@ use winit::window::{CursorIcon, Theme, Window, WindowId};
 #[derive(Debug)]
 enum RuxEvent {
     /// The `.rux` file changed on disk.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
     Reload,
     /// The GPU surface finished initialising. Web only: `create_surface` is
     /// async and `resumed` is not, so setup runs as a task and wakes the loop
@@ -125,11 +125,11 @@ enum RuxEvent {
     WebRoute(Option<usize>),
     /// Assistive technology asked us something (it attached, it wants the
     /// tree, it moved focus). Delivered through the same proxy as hot-reload.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
     Access(accesskit_winit::Event),
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
 impl From<accesskit_winit::Event> for RuxEvent {
     fn from(event: accesskit_winit::Event) -> Self {
         Self::Access(event)
@@ -641,10 +641,10 @@ fn dropdown_paints(sel: &SelectRegion, value: &str) -> Vec<Paint> {
 
 /// The accessibility tree's root. Element ids follow it, offset by one, so an
 /// element's id is stable for a given position in document order.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
 const ACCESS_ROOT: NodeId = NodeId(0);
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
 fn to_accesskit_role(role: AccessRole) -> Role {
     match role {
         AccessRole::Label => Role::Label,
@@ -671,7 +671,7 @@ fn to_accesskit_role(role: AccessRole) -> Role {
 /// the alternative (tracking node identity across reconciles) is exactly the kind
 /// of parallel bookkeeping that goes stale. Geometry is in *physical* pixels,
 /// which is what the platform expects.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
 fn access_tree(nodes: &[AccessNode], focused_model: Option<&str>, scale: f64, title: &str) -> TreeUpdate {
     let mut root = AccessKitNode::new(Role::Window);
     root.set_label(title.to_string());
@@ -1037,7 +1037,7 @@ struct RenderState {
     /// Windows, AT-SPI on Linux, NSAccessibility on macOS). It only does work
     /// while assistive technology is actually attached, so this costs nothing in
     /// the common case.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
     access: accesskit_winit::Adapter,
 }
 
@@ -1076,7 +1076,7 @@ struct App {
     state: Option<RenderState>,
     /// Proxy for events raised outside the loop: the file watcher and the
     /// accessibility adapter both deliver through it.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
     proxy: winit::event_loop::EventLoopProxy<RuxEvent>,
     /// Set while the async surface setup is in flight, so `resumed` firing twice
     /// doesn't start a second one.
@@ -1209,7 +1209,7 @@ struct App {
     /// app still runs, copy/paste just does nothing. Absent on the web, where
     /// the clipboard is async and permission-gated; same "copy/paste does
     /// nothing" outcome, reached without a field.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
     clipboard: Option<arboard::Clipboard>,
     /// Whether the caret is in the visible half of its blink cycle.
     caret_visible: bool,
@@ -1253,7 +1253,7 @@ impl App {
     /// one already parsed, because it has no filesystem to load it from.
     fn new(
         #[cfg(not(target_arch = "wasm32"))] path: PathBuf,
-        #[cfg(not(target_arch = "wasm32"))] proxy: winit::event_loop::EventLoopProxy<RuxEvent>,
+        #[cfg(not(any(target_arch = "wasm32", target_os = "android")))] proxy: winit::event_loop::EventLoopProxy<RuxEvent>,
         #[cfg(target_arch = "wasm32")] document: Document,
     ) -> Self {
         #[cfg(not(target_arch = "wasm32"))]
@@ -1261,7 +1261,7 @@ impl App {
         Self {
             context: RenderContext::new(),
             state: None,
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
             proxy,
             #[cfg(target_arch = "wasm32")]
             pending: Rc::new(RefCell::new(None)),
@@ -1302,7 +1302,7 @@ impl App {
             touch_text: None,
             text_scroll: 0.0,
             last_click: None,
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
             clipboard: arboard::Clipboard::new()
                 .map_err(|e| eprintln!("rux: no clipboard ({e}), so copy/paste is disabled"))
                 .ok(),
@@ -1398,7 +1398,7 @@ impl App {
     /// Re-load the document after a file change. On a parse/load error the last
     /// good tree stays on screen and the dev overlay reports the error, so a typo
     /// mid-edit neither blanks the window nor passes unnoticed.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
     fn reload(&mut self) {
         match Document::load(&self.path) {
             Ok(doc) => {
@@ -2734,6 +2734,10 @@ impl App {
     /// API is a promise, and permission may even be prompted for, so the read is
     /// started here and the paste happens later, when [`RuxEvent::WebPaste`]
     /// arrives. Both ends meet in [`apply_paste`](Self::apply_paste).
+    // Native, Android included: the body is only `clipboard_read` plus
+    // `apply_paste`, and Android has both. Its clipboard just always reads
+    // empty, which is a state every platform can be in anyway, so the paste
+    // path stays one path rather than growing a third.
     #[cfg(not(target_arch = "wasm32"))]
     fn request_paste(&mut self, model: &str) {
         if let Some(pasted) = self.clipboard_read() {
@@ -3270,7 +3274,7 @@ impl App {
     }
 
     /// Put `text` on the system clipboard.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
     fn clipboard_write(&mut self, text: &str) {
         if let Some(cb) = self.clipboard.as_mut() {
             if let Err(e) = cb.set_text(text.to_string()) {
@@ -3281,7 +3285,7 @@ impl App {
 
     /// Read the system clipboard. `None` when it's empty, holds non-text, or
     /// there's no clipboard at all.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
     fn clipboard_read(&mut self) -> Option<String> {
         self.clipboard.as_mut()?.get_text().ok()
     }
@@ -3302,6 +3306,25 @@ impl App {
     fn clipboard_read(&mut self) -> Option<String> {
         // Unreachable in practice: `request_paste` takes the async path on the
         // web. Kept so the native and web shells present the same surface.
+        None
+    }
+
+    // Android has a clipboard, and reaching it means `ClipboardManager` across
+    // JNI. That is a real piece of work with a `JNIEnv` and a lifetime attached
+    // to the activity, and none of it is what the first APK is for, so copy and
+    // paste do nothing here rather than half working.
+    //
+    // These are stand-ins and not an omission: the text editing path is shared
+    // by all three platforms, so the surface has to exist. Writing silently does
+    // nothing, and reading says there is nothing to paste, which is what an
+    // empty clipboard says anyway. Nothing above this has to know which platform
+    // it is on, which is why `request_paste` above is shared rather than
+    // rewritten here.
+    #[cfg(target_os = "android")]
+    fn clipboard_write(&mut self, _text: &str) {}
+
+    #[cfg(target_os = "android")]
+    fn clipboard_read(&mut self) -> Option<String> {
         None
     }
 
@@ -3604,7 +3627,7 @@ impl App {
         // case pays only for the (already computed) node list.
         // Native only: the web already has an accessibility tree of its own, and
         // accesskit_winit has no adapter for it.
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
         {
             let window_title = state.window.title();
             state.access.update_if_active(|| {
@@ -3748,7 +3771,13 @@ impl ApplicationHandler<RuxEvent> for App {
             .with_title(title)
             .with_visible(false)
             .with_inner_size(winit::dpi::LogicalSize::new(open_w, open_h));
+        // Android ignores the title, the size and the visibility above: an
+        // activity gets the display it is given. They are set anyway rather than
+        // branched around, because winit accepts them everywhere and a second
+        // code path here would be two ways to open a window and one of them
+        // rarely exercised.
         let window = Arc::new(event_loop.create_window(attributes).expect("create window"));
+        #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
         let access = accesskit_winit::Adapter::with_event_loop_proxy(
             event_loop,
             &window,
@@ -3771,6 +3800,7 @@ impl ApplicationHandler<RuxEvent> for App {
             surface,
             renderer,
             scene: Scene::new(),
+            #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
             access,
         });
         self.request_redraw();
@@ -3838,9 +3868,14 @@ impl ApplicationHandler<RuxEvent> for App {
         });
     }
 
+    // Not on Android, where nothing outside the loop has anything to say yet:
+    // there is no watcher, no accessibility adapter and no host page, so
+    // `RuxEvent` has no variants at all there and this would be a match on an
+    // uninhabited value. Hot reload over `adb` is what brings it back.
+    #[cfg(not(target_os = "android"))]
     fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: RuxEvent) {
         match event {
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
             RuxEvent::Reload => self.reload(),
 
             // The device that owns the surface lives in the context the task
@@ -3892,7 +3927,7 @@ impl ApplicationHandler<RuxEvent> for App {
                 }
             }
 
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
             RuxEvent::Access(event) => {
                 match event.window_event {
                     // Assistive technology just attached: it needs the whole tree,
@@ -3920,7 +3955,7 @@ impl ApplicationHandler<RuxEvent> for App {
         // The adapter needs to see window events (focus, resize) to keep the
         // platform's view of the window in step. It observes; we still handle
         // every event ourselves below.
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
         if let Some(state) = self.state.as_mut() {
             state.access.process_event(&state.window, &event);
         }
@@ -5232,7 +5267,7 @@ impl DeviceProfile {
 /// Native only: it takes a filesystem path and installs a file watcher, neither
 /// of which a browser has. The web build drives the same `App` from source text
 /// supplied by the playground editor.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
 pub fn run(path: PathBuf) {
     run_at(path, None)
 }
@@ -5243,7 +5278,7 @@ pub fn run(path: PathBuf) {
 /// testable at all: a page reached only by tapping through the app cannot be
 /// checked on its own, and on a phone the same call is what an `myapp://` URL
 /// eventually turns into.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
 pub fn run_at(path: PathBuf, route: Option<String>) {
     run_previewing(path, route, None)
 }
@@ -5254,7 +5289,7 @@ pub fn run_at(path: PathBuf, route: Option<String>) {
 /// costs nothing: no emulator, no NDK, the desktop loop and hot reload intact,
 /// and the layout mistakes that a notch and a 393-pixel-wide display cause are
 /// the mistakes it catches, which is most of them.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
 pub fn run_previewing(path: PathBuf, route: Option<String>, preview: Option<DeviceProfile>) {
     let event_loop = EventLoop::<RuxEvent>::with_user_event()
         .build()
@@ -5305,6 +5340,58 @@ pub fn run_previewing(path: PathBuf, route: Option<String>, preview: Option<Devi
     event_loop.run_app(&mut app).expect("run app");
 
     drop(watcher); // keep the watcher alive for the loop's lifetime
+}
+
+/// `android_activity`, re-exported so a generated wrapper needs one dependency.
+///
+/// `rux build --target android` writes a crate whose whole content is an
+/// `android_main` taking an [`AndroidApp`](android_activity::AndroidApp). That
+/// type has to be named in the signature, and it has to be the *same* type this
+/// crate was built against, so naming the crate again in the generated manifest
+/// would be one more version to keep in step for no benefit.
+#[cfg(target_os = "android")]
+pub use android_activity;
+
+/// Run a document as an Android activity.
+///
+/// The Android counterpart of [`run`], and deliberately the smaller function.
+/// Everything that makes the desktop entry long is absent here:
+///
+/// - **No watcher.** An APK's documents are not files on a disk anyone can
+///   watch. Reloading on Android is driven from the other end, over `adb`.
+/// - **No window sizing, and no `--preview`.** An activity is given the
+///   display. The device is the device.
+/// - **No route.** A deep link arrives as an `Intent`, which is a later piece of
+///   work than the first APK; until then an Android app starts at its entry
+///   document exactly as a desktop one does with no `--route`.
+///
+/// What is left is the same `App`, the same event loop and the same frame path
+/// the desktop has always used, which is the point: this is not a second shell.
+///
+/// `path` names the entry document *inside the source that is already
+/// installed*, not a file on a filesystem. The caller installs a
+/// [`rux_runtime::Source`] first (a generated release wrapper embeds every
+/// document and installs a `MemorySource`), so by the time this runs, loading a
+/// document is a lookup and never touches Android's asset machinery.
+///
+/// Called from the `android_main` of a generated cdylib, which is how an Android
+/// app is entered: there is no `fn main` on the other side.
+#[cfg(target_os = "android")]
+pub fn run_android(app: android_activity::AndroidApp, path: PathBuf) {
+    use winit::platform::android::EventLoopBuilderExtAndroid;
+
+    let event_loop = EventLoop::<RuxEvent>::with_user_event()
+        .with_android_app(app)
+        .build()
+        .expect("create event loop");
+    // Wait, not Poll, for the same reason as the desktop: an idle window should
+    // cost nothing. It matters more here, where the cost is someone's battery.
+    event_loop.set_control_flow(ControlFlow::Wait);
+
+    // No proxy: nothing outside the loop speaks to an Android app yet. See
+    // `user_event`, which is not compiled here for the same reason.
+    let mut app = App::new(path);
+    event_loop.run_app(&mut app).expect("run app");
 }
 
 #[cfg(test)]

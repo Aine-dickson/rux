@@ -3242,6 +3242,7 @@ version = "0.8.0-dev"
 dependencies = [
  "accesskit",
  "accesskit_winit",
+ "android-activity",
  "arboard",
  "notify",
  "pollster",
