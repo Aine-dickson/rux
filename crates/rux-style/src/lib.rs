@@ -1398,13 +1398,13 @@ pub fn build_styled_tree_tracked(
         instances,
         swaps,
         &InteractionState::default(),
-        Viewport::default(),
+        Environment::sane(),
     )
 }
 
 /// Like [`build_styled_tree_tracked`], but matches pseudo-class selectors against
 /// the shell's current [`InteractionState`], what is hovered, pressed, focused,
-/// and `@media` queries against the current [`Viewport`]. The runtime passes its
+/// and `@media` queries against the current [`Environment`]. The runtime passes its
 /// live state on every build so a reconcile reproduces the same styling.
 pub fn build_styled_tree_stateful(
     sfc: &Sfc,
@@ -1416,7 +1416,7 @@ pub fn build_styled_tree_stateful(
     instances: &mut Instances,
     swaps: &mut Swaps,
     state: &InteractionState,
-    viewport: Viewport,
+    env: Environment,
 ) -> Result<(LayoutNode, BindingRegistry), String> {
     // The document's own `<style>` knows where it is in its file, so its
     // warnings get a line. A component's does not: its rules live in a
@@ -1424,7 +1424,7 @@ pub fn build_styled_tree_stateful(
     // document being built, so a line from the component's coordinate space
     // would point confidently at the wrong place. Unplaced is the honest answer
     // until warnings carry a file as well as a line.
-    let rules = parse_document_rules(sfc, viewport);
+    let rules = parse_document_rules(sfc, env);
 
     // What a `to=` is checked against. Refreshed per build rather than per load
     // because hot reload rewrites the routes as readily as anything else, and a
@@ -1457,7 +1457,7 @@ pub fn build_styled_tree_stateful(
     let comps: Components = components
         .iter()
         .map(|(tag, c)| {
-            let own = parse_component_rules(c, viewport);
+            let own = parse_component_rules(c, env);
             let merged = if c.style_scoped {
                 own
             } else {
@@ -1947,6 +1947,73 @@ impl Default for Viewport {
     }
 }
 
+/// Whether the operating system is asking for light or dark surfaces.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum ColorScheme {
+    #[default]
+    Light,
+    Dark,
+}
+
+/// The edges of the display a phone will not let a window use: a notch, a
+/// rounded corner, a home indicator, a status bar.
+///
+/// Zero everywhere on a desktop, which is why it can be carried before anything
+/// fills it in: a window that owns its whole surface has no unsafe edges.
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub struct Insets {
+    pub top: f32,
+    pub right: f32,
+    pub bottom: f32,
+    pub left: f32,
+}
+
+/// Everything the operating system knows that a stylesheet can ask about.
+///
+/// **This is one struct on purpose, and it carries fields nothing fills in
+/// yet.** Every one of these is the same question asked of the same operating
+/// system and surfaced as `@media`, and every one of them has to reach
+/// `Feature::holds`, which means reaching every call site that evaluates a
+/// query. Adding them one at a time would mean re-opening those call sites once
+/// per answer. The fields cost nothing while unanswered: an inset of zero and a
+/// density of one are exactly what a desktop window reports.
+///
+/// It also buys something that is not an environment query at all. Once the
+/// answers are data rather than measurements, they can be supplied by hand, and
+/// a desktop window can be told it is a phone: a device profile is this struct
+/// with a viewport, a density and safe-area insets filled in from a table. That
+/// is most of what mobile development needs before an emulator is involved.
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub struct Environment {
+    pub viewport: Viewport,
+    /// The person has asked for less movement. An accessibility requirement
+    /// rather than a preference: for some people motion is a medical problem.
+    pub reduced_motion: bool,
+    pub color_scheme: ColorScheme,
+    /// Filled in on a phone; zero on a desktop.
+    pub safe_area: Insets,
+    /// Physical pixels per logical pixel. The window's scale factor, named for
+    /// what a stylesheet would call it.
+    pub density: f32,
+}
+
+impl Environment {
+    /// An environment that is only a window size, which is what every caller
+    /// that predates this struct was passing.
+    pub fn from_viewport(viewport: Viewport) -> Self {
+        Self { viewport, ..Self::sane() }
+    }
+
+    /// The defaults a headless build evaluates against.
+    ///
+    /// Not `Default::default()` because `density` must be 1.0 and not 0.0: a
+    /// derived default would give a zero scale factor, and anything dividing by
+    /// it would produce infinity rather than an obviously wrong number.
+    pub fn sane() -> Self {
+        Self { density: 1.0, ..Self::default() }
+    }
+}
+
 /// A comparison in a media feature. `min-width: 600px` is `Ge(600)`, and the
 /// Level-4 range spelling `(width < 600px)` is `Lt(600)`.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -1990,6 +2057,10 @@ enum Feature {
     Height(Cmp, f32),
     Portrait,
     Landscape,
+    /// `prefers-reduced-motion: reduce`, or its `no-preference` half.
+    ReducedMotion(bool),
+    /// `prefers-color-scheme: dark`, or its `light` half.
+    Scheme(ColorScheme),
     /// A media *type* we're always in (`screen`, `all`).
     Always,
     /// Unsupported, never matches.
@@ -1997,12 +2068,15 @@ enum Feature {
 }
 
 impl Feature {
-    fn holds(&self, vp: Viewport) -> bool {
+    fn holds(&self, env: Environment) -> bool {
+        let vp = env.viewport;
         match *self {
             Self::Width(cmp, v) => cmp.holds(vp.width, v),
             Self::Height(cmp, v) => cmp.holds(vp.height, v),
             Self::Portrait => vp.height >= vp.width,
             Self::Landscape => vp.width > vp.height,
+            Self::ReducedMotion(want) => env.reduced_motion == want,
+            Self::Scheme(want) => env.color_scheme == want,
             Self::Always => true,
             Self::Never => false,
         }
@@ -2017,8 +2091,8 @@ struct MediaCond {
 }
 
 impl MediaCond {
-    fn holds(&self, vp: Viewport) -> bool {
-        self.any.iter().any(|all| all.iter().all(|f| f.holds(vp)))
+    fn holds(&self, env: Environment) -> bool {
+        self.any.iter().any(|all| all.iter().all(|f| f.holds(env)))
     }
 
     /// Parse a serialized media query list, e.g.
@@ -2078,6 +2152,20 @@ fn parse_media_feature(token: &str) -> Vec<Feature> {
         "orientation" => match value.to_ascii_lowercase().as_str() {
             "portrait" => Feature::Portrait,
             "landscape" => Feature::Landscape,
+            _ => Feature::Never,
+        },
+        // Both halves of each preference, not just the interesting one. CSS
+        // lets an author write the `no-preference` or `light` side and expect
+        // it to answer, and a query that silently never matches is the failure
+        // this whole fail-closed design is trying to make visible elsewhere.
+        "prefers-reduced-motion" => match value.to_ascii_lowercase().as_str() {
+            "reduce" => Feature::ReducedMotion(true),
+            "no-preference" => Feature::ReducedMotion(false),
+            _ => Feature::Never,
+        },
+        "prefers-color-scheme" => match value.to_ascii_lowercase().as_str() {
+            "dark" => Feature::Scheme(ColorScheme::Dark),
+            "light" => Feature::Scheme(ColorScheme::Light),
             _ => Feature::Never,
         },
         "min-width" | "max-width" | "min-height" | "max-height" => {
@@ -2216,24 +2304,24 @@ fn warn_unsupported_media(what: &str) {
 /// Whether each `@media` block in `css` applies at `vp`, in source order. The
 /// runtime compares this across a resize: if it is unchanged, no rule set changed
 /// and the tree does not need re-cascading.
-pub fn media_matches(css: &str, vp: Viewport) -> Vec<bool> {
+pub fn media_matches(css: &str, env: Environment) -> Vec<bool> {
     let Ok(sheet) = StyleSheet::parse(css, ParserOptions::default()) else {
         return Vec::new();
     };
     let mut out = Vec::new();
-    collect_media_matches(&sheet.rules.0, vp, &mut out);
+    collect_media_matches(&sheet.rules.0, env, &mut out);
     out
 }
 
-fn collect_media_matches(rules: &[CssRule], vp: Viewport, out: &mut Vec<bool>) {
+fn collect_media_matches(rules: &[CssRule], env: Environment, out: &mut Vec<bool>) {
     for rule in rules {
         if let CssRule::Media(media) = rule {
             let text = media
                 .query
                 .to_css_string(PrinterOptions::default())
                 .unwrap_or_default();
-            out.push(MediaCond::parse(&text).holds(vp));
-            collect_media_matches(&media.rules.0, vp, out);
+            out.push(MediaCond::parse(&text).holds(env));
+            collect_media_matches(&media.rules.0, env, out);
         }
     }
 }
@@ -2243,8 +2331,8 @@ fn collect_media_matches(rules: &[CssRule], vp: Viewport, out: &mut Vec<bool>) {
 /// `base` is the 1-based file line the `<style>` block's first character sits
 /// on, used to lift lightningcss's section-relative positions onto the file's
 /// own lines. `None` means "do not claim to know": see [`parse_rules_at`].
-fn parse_rules(css: &str, vp: Viewport) -> Vec<Rule> {
-    parse_rules_at(css, vp, None)
+fn parse_rules(css: &str, env: Environment) -> Vec<Rule> {
+    parse_rules_at(css, env, None)
 }
 
 /// Every sheet a document styles with: what it included, then its own
@@ -2258,32 +2346,32 @@ fn parse_rules(css: &str, vp: Viewport) -> Vec<Rule> {
 /// consumer attributes a warning to the document being built, so a line number
 /// from the include's coordinate space would point confidently at the wrong
 /// place. Same reasoning as a component's `<style>` above.
-fn parse_document_rules(sfc: &Sfc, vp: Viewport) -> Vec<Rule> {
+fn parse_document_rules(sfc: &Sfc, env: Environment) -> Vec<Rule> {
     if sfc.style_includes.is_empty() {
         // The overwhelmingly common case, and it keeps the `order` values
         // exactly as they were before includes existed.
-        return parse_rules_at(&sfc.style, vp, Some(sfc.style_line));
+        return parse_rules_at(&sfc.style, env, Some(sfc.style_line));
     }
     let mut rules = Vec::new();
     for include in &sfc.style_includes {
-        rules.extend(parse_rules(&include.css, vp));
+        rules.extend(parse_rules(&include.css, env));
     }
-    rules.extend(parse_rules_at(&sfc.style, vp, Some(sfc.style_line)));
+    rules.extend(parse_rules_at(&sfc.style, env, Some(sfc.style_line)));
     renumber(&mut rules);
     rules
 }
 
 /// [`parse_document_rules`] for a component, whose own `<style>` is unplaced
 /// too.
-fn parse_component_rules(sfc: &Sfc, vp: Viewport) -> Vec<Rule> {
+fn parse_component_rules(sfc: &Sfc, env: Environment) -> Vec<Rule> {
     if sfc.style_includes.is_empty() {
-        return parse_rules(&sfc.style, vp);
+        return parse_rules(&sfc.style, env);
     }
     let mut rules = Vec::new();
     for include in &sfc.style_includes {
-        rules.extend(parse_rules(&include.css, vp));
+        rules.extend(parse_rules(&include.css, env));
     }
-    rules.extend(parse_rules(&sfc.style, vp));
+    rules.extend(parse_rules(&sfc.style, env));
     renumber(&mut rules);
     rules
 }
@@ -2300,7 +2388,7 @@ fn renumber(rules: &mut [Rule]) {
     }
 }
 
-fn parse_rules_at(css: &str, vp: Viewport, base: Option<usize>) -> Vec<Rule> {
+fn parse_rules_at(css: &str, env: Environment, base: Option<usize>) -> Vec<Rule> {
     let sheet = match StyleSheet::parse(css, ParserOptions::default()) {
         Ok(s) => s,
         Err(_) => return Vec::new(),
@@ -2308,7 +2396,7 @@ fn parse_rules_at(css: &str, vp: Viewport, base: Option<usize>) -> Vec<Rule> {
 
     let mut rules = Vec::new();
     let mut order = 0usize;
-    collect_rules(&sheet.rules.0, vp, &mut rules, &mut order, base, css);
+    collect_rules(&sheet.rules.0, env, &mut rules, &mut order, base, css);
     rules
 }
 
@@ -2319,7 +2407,7 @@ fn parse_rules_at(css: &str, vp: Viewport, base: Option<usize>) -> Vec<Rule> {
 /// rule win over an earlier plain rule of equal specificity, as in CSS.
 fn collect_rules(
     rules: &[CssRule],
-    vp: Viewport,
+    env: Environment,
     out: &mut Vec<Rule>,
     order: &mut usize,
     base: Option<usize>,
@@ -2334,10 +2422,10 @@ fn collect_rules(
                     .unwrap_or_default();
                 // An unsupported condition is reported against the `@media` line.
                 let holds = located(file_line(base, media.loc.line), || {
-                    MediaCond::parse(&text).holds(vp)
+                    MediaCond::parse(&text).holds(env)
                 });
                 if holds {
-                    collect_rules(&media.rules.0, vp, out, order, base, css);
+                    collect_rules(&media.rules.0, env, out, order, base, css);
                 }
             }
             CssRule::Style(style) => collect_style_rule(style, out, order, base, css),
@@ -7581,14 +7669,17 @@ mod tests {
 
     // ── @media ──────────────────────────────────────────────────────────────
 
-    use super::{media_matches, parse_rules, InteractionState, Viewport};
+    use super::{
+        media_matches, parse_rules, ColorScheme, Environment, InteractionState, Viewport,
+    };
 
-    fn vp(width: f32, height: f32) -> Viewport {
-        Viewport { width, height }
+    /// A window of this size, with every other answer left at its default.
+    fn vp(width: f32, height: f32) -> Environment {
+        Environment::from_viewport(Viewport { width, height })
     }
 
     /// Build at a given viewport and report the target's background.
-    fn bg_at_vp(src: &str, viewport: Viewport) -> Option<Background> {
+    fn bg_at_vp(src: &str, env: Environment) -> Option<Background> {
         let sfc = rux_parser::parse_sfc(src).unwrap();
         let mut engine = Builder::new().build(&sfc.script).unwrap();
         let mut instances = super::Instances::new();
@@ -7600,7 +7691,7 @@ mod tests {
             &mut instances,
             &mut crate::Swaps::new(),
             &InteractionState::default(),
-            viewport,
+            env,
         )
         .unwrap();
         root.0.children[0].style.background.clone()
@@ -7672,6 +7763,58 @@ mod tests {
 
     /// `media_matches` is what lets the runtime skip work on a resize that crosses
     /// no breakpoint: same answers, no re-cascade.
+    #[test]
+    /// Both halves of both preferences answer, and answer against the
+    /// environment rather than the window size.
+    #[test]
+    fn the_environment_queries_hold_and_fail_the_right_way_round() {
+        let css = "@media (prefers-reduced-motion: reduce) { .a { color: red } }\
+                   @media (prefers-reduced-motion: no-preference) { .b { color: red } }\
+                   @media (prefers-color-scheme: dark) { .c { color: red } }\
+                   @media (prefers-color-scheme: light) { .d { color: red } }";
+
+        let calm = Environment { reduced_motion: true, ..Environment::sane() };
+        assert_eq!(media_matches(css, calm), vec![true, false, false, true]);
+
+        let dark = Environment { color_scheme: ColorScheme::Dark, ..Environment::sane() };
+        assert_eq!(media_matches(css, dark), vec![false, true, true, false]);
+
+        // The default is the ordinary case: full motion, light surfaces.
+        assert_eq!(media_matches(css, Environment::sane()), vec![false, true, false, true]);
+    }
+
+    /// A value neither half of a preference uses must not match either half.
+    ///
+    /// The fail-closed rule: an unsupported query hides its rules rather than
+    /// applying them, so a typo loses a style instead of silently keeping one
+    /// that was meant to be conditional.
+    #[test]
+    fn a_misspelled_preference_matches_nothing() {
+        let css = "@media (prefers-reduced-motion: reduced) { .a { color: red } }\
+                   @media (prefers-color-scheme: sepia) { .b { color: red } }";
+        for env in [
+            Environment::sane(),
+            Environment { reduced_motion: true, ..Environment::sane() },
+            Environment { color_scheme: ColorScheme::Dark, ..Environment::sane() },
+        ] {
+            assert_eq!(media_matches(css, env), vec![false, false]);
+        }
+    }
+
+    /// The width queries must keep working now that they read through a struct
+    /// rather than being handed one, and must ignore the rest of it.
+    #[test]
+    fn a_preference_does_not_disturb_a_width_query() {
+        let css = "@media (max-width: 600px) { .a { color: red } }";
+        let narrow = Environment::from_viewport(Viewport { width: 500.0, height: 800.0 });
+        assert_eq!(media_matches(css, narrow), vec![true]);
+        assert_eq!(
+            media_matches(css, Environment { reduced_motion: true, ..narrow }),
+            vec![true],
+            "reduced motion is not a width"
+        );
+    }
+
     #[test]
     fn media_matches_reports_each_block() {
         let css = "@media (max-width: 600px) { .a { color: red } } \
@@ -7980,7 +8123,7 @@ mod tests {
         // it before it silently degrades matching back to descendant-only.
         use super::{parse_rules, Combinator};
         let css = ".card > text { color: #111 } .a + .b { color: #222 } .a ~ .b { color: #333 }";
-        let rules = parse_rules(css, Viewport::default());
+        let rules = parse_rules(css, Environment::sane());
         let combs: Vec<&[Combinator]> = rules.iter().map(|r| r.combs.as_slice()).collect();
         assert_eq!(combs[0], &[Combinator::Child]);
         assert_eq!(combs[1], &[Combinator::NextSibling]);

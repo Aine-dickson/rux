@@ -38,7 +38,7 @@ use rux_style::{BindingRegistry, Instances, Namespace, Swaps, DOCUMENT_NAMESPACE
 /// Re-exported so the shell can hand pointer/focus state and the window size in
 /// without depending on `rux-style` directly.
 pub use rux_reactive::json_string;
-pub use rux_style::{InteractionState, Viewport, Warning};
+pub use rux_style::{ColorScheme, Environment, Insets, InteractionState, Viewport, Warning};
 /// Re-exported for the same reason: the shell owns the animator, because the
 /// clock and the previous frame are its business and not the document's.
 pub use rux_style::{Animator, FRAME_MS};
@@ -72,8 +72,9 @@ pub struct Document {
     /// `:hover`, `:active` and `:focus` match against. Owned here so every build
     /// (rebuild, reconcile, hot-reload) reproduces the same styling.
     state: InteractionState,
-    /// The window size `@media` queries are evaluated against.
-    viewport: Viewport,
+    /// Everything the operating system knows that `@media` can ask about:
+    /// the window size, and the preferences and device metrics beside it.
+    environment: Environment,
     /// What is currently wrong with this document, for the dev overlay.
     diagnostics: Diagnostics,
     /// Every component instance's private state, kept here because the tree it
@@ -1166,7 +1167,7 @@ impl Document {
             focus: None,
             registry,
             state: InteractionState::default(),
-            viewport: Viewport::default(),
+            environment: Environment::sane(),
             // Whatever the build just complained about, or printed, ready for the
             // overlay.
             diagnostics: Diagnostics {
@@ -1267,7 +1268,7 @@ impl Document {
             focus: None,
             registry,
             state: InteractionState::default(),
-            viewport: Viewport::default(),
+            environment: Environment::sane(),
             diagnostics: Diagnostics {
                 warnings: collect_warnings(),
                 prints: rux_script::take_logs(),
@@ -1329,8 +1330,9 @@ impl Document {
     /// identity. Used by hot-reload so a successful load clears the error.
     pub fn replace_with(&mut self, mut fresh: Document) {
         // A reload rebuilds from scratch, so focus is legitimately reset, but the
-        // viewport and pointer state belong to the window, not the file.
-        fresh.viewport = self.viewport;
+        // The environment and the pointer state belong to the window, not
+        // the file.
+        fresh.environment = self.environment;
         fresh.state = self.state.clone();
         fresh.rebuild();
         *self = fresh;
@@ -1393,12 +1395,22 @@ impl Document {
     /// actually differs. A document with no `@media` at all compares two empty
     /// vectors and never rebuilds.
     pub fn set_viewport(&mut self, viewport: Viewport) -> bool {
-        if viewport == self.viewport {
+        self.set_environment(Environment { viewport, ..self.environment })
+    }
+
+    /// The same, for everything the operating system answers rather than
+    /// only the window size.
+    ///
+    /// One entry point for all of it because the cost that matters is the
+    /// re-cascade, and that is decided the same way whichever answer moved:
+    /// a preference changing mid-run is exactly a breakpoint being crossed.
+    pub fn set_environment(&mut self, environment: Environment) -> bool {
+        if environment == self.environment {
             return false;
         }
-        let before = self.media_state(self.viewport);
-        let after = self.media_state(viewport);
-        self.viewport = viewport;
+        let before = self.media_state(self.environment);
+        let after = self.media_state(environment);
+        self.environment = environment;
         if before == after {
             return false;
         }
@@ -1410,13 +1422,13 @@ impl Document {
 
     /// Whether each `@media` block, in the document and in every component,
     /// applies at `viewport`.
-    fn media_state(&self, viewport: Viewport) -> Vec<bool> {
-        let mut out = rux_style::media_matches(&self.sfc.style, viewport);
+    fn media_state(&self, environment: Environment) -> Vec<bool> {
+        let mut out = rux_style::media_matches(&self.sfc.style, environment);
         // Components are keyed by tag in a HashMap, so sort for a stable order.
         let mut tags: Vec<&String> = self.components.keys().collect();
         tags.sort();
         for tag in tags {
-            out.extend(rux_style::media_matches(&self.components[tag].style, viewport));
+            out.extend(rux_style::media_matches(&self.components[tag].style, environment));
         }
         out
     }
@@ -1432,7 +1444,7 @@ impl Document {
             &mut self.instances,
             &mut self.swaps,
             &self.state,
-            self.viewport,
+            self.environment,
         ) else {
             return;
         };
@@ -1520,7 +1532,7 @@ impl Document {
             &mut self.instances,
             &mut self.swaps,
             &self.state,
-            self.viewport,
+            self.environment,
         ) {
             resolve_images(&mut root, &self.base);
             apply_focus(&mut root, self.focus.as_ref());
@@ -1684,7 +1696,7 @@ impl Document {
             &mut self.instances,
             &mut self.swaps,
             &self.state,
-            self.viewport,
+            self.environment,
         ) else {
             return;
         };
