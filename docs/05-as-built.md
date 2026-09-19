@@ -87,6 +87,36 @@ cargo run -- examples/dashboard.rux
 Edit any `.rux` file (including imported components) and it **hot-reloads**: no
 rebuild. Only changing the compiled Rust host requires `cargo run` again.
 
+### Previewing a device, without one
+
+```bash
+rux run --preview phone         # 393 by 852 at 3x, notch above, home indicator below
+rux run --preview phone-small   # 375 by 667 at 2x, a status bar and nothing else
+rux run --preview phone-android # 412 by 915 at 2.625x, status bar and gesture bar
+rux run --preview tablet        # 820 by 1180 at 2x
+```
+
+The window opens at the device's logical size and the environment answers for
+the device: its density, and its **safe-area insets**, which is what makes
+`env(safe-area-inset-*)` resolve to something other than zero on a desktop.
+Naming a device that does not exist prints the ones that do.
+
+Two things it deliberately does not do. The **viewport** is still the window's
+own logical size, so `@media` keeps telling the truth and dragging the window
+edge still reflows, which is most of what this is for. And a window that does
+not fit the monitor is **capped to what does**, with a line saying so: a phone
+is taller than a laptop screen in the units that matter, and 393 by 852 is 1278
+physical pixels on a 1.5x display.
+
+These profiles are **nominal**, not measurements of one handset: a notch that
+takes a strip off the top, a home indicator that takes one off the bottom, a
+display narrower than any window anyone drags. The point is to be *a* phone, not
+*the* phone. A real device reports its own values down the same road.
+
+Portrait only so far. Rotation moves an inset from one edge to another, and the
+runtime handles that (an inset that moves re-cascades), but there is no way to
+ask for it from the command line yet.
+
 ## Formatting
 
 ```bash
@@ -820,6 +850,32 @@ its subtree. A cycle terminates rather than hanging.
 An **undefined** variable with no fallback makes the declaration invalid, so it is
 dropped (as in CSS) and warned about once. Driven in `examples/theme.rux`, which
 swaps a whole palette with one `:class`.
+
+**`env()`: the strip of the display the device has already taken.**
+```css
+.bar  { padding-top: env(safe-area-inset-top); }      /* under a notch */
+.dock { padding-bottom: env(safe-area-inset-bottom); } /* above a home indicator */
+.app  { --gutter: env(safe-area-inset-left, 0px); }    /* a fallback, as in CSS */
+```
+Four names, `safe-area-inset-top`, `-right`, `-bottom` and `-left`, resolving to
+a length. **On a desktop window every one of them is zero**, and zero is an
+answer rather than a placeholder: a window that owns its whole surface has no
+unsafe edges, so the same stylesheet is correct in both places and the phone
+simply has more to avoid.
+
+It resolves wherever `var()` does, a custom property's own value included, so
+`--gutter: env(safe-area-inset-bottom)` is the way to write it once. A fallback
+covers a name Rux cannot answer, **not** a known name answering zero:
+`env(safe-area-inset-top, 20px)` on a desktop is 0, not 20, which is what CSS
+does and is the only reading that lets a fallback mean "you are somewhere that
+has no such thing". An unknown name with no fallback makes the declaration
+invalid and is warned about once, the same as an undefined variable.
+
+The other `env()` names in CSS (`titlebar-area-*`, `viewport-segment-*`) name
+surfaces Rux does not have, so they are unknown here; answering for one would be
+inventing a number rather than reporting one.
+
+To see a non-zero inset on a desktop, see `rux run --preview` below.
 
 **`@media` queries:** evaluated against the window's **logical** size.
 ```css

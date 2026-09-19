@@ -55,6 +55,11 @@ Usage:
 Run options:
   --route <path>             Open on this route instead of `/`, the way a
                              deep link arrives
+  --preview <device>         Size the window to a device and answer as one:
+                             density and safe-area insets, which a desktop
+                             window has no honest values for. Naming a
+                             device that does not exist lists the ones that
+                             do (phone, phone-small, phone-android, tablet)
 
 Check options:
   --format json              Emit diagnostics as JSON, for an editor
@@ -253,6 +258,7 @@ fn run(path: PathBuf, args: &[String]) -> ExitCode {
     }
 
     let mut route = None;
+    let mut preview = None;
     let mut rest = args.iter();
     while let Some(arg) = rest.next() {
         match arg.as_str() {
@@ -263,13 +269,49 @@ fn run(path: PathBuf, args: &[String]) -> ExitCode {
                     return ExitCode::from(2);
                 }
             },
+            "--preview" => match rest.next() {
+                Some(value) => match rux_shell::DeviceProfile::by_name(value) {
+                    Some(profile) => preview = Some(profile),
+                    None => {
+                        eprintln!(
+                            "rux: there is no device profile called `{value}`\n\nTry one of:\n{}",
+                            rux_shell::DeviceProfile::names_with_descriptions()
+                        );
+                        return ExitCode::from(2);
+                    }
+                },
+                None => {
+                    eprintln!(
+                        "rux: `--preview` needs a device\n\nTry one of:\n{}",
+                        rux_shell::DeviceProfile::names_with_descriptions()
+                    );
+                    return ExitCode::from(2);
+                }
+            },
             flag => {
                 eprintln!("rux: unknown option `{flag}`\n\n{USAGE}");
                 return ExitCode::from(2);
             }
         }
     }
-    rux_shell::run_at(path, route);
+    if let Some(profile) = preview {
+        // Said out loud, because the window is about to open at a size nobody
+        // asked for and `env(safe-area-inset-*)` is about to answer something
+        // no desktop ever does. Both read as the app misbehaving if the reason
+        // is not on the screen the command was typed into.
+        eprintln!(
+            "rux: previewing as `{}`, {} by {} at {}x, safe area {}/{}/{}/{}",
+            profile.name,
+            profile.width as i32,
+            profile.height as i32,
+            profile.density,
+            profile.safe_area.top,
+            profile.safe_area.right,
+            profile.safe_area.bottom,
+            profile.safe_area.left,
+        );
+    }
+    rux_shell::run_previewing(path, route, preview);
     ExitCode::SUCCESS
 }
 

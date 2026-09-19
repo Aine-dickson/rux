@@ -1037,27 +1037,12 @@ fn resolve_vars(value: &str, vars: &HashMap<String, String>, depth: usize) -> St
     }
     let mut out = String::with_capacity(value.len());
     let mut rest = value;
-    while let Some(start) = rest.find("var(") {
+    while let Some(start) = find_call(rest, "var(") {
         out.push_str(&rest[..start]);
         let after = &rest[start + 4..];
-        // Find this var()'s closing paren, allowing nested parens in a fallback
-        // (`var(--x, rgb(0, 0, 0))`).
-        let mut depth_parens = 1i32;
-        let mut end = None;
-        for (i, c) in after.char_indices() {
-            match c {
-                '(' => depth_parens += 1,
-                ')' => {
-                    depth_parens -= 1;
-                    if depth_parens == 0 {
-                        end = Some(i);
-                        break;
-                    }
-                }
-                _ => {}
-            }
-        }
-        let Some(end) = end else {
+        // The closing paren of *this* call, allowing nested parens in a
+        // fallback (`var(--x, rgb(0, 0, 0))`).
+        let Some(end) = closing_paren(after) else {
             // Unclosed `var(`, emit the rest verbatim rather than looping.
             out.push_str("var(");
             out.push_str(after);
@@ -1107,9 +1092,152 @@ fn take_vars(props: &mut HashMap<String, String>, inherited: &Vars) -> Vars {
         // would only be fed to `interpret` (which ignores it) as noise.
         let Some(value) = props.remove(&name) else { continue };
         let value = resolve_vars(&value, &vars, 0);
+        // `--pad: env(safe-area-inset-bottom)` is the way an author writes this
+        // once and reads it everywhere, so it has to resolve where the variable
+        // is declared and not only where a property is.
+        let value = if value.contains("env(") { resolve_env(&value) } else { value };
         vars.insert(name, value);
     }
     Rc::new(vars)
+}
+
+thread_local! {
+    /// What `env()` resolves against while a tree is being built.
+    ///
+    /// A thread-local rather than a parameter because `build_node_inner`
+    /// already takes twenty of those, and this is read in one place: the pass
+    /// that substitutes values before they are interpreted. It follows the
+    /// pattern the source provider and the fragment flag already set, and
+    /// `cargo test`'s threads each get their own.
+    static BUILD_ENV: std::cell::Cell<Environment> =
+        const { std::cell::Cell::new(Environment::HEADLESS) };
+}
+
+/// The environment `env()` resolves against for the rest of this build.
+fn set_build_env(env: Environment) {
+    BUILD_ENV.with(|e| e.set(env));
+}
+
+/// Substitute every `env(<name>[, fallback])` in `value`.
+///
+/// The only names are the four safe-area insets, which is what CSS's own
+/// `env()` is overwhelmingly used for: the strip along an edge of a phone's
+/// display that a notch, a rounded corner, a status bar or a home indicator
+/// has already taken. On a desktop window every one of them is zero, which is
+/// the honest answer rather than a placeholder: a window that owns its whole
+/// surface has no unsafe edges.
+///
+/// **This is the surface that makes the inset mean anything.** The value has
+/// been carried in [`Environment`] since the struct landed and nothing could
+/// read it, so filling it in changed nothing that anyone could see.
+///
+/// An unknown name with a fallback takes the fallback, as in CSS. An unknown
+/// name without one leaves the reference in place, which makes the declaration
+/// unparseable and so ignored: CSS's "invalid at computed-value time", and the
+/// same shape [`resolve_vars`] already uses, warning rather than dropping it
+/// in silence.
+fn resolve_env(value: &str) -> String {
+    let env = BUILD_ENV.with(std::cell::Cell::get);
+    let mut out = String::with_capacity(value.len());
+    let mut rest = value;
+    while let Some(start) = find_call(rest, "env(") {
+        out.push_str(&rest[..start]);
+        let after = &rest[start + 4..];
+        let Some(end) = closing_paren(after) else {
+            // Unclosed, emit the rest verbatim rather than looping.
+            out.push_str("env(");
+            out.push_str(after);
+            return out;
+        };
+        let inner = &after[..end];
+        let (name, fallback) = match inner.split_once(',') {
+            Some((n, f)) => (n.trim(), Some(f.trim())),
+            None => (inner.trim(), None),
+        };
+        match safe_area_inset(name, env.safe_area) {
+            Some(px) => out.push_str(&format!("{px}px")),
+            None => match fallback {
+                Some(f) => out.push_str(f),
+                None => {
+                    warn_unknown_env(name);
+                    out.push_str("env(");
+                    out.push_str(inner);
+                    out.push(')');
+                }
+            },
+        }
+        rest = &after[end + 1..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// The four names, and nothing else. `safe-area-inset-*` only: the other
+/// `env()` names in CSS (`titlebar-area-*`, `viewport-segment-*`) describe
+/// surfaces Rux does not have, and answering for one would be inventing a
+/// number rather than reporting one.
+fn safe_area_inset(name: &str, insets: Insets) -> Option<f32> {
+    match name {
+        "safe-area-inset-top" => Some(insets.top),
+        "safe-area-inset-right" => Some(insets.right),
+        "safe-area-inset-bottom" => Some(insets.bottom),
+        "safe-area-inset-left" => Some(insets.left),
+        _ => None,
+    }
+}
+
+/// Where a function call named `name` starts, ignoring a match that is really
+/// the tail of a longer identifier.
+///
+/// `env(` inside `--my-env(` is not a call to `env()`, and a custom property
+/// may legally be called anything at all.
+fn find_call(haystack: &str, name: &str) -> Option<usize> {
+    let mut from = 0;
+    while let Some(hit) = haystack[from..].find(name) {
+        let at = from + hit;
+        let before = haystack[..at].chars().next_back();
+        if !before.is_some_and(|c| c.is_alphanumeric() || c == '-' || c == '_') {
+            return Some(at);
+        }
+        from = at + name.len();
+    }
+    None
+}
+
+/// The index of the `)` that closes a call whose `(` has already been passed,
+/// allowing nested parens in a fallback (`env(x, calc(1px + 2px))`).
+fn closing_paren(after: &str) -> Option<usize> {
+    let mut depth = 1i32;
+    for (i, c) in after.char_indices() {
+        match c {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Warn once per name that an `env()` named something Rux cannot answer.
+fn warn_unknown_env(name: &str) {
+    use std::sync::{Mutex, OnceLock};
+    static SEEN: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    let message = format!(
+        "`env({name})` is not an environment value Rux knows, so the declaration using it is \
+         ignored. The four it knows are `safe-area-inset-top`, `-right`, `-bottom` and \
+         `-left`, and any name at all takes a fallback: `env({name}, 0px)`"
+    );
+    warn(message.clone());
+    let seen = SEEN.get_or_init(|| Mutex::new(HashSet::new()));
+    let Ok(mut seen) = seen.lock() else { return };
+    if seen.insert(name.to_string()) {
+        echo(&message);
+    }
 }
 
 /// Warn once per name that a `var()` referenced an undefined custom property.
@@ -1425,6 +1553,10 @@ pub fn build_styled_tree_stateful(
     // would point confidently at the wrong place. Unplaced is the honest answer
     // until warnings carry a file as well as a line.
     let rules = parse_document_rules(sfc, env);
+
+    // What `env()` reads, for the length of this build. Set here rather than
+    // threaded, beside the two other build-scoped registers below.
+    set_build_env(env);
 
     // What a `to=` is checked against. Refreshed per build rather than per load
     // because hot reload rewrites the routes as readily as anything else, and a
@@ -2043,8 +2175,24 @@ impl Environment {
     /// derived default would give a zero scale factor, and anything dividing by
     /// it would produce infinity rather than an obviously wrong number.
     pub fn sane() -> Self {
-        Self { density: 1.0, ..Self::default() }
+        Self::HEADLESS
     }
+
+    /// The same thing as a constant, for the places that need one: a
+    /// `thread_local!` initialiser cannot call a function.
+    ///
+    /// The viewport is spelled out rather than derived, and it must stay the
+    /// same numbers as `Viewport`'s own `Default`: a headless build evaluates
+    /// `@media` the way the default window would, and writing a zero viewport
+    /// here made every `max-width` query match, which is every narrow layout
+    /// applying in every test that never mentioned a viewport.
+    pub const HEADLESS: Self = Self {
+        viewport: Viewport { width: 1280.0, height: 800.0 },
+        reduced_motion: false,
+        color_scheme: ColorScheme::Light,
+        safe_area: Insets { top: 0.0, right: 0.0, bottom: 0.0, left: 0.0 },
+        density: 1.0,
+    };
 }
 
 /// A comparison in a media feature. `min-width: 600px` is `Ge(600)`, and the
@@ -3473,6 +3621,11 @@ fn build_node_inner(
     for value in props.values_mut() {
         if value.contains("var(") {
             *value = resolve_vars(value, &vars, 0);
+        }
+        // After `var()`, so a variable holding an `env()` resolves, and so an
+        // `env()` fallback may itself be a variable.
+        if value.contains("env(") {
+            *value = resolve_env(value);
         }
     }
 
@@ -7819,6 +7972,134 @@ mod tests {
         root.0.children[0].style.background.clone()
     }
 
+
+    // ── env(safe-area-inset-*) ──────────────────────────────────────────────
+
+    use super::{take_warnings, Insets};
+
+    /// Build with these insets and return the padding of the first child.
+    fn padding_with(src: &str, safe_area: Insets) -> rux_layout::Sides {
+        let sfc = rux_parser::parse_sfc(src).unwrap();
+        let mut engine = Builder::new().build(&sfc.script).unwrap();
+        let mut instances = super::Instances::new();
+        let root = super::build_styled_tree_stateful(
+            &sfc,
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut engine,
+            &mut instances,
+            &mut crate::Swaps::new(),
+            &InteractionState::default(),
+            Environment { safe_area, ..Environment::sane() },
+        )
+        .unwrap();
+        root.0.children[0].style.padding
+    }
+
+    /// `sane()` and `HEADLESS` are one thing said twice, and the constant is
+    /// the copy that cannot be derived. The viewport in particular: a zero one
+    /// makes every `max-width` query match, so every narrow layout applies in
+    /// every test that never mentioned a window.
+    #[test]
+    fn the_headless_constant_is_the_sane_environment() {
+        assert_eq!(Environment::HEADLESS, Environment::sane());
+        assert_eq!(Environment::HEADLESS.viewport, Viewport::default());
+        assert_eq!(Environment::HEADLESS.density, 1.0, "never zero: things divide by it");
+    }
+
+    const INSET_DOC: &str = r#"<template><screen><view class="bar" /></screen></template>
+        <style>
+          .bar {
+            padding-top: env(safe-area-inset-top);
+            padding-bottom: env(safe-area-inset-bottom);
+          }
+        </style>"#;
+
+    /// The whole point: a stylesheet can read the strip of the display a notch
+    /// or a home indicator has already taken, and lay itself out clear of it.
+    #[test]
+    fn env_reads_the_safe_area_insets() {
+        let padding = padding_with(INSET_DOC, Insets { top: 47.0, bottom: 34.0, ..Insets::default() });
+        assert_eq!((padding.top, padding.bottom), (47.0, 34.0));
+    }
+
+    /// On a desktop window every inset is zero, and zero is an answer rather
+    /// than a failure: a window that owns its whole surface has no unsafe edge.
+    /// The same stylesheet has to work there, unchanged.
+    #[test]
+    fn env_is_zero_where_nothing_is_taken() {
+        let padding = padding_with(INSET_DOC, Insets::default());
+        assert_eq!((padding.top, padding.bottom), (0.0, 0.0));
+    }
+
+    /// A fallback is used only when the name is one Rux cannot answer. A known
+    /// name answering zero is still an answer, so the fallback must not win
+    /// there: `env(safe-area-inset-top, 20px)` on a desktop is 0, not 20.
+    #[test]
+    fn a_fallback_covers_an_unknown_name_and_not_a_zero_answer() {
+        let padding = padding_with(
+            r#"<template><screen><view class="bar" /></screen></template>
+            <style>
+              .bar {
+                padding-top: env(safe-area-inset-top, 20px);
+                padding-bottom: env(titlebar-area-height, 12px);
+              }
+            </style>"#,
+            Insets::default(),
+        );
+        assert_eq!(padding.top, 0.0, "a known inset answers zero");
+        assert_eq!(padding.bottom, 12.0, "an unknown name takes the fallback");
+    }
+
+    /// An unknown name with no fallback leaves the declaration unparseable, so
+    /// it is ignored, which is CSS's own "invalid at computed-value time", and
+    /// it is said out loud rather than dropped in silence.
+    #[test]
+    fn an_unknown_env_with_no_fallback_is_ignored_and_reported() {
+        let _ = take_warnings();
+        let padding = padding_with(
+            r#"<template><screen><view class="bar" /></screen></template>
+            <style>.bar { padding-top: env(nonsense); }</style>"#,
+            Insets { top: 47.0, ..Insets::default() },
+        );
+        assert_eq!(padding.top, 0.0, "the declaration is ignored, not guessed at");
+        assert!(
+            take_warnings().iter().any(|w| w.message.contains("nonsense")),
+            "and the author is told which name it was"
+        );
+    }
+
+    /// The way an author writes it once and reads it everywhere, so it has to
+    /// resolve where the variable is declared, not only where a property is.
+    #[test]
+    fn a_custom_property_can_hold_an_env() {
+        let padding = padding_with(
+            r#"<template><screen class="app"><view class="bar" /></screen></template>
+            <style>
+              .app { --gutter: env(safe-area-inset-bottom); }
+              .bar { padding-bottom: var(--gutter); }
+            </style>"#,
+            Insets { bottom: 34.0, ..Insets::default() },
+        );
+        assert_eq!(padding.bottom, 34.0);
+    }
+
+    /// `env(` is only a call at a token boundary. A custom property may be
+    /// named anything, `--my-env` included, and substituting inside its name
+    /// would corrupt a declaration that has nothing to do with this.
+    #[test]
+    fn a_property_whose_name_ends_in_env_is_not_a_call() {
+        let padding = padding_with(
+            r#"<template><screen class="app"><view class="bar" /></screen></template>
+            <style>
+              .app { --my-env: 9px; }
+              .bar { padding-top: var(--my-env); }
+            </style>"#,
+            Insets { top: 47.0, ..Insets::default() },
+        );
+        assert_eq!(padding.top, 9.0);
+    }
+
     const MEDIA_DOC: &str = r#"<template><screen><view class="target" /></screen></template>
         <style>
           .target { background: #00ff00; }
@@ -7883,9 +8164,6 @@ mod tests {
         assert!(bg_at_vp(src, vp(800.0, 600.0)).is_none());
     }
 
-    /// `media_matches` is what lets the runtime skip work on a resize that crosses
-    /// no breakpoint: same answers, no re-cascade.
-    #[test]
     /// Both halves of both preferences answer, and answer against the
     /// environment rather than the window size.
     #[test]

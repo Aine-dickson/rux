@@ -348,6 +348,32 @@ An **undefined** variable with no fallback makes the declaration invalid, so it 
 dropped (as in CSS) and warned about once. Driven in `examples/theme.rux`, which
 swaps a whole palette with one `:class`.
 
+**`env()`: the strip of the display the device has already taken.**
+```css
+.bar  { padding-top: env(safe-area-inset-top); }      /* under a notch */
+.dock { padding-bottom: env(safe-area-inset-bottom); } /* above a home indicator */
+.app  { --gutter: env(safe-area-inset-left, 0px); }    /* a fallback, as in CSS */
+```
+Four names, `safe-area-inset-top`, `-right`, `-bottom` and `-left`, resolving to
+a length. **On a desktop window every one of them is zero**, and zero is an
+answer rather than a placeholder: a window that owns its whole surface has no
+unsafe edges, so the same stylesheet is correct in both places and the phone
+simply has more to avoid.
+
+It resolves wherever `var()` does, a custom property's own value included, so
+`--gutter: env(safe-area-inset-bottom)` is the way to write it once. A fallback
+covers a name Rux cannot answer, **not** a known name answering zero:
+`env(safe-area-inset-top, 20px)` on a desktop is 0, not 20, which is what CSS
+does and is the only reading that lets a fallback mean "you are somewhere that
+has no such thing". An unknown name with no fallback makes the declaration
+invalid and is warned about once, the same as an undefined variable.
+
+The other `env()` names in CSS (`titlebar-area-*`, `viewport-segment-*`) name
+surfaces Rux does not have, so they are unknown here; answering for one would be
+inventing a number rather than reporting one.
+
+To see a non-zero inset on a desktop, see `rux run --preview` below.
+
 **`@media` queries:** evaluated against the window's **logical** size.
 ```css
 @media (max-width: 600px) { .row { flex-direction: column; } }

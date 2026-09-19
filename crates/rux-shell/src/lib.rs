@@ -50,7 +50,7 @@ use rux_layout::{
     TextAlign,
     TextContent, TextWrap,
 };
-use rux_runtime::{Document, Focus, InteractionState, Viewport};
+use rux_runtime::{Document, Focus, Insets, InteractionState, Viewport};
 use vello::kurbo::Affine;
 use vello::peniko::Color;
 use vello::util::{RenderContext, RenderSurface};
@@ -1089,6 +1089,14 @@ struct App {
     /// arrives as text.
     #[cfg(not(target_arch = "wasm32"))]
     path: PathBuf,
+    /// The device this window is pretending to be, from `--preview`.
+    ///
+    /// It supplies the two answers a desktop window cannot give honestly: the
+    /// density of a screen nobody is looking at, and the insets of a display
+    /// with something in front of it. The viewport is **not** taken from it:
+    /// that stays the window's own logical size, so `@media (max-width: …)`
+    /// keeps telling the truth and dragging the window edge still works.
+    preview: Option<DeviceProfile>,
     document: Document,
     text: rux_text::TextEngine,
     images: rux_paint::ImageCache,
@@ -1261,6 +1269,7 @@ impl App {
             starting: false,
             #[cfg(not(target_arch = "wasm32"))]
             path,
+            preview: None,
             document,
             text: rux_text::TextEngine::new(),
             images: rux_paint::ImageCache::new(),
@@ -1987,8 +1996,16 @@ impl App {
             color_scheme: Self::window_color_scheme(&state.window),
             // The window's scale factor is what a stylesheet would call density,
             // and it is the one environment answer this shell has always known
-            // and never passed on.
-            density: scale as f32,
+            // and never passed on. A preview answers for the device instead,
+            // since the monitor's scale factor says nothing about a phone's.
+            density: match self.preview {
+                Some(profile) => profile.density,
+                None => scale as f32,
+            },
+            // Zero on a desktop, which is the honest answer and also a useless
+            // one to develop against: a window that owns its whole surface has
+            // no unsafe edges, and every phone does.
+            safe_area: self.preview.map(|p| p.safe_area).unwrap_or_default(),
             ..Default::default()
         };
         if self.document.set_environment(environment) {
@@ -2033,6 +2050,45 @@ impl App {
     #[cfg(not(windows))]
     fn os_reduced_motion() -> bool {
         false
+    }
+
+    /// The size to open a preview window at, which is the device's own size
+    /// unless the monitor is too small for it.
+    ///
+    /// **A phone is taller than a laptop screen, in the units that matter.** A
+    /// 393 by 852 window is 1278 physical pixels tall on a 1.5x display, and a
+    /// monitor 960 pixels high cannot show it: the window opens with its lower
+    /// half off the bottom of the desktop, which looks like the app having
+    /// drawn nothing there. So it is capped to what fits, and the cap is said
+    /// out loud, because a window that is not the size it was asked for is
+    /// worth one line of explanation.
+    ///
+    /// The viewport follows the window, so a capped preview is an honest
+    /// smaller device rather than a lie about a big one: `@media` answers for
+    /// the window that exists, and only density and the insets come from the
+    /// profile.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn preview_size(event_loop: &ActiveEventLoop, profile: DeviceProfile) -> (f64, f64) {
+        let (want_w, want_h) = (profile.width as f64, profile.height as f64);
+        let Some(monitor) = event_loop.primary_monitor() else { return (want_w, want_h) };
+        let scale = monitor.scale_factor();
+        let size = monitor.size();
+        // Nine tenths, because the monitor's full height is not available to a
+        // window: a title bar sits above the client area and a taskbar usually
+        // sits below the desktop. winit does not report the work area, and
+        // guessing low is the failure that is easy to recover from by dragging.
+        let (max_w, max_h) =
+            (size.width as f64 / scale * 0.9, size.height as f64 / scale * 0.9);
+        let (w, h) = (want_w.min(max_w), want_h.min(max_h));
+        if w < want_w || h < want_h {
+            eprintln!(
+                "rux: this monitor fits {} by {} logical pixels, not the {} by {} of `{}`, \
+                 so the window is that much of it. Density and the safe area are still the \
+                 device's.",
+                w as i32, h as i32, want_w as i32, want_h as i32, profile.name
+            );
+        }
+        (w, h)
     }
 
     /// Whether the operating system is asking for light or dark surfaces.
@@ -3682,10 +3738,16 @@ impl ApplicationHandler<RuxEvent> for App {
         );
         // Created hidden: the accessibility adapter must exist before the window
         // is first shown, or it panics. Revealed again once the adapter is up.
+        // A preview opens at the device's own logical size; everything else at
+        // the size this shell has always used.
+        let (open_w, open_h) = match self.preview {
+            Some(profile) => Self::preview_size(event_loop, profile),
+            None => (420.0, 640.0),
+        };
         let attributes = Window::default_attributes()
             .with_title(title)
             .with_visible(false)
-            .with_inner_size(winit::dpi::LogicalSize::new(420.0, 640.0));
+            .with_inner_size(winit::dpi::LogicalSize::new(open_w, open_h));
         let window = Arc::new(event_loop.create_window(attributes).expect("create window"));
         let access = accesskit_winit::Adapter::with_event_loop_proxy(
             event_loop,
@@ -5067,6 +5129,110 @@ pub fn diagnose_web_source(source: String) -> String {
 /// of which a browser has. The web build drives the same `App` from source text
 /// supplied by the playground editor.
 #[cfg(not(target_arch = "wasm32"))]
+/// A device to pretend to be, so that mobile layout can be worked on with no
+/// device in the room.
+///
+/// **The desktop window is the only honest thing here, and it is honest about
+/// nothing that matters on a phone.** Every inset is zero, the density is
+/// whatever the monitor says, and the window is whatever size it was dragged
+/// to. So `env(safe-area-inset-bottom)` resolves to zero on every machine a Rux
+/// app is written on and to 34 on the device it ships to, and the first time
+/// anyone sees the difference is on the device. A profile closes that: the
+/// window is sized to a device and the answers the operating system would give
+/// are filled in by hand.
+///
+/// **These are nominal, not measurements of one handset.** The point is to be
+/// *a* phone rather than *the* phone: a notch that takes a strip off the top, a
+/// home indicator that takes one off the bottom, a display narrower than any
+/// desktop window anyone would drag. A real device reports its own values and
+/// they arrive by the same road, through [`Environment`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DeviceProfile {
+    /// What `--preview` is given.
+    pub name: &'static str,
+    /// What it stands for, for the listing when a name is wrong.
+    pub about: &'static str,
+    /// Logical pixels, portrait. The window is opened at this size.
+    pub width: f32,
+    pub height: f32,
+    /// Physical pixels per logical pixel, as the device reports it.
+    pub density: f32,
+    /// The edges the display will not let the app use, portrait.
+    pub safe_area: Insets,
+}
+
+/// The profiles `--preview` knows.
+///
+/// Four, on purpose. A list long enough to need scrolling is a list nobody
+/// reads, and the differences that matter to a layout are the ones between
+/// these: a tall notched display, a short one with none, an Android bar at both
+/// ends, and something wide enough to be a tablet.
+pub const DEVICE_PROFILES: &[DeviceProfile] = &[
+    DeviceProfile {
+        name: "phone",
+        about: "a modern full-screen phone: a notch at the top, a home indicator at the bottom",
+        width: 393.0,
+        height: 852.0,
+        density: 3.0,
+        safe_area: Insets { top: 59.0, right: 0.0, bottom: 34.0, left: 0.0 },
+    },
+    DeviceProfile {
+        name: "phone-small",
+        about: "an older, smaller phone with a physical home button and a plain status bar",
+        width: 375.0,
+        height: 667.0,
+        density: 2.0,
+        safe_area: Insets { top: 20.0, right: 0.0, bottom: 0.0, left: 0.0 },
+    },
+    DeviceProfile {
+        name: "phone-android",
+        about: "an Android phone with a status bar above and a gesture bar below",
+        width: 412.0,
+        height: 915.0,
+        density: 2.625,
+        safe_area: Insets { top: 24.0, right: 0.0, bottom: 24.0, left: 0.0 },
+    },
+    DeviceProfile {
+        name: "tablet",
+        about: "a tablet: wide enough that a phone layout stops being the right one",
+        width: 820.0,
+        height: 1180.0,
+        density: 2.0,
+        safe_area: Insets { top: 24.0, right: 0.0, bottom: 20.0, left: 0.0 },
+    },
+];
+
+impl DeviceProfile {
+    /// Look one up by the name written on the command line.
+    pub fn by_name(name: &str) -> Option<Self> {
+        DEVICE_PROFILES.iter().copied().find(|p| p.name == name)
+    }
+
+    /// What to print when the name was not one of them.
+    ///
+    /// The list, with what each one is for, because a bare "unknown profile" is
+    /// an error that makes the reader go looking for documentation to answer a
+    /// question the program could have answered.
+    pub fn names_with_descriptions() -> String {
+        let width = DEVICE_PROFILES.iter().map(|p| p.name.len()).max().unwrap_or(0);
+        DEVICE_PROFILES
+            .iter()
+            .map(|p| {
+                format!(
+                    "  {:width$}  {} by {} at {}x, {}",
+                    p.name,
+                    p.width as i32,
+                    p.height as i32,
+                    p.density,
+                    p.about,
+                    width = width
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+}
+
 pub fn run(path: PathBuf) {
     run_at(path, None)
 }
@@ -5079,6 +5245,17 @@ pub fn run(path: PathBuf) {
 /// eventually turns into.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn run_at(path: PathBuf, route: Option<String>) {
+    run_previewing(path, route, None)
+}
+
+/// The same, with the window pretending to be a device.
+///
+/// See [`DeviceProfile`]. This is the whole of "develop without a phone" that
+/// costs nothing: no emulator, no NDK, the desktop loop and hot reload intact,
+/// and the layout mistakes that a notch and a 393-pixel-wide display cause are
+/// the mistakes it catches, which is most of them.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn run_previewing(path: PathBuf, route: Option<String>, preview: Option<DeviceProfile>) {
     let event_loop = EventLoop::<RuxEvent>::with_user_event()
         .build()
         .expect("create event loop");
@@ -5118,6 +5295,8 @@ pub fn run_at(path: PathBuf, route: Option<String>) {
         .expect("watch directory");
 
     let mut app = App::new(path, event_loop.create_proxy());
+    // Before `resumed`, which is where the window is sized from it.
+    app.preview = preview;
     // Before the first frame, and before the watcher can reload: `start_at`
     // replaces the history, so it has to be the first thing that touches it.
     if let Some(route) = route {
@@ -5162,6 +5341,35 @@ mod tests {
             content_width: 220.0,
             content_height: 600.0,
             max: Offset { x: 0.0, y: 380.0 },
+        }
+    }
+
+    /// The names on the command line are the names in the table, and a wrong
+    /// one is answered with the list rather than with "unknown".
+    #[test]
+    fn a_device_profile_is_found_by_the_name_that_is_typed() {
+        assert_eq!(DeviceProfile::by_name("phone").map(|p| p.width), Some(393.0));
+        assert!(DeviceProfile::by_name("iphone-42").is_none());
+
+        let listing = DeviceProfile::names_with_descriptions();
+        for profile in DEVICE_PROFILES {
+            assert!(listing.contains(profile.name), "{} is missing from the listing", profile.name);
+        }
+    }
+
+    /// Every profile has a safe area worth previewing for, and a phone-sized
+    /// display. A profile that took nothing off any edge would be a desktop
+    /// window with a different width, which is not what this is for.
+    #[test]
+    fn every_profile_takes_something_off_an_edge() {
+        for profile in DEVICE_PROFILES {
+            let insets = profile.safe_area;
+            assert!(
+                insets.top + insets.right + insets.bottom + insets.left > 0.0,
+                "{} reports no safe area at all",
+                profile.name
+            );
+            assert!(profile.density >= 2.0, "{} is not a device density", profile.name);
         }
     }
 

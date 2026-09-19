@@ -1,0 +1,86 @@
+<!-- The edges a phone will not let an app use, and how a stylesheet asks.
+
+     Run it twice to see the point:
+
+       rux run examples/safe-area.rux                   a desktop window
+       rux run examples/safe-area.rux --preview phone   a notch and a home bar
+
+     Nothing in this file changes between the two. Every inset is zero on a
+     desktop, because a window that owns its whole surface has no unsafe edge,
+     and the same rules pad clear of the notch on a device. -->
+<template>
+  <screen class="app">
+    <view class="bar">
+      <text class="bar-label">Inbox</text>
+    </view>
+
+    <view class="body">
+      <text class="lead">The bar above pads itself under the status bar or the notch. The dock below stays clear of the home indicator. Neither of them knows which device this is.</text>
+      <view class="readout">
+        <text class="readout-line">top: this bar's own padding</text>
+        <text class="readout-line">bottom: the dock's</text>
+      </view>
+    </view>
+
+    <view class="dock">
+      <text class="dock-label">Home</text>
+      <text class="dock-label">Search</text>
+      <text class="dock-label">You</text>
+    </view>
+  </screen>
+</template>
+
+<style>
+  .app {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    background: #1e1e2e;
+  }
+
+  /* The two rules this example exists for. */
+  .bar { padding-top: env(safe-area-inset-top); }
+  .dock { padding-bottom: env(safe-area-inset-bottom); }
+
+  .bar {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding-bottom: 12px;
+    background: #89b4fa;
+  }
+
+  .bar-label { color: #11111b; font-size: 18px; font-weight: 700; }
+
+  .body {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 16px;
+    padding: 20px;
+  }
+
+  .lead { color: #cdd6f4; font-size: 15px; }
+
+  .readout {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 14px;
+    background: #313244;
+    border-radius: 10px;
+  }
+
+  .readout-line { color: #9399b2; font-size: 13px; }
+
+  .dock {
+    display: flex;
+    justify-content: space-around;
+    align-items: center;
+    padding-top: 14px;
+    background: #313244;
+  }
+
+  .dock-label { color: #cdd6f4; font-size: 14px; }
+</style>

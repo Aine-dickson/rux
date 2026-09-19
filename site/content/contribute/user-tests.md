@@ -921,6 +921,52 @@ form does. The component really was being used wrongly by the fixture, and the
 error naming `row.rux` was the checker reaching into a component through its
 caller, which is the thing being built.
 
+### Safe areas, and a device to see them on (2026-09-19)
+
+`env(safe-area-inset-*)` is the surface that makes the inset mean anything, and
+`rux run --preview` is the only way to see a non-zero one without a phone. They
+were built and driven together, because either alone is unobservable.
+
+`examples/safe-area.rux` ships as the case: a bar that pads itself clear of the
+top edge, a dock that pads itself clear of the bottom, and nothing in the file
+that knows which device it is on.
+
+| Case | Where | Result |
+|---|---|---|
+| `rux run examples/safe-area.rux` | desktop | No padding above the bar or below the dock. Zero is the right answer for a window that owns its whole surface |
+| The same file, `--preview phone` | desktop | A 59px strip above `Inbox` and a 34px strip below the dock labels, at the device's density. The file is byte for byte the same |
+| `--preview tablet` on a 1280x720 logical monitor | desktop | Capped to 820 by 648 with a line saying so, rather than opening half off the bottom of the desktop |
+| `--preview nonsuch` | desktop | Exits 2 and prints all four profiles with what each is for |
+| An inset that moves while running | `cargo test` | Re-cascades. `set_environment` used to return early whenever every `@media` query still answered the same way, which was true right up until something read the environment directly |
+| `env(safe-area-inset-top, 20px)` on a desktop | `cargo test` | 0, not 20. A fallback covers a name Rux cannot answer, not a known name answering zero |
+| `env(nonsense)` | desktop, `rux check` | Two warnings: the name, and the declaration it cost. Exactly what an undefined `var()` already does |
+
+**The window was where the first attempt looked broken, twice, and neither was
+the feature.** A probe with `height: 120px` on the padded bar hid what the
+padding did, because a height in Rux is the border box and the padding grows
+inwards. And the stripes hugged their text instead of spanning the window,
+which is the `align-items` divergence still unreverted on this branch. Both read as "the inset did nothing".
+
+### `rux fmt` re-indented a file because it contained an apostrophe
+
+Found writing the example above, in a `<text>` reading `this bar's own
+padding`. The formatter treats `'` as the start of a string and skips to the
+next one; with none on the line, it swallowed the `</text>` that closed the
+element, so **every line below was indented one level deeper, and the next
+apostrophe added another.**
+
+| Case | Where | Result |
+|---|---|---|
+| `<text>the dog's bowl</text>` then a sibling | desktop, `rux fmt` | **Failed**: the sibling and everything under it shifted one level per apostrophe. Now unchanged |
+| Two apostrophes on one line (`it's Bob's`) | `cargo test` | Worked before, by accident: the pair looked like a closed string. Still works |
+| A brace inside a real string, `let s = "a { brace"` | `cargo test` | Still hidden from the nesting count, which is what the skipping is for |
+| All 68 `.rux` files in the repo | desktop, `rux fmt --check .` | The fix changes none of them. The 17 that would be reformatted are unrelated drift that predates this |
+
+`rux fmt` writes in place, so this was a tool corrupting files rather than
+merely misreporting them. The fix is one rule: a quote opens a string only if
+it closes on the same line. Nothing is lost by it, because neither rhai nor CSS
+lets a string span a newline.
+
 ## Standing gaps
 
 Cases nothing here can currently exercise. They are the shape of what v0.8 has

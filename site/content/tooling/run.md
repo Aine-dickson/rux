@@ -44,10 +44,38 @@ they typed produced a panic out of the file watcher.
 | | |
 |---|---|
 | `--route <path>` | Open on this route instead of `/`, the way a deep link arrives |
+| `--preview <device>` | Size the window to a device, and answer as one |
 
 ```bash
 rux run --route /settings
 ```
+
+## Previewing a device, without one
+
+```bash
+rux run --preview phone         # 393 by 852 at 3x, notch above, home indicator below
+rux run --preview phone-small   # 375 by 667 at 2x, a status bar and nothing else
+rux run --preview phone-android # 412 by 915 at 2.625x, status bar and gesture bar
+rux run --preview tablet        # 820 by 1180 at 2x
+```
+
+The window opens at the device's logical size, and the environment answers for
+the device: its density, and its safe-area insets, which is what makes
+`env(safe-area-inset-top)` and its three companions resolve to something other
+than zero on a desktop. Naming a device that does not exist prints the ones that
+do.
+
+`examples/safe-area.rux` is written to be run both ways. Nothing in the file
+changes between them.
+
+Two things it deliberately does not do. The **viewport** stays the window's own
+logical size, so `@media` keeps telling the truth and dragging the window edge
+still reflows. And a window that does not fit the monitor is **capped to what
+does**, with a line saying so: a phone is taller than a laptop screen in the
+units that matter, since 393 by 852 is 1278 physical pixels on a 1.5x display.
+
+The profiles are nominal rather than measurements of one handset. The point is
+to be *a* phone, not *the* phone. Portrait only so far.
 
 ## Hot reload
 

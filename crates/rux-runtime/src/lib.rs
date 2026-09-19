@@ -1530,8 +1530,13 @@ impl Document {
         }
         let before = self.media_state(self.environment);
         let after = self.media_state(environment);
+        // A media query is not the only thing the cascade reads out of the
+        // environment: `env(safe-area-inset-*)` reads the insets directly, so a
+        // rotation that moves a notch from one edge to another has to
+        // re-cascade even though every query still answers the same way.
+        let insets_moved = environment.safe_area != self.environment.safe_area;
         self.environment = environment;
-        if before == after {
+        if before == after && !insets_moved {
             return false;
         }
         // A breakpoint was crossed: re-cascade everything. Focus is re-applied by
@@ -6059,6 +6064,35 @@ use components::detail;
         assert_eq!(out.selects[0].model, out.selects[1].model);
         assert_eq!(out.selects[0].options, vec!["a", "b"]);
         assert_eq!(out.selects[1].options, vec!["c", "d"]);
+    }
+
+    /// An inset that moves has to re-cascade, and nothing in a media query
+    /// tells the runtime that it did.
+    ///
+    /// `set_environment` used to return early whenever every `@media` block
+    /// still answered the same way, which was the whole story while the
+    /// environment was only read by queries. `env(safe-area-inset-*)` reads the
+    /// insets directly, so a rotation that moves a notch from one edge to
+    /// another changes what the stylesheet computes while every query stands
+    /// still.
+    #[test]
+    fn moving_a_safe_area_inset_re_cascades() {
+        let mut doc = Document::from_source(
+            "<template><screen><view class=\"bar\" /></screen></template>\
+             <style>.bar { padding-top: env(safe-area-inset-top) }</style>",
+        )
+        .expect("loads");
+        assert_eq!(doc.root.children[0].style.padding.top, 0.0, "a desktop takes nothing");
+
+        let moved = doc.set_environment(Environment {
+            safe_area: Insets { top: 59.0, ..Insets::default() },
+            ..Environment::sane()
+        });
+        assert!(moved, "the tree had to be rebuilt");
+        assert_eq!(
+            doc.root.children[0].style.padding.top, 59.0,
+            "and the padding is the inset the device reported"
+        );
     }
 
     /// `<screen>` means the whole display, not a box. Written inside a small
