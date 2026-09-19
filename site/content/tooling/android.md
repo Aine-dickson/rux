@@ -61,13 +61,17 @@ Any recent version of each works; those are known-good ones. `sdkmanager
 ## 4. The Rust target
 
 ```bash
-rustup target add aarch64-linux-android
+rustup target add x86_64-linux-android
 ```
 
-That is the 64-bit ARM target, which is what a phone almost certainly is. The
-other three (`armv7-linux-androideabi`, `x86_64-linux-android`,
-`i686-linux-android`) matter when building for every ABI, and an emulator on an
-x86 machine wants `x86_64-linux-android`.
+That is the emulator's target, and the emulator is where an app is developed
+before there is a phone to put it on. It is deliberately not the phone's target:
+`rux build --target android` produces x86_64 today, so an APK can be installed
+and driven on a machine with no Android device attached at all.
+
+The other three (`aarch64-linux-android`, `armv7-linux-androideabi`,
+`i686-linux-android`) matter when building for every ABI. `aarch64` is the one a
+shipped phone almost certainly needs, and it arrives with release builds.
 
 ## Then
 

@@ -970,6 +970,7 @@ driving are the absent ones.
 | Case | Where | Result |
 |---|---|---|
 | This machine | desktop, `rux doctor` | 7 of 8 found, and it caught a real absence: `aarch64-linux-android` is not installed. Exit 1 |
+| This machine, after `rustup target add x86_64-linux-android` | desktop, `rux doctor` | 8 of 8 found, and it says so: "everything an Android build needs is here." Exit 0. The run above is the same machine before the target was installed, kept because the interesting half of this command is what it says when something is absent |
 | `ANDROID_HOME` at an empty directory | desktop, `rux doctor` | The SDK is found and all six things inside it are missing, each with its own path and its own fix. Exit 1 |
 | No SDK anywhere | `cargo test` | One finding, not eight: there is no point listing six paths inside a directory that does not exist. It names every place it looked and says to set `ANDROID_HOME` |
 | A platform older than the floor | `cargo test` | Reported **unusable**, not missing: `android-21` is installed, correct and no use, and its fix is a different command |

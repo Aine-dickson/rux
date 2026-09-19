@@ -28,17 +28,35 @@ use std::path::{Path, PathBuf};
 /// have already shipped.
 pub const MIN_API: u32 = 26;
 
-/// The ABI slice 4 builds first, and the one a phone almost certainly wants.
-pub const FIRST_ABI: Abi = Abi {
-    name: "arm64-v8a",
-    rust_target: "aarch64-linux-android",
-    clang_prefix: "aarch64-linux-android",
+/// The ABI the first APK is built for, and it is the emulator's, not a phone's.
+///
+/// **x86_64, deliberately, and the reasoning is worth keeping.** arm64 is what
+/// a shipped phone runs, so it looks like the obvious first ABI, and it was the
+/// first plan. It is the wrong one to build first: the goal is that someone can
+/// develop without a phone, the emulator is what makes that true, and
+/// `ro.product.cpu.abi` on the emulator is x86_64. A first APK in arm64 could
+/// not be installed or driven by anyone who does not already own the device the
+/// whole milestone is trying not to require.
+///
+/// So the dev loop is x86_64 from day one. What a phone actually runs,
+/// `arm64-v8a` on `aarch64-linux-android`, arrives when a build produces every
+/// ABI, and is left unwritten here until something builds it: a constant with
+/// no caller is how the four-ABI table that preceded this one earned its
+/// deletion.
+///
+/// Developing on one architecture while shipping another is a real divergence
+/// that will eventually hide a bug, and it is accepted with its eyes open: an
+/// APK nobody here can run hides all of them.
+pub const DEV_ABI: Abi = Abi {
+    name: "x86_64",
+    rust_target: "x86_64-linux-android",
+    clang_prefix: "x86_64-linux-android",
 };
 
 /// One Android ABI, under the three names it goes by.
 ///
-/// Only arm64 exists here, because only arm64 is used yet. The other three
-/// (`armeabi-v7a`, `x86_64`, `x86`) arrive when a build produces every ABI,
+/// Only the one exists here, because only one is used. The other three
+/// (`arm64-v8a`, `armeabi-v7a`, `x86`) arrive when a build produces every ABI,
 /// and one of them carries a trap worth knowing before then: the 32-bit ARM
 /// Rust target is `armv7-linux-androideabi` while the NDK's clang driver for
 /// the same architecture is spelled `armv7a-linux-androideabi`. The two names
@@ -303,7 +321,7 @@ pub fn survey(search: &Search) -> Survey {
     findings.push(platform_tools(&sdk));
     findings.push(ndk(&sdk));
     findings.push(jdk(search));
-    findings.push(rust_target(search, FIRST_ABI));
+    findings.push(rust_target(search, DEV_ABI));
 
     Survey { findings }
 }
@@ -414,7 +432,7 @@ fn ndk(sdk: &Path) -> Finding {
     // The exact driver a build invokes, rather than the directory it lives in:
     // an NDK unpacked for another host, or one too old to have the API level
     // Rux targets, has the directory and not the file.
-    let driver = exe(&format!("{}{}-clang", FIRST_ABI.clang_prefix, MIN_API), Kind::Cmd);
+    let driver = exe(&format!("{}{}-clang", DEV_ABI.clang_prefix, MIN_API), Kind::Cmd);
     let mut looked = Vec::new();
     for (key, dir) in versions_in(&root) {
         let bin = dir.join("toolchains").join("llvm").join("prebuilt").join(ndk_host()).join("bin");
@@ -631,7 +649,7 @@ mod tests {
             "sdkmanager \"platforms;android-35\"",
             "sdkmanager \"platform-tools\"",
             "sdkmanager \"ndk;",
-            "rustup target add aarch64-linux-android",
+            "rustup target add x86_64-linux-android",
             "JAVA_HOME",
         ] {
             assert!(text.contains(wanted), "no fix line for {wanted}:\n{text}");
@@ -663,7 +681,7 @@ mod tests {
             .join("ndk/28.2.13676358/toolchains/llvm/prebuilt")
             .join(ndk_host())
             .join("bin");
-        write_tool(&bin, &exe(&format!("{}{MIN_API}-clang", FIRST_ABI.clang_prefix), Kind::Cmd));
+        write_tool(&bin, &exe(&format!("{}{MIN_API}-clang", DEV_ABI.clang_prefix), Kind::Cmd));
 
         let search = Search {
             sdk: Some(dir.clone()),
@@ -671,7 +689,7 @@ mod tests {
             sdk_looked: vec![dir],
             java_home: None,
             path: Vec::new(),
-            rust_targets: Some(vec![FIRST_ABI.rust_target.to_string()]),
+            rust_targets: Some(vec![DEV_ABI.rust_target.to_string()]),
         };
         let survey = survey(&search);
         let text = render(&survey);
