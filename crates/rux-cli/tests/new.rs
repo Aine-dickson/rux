@@ -59,9 +59,17 @@ fn the_scaffold_writes_the_layout_it_documents() {
     assert!(stdout.contains("rux run"), "the run command is not spelled out");
 
     let root = scratch.path().join("my-app");
-    for expected in
-        ["app.rux", "components/task.rux", "assets/README.md", "README.md", ".gitignore"]
-    {
+    for expected in [
+        "app.rux",
+        "pages/home.rux",
+        "pages/new-task.rux",
+        "pages/detail.rux",
+        "pages/missing.rux",
+        "components/task-row.rux",
+        "assets/README.md",
+        "README.md",
+        ".gitignore",
+    ] {
         assert!(root.join(expected).is_file(), "{expected} was not created");
     }
 
@@ -70,6 +78,7 @@ fn the_scaffold_writes_the_layout_it_documents() {
     let readme = std::fs::read_to_string(root.join("README.md")).unwrap();
     assert!(readme.contains("my-app"), "the project name did not reach the README");
     assert!(readme.contains("components/"));
+    assert!(readme.contains("pages/"));
     assert!(readme.contains("assets/"));
 }
 
@@ -83,10 +92,21 @@ fn what_the_scaffold_writes_checks_clean() {
     let (code, stdout, stderr) = run(&root, &["check"]);
     assert_eq!(code, 0, "a fresh project does not check clean\n{stdout}\n{stderr}");
 
-    // Components are skipped when walking, so the one that is there is named
-    // explicitly. A broken component would otherwise go unnoticed until run.
-    let (code, stdout, stderr) = run(&root, &["check", "components/task.rux"]);
-    assert_eq!(code, 0, "the scaffolded component does not check clean\n{stdout}\n{stderr}");
+    // The component is skipped by the walk, because a file read alone is
+    // missing the props its caller passes, so it is named explicitly. A broken
+    // component would otherwise go unnoticed until it is run.
+    let (code, stdout, stderr) = run(&root, &["check", "components/task-row.rux"]);
+    assert_eq!(code, 0, "the scaffolded component does not check clean
+{stdout}
+{stderr}");
+
+    // The **pages** are deliberately not checked alone here, and that is a
+    // finding rather than an omission: a page calls functions declared in
+    // `app.rux`, and functions are only shared into the engine when the
+    // document that declares them is the one being loaded. Read on its own a
+    // page is an incomplete program, so `rux check pages/detail.rux` reports
+    // `task_by_id` as missing against code that works. Checking a page in the
+    // context of its project is what would make that answerable.
 }
 
 /// And what comes out is already formatted. This caught a real mistake: the

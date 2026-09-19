@@ -55,10 +55,17 @@ function register(vscode) {
 
   // `<` and `/` open the tag lists, space and `:` and `@` the attribute ones,
   // and `-` so `r-` keeps the directive list up rather than dismissing it.
+  //
+  // **The quotes are here because a provider nobody can see does not exist.**
+  // `type="` completed correctly from the first release of it and never once
+  // appeared, because opening a value types a quote and a quote triggered
+  // nothing: the list was reachable only by pressing Ctrl+Space in exactly the
+  // right spot, which is not something an author knows to do. Both quotes, since
+  // `type='text'` is equally legal.
   return vscode.languages.registerCompletionItemProvider(
     'rux',
     provider,
-    '<', '/', ' ', ':', '@', '-', '.', '#'
+    '<', '/', ' ', ':', '@', '-', '.', '#', '"', "'"
   );
 }
 
@@ -85,9 +92,33 @@ function template(vscode, text, offset) {
     return expression(vscode, text, offset);
   }
 
+  // Inside a literal value whose values are a closed set: `type="…"` on an
+  // `<input>` is the one an author meets first. Offered rather than left to the
+  // `detail` line, which reads `text | textarea | select | checkbox | radio`
+  // and is only visible while completing the attribute *name*, one keystroke
+  // before the place the value has to be written.
+  const value = context.attributeValueAt(text, offset);
+  if (value) {
+    const known = vocabulary.attributeValues(value.tag, value.attribute);
+    if (!known.length) return undefined;
+    return known.map((v, i) => attributeValueItem(vscode, v, i));
+  }
+
   const tag = context.openTagAt(text, offset);
   if (!tag) return snippetItems(vscode, 'template');
   return tag.onName ? tags(vscode, text) : attributes(vscode, tag.tag);
+}
+
+/** One value of a closed-set attribute, with what choosing it means. */
+function attributeValueItem(vscode, value, index) {
+  const item = new vscode.CompletionItem(value.name, vscode.CompletionItemKind.EnumMember);
+  item.detail = value.detail;
+  item.documentation = new vscode.MarkdownString(value.doc);
+  // The list is written in the order an author meets them, not alphabetically:
+  // `text` is the default and `radio` the specialist, and sorting would put
+  // `checkbox` first for no reason a reader could see.
+  item.sortText = ORDER.attribute + String(index).padStart(2, '0');
+  return item;
 }
 
 /**
@@ -519,13 +550,22 @@ function usePathBeing(text, offset) {
   return m ? m[1] : null;
 }
 
+// Shared with go-to-definition, which has to agree with this list about where
+// an import points or one of the two is lying about the same line.
+const { projectRoot } = require('./project');
+
 /**
  * The importable names under the path typed so far.
  *
  * The rules are the runtime's, not a guess: `use components::task;` names the
- * file `components/task.rux` **relative to the importing document**, and a `_`
- * in the path becomes a `-` in the tag. So directories map to `::` segments and
- * `.rux` files map to leaf names, and neither is invented here.
+ * file `components/task.rux`, looked for **beside the importing document first
+ * and then from the project root**, and a `_` in the path becomes a `-` in the
+ * tag. So directories map to `::` segments and `.rux` files map to leaf names,
+ * and neither is invented here.
+ *
+ * Both bases are offered because both resolve. Beside-first, and a name found
+ * in both is shown once, from the near one: that is the order the runtime picks
+ * in, so the list cannot promise a file the import will not reach.
  *
  * A directory is only offered if there is a `.rux` file somewhere under it.
  * Offering `assets::` because it exists would be offering a dead end.
@@ -536,48 +576,88 @@ function importPath(vscode, document, typed) {
   const segments = typed.split('::');
   // The last segment is what is being typed; the ones before it are the folder.
   const partial = segments.pop();
-  const dir = path.join(path.dirname(document.uri.fsPath), ...segments);
+  const here = path.dirname(document.uri.fsPath);
+  const root = projectRoot(here);
 
-  let entries;
-  try {
-    entries = fs.readdirSync(dir, { withFileTypes: true });
-  } catch (e) {
-    return undefined; // not a directory yet; nothing to offer
+  // Beside the file, then the project root. Deduped, so a file at the root
+  // being edited does not read its own directory twice.
+  const bases = [{ dir: here, fromRoot: false }];
+  if (root && path.resolve(root) !== path.resolve(here)) {
+    bases.push({ dir: root, fromRoot: true });
   }
 
   const items = [];
-  for (const entry of entries) {
-    if (entry.name.startsWith('.')) continue;
-
-    if (entry.isDirectory()) {
-      if (!holdsRux(path.join(dir, entry.name), 0)) continue;
-      const item = new vscode.CompletionItem(entry.name, vscode.CompletionItemKind.Folder);
-      item.detail = 'folder';
-      item.insertText = `${entry.name}::`;
-      item.sortText = '1' + entry.name;
-      // Reopen the list after `::` so the next level can be picked without
-      // retyping. This is the whole reason the separator is a trigger character.
-      item.command = { command: 'editor.action.triggerSuggest', title: 'suggest' };
-      items.push(item);
-      continue;
+  const seen = new Set();
+  for (const base of bases) {
+    const dir = path.join(base.dir, ...segments);
+    let entries;
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch (e) {
+      continue; // not a directory under this base; the other one may still have it
     }
 
-    if (!entry.name.endsWith('.rux')) continue;
-    // A document importing itself is legal to type and never useful.
-    if (path.join(dir, entry.name) === document.uri.fsPath) continue;
+    for (const entry of entries) {
+      if (entry.name.startsWith('.')) continue;
 
-    const stem = entry.name.slice(0, -'.rux'.length);
-    const item = new vscode.CompletionItem(stem, vscode.CompletionItemKind.Module);
-    item.detail = `component <${stem.replace(/_/g, '-')}>`;
-    item.documentation = new vscode.MarkdownString(
-      `Imports \`${[...segments, entry.name].join('/')}\`, usable as ` +
-        `\`<${stem.replace(/_/g, '-')} />\`.\n\n` +
-        (stem.includes('_')
-          ? 'The underscore becomes a hyphen in the tag; that is the runtime\'s rule, not a convention.'
-          : '')
-    );
-    item.sortText = '0' + stem;
-    items.push(item);
+      if (entry.isDirectory()) {
+        if (!holdsRux(path.join(dir, entry.name), 0)) continue;
+        if (seen.has(entry.name)) continue;
+        seen.add(entry.name);
+        const item = new vscode.CompletionItem(entry.name, vscode.CompletionItemKind.Folder);
+        item.detail = base.fromRoot ? 'folder, from the project root' : 'folder';
+        item.insertText = `${entry.name}::`;
+        item.sortText = (base.fromRoot ? '3' : '1') + entry.name;
+        // Reopen the list after `::` so the next level can be picked without
+        // retyping. This is the whole reason the separator is a trigger character.
+        item.command = { command: 'editor.action.triggerSuggest', title: 'suggest' };
+        items.push(item);
+        continue;
+      }
+
+      if (!entry.name.endsWith('.rux')) continue;
+      // A document importing itself is legal to type and never useful.
+      if (path.join(dir, entry.name) === document.uri.fsPath) continue;
+
+      const stem = entry.name.slice(0, -'.rux'.length);
+      if (seen.has(stem)) continue;
+      seen.add(stem);
+      // **What is inserted is the snake spelling, whatever the file is called.**
+      // A `use` path is script, and `-` is the subtraction operator: `use
+      // new-task;` reads as `new` minus `task` to a reader and to every other
+      // line in the section. It resolves today only because `use` lines are
+      // lifted out before rhai sees them, which is an accident to lean on rather
+      // than a rule. So a `new-task.rux` is offered as `new_task`, and the
+      // runtime looks for the hyphenated file when the exact one is not there.
+      //
+      // Found by the user 2026-09-15, who had a `new-task.rux` and was handed
+      // `use new-task;` by this list.
+      const asPath = stem.replace(/-/g, '_');
+      const tag = stem.replace(/_/g, '-');
+      const item = new vscode.CompletionItem(asPath, vscode.CompletionItemKind.Module);
+      item.insertText = asPath;
+      item.detail = base.fromRoot
+        ? `component <${tag}>, from the project root`
+        : `component <${tag}>`;
+      const where = base.fromRoot
+        ? `Imports \`${[...segments, entry.name].join('/')}\` from the project root, ` +
+          `which is where \`app.rux\` is. Nothing of that name sits beside this file, ` +
+          `and the runtime looks in both places.`
+        : `Imports \`${[...segments, entry.name].join('/')}\`, beside this file.`;
+      item.documentation = new vscode.MarkdownString(
+        `${where} Usable as \`<${tag} />\` or \`<${asPath} />\`.\n\n` +
+          (asPath !== stem
+            ? `The file is \`${entry.name}\`, and the path is written \`${asPath}\`: a ` +
+              '`use` path is script, where `-` is the minus operator. The runtime looks ' +
+              'for the hyphenated file when the underscored one is not there.'
+            : stem.includes('_')
+              ? 'The underscore becomes a hyphen in the tag. A template takes either ' +
+                'spelling; the `use` path has to be the underscored one.'
+              : '')
+      );
+      item.sortText = (base.fromRoot ? '2' : '0') + asPath;
+      items.push(item);
+    }
   }
 
   // `partial` is left to VS Code to filter on, which keeps the list narrowing as

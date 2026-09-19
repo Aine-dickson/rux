@@ -760,6 +760,83 @@ pub const ROUTER_SIGNALS: [&str; 5] =
     [ROUTE_SIGNAL, PARAMS_SIGNAL, QUERY_SIGNAL, CAN_BACK_SIGNAL, CAN_FORWARD_SIGNAL];
 
 /// A live script engine: state in `scope`, script functions in `funcs`.
+/// Something a handler calls that cannot do what it was written to do.
+///
+/// Two shapes, because they are two different mistakes and collapsing them into
+/// one message would repeat the defect this whole check exists to fix: a
+/// message that says "`set` does not exist" about a function that plainly does
+/// teaches an author to distrust the next one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CallProblem {
+    /// No function of this name is registered, defined by a `fn`, or built in.
+    /// Nothing a row or a component instance brings into scope can add one, so
+    /// this can never resolve under any state.
+    NoSuchFunction(String),
+    /// A signal used through the API `docs/02-spec.md` described before v0.3
+    /// replaced it with ordinary assignment.
+    ///
+    /// Reported separately because `set` and `get` **do** exist, on arrays,
+    /// maps, blobs and strings, so the name check cannot see this and a message
+    /// about an unknown function would be false. What makes it safe to report
+    /// is the arity: every registered `set` takes two arguments after its
+    /// receiver and the map's `get` takes one, so a one-argument `set` or a
+    /// no-argument `get` on a signal is the superseded API and nothing else.
+    StaleSignalApi { signal: String, method: String },
+    /// A `fn` this document declared, called with a number of arguments no
+    /// version of it takes.
+    ///
+    /// Only for the document's own functions. A registered native can be
+    /// overloaded on types this has no way to see, and a method call's receiver
+    /// is an argument, so checking arity against the whole registry would flag
+    /// working code. A `fn` in `<script>` has a parameter list that is right
+    /// there in the file, and rhai dispatches it on count alone.
+    WrongArgumentCount { name: String, given: usize, wanted: Vec<usize> },
+}
+
+impl CallProblem {
+    /// The whole sentence, ready to follow "the `@tap` handler ".
+    ///
+    /// Rendered here rather than by the caller so the runtime, `rux check` and
+    /// anything else that grows a use of this cannot word it three ways.
+    pub fn describe(&self) -> String {
+        match self {
+            Self::NoSuchFunction(name) => format!(
+                "calls `{name}`, which does not exist, so it will do nothing at that \
+                 point when it runs"
+            ),
+            Self::WrongArgumentCount { name, given, wanted } => {
+                let plural = |n: usize| if n == 1 { "argument" } else { "arguments" };
+                let takes = match wanted.as_slice() {
+                    [one] => format!("takes {one} {}", plural(*one)),
+                    many => format!(
+                        "takes {}",
+                        many.iter()
+                            .map(|n| format!("{n} {}", plural(*n)))
+                            .collect::<Vec<_>>()
+                            .join(" or ")
+                    ),
+                };
+                format!(
+                    "calls `{name}` with {given} {}, and `{name}` {takes}, so the call \
+                     fails the moment it runs",
+                    plural(*given)
+                )
+            }
+            Self::StaleSignalApi { signal, method } => {
+                let fix = match method.as_str() {
+                    "set" => format!("assign to it instead: `{signal} = …`"),
+                    _ => format!("read it by naming it instead: `{signal}`"),
+                };
+                format!(
+                    "calls `{signal}.{method}()`, which was how signals worked before \
+                     v0.3 and has not existed since. It does nothing now, in silence. \
+                     {fix}"
+                )
+            }
+        }
+    }
+}
+
 pub struct Engine {
     engine: RhaiEngine,
     scope: Scope<'static>,
@@ -777,20 +854,141 @@ thread_local! {
     static WARNINGS: RefCell<Vec<Warning>> = const { RefCell::new(Vec::new()) };
 }
 
+thread_local! {
+    /// The file line the expression being evaluated was written on, if the
+    /// caller knew it.
+    ///
+    /// The same arrangement `rux-style` uses for stylesheet warnings, and
+    /// deliberately the same shape, so that knowing how one works is knowing how
+    /// both do. It is a thread-local rather than a parameter because the path
+    /// from "build this element" to "this expression failed" runs through
+    /// expression evaluation, dependency tracking and `r-for` expansion, none of
+    /// which has any other reason to know what a file is.
+    static AT_LINE: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
+}
+
+/// Run `f` with any warning it raises attributed to `line`.
+///
+/// Restores whatever was set before rather than clearing, so nesting unwinds
+/// correctly: an `r-for` row's `{{ }}` is evaluated inside the element that
+/// carries the loop, and the inner position must not outlive the inner call.
+pub fn located<T>(line: Option<usize>, f: impl FnOnce() -> T) -> T {
+    let previous = AT_LINE.with(|l| l.replace(line));
+    let out = f();
+    AT_LINE.with(|l| l.set(previous));
+    out
+}
+
+thread_local! {
+    /// The file the thing being built came from, when it is not the document.
+    ///
+    /// Set while an imported component's subtree is built, so a warning raised
+    /// in there names the component's file. Coarser than [`AT_LINE`] on purpose:
+    /// a line changes per attribute, a file changes only at a component
+    /// boundary, so they are two scopes rather than one pair.
+    static IN_FILE: RefCell<Option<std::path::PathBuf>> = const { RefCell::new(None) };
+}
+
+/// Run `f` with any warning it raises attributed to `file`.
+///
+/// Restores what was set before rather than clearing, so a component that uses
+/// another component unwinds to the outer one rather than to the document.
+pub fn in_file<T>(file: Option<std::path::PathBuf>, f: impl FnOnce() -> T) -> T {
+    let previous = IN_FILE.with(|c| c.replace(file));
+    let out = f();
+    IN_FILE.with(|c| c.replace(previous));
+    out
+}
+
+thread_local! {
+    /// Whether this document is a **fragment**: a component, whose surroundings
+    /// are supplied by whoever uses it, rather than a page that stands alone.
+    ///
+    /// Two things reach a component from outside, and neither is declared
+    /// anywhere in its own file:
+    ///
+    /// - **Props.** A component reads `{{ label }}` with nothing saying `label`
+    ///   is expected, so a checker reading that file alone cannot tell a prop
+    ///   from a typo.
+    /// - **Functions.** Only `fn` definitions are shared into the one engine,
+    ///   so a component's `@tap="bump_it(2)"` legitimately calls a `fn` its
+    ///   parent declared and it has never heard of.
+    ///
+    /// So a fragment read on its own is an incomplete program, and the things
+    /// it appears to be missing are exactly the things a caller provides. A page
+    /// (`<screen>` root) has no caller, so what is missing there is missing.
+    /// Severity follows that, and only severity: both are still reported.
+    ///
+    /// This is inference standing in for a declaration. `rux new` scaffolds a
+    /// component that reads two props, so escalating everywhere made the tool
+    /// ship a project failing its own `rux check`, which is how the rule was
+    /// found. A way to declare a prop would make the question answerable
+    /// instead; it is scheduled, not built.
+    static IS_FRAGMENT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Say whether this document is a fragment. See [`IS_FRAGMENT`].
+///
+/// Set once per load, from the document's root element. `rux-runtime` owns the
+/// page/fragment distinction because it is the layer that has the template.
+pub fn set_is_fragment(yes: bool) {
+    IS_FRAGMENT.with(|c| c.set(yes));
+}
+
+/// Whether what this document is missing might be supplied by a caller.
+///
+/// Read by the runtime to decide whether an unresolvable call is an error or a
+/// warning, the same question [`level_for`] answers for an undefined name.
+pub fn is_fragment() -> bool {
+    IS_FRAGMENT.with(std::cell::Cell::get)
+}
+
+/// Whether a failed expression is definitely wrong or only probably.
+///
+/// Only the undefined-name case is softened, and only for a fragment. Anything
+/// else that fails (a call to nothing, a syntax error, a bad index) is wrong
+/// wherever it is written, because no caller can supply a missing function.
+fn level_for(rhai_message: &str) -> rux_reactive::Level {
+    let undefined_name = rhai_message.starts_with("Variable not found:");
+    if undefined_name && is_fragment() {
+        rux_reactive::Level::Warning
+    } else {
+        rux_reactive::Level::Error
+    }
+}
+
 fn warn(message: String) {
+    raise(message, rux_reactive::Level::Warning);
+}
+
+/// Raise something that is definitely wrong rather than merely dead.
+///
+/// An expression that cannot compile, or that fails with every local in scope,
+/// is not "ignored" the way an unhonored CSS property is: it is a binding that
+/// can never show anything. `rux check` exits non-zero for these, and it used
+/// to call such a document clean.
+fn error(message: String) {
+    raise(message, rux_reactive::Level::Error);
+}
+
+fn raise(message: String, level: rux_reactive::Level) {
+    let at = AT_LINE.with(|l| l.get());
+    let file = IN_FILE.with(|c| c.borrow().clone());
     WARNINGS.with(|w| {
         let mut w = w.borrow_mut();
         // A binding is re-evaluated on every build, and an `r-for` evaluates the
         // same expression once per row, so the same failure arrives many times.
-        if !w.iter().any(|existing: &Warning| existing.message == message) {
+        // Deduped by message *and* line, as the cascade's sink is: the same
+        // mistake on two lines is two places to go and fix, and an editor wants
+        // a squiggle on each.
+        if !w.iter().any(|existing: &Warning| {
+            existing.message == message && existing.line == at && existing.file == file
+        }) {
             if ECHO.with(|e| e.get()) {
                 eprintln!("rux: {message}");
             }
-            // Expression failures are still unplaced: an expression comes from a
-            // template attribute or a `{{ }}` span, and the template parser does
-            // not yet record where each of those started. See `rux-reactive`'s
-            // `Warning` on why a guess would be worse than nothing.
-            w.push(Warning::new(message));
+            let warning = Warning::maybe_at(message, at).in_file(file);
+            w.push(if level == rux_reactive::Level::Error { warning.as_error() } else { warning });
         }
     });
 }
@@ -831,6 +1029,12 @@ pub fn take_warnings() -> Vec<Warning> {
 /// a second sink would let those two disagree about what was said.
 pub fn warn_script(message: impl Into<String>) {
     warn(message.into());
+}
+
+/// Raise a script *error* from outside the engine: something definitely wrong
+/// rather than merely dead. See [`rux_reactive::Level`].
+pub fn error_script(message: impl Into<String>) {
+    error(message.into());
 }
 
 thread_local! {
@@ -1359,7 +1563,7 @@ impl Engine {
                 // A `{{ }}` or `@tap` that doesn't compile used to evaluate to
                 // nothing, silently, the same failure mode as ignored CSS. Record
                 // it so the dev overlay can say what's wrong.
-                warn(format!(
+                error(format!(
                     "expression `{}` failed to compile: {}",
                     trim_expr(src),
                     explain(&e.to_string())
@@ -1378,11 +1582,11 @@ impl Engine {
         match result {
             Ok(value) => Some(value),
             Err(e) => {
-                warn(format!(
-                    "expression `{}` failed: {}",
-                    trim_expr(src),
-                    explain(&e.to_string())
-                ));
+                let raw = e.to_string();
+                raise(
+                    format!("expression `{}` failed: {}", trim_expr(src), explain(&raw)),
+                    level_for(&raw),
+                );
                 None
             }
         }
@@ -1466,6 +1670,286 @@ impl Engine {
     /// moment it is tapped.
     pub fn check_syntax(&self, src: &str) -> Result<(), String> {
         self.engine.compile(rewrite_intervals(src)).map(|_| ()).map_err(|e| rux_phrasing(&e.to_string()))
+    }
+
+    /// The functions and methods `src` calls that nothing could ever resolve.
+    ///
+    /// **This is the other half of [`Self::check_syntax`], and the half that was
+    /// missing.** rhai resolves a function *name* when the call runs, not when
+    /// it compiles, so `@tap="alert(…)"` compiles perfectly and does nothing
+    /// when tapped. A `{{ }}` expression is evaluated during the build and
+    /// reports the same mistake immediately, so the two halves of the language
+    /// disagreed about whether a typo was worth mentioning: interpolations said
+    /// so, handlers did not. A handler that does nothing is indistinguishable
+    /// from a handler that never fired, which makes it the worse place to be
+    /// silent.
+    ///
+    /// **Names only, deliberately, and not arity.** A name that is registered
+    /// nowhere, defined by no `fn` and built into nothing can never resolve
+    /// under any state, so saying so cannot be a false alarm. Arity is a
+    /// different question with real traps in it (a method call carries its
+    /// receiver as an argument, operators arrive as calls, a closure is called
+    /// through `call`), and getting it wrong would flag working code. Noise
+    /// here would be worse than the silence being fixed, because the whole
+    /// value of a diagnostic is that it is worth reading.
+    ///
+    /// Variables are left alone for the reason [`Self::check_syntax`] gives: a
+    /// handler legitimately names an `r-for` local or a component's own state
+    /// that does not exist until it runs. Functions are not like that. Nothing
+    /// a row or an instance brings into scope can add a function name.
+    pub fn unknown_calls(&self, src: &str) -> Vec<CallProblem> {
+        let Ok(ast) = self.engine.compile(rewrite_intervals(src)) else {
+            return Vec::new(); // a syntax error is `check_syntax`'s to report
+        };
+        self.unresolvable_calls(&ast)
+    }
+
+    /// The same check, over the `fn` bodies the document declared.
+    ///
+    /// A handler is not the only place a call hides. `fn refresh() { alert(…) }`
+    /// is never compiled against anything until something calls it, and a `fn`
+    /// nothing calls yet is exactly where a typo waits quietest. The bodies are
+    /// already held as [`Self::funcs`] for dispatch, so checking them costs one
+    /// more walk of an AST that is sitting there.
+    ///
+    /// Calls between the document's own functions resolve normally, because
+    /// [`Self::callable_names`] reads the same `AST` this walks: a `fn` may call
+    /// one declared below it, as it may at run time.
+    pub fn unknown_calls_in_functions(&self) -> Vec<CallProblem> {
+        self.unresolvable_calls(&self.funcs)
+    }
+
+    /// The walk both of the above share.
+    fn unresolvable_calls(&self, ast: &AST) -> Vec<CallProblem> {
+        let known = self.callable_names();
+        let own = self.own_fn_arities();
+        let mut unknown: Vec<CallProblem> = Vec::new();
+        ast.walk(&mut |path| {
+            let Some(rhai::ASTNode::Expr(expr)) = path.last() else { return true };
+            let mut note = |problem: CallProblem| {
+                if !unknown.contains(&problem) {
+                    unknown.push(problem);
+                }
+            };
+            match expr {
+                rhai::Expr::FnCall(call, ..) | rhai::Expr::MethodCall(call, ..) => {
+                    // An operator reaches the AST as a call (`a + b` is `+`),
+                    // and so does every comparison and index. They resolve
+                    // through the interpreter's own tables rather than by name,
+                    // so asking whether `+` is registered proves nothing.
+                    if call.op_token.is_some() {
+                        return true;
+                    }
+                    let name = call.name.as_str();
+                    if !known.contains(name) {
+                        note(CallProblem::NoSuchFunction(name.to_string()));
+                    } else if let Some(wanted) = own.get(name) {
+                        // A method call carries its receiver as the first
+                        // argument, which is how `x.f(y)` reaches `fn f(a, b)`.
+                        let given = call.args.len()
+                            + usize::from(matches!(expr, rhai::Expr::MethodCall(..)));
+                        if !wanted.contains(&given) {
+                            let mut wanted: Vec<usize> = wanted.iter().copied().collect();
+                            wanted.sort_unstable();
+                            note(CallProblem::WrongArgumentCount {
+                                name: name.to_string(),
+                                given,
+                                wanted,
+                            });
+                        }
+                    }
+                }
+                // A method call and its receiver are two nodes, and the
+                // receiver is what says whether `set` here is an array's or a
+                // signal's. Both arms are needed: the walk visits the `Dot` and
+                // the `MethodCall` separately, and only the `Dot` has the pair.
+                rhai::Expr::Dot(pair, ..) => {
+                    if let Some(problem) = self.stale_signal_api(&pair.lhs, &pair.rhs) {
+                        note(problem);
+                    }
+                }
+                _ => {}
+            }
+            true
+        });
+        unknown
+    }
+
+    /// Names read inside a `fn` body that **nothing anywhere could supply**.
+    ///
+    /// ## Why this is not the obvious check
+    ///
+    /// A `fn` body cannot be checked against its own parameters and locals, the
+    /// way it could in most languages, because of divergence 4 in the fork: in
+    /// Rux **a call runs in the scope it was written in**, so a function sees
+    /// its caller's locals. Driven and confirmed: `fn outer() { let x = 42;
+    /// inner(); }` with `fn inner() { n = x; }` sets `n` to 42. Checking a body
+    /// in isolation would therefore report the single most useful thing the
+    /// fork exists to allow.
+    ///
+    /// So the question asked here is weaker and answerable: **is this name
+    /// declared anywhere at all?** A name that is no signal, no parameter, no
+    /// `let` and no loop variable in this document cannot be in scope under any
+    /// caller, because scope is made of declarations and there is no
+    /// declaration of it to be in. `fn addUser() { Have }` is the shape this
+    /// catches, and it is the shape a typo takes.
+    ///
+    /// `also` is what the *runtime* knows and this crate does not: the names an
+    /// `r-for` row brings in, and the locals of every handler in the template,
+    /// since any of those can be the caller whose scope a body is running in.
+    ///
+    /// ## Reported as an error
+    ///
+    /// Decided by the user, 2026-09-17, looking at the squiggle: a name nothing
+    /// anywhere declares is a mistake, and a caution let `rux check` exit 0 on a
+    /// document that cannot work. What keeps that safe is how narrow the
+    /// question is. This never asks whether a name is in scope *here*, only
+    /// whether it is declared *at all*, and `also` carries the names the runtime
+    /// knows about that this crate cannot see. The measure is the corpus: all 47
+    /// examples and all 21 components alone produce no report.
+    /// `own_script_lines` is how much of the compiled text is **this document's
+    /// own** `<script>`. Every component's `fn`s are appended to it before
+    /// compiling, so the one AST holds functions from several files, and a
+    /// report about a line past that mark belongs to a file this is not
+    /// checking. Naming the wrong file is worse than saying nothing: unplaced is
+    /// vague, placed and wrong is a trap, which this project has already paid
+    /// for once. A component is reported when it is the file being checked.
+    /// Each report carries the **script-relative** line it was read on, which
+    /// the runtime turns into a line in the file. Without one it is drawn at
+    /// the top of the document, pointing at `<template>` for a mistake in
+    /// `<script>`.
+    pub fn unknown_names_in_functions(
+        &self,
+        also: &HashSet<String>,
+        own_script_lines: usize,
+    ) -> Vec<(String, Option<usize>)> {
+        let mut in_scope = declared_in(&self.funcs);
+        in_scope.extend(self.signals.iter().cloned());
+        in_scope.extend(also.iter().cloned());
+
+        let mut unknown: Vec<(String, Option<usize>)> = Vec::new();
+        self.funcs.walk(&mut |path| {
+            let Some(rhai::ASTNode::Expr(rhai::Expr::Variable(var, _, pos))) = path.last() else {
+                return true;
+            };
+            // Past the mark is a component's function, riding in the same AST.
+            if pos.line().is_some_and(|line| line > own_script_lines) {
+                return true;
+            }
+            // A qualified name (`mod::thing`) resolves through a module and not
+            // through any scope, so scope has nothing to say about it.
+            if !var.2.is_empty() {
+                return true;
+            }
+            let name = var.1.as_str();
+            if in_scope.contains(name) {
+                return true;
+            }
+            // A bare name that is really a function is a call the other check
+            // owns, and reporting it here would say the same thing twice in
+            // different words.
+            if self.callable_names().contains(name) {
+                return true;
+            }
+            // One report per name, at the first place it is read: a name
+            // misspelled the same way twice is one thing to fix.
+            if !unknown.iter().any(|(n, _)| n == name) {
+                unknown.push((name.to_string(), pos.line()));
+            }
+            true
+        });
+        unknown
+    }
+
+    /// Every name `src` declares, for handing back as part of `also` above.
+    ///
+    /// A handler is a caller, so its locals are in scope inside whatever it
+    /// calls. Compiling it here rather than in the runtime keeps every piece of
+    /// rhai knowledge on this side of the boundary.
+    pub fn declared_names(&self, src: &str) -> HashSet<String> {
+        match self.engine.compile(rewrite_intervals(src)) {
+            Ok(ast) => declared_in(&ast),
+            // A syntax error is `check_syntax`'s to report, and an AST that does
+            // not exist declares nothing.
+            Err(_) => HashSet::new(),
+        }
+    }
+
+    /// `signal.set(x)` and `signal.get()`, which name real functions and still
+    /// cannot work.
+    ///
+    /// These two escape [`Self::unknown_calls`]'s name check because `set` and
+    /// `get` *are* registered: `set` on an array, a map, a blob and a string,
+    /// `get` on a map. So `searching.set(true)` compiles, resolves nothing at
+    /// run time for a bool, and does nothing, in silence. It is the single most
+    /// misleading thing an author can write, because it is what
+    /// `docs/02-spec.md` taught until 2026-08-25.
+    ///
+    /// The arity is what makes this safe to report. Every registered `set`
+    /// takes **two** arguments after the receiver (`tasks.set(0, "x")` on an
+    /// array signal is legitimate and stays silent), and the map's `get` takes
+    /// one. A one-argument `set` or a no-argument `get` on a name that is a
+    /// signal is the v0.3-superseded API and nothing else, so there is no state
+    /// in which it could have worked.
+    fn stale_signal_api(&self, receiver: &rhai::Expr, call: &rhai::Expr) -> Option<CallProblem> {
+        let rhai::Expr::Variable(var, ..) = receiver else { return None };
+        let signal = var.1.as_str();
+        if !self.signals.contains(signal) {
+            return None;
+        }
+        let (rhai::Expr::MethodCall(call, ..) | rhai::Expr::FnCall(call, ..)) = call else {
+            return None;
+        };
+        let stale = matches!((call.name.as_str(), call.args.len()), ("set", 1) | ("get", 0));
+        stale.then(|| CallProblem::StaleSignalApi {
+            signal: signal.to_string(),
+            method: call.name.to_string(),
+        })
+    }
+
+    /// The parameter counts of the `fn`s this document declared.
+    ///
+    /// A name may appear more than once: rhai dispatches a script function on
+    /// its argument count, so `fn f(a)` and `fn f(a, b)` are two functions and
+    /// both counts are legal.
+    ///
+    /// **A name the host or a package also registered is left out entirely.**
+    /// The native side can be overloaded on types nothing here can see, so a
+    /// count that no `fn` accepts might still be resolved by a native of the
+    /// same name. Dropping those is what keeps this from flagging working code,
+    /// which matters more than catching every case.
+    fn own_fn_arities(&self) -> HashMap<String, HashSet<usize>> {
+        let native: HashSet<String> = self
+            .engine
+            .collect_fn_metadata(None, |f| Some(f.metadata.name.to_string()), true)
+            .into_iter()
+            .collect();
+        let mut arities: HashMap<String, HashSet<usize>> = HashMap::new();
+        for f in self.funcs.iter_functions() {
+            if native.contains(f.name) {
+                continue;
+            }
+            arities.entry(f.name.to_string()).or_default().insert(f.params.len());
+        }
+        arities
+    }
+
+    /// Every function name this engine could resolve a call to.
+    ///
+    /// Three sources, because a call can land in any of them: what the host and
+    /// the script tier registered, what the standard packages bring, and the
+    /// `fn`s the document itself declared. The first two come from the engine,
+    /// which is the same place the interpreter looks, so this cannot drift from
+    /// what would actually happen at run time. The third is the document's own
+    /// `AST`, which is where `fn refresh()` lives.
+    fn callable_names(&self) -> HashSet<String> {
+        let mut names: HashSet<String> = self
+            .engine
+            .collect_fn_metadata(None, |f| Some(f.metadata.name.to_string()), true)
+            .into_iter()
+            .collect();
+        names.extend(self.funcs.iter_functions().map(|f| f.name.to_string()));
+        names
     }
 
     pub fn run_handler_tracked(&mut self, src: &str) -> HashSet<String> {
@@ -1726,6 +2210,36 @@ impl Engine {
         }
         names.into_iter().filter(|n| self.read_signal(n) != before[n]).collect()
     }
+}
+
+/// Every name an AST declares: `fn` parameters, `let` bindings, and the
+/// variables a `for` loop brings in.
+///
+/// Deliberately flat rather than per-scope. A `let` inside one block does not
+/// really reach a sibling block, but pretending it might is the safe direction
+/// of wrong: it can only make this quieter, never louder, and quiet is the side
+/// a name check has to fail towards.
+fn declared_in(ast: &AST) -> HashSet<String> {
+    let mut names: HashSet<String> = HashSet::new();
+    for f in ast.iter_functions() {
+        names.extend(f.params.iter().map(|p| p.to_string()));
+    }
+    ast.walk(&mut |path| {
+        match path.last() {
+            Some(rhai::ASTNode::Stmt(rhai::Stmt::Var(decl, ..))) => {
+                names.insert(decl.0.name.to_string());
+            }
+            Some(rhai::ASTNode::Stmt(rhai::Stmt::For(loop_, ..))) => {
+                names.insert(loop_.0.name.to_string());
+                if let Some(counter) = &loop_.1 {
+                    names.insert(counter.name.to_string());
+                }
+            }
+            _ => {}
+        }
+        true
+    });
+    names
 }
 
 fn to_dynamic(v: &Value) -> Dynamic {
@@ -2632,4 +3146,5 @@ mod tests {
         assert_eq!(take_warnings().len(), 1);
     }
 }
+
 

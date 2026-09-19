@@ -206,6 +206,84 @@ test('a use path offers folders that hold components, and skips ones that do not
   fs.rmSync(root, { recursive: true, force: true });
 });
 
+
+test('a use path offers the project root as well as the file it is beside', () => {
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+
+  // The reported shape: components at the root, the page one level down.
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'rux-use-root-'));
+  fs.mkdirSync(path.join(root, 'components'));
+  fs.mkdirSync(path.join(root, 'pages'));
+  fs.writeFileSync(path.join(root, 'app.rux'), '<template></template>');
+  fs.writeFileSync(path.join(root, 'components', 'task.rux'), '<template></template>');
+  fs.writeFileSync(path.join(root, 'pages', 'home.rux'), '<template></template>');
+
+  const page = { uri: { scheme: 'file', fsPath: path.join(root, 'pages', 'home.rux') } };
+
+  // Nothing named `components` sits beside the page, so this can only have come
+  // from the root. Before the runtime looked there, offering it would have been
+  // a lie; now not offering it hides the only thing that works.
+  const top = completion.importPath(vscodeStub, page, '');
+  const folder = top.find((i) => i.label === 'components');
+  assert.ok(folder, 'the root components folder was not offered');
+  assert.match(folder.detail, /project root/, `detail was ${folder.detail}`);
+
+  const inside = completion.importPath(vscodeStub, page, 'components::');
+  const task = inside.find((i) => i.label === 'task');
+  assert.ok(task, 'the component under the root folder was not offered');
+  assert.match(task.detail, /project root/, `detail was ${task.detail}`);
+  assert.match(task.detail, /<task>/, 'and still names the tag');
+
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test('a component beside the file hides the one at the root, as the runtime does', () => {
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'rux-use-both-'));
+  fs.mkdirSync(path.join(root, 'components'));
+  fs.mkdirSync(path.join(root, 'pages', 'components'), { recursive: true });
+  fs.writeFileSync(path.join(root, 'app.rux'), '<template></template>');
+  fs.writeFileSync(path.join(root, 'components', 'task.rux'), '<template></template>');
+  fs.writeFileSync(path.join(root, 'pages', 'components', 'task.rux'), '<template></template>');
+  fs.writeFileSync(path.join(root, 'pages', 'home.rux'), '<template></template>');
+
+  const page = { uri: { scheme: 'file', fsPath: path.join(root, 'pages', 'home.rux') } };
+  const inside = completion.importPath(vscodeStub, page, 'components::');
+  const tasks = inside.filter((i) => i.label === 'task');
+  assert.equal(tasks.length, 1, 'one entry, not two, for one name that resolves once');
+  assert.ok(
+    !/project root/.test(tasks[0].detail),
+    `the near copy is the one that resolves, so it is the one shown: ${tasks[0].detail}`
+  );
+
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test('outside a project there is no root, so nothing extra is offered', () => {
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+
+  // No app.rux and no index.rux anywhere: the runtime has no root to fall back
+  // to here, so the list must not invent one.
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'rux-use-none-'));
+  fs.mkdirSync(path.join(root, 'components'));
+  fs.mkdirSync(path.join(root, 'pages'));
+  fs.writeFileSync(path.join(root, 'components', 'task.rux'), '<template></template>');
+  fs.writeFileSync(path.join(root, 'pages', 'home.rux'), '<template></template>');
+
+  const page = { uri: { scheme: 'file', fsPath: path.join(root, 'pages', 'home.rux') } };
+  const top = completion.importPath(vscodeStub, page, '').map((i) => i.label);
+  assert.ok(!top.includes('components'), 'nothing marks a root, so nothing is offered from one');
+
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
 // ── the vocabulary itself ────────────────────────────────────────────────────
 
 test('the bundled vocabulary is loadable and honest', () => {

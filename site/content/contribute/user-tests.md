@@ -449,6 +449,397 @@ directory and took the first entry, and an install leaves the previous version's
 directory behind. It now reads VS Code's own `extensions.json`, and names the
 leftovers rather than being fooled by them.
 
+## v0.7.1
+
+### The unhonored-property message, split three ways (2026-08-25)
+
+Driven with `rux check` on one file carrying all three cases at once, which is
+the only way to see that they now read as three different problems.
+
+| Case | Hardware | Outcome |
+|---|---|---|
+| `outline: 1px solid red`, real CSS Rux has not built | desktop, `rux check` | Passed: "real CSS that Rux does not honor yet", and it promises nothing more |
+| `paddding: 8px`, a typo | desktop, `rux check` | Passed: "is not a CSS property Rux knows", and it offered `padding` |
+| `colour: #fff`, the other spelling | desktop, `rux check` | Passed: offered `color`. Worth having, since it is the mistake an author makes once a week |
+| `florble: 3`, invented | desktop, `rux check` | Passed: reported unknown and suggested nothing, rather than reaching for the nearest unrelated name |
+| All five in one file | desktop, `rux check` | Passed: five warnings, each on its own line number |
+
+**Found while writing the reference for it:** the first chapter of `/learn` told
+the reader to add `line-height: 2` and watch the terminal warn. `line-height`
+has been honored since v0.5, so the demonstration printed nothing at all and had
+been wrong through two releases. Nobody drove the tutorial's own instruction.
+
+### Broken sections, argument counts, and percentages (2026-09-15)
+
+| Case | Hardware | Outcome |
+|---|---|---|
+| `<template>` opened, never closed | desktop, `rux check` | Passed: "opened here and never closed", at 1:1. Said "missing <template> section" before, with the author looking straight at the tag |
+| A file with only a `<style>` | desktop, `rux check` | Passed: genuinely missing, and says what a template is for |
+| `<template` with no `>` anywhere | desktop, `rux check` | Passed: "never finished: no `>` after it" |
+| `<style>` opened, never closed | desktop, `rux check` | Passed: an error at line 4. Silently meant "this file has no styles" before, which looks exactly like CSS that does not work |
+| `two(1)` and `two(1,2,3)` where `fn two(a, b)` | desktop, `rux check` | Passed: names the count given and the count wanted |
+| `none(5)` where `fn none()` | desktop, `rux check` | Passed |
+| `two(1, 2)` and `none()` | desktop, `rux check` | Passed by staying silent |
+| `bump_it(2)` in a component, `fn bump_it` in its parent | desktop, `rux check` | **Whole app: silent** (correct, `fn`s are shared). **Component alone: a warning, not an error** (correct, its parent may define it) |
+| `padding: 10%`, `margin: 10%`, `gap: 5%`, `border-radius: 50%` | desktop, `rux check` | Passed: each says it is ignored and why. **All four were silently dropped before** |
+| `width: 50%` | desktop, `rux check` | Passed by staying silent: layout resolves it, so it works |
+| All 47 files in `examples/` | desktop, `rux check` | Clean |
+
+**The percentage report was four properties, not one.** `border-radius: 50%` was
+reported; `padding`, `margin` and `gap` had the same defect and nobody had tried
+them. The cause is two functions in one file disagreeing about what a length is:
+the interpreter reads these with `parse_px`, which has no percentage, while
+`warn_unparseable_lengths` validated with `parse_len`, which does. So the value
+was thrown away and then pronounced fine **by the warning added to stop values
+being thrown away in silence**.
+
+**Still not driven in the window**: whether a radius clamped by a hug-sized
+button's own text is the whole of the other half of that report. It is correct
+behaviour by the CSS rule, and the author note stays open until someone looks.
+
+### Severity, unknown events, and which file (2026-09-15)
+
+| Case | Hardware | Outcome |
+|---|---|---|
+| `{{ nope }}` in a page | desktop, `rux check` | Passed: **error**, exit 1. Was a warning, exit 0 |
+| `{{ label }}` in a component checked on its own | desktop, `rux check` | Passed by staying a **warning**: props are not declared, so it cannot be told from a typo |
+| `@class="big"` on a `<view>` | desktop, `rux check` | Passed: error, listing the six events that exist |
+| `@sent="x"` on a component tag | desktop, `rux check` | Passed by staying silent: that is a listener for an emitted event |
+| `r-else=""` | desktop, `rux check` | Passed: error. Needed `Attr::has_value`, since the value is empty either way |
+| `r-else` on its own | desktop, `rux check` | Passed by staying silent |
+| A warning raised inside an imported component | desktop, `rux check` | Passed: names `components/badge.rux:3`, not `app.rux:3`. It reported the **importer's** name with the **component's** line until this landed |
+| All 47 files in `examples/` | desktop, `rux check` | **Found a real bug**, see below, then clean |
+
+**Two live bugs found by the checks on their first run over the corpus, which is
+the argument for both of them:**
+
+1. **`examples/recipes/message-list.rux` carried `@submit="send()"` on its
+   `<input>`.** An `<input>` raises no events of its own, so pressing Enter had
+   never once sent a message. The send button beside it works, which is what
+   kept it hidden through every release the recipe has shipped in.
+2. **`rux new` scaffolded a project that failed its own `rux check`.** The
+   scaffolded `components/task.rux` reads two props and declares nothing, so
+   making undefined names an error everywhere turned the tool's own output into
+   two errors. That is what produced the page/fragment rule, and it is the
+   strongest argument on record for giving props a declaration.
+
+**Also worth recording as a near miss.** Adding line numbers to template
+warnings the day before had made the multi-file case *more* dangerous, not less:
+warnings from a component carried its line number and the importing document's
+name, so they pointed confidently at an innocent line of the wrong file. It was
+found by asking what happens with an imported template, not by any test.
+
+### Where a template warning points (2026-09-15)
+
+Driven with `rux check --format json`, which is what the editor reads, against
+a file whose line numbers were chosen to be awkward.
+
+| Case | Hardware | Outcome |
+|---|---|---|
+| `{{ nope }}` on its own line | desktop, `rux check` | Passed: the text run's line. Was unplaced, so it landed on line 1 |
+| `@tap` three lines below its `<button` | desktop, `rux check` | Passed: the attribute's line, not the tag's |
+| `:class` two lines below its `<view` | desktop, `rux check` | Passed: the attribute's line |
+| `r-if` on a child | desktop, `rux check` | Passed: the directive's line. Read by the *parent's* loop, so it reported the parent's line until it was placed |
+| `r-for` on a child | desktop, `rux check` | Passed, same shape |
+| `{{ }}` inside an `r-for` row | desktop, `rux check` | Passed: the row's text line, once, not once per item |
+| A document opening with `<script>` and `<style>`, template starting on line 9 | desktop, `rux check` | Passed: reported line 11, the file's line, not the template section's line 3 |
+| All 47 files in `examples/` | desktop, `rux check` | Passed, still no warnings at all |
+
+**The old behaviour is worth naming precisely:** every template warning arrived
+with no line, so every consumer fell back to the top of the file. That put the
+squiggle on the `<` of `<template>`, which is the one place in a document where
+nothing is ever wrong.
+
+### Calls that can never resolve (2026-09-15)
+
+Driven with `rux check` on files carrying each case, and the silent half matters
+more than the loud half: the whole value of this check is that it is worth
+reading.
+
+| Case | Hardware | Outcome |
+|---|---|---|
+| `@tap="alert(1)"` | desktop, `rux check` | Passed: names the call and says it does not exist. Silent before |
+| `@tap="searching.frobnicate()"` | desktop, `rux check` | Passed |
+| `@tap="searching.set(true)"` | desktop, `rux check` | Passed: named as the pre-v0.3 signal API, with the assignment that replaced it. **Not** reported as a missing function, because `set` is registered for arrays and maps and saying otherwise would be false |
+| `@tap="n = searching.get()"` | desktop, `rux check` | Passed, same shape |
+| `@tap="count.update(...)"` | desktop, `rux check` | Passed, caught by name: `update` is registered nowhere |
+| `@tap="tasks.set(0, &quot;x&quot;)"` on an array signal | desktop, `rux check` | **Passed by staying silent.** This is the registered two-argument `set` and it works |
+| `@tap="tasks.push(&quot;x&quot;)"`, `count += tasks.len()`, `bump()` | desktop, `rux check` | Passed by staying silent |
+| `fn helper() { alert("x") }`, never called | desktop, `rux check` | Passed: a `fn` nobody calls is the quietest place a typo can sit |
+| `fn bump() { helper() }` with `helper` declared **below** it | desktop, `rux check` | Passed by staying silent: that resolves at run time, so warning would be wrong |
+| **All 47 files in `examples/`** | desktop, `rux check` | **Passed with no new warnings**, which is the false-positive measurement this check lives or dies by |
+| 300 handlers in one document | desktop, debug build | 0.37s end to end, so no caching was added for a cost that is not there |
+
+**The `.set()` case is not a typo an author invented.** `docs/02-spec.md` taught
+`count.get()` / `.set()` / `.update()`, and that file was billed as the reference
+until 2026-08-25. Someone who read the docs and wrote it got a handler that did
+nothing and no reason why.
+
+### The `r-for` tuple form (2026-08-25)
+
+| Case | Hardware | Outcome |
+|---|---|---|
+| `r-for="(pot, index) in pots"` | desktop, `rux check` | Passed: says the form is unsupported and names `pot` and `index` as the two things that do not exist because of it. Before this it only said `index` was undefined and advised declaring it as a signal |
+| The same file's follow-on warnings | desktop, `rux check` | Passed: the two undefined-name warnings still appear and now read as consequences of the first, rather than as the whole story |
+| `r-for="pot in pots"`, the ordinary form | desktop, `rux check` | Passed: silent, which is the half that would turn the fix into noise if it were wrong |
+
+**The spec was where the tuple form came from.** `docs/02-spec.md` said `r-for`
+"supports an index form" and used `:key` in its example, neither of which was
+ever built. An author who reads the reference and writes what it says is not
+making a mistake. Both lines are corrected.
+
+### The document's own interval, beside a component (2026-09-15)
+
+Found while walking the v0.7.0 release post claim by claim, not by any test.
+
+| Case | Hardware | Outcome |
+|---|---|---|
+| Document `mounted` starts `setInterval`, a component with a `mounted` hook is on the first build, the component is then dropped | desktop, `rux run` | **Failed before the fix.** The document's interval stopped, the window went to sleep at zero CPU, and the screen froze with the last frame on it. No error, no warning, no panic |
+| The same, through a `<router>`: the landing route's view declares `mounted`, then navigate away | desktop, `rux run` | **Failed before the fix**, and this is the shape an author meets first. The router rendered nothing and the app stopped responding to its own clock |
+| The same component declaring only `unmounted` | desktop, `rux run` | Passed: the trigger is a `mounted` hook, because that is what the mounts pass drains the queue for |
+| The component mounting *later*, after the interval already existed | desktop, `rux run` | Passed, and this is what made the bug look intermittent |
+| A component's own interval, started in its `mounted` | desktop, `rux run` | Passed both before and after: it still dies with the instance, which is the half a fix here could easily have broken |
+
+**The cause was attribution, not pruning.** Timer requests queue in one place for
+the whole document. `settle_lifecycle` attributes whatever is pending to the
+instance that just mounted, and on the first build it ran *before* the document's
+own request was drained, so the document's clock was handed to the first
+component on screen and pruned with it. The drain moved to directly after
+`mounted` runs.
+
+**The frozen app reads as a crash and is not one.** The process sat at zero CPU,
+`Responding=True`, with the window still painting its last frame. Nothing was
+spinning and nothing had panicked: the runtime had simply stopped asking the
+event loop to wake it. Anything that looks like a hang here is worth measuring
+before it is debugged as one.
+
+### How a `<route>` names its view (2026-09-15)
+
+Found while walking the v0.7.0 release post claim by claim: the probe app for
+the guard claims would not load, and the reason it gave was one the file had
+already done.
+
+| Case | Hardware | Outcome |
+|---|---|---|
+| `view="page_a"` with `use components::page_a;` present | desktop, `rux check` | **Failed before the fix.** Said "which is not imported; add `use components::page_a;` to the script", which is the line sitting two lines below it. Doing what the message says gets the same message back |
+| `view="page-a"` with nothing imported | desktop, `rux check` | **Failed before the fix.** Suggested `use components::page-a;`. Pasting it turns the warning into a hard error looking for `page-a.rux`, a filename no convention here produces |
+| `view="page-a"` with `use components::page_a;` | desktop, `rux check` | Passed, silent. The control, and the spelling that works |
+
+**Two spellings for one component is the trap, and it is real rather than
+avoidable.** A view is named the way its tag is, in kebab, and the `use` that
+brings it in names the file, in snake. Both messages now say which spelling the
+place they are complaining about wants, and the import they suggest is one that
+parses.
+
+### `query()` against the root (2026-09-15)
+
+From the claim walk: the post says a handler can read the screen, and the
+reference says `query()` "is the stylesheet's own matcher". It was not, at
+exactly one node.
+
+| Case | Hardware | Outcome |
+|---|---|---|
+| `query(".app .row")` with `.app` on the `<screen>` root | desktop, `rux run` | **Failed before the fix.** Empty, while the identical selector in the stylesheet painted the row red. Two answers about one document |
+| `query(".app > .wrap")`, `query("screen > .wrap")` | desktop, `rux run` | **Failed before the fix**, same cause |
+| `query(".wrap > .row")`, `query(".row > .t")`, `view > text` | desktop, `rux run` | Passed all along: `>` works, which is what made the bug look like something subtler than it was |
+| `query(".row + .row")`, `query(".row ~ .row")` | desktop, `rux run` | Passed all along |
+| `query(".app")`, `query("screen")` | desktop, `rux run` | Passed all along: the root was always **findable**, just never an **ancestor** |
+
+**The root's path is empty, and the ancestor chain was rebuilt from depth 1.**
+So the one node an author is most likely to anchor a selector at was the one
+node that could never appear above anything. `query(".app")` returning 1 while
+`query(".app .row")` returned 0 is the tell, and it is why this reads as a
+selector-support gap rather than an off-by-one.
+
+### Reaching a component in a parent directory (2026-09-15)
+
+Reported by the user as the thing that catches them out most often, with a
+screenshot: `pages/home.rux` in a project whose components live at the root.
+
+| Case | Hardware | Outcome |
+|---|---|---|
+| `use components::task;` in `pages/home.rux`, component at `components/task.rux` | desktop, `rux check` + `rux run` | **Failed before the fix**, and the only way out was a second copy of the component beside the page. Now resolves from the project root, and the page renders both rows in the window |
+| The same import with a component **also** at `pages/components/task.rux` | desktop, `rux check` | Passed: the near copy wins. This is the half that had to keep working, or a document that resolves today would quietly start meaning a different file |
+| The same layout with no `app.rux` or `index.rux` anywhere above | desktop, `rux check` | Passed by still failing: nothing marks the top of a project, so there is no root and only the relative form applies |
+| `use components::nope;`, nowhere at all | desktop, `rux check --format json` | Passed: `"line": 6`, and the message names both directories it looked in. It used to be a bare OS error with `"line": null` |
+| `use components::;`, half typed after a completion | desktop, `rux check` | Passed: "this `use` names no component: a path segment is empty". It used to report `reading component .../components/.rux: The system cannot find the path specified`, which describes a path the author never wrote and blames the disk |
+
+**The squiggle was the visible half.** Every one of these errors came back with
+no position, so VS Code drew it on line 1 and pointed at `<template>` for a
+mistake on the last line of `<script>`. `LoadError::at_line` places them now,
+and the import carries the line it was written on.
+
+### A template with more than one root (2026-09-15)
+
+Reported as "`rux run` too doesn't give me the expected UI", against a project
+whose `pages/home.rux` was written as four siblings.
+
+| Case | Hardware | Outcome |
+|---|---|---|
+| A component with three root elements | desktop, `rux run` | **Failed before the fix, in silence.** Only the first root drew. No warning, no overlay, nothing on stderr, and `rux check` clean |
+| The reported project: four roots, the first an `r-if` over an empty list | desktop, `rux run` | **Failed worse.** The first root was the one that rendered, and its condition was false, so the page rendered **nothing at all** and the window showed only the title from `app.rux` |
+| The same, after the fix | desktop, `rux check` | Passed: names the file, the line of the second root, how many there are, the tag that starts the dropped run, and to wrap them in a `<view>` |
+| The error raised through an import | desktop, `rux check app.rux` | Passed: reported against `pages/home.rux`, the file that is actually wrong, not the importer |
+| Every `.rux` in the repo | desktop | Passed: **zero** multi-root templates, so making this an error breaks nothing that exists |
+
+**The rule was real and written down nowhere a reader would look.**
+`docs/02-spec.md` says a template "must contain exactly one root element", and
+that file was reframed in this same patch line as design history, checked
+against nothing. The reference said nothing at all. So the runtime enforced a
+rule by dropping markup, and the only document stating it was the one that
+announces it does not describe the runtime.
+
+### `r-if` riding on `r-for` (2026-09-15)
+
+Found while writing a routing example to answer a question, which is its own
+small lesson: the example was wrong and the runtime said nothing.
+
+| Case | Hardware | Outcome |
+|---|---|---|
+| `<text r-for="n in nums" r-if="n > 2">` over `[1, 2, 3, 4]` | desktop, `rux run` | **Failed before the fix, in silence.** All four rows rendered. The loop expands the element and the condition is never read, so the filter does nothing and nothing says so |
+| The same after the fix | desktop, `rux check` | Passed: names the directive, says the condition is never read, and gives both ways out (filter with a `computed`, or move it to a child) |
+| All 47 files under `examples/` | desktop, `rux check` | Passed with no new warnings, which is the false-positive measurement this check lives or dies by |
+
+**Reported rather than honored, deliberately.** Which of the two should win is a
+real design question, and Vue has answered it both ways across two major
+versions. Quietly picking an answer here would change what existing documents
+render, which is not a patch's business.
+
+### Four things a first router app ran into (2026-09-15)
+
+Reported from a tasker app written in the editor: a screenshot of a squiggle
+under `<input>`, one of `Ctrl+/` writing `//` into a template, and the question
+of why `view="new_task"` was accepted when nothing imported it.
+
+| Case | Hardware | Outcome |
+|---|---|---|
+| `<view><input type="text"></view>` | desktop, VS Code + `rux check` | **Failed before the fix.** Parse error, and it named the wrong tag: "mismatched closing tag: expected `</input>`, found `</view>`", against a file whose only mistake was being written the way HTML is |
+| The same after the fix | desktop, `rux check` | Passed: the void tags close themselves, and `<input></input>` now says "`<input>` holds nothing, so it has no closing tag" rather than blaming the enclosing element |
+| `Ctrl+/` in `<template>` | desktop, VS Code | **Failed before the fix, in silence.** Wrote `// <view>`, which is not a comment in markup. In `<style>` it wrote `//`, which is not a comment in CSS either and is dropped by the parser without a word, so a "commented out" rule stayed in force |
+| `Ctrl+/` in each section after the fix | desktop, VS Code | Passed: `<!-- -->` in the template and between sections, `/* */` in the style, `//` in the script |
+| `<route path="/new" view="new_task" />` with no `use` for it | desktop, `rux check` | **Failed before the fix.** Exited 0. The route was not the one being rendered, and only the matched route's view was ever resolved, so the broken page waited for the first navigation to it |
+| The same after the fix | desktop, `rux check` | Passed: an **error** on the `view=`'s own line, said once rather than twice for the route you happen to be standing on |
+| A `to="/typo"` beside a `to="/new"` and a `to="/task/7"` | desktop, `rux check` | Passed: only the typo reported, against `pages/home.rux` and its own line, with the `:id` route matching the concrete path |
+| `view="new_task"` beside its own `use pages::new_task;` | desktop, VS Code | **Failed before the fix, by design.** Accepted the name only in kebab, and told the author to write the other spelling of a name they had already given correctly. Reported as "why am I forced to write new_task as new-task in view=?" |
+| The same after the fix, both spellings, plus `<new_task />` and `<new-task />` | desktop, `rux check` | Passed: either spelling resolves in the template, both file under the one canonical name, and `netask` is still an error |
+| The completion list, against a `new-task.rux` | desktop, VS Code | **Failed before the fix.** Offered the stem verbatim, so it wrote `use new-task;`. That resolves only because `use` lines are lifted out before rhai sees them; one line further down the same text is `new` minus `task`. Reported as "would rust agree with having `-` in any naming" |
+| The same after the fix | desktop, VS Code + `rux check` | Passed: the list inserts `new_task`, `use new_task;` finds `new-task.rux`, and a hyphenated path still resolves but says it reads as subtraction |
+| All 47 files under `examples/` | desktop, `rux check` | Passed with no new findings. The dead-link check found two at first, both in files that link to `/nowhere` **on purpose** to demonstrate `<route fallback>`; running it through the router's own matcher rather than a flattened list of patterns is what fixed that |
+
+**Three of the four were silent, and the fourth pointed at the wrong line.**
+That is the shape worth noticing: none of them was a missing feature. The
+information existed in every case — the void list was already in the formatter,
+the section boundaries were already in the editor's scanner, the imports were
+already in the script — and nothing was asking it at the moment it mattered.
+
+### A component could not use a component (2026-09-15)
+
+Found while testing the fix above, on a copy of the user's own project. Not
+reported by them: their task list was empty, so the symptom read as "no tasks
+yet" rather than as a bug.
+
+| Case | Hardware | Outcome |
+|---|---|---|
+| `components/task.rux` deliberately broken, `app.rux` importing only the pages | desktop, `rux check` | **Failed before the fix, in total silence.** Exit 0. The file was never parsed: `home.rux` imported it and a component's `use` lines were thrown away, so `<task>` matched nothing and expanded to nothing |
+| The same, with `use components::task;` added to `app.rux` | desktop, `rux check` | The breakage appears at once, which is what isolated the cause: the component is only ever loaded through the **document's** imports |
+| `<definitely-not-an-element />` | desktop, `rux check` | **Failed before the fix.** Reported nowhere. This is the silence that hid the one above: a tag was the only name in a template with no way to fail |
+| Both, after the fix | desktop, `rux check` | Passed: a component's imports are followed, and a tag naming nothing is an error that lists Rux's own elements |
+| Two pages, each importing a different `task.rux`, each writing `<task>` | desktop, `rux check` + render | Passed: each renders its own. Under the old flat map the second import replaced the first and one page rendered the other's component |
+| A tag the *document* imports, written inside a component that does not | desktop, `rux check` | Passed: reported. A namespace that leaks is not a namespace |
+| Two files importing each other | desktop, `rux check` | Passed: loads and renders. A worklist, so a cycle is a map lookup rather than a stack overflow |
+| A nested route (`/crew/:id` inside `/crew`) | desktop, `cargo test` | **Caught by the existing suite, not by hand.** Making tags per-file broke it: a route's `view` is named in the file that wrote the `<router>`, and the `<router-view />` placing it is several components deep. Four router tests failed in one run and named the cause |
+| All 47 files under `examples/`, plus all 21 components checked individually | desktop, `rux check` | Passed with no new findings, which is the false-positive measurement the unknown-tag error lives or dies by |
+
+**The silence was load-bearing.** Three separate defects sat on top of one
+missing diagnostic. Nothing reported an unknown tag, so a tag that resolved to
+nothing looked exactly like a tag that resolved to an empty component, which
+looked exactly like an empty list. The fix that matters most here is the
+smallest one.
+
+### An input that could not be typed into, and a border that was not drawn (2026-09-15)
+
+Reported together, from one file: *"I have an issue with my input elements. They
+are uninteractive. Even the css isn't being applied."* Two unrelated defects,
+both silent, and each one made the other harder to see.
+
+| Case | Hardware | Outcome |
+|---|---|---|
+| `<input placeholder="Task title" />`, no `r-model` | desktop, `rux run` | **Failed before the fix, in silence.** The box paints and the placeholder renders, and a tap reaches nothing: the layout makes a focus region only for an input carrying a model, so there is no caret, no keystroke and no value |
+| The same, after the fix | desktop, `rux check` | Passed: an error naming the line and what to write |
+| `input { border-bottom: 0.1rem #00f solid; }` | desktop, `rux run` | **Failed before the fix.** Nothing drawn. The cascade computed `bottom: 1.6`, and paint read `border.top` |
+| `border: 6px solid` (uniform), as the control | desktop, `rux run` | Drawn correctly, which is what isolated the cause: only the uniform case ever worked |
+| `border-top: 6px solid` | desktop, `rux run` | **Failed the other way**: drawn on all four sides |
+| All three after the fix | desktop, `rux run` + screenshot | Passed: bottom-only, four-sided, top-only, each as written |
+| All 47 files under `examples/` | desktop, `rux check` | Passed with no new findings. Every example binds its inputs, and none of them sets an uneven border |
+
+**The cascade was never the problem, which is why it looked like one.** A probe
+printing the computed style showed `border-bottom: 1.6` sitting on the node
+exactly as written, so "the CSS is not applied" was false and the real fault was
+one layer further down, where three of the four sides were dropped on the way
+into `PaintRect`. Reading the computed style is not the same as looking at the
+window, and this is the case that says so.
+
+### An input inside a component took no text
+
+Reported as "my inputs do not receive values", against `pages/new-task.rux` in
+the user's own tasker app: the first keystroke seemed to register as a space and
+nothing after it arrived at all. A routed `view=` is a component instance, and
+that turned out to be the whole of it.
+
+| Case | Where | Result |
+|---|---|---|
+| `<input r-model>` on a page (`<screen>` root), as the control | desktop, `rux run` + SendKeys | Passed, before and after. The signal updated on every keystroke |
+| `<input r-model>` inside a component | desktop, `rux run` + SendKeys | **Failed before the fix.** The caret painted in the field, three keys went in, nothing was entered. One error on stderr, printed once rather than per keystroke |
+| The same, after the fix | desktop, `rux run` + SendKeys + screenshot | Passed: `Hello` typed, shown in the field, and the component's own signal reads it back |
+| The user's `pages/new-task.rux`, through the router | desktop, `rux run --route /new` + SendKeys | Passed after the fix: `Buy milk` typed into the field that had taken nothing |
+| Two instances of one component | `cargo test` | **Failed before the fix**, and differently: writing one changed what the other read, because the captured build scope was matched on `(model, row)` only |
+| `<input r-model>` bound to a **prop** | `cargo test` | Passed: the edit is dropped rather than half-kept, the same rule handlers follow |
+| All 47 files under `examples/` | desktop, `rux check` | Passed with no new findings |
+
+**Two things were being driven for the first time here.** No `r-model` test in
+the runtime had ever used anything but a `<screen>` root, so the component case
+had no coverage at all; and typing had never been driven headlessly. Injected
+clicks still do not reach the window, but **`SendKeys` does**, which with a
+`mounted` hook calling `focus()` is a complete typing harness.
+
+**The one-line cause sat under the plumbing.** `rux-style` builds an `<input>`
+in a branch of its own, and that branch never set `node.instance`, though the
+general element branch always had. Every input reported "no instance", so
+nothing downstream could have known whose state its model named.
+
+### A name inside a `fn` body that nothing declares
+
+Found in the user's own `pages/new-task.rux` while chasing the input bug: `fn
+addUser() { Have }` passed `rux check` clean, as a page as well as a skipped
+component. The undefined-name check runs when an expression is *evaluated*, and
+a `fn` nobody has called yet is never evaluated.
+
+| Case | Where | Result |
+|---|---|---|
+| `fn add() { Have }` | desktop, `rux check` | **Failed before the fix**: "no problems found". Now a warning naming `Have` |
+| The user's own `pages/new-task.rux` | desktop, `rux check <file>` | Passed after the fix: the same warning, against the file the `fn` is actually in |
+| A `fn` reading a **local of the function that called it** | desktop, `rux run` + `print` | Legal, and driven to be sure: `outer` declares `helper_local = 42`, `inner` reads it, the signal ends at 42. Must stay silent, and does |
+| A `fn` reading a **handler's** local | `cargo test` | Silent: a handler is a caller like any other |
+| A `fn` reading an `r-for` **row variable** | `cargo test` | Silent: the row is in scope for anything the row's handler calls |
+| A component's `fn`, while checking the document | desktop, `rux check` | Silent, deliberately: the component's functions ride in the same compiled text, and the warning would carry the document's name against another file's line |
+| All 47 files under `examples/`, and each of the 21 components alone | desktop, `rux check` | Passed with no new findings, which is the false-positive measure |
+
+**The obvious check would have been wrong**, and that is the finding worth
+keeping. Divergence 4 in the rhai fork makes a call run in the scope it was
+written in, so a `fn` sees its caller's locals. Checking a body against its own
+parameters and `let`s would report the single most useful thing the fork exists
+to allow. The question the check actually asks is the weaker, answerable one:
+**is this name declared anywhere at all?** A name that is no signal, no
+parameter, no `let` and no loop variable anywhere in the document cannot be in
+scope under any caller, because scope is made of declarations and there is no
+declaration of it to be in.
+
+It is an **error**, decided by the user while looking at the squiggle: a name
+declared nowhere cannot resolve under any caller, and calling it a caution let
+`rux check` exit 0 on a document that cannot work. It carries the line the name
+is read on; reported without one it was drawn at the top of the file, pointing
+at `<template>` for a mistake in `<script>`.
+
 ## Standing gaps
 
 Cases nothing here can currently exercise. They are the shape of what v0.8 has

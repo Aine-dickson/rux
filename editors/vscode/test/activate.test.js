@@ -50,6 +50,8 @@ function makeVscode(record) {
       createTerminal: () => ({ show() {}, sendText() {}, dispose() {}, exitStatus: undefined }),
       showTextDocument: async () => ({}),
       activeTextEditor: undefined,
+      onDidChangeTextEditorSelection: event,
+      onDidChangeActiveTextEditor: event,
     },
     languages: {
       createDiagnosticCollection: () => ({ dispose() {}, set() {}, delete() {} }),
@@ -58,6 +60,10 @@ function makeVscode(record) {
       registerDefinitionProvider: () => (record.providers.push('definition'), disposable),
       registerDocumentSymbolProvider: () => (record.providers.push('symbols'), disposable),
       registerDocumentFormattingEditProvider: () => (record.providers.push('formatter'), disposable),
+      registerDocumentSemanticTokensProvider: () => (record.providers.push('semantic'), disposable),
+      // Re-declared as the cursor moves between sections, so that Ctrl+/ writes
+      // the comment the section's language actually has. See `comments.js`.
+      setLanguageConfiguration: () => (record.providers.push('languageConfiguration'), disposable),
     },
     commands: {
       registerCommand: (id) => (record.commands.push(id), disposable),
@@ -92,6 +98,23 @@ function makeVscode(record) {
     DocumentSymbol: class {},
     SymbolKind: new Proxy({}, { get: (_t, k) => String(k) }),
     TextEdit: { replace: () => ({}) },
+    SemanticTokensLegend: class {
+      constructor(types, modifiers) {
+        this.tokenTypes = types;
+        this.tokenModifiers = modifiers;
+      }
+    },
+    SemanticTokensBuilder: class {
+      constructor() {
+        this.pushed = [];
+      }
+      push(...args) {
+        this.pushed.push(args);
+      }
+      build() {
+        return { data: this.pushed };
+      }
+    },
     Uri: { file: (p) => ({ fsPath: p, scheme: 'file' }) },
   };
 }
@@ -139,7 +162,7 @@ test('activate() runs to completion', () => {
 
 test('every provider the extension advertises is registered', () => {
   const { providers } = activate();
-  for (const name of ['completion', 'hover', 'definition', 'symbols', 'formatter']) {
+  for (const name of ['completion', 'hover', 'definition', 'symbols', 'formatter', 'semantic']) {
     assert.ok(providers.includes(name), `the ${name} provider was never registered`);
   }
 });

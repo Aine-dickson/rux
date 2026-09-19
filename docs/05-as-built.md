@@ -213,6 +213,16 @@ components as custom tags, plus two that render no box of their own: `<slot>`
 [Routing](#routing)). `role=` is honored for **selectors and semantics**
 (and matches **case-insensitively**: `role="Heading"` matches `[role="heading"]`).
 
+**An element that holds nothing closes itself.** `<image>`, `<input>`,
+`<path>` and `<router-view>` take no children, so `<input type="text">` is
+complete as written and there is no `</input>` for it to be missing. The slash
+is still legal and is what `examples/` uses. Writing a closing tag for one is an
+error that says so: *"`<input>` holds nothing, so it has no closing tag; delete
+`</input>`"*. Until v0.7.1 the parser demanded the closing tag and, not finding
+it, named whichever closing tag it found next — so `<view><input></view>` was
+reported as "expected `</input>`, found `</view>`", against a file whose only
+mistake was being written the way HTML is written.
+
 `<image src="assets/logo.png">`: `src` resolves **relative to the .rux file**
 (not the working directory), and `:src` binds an expression. With no CSS size it
 lays out at the file's intrinsic pixel size; a `width`/`height` scales it to fit.
@@ -289,7 +299,10 @@ Driven in `examples/chart.rux` and `examples/morph.rux`.
 
 - **Everything defaults to `display: block`.** Block containers make children fill.
 - **Use `display: flex` for layout.** Flex cross-axis defaults to **flex-start**
-  (children hug), not CSS's `stretch`, which is a deliberate divergence for ergonomics.
+  (children hug), not CSS's `stretch`. **This is a divergence Rux intends to
+  drop**: see "Where Rux differs from CSS". Until it does, every flex
+  column needs its own `align-items: stretch` for its children to fill, because
+  `align-items` does not inherit.
 - **Hug means `fit-content`**: a box with no `width` is clamped to its parent's
   inner width, so it can't burst out of a narrower parent. An explicit `width` (or
   `flex-shrink: 0`) is your call and *will* overflow, so clip it with `overflow: hidden`.
@@ -299,6 +312,27 @@ Driven in `examples/chart.rux` and `examples/morph.rux`.
   scene is scaled to the display's DPI, so `16px` is the same physical size on a
   1x and a 2x screen.
 
+
+### Where Rux differs from CSS
+
+**The rule, set 2026-09-18: Rux's CSS behaves the way real CSS does, defaults
+included, unless a divergence is genuinely necessary.** An author arrives
+knowing CSS, and every place Rux answers differently is something they learn by
+being surprised in the window. Documenting a divergence does not pay for it;
+only necessity does, and "better ergonomics" is not necessity.
+
+So this list is short on purpose, and each entry says which kind it is.
+
+| Difference | Kind | Standing |
+|---|---|---|
+| Flex cross-axis defaults to `flex-start`, not `stretch` | a preference, taken for ergonomics | **To be reverted.** It changes the layout of every existing document, so it is scheduled rather than patched |
+| `border-radius` in percent resolves against the **shorter side**, so `50%` on a 160x60 box is a pill and not CSS's ellipse | a capability: Rux draws one radius per corner and cannot draw an elliptical corner | Keep |
+| No inline text flow: two `<text>` siblings stack instead of sharing a line | a capability: the layout engine has no inline layout, which is why `display: inline` was built and then removed | Keep |
+
+Two things that look like differences and are not: `display` defaults to
+`block`, and `flex: 1` means `1 1 0%`. Both are CSS's own answers.
+
+
 ### Honored CSS
 ```
 display (block|flex|grid|inline|none)
@@ -306,28 +340,76 @@ flex-direction, justify-content, align-items, gap, row-gap, column-gap
 align-self, justify-self, justify-items, align-content
 flex-grow, flex-shrink, flex-basis, flex-wrap, flex (shorthand)
 grid-template-columns, grid-template-rows
-grid-column, grid-row (+ -start/-end)   (1 / 3, span 2, -1; no named lines)
+grid-column, grid-column-start, grid-column-end
+grid-row, grid-row-start, grid-row-end   (1 / 3, span 2, -1; no named lines)
 grid-auto-flow, grid-auto-rows, grid-auto-columns
 transform (translate/scale/rotate; visual only; hit regions aren't transformed)
-position (static|relative|sticky|absolute|fixed) + top/right/bottom/left, aspect-ratio
-width, height, min/max-width, min/max-height
-padding, margin        (shorthand 1–4 values + -top/-right/-bottom/-left)
-border, border-width, border-color, border-<side>, border-<side>-width
-background / background-color / background-image, opacity
+position (static|relative|sticky|absolute|fixed), top, right, bottom, left
+aspect-ratio
+width, height, min-width, max-width, min-height, max-height
+padding, padding-top, padding-right, padding-bottom, padding-left
+margin, margin-top, margin-right, margin-bottom, margin-left
+                       (each shorthand takes 1–4 values)
+border, border-width, border-color
+border-top, border-right, border-bottom, border-left
+border-top-width, border-right-width, border-bottom-width, border-left-width
+background, background-color, background-image, opacity
   (colour, linear-/radial-gradient, or url(…) image, cover-sized, clipped to corners)
 box-shadow (single, outer; inset parsed but not drawn)
 transition (property duration easing delay, comma-separated; see below)
-border-radius (1–4 diagonal shorthand + per-corner -top-left/-top-right/…)
+border-radius (1–4 diagonal shorthand; px/rem/em, and % against the box)
+border-top-left-radius, border-top-right-radius
+border-bottom-right-radius, border-bottom-left-radius
 color, font-size, font-weight, font-family, font-style (italic), text-align
 letter-spacing, word-spacing, line-height, white-space (nowrap|pre)
-text-decoration (underline / line-through)                (color: hex, rgb()/rgba(), CSS names)
-overflow / overflow-x / overflow-y   (hidden|clip = clip; auto|scroll = scroll;
+text-decoration, text-decoration-line (underline / line-through; the longhand
+                       wins where both are set)  (color: hex, rgb()/rgba(), CSS names)
+overflow, overflow-x, overflow-y     (hidden|clip = clip; auto|scroll = scroll;
                                       both axes together; x and y can't differ)
-overflow-wrap (break-word), word-break (break-all)
+overflow-wrap (break-word), word-wrap (the legacy alias for it), word-break (break-all)
 cursor (pointer, on @tap boxes only)
 fill, fill-rule, stroke, stroke-width, stroke-linecap, stroke-linejoin
   (<path> only; see above)
 ```
+**Percentages need a box, and most of these are resolved before there is one.**
+`width`, `height`, `min`/`max-*` and the insets become a length that layout
+resolves, so `width: 50%` works. `padding`, `margin`, `gap`/`row-gap`/
+`column-gap`, the border widths, `font-size`, `letter-spacing` and
+`word-spacing` are resolved to plain pixels during the cascade, where there is
+no box yet, so a percentage on one of those is **ignored and says so**. Until
+v0.7.1 it was ignored in silence, because the interpreter read them with a
+px-only parser while the length check validated with a percentage-capable one:
+the value was dropped and then pronounced fine. Real percentage support for them
+is scheduled.
+
+**A border may differ per side.** `border-bottom: 2px solid #89b4fa` draws under
+the box and nowhere else, which is the underlined-field shape most forms want.
+Until v0.7.1 it drew *nothing*: the cascade computed all four sides, and paint
+carried one width taken from the top, so `border-bottom` was dropped and
+`border-top` was drawn on all four sides. Both silent, and `border-bottom` is
+offered by the editor's completion list, which is supposed to mean it works.
+
+Uniform borders are drawn as one stroke, which is what follows the corner
+radius. Uneven ones are drawn as four filled edges, so where two different
+non-zero widths meet the corner is square rather than mitred diagonally. That
+difference is only visible on a box that sets two adjacent sides to different
+widths.
+
+**`border-radius` is the exception, and takes a percentage.** It is the one of
+these that layout never reads: only paint does, and paint knows the box. So
+`border-radius: 50%` is resolved against the laid-out box and a square comes out
+a circle. It works on the corner longhands too, and a longhand in px after a
+shorthand in `%` replaces that corner in both units.
+
+A percentage resolves against the **shorter side**, not per axis. Rux draws
+circular corners (one radius per corner), so `50%` on a 160x60 box is a pill of
+radius 30 rather than the ellipse CSS would draw. On a square the two agree
+exactly, and the pill is what someone writing `50%` on a button is after.
+
+`border-radius: 9999px` still works and still means "as round as it goes", since
+a radius larger than the box is clamped to it. That is what the runtime itself
+uses to draw a radio button.
+
 **Selectors:** tag, `.class`, `#id`, `[role="…"]`, compounds, and all four
 combinators: descendant (`.a .b`), child (`.a > .b`), next-sibling (`.a + .b`),
 subsequent-sibling (`.a ~ .b`).
@@ -733,11 +815,25 @@ parses it and does name-matching + fallback; the generic families (`serif`,
 `font-size`. `color`/`font-size`/`font-family` are the three inheriting text
 properties.
 
-Anything else is **parsed but not honored**: but no longer *silently*: the
-runtime now prints one line per unhonored property (`rux: CSS property
-\`box-shadow\` is parsed but not yet honored …`), once each. Notably absent:
-`line-height`, `box-shadow`, gradients, `transform`, and CSS variables.
-`position` is no longer among them: all five values are honored.
+Anything else is **parsed but not honored**, and never *silently*: the runtime
+prints one line per unhonored property, once each. It says which of three things
+happened, because they are not the same problem:
+
+| You wrote | It says |
+|---|---|
+| `outline: 1px solid red` | ``CSS property `outline` is real CSS that Rux does not honor yet, so it will have no effect`` |
+| `paddding: 8px` | ``` `paddding` is not a CSS property Rux knows, so it will have no effect. Did you mean `padding`? ``` |
+| `florble: 3` | ``` `florble` is not a CSS property Rux knows, so it will have no effect ``` |
+
+The middle case is the one worth having. Until v0.7.1 a typo got the same "not
+yet honored" line a real unbuilt property got, so it read as a feature on its
+way and an author could wait for a release that was never going to fix it.
+
+Real CSS Rux has not built includes `outline`, `z-index`, `box-sizing`,
+`transform-origin`, `visibility`, `filter`, `text-transform`, `background-size`,
+`list-style` and the `animation` family. `line-height`, `box-shadow`,
+gradients, `transform`, CSS variables and all five `position` values used to be
+on that list and are honored now.
 
 Colours accept `#hex` (3/6/8-digit), `rgb()`/`rgba()`, and the full CSS named-
 colour list (`red`, `rebeccapurple`, …). The named list matters because
@@ -859,6 +955,19 @@ handler. The tree is a function of state, and state is how it changes.
 `examples/element-query.rux` demonstrates all of it.
 
 ### Inputs
+
+**`r-model` is not optional.** It is the whole of an input's identity: the
+layout gives a focus region only to an input that carries one, the shell tracks
+the caret by the model text, and the value the field shows is read back out of
+that signal. An `<input placeholder="…" />` with nothing bound paints its box,
+renders its placeholder, and takes no tap, no caret and no keystroke. That was
+silent until v0.7.1 and is now an error naming the line:
+
+```
+this `<input>` has no `r-model`, so nothing can be typed into it: the caret,
+the keystrokes and the value it shows are all addressed by the signal it binds
+```
+
 `<input r-model="sig" placeholder="…">`: tap to focus, type to edit. There is a
 real **caret**: tapping puts it where you tapped, ←/→ move it, Home/End jump,
 Backspace/Delete cut either side of it, and typing inserts at it. Esc unfocuses.
@@ -1122,6 +1231,99 @@ scrollbar hover/fade states, no `scrollbar-width`/`scrollbar-color`, no
 Component instances are isolated (only props are visible inside). Their CSS styles
 their own subtree. Editing a component hot-reloads.
 
+**One component, two spellings, and the template takes either.**
+`use components::crew_detail;` names the file `components/crew_detail.rux` and
+contributes the tag `<crew-detail>`. The `use` **has** to be snake, because it
+is a path and `crew-detail` is not a path segment anyone can write; the tag
+**has** to be kebab, because that is what a custom element looks like. Both are
+forced, at opposite ends of the same file, and the author was left holding the
+difference. So in a `<template>` — as a tag and as a `<route view="…">` alike —
+`crew_detail` and `crew-detail` are the same component and both resolve. In
+`<script>` the `use` path stays strict: it is naming a file.
+
+Nothing is ambiguous, because the import maps `_` to `-` and no import can ever
+contribute a tag with an underscore in it. Whichever spelling is written, the
+component is filed under its **canonical** kebab name, so one component written
+both ways in one file is still one instance with one set of state, and not two
+halves of one.
+
+**And the file may be named either way too.** `use new_task;` finds
+`new_task.rux`, and failing that `new-task.rux`. Exact spelling first at both
+bases, so nothing that resolves today moves; the hyphenated candidate can only
+turn a hard error into a working import. That matters because a file is named
+by a person, and somebody who has been writing `<new-task>` all morning names it
+`new-task.rux`.
+
+**A component may use a component, and a tag is a local name.** Every file's
+`use` lines are read, not just the document's, and each file's markup may write
+only the tags that file imported. So `components/task.rux` can `use` its own
+`components/avatar.rux` without the document knowing, and two pages may each
+`use` a different `task.rux` and each write `<task>` meaning their own.
+
+Until v0.7.1 a component's `use` lines were parsed and then thrown away. Only
+the root document's imports existed, in one flat map, so a component could not
+use a component: the tag matched nothing, expanded to nothing, and said nothing.
+Found on a real project where `pages/home.rux` carried `use components::task;`
+and rendered `<task r-for="t in tasks">`, `app.rux` imported only the pages, and
+the list came up empty in a way that read as *"no tasks yet"*. The flat map had a
+second failure nobody had hit yet: two files importing different components under
+one tag, where the second import silently replaced the first.
+
+Imports are followed as a worklist rather than by recursion, so **two files
+importing each other terminates** rather than overflowing a stack: a file already
+loaded contributes its tag to the importing file's namespace and is not walked
+again. Functions are the deliberate exception and stay shared across every file:
+a component may call a `fn` its caller declared, which is the older rule and what
+`set_is_fragment` exists to keep checkable.
+
+**A tag that names nothing is an error.**
+```
+there is no element or component called `<netask>`. Rux's own elements are
+<screen> <view> <text> <image> <path> <button> <input> <slot> <router> <route>
+<router-view>; anything else is a component, and needs a `use` for it in this
+file's <script>
+```
+It can never render anything, which is the same test `view=` uses. It was silent
+until v0.7.1, and that silence is what hid the nested-import bug above for the
+whole of v0.7: a tag is the one name in a template that had no other way to fail.
+
+**A route's `view` is a name in the file that wrote the `<router>`.** Not in
+whatever component the `<router-view />` sits in, which by the time a nested
+route renders is usually several files away from the one that named it.
+
+**A `use` path with a `-` in it is reported.** It resolves, and has since before
+anyone noticed — `use` lines are lifted out of the script before rhai sees them,
+so the hyphen is never parsed as anything. One line further down the same text
+is `new` minus `task`. A path that would be arithmetic anywhere else in the same
+section is a spelling waiting to break, so it warns and names the snake form,
+which finds the same file. Nothing written that way stops working.
+
+Reported 2026-09-15 as *"why am I forced to write `new_task` as `new-task` in
+`view=`?"*, against a `view="new_task"` whose `use pages::new_task;` sat three
+lines below it. Until then the answer was a message telling the author to go and
+write the other spelling of a name they had already given correctly.
+
+**A `<template>` takes exactly one root element**, in a document and in a
+component alike. Wrap siblings in a `<view>`. Writing several is reported, with
+the line of the second: it used to keep the first and drop the rest in silence,
+and a first root carrying an `r-if` that happened to be false rendered the whole
+component as nothing at all.
+
+**An import is looked for beside the file first, then from the project root.**
+`use components::stat;` in `pages/home.rux` tries `pages/components/stat.rux`,
+and if nothing is there, `components/stat.rux` next to the project's `app.rux`
+or `index.rux`. So a page in a subdirectory can share the components at the root
+rather than keeping a copy of each one beside it.
+
+Beside-first is deliberate: a component that resolves today goes on meaning the
+same file, and the root is only ever a fallback. Outside a project, where no
+`app.rux` or `index.rux` marks the top, there is no root and only the relative
+form applies.
+
+There is still no `super::` and no `..`. The root fallback covers what those
+were being reached for, and a path that can climb is a path that can escape the
+project.
+
 **Components are a desktop feature today.** `use components::stat;` names a
 *file*, and the web build has no filesystem to read it from: a document run in
 a browser is handed no components, so every component tag renders nothing and
@@ -1268,6 +1470,24 @@ Like `<slot>`, a router leaves **no box of its own** behind: the matched view
 expands in its place. Routes are tried in the order written and the first match
 wins, so a `fallback` can sit anywhere among them. A path nothing matches and no
 fallback catches renders nothing, and warns.
+
+**Every route's `view` is checked at load, not on arrival.** A route is expanded
+when its path is the one you are on, so a `view` naming nothing used to be
+silent on every page but its own: the document loaded, `rux check` exited 0, and
+the mistake waited for the first navigation there. Whether a name is imported is
+a fact about the file rather than about where you are standing in it, and it is
+reported as an **error** — a page that can never render is wrong, not merely
+dead.
+
+**A `to=` that matches no route is reported too.** A dead link is silent by
+construction: tapping it navigates, the router matches nothing, and the screen
+goes blank with no more explanation than an empty screen. The address is written
+in the markup and so are the routes, so the two are compared before anyone taps.
+Only the written-out `to=` — `:to` is built from a row's own data, and a path
+that exists for row 3 and not for row 4 is a data problem rather than a markup
+one. The check runs through the router's own matcher, so `<route fallback>`
+answers for everything and a document with no `<router>` says nothing at all
+(which is what a component holding links needs).
 
 **The path is an ordinary signal called `route`.** That is the whole design:
 `{{ route }}`, `r-if="route == \"/about\""` and `:class` already understand
@@ -1558,12 +1778,64 @@ app is watching.
   `var()`s, unsupported `@media` conditions, and **expressions that failed**, `expression \`dubble(n)\` failed: Function not found: dubble`. Long lists are
   capped at six with a count of the rest; everything still goes to stderr.
   CSS warnings are prefixed with the line they are on (`line 11: …`).
+- **Template warnings carry their line too**, from v0.7.1. Every one of them
+  used to arrive unplaced, so the overlay, `rux check --format json` and the
+  editor gutter all fell back to the top of the file: the `<` of `<template>`,
+  which is the one place in a document where nothing is ever wrong. The
+  template parser now records a file line for each element, each attribute and
+  each text run, and a warning is attributed to the most specific one that
+  applies. A handler lands on its own attribute's line rather than on the tag's,
+  which matters because elements are routinely written across several lines; an
+  `r-if` or `r-for` lands on the directive rather than on the parent element
+  whose loop reads it; and a `{{ }}` lands on the text run rather than on the
+  element containing it.
+- **A warning raised inside an imported component names that component's file**,
+  not the document that imported it. Errors have done this since components
+  landed; warnings had nowhere to put it, so they carried the component's line
+  number and the importer's name. That pairing reads as a precise location and
+  is not one, which is worse than saying nothing at all.
+- **Some of these are errors, even though the document built.** A load either
+  works or does not; that is separate from whether what loaded is *right*. An
+  expression that cannot resolve, an `@event` the runtime never dispatches and a
+  value on a valueless directive are all definitely wrong, so `rux check` exits
+  non-zero for them where it used to call the file clean. The window still runs
+  the app: blanking it over a typo mid-edit would be worse than useless.
+
+  **Reading an undefined name is an error in a page and a warning in a
+  fragment.** A page (`<screen>` root) has no caller, so a name it does not
+  declare can come from nowhere. A fragment is a component, and **props are not
+  declared**, so its `{{ label }}` is indistinguishable from a typo when the
+  file is read on its own. A declaration form would make that answerable instead
+  of inferable; until then the severity follows the root element.
 - **Tapping the panel dismisses it**, and it says so. The panel covers the app it
   is describing, which was a problem when the thing you needed to look at was
   underneath. The dismissal is remembered against *those* diagnostics, so it
   lasts exactly as long as the document's problems are the same ones: fix a
   warning, or introduce an error, and the panel comes straight back. A press
   landing on the panel does not reach the app under it either.
+
+- **A handler or a `fn` that calls something which cannot exist** is reported
+  at load, before anything is tapped. rhai looks a function name up when the
+  call *runs*, so until v0.7.1 `@tap="alert(1)"` compiled clean and did nothing
+  when pressed, while the identical mistake inside `{{ }}` was reported during
+  the build. A dead handler looks exactly like a handler that never fired, so
+  this was the worst place in the language to be quiet. Every `@event`, every
+  route `guard` and every `fn` body in `<script>` is checked, including the ones
+  behind a false `r-if` and the ones nothing calls yet.
+
+  **Names, not argument counts.** A name that is registered nowhere, defined by
+  no `fn` and built into nothing can never resolve under any state, so saying so
+  cannot be a false alarm. Argument counts are a separate question with real
+  traps in them, and a check that flags working code is worse than the silence
+  it replaced.
+
+  One case is reported by shape rather than by name: **`signal.set(x)` and
+  `signal.get()`**, the signal API from before v0.3, which ordinary assignment
+  replaced. Those two escape a name check because `set` and `get` really are
+  registered, on arrays, maps, blobs and strings. What identifies them is the
+  arity: every registered `set` takes two arguments after its receiver, so
+  `tasks.set(0, "x")` on an array signal is legitimate and stays silent, while
+  `searching.set(true)` is the superseded API and nothing else.
 
 Every shipped example is checked to load **warning-free**, so a noisy overlay in
 `examples/` is a test failure.

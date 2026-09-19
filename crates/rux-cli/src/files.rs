@@ -22,6 +22,20 @@ pub enum Components {
 /// A file named explicitly is always included, even when walking would have
 /// skipped it: naming it was deliberate.
 pub fn collect(paths: &[PathBuf], components: Components) -> Result<Vec<PathBuf>, String> {
+    collect_reporting_skips(paths, components).map(|(files, _)| files)
+}
+
+/// The same, and also the files that walking deliberately left out.
+///
+/// Returned rather than swallowed because the count is the difference between
+/// "your project is clean" and "two of your four files were never looked at",
+/// and those read identically when only the first number is printed. Someone
+/// read `checked 2 files, no problems found` over a four-file project and
+/// reasonably took it for a clean bill of health.
+pub fn collect_reporting_skips(
+    paths: &[PathBuf],
+    components: Components,
+) -> Result<(Vec<PathBuf>, Vec<PathBuf>), String> {
     let (mut explicit, mut walked) = (Vec::new(), Vec::new());
     if paths.is_empty() {
         walk(Path::new("."), &mut walked)?;
@@ -37,16 +51,29 @@ pub fn collect(paths: &[PathBuf], components: Components) -> Result<Vec<PathBuf>
     }
 
     let mut files = explicit;
-    files.extend(walked.into_iter().filter(|f| match components {
-        Components::Include => true,
-        // `Some(false)` is "definitely a component". `None` means the file would
-        // not parse, and that is never a reason to skip it: the parse error is
-        // the whole point of looking.
-        Components::SkipWhenWalking => rux_runtime::is_entry_point(f) != Some(false),
-    }));
+    let mut skipped = Vec::new();
+    for f in walked {
+        let keep = match components {
+            Components::Include => true,
+            // `Some(false)` is "definitely a component". `None` means the file
+            // would not parse, and that is never a reason to skip it: the parse
+            // error is the whole point of looking.
+            Components::SkipWhenWalking => rux_runtime::is_entry_point(&f) != Some(false),
+        };
+        if keep {
+            files.push(f);
+        } else {
+            skipped.push(f);
+        }
+    }
     files.sort();
     files.dedup();
-    Ok(files)
+    // A file named explicitly is checked even if it is a component, so it must
+    // not also be reported as skipped.
+    skipped.retain(|s| !files.contains(s));
+    skipped.sort();
+    skipped.dedup();
+    Ok((files, skipped))
 }
 
 fn walk(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), String> {

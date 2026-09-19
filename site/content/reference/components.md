@@ -15,6 +15,99 @@ weight = 12
 Component instances are isolated (only props are visible inside). Their CSS styles
 their own subtree. Editing a component hot-reloads.
 
+**One component, two spellings, and the template takes either.**
+`use components::crew_detail;` names the file `components/crew_detail.rux` and
+contributes the tag `<crew-detail>`. The `use` **has** to be snake, because it
+is a path and `crew-detail` is not a path segment anyone can write; the tag
+**has** to be kebab, because that is what a custom element looks like. Both are
+forced, at opposite ends of the same file, and the author was left holding the
+difference. So in a `<template>` — as a tag and as a `<route view="…">` alike —
+`crew_detail` and `crew-detail` are the same component and both resolve. In
+`<script>` the `use` path stays strict: it is naming a file.
+
+Nothing is ambiguous, because the import maps `_` to `-` and no import can ever
+contribute a tag with an underscore in it. Whichever spelling is written, the
+component is filed under its **canonical** kebab name, so one component written
+both ways in one file is still one instance with one set of state, and not two
+halves of one.
+
+**And the file may be named either way too.** `use new_task;` finds
+`new_task.rux`, and failing that `new-task.rux`. Exact spelling first at both
+bases, so nothing that resolves today moves; the hyphenated candidate can only
+turn a hard error into a working import. That matters because a file is named
+by a person, and somebody who has been writing `<new-task>` all morning names it
+`new-task.rux`.
+
+**A component may use a component, and a tag is a local name.** Every file's
+`use` lines are read, not just the document's, and each file's markup may write
+only the tags that file imported. So `components/task.rux` can `use` its own
+`components/avatar.rux` without the document knowing, and two pages may each
+`use` a different `task.rux` and each write `<task>` meaning their own.
+
+Until v0.7.1 a component's `use` lines were parsed and then thrown away. Only
+the root document's imports existed, in one flat map, so a component could not
+use a component: the tag matched nothing, expanded to nothing, and said nothing.
+Found on a real project where `pages/home.rux` carried `use components::task;`
+and rendered `<task r-for="t in tasks">`, `app.rux` imported only the pages, and
+the list came up empty in a way that read as *"no tasks yet"*. The flat map had a
+second failure nobody had hit yet: two files importing different components under
+one tag, where the second import silently replaced the first.
+
+Imports are followed as a worklist rather than by recursion, so **two files
+importing each other terminates** rather than overflowing a stack: a file already
+loaded contributes its tag to the importing file's namespace and is not walked
+again. Functions are the deliberate exception and stay shared across every file:
+a component may call a `fn` its caller declared, which is the older rule and what
+`set_is_fragment` exists to keep checkable.
+
+**A tag that names nothing is an error.**
+```
+there is no element or component called `<netask>`. Rux's own elements are
+<screen> <view> <text> <image> <path> <button> <input> <slot> <router> <route>
+<router-view>; anything else is a component, and needs a `use` for it in this
+file's <script>
+```
+It can never render anything, which is the same test `view=` uses. It was silent
+until v0.7.1, and that silence is what hid the nested-import bug above for the
+whole of v0.7: a tag is the one name in a template that had no other way to fail.
+
+**A route's `view` is a name in the file that wrote the `<router>`.** Not in
+whatever component the `<router-view />` sits in, which by the time a nested
+route renders is usually several files away from the one that named it.
+
+**A `use` path with a `-` in it is reported.** It resolves, and has since before
+anyone noticed — `use` lines are lifted out of the script before rhai sees them,
+so the hyphen is never parsed as anything. One line further down the same text
+is `new` minus `task`. A path that would be arithmetic anywhere else in the same
+section is a spelling waiting to break, so it warns and names the snake form,
+which finds the same file. Nothing written that way stops working.
+
+Reported 2026-09-15 as *"why am I forced to write `new_task` as `new-task` in
+`view=`?"*, against a `view="new_task"` whose `use pages::new_task;` sat three
+lines below it. Until then the answer was a message telling the author to go and
+write the other spelling of a name they had already given correctly.
+
+**A `<template>` takes exactly one root element**, in a document and in a
+component alike. Wrap siblings in a `<view>`. Writing several is reported, with
+the line of the second: it used to keep the first and drop the rest in silence,
+and a first root carrying an `r-if` that happened to be false rendered the whole
+component as nothing at all.
+
+**An import is looked for beside the file first, then from the project root.**
+`use components::stat;` in `pages/home.rux` tries `pages/components/stat.rux`,
+and if nothing is there, `components/stat.rux` next to the project's `app.rux`
+or `index.rux`. So a page in a subdirectory can share the components at the root
+rather than keeping a copy of each one beside it.
+
+Beside-first is deliberate: a component that resolves today goes on meaning the
+same file, and the root is only ever a fallback. Outside a project, where no
+`app.rux` or `index.rux` marks the top, there is no root and only the relative
+form applies.
+
+There is still no `super::` and no `..`. The root fallback covers what those
+were being reached for, and a path that can climb is a path that can escape the
+project.
+
 **Components are a desktop feature today.** `use components::stat;` names a
 *file*, and the web build has no filesystem to read it from: a document run in
 a browser is handed no components, so every component tag renders nothing and

@@ -4,7 +4,12 @@ Editor support for `.rux` files:
 
 - **Completions**, offered from what the runtime actually understands. In
   `<template>`: elements, the components this file imported with
-  `use components::…`, the directives, and each element's own attributes. In
+  `use components::…`, the directives, and each element's own attributes,
+  **including the values an attribute takes when they are a closed set**:
+  `<input type="` offers `text`, `textarea`, `select`, `checkbox` and `radio`,
+  each saying what choosing it does. An attribute whose values are open text
+  offers nothing, so silence there means "anything goes" rather than "nothing
+  works". In
   `<style>`: **only the CSS properties Rux honors**, which is the completion a
   general CSS extension cannot give you, because Rux honors a subset and warns
   about the rest. In `<script>`: `signal`, `computed`, `effect`, the router
@@ -23,8 +28,10 @@ Editor support for `.rux` files:
   popup answers these questions once and then takes the answer away.
 - **Go to definition** (`F12`, `Ctrl+Click`) on a `use components::task_card;`
   path and on the `<task-card>` tag it contributes. Both open
-  `components/task_card.rux`, resolved by the runtime's own rules: relative to
-  the importing file, and with the underscore mapped to the hyphen.
+  `components/task_card.rux`, resolved by the runtime's own rules: beside the
+  importing file first, then the project root. Either spelling of the tag works,
+  `<task-card>` and `<task_card>` alike, because the runtime takes either in a
+  template.
 - **Outline** (`Ctrl+Shift+O`, and the breadcrumb bar): the three sections, then
   every element carrying a `class` or an `id` named as its selector would be
   (`view.row.spread`, `text#total`), every rule in the sheet with `@media`
@@ -46,6 +53,23 @@ Editor support for `.rux` files:
   `transitionrules` for the three rules an enter/leave animation needs, `sticky`
   for a heading that rides its scroller's edge, and `pathbound` for geometry
   that morphs.
+- **`Ctrl+/` writes the comment the section actually has**: `<!-- -->` in
+  `<template>` and between sections, `/* */` in `<style>`, `//` in `<script>`.
+  VS Code reads one set of comment rules per *language* and a `.rux` file is
+  three of them, so the rules are re-declared as the cursor moves. Neither
+  markup nor CSS has a line comment, and this no longer pretends they do: `//`
+  in a template is a syntax error, and in CSS it is dropped by the parser
+  without a word, so a rule commented out that way stayed in force.
+- **The names in `view=""` and `to=""` are coloured as names**, in the same
+  colour a component tag gets, when they resolve: a `view` whose component this
+  file imported, a `to` whose path some `<route>` in the project answers to.
+  One that does not resolve is left as an ordinary string, so **the colour means
+  the reference is good** and a typo reads as a typo without waiting for a
+  squiggle. A `<route fallback>` is deliberately not consulted — it would paint
+  every address, including the typo. This one rides on VS Code's semantic
+  highlighting, which is `configuredByTheme` by default: a theme that does not
+  opt in shows the plain string colour. Force it with
+  `"editor.semanticHighlighting.enabled": true`.
 - **Folding** of the three sections, HTML-style tag indentation, and bracket/quote
   auto-close.
 - **Format Document** (`Shift+Alt+F`): runs `rux fmt`. It re-indents the
@@ -105,7 +129,7 @@ has. Live diagnostics are a job for the language server.
 ```
 cd editors/vscode
 npx @vscode/vsce package     # produces ruxlang-<version>.vsix
-code --install-extension ruxlang-0.4.0.vsix
+code --install-extension ruxlang-0.4.1.vsix
 ```
 
 If a Marketplace copy is already installed, uninstall it first

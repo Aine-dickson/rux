@@ -13,6 +13,70 @@
 
 use std::fmt;
 
+/// Tags that hold no children, so an opening tag closes itself and a closing
+/// tag is not merely unnecessary but wrong.
+///
+/// `<input type="text">` is the one an author writes by hand, and until this
+/// list reached the parser it was a parse error: the template demanded an
+/// `</input>` that Rux has no such thing as, and the message named the *next*
+/// closing tag it found instead, so `<view><input></view>` was reported as
+/// "expected </input>, found </view>" against a document whose only mistake was
+/// being written the way HTML is.
+///
+/// The same set the formatter indents by and the editor auto-closes by. It
+/// lived in `rux-fmt` first, which is why that crate now re-exports this one
+/// rather than keeping a second copy: the list drifted once already between
+/// Rust and JavaScript (HTML's `img` against Rux's `<image>`), and a third copy
+/// is how it would drift again.
+const VOID_TAGS: &[&str] = &[
+    // `<router-view />` never nests: what goes in it comes from the route
+    // matched below, not from anything written between the tags. `<path>` holds
+    // its geometry in an attribute, so it has nothing to nest.
+    "image", "input", "path", "router-view", //
+    "area", "base", "br", "col", "embed", "hr", "img", "link", "meta", "param", "source", "track",
+    "wbr",
+];
+
+/// Every tag Rux itself defines. Anything else in a template is a component,
+/// which is to say somebody's file.
+///
+/// Held here, beside [`VOID_TAGS`], because both answer the same kind of
+/// question about a name and both have to agree with `rux vocab`: the editor's
+/// completion list and the runtime's unknown-tag error are two readings of one
+/// list, and a second copy is how `<image>` came to be missing from one of them.
+/// `rux-cli` has a test that the vocabulary it prints matches this exactly.
+///
+/// `router-view` is here and is not in the vocabulary's element list, because it
+/// is documented with the router rather than on its own. It is still a tag Rux
+/// defines, which is what this list is for.
+const ELEMENT_TAGS: &[&str] = &[
+    "screen", "view", "text", "image", "path", "button", "input", //
+    "slot", "router", "route", "router-view",
+];
+
+/// Whether `tag` is one of Rux's own elements rather than a component.
+pub fn is_element(tag: &str) -> bool {
+    ELEMENT_TAGS.contains(&tag)
+}
+
+/// The tags in [`is_element`], for anything that has to agree about what Rux
+/// defines: `rux vocab`, and the runtime's "no such tag" error.
+pub fn element_tags() -> &'static [&'static str] {
+    ELEMENT_TAGS
+}
+
+/// Whether `tag` is one that never takes children or a closing tag.
+pub fn is_void(tag: &str) -> bool {
+    VOID_TAGS.contains(&tag)
+}
+
+/// The tags in [`is_void`], for anything that has to agree with the parser
+/// about what never nests: the formatter's indenter, and through `rux vocab`
+/// the editor's tag auto-closing.
+pub fn void_tags() -> &'static [&'static str] {
+    VOID_TAGS
+}
+
 /// Decode the HTML entities an author might write: the named ones (`&amp;`,
 /// `&lt;`, `&gt;`, `&quot;`, `&apos;`, `&nbsp;`) and numeric (`&#38;`, `&#x26;`).
 /// An unrecognised `&…;` is left as written.
@@ -72,6 +136,17 @@ fn entity_char(entity: &str) -> Option<char> {
 /// stages; `template` is the parsed root element.
 #[derive(Debug, Clone)]
 pub struct Sfc {
+    /// The file this was parsed from, once somebody who has a filesystem says
+    /// so. Parsing does no IO and is handed a string, so the parser always
+    /// leaves this `None`; `rux-runtime` fills it in, the same arrangement
+    /// [`Sfc::style_includes`] already uses.
+    ///
+    /// It exists so a warning raised while building an imported component can
+    /// name the component's file rather than the document's. Errors have said
+    /// so since components landed (`LoadError::file`); warnings did not, and a
+    /// warning that names the wrong file is worse than one that names none,
+    /// because it comes with a line number the reader will trust.
+    pub file: Option<std::path::PathBuf>,
     pub template: Element,
     pub style: String,
     pub script: String,
@@ -120,24 +195,66 @@ pub struct StyleInclude {
 #[derive(Debug, Clone)]
 pub struct Element {
     pub tag: String,
-    pub attrs: Vec<(String, String)>,
+    pub attrs: Vec<Attr>,
     pub children: Vec<Node>,
+    /// The 1-based **file** line this element's `<` sits on.
+    ///
+    /// File-relative, not section-relative, so it lines up with the editor
+    /// gutter without every reader having to know where `<template>` started.
+    /// [`parse_sfc`] shifts the whole tree once, after parsing, the same way it
+    /// already shifts a [`ParseError`].
+    pub line: usize,
+}
+
+/// One attribute, with the line it was written on.
+///
+/// The line is carried per attribute rather than per element because elements
+/// here are routinely written across several lines:
+///
+/// ```text
+/// <view class="tile"
+///       r-for="d in devices" @tap="select(d)">
+/// ```
+///
+/// A warning about that `@tap` belongs on the second line, and an element-level
+/// line would put it on the first. That is a smaller lie than the one this
+/// replaces, but it is still a lie, and the cost of not telling it is one
+/// `usize`.
+#[derive(Debug, Clone)]
+pub struct Attr {
+    pub name: String,
+    pub value: String,
+    /// The 1-based **file** line, as [`Element::line`].
+    pub line: usize,
+    /// Whether an `=` was written at all.
+    ///
+    /// `r-else` and `r-else=""` both leave [`Attr::value`] empty, so without
+    /// this the two are indistinguishable and a value given to an attribute
+    /// that takes none cannot be reported. The directives this matters for
+    /// (`r-else`, and `fallback` on a `<route>`) are exactly the ones an editor
+    /// is most likely to complete *with* an `=""` it should not.
+    pub has_value: bool,
 }
 
 /// A node in the template tree.
 #[derive(Debug, Clone)]
 pub enum Node {
     Element(Element),
-    Text(String),
+    /// Text, and the 1-based **file** line it starts on. A `{{ }}` that fails
+    /// is reported against this, which is why the text keeps its position even
+    /// though nothing else about a text node needs one.
+    Text(String, usize),
 }
 
 impl Element {
     /// Value of an attribute by exact name, if present.
     pub fn attr(&self, name: &str) -> Option<&str> {
-        self.attrs
-            .iter()
-            .find(|(k, _)| k == name)
-            .map(|(_, v)| v.as_str())
+        self.attrs.iter().find(|a| a.name == name).map(|a| a.value.as_str())
+    }
+
+    /// The line an attribute was written on, for a warning that is about it.
+    pub fn attr_line(&self, name: &str) -> Option<usize> {
+        self.attrs.iter().find(|a| a.name == name).map(|a| a.line)
     }
 
     /// Whitespace-separated `class` tokens.
@@ -197,8 +314,19 @@ impl std::error::Error for ParseError {}
 
 /// Parse a full `.rux` source into an [`Sfc`].
 pub fn parse_sfc(src: &str) -> Result<Sfc, ParseError> {
-    let (template_src, template_start) =
-        section(src, "template").ok_or_else(|| ParseError::new("missing <template> section"))?;
+    let (template_src, template_start, _) =
+        find_section(src, "template").map_err(|why| section_error(src, "template", why))?;
+    // A `<style>` or `<script>` that is absent is fine and common. One that is
+    // *present and broken* is not: before this, an unclosed `<style>` dropped
+    // every rule in the file with nothing said, which looks exactly like CSS
+    // that does not work.
+    for name in ["style", "script"] {
+        if let Err(why) = find_section(src, name) {
+            if why != SectionProblem::Absent {
+                return Err(section_error(src, name, why));
+            }
+        }
+    }
     let (style, style_line) = trimmed_section(src, "style");
     let (script, script_line) = trimmed_section(src, "script");
     let style_open = section_with_open(src, "style").map(|(_, _, open)| open);
@@ -219,15 +347,51 @@ pub fn parse_sfc(src: &str) -> Result<Sfc, ParseError> {
 
     let mut parser = Parser::new(&template_src);
     let nodes = parser.parse_nodes(None).map_err(|e| e.offset_lines(lines_before))?;
-    let template = nodes
+    // Every element at the top of the template, not just the first.
+    //
+    // Taking the first and dropping the rest is what this did, in silence. A
+    // component written with four siblings rendered only the opening one, and
+    // when that one carried an `r-if` that happened to be false, the component
+    // rendered *nothing at all*: a blank screen, no warning, and `rux check`
+    // clean. That is the silent-drop shape this project keeps hunting, and it
+    // cost somebody an afternoon of looking at an empty window.
+    //
+    // The one-root rule itself is real and stays. It was only ever written down
+    // in `docs/02-spec.md`, which is design history and checked against nothing,
+    // so an author reading the actual reference had no way to learn it.
+    let mut roots: Vec<Element> = nodes
         .into_iter()
-        .find_map(|n| match n {
+        .filter_map(|n| match n {
             Node::Element(e) => Some(e),
-            Node::Text(_) => None,
+            Node::Text(..) => None,
         })
+        .collect();
+    if roots.len() > 1 {
+        let extra = &roots[1];
+        return Err(ParseError::at(
+            format!(
+                "<template> has {} root elements, and it takes exactly one. \
+                 `<{}>` and everything after it would be dropped without a word. \
+                 Wrap them in a single `<view>`.",
+                roots.len(),
+                extra.tag
+            ),
+            extra.line,
+            1,
+        )
+        .offset_lines(lines_before));
+    }
+    let mut template = roots
+        .pop()
         .ok_or_else(|| ParseError::new("<template> has no root element"))?;
+    // The parser counts from the start of the section it was handed, so every
+    // line in the tree is short by however many lines came before `<template>`.
+    // Shifted once here rather than threaded through the parser, which is the
+    // same trade `offset_lines` already makes for a ParseError.
+    offset_element_lines(&mut template, lines_before);
 
     Ok(Sfc {
+        file: None,
         template,
         style,
         style_line,
@@ -237,6 +401,24 @@ pub fn parse_sfc(src: &str) -> Result<Sfc, ParseError> {
         style_scoped,
         style_includes: Vec::new(),
     })
+}
+
+/// Move every line in a parsed subtree onto the file's numbering.
+///
+/// See the call site: the parser is handed the `<template>` body alone and so
+/// counts from 1 at its first line, while everything downstream (the overlay,
+/// `rux check --format json`, the editor gutter) means file lines.
+fn offset_element_lines(el: &mut Element, by: usize) {
+    el.line += by;
+    for attr in &mut el.attrs {
+        attr.line += by;
+    }
+    for child in &mut el.children {
+        match child {
+            Node::Element(child) => offset_element_lines(child, by),
+            Node::Text(_, line) => *line += by,
+        }
+    }
 }
 
 /// A section's contents with the surrounding blank space removed, and the
@@ -268,17 +450,86 @@ fn section(src: &str, name: &str) -> Option<(String, usize)> {
 /// runs inside: `<script>` holds rhai and `<style>` holds CSS, and neither is
 /// the XML-shaped grammar.
 fn section_with_open(src: &str, name: &str) -> Option<(String, usize, String)> {
+    find_section(src, name).ok()
+}
+
+/// Why a section could not be read, for the three cases that are not the same
+/// problem.
+///
+/// They produced one message for a long time, and it was the wrong one twice
+/// out of three: a file whose `<template>` was simply never closed reported as
+/// having **no** `<template>` at all. That is the worst shape a parse error
+/// takes, because the author is looking at the tag it says is missing. It shows
+/// up constantly while editing, since a half-typed section is unclosed by
+/// definition.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SectionProblem {
+    /// No `<name` anywhere.
+    Absent,
+    /// `<name` is there and its opening tag never ends: no `>` after it.
+    UnterminatedOpenTag { at: usize },
+    /// The section opens and never closes.
+    Unclosed { at: usize },
+}
+
+/// Find one section, or say precisely what is wrong with it.
+fn find_section(src: &str, name: &str) -> Result<(String, usize, String), SectionProblem> {
     let open = format!("<{name}");
-    let start = src.find(&open)?;
-    let open_end = start + src[start..].find('>')?;
+    let start = src.find(&open).ok_or(SectionProblem::Absent)?;
+    let open_end = start
+        + src[start..]
+            .find('>')
+            .ok_or(SectionProblem::UnterminatedOpenTag { at: start })?;
     let after_open = open_end + 1;
     let close = format!("</{name}>");
-    let end = src[after_open..].find(&close)? + after_open;
-    Some((
+    let end = src[after_open..]
+        .find(&close)
+        .ok_or(SectionProblem::Unclosed { at: start })?
+        + after_open;
+    Ok((
         src[after_open..end].to_string(),
         after_open,
         src[start..open_end].to_string(),
     ))
+}
+
+/// Turn a [`SectionProblem`] into the error an author reads.
+///
+/// `required` separates `<template>`, whose absence is a real error, from
+/// `<style>` and `<script>`, which are optional and whose absence is not. A
+/// section that is *present and broken* is an error either way: silently
+/// dropping every rule in an unclosed `<style>` is the same failure wearing a
+/// quieter coat.
+fn section_error(src: &str, name: &str, problem: SectionProblem) -> ParseError {
+    let at = |offset: usize| {
+        let line = src[..offset].matches('\n').count() + 1;
+        let col = offset - src[..offset].rfind('\n').map_or(0, |i| i + 1) + 1;
+        (line, col)
+    };
+    match problem {
+        SectionProblem::Absent => ParseError::new(format!(
+            "missing <{name}> section: every .rux file needs one, holding a single root element"
+        )),
+        SectionProblem::UnterminatedOpenTag { at: offset } => {
+            let (line, col) = at(offset);
+            ParseError::at(
+                format!("the opening <{name}> tag is never finished: no `>` after it"),
+                line,
+                col,
+            )
+        }
+        SectionProblem::Unclosed { at: offset } => {
+            let (line, col) = at(offset);
+            ParseError::at(
+                format!(
+                    "<{name}> is opened here and never closed: add `</{name}>`. \
+                     The section is not missing, it has no end"
+                ),
+                line,
+                col,
+            )
+        }
+    }
 }
 
 /// Read one attribute's value out of a raw opening tag, `<style src="a.css"`.
@@ -424,9 +675,15 @@ impl Parser {
                 continue;
             }
             // Text run up to the next '<'.
+            let at = self.line_col(self.pos).0;
             let text = self.read_text();
             if !text.trim().is_empty() {
-                nodes.push(Node::Text(text.trim().to_string()));
+                // The line of the run's first character, not of its first
+                // non-space one. A `{{ }}` sitting on its own line after the
+                // tag is the common shape, and the leading newline is part of
+                // the run, so the trim is counted back out.
+                let skipped = text.chars().take_while(|c| c.is_whitespace()).filter(|c| *c == '\n').count();
+                nodes.push(Node::Text(text.trim().to_string(), at + skipped));
             }
         }
         let _ = parent;
@@ -483,6 +740,9 @@ impl Parser {
     }
 
     fn parse_element(&mut self) -> Result<Element, ParseError> {
+        // Taken before the `<` is consumed, so the line is the one an author
+        // sees the tag begin on.
+        let line = self.line_col(self.pos).0;
         self.bump(); // consume '<'
         let tag = self.read_name();
         if tag.is_empty() {
@@ -496,21 +756,29 @@ impl Parser {
                 None => return Err(self.err(format!("unclosed tag <{tag}>"))),
                 Some('>') => {
                     self.bump();
+                    // A void tag closes itself. `<input type="text">` is HTML's
+                    // shape and the shape every author reaches for, and Rux has
+                    // no `</input>` for it to be missing.
+                    if is_void(&tag) {
+                        return Ok(Element { tag, attrs, children: Vec::new(), line });
+                    }
                     let children = self.parse_nodes(Some(&tag))?;
                     self.expect_closing(&tag)?;
-                    return Ok(Element { tag, attrs, children });
+                    return Ok(Element { tag, attrs, children, line });
                 }
                 Some('/') if self.starts_with("/>") => {
                     self.pos += 2;
-                    return Ok(Element { tag, attrs, children: Vec::new() });
+                    return Ok(Element { tag, attrs, children: Vec::new(), line });
                 }
                 _ => {
+                    let attr_line = self.line_col(self.pos).0;
                     let name = self.read_attr_name();
                     if name.is_empty() {
                         return Err(self.err(format!("malformed attribute in <{tag}>")));
                     }
                     self.skip_ws();
-                    let value = if self.peek() == Some('=') {
+                    let has_value = self.peek() == Some('=');
+                    let value = if has_value {
                         self.bump();
                         self.skip_ws();
                         // Decoded here: an attribute is quoted with the same `"`
@@ -520,7 +788,7 @@ impl Parser {
                     } else {
                         String::new() // valueless attribute, e.g. `disabled`
                     };
-                    attrs.push((name, value));
+                    attrs.push(Attr { name, value, line: attr_line, has_value });
                 }
             }
         }
@@ -564,6 +832,15 @@ impl Parser {
         self.pos += 2;
         let close = self.read_name();
         if close != tag {
+            // A closing tag for something that never takes one. Saying
+            // "expected </view>, found </input>" here would point at the
+            // enclosing element and describe the wrong mistake: the `</input>`
+            // is not a tag in the wrong place, it is a tag that does not exist.
+            if is_void(&close) {
+                return Err(self.err(format!(
+                    "<{close}> holds nothing, so it has no closing tag; delete </{close}>"
+                )));
+            }
             return Err(self.err(format!(
                 "mismatched closing tag: expected </{tag}>, found </{close}>"
             )));
@@ -580,6 +857,49 @@ impl Parser {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `<input type="text">` is how anyone writes a text field, and Rux has no
+    /// `</input>` for it to be missing. Until void tags reached the parser this
+    /// was a parse error that named the *enclosing* element's closing tag, so a
+    /// correct document was reported as a mismatch.
+    #[test]
+    fn a_void_tag_closes_itself() {
+        let src = "<template>
+  <view>
+    <input type=\"text\">
+  </view>
+</template>";
+        let sfc = parse_sfc(src).expect("parses without a closing </input>");
+        let view = &sfc.template;
+        assert_eq!(view.tag, "view");
+        let Node::Element(input) = &view.children[0] else { panic!("an element") };
+        assert_eq!(input.tag, "input");
+        assert_eq!(input.attr("type"), Some("text"));
+        assert!(input.children.is_empty(), "a void tag holds nothing");
+    }
+
+    /// The slash stays legal: every file in `examples/` is written that way.
+    #[test]
+    fn a_void_tag_may_still_be_written_self_closing() {
+        let src = "<template><view><image src=\"a.png\" /></view></template>";
+        let sfc = parse_sfc(src).expect("parses");
+        let Node::Element(image) = &sfc.template.children[0] else { panic!("an element") };
+        assert_eq!(image.tag, "image");
+    }
+
+    /// And a closing tag for one is named as the mistake it is, rather than
+    /// reported against whatever element happened to enclose it.
+    #[test]
+    fn a_closing_void_tag_says_what_is_wrong_with_it() {
+        let src = "<template><view><input></input></view></template>";
+        let err = parse_sfc(src).expect_err("rejected");
+        assert!(
+            err.message.contains("no closing tag") && err.message.contains("</input>"),
+            "names the tag that does not exist: {}",
+            err.message
+        );
+    }
+
 
     /// The line a section's content starts on, which is what lets a later stage
     /// report a CSS warning against the file's own gutter rather than against an
@@ -685,4 +1005,81 @@ mod tests {
         assert_eq!(input.tag, "input");
         assert_eq!(input.attr("type"), Some("text"));
     }
+
+    /// The three ways a section can fail are three different problems, and one
+    /// of them used to report as another. A `<template>` that is opened and
+    /// never closed said "missing <template> section", which is the worst shape
+    /// an error takes: the author is looking straight at the tag it says is
+    /// absent, and a half-typed section is unclosed by definition, so it showed
+    /// up constantly while editing.
+    #[test]
+    fn a_broken_section_says_which_way_it_is_broken() {
+        let unclosed = parse_sfc("<template>\n  <screen></screen>\n").unwrap_err();
+        assert!(
+            unclosed.message.contains("never closed"),
+            "not `missing`: {}",
+            unclosed.message
+        );
+        assert_eq!(unclosed.line, Some(1), "and it points at the opening tag");
+
+        let absent = parse_sfc("<style>\n.a { color: red; }\n</style>\n").unwrap_err();
+        assert!(absent.message.contains("missing <template>"), "{}", absent.message);
+
+        let unterminated = parse_sfc("<template").unwrap_err();
+        assert!(
+            unterminated.message.contains("never finished"),
+            "{}",
+            unterminated.message
+        );
+    }
+
+    /// An unclosed `<style>` used to drop every rule in the file in silence,
+    /// which looks exactly like CSS that does not work. A section that is
+    /// *present and broken* is an error even when the section is optional.
+    #[test]
+    fn an_unclosed_optional_section_is_still_an_error() {
+        let err = parse_sfc("<template>\n  <screen></screen>\n</template>\n<style>\n.a{color:red}\n")
+            .unwrap_err();
+        assert!(err.message.contains("<style> is opened here and never closed"), "{}", err.message);
+        assert_eq!(err.line, Some(4));
+
+        // And a file with no `<style>` at all is still perfectly fine.
+        assert!(parse_sfc("<template>\n  <screen></screen>\n</template>\n").is_ok());
+    }
+    /// A template with more than one root element says so, and says where.
+    ///
+    /// It used to take the first element and drop the rest without a word. A
+    /// component written as four siblings rendered only the first, and when
+    /// that one carried an `r-if` that was false it rendered nothing at all:
+    /// a blank window, no warning, and a clean `rux check`. Reported as "rux run
+    /// doesn't give me the expected UI", which is exactly what a silent drop
+    /// looks like from the outside.
+    #[test]
+    fn a_template_with_two_roots_says_so_instead_of_dropping_one() {
+        let src = "<template>\n  <view><text>one</text></view>\n  <view><text>two</text></view>\n</template>";
+        let err = parse_sfc(src).expect_err("two roots is not a document");
+        assert!(err.message.contains("root elements"), "names the problem: {}", err.message);
+        assert!(err.message.contains("dropped"), "and what it used to cost: {}", err.message);
+        assert_eq!(err.line, Some(3), "points at the second root, not the first");
+    }
+
+    /// The count and the offending tag are both in the message, because "more
+    /// than one" leaves the author counting and the tag is what they search for.
+    #[test]
+    fn the_multi_root_message_names_the_count_and_the_tag() {
+        let src = "<template>\n  <view />\n  <text>x</text>\n  <input />\n</template>";
+        let err = parse_sfc(src).expect_err("three roots");
+        assert!(err.message.contains('3'), "the count: {}", err.message);
+        assert!(err.message.contains("`<text>`"), "the tag that starts the dropped run: {}", err.message);
+    }
+
+    /// One root is still one root, including with comments and stray text
+    /// around it, which are not elements and must not be counted.
+    #[test]
+    fn a_single_root_with_comments_around_it_is_still_one_root() {
+        let src = "<template>\n  <!-- a note -->\n  <view><text>one</text></view>\n</template>";
+        let sfc = parse_sfc(src).expect("one root");
+        assert_eq!(sfc.template.tag, "view");
+    }
+
 }

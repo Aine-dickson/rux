@@ -71,8 +71,36 @@ fn located<T>(line: Option<usize>, f: impl FnOnce() -> T) -> T {
     out
 }
 
+thread_local! {
+    /// The file the thing being built came from, when it is not the document.
+    ///
+    /// Set while an imported component's subtree is built, so a warning raised
+    /// in there names the component's file. Coarser than [`AT_LINE`] on purpose:
+    /// a line changes per attribute, a file changes only at a component
+    /// boundary, so they are two scopes rather than one pair.
+    static IN_FILE: std::cell::RefCell<Option<std::path::PathBuf>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Run `f` with any warning it raises attributed to `file`.
+///
+/// Restores what was set before rather than clearing, so a component that uses
+/// another component unwinds to the outer one rather than to the document.
+///
+/// Sets the script tier's scope as well as this one. Building a component
+/// raises warnings from both sinks (a rule that does nothing, an expression
+/// that failed) and they are equally the component's, so a reader would have no
+/// way to know that only half of them named the right file.
+pub fn in_file<T>(file: Option<std::path::PathBuf>, f: impl FnOnce() -> T) -> T {
+    let previous = IN_FILE.with(|c| c.replace(file.clone()));
+    let out = rux_script::in_file(file, f);
+    IN_FILE.with(|c| c.replace(previous));
+    out
+}
+
 fn warn(message: String) {
-    let warning = Warning::maybe_at(message, AT_LINE.with(|l| l.get()));
+    let file = IN_FILE.with(|c| c.borrow().clone());
+    let warning = Warning::maybe_at(message, AT_LINE.with(|l| l.get())).in_file(file);
     WARNINGS.with(|w| {
         let mut w = w.borrow_mut();
         // Deduped by message *and* line: the same unhonored property on two
@@ -80,6 +108,21 @@ fn warn(message: String) {
         // squiggle on each. Twice on one line is still once.
         if !w.contains(&warning) {
             w.push(warning);
+        }
+    });
+}
+
+/// Raise something definitely wrong rather than merely dead, into the same sink.
+///
+/// `rux check` exits non-zero for these, and the dev overlay reds them. The
+/// line is the same [`AT_LINE`] a warning uses, so `located` covers both.
+fn error(message: String) {
+    let file = IN_FILE.with(|c| c.borrow().clone());
+    let raised = Warning::maybe_at(message, AT_LINE.with(|l| l.get())).in_file(file).as_error();
+    WARNINGS.with(|w| {
+        let mut w = w.borrow_mut();
+        if !w.contains(&raised) {
+            w.push(raised);
         }
     });
 }
@@ -161,6 +204,11 @@ pub struct ValueBinding {
     /// the row's own scope: the expression is recorded as written, so a model
     /// like `items[item.at].note` means nothing without `item` in scope.
     pub row: Option<String>,
+    /// The component instance this input was written in, the third part of its
+    /// identity. Two instances of one component record the same model and the
+    /// same row, so without this the first one's captured scope answered for
+    /// every one of them.
+    pub instance: Option<String>,
     /// Shown (dim) when the value is empty.
     pub placeholder: String,
     /// Text colour when the field has a value.
@@ -304,6 +352,11 @@ fn bind_locals(src: &str, locals: &Locals) -> String {
 /// A compiled component: its template root, its own CSS rules, and the
 /// top-level script that gives each instance its private state.
 struct Component {
+    /// The file it was read from, so a warning raised while expanding it names
+    /// that file instead of whoever imported it. `None` for a component that
+    /// came from somewhere with no filesystem, the browser build being the one
+    /// that does.
+    file: Option<std::path::PathBuf>,
     template: Element,
     /// Its own rules, with the document's merged in ahead of them unless
     /// either side said `<style scoped>`. Merged once at load; see
@@ -838,6 +891,14 @@ struct Outlet<'a> {
     /// view never places a `<router-view />` would otherwise lose the child in
     /// silence, which is the failure this project keeps closing off.
     used: &'a std::cell::Cell<bool>,
+    /// The namespace key of the file that wrote the `<router>`.
+    ///
+    /// A route's `view` is a name in **that** file, and a `<router-view />` is
+    /// usually several components deep by the time it renders the next link. So
+    /// the namespace travels with the chain rather than being whatever file the
+    /// outlet happens to sit in, which is how a nested route came to report its
+    /// own view as "not imported" the moment tags became per-file.
+    router_ns: &'a str,
 }
 
 /// An element's element children, skipping text nodes. Text between tags is
@@ -847,13 +908,89 @@ fn element_children(el: &Element) -> Vec<&Element> {
         .iter()
         .filter_map(|n| match n {
             TplNode::Element(child) => Some(child),
-            TplNode::Text(_) => None,
+            TplNode::Text(..) => None,
         })
         .collect()
 }
 
-/// Registered components, keyed by custom-element tag.
+/// Registered components, keyed by whatever the loader made unique per file.
 type Components = HashMap<String, Component>;
+
+/// What one file's markup may name: tag, to the key of the component it means.
+///
+/// Per file rather than per document, because a tag is a **local** name. Two
+/// files may each `use` a different `task.rux` and each write `<task>`, and
+/// before this they shared one flat map, so the second import silently replaced
+/// the first and one of the two files rendered the other's component.
+pub type Namespace = HashMap<String, String>;
+
+/// The namespace of the document itself, which is not a component and so has no
+/// key of its own.
+pub const DOCUMENT_NAMESPACE: &str = "";
+
+thread_local! {
+    /// Every file's namespace, refreshed at the top of each build.
+    static NAMESPACES: std::cell::RefCell<HashMap<String, Namespace>> =
+        std::cell::RefCell::new(HashMap::new());
+
+    /// Whose markup is being built right now: a component's key, or
+    /// [`DOCUMENT_NAMESPACE`].
+    ///
+    /// A thread-local for the same reason `IN_FILE` is one, and with exactly the
+    /// same scope: it changes only at a component boundary, which is one place
+    /// (`expand_component`), while the alternative is a parameter threaded
+    /// through every function in the tree walk that has no other reason to know
+    /// what a file is.
+    static CURRENT_FILE: std::cell::RefCell<String> =
+        const { std::cell::RefCell::new(String::new()) };
+}
+
+/// Build `f` as though its markup were written in the file keyed `key`.
+///
+/// Restores whatever was current before rather than clearing, so nesting
+/// unwinds: a component that uses a component returns to its own namespace and
+/// not to the document's.
+fn in_namespace<T>(key: &str, f: impl FnOnce() -> T) -> T {
+    let previous = CURRENT_FILE.with(|c| c.replace(key.to_string()));
+    let out = f();
+    CURRENT_FILE.with(|c| *c.borrow_mut() = previous);
+    out
+}
+
+/// Look a component up by either spelling, and say which one it really is.
+///
+/// One component has two names and the author did not choose either of them.
+/// `use pages::new_task;` **has** to be snake: it is a Rust-shaped path naming
+/// `pages/new_task.rux`, and `new-task` there is a subtraction. The tag it
+/// contributes **has** to be kebab: that is what a custom element looks like
+/// everywhere else on the web. So the underscore and the hyphen are both
+/// forced, at opposite ends of the same file, and the author is left holding
+/// the difference — which showed up as `view="new_task"` being told to go and
+/// write the other spelling of a name it had already given correctly.
+///
+/// So the template accepts either, and the script stays strict. Nothing is
+/// ambiguous: `extract_imports` maps `_` to `-`, so no import can ever produce
+/// a tag with an underscore in it, and the two spellings can never name two
+/// different components.
+///
+/// The returned name is the **canonical** one, the key the component is
+/// registered under. Everything an instance owns is filed by that name — its
+/// `mounted` body, its `computed`s, its `effect`s — so handing back what the
+/// author typed would give one component two identities and split its state
+/// down the middle of a file.
+/// Looked up in the namespace of the file being built, not in one flat map, so
+/// the same tag may mean different components in two files.
+fn find_component<'a>(comps: &'a Components, name: &str) -> Option<(&'a str, &'a Component)> {
+    let kebab = name.replace('_', "-");
+    let key = NAMESPACES.with(|all| {
+        let all = all.borrow();
+        CURRENT_FILE.with(|here| {
+            let namespace = all.get(&*here.borrow())?;
+            namespace.get(name).or_else(|| namespace.get(&kebab)).cloned()
+        })
+    })?;
+    comps.get_key_value(&key).map(|(key, component)| (key.as_str(), component))
+}
 
 /// Default inherited text colour (`#cdd6f4`) and font size, used at the root
 /// before any `color` / `font-size` rule applies. Text properties inherit.
@@ -1036,11 +1173,12 @@ impl Toggle {
 pub fn build_styled_tree(
     sfc: &Sfc,
     components: &HashMap<String, Sfc>,
+    namespaces: &HashMap<String, Namespace>,
     engine: &mut Engine,
 ) -> Result<LayoutNode, String> {
     let mut instances = Instances::new();
     let mut swaps = Swaps::new();
-    build_styled_tree_tracked(sfc, components, engine, &mut instances, &mut swaps)
+    build_styled_tree_tracked(sfc, components, namespaces, engine, &mut instances, &mut swaps)
         .map(|(node, _)| node)
 }
 
@@ -1247,6 +1385,7 @@ pub fn eval_value_binding(binding: &ValueBinding, engine: &mut Engine) -> (Strin
 pub fn build_styled_tree_tracked(
     sfc: &Sfc,
     components: &HashMap<String, Sfc>,
+    namespaces: &HashMap<String, Namespace>,
     engine: &mut Engine,
     instances: &mut Instances,
     swaps: &mut Swaps,
@@ -1254,6 +1393,7 @@ pub fn build_styled_tree_tracked(
     build_styled_tree_stateful(
         sfc,
         components,
+        namespaces,
         engine,
         instances,
         swaps,
@@ -1269,6 +1409,9 @@ pub fn build_styled_tree_tracked(
 pub fn build_styled_tree_stateful(
     sfc: &Sfc,
     components: &HashMap<String, Sfc>,
+    // Which tags each file may write. See [`Namespace`]: a tag is a local name,
+    // and two files may use the same one for different components.
+    namespaces: &HashMap<String, Namespace>,
     engine: &mut Engine,
     instances: &mut Instances,
     swaps: &mut Swaps,
@@ -1282,6 +1425,17 @@ pub fn build_styled_tree_stateful(
     // would point confidently at the wrong place. Unplaced is the honest answer
     // until warnings carry a file as well as a line.
     let rules = parse_document_rules(sfc, viewport);
+
+    // What a `to=` is checked against. Refreshed per build rather than per load
+    // because hot reload rewrites the routes as readily as anything else, and a
+    // stale table would report a link to a route that now exists.
+    ROUTER.with(|r| *r.borrow_mut() = find_router(&sfc.template).cloned());
+
+    // Whose tags are whose, for the length of this build. The walk starts in the
+    // document's own namespace and `expand_component` switches into each
+    // component's as it enters one.
+    NAMESPACES.with(|n| *n.borrow_mut() = namespaces.clone());
+    CURRENT_FILE.with(|c| *c.borrow_mut() = DOCUMENT_NAMESPACE.to_string());
 
     // The document's stylesheet reaches the components it uses. Before this, a
     // component saw only its own `<style>`, so a shared look had to be
@@ -1312,6 +1466,7 @@ pub fn build_styled_tree_stateful(
             (
                 tag.clone(),
                 Component {
+                    file: c.file.clone(),
                     template: c.template.clone(),
                     rules: merged,
                     script: component_statements(&c.script),
@@ -1420,12 +1575,29 @@ fn interpolate_tracked(
 }
 
 /// The raw concatenated text of an element's direct text children, `{{ }}` spans
+/// The line a `{{ }}` failure inside this element should be reported on.
+///
+/// The first text child that interpolates, since that is what can fail. An
+/// element with several text runs reports them all against the first one that
+/// could go wrong, which is a small imprecision compared with reporting them
+/// against the top of the file. With no interpolation anywhere, the element's
+/// own line, which is what the caller would have used anyway.
+fn text_line(el: &Element) -> usize {
+    el.children
+        .iter()
+        .find_map(|c| match c {
+            TplNode::Text(t, line) if t.contains("{{") => Some(*line),
+            _ => None,
+        })
+        .unwrap_or(el.line)
+}
+
 /// left intact, the template a [`TextBinding`] re-interpolates on change.
 fn text_template(el: &Element) -> String {
     el.children
         .iter()
         .filter_map(|c| match c {
-            TplNode::Text(t) => Some(t.trim()),
+            TplNode::Text(t, _) => Some(t.trim()),
             _ => None,
         })
         .filter(|t| !t.is_empty())
@@ -1515,6 +1687,10 @@ pub struct InteractionState {
     /// Without it `:focus` matches every row of a list at once, since they all
     /// carry the same `r-model` text.
     pub focused_row: Option<String>,
+    /// The component instance that input is in, when it is inside one. Without
+    /// it `:focus` lights the same input in *every* instance of a component,
+    /// since they all carry the same `r-model` text as well.
+    pub focused_instance: Option<String>,
 }
 
 impl InteractionState {
@@ -1666,7 +1842,12 @@ impl ElementIndex {
     /// along in [`AncNode::prev`] so a sibling combinator above a descendant hop
     /// still resolves.
     fn context_of(&self, entry: &ElementEntry) -> (Vec<AncNode>, Vec<ElemDesc>) {
-        let ancestors = (1..entry.path.len())
+        // From 0, so the root is an ancestor like any other. The root's own
+        // path is empty, and starting at 1 skipped exactly it: `.app .row`
+        // matched nothing from a handler while the stylesheet painted it, so
+        // the two disagreed about the same document. A node at the root gets
+        // `0..0` and still has no ancestors, which is correct.
+        let ancestors = (0..entry.path.len())
             .map(|depth| {
                 let at = &entry.path[..depth];
                 AncNode {
@@ -2329,6 +2510,34 @@ const LENGTH_ONLY_PROPERTIES: &[&str] = &[
     "letter-spacing", "word-spacing", "font-size",
 ];
 
+/// Of those, the ones resolved to **plain pixels at cascade time**, where there
+/// is no box to take a percentage of.
+///
+/// `width` and the insets become a [`Len`], which carries `Pct` and is resolved
+/// during layout against a box that exists by then. These do not: they are
+/// `f32` in [`Style`] by the time layout runs, so a percentage has nothing to
+/// resolve against and `parse_px` returns `None` for it.
+///
+/// Before this list the two halves disagreed. The interpreter read these with
+/// `parse_px`, which drops a percentage, while [`warn_unparseable_lengths`]
+/// validated with `parse_len`, which accepts one. So `padding: 10%`,
+/// `margin: 10%`, `gap: 5%` and `border-radius: 50%` were each dropped on the
+/// floor and then pronounced fine, which is the exact failure shape the length
+/// warning was added to remove. Found from a report that `border-radius` would
+/// not take a percentage; it was four properties, not one.
+///
+/// Supporting percentages here means carrying a `Len` through to paint for the
+/// radius and to layout for the rest. That is a feature, and it is scheduled.
+/// Saying so is the patch.
+const PX_ONLY_PROPERTIES: &[&str] = &[
+    "padding", "padding-top", "padding-right", "padding-bottom", "padding-left",
+    "margin", "margin-top", "margin-right", "margin-bottom", "margin-left",
+    "gap", "row-gap", "column-gap",
+    "border-width", "border-top-width", "border-right-width",
+    "border-bottom-width", "border-left-width",
+    "letter-spacing", "word-spacing", "font-size",
+];
+
 /// Warn, once per property and value, that a length was written and not
 /// understood.
 ///
@@ -2349,7 +2558,33 @@ fn warn_unparseable_lengths(props: &HashMap<String, String>) {
             if token.chars().all(|c| c.is_ascii_alphabetic() || c == '-') {
                 continue;
             }
-            if parse_len(token).is_some() {
+            let px_only = PX_ONLY_PROPERTIES.contains(&property.as_str());
+            // Checked with the same parser the property is actually read by, or
+            // the check blesses values the interpreter then throws away.
+            if (px_only && parse_px(token).is_some()) || (!px_only && parse_len(token).is_some()) {
+                continue;
+            }
+            if px_only && token.ends_with('%') {
+                // A radius has a workaround that gives exactly what the
+                // percentage was reaching for, so the message names it. A
+                // radius larger than the box is clamped to half the shorter
+                // side, which is what `50%` means on a square, and the author
+                // wanting a pill or a circle is who writes `%` here.
+                //
+                // There is no equivalent for `padding`, `margin` or `gap`, so
+                // they get the plain sentence rather than an invented one.
+                let workaround = if property.ends_with("radius") {
+                    " A radius bigger than the box is clamped to it, so \
+                     `9999px` is how to say \"as round as it goes\"."
+                } else {
+                    ""
+                };
+                warn_once(format!(
+                    "`{property}: {token}` is ignored: Rux does not honor a percentage \
+                     on `{property}` yet, because it is resolved to plain pixels before \
+                     there is a box to take a percentage of. It takes px, rem or em.\
+                     {workaround}"
+                ));
                 continue;
             }
             warn_once(format!(
@@ -2411,12 +2646,119 @@ pub fn animatable_properties() -> Vec<&'static str> {
     std::iter::once(AnimProp::All.name()).chain(AnimProp::EVERY.iter().map(|p| p.name())).collect()
 }
 
-/// Warn, once per property name, for the life of the process, that a parsed
-/// declaration is not honored. Deduped so a whole-tree rebuild (which reparses
-/// every sheet) doesn't repeat the same line on every keystroke.
 /// The inset longhands, in `Style::inset` order (top, right, bottom, left).
 const INSETS: [&str; 4] = ["top", "right", "bottom", "left"];
 
+/// Real CSS properties Rux parses and does not honor.
+///
+/// This exists to tell two failures apart. `outline` is CSS an author has every
+/// reason to expect, and the honest answer is that Rux has not built it yet;
+/// `paddding` is a typo, and the honest answer is that no such property exists.
+/// Before this list both produced the identical "parsed but not yet honored"
+/// line, so a typo was indistinguishable from a pending feature and read as a
+/// promise the roadmap had never made.
+///
+/// It does not have to be every property CSS defines, and deliberately is not:
+/// a name in neither list is reported as unknown, which is true of the long
+/// tail and useful for the typos. What belongs here is what an author actually
+/// reaches for. Adding a name here is also the first half of honoring it, and
+/// moving it to [`HONORED_PROPERTIES`] is the second.
+const UNIMPLEMENTED_PROPERTIES: &[&str] = &[
+    // Painting and compositing
+    "outline", "outline-color", "outline-offset", "outline-style", "outline-width",
+    "z-index", "filter", "backdrop-filter", "mix-blend-mode", "isolation",
+    "visibility", "clip-path", "mask", "text-shadow",
+    // Boxes
+    "box-sizing", "float", "clear", "order", "inset",
+    "place-items", "place-content", "place-self", "resize",
+    "border-style", "border-top-style", "border-right-style",
+    "border-bottom-style", "border-left-style",
+    // Backgrounds. `background-image` is honored and always covers its box, so
+    // the properties that would size or place it are the common near miss.
+    "background-size", "background-position", "background-repeat",
+    "background-attachment", "background-clip", "background-origin",
+    // Text
+    "text-transform", "text-overflow", "text-indent", "text-decoration-color",
+    "text-decoration-style", "vertical-align", "font-variant", "font-stretch",
+    "direction", "writing-mode", "user-select", "caret-color", "accent-color",
+    "appearance", "list-style", "list-style-type", "list-style-position",
+    // Motion. `transition` is honored; keyframe animation and the origin a
+    // transform turns about are not.
+    "transform-origin", "perspective", "perspective-origin", "will-change",
+    "animation", "animation-name", "animation-duration", "animation-delay",
+    "animation-timing-function", "animation-iteration-count", "animation-direction",
+    "animation-fill-mode", "animation-play-state",
+    // Other layout models
+    "object-fit", "object-position", "pointer-events", "scroll-behavior",
+    "columns", "column-count", "column-width", "table-layout",
+    "border-collapse", "border-spacing", "content",
+];
+
+/// Levenshtein distance, for the did-you-mean below.
+///
+/// Two rows rather than a full matrix: the operands are property names, so this
+/// runs on a warning path against a couple of hundred candidates and there is no
+/// reason to allocate a grid for it.
+fn edit_distance(a: &str, b: &str) -> usize {
+    let b: Vec<char> = b.chars().collect();
+    let mut previous: Vec<usize> = (0..=b.len()).collect();
+    let mut current = vec![0usize; b.len() + 1];
+    for (i, ca) in a.chars().enumerate() {
+        current[0] = i + 1;
+        for (j, &cb) in b.iter().enumerate() {
+            let substitute = previous[j] + usize::from(ca != cb);
+            current[j + 1] = substitute.min(previous[j + 1] + 1).min(current[j] + 1);
+        }
+        std::mem::swap(&mut previous, &mut current);
+    }
+    previous[b.len()]
+}
+
+/// The closest property name to `property`, if one is close enough to be worth
+/// suggesting.
+///
+/// The budget scales with the length of the name written, because a fixed
+/// distance of two is most of a short name and almost none of a long one:
+/// `gap` must not be offered for `top`, while `bordr-radius` should still find
+/// `border-radius`. An honored name beats an unimplemented one at the same
+/// distance, since suggesting something that works beats suggesting something
+/// else that also does nothing.
+fn nearest_property(property: &str) -> Option<&'static str> {
+    let budget = match property.chars().count() {
+        0..=4 => 1,
+        5..=8 => 2,
+        _ => 3,
+    };
+    let mut best: Option<(usize, bool, &'static str)> = None;
+    for (honored, name) in HONORED_PROPERTIES
+        .iter()
+        .map(|n| (true, *n))
+        .chain(UNIMPLEMENTED_PROPERTIES.iter().map(|n| (false, *n)))
+    {
+        let distance = edit_distance(property, name);
+        if distance > budget {
+            continue;
+        }
+        // Ranked on `!honored`, so `false` (an honored name) sorts first and
+        // wins a tie.
+        let candidate = (distance, !honored);
+        if best.is_none_or(|(d, unhonored, _)| candidate < (d, unhonored)) {
+            best = Some((candidate.0, candidate.1, name));
+        }
+    }
+    best.map(|(_, _, name)| name)
+}
+
+/// Warn, once per property name, for the life of the process, that a parsed
+/// declaration is not honored. Deduped so a whole-tree rebuild (which reparses
+/// every sheet) doesn't repeat the same line on every keystroke.
+///
+/// Three outcomes, not one. Honored says nothing; real-but-unbuilt says exactly
+/// that and promises nothing beyond it; an unrecognised name says it is
+/// unrecognised and offers the nearest thing that exists. The single message
+/// this replaced told an author with a typo that their property was "not yet
+/// honored", which sounds like a feature on its way and left them waiting for a
+/// release that was never going to fix it.
 fn warn_if_unhonored(property: &str) {
     use std::collections::HashSet;
     use std::sync::{Mutex, OnceLock};
@@ -2427,8 +2769,22 @@ fn warn_if_unhonored(property: &str) {
     if property.starts_with("--") || is_honored(property) {
         return;
     }
-    let message =
-        format!("CSS property `{property}` is parsed but not yet honored, it will have no effect");
+    let message = if UNIMPLEMENTED_PROPERTIES.contains(&property) {
+        format!(
+            "CSS property `{property}` is real CSS that Rux does not honor yet, so it \
+             will have no effect"
+        )
+    } else {
+        match nearest_property(property) {
+            Some(nearest) => format!(
+                "`{property}` is not a CSS property Rux knows, so it will have no effect. \
+                 Did you mean `{nearest}`?"
+            ),
+            None => {
+                format!("`{property}` is not a CSS property Rux knows, so it will have no effect")
+            }
+        }
+    };
     warn(message.clone());
     let seen = SEEN.get_or_init(|| Mutex::new(HashSet::new()));
     let Ok(mut seen) = seen.lock() else { return };
@@ -2764,7 +3120,49 @@ fn matched_props(
 /// `inherited` carries the resolved text properties (`color`/`font-size`/
 /// `font-family`, which inherit); `locals` carries `r-for` loop bindings.
 #[allow(clippy::too_many_arguments)]
+/// Build one element, with every warning raised underneath it attributed to the
+/// line the element was written on.
+///
+/// A wrapper rather than a `located` around the body, because the body has a
+/// dozen early returns and each one would have to remember to restore the
+/// position. Wrapping the call is the one place that cannot be forgotten.
+///
+/// The default is the element's own line, and the places that know better say
+/// so: a handler is placed on its attribute's line, a `{{ }}` on its text
+/// node's. Nesting works because [`rux_script::located`] restores what it
+/// replaced, so a child's line does not outlive the child.
+#[allow(clippy::too_many_arguments)]
 fn build_node(
+    el: &Element,
+    rules: &[Rule],
+    comps: &Components,
+    ancestors: &mut Vec<AncNode>,
+    prev: &[ElemDesc],
+    inherited: &Inherited,
+    engine: &mut Engine,
+    locals: &Locals,
+    path: &[usize],
+    tpl_path: &[usize],
+    reg: &mut BindingRegistry,
+    state: &InteractionState,
+    instances: &mut Instances,
+    swaps: &mut Swaps,
+    instance: Option<&str>,
+    slot: Option<Slot>,
+    outlet: Option<Outlet>,
+    row: Option<&str>,
+    swap: Option<SwapSide>,
+) -> LayoutNode {
+    rux_script::located(Some(el.line), || {
+        build_node_inner(
+            el, rules, comps, ancestors, prev, inherited, engine, locals, path, tpl_path, reg,
+            state, instances, swaps, instance, slot, outlet, row, swap,
+        )
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_node_inner(
     el: &Element,
     rules: &[Rule],
     comps: &Components,
@@ -2792,16 +3190,42 @@ fn build_node(
     // inherit the visual effect through the cascade, not through this.
     swap: Option<SwapSide>,
 ) -> LayoutNode {
-    // A custom-element tag expands its imported component in place.
-    if let Some(component) = comps.get(&el.tag) {
+    // A tag that is neither one of Rux's own elements nor anything this file
+    // imported can never render anything, so it is an error and not a warning.
+    //
+    // It was silent until 2026-09-15, and that silence is what hid a larger bug
+    // for the whole of v0.7: a component's `use` lines were thrown away, so a
+    // tag inside a component matched nothing, expanded to nothing, and left an
+    // empty screen to be read as an empty list. A tag is the one name in a
+    // template with no other way to fail.
+    if !rux_parser::is_element(&el.tag) && find_component(comps, &el.tag).is_none() {
+        located(Some(el.line), || {
+            error(format!(
+                "there is no element or component called `<{}>`. Rux's own elements are {}; \
+                 anything else is a component, and needs a `use` for it in this file's \
+                 <script>",
+                el.tag,
+                rux_parser::element_tags()
+                    .iter()
+                    .map(|t| format!("<{t}>"))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            ))
+        });
+    }
+    // A custom-element tag expands its imported component in place. Written
+    // either way round: `<new-task>` and `<new_task>` are the same component,
+    // see `find_component`.
+    if let Some((tag, component)) = find_component(comps, &el.tag) {
         return expand_component(
             el, component, comps, ancestors, inherited, engine, locals, path, tpl_path, reg, state, rules,
             instances, swaps, instance, row, &Locals::new(), None,
             // An ordinary component tag is not a route view, so a
             // `<router-view />` inside it has no chain and says so.
             None,
-            // Here the element *is* the component tag.
-            &el.tag,
+            // Here the element *is* the component tag, under the name it is
+            // registered by rather than the one this line happens to spell.
+            tag,
             // A component tag carrying `r-if` and `r-transition` swaps like any
             // other element; the side lands on the component's root.
             swap,
@@ -2832,7 +3256,11 @@ fn build_node(
     // Both halves, or every row of a list matches at once: they all carry the
     // same `r-model` text, so the model alone cannot pick one out.
     desc.states.focus = match (&state.focused_model, el.attr("r-model")) {
-        (Some(focused), Some(model)) => focused == model && state.focused_row.as_deref() == row,
+        (Some(focused), Some(model)) => {
+            focused == model
+                && state.focused_row.as_deref() == row
+                && state.focused_instance.as_deref() == instance
+        }
         _ => false,
     };
     // `:class`: dynamic classes fed into the cascade (the `checked` pattern,
@@ -2841,6 +3269,13 @@ fn build_node(
     // Where this element links to, if anywhere. `:to` is the computed form, which
     // is what a list of rows needs: every row links somewhere different, and the
     // path is built from the row's own data.
+    // A written-out `to` names a path the router is supposed to know, so it is
+    // answerable here. `:to` is not: it is built from a row's own data and a
+    // path that exists for row 3 and not for row 4 is a data problem, not a
+    // markup one.
+    if let Some(written) = el.attr("to") {
+        located(el.attr_line("to"), || warn_if_no_such_route(written));
+    }
     let to = el.attr("to").map(str::to_string).or_else(|| {
         let expr = el.attr(":to")?;
         let (value, deps) = engine.eval_value_tracked(expr, locals);
@@ -2858,7 +3293,9 @@ fn build_node(
             value.is_some_and(|v| match_route(to, &v.to_display()).is_some());
     }
     if let Some(expr) = el.attr(":class") {
-        let (value, deps) = engine.eval_value_tracked(expr, locals);
+        let (value, deps) = rux_script::located(el.attr_line(":class"), || {
+            engine.eval_value_tracked(expr, locals)
+        });
         dyn_deps.extend(deps);
         if let Some(v) = value {
             desc.classes.extend(class_list(&v));
@@ -3028,7 +3465,10 @@ fn build_node(
         // template, the locals, and the signals it reads, keyed by this node's
         // path. Only text that actually interpolates is registered.
         let template = text_template(el);
-        let (text, deps) = interpolate_tracked(&template, engine, locals);
+        // Placed on the text itself, which for a multi-line `<text>` is not the
+        // line the tag opened on.
+        let (text, deps) =
+            rux_script::located(Some(text_line(el)), || interpolate_tracked(&template, engine, locals));
         if template.contains("{{") {
             reg.text.push(TextBinding {
                 path: path.to_vec(),
@@ -3248,6 +3688,29 @@ fn build_node(
     if el.tag == "input" {
         let mut style = style;
         let multiline = el.attr("type") == Some("textarea");
+        // An input with nothing bound to it is inert, and was inert in silence.
+        //
+        // `r-model` is not decoration: it is the whole of an input's identity.
+        // The layout only makes a focus region for an input that has one
+        // (`if let Some(model) = &node.model` in `rux-layout`), the shell tracks
+        // focus by the model text, and the value the field shows is read back
+        // out of that signal. Without one the box paints, the placeholder
+        // renders, and a tap reaches nothing: no caret, no keystrokes, no value.
+        //
+        // Reported 2026-09-15 as "my input elements are uninteractive", against
+        // two `<input placeholder="…" />` with no binding. Nothing in the file
+        // was wrong to look at, and nothing anywhere said what was missing.
+        if el.attr("r-model").is_none() {
+            located(Some(el.line), || {
+                error(
+                    "this `<input>` has no `r-model`, so nothing can be typed into it: the \
+                     caret, the keystrokes and the value it shows are all addressed by the \
+                     signal it binds. Write `r-model=\"name\"` and declare `let name = \
+                     signal(\"\")` in <script>"
+                        .to_string(),
+                )
+            });
+        }
         // Inputs are form controls: they fill their slot rather than hug their
         // text (else the box would shrink as you type). A single line clips; a
         // textarea scrolls, so text past the bottom stays reachable.
@@ -3291,6 +3754,7 @@ fn build_node(
                     path: path.to_vec(),
                     model: m.to_string(),
                     row: row.map(str::to_string),
+                    instance: instance.map(str::to_string),
                     placeholder: placeholder.clone(),
                     color,
                     placeholder_color: PLACEHOLDER_COLOR,
@@ -3332,6 +3796,12 @@ fn build_node(
         let mut node = LayoutNode::new(style);
         node.children.push(text_child);
         node.model = model;
+        // An input built inside a component has to carry which one: its model
+        // names that instance's own state, and without this the value was read
+        // and written in the document's scope, where the name does not exist.
+        // The general element branch below has always set it; this one never
+        // did, which is exactly the branch every `r-model` goes through.
+        node.instance = instance.map(str::to_string);
         node.multiline = multiline;
         node.options = options;
         node.on_tap = on_tap;
@@ -3507,7 +3977,7 @@ fn expand_component(
     let mut props: Locals = Vec::new();
     let mut prop_deps: HashSet<String> = HashSet::new();
     let mut listeners: Vec<(String, String)> = Vec::new();
-    for (key, expr) in &el.attrs {
+    for rux_parser::Attr { name: key, value: expr, .. } in &el.attrs {
         // `@event="body"` is a listener, not a prop: the body is the caller's
         // code to run *later*, so it is carried as text and never evaluated
         // here. Evaluating it would run the caller's statements at build time,
@@ -3587,30 +4057,43 @@ fn expand_component(
     // inherits the caller's ancestor chain so a descendant selector written
     // outside can reach it.
     let mut ancestors: Vec<AncNode> = caller_ancestors.to_vec();
-    build_node(
-        &component.template,
-        &component.rules,
-        comps,
-        &mut ancestors,
-        &[],
-        inherited,
-        engine,
-        &locals,
-        path,
-        tpl_path,
-        reg,
-        state,
-        instances,
-        swaps,
-        Some(key.as_str()),
-        Some(slot),
-        // Only a route's own view is handed the rest of the chain; an ordinary
-        // component tag is given `None` by its caller.
-        outlet,
-        // A component expanded inside a row is still inside that row.
-        row,
-        swap,
-    )
+    // From here down the lines being reported are the *component's* lines, so
+    // the file has to change with them. Only from here: the props above were
+    // written on the caller's element, in the caller's file, and belong to it.
+    // Slot content is the caller's too, but it is built through this subtree,
+    // so it is attributed to the component. That is a smaller error than the
+    // one being fixed and closing it needs a position on the slot's nodes.
+    // And from here down the *tags* are the component's too: `<task>` inside it
+    // means whatever its own `use` says, which is not necessarily what the same
+    // word means in the file that called it.
+    in_file(component.file.clone(), || {
+        in_namespace(comp_tag, || {
+        build_node(
+            &component.template,
+            &component.rules,
+            comps,
+            &mut ancestors,
+            &[],
+            inherited,
+            engine,
+            &locals,
+            path,
+            tpl_path,
+            reg,
+            state,
+            instances,
+            swaps,
+            Some(key.as_str()),
+            Some(slot),
+            // Only a route's own view is handed the rest of the chain; an
+            // ordinary component tag is given `None` by its caller.
+            outlet,
+            // A component expanded inside a row is still inside that row.
+            row,
+            swap,
+        )
+        })
+    })
 }
 
 /// Match a `<route path="…">` pattern against the current path, capturing the
@@ -3661,6 +4144,95 @@ struct Link<'a> {
 /// The `<route>` children of a `<route>` or a `<router>`, in written order.
 fn child_routes(el: &Element) -> Vec<&Element> {
     element_children(el).into_iter().filter(|r| r.tag == "route").collect()
+}
+
+/// Say that `view` names nothing this document imported.
+///
+/// An error rather than a warning: a route whose view is not imported can never
+/// render anything, which is the definition [`error`] carries. It used to be a
+/// warning that only the matched route raised, so `rux check` exited 0 on a
+/// document with a page in it that was already unreachable.
+///
+/// The suggested import is spelled in **snake**, always. A `use` path names a
+/// file, `page-a` is not a path segment anyone can write, and pasting
+/// `use components::page-a;` turns a report into a hard error looking for a
+/// `page-a.rux` that no convention here would ever produce.
+///
+/// There used to be a second message here, for a `view` written in the import's
+/// own spelling: it said "a view is named the way its tag is, write
+/// `view=\"page-a\"`". That message is gone because the case it described is
+/// no longer a mistake — see [`find_component`], which takes either spelling.
+fn report_view_not_imported(view: &str) {
+    error(format!(
+        "<route> names the view `{view}`, which is not imported; add \
+         `use components::{file};` to the script",
+        file = view.replace('-', "_")
+    ));
+}
+
+thread_local! {
+    /// The document's `<router>`, cloned at the top of each build.
+    ///
+    /// Held here rather than passed down because a `to=` is read where an
+    /// element is described, which is nowhere near the `<router>` and has no
+    /// reason to know a document has one. `None` means no router in this
+    /// document, which is the honest answer for a component being checked on
+    /// its own and the reason [`warn_if_no_such_route`] says nothing then.
+    ///
+    /// The subtree itself rather than a list of patterns, so the check runs
+    /// through [`match_router`] and cannot disagree with the router about what
+    /// a path reaches. The first draft compared against a flattened list and
+    /// called every link in `examples/router.rux` dead, because a list of
+    /// patterns has no idea what `<route fallback>` is.
+    static ROUTER: std::cell::RefCell<Option<Element>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Say that `to` names a path this document's router does not reach.
+///
+/// A dead link is silent by construction: tapping it navigates, the router
+/// matches nothing, and the page goes blank with no more explanation than an
+/// empty screen. The address is written in the markup and so are the routes, so
+/// the two can be compared before anyone taps.
+///
+/// A query or fragment is cut off first: `to="/search?q=rust"` is a link to
+/// `/search`, and the router has never matched on anything past the `?`.
+fn warn_if_no_such_route(to: &str) {
+    let path = to.split(['?', '#']).next().unwrap_or(to);
+    let reachable = ROUTER.with(|r| match r.borrow().as_ref() {
+        Some(router) => match_router(router, path).is_some(),
+        // Nothing to check against. A component holds links and no router of
+        // its own, and reporting every one of them would be a check nobody
+        // could leave switched on.
+        None => true,
+    });
+    if !reachable {
+        warn(format!(
+            "`to=\"{to}\"` matches no <route> in this document, so tapping it would leave \
+             the router with nothing to render"
+        ));
+    }
+}
+
+/// Check the `view` of every route in a router, not only the one that matched.
+///
+/// A route is expanded when its path is the one you are on, so until this
+/// existed a `view` naming nothing was silent on every page but its own: the
+/// document loaded, `rux check` called it clean, and the mistake surfaced the
+/// first time somebody navigated there. Whether a name is imported is a fact
+/// about the file rather than about where you are standing in it, so it is
+/// answerable at load, and is answered here.
+///
+/// A route with no `view` at all is left alone: its children are what render,
+/// and a leaf without one already has a message of its own in `expand_chain`.
+fn check_route_views(routes: &[&Element], comps: &Components) {
+    for route in routes {
+        if let Some(view) = route.attr("view") {
+            if !view.trim().is_empty() && find_component(comps, view).is_none() {
+                located(route.attr_line("view"), || report_view_not_imported(view));
+            }
+        }
+        check_route_views(&child_routes(route), comps);
+    }
 }
 
 /// Match one level of routes against `rest`, and every level below it.
@@ -3785,6 +4357,8 @@ fn chain_params(chain: &[Link]) -> Locals {
 #[allow(clippy::too_many_arguments)]
 fn expand_chain(
     chain: &[Link],
+    // See `Outlet::router_ns`.
+    router_ns: &str,
     params: &Locals,
     current: &str,
     comps: &Components,
@@ -3812,11 +4386,14 @@ fn expand_chain(
         ));
         return None;
     };
-    let Some(component) = comps.get(view) else {
-        warn(format!(
-            "<route> names the view `{view}`, which is not imported; add \
-             `use components::{view};` to the script"
-        ));
+    // Either spelling; `view` is what the author wrote and `name` is what the
+    // component is registered as. See `find_component`.
+    let Some((name, component)) = in_namespace(router_ns, || find_component(comps, view)) else {
+        // Reported against the `view=` it was written on, which is also what
+        // lets this share a message with the load-time pass over every route:
+        // warnings dedupe by message, line and file, so the route you happen to
+        // be standing on is not reported twice.
+        located(link.route.attr_line("view"), || report_view_not_imported(view));
         return None;
     };
     // Identity is where the route sits in the template, one step per level, so
@@ -3827,14 +4404,14 @@ fn expand_chain(
 
     let rest = &chain[1..];
     let used = std::cell::Cell::new(false);
-    let outlet = Outlet { rest, params, current, router_tpl: &tpl, used: &used };
+    let outlet = Outlet { rest, params, current, router_tpl: &tpl, used: &used, router_ns };
 
     // The `<route>` element stands in for the component tag, so any `:prop`
     // written on it is passed through as well, and the captured parameters of
     // the *whole* chain join them.
     let node = expand_component(
         link.route, component, comps, caller_ancestors, inherited, engine, locals, path, &tpl, reg, state, rules,
-        instances, swaps, instance, row, params, Some(current), Some(outlet), view, swap,
+        instances, swaps, instance, row, params, Some(current), Some(outlet), name, swap,
     );
 
     // A route with children whose view never places an outlet would drop that
@@ -3959,9 +4536,49 @@ pub fn restore_scroll(template: &Element) -> bool {
 }
 
 /// Parse `r-for="item in items"` into `(binding, collection_expr)`.
-fn parse_for(expr: &str) -> Option<(&str, &str)> {
+///
+/// Public because the checker needs the same answer: a loop variable is a name
+/// in scope inside anything a row's handler calls, and a second parser for one
+/// `split_once` would eventually disagree with this one about what `r-for`
+/// binds.
+pub fn parse_for(expr: &str) -> Option<(&str, &str)> {
     let (var, coll) = expr.split_once(" in ")?;
     Some((var.trim(), coll.trim()))
+}
+
+/// Say so when `r-for` was written with a destructuring or index form.
+///
+/// `r-for` binds exactly **one** name, and [`parse_for`] takes everything left
+/// of ` in ` as that name. So `r-for="(pot, index) in pots"` bound a local
+/// literally called `(pot, index)`, and both `pot` and `index` were then
+/// undefined. What the author saw was the undefined-variable warning for
+/// `index`, advising them to declare it in `<script>` as a signal, advice that
+/// is useless to someone reaching for a loop index and never once said that the
+/// tuple form is not supported.
+///
+/// The name is left bound as written rather than rejected, because the row
+/// still has to build so the rest of the document can be checked. The warning
+/// is the fix: it names what was actually bound, so the second warning about
+/// the undefined name reads as a consequence instead of a mystery.
+fn warn_if_destructuring_for(expr: &str, var: &str) {
+    let looks_like_a_tuple = var.starts_with('(') || var.contains(',');
+    if !looks_like_a_tuple {
+        return;
+    }
+    let names: Vec<&str> = var
+        .trim_start_matches('(')
+        .trim_end_matches(')')
+        .split(',')
+        .map(str::trim)
+        .filter(|n| !n.is_empty())
+        .collect();
+    let first = names.first().copied().unwrap_or("item");
+    warn(format!(
+        "`r-for=\"{expr}\"` binds one name and `{var}` is being taken as that whole name, \
+         so none of {} exists inside the row. `r-for` has no index or destructuring form: \
+         write `r-for=\"{first} in …\"` and reach the rest through `{first}`",
+        names.iter().map(|n| format!("`{n}`")).collect::<Vec<_>>().join(", ")
+    ));
 }
 
 /// Build a sequence of element children, applying the structural directives
@@ -4149,10 +4766,12 @@ fn build_children(
         if el.attr("r-key").is_some() && el.attr("r-for").is_none() {
             // A key with nothing to identify. Silently ignoring it would let
             // someone believe their list was keyed when it was not.
-            warn(format!(
-                "`r-key` on <{}> does nothing without `r-for` on the same element",
-                el.tag
-            ));
+            located(el.attr_line("r-key"), || {
+                warn(format!(
+                    "`r-key` on <{}> does nothing without `r-for` on the same element",
+                    el.tag
+                ))
+            });
         }
         // `<slot />` is where the caller's children land. It is not an element
         // of its own: it renders them (or its own children as a fallback) and
@@ -4217,7 +4836,7 @@ fn build_children(
                         o.used.set(true);
                         let cp = child_path(&out);
                         if let Some(node) = expand_chain(
-                            o.rest, o.params, o.current, comps, ancestors, inherited, engine, locals, &cp,
+                            o.rest, o.router_ns, o.params, o.current, comps, ancestors, inherited, engine, locals, &cp,
                             o.router_tpl, reg, state, rules, instances, swaps, instance, row,
                             // A nested outlet is not itself a swap; the swap, if
                             // any, belongs to the `<router>` that chose the chain.
@@ -4254,6 +4873,14 @@ fn build_children(
             let current = value.map(|v| v.to_display()).unwrap_or_default();
 
             let routes = element_children(el);
+            // Whose file this `<router>` is written in. A route's `view` is a
+            // name in that file, and by the time a nested link renders, the
+            // `<router-view />` placing it is several components deep in files
+            // that have never heard of it. See `Outlet::router_ns`.
+            let router_ns = CURRENT_FILE.with(|c| c.borrow().clone());
+            // Every route's `view`, not just the matched one's: see
+            // `check_route_views`.
+            check_route_views(&child_routes(el), comps);
             for r in &routes {
                 if r.tag != "route" {
                     warn(format!(
@@ -4305,7 +4932,7 @@ fn build_children(
                     let params = chain_params(&chain);
                     let cp = child_path(&out);
                     if let Some(mut node) = expand_chain(
-                        &chain, &params, &old_path, comps, ancestors, inherited, engine, locals, &cp, &ctp,
+                        &chain, &router_ns, &params, &old_path, comps, ancestors, inherited, engine, locals, &cp, &ctp,
                         reg, state, rules, instances, swaps, instance, row, side,
                     ) {
                         arm_swap(swaps, &key, &mut node, anim, engine, locals, &mut structural_deps);
@@ -4333,7 +4960,7 @@ fn build_children(
                         None
                     };
                     if let Some(mut node) = expand_chain(
-                        &chain, &params, &current, comps, ancestors, inherited, engine, locals, &cp, &ctp,
+                        &chain, &router_ns, &params, &current, comps, ancestors, inherited, engine, locals, &cp, &ctp,
                         reg, state, rules, instances, swaps, instance, row, side,
                     ) {
                         if anim.is_some() {
@@ -4364,10 +4991,35 @@ fn build_children(
         if let Some(for_expr) = el.attr("r-for") {
             in_chain = false;
             if let Some((var, coll)) = parse_for(for_expr) {
+                // A directive is read by the *parent's* loop, so without this it
+                // would be reported on the parent's line. It belongs on the line
+                // the directive was written on.
+                let at = el.attr_line("r-for");
+                rux_script::located(at, || warn_if_destructuring_for(for_expr, var));
+                // `r-if` on the same element as `r-for` is read by nobody: the
+                // loop expands the element and the condition is never consulted,
+                // so every row renders and the filter silently does nothing.
+                // Said out loud rather than honored, because which one wins is a
+                // real design question (Vue has answered it both ways across two
+                // major versions) and quietly picking an answer here would change
+                // what existing documents render.
+                for name in ["r-if", "r-elif", "r-else", "r-show"] {
+                    if el.attr(name).is_some() {
+                        rux_script::located(el.attr_line(name).or(at), || {
+                            warn(format!(
+                                "`{name}` on the same element as `r-for` does nothing: the loop \
+                                 expands the element and the condition is never read, so every \
+                                 row renders. Filter the collection instead, with a `computed`, \
+                                 or put the `{name}` on a child."
+                            ))
+                        });
+                    }
+                }
                 // The collection is a reconcilable read, not a force-rebuild one:
                 // it flows to the parent's structural deps (via the return), not to
                 // `reg.structural`.
-                let (value, deps) = engine.eval_value_tracked(coll, locals);
+                let (value, deps) =
+                    rux_script::located(at, || engine.eval_value_tracked(coll, locals));
                 structural_deps.extend(deps);
                 let items = value.and_then(|v| v.as_list().map(<[Value]>::to_vec));
                 if let Some(items) = items {
@@ -4479,7 +5131,9 @@ fn build_children(
         // the answer is always the condition itself.
         if let Some(cond) = el.attr("r-if") {
             in_chain = true;
-            let (v, deps) = engine.eval_bool_tracked(cond, locals);
+            let (v, deps) = rux_script::located(el.attr_line("r-if"), || {
+                engine.eval_bool_tracked(cond, locals)
+            });
             structural_deps.extend(deps);
             chain_satisfied = v;
             let key: SwapKey = (ctp.clone(), row.map(str::to_string));
@@ -4495,7 +5149,9 @@ fn build_children(
         }
         if let Some(cond) = el.attr("r-elif") {
             let taken = if in_chain && !chain_satisfied {
-                let (v, deps) = engine.eval_bool_tracked(cond, locals);
+                let (v, deps) = rux_script::located(el.attr_line("r-elif"), || {
+                    engine.eval_bool_tracked(cond, locals)
+                });
                 structural_deps.extend(deps);
                 v
             } else {
@@ -4752,6 +5408,7 @@ fn interpret(p: &HashMap<String, String>) -> Style {
     // per-corner longhands override.
     if let Some(v) = p.get("border-radius") {
         st.radius = parse_border_radius(v);
+        st.radius_pct = parse_border_radius_pct(v);
     }
     for (i, corner) in [
         "border-top-left-radius",
@@ -4762,8 +5419,18 @@ fn interpret(p: &HashMap<String, String>) -> Style {
     .iter()
     .enumerate()
     {
-        if let Some(px) = p.get(*corner).and_then(|v| parse_px(first(v))) {
+        let Some(written) = p.get(*corner).map(|v| first(v)) else { continue };
+        // A longhand replaces whatever the shorthand said for that corner, in
+        // both units: writing one in px after a shorthand in % has to clear the
+        // percentage, or the corner would keep resolving against the box and
+        // the px would never be seen.
+        if let Some(px) = parse_px(written) {
             st.radius[i] = px;
+            st.radius_pct[i] = None;
+        } else if let Some(pct) =
+            written.strip_suffix('%').and_then(|n| n.trim().parse::<f32>().ok())
+        {
+            st.radius_pct[i] = Some(pct);
         }
     }
     // `auto`/`scroll` scroll (and clip); `hidden`/`clip` only clip. Any axis
@@ -5543,6 +6210,27 @@ fn parse_shorthand_sides(value: &str) -> Sides {
     }
 }
 
+/// The percentage half of `border-radius`, in the same diagonal grouping.
+///
+/// Returned separately from the pixels because the two resolve at different
+/// times: pixels are final here, a percentage needs a box and is worked out at
+/// paint. A corner written in px comes back `None` and keeps whatever
+/// [`parse_border_radius`] gave it.
+fn parse_border_radius_pct(value: &str) -> [Option<f32>; 4] {
+    let horizontal = value.split('/').next().unwrap_or(value);
+    let v: Vec<Option<f32>> = horizontal
+        .split_whitespace()
+        .map(|t| t.strip_suffix('%').and_then(|n| n.trim().parse::<f32>().ok()))
+        .collect();
+    match v.len() {
+        1 => [v[0]; 4],
+        2 => [v[0], v[1], v[0], v[1]],
+        3 => [v[0], v[1], v[2], v[1]],
+        n if n >= 4 => [v[0], v[1], v[2], v[3]],
+        _ => [None; 4],
+    }
+}
+
 /// Parse the `border-radius` shorthand into `[TL, TR, BR, BL]`. Unlike the box
 /// shorthands, border-radius groups by diagonal: 1 value = all; 2 = TL/BR, TR/BL;
 /// 3 = TL, TR/BL, BR; 4 = TL, TR, BR, BL. An elliptical `h / v` form is reduced
@@ -5808,6 +6496,18 @@ fn parse_hex(hex: &str) -> Option<Rgba> {
 #[cfg(test)]
 mod tests {
     use super::{build_styled_tree, build_styled_tree_tracked, interpolate_tracked, interpret, Len, Locals};
+
+    /// A namespace for a test registry keyed by tag.
+    ///
+    /// The real loader keys components by file and gives each file its own
+    /// namespace; a test that writes one map by hand wants the flat thing that
+    /// used to exist, which is every tag visible to the document under its own
+    /// name.
+    fn flat(components: &HashMap<String, crate::Sfc>) -> HashMap<String, super::Namespace> {
+        let namespace: super::Namespace =
+            components.keys().map(|tag| (tag.clone(), tag.clone())).collect();
+        HashMap::from([(super::DOCUMENT_NAMESPACE.to_string(), namespace)])
+    }
     use rux_script::{Builder, Engine};
     use std::collections::HashMap;
 
@@ -5829,6 +6529,127 @@ mod tests {
             matches!(Pseudo::parse("first-child"), Pseudo::Unknown(_)),
             "a pseudo-class Rux does not implement must still parse as Unknown"
         );
+    }
+
+    /// A percentage on a property that cannot take one is reported, not dropped.
+    ///
+    /// The interpreter reads these with `parse_px`, which has no `%`, while the
+    /// length check validated with `parse_len`, which does. So the value was
+    /// thrown away and then pronounced fine, by two functions in this file that
+    /// disagreed about what a length is. Reported as `border-radius` not taking
+    /// a percentage; it was four properties.
+    ///
+    /// **`border-radius` has since left this list**, because it is the one of
+    /// the four whose percentage has somewhere to resolve: it is not consumed
+    /// by layout, only by paint, and paint knows the box. The other three
+    /// resolve during the cascade and still have nothing to measure against.
+    #[test]
+    fn a_percentage_where_there_is_no_box_says_so() {
+        use super::{parse_len, parse_px, LENGTH_ONLY_PROPERTIES, PX_ONLY_PROPERTIES};
+
+        // The split is the whole fix: every px-only property must actually be
+        // one the interpreter reads with `parse_px`, and `%` must fail there.
+        for name in PX_ONLY_PROPERTIES {
+            assert!(
+                LENGTH_ONLY_PROPERTIES.contains(name),
+                "`{name}` is px-only and not length-checked at all"
+            );
+        }
+        assert!(parse_px("50%").is_none(), "px-only parsing has no percentage");
+        assert!(parse_len("50%").is_some(), "the Len parser does");
+
+        // `width` resolves during layout, against a box that exists by then, so
+        // it keeps its percentage and must not be caught by this.
+        assert!(!PX_ONLY_PROPERTIES.contains(&"width"));
+        assert!(!PX_ONLY_PROPERTIES.contains(&"height"));
+        assert!(!PX_ONLY_PROPERTIES.contains(&"top"));
+        // Three of the four that were silently dropped. Still px-only, still
+        // reported.
+        for name in ["padding", "margin", "gap"] {
+            assert!(PX_ONLY_PROPERTIES.contains(&name), "`{name}` takes no percentage");
+        }
+        // The fourth takes one now, and must not be warned about.
+        for name in [
+            "border-radius",
+            "border-top-left-radius",
+            "border-top-right-radius",
+            "border-bottom-right-radius",
+            "border-bottom-left-radius",
+        ] {
+            assert!(
+                !PX_ONLY_PROPERTIES.contains(&name),
+                "`{name}` resolves its percentage at paint and must not be reported"
+            );
+        }
+    }
+
+    /// A percentage radius is carried to paint rather than resolved here.
+    #[test]
+    fn a_percentage_radius_is_carried_as_a_percentage() {
+        use super::{parse_border_radius, parse_border_radius_pct};
+
+        // The diagonal grouping is the same in both halves.
+        assert_eq!(parse_border_radius_pct("50%"), [Some(50.0); 4]);
+        assert_eq!(
+            parse_border_radius_pct("50% 0px"),
+            [Some(50.0), None, Some(50.0), None],
+            "a corner in px carries no percentage"
+        );
+        assert_eq!(
+            parse_border_radius_pct("10% 20% 30% 40%"),
+            [Some(10.0), Some(20.0), Some(30.0), Some(40.0)]
+        );
+        // Plain pixels carry none at all, so nothing changes for every document
+        // that never writes a percentage.
+        assert_eq!(parse_border_radius_pct("12px"), [None; 4]);
+        assert_eq!(parse_border_radius("12px"), [12.0; 4]);
+    }
+
+    /// The three states an unhonored property can be in have to stay three.
+    ///
+    /// They were one message for a long time, so `outline` (real CSS, not
+    /// built), `paddding` (a typo) and `florble` (invented) all read as "parsed
+    /// but not yet honored", and an author with a typo waited for a release.
+    #[test]
+    fn unhonored_properties_report_three_different_things() {
+        use super::{nearest_property, is_honored, UNIMPLEMENTED_PROPERTIES};
+
+        // Real CSS, unbuilt: named as such, and never offered as a correction
+        // for itself.
+        assert!(UNIMPLEMENTED_PROPERTIES.contains(&"outline"));
+        assert!(UNIMPLEMENTED_PROPERTIES.contains(&"transform-origin"));
+
+        // A typo finds the property it was reaching for.
+        assert_eq!(nearest_property("paddding"), Some("padding"));
+        assert_eq!(nearest_property("bordr-radius"), Some("border-radius"));
+        assert_eq!(nearest_property("colour"), Some("color"));
+
+        // Invented nonsense suggests nothing rather than reaching for the
+        // nearest unrelated name.
+        assert_eq!(nearest_property("florble"), None);
+
+        // A short name gets a short budget, so one edit still suggests and two
+        // does not. `tap` is a plausible slip for `gap`; `zzz` is not a slip
+        // for anything and must stay silent rather than reach for `gap`.
+        assert_eq!(nearest_property("tap"), Some("gap"));
+        assert_eq!(nearest_property("zzz"), None);
+
+        // Nothing honored should ever reach the warning at all.
+        assert!(is_honored("padding"));
+    }
+
+    /// No name may claim to be both honored and unimplemented. The two lists
+    /// drive different messages, so an overlap would make which one an author
+    /// sees depend on the order the checks happen to run in.
+    #[test]
+    fn honored_and_unimplemented_never_overlap() {
+        use super::{honored_properties, UNIMPLEMENTED_PROPERTIES};
+        for name in UNIMPLEMENTED_PROPERTIES {
+            assert!(
+                !honored_properties().contains(name),
+                "`{name}` is listed as both honored and unimplemented"
+            );
+        }
     }
 
     /// The same pairing for `transition`'s values.
@@ -5853,7 +6674,7 @@ mod tests {
         let src = "<template><screen>                     <view @drag=\"a()\" @press=\"b()\" @longpress=\"c()\" />                   </screen></template>";
         let sfc = rux_parser::parse_sfc(src).expect("parses");
         let mut engine = Builder::new().build("").expect("engine");
-        let tree = build_styled_tree(&sfc, &HashMap::new(), &mut engine).expect("builds");
+        let tree = build_styled_tree(&sfc, &HashMap::new(), &HashMap::new(), &mut engine).expect("builds");
         let node = &tree.children[0];
         let kinds: Vec<Gesture> = node.gestures.iter().map(|(g, _)| *g).collect();
         assert_eq!(
@@ -5875,7 +6696,7 @@ mod tests {
         let mut engine = Builder::new().build("").expect("engine");
 
         let _ = super::take_warnings(); // start from a clean sink
-        let _ = build_styled_tree(&sfc, &HashMap::new(), &mut engine).expect("builds");
+        let _ = build_styled_tree(&sfc, &HashMap::new(), &HashMap::new(), &mut engine).expect("builds");
         let warnings = super::take_warnings();
 
         let line_for = |needle: &str| {
@@ -5924,7 +6745,7 @@ mod tests {
         let mut engine = Builder::new().build("").expect("engine");
 
         let _ = super::take_warnings();
-        let _ = build_styled_tree(&sfc, &HashMap::new(), &mut engine).expect("builds");
+        let _ = build_styled_tree(&sfc, &HashMap::new(), &HashMap::new(), &mut engine).expect("builds");
         let warnings = super::take_warnings();
 
         let line_for = |needle: &str| {
@@ -5963,7 +6784,7 @@ mod tests {
         let mut engine = Builder::new().build("").expect("engine");
 
         let _ = super::take_warnings();
-        let _ = build_styled_tree(&main, &components, &mut engine).expect("builds");
+        let _ = build_styled_tree(&main, &components, &flat(&components), &mut engine).expect("builds");
         let warnings = super::take_warnings();
 
         let float = warnings
@@ -5980,7 +6801,7 @@ mod tests {
         let mut components = HashMap::new();
         components.insert("chip".to_string(), component);
         let mut engine = Builder::new().build("").expect("engine");
-        let root = build_styled_tree(&main, &components, &mut engine).expect("builds");
+        let root = build_styled_tree(&main, &components, &flat(&components), &mut engine).expect("builds");
         // <screen> -> the expanded component's root.
         root.children.into_iter().next().expect("the component rendered")
     }
@@ -6306,7 +7127,7 @@ mod tests {
         let mut engine = Builder::new().build(&sfc.script).unwrap();
         let mut instances = super::Instances::new();
         let (_root, reg) =
-            build_styled_tree_tracked(&sfc, &HashMap::new(), &mut engine, &mut instances, &mut crate::Swaps::new()).unwrap();
+            build_styled_tree_tracked(&sfc, &HashMap::new(), &HashMap::new(), &mut engine, &mut instances, &mut crate::Swaps::new()).unwrap();
 
         assert_eq!(reg.structural_parents.len(), 1, "the screen is the one structural parent");
         let sp = &reg.structural_parents[0];
@@ -6409,7 +7230,7 @@ mod tests {
         let src = r#"<template><screen><image src="assets/logo.png" /></screen></template>"#;
         let sfc = rux_parser::parse_sfc(src).unwrap();
         let mut e = Builder::new().build("").unwrap();
-        let root = build_styled_tree(&sfc, &HashMap::new(), &mut e).unwrap();
+        let root = build_styled_tree(&sfc, &HashMap::new(), &HashMap::new(), &mut e).unwrap();
         let img = root.children[0].image.as_ref().expect("image node");
         assert_eq!(img.src, "assets/logo.png");
     }
@@ -6442,7 +7263,7 @@ mod tests {
         "#;
         let sfc = rux_parser::parse_sfc(src).unwrap();
         let mut engine = Builder::new().build(&sfc.script).unwrap();
-        let root = build_styled_tree(&sfc, &HashMap::new(), &mut engine).unwrap();
+        let root = build_styled_tree(&sfc, &HashMap::new(), &HashMap::new(), &mut engine).unwrap();
 
         // 3 views from r-for + exactly one branch (level=10 → the r-elif "mid").
         assert_eq!(root.children.len(), 4);
@@ -6464,7 +7285,7 @@ mod tests {
         "#;
         let sfc = rux_parser::parse_sfc(src).unwrap();
         let mut engine = Builder::new().build(&sfc.script).unwrap();
-        let root = build_styled_tree(&sfc, &HashMap::new(), &mut engine).unwrap();
+        let root = build_styled_tree(&sfc, &HashMap::new(), &HashMap::new(), &mut engine).unwrap();
 
         // The second row's handler must carry its own loop value baked in, not a
         // bare `item` that resolves to nothing when it runs in global scope.
@@ -6491,7 +7312,7 @@ mod tests {
         let sfc = rux_parser::parse_sfc(src).unwrap();
         let mut engine = Builder::new().build(&sfc.script).unwrap();
 
-        let root = build_styled_tree(&sfc, &HashMap::new(), &mut engine).unwrap();
+        let root = build_styled_tree(&sfc, &HashMap::new(), &HashMap::new(), &mut engine).unwrap();
         let input = &root.children[0];
         assert_eq!(input.model.as_deref(), Some("name"), "r-model bound");
         // Empty signal → the placeholder is shown.
@@ -6499,7 +7320,7 @@ mod tests {
 
         // Simulate the shell editing the focused input, then rebuild.
         engine.set_string("name", "Cam");
-        let root = build_styled_tree(&sfc, &HashMap::new(), &mut engine).unwrap();
+        let root = build_styled_tree(&sfc, &HashMap::new(), &HashMap::new(), &mut engine).unwrap();
         let input = &root.children[0];
         assert_eq!(input.children[0].text.as_ref().unwrap().text, "Cam");
     }
@@ -6517,7 +7338,7 @@ mod tests {
                      </script>"#;
         let sfc = rux_parser::parse_sfc(src).unwrap();
         let mut engine = Builder::new().build(&sfc.script).unwrap();
-        let root = build_styled_tree(&sfc, &HashMap::new(), &mut engine).unwrap();
+        let root = build_styled_tree(&sfc, &HashMap::new(), &HashMap::new(), &mut engine).unwrap();
 
         // The select evaluates :options to strings and shows the bound value.
         let select = &root.children[0];
@@ -6555,7 +7376,7 @@ mod tests {
         components.insert("stat".to_string(), stat);
 
         let mut engine = Builder::new().build(&main.script).unwrap();
-        let root = build_styled_tree(&main, &components, &mut engine).unwrap();
+        let root = build_styled_tree(&main, &components, &flat(&components), &mut engine).unwrap();
 
         // screen → (expanded stat) view → text "Battery: 82"
         let view = &root.children[0];
@@ -6608,7 +7429,7 @@ mod tests {
     fn built(src: &str) -> rux_layout::Node {
         let sfc = rux_parser::parse_sfc(src).unwrap();
         let mut engine = Builder::new().build(&sfc.script).unwrap();
-        build_styled_tree(&sfc, &HashMap::new(), &mut engine).unwrap()
+        build_styled_tree(&sfc, &HashMap::new(), &HashMap::new(), &mut engine).unwrap()
     }
 
     /// Every control gets a role a screen reader can announce, derived from what
@@ -6774,6 +7595,7 @@ mod tests {
         let root = super::build_styled_tree_stateful(
             &sfc,
             &HashMap::new(),
+            &HashMap::new(),
             &mut engine,
             &mut instances,
             &mut crate::Swaps::new(),
@@ -6878,7 +7700,7 @@ mod tests {
     fn bg_at(src: &str, path: &[usize]) -> Option<Background> {
         let sfc = rux_parser::parse_sfc(src).unwrap();
         let mut engine = Builder::new().build(&sfc.script).unwrap();
-        let root = build_styled_tree(&sfc, &HashMap::new(), &mut engine).unwrap();
+        let root = build_styled_tree(&sfc, &HashMap::new(), &HashMap::new(), &mut engine).unwrap();
         let mut node = &root;
         for i in path {
             node = &node.children[*i];
@@ -7130,7 +7952,7 @@ mod tests {
         "#;
         let sfc = rux_parser::parse_sfc(src).unwrap();
         let mut engine = Builder::new().build(&sfc.script).unwrap();
-        let root = build_styled_tree(&sfc, &HashMap::new(), &mut engine).unwrap();
+        let root = build_styled_tree(&sfc, &HashMap::new(), &HashMap::new(), &mut engine).unwrap();
 
         let green = |n: &rux_layout::Node| {
             matches!(&n.style.background, Some(rux_layout::Background::Color(c)) if c.g == 1.0)
@@ -7185,7 +8007,7 @@ mod tests {
         "#;
         let sfc = rux_parser::parse_sfc(src).unwrap();
         let mut engine = Builder::new().build("").unwrap();
-        let root = build_styled_tree(&sfc, &HashMap::new(), &mut engine).unwrap();
+        let root = build_styled_tree(&sfc, &HashMap::new(), &HashMap::new(), &mut engine).unwrap();
 
         let direct = root.children[0].text.as_ref().unwrap();
         let nested = root.children[1].children[0].text.as_ref().unwrap();
@@ -7253,7 +8075,7 @@ mod tests {
         let mut engine = Builder::new().build(&sfc.script).unwrap();
         let mut instances = super::Instances::new();
         let (_, reg) =
-            super::build_styled_tree_tracked(&sfc, &HashMap::new(), &mut engine, &mut instances, &mut crate::Swaps::new())
+            super::build_styled_tree_tracked(&sfc, &HashMap::new(), &HashMap::new(), &mut engine, &mut instances, &mut crate::Swaps::new())
                 .unwrap();
         reg.elements
     }
@@ -7300,6 +8122,29 @@ mod tests {
         assert_eq!(after.len(), 1);
         // …and it is genuinely the later one.
         assert!(after[0].path > index.query(".card").unwrap()[0].path);
+    }
+
+    /// The root is an ancestor like any other, which is where this diverged
+    /// from the stylesheet.
+    ///
+    /// `query()` is billed as the stylesheet's own matcher, and a rule written
+    /// `.app .row` painted while the identical selector handed to a handler
+    /// came back empty. The ancestor chain was rebuilt from depth 1, and the
+    /// root's path is empty, so the one node every selector is most likely to
+    /// be anchored at was the one node that could never match.
+    #[test]
+    fn a_selector_anchored_at_the_root_matches() {
+        let index = indexed(
+            r#"<template><screen class="app">
+                 <view class="wrap"><view class="row"><text>One</text></view></view>
+               </screen></template>"#,
+        );
+        assert_eq!(index.query(".app").unwrap().len(), 1, "the root is in the index");
+        assert_eq!(index.query(".app .row").unwrap().len(), 1, "as a descendant");
+        assert_eq!(index.query(".app > .wrap").unwrap().len(), 1, "as a parent");
+        assert_eq!(index.query("screen > .wrap").unwrap().len(), 1, "by tag too");
+        // The root itself has no ancestors, so anchoring above it still fails.
+        assert!(index.query("view > .app").unwrap().is_empty(), "nothing is above the root");
     }
 
     /// Results are in document order, which is what makes indexing into a query

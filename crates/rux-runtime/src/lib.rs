@@ -31,7 +31,7 @@ use rux_layout::{Node as LayoutNode, Offset};
 use rux_parser::{Sfc, StyleInclude};
 use rux_reactive::Value;
 use rux_script::{Builder, Engine};
-use rux_style::{BindingRegistry, Instances, Swaps};
+use rux_style::{BindingRegistry, Instances, Namespace, Swaps, DOCUMENT_NAMESPACE};
 /// Re-exported so the shell can hand pointer/focus state and the window size in
 /// without depending on `rux-style` directly.
 pub use rux_reactive::json_string;
@@ -47,7 +47,14 @@ pub use rux_script::warn_script;
 /// script engine, and the current tree.
 pub struct Document {
     sfc: Sfc,
+    /// Every component file this document reached, by the key
+    /// [`component_key`] gives it. Flat, because it is a registry and not a
+    /// scope.
     components: HashMap<String, Sfc>,
+    /// The scope: which tags each file may write, and what each one means.
+    /// Keyed the same way, with the document itself under
+    /// [`DOCUMENT_NAMESPACE`].
+    namespaces: HashMap<String, Namespace>,
     engine: Engine,
     /// Directory the document was loaded from, `<image src>` resolves against it.
     base: PathBuf,
@@ -161,35 +168,222 @@ pub struct Document {
 /// to tap it while watching stderr. `rux check` did not catch it either, because
 /// checking reuses the loader and the loader never looked.
 ///
-/// Syntax only. A handler legitimately names things that do not exist until it
-/// runs, an `r-for` local or a component's own state, and those are runtime
-/// lookups rather than compile errors, so this cannot cry wolf about them.
+/// Syntax, and the names of the functions called. A handler legitimately names
+/// *variables* that do not exist until it runs, an `r-for` local or a
+/// component's own state, and those are runtime lookups rather than compile
+/// errors, so this cannot cry wolf about them. Functions are not like that:
+/// nothing a row or an instance brings into scope can add a function name, so a
+/// call that resolves nowhere resolves nowhere under every state.
+///
+/// That second half was missing until v0.7.1, and it was the expensive half.
+/// rhai looks a function name up when the call runs, so `@tap="alert(…)"`
+/// compiled clean and did nothing when tapped, while the same mistake inside
+/// `{{ }}` was reported during the build. The two halves of the language
+/// disagreed about whether a typo was worth mentioning.
 ///
 /// Every handler in the template is checked, not only the ones currently on
 /// screen, so a branch behind a false `r-if` is covered too.
-fn check_handlers(template: &rux_parser::Element, engine: &rux_script::Engine) {
-    for (name, value) in &template.attrs {
+fn check_handlers(
+    template: &rux_parser::Element,
+    engine: &rux_script::Engine,
+    // Tags that name an imported component. A component takes any `@name` as a
+    // listener for an event it emits, so the fixed gesture vocabulary does not
+    // apply to one and checking against it would flag every custom event in
+    // every app that uses them.
+    component_tags: &std::collections::HashSet<String>,
+) {
+    check_attribute_shapes(template, component_tags);
+    for rux_parser::Attr { name, value, line, .. } in &template.attrs {
         if !name.starts_with('@') || value.trim().is_empty() {
             continue;
         }
-        if let Err(why) = engine.check_syntax(value) {
-            rux_script::warn_script(format!("`{name}` handler will never run: {why}"));
-        }
+        // Placed on the attribute's own line, not the element's. An element here
+        // is routinely written across several lines and the handler is rarely on
+        // the first of them.
+        rux_script::located(Some(*line), || {
+            if let Err(why) = engine.check_syntax(value) {
+                rux_script::warn_script(format!("`{name}` handler will never run: {why}"));
+                return; // it did not compile, so its calls are not worth reading
+            }
+            warn_unknown_calls(engine, value, &format!("the `{name}` handler"));
+        });
     }
     // A `guard` is author code on the same terms, and it hides longer than a
     // handler does: nobody taps a guard, so a broken one is found by whoever
     // navigates, and what they see is a link that does nothing.
     if let Some(guard) = template.attr("guard").filter(|g| !g.trim().is_empty()) {
-        if let Err(why) = engine.check_syntax(guard) {
-            rux_script::warn_script(format!(
-                "the `guard` on <{}> will never run, so it can refuse nothing: {why}",
-                template.tag
-            ));
-        }
+        let at = template.attr_line("guard");
+        rux_script::located(at, || {
+            if let Err(why) = engine.check_syntax(guard) {
+                rux_script::warn_script(format!(
+                    "the `guard` on <{}> will never run, so it can refuse nothing: {why}",
+                    template.tag
+                ));
+            } else {
+                warn_unknown_calls(
+                    engine,
+                    guard,
+                    &format!("the `guard` on <{}>", template.tag),
+                );
+            }
+        });
     }
     for child in &template.children {
         if let rux_parser::Node::Element(el) = child {
-            check_handlers(el, engine);
+            check_handlers(el, engine, component_tags);
+        }
+    }
+}
+
+/// The events the runtime actually dispatches, without the `@`.
+///
+/// `tap` plus the five in [`rux_layout::Gesture`]. Kept beside the check rather
+/// than derived, because `tap` is not a `Gesture` (it is the finished gesture,
+/// and is also what a keyboard activation produces) and a list of five that
+/// silently means six is worse than a list of six.
+const EVENT_NAMES: &[&str] = &["tap", "press", "release", "longpress", "swipe", "drag"];
+
+/// Attributes that mean something only by being present.
+///
+/// Writing `r-else=""` is not the same mistake as writing `r-else`: it reads as
+/// though a condition were being supplied, and there is nowhere for one to go.
+const VALUELESS_ATTRS: &[&str] = &["r-else", "fallback"];
+
+/// Report attributes that are shaped wrong, as opposed to ones whose expression
+/// is wrong.
+///
+/// Both of these were accepted in silence. `@class="big"` checked clean and did
+/// nothing, which is the same silent-failure class the unhonored-CSS message
+/// exists to close, and it is worse here because the gesture vocabulary is
+/// fixed and known: there is no "not yet honored" to hide behind.
+fn check_attribute_shapes(
+    el: &rux_parser::Element,
+    component_tags: &std::collections::HashSet<String>,
+) {
+    let is_component = component_tags.contains(&el.tag);
+    for attr in &el.attrs {
+        if let Some(event) = attr.name.strip_prefix('@') {
+            // A component's `@name` is a listener for whatever it emits, so any
+            // name is legitimate there.
+            if is_component || EVENT_NAMES.contains(&event) {
+                continue;
+            }
+            rux_script::located(Some(attr.line), || {
+                rux_script::error_script(format!(
+                    "`@{event}` on <{}> is not an event Rux dispatches, so nothing \
+                     will ever run it. The events are {}",
+                    el.tag,
+                    EVENT_NAMES.iter().map(|n| format!("`@{n}`")).collect::<Vec<_>>().join(", ")
+                ));
+            });
+        }
+        if VALUELESS_ATTRS.contains(&attr.name.as_str()) && attr.has_value {
+            rux_script::located(Some(attr.line), || {
+                rux_script::error_script(format!(
+                    "`{}` takes no value, so `{}=\"{}\"` says something that cannot be \
+                     read. Write `{}` on its own",
+                    attr.name, attr.name, attr.value, attr.name
+                ));
+            });
+        }
+    }
+}
+
+/// Report each call in `src` that could never resolve, named by where it is.
+///
+/// One warning per name rather than one per handler, because a handler with two
+/// mistakes in it has two things to fix and a reader who sees one of them will
+/// fix that one and re-run.
+fn warn_unknown_calls(engine: &rux_script::Engine, src: &str, whose: &str) {
+    for problem in engine.unknown_calls(src) {
+        let message = format!("{whose} {}", problem.describe());
+        // A call that resolves nowhere is definitely wrong in a page, which has
+        // no caller. In a fragment it is only probably wrong: **only `fn`
+        // definitions are shared into the one engine**, so a component's
+        // handler legitimately calls a function its parent declared and it has
+        // never heard of. Read on its own, that component is an incomplete
+        // program, and the same is true of its props.
+        if rux_script::is_fragment() {
+            rux_script::warn_script(message);
+        } else {
+            rux_script::error_script(message);
+        }
+    }
+}
+
+/// The same report for the `fn` bodies in `<script>`.
+///
+/// Separate from [`check_handlers`] because it is per document rather than per
+/// element, and because a `fn` nobody has called yet is the quietest place in
+/// the language for a typo to sit: a handler at least fails the moment someone
+/// taps it.
+fn check_script_functions(
+    engine: &rux_script::Engine,
+    callers: &HashSet<String>,
+    own_script_lines: usize,
+    script_line: usize,
+) {
+    for problem in engine.unknown_calls_in_functions() {
+        let message = format!("a <script> function {}", problem.describe());
+        if rux_script::is_fragment() {
+            rux_script::warn_script(message);
+        } else {
+            rux_script::error_script(message);
+        }
+    }
+    // Names, on weaker terms than calls. A call resolves through a registry
+    // nothing in scope can add to; a name resolves through scope, and in Rux a
+    // function runs in its **caller's** scope, so what is reported is only a
+    // name declared nowhere at all, which no caller can be holding, because
+    // there is no declaration of it to hold.
+    for (name, at) in engine.unknown_names_in_functions(callers, own_script_lines) {
+        // Script-relative to file-relative, the same arithmetic
+        // `LoadError::in_script` does: the `<script>` body starts partway down
+        // the file, and a line drawn without that offset lands in the template.
+        // Reported at line 1 it pointed at `<template>` for a mistake in
+        // `<script>`, which is the shape of wrong this project has already paid
+        // for once.
+        let line = at.map(|l| l + script_line - 1);
+        rux_script::located(line, || {
+            rux_script::error_script(format!(
+                "a <script> function reads `{name}`, which is declared nowhere: \
+                 no caller can have it in scope. Declare it with \
+                 `let {name} = signal(\u{2026})`, or check the spelling"
+            ));
+        });
+    }
+}
+
+/// Every name the template puts in scope for something a handler calls.
+///
+/// Two sources, and both are callers: an `r-for` binds a name for the whole
+/// row, and a handler's own `let`s are in scope inside whatever that handler
+/// goes on to call. Collected from the components too, since a component's
+/// handler calling a shared `fn` is a caller like any other.
+fn names_callers_bring(template: &rux_parser::Element, engine: &rux_script::Engine) -> HashSet<String> {
+    let mut names = HashSet::new();
+    collect_caller_names(template, engine, &mut names);
+    names
+}
+
+fn collect_caller_names(
+    el: &rux_parser::Element,
+    engine: &rux_script::Engine,
+    out: &mut HashSet<String>,
+) {
+    if let Some(expr) = el.attr("r-for") {
+        if let Some((var, _)) = rux_style::parse_for(expr) {
+            out.insert(var.to_string());
+        }
+    }
+    for rux_parser::Attr { name, value, .. } in &el.attrs {
+        if name.starts_with('@') || name == "guard" {
+            out.extend(engine.declared_names(value));
+        }
+    }
+    for child in &el.children {
+        if let rux_parser::Node::Element(child) = child {
+            collect_caller_names(child, engine, out);
         }
     }
 }
@@ -399,6 +593,15 @@ pub struct Focus {
     /// reorders: the identity is the row, not the position, so nothing has to
     /// be remapped afterwards.
     pub row: Option<String>,
+    /// The component instance the focused input was written in, when it is
+    /// inside one, and the scope its model is read and written in.
+    ///
+    /// The third part of an input's identity. `model` and `row` say *which*
+    /// input; this says where its name means anything. A component's state is
+    /// private to the instance, so the same `r-model` text in two instances of
+    /// one component is two different values, and neither of them is a document
+    /// signal.
+    pub instance: Option<String>,
     pub caret: usize,
     pub anchor: usize,
     /// The byte range of an in-progress IME composition, if one is running. The
@@ -415,13 +618,26 @@ impl Focus {
 
     /// The same, in a known `r-for` row.
     pub fn at_row(model: impl Into<String>, row: Option<String>, caret: usize) -> Self {
-        Self { model: model.into(), row, caret, anchor: caret, preedit: None }
+        Self { model: model.into(), row, instance: None, caret, anchor: caret, preedit: None }
     }
 
-    /// Whether this focus is the input bound to `model` in row `row`. Both
-    /// halves matter: a list's rows all share one model.
-    pub fn is(&self, model: &str, row: Option<&str>) -> bool {
-        self.model == model && self.row.as_deref() == row
+    /// The same, in a known component instance.
+    pub fn at_row_in(
+        model: impl Into<String>,
+        row: Option<String>,
+        instance: Option<String>,
+        caret: usize,
+    ) -> Self {
+        Self { instance, ..Self::at_row(model, row, caret) }
+    }
+
+    /// Whether this focus is the input bound to `model` in row `row` of
+    /// `instance`. All three matter: a list's rows all share one model, and so
+    /// do two instances of one component.
+    pub fn is(&self, model: &str, row: Option<&str>, instance: Option<&str>) -> bool {
+        self.model == model
+            && self.row.as_deref() == row
+            && self.instance.as_deref() == instance
     }
 
     /// The selected range, low to high.
@@ -455,7 +671,7 @@ fn apply_focus_in(node: &mut LayoutNode, focus: Option<&Focus>, row: Option<&str
     if node.model.is_some() {
         if let Some(text) = node.children.first_mut().and_then(|c| c.text.as_mut()) {
             let mine = focus.filter(|f| {
-                node.model.as_deref().is_some_and(|m| f.is(m, row))
+                node.model.as_deref().is_some_and(|m| f.is(m, row, node.instance.as_deref()))
             });
             // An empty input shows its placeholder; the caret still sits at 0.
             text.caret = mine.map(|f| f.caret.min(text.text.len()));
@@ -596,6 +812,23 @@ impl LoadError {
         Self { message, file: None, line: None, column: None, parse: false }
     }
 
+    /// A failure that belongs to one line of a known file.
+    ///
+    /// `parse: false`, because this is not the parser talking and the flattened
+    /// sentence must not grow a "parse error at" prefix it has never had. The
+    /// position travels in the fields, which is what a checker draws the
+    /// squiggle from; an unplaced error is drawn at line 1, pointing at
+    /// `<template>` for a mistake in `<script>`.
+    fn at_line(message: String, line: usize, file: &Path) -> Self {
+        Self {
+            message,
+            file: Some(file.to_path_buf()),
+            line: Some(line),
+            column: None,
+            parse: false,
+        }
+    }
+
     /// A script failure, moved from section coordinates into file ones.
     ///
     /// `script_line` is the 1-based file line the `<script>` body starts on, so
@@ -693,69 +926,179 @@ impl Document {
         // its own script stops.
         let main_script_lines = main_script.lines().count();
         let mut combined_script = main_script;
-        for import in imports {
-            let comp_path = base.join(&import.file);
-            let comp_src = std::fs::read_to_string(&comp_path).map_err(|e| {
-                LoadError::plain(format!("reading component {}: {e}", comp_path.display()))
-            })?;
-            let mut comp_sfc =
-                rux_parser::parse_sfc(&comp_src).map_err(|e| LoadError::parse(e, Some(&comp_path)))?;
-            // A component's `src` is relative to the component, not to whoever
-            // imported it. Anything else would make a component unusable from a
-            // second directory, which is the whole point of having one.
-            let comp_base = comp_path.parent().unwrap_or_else(|| Path::new(".")).to_path_buf();
-            resolve_style_includes(&mut comp_sfc, &comp_base)?;
-            let (comp_script, _nested) = extract_imports(&comp_sfc.script);
-            // A component's own computed/effect declarations are not
-            // supported yet; strip them so the merged script still compiles.
-            let (comp_script, comp_computeds, comp_effects, comp_hooks) =
-                extract_reactives(&comp_script);
-            // A component's `computed` lines are evaluated per instance, in that
-            // instance's scope, as part of expanding it; its `effect` blocks are
-            // run per instance and subscribe to what they read. Both are kept by
-            // tag, like the hooks and like the component's functions: the
-            // declaration is shared, the scope it runs in is not.
-            // A computed is declared in the instance's script as a placeholder
-            // rather than as its own expression. Creating an instance runs that
-            // script in a scope of its own, without the document's signals, so a
-            // computed that reads one would fail there, and a failure takes the
-            // whole script with it: the instance would come up with *no* state
-            // at all. The real value is computed at mount, before the tree that
-            // shows it is built.
-            let mut comp_script = comp_script;
-            for computed in &comp_computeds {
-                comp_script = comp_script.replace(
-                    &format!("let {} = {};", computed.name, computed.expr),
-                    &format!("let {} = 0;", computed.name),
-                );
+        // Every file's imports, not just the document's.
+        //
+        // This used to be one pass over `imports`, with a component's own `use`
+        // lines parsed and then thrown away (`let (comp_script, _nested) = ...`).
+        // So a component could not use a component: the tag matched nothing in
+        // the one shared map, expanded to nothing, and said nothing, unless the
+        // root document happened to import the same file too. Proven on a real
+        // project 2026-09-15, where a `<task>` list rendered empty and read as
+        // "no tasks yet".
+        //
+        // A worklist rather than recursion, so a cycle is a `contains_key` and
+        // not a stack overflow: a file already loaded contributes its tag to the
+        // importing file's namespace and is not walked a second time.
+        let mut namespaces: HashMap<String, Namespace> = HashMap::new();
+        let mut queue: Vec<ImportJob> = vec![ImportJob {
+            owner: DOCUMENT_NAMESPACE.to_string(),
+            owner_path: path.to_path_buf(),
+            owner_script_line: sfc.script_line,
+            base: base.to_path_buf(),
+            imports,
+        }];
+        while let Some(job) = queue.pop() {
+            // What this one file's markup may write. Recorded even when it is
+            // empty, so "imports nothing" and "not in the map" stay one answer.
+            let mut namespace = Namespace::new();
+            for import in job.imports {
+                let at = job.owner_script_line + import.line - 1;
+                // A half-typed `use` names no file, and the filesystem error it
+                // used to produce talked about a path ending in `/.rux`, which is
+                // not something the author wrote.
+                if import.empty_segment {
+                    return Err(LoadError::at_line(
+                        "this `use` names no component: a path segment is empty. \
+                         Write `use components::name;`"
+                            .to_string(),
+                        at,
+                        &job.owner_path,
+                    ));
+                }
+                // Reported, not refused: it resolves, and every file written this
+                // way goes on working. See `Import::hyphenated_path` for why it
+                // is worth saying anything at all.
+                if import.hyphenated_path {
+                    let written = import.file.trim_end_matches(".rux").replace('/', "::");
+                    let owner = job.owner_path.clone();
+                    rux_script::in_file(Some(owner), || {
+                        rux_script::located(Some(at), || {
+                            rux_script::warn_script(format!(
+                                "`use {written};` reads as subtraction in script: `-` is the \
+                                 minus operator, and a `use` path is the one place it happens \
+                                 not to be parsed. Write `use {};` - it finds the same file, \
+                                 hyphenated or not",
+                                written.replace('-', "_")
+                            ))
+                        })
+                    });
+                }
+                let comp_path =
+                    resolve_import(&job.base, &import.file).map_err(|(beside, from_root)| {
+                        let mut looked = format!("`{}`", beside.display());
+                        if let Some(root) = from_root.filter(|r| *r != beside) {
+                            looked.push_str(&format!(" and `{}`", root.display()));
+                        }
+                        LoadError::at_line(
+                            format!(
+                                "no component file for `{}`: looked in {looked}",
+                                import.file.trim_end_matches(".rux").replace('/', "::")
+                            ),
+                            at,
+                            &job.owner_path,
+                        )
+                    })?;
+                let key = component_key(&comp_path);
+                // The tag this file may write, and what it resolves to. Recorded
+                // before the load is skipped below, so a second importer of the
+                // same file still gets the tag in its own namespace.
+                namespace.insert(import.tag.clone(), key.clone());
+                // Already loaded, by this file or another. Its own imports are
+                // already queued, and this is also where a cycle stops.
+                if components.contains_key(&key) {
+                    continue;
+                }
+
+                let comp_src = std::fs::read_to_string(&comp_path).map_err(|e| {
+                    LoadError::at_line(
+                        format!("reading component {}: {e}", comp_path.display()),
+                        at,
+                        &job.owner_path,
+                    )
+                })?;
+                let mut comp_sfc = rux_parser::parse_sfc(&comp_src)
+                    .map_err(|e| LoadError::parse(e, Some(&comp_path)))?;
+                // Parsing does no IO, so the parser cannot know this and leaves
+                // it `None`. Filling it in here is what lets a warning raised
+                // while building this component name its file, not the importer's.
+                comp_sfc.file = Some(comp_path.clone());
+                // A component's `src` is relative to the component, not to
+                // whoever imported it. Anything else would make a component
+                // unusable from a second directory, which is the point of one.
+                let comp_base =
+                    comp_path.parent().unwrap_or_else(|| Path::new(".")).to_path_buf();
+                resolve_style_includes(&mut comp_sfc, &comp_base)?;
+                let (comp_script, nested) = extract_imports(&comp_sfc.script);
+                // A component's own computed/effect declarations are not
+                // supported yet; strip them so the merged script still compiles.
+                let (comp_script, comp_computeds, comp_effects, comp_hooks) =
+                    extract_reactives(&comp_script);
+                // Kept by the component's key, like the hooks and like its
+                // functions: the declaration is shared, the scope it runs in is
+                // per instance.
+                //
+                // A computed is declared in the instance's script as a
+                // placeholder rather than as its own expression. Creating an
+                // instance runs that script in a scope of its own, without the
+                // document's signals, so a computed that reads one would fail
+                // there, and a failure takes the whole script with it: the
+                // instance would come up with *no* state at all. The real value
+                // is computed at mount, before the tree that shows it is built.
+                let mut comp_script = comp_script;
+                for computed in &comp_computeds {
+                    comp_script = comp_script.replace(
+                        &format!("let {} = {};", computed.name, computed.expr),
+                        &format!("let {} = 0;", computed.name),
+                    );
+                }
+                if !comp_computeds.is_empty() {
+                    component_computeds.insert(key.clone(), comp_computeds);
+                }
+                if !comp_effects.is_empty() {
+                    component_effects.insert(key.clone(), comp_effects);
+                }
+                // Its lifecycle hooks are kept, per component, and run per
+                // instance.
+                //
+                // The stripping is not cosmetic: `components` stores the parsed
+                // component, and `rux-style` runs its script through `init_scope`
+                // to create each instance's state. A `mounted { ... }` block left
+                // in there is not a declaration, it is a statement rhai would try
+                // to execute once per instance at creation.
+                if !comp_hooks.is_empty() {
+                    component_hooks.insert(key.clone(), comp_hooks);
+                }
+                comp_sfc.script = comp_script.clone();
+                // Only its *functions* join the shared engine. Its `let`s do not:
+                // they are the state each instance gets a private copy of, so
+                // merging them here would put one shared variable behind every
+                // instance, which is exactly the bug that split was fixing.
+                //
+                // Functions stay shared across every file, unlike tags. That is
+                // deliberate and is the older rule: a component may call a `fn`
+                // its caller declared, which `set_is_fragment` exists to keep
+                // checkable.
+                combined_script.push('\n');
+                combined_script.push_str(&component_functions(&comp_script));
+                let comp_script_line = comp_sfc.script_line;
+                components.insert(key.clone(), comp_sfc);
+                queue.push(ImportJob {
+                    owner: key,
+                    owner_path: comp_path,
+                    owner_script_line: comp_script_line,
+                    base: comp_base,
+                    imports: nested,
+                });
             }
-            if !comp_computeds.is_empty() {
-                component_computeds.insert(import.tag.clone(), comp_computeds);
-            }
-            if !comp_effects.is_empty() {
-                component_effects.insert(import.tag.clone(), comp_effects);
-            }
-            // Its lifecycle hooks are kept, per component, and run per instance.
-            //
-            // The stripping is not cosmetic: `components` stores the parsed
-            // component, and `rux-style` runs its script through `init_scope` to
-            // create each instance's state. A `mounted { … }` block left in
-            // there is not a declaration, it is a statement rhai would try to
-            // execute once per instance at creation.
-            if !comp_hooks.is_empty() {
-                component_hooks.insert(import.tag.clone(), comp_hooks);
-            }
-            comp_sfc.script = comp_script.clone();
-            // Only its *functions* join the shared engine. Its `let`s do not:
-            // they are the state each instance gets a private copy of, so
-            // merging them here would put one shared variable behind every
-            // instance, which is exactly the bug this is fixing. `rux-style`
-            // runs the same split and hands the statements to `init_scope`.
-            combined_script.push('\n');
-            combined_script.push_str(&component_functions(&comp_script));
-            components.insert(import.tag, comp_sfc);
+            namespaces.insert(job.owner, namespace);
         }
 
+        // A document whose root is `<screen>` is a page and has no caller, so a
+        // name it does not declare can come from nowhere. Anything else is a
+        // fragment, which is to say a component, and its undeclared names may be
+        // props the caller supplies. Set before the first build, since that is
+        // when expressions are evaluated.
+        rux_script::set_is_fragment(sfc.template.tag != "screen");
         // Before the first build: a `:to` calling `path_for` is evaluated
         // during that build, so the names have to be known by then.
         rux_script::set_routes(rux_style::named_routes(&sfc.template));
@@ -766,18 +1109,38 @@ impl Document {
             .map_err(|e| LoadError::in_script(e, sfc.script_line, main_script_lines, Some(path)))?;
         let mut instances = Instances::new();
         let mut swaps = Swaps::new();
-        let (mut root, registry) = rux_style::build_styled_tree_tracked(&sfc, &components, &mut engine, &mut instances, &mut swaps)
+        let (mut root, registry) = rux_style::build_styled_tree_tracked(&sfc, &components, &namespaces, &mut engine, &mut instances, &mut swaps)
             .map_err(LoadError::plain)?;
         resolve_images(&mut root, base);
         // Before the warnings are drained below, so a handler that cannot
         // compile is reported by `rux check` and by the overlay alike.
-        check_handlers(&sfc.template, &engine);
-        for component in components.values() {
-            check_handlers(&component.template, &engine);
+        // Which tags are components is a per-file question now, not a
+        // document-wide one: a component takes any `@name` as a listener for an
+        // event it emits, and a tag that is a component in one file may be
+        // nothing at all in the next. Reading it from the whole registry would
+        // excuse a typo'd `@handler` on a tag this file cannot even write.
+        let tags_in = |key: &str| -> std::collections::HashSet<String> {
+            namespaces.get(key).map(|ns| ns.keys().cloned().collect()).unwrap_or_default()
+        };
+        check_handlers(&sfc.template, &engine, &tags_in(DOCUMENT_NAMESPACE));
+        for (key, component) in &components {
+            // Its handlers are on its lines, so they are reported against its
+            // file. Without this they carried the component's line number and
+            // the *document's* name, which points a reader confidently at an
+            // unrelated line of a file that is fine.
+            rux_script::in_file(component.file.clone(), || {
+                check_handlers(&component.template, &engine, &tags_in(key));
+            });
         }
+        let mut callers = names_callers_bring(&sfc.template, &engine);
+        for component in components.values() {
+            callers.extend(names_callers_bring(&component.template, &engine));
+        }
+        check_script_functions(&engine, &callers, main_script_lines, sfc.script_line);
         let mut doc = Self {
             sfc,
             components,
+            namespaces,
             engine,
             base: base.to_path_buf(),
             focus: None,
@@ -839,6 +1202,9 @@ impl Document {
         }
         let (main_script, _imports) = extract_imports(&sfc.script);
         let (main_script, computeds, effects, hooks) = extract_reactives(&main_script);
+        // Same page/fragment rule as the file loader above: a `<screen>` root
+        // has no caller, so an undeclared name can come from nowhere.
+        rux_script::set_is_fragment(sfc.template.tag != "screen");
         rux_script::set_routes(rux_style::named_routes(&sfc.template));
         // Same mapping as `load_checked`, and the playground is the case that
         // most wants it: this is the only error surface it has. Nothing is
@@ -849,14 +1215,33 @@ impl Document {
         let mut instances = Instances::new();
         let mut swaps = Swaps::new();
         let (mut root, registry) =
-            rux_style::build_styled_tree_tracked(&sfc, &HashMap::new(), &mut engine, &mut instances, &mut swaps)
+            rux_style::build_styled_tree_tracked(
+                &sfc,
+                &HashMap::new(),
+                &HashMap::new(),
+                &mut engine,
+                &mut instances,
+                &mut swaps,
+            )
                 .map_err(LoadError::plain)?;
         let base = PathBuf::from(".");
         resolve_images(&mut root, &base);
-        check_handlers(&sfc.template, &engine);
+        // `from_source` has no filesystem, so it has no components either.
+        check_handlers(&sfc.template, &engine, &std::collections::HashSet::new());
+        // No components here either, so the document's own template is the whole
+        // of what a caller can bring.
+        // Nothing is appended here, so the whole compiled text is this
+        // document's own.
+        check_script_functions(
+            &engine,
+            &names_callers_bring(&sfc.template, &engine),
+            usize::MAX,
+            sfc.script_line,
+        );
         let mut doc = Self {
             sfc,
             components: HashMap::new(),
+            namespaces: HashMap::new(),
             engine,
             base,
             focus: None,
@@ -1022,6 +1407,7 @@ impl Document {
         let Ok((mut fresh_root, fresh_reg)) = rux_style::build_styled_tree_stateful(
             &self.sfc,
             &self.components,
+            &self.namespaces,
             &mut self.engine,
             &mut self.instances,
             &mut self.swaps,
@@ -1109,6 +1495,7 @@ impl Document {
         if let Ok((mut root, registry)) = rux_style::build_styled_tree_stateful(
             &self.sfc,
             &self.components,
+            &self.namespaces,
             &mut self.engine,
             &mut self.instances,
             &mut self.swaps,
@@ -1272,6 +1659,7 @@ impl Document {
         let Ok((mut fresh_root, fresh_reg)) = rux_style::build_styled_tree_stateful(
             &self.sfc,
             &self.components,
+            &self.namespaces,
             &mut self.engine,
             &mut self.instances,
             &mut self.swaps,
@@ -1338,7 +1726,7 @@ impl Document {
     /// to a rebuild only when `model` is also read structurally. The caller sets
     /// the caret afterward via [`set_focus`](Self::set_focus).
     pub fn apply_edit(&mut self, model: &str, value: &str) {
-        self.apply_edit_in(model, None, value);
+        self.apply_edit_in(model, None, None, value);
     }
 
     /// [`apply_edit`](Self::apply_edit) for an input in a known `r-for` row.
@@ -1347,19 +1735,106 @@ impl Document {
     /// list it can mention the loop variable, which only exists in that row's
     /// scope. The scope was captured when the input was built, so this looks it
     /// up rather than reconstructing it.
-    pub fn apply_edit_in(&mut self, model: &str, row: Option<&str>, value: &str) {
-        let locals = self.locals_for(model, row);
-        let changed = self.engine.assign_string(model, value, &locals);
-        if changed.is_empty() {
+    /// `instance` is the component the input was written in, and is what makes
+    /// an `r-model` inside a component work at all: its state is private to the
+    /// instance and is not a document signal, so the write has to happen in that
+    /// instance's scope and be handed back to it afterwards, exactly as a
+    /// handler's writes are.
+    pub fn apply_edit_in(
+        &mut self,
+        model: &str,
+        row: Option<&str>,
+        instance: Option<&str>,
+        value: &str,
+    ) {
+        let Some(key) = instance.filter(|k| self.instances.contains_key(*k)) else {
+            let locals = self.locals_for(model, row, None);
+            let changed = self.engine.assign_string(model, value, &locals);
+            if changed.is_empty() {
+                return;
+            }
+            self.apply_change(&changed);
             return;
+        };
+
+        // The same shape as `dispatch_handler`: run the assignment with the
+        // instance's own names in scope, then write back only the names the
+        // instance owns. The value is quoted as a literal, because it is
+        // somebody's typing and may hold a quote or a backslash.
+        let key = key.to_string();
+        let locals = self.scope_for(model, row, Some(&key));
+        let src = format!("{model} = {}", rux_reactive::json_string(value));
+        let (after, changed) = self.engine.run_scoped_handler(&src, &locals);
+        let moved = self.write_back_instance(&key, after);
+
+        if !changed.is_empty() {
+            self.apply_change(&changed);
         }
-        self.apply_change(&changed);
+        if moved {
+            // Instance state is not a signal, so no patch can find it: the
+            // rebuild is the only thing that reads it again. A component is a
+            // subtree, so this is bounded.
+            self.refresh_instance_computeds(None);
+            self.rebuild();
+        }
     }
 
-    /// An input's current value, read in its own row's scope.
-    pub fn value_in(&mut self, model: &str, row: Option<&str>) -> String {
-        let locals = self.locals_for(model, row);
+    /// An input's current value, read in its own row's and instance's scope.
+    pub fn value_in(&mut self, model: &str, row: Option<&str>, instance: Option<&str>) -> String {
+        let locals = self.scope_for(model, row, instance);
         self.engine.get_string_in(model, &locals)
+    }
+
+    /// Everything that was in scope where this input was built: the component
+    /// instance's own state and props, then the `r-for` row's loop variables.
+    ///
+    /// In that order, so a loop variable shadows a state name of the same
+    /// spelling, which is what the nesting on the page says should happen.
+    fn scope_for(
+        &self,
+        model: &str,
+        row: Option<&str>,
+        instance: Option<&str>,
+    ) -> Vec<(String, rux_reactive::Value)> {
+        let mut locals = match instance.and_then(|k| self.instances.get(k)) {
+            Some(entry) => {
+                let mut own = entry.state.clone();
+                own.extend(entry.props.iter().cloned());
+                own
+            }
+            None => Vec::new(),
+        };
+        locals.extend(self.locals_for(model, row, instance));
+        locals
+    }
+
+    /// Hand an instance back the names it owns after something ran in its scope,
+    /// and say whether any of them actually moved.
+    ///
+    /// Only its own state: a prop belongs to the caller, so writing one here
+    /// would look like it worked and be forgotten on the next build. That is the
+    /// same rule handlers follow, and an `r-model` bound to a prop is the case
+    /// it catches.
+    fn write_back_instance(&mut self, key: &str, after: Vec<(String, rux_reactive::Value)>) -> bool {
+        let Some(entry) = self.instances.get(key) else { return false };
+        let state_names: Vec<String> = entry.state.iter().map(|(n, _)| n.clone()).collect();
+        let mut moved = false;
+        for (name, value) in after {
+            if !state_names.contains(&name) {
+                continue;
+            }
+            let slot = self
+                .instances
+                .get_mut(key)
+                .and_then(|i| i.state.iter_mut().find(|(n, _)| *n == name));
+            if let Some(slot) = slot {
+                if slot.1 != value {
+                    slot.1 = value;
+                    moved = true;
+                }
+            }
+        }
+        moved
     }
 
     /// The loop variables that were in scope where this input was built.
@@ -1367,11 +1842,20 @@ impl Document {
     /// Matched on model *and* row, since a list's rows all record the same
     /// model. Empty for an input outside a list, which is the common case and
     /// needs nothing.
-    fn locals_for(&self, model: &str, row: Option<&str>) -> Vec<(String, rux_reactive::Value)> {
+    fn locals_for(
+        &self,
+        model: &str,
+        row: Option<&str>,
+        instance: Option<&str>,
+    ) -> Vec<(String, rux_reactive::Value)> {
         self.registry
             .value
             .iter()
-            .find(|b| b.model == model && b.row.as_deref() == row)
+            .find(|b| {
+                b.model == model
+                    && b.row.as_deref() == row
+                    && b.instance.as_deref() == instance
+            })
             .map(|b| b.locals.clone())
             .unwrap_or_default()
     }
@@ -1955,10 +2439,19 @@ impl Document {
                     // when it is an input, and asking anything else to take
                     // focus is a no-op rather than a silent half-state.
                     let found = node_at(&self.root, &path)
-                        .and_then(|n| n.model.clone().map(|m| (m, n.key.clone())));
-                    if let Some((model, row)) = found {
-                        let caret = self.engine.get_string(&model).chars().count();
-                        self.pending_focus = Some(Some(Focus::at_row(model, row, caret)));
+                        .and_then(|n| {
+                            n.model.clone().map(|m| (m, n.key.clone(), n.instance.clone()))
+                        });
+                    if let Some((model, row, instance)) = found {
+                        // Read in the input's own scope. Read in the document's,
+                        // an input inside a component reported its own model as
+                        // undefined and the caret landed in an empty field.
+                        let caret = self
+                            .value_in(&model, row.as_deref(), instance.as_deref())
+                            .chars()
+                            .count();
+                        self.pending_focus =
+                            Some(Some(Focus::at_row_in(model, row, instance, caret)));
                         acted = true;
                     } else {
                         rux_script::warn_script(
@@ -2029,24 +2522,7 @@ impl Document {
         // Only the component's own names are written back. A prop belongs to the
         // caller: assigning to one inside a component would look like it worked
         // and be forgotten on the next build, which is worse than not allowing it.
-        let state_names: Vec<String> =
-            self.instances[key].state.iter().map(|(n, _)| n.clone()).collect();
-        let mut moved = false;
-        for (name, value) in after {
-            if !state_names.contains(&name) {
-                continue;
-            }
-            let slot = self
-                .instances
-                .get_mut(key)
-                .and_then(|i| i.state.iter_mut().find(|(n, _)| *n == name));
-            if let Some(slot) = slot {
-                if slot.1 != value {
-                    slot.1 = value;
-                    moved = true;
-                }
-            }
-        }
+        let mut moved = self.write_back_instance(key, after);
 
         // A handler that moved this instance's state has moved whatever its
         // computeds derive from, and those are read by the build that is about
@@ -2131,6 +2607,14 @@ impl Document {
         // runs exactly once, which is the whole difference from an `effect`, and
         // is why it needs a flag rather than a dependency set.
         writes.extend(self.run_mounted());
+        // Drained here, before anything else can claim it. A timer request sits
+        // in one queue shared by the whole document, and the mounts below take
+        // whatever is pending and attribute it to the instance that just
+        // mounted. A document `mounted` that starts the app's clock while any
+        // component is on the first build would otherwise hand its interval to
+        // that component, and the clock would stop the moment the component
+        // went away.
+        self.apply_timer_requests(None);
         self.diagnostics.warnings.extend(collect_warnings());
         if !writes.is_empty() {
             // An effect or hook that set something on load has to be reflected,
@@ -2145,8 +2629,8 @@ impl Document {
         // handler does, and a queue nobody drains is the same as no feature at
         // all. The shell picks these up after the first frame is laid out.
         let _ = self.apply_element_actions();
-        // A document `mounted` starting the app's clock is the obvious use, so
-        // its timers are picked up here too, owned by the document.
+        // Anything a hook started while settling and nobody claimed belongs to
+        // the document. The document's own request was taken above.
         self.apply_timer_requests(None);
         self.diagnostics.warnings.extend(collect_warnings());
     }
@@ -2968,11 +3452,152 @@ fn component_functions(script: &str) -> String {
 }
 
 /// A resolved component import.
+/// The entry points that mark the top of a project, in the order `rux run`
+/// prefers them.
+const WORKSPACE_ENTRIES: [&str; 2] = ["app.rux", "index.rux"];
+
+/// The directory holding this project's entry point, found by walking up from
+/// `from`, or `None` outside a project.
+///
+/// `rux run` already walks up like this so that the tool works from a
+/// subdirectory the way `git` does. Imports need the same notion of a root for
+/// the fallback below.
+fn workspace_root(from: &Path) -> Option<PathBuf> {
+    let mut dir = Some(from);
+    while let Some(current) = dir {
+        if WORKSPACE_ENTRIES.iter().any(|name| current.join(name).is_file()) {
+            return Some(current.to_path_buf());
+        }
+        dir = current.parent();
+    }
+    None
+}
+
+/// Where a `use a::b;` in a file under `base` actually points.
+///
+/// **Beside the importing file first**, which is what Rux has always done and
+/// what keeps a component usable from a second directory. Then, if nothing is
+/// there, **from the project root**, which is what an author means when they
+/// write `use components::task;` in `pages/home.rux`: `components/` is a place
+/// in the project, not a place beside this file.
+///
+/// Relative-first rather than root-first so that no document which resolves
+/// today can start resolving somewhere else. The fallback can only turn a hard
+/// error into a working import.
+///
+/// This is the answer to the trap that had no answer: `use` resolved downward
+/// only, with no `super::` and no `..`, so a file in a subdirectory could not
+/// reach a shared component at all and had to keep its own copy.
+/// A `use` path is written in snake, and the file may not be.
+///
+/// `use new_task;` has to be snake because it is script: a `-` there is the
+/// subtraction operator everywhere else on the line, and a name that would be
+/// arithmetic one line further down is not a name. But the file beside it is
+/// named by a person, and `new-task.rux` is what a person who has been writing
+/// `<new-task>` all morning tends to type. Those two cannot both be right and
+/// have the author do the reconciling, which is the same split
+/// `find_component` closes on the template side.
+///
+/// So a path that finds nothing is looked for again with its underscores as
+/// hyphens. Tried **last**, after every exact candidate, so this can only turn
+/// a hard error into a working import and never move a document that resolves
+/// today — the same argument the root fallback above is built on.
+fn hyphenated(file: &str) -> Option<String> {
+    let swapped = file.replace('_', "-");
+    (swapped != file).then_some(swapped)
+}
+
+/// What a component file is filed under, once for the whole load.
+///
+/// The **file**, not the tag, because a tag is a local name: two files may each
+/// `use` a different `task.rux` and each write `<task>`, and keying the registry
+/// by tag meant the second import quietly replaced the first. The path is what
+/// is actually unique.
+///
+/// Canonicalised where the filesystem allows it, so the same file reached two
+/// ways is one entry and is loaded once. A path that cannot be canonicalised
+/// (it may have been deleted between resolving and here) falls back to itself,
+/// which is still unique enough to key a map; the separators are normalised so
+/// the fallback cannot disagree with the canonical form about `/` and `\`.
+fn component_key(path: &Path) -> String {
+    let resolved = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    resolved.to_string_lossy().replace('\\', "/")
+}
+
+fn resolve_import(base: &Path, file: &str) -> Result<PathBuf, (PathBuf, Option<PathBuf>)> {
+    // Joined a segment at a time rather than as one `a/b.rux` string, so the
+    // result is spelled in the platform's own separator. Joining the whole
+    // thing produced `...\pages\components/task.rux` in every message on
+    // Windows, which reads like two different paths spliced together.
+    let join = |dir: &Path, name: &str| {
+        name.split('/').fold(dir.to_path_buf(), |acc, part| acc.join(part))
+    };
+    let root = workspace_root(base);
+    let beside = join(base, file);
+    let from_root = root.as_ref().map(|r| join(r, file));
+
+    // Exact spelling first, at both bases, then the hyphenated one at both.
+    let mut candidates = vec![Some(beside.clone()), from_root.clone()];
+    if let Some(swapped) = hyphenated(file) {
+        candidates.push(Some(join(base, &swapped)));
+        candidates.push(root.as_ref().map(|r| join(r, &swapped)));
+    }
+    for candidate in candidates.into_iter().flatten() {
+        if candidate.is_file() {
+            return Ok(candidate);
+        }
+    }
+    // None of them: hand back the two exact ones, which are the paths the
+    // author actually wrote. Listing four spellings of the same miss would make
+    // the message harder to read, not easier.
+    Err((beside, from_root))
+}
+
+/// One file's imports, waiting to be walked.
+///
+/// `owner_path` and `owner_script_line` are the *importing* file's, so a bad
+/// `use` inside a component is reported against that component and on its own
+/// line, rather than against whichever document happened to pull it in.
+struct ImportJob {
+    /// The namespace key this file's imports belong to: a component's key, or
+    /// [`DOCUMENT_NAMESPACE`] for the document itself.
+    owner: String,
+    owner_path: PathBuf,
+    owner_script_line: usize,
+    /// The directory its own `use` paths resolve against, which is its own,
+    /// not the document's.
+    base: PathBuf,
+    imports: Vec<Import>,
+}
+
 struct Import {
     /// Custom-element tag (last path segment, `_` → `-`).
     tag: String,
     /// File path relative to the importing document (`a::b` → `a/b.rux`).
     file: String,
+    /// 1-based line **within the script section**, so a failure can be placed
+    /// in the file the way a script error is.
+    ///
+    /// Without it a component that would not load was reported with no position
+    /// at all and drawn at the top of the file, pointing at `<template>` for a
+    /// mistake on the last line of `<script>`.
+    line: usize,
+    /// `use components::;` and friends: the path parses as segments but one of
+    /// them is empty, so it names no file.
+    ///
+    /// Kept as an import rather than dropped, because dropping it hands
+    /// `use components::;` to rhai, which reports it in its own vocabulary. It
+    /// is a half-typed import and deserves to be told so.
+    empty_segment: bool,
+    /// The path was written with a `-` in it, as `use new-task;`.
+    ///
+    /// It resolves, and has since before anyone noticed: `use` lines are lifted
+    /// out of the script before rhai ever sees them, so the hyphen is never
+    /// parsed as anything. Put the same text one line further down and it is
+    /// `new` minus `task`. A path that would be arithmetic anywhere else in the
+    /// same section is a spelling waiting to break, so it is reported and the
+    /// snake form named, which finds the same file either way.
+    hyphenated_path: bool,
 }
 
 /// Split `use a::b;` lines out of a script, returning the cleaned script (which
@@ -2981,7 +3606,7 @@ fn extract_imports(script: &str) -> (String, Vec<Import>) {
     let mut cleaned = String::new();
     let mut imports = Vec::new();
 
-    for line in script.lines() {
+    for (index, line) in script.lines().enumerate() {
         let trimmed = line.trim();
         if let Some(rest) = trimmed.strip_prefix("use ") {
             // A `use` must be its own statement on its own line; a path with
@@ -2990,12 +3615,20 @@ fn extract_imports(script: &str) -> (String, Vec<Import>) {
                 !p.is_empty() && !p.contains(char::is_whitespace) && !p.contains(';')
             }) {
                 let segments: Vec<&str> = path.split("::").collect();
+                let empty_segment = segments.iter().any(|s| s.is_empty());
+                let hyphenated_path = path.contains('-');
                 let file = format!("{}.rux", segments.join("/"));
                 let tag = segments
                     .last()
                     .map(|s| s.replace('_', "-"))
                     .unwrap_or_default();
-                imports.push(Import { tag, file });
+                imports.push(Import {
+                    tag,
+                    file,
+                    line: index + 1,
+                    empty_segment,
+                    hyphenated_path,
+                });
                 // A blank line rather than no line. Dropping it shifted every
                 // line below by one, so rhai's positions no longer matched the
                 // section and a script error could not be placed in the file.
@@ -3161,6 +3794,463 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
+    /// Every warning from a template used to arrive with no line at all, so the
+    /// overlay, `rux check --format json` and the editor gutter all put the
+    /// squiggle at the top of the file: on the `<` of `<template>`, which is
+    /// the one place in the document where nothing is ever wrong.
+    ///
+    /// The lines here are deliberately awkward. `r-if` and `r-for` are read by
+    /// the *parent's* loop, so without placing them they take the parent's
+    /// line; `:class` and `@tap` sit on a later line than the tag they belong
+    /// to, because elements are routinely written across several lines; and a
+    /// `{{ }}` inside an `r-for` row is evaluated once per item, under a
+    /// position the loop itself set.
+    #[test]
+    fn template_warnings_land_on_the_line_that_is_wrong() {
+        let _ = take_warnings();
+        // Written out with explicit newlines so the assertions below can be
+        // read against it: the line numbers are the point of the test.
+        let src = "<template>\n\
+                   \x20 <screen>\n\
+                   \x20   <view r-if=\"missing_one\">a</view>\n\
+                   \x20   <view\n\
+                   \x20       class=\"x\"\n\
+                   \x20       :class=\"missing_two\">b</view>\n\
+                   \x20   <view r-for=\"d in missing_three\"><text>x</text></view>\n\
+                   \x20   <button @tap=\"no_such_call()\">go</button>\n\
+                   \x20   <text>{{ missing_four }}</text>\n\
+                   \x20 </screen>\n\
+                   </template>";
+        let doc = Document::from_source(src).expect("renders anyway");
+        let line_of = |needle: &str| {
+            doc.diagnostics
+                .warnings
+                .iter()
+                .find(|w| w.message.contains(needle))
+                .unwrap_or_else(|| panic!("no warning mentioning {needle}: {:?}", doc.diagnostics.warnings))
+                .line
+        };
+        assert_eq!(line_of("missing_one"), Some(3), "r-if, read by the parent's loop");
+        assert_eq!(line_of("missing_two"), Some(6), ":class, three lines below its tag");
+        assert_eq!(line_of("missing_three"), Some(7), "r-for, also read by the parent");
+        assert_eq!(line_of("no_such_call"), Some(8), "a handler");
+        assert_eq!(line_of("missing_four"), Some(9), "a text interpolation");
+    }
+
+    /// Calling a `fn` with the wrong number of arguments fails the moment it
+    /// runs, and in a handler nothing said so.
+    ///
+    /// Checked only for the document's own `fn`s. A registered native can be
+    /// overloaded on types nothing here can see, so the same check against the
+    /// whole registry would flag working code, and a check that does that is
+    /// worse than the silence it replaces.
+    #[test]
+    fn calling_a_fn_with_the_wrong_count_is_reported() {
+        let _ = take_warnings();
+        let doc = Document::from_source(
+            "<template><screen>\
+             <button @tap=\"two(1)\">a</button>\
+             <button @tap=\"two(1, 2, 3)\">b</button>\
+             <button @tap=\"none(5)\">c</button>\
+             <button @tap=\"two(1, 2)\">right</button>\
+             <button @tap=\"none()\">right</button>\
+             </screen></template>\n\
+             <script>let n = signal(0); fn two(a, b) { n = a + b } fn none() { n = 0 }</script>",
+        )
+        .expect("renders anyway");
+        let counts: Vec<&str> = doc
+            .diagnostics
+            .warnings
+            .iter()
+            .filter(|w| w.message.contains("takes"))
+            .map(|w| w.message.as_str())
+            .collect();
+        assert_eq!(counts.len(), 3, "three wrong calls, two right ones: {counts:?}");
+        assert!(
+            counts.iter().any(|m| m.contains("with 1 argument, and `two` takes 2 arguments")),
+            "{counts:?}"
+        );
+        assert!(counts.iter().any(|m| m.contains("with 3 arguments")), "{counts:?}");
+        assert!(
+            counts.iter().any(|m| m.contains("`none` takes 0 arguments")),
+            "{counts:?}"
+        );
+    }
+
+    /// A component's handler may call a `fn` its **parent** declared, because
+    /// only `fn` definitions are shared into the one engine. Read on its own
+    /// that component is an incomplete program, so an unresolvable call there
+    /// stays a warning, exactly as an undefined name does.
+    ///
+    /// Without this, checking any component that calls a shared helper reported
+    /// a function that plainly works as missing.
+    #[test]
+    fn an_unresolvable_call_is_an_error_in_a_page_and_a_warning_in_a_fragment() {
+        let _ = take_warnings();
+        let page = Document::from_source(
+            "<template><screen><button @tap=\"ghost()\">x</button></screen></template>",
+        )
+        .expect("renders anyway");
+        assert!(
+            page.diagnostics
+                .warnings
+                .iter()
+                .find(|w| w.message.contains("ghost"))
+                .expect("reported")
+                .is_error(),
+            "a page has no parent to define it: {:?}",
+            page.diagnostics.warnings
+        );
+
+        let _ = take_warnings();
+        let fragment = Document::from_source(
+            "<template><view><button @tap=\"ghost()\">x</button></view></template>",
+        )
+        .expect("renders anyway");
+        assert!(
+            !fragment
+                .diagnostics
+                .warnings
+                .iter()
+                .find(|w| w.message.contains("ghost"))
+                .expect("still reported")
+                .is_error(),
+            "a parent may declare it: {:?}",
+            fragment.diagnostics.warnings
+        );
+    }
+
+    /// `@class="big"` used to check clean and do nothing.
+    ///
+    /// The gesture vocabulary is fixed and known, so there is no "not honored
+    /// yet" for an `@name` to hide behind: if it is not one of the six, nothing
+    /// will ever run it.
+    #[test]
+    fn an_event_the_runtime_never_dispatches_is_an_error() {
+        let _ = take_warnings();
+        let doc = Document::from_source(
+            "<template><screen><view @class=\"big\">x</view></screen></template>",
+        )
+        .expect("renders anyway");
+        let found = doc
+            .diagnostics
+            .warnings
+            .iter()
+            .find(|w| w.message.contains("@class"))
+            .expect("reported");
+        assert!(found.is_error(), "and as an error, not a shrug: {found:?}");
+        assert!(
+            found.message.contains("@tap") && found.message.contains("@drag"),
+            "the message lists what does exist: {found:?}"
+        );
+    }
+
+    /// A valueless directive given a value says something with nowhere to go.
+    /// `r-else` and `r-else=""` are the same to the parser's `value`, so this
+    /// needs `Attr::has_value` to be visible at all.
+    #[test]
+    fn a_value_on_a_valueless_directive_is_an_error() {
+        let _ = take_warnings();
+        let doc = Document::from_source(
+            "<template><screen><text r-if=\"n > 0\">y</text>\
+             <text r-else=\"\">n</text></screen></template>\n\
+             <script>let n = signal(0);</script>",
+        )
+        .expect("renders anyway");
+        let found = doc
+            .diagnostics
+            .warnings
+            .iter()
+            .find(|w| w.message.contains("takes no value"))
+            .expect("reported");
+        assert!(found.is_error(), "{found:?}");
+
+        // And the correct form says nothing, or the check is noise on every
+        // branch anyone writes.
+        let _ = take_warnings();
+        let fine = Document::from_source(
+            "<template><screen><text r-if=\"n > 0\">y</text>\
+             <text r-else>n</text></screen></template>\n\
+             <script>let n = signal(0);</script>",
+        )
+        .expect("renders");
+        assert!(
+            !fine.diagnostics.warnings.iter().any(|w| w.message.contains("takes no value")),
+            "{:?}",
+            fine.diagnostics.warnings
+        );
+    }
+
+    /// Reading a name that does not exist is an error in a **page**, where
+    /// nothing can supply it, and a warning in a **fragment**, where a caller
+    /// can: props are not declared, so a component's `{{ label }}` is
+    /// indistinguishable from a typo when the file is read on its own.
+    ///
+    /// This is not hypothetical tidiness. The component `rux new` scaffolds
+    /// reads two props and nothing else, so escalating everywhere made the tool
+    /// ship a project that failed its own `rux check`, which is how this rule
+    /// was found.
+    #[test]
+    fn an_undefined_name_is_an_error_in_a_page_and_a_warning_in_a_fragment() {
+        let _ = take_warnings();
+        let page = Document::from_source(
+            "<template><screen><text>{{ absent }}</text></screen></template>",
+        )
+        .expect("renders anyway");
+        let in_page = page
+            .diagnostics
+            .warnings
+            .iter()
+            .find(|w| w.message.contains("absent"))
+            .expect("reported");
+        assert!(in_page.is_error(), "a page has no caller: {in_page:?}");
+
+        let _ = take_warnings();
+        let fragment =
+            Document::from_source("<template><view><text>{{ absent }}</text></view></template>")
+                .expect("renders anyway");
+        let in_fragment = fragment
+            .diagnostics
+            .warnings
+            .iter()
+            .find(|w| w.message.contains("absent"))
+            .expect("still reported");
+        assert!(
+            !in_fragment.is_error(),
+            "a fragment's caller may be passing it as a prop: {in_fragment:?}"
+        );
+    }
+
+    /// A warning from inside an imported component names **that** file.
+    ///
+    /// Errors have done this since components landed (`LoadError::file`);
+    /// warnings had no field for it, so they carried the component's line
+    /// number and the importing document's name. That pairing is worse than
+    /// saying nothing: it looks like a precise location, and it points at
+    /// whatever happens to be on that line of the wrong file. Adding line
+    /// numbers to template warnings is what made it dangerous, so the two
+    /// belong together.
+    #[test]
+    fn a_warning_inside_a_component_names_the_components_file() {
+        use std::fs;
+        let dir = std::env::temp_dir().join(format!("rux_compfile_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("components")).unwrap();
+        // The document is deliberately innocent on the lines the component's
+        // mistakes are on, so a wrong attribution cannot accidentally be right.
+        fs::write(
+            dir.join("app.rux"),
+            "<template>\n  <screen>\n    <text>ok</text>\n    <badge />\n  </screen>\n\
+             </template>\n<script>\nuse components::badge;\n</script>\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.join("components/badge.rux"),
+            "<template>\n  <view>\n    <text>{{ absent_name }}</text>\n  </view>\n</template>\n",
+        )
+        .unwrap();
+
+        let _ = take_warnings();
+        let doc = Document::load(&dir.join("app.rux")).expect("renders anyway");
+        let warning = doc
+            .diagnostics
+            .warnings
+            .iter()
+            .find(|w| w.message.contains("absent_name"))
+            .expect("the failure is reported");
+        assert_eq!(warning.line, Some(3), "the component's line 3");
+        assert_eq!(
+            warning.file.as_deref().and_then(|p| p.file_name()).and_then(|n| n.to_str()),
+            Some("badge.rux"),
+            "and the component's file, not the document that imported it"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// The parser is handed the `<template>` body alone, so it counts from 1 at
+    /// the template's first line and every position is short by whatever came
+    /// before it. A document that opens with `<script>` is the ordinary case,
+    /// not a corner one, and getting the shift wrong would move every squiggle
+    /// in the file by a constant nobody would think to check.
+    #[test]
+    fn lines_are_the_files_lines_not_the_templates() {
+        let _ = take_warnings();
+        let src = "<script>\nlet a = signal(1);\n</script>\n\n\
+                   <style>\n.x { color: red; }\n</style>\n\n\
+                   <template>\n  <screen>\n    <text>{{ missing_here }}</text>\n  </screen>\n\
+                   </template>";
+        let doc = Document::from_source(src).expect("renders anyway");
+        let warning = doc
+            .diagnostics
+            .warnings
+            .iter()
+            .find(|w| w.message.contains("missing_here"))
+            .expect("the failure is reported");
+        assert_eq!(
+            warning.line,
+            Some(11),
+            "`<template>` opens on line 9 and the text is on line 11: {:?}",
+            doc.diagnostics.warnings
+        );
+    }
+
+    /// A handler calling something that does not exist used to be silent.
+    ///
+    /// rhai resolves a function name when the call runs, so the handler
+    /// compiled clean and did nothing when tapped. The same mistake inside
+    /// `{{ }}` was reported during the build, so the language said a typo
+    /// mattered in one half and not the other, and the half it ignored is the
+    /// one where a dead handler looks exactly like a handler that never fired.
+    #[test]
+    fn a_handler_calling_nothing_says_so() {
+        let _ = take_warnings();
+        let doc = Document::from_source(
+            "<template><screen><button @tap=\"alert(1)\">go</button></screen></template>",
+        )
+        .expect("renders anyway");
+        assert!(
+            doc.diagnostics.warnings.iter().any(|w| w.message.contains("calls `alert`")
+                && w.message.contains("does not exist")),
+            "the warning names the call: {:?}",
+            doc.diagnostics.warnings
+        );
+    }
+
+    /// `signal.set(x)` is not an invented spelling: it is what `docs/02-spec.md`
+    /// taught, and that file was billed as the reference until 2026-08-25. It
+    /// escapes the unknown-name check because `set` really is registered, on
+    /// arrays, maps, blobs and strings, so it has to be recognised by its shape
+    /// and reported as the superseded API rather than as a missing function.
+    #[test]
+    fn the_pre_v0_3_signal_api_says_what_replaced_it() {
+        let _ = take_warnings();
+        let doc = Document::from_source(
+            "<template><screen><button @tap=\"searching.set(true)\">go</button></screen>\
+             </template>\n<script>let searching = signal(false);</script>",
+        )
+        .expect("renders anyway");
+        let said = |needle: &str| doc.diagnostics.warnings.iter().any(|w| w.message.contains(needle));
+        assert!(
+            said("`searching.set()`") && said("before v0.3"),
+            "it must name the call and say what happened to it: {:?}",
+            doc.diagnostics.warnings
+        );
+        assert!(
+            !said("does not exist"),
+            "`set` does exist, on arrays and maps, and saying otherwise teaches an \
+             author to distrust the next message: {:?}",
+            doc.diagnostics.warnings
+        );
+    }
+
+    /// A `fn` nobody has called yet is the quietest place a typo can sit: a
+    /// handler at least fails the moment somebody taps it. Functions calling
+    /// each other must still resolve, including one declared below its caller,
+    /// because that works at run time and a warning about it would be wrong.
+    #[test]
+    fn a_script_function_calling_nothing_says_so() {
+        let _ = take_warnings();
+        let doc = Document::from_source(
+            "<template><screen><button @tap=\"bump()\">go</button></screen></template>\n\
+             <script>\
+             let count = signal(0);\
+             fn bump() { count += 1; helper() }\
+             fn helper() { count += 2 }\
+             fn unused() { nonexistent_thing() }\
+             </script>",
+        )
+        .expect("renders");
+        let calls: Vec<_> = doc
+            .diagnostics
+            .warnings
+            .iter()
+            .filter(|w| w.message.contains("calls "))
+            .collect();
+        assert_eq!(calls.len(), 1, "one problem, not one per function: {calls:?}");
+        assert!(
+            calls[0].message.contains("nonexistent_thing"),
+            "and it is the one that cannot resolve: {calls:?}"
+        );
+    }
+
+    /// **The half that matters more than the warnings.** A check that flags
+    /// working code is worse than the silence it replaced, because the value of
+    /// a diagnostic is entirely that it is worth reading.
+    ///
+    /// Each of these is a real call that must stay silent: a two-argument `set`
+    /// on an array signal (the registered one), an ordinary method, a user
+    /// `fn`, an operator, and a signal read the way signals are actually read.
+    #[test]
+    fn handlers_that_work_are_not_warned_about() {
+        let _ = take_warnings();
+        let doc = Document::from_source(
+            "<template><screen>\
+             <button @tap=\"tasks.set(0, &quot;x&quot;)\">a</button>\
+             <button @tap=\"tasks.push(&quot;x&quot;)\">b</button>\
+             <button @tap=\"bump()\">c</button>\
+             <button @tap=\"count = count + 1\">d</button>\
+             <button @tap=\"count += tasks.len()\">e</button>\
+             </screen></template>\n\
+             <script>\
+             let tasks = signal([\"a\"]);\
+             let count = signal(0);\
+             fn bump() { count += 1 }\
+             </script>",
+        )
+        .expect("renders");
+        let noise: Vec<_> = doc
+            .diagnostics
+            .warnings
+            .iter()
+            .filter(|w| w.message.contains("calls "))
+            .collect();
+        assert!(noise.is_empty(), "nothing here is wrong: {noise:?}");
+    }
+
+    /// `r-for` binds one name, so the tuple form bound a local literally called
+    /// `(pot, index)` and left both `pot` and `index` undefined. All an author
+    /// saw was the undefined-variable warning for `index`, telling them to
+    /// declare it in `<script>` as a signal, which is not a thing anyone
+    /// reaching for a loop index can act on. The warning has to say that the
+    /// form itself is unsupported.
+    #[test]
+    fn the_r_for_tuple_form_says_it_is_unsupported() {
+        let _ = take_warnings(); // the sinks are global; start from a known state
+        let doc = Document::from_source(
+            "<template><screen><text r-for=\"(pot, index) in pots\">{{ pot }}</text></screen>\
+             </template>\n<script>let pots = signal([\"a\", \"b\"]);</script>",
+        )
+        .expect("the row still builds, so the rest of the document can be checked");
+        let said = |needle: &str| doc.diagnostics.warnings.iter().any(|w| w.message.contains(needle));
+        assert!(
+            said("no index or destructuring form"),
+            "the warning must name the form, not the symptom: {:?}",
+            doc.diagnostics.warnings
+        );
+        assert!(
+            said("`pot`, `index`"),
+            "and must name what is undefined as a result: {:?}",
+            doc.diagnostics.warnings
+        );
+    }
+
+    /// The ordinary single-name form must stay silent, or the warning above is
+    /// noise on every list in every document.
+    #[test]
+    fn the_ordinary_r_for_form_warns_about_nothing() {
+        let _ = take_warnings();
+        let doc = Document::from_source(
+            "<template><screen><text r-for=\"pot in pots\">{{ pot }}</text></screen></template>\n\
+             <script>let pots = signal([\"a\", \"b\"]);</script>",
+        )
+        .expect("renders");
+        assert!(
+            !doc.diagnostics.warnings.iter().any(|w| w.message.contains("r-for")),
+            "nothing to say about a well-formed loop: {:?}",
+            doc.diagnostics.warnings
+        );
+    }
+
     /// From source there is no file, so there is nothing for the path to be
     /// relative to. The document still renders; it just says what it lost.
     #[test]
@@ -3267,12 +4357,12 @@ mod tests {
     fn selection_paints_only_in_the_focused_input() {
         let mut doc = two_inputs();
 
-        doc.set_focus(Some(Focus { model: "name".into(), row: None, caret: 3, anchor: 1, preedit: None }));
+        doc.set_focus(Some(Focus { model: "name".into(), row: None, instance: None, caret: 3, anchor: 1, preedit: None }));
         assert_eq!(selection_of(&doc.root, "name"), Some((1, 3)));
         assert_eq!(selection_of(&doc.root, "city"), None);
 
         // Dragging leftwards puts the caret *before* the anchor; same range.
-        doc.set_focus(Some(Focus { model: "name".into(), row: None, caret: 1, anchor: 3, preedit: None }));
+        doc.set_focus(Some(Focus { model: "name".into(), row: None, instance: None, caret: 1, anchor: 3, preedit: None }));
         assert_eq!(selection_of(&doc.root, "name"), Some((1, 3)));
     }
 
@@ -3283,10 +4373,10 @@ mod tests {
     fn focus_moves_the_selection_out_of_the_old_input() {
         let mut doc = two_inputs();
 
-        doc.set_focus(Some(Focus { model: "name".into(), row: None, caret: 3, anchor: 0, preedit: None }));
+        doc.set_focus(Some(Focus { model: "name".into(), row: None, instance: None, caret: 3, anchor: 0, preedit: None }));
         assert_eq!(selection_of(&doc.root, "name"), Some((0, 3)));
 
-        doc.set_focus(Some(Focus { model: "city".into(), row: None, caret: 2, anchor: 0, preedit: None }));
+        doc.set_focus(Some(Focus { model: "city".into(), row: None, instance: None, caret: 2, anchor: 0, preedit: None }));
         assert_eq!(selection_of(&doc.root, "name"), None, "old input kept its selection");
         assert_eq!(selection_of(&doc.root, "city"), Some((0, 2)));
 
@@ -3420,12 +4510,12 @@ mod tests {
         .expect("load");
         let model = "rows[row.at.to_int()].note";
 
-        assert_eq!(doc.value_in(model, Some("a")), "alpha");
-        assert_eq!(doc.value_in(model, Some("b")), "bravo", "each row reads its own value");
+        assert_eq!(doc.value_in(model, Some("a"), None), "alpha");
+        assert_eq!(doc.value_in(model, Some("b"), None), "bravo", "each row reads its own value");
 
-        doc.apply_edit_in(model, Some("b"), "bravo!");
-        assert_eq!(doc.value_in(model, Some("b")), "bravo!", "the edit landed");
-        assert_eq!(doc.value_in(model, Some("a")), "alpha", "and only in that row");
+        doc.apply_edit_in(model, Some("b"), None, "bravo!");
+        assert_eq!(doc.value_in(model, Some("b"), None), "bravo!", "the edit landed");
+        assert_eq!(doc.value_in(model, Some("a"), None), "alpha", "and only in that row");
     }
 
     /// An `r-model` that is a path rather than a bare signal is written through
@@ -3439,7 +4529,7 @@ mod tests {
         .expect("load");
 
         doc.apply_edit("user.name", "grace");
-        assert_eq!(doc.value_in("user.name", None), "grace");
+        assert_eq!(doc.value_in("user.name", None, None), "grace");
     }
 
     /// A value containing quotes and backslashes survives being written, since
@@ -3449,7 +4539,7 @@ mod tests {
         let mut doc = two_inputs();
         let awkward = "she said \"hi\" \\ then left";
         doc.apply_edit("name", awkward);
-        assert_eq!(doc.value_in("name", None), awkward);
+        assert_eq!(doc.value_in("name", None, None), awkward);
     }
 
     /// Write a component with a `<slot />` and a document that fills it, in a
@@ -4053,20 +5143,20 @@ use components::detail;
     #[test]
     fn the_history_says_whether_it_can_be_walked() {
         let mut doc = router_app();
-        assert_eq!(doc.value_in("can_go_back", None), "false", "nothing behind the first page");
-        assert_eq!(doc.value_in("can_go_forward", None), "false");
+        assert_eq!(doc.value_in("can_go_back", None, None), "false", "nothing behind the first page");
+        assert_eq!(doc.value_in("can_go_forward", None, None), "false");
 
         doc.navigate("/settings");
-        assert_eq!(doc.value_in("can_go_back", None), "true");
-        assert_eq!(doc.value_in("can_go_forward", None), "false", "nothing ahead of the last page");
+        assert_eq!(doc.value_in("can_go_back", None, None), "true");
+        assert_eq!(doc.value_in("can_go_forward", None, None), "false", "nothing ahead of the last page");
 
         doc.back();
-        assert_eq!(doc.value_in("can_go_back", None), "false");
-        assert_eq!(doc.value_in("can_go_forward", None), "true", "the page just left is ahead");
+        assert_eq!(doc.value_in("can_go_back", None, None), "false");
+        assert_eq!(doc.value_in("can_go_forward", None, None), "true", "the page just left is ahead");
 
         // Somewhere new drops what was ahead, so forward closes again.
         doc.navigate("/user/1");
-        assert_eq!(doc.value_in("can_go_forward", None), "false");
+        assert_eq!(doc.value_in("can_go_forward", None, None), "false");
     }
 
     /// A query is an argument to a page, not a different page. So it does not
@@ -4398,7 +5488,7 @@ use components::detail;
         assert!(find_text(&doc.root, "7"), "the component sees its own: {:?}", text_of(&doc.root));
         // The document's own `{{ count }}` has nothing to read, and says so
         // rather than borrowing the component's.
-        assert_eq!(doc.value_in("count", None), "", "{:?}", text_of(&doc.root));
+        assert_eq!(doc.value_in("count", None, None), "", "{:?}", text_of(&doc.root));
     }
 
     /// The isolation is one-directional, and the docs claimed otherwise. A
@@ -4425,7 +5515,7 @@ use components::detail;
         );
         let card = doc.root.children[0].clone();
         assert!(tap(&mut doc, &card), "the handler wrote a document signal");
-        assert_eq!(doc.value_in("theme", None), "dark");
+        assert_eq!(doc.value_in("theme", None, None), "dark");
         assert!(find_text(&doc.root, "saw dark"), "{:?}", text_of(&doc.root));
     }
 
@@ -4808,7 +5898,7 @@ use components::detail;
     #[test]
     fn selection_survives_a_rebuild() {
         let mut doc = two_inputs();
-        doc.set_focus(Some(Focus { model: "name".into(), row: None, caret: 3, anchor: 1, preedit: None }));
+        doc.set_focus(Some(Focus { model: "name".into(), row: None, instance: None, caret: 3, anchor: 1, preedit: None }));
         doc.rebuild();
         assert_eq!(selection_of(&doc.root, "name"), Some((1, 3)));
         assert_eq!(caret_of(&doc.root, "name"), Some(3));
@@ -4826,6 +5916,7 @@ use components::detail;
         doc.set_focus(Some(Focus {
             model: "name".into(),
             row: None,
+            instance: None,
             caret: 3,
             anchor: 3,
             preedit: Some((1, 3)),
@@ -4847,6 +5938,7 @@ use components::detail;
         doc.set_focus(Some(Focus {
             model: "name".into(),
             row: None,
+            instance: None,
             caret: 2,
             anchor: 2,
             preedit: Some((0, 2)),
@@ -5468,6 +6560,44 @@ use components::detail;
         assert_eq!(doc.timer_deadline(50.0), None, "the timer went with the instance");
         assert!(!doc.fire_timers(10_000.0));
         assert_eq!(doc.engine_mut().get_string("beats"), "1", "and never ticked again");
+    }
+
+    /// The document's own interval belongs to the document, even when a
+    /// component mounts in the same pass that started it.
+    ///
+    /// Timer requests queue in one place for the whole document, and the mounts
+    /// settled on the first build take whatever is pending. A document `mounted`
+    /// that starts the app's clock while any component is on screen had its
+    /// interval handed to that component, so the clock stopped the first time
+    /// the component went away: a router whose landing page declared a `mounted`
+    /// hook froze the app on the first navigation, with no error anywhere.
+    #[test]
+    fn a_document_interval_is_not_claimed_by_a_component_mounting_beside_it() {
+        let mut doc = with_component(
+            "<template><view><text>card</text></view></template>
+             <script>
+mounted { }
+</script>",
+            "<template><screen>               <text>{{ beats }}</text>               <card r-if=\"open\" />             </screen></template>
+             <script>
+use components::card;
+let open = signal(true);
+             let beats = signal(0);
+             mounted { setInterval(50) { beats++; } }
+</script>",
+        );
+        assert_eq!(doc.timer_deadline(0.0), Some(50.0), "the document started one");
+        assert!(doc.fire_timers(50.0));
+        assert_eq!(doc.engine_mut().get_string("beats"), "1");
+
+        assert!(doc.apply_handler("open = false"), "drop the component beside it");
+        assert_eq!(
+            doc.timer_deadline(50.0),
+            Some(100.0),
+            "the document's clock is still running"
+        );
+        assert!(doc.fire_timers(100.0), "and still ticks");
+        assert_eq!(doc.engine_mut().get_string("beats"), "2");
     }
 
     /// A period of zero would fire every frame forever, so it is refused out

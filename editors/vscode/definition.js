@@ -12,10 +12,10 @@
 // not a convention: a resolver that guessed would send someone to the wrong
 // file, which is worse than not offering to navigate at all.
 
-const fs = require('fs');
 const path = require('path');
 
 const context = require('./context');
+const project = require('./project');
 
 function register(vscode) {
   return vscode.languages.registerDefinitionProvider('rux', {
@@ -75,26 +75,26 @@ function fromTag(text, offset, dir) {
   if (!at) return null;
   if (!/<\/?$/.test(text.slice(Math.max(0, at.start - 2), at.start))) return null;
 
-  const component = context.importedComponents(text).find((c) => c.tag === at.word);
+  const component = context.componentNamed(text, at.word);
   if (!component) return null;
   return resolve(dir, component.file.replace(/\.rux$/, '').split('/'));
 }
 
 /**
- * `['components', 'task']` under `dir` is `dir/components/task.rux`.
+ * `['components', 'task']` from a document in `dir`.
  *
  * `null` when the file is not there, so a `use` of a file that has not been
  * written yet simply does not navigate, rather than opening an empty editor on
  * a path that does not exist.
+ *
+ * The lookup itself is `project.resolveImport`, shared with the completion
+ * list. It used to be a one-liner here that joined `dir` and stopped, which
+ * meant navigation silently failed for the two cases the runtime handles: an
+ * import found from the project root, and a snake path naming a hyphenated
+ * file.
  */
 function resolve(dir, segments) {
-  if (!segments.length) return null;
-  const file = path.join(dir, ...segments) + '.rux';
-  try {
-    return fs.statSync(file).isFile() ? file : null;
-  } catch (e) {
-    return null;
-  }
+  return project.resolveImport(dir, segments);
 }
 
 module.exports = { register, targetAt };

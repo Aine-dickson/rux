@@ -12,28 +12,76 @@ flex-direction, justify-content, align-items, gap, row-gap, column-gap
 align-self, justify-self, justify-items, align-content
 flex-grow, flex-shrink, flex-basis, flex-wrap, flex (shorthand)
 grid-template-columns, grid-template-rows
-grid-column, grid-row (+ -start/-end)   (1 / 3, span 2, -1; no named lines)
+grid-column, grid-column-start, grid-column-end
+grid-row, grid-row-start, grid-row-end   (1 / 3, span 2, -1; no named lines)
 grid-auto-flow, grid-auto-rows, grid-auto-columns
 transform (translate/scale/rotate; visual only; hit regions aren't transformed)
-position (static|relative|sticky|absolute|fixed) + top/right/bottom/left, aspect-ratio
-width, height, min/max-width, min/max-height
-padding, margin        (shorthand 1–4 values + -top/-right/-bottom/-left)
-border, border-width, border-color, border-<side>, border-<side>-width
-background / background-color / background-image, opacity
+position (static|relative|sticky|absolute|fixed), top, right, bottom, left
+aspect-ratio
+width, height, min-width, max-width, min-height, max-height
+padding, padding-top, padding-right, padding-bottom, padding-left
+margin, margin-top, margin-right, margin-bottom, margin-left
+                       (each shorthand takes 1–4 values)
+border, border-width, border-color
+border-top, border-right, border-bottom, border-left
+border-top-width, border-right-width, border-bottom-width, border-left-width
+background, background-color, background-image, opacity
   (colour, linear-/radial-gradient, or url(…) image, cover-sized, clipped to corners)
 box-shadow (single, outer; inset parsed but not drawn)
 transition (property duration easing delay, comma-separated; see below)
-border-radius (1–4 diagonal shorthand + per-corner -top-left/-top-right/…)
+border-radius (1–4 diagonal shorthand; px/rem/em, and % against the box)
+border-top-left-radius, border-top-right-radius
+border-bottom-right-radius, border-bottom-left-radius
 color, font-size, font-weight, font-family, font-style (italic), text-align
 letter-spacing, word-spacing, line-height, white-space (nowrap|pre)
-text-decoration (underline / line-through)                (color: hex, rgb()/rgba(), CSS names)
-overflow / overflow-x / overflow-y   (hidden|clip = clip; auto|scroll = scroll;
+text-decoration, text-decoration-line (underline / line-through; the longhand
+                       wins where both are set)  (color: hex, rgb()/rgba(), CSS names)
+overflow, overflow-x, overflow-y     (hidden|clip = clip; auto|scroll = scroll;
                                       both axes together; x and y can't differ)
-overflow-wrap (break-word), word-break (break-all)
+overflow-wrap (break-word), word-wrap (the legacy alias for it), word-break (break-all)
 cursor (pointer, on @tap boxes only)
 fill, fill-rule, stroke, stroke-width, stroke-linecap, stroke-linejoin
   (<path> only; see above)
 ```
+**Percentages need a box, and most of these are resolved before there is one.**
+`width`, `height`, `min`/`max-*` and the insets become a length that layout
+resolves, so `width: 50%` works. `padding`, `margin`, `gap`/`row-gap`/
+`column-gap`, the border widths, `font-size`, `letter-spacing` and
+`word-spacing` are resolved to plain pixels during the cascade, where there is
+no box yet, so a percentage on one of those is **ignored and says so**. Until
+v0.7.1 it was ignored in silence, because the interpreter read them with a
+px-only parser while the length check validated with a percentage-capable one:
+the value was dropped and then pronounced fine. Real percentage support for them
+is scheduled.
+
+**A border may differ per side.** `border-bottom: 2px solid #89b4fa` draws under
+the box and nowhere else, which is the underlined-field shape most forms want.
+Until v0.7.1 it drew *nothing*: the cascade computed all four sides, and paint
+carried one width taken from the top, so `border-bottom` was dropped and
+`border-top` was drawn on all four sides. Both silent, and `border-bottom` is
+offered by the editor's completion list, which is supposed to mean it works.
+
+Uniform borders are drawn as one stroke, which is what follows the corner
+radius. Uneven ones are drawn as four filled edges, so where two different
+non-zero widths meet the corner is square rather than mitred diagonally. That
+difference is only visible on a box that sets two adjacent sides to different
+widths.
+
+**`border-radius` is the exception, and takes a percentage.** It is the one of
+these that layout never reads: only paint does, and paint knows the box. So
+`border-radius: 50%` is resolved against the laid-out box and a square comes out
+a circle. It works on the corner longhands too, and a longhand in px after a
+shorthand in `%` replaces that corner in both units.
+
+A percentage resolves against the **shorter side**, not per axis. Rux draws
+circular corners (one radius per corner), so `50%` on a 160x60 box is a pill of
+radius 30 rather than the ellipse CSS would draw. On a square the two agree
+exactly, and the pill is what someone writing `50%` on a button is after.
+
+`border-radius: 9999px` still works and still means "as round as it goes", since
+a radius larger than the box is clamped to it. That is what the runtime itself
+uses to draw a radio button.
+
 **Selectors:** tag, `.class`, `#id`, `[role="…"]`, compounds, and all four
 combinators: descendant (`.a .b`), child (`.a > .b`), next-sibling (`.a + .b`),
 subsequent-sibling (`.a ~ .b`).

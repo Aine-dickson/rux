@@ -45,24 +45,32 @@ Three sections, six element types, real CSS, gesture events, signals. No layout 
 | Doc | Read it for |
 |---|---|
 | [Rationale](./01-rationale.md) | *Why* Rux is shaped this way: the laws and the tradeoffs we accepted. Start here to understand the constraints before proposing changes. |
-| [Spec](./02-spec.md) | *What* Rux is: the formal reference for the SFC grammar, elements, roles, directives, events, CSS subset, script/host contract, and reactivity. The source of truth we architect and build against. |
+| [Design surface (v0.1)](./02-spec.md) | *What Rux was going to be*: the original v0.1 design, kept as history. **Not a reference, and parts of it are false.** Read for the reasoning, not for the language. |
 | [Guide](./03-guide.md) | *How* to build with Rux: a tutorial that assembles a small app screen by screen and validates the developer experience. |
 | [Architecture](./04-architecture.md) | *How the runtime works*: the parse→cascade→reactive→layout→paint pipeline, crate layout, the milestone plan, and open questions. The plan for building it. |
-| **[As Built](./05-as-built.md)** | **What actually works today**: running it, honored CSS, gotchas, and gaps. Authoritative where it contradicts 01–04. Start here if you're writing `.rux` code. |
+| **[As Built](./05-as-built.md)** | **The reference.** What actually works today: running it, honored CSS, gotchas, and gaps. Authoritative wherever anything else disagrees. Start here if you're writing `.rux` code. |
 | **[Script](./07-script.md)** | **The script language in depth**: state, functions, values, the element API, and every way it differs from rhai and from JavaScript. Rux forks rhai, so rhai's own docs are no longer correct on their own. |
 | [Roadmap](./06-roadmap.md) | *What's next*: the v0.1 shake-down, v0.2 (inputs and polish), v0.3 (fine-grained reactivity). Start here if you're picking the work up. |
 | [User test cases](./08-user-tests.md) | *What a person actually drove*, per feature and per release, on what hardware, and what those runs found. Every feature records its cases here; almost every expensive bug in Rux was found this way rather than by CI. |
 | [Author notes](./09-author-notes.md) | *What is not a bug and has to be taught*: behaviour that is correct and still catches authors out, each tracked with the page it has to be explained on. Every entry is a v1.0 blocker. |
 
-## Status
+## Which document is the reference
 
-> **The runtime is BUILT (M0–M9 complete), plus scrolling, images, a real
-> input caret, checkbox/radio, opacity, and the full flex model.** Docs 01–04
-> below describe the original *design intent* and have **drifted from the
-> implementation** in places (notably: rhai functions can't mutate state, the
-> inline/block model was removed, grid was added). For **what actually works
-> today**, read **[As Built](./05-as-built.md)**: where they disagree, it
-> wins. For **what's next**, read **[Roadmap](./06-roadmap.md)**.
+**[As Built](./05-as-built.md) and [Script](./07-script.md), and only those
+two.** Together they are the language as it exists. Every element, attribute,
+directive, gesture, pseudo-class, script global and CSS property the editor
+offers is checked to appear in them on every `cargo test`, so a feature cannot
+ship undocumented the way `<path>` did in v0.7.
+
+**Docs 01–04 are design records, not references.** They describe what Rux was
+going to be, they have drifted from the implementation, and they are not
+checked against anything. That is deliberate: two documents both claiming to
+describe the language is how the drift happened, and the cure is one reference
+rather than two that agree for a while.
+
+> **The runtime is BUILT (M0–M9 complete)**, plus scrolling, images, a real
+> input caret, checkbox/radio, opacity, and the full flex model. For **what's
+> next**, read **[Roadmap](./06-roadmap.md)**.
 >
 > Renderer: **vello 0.9** / **parley 0.11** / **taffy 0.7** / **rhai** /
 > **lightningcss**.

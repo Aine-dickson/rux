@@ -19,7 +19,7 @@
 //! still uses; the CSS formatter has no JS counterpart. When `rux fmt` exists as
 //! a CLI the extension should shell out to it and the JS copy should go. **Until
 //! then, an indenting change here needs the same change there**, and note the
-//! JS still has the `<image>` bug described on `VOID_TAGS` below.
+//! JS still has the `<image>` bug described on [`void_tags`] below.
 //!
 //! Where the indenter differs from the JS: the JS blanks strings and comments
 //! with a chain of regexes and then re-scans. This walks each line once as a
@@ -49,29 +49,19 @@ pub enum Pending {
 
 /// Tags that never nest, so an opening tag must not increase the indent.
 ///
-/// `image` is the one that matters and the one the JS list misses: it inherited
-/// HTML's set, which has `img`, but Rux's element is `<image>`. An `<image
-/// src="…">` written without a self-closing slash therefore over-indents
-/// everything after it, in VS Code today, and here until this test caught it.
-/// The HTML names are kept because they cost nothing and pasted markup is
-/// common.
-const VOID_TAGS: &[&str] = &[
-    // `<router-view />` never nests: what goes in it comes from the route
-    // matched below, not from anything written between the tags.
-    // `<path>` holds its geometry in an attribute, so it has nothing to nest
-    // and closing it would only ever be noise.
-    "image", "input", "path", "router-view", //
-    "area", "base", "br", "col", "embed", "hr", "img", "link", "meta", "param", "source", "track",
-    "wbr",
-];
+/// The list lives in `rux-parser`, which is the crate that decides what never
+/// nests: a void tag closes itself there, so an `<input type="text">` written
+/// without a slash parses. It used to live here, and the copy in the editor's
+/// JavaScript inherited HTML's set, which has `img` but not Rux's `<image>` —
+/// so an `<image src="...">` over-indented everything after it. One list, read
+/// from one place, is the fix for that; re-exported rather than re-declared so
+/// `rux vocab` and the editor keep reading it through the formatter.
+pub use rux_parser::void_tags;
 
-/// The tags in [`VOID_TAGS`], for anything outside the formatter that has to
-/// agree with it about what never nests: `rux vocab`, and through it the
-/// editor's tag auto-closing, which must not write `</image>` after an
-/// `<image src="…">`. This is the same drift the doc comment above describes,
-/// caught once in the JS formatter and worth not repeating in the JS editor.
-pub fn void_tags() -> &'static [&'static str] {
-    VOID_TAGS
+/// Case-insensitively, because pasted markup is common and `<BR>` should not
+/// indent the rest of a file.
+fn is_void(tag: &str) -> bool {
+    void_tags().iter().any(|v| v.eq_ignore_ascii_case(tag))
 }
 
 /// Format `text`, using `unit` for one indent level (`"  "`, `"    "`, `"\t"`…).
@@ -246,7 +236,7 @@ fn scan(line: &str) -> (Delta, Pending) {
                         .unwrap_or(end - i - 1);
                 let name = &line[i + 1..name_end];
                 let self_closing = b[..end].ends_with(b"/");
-                if !self_closing && !VOID_TAGS.iter().any(|v| v.eq_ignore_ascii_case(name)) {
+                if !self_closing && !is_void(name) {
                     net += 1;
                 }
                 seen_non_close = true;

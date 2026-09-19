@@ -46,7 +46,8 @@ use std::rc::Rc;
 use notify::{EventKind, RecursiveMode, Watcher};
 use rux_layout::{
     Background, Cursor, FocusItem, FocusKind, FocusRegion, HitRegion,
-    Offset, Paint, PaintRect, PaintText, Rgba, ScrollRegion, SelectRegion, StateRegion, TextAlign,
+    Offset, Paint, PaintRect, PaintText, Rgba, ScrollRegion, SelectRegion, Sides, StateRegion,
+    TextAlign,
     TextContent, TextWrap,
 };
 use rux_runtime::{Document, Focus, InteractionState, Viewport};
@@ -437,7 +438,7 @@ fn scrollbar_paints(scrolls: &[ScrollRegion], offsets: &[Offset], alpha: f32) ->
                 height: th,
                 background: Some(Background::Color(track_bg)),
                 radius: [BAR_W / 2.0; 4],
-                border_width: 0.0,
+                border: Sides::ZERO,
                 border_color: None,
             }));
             out.push(Paint::Rect(PaintRect {
@@ -447,7 +448,7 @@ fn scrollbar_paints(scrolls: &[ScrollRegion], offsets: &[Offset], alpha: f32) ->
                 height: thh,
                 background: Some(Background::Color(thumb_bg)),
                 radius: [BAR_W / 2.0; 4],
-                border_width: 0.0,
+                border: Sides::ZERO,
                 border_color: None,
             }));
         }
@@ -471,7 +472,7 @@ fn focus_ring(item: &FocusItem, within: Option<&ScrollRegion>, alpha: f32) -> Ve
         height: item.height + 4.0,
         background: None,
         radius: [7.0; 4],
-        border_width: 2.0,
+        border: Sides::uniform(2.0),
         border_color: Some(Rgba::new(0.54, 0.71, 0.98, alpha)), // #89b4fa
     });
     let Some(r) = within else { return vec![ring] };
@@ -515,7 +516,7 @@ fn toolbar_paints(field: (f32, f32, f32, f32), viewport: (f32, f32)) -> Vec<Pain
         height: h,
         background: Some(Background::Color(panel_bg)),
         radius: [8.0; 4],
-        border_width: 1.0,
+        border: Sides::uniform(1.0),
         border_color: Some(border),
     }));
 
@@ -530,7 +531,7 @@ fn toolbar_paints(field: (f32, f32, f32, f32), viewport: (f32, f32)) -> Vec<Pain
                 height: bh - 14.0,
                 background: Some(Background::Color(divider)),
                 radius: [0.0; 4],
-                border_width: 0.0,
+                border: Sides::ZERO,
                 border_color: None,
             }));
         }
@@ -576,7 +577,7 @@ fn dropdown_paints(sel: &SelectRegion, value: &str) -> Vec<Paint> {
         height: ph,
         background: Some(Background::Color(panel_bg)),
         radius: [8.0; 4],
-        border_width: 1.0,
+        border: Sides::uniform(1.0),
         border_color: Some(border),
     }));
 
@@ -591,7 +592,7 @@ fn dropdown_paints(sel: &SelectRegion, value: &str) -> Vec<Paint> {
                 height: DROPDOWN_ROW_H - 6.0,
                 background: Some(Background::Color(selected)),
                 radius: [5.0; 4],
-                border_width: 0.0,
+                border: Sides::ZERO,
                 border_color: None,
             }));
         } else if i > 0 {
@@ -603,7 +604,7 @@ fn dropdown_paints(sel: &SelectRegion, value: &str) -> Vec<Paint> {
                 height: 1.0,
                 background: Some(Background::Color(border)),
                 radius: [0.0; 4],
-                border_width: 0.0,
+                border: Sides::ZERO,
                 border_color: None,
             }));
         }
@@ -792,8 +793,17 @@ fn overlay_paints(diag: &rux_runtime::Diagnostics, path: &Path, width: f32) -> O
     let print_edge = Rgba::new(0.53, 0.71, 0.98, 1.0); // #89b4fa-ish
     let print_ink = Rgba::new(0.72, 0.82, 0.99, 1.0);
 
-    let is_error = diag.error.is_some();
-    let (bg, edge) = if is_error {
+    let failed_to_load = diag.error.is_some();
+    // The sink carries a level per entry, and the overlay used to read only
+    // `diag.error`, which is the *load* failing. So a finding the runtime calls
+    // an error — a route naming a view nothing imported, a tag naming nothing —
+    // was counted and coloured here as a warning, while `rux check` and the
+    // editor's squiggle called the same line an error. One finding, two
+    // verdicts, depending on which window you were looking at. Reported
+    // 2026-09-15 from exactly that pair of screenshots.
+    let errors = diag.warnings.iter().filter(|w| w.is_error()).count();
+    let warnings = diag.warnings.len() - errors;
+    let (bg, edge) = if failed_to_load || errors > 0 {
         (error_bg, error_edge)
     } else if diag.warnings.is_empty() {
         (print_bg, print_edge)
@@ -819,10 +829,25 @@ fn overlay_paints(diag: &rux_runtime::Diagnostics, path: &Path, width: f32) -> O
     // would grow past the window and hide the app it is describing.
     let shown = diag.warnings.len().min(OVERLAY_MAX_WARNINGS);
     for warning in &diag.warnings[..shown] {
+        // A warning raised inside an imported component belongs to that
+        // component, and its line number is a line of *that* file. Showing
+        // `line 9` under a panel headed with the document being run points
+        // confidently at the wrong file, which is worse than saying nothing:
+        // the reader trusts it and goes to look. The file is named whenever it
+        // is not the one in the title.
+        let origin = warning
+            .file
+            .as_deref()
+            .map(file_name)
+            .filter(|name| *name != file_name(path));
+        let text = match origin {
+            Some(name) => format!("• {name} {warning}"),
+            None => format!("• {warning}"),
+        };
         lines.extend(
-            wrap_overlay(&format!("• {warning}"), text_w)
+            wrap_overlay(&text, text_w)
                 .into_iter()
-                .map(|l| (l, if is_error { muted } else { ink })),
+                .map(|l| (l, if failed_to_load { muted } else { ink })),
         );
     }
     if diag.warnings.len() > shown {
@@ -850,12 +875,24 @@ fn overlay_paints(diag: &rux_runtime::Diagnostics, path: &Path, width: f32) -> O
         ));
     }
 
-    let title = match (&diag.error, diag.warnings.len(), diag.prints.len()) {
-        (Some(_), 0, _) => format!("rux: {} failed to load", file_name(path)),
-        (Some(_), n, _) => format!("rux: {} failed to load  ·  {n} warning(s)", file_name(path)),
-        (None, 0, p) => format!("rux: {p} printed from {}", file_name(path)),
-        (None, n, 0) => format!("rux: {n} warning(s) in {}", file_name(path)),
-        (None, n, p) => format!("rux: {n} warning(s), {p} printed in {}", file_name(path)),
+    // Errors and warnings are counted apart, so the panel agrees with what
+    // `rux check` prints and with what the editor draws. "1 warning(s)" over a
+    // finding the checker calls an error is the whole reason this is a match on
+    // two numbers rather than one.
+    let counted = match (errors, warnings) {
+        (0, 0) => String::new(),
+        (0, n) => format!("{n} warning(s)"),
+        (n, 0) => format!("{n} error(s)"),
+        (e, w) => format!("{e} error(s), {w} warning(s)"),
+    };
+    let title = match (&diag.error, counted.is_empty(), diag.prints.len()) {
+        (Some(_), true, _) => format!("rux: {} failed to load", file_name(path)),
+        (Some(_), false, _) => {
+            format!("rux: {} failed to load  ·  {counted}", file_name(path))
+        }
+        (None, true, p) => format!("rux: {p} printed from {}", file_name(path)),
+        (None, false, 0) => format!("rux: {counted} in {}", file_name(path)),
+        (None, false, p) => format!("rux: {counted}, {p} printed in {}", file_name(path)),
     };
     // The panel covers the app it is describing, and there was no way to move it
     // out of the way. It says so rather than leaving the gesture to be guessed
@@ -883,7 +920,7 @@ fn overlay_paints(diag: &rux_runtime::Diagnostics, path: &Path, width: f32) -> O
         height: panel_h,
         background: Some(Background::Color(bg)),
         radius: [10.0; 4],
-        border_width: 2.0,
+        border: Sides::uniform(2.0),
         border_color: Some(edge),
     }));
     out.push(Paint::Text(PaintText {
@@ -1109,6 +1146,12 @@ struct App {
     /// which row, and it is what keeps the caret with its row when the list is
     /// reordered.
     focused_row: Option<String>,
+    /// The component instance that input was written in, when it is inside one.
+    ///
+    /// The scope its model is read and written in. Without it every keystroke
+    /// was assigned to a document signal of the same name, which in a component
+    /// is nothing at all: the field stayed empty and typing did nothing.
+    focused_instance: Option<String>,
     /// Whether the focused input is a `type="textarea"` (Enter → newline).
     focused_multiline: bool,
     /// The currently open `select` dropdown, as `(r-model, row key)`. Survives
@@ -1119,7 +1162,7 @@ struct App {
     /// one. Keyed by the model alone, tapping row three's select opened row
     /// one's dropdown, drew it over row one, hit-tested the options against row
     /// one's box, and wrote the chosen option into row one.
-    open_select: Option<(String, Option<String>)>,
+    open_select: Option<(String, Option<String>, Option<String>)>,
     /// Caret position in the focused input, as a byte index into its value.
     caret: usize,
     /// Where the current selection started, as a byte index. Equal to `caret`
@@ -1238,6 +1281,7 @@ impl App {
             touch: None,
             focused: None,
             focused_row: None,
+            focused_instance: None,
             focused_multiline: false,
             open_select: None,
             caret: 0,
@@ -1566,7 +1610,11 @@ impl App {
     /// The byte index in `region`'s text nearest a point, in logical px. An empty
     /// input is showing its placeholder, not a value, so its caret belongs at 0.
     fn index_in(&mut self, region: &FocusRegion, px: f32, py: f32) -> usize {
-        let value = self.document.value_in(&region.model, region.row.as_deref());
+        let value = self.document.value_in(
+            &region.model,
+            region.row.as_deref(),
+            region.instance.as_deref(),
+        );
         match region.text.as_ref() {
             Some(t) if !value.is_empty() => {
                 let (tx, ty) = self.text_point(region, t, px, py);
@@ -1612,6 +1660,7 @@ impl App {
         layout: &rux_layout::Layout,
         focused: Option<&str>,
         focused_row: Option<&str>,
+        focused_instance: Option<&str>,
         caret: usize,
         scroll: &mut f32,
         text: &mut rux_text::TextEngine,
@@ -1624,7 +1673,11 @@ impl App {
         let Some(region) = layout
             .focuses
             .iter()
-            .find(|f| f.model == model && f.row.as_deref() == focused_row)
+            .find(|f| {
+                f.model == model
+                    && f.row.as_deref() == focused_row
+                    && f.instance.as_deref() == focused_instance
+            })
         else {
             return *scroll;
         };
@@ -1634,7 +1687,7 @@ impl App {
             *scroll = 0.0;
             return 0.0;
         };
-        let value = document.value_in(model, focused_row);
+        let value = document.value_in(model, focused_row, focused_instance);
         let style = rux_paint::text_style(&t.content);
         let (cx, _, _) = text.caret_geometry(&value, &style, Some(t.width), caret.min(value.len()));
 
@@ -1715,7 +1768,8 @@ impl App {
     /// scroll region instead, and an unfocused field is never scrolled.
     fn text_scroll_for(&self, region: &FocusRegion) -> f32 {
         let focused = self.focused.as_deref() == Some(region.model.as_str())
-            && self.focused_row.as_deref() == region.row.as_deref();
+            && self.focused_row.as_deref() == region.row.as_deref()
+            && self.focused_instance.as_deref() == region.instance.as_deref();
         if focused && !region.multiline { self.text_scroll } else { 0.0 }
     }
 
@@ -1759,7 +1813,7 @@ impl App {
 
         let caret = self.index_in(&region, fx, fy);
         self.text_drag = true;
-        self.set_focus(Some((region.model, region.row, caret)));
+        self.set_focus(Some((region.model, region.row, region.instance, caret)));
         true
     }
 
@@ -1774,7 +1828,11 @@ impl App {
         let Some(region) = self.focuses.iter().rev().find(|f| f.contains(fx, fy)).cloned() else {
             return false;
         };
-        let value = self.document.value_in(&region.model, region.row.as_deref());
+        let value = self.document.value_in(
+            &region.model,
+            region.row.as_deref(),
+            region.instance.as_deref(),
+        );
         let (Some(t), false) = (&region.text, value.is_empty()) else {
             return false;
         };
@@ -1789,6 +1847,7 @@ impl App {
         self.set_focus_range(Some(Focus {
             model: region.model,
             row: region.row,
+            instance: region.instance,
             caret: end,
             anchor: start,
             preedit: None,
@@ -1826,6 +1885,7 @@ impl App {
             self.set_focus_range(Some(Focus {
                 model: region.model,
                 row: region.row,
+                instance: region.instance,
                 caret,
                 anchor: caret,
                 preedit: None,
@@ -1844,6 +1904,7 @@ impl App {
             self.set_focus_range(Some(Focus {
                 model: region.model,
                 row: region.row,
+                instance: region.instance,
                 caret,
                 anchor,
                 preedit: None,
@@ -1902,6 +1963,7 @@ impl App {
             active,
             focused_model: self.document.interaction().focused_model.clone(),
             focused_row: self.document.interaction().focused_row.clone(),
+            focused_instance: self.document.interaction().focused_instance.clone(),
         };
         if self.document.set_interaction(next) {
             self.request_redraw();
@@ -1942,13 +2004,22 @@ impl App {
     }
 
     /// Tell the document which input has focus, so `:focus` rules match it.
-    fn update_focus_state(&mut self, model: Option<String>, row: Option<String>) {
+    fn update_focus_state(
+        &mut self,
+        model: Option<String>,
+        row: Option<String>,
+        instance: Option<String>,
+    ) {
         let mut next = self.document.interaction().clone();
-        if next.focused_model == model && next.focused_row == row {
+        if next.focused_model == model
+            && next.focused_row == row
+            && next.focused_instance == instance
+        {
             return;
         }
         next.focused_model = model;
         next.focused_row = row;
+        next.focused_instance = instance;
         if self.document.set_interaction(next) {
             self.request_redraw();
         }
@@ -2008,17 +2079,22 @@ impl App {
 
         // An open dropdown is on top of everything, so it intercepts taps first:
         // a tap on an option selects it; any other tap just closes the dropdown.
-        if let Some((model, row)) = self.open_select.take() {
+        if let Some((model, row, instance)) = self.open_select.take() {
             if let Some(sel) = self
                 .selects
                 .iter()
-                .find(|s| s.model == model && s.row == row)
+                .find(|s| s.model == model && s.row == row && s.instance == instance)
                 .cloned()
             {
                 for (i, option) in sel.options.iter().enumerate() {
                     let (rx, ry, rw, rh) = dropdown_row(&sel, i);
                     if fx >= rx && fx <= rx + rw && fy >= ry && fy <= ry + rh {
-                        self.document.apply_edit_in(&model, row.as_deref(), option);
+                        self.document.apply_edit_in(
+                            &model,
+                            row.as_deref(),
+                            instance.as_deref(),
+                            option,
+                        );
                         self.request_redraw();
                         return;
                     }
@@ -2035,7 +2111,8 @@ impl App {
 
         // A tap on a closed select opens its dropdown.
         if let Some(sel) = self.selects.iter().find(|s| s.contains(fx, fy)) {
-            self.open_select = Some((sel.model.clone(), sel.row.clone()));
+            self.open_select =
+                Some((sel.model.clone(), sel.row.clone(), sel.instance.clone()));
             self.set_focus(None);
             self.request_redraw();
             return;
@@ -2472,6 +2549,7 @@ impl App {
                 model,
                 // Still the same field being typed into.
                 row: self.focused_row.clone(),
+                instance: self.focused_instance.clone(),
                 caret: new_caret,
                 anchor: new_anchor,
                 preedit: None,
@@ -2503,6 +2581,7 @@ impl App {
         self.set_focus_range(Some(Focus {
             model: model.to_string(),
             row: self.focused_row.clone(),
+            instance: self.focused_instance.clone(),
             caret: value.len(),
             anchor: 0,
             preedit: None,
@@ -2672,13 +2751,16 @@ impl App {
     fn set_keyboard_focus(&mut self, index: Option<usize>) {
         self.focus_index = index;
         match index.and_then(|i| self.focusables.get(i)).map(|f| f.kind.clone()) {
-            Some(FocusKind::Text { model, row, multiline, .. }) => {
+            Some(FocusKind::Text { model, row, instance, multiline, .. }) => {
                 // Read against the field being moved *to*, not the one being
                 // left: focus has not moved yet, so `focused_value` is still the
-                // old field and Tab would drop the caret at its length.
-                let caret = self.document.value_in(&model, row.as_deref()).len();
+                // old field and Tab would drop the caret at its length. In the
+                // field's own scope, or tabbing into an input inside a component
+                // reads an empty string and drops the caret at 0.
+                let caret =
+                    self.document.value_in(&model, row.as_deref(), instance.as_deref()).len();
                 self.focused_multiline = multiline;
-                self.set_focus(Some((model, row, caret)));
+                self.set_focus(Some((model, row, instance, caret)));
             }
             _ => self.set_focus(None),
         }
@@ -2696,8 +2778,8 @@ impl App {
                 self.adopt_element_requests();
                 self.request_redraw();
             }
-            Some(FocusKind::Select { model, row, .. }) => {
-                self.open_select = Some((model, row));
+            Some(FocusKind::Select { model, row, instance, .. }) => {
+                self.open_select = Some((model, row, instance));
                 self.request_redraw();
             }
             _ => {}
@@ -2710,9 +2792,11 @@ impl App {
     /// The row is the `r-key` of the `r-for` row the input is in, and `None`
     /// outside a list. It is half the identity: every row of a list is bound to
     /// the same `r-model` text, so the model alone cannot say which one.
-    fn set_focus(&mut self, focus: Option<(String, Option<String>, usize)>) {
+    fn set_focus(&mut self, focus: Option<(String, Option<String>, Option<String>, usize)>) {
         match focus {
-            Some((model, row, caret)) => self.set_focus_range(Some(Focus::at_row(model, row, caret))),
+            Some((model, row, instance, caret)) => {
+                self.set_focus_range(Some(Focus::at_row_in(model, row, instance, caret)))
+            }
             None => self.set_focus_range(None),
         }
     }
@@ -2727,22 +2811,26 @@ impl App {
     fn focused_value(&mut self) -> String {
         let Some(model) = self.focused.clone() else { return String::new() };
         let row = self.focused_row.clone();
-        self.document.value_in(&model, row.as_deref())
+        let instance = self.focused_instance.clone();
+        self.document.value_in(&model, row.as_deref(), instance.as_deref())
     }
 
     /// Write the focused input's value back, in that same scope.
     fn write_focused(&mut self, value: &str) {
         let Some(model) = self.focused.clone() else { return };
         let row = self.focused_row.clone();
-        self.document.apply_edit_in(&model, row.as_deref(), value);
+        let instance = self.focused_instance.clone();
+        self.document.apply_edit_in(&model, row.as_deref(), instance.as_deref(), value);
     }
 
     /// The focused input's region, matched on both halves of its identity.
     fn focused_region(&self) -> Option<&FocusRegion> {
         let model = self.focused.as_deref()?;
-        self.focuses
-            .iter()
-            .find(|f| f.model == model && f.row.as_deref() == self.focused_row.as_deref())
+        self.focuses.iter().find(|f| {
+            f.model == model
+                && f.row.as_deref() == self.focused_row.as_deref()
+                && f.instance.as_deref() == self.focused_instance.as_deref()
+        })
     }
 
     /// The full-fidelity focus setter: caret, selection anchor *and* composition.
@@ -2760,12 +2848,19 @@ impl App {
         // already scrolled to somewhere the caret is not.
         let same_field = focus
             .as_ref()
-            .is_some_and(|f| f.is(self.focused.as_deref().unwrap_or(""), self.focused_row.as_deref()));
+            .is_some_and(|f| {
+                f.is(
+                    self.focused.as_deref().unwrap_or(""),
+                    self.focused_row.as_deref(),
+                    self.focused_instance.as_deref(),
+                )
+            });
         if !same_field {
             self.text_scroll = 0.0;
         }
         self.focused = focus.as_ref().map(|f| f.model.clone());
         self.focused_row = focus.as_ref().and_then(|f| f.row.clone());
+        self.focused_instance = focus.as_ref().and_then(|f| f.instance.clone());
         self.caret = focus.as_ref().map(|f| f.caret).unwrap_or(0);
         self.anchor = focus.as_ref().map(|f| f.anchor).unwrap_or(0);
         self.document.set_focus(focus);
@@ -2773,7 +2868,8 @@ impl App {
         // halves of its identity, or every row of a list matches at once.
         let model = self.focused.clone();
         let row = self.focused_row.clone();
-        self.update_focus_state(model, row);
+        let instance = self.focused_instance.clone();
+        self.update_focus_state(model, row, instance);
         self.set_ime_enabled(self.focused.is_some());
         self.reset_blink();
         self.request_redraw();
@@ -2882,11 +2978,13 @@ impl App {
         self.preedit = None;
         self.write_focused(&value);
         self.scroll_caret_into_view(&value, caret);
-        // The row travels with the model: an input inside an `r-for` is
-        // identified by both, and dropping it here would put the caret in every
-        // row of the list at once.
+        // The row and the instance travel with the model: an input inside an
+        // `r-for` is identified by both, and one inside a component by the
+        // instance as well. Dropping either here would put the caret in every
+        // row of the list, or in every instance of the component, at once.
         let row = self.focused_row.clone();
-        self.set_focus_range(Some(Focus { model, row, caret, anchor, preedit }));
+        let instance = self.focused_instance.clone();
+        self.set_focus_range(Some(Focus { model, row, instance, caret, anchor, preedit }));
     }
 
     /// Park the candidate window under the caret instead of at the window's
@@ -2979,6 +3077,7 @@ impl App {
         self.set_focus_range(Some(Focus {
             model,
             row: self.focused_row.clone(),
+            instance: self.focused_instance.clone(),
             caret,
             anchor: caret,
             preedit: Some((at, at + text.len())),
@@ -3150,6 +3249,7 @@ impl App {
             text_scroll,
             focused,
             focused_row,
+            focused_instance,
             #[cfg(not(target_arch = "wasm32"))]
             path,
             ..
@@ -3257,6 +3357,7 @@ impl App {
             &layout,
             focused.as_deref(),
             focused_row.as_deref(),
+            focused_instance.as_deref(),
             *caret,
             text_scroll,
             text,
@@ -3325,7 +3426,11 @@ impl App {
                 layout
                     .focuses
                     .iter()
-                    .find(|f| f.model == m && f.row.as_deref() == focused_row.as_deref())
+                    .find(|f| {
+                        f.model == m
+                            && f.row.as_deref() == focused_row.as_deref()
+                            && f.instance.as_deref() == focused_instance.as_deref()
+                    })
             }) {
                 let strip = toolbar_paints(
                     (r.x, r.y, r.width, r.height),
@@ -3337,9 +3442,13 @@ impl App {
         }
 
         // An open `select` draws its dropdown on top of everything else.
-        if let Some((model, row)) = open_select.clone() {
-            if let Some(sel) = layout.selects.iter().find(|s| s.model == model && s.row == row) {
-                let value = document.value_in(&model, row.as_deref());
+        if let Some((model, row, instance)) = open_select.clone() {
+            if let Some(sel) = layout
+                .selects
+                .iter()
+                .find(|s| s.model == model && s.row == row && s.instance == instance)
+            {
+                let value = document.value_in(&model, row.as_deref(), instance.as_deref());
                 let overlay = dropdown_paints(sel, &value);
                 let scene = rux_paint::build_scene(&overlay, text, images, false);
                 state.scene.append(&scene, Some(Affine::scale(scale)));
@@ -3390,15 +3499,19 @@ impl App {
         //
         // It shows up worst on the web, where the hidden `<input>` holds real
         // DOM focus and a phone's on-screen keyboard would stay up over the
-        // page you just moved to. Identity is `(model, row)`, the same pair the
-        // caret uses, or one row of a list would answer for another.
+        // page you just moved to. Identity is `(model, row, instance)`, the same
+        // three the caret uses, or one row of a list would answer for another,
+        // and so would one instance of a component for its twin.
         if let Some(model) = focused.clone() {
-            let still_here = focuses
-                .iter()
-                .any(|f| f.model == model && f.row.as_deref() == focused_row.as_deref());
+            let still_here = focuses.iter().any(|f| {
+                f.model == model
+                    && f.row.as_deref() == focused_row.as_deref()
+                    && f.instance.as_deref() == focused_instance.as_deref()
+            });
             if !still_here {
                 *focused = None;
                 *focused_row = None;
+                *focused_instance = None;
                 *text_scroll = 0.0;
                 #[cfg(target_arch = "wasm32")]
                 if let Some(el) = web_ime_element() {
@@ -4116,6 +4229,86 @@ fn path_for_route(base: &str, route: &str) -> String {
         return if base.is_empty() { rux_runtime::ROOT_PATH.to_string() } else { base.to_string() };
     }
     format!("{base}{route}")
+}
+
+#[cfg(test)]
+mod overlay_attribution {
+    use super::{overlay_paints, Paint};
+    use std::path::{Path, PathBuf};
+
+    /// Every string the overlay would paint.
+    fn painted(diag: &rux_runtime::Diagnostics, running: &str) -> String {
+        let panel = overlay_paints(diag, Path::new(running), 900.0).expect("a panel");
+        panel
+            .paints
+            .iter()
+            .filter_map(|p| match p {
+                Paint::Text(t) => Some(t.content.text.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn warning(message: &str, line: Option<usize>, file: Option<&str>) -> rux_reactive::Warning {
+        rux_reactive::Warning {
+            message: message.to_string(),
+            line,
+            file: file.map(PathBuf::from),
+            level: rux_reactive::Level::Warning,
+        }
+    }
+
+    /// A warning from an imported component names that component.
+    ///
+    /// The panel is headed with the document being *run*, so `line 9` under a
+    /// title reading `app.rux` pointed confidently at a line of the wrong file.
+    /// Unplaced is vague; placed and wrong is a trap, which is the same lesson
+    /// the line numbers themselves taught.
+    #[test]
+    fn a_warning_from_another_file_says_which() {
+        let diag = rux_runtime::Diagnostics {
+            error: None,
+            stale: false,
+            warnings: vec![warning("`draft` is not defined", Some(9), Some("pages/home.rux"))],
+            prints: vec![],
+        };
+        let text = painted(&diag, "app.rux");
+        assert!(text.contains("home.rux"), "names the file it is really in: {text}");
+        assert!(text.contains("line 9"), "and keeps the line: {text}");
+    }
+
+    /// A warning from the document being run is not labelled, because repeating
+    /// the title on every line is noise.
+    #[test]
+    fn a_warning_from_the_running_document_is_not_labelled() {
+        let diag = rux_runtime::Diagnostics {
+            error: None,
+            stale: false,
+            warnings: vec![warning("`draft` is not defined", Some(9), Some("app.rux"))],
+            prints: vec![],
+        };
+        let text = painted(&diag, "app.rux");
+        let body: Vec<&str> = text.lines().filter(|l| l.starts_with('•')).collect();
+        assert!(!body.is_empty(), "a warning line was painted: {text}");
+        assert!(
+            body.iter().all(|l| !l.contains("app.rux")),
+            "its own file is not repeated on the line: {body:?}"
+        );
+    }
+
+    /// A warning that carries no file at all is still shown, unlabelled.
+    #[test]
+    fn a_warning_with_no_file_is_still_shown() {
+        let diag = rux_runtime::Diagnostics {
+            error: None,
+            stale: false,
+            warnings: vec![warning("a css property is not honored", None, None)],
+            prints: vec![],
+        };
+        let text = painted(&diag, "app.rux");
+        assert!(text.contains("not honored"), "shown: {text}");
+    }
 }
 
 #[cfg(test)]

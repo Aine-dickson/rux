@@ -22,6 +22,24 @@ expands in its place. Routes are tried in the order written and the first match
 wins, so a `fallback` can sit anywhere among them. A path nothing matches and no
 fallback catches renders nothing, and warns.
 
+**Every route's `view` is checked at load, not on arrival.** A route is expanded
+when its path is the one you are on, so a `view` naming nothing used to be
+silent on every page but its own: the document loaded, `rux check` exited 0, and
+the mistake waited for the first navigation there. Whether a name is imported is
+a fact about the file rather than about where you are standing in it, and it is
+reported as an **error** — a page that can never render is wrong, not merely
+dead.
+
+**A `to=` that matches no route is reported too.** A dead link is silent by
+construction: tapping it navigates, the router matches nothing, and the screen
+goes blank with no more explanation than an empty screen. The address is written
+in the markup and so are the routes, so the two are compared before anyone taps.
+Only the written-out `to=` — `:to` is built from a row's own data, and a path
+that exists for row 3 and not for row 4 is a data problem rather than a markup
+one. The check runs through the router's own matcher, so `<route fallback>`
+answers for everything and a document with no `<router>` says nothing at all
+(which is what a component holding links needs).
+
 **The path is an ordinary signal called `route`.** That is the whole design:
 `{{ route }}`, `r-if="route == \"/about\""` and `:class` already understand
 navigation, and a route change reconciles the router's subtree rather than

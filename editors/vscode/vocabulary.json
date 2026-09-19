@@ -1,5 +1,5 @@
 {
-  "version": "0.7.0",
+  "version": "0.7.1",
   "elements": [
     { "name": "screen", "detail": "the root element of a document", "doc": "The root of a `.rux` document. A component whose template root is `<screen>` is a page; anything else is a fragment." },
     { "name": "view", "detail": "a box; the generic container", "doc": "A generic box, the element most markup is made of. Defaults to `display: block`, so give it `display: flex` to lay its children out." },
@@ -54,7 +54,7 @@
     ],
     "route": [
       { "name": "path", "detail": "the path to match", "doc": "`/crew/:id` captures `id` and hands it to the view as a prop. A child route's path is relative to its parent, and `path=\"\"` is the index route that fills the parent's outlet at the parent's own path." },
-      { "name": "view", "detail": "the component to render", "doc": "Names an imported component, the same name its tag would use." },
+      { "name": "view", "detail": "the component to render", "doc": "Names an imported component. Either spelling: `view=\"crew-detail\"` as the tag is written, or `view=\"crew_detail\"` as the `use` that imports it is written. They are the same component." },
       { "name": "fallback", "detail": "match anything unmatched", "doc": "Valueless. Renders when no other route matched, wherever it sits among them." },
       { "name": "guard", "detail": "decide whether this route may be entered", "doc": "`guard=\"expr\"`, run whenever this route is part of the match. `false` cancels the navigation, a string redirects to that path, and anything else allows it, `()` included, so a function that falls off the end has consented. Outer guards run first." }
     ],
@@ -65,6 +65,17 @@
     "text": [
       { "name": "for", "detail": "label another element", "doc": "Names the `id` of the element this text labels, so the accessibility tree pairs them." }
     ]
+  },
+  "attributeValues": {
+    "input": {
+      "type": [
+        { "name": "text", "detail": "a single-line field", "doc": "The default, so `type` may be left off entirely." },
+        { "name": "textarea", "detail": "a multi-line field", "doc": "Enter inserts a newline instead of being ignored, and the box scrolls its own content." },
+        { "name": "select", "detail": "a dropdown", "doc": "Shows the bound value and opens a list on tap. Takes its choices from `:options`." },
+        { "name": "checkbox", "detail": "a tap-toggle", "doc": "No caret and no focus of its own: a tap flips the bound value, and `:checked` matches it. Space or Enter activates it when tabbed to." },
+        { "name": "radio", "detail": "one of a group", "doc": "Radios sharing a `name` are one group, so choosing one clears the others. Carries the chosen value in `value`." }
+      ]
+    }
   },
   "scriptGlobals": [
     { "name": "signal", "detail": "signal(value)", "doc": "Declare a piece of reactive state." },
@@ -174,7 +185,7 @@
     { "name": "border", "detail": "width, style and colour of the outline", "doc": "`2px solid #45475a`. The style word is accepted and only the width and colour are drawn.", "usage": ".field { border: 2px solid #45475a; }" },
     { "name": "border-width", "detail": "how thick the outline is", "doc": "Takes room in the layout, so changing it moves the content inside.", "usage": ".field { border-width: 2px; }" },
     { "name": "border-color", "detail": "what colour the outline is", "doc": "Animatable, so it is the usual way to show focus without the box moving.", "usage": ".field:focus { border-color: #89b4fa; }" },
-    { "name": "border-radius", "detail": "how round the corners are", "doc": "One to four lengths. Clips the background and the border; it does **not** clip children unless the box also has `overflow: hidden`.", "usage": ".card { border-radius: 12px; }" },
+    { "name": "border-radius", "detail": "how round the corners are", "doc": "One to four lengths, grouped by diagonal. Takes a percentage, resolved against the box's shorter side, so `50%` rounds a square into a circle and an oblong into a pill. Clips the background and the border; it does **not** clip children unless the box also has `overflow: hidden`.", "usage": ".card { border-radius: 12px; }" },
     { "name": "border-top-left-radius", "detail": "roundness of one corner", "doc": "Overrides `border-radius` for this corner.", "usage": ".bubble { border-top-left-radius: 2px; }" },
     { "name": "border-top-right-radius", "detail": "roundness of one corner", "doc": "Overrides `border-radius` for this corner.", "usage": ".bubble { border-top-right-radius: 2px; }" },
     { "name": "border-bottom-right-radius", "detail": "roundness of one corner", "doc": "Overrides `border-radius` for this corner.", "usage": ".bubble { border-bottom-right-radius: 2px; }" },

@@ -10,3 +10,7 @@ keywords = ["ui", "formatter", "rux"]
 categories = ["gui", "development-tools"]
 
 [dependencies]
+# Only for the void-tag list. The formatter indents by what never nests and the
+# parser decides what never nests; two answers to that question is how `<image>`
+# came to be missing from one of them.
+rux-parser.workspace = true

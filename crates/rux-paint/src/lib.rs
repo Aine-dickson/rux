@@ -219,18 +219,65 @@ pub fn build_scene(
                         }
                     }
                 }
-                // Border: stroke inset by half its width so it sits inside the box.
+                // Border. Two ways to draw one, because a rounded corner and an
+                // uneven edge want different things.
+                //
+                // **Uniform**: one stroke inset by half its width, so it sits
+                // inside the box and follows the corner radius. This was the
+                // only path, reading a single width taken from `border.top`, so
+                // a `border-bottom: 6px` drew nothing and a `border-top: 6px`
+                // drew a box on all four sides.
+                //
+                // **Uneven**: each edge filled as its own rectangle. A stroke
+                // cannot vary along its length, and `border-bottom` under an
+                // input is the case this exists for. The corners are square
+                // where two thicknesses meet; CSS mitres them diagonally, which
+                // is only visible when two *different* non-zero sides share a
+                // corner and is not worth a path builder here.
                 if let Some(bc) = r.border_color {
-                    if r.border_width > 0.0 {
-                        let half = (r.border_width / 2.0) as f64;
-                        let inner = rounded_rect(r.x, r.y, r.width, r.height, r.radius, half);
-                        scene.stroke(
-                            &Stroke::new(r.border_width as f64),
-                            cur,
-                            to_color(bc),
-                            None,
-                            &inner,
-                        );
+                    let b = r.border;
+                    let widest = b.top.max(b.right).max(b.bottom).max(b.left);
+                    if widest > 0.0 {
+                        if b.is_uniform() {
+                            let half = (b.top / 2.0) as f64;
+                            let inner = rounded_rect(r.x, r.y, r.width, r.height, r.radius, half);
+                            scene.stroke(
+                                &Stroke::new(b.top as f64),
+                                cur,
+                                to_color(bc),
+                                None,
+                                &inner,
+                            );
+                        } else {
+                            let (x, y, w, h) = (r.x as f64, r.y as f64, r.width as f64, r.height as f64);
+                            let color = to_color(bc);
+                            // Top and bottom span the full width; the sides take
+                            // what is left between them, so a corner is painted
+                            // once rather than twice over.
+                            let edges = [
+                                (x, y, w, b.top as f64),
+                                (x, y + h - b.bottom as f64, w, b.bottom as f64),
+                                (x, y + b.top as f64, b.left as f64, h - (b.top + b.bottom) as f64),
+                                (
+                                    x + w - b.right as f64,
+                                    y + b.top as f64,
+                                    b.right as f64,
+                                    h - (b.top + b.bottom) as f64,
+                                ),
+                            ];
+                            for (ex, ey, ew, eh) in edges {
+                                if ew <= 0.0 || eh <= 0.0 {
+                                    continue;
+                                }
+                                scene.fill(
+                                    Fill::NonZero,
+                                    cur,
+                                    color,
+                                    None,
+                                    &Rect::new(ex, ey, ex + ew, ey + eh),
+                                );
+                            }
+                        }
                     }
                 }
             }

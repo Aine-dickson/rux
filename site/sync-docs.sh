@@ -44,7 +44,7 @@ pages=(
   # reference sidebar: overview, elements, layout, CSS, reactivity, script, then
   # the rest of the runtime, with the v0.1 design history last.
   "07-script.md|reference/script.md|Script|6|The script language: state, functions, values, the element API, and every way it differs from rhai and from JavaScript."
-  "02-spec.md|reference/spec.md|Design surface (v0.1)|16|The original v0.1 spec, kept as design history. Not a description of the built runtime."
+  "02-spec.md|reference/spec.md|Design surface (v0.1)|16|The original v0.1 spec, kept as design history. Not a description of the built runtime, and parts of it are false."
   "01-rationale.md|reference/rationale.md|Design rationale|17|The four laws, the element audit, and the decisions behind them, with the tradeoffs each one accepted."
   "06-roadmap.md|roadmap/_index.md|Roadmap|4|Where Rux goes next: milestones, the release cadence, and what is deliberately not being built."
   "04-architecture.md|contribute/_index.md|Architecture|5|How a .rux file becomes pixels, and which crate owns which stage."
@@ -76,6 +76,9 @@ splits=(
   # Single-quoted for the backticks, as above.
   '05-as-built.md|### `<path>`: vector geometry|reference/paths.md|Paths|16|SVG path data as an element: the d attribute, paint as CSS, and shapes that morph.'
   "05-as-built.md|### Honored CSS|reference/css.md|Honored CSS|4|The authoritative list of properties the runtime interprets, plus selectors, pseudo-classes and transitions."
+  # Its own page rather than a note inside Layout: the rule is about all of CSS,
+  # and a reader arriving from CSS wants the whole list in one place.
+  "05-as-built.md|### Where Rux differs from CSS|reference/css-differences.md|Where Rux differs from CSS|6|The short list of places Rux does not answer the way CSS does, and which kind of difference each one is."
   "05-as-built.md|### Reactivity & script|reference/reactivity.md|Reactivity|5|Signals, computed values, effects, and what re-runs when one changes."
   "05-as-built.md|### Inputs|reference/inputs.md|Inputs|7|Text fields, textarea, select, checkbox and radio, and two-way binding with r-model."
   "05-as-built.md|### Text input and composition|reference/text-input.md|Text input|8|The caret, the soft keyboard, and IME composition for text that is not typed one key at a time."

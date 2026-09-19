@@ -56,6 +56,23 @@ function importedComponents(text) {
 }
 
 /**
+ * The component `name` refers to, written in either spelling, or `undefined`.
+ *
+ * One component has two names and the author chose neither. `use pages::new_task;`
+ * has to be snake, because it names a file; the tag it contributes has to be
+ * kebab, because that is what a custom element looks like. So both are forced,
+ * at opposite ends of the same file, and the runtime takes either of them in
+ * the template (`find_component` in `crates/rux-style`). This is that rule, and
+ * every reader of an import in this extension goes through it rather than
+ * comparing `c.tag === word` and quietly disagreeing with what would run.
+ */
+function componentNamed(text, name) {
+  if (!name) return undefined;
+  const kebab = name.replace(/_/g, '-');
+  return importedComponents(text).find((c) => c.tag === kebab);
+}
+
+/**
  * If `offset` sits inside an unfinished opening tag, describe it.
  *
  * Returns `null` when the cursor is in ordinary content, and otherwise
@@ -374,15 +391,36 @@ function inTemplateExpression(text, offset) {
     if (close === -1 || close >= offset) return true;
   }
 
-  // The other half is an attribute value, which means finding the quote we are
-  // inside and asking what its attribute was called. Anything not bound (a
-  // plain `class="…"`) is a literal, not an expression.
+  // The other half is an attribute value. Anything not bound (a plain
+  // `class="…"`) is a literal, not an expression.
+  const at = attributeValueAt(text, offset);
+  if (!at) return false;
+  return (
+    at.attribute.startsWith('@') ||
+    at.attribute.startsWith(':') ||
+    EXPRESSION_ATTRIBUTES.includes(at.attribute)
+  );
+}
+
+/**
+ * The attribute value the cursor sits inside, as
+ * `{ tag, attribute, prefix }`, or `null` when it is not in one.
+ *
+ * `tag` is the element the attribute is written on, because the same attribute
+ * name means different things on different elements, and `prefix` is what has
+ * been typed into the value so far.
+ *
+ * This is the shared half of "am I in a value, and whose": both the expression
+ * check above and the value completion need exactly it, and two scanners over
+ * the same quotes would eventually disagree about one of them.
+ */
+function attributeValueAt(text, offset) {
   const from = Math.max(0, offset - 2000);
   const before = text.slice(from, offset);
   const lt = before.lastIndexOf('<');
-  if (lt === -1) return false;
+  if (lt === -1) return null;
   const gt = before.lastIndexOf('>');
-  if (gt > lt) return false;
+  if (gt > lt) return null;
 
   const inside = before.slice(lt + 1);
   let quote = null;
@@ -399,18 +437,19 @@ function inTemplateExpression(text, offset) {
       valueStart = i;
     }
   }
-  if (!quote || valueStart === -1) return false;
+  if (!quote || valueStart === -1) return null;
 
   // The attribute name is the word before the `=` that opened this value.
   const head = inside.slice(0, valueStart);
   const name = /([@:]?[\w.-]+)\s*=\s*$/.exec(head);
-  if (!name) return false;
-  const attribute = name[1];
-  return (
-    attribute.startsWith('@') ||
-    attribute.startsWith(':') ||
-    EXPRESSION_ATTRIBUTES.includes(attribute)
-  );
+  if (!name) return null;
+
+  const tag = /^([A-Za-z][\w.-]*)/.exec(inside);
+  return {
+    tag: tag ? tag[1] : '',
+    attribute: name[1],
+    prefix: inside.slice(valueStart + 1),
+  };
 }
 
 /**
@@ -430,7 +469,9 @@ module.exports = {
   inTemplateExpression,
   sectionSpan,
   importedComponents,
+  componentNamed,
   openTagAt,
+  attributeValueAt,
   unclosedTagAt,
   inCssDeclaration,
   cssPositionAt,

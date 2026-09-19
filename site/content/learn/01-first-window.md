@@ -60,15 +60,22 @@ CSS, not a lookalike DSL. `.title { font-size: 28px }` is parsed by
 real cascade. Selectors, specificity and shorthands behave the way you expect.
 
 Rux does not honor *all* of CSS, and it tells you when you use something it
-doesn't. Try adding `line-height: 2` to `.title` and watch the terminal:
+doesn't. Try adding `outline: 1px solid red` to `.title` and watch the terminal:
 
 ```
-rux: CSS property `line-height` is parsed but not yet honored
+rux: CSS property `outline` is real CSS that Rux does not honor yet, so it will have no effect
 ```
 
-One line per unhonored property, once each. Nothing fails silently, which
-matters a lot when the thing you are styling is a window rather than a page you
-can inspect. The full honored set is in [the reference](@/reference/_index.md).
+Now misspell one instead. `paddding: 8px` gets a different line, because it is a
+different problem:
+
+```
+rux: `paddding` is not a CSS property Rux knows, so it will have no effect. Did you mean `padding`?
+```
+
+One line per property, once each. Nothing fails silently, which matters a lot
+when the thing you are styling is a window rather than a page you can inspect.
+The full honored set is in [the reference](@/reference/_index.md).
 
 ## Checkpoint
 

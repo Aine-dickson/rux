@@ -62,8 +62,8 @@ pub fn run(options: Options) -> i32 {
     // each warning to stderr as prose.
     rux_runtime::set_stderr_echo(false);
 
-    let files = match collect_files(&options.paths) {
-        Ok(files) => files,
+    let (files, skipped) = match collect_files(&options.paths) {
+        Ok(both) => both,
         Err(err) => {
             eprintln!("rux: {err}");
             return 2;
@@ -90,7 +90,7 @@ pub fn run(options: Options) -> i32 {
     let errors = found.iter().filter(|d| d.severity == Severity::Error).count();
     let warnings = found.len() - errors;
     if !options.json {
-        report_summary(files.len(), errors, warnings);
+        report_summary(files.len(), errors, warnings, &skipped);
     }
 
     if errors > 0 || (options.deny_warnings && warnings > 0) {
@@ -115,13 +115,23 @@ fn check_file(file: &Path) -> Vec<Diagnostic> {
             .warnings
             .iter()
             .map(|w| Diagnostic {
-                file: file.to_path_buf(),
+                // A warning raised inside a `use`d component names that
+                // component's file, matching what the error path above has done
+                // since components landed. Anything else pairs the component's
+                // line number with the importing file's name, which reads as a
+                // precise location and is not one.
+                file: w.file.clone().unwrap_or_else(|| file.to_path_buf()),
                 line: w.line,
                 // No column: the CSS parser locates a *rule*, not the
                 // declaration inside it, so pointing at a column would be
                 // pointing at the selector.
                 column: None,
-                severity: Severity::Warning,
+                // A document can build and still contain something simply
+                // wrong: an expression that cannot resolve, an `@event` the
+                // runtime never dispatches. Those are errors even though the
+                // load succeeded, and `rux check` used to call such a file
+                // clean and exit 0.
+                severity: if w.is_error() { Severity::Error } else { Severity::Warning },
                 message: w.message.clone(),
             })
             .collect(),
@@ -154,8 +164,33 @@ fn render(d: &Diagnostic) -> String {
     }
 }
 
-fn report_summary(files: usize, errors: usize, warnings: usize) {
+fn report_summary(files: usize, errors: usize, warnings: usize, skipped: &[PathBuf]) {
     let file_word = if files == 1 { "file" } else { "files" };
+    // Said out loud, because "checked 2 files, no problems found" over a project
+    // of four reads as a clean bill of health for all four. A component is
+    // skipped on purpose (its props come from whoever uses it, so reading it
+    // alone invents warnings), but skipping in silence is how somebody comes to
+    // believe a file was looked at when it never was.
+    if !skipped.is_empty() {
+        // Named, but not all of them: a project can hold dozens of components
+        // and a line listing every one is scrolled past rather than read, which
+        // would put this straight back where it started.
+        const SHOWN: usize = 3;
+        let mut names: Vec<String> =
+            skipped.iter().take(SHOWN).map(|p| p.display().to_string()).collect();
+        if skipped.len() > SHOWN {
+            names.push(format!("and {} more", skipped.len() - SHOWN));
+        }
+        eprintln!(
+            "rux: skipped {} component{} ({})",
+            skipped.len(),
+            if skipped.len() == 1 { "" } else { "s" },
+            names.join(", ")
+        );
+        eprintln!(
+            "rux: a component's props come from its caller, so name one to check it on its own"
+        );
+    }
     if errors == 0 && warnings == 0 {
         eprintln!("rux: checked {files} {file_word}, no problems found");
     } else {
@@ -206,8 +241,8 @@ fn to_json(found: &[Diagnostic]) -> String {
 /// that passes them, so checking one on its own reports every prop as an
 /// undefined variable, and a checker whose default output is four false
 /// failures is one nobody will keep in CI.
-fn collect_files(paths: &[PathBuf]) -> Result<Vec<PathBuf>, String> {
-    crate::files::collect(paths, crate::files::Components::SkipWhenWalking)
+fn collect_files(paths: &[PathBuf]) -> Result<(Vec<PathBuf>, Vec<PathBuf>), String> {
+    crate::files::collect_reporting_skips(paths, crate::files::Components::SkipWhenWalking)
 }
 
 #[cfg(test)]

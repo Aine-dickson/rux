@@ -42,6 +42,7 @@ const EMPTY = {
   globalAttributes: [],
   directives: [],
   elementAttributes: {},
+  attributeValues: {},
   scriptGlobals: [],
   pseudoClasses: [],
   voidTags: [],
@@ -154,6 +155,17 @@ function attributesFor(tag) {
 }
 
 /** `signal`, `computed`, `navigate` and the rest of what script can call. */
+/**
+ * The values `attribute` takes on `tag`, as `{ name, detail, doc }`, or `[]`.
+ *
+ * Empty for every attribute whose values are not a closed set, which is most of
+ * them: an empty list means "nothing to offer here", never "anything goes".
+ */
+function attributeValues(tag, attribute) {
+  const forTag = (current().attributeValues || {})[tag] || {};
+  return forTag[attribute] || [];
+}
+
 function scriptGlobals() {
   return current().scriptGlobals || [];
 }
@@ -257,6 +269,7 @@ module.exports = {
   globalAttributes,
   directives,
   attributesFor,
+  attributeValues,
   scriptGlobals,
   cssProperties,
   cssValues,

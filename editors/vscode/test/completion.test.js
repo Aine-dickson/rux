@@ -43,7 +43,12 @@ const vscode = {
       this.value = value;
     }
   },
-  languages: { registerCompletionItemProvider: (_lang, provider) => provider },
+  languages: {
+    registerCompletionItemProvider: (_lang, provider, ...triggers) => {
+      provider.triggers = triggers;
+      return provider;
+    },
+  },
 };
 
 const provider = completion.register(vscode);
@@ -90,6 +95,61 @@ test('a CSS value list is values, with no snippets mixed in', () => {
   for (const noise of ['script', 'signal', 'slot', 'sticky', 'style']) {
     assert.ok(!offered.includes(noise), `${noise} is a snippet and must not be here`);
   }
+});
+
+test('a quote opens the value list, or nobody ever sees it', () => {
+  // The completion for `type="…"` worked and was invisible for a release: the
+  // only way to open a list is a trigger character, and the character that
+  // opens a value is the quote. Both quotes, since `type='text'` is legal too.
+  assert.ok(provider.triggers.includes('"'), 'a double quote must open the list');
+  assert.ok(provider.triggers.includes("'"), 'and so must a single quote');
+});
+
+test('an input type offers the five kinds and nothing else', () => {
+  const offered = offeredAt('<template><input type="TYPE_VALUE" /></template>', 'TYPE_VALUE');
+  assert.deepEqual(
+    offered,
+    ['text', 'textarea', 'select', 'checkbox', 'radio'],
+    'the five kinds, in the order an author meets them'
+  );
+});
+
+test('a half-typed input type still offers the whole set', () => {
+  // Filtering is the editor's job, not the provider's: returning only the
+  // matches would fight VS Code's own fuzzy matching and lose the list the
+  // moment a character is deleted.
+  const offered = offeredAt('<template><input type="teTYPE_PART" /></template>', 'TYPE_PART');
+  assert.ok(offered.includes('textarea'), 'textarea is still on offer');
+  assert.ok(offered.includes('checkbox'), 'and so is everything else');
+});
+
+test('an attribute with no closed set of values offers nothing', () => {
+  // The important half: silence here means "anything goes", and an offer would
+  // be a claim that these are the placeholders Rux knows about.
+  const offered = offeredAt(
+    '<template><input placeholder="PLACE_VALUE" /></template>',
+    'PLACE_VALUE'
+  );
+  assert.deepEqual(offered, [], `nothing to offer for a free-text value: ${offered}`);
+});
+
+test('a value list is per element, not per attribute name', () => {
+  // `type` on something that is not an input is not an input type. Offering the
+  // five kinds on a `<view type="…">` would be confidently wrong.
+  const offered = offeredAt('<template><view type="OTHER_TAG" /></template>', 'OTHER_TAG');
+  assert.deepEqual(offered, [], `a view has no type values: ${offered}`);
+});
+
+test('a bound type is an expression, not the value list', () => {
+  // `:type="kind"` names a signal, so what is useful there is the document's
+  // own state. Offering `checkbox` inside an expression would be offering a
+  // bare word that does not resolve.
+  const offered = offeredAt(
+    '<template><input :type="BOUND_TYPE" /></template><script>let kind = signal("text");</script>',
+    'BOUND_TYPE'
+  );
+  assert.ok(!offered.includes('checkbox'), `an expression, not a value list: ${offered}`);
+  assert.ok(offered.includes('kind'), 'the document state is what belongs here');
 });
 
 test('rule level offers whole-rule snippets and not property names', () => {
@@ -437,4 +497,79 @@ test('an escaped quote does not end the string it is inside', () => {
 </script>`;
   const found = locals.declarations(source).map((d) => d.name);
   assert.ok(found.includes('after'), 'the file did not go quiet');
+});
+
+// ── the `use` hover goes and looks ───────────────────────────────────────────
+
+/**
+ * The hover used to describe what a `use` path *means* and never check whether
+ * it resolved, which reads as confirmation that it does. Reported by someone
+ * looking at a red squiggle and a confident hover on the same line and asking,
+ * reasonably, which one to believe.
+ */
+function useProject() {
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'rux-hover-use-'));
+  fs.mkdirSync(path.join(root, 'components'));
+  fs.mkdirSync(path.join(root, 'pages'));
+  fs.writeFileSync(path.join(root, 'app.rux'), '<template></template>');
+  fs.writeFileSync(path.join(root, 'components', 'task.rux'), '<template></template>');
+  return root;
+}
+
+const USE_DOC = '<template></template>\n<script>\nuse components::task;\n</script>';
+
+function useHover(docPath, needle) {
+  const idx = USE_DOC.indexOf(needle);
+  const at = contextModule.memberAt(USE_DOC, idx);
+  return hover.lookUp('script', USE_DOC, at, docPath);
+}
+
+test('the use hover says where the import actually resolved', () => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const root = useProject();
+
+  // A page one directory down: nothing beside it, so this can only resolve
+  // from the project root, and the hover has to say which.
+  const page = path.join(root, 'pages', 'home.rux');
+  const leaf = useHover(page, 'task');
+  assert.match(leaf.doc, /Resolves to/, `hover did not resolve: ${leaf.doc}`);
+  assert.match(leaf.doc, /from the project root/, `wrong place: ${leaf.doc}`);
+
+  // Beside the file, and it says so instead.
+  const atRoot = path.join(root, 'app.rux');
+  const near = useHover(atRoot, 'task');
+  assert.match(near.doc, /beside this file/, `wrong place: ${near.doc}`);
+
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test('the use hover says so when nothing is there', () => {
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'rux-hover-none-'));
+  fs.writeFileSync(path.join(root, 'app.rux'), '<template></template>');
+
+  const found = useHover(path.join(root, 'app.rux'), 'task');
+  assert.match(found.doc, /Nothing of that name is there/, `too confident: ${found.doc}`);
+  assert.match(found.doc, /Looked in/, 'and must name where it looked');
+
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test('the use hover no longer teaches that a parent directory is unreachable', () => {
+  const path = require('node:path');
+  const fs = require('node:fs');
+  const root = useProject();
+  const found = useHover(path.join(root, 'pages', 'home.rux'), 'use');
+  assert.ok(
+    !/cannot be imported at all/.test(found.doc),
+    'the downward-only rule was lifted in v0.7.1 and the hover taught it for a while'
+  );
+  assert.match(found.doc, /project root/, 'it teaches the rule that is actually in force');
+  fs.rmSync(root, { recursive: true, force: true });
 });

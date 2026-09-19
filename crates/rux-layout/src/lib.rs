@@ -61,6 +61,15 @@ pub struct Sides {
 }
 
 impl Sides {
+    /// All four zero, the common case for a box with no border.
+    pub const ZERO: Self = Self::uniform(0.0);
+
+    /// Whether all four are the same, which is what lets a border be drawn as
+    /// one stroke around a rounded rectangle rather than four filled edges.
+    pub fn is_uniform(&self) -> bool {
+        self.top == self.right && self.right == self.bottom && self.bottom == self.left
+    }
+
     pub const fn uniform(v: f32) -> Self {
         Self {
             top: v,
@@ -554,6 +563,17 @@ pub struct Style {
     pub background: Option<Background>,
     /// `border-radius`, per corner (top-left, top-right, bottom-right, bottom-left).
     pub radius: Corners,
+    /// The same four corners when written as a **percentage**, which cannot be
+    /// resolved here: the cascade runs before there is a box. `Some(50.0)` on a
+    /// corner means "half the shorter side", worked out at paint time, and
+    /// overrides that corner's `radius`.
+    ///
+    /// Rux draws circular corners only (see `parse_border_radius`), so there is
+    /// one scalar per corner and a percentage resolves against the **shorter**
+    /// side rather than per axis. On a square that is CSS's answer exactly; on
+    /// an oblong CSS would give an ellipse, which this cannot represent, and
+    /// half the shorter side is the pill an author reaching for `50%` wants.
+    pub radius_pct: [Option<f32>; 4],
     /// `box-shadow` (single, outer). Drawn behind the box's own background.
     pub box_shadow: Option<BoxShadow>,
     /// `transform`: an affine applied to this box and its subtree at paint time.
@@ -665,6 +685,7 @@ impl Default for Style {
             overflow: Overflow::Visible,
             background: None,
             radius: [0.0; 4],
+            radius_pct: [None; 4],
             box_shadow: None,
             transform: None,
             cursor: Cursor::Default,
@@ -983,8 +1004,14 @@ pub struct PaintRect {
     pub height: f32,
     pub background: Option<Background>,
     pub radius: Corners,
-    /// Uniform border width for rendering (0 = none).
-    pub border_width: f32,
+    /// Border width **per side** (all zero = none).
+    ///
+    /// This used to be one `f32` filled from `style.border.top`, so the three
+    /// other sides were computed by the cascade and then thrown away here. A
+    /// `border-bottom: 6px` drew nothing at all, and a `border-top: 6px` drew a
+    /// box on all four sides. Both were silent, and `border-bottom` is offered
+    /// by the editor's completion list, which is supposed to mean it works.
+    pub border: Sides,
     pub border_color: Option<Rgba>,
 }
 
@@ -1253,6 +1280,14 @@ pub struct FocusRegion {
     /// inputs in one list are indistinguishable and the caret lands in the first
     /// of them whichever one was tapped.
     pub row: Option<String>,
+    /// The component instance this input was written in, when it is inside one.
+    ///
+    /// The third part of its identity, and the one that says *where the model
+    /// means anything*. An `r-model` inside a component names that instance's
+    /// own state, which the document knows nothing about: read it in the
+    /// document's scope and the name resolves to nothing, so the field shows
+    /// empty and every keystroke is written somewhere nobody reads.
+    pub instance: Option<String>,
     /// The input's text box (its laid-out child). The shell needs it to turn a
     /// click into a caret position.
     pub text: Option<PaintText>,
@@ -1283,6 +1318,10 @@ pub struct SelectRegion {
     /// first row's dropdown wherever you tapped, draws it over that row, and
     /// writes the chosen option into it.
     pub row: Option<String>,
+    /// The component instance this select was written in. Same reason as
+    /// [`FocusRegion::instance`]: choosing an option writes the model, and a
+    /// write in the wrong scope lands nowhere.
+    pub instance: Option<String>,
     pub options: Vec<String>,
 }
 
@@ -1366,11 +1405,25 @@ impl FocusItem {
 #[derive(Clone, Debug)]
 pub enum FocusKind {
     /// A text / textarea input: focusing it starts caret editing.
-    Text { model: String, row: Option<String>, multiline: bool, text: Option<PaintText> },
+    Text {
+        model: String,
+        row: Option<String>,
+        /// The component instance the input was written in: the scope its model
+        /// is read and written in. See [`FocusRegion::instance`].
+        instance: Option<String>,
+        multiline: bool,
+        text: Option<PaintText>,
+    },
     /// A button / checkbox / radio: Space or Enter runs its handler.
     Activate { on_tap: String, instance: Option<String> },
     /// A select: Space or Enter opens its dropdown.
-    Select { model: String, row: Option<String>, options: Vec<String> },
+    Select {
+        model: String,
+        row: Option<String>,
+        /// The component instance the select was written in.
+        instance: Option<String>,
+        options: Vec<String>,
+    },
 }
 
 /// The result of laying out a tree: paint items, hit regions, and focus regions,
@@ -1431,12 +1484,41 @@ fn content_box(layout: &taffy::Layout) -> (f32, f32, f32, f32) {
 /// don't each widen this signature.
 pub type Measure<'a> = dyn FnMut(&TextContent, Option<f32>) -> (f32, f32) + 'a;
 
+/// Turn any percentage corners into pixels, now that the box has a size.
+///
+/// A percentage is resolved against the **shorter side**, because Rux draws
+/// circular corners: there is one scalar per corner, so there is no way to say
+/// "half the width horizontally and half the height vertically", which is what
+/// CSS's `50%` means on an oblong. On a square the two answers are identical.
+/// On an oblong CSS draws an ellipse and this draws a pill, which is what
+/// somebody writing `border-radius: 50%` on a button is after.
+///
+/// The value is not clamped here. A radius wider than the box is already
+/// clamped by the rounded-rect builder, which is the same path that makes
+/// `9999px` a reliable way to say "as round as it goes", and clamping twice
+/// would be one place too many to keep in agreement.
+fn resolve_radius(radius: Corners, pct: [Option<f32>; 4], width: f32, height: f32) -> Corners {
+    if pct.iter().all(Option::is_none) {
+        return radius;
+    }
+    let shorter = width.min(height).max(0.0);
+    let mut out = radius;
+    for (i, p) in pct.iter().enumerate() {
+        if let Some(p) = p {
+            out[i] = shorter * p / 100.0;
+        }
+    }
+    out
+}
+
 /// What each taffy node paints.
 enum PaintKind {
     Box {
         bg: Option<Background>,
         radius: Corners,
-        border_width: f32,
+        /// Percentage corners, resolved against this box once it has a size.
+        radius_pct: [Option<f32>; 4],
+        border: Sides,
         border_color: Option<Rgba>,
         clip: bool,
         shadow: Option<BoxShadow>,
@@ -1849,6 +1931,9 @@ struct Bound {
     model: String,
     /// The enclosing `r-for` row's key, the other half of an input's identity.
     row: Option<String>,
+    /// The component instance the input was written in, the scope its model is
+    /// resolved in. See [`FocusRegion::instance`].
+    instance: Option<String>,
     multiline: bool,
     options: Option<Vec<String>>,
 }
@@ -1948,7 +2033,8 @@ fn build(
             PaintKind::Box {
                 bg: node.style.background.clone(),
                 radius: node.style.radius,
-                border_width: node.style.border.top,
+                radius_pct: node.style.radius_pct,
+                border: node.style.border,
                 border_color: node.style.border_color,
                 clip: node.style.overflow != Overflow::Visible,
                 shadow: node.style.box_shadow,
@@ -1981,7 +2067,8 @@ fn build(
             PaintKind::Box {
                 bg: node.style.background.clone(),
                 radius: node.style.radius,
-                border_width: node.style.border.top,
+                radius_pct: node.style.radius_pct,
+                border: node.style.border,
                 border_color: node.style.border_color,
                 clip: node.style.overflow != Overflow::Visible,
                 shadow: node.style.box_shadow,
@@ -2011,7 +2098,8 @@ fn build(
             PaintKind::Box {
                 bg: node.style.background.clone(),
                 radius: node.style.radius,
-                border_width: node.style.border.top,
+                radius_pct: node.style.radius_pct,
+                border: node.style.border,
                 border_color: node.style.border_color,
                 clip: node.style.overflow != Overflow::Visible,
                 shadow: node.style.box_shadow,
@@ -2090,8 +2178,9 @@ fn build(
             PaintKind::Box {
                 bg: node.style.background.clone(),
                 radius: node.style.radius,
+                radius_pct: node.style.radius_pct,
                 // Uniform border for rendering (top width is representative).
-                border_width: node.style.border.top,
+                border: node.style.border,
                 border_color: node.style.border_color,
                 clip: node.style.overflow != Overflow::Visible,
                 shadow: node.style.box_shadow,
@@ -2115,6 +2204,7 @@ fn build(
             id,
             model: model.clone(),
             row: row.map(str::to_string),
+            instance: node.instance.clone(),
             multiline: node.multiline,
             options: node.options.clone(),
         });
@@ -2268,12 +2358,17 @@ fn collect(
             PaintKind::Box {
                 bg,
                 radius,
-                border_width,
+                radius_pct,
+                border,
                 border_color,
                 clip: c,
                 shadow,
             } => {
                 clip = *c;
+                // Here, and not in the cascade, is the first moment a
+                // percentage has a box to be a percentage of.
+                let radius =
+                    &resolve_radius(*radius, *radius_pct, layout.size.width, layout.size.height);
                 clip_radius = *radius;
                 // The shadow goes down first, so the box's own fill sits on top.
                 // Outer shadows only for now; inset is parsed but not drawn.
@@ -2290,7 +2385,8 @@ fn collect(
                         color: sh.color,
                     });
                 }
-                let has_border = *border_width > 0.0 && border_color.is_some();
+                let widest = border.top.max(border.right).max(border.bottom).max(border.left);
+                let has_border = widest > 0.0 && border_color.is_some();
                 if bg.is_some() || has_border {
                     out.paints.push(Paint::Rect(PaintRect {
                         x,
@@ -2299,7 +2395,7 @@ fn collect(
                         height: layout.size.height,
                         background: bg.clone(),
                         radius: *radius,
-                        border_width: *border_width,
+                        border: *border,
                         border_color: *border_color,
                     }));
                 }
@@ -2350,6 +2446,14 @@ fn collect(
     // A `for=` label targeting a text input: a focus region at the label's box,
     // carrying the *target's* model, so tapping the label focuses that input.
     if let Some((_, model, row)) = focus_labels.iter().find(|(nid, ..)| *nid == id) {
+        // The scope comes from the input the label points at, not from the
+        // label: `for=` names a model, and a model only means anything where it
+        // was written. A label that finds no such input carries no instance,
+        // which is the same answer as before this field existed.
+        let instance = models
+            .iter()
+            .find(|b| b.model == *model && b.row == *row)
+            .and_then(|b| b.instance.clone());
         out.focuses.push(FocusRegion {
             x,
             y,
@@ -2357,6 +2461,7 @@ fn collect(
             height: layout.size.height,
             model: model.clone(),
             row: row.clone(),
+            instance,
             text: None,
             multiline: false,
             scroll_id: None,
@@ -2428,6 +2533,7 @@ fn collect(
                 height: fh,
                 model: bound.model.clone(),
                 row: bound.row.clone(),
+                instance: bound.instance.clone(),
                 options: options.clone(),
             });
             out.focusables.push(FocusItem {
@@ -2440,6 +2546,7 @@ fn collect(
                 kind: FocusKind::Select {
                     model: bound.model.clone(),
                     row: bound.row.clone(),
+                    instance: bound.instance.clone(),
                     options: options.clone(),
                 },
                 scroll: inside_scroll,
@@ -2476,6 +2583,7 @@ fn collect(
                 height: fh,
                 model: bound.model.clone(),
                 row: bound.row.clone(),
+                instance: bound.instance.clone(),
                 text: text.clone(),
                 multiline: bound.multiline,
                 // The scroll block below assigns ids as `out.scrolls.len()`, so if
@@ -2492,6 +2600,7 @@ fn collect(
                 kind: FocusKind::Text {
                     model: bound.model.clone(),
                     row: bound.row.clone(),
+                    instance: bound.instance.clone(),
                     multiline: bound.multiline,
                     text,
                 },

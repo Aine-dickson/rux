@@ -381,11 +381,14 @@ and driven in `examples/fonts.rux`.
 
 **Also worth doing while in here:** *say something* when a declaration is ignored.
 **Done (2026-07-15):** `warn_if_unhonored` prints one line per unhonored
-property (`rux: CSS property \`box-shadow\` is parsed but not yet honored, so it
-will have no effect`), deduped for the life of the process via a `static` set so
-the whole-tree rebuild doesn't repeat it every keystroke. The honored set is the
+property, deduped for the life of the process via a `static` set so the
+whole-tree rebuild doesn't repeat it every keystroke. The honored set is the
 `HONORED_PROPERTIES` list in `rux-style`: **when you honor a new property below,
 add it there too**, or authors get told a working property does nothing.
+**Split into three messages in v0.7.1:** honored says nothing, real CSS Rux has
+not built says so, and an unrecognised name says so and offers the nearest
+property that exists. The second list is `UNIMPLEMENTED_PROPERTIES`, and moving
+a name from it into `HONORED_PROPERTIES` is what honoring one looks like.
 
 **Landmine found doing this (2026-07-15):** named colors beyond
 `black`/`white`/`transparent` are not resolved, and lightningcss *minifies* hex
@@ -1891,6 +1894,171 @@ running in CI without a window or a GPU. A geometry read there has no answer, so
 checking a document must not require one: `query` resolves, the handle exists,
 and the metrics are absent.
 
+### v0.7.x: the validation line
+
+**Opened 2026-08-21.** v0.8 is paused. The rule, in the user's words: *"Not
+until I exhaust what we claim is done are we moving to 0.8. We shall keep on
+0.7.x."* So 0.7.x is a validation pass over what v0.7 says it shipped, driven by
+a person using the language rather than by the suite.
+
+**The sorting rule, also the user's:** anything that is an implementation
+**claim** is fixed inside 0.7.x and does not cross into a later release.
+Anything that genuinely cannot be fixed in a patch may be scheduled. The test is
+not "is it small", it is "did v0.7 say this works".
+
+#### Round one (2026-08-25): done
+
+1. Every honored CSS property is findable by its own name in the reference.
+2. The unhonored-property message is three messages: honored, real CSS not built,
+   and a name Rux does not know, the last with a did-you-mean.
+3. `r-for` says the tuple form is unsupported instead of reporting the index
+   variable as undefined.
+4. One reference, enforced. `docs/05-as-built.md` + `docs/07-script.md` are it;
+   `docs/02-spec.md` is design history; and every name the editor offers is
+   checked to appear in the reference on every `cargo test`.
+
+#### Round two (reported 2026-08-26), triage
+
+**The one that matters most, and it is one bug wearing many faces:**
+
+- **Handler expressions are never checked.** An `@tap` (or any `@event`) body is
+  not checked for unknown functions or unknown methods, while a `{{ }}`
+  expression is. Verified with `rux check`:
+
+  | Written | Reported |
+  |---|---|
+  | `{{ bogus(1) }}` | warning: there is no function `bogus` taking 1 argument |
+  | `{{ searching.nonsense() }}` | warning: there is no function `nonsense` taking 1 argument |
+  | `@tap="alert(&quot;hi&quot;)"` | **nothing** |
+  | `@tap="searching.set(true)"` | **nothing** |
+  | `@tap="searching.frobnicate()"` | **nothing** |
+
+  This is the silent-failure class v0.7 spent the milestone killing, alive in
+  the half of the language where a typo costs the most: a handler that does
+  nothing looks exactly like a handler that did not fire. It accounts for the
+  reported "unknown function is not caught" and the reported "`searching.set(true)`
+  does nothing and never says so" as a single defect.
+
+  **DONE 2026-09-15.** Every `@event`, route `guard` and `<script>` `fn` body is
+  walked at load and every call that resolves nowhere is reported. Names only,
+  not argument counts, because a check that flags working code would be worse
+  than the silence. `signal.set(x)` / `signal.get()` are caught by arity instead,
+  since `set` and `get` are registered for arrays and maps and a name check
+  cannot see them. Verified against all 47 example files with no new warnings.
+
+  `.set()` in particular is not an invented spelling: `docs/02-spec.md` taught
+  it (`count.get()` / `.set()` / `.update()`) and that document was billed as
+  the reference until 2026-08-25. An author who read the docs and wrote `.set()`
+  got silence.
+
+**Claims, so 0.7.x:**
+
+- ~~**Diagnostic positions in `<template>` are wrong.**~~ **DONE 2026-09-15.**
+  Everything from a template arrived unplaced, so every squiggle pointed at the
+  `<` of `<template>`. `rux-parser` now carries a file line on each element,
+  each attribute and each text run, and `rux-script` gained the same
+  `located`/`AT_LINE` arrangement the cascade already had, so the two work the
+  same way. Placed at the most specific level available: a handler on its
+  attribute's line, an `r-if`/`r-for` on the directive rather than on the parent
+  that reads it, a `{{ }}` on its text run.
+- ~~**An undefined variable in a template is a warning, not an error.**~~
+  **DONE 2026-09-15**, with one qualification worth keeping. The warning sink
+  gained a level, so a document can build and still report errors, and
+  `rux check` exits non-zero for them. But it is an error only in a **page**:
+  a fragment's undeclared names may be props, because **props are not
+  declared**, and escalating everywhere made `rux new` scaffold a project that
+  failed its own `rux check`. That is the clearest argument yet for a prop
+  declaration form; see the props note above.
+- ~~**"missing `<template>` section" is emitted for an unclosed one.**~~
+  **DONE 2026-09-15.** Three conditions, three messages, each with the position
+  of the opening tag. An unclosed `<style>` or `<script>` is now an error too,
+  rather than silently meaning "this file has no styles".
+- ~~**An unsupported `@` attribute is silently accepted.**~~ **DONE
+  2026-09-15**, as an error, listing the six events that do exist. A component
+  tag is exempt, since `@name` on one is a listener for whatever it emits.
+  **It found a live bug on its first run over the corpus:** the shipped
+  `message-list` recipe carried `@submit="send()"` on its `<input>`, which has
+  never fired once. The send button beside it working is what kept anyone from
+  noticing.
+- ~~**`r-else=""` is silently accepted.**~~ **DONE 2026-09-15**, as an error,
+  covering `fallback` on a `<route>` too. It needed `Attr::has_value` in the
+  parser: `r-else` and `r-else=""` both leave the value empty, so the two were
+  indistinguishable and there was nothing to report.
+- ~~**Arguments are not checked against the function.**~~ **DONE 2026-09-15**,
+  for **count**, and only for the document's own `fn`s: a registered native can
+  be overloaded on types nothing here can see, so checking arity against the
+  whole registry would flag working code. Wrong *shape* is the type-system
+  item and stays scheduled.
+- ~~**`border-radius` with a percentage.**~~ **DONE 2026-09-15, and it was four
+  properties rather than one.** `parse_len` accepts `%` and that is what the
+  length *check* used, while the interpreter reads these with `parse_px`, which
+  does not. So `border-radius: 50%`, `padding: 10%`, `margin: 10%` and
+  `gap: 5%` were each dropped on the floor and then pronounced fine by the very
+  warning added to stop values being dropped in silence. They say so now.
+  **Actually honoring a percentage on them is a feature**, not a patch: these
+  are resolved to plain pixels during the cascade, before any box exists, so it
+  means carrying a length through to layout for most of them and to paint for
+  the radius. Scheduled. The separate half of that report, a radius clamped by a
+  hug-sized button's own text, is correct behaviour and is in the author notes.
+
+**Answered rather than scheduled:**
+
+- **Text directly inside `<button>` already works.** `<button @tap="…">Add</button>`
+  checks clean. Whether it *paints* is a window check, not a parse one.
+- **There is no `<label>` element and never was.** Labelling is `role="label"`
+  plus `<text for="the-input-id">`, which pairs them in the accessibility tree.
+  The element set is the ten in the reference.
+- **Props are not declared in the child.** A prop arrives as `:name="expr"` on
+  the component tag, is evaluated in the *caller's* scope, and is pushed into
+  the instance's scope. So a child uses `{{ label }}` with nothing declared,
+  which is why `rux new`'s app looks like it skipped a step. Props are
+  re-derived on every build and are **not** writable from inside. A declaration
+  form is worth considering, because "used and never declared" is
+  indistinguishable from a typo to a reader and to a checker, but it is new
+  surface and not a patch.
+
+**New surface, so scheduled, not 0.7.x:**
+
+- **`@change` and `@input` on `<input>`.** Today `r-model` is the only way to
+  hear about a field changing. A to-do list wants the event. Fits v0.9's input
+  pass, or earlier if it stays this small.
+- **A type system, or inference where Rux can manage it.** Reported from
+  `let tasks = signal([])` giving no completions for `task` inside a later
+  `filter`. It is the root of two other requests (completions on element handles
+  from `query()`, and errors on impossible comparisons), and it is the largest
+  thing on this list by a wide margin. Needs its own milestone and a decision
+  about how far inference goes before annotations are required.
+- **Errors on impossible comparisons.** Downstream of the above; without types
+  there is nothing to compare.
+- **Handlers without `()`.** `@tap="refresh"` where `refresh` takes no
+  arguments. Ergonomic, unambiguous, and a language change.
+- **`screen` and `view` should differ visibly.** The reporter expects `<screen>`
+  to take the full width and height of the display and `<view>` to be a generic
+  box. The root is already forced to fill the viewport, so this is about whether
+  a `<screen>` that is *not* the root means anything, and about saying which it
+  is. Needs a decision before it needs code.
+- **`flex-direction: column` should make block children full width.** This
+  collides with a deliberate divergence: the flex cross-axis defaults to
+  `flex-start` (children hug) rather than CSS's `stretch`, for ergonomics. The
+  report is evidence that the divergence surprises people in the column case.
+  Worth re-opening, worth deciding rather than patching.
+
+**Probably correct, and therefore an author note:**
+
+- **How round a box can get is limited by its content.** A button reading "Add"
+  would not round past roughly 2.5rem until its width and height grew. That is
+  what a radius does: it cannot exceed half the box, and the box is sized by its
+  text. If driving it confirms the geometry is right, the fix is a sentence in
+  the reference, not a change. Logged in `docs/09-author-notes.md`.
+
+**Extension, held until the language items are exhausted:** the play button
+seeing props as undefined while `rux run` works, role completions, element-name
+completions that insert a full tag pair, completions replacing the typed prefix
+instead of appending to it (`@@tap`), narrowing completions after `@` to events,
+hover type information, `r-else` being offered with `=""`, and `ctrl+/` using
+`//` inside `<style>` and `<template>` instead of the comment syntax those
+sections actually take. Recorded in full in the extension's own register.
+
 ### v0.8: mobile
 
 **Ships as v0.8.x across several Fridays**, per the cadence above. The slices are
@@ -2287,9 +2455,15 @@ thread, and one trusted file".
    to **v0.8**, where it is the first item; what stays here is what genuinely
    needs a language that has stopped moving: installer formats, an app bundle,
    and a platform matrix wider than the one machine Rux is developed on.
-2. **Re-derive the spec.** `docs/02-spec.md` describes itself as the v0.1
-   design surface, not the built surface, and is published only as history.
-   1.0 means the spec and the runtime agree again.
+2. ~~**Re-derive the spec.**~~ **Resolved 2026-08-25: it is not going to be
+   re-derived.** Bringing `docs/02-spec.md` back into agreement with the
+   runtime would create a *second* reference beside `docs/05-as-built.md`, and
+   two documents both describing the language is precisely how nine shipped
+   features came to be missing from one of them. `02-spec.md` is design history
+   and stays that way; `05-as-built.md` and `07-script.md` are the reference,
+   and every name the editor offers is now checked to appear in them on every
+   `cargo test`. What 1.0 needs is that gate staying green, not a third
+   document to keep in step.
 3. **`rux-lsp`** (Tier 2): go-to-definition, hover, completion, diagnostics
    from `rux check`.
 4. ~~**TailwindCSS**, if it still looks worth it.~~ **Resolved 2026-08-19**: it

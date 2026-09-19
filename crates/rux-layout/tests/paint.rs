@@ -192,3 +192,78 @@ fn opacity_wraps_the_subtree() {
         "both the node and its child paint inside the layer"
     );
 }
+
+// ── per-side borders ────────────────────────────────────────────────────────
+//
+// `PaintRect` used to carry one `border_width`, filled from `style.border.top`,
+// and the painter stroked the whole box with it. So the cascade computed all
+// four sides and three of them were thrown away here: a `border-bottom: 6px`
+// drew nothing at all, and a `border-top: 6px` drew a box on every side. Both
+// silent, and `border-bottom` is in the editor's completion list, which is
+// supposed to mean it works.
+//
+// Reported 2026-09-15 as "the css isn't being applied", against an `<input>`
+// styled with `border-bottom`.
+
+/// A box with only one side set reaches paint with only that side set.
+#[test]
+fn a_one_sided_border_keeps_its_one_side() {
+    let node = Node::new(Style {
+        width: Some(Len::Px(100.0)),
+        height: Some(Len::Px(40.0)),
+        border: Sides { top: 0.0, right: 0.0, bottom: 6.0, left: 0.0 },
+        border_color: Some(Rgba::new(0.0, 1.0, 0.0, 1.0)),
+        ..Default::default()
+    });
+    let rect = paints(node)
+        .into_iter()
+        .find_map(|p| match p {
+            Paint::Rect(r) if r.border_color.is_some() => Some(r),
+            _ => None,
+        })
+        .expect("the box paints");
+    assert_eq!(rect.border.bottom, 6.0, "the side that was written");
+    assert_eq!(rect.border.top, 0.0, "and not the one that was not");
+    assert_eq!(rect.border.left, 0.0);
+    assert_eq!(rect.border.right, 0.0);
+}
+
+/// A box with a border only at the top does not come out with four.
+#[test]
+fn a_top_border_does_not_become_a_box() {
+    let node = Node::new(Style {
+        width: Some(Len::Px(100.0)),
+        height: Some(Len::Px(40.0)),
+        border: Sides { top: 6.0, right: 0.0, bottom: 0.0, left: 0.0 },
+        border_color: Some(Rgba::new(1.0, 0.0, 0.0, 1.0)),
+        ..Default::default()
+    });
+    let rect = paints(node)
+        .into_iter()
+        .find_map(|p| match p {
+            Paint::Rect(r) if r.border_color.is_some() => Some(r),
+            _ => None,
+        })
+        .expect("the box paints");
+    assert!(!rect.border.is_uniform(), "one side is not four");
+    assert_eq!((rect.border.top, rect.border.bottom), (6.0, 0.0));
+}
+
+/// A box that is painted only because of its border is still painted.
+///
+/// The emit test is `widest > 0`, not `border.top > 0`, or a box whose only
+/// styling is a `border-bottom` would produce no `PaintRect` at all.
+#[test]
+fn a_box_with_only_a_bottom_border_is_still_emitted() {
+    let node = Node::new(Style {
+        width: Some(Len::Px(100.0)),
+        height: Some(Len::Px(40.0)),
+        border: Sides { top: 0.0, right: 0.0, bottom: 2.0, left: 0.0 },
+        border_color: Some(Rgba::new(0.0, 0.0, 1.0, 1.0)),
+        ..Default::default()
+    });
+    assert!(
+        paints(node).iter().any(|p| matches!(p, Paint::Rect(r) if r.border.bottom == 2.0)),
+        "no background, no uniform border, and it still has to be drawn"
+    );
+}
