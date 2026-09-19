@@ -209,6 +209,113 @@ impl Survey {
     pub fn ready(&self) -> bool {
         self.missing() == 0
     }
+
+    /// The path a named finding was found at, when it was found.
+    fn found_at(&self, what: &str) -> Option<PathBuf> {
+        self.findings.iter().find(|f| f.what == what).and_then(|f| match &f.outcome {
+            Outcome::Found { at, .. } => Some(at.clone()),
+            _ => None,
+        })
+    }
+}
+
+/// Every path an Android build actually runs, once the survey says they exist.
+///
+/// **Read out of the survey rather than looked up again**, which matters more
+/// than it looks: `rux doctor` picks the newest build-tools and the newest NDK
+/// that has the driver Rux needs, and a second lookup written beside the build
+/// would be free to disagree. A user reading a report that says NDK 29 while
+/// the build quietly used NDK 26 has been told a falsehood by the tool whose
+/// entire job is to tell the truth about the toolchain.
+///
+/// So there is one survey, and this is a view of it.
+#[derive(Clone, Debug)]
+pub struct Toolchain {
+    /// Holds `aapt2`, `aapt`, `zipalign` and `apksigner`.
+    pub build_tools: PathBuf,
+    /// The platform directory, for its `android.jar`.
+    pub platform: PathBuf,
+    /// `adb` itself, not its directory.
+    pub adb: PathBuf,
+    /// The NDK's `bin`, holding the clang driver and `llvm-strip`.
+    pub ndk_bin: PathBuf,
+    /// The JDK's `bin`, holding `keytool`.
+    pub java_bin: PathBuf,
+}
+
+impl Toolchain {
+    /// Resolve the toolchain, or say what is missing in the words `rux doctor`
+    /// would use.
+    ///
+    /// The whole report comes back on failure, not just the first absence. A
+    /// build that stops at the first missing piece makes someone install four
+    /// things in four rounds.
+    pub fn resolve() -> Result<Self, String> {
+        let survey = survey(&Search::from_environment());
+        if !survey.ready() {
+            return Err(format!(
+                "an Android build needs a toolchain that is not all here yet.\n\n{}",
+                render(&survey)
+            ));
+        }
+        let at = |what: &str| {
+            survey.found_at(what).ok_or_else(|| format!("{what} went missing between the survey and the build"))
+        };
+        Ok(Self {
+            build_tools: at("build-tools")?,
+            platform: at("platform")?,
+            adb: at("platform-tools")?,
+            ndk_bin: at("NDK")?,
+            // The survey names `java` itself, because that is the file whose
+            // existence answers "is there a JDK". The build wants its
+            // neighbours, so it keeps the directory.
+            java_bin: at("JDK")?.parent().map(Path::to_path_buf).unwrap_or_default(),
+        })
+    }
+
+    pub fn aapt2(&self) -> PathBuf {
+        self.build_tools.join(exe("aapt2", Kind::Native))
+    }
+
+    /// The legacy `aapt`, kept for one job: adding a file to a built APK.
+    ///
+    /// `aapt2` cannot do it. It links an APK and has no way to put another
+    /// entry in one afterwards, and the native library is produced by cargo
+    /// long after `aapt2 link` has run. The alternatives were a zip crate (a
+    /// dependency, and this milestone is judged on compile time) or writing zip
+    /// entries by hand (a format to get wrong for no gain).
+    ///
+    /// `aapt` is deprecated and still shipped in build-tools 36. If it is ever
+    /// dropped, this is the one call site that has to change.
+    pub fn aapt(&self) -> PathBuf {
+        self.build_tools.join(exe("aapt", Kind::Native))
+    }
+
+    pub fn zipalign(&self) -> PathBuf {
+        self.build_tools.join(exe("zipalign", Kind::Native))
+    }
+
+    pub fn apksigner(&self) -> PathBuf {
+        self.build_tools.join(exe("apksigner", Kind::Script))
+    }
+
+    pub fn keytool(&self) -> PathBuf {
+        self.java_bin.join(exe("keytool", Kind::Native))
+    }
+
+    pub fn android_jar(&self) -> PathBuf {
+        self.platform.join("android.jar")
+    }
+
+    /// The clang driver cargo links with, for `abi` at Rux's floor API.
+    pub fn clang(&self, abi: Abi) -> PathBuf {
+        self.ndk_bin.join(exe(&format!("{}{MIN_API}-clang", abi.clang_prefix), Kind::Cmd))
+    }
+
+    /// Debug symbols are most of a Rust `.so` and none of them reach the phone.
+    pub fn strip(&self) -> PathBuf {
+        self.ndk_bin.join(exe("llvm-strip", Kind::Native))
+    }
 }
 
 /// The executable name a tool goes by on this platform.

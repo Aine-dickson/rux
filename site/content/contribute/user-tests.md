@@ -977,11 +977,29 @@ driving are the absent ones.
 | Case | Where | Result |
 |---|---|---|
 | This machine | desktop, `rux doctor` | 7 of 8 found, and it caught a real absence: `aarch64-linux-android` is not installed. Exit 1 |
+| This machine, after `rustup target add x86_64-linux-android` | desktop, `rux doctor` | 8 of 8 found, and it says so: "everything an Android build needs is here." Exit 0. The run above is the same machine before the target was installed, kept because the interesting half of this command is what it says when something is absent |
 | `ANDROID_HOME` at an empty directory | desktop, `rux doctor` | The SDK is found and all six things inside it are missing, each with its own path and its own fix. Exit 1 |
 | No SDK anywhere | `cargo test` | One finding, not eight: there is no point listing six paths inside a directory that does not exist. It names every place it looked and says to set `ANDROID_HOME` |
 | A platform older than the floor | `cargo test` | Reported **unusable**, not missing: `android-21` is installed, correct and no use, and its fix is a different command |
 | `9.0.0` beside `35.0.0` in build-tools | `cargo test` | 35.0.0 wins. Sorted by version component, because every string comparison puts `9.0.0` last and picking it would hand a build a toolchain seven years too old |
-| `rux build --target android` | desktop | Exits 2 and points at `rux doctor`, rather than only refusing |
+| `rux build --target android` | desktop | Exits 2 and points at `rux doctor`, rather than only refusing. **Superseded:** it builds an APK now |
+
+## The first APK, 2026-09-20
+
+The milestone for this slice was an app on a phone driven by a finger. It was
+met on the emulator, which is the point: no Android device was attached to this
+machine at any stage, and `adb` cannot tell the difference.
+
+| Case | Where | Result |
+|---|---|---|
+| `rux-shell` for Android | `cargo check --target x86_64-linux-android` | Compiles warning-clean, and so do desktop and wasm. The whole stack links: wgpu, vello, winit and `android-activity` in one cdylib exporting `android_main` |
+| `counter.rux` as an APK | emulator (Pixel 6, API 35, `-gpu host`) | It runs. Vulkan comes up on the ranchu driver, the activity displays in 2.25 seconds, and the count reads 0 in green on the dark background |
+| Three taps on Add one | emulator, `adb shell input tap` | The count reads 3, and the button carries its focus ring. Signals, handlers, layout, text and paint all work unchanged on Android |
+| `rux run --device` on a fresh `rux new` project | emulator | One command builds, packs, signs, installs and starts. The whole scaffolded Tasks app appears: list, checkboxes, tab bar |
+| Tapping the Add tab | emulator | Routing works by finger. The page changes to New task, the tab selection follows, and the form renders with its inputs and a disabled button |
+| A second `rux run --device` over the first | emulator | Reinstalls in place, because both builds are signed by the same cached debug key |
+| The library entry path | emulator | **Found a defect.** The APK built, signed and installed, then died at launch: `unable to find native library counter_app`. `Path::join` on Windows had written the zip entry with backslashes, and a zip separator is `/` on every platform, so the library arrived as one oddly named file at the archive root rather than inside a directory Android looks in. Nothing before the device could have caught it: every earlier step was happy |
+| The status bar | emulator | **Found a gap.** The header draws under the status bar. `env(safe-area-inset-*)` answers on desktop under `--preview`, and nothing populates it on Android yet, so a real notch is still unhandled on the one platform that has one |
 
 **A test caught the caveat in the act.** The first version of the empty-SDK
 test asserted that everything under the SDK was missing, and it failed: the JDK

@@ -25,8 +25,10 @@
 //! checkout of this repo, so it panicked for everyone else.
 
 mod android;
+mod apk;
 mod build;
 mod check;
+mod device;
 mod files;
 mod fmt;
 mod manifest;
@@ -65,6 +67,9 @@ Run options:
                              window has no honest values for. Naming a
                              device that does not exist lists the ones that
                              do (phone, phone-small, phone-android, tablet)
+  --device                   Build an APK, install it and start it on the
+                             attached device or running emulator. Needs a
+                             `rux.toml`; `rux doctor` says what it needs
 
 Check options:
   --format json              Emit diagnostics as JSON, for an editor
@@ -109,6 +114,12 @@ fn main() -> ExitCode {
         Some("vocab") => ExitCode::from(vocab::emit() as u8),
         Some("doctor") => ExitCode::from(android::doctor() as u8),
         Some("build") => build_command(&args[1..]),
+        // Checked before a path is resolved, because running on a device is not
+        // "run this file elsewhere": it builds a whole project from its
+        // `rux.toml`, exactly as `rux build` does, and there is no file to name.
+        Some("run") if args.iter().any(|a| a == "--device") => {
+            ExitCode::from(device::run(&args[1..]) as u8)
+        }
         Some("run") => match args.get(1).filter(|a| !a.starts_with('-')) {
             Some(path) => run(PathBuf::from(path), &args[2..]),
             // `run` with no file means the same as bare `rux`: the workspace's
@@ -202,8 +213,17 @@ fn build_command(args: &[String]) -> ExitCode {
         i += 1;
     }
 
+    let target = options.target;
     match build::run(options) {
-        Ok(_) => ExitCode::SUCCESS,
+        Ok(_) => {
+            // Only when the build was asked for on its own. Saying it at the end
+            // of `rux run --device`, which has just done exactly that, reads as
+            // though something did not happen.
+            if target == build::Target::Android {
+                println!("rux: `rux run --device` installs and starts it");
+            }
+            ExitCode::SUCCESS
+        }
         Err(e) => {
             eprintln!("rux: {e}");
             ExitCode::from(1)

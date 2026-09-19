@@ -9,10 +9,40 @@ weight = 5
 ```bash
 rux build                      # a dev build: reads the project from disk
 rux build --release            # embeds the documents into one executable
-rux build --target desktop     # the default, and the only target so far
+rux build --target desktop     # the default
+rux build --target android     # an APK, in dist/, ready to install
 ```
 
-The result lands in `dist/`, as a single executable named after the app.
+The result lands in `dist/`, as a single executable named after the app, or as
+an APK for Android.
+
+## Android
+
+```bash
+rux build --target android     # writes dist/<app>.apk
+rux run --device               # builds it, installs it, starts it
+```
+
+No Gradle and no Android Studio, at any point. What the build actually runs is
+four command-line tools out of the Android SDK: `aapt2` writes the base APK
+from a generated manifest, the native library is added to it, `zipalign` aligns
+it and `apksigner` signs it. A debug keystore is generated once, at
+`~/.rux/debug.keystore`, and reused for every project on the machine, which is
+what lets a reinstall replace a previous build instead of being refused.
+
+`rux doctor` says what an Android build needs, what is here, and the one command
+that installs whatever is not. Start there; see [Android](@/tooling/android.md).
+
+Two things are true of an Android build today and are worth knowing before you
+meet them:
+
+- **The documents are embedded whether or not you pass `--release`.** There is
+  no filesystem inside an APK to read them back from, so a dev build for Android
+  does not hot reload yet.
+- **It builds `x86_64` only**, which is the emulator's architecture rather than
+  a phone's. That is deliberate while the loop is being built: it means an APK
+  can be run without owning a device. The other ABIs, `arm64-v8a` among them,
+  arrive with release builds.
 
 ## It needs a `rux.toml`
 
