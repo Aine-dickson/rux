@@ -201,8 +201,93 @@ gate_wasm() {
 }
 
 # The gates that are true of a healthy tree on any day, release or not.
+gate_publish_order() {
+  # Every publishable workspace member must appear in LAYERS, checked before
+  # anything uploads.
+  #
+  # This gate exists because its absence cost a release. `rux-rhai` was added to
+  # the workspace in v0.7 and never added to the staircase below. It publishes
+  # whether or not anyone remembers it, because cargo rejects a path dependency
+  # without a version, so the v0.7.0 run got through the whole first layer and
+  # died on `rux-script`, leaving five crates permanently on crates.io with the
+  # release half published. Mid-publish is unrecoverable: a version cannot be
+  # replaced, only yanked.
+  #
+  # Three questions, none of them asked before, all of them cheap: is every
+  # publishable crate named, is every name real, and does each crate come after
+  # the workspace crates it depends on. The third is the same failure as the
+  # first: a crate whose dependency has not reached the index fails to publish
+  # exactly as if it had been left out.
+  local root="${1:-.}"
+  local flat=" ${LAYERS[*]} "
+  local manifest name
+  local -a published=() missing=() unknown=() duplicated=()
+
+  for manifest in "$root"/crates/*/Cargo.toml; do
+    [[ -f "$manifest" ]] || continue
+    grep -q '^publish[[:space:]]*=[[:space:]]*false' "$manifest" && continue
+    name="$(sed -n 's/^name[[:space:]]*=[[:space:]]*"\(.*\)".*/\1/p' "$manifest" | head -1)"
+    [[ -n "$name" ]] || die "cannot read a crate name out of $manifest"
+    published+=("$name")
+    [[ "$flat" == *" $name "* ]] || missing+=("$name")
+  done
+  (( ${#published[@]} > 0 )) || die "found no crate manifests under $root/crates"
+  (( ${#missing[@]} == 0 )) || die "publishable but missing from LAYERS: ${missing[*]}"
+
+  # The mirror: a crate renamed or made private leaves a name in LAYERS that no
+  # longer publishes, and the run would wait for it to reach an index it will
+  # never reach.
+  local all_published=" ${published[*]} "
+  local entry
+  for entry in ${LAYERS[*]}; do
+    [[ "$all_published" == *" $entry "* ]] || unknown+=("$entry")
+  done
+  (( ${#unknown[@]} == 0 )) || die "named in LAYERS but not a publishable crate: ${unknown[*]}"
+
+  # A crate in two layers publishes twice; the second attempt fails because the
+  # version is already on the index, and the run dies partway through.
+  mapfile -t duplicated < <(printf '%s\n' ${LAYERS[*]} | sort | uniq -d)
+  (( ${#duplicated[@]} == 0 )) || die "listed in LAYERS more than once: ${duplicated[*]}"
+
+  # Order. A crate may depend only on crates in strictly earlier layers.
+  # `rux-layout.workspace = true` is how every internal dependency is written
+  # here, which is what makes them findable without parsing TOML.
+  local -a layer_names=() layer_index=()
+  local index=0 layer crate
+  for layer in "${LAYERS[@]}"; do
+    for crate in $layer; do
+      layer_names+=("$crate")
+      layer_index+=("$index")
+    done
+    index=$(( index + 1 ))
+  done
+  layer_of() {
+    local want="$1" i
+    for i in "${!layer_names[@]}"; do
+      if [[ "${layer_names[$i]}" == "$want" ]]; then echo "${layer_index[$i]}"; return; fi
+    done
+    echo "-1"
+  }
+  local own dep dep_layer
+  for manifest in "$root"/crates/*/Cargo.toml; do
+    [[ -f "$manifest" ]] || continue
+    grep -q '^publish[[:space:]]*=[[:space:]]*false' "$manifest" && continue
+    name="$(sed -n 's/^name[[:space:]]*=[[:space:]]*"\(.*\)".*/\1/p' "$manifest" | head -1)"
+    own="$(layer_of "$name")"
+    while read -r dep; do
+      [[ -n "$dep" ]] || continue
+      dep_layer="$(layer_of "$dep")"
+      [[ "$dep_layer" == "-1" ]] && continue
+      (( dep_layer < own )) || die "LAYERS order: $name is in layer $own and depends on $dep in layer $dep_layer"
+    done < <(sed -n 's/^\([a-z0-9-]*\)\.workspace[[:space:]]*=[[:space:]]*true.*/\1/p' "$manifest")
+  done
+
+  ok "LAYERS covers every publishable crate, in dependency order"
+}
+
 run_verify() {
   gate_docs_synced
+  gate_publish_order
   gate_editor
   gate_build
   gate_tests
@@ -413,8 +498,13 @@ LAYERS=(
   # it is a fork of rhai, and its dependencies are all upstream. rux-script
   # depends on it, so it has to be on the index before the second layer runs,
   # which the wait at the end of each layer takes care of.
-  "rux-parser rux-reactive rux-text rux-layout rux-fmt rux-rhai"
-  "rux-script rux-paint"
+  "rux-parser rux-reactive rux-text rux-layout rux-rhai"
+  # rux-fmt depends on rux-parser for the void-tag list, so it cannot share a
+  # layer with it: within a layer crates publish back to back and the index
+  # wait happens only at the end. It sat in layer 0 until the coverage gate
+  # below was written, and survived on the slack of three unrelated crates
+  # publishing between the two.
+  "rux-script rux-paint rux-fmt"
   "rux-style"
   "rux-runtime"
   "rux-shell"
