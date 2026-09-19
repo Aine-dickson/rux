@@ -38,7 +38,9 @@ use rux_style::{BindingRegistry, Instances, Namespace, Swaps, DOCUMENT_NAMESPACE
 /// Re-exported so the shell can hand pointer/focus state and the window size in
 /// without depending on `rux-style` directly.
 pub use rux_reactive::json_string;
-pub use rux_style::{ColorScheme, Environment, Insets, InteractionState, Viewport, Warning};
+pub use rux_style::{
+    ColorScheme, Environment, Insets, InteractionState, RoutePattern, Viewport, Warning,
+};
 /// Re-exported for the same reason: the shell owns the animator, because the
 /// clock and the previous frame are its business and not the document's.
 pub use rux_style::{Animator, FRAME_MS};
@@ -746,23 +748,142 @@ pub fn set_stderr_echo(on: bool) {
     rux_style::set_stderr_echo(on);
 }
 
-/// Whether this file is a document in its own right, rather than a component
-/// meant to be used by one. `None` means the question could not be answered,
-/// because the file would not read or parse.
+thread_local! {
+    /// Whether the file about to be loaded might have a caller: a component
+    /// somebody else writes as a tag, whose `{{ prop }}` values arrive from
+    /// outside it.
+    ///
+    /// It decides severity, and only severity: an undefined name is an error in
+    /// something nothing else uses and a warning in something that may be
+    /// handed its values. Both are reported either way.
+    ///
+    /// It used to be read off the template's root tag, `<screen>` meaning "no
+    /// caller". That was the same conflation `imports_of` exists to end, and it
+    /// got the common case backwards: a page under a router has a `<view>` root
+    /// and no caller at all. The question belongs to whoever opened the file,
+    /// because only they know why. `rux run` is running the app, so nothing is
+    /// supplying it anything; `rux check` asks the project.
+    ///
+    /// Not knowing is spelled as the document case rather than guessed, so a
+    /// caller that says nothing gets errors for names that are wrong.
+    static MAY_HAVE_CALLER: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Say whether the next load's file might be used by another one.
 ///
-/// The test is the one the spec already sets: "the application entry point is a
-/// component whose root is `<screen>`". Anything else is a fragment expecting a
-/// parent.
+/// Sticky, like the source provider, because the shell reloads the same
+/// document on every edit and a hot reload must not quietly change what the
+/// overlay calls an error.
+pub fn set_may_have_caller(yes: bool) {
+    MAY_HAVE_CALLER.with(|c| c.set(yes));
+}
+
+/// Every `.rux` file this one imports, resolved the way a load resolves them.
+/// `None` means the question could not be answered, because the file would not
+/// read or parse.
 ///
-/// A checker needs the distinction. A component's `{{ prop }}` bindings are
-/// supplied by whoever uses it, so loading one on its own reports every prop as
-/// an undefined variable: failures that say nothing about whether the file is
-/// correct. Going by the root rather than by who imports what also catches a
-/// component that nothing currently uses.
-pub fn is_entry_point(path: impl AsRef<Path>) -> Option<bool> {
-    let src = source::read_text(path.as_ref()).ok()?;
+/// This replaces `is_entry_point`, which asked whether the template's root was
+/// `<screen>`. That test made a *layout* choice decide whether a checker opened
+/// a file at all: a page written with a `<view>` root, which is what a page
+/// under a router is, was filed as a component and skipped, so a whole
+/// project's pages went unlooked-at while the summary said "no problems found".
+/// `<screen>` now means the display and nothing else.
+///
+/// Who imports what is the question that was actually being asked. A
+/// component's `{{ prop }}` values come from whoever uses it, so reading one on
+/// its own reports every prop as undefined: findings that say nothing about
+/// whether the file is correct. A file nothing imports has no such caller, and
+/// there is nobody else to check it.
+///
+/// The cost of the change: a component that nothing currently uses is now
+/// checked like a document, where the root tag used to file it as a fragment
+/// whatever else was true. That is the honest reading of a file nothing uses,
+/// and it is information rather than noise.
+pub fn imports_of(path: impl AsRef<Path>) -> Option<Vec<(String, PathBuf)>> {
+    let path = path.as_ref();
+    let src = source::read_text(path).ok()?;
     let sfc = rux_parser::parse_sfc(&src).ok()?;
-    Some(sfc.template.tag == "screen")
+    let base = path.parent().unwrap_or_else(|| Path::new("."));
+    let (_, imports) = extract_imports(&sfc.script);
+    Some(
+        imports
+            .iter()
+            // An import that resolves to nothing is a load error, reported when
+            // the file is actually checked. Here it simply names no file.
+            .filter_map(|i| {
+                resolve_import(base, &i.file).ok().map(|p| (i.tag.clone(), source::canonical(&p)))
+            })
+            .collect(),
+    )
+}
+
+/// Every file this document's `<route>`s render, resolved to paths.
+///
+/// Answered from the file rather than from a loaded [`Document`], because the
+/// caller that needs it most has not loaded anything yet: it is deciding *what*
+/// to load. A file that will not parse routes nowhere.
+pub fn route_views_of(document: impl AsRef<Path>) -> Vec<PathBuf> {
+    let document = document.as_ref();
+    let Some(sfc) = source::read_text(document).ok().and_then(|s| rux_parser::parse_sfc(&s).ok())
+    else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for route in rux_style::route_patterns(&sfc.template) {
+        let Some(view) = route.view else { continue };
+        if let Some(path) = route_view_file(document, &view) {
+            if !out.contains(&path) {
+                out.push(path);
+            }
+        }
+    }
+    out
+}
+
+/// This project's entry document: the `app.rux` or `index.rux` at the top of
+/// the tree `from` sits in.
+///
+/// It is the document a page has to be checked *through*. A page reads the
+/// app's signals and calls its functions, which are shared into the engine by
+/// the document that declares them, so a page read on its own reports every one
+/// of them as missing: false findings about code that works.
+pub fn project_entry(from: impl AsRef<Path>) -> Option<PathBuf> {
+    let root = workspace_root(from.as_ref())?;
+    WORKSPACE_ENTRIES
+        .iter()
+        .map(|name| root.join(name))
+        .find(|candidate| source::exists(candidate))
+}
+
+/// The file a `<route view="…">` renders, for a document that imported it.
+///
+/// The view name is script (`new_task`), the tag is markup (`new-task`), and
+/// the file may be spelled either way. One place answers it so a checker and
+/// the loader cannot disagree about whose page this is.
+pub fn route_view_file(document: impl AsRef<Path>, view: &str) -> Option<PathBuf> {
+    let wanted = view.replace('_', "-");
+    imports_of(document)?.into_iter().find(|(tag, _)| *tag == wanted).map(|(_, file)| file)
+}
+
+/// The directory holding this project's entry point (`app.rux` or `index.rux`),
+/// found by walking up from `from`, or `None` outside a project.
+///
+/// Public because a checker has to ask it: which files can import this one is a
+/// question about the project, not about the directory that happens to have
+/// been named on the command line. `rux check pages/` must still know that
+/// `app.rux` one level up uses everything in it.
+pub fn project_root(from: impl AsRef<Path>) -> Option<PathBuf> {
+    workspace_root(from.as_ref())
+}
+
+/// The same normalisation `imports_of` puts its results through, so a walked
+/// path and an imported one can be compared at all.
+///
+/// Two spellings of one file are one file: `./pages/home.rux` and
+/// `pages\home.rux` are the same import, and a classifier that thinks
+/// otherwise checks a page twice or not at all.
+pub fn same_file_key(path: impl AsRef<Path>) -> PathBuf {
+    source::canonical(path.as_ref())
 }
 
 /// Resolve every `<image src>` in the tree against `base` and read its intrinsic
@@ -1114,12 +1235,11 @@ impl Document {
             namespaces.insert(job.owner, namespace);
         }
 
-        // A document whose root is `<screen>` is a page and has no caller, so a
-        // name it does not declare can come from nowhere. Anything else is a
-        // fragment, which is to say a component, and its undeclared names may be
-        // props the caller supplies. Set before the first build, since that is
-        // when expressions are evaluated.
-        rux_script::set_is_fragment(sfc.template.tag != "screen");
+        // Whether an undeclared name here could have come from a caller.
+        // Decided by whoever opened this file, not by its root tag: see
+        // `MAY_HAVE_CALLER`. Set before the first build, since that is when
+        // expressions are evaluated.
+        rux_script::set_is_fragment(MAY_HAVE_CALLER.with(std::cell::Cell::get));
         // Before the first build: a `:to` calling `path_for` is evaluated
         // during that build, so the names have to be known by then.
         rux_script::set_routes(rux_style::named_routes(&sfc.template));
@@ -1223,9 +1343,9 @@ impl Document {
         }
         let (main_script, _imports) = extract_imports(&sfc.script);
         let (main_script, computeds, effects, hooks) = extract_reactives(&main_script);
-        // Same page/fragment rule as the file loader above: a `<screen>` root
-        // has no caller, so an undeclared name can come from nowhere.
-        rux_script::set_is_fragment(sfc.template.tag != "screen");
+        // Same rule as the file loader above, and the same answer: whoever
+        // asked for this source knows whether anything supplies it.
+        rux_script::set_is_fragment(MAY_HAVE_CALLER.with(std::cell::Cell::get));
         rux_script::set_routes(rux_style::named_routes(&sfc.template));
         // Same mapping as `load_checked`, and the playground is the case that
         // most wants it: this is the only error surface it has. Nothing is
@@ -2115,6 +2235,52 @@ impl Document {
     /// with no explanation anywhere.
     fn surface_guard_warnings(&mut self) {
         self.diagnostics.warnings.extend(collect_warnings());
+    }
+
+    /// The paths a checker has to visit to have looked at every page.
+    ///
+    /// A router builds the matching route and nothing else, so loading a
+    /// document reaches exactly one page: the one at `/`. Every other view is a
+    /// file whose template has never been built, which is how a project of six
+    /// files could report "checked 1 file, no problems found" and mean it.
+    ///
+    /// A pattern with parameters in it is visited with [`Self::CHECK_PARAM`] in
+    /// each slot, because there is no real id to use and a deep link can carry
+    /// anything at all. A page that assumes its parameter names something that
+    /// exists is a page that breaks on a link someone typed wrong, so what this
+    /// turns up is a finding and not an artefact of the checking.
+    ///
+    /// The fallback is only visited when there *is* one. Walking off the end of
+    /// the routes of a document without a fallback raises "no `<route>` matches"
+    /// against a document that has nothing wrong with it.
+    pub fn route_visits(&self) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        for route in rux_style::route_patterns(&self.sfc.template) {
+            let path = if route.fallback {
+                format!("/{}-no-such-route", Self::CHECK_PARAM)
+            } else {
+                route
+                    .pattern
+                    .split('/')
+                    .map(|seg| if seg.starts_with(':') { Self::CHECK_PARAM } else { seg })
+                    .collect::<Vec<_>>()
+                    .join("/")
+            };
+            let path = if path.is_empty() { "/".to_string() } else { path };
+            if !out.contains(&path) {
+                out.push(path);
+            }
+        }
+        out
+    }
+
+    /// What a route parameter is filled with while checking. Spelled so that a
+    /// path in a message says where it came from.
+    pub const CHECK_PARAM: &'static str = "rux-check";
+
+    /// Every route this document declares, views included.
+    pub fn route_patterns(&self) -> Vec<RoutePattern> {
+        rux_style::route_patterns(&self.sfc.template)
     }
 
     /// Go to `path`, recording it in the history.
@@ -3919,6 +4085,7 @@ mod tests {
     #[test]
     fn an_unresolvable_call_is_an_error_in_a_page_and_a_warning_in_a_fragment() {
         let _ = take_warnings();
+        set_may_have_caller(false);
         let page = Document::from_source(
             "<template><screen><button @tap=\"ghost()\">x</button></screen></template>",
         )
@@ -3935,6 +4102,7 @@ mod tests {
         );
 
         let _ = take_warnings();
+        set_may_have_caller(true);
         let fragment = Document::from_source(
             "<template><view><button @tap=\"ghost()\">x</button></view></template>",
         )
@@ -3950,6 +4118,7 @@ mod tests {
             "a parent may declare it: {:?}",
             fragment.diagnostics.warnings
         );
+        set_may_have_caller(false);
     }
 
     /// `@class="big"` used to check clean and do nothing.
@@ -4013,10 +4182,14 @@ mod tests {
         );
     }
 
-    /// Reading a name that does not exist is an error in a **page**, where
-    /// nothing can supply it, and a warning in a **fragment**, where a caller
-    /// can: props are not declared, so a component's `{{ label }}` is
+    /// Reading a name that does not exist is an error in a document, where
+    /// nothing can supply it, and a warning in something with a caller, where
+    /// a caller can: props are not declared, so a component's `{{ label }}` is
     /// indistinguishable from a typo when the file is read on its own.
+    ///
+    /// Which of the two a file is comes from whoever opened it, not from its
+    /// root tag: a page under a router has a `<view>` root and no caller at
+    /// all, so the tag had the common case backwards.
     ///
     /// This is not hypothetical tidiness. The component `rux new` scaffolds
     /// reads two props and nothing else, so escalating everywhere made the tool
@@ -4025,6 +4198,7 @@ mod tests {
     #[test]
     fn an_undefined_name_is_an_error_in_a_page_and_a_warning_in_a_fragment() {
         let _ = take_warnings();
+        set_may_have_caller(false);
         let page = Document::from_source(
             "<template><screen><text>{{ absent }}</text></screen></template>",
         )
@@ -4038,6 +4212,7 @@ mod tests {
         assert!(in_page.is_error(), "a page has no caller: {in_page:?}");
 
         let _ = take_warnings();
+        set_may_have_caller(true);
         let fragment =
             Document::from_source("<template><view><text>{{ absent }}</text></view></template>")
                 .expect("renders anyway");
@@ -4051,6 +4226,7 @@ mod tests {
             !in_fragment.is_error(),
             "a fragment's caller may be passing it as a prop: {in_fragment:?}"
         );
+        set_may_have_caller(false);
     }
 
     /// A warning from inside an imported component names **that** file.

@@ -62,21 +62,90 @@ pub fn run(options: Options) -> i32 {
     // each warning to stderr as prose.
     rux_runtime::set_stderr_echo(false);
 
-    let (files, skipped) = match collect_files(&options.paths) {
-        Ok(both) => both,
+    let collected = match collect_files(&options.paths) {
+        Ok(it) => it,
         Err(err) => {
             eprintln!("rux: {err}");
             return 2;
         }
     };
+    let (mut files, skipped) = (collected.files, collected.skipped);
+
+    // A page cannot be read on its own, so being asked about one is answered by
+    // checking the document it belongs to. That covers both ways of asking:
+    // `rux check pages/home.rux`, where the page was named, and `rux check
+    // pages/`, where walking finds nothing but pages and would otherwise report
+    // an empty directory.
+    //
+    // Only when the document is not already being checked. Over a whole project
+    // it always is, and saying so there would be noise about the ordinary case.
+    let asked_about: Vec<PathBuf> = files.iter().chain(skipped.iter()).cloned().collect();
+    let mut borrowed: Vec<(PathBuf, Vec<PathBuf>)> = Vec::new();
+    for file in &asked_about {
+        let Some(context) = context_for(file) else { continue };
+        if files.iter().any(|f| same_file(f, &context)) {
+            continue;
+        }
+        match borrowed.iter_mut().find(|(c, _)| same_file(c, &context)) {
+            Some((_, pages)) => pages.push(file.clone()),
+            None => borrowed.push((context, vec![file.clone()])),
+        }
+    }
+    // What the answer is allowed to be about, when a document had to be brought
+    // in that nobody asked for. Its *own* problems count, because a page cannot
+    // be checked through a document that is broken; its other pages do not,
+    // since nobody asked about those.
+    let mut only_about: Vec<PathBuf> = Vec::new();
+    for (context, pages) in &borrowed {
+        eprintln!(
+            "rux: {} checked through {}, where the app's signals and functions are in scope",
+            if pages.len() == 1 {
+                pages[0].display().to_string()
+            } else {
+                format!("{} pages", pages.len())
+            },
+            context.display()
+        );
+        // The page itself comes off the list: checking it *as well* would
+        // report exactly the findings this exists to stop, the app's own state
+        // read as undefined names in a file that never declared it.
+        files.retain(|f| !pages.iter().any(|p| same_file(p, f)));
+        only_about.extend(pages.iter().cloned());
+        only_about.push(context.clone());
+        files.push(context.clone());
+    }
+
     if files.is_empty() {
         eprintln!("rux: no .rux files found");
         return 2;
     }
 
     let mut found = Vec::new();
+    let mut reached: Vec<PathBuf> = Vec::new();
     for file in &files {
-        found.extend(check_file(file));
+        // Whether anything in this project writes this file as a tag, which is
+        // what decides whether a name it never declares is a mistake or a prop
+        // somebody hands it. Only ever true for a file named on the command
+        // line: walking drops the ones with callers.
+        let has_caller = collected.used.contains(&rux_runtime::same_file_key(file));
+        rux_runtime::set_may_have_caller(has_caller);
+        let checked = check_file(file);
+        found.extend(checked.diagnostics);
+        for page in checked.reached {
+            if !reached.contains(&page) {
+                reached.push(page);
+            }
+        }
+    }
+    rux_runtime::set_may_have_caller(false);
+
+    // A page checked through the document that routes to it was looked at, and
+    // calling it skipped is the exact misreport this release set out to end.
+    let skipped: Vec<PathBuf> =
+        skipped.into_iter().filter(|p| !reached.iter().any(|r| same_file(r, p))).collect();
+
+    if !only_about.is_empty() {
+        found.retain(|d| only_about.iter().any(|p| same_file(p, &d.file)));
     }
 
     if options.json {
@@ -90,7 +159,7 @@ pub fn run(options: Options) -> i32 {
     let errors = found.iter().filter(|d| d.severity == Severity::Error).count();
     let warnings = found.len() - errors;
     if !options.json {
-        report_summary(files.len(), errors, warnings, &skipped);
+        report_summary(files.len(), reached.len(), errors, warnings, &skipped);
     }
 
     if errors > 0 || (options.deny_warnings && warnings > 0) {
@@ -100,8 +169,18 @@ pub fn run(options: Options) -> i32 {
     }
 }
 
+/// One file's findings, and the other files looking at it reached.
+struct Checked {
+    diagnostics: Vec<Diagnostic>,
+    /// The pages this document routes to, which were checked through it rather
+    /// than on their own. Reported so the summary can say they were looked at:
+    /// they are not components and calling them skipped is how a project came
+    /// to believe five of its six files had been read.
+    reached: Vec<PathBuf>,
+}
+
 /// Load one file and turn whatever it says into diagnostics.
-fn check_file(file: &Path) -> Vec<Diagnostic> {
+fn check_file(file: &Path) -> Checked {
     // The warning sinks are global. Clear them first so a previous file's
     // leftovers cannot be attributed to this one. The `print` sink goes with
     // them: `rux check` never reports prints, so anything left in it would be
@@ -110,9 +189,27 @@ fn check_file(file: &Path) -> Vec<Diagnostic> {
     let _ = rux_runtime::take_prints();
 
     match Document::load_checked(file) {
-        Ok(doc) => doc
-            .diagnostics()
-            .warnings
+        Ok(mut doc) => {
+            let mut warnings = doc.diagnostics().warnings.clone();
+            // A router builds the matching route and nothing else, so the load
+            // above has looked at exactly one page: the one at `/`. Walking the
+            // rest is what makes a routed project checkable at all, and it is
+            // the only way a page gets checked with its app's signals and
+            // functions in scope, which is the whole reason naming one on the
+            // command line reports the app's own state as undefined.
+            let reached = rux_runtime::route_views_of(file);
+            for path in doc.route_visits() {
+                doc.navigate(&path);
+                // A rebuild *replaces* what the document says is wrong with
+                // what this build found, so each visit has to be taken as it
+                // happens rather than read once at the end.
+                for w in doc.diagnostics().warnings.clone() {
+                    if !warnings.contains(&w) {
+                        warnings.push(w);
+                    }
+                }
+            }
+            let diagnostics = warnings
             .iter()
             .map(|w| Diagnostic {
                 // A warning raised inside a `use`d component names that
@@ -134,23 +231,56 @@ fn check_file(file: &Path) -> Vec<Diagnostic> {
                 severity: if w.is_error() { Severity::Error } else { Severity::Warning },
                 message: w.message.clone(),
             })
-            .collect(),
+            .collect();
+            Checked { diagnostics, reached }
+        }
         Err(err) => {
             // A failed load can still have warned or printed on its way down, and
             // those would otherwise surface against the next file.
             let _ = rux_runtime::take_warnings();
             let _ = rux_runtime::take_prints();
-            vec![Diagnostic {
-                // A `use`d component reports against its own file, not the one
-                // that imported it, so the squiggle lands where the mistake is.
-                file: err.file.clone().unwrap_or_else(|| file.to_path_buf()),
-                line: err.line,
-                column: err.column,
-                severity: Severity::Error,
-                message: err.message.clone(),
-            }]
+            Checked {
+                diagnostics: vec![Diagnostic {
+                    // A `use`d component reports against its own file, not the
+                    // one that imported it, so the squiggle lands where the
+                    // mistake is.
+                    file: err.file.clone().unwrap_or_else(|| file.to_path_buf()),
+                    line: err.line,
+                    column: err.column,
+                    severity: Severity::Error,
+                    message: err.message.clone(),
+                }],
+                // A document that would not load routed nowhere.
+                reached: Vec::new(),
+            }
         }
     }
+}
+
+/// Whether two paths name the same file, whatever they are spelled like.
+fn same_file(a: &Path, b: &Path) -> bool {
+    rux_runtime::same_file_key(a) == rux_runtime::same_file_key(b)
+}
+
+/// The document a file can only be checked *through*, if there is one.
+///
+/// A page reads the app's signals and calls its functions, and those are shared
+/// into the engine by the document that declares them. Read on its own a page
+/// reports every one of them as missing, which is watchlist item 12: the one
+/// command that reached a file the walk skipped invented failures in it.
+///
+/// So naming a page checks the app, which builds that page at the route it
+/// belongs to with everything in scope. Only for a page: a plain component has
+/// no single caller to be checked through, and inventing one would pick a
+/// context out of however many use it.
+fn context_for(file: &Path) -> Option<PathBuf> {
+    let entry = rux_runtime::project_entry(file)?;
+    if same_file(&entry, file) {
+        return None;
+    }
+    rux_runtime::route_views_of(&entry)
+        .contains(&rux_runtime::same_file_key(file))
+        .then_some(entry)
 }
 
 /// `path:line:col: severity: message`, the shape every compiler emits and every
@@ -164,8 +294,27 @@ fn render(d: &Diagnostic) -> String {
     }
 }
 
-fn report_summary(files: usize, errors: usize, warnings: usize, skipped: &[PathBuf]) {
+fn report_summary(
+    files: usize,
+    reached: usize,
+    errors: usize,
+    warnings: usize,
+    skipped: &[PathBuf],
+) {
     let file_word = if files == 1 { "file" } else { "files" };
+    // Pages are counted apart from documents rather than folded in, because
+    // "checked 5 files" over a project of five would hide the one thing worth
+    // knowing: four of them were checked *through* the app, with its signals
+    // and functions in scope, and cannot be checked any other way.
+    let through = if reached == 0 {
+        String::new()
+    } else {
+        format!(
+            " and the {reached} page{} {}",
+            if reached == 1 { "" } else { "s" },
+            if files == 1 { "it routes to" } else { "they route to" }
+        )
+    };
     // Said out loud, because "checked 2 files, no problems found" over a project
     // of four reads as a clean bill of health for all four. A component is
     // skipped on purpose (its props come from whoever uses it, so reading it
@@ -192,10 +341,10 @@ fn report_summary(files: usize, errors: usize, warnings: usize, skipped: &[PathB
         );
     }
     if errors == 0 && warnings == 0 {
-        eprintln!("rux: checked {files} {file_word}, no problems found");
+        eprintln!("rux: checked {files} {file_word}{through}, no problems found");
     } else {
         eprintln!(
-            "rux: checked {files} {file_word}, {errors} error{}, {warnings} warning{}",
+            "rux: checked {files} {file_word}{through}, {errors} error{}, {warnings} warning{}",
             if errors == 1 { "" } else { "s" },
             if warnings == 1 { "" } else { "s" },
         );
@@ -241,7 +390,7 @@ fn to_json(found: &[Diagnostic]) -> String {
 /// that passes them, so checking one on its own reports every prop as an
 /// undefined variable, and a checker whose default output is four false
 /// failures is one nobody will keep in CI.
-fn collect_files(paths: &[PathBuf]) -> Result<(Vec<PathBuf>, Vec<PathBuf>), String> {
+fn collect_files(paths: &[PathBuf]) -> Result<crate::files::Collected, String> {
     crate::files::collect_reporting_skips(paths, crate::files::Components::SkipWhenWalking)
 }
 

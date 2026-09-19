@@ -885,6 +885,42 @@ cache that has not been told, not a wire that is not connected.
 by a synthetic broadcast, and reduced motion, `rux build` and the source
 provider from the session before this one.
 
+### The `<screen>` correction, driven both halves (2026-09-19)
+
+Two things were separated: what `<screen>` lays out, and what decides whether a
+file is a page. They had been the same line of code.
+
+| Case | Where | Result |
+|---|---|---|
+| A `<screen>` inside a 240x120 box with `overflow: hidden` | desktop, `rux run` | Covers the whole window: out of the clip, out of the box, out of the root's 60px padding |
+| The same, as a test | `cargo test` | `(0, 0, 800, 600)` where it was `(60, 60, 240, 130)`. Proven both ways, since the change is invisible to every existing document |
+| `rux check` over a `rux new` project | desktop | **Was**: "checked 1 file, no problems found" over six files. **Now**: 1 document, 4 pages through it, 1 component skipped |
+| A mistake in each of the four pages, one behind the `fallback` | desktop | All four reported, each against its own file and line |
+| `rux check pages/home.rux` | desktop | **Was**: `tasks is not defined`, against code that works. **Now**: checked through `app.rux`, clean |
+| `rux check pages/` | desktop | **Was**: "no .rux files found". **Now**: 4 pages through `app.rux` |
+| `rux check components/task-row.rux` | desktop | Unchanged: checked on its own, props reported as warnings and not errors |
+| The scaffolded app in the window | desktop, `rux run` | Renders as before: header, list from the app's signals, tab bar. The runtime does not care how the checker classifies |
+| All 47 documents under `examples/` | desktop, `rux check --deny-warnings` | Clean, and 13 routed pages were checked that never had been |
+
+**The corpus found the one thing the design gives up.** Classifying by who
+imports what means a component nobody uses is checked like a document, and
+`examples/components/stat.rux` was exactly that: written for the M9
+component-import demo, orphaned ever since, and reporting its two props as
+undefined the moment anything looked at it. That is a true finding about dead
+code rather than a false one about a component, and the file is gone.
+
+**The harness lied twice, in the same way both times.** A pattern written with
+`\n` matches nothing in a CRLF file, and `crates/rux-cli/src/files.rs` is CRLF
+while `crates/rux-runtime/src/lib.rs` is LF, in the same repository and the
+same commit. Both times it read as "the anchor has moved". Every scripted edit
+here now goes through one helper that asks the file which ending it uses.
+
+The second: a fixture written to prove the classifier failed, and the classifier
+was right. `<row label="hi" />` does not pass a prop; only the bound `:label`
+form does. The component really was being used wrongly by the fixture, and the
+error naming `row.rux` was the checker reaching into a component through its
+caller, which is the thing being built.
+
 ## Standing gaps
 
 Cases nothing here can currently exercise. They are the shape of what v0.8 has

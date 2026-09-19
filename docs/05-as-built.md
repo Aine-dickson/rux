@@ -161,10 +161,44 @@ Two kinds are still unplaced, deliberately rather than by omission:
   component's numbering would point confidently at the wrong part of whichever
   document imported it. A wrong line is worse than none.
 
-Walking a directory **skips components**, the files whose template root is not
-`<screen>`. A component's `{{ prop }}` values come from whoever uses it, so
-loading one on its own reports every prop as undefined. Naming a component
-explicitly checks it anyway, since that was asked for on purpose.
+### What gets checked, and through what
+
+Walking a directory **skips components**, and a component is a file that
+something else in the project writes as a tag. A component's `{{ prop }}`
+values come from whoever uses it, so loading one on its own reports every prop
+as undefined. Naming one explicitly checks it anyway, since that was asked for
+on purpose, and its undeclared names are warnings rather than errors there:
+without a way to declare a prop, a typo and a prop look the same.
+
+It used to skip the files whose template root was not `<screen>`, which let a
+layout choice decide whether a file was opened at all. A page under a router
+has a `<view>` root, so a project's pages were filed as components and never
+looked at, and `rux check` said "checked 1 file, no problems found" over a
+project of six.
+
+**Pages are checked through the document that routes to them.** A router builds
+the matching route and nothing else, so loading a document reaches exactly one
+page, the one at `/`. The checker walks the rest: every `<route>`'s full
+pattern is visited in turn, with `rux-check` standing in for each `:parameter`
+and one visit to nowhere when there is a `fallback`. Each page is therefore
+built with the app's signals and functions in scope, which is the only way it
+can be built: those are shared into the engine by the document that declares
+them.
+
+That is also what naming a page does. `rux check pages/home.rux` checks
+`app.rux`, says so, and reports what is wrong with the page and with the app,
+not with the app's other pages. Read on its own a page reports every signal it
+reads as undefined, which is a page of false failures about code that works.
+
+A file that **nothing uses** is a document and is checked like one. There is
+nobody to supply a name it never declares, so a name it never declares is
+wrong. This is the one thing the old root-tag test did that this does not: a
+component nobody has written a tag for yet is now looked at rather than filed
+away.
+
+A route parameter is filled with `rux-check` rather than a real value, so a
+page that assumes its parameter names something that exists reports it. That is
+a finding and not an artefact: a deep link carries whatever was typed.
 
 ## Telling an editor what the runtime understands
 

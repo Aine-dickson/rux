@@ -70,7 +70,12 @@ once:
 - A file with a `<template>` is a **component**; its file name (kebab-cased)
   is the tag other files use to embed it. See [modules & reuse](#modules-reuse).
 
-The application entry point is a component whose root is [`<screen>`](#elements).
+The application entry point is `app.rux` (or `index.rux`) at the top of the
+project. What tells a document from a component is **use**: a file something
+else writes as a tag is a component, and a file nothing writes as a tag stands
+on its own. It is not the root element. A page named by a `<route>` is a
+document by role and an embedded component by mechanism, and its root is
+usually a `<view>`, because it renders inside the app's own chrome.
 
 ---
 

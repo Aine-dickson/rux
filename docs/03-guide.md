@@ -40,7 +40,8 @@ Every app starts at a `<screen>`. Create `app.rux`:
 </template>
 ```
 
-`<screen>` is the root of one view (like `<body>`). `<text>` is a text run.
+`<screen>` is the display itself: wherever it is written it covers the device,
+which is why an app starts at one. `<text>` is a text run.
 That's a complete, runnable component. Save it and the window shows the text, with no build step for the template.
 
 ## 2. Styling with literal CSS

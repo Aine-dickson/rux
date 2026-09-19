@@ -42,15 +42,41 @@ is fine, because those are runtime lookups and not compile errors.
 ## Walking a directory skips components
 
 A component's `{{ prop }}` values come from whoever uses it, so loading one on
-its own would report every prop as undefined. Files whose template root is not
-`<screen>` are therefore skipped when walking.
+its own would report every prop as undefined. A component is a file that
+something else in the project writes as a tag, and those are skipped when
+walking.
 
 Naming a component explicitly checks it anyway, because that was asked for on
-purpose:
+purpose, and there its undeclared names are warnings rather than errors:
 
 ```bash
 rux check components/task.rux
 ```
+
+A file that nothing uses is a document and is checked like one. Nobody can
+supply a name it never declares, so a name it never declares is wrong.
+
+## Pages are checked through the app
+
+A router builds the matching route and nothing else, so loading a document
+reaches exactly one page: the one at `/`. The checker visits the rest, every
+`<route>` in turn, with `rux-check` standing in for each `:parameter` and one
+visit to nowhere when there is a `fallback`.
+
+That is the only way a page can be checked at all. A page reads the app's
+signals and calls its functions, and those are shared into the engine by the
+document that declares them, so a page read on its own reports every one of
+them as missing. Asking about a page therefore checks the app:
+
+```bash
+rux check pages/home.rux
+rux: pages/home.rux checked through app.rux, where the app's signals and functions are in scope
+```
+
+You get what is wrong with the page and with the app, not with the app's other
+pages. A parameter is filled with `rux-check` rather than a real value, so a
+page that assumes its parameter names something that exists says so. A deep
+link carries whatever was typed, so that is a finding and not an artefact.
 
 ## Where warnings land
 

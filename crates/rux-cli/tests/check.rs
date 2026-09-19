@@ -95,12 +95,24 @@ fn warnings_alone_do_not_fail_unless_asked() {
 
 /// A component's props come from its parent, so checking one standalone would
 /// report every prop as undefined. Walking a directory must skip them.
+///
+/// What makes it a component is that something **uses** it. It used to be that
+/// its template root was not `<screen>`, which let a layout choice decide
+/// whether a file was ever opened.
 #[test]
 fn components_are_skipped_when_walking_but_not_when_named() {
     let dir = fixture(
         "components",
         &[
-            ("app.rux", GOOD),
+            (
+                "app.rux",
+                r#"<template><screen class="a"><row :label="greeting" /></screen></template>
+<style>.a { display: flex; }</style>
+<script>
+  use components::row;
+  let greeting = signal("hi");
+</script>"#,
+            ),
             (
                 "components/row.rux",
                 r#"<template><view><text>{{ label }}</text></view></template>"#,
@@ -110,13 +122,100 @@ fn components_are_skipped_when_walking_but_not_when_named() {
     let path = dir.to_str().unwrap();
 
     let walked = check(&[path]);
-    assert!(walked.status.success());
+    assert!(walked.status.success(), "{}", stdout(&walked));
     assert_eq!(stdout(&walked), "", "walking must not report the component");
 
     let named = check(&[dir.join("components/row.rux").to_str().unwrap()]);
     assert!(
         stdout(&named).contains("label"),
         "naming a component explicitly should still check it: {}",
+        stdout(&named)
+    );
+}
+
+/// A file nothing uses is a document, and it is checked like one.
+///
+/// This is the cost of classifying by who imports what, and it is deliberate:
+/// there is nobody to supply a name the file never declares, so a name it never
+/// declares is wrong. The old root-tag test filed such a file as a component
+/// whatever else was true and never looked at it again.
+#[test]
+fn a_file_nothing_uses_is_checked_like_a_document() {
+    let dir = fixture(
+        "unused-component",
+        &[
+            ("app.rux", GOOD),
+            (
+                "components/orphan.rux",
+                r#"<template><view><text>{{ label }}</text></view></template>"#,
+            ),
+        ],
+    );
+
+    let out = check(&[dir.to_str().unwrap()]);
+    assert!(
+        stdout(&out).contains("orphan.rux") && stdout(&out).contains("label"),
+        "a component with no caller is looked at: {}",
+        stdout(&out)
+    );
+}
+
+/// A page is not a component, and the router is what says so.
+///
+/// It is also the whole of watchlist item 2: `pages/home.rux` opens with a
+/// `<view>`, so it was filed as a component and skipped, although `app.rux`
+/// names it under `<route view=>`. The project reported "checked 1 file, no
+/// problems found" over a page with a mistake in it.
+#[test]
+fn a_routed_page_is_checked_through_the_document_that_routes_to_it() {
+    let dir = fixture(
+        "routed-pages",
+        &[
+            (
+                "app.rux",
+                r#"<template><screen class="a">
+  <router>
+    <route path="/" view="home" />
+    <route path="/other" view="other" />
+  </router>
+</screen></template>
+<style>.a { display: flex; }</style>
+<script>
+  use pages::home;
+  use pages::other;
+  let tally = signal(3);
+</script>"#,
+            ),
+            // Reads the app's signal, which is exactly what makes it
+            // uncheckable on its own.
+            ("pages/home.rux", r#"<template><view><text>{{ tally }}</text></view></template>"#),
+            // Not the route the document opens at, so nothing ever built it.
+            (
+                "pages/other.rux",
+                r#"<template><view><text>{{ never_declared }}</text></view></template>"#,
+            ),
+        ],
+    );
+
+    let walked = check(&[dir.to_str().unwrap()]);
+    assert!(
+        stdout(&walked).contains("other.rux") && stdout(&walked).contains("never_declared"),
+        "the page behind a second route is built and checked: {}",
+        stdout(&walked)
+    );
+    assert!(
+        !stdout(&walked).contains("tally"),
+        "and the app's own signal is in scope in the page that reads it: {}",
+        stdout(&walked)
+    );
+
+    // Naming the page asks the same question and must get the same answer,
+    // rather than reporting the app's state as undefined in it (watchlist 12).
+    let named = check(&[dir.join("pages/home.rux").to_str().unwrap()]);
+    assert!(named.status.success(), "{}", stdout(&named));
+    assert!(
+        !stdout(&named).contains("tally"),
+        "a page named on the command line is checked through its app: {}",
         stdout(&named)
     );
 }

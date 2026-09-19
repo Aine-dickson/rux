@@ -4644,6 +4644,55 @@ fn collect_named(routes: &[&Element], prefix: &str, out: &mut Vec<(String, Strin
     }
 }
 
+/// Every route the document declares, as the full path a navigation uses.
+///
+/// [`named_routes`] answers a different question (what `path_for("name")`
+/// resolves to) and so lists only the routes that carry a `name`. A checker
+/// needs all of them, named or not, because an unnamed route still has a view
+/// and that view is still a file nobody has ever looked at.
+///
+/// A `<route fallback>` has no path of its own, so it is reported with an empty
+/// one and the flag set: the only way to reach it is to go somewhere no other
+/// route matches.
+pub fn route_patterns(template: &Element) -> Vec<RoutePattern> {
+    let Some(router) = find_router(template) else { return Vec::new() };
+    let mut out = Vec::new();
+    collect_patterns(&child_routes(router), "", &mut out);
+    out
+}
+
+/// One entry of [`route_patterns`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RoutePattern {
+    /// The full pattern, ancestors included: `/task/:id`, not `:id`.
+    pub pattern: String,
+    /// `<route fallback>`: reached by going where nothing else matches.
+    pub fallback: bool,
+    /// The `view=` it renders, for saying whose problem a finding is.
+    pub view: Option<String>,
+}
+
+fn collect_patterns(routes: &[&Element], prefix: &str, out: &mut Vec<RoutePattern>) {
+    for route in routes {
+        let view = route.attr("view").map(str::to_string);
+        let Some(pattern) = route.attr("path") else {
+            if route.attr("fallback").is_some() {
+                out.push(RoutePattern { pattern: String::new(), fallback: true, view });
+            }
+            continue;
+        };
+        let full = if pattern.starts_with('/') {
+            pattern.to_string()
+        } else if pattern.is_empty() {
+            prefix.to_string()
+        } else {
+            format!("{}/{}", prefix.trim_end_matches('/'), pattern.trim_start_matches('/'))
+        };
+        out.push(RoutePattern { pattern: full.clone(), fallback: false, view });
+        collect_patterns(&child_routes(route), &full, out);
+    }
+}
+
 /// Whether the router remembers where each page was scrolled to.
 ///
 /// `<router restore-scroll="false">` turns it off; anything else, including no
