@@ -5122,13 +5122,6 @@ pub fn diagnose_web_source(source: String) -> String {
     format!("{{\"error\": {error}, \"warnings\": {warnings}}}")
 }
 
-/// Open the Rux window for the given `.rux` file and run the frame loop until the
-/// window closes. Watches the file and repaints on change.
-///
-/// Native only: it takes a filesystem path and installs a file watcher, neither
-/// of which a browser has. The web build drives the same `App` from source text
-/// supplied by the playground editor.
-#[cfg(not(target_arch = "wasm32"))]
 /// A device to pretend to be, so that mobile layout can be worked on with no
 /// device in the room.
 ///
@@ -5233,6 +5226,13 @@ impl DeviceProfile {
     }
 }
 
+/// Open the Rux window for the given `.rux` file and run the frame loop until the
+/// window closes. Watches the file and repaints on change.
+///
+/// Native only: it takes a filesystem path and installs a file watcher, neither
+/// of which a browser has. The web build drives the same `App` from source text
+/// supplied by the playground editor.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn run(path: PathBuf) {
     run_at(path, None)
 }
