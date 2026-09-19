@@ -5885,6 +5885,34 @@ use components::detail;
         assert_eq!(out.selects[1].options, vec!["c", "d"]);
     }
 
+    /// `<screen>` means the whole display, not a box. Written inside a small
+    /// clipped parent it still covers the window: that is what the word has
+    /// meant since the language was described and what nothing implemented.
+    ///
+    /// The root case is not the interesting one (the layout has always forced
+    /// the root to the viewport, whatever its tag); a `<screen>` that is not
+    /// the root is.
+    #[test]
+    fn a_screen_below_the_root_is_still_the_whole_display() {
+        let doc = Document::from_source(
+            "<template><screen>               <view class=\"box\">                 <screen class=\"sheet\"><text>over everything</text></screen>               </view>             </screen></template>             <style>               screen { padding: 60px }               .box { width: 240px; height: 120px; overflow: hidden }             </style>",
+        )
+        .expect("load");
+
+        let mut measure = |_: &rux_layout::TextContent, _: Option<f32>| (10.0, 10.0);
+        let out = rux_layout::layout(&doc.root, 800.0, 600.0, &mut measure);
+        let sheet = out
+            .metrics
+            .iter()
+            .find(|m| m.path == [0, 0])
+            .expect("the nested screen is measured");
+        assert_eq!(
+            (sheet.x, sheet.y, sheet.width, sheet.height),
+            (0.0, 0.0, 800.0, 600.0),
+            "not the 240x120 box it is written in, and not inset by the root's padding"
+        );
+    }
+
     /// Two rows claiming one identity is worse than none, so it is said out
     /// loud. Same for a key on an element that is not a row at all.
     #[test]

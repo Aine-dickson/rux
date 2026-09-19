@@ -1,7 +1,7 @@
 {
   "version": "0.8.0-dev",
   "elements": [
-    { "name": "screen", "detail": "the root element of a document", "doc": "The root of a `.rux` document. A component whose template root is `<screen>` is a page; anything else is a fragment." },
+    { "name": "screen", "detail": "the whole display", "doc": "The display itself, not a box in it. Wherever it is written, including inside a clipped box or a component a `<route>` names, it covers the device: it defaults to `position: fixed` with every inset at zero." },
     { "name": "view", "detail": "a box; the generic container", "doc": "A generic box, the element most markup is made of. Defaults to `display: block`, so give it `display: flex` to lay its children out." },
     { "name": "text", "detail": "a run of text", "doc": "A run of text. Two `<text>` siblings **stack**: there is no inline flow, so they do not share a line. `role=\"heading\"` announces it as a heading." },
     { "name": "image", "detail": "an image from a file", "doc": "`src` resolves relative to the `.rux` file, not the working directory. PNG, JPEG, GIF and WebP. With no CSS size it lays out at its intrinsic pixel size." },

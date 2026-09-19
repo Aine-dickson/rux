@@ -35,9 +35,11 @@ struct Entry {
 const ELEMENTS: &[Entry] = &[
     Entry {
         name: "screen",
-        detail: "the root element of a document",
-        doc: "The root of a `.rux` document. A component whose template root is \
-              `<screen>` is a page; anything else is a fragment.",
+        detail: "the whole display",
+        doc: "The display itself, not a box in it. Wherever it is written, \
+              including inside a clipped box or a component a `<route>` names, \
+              it covers the device: it defaults to `position: fixed` with every \
+              inset at zero.",
     },
     Entry {
         name: "view",

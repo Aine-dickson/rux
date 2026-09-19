@@ -74,7 +74,7 @@ an [`<input type=>`](#input-types), a [directive](#directives--bindings), or CSS
 
 | Element | Is | Web analogue | Notable attributes |
 |---|---|---|---|
-| `<screen>` | root of one view | `<body>` | n/a |
+| `<screen>` | the whole display | `<body>` | n/a |
 | `<view>` | generic container / box | `<div>` | `role` |
 | `<text>` | text run | `<span>` / `<p>` | `role`, `for` |
 | `<image>` | bitmap or vector image | `<img>` | `src`, `alt` |
@@ -84,6 +84,17 @@ an [`<input type=>`](#input-types), a [directive](#directives--bindings), or CSS
 Any element accepts: `class`, `id`, `role` (where semantic), style/structural
 [directives](#directives--bindings), and the [events](#events) in its capability
 set.
+
+`<screen>` is the one element that names a **place** rather than a box: the
+whole display, which nothing written between it and the window may shrink,
+inset, clip or scroll away. Wherever it appears, including inside a component a
+`<route>` names or inside a small clipped box, it covers the device. That is
+what makes it the thing a safe-area inset is a property of. It is a default, so
+an author who gives one a `top` of their own has taken it back.
+
+It does **not** say anything about whether a file is a page. That was once the
+whole of its meaning in the code, and a layout choice deciding whether a file
+was checked at all is the thing this separation exists to end.
 
 ### Input types
 

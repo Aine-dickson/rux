@@ -3497,7 +3497,7 @@ fn build_node_inner(
     // reported as the length it turned out to be rather than as `var(--x)`.
     warn_unparseable_lengths(&props);
 
-    let style = interpret(&props);
+    let style = screen_fills_the_display(interpret(&props), el, path, &props);
     // A `@tap` handler runs later, in global scope, where the `r-for` loop
     // variable no longer exists, so `@tap="picked = item"` would see `item`
     // undefined and silently do nothing. Bake the current loop bindings into the
@@ -5312,6 +5312,46 @@ fn build_children(
         prev.push(ElemDesc::of(el));
     }
     (out, structural_deps)
+}
+
+/// `<screen>` is the one element that means a *place* rather than a box: the
+/// whole display, which nothing between it and the window may shrink, inset or
+/// scroll away.
+///
+/// It used to mean nothing of the kind. It laid out exactly like a `<view>`,
+/// and the only thing that filled the window was the **root**, forced to the
+/// viewport by the layout whatever its tag. So a `<screen>` anywhere but the
+/// root was an ordinary box, and the word was carrying a meaning the code did
+/// not implement anywhere.
+///
+/// The root keeps being forced to the viewport, because the root *is* the
+/// window: it is the initial containing block and everything `fixed` hoists to
+/// it. That is why this only has to say anything about a `<screen>` that is not
+/// the root, and why it says it as `position: fixed` with every inset at zero:
+/// the four edges of the initial containing block are the display, whatever
+/// box, padding or scroller the element happens to be written inside.
+///
+/// They are **defaults**, applied only where the author's own stylesheet is
+/// silent, the way every other element's defaults work. A `<screen>` with a
+/// `top` of its own is a `<screen>` the author has taken responsibility for.
+fn screen_fills_the_display(
+    mut st: Style,
+    el: &Element,
+    path: &[usize],
+    props: &HashMap<String, String>,
+) -> Style {
+    if el.tag != "screen" || path.is_empty() {
+        return st;
+    }
+    if !props.contains_key("position") {
+        st.position = Position::Fixed;
+    }
+    for (i, edge) in INSETS.iter().enumerate() {
+        if !props.contains_key(*edge) {
+            st.inset[i] = Some(Len::Px(0.0));
+        }
+    }
+    st
 }
 
 // ── Value interpretation (honored subset) ───────────────────────────────────
