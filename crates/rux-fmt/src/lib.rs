@@ -185,21 +185,22 @@ fn scan(line: &str) -> (Delta, Pending) {
     while i < b.len() {
         match b[i] {
             // Strings: skip wholesale, so braces inside them never count.
-            b'"' | b'\'' => {
-                let quote = b[i];
-                i += 1;
-                while i < b.len() {
-                    if b[i] == b'\\' {
-                        i += 2;
-                        continue;
-                    }
-                    if b[i] == quote {
-                        i += 1;
-                        break;
-                    }
-                    i += 1;
-                }
-            }
+            //
+            // **Only when the quote closes on this line.** An apostrophe in
+            // ordinary prose is not the start of anything: `<text>the dog's
+            // bowl</text>` used to open a string that ran to the end of the
+            // line, swallowing the `</text>` that closed the element, so every
+            // line below it was indented one level deeper, and the next
+            // apostrophe added another. A single word like "don't" in a
+            // paragraph re-indented the rest of the file.
+            //
+            // Nothing is lost by requiring the close: neither rhai nor CSS
+            // lets a string span a newline, so an unterminated quote on a line
+            // is an apostrophe, not a string.
+            b'"' | b'\'' => match string_end(b, i) {
+                Some(end) => i = end + 1,
+                None => i += 1,
+            },
             b'/' if b.get(i + 1) == Some(&b'/') => break, // line comment: done
             b'/' if b.get(i + 1) == Some(&b'*') => {
                 match find(b, i + 2, b"*/") {
@@ -256,6 +257,27 @@ fn scan(line: &str) -> (Delta, Pending) {
     }
 
     (Delta { net, leading_close }, pending)
+}
+
+/// Where the string opened at `start` closes, or `None` if it does not close on
+/// this line.
+///
+/// Escapes are honoured, so `"a\"b"` ends at the last quote and not the middle
+/// one.
+fn string_end(b: &[u8], start: usize) -> Option<usize> {
+    let quote = b[start];
+    let mut i = start + 1;
+    while i < b.len() {
+        if b[i] == b'\\' {
+            i += 2;
+            continue;
+        }
+        if b[i] == quote {
+            return Some(i);
+        }
+        i += 1;
+    }
+    None
 }
 
 /// Byte-substring search from `from`.

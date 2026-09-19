@@ -140,3 +140,43 @@ fn examples_survive_reindenting() {
     }
     assert!(checked > 5, "expected several examples, checked {checked}");
 }
+
+/// An apostrophe in ordinary prose is not the start of a string.
+///
+/// It used to open one, which ran to the end of the line and swallowed the
+/// `</text>` that closed the element, so every line below was indented one
+/// level deeper and the next apostrophe added another. One "don't" in a
+/// paragraph re-indented the rest of the file, and `rux fmt` writes in place.
+#[test]
+fn an_apostrophe_in_text_does_not_open_a_string() {
+    let src = "<template>\n<screen>\n<view>\n<text>the dog's bowl</text>\n<text>after</text>\n</view>\n</screen>\n</template>\n";
+    let out = reindent(src, UNIT);
+    let lines: Vec<&str> = out.lines().collect();
+
+    assert_eq!(indent_of(lines[3], UNIT), 3, "the text sits inside screen > view");
+    assert_eq!(
+        indent_of(lines[4], UNIT),
+        indent_of(lines[3], UNIT),
+        "and its sibling sits beside it, not below it"
+    );
+    assert_eq!(indent_of(lines[5], UNIT), 2, "</view> closes back to screen's level");
+}
+
+/// A quoted string that *does* close is still skipped whole, which is what
+/// stops a brace inside one from counting as nesting.
+#[test]
+fn a_closed_string_still_hides_what_is_inside_it() {
+    let src = "<template>\n<screen>\n<text>a { not a block</text>\n</screen>\n</template>\n";
+    let with_braces_in_a_string =
+        "<script>\nlet s = \"a { brace\";\nlet t = 1;\n</script>\n";
+    let out = reindent(src, UNIT);
+    assert_eq!(indent_of(out.lines().nth(2).unwrap(), UNIT), 2, "{out}");
+
+    let out = reindent(with_braces_in_a_string, UNIT);
+    let lines: Vec<&str> = out.lines().collect();
+    assert_eq!(
+        indent_of(lines[1], UNIT),
+        indent_of(lines[2], UNIT),
+        "the brace inside the string opened nothing: {out}"
+    );
+}
