@@ -2262,7 +2262,14 @@ fn build(
     if let Some(fm) = &node.focus_model {
         focus_labels.push((id, fm.clone(), row.map(str::to_string)));
     }
-    if node.hidden {
+    // `display: none` reached taffy, which gave the box no size and no slot,
+    // but nothing stopped it being *painted*: a text node with no box still
+    // drew its glyphs, at its parent's origin, on top of whatever was really
+    // there. It takes the same road as `r-show="false"` from here, because
+    // "paints nothing, hit-tests as nothing, and takes its subtree with it" is
+    // exactly what both mean. The one difference between them, whether a slot
+    // is reserved, is already settled in the layout above.
+    if node.hidden || node.style.display == Display::None {
         hidden.push(id);
     }
     if node.style.opacity < 1.0 {

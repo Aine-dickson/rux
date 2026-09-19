@@ -267,3 +267,49 @@ fn a_box_with_only_a_bottom_border_is_still_emitted() {
         "no background, no uniform border, and it still has to be drawn"
     );
 }
+
+/// `display: none` reached taffy, which gave the box no size and no slot, and
+/// then the node was painted anyway. A text node has glyphs to draw whether or
+/// not it has a box, so `display: none` on a `<text>` drew its words at its
+/// parent's origin, on top of whatever was really there.
+#[test]
+fn a_display_none_node_paints_nothing() {
+    let mut parent = Node::new(Style {
+        display: Display::Flex,
+        axis: Axis::Column,
+        ..Default::default()
+    });
+    parent.children.push(Node::text(
+        Style { display: Display::None, ..Default::default() },
+        label("gone"),
+    ));
+    parent.children.push(Node::text(Style::default(), label("here")));
+
+    let drawn: Vec<String> = paints(parent)
+        .iter()
+        .filter_map(|p| match p {
+            Paint::Text(t) => Some(t.content.text.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(drawn, vec!["here".to_string()], "only the shown node draws");
+}
+
+/// And it takes its subtree with it: a child of a `display: none` box is gone
+/// too, however visible its own style says it is.
+#[test]
+fn a_display_none_subtree_paints_nothing() {
+    let mut gone = Node::new(Style {
+        display: Display::None,
+        background: Some(Background::Color(Rgba::new(1.0, 0.0, 0.0, 1.0))),
+        ..Default::default()
+    });
+    gone.children.push(Node::text(Style::default(), label("inside")));
+
+    let paints = paints(gone);
+    assert!(paints.iter().all(|p| !matches!(p, Paint::Text(_))), "{paints:?}");
+    assert!(
+        paints.iter().all(|p| !matches!(p, Paint::Rect(r) if r.background.is_some())),
+        "{paints:?}"
+    );
+}
