@@ -1010,6 +1010,7 @@ An APK now carries one Java class of its own, compiled by `javac` and dexed by
 | The activity name in two places | emulator | **Found a second defect**, caught by its own error message: `rux run --device` still started `android.app.NativeActivity` while the generated manifest named ours. Packaged and installed fine, refused to start. Both now read one constant |
 | `examples/safe-area.rux` on a device | emulator | **The insets are real.** The bar pads below the status bar and the dock clears the gesture bar, on a screen where the scaffolded app overlaps both. Nothing in the file changed between the desktop and the phone |
 | The scaffolded app under the status bar | emulator | Still overlaps, and it is **correct**: `env(safe-area-inset-*)` is opt-in and the template never asks. Logged as an author-side trap, since the first Android app a new user builds inherits the fault |
+| The scaffold, after padding its own bars | emulator | **Fixed.** `rux new` now pads the screen by the top and bottom insets, and the header and the tab bar both clear the system bars. `rux check` on the fresh scaffold reports no problems, so `env()` in a shorthand-free longhand is honored rather than warned about. `calc()` does not exist yet, which is why the insets go on the screen rather than being added to the header's own padding |
 
 ## The input connection, 2026-09-20
 

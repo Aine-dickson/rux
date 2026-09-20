@@ -78,6 +78,13 @@ const APP: &str = r#"<!-- The entry point. `rux run` looks for this file here an
     height: 100vh;
     background: #1e1e2e;
     font-family: sans-serif;
+    /* The edges a phone will not let an app draw in: the status bar at the
+       top, the gesture bar or the home indicator at the bottom. Both are zero
+       on a desktop, so this changes nothing there and is the difference
+       between a readable header and one under the clock on a device. Try it
+       with `rux run --preview phone`. */
+    padding-top: env(safe-area-inset-top);
+    padding-bottom: env(safe-area-inset-bottom);
   }
 
   .header {
