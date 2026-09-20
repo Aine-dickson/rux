@@ -84,6 +84,47 @@ starts compiling rather than partway through:
 rustup target add aarch64-linux-android armv7-linux-androideabi i686-linux-android
 ```
 
+## Signing a release
+
+Every APK is signed, because Android refuses to install one that is not. Without
+a `[signing]` block Rux uses a debug key it generates once and shares between
+your projects, which installs anywhere and is accepted by no store. A release
+build says so rather than letting you find out later.
+
+To sign with your own key, name it:
+
+```toml
+[signing]
+keystore = "release.jks"
+alias = "upload"
+```
+
+The path is relative to `rux.toml` unless it is absolute.
+
+**The passwords are not in there, and will not be accepted there.** `rux.toml`
+is a file you commit, and a keystore password committed beside the keystore it
+opens is the same as having no password. They come from the environment:
+
+```bash
+export RUX_KEYSTORE_PASSWORD=...   # the keystore's password
+export RUX_KEY_PASSWORD=...        # the key's own, if it differs
+```
+
+Writing `password` into `[signing]` is an error that says where it goes instead,
+rather than a key quietly read from a file you are about to push.
+
+A keystore that is not where the manifest says, or a password that was never
+exported, is reported before anything compiles, not after sixteen minutes.
+
+If you have no keystore yet, `keytool` comes with the JDK you already installed:
+
+```bash
+keytool -genkeypair -keystore release.jks -alias upload   -keyalg RSA -keysize 2048 -validity 9000
+```
+
+Keep it, and keep it backed up. An app updated with a different key is not an
+update: every store treats it as a different app, and there is no way back.
+
 ## What a build costs
 
 Worth knowing before you wait for one. Measured on an ordinary laptop, for the
@@ -134,9 +175,9 @@ of Rux that built it.
 `index.rux` that `rux run` would, so a project following the convention writes
 nothing.
 
-Nothing else is accepted yet. Icons, splash screens and signing all have
-manifest keys waiting for them, and each one lands in the release that makes it
-do something rather than ahead of it.
+`[signing]` names the key a release is signed with; see below. Icons and splash
+screens have manifest keys waiting for them, and each one lands in the release
+that makes it do something rather than ahead of it.
 
 ## Dev builds and release builds differ in one way
 

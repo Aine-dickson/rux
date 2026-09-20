@@ -345,6 +345,24 @@ pub fn run(options: Options) -> Result<PathBuf, String> {
         (Target::Android, None) if options.release => crate::android::ABIS.to_vec(),
         (Target::Android, None) => vec![crate::android::DEV_ABI],
     };
+    // Checked here, before anything compiles. A keystore that is not where the
+    // manifest says, or a password that was never exported, is knowable in the
+    // moment it takes to look, and finding out afterwards means finding out
+    // sixteen minutes later.
+    if options.target == Target::Android {
+        manifest.signing_key()?;
+        if options.release && manifest.signing.is_none() {
+            // Said plainly rather than left to be discovered by a store. A
+            // debug-signed APK installs perfectly well, which is exactly why
+            // this is easy to ship by accident.
+            println!(
+                "rux: no [signing] block, so this release is signed with the shared debug key.\n\
+                 rux: it will install, and no store will accept it. See \
+                 https://ruxlang.dev/tooling/build/"
+            );
+        }
+    }
+
     // Asked once, up front, for all of them. Finding out on the third compile
     // that a target was never installed means waiting through two to learn
     // something that was knowable before the first.
@@ -481,6 +499,7 @@ mod tests {
             id: "dev.example.tasks".into(),
             version: "0.1.0".into(),
             entry: PathBuf::from("app.rux"),
+            signing: None,
         }
     }
 

@@ -47,7 +47,36 @@ pub struct Manifest {
     pub version: String,
     /// Relative to `root`.
     pub entry: PathBuf,
+    /// The key a release is signed with, when the author has one.
+    ///
+    /// `None` means a release is signed with the shared debug key, which is
+    /// enough to install and not enough to publish.
+    pub signing: Option<Signing>,
 }
+
+/// Where a release build's signing key lives.
+///
+/// **No passwords, and that is the whole design.** `rux.toml` is a file people
+/// commit, and a keystore password committed beside the keystore it opens is
+/// the same as no password at all. The passwords come from the environment, so
+/// the manifest can say which key to use without saying how to open it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Signing {
+    /// The keystore, relative to the project root unless it is absolute.
+    pub keystore: PathBuf,
+    /// Which key inside it.
+    pub alias: String,
+}
+
+/// The environment variable holding the keystore's password.
+pub const KEYSTORE_PASSWORD: &str = "RUX_KEYSTORE_PASSWORD";
+
+/// The environment variable holding the key's own password.
+///
+/// Falls back to [`KEYSTORE_PASSWORD`], because the two are the same in most
+/// keystores and making someone set an identical value twice is a way to be
+/// asked why.
+pub const KEY_PASSWORD: &str = "RUX_KEY_PASSWORD";
 
 impl Manifest {
     /// Find the manifest by walking up from `from`, the way `rux run` finds an
@@ -139,7 +168,73 @@ impl Manifest {
             return Err(format!("[app] `entry` names {}, which is not here", entry.display()));
         }
 
-        Ok(Manifest { root, name, id, version, entry })
+        let signing = match value.get("signing") {
+            None => None,
+            Some(toml::Value::Table(table)) => {
+                let field = |key: &str| -> Result<String, String> {
+                    match table.get(key) {
+                        Some(toml::Value::String(s)) if !s.trim().is_empty() => Ok(s.clone()),
+                        Some(toml::Value::String(_)) => {
+                            Err(format!("[signing] `{key}` is empty"))
+                        }
+                        Some(_) => Err(format!("[signing] `{key}` must be a string")),
+                        None => Err(format!(
+                            "[signing] has no `{key}`. A signing block needs both `keystore` \
+                             and `alias`, or neither"
+                        )),
+                    }
+                };
+                // Refused by name, because someone will try it: a password here
+                // is a password in version control, beside the keystore it
+                // opens. Saying where it goes instead is the whole point of
+                // noticing.
+                for secret in ["password", "keystore_password", "key_password", "storepass"] {
+                    if table.contains_key(secret) {
+                        return Err(format!(
+                            "[signing] `{secret}` does not belong in {MANIFEST}, which is a file \
+                             you commit.\n\nSet {KEYSTORE_PASSWORD} in the environment instead, \
+                             and {KEY_PASSWORD} if the key's own password differs."
+                        ));
+                    }
+                }
+                Some(Signing { keystore: PathBuf::from(field("keystore")?), alias: field("alias")? })
+            }
+            Some(_) => return Err("[signing] must be a table".into()),
+        };
+
+        Ok(Manifest { root, name, id, version, entry, signing })
+    }
+
+    /// The keystore to sign with, and the two passwords, or why not.
+    ///
+    /// Resolved here rather than at the moment of signing, so a release build
+    /// that cannot be signed says so before it spends sixteen minutes
+    /// compiling four ABIs.
+    pub fn signing_key(&self) -> Result<Option<(PathBuf, String, String, String)>, String> {
+        let Some(signing) = &self.signing else { return Ok(None) };
+        let keystore = if signing.keystore.is_absolute() {
+            signing.keystore.clone()
+        } else {
+            self.root.join(&signing.keystore)
+        };
+        if !keystore.is_file() {
+            return Err(format!(
+                "[signing] names the keystore {}, which is not there.\n\nThe path is relative to \
+                 {MANIFEST} unless it is absolute.",
+                keystore.display()
+            ));
+        }
+        let store_password = std::env::var(KEYSTORE_PASSWORD).map_err(|_| {
+            format!(
+                "[signing] names a keystore, and {KEYSTORE_PASSWORD} is not set.\n\nPasswords are \
+                 read from the environment rather than {MANIFEST}, because a manifest is a file \
+                 you commit."
+            )
+        })?;
+        // The same password unless told otherwise, which is how most keystores
+        // are made.
+        let key_password = std::env::var(KEY_PASSWORD).unwrap_or_else(|_| store_password.clone());
+        Ok(Some((keystore, signing.alias.clone(), store_password, key_password)))
     }
 
     /// A file-system-safe stem for the artifact, derived from `name`.
@@ -184,6 +279,45 @@ id = "dev.example.tasks"
 version = "0.1.0"
 entry = "Cargo.toml"
 "#;
+
+    #[test]
+    fn a_signing_block_reads_and_is_optional() {
+        assert_eq!(parse(MINIMAL).unwrap().signing, None);
+        let text = format!("{MINIMAL}\n[signing]\nkeystore = \"release.jks\"\nalias = \"upload\"\n");
+        let signing = parse(&text).unwrap().signing.expect("a signing block");
+        assert_eq!(signing.keystore, PathBuf::from("release.jks"));
+        assert_eq!(signing.alias, "upload");
+    }
+
+    #[test]
+    fn a_password_in_the_manifest_is_refused_by_name() {
+        // The point of the whole design. `rux.toml` is committed, and a
+        // keystore password committed beside the keystore it opens is the same
+        // as no password. Every spelling someone might reach for is caught, and
+        // the message says where it goes instead.
+        for key in ["password", "keystore_password", "key_password", "storepass"] {
+            let text = format!(
+                "{MINIMAL}\n[signing]\nkeystore = \"r.jks\"\nalias = \"a\"\n{key} = \"hunter2\"\n"
+            );
+            let error = parse(&text).expect_err("a password should be refused");
+            assert!(error.contains(key), "{error}");
+            assert!(error.contains(KEYSTORE_PASSWORD), "should say where it goes: {error}");
+        }
+    }
+
+    #[test]
+    fn half_a_signing_block_is_an_error_naming_the_missing_half() {
+        let text = format!("{MINIMAL}\n[signing]\nkeystore = \"release.jks\"\n");
+        let error = parse(&text).expect_err("alias is required");
+        assert!(error.contains("alias"), "{error}");
+    }
+
+    #[test]
+    fn a_missing_keystore_is_reported_before_anything_is_built() {
+        let text = format!("{MINIMAL}\n[signing]\nkeystore = \"nope.jks\"\nalias = \"a\"\n");
+        let error = parse(&text).unwrap().signing_key().expect_err("no such keystore");
+        assert!(error.contains("nope.jks"), "{error}");
+    }
 
     #[test]
     fn a_minimal_manifest_reads() {

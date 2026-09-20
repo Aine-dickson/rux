@@ -123,22 +123,33 @@ pub fn pack(
         "zipalign",
     )?;
 
-    let keystore = debug_keystore(toolchain)?;
     // Deleted first: apksigner refuses to write over an existing output, and a
     // second build would otherwise fail on the leftovers of the first.
     let _ = std::fs::remove_file(out);
-    run(
-        Command::new(toolchain.apksigner())
-            .arg("sign")
-            .arg("--ks")
-            .arg(&keystore)
-            .args(["--ks-pass", "pass:android"])
-            .args(["--key-pass", "pass:android"])
-            .arg("--out")
-            .arg(out)
-            .arg(&aligned),
-        "apksigner",
-    )?;
+    let mut sign = Command::new(toolchain.apksigner());
+    sign.arg("sign");
+    match manifest.signing_key()? {
+        Some((keystore, alias, store_password, key_password)) => {
+            println!("rux: signing with {} ({alias})", keystore.display());
+            sign.arg("--ks")
+                .arg(&keystore)
+                .args(["--ks-key-alias", &alias])
+                // Passed as `pass:` rather than through a file, because the
+                // alternative is writing the password to disk for the length of
+                // a build. It is visible in this process's arguments either
+                // way; a file would also leave it somewhere afterwards.
+                .args(["--ks-pass", &format!("pass:{store_password}")])
+                .args(["--key-pass", &format!("pass:{key_password}")]);
+        }
+        None => {
+            let keystore = debug_keystore(toolchain)?;
+            sign.arg("--ks")
+                .arg(&keystore)
+                .args(["--ks-pass", "pass:android"])
+                .args(["--key-pass", "pass:android"]);
+        }
+    }
+    run(sign.arg("--out").arg(out).arg(&aligned), "apksigner")?;
 
     Ok(())
 }
@@ -415,6 +426,7 @@ mod tests {
             id: "dev.example.tasks".into(),
             version: "0.1.0".into(),
             entry: PathBuf::from("app.rux"),
+            signing: None,
         }
     }
 

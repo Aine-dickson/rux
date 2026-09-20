@@ -1012,6 +1012,17 @@ An APK now carries one Java class of its own, compiled by `javac` and dexed by
 | The scaffolded app under the status bar | emulator | Still overlaps, and it is **correct**: `env(safe-area-inset-*)` is opt-in and the template never asks. Logged as an author-side trap, since the first Android app a new user builds inherits the fault |
 | The scaffold, after padding its own bars | emulator | **Fixed.** `rux new` now pads the screen by the top and bottom insets, and the header and the tab bar both clear the system bars. `rux check` on the fresh scaffold reports no problems, so `env()` in a shorthand-free longhand is honored rather than warned about. `calc()` does not exist yet, which is why the insets go on the screen rather than being added to the header's own padding |
 
+## Release signing, 2026-09-20
+
+| Case | Where | Result |
+|---|---|---|
+| A `[signing]` block with a real keystore | desktop, then `apksigner verify` | The APK carries `CN=Counter App Release, O=Example, C=UG` where a default build carries `CN=Rux Debug, O=Rux, C=US`. The two are visibly different keys, which is the whole point |
+| A signing block with no password exported | desktop | Refused **before compiling**, naming `RUX_KEYSTORE_PASSWORD` and saying why it is not in the manifest |
+| A password written into `rux.toml` | desktop | Refused by name, for all four spellings someone might reach for, with the environment variable to use instead. A manifest is a file you commit |
+| A keystore that is not there | `cargo test` | Named, with the note that the path is relative to the manifest |
+| Half a signing block | `cargo test` | Names the missing half rather than failing at signing time |
+| `--release` with no `[signing]` block | desktop | Says the release is signed with the shared debug key and that no store will accept it, before it starts compiling. A debug-signed APK installs perfectly well, which is exactly why it is easy to ship by accident |
+
 ## Four ABIs, 2026-09-20
 
 | Case | Where | Result |
