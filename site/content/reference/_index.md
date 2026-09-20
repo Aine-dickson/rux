@@ -112,6 +112,20 @@ A bound `:name` is not checked, since it is not known until the app runs. That
 is also the one case a build cannot shake down, so it embeds every icon and
 says why.
 
+**Some icons morph into one another**, because paint and geometry are both CSS
+here and `transition: d` already interpolates two paths that share a command
+sequence:
+
+```css
+icon { transition: d 200ms ease-in-out; }
+```
+
+A bound `:name` that swaps `chevron-down` for `chevron-up` then animates rather
+than jumps. **It is not general**, and should not be planned around: two icons
+morph only when their artwork happens to be built the same way. The pairs known
+to work are `chevron-down`/`chevron-up`, `chevron-right`/`chevron-left`,
+`arrow-right`/`arrow-left` and `maximize`/`minimize`. Everything else swaps.
+
 ### `position`, and which box an out-of-flow one is measured against
 
 All five of `static`, `relative`, `sticky`, `absolute` and `fixed` mean what CSS

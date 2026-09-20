@@ -2495,6 +2495,46 @@ Steps 1 and 2 are independent of `rux build` and can happen whenever. Step 3
 wants step 1 answered. Step 4 is the scheduling constraint, and step 5 should
 not be promised publicly until it has been measured.
 
+#### Step 5, measured 2026-09-20: a fifth of it is already free
+
+Twenty pairs, chosen from what an interface actually toggles rather than from
+what happened to look similar, then compared against Tabler 3.47.0. The engine
+interpolates two paths when they share a command sequence and jumps otherwise,
+so the question is how far apart the drawings already are.
+
+| | pairs |
+|---|---|
+| already share a command sequence | **4** |
+| same number of paths, commands differ | 2 |
+| different number of paths | 14 |
+
+**The four already morph, today, with nothing built.** `chevron-down` to
+`chevron-up`, `chevron-right` to `chevron-left`, `arrow-right` to `arrow-left`
+and `maximize` to `minimize` all interpolate under `transition: d`. Driven and
+caught mid-flight: the chevron flattens through a horizontal line, the arrow's
+head collapses through the middle, and maximize's four corner brackets converge
+into a small rounded square. That is a fifth of the list for the price of
+documenting it, and it should be documented before anything is built.
+
+**The fourteen are redrawing, not adjusting.** `player-play` is one path of
+`MVLL` and `player-pause` is two of `MAHAVAHAL`; `menu-2` is three strokes and
+`x` is two. Nothing mechanical turns one into the other, which is the same
+answer the earlier survey gave from the other direction.
+
+**What a normalizer would actually be**, if the curated list is built: convert
+every command to cubics, so `L`, `H`, `V`, `Q` and `A` all become `C`; equalize
+segment counts by subdividing the shorter path; add degenerate zero-length
+paths so both sides have the same number, which is how `minus` grows into
+`plus` rather than jumping. The first two steps are mechanical and
+well-understood. **The third is not**: which point on one shape corresponds to
+which on the other, and which way each is wound, is what decides whether the
+result reads as a transformation or as a shape turning inside out. That is the
+work, it is per pair, and it is the reason this is a curated list of twenty
+rather than a feature that works on five thousand.
+
+So the honest position is unchanged and now has numbers behind it: **do not
+promise that icons morph.** Document the four that do.
+
 #### Reviewed 2026-09-20: still yes, and the constraint has cleared
 
 **Step 4 was what parked this, and `rux build` now exists.** Three things the
