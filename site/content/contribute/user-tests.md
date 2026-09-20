@@ -1079,6 +1079,29 @@ was found, because this machine has one on `PATH` and the lookup asked the real
 `PATH` became data like everything else, and the test now describes a machine
 rather than this machine.
 
+## The launcher icon, 2026-09-20
+
+Spiked before it was built, on the user's call: one hand-made PNG through
+`aapt2 compile` into an APK, on the emulator, before any density generation or
+manifest surface existed. The spike reassembled around the library, dex and
+manifest left in `.rux-build` by the previous build, so it needed **no cargo
+build at all** and each attempt cost seconds.
+
+| Case | Where | Result |
+|---|---|---|
+| One PNG, by hand, through `aapt2` | emulator | **The no-Gradle claim survives resources.** Two extra calls, both `aapt2`, which the pipeline already runs. `aapt2 compile --dir` takes the whole tree in one invocation, so five densities are not five processes |
+| The icon on the launcher | emulator | **Visible, and the control was free.** Three other Rux apps on the same device still showed the default robot, so the difference was the resource pipeline and nothing else |
+| A square PNG, as Android's own docs describe a legacy icon | emulator | **Found the real problem.** The launcher shrank it onto a white plate rather than showing it: our violet square became a small stamp. `MIN_API` is 26 and adaptive icons arrived in 26, so **every device Rux supports masks the icon**, and an app shipping a plain square looks smaller and paler than everything beside it |
+| The adaptive icon, two layers | emulator | Fills the mask edge to edge. This is what the manifest keys were then designed around: `icon` is the foreground and `icon-background` is the plate |
+| `-R` for the compiled resources | build only | **Found a defect before it was written.** `-R` declares an *overlay*, and an overlay may only replace a resource that already exists. A PNG alone links fine, so the wrong flag survives any test that does not add a `values/` resource; the first `<color>` fails with "does not override an existing resource", which reads like a typo and is not one. The flats go as positional arguments |
+| `rux build --target android` with two manifest keys | emulator | **Driven end to end.** One 432px source file became all five density buckets, the adaptive XML and the colour resource; the icon is on the launcher and the app starts from it and renders |
+| An app with no icon at all | emulator | Still builds, installs and runs, and shows the platform default. The `android:icon` attribute is absent rather than naming a resource that was never compiled, which `aapt2` would refuse to link |
+| Two tests sharing one staging directory | host | **The generator's cleanup proved itself by accident.** The icon tests keyed their temp directory on the process id, so they shared one; `generate` clears the tree it is about to write, and parallel tests deleted each other's output. The product was right and the tests were wrong |
+
+**Not covered, deliberately:** the splash screen, which is a theme and so a
+`values/themes.xml` and an `android:theme`, and would have hit the `-R` trap
+above. It is the last of slice 5.
+
 ## Standing gaps
 
 Cases nothing here can currently exercise. They are the shape of what v0.8 has

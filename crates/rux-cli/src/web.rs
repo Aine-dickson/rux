@@ -203,6 +203,7 @@ mod tests {
             version: "0.1.0".into(),
             entry: PathBuf::from("app.rux"),
             signing: None,
+            icon: None,
         }
     }
 

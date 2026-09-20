@@ -77,20 +77,50 @@ pub fn pack(
     std::fs::write(&manifest_xml, android_manifest(manifest))
         .map_err(|e| format!("writing {}: {e}", manifest_xml.display()))?;
 
+    // One invocation for the whole tree, whatever is in it: `--dir` walks it and
+    // emits a zip of compiled resources, so the number of densities never
+    // becomes a number of processes.
+    let resources = match manifest.icon_source()? {
+        None => None,
+        Some((foreground, background)) => {
+            let res = crate::icon::generate(&foreground, background, &staging)?;
+            let compiled = staging.join("res.zip");
+            run(
+                Command::new(toolchain.aapt2())
+                    .arg("compile")
+                    .arg("--dir")
+                    .arg(&res)
+                    .arg("-o")
+                    .arg(&compiled),
+                "aapt2 compile",
+            )?;
+            Some(compiled)
+        }
+    };
+
     let base = staging.join("base.apk");
-    run(
-        Command::new(toolchain.aapt2())
-            .arg("link")
-            .arg("--manifest")
-            .arg(&manifest_xml)
-            .arg("-I")
-            .arg(toolchain.android_jar())
-            .args(["--min-sdk-version", &MIN_API.to_string()])
-            .args(["--target-sdk-version", &TARGET_API.to_string()])
-            .arg("-o")
-            .arg(&base),
-        "aapt2 link",
-    )?;
+    let mut link = Command::new(toolchain.aapt2());
+    link.arg("link")
+        .arg("--manifest")
+        .arg(&manifest_xml)
+        .arg("-I")
+        .arg(toolchain.android_jar())
+        .args(["--min-sdk-version", &MIN_API.to_string()])
+        .args(["--target-sdk-version", &TARGET_API.to_string()])
+        .arg("-o")
+        .arg(&base);
+    if let Some(compiled) = &resources {
+        // **Positional, and NOT `-R`.** `-R` declares an *overlay*, and an
+        // overlay may only replace a resource that already exists: the first
+        // `values/` resource we add fails with "does not override an existing
+        // resource", which reads like a spelling mistake and is not one. A
+        // PNG-only icon links fine under `-R`, so the wrong flag survives every
+        // test that does not add a colour. `--auto-add-overlay` silences it and
+        // is the wrong fix, because then a genuine typo silently adds a
+        // resource instead of failing.
+        link.arg(compiled);
+    }
+    run(&mut link, "aapt2 link")?;
 
     // Relative to the staging directory, because that relative path is exactly
     // what the entry is named inside the APK. Run from anywhere else and the
@@ -348,7 +378,7 @@ fn android_manifest(manifest: &Manifest) -> String {
     android:versionName="{version}">
     <uses-sdk android:minSdkVersion="{MIN_API}" android:targetSdkVersion="{TARGET_API}" />
     <application
-        android:label="{label}"
+        android:label="{label}"{icon}
         android:hasCode="true"
         android:extractNativeLibs="true">
         <activity
@@ -368,6 +398,13 @@ fn android_manifest(manifest: &Manifest) -> String {
         id = manifest.id,
         version = manifest.version,
         label = escape(&manifest.name),
+        // Absent entirely when the app has no icon, rather than named and left
+        // to resolve to nothing: `aapt2` fails a link naming a resource that
+        // was never compiled, so an app with no art would not package at all.
+        icon = match manifest.icon {
+            Some(_) => format!("\n        android:icon=\"{}\"", crate::icon::manifest_reference()),
+            None => String::new(),
+        },
         activity = ACTIVITY_CLASS,
         lib = manifest.artifact_stem().replace('-', "_"),
     )
@@ -427,6 +464,7 @@ mod tests {
             version: "0.1.0".into(),
             entry: PathBuf::from("app.rux"),
             signing: None,
+            icon: None,
         }
     }
 

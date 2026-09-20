@@ -31,6 +31,7 @@ mod check;
 mod device;
 mod files;
 mod fmt;
+mod icon;
 mod manifest;
 mod new;
 mod vocab;

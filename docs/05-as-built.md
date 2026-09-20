@@ -45,10 +45,15 @@ from the document's own directory rather than from wherever `rux` was run. The
 scaffold checks clean and is already formatted the way `rux fmt` writes, so the
 first `rux fmt` in a new project changes nothing.
 
-**A workspace is a directory containing `app.rux` or `index.rux`.** That is the
-whole definition. There is no manifest file: a `rux.toml` would have to carry a
-window title, an icon and a target, and each of those is a decision `rux build`
-owns and has not made yet. If one arrives, `rux new` is where it gets written.
+**A workspace is a directory containing `app.rux` or `index.rux`**, and that is
+still all `rux run` and `rux check` need. `rux build` needs more, because a
+build has to say what the app is called and what an operating system files it
+under, and it reads a `rux.toml` beside the entry point or above it: `name`,
+`id`, `version`, an optional `entry`, the `icon` pair, and a `[signing]` block
+for a release. Each key landed in the commit that made it do something.
+
+**`rux new` does not write one yet**, so a scaffolded project is built only
+after a manifest is added by hand. That is a gap rather than a decision.
 
 ## Running it
 

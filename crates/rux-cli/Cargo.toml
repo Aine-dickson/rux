@@ -39,6 +39,10 @@ rux-style.workspace = true
 # and the parser decides what a tag may be, so the two have to be one list. The
 # void-tag list drifted exactly this way once already.
 rux-parser.workspace = true
+# Rescaling one icon into the five densities Android wants. Free in compile
+# time: `rux-runtime` already depends on it to decode what `<img>` draws, so it
+# is in the graph either way and this is a second user of a built crate.
+image.workspace = true
 # `rux build` reads `rux.toml`. Parsed as a `Value` rather than derived, so
 # this pulls the parser and not a proc-macro build: the manifest is one
 # four-key table, and compile time is something this milestone is judged on.

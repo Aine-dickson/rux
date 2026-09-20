@@ -17,11 +17,22 @@
 //!   `index.rux` that `rux run` already looks for, so a project that wants the
 //!   convention writes nothing.
 //!
-//! **Deliberately absent, and each for the same reason.** `icon` and `splash`
-//! name assets nothing yet draws. `[signing]` configures a keystore no code
-//! creates. `permissions` would be a list the runtime cannot request, since no
-//! Rux API needs one. Every one of them is scheduled, and each lands in the
-//! commit that makes it do something rather than ahead of it.
+//! Two more do as of the icon, and they arrive as a pair:
+//!
+//! - `icon`, the foreground art.
+//! - `icon-background`, the plate behind it.
+//!
+//! **Two keys rather than one, because Android's icon is two layers.** Every
+//! device Rux supports masks an icon to whatever shape the launcher likes, so
+//! art handed over as a single square is either letterboxed into the middle of
+//! it or cropped by it. Naming the background separately is what lets the
+//! foreground bleed to the edges of a circle without the corners of a square
+//! showing. See `icon.rs`.
+//!
+//! **Deliberately absent, and each for the same reason.** `splash` names an
+//! asset nothing yet draws. `permissions` would be a list the runtime cannot
+//! request, since no Rux API needs one. Both are scheduled, and each lands in
+//! the commit that makes it do something rather than ahead of it.
 //!
 //! The manifest is also what makes a project root explicit. `workspace_root`
 //! infers one today by finding `app.rux` while walking up, which is a guess
@@ -52,6 +63,36 @@ pub struct Manifest {
     /// `None` means a release is signed with the shared debug key, which is
     /// enough to install and not enough to publish.
     pub signing: Option<Signing>,
+    /// The launcher icon, when the author has drawn one.
+    ///
+    /// `None` means the platform's own default, which on Android is the robot.
+    /// An app with no icon still builds, installs and runs: this is the one
+    /// piece of polish that must not be a wall in front of a first build.
+    pub icon: Option<Icon>,
+}
+
+/// The launcher icon, as two layers.
+///
+/// **Not one square image, and the reason is that Android will not show one.**
+/// Since API 26, which is also Rux's floor, a launcher masks every icon into a
+/// shape it chooses: a circle, a squircle, a rounded square, whatever the
+/// device's skin prefers. An icon supplied as a single opaque square is shrunk
+/// onto a white plate so that none of it is lost, which is why an app that
+/// ships one looks smaller and paler than every app beside it.
+///
+/// So the author supplies the foreground and says what colour sits behind it,
+/// and the mask falls on the plate instead of on the art.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Icon {
+    /// The foreground art, relative to the project root unless it is absolute.
+    ///
+    /// The whole image is the 108dp canvas, of which **only the middle 72dp is
+    /// guaranteed to be visible**; the rest is under the mask and may be
+    /// animated by the launcher. Art that runs to the edges of the file will
+    /// have its edges eaten, and that is the platform's rule rather than ours.
+    pub foreground: PathBuf,
+    /// The plate behind it, normalized to `#rrggbb`.
+    pub background: String,
 }
 
 /// Where a release build's signing key lives.
@@ -168,6 +209,42 @@ impl Manifest {
             return Err(format!("[app] `entry` names {}, which is not here", entry.display()));
         }
 
+        // Named in the one spelling, because a key that is silently ignored is
+        // worse than one that is refused: the author sees a robot on the
+        // launcher and has nothing to read that explains it.
+        if app.contains_key("icon_background") {
+            return Err(
+                "[app] `icon_background` is spelled `icon-background`, with a dash".to_string()
+            );
+        }
+
+        let icon = match (app.get("icon"), app.get("icon-background")) {
+            (None, None) => None,
+            (Some(_), None) => {
+                return Err(format!(
+                    "[app] names an `icon` and no `icon-background`. An Android launcher masks \
+                     every icon to its own shape, so it needs to know what colour is behind the \
+                     art when the mask is wider than it.\n\nAdd `icon-background = \"#rrggbb\"`."
+                ))
+            }
+            (None, Some(_)) => {
+                return Err("[app] names an `icon-background` and no `icon`".to_string())
+            }
+            (Some(toml::Value::String(path)), Some(background)) if !path.trim().is_empty() => {
+                let toml::Value::String(background) = background else {
+                    return Err("[app] `icon-background` must be a string".into());
+                };
+                Some(Icon {
+                    foreground: PathBuf::from(path),
+                    background: normalize_color(background)?,
+                })
+            }
+            (Some(toml::Value::String(_)), Some(_)) => {
+                return Err("[app] `icon` is empty".to_string())
+            }
+            (Some(_), Some(_)) => return Err("[app] `icon` must be a string".to_string()),
+        };
+
         let signing = match value.get("signing") {
             None => None,
             Some(toml::Value::Table(table)) => {
@@ -202,7 +279,30 @@ impl Manifest {
             Some(_) => return Err("[signing] must be a table".into()),
         };
 
-        Ok(Manifest { root, name, id, version, entry, signing })
+        Ok(Manifest { root, name, id, version, entry, signing, icon })
+    }
+
+    /// The icon's foreground file, checked to be there.
+    ///
+    /// Resolved here rather than when the resources are packed, for the reason
+    /// [`Manifest::signing_key`] gives: a release build spends sixteen minutes
+    /// on four ABIs before it packages anything, and a typo in a path should
+    /// not cost that.
+    pub fn icon_source(&self) -> Result<Option<(PathBuf, &str)>, String> {
+        let Some(icon) = &self.icon else { return Ok(None) };
+        let foreground = if icon.foreground.is_absolute() {
+            icon.foreground.clone()
+        } else {
+            self.root.join(&icon.foreground)
+        };
+        if !foreground.is_file() {
+            return Err(format!(
+                "[app] names the icon {}, which is not there.\n\nThe path is relative to \
+                 {MANIFEST} unless it is absolute.",
+                foreground.display()
+            ));
+        }
+        Ok(Some((foreground, icon.background.as_str())))
     }
 
     /// The keystore to sign with, and the two passwords, or why not.
@@ -264,6 +364,47 @@ impl Manifest {
     }
 }
 
+/// `#rgb` or `#rrggbb` to the `#rrggbb` an Android colour resource wants.
+///
+/// **Hex only, and no CSS colour names.** A stylesheet's `background` is CSS
+/// and follows CSS; this is a manifest key naming a value that is written
+/// verbatim into a platform resource file, and accepting `rebeccapurple` here
+/// would mean carrying a colour table into the packager to translate it.
+///
+/// Alpha is refused rather than passed through. Android would take `#aarrggbb`,
+/// but a launcher composites the plate against its own background, so a
+/// translucent one is a bug that only shows on some devices.
+fn normalize_color(text: &str) -> Result<String, String> {
+    let bad = || {
+        format!(
+            "[app] `icon-background` should be a hex colour like `#7c3aed`, and `{text}` is not"
+        )
+    };
+    let digits = text.strip_prefix('#').ok_or_else(bad)?;
+    if !digits.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(bad());
+    }
+    match digits.len() {
+        3 => {
+            // `#abc` is `#aabbcc`, the same doubling CSS does.
+            let mut out = String::with_capacity(7);
+            out.push('#');
+            for c in digits.chars() {
+                out.push(c.to_ascii_lowercase());
+                out.push(c.to_ascii_lowercase());
+            }
+            Ok(out)
+        }
+        6 => Ok(format!("#{}", digits.to_ascii_lowercase())),
+        4 | 8 => Err(format!(
+            "[app] `icon-background` is `{text}`, which carries transparency.\n\nThe plate behind \
+             an icon is composited against whatever the launcher puts behind it, so it has to be \
+             opaque. Use `#rrggbb`."
+        )),
+        _ => Err(bad()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -287,6 +428,64 @@ entry = "Cargo.toml"
         let signing = parse(&text).unwrap().signing.expect("a signing block");
         assert_eq!(signing.keystore, PathBuf::from("release.jks"));
         assert_eq!(signing.alias, "upload");
+    }
+
+    #[test]
+    fn an_icon_reads_as_two_layers_and_is_optional() {
+        assert_eq!(parse(MINIMAL).unwrap().icon, None);
+        let text = format!("{MINIMAL}icon = \"assets/icon.png\"\nicon-background = \"#7C3AED\"\n");
+        let icon = parse(&text).unwrap().icon.expect("an icon");
+        assert_eq!(icon.foreground, PathBuf::from("assets/icon.png"));
+        // Normalized on the way in, so everything downstream writes one spelling
+        // into the resource file rather than whatever the author typed.
+        assert_eq!(icon.background, "#7c3aed");
+    }
+
+    #[test]
+    fn an_icon_without_a_background_says_what_to_add() {
+        let text = format!("{MINIMAL}icon = \"assets/icon.png\"\n");
+        let error = parse(&text).expect_err("half an icon");
+        assert!(error.contains("icon-background"), "{error}");
+    }
+
+    #[test]
+    fn the_underscore_spelling_is_refused_by_name() {
+        // Silently ignored, this is an author staring at a robot on their
+        // launcher with nothing to read that explains it.
+        let text =
+            format!("{MINIMAL}icon = \"assets/icon.png\"\nicon_background = \"#7c3aed\"\n");
+        let error = parse(&text).expect_err("the wrong spelling");
+        assert!(error.contains("icon-background"), "{error}");
+    }
+
+    #[test]
+    fn a_three_digit_colour_doubles_the_way_css_does() {
+        let text = format!("{MINIMAL}icon = \"i.png\"\nicon-background = \"#ABC\"\n");
+        assert_eq!(parse(&text).unwrap().icon.expect("an icon").background, "#aabbcc");
+    }
+
+    #[test]
+    fn a_translucent_plate_is_refused_with_the_reason() {
+        let text = format!("{MINIMAL}icon = \"i.png\"\nicon-background = \"#7c3aed80\"\n");
+        let error = parse(&text).expect_err("alpha in a plate");
+        assert!(error.contains("opaque"), "{error}");
+    }
+
+    #[test]
+    fn a_colour_that_is_not_one_names_what_was_written() {
+        let text = format!("{MINIMAL}icon = \"i.png\"\nicon-background = \"violet\"\n");
+        let error = parse(&text).expect_err("a colour name");
+        assert!(error.contains("violet"), "{error}");
+    }
+
+    #[test]
+    fn a_missing_icon_file_is_reported_before_anything_is_built() {
+        let text = format!("{MINIMAL}icon = \"nope.png\"\nicon-background = \"#7c3aed\"\n");
+        // Parsing accepts it; the check belongs where the build can run it
+        // early, for the reason `signing_key` is resolved early.
+        let manifest = parse(&text).expect("a manifest that parses");
+        let error = manifest.icon_source().expect_err("a path that is not there");
+        assert!(error.contains("nope.png"), "{error}");
     }
 
     #[test]

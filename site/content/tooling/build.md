@@ -26,8 +26,9 @@ rux run --device               # builds it, installs it, starts it
 
 No Gradle and no Android Studio, at any point. What the build actually runs is
 a handful of command-line tools that come with the SDK and the JDK: `javac` and
-`d8` build the one Java class an app carries, `aapt2` writes the base APK from a
-generated manifest, the native library and that class are added to it,
+`d8` build the one Java class an app carries, `aapt2` compiles the icon and
+writes the base APK from a generated manifest, the native library and that
+class are added to it,
 `zipalign` aligns it and `apksigner` signs it. A debug keystore is generated
 once, at `~/.rux/debug.keystore`, and reused for every project on the machine,
 which is what lets a reinstall replace a previous build instead of being
@@ -224,9 +225,49 @@ of Rux that built it.
 `index.rux` that `rux run` would, so a project following the convention writes
 nothing.
 
-`[signing]` names the key a release is signed with; see below. Icons and splash
-screens have manifest keys waiting for them, and each one lands in the release
-that makes it do something rather than ahead of it.
+`icon` and `icon-background` are the launcher icon; see below. `[signing]`
+names the key a release is signed with; see below as well. A splash screen has
+a manifest key waiting for it, and it lands in the release that makes it do
+something rather than ahead of it.
+
+## The icon is two layers, not one image
+
+```toml
+[app]
+icon = "assets/icon.png"
+icon-background = "#7c3aed"
+```
+
+`icon` is the artwork. `icon-background` is the colour behind it. Both, or
+neither: an app with no icon builds and installs and runs, and shows the
+platform's default.
+
+**Two keys rather than one, because that is what Android shows.** Every
+launcher masks an icon into a shape it chooses for itself, and which shape
+depends on the device: a circle, a squircle, a rounded square. An icon supplied
+as a single square image cannot be masked without losing its corners, so the
+system shrinks it onto a white plate instead, and the result is an app that
+looks smaller and paler than everything beside it. Naming the background
+separately is what lets the artwork run to the edges and the mask fall on the
+plate.
+
+So `icon` is the **foreground**: the mark, usually on transparency, with room
+around it. It should be square. The whole image is a 108dp canvas of which
+**only the middle 72dp is certain to be seen** — the rest is under the mask,
+and some launchers shift it as the user scrolls. Artwork that runs to the edge
+of the file will have that edge eaten. It is the platform's rule rather than
+Rux's, and designing to it is what makes an icon look right on a device nobody
+tested on.
+
+One file is enough. `rux build` rescales it into all five density buckets
+Android asks for, writes the adaptive-icon resource that names the two layers,
+and packs them with `aapt2`. Supply it at 432px or larger and nothing is ever
+enlarged; smaller than that and the build says so and carries on.
+
+`icon-background` is a hex colour, `#rgb` or `#rrggbb`. Colour names are not
+accepted, and neither is transparency: the plate is composited against whatever
+the launcher has behind it, so a translucent one looks different from device to
+device.
 
 ## Dev builds and release builds differ in one way
 
