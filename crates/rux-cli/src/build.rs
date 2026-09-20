@@ -346,43 +346,78 @@ fn embed_icons(manifest: &Manifest, files: &[PathBuf], out: &mut String) {
         return;
     }
 
+    // **A blob and an index, not thousands of literals in a function body.**
+    // The first version emitted one `MemoryIcons::insert` with two inline
+    // `vec![]` per icon. That is fine for the nine a normal app names and fatal
+    // for the whole set: an app with a bound name embeds all of them, and five
+    // thousand inline vector constructions in one function overflowed the stack
+    // of Android's `android_main` thread. The app died with `SIGSEGV` before it
+    // drew anything, and only building one found it. Statics take no stack, and
+    // this is the same shape `rux-icons` itself is generated in.
+    let mut blob = String::new();
+    let mut index = String::new();
+    let mut embedded = 0usize;
+    for name in &wanted {
+        // A name that is not in the set is skipped rather than failing here.
+        // `verify_icons` has already refused the build if one was misspelled,
+        // so reaching this with an unknown name means the set changed under us.
+        if !rux_icons::exists(name) {
+            continue;
+        }
+        let name_at = blob.len();
+        blob.push_str(name);
+        let outline_at = blob.len();
+        pack_into(&mut blob, name, rux_icons::Variant::Outline);
+        let filled_at = blob.len();
+        pack_into(&mut blob, name, rux_icons::Variant::Filled);
+        index.push_str(&format!(
+            "[{},{},{},{},{},{}],",
+            name_at,
+            outline_at - name_at,
+            outline_at,
+            filled_at - outline_at,
+            filled_at,
+            blob.len() - filled_at
+        ));
+        embedded += 1;
+    }
+
+    out.push_str(&format!("    static ICON_BLOB: &str = {};\n", literal(&blob)));
+    out.push_str(&format!("    static ICON_INDEX: [[usize; 6]; {embedded}] = [{index}];\n"));
     out.push_str(&format!(
         "    let mut icons = rux_runtime::MemoryIcons::new({:?});\n",
         rux_icons::GRID
     ));
-    let mut embedded = 0usize;
-    for name in &wanted {
-        // A name that is not in the set is skipped rather than failing here.
-        // `rux check` is what tells an author about a misspelled icon, with a
-        // position in the file; a packager repeating it worse helps nobody.
-        if !rux_icons::exists(name) {
-            continue;
-        }
-        let outline = paths_literal(name, rux_icons::Variant::Outline);
-        let filled = paths_literal(name, rux_icons::Variant::Filled);
-        out.push_str(&format!("    icons.insert({}, {outline}, {filled});\n", literal(name)));
-        embedded += 1;
-    }
+    out.push_str(
+        "    for r in ICON_INDEX.iter() {\n\
+         \x20       icons.insert_packed(\n\
+         \x20           &ICON_BLOB[r[0]..r[0] + r[1]],\n\
+         \x20           &ICON_BLOB[r[2]..r[2] + r[3]],\n\
+         \x20           &ICON_BLOB[r[4]..r[4] + r[5]],\n\
+         \x20       );\n\
+         \x20   }\n",
+    );
     out.push_str("    rux_runtime::set_icons(std::rc::Rc::new(icons));\n");
     println!("rux: {embedded} icons embedded");
 }
 
-/// One variant's paths, as the Rust literal the generated crate carries.
-fn paths_literal(name: &str, variant: rux_icons::Variant) -> String {
-    let Some(paths) = rux_icons::find(name, variant) else { return "vec![]".to_string() };
-    let mut out = String::from("vec![");
-    for p in paths.iter() {
-        out.push_str(&format!(
-            "rux_runtime::IconPath {{ d: {}.into(), fill_current: {}, no_stroke: {}, \
-             half_opacity: {} }},",
-            literal(p.d),
-            p.fill_current,
-            p.no_stroke,
-            p.half_opacity
-        ));
+/// One variant's paths, in the packed form the generated crate unpacks.
+///
+/// Paths joined by `\n`, each prefixed by a hex digit of paint flags. Nothing
+/// at all when the variant does not exist, which is what `insert_packed` reads
+/// as absent rather than empty.
+fn pack_into(blob: &mut String, name: &str, variant: rux_icons::Variant) {
+    let Some(paths) = rux_icons::find(name, variant) else { return };
+    for (i, p) in paths.iter().enumerate() {
+        if i > 0 {
+            blob.push('\n');
+        }
+        let flags = u32::from(p.fill_current)
+            | (u32::from(p.no_stroke) << 1)
+            | (u32::from(p.half_opacity) << 2);
+        blob.push(char::from_digit(flags, 16).expect("flags fit a hex digit"));
+        blob.push_str(p.d);
     }
-    out.push(']');
-    out
 }
 
 /// Replace everything that is not markup with spaces, keeping every newline.
@@ -904,20 +939,19 @@ mod tests {
 
     #[test]
     fn the_embedded_icons_are_the_ones_named_and_no_others() {
-        let mut out = String::new();
-        let mut wanted = std::collections::BTreeSet::new();
-        wanted.insert("heart".to_string());
-        // Written by hand rather than through `embed_icons`, which reads files;
-        // this is about what lands in the generated crate.
-        for name in &wanted {
-            let outline = paths_literal(name, rux_icons::Variant::Outline);
-            out.push_str(&outline);
-        }
-        assert!(out.contains("IconPath"), "{out}");
-        assert!(!out.contains("d: \"\""), "an empty path was emitted");
+        let mut blob = String::new();
+        pack_into(&mut blob, "heart", rux_icons::Variant::Outline);
+        assert!(!blob.is_empty(), "heart packed to nothing");
+        // The flag digit, then a command letter. If the digit were lost the
+        // data would still look plausible and every override would be gone.
+        assert!(blob.starts_with(|c: char| c.is_ascii_hexdigit()), "{blob}");
+        assert!(blob[1..].starts_with(|c: char| c.is_ascii_alphabetic()), "{blob}");
+
         // A name nobody asked for must not be in there. `star` is a real icon,
         // which is what makes it a fair check that only `heart` was taken.
-        assert!(!out.contains(&paths_literal("star", rux_icons::Variant::Outline)));
+        let mut other = String::new();
+        pack_into(&mut other, "star", rux_icons::Variant::Outline);
+        assert!(!blob.contains(&other));
     }
 
     #[test]

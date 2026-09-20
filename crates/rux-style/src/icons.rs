@@ -85,6 +85,21 @@ impl MemoryIcons {
     pub fn insert(&mut self, name: &str, outline: Vec<IconPath>, filled: Vec<IconPath>) {
         self.icons.insert(name.to_string(), (outline, filled));
     }
+
+    /// Add one icon from the packed form a generated crate carries.
+    ///
+    /// **A generated app does not write out thousands of `Vec` literals**, and
+    /// this exists because the first version did. An app whose icon name is
+    /// bound embeds the whole set, and five thousand inline vector
+    /// constructions in one function overflowed the stack of Android's
+    /// `android_main` thread: the app died with `SIGSEGV` before drawing
+    /// anything. Static tables and a loop have a stack frame of nothing.
+    ///
+    /// Each variant is its paths joined by `\n`, every path prefixed with one
+    /// hex digit of paint flags. Empty means the variant does not exist.
+    pub fn insert_packed(&mut self, name: &str, outline: &str, filled: &str) {
+        self.icons.insert(name.to_string(), (unpack(outline), unpack(filled)));
+    }
 }
 
 impl IconSet for MemoryIcons {
@@ -102,6 +117,32 @@ impl IconSet for MemoryIcons {
     fn grid(&self) -> f32 {
         self.grid
     }
+}
+
+/// One variant's packed paths back into drawings.
+///
+/// The format is the one the icon data is generated in: paths joined by `\n`,
+/// each prefixed with a hex digit of paint flags. Path data never contains a
+/// newline and always begins with a command letter, so neither marker can be
+/// confused with content.
+fn unpack(packed: &str) -> Vec<IconPath> {
+    if packed.is_empty() {
+        return Vec::new();
+    }
+    packed
+        .split('\n')
+        .filter(|entry| !entry.is_empty())
+        .map(|entry| {
+            let (flags, d) = entry.split_at(1);
+            let flags = u8::from_str_radix(flags, 16).unwrap_or(0);
+            IconPath {
+                d: d.to_string(),
+                fill_current: flags & 1 != 0,
+                no_stroke: flags & 2 != 0,
+                half_opacity: flags & 4 != 0,
+            }
+        })
+        .collect()
 }
 
 /// The set that knows nothing, which is what a bare runtime has.
