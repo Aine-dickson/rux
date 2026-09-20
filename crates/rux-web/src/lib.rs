@@ -22,14 +22,14 @@
 
 /// The UI font, embedded in the binary.
 ///
-/// Inter, under the SIL Open Font License 1.1, see `assets/Inter-OFL.txt`,
-/// which must ship wherever these bytes do. It is a variable font, so one file
-/// covers every weight the examples ask for (400 through 700) instead of
-/// needing a static face per weight.
-/// The font the playground renders with.
+/// Inter, under the SIL Open Font License 1.1. The licence now sits beside the
+/// bytes in `rux-shell/assets/`, which is where it has to be: it must ship
+/// wherever they do. Inter is variable, so one file covers every weight the
+/// examples ask for (400 through 700) rather than a static face per weight.
 ///
-/// Re-exported from `rux-shell` rather than carried here: a built web app needs
-/// the same font, and the shell is what needs one when the platform has none.
+/// Re-exported from `rux-shell` rather than carried here. A built web app needs
+/// the same font, and the shell is what needs one when the platform offers
+/// none, so keeping two copies of 876 KB would be two copies to keep in step.
 pub use rux_shell::DEFAULT_FONT;
 
 /// The TextMate grammar, embedded from the file the site and the VS Code

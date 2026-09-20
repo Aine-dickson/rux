@@ -5186,7 +5186,14 @@ pub fn start_web(
 /// a font when there is nothing to ask, and both the playground and an app
 /// built by `rux build --target web` need the same one. Two copies of 876 KB
 /// would be two copies to keep in step.
-#[cfg(target_arch = "wasm32")]
+///
+/// **Not gated to wasm, deliberately.** It was, and that broke the test which
+/// checks these bytes actually parse, which runs on the host on purpose: a font
+/// that yields no faces makes every string measure to zero and the canvas
+/// render blank, and diagnosing that through a wasm bundle is miserable.
+/// Leaving it ungated costs nothing where it is unused, because this is a
+/// `const` and not a `static`: it is materialised at its use sites, so a
+/// desktop binary that never mentions it carries none of it.
 pub const DEFAULT_FONT: &[u8] = include_bytes!("../assets/Inter-Variable.ttf");
 
 /// Run a whole project in a canvas, loading it through the installed
