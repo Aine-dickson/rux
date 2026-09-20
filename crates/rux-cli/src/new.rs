@@ -10,17 +10,19 @@
 //!
 //! # What a workspace is
 //!
-//! **A directory containing `app.rux` or `index.rux`.** That is the whole
-//! definition, and there is deliberately no manifest file yet.
+//! **A directory containing `app.rux` or `index.rux`.** That is still all
+//! `rux run` and `rux check` need, and the lookup they use has not changed.
 //!
-//! A `rux.toml` would have to carry a window title, an icon, a target and a
-//! version, and every one of those is a decision `rux build` owns and has not
-//! made. Inventing the manifest here would commit the build format by accident,
-//! from the side of the tool least able to see the consequences. An entry file
-//! is enough for `rux run` to find its way, costs nothing to keep if a manifest
-//! arrives later, and if one does, `rux new` is where it gets written.
+//! **The scaffold also writes a `rux.toml`, as of v0.8.** It used to not, on
+//! the grounds that a manifest would commit decisions `rux build` owned and had
+//! not made. `rux build` has since made all of them, and the reasoning expired
+//! without the code noticing: a scaffolded project could be run but not built,
+//! and the missing file had to be written by hand before the first
+//! `rux build --target android` would do anything. Scaffolding one is the whole
+//! fix, and the keys it writes are the three a build cannot infer.
 //!
-//! See `entry` in `main.rs` for the lookup this pairs with.
+//! See `entry` in `main.rs` for the lookup this pairs with, and
+//! `crate::manifest` for what the file means.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -644,6 +646,24 @@ const ASSETS_NOTE: &str = "Images go here.\n\
     \n\
     PNG, JPEG, GIF and WebP.\n";
 
+/// The manifest a scaffolded project starts with.
+///
+/// **Three keys and no more.** `entry` is left out because `app.rux` is what
+/// the lookup already prefers, so writing it would turn a convention into
+/// configuration on day one. `icon` and `[signing]` are left out because they
+/// name things that do not exist yet in a new project, and a manifest full of
+/// commented-out keys is a manifest nobody reads.
+const MANIFEST_TEMPLATE: &str = r#"[app]
+name = "{name}"
+
+# Reverse-DNS, and the one field worth getting right before you ship. An
+# operating system files the app under this, so changing it later produces a
+# different app rather than an update. `dev.example` is a placeholder.
+id = "{id}"
+
+version = "0.1.0"
+"#;
+
 const FILES: &[File] = &[
     File { path: "app.rux", body: APP },
     File { path: "pages/home.rux", body: HOME },
@@ -722,7 +742,33 @@ fn write_all(target: &Path, name: &str) -> Result<(), String> {
     let readme = README.replace("{name}", name);
     let path = target.join("README.md");
     fs::write(&path, readme).map_err(|e| format!("writing {}: {e}", path.display()))?;
+
+    let manifest = MANIFEST_TEMPLATE
+        .replace("{name}", name)
+        .replace("{id}", &default_id(name));
+    let path = target.join(crate::manifest::MANIFEST);
+    fs::write(&path, manifest).map_err(|e| format!("writing {}: {e}", path.display()))?;
     Ok(())
+}
+
+/// A reverse-DNS id for a project called `name`, for the author to replace.
+///
+/// **The last segment has to be a valid Java identifier**, because that is what
+/// Android package segments are, and a project name is allowed characters that
+/// are not: `rux new my-app` would otherwise scaffold `dev.example.my-app`,
+/// which `rux build` accepts and `aapt2` rejects, a whole Android build later.
+/// So anything that is not a letter, a digit or an underscore becomes one, and
+/// a leading digit gains a prefix rather than being dropped, since `3d-viewer`
+/// and `d-viewer` are different names.
+fn default_id(name: &str) -> String {
+    let mut segment: String = name
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect();
+    if segment.starts_with(|c: char| c.is_ascii_digit()) {
+        segment.insert(0, 'a');
+    }
+    format!("dev.example.{}", segment.to_ascii_lowercase())
 }
 
 /// What makes a usable project name.

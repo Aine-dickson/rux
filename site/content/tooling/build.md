@@ -203,6 +203,10 @@ should file it under, and neither of those can be guessed from a document. So
 `rux build` reads a manifest, found here or in any parent directory, the same
 way `rux run` finds an entry point.
 
+**`rux new` writes one**, so a scaffolded project builds without this section.
+It is here for what the keys mean and for a project that predates the scaffold
+writing them.
+
 ```toml
 [app]
 name = "Task List"

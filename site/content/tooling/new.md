@@ -40,17 +40,30 @@ for the five things people reach for first. State with `signal`, a two-way
 bound `<input>` with `r-model`, a `@tap` handler that calls a named function,
 a list with `r-for` and `r-key`, and a component receiving props.
 
-## There is no manifest
+## The manifest it writes
 
-**A workspace is a directory containing `app.rux` or `index.rux`.** That is the
-whole definition. There is no `rux.toml`, and its absence is deliberate rather
-than pending.
+**`rux run` and `rux check` need nothing but a directory containing `app.rux`
+or `index.rux`**, and that has not changed. `rux build` needs more, because it
+has to say what the app is called and what an operating system should file it
+under, and neither can be guessed from a document. So the scaffold writes a
+`rux.toml` with the three keys a build cannot infer:
 
-A manifest would have to carry a window title, an icon, a target and a version,
-and every one of those is a decision that belongs to `rux build`, which does
-not exist yet. Inventing the file here would commit the build format from the
-side least able to see the consequences. If a manifest arrives, `rux new` is
-where it gets written.
+```toml
+[app]
+name = "my-app"
+id = "dev.example.my_app"
+version = "0.1.0"
+```
+
+**Change the `id` before you ship anything.** `dev.example` is a placeholder.
+An operating system files the app under that name, so changing it later
+produces a different app rather than an update, and no store offers a way back.
+
+`entry` is deliberately absent: `app.rux` is what the lookup prefers anyway, and
+writing it down would turn a convention into configuration on the first day.
+An icon and a signing key are absent for the same kind of reason, since they
+name things a new project does not have yet. See
+[`rux build`](@/tooling/build.md) for both.
 
 ## What it refuses
 

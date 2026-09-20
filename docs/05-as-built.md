@@ -52,8 +52,9 @@ under, and it reads a `rux.toml` beside the entry point or above it: `name`,
 `id`, `version`, an optional `entry`, the `icon` pair, and a `[signing]` block
 for a release. Each key landed in the commit that made it do something.
 
-**`rux new` does not write one yet**, so a scaffolded project is built only
-after a manifest is added by hand. That is a gap rather than a decision.
+**`rux new` writes one**, with `name`, `id` and `version`, so a scaffolded
+project builds without anything being added by hand. It used to not, on
+reasoning that expired when `rux build` landed.
 
 ## Running it
 

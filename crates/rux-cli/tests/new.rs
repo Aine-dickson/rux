@@ -69,6 +69,7 @@ fn the_scaffold_writes_the_layout_it_documents() {
         "assets/README.md",
         "README.md",
         ".gitignore",
+        "rux.toml",
     ] {
         assert!(root.join(expected).is_file(), "{expected} was not created");
     }
@@ -273,4 +274,54 @@ fn index_rux_is_accepted_as_an_entry_point() {
     // opened because `--route` is rejected first.
     let (_, _, stderr) = run(scratch.path(), &["run", "--route"]);
     assert!(!stderr.contains("no app.rux"), "index.rux was not accepted: {stderr}");
+}
+
+#[test]
+fn a_scaffolded_project_can_be_built_without_writing_a_file_by_hand() {
+    // The gap this closes: `rux new` wrote no manifest, so `rux build` on a
+    // fresh project stopped at "no rux.toml" and the author had to write one
+    // before the tool they had just been told to run would do anything.
+    let scratch = Scratch::new("manifest");
+    let (code, _, stderr) = run(scratch.path(), &["new", "my-app"]);
+    assert_eq!(code, 0, "stderr: {stderr}");
+
+    let manifest = std::fs::read_to_string(scratch.path().join("my-app").join("rux.toml"))
+        .expect("the scaffold wrote no rux.toml");
+    assert!(manifest.contains(r#"name = "my-app""#), "{manifest}");
+    assert!(manifest.contains("version ="), "{manifest}");
+    // `entry` is deliberately absent: `app.rux` is what the lookup prefers
+    // anyway, and writing it turns a convention into configuration.
+    assert!(!manifest.contains("entry ="), "{manifest}");
+}
+
+#[test]
+fn a_scaffolded_id_is_a_package_name_android_will_accept() {
+    // **A dash is legal in a project name and illegal in an Android package
+    // segment.** `dev.example.my-app` passes our own manifest check, which only
+    // looks for dots, and is rejected by `aapt2` at the end of a full Android
+    // build. The scaffold is where that is cheapest to get right.
+    let scratch = Scratch::new("package-id");
+    let (code, _, stderr) = run(scratch.path(), &["new", "my-app"]);
+    assert_eq!(code, 0, "stderr: {stderr}");
+
+    let manifest = std::fs::read_to_string(scratch.path().join("my-app").join("rux.toml"))
+        .expect("reading the manifest");
+    let id = manifest
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("id = "))
+        .expect("no id")
+        .trim_matches('"')
+        .to_string();
+    assert!(!id.contains('-'), "a dash reached the package name: {id}");
+    for segment in id.split('.') {
+        assert!(!segment.is_empty(), "empty segment in {id}");
+        assert!(
+            !segment.starts_with(|c: char| c.is_ascii_digit()),
+            "segment starts with a digit in {id}"
+        );
+        assert!(
+            segment.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'),
+            "not a Java identifier: {segment} in {id}"
+        );
+    }
 }

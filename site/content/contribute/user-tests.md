@@ -1124,6 +1124,19 @@ proof that the exit-listener approach worked when it had never run. The
 symptom is silence: no error, no warning, just the previous behaviour. Probe
 logging is what found it, by printing nothing at all.
 
+## The scaffold writes a manifest, 2026-09-20
+
+| Case | Where | Result |
+|---|---|---|
+| `rux new` then `rux build --target android`, nothing edited | emulator | **Works, and did not before.** A scaffolded project could be run and not built: the build stopped at a missing `rux.toml` and the author had to write one by hand before the tool they had just been told about would do anything |
+| The scaffolded app on a device | emulator | Installs on the shared debug key, starts, renders, routes by finger. The whole path from `rux new` to an app on a screen is now unbroken |
+| A project name with a dash | host, and it would have failed on a device | **Found a defect before it bit.** A dash is legal in a project name and illegal in an Android package segment. `dev.example.my-app` passes our own manifest check, which only looks for dots, and `aapt2` rejects it at the end of a full Android build. The scaffold now derives `my_app`, and a leading digit gains a prefix rather than being dropped |
+
+**The reasoning expired without the code noticing**, which is the second time in
+two days. The module said a manifest would commit decisions `rux build` owned
+and had not made; `rux build` has since made all of them. `docs/05-as-built.md`
+had the same shape of staleness and was corrected alongside the icon work.
+
 ## Standing gaps
 
 Cases nothing here can currently exercise. They are the shape of what v0.8 has
