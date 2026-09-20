@@ -2103,9 +2103,15 @@ whether this milestone worked, at development time and at build time alike. How
 is deliberately left open until the milestone is reached rather than guessed
 here.
 
-1. **Android and iOS**, through winit and wgpu, which both support them. The
-   wasm work in v0.5 is a useful rehearsal: it already forced the shell to stop
-   assuming a filesystem, a blocking main thread and a system clipboard.
+1. **Android**, through winit and wgpu, which both support it. The wasm work in
+   v0.5 is a useful rehearsal: it already forced the shell to stop assuming a
+   filesystem, a blocking main thread and a system clipboard.
+
+   **iOS was in this item and came out of it on 2026-09-20.** See
+   [iOS](#ios-blocked-on-hardware-not-on-a-date) below. It is not cancelled and
+   it is not descoped for convenience: it cannot be built, or driven, on the
+   hardware this project runs on, and leaving it in the milestone made the
+   milestone's own promise untrue.
 2. **Touch for real.** Kinetic scrolling is unimplemented and touch drag is
    marked untested because there is no touch hardware here.
 3. **Native pickers** for `<input type="select">`, promised in the spec and
@@ -2332,6 +2338,46 @@ version that promises not to break. This is the same argument as
 [user tests](./08-user-tests.md) and [author notes](./09-author-notes.md), one
 level up: driving a feature finds what testing it does not, and building a
 library finds what driving a feature does not.
+
+---
+
+### iOS: blocked on hardware, not on a date
+
+**Moved out of v0.8 on 2026-09-20**, once the Android half was finished and it
+was clear what the remaining half would actually cost.
+
+**Every step after compiling is Apple-only.** The Rust half cross-compiles to
+`aarch64-apple-ios` in principle, but the iOS SDK, the linker that resolves
+against it, `codesign`, `xcodebuild`, the Simulator and the packaging into an
+`.ipa` all run on macOS and are licensed to Apple hardware. There is no
+equivalent of the trick that made Android work here: Android's toolchain is a
+handful of command-line tools that run anywhere, and Rux drives them directly,
+which is the whole reason it needs no Gradle and no Android Studio. iOS has no
+such surface to drive.
+
+**A cloud macOS runner is the only path that needs no hardware**, and it
+conflicts with how this project decides something works. Every serious defect in
+the last several milestones was invisible to the test suite and obvious within
+seconds of using the app; the splash screen is the most recent example, where
+the first implementation satisfied every log line and was black on screen. A
+screenshot from CI would not have caught that. Driving it by hand did. Shipping
+iOS from CI would mean shipping a platform nobody has ever used.
+
+**So iOS is gated on a Mac rather than on a release.** What it will owe when it
+is unblocked, and why it is not a second afternoon of the Android work:
+
+- A second packaging pipeline, with signing, provisioning profiles and
+  entitlements, none of which have an Android counterpart that transfers.
+- A second Java-shim-shaped problem. The one Java class in an Android app exists
+  because safe-area insets and the input connection are method overrides that
+  native code cannot provide. iOS has the same shape of gap, in UIKit, and it
+  will want the same kind of answer.
+- App Store distribution, which is policy work as much as engineering.
+
+Nothing about the runtime blocks it. winit and wgpu both support iOS, the source
+provider already abstracts the filesystem away, and the environment struct
+already carries safe areas, density and orientation for whoever fills them in.
+**The blocker is entirely the toolchain and the ability to look at the result.**
 
 ---
 
