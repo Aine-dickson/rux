@@ -3496,7 +3496,52 @@ fn build_icon(
         .and_then(|s| parse_px_len(s, inherited.font_size))
         .unwrap_or(DEFAULT_ICON_SIZE);
 
-    let (paths, grid) = icons::with(|set| (set.find(&name, filled), set.grid()));
+    let (paths, grid, exists, has_filled, installed) = icons::with(|set| {
+        (
+            set.find(&name, filled),
+            set.grid(),
+            set.exists(&name),
+            set.has_filled(&name),
+            set.installed(),
+        )
+    });
+
+    // **Three ways an icon can be wrong, and they are different mistakes.** All
+    // three draw nothing, so without this an author sees a gap in a row and has
+    // no way to tell a typo from artwork that was never drawn.
+    //
+    // Raised only when a set is installed. A bare runtime knows no icons, and
+    // reporting every icon as missing would be a complaint about the host
+    // rather than about the document. A bound `:name` is exempt too: it is not
+    // known until the app runs, and the build already says separately that a
+    // bound name costs tree-shaking.
+    if installed && el.attr(":name").is_none() {
+        if name.is_empty() {
+            located(Some(el.line), || {
+                error("<icon> needs a `name`, like `<icon name=\"heart\" />`".to_string())
+            });
+        } else if !exists {
+            located(Some(el.line), || {
+                error(format!(
+                    "there is no icon called `{name}`. The names are Tabler's: `heart`, \
+                     `circle-check`, `arrow-left`. `rux vocab` lists what `<icon>` takes."
+                ))
+            });
+        } else if filled && !has_filled {
+            // Named rather than quietly drawn as an outline. A silent fallback
+            // is the failure class strict bindings exist to remove, and here it
+            // would be the usual case rather than the exception: about four
+            // icons in five are outline only, so nobody would ever learn that
+            // their filled icon had never been filled.
+            located(Some(el.line), || {
+                error(format!(
+                    "`{name}` has no filled artwork, and `variant=\"filled\"` does not fall \
+                     back to the outline. Solid and outline are different drawings rather \
+                     than a render mode, and about four icons in five exist in outline only."
+                ))
+            });
+        }
+    }
 
     let mut style = style;
     // The box is the size asked for, so an icon takes the space it draws in and

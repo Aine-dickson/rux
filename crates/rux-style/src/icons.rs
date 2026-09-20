@@ -49,6 +49,17 @@ pub trait IconSet {
     fn has_filled(&self, name: &str) -> bool;
     /// The grid the set is drawn on, 24 for Tabler and everything like it.
     fn grid(&self) -> f32;
+
+    /// Whether this set can answer for anything at all.
+    ///
+    /// **The difference between "that icon does not exist" and "nobody has said
+    /// what the icons are".** A bare runtime has no set, and reporting every
+    /// `<icon>` in a document as a bad name would be a complaint about the host
+    /// rather than about the document. Defaulted to true, because a set that
+    /// bothered to exist can answer.
+    fn installed(&self) -> bool {
+        true
+    }
 }
 
 /// An icon set carried in memory, which is what a built app has.
@@ -108,6 +119,9 @@ impl IconSet for NoIcons {
     }
     fn grid(&self) -> f32 {
         24.0
+    }
+    fn installed(&self) -> bool {
+        false
     }
 }
 

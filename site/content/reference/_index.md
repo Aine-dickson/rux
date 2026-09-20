@@ -99,6 +99,19 @@ a path that is solid, or filled with no stroke: the dot on the head in
 `accessible`, the slice in `percentage-25`. Those overrides survive into the
 drawing, because without them the dot renders as a ring.
 
+**`rux check` tells the three mistakes apart**, because all three draw nothing
+and a gap in a row does not say which one you made:
+
+```text
+app.rux:4: error: there is no icon called `hart`
+app.rux:5: error: `abacus` has no filled artwork, and variant="filled" does not fall back
+app.rux:6: error: <icon> needs a `name`
+```
+
+A bound `:name` is not checked, since it is not known until the app runs. That
+is also the one case a build cannot shake down, so it embeds every icon and
+says why.
+
 ### `position`, and which box an out-of-flow one is measured against
 
 All five of `static`, `relative`, `sticky`, `absolute` and `fixed` mean what CSS

@@ -427,3 +427,90 @@ mod serde_json_lite {
         }
     }
 }
+
+/// Three ways an icon is wrong, all of which draw nothing.
+///
+/// Together in one fixture because the point is that they are told apart: a
+/// typo, artwork that does not exist, and no name at all are different
+/// mistakes, and an author who sees only a gap in a row cannot tell which they
+/// made. `abacus` is outline-only in Tabler, which is what makes it the fair
+/// case for the filled message.
+const BAD_ICONS: &str = r#"<template>
+  <screen>
+    <icon name="heart" size="1em" />
+    <icon name="hart" size="1em" />
+    <icon name="abacus" variant="filled" size="1em" />
+    <icon size="1em" />
+  </screen>
+</template>"#;
+
+#[test]
+fn a_misspelled_icon_is_named_and_located() {
+    let dir = fixture("icon-misspelled", &[("app.rux", BAD_ICONS)]);
+    let out = check(&[dir.join("app.rux").to_str().unwrap()]);
+    let text = stdout(&out);
+    assert_eq!(out.status.code(), Some(1), "{text}");
+    assert!(text.contains("app.rux:4:"), "no position on the bad name: {text}");
+    assert!(text.contains("no icon called `hart`"), "{text}");
+}
+
+#[test]
+fn a_filled_variant_that_does_not_exist_is_refused_rather_than_swapped() {
+    // The design call this protects: a silent fallback to the outline would be
+    // the usual case rather than the exception, since about four icons in five
+    // are outline only, and nobody would learn their icon was never filled.
+    let dir = fixture("icon-filled", &[("app.rux", BAD_ICONS)]);
+    let out = check(&[dir.join("app.rux").to_str().unwrap()]);
+    let text = stdout(&out);
+    assert!(text.contains("app.rux:5:"), "no position on the filled variant: {text}");
+    assert!(text.contains("`abacus` has no filled artwork"), "{text}");
+    assert!(text.contains("does not fall back"), "{text}");
+}
+
+#[test]
+fn an_icon_with_no_name_says_so() {
+    let dir = fixture("icon-nameless", &[("app.rux", BAD_ICONS)]);
+    let out = check(&[dir.join("app.rux").to_str().unwrap()]);
+    let text = stdout(&out);
+    assert!(text.contains("app.rux:6:"), "no position on the nameless icon: {text}");
+    assert!(text.contains("needs a `name`"), "{text}");
+}
+
+#[test]
+fn icons_that_are_right_are_silent() {
+    // The half that matters as much: `heart` exists and has filled artwork, so
+    // neither form may be reported. A checker that cried about valid icons
+    // would be turned off within a day.
+    const GOOD_ICONS: &str = r#"<template>
+  <screen>
+    <icon name="heart" size="1em" />
+    <icon name="heart" variant="filled" size="24px" />
+    <icon name="circle-check" />
+  </screen>
+</template>"#;
+    let dir = fixture("icon-good", &[("app.rux", GOOD_ICONS)]);
+    let out = check(&[dir.join("app.rux").to_str().unwrap()]);
+    let text = stdout(&out);
+    assert_eq!(out.status.code(), Some(0), "{text}");
+    // A clean run prints no diagnostics; the summary goes to stderr.
+    assert_eq!(text, "", "valid icons were reported: {text}");
+}
+
+#[test]
+fn a_bound_name_is_not_reported_because_it_is_not_known_yet() {
+    // `:name` is resolved when the app runs, so there is nothing to check here.
+    // Reporting it would make the binding unusable; the build says separately
+    // that it costs tree-shaking.
+    const BOUND: &str = r#"<template>
+  <screen>
+    <icon :name="chosen" size="1em" />
+  </screen>
+</template>
+<script>
+  let chosen = signal("heart");
+</script>"#;
+    let dir = fixture("icon-bound", &[("app.rux", BOUND)]);
+    let out = check(&[dir.join("app.rux").to_str().unwrap()]);
+    let text = stdout(&out);
+    assert_eq!(out.status.code(), Some(0), "{text}");
+}
