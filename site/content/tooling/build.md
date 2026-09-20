@@ -121,6 +121,18 @@ behind a URL. Unlike the playground, which runs one document typed into an
 editor, this loads a whole project, so components, stylesheets and routed pages
 all work as they do on a desktop.
 
+**Deploy a `--release` build.** For the browser the cost that matters is the
+download before anything appears, so a release is tuned for size rather than
+speed, and the difference is not small:
+
+| Build | Module | Time |
+|---|---|---|
+| `--target web` | 35 MB | about 3 minutes |
+| `--release --target web` | 7 MB | about 4.5 minutes |
+
+The build prints the size either way, and a debug build says it is not the one
+to deploy.
+
 ## Signing a release
 
 Every APK is signed, because Android refuses to install one that is not. Without

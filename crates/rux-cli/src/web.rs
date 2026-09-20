@@ -49,7 +49,21 @@ pub fn bundle(
     let page = out_dir.join("index.html");
     std::fs::write(&page, index_html(manifest))
         .map_err(|e| format!("writing {}: {e}", page.display()))?;
+
+    // Said out loud, because it is the number that decides whether this is
+    // deployable. A visitor pays it before anything appears on screen, and a
+    // debug build is large enough that someone who did not check would find
+    // out from their own users.
+    let wasm = out_dir.join(format!("{}_bg.wasm", manifest.artifact_stem()));
+    if let Ok(meta) = std::fs::metadata(&wasm) {
+        println!("rux: the module is {}", megabytes(meta.len()));
+    }
     Ok(page)
+}
+
+/// A byte count a person can read.
+fn megabytes(bytes: u64) -> String {
+    format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
 }
 
 /// What to say when `wasm-bindgen` is not there at all.
