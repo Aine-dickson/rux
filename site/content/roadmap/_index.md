@@ -2514,11 +2514,17 @@ in the loop, and needs its own answer.
 
 **The author never compiles the whole set, and Rux does.** Once the above is
 right, an app carries what it uses and nothing more. What remains is Rux's own
-build, and it is worth designing for: emit one embedded blob and a sorted index
-to binary-search, rather than six thousand string literals, which is the shape
-compilers are slow at. It also makes a subset a slice rather than a filter.
-This is the generator's output format, so it is decided before the generator is
-written rather than after.
+build: one embedded blob and a sorted index to binary-search, rather than six
+thousand string literals.
+
+**Measured once both existed, because the first reason given for this was
+wrong.** The claim was that thousands of string literals are the shape
+compilers are slow at. Timed: the literal form takes 1.6 seconds and the blob
+takes 0.6. Two and a half times, and both are fast enough that nobody would
+have noticed. **The real reason to prefer the blob is structural**, and it is
+the one that survives: a subset of it is a slice, where a subset of a literal
+table is a filter that has to be rebuilt. That is exactly what tree-shaking
+wants. The compile time is a bonus worth a second.
 
 **`transform-origin` looks like a blocker and probably is not.** It is
 unimplemented, and the transform origin is fixed at the box centre, so the

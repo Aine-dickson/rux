@@ -498,7 +498,9 @@ LAYERS=(
   # it is a fork of rhai, and its dependencies are all upstream. rux-script
   # depends on it, so it has to be on the index before the second layer runs,
   # which the wait at the end of each layer takes care of.
-  "rux-parser rux-reactive rux-text rux-layout rux-rhai"
+  # rux-icons joins the first layer for the same reason: it depends on nothing
+  # at all, being a string and an integer table generated from Tabler.
+  "rux-parser rux-reactive rux-text rux-layout rux-rhai rux-icons"
   # rux-fmt depends on rux-parser for the void-tag list, so it cannot share a
   # layer with it: within a layer crates publish back to back and the index
   # wait happens only at the end. It sat in layer 0 until the coverage gate
