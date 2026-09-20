@@ -2495,6 +2495,48 @@ Steps 1 and 2 are independent of `rux build` and can happen whenever. Step 3
 wants step 1 answered. Step 4 is the scheduling constraint, and step 5 should
 not be promised publicly until it has been measured.
 
+#### Reviewed 2026-09-20: still yes, and the constraint has cleared
+
+**Step 4 was what parked this, and `rux build` now exists.** Three things the
+plan above does not say, found by reading the code rather than by building.
+
+**Where the data lives decides whether tree-shaking is possible at all.** An
+app's generated wrapper crate depends on `rux-shell` and `rux-runtime`. Put the
+icon data in the runtime and every app compiles all six thousand of them, with
+no way to shake anything out, because the dependency is resolved before Rux
+knows which icons a document mentions. The data belongs on the **build** side,
+where it can ride the road documents already travel: the CLI writes a
+`MemorySource` into the wrapper, so it can emit the referenced icons exactly as
+it already embeds the referenced files. Two follow-ons come with that. Hot
+reload can introduce an icon name mid-run, which is fine because the tool
+already watches the project and can supply it. The web build has no such tool
+in the loop, and needs its own answer.
+
+**The author never compiles the whole set, and Rux does.** Once the above is
+right, an app carries what it uses and nothing more. What remains is Rux's own
+build, and it is worth designing for: emit one embedded blob and a sorted index
+to binary-search, rather than six thousand string literals, which is the shape
+compilers are slow at. It also makes a subset a slice rather than a filter.
+This is the generator's output format, so it is decided before the generator is
+written rather than after.
+
+**`transform-origin` looks like a blocker and probably is not.** It is
+unimplemented, and the transform origin is fixed at the box centre, so the
+obvious reading is that an icon cannot scale its grid into its box. But
+transform functions compose, and a translate cancels the fixed centre exactly:
+for a 24-unit grid in a box of *N* pixels, `scale(N/24)` followed by a
+translate of `N/2 - 12px` maps the grid onto the box at any size. Path
+coordinates are already measured from the content corner, which is what makes
+it land.
+
+That has been derived and not yet seen, so it is the first thing to drive,
+exactly as the `1em` question was. It carries a consequence either way: the
+transform depends on the resolved pixel size, so it cannot be written in a
+stylesheet and must be emitted by the element from its own size. That turns the
+`size` attribute from a convenience into a requirement. It also means an icon's
+stroke scales with it, so a set drawn at one stroke weight stays right at every
+size for nothing.
+
 #### Why this is unusually cheap for Rux
 
 Paint is CSS in Rux, and `fill`, `stroke` and `stroke-width` cascade and inherit
