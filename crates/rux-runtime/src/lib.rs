@@ -44,6 +44,13 @@ pub use rux_style::{
 /// Re-exported for the same reason: the shell owns the animator, because the
 /// clock and the previous frame are its business and not the document's.
 pub use rux_style::{Animator, FRAME_MS};
+/// Re-exported so a built app can install the icons `rux build` chose for it.
+///
+/// The generated crate depends on this one and never on the icon data, by
+/// design: a cargo dependency is resolved long before anyone knows which icons
+/// a document names, so a full table behind this edge could not be shaken out.
+/// What the generated crate receives instead is the handful it draws.
+pub use rux_style::{set_icons, IconPath, MemoryIcons};
 /// Re-exported so the shell can report a script-facing problem it is the only
 /// one able to see, such as `tap()` naming an element with no box on screen.
 pub use rux_script::warn_script;

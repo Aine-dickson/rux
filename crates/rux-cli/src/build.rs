@@ -301,6 +301,129 @@ fn embed(manifest: &Manifest, files: &[PathBuf], out: &mut String) {
         ));
     }
     out.push_str("    rux_runtime::set_source(std::rc::Rc::new(files));\n");
+    embed_icons(manifest, files, out);
+}
+
+/// The icons this project names, and only those.
+///
+/// **This is tree-shaking, and it is why the icon data lives in the tool rather
+/// than in the runtime.** The generated crate depends on `rux-runtime`, and a
+/// cargo dependency is resolved long before anyone knows which icons a document
+/// mentions, so a full table behind that edge would be compiled into every app
+/// with no way to remove it. Here, the side that has already read the documents
+/// looks each name up while it still has all six thousand, and writes out the
+/// handful that were used.
+fn embed_icons(manifest: &Manifest, files: &[PathBuf], out: &mut String) {
+    let mut wanted: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let mut dynamic = Vec::new();
+    for file in files {
+        let Ok(text) = std::fs::read_to_string(manifest.root.join(file)) else { continue };
+        scan_icons(&text, &mut wanted, &mut dynamic);
+    }
+
+    // **A bound name cannot be resolved without running the app**, so the
+    // honest answer is all of them rather than a guess that leaves an icon
+    // blank on a screen nobody tested. Said out loud, because the cost lands in
+    // the artifact and an author should learn why from the build rather than
+    // from a file listing.
+    if !dynamic.is_empty() {
+        println!(
+            "rux: an icon name is bound ({}), so all {} icons are embedded. \
+             A literal `name=` embeds only what it uses.",
+            dynamic[0],
+            rux_icons::count()
+        );
+        wanted = rux_icons::names().map(str::to_string).collect();
+    }
+
+    if wanted.is_empty() {
+        return;
+    }
+
+    out.push_str(&format!(
+        "    let mut icons = rux_runtime::MemoryIcons::new({:?});\n",
+        rux_icons::GRID
+    ));
+    let mut embedded = 0usize;
+    for name in &wanted {
+        // A name that is not in the set is skipped rather than failing here.
+        // `rux check` is what tells an author about a misspelled icon, with a
+        // position in the file; a packager repeating it worse helps nobody.
+        if !rux_icons::exists(name) {
+            continue;
+        }
+        let outline = paths_literal(name, rux_icons::Variant::Outline);
+        let filled = paths_literal(name, rux_icons::Variant::Filled);
+        out.push_str(&format!("    icons.insert({}, {outline}, {filled});\n", literal(name)));
+        embedded += 1;
+    }
+    out.push_str("    rux_runtime::set_icons(std::rc::Rc::new(icons));\n");
+    println!("rux: {embedded} icons embedded");
+}
+
+/// One variant's paths, as the Rust literal the generated crate carries.
+fn paths_literal(name: &str, variant: rux_icons::Variant) -> String {
+    let Some(paths) = rux_icons::find(name, variant) else { return "vec![]".to_string() };
+    let mut out = String::from("vec![");
+    for p in paths.iter() {
+        out.push_str(&format!(
+            "rux_runtime::IconPath {{ d: {}.into(), fill_current: {}, no_stroke: {}, \
+             half_opacity: {} }},",
+            literal(p.d),
+            p.fill_current,
+            p.no_stroke,
+            p.half_opacity
+        ));
+    }
+    out.push(']');
+    out
+}
+
+/// Every icon a document names literally, and whether any name is bound.
+///
+/// Text rather than a parse, deliberately: this runs over the same files the
+/// build is about to embed, and a second full parse to answer one question
+/// would double the work for no more certainty than the attribute already
+/// gives.
+fn scan_icons(
+    text: &str,
+    wanted: &mut std::collections::BTreeSet<String>,
+    dynamic: &mut Vec<String>,
+) {
+    let mut rest = text;
+    while let Some(at) = rest.find("<icon") {
+        let after = &rest[at + "<icon".len()..];
+        // A tag name ends at whitespace or at the end of the tag. Without this,
+        // `<iconography>` would be read as an icon.
+        if !after.starts_with(|c: char| c.is_whitespace() || c == '>' || c == '/') {
+            rest = after;
+            continue;
+        }
+        let end = after.find('>').unwrap_or(after.len());
+        let attrs = &after[..end];
+        if let Some(name) = attr_value(attrs, "name") {
+            wanted.insert(name);
+        } else if attr_value(attrs, ":name").is_some() {
+            dynamic.push(attrs.trim().to_string());
+        }
+        rest = &after[end..];
+    }
+}
+
+/// One attribute's value out of an element's attribute text.
+fn attr_value(attrs: &str, name: &str) -> Option<String> {
+    let mut rest = attrs;
+    loop {
+        let at = rest.find(name)?;
+        let before_ok = at == 0 || rest[..at].ends_with(char::is_whitespace);
+        let after = rest[at + name.len()..].trim_start();
+        if before_ok && after.starts_with('=') {
+            let q = after[1..].trim_start().strip_prefix('"')?;
+            let close = q.find('"')?;
+            return Some(q[..close].to_string());
+        }
+        rest = &rest[at + name.len()..];
+    }
 }
 
 fn wrapper_main(manifest: &Manifest, files: &[PathBuf], options: &Options) -> String {
@@ -614,6 +737,60 @@ pub fn run(options: Options) -> Result<PathBuf, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// What `scan_icons` finds in one document.
+    fn scan(text: &str) -> (Vec<String>, bool) {
+        let mut wanted = std::collections::BTreeSet::new();
+        let mut dynamic = Vec::new();
+        scan_icons(text, &mut wanted, &mut dynamic);
+        (wanted.into_iter().collect(), !dynamic.is_empty())
+    }
+
+    #[test]
+    fn only_the_icons_a_document_names_are_collected() {
+        let (names, dynamic) = scan(
+            r#"<icon name="heart" /><icon name="star" size="2em"/><icon name="heart"/>"#,
+        );
+        assert_eq!(names, vec!["heart", "star"], "duplicates should collapse");
+        assert!(!dynamic);
+    }
+
+    #[test]
+    fn a_tag_that_merely_starts_with_icon_is_not_one() {
+        // `<iconography>` is somebody's component. Without the boundary check
+        // this would scan its attributes as an icon's and embed nothing useful
+        // while looking like it worked.
+        let (names, _) = scan(r#"<iconography name="heart" />"#);
+        assert!(names.is_empty(), "{names:?}");
+    }
+
+    #[test]
+    fn a_bound_name_is_reported_because_it_cannot_be_shaken() {
+        // The whole point of the scan is knowing what to embed. A bound name
+        // cannot be known without running the app, so the build has to say so
+        // rather than quietly ship an app with a blank space in it.
+        let (names, dynamic) = scan(r#"<icon :name="chosen" />"#);
+        assert!(names.is_empty());
+        assert!(dynamic, "a bound name was not noticed");
+    }
+
+    #[test]
+    fn the_embedded_icons_are_the_ones_named_and_no_others() {
+        let mut out = String::new();
+        let mut wanted = std::collections::BTreeSet::new();
+        wanted.insert("heart".to_string());
+        // Written by hand rather than through `embed_icons`, which reads files;
+        // this is about what lands in the generated crate.
+        for name in &wanted {
+            let outline = paths_literal(name, rux_icons::Variant::Outline);
+            out.push_str(&outline);
+        }
+        assert!(out.contains("IconPath"), "{out}");
+        assert!(!out.contains("d: \"\""), "an empty path was emitted");
+        // A name nobody asked for must not be in there. `star` is a real icon,
+        // which is what makes it a fair check that only `heart` was taken.
+        assert!(!out.contains(&paths_literal("star", rux_icons::Variant::Outline)));
+    }
 
     fn manifest() -> Manifest {
         Manifest {

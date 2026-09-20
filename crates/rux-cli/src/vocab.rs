@@ -67,6 +67,16 @@ const ELEMENTS: &[Entry] = &[
         doc: "`d` is SVG path data, in the element's own coordinates. Paint is               CSS, not attributes: `fill`, `stroke`, `stroke-width`,               `stroke-linecap`, `stroke-linejoin`, `fill-rule`. With no CSS size               it lays out at the size of its own geometry. `:d` binds an               expression, and two paths with the same command sequence animate               between one another under `transition: d`.",
     },
     Entry {
+        name: "icon",
+        detail: "one of Tabler's icons, drawn at the size you ask for",
+        doc: "`name` is which icon, `variant=\"filled\"` asks for the solid \
+              artwork, and `size` is how big to draw it: `1em` matches the \
+              text beside it. Paint is CSS and inherits, so an icon takes its \
+              colour from the text around it, and `fill`, `stroke` and \
+              `stroke-width` override that. Roughly four icons in five are \
+              outline only, so `filled` is not available for every name.",
+    },
+    Entry {
         name: "button",
         detail: "a tappable box, announced as a button",
         doc: "A tappable box. `<view @tap>` is the same thing to the layout; \
@@ -137,6 +147,15 @@ const ELEMENT_ATTRIBUTES: &[(&str, &[Entry])] = &[
         &[
             Entry { name: "src", detail: "path, relative to this .rux file", doc: "Resolved relative to the document, not the working directory. `:src` binds an expression." },
             Entry { name: "alt", detail: "accessible description", doc: "What the image is, for the accessibility tree." },
+        ],
+    ),
+    (
+        "icon",
+        &[
+            Entry { name: "name", detail: "which icon", doc: "A Tabler icon name, like `heart` or `circle-check`. `:name` binds an expression, at the cost of tree-shaking: a build that cannot know the name embeds every icon." },
+            Entry { name: "variant", detail: "`outline` (default) or `filled`", doc: "Solid and outline are different artwork rather than a render mode, and roughly four icons in five exist in outline only. Asking for `filled` where there is none draws nothing rather than quietly falling back." },
+            Entry { name: "size", detail: "how big to draw it", doc: "A length, defaulting to 16px. `1em` matches the text beside it. The drawing is scaled from the set's own 24-unit grid, so the stroke stays in proportion at every size." },
+            Entry { name: "alt", detail: "accessible description", doc: "What the icon means. Without it the icon is treated as decoration and left out of the accessibility tree, which is usually right for an icon sitting beside its own label." },
         ],
     ),
     (

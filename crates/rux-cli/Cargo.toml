@@ -35,6 +35,10 @@ rux-fmt.workspace = true
 # `rux vocab` prints the honored-CSS list for the editor's completions, and it
 # has to be *the* list the unhonored-property warning consults, not a copy.
 rux-style.workspace = true
+# The bundled icon set. It lives on this side of the tree deliberately: an
+# app's generated crate depends on `rux-runtime`, so icon data behind that
+# edge would be compiled by every app with nothing able to shake it out.
+rux-icons.workspace = true
 # For the element list only, and only in a test: `rux vocab` offers the elements
 # and the parser decides what a tag may be, so the two have to be one list. The
 # void-tag list drifted exactly this way once already.

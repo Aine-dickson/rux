@@ -32,7 +32,7 @@ const VOID_TAGS: &[&str] = &[
     // `<router-view />` never nests: what goes in it comes from the route
     // matched below, not from anything written between the tags. `<path>` holds
     // its geometry in an attribute, so it has nothing to nest.
-    "image", "input", "path", "router-view", //
+    "image", "input", "icon", "path", "router-view", //
     "area", "base", "br", "col", "embed", "hr", "img", "link", "meta", "param", "source", "track",
     "wbr",
 ];
@@ -50,7 +50,7 @@ const VOID_TAGS: &[&str] = &[
 /// is documented with the router rather than on its own. It is still a tag Rux
 /// defines, which is what this list is for.
 const ELEMENT_TAGS: &[&str] = &[
-    "screen", "view", "text", "image", "path", "button", "input", //
+    "screen", "view", "text", "image", "icon", "path", "button", "input", //
     "slot", "router", "route", "router-view",
 ];
 

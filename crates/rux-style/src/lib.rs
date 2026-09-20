@@ -35,6 +35,10 @@ use rux_script::Engine;
 mod anim;
 pub use anim::{Animator, FRAME_MS};
 
+/// Where `<icon>` gets its geometry, and why the data is not in this crate.
+mod icons;
+pub use icons::{reset_icons, set_icons, IconPath, IconSet, MemoryIcons};
+
 /// Loop-variable bindings introduced by `r-for`, layered as a scope stack and
 /// injected into the script engine for each evaluation.
 type Locals = Vec<(String, Value)>;
@@ -3431,6 +3435,152 @@ fn build_node(
 }
 
 #[allow(clippy::too_many_arguments)]
+/// `<icon>` to a box carrying the set's paths, scaled to the size asked for.
+///
+/// # The geometry, which is the part that is not obvious
+///
+/// An icon set is drawn on one grid (24 units for Tabler) and an author wants
+/// it at whatever size the type beside it is. `width` on a path sets the box and
+/// does **not** scale the drawing, and `transform-origin` is unimplemented, so
+/// the origin is fixed at the box centre. That reads like the grid cannot be
+/// mapped onto the box. It can: transform functions compose, so a translate
+/// cancels the fixed centre. For a `grid`-unit drawing in a box of `n` pixels,
+///
+/// ```text
+/// scale(n / grid) translate(n / 2 - grid / 2, ...)
+/// ```
+///
+/// puts the grid's corners on the box's corners. Driven on a device, and held
+/// by `rux-layout/tests/icon_grid.rs` so it cannot quietly stop being true.
+///
+/// **The transform goes on the container, once**, not on each path: the paths
+/// are absolutely positioned at the container's own corner, so they all share
+/// its coordinate space and one `PushTransform` covers the icon.
+///
+/// # Why `size` is an attribute and not just CSS
+///
+/// The transform above needs the resolved pixel size, and a stylesheet is
+/// resolved after this runs. So the element has to be told its size where it
+/// can read it. `size` accepts the lengths an icon is actually asked for, and
+/// an author who writes `width` in CSS instead gets a box of that width with
+/// the drawing still scaled from `size`, which is why `size` is the documented
+/// way to ask.
+fn build_icon(
+    el: &Element,
+    style: Style,
+    inherited: &Inherited,
+    engine: &mut Engine,
+    locals: &Locals,
+    reg: &mut BindingRegistry,
+) -> LayoutNode {
+    let mut bound = |attr: &str, plain: &str| -> Option<String> {
+        el.attr(attr)
+            .map(|e| {
+                let (v, deps) = engine.eval_display_tracked(e, locals);
+                // A rebuild rather than a patch, as for `:d`: changing which
+                // icon is drawn changes the geometry, and there is no in-place
+                // edit of a path list that is always correct.
+                reg.structural.extend(deps);
+                v
+            })
+            .or_else(|| el.attr(plain).map(str::to_string))
+    };
+
+    let name = bound(":name", "name").unwrap_or_default();
+    let filled = bound(":variant", "variant").as_deref() == Some("filled");
+
+    // The size the drawing is scaled to. `em` resolves against this element's
+    // own font size, which is what makes `size="1em"` match the text beside it.
+    let n = el
+        .attr("size")
+        .and_then(|s| parse_px_len(s, inherited.font_size))
+        .unwrap_or(DEFAULT_ICON_SIZE);
+
+    let (paths, grid) = icons::with(|set| (set.find(&name, filled), set.grid()));
+
+    let mut style = style;
+    // The box is the size asked for, so an icon takes the space it draws in and
+    // a row of them lines up with the text.
+    style.width = Some(Len::Px(n));
+    style.height = Some(Len::Px(n));
+    // A containing block, so the paths below resolve their insets against this
+    // box rather than against whatever ancestor happens to be positioned.
+    if style.position == Position::Static {
+        style.position = Position::Relative;
+    }
+    let s = n / grid;
+    style.transform = Some([s, 0.0, 0.0, s, s * (n / 2.0 - grid / 2.0), s * (n / 2.0 - grid / 2.0)]);
+
+    // **Paint defaults per variant**, and both wrong ways fail loudly rather
+    // than subtly: an outline icon that is filled reads as a solid blob, and a
+    // filled icon that is stroked reads as an outline of an outline. Taken from
+    // `color`, which is what `currentColor` means in every set of this kind and
+    // what lets an icon match the text beside it with no plumbing.
+    if filled {
+        style.fill = Some(inherited.color);
+        style.stroke = None;
+    } else {
+        style.fill = None;
+        style.stroke = Some(inherited.color);
+        // Tabler is drawn at stroke 2 on its 24 grid, and the grid transform
+        // scales the stroke with everything else, so this stays right at every
+        // size. An author wanting a lighter icon says so in CSS.
+        if style.stroke_width <= 1.0 {
+            style.stroke_width = DEFAULT_ICON_STROKE;
+        }
+    }
+
+    let mut node = LayoutNode::new(style.clone());
+
+    let Some(paths) = paths else {
+        // Nothing is drawn, and nothing pretends to be. Which mistake it was is
+        // decided by the checker, which can say "no such icon" or "that icon has
+        // no filled variant"; here there is only a box of the right size, so a
+        // layout does not shift when the name is fixed.
+        return node;
+    };
+
+    for path in paths {
+        let mut child = style.clone();
+        // Every path shares the container's corner, so they overlay in the grid
+        // coordinates the data is written in.
+        child.position = Position::Absolute;
+        child.inset = [Some(Len::Px(0.0)), None, None, Some(Len::Px(0.0))];
+        child.transform = None;
+        // The box does not size the drawing, and a path with one would be given
+        // the container's size for nothing.
+        child.width = None;
+        child.height = None;
+        // **Per-path paint overrides the variant**, and an icon drawn without
+        // this is visibly wrong: the dot on the head in `accessible` becomes a
+        // ring, the slice in `percentage-25` becomes an outline.
+        if path.fill_current {
+            child.fill = Some(inherited.color);
+        }
+        if path.no_stroke {
+            child.stroke = None;
+        }
+        if path.half_opacity {
+            child.opacity *= 0.5;
+        }
+        let mut leaf = LayoutNode::path(child, PathContent::parse(&path.d));
+        leaf.instance = node.instance.clone();
+        node.children.push(leaf);
+    }
+    node
+}
+
+/// The size an icon is drawn at when the author does not say.
+///
+/// One line of body text, which is where an icon almost always sits.
+const DEFAULT_ICON_SIZE: f32 = 16.0;
+
+/// The stroke an outline icon is drawn with, in grid units.
+///
+/// Tabler draws at 2 on a 24 grid. The grid transform scales the stroke with
+/// the rest, so one number is right at every size.
+const DEFAULT_ICON_STROKE: f32 = 2.0;
+
 fn build_node_inner(
     el: &Element,
     rules: &[Rule],
@@ -3846,6 +3996,27 @@ fn build_node_inner(
     // where every other appearance in Rux is written, and geometry belongs in
     // an attribute because a data-driven path is computed per row and the
     // cascade is the wrong place for a value that changes with the data.
+    // <icon name=… variant=… size=…>: one name becomes the several paths the
+    // set draws it with. See `build_icon` for the geometry, which is the part
+    // that is not obvious.
+    if el.tag == "icon" {
+        let mut node = build_icon(el, style, inherited, engine, locals, reg);
+        node.on_tap = on_tap;
+        node.gestures = gestures;
+        node.hidden = hidden;
+        node.id = el.attr("id").map(str::to_string);
+        node.instance = instance.map(|i| i.to_string());
+        // An icon is a drawing, so it is described or it is decoration. Most
+        // icons beside a word are decoration, and announcing "graphic" for each
+        // one is worse than silence.
+        node.access = Access {
+            role: el.attr("alt").map(|_| AccessRole::Image).unwrap_or(AccessRole::None),
+            label: el.attr("alt").map(str::to_string),
+            ..Access::default()
+        };
+        return node;
+    }
+
     if el.tag == "path" {
         let d = el
             .attr(":d")

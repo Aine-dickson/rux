@@ -32,6 +32,7 @@ mod device;
 mod files;
 mod fmt;
 mod icon;
+mod iconset;
 mod manifest;
 mod new;
 mod vocab;
@@ -100,6 +101,13 @@ Exit codes: 0 clean, 1 problems found, 2 the request itself was wrong.
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
+
+    // Before anything reads a document. `rux-style` ships the hook and no data,
+    // so without this every `<icon>` draws as an empty box of the right size:
+    // a silent failure that looks like a styling problem. Installed once here
+    // rather than per command, because forgetting it in one of them is exactly
+    // how that bug would arrive.
+    iconset::install();
 
     match args.first().map(String::as_str) {
         Some("-h" | "--help" | "help") => {
