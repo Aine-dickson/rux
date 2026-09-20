@@ -42,6 +42,10 @@ attach to. It depends on nothing but the Android platform, so there is no AAR,
 no AndroidX and no resources to merge, which is the step that would drag Gradle
 back in.
 
+That class is why safe areas reach your stylesheet and why a soft keyboard can
+compose text. It is compiled from source that ships with Rux, so you can read
+it, and it is the same class in every Rux app.
+
 Nothing about it is yours to maintain, and nothing about it changes what you
 write. It is mentioned here because an APK that says `android:hasCode="true"`
 usually means a Java project, and this one does not.
@@ -60,9 +64,9 @@ meet them:
   layout that never mentions it looks correct. On a device the same layout draws
   under the status bar. Pad the bars that need it, as
   `examples/safe-area.rux` does.
-- **A soft keyboard types, but does not compose.** Latin text and backspace work.
-  Composing input, autocorrect and swipe typing need an input connection, which
-  is the next piece of work.
+- **A soft keyboard works, composition included.** The one Java class provides
+  the input connection an input method attaches to, so typing, backspace,
+  autocorrect and suggestions all behave as they do in any other Android app.
 - **It builds `x86_64` only**, which is the emulator's architecture rather than
   a phone's. That is deliberate while the loop is being built: it means an APK
   can be run without owning a device. The other ABIs, `arm64-v8a` among them,

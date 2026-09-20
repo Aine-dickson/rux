@@ -3244,6 +3244,8 @@ dependencies = [
  "accesskit_winit",
  "android-activity",
  "arboard",
+ "jni",
+ "ndk-context",
  "notify",
  "pollster",
  "rux-layout",

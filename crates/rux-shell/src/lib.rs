@@ -123,6 +123,17 @@ enum RuxEvent {
     /// has to be read back off the URL instead.
     #[cfg(target_arch = "wasm32")]
     WebRoute(Option<usize>),
+    /// An input method on Android edited the focused field.
+    ///
+    /// Carries the whole editing state rather than a keystroke, for the same
+    /// reason [`RuxEvent::WebText`] does: on a phone the text is edited by
+    /// something else and reported as a result. Offsets are UTF-16 code units,
+    /// which is what the platform counts in, converted on arrival.
+    ///
+    /// `compose` is the composing range, or `None` when nothing is being
+    /// composed.
+    #[cfg(target_os = "android")]
+    AndroidText { value: String, caret: usize, anchor: usize, compose: Option<(usize, usize)> },
     /// Assistive technology asked us something (it attached, it wants the
     /// tree, it moved focus). Delivered through the same proxy as hot-reload.
     #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
@@ -3019,6 +3030,33 @@ impl App {
     /// It is toggled with focus rather than left on, because while it is on the
     /// compositor may swallow plain keystrokes that the rest of the UI wants.
     fn set_ime_enabled(&mut self, on: bool) {
+        // **Android goes first, and the order is the whole of why this works.**
+        // `set_ime_allowed` below is what raises the keyboard, and raising it
+        // makes the input method ask the focused view whether it is a text
+        // editor. That view answers out of `WANTS_TEXT`. Setting the flag after
+        // the call means the answer is still "no" when the question is asked,
+        // so the keyboard does not appear and nothing asks again. Driven: with
+        // this block last, tapping a field did nothing at all.
+        #[cfg(target_os = "android")]
+        {
+            // Android's equivalent of the web's hidden input. An input method
+            // reads this the moment it attaches, so it has to be written before
+            // the keyboard opens rather than at the next edit. Cleared on blur
+            // so a stale value cannot seed the next field.
+            let value = if on { self.focused_value() } else { String::new() };
+            if let Ok(mut text) = FOCUSED_TEXT.lock() {
+                *text = value;
+            }
+            // Written after the text, so an input method that reads both in the
+            // same breath cannot see "yes, and it is empty" for a field that
+            // has contents.
+            WANTS_TEXT.store(on, std::sync::atomic::Ordering::Relaxed);
+            // And then the keyboard is raised or dropped from the Java side.
+            // It cannot be done from here: an input method only serves the
+            // focused view, and once Rux's own view took focus, the decor view
+            // that `set_ime_allowed` asks for stopped being served.
+            android_set_text_input(on);
+        }
         let Some(state) = self.state.as_ref() else { return };
         state.window.set_ime_allowed(on);
         if on {
@@ -3027,6 +3065,7 @@ impl App {
         #[cfg(target_arch = "wasm32")]
         self.sync_web_ime();
     }
+
 
     /// Keep the hidden `<input>` in step with the focused field, and focus or
     /// blur it so the phone's keyboard opens and closes with the caret.
@@ -3089,6 +3128,51 @@ impl App {
         let _ = style.set_property("top", &format!("{}px", oy + region.y));
         let _ = style.set_property("width", &format!("{}px", region.width.max(1.0)));
         let _ = style.set_property("height", &format!("{}px", region.height.max(1.0)));
+    }
+
+    /// Apply an edit an Android input method made.
+    ///
+    /// The Android half of [`Self::apply_web_text`], and deliberately the same
+    /// shape: the field's value is replaced outright, because the editing
+    /// happened somewhere else and arrives as a result rather than a keystroke.
+    /// It differs only in taking the composing range as a pair, which is what
+    /// the platform reports, rather than as a length back from the caret.
+    ///
+    /// The snapshot an input method starts from is refreshed here too, so the
+    /// next one to attach begins from what is actually in the field.
+    #[cfg(target_os = "android")]
+    fn apply_soft_keyboard_text(
+        &mut self,
+        value: String,
+        caret: usize,
+        anchor: usize,
+        compose: Option<(usize, usize)>,
+    ) {
+        let Some(model) = self.focused.clone() else { return };
+        let value = if self.focused_multiline {
+            value.replace("\r\n", "\n")
+        } else {
+            value.replace(['\n', '\r'], "")
+        };
+        let caret = floor_char_boundary(&value, caret.min(value.len()));
+        let anchor = floor_char_boundary(&value, anchor.min(value.len()));
+        let preedit = compose.map(|(start, end)| {
+            (
+                floor_char_boundary(&value, start.min(value.len())),
+                floor_char_boundary(&value, end.min(value.len())),
+            )
+        });
+        // The input method is running the composition, so the shell's own
+        // composition state stays empty and must not be restored over this.
+        self.preedit = None;
+        self.write_focused(&value);
+        self.scroll_caret_into_view(&value, caret);
+        if let Ok(mut text) = FOCUSED_TEXT.lock() {
+            *text = value.clone();
+        }
+        let row = self.focused_row.clone();
+        let instance = self.focused_instance.clone();
+        self.set_focus_range(Some(Focus { model, row, instance, caret, anchor, preedit }));
     }
 
     /// Apply an edit the browser's soft keyboard made.
@@ -3878,11 +3962,6 @@ impl ApplicationHandler<RuxEvent> for App {
         });
     }
 
-    // Not on Android, where nothing outside the loop has anything to say yet:
-    // there is no watcher, no accessibility adapter and no host page, so
-    // `RuxEvent` has no variants at all there and this would be a match on an
-    // uninhabited value. Hot reload over `adb` is what brings it back.
-    #[cfg(not(target_os = "android"))]
     fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: RuxEvent) {
         match event {
             #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
@@ -3905,6 +3984,13 @@ impl ApplicationHandler<RuxEvent> for App {
             #[cfg(target_arch = "wasm32")]
             RuxEvent::WebText { value, caret, anchor, composing } => {
                 self.apply_web_text(value, caret, anchor, composing)
+            }
+
+            // The same thing the web does, by a different road. Both platforms
+            // let something else own the editing and report the result whole.
+            #[cfg(target_os = "android")]
+            RuxEvent::AndroidText { value, caret, anchor, compose } => {
+                self.apply_soft_keyboard_text(value, caret, anchor, compose)
             }
 
             #[cfg(target_arch = "wasm32")]
@@ -4862,7 +4948,7 @@ fn byte_to_utf16_index(s: &str, byte: usize) -> usize {
 
 /// Round `index` down to a character boundary, so a caret that arrives inside a
 /// character is pulled back to its start rather than left to panic a later slice.
-#[cfg(any(target_arch = "wasm32", test))]
+#[cfg(any(target_arch = "wasm32", target_os = "android", test))]
 fn floor_char_boundary(s: &str, mut index: usize) -> usize {
     index = index.min(s.len());
     while index > 0 && !s.is_char_boundary(index) {
@@ -5407,6 +5493,228 @@ pub extern "system" fn Java_dev_ruxlang_shell_RuxActivity_nativeSafeArea(
     SAFE_AREA.store(packed, std::sync::atomic::Ordering::Relaxed);
 }
 
+/// How the JNI callbacks reach the event loop.
+///
+/// An input method calls in on Android's main thread, and the shell runs its
+/// loop on another, so the text has to travel as an event exactly as it does in
+/// a browser. A proxy is `Send`, so it can be left here for a caller that has
+/// no other way to find the loop.
+#[cfg(target_os = "android")]
+static PROXY: std::sync::Mutex<Option<winit::event_loop::EventLoopProxy<RuxEvent>>> =
+    std::sync::Mutex::new(None);
+
+/// What the focused field holds, for an input method that is about to start.
+///
+/// Kept beside the loop rather than asked of it, because the question arrives
+/// on the wrong thread and has to be answered synchronously: `onCreateInputConnection`
+/// needs the text to seed its editable before it returns, and cannot wait for a
+/// frame. The shell writes it whenever focus or content changes, so it is a
+/// snapshot that is never more than one edit stale.
+#[cfg(target_os = "android")]
+static FOCUSED_TEXT: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
+
+/// Whether a text field is focused, asked by the view that receives typing.
+///
+/// Android treats a focused text editor as a reason to raise the keyboard, and
+/// the view exists for the whole life of the app, so it cannot simply answer
+/// yes: the keyboard would be up before anything was tapped. It answers this
+/// instead, which is the same thing Rux means by a field being focused.
+#[cfg(target_os = "android")]
+static WANTS_TEXT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Android asks whether anything wants typing.
+///
+/// # Safety
+///
+/// Called by the JVM, with the signature declared in `RuxActivity.java`.
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "system" fn Java_dev_ruxlang_shell_RuxActivity_nativeWantsText(
+    _env: *mut std::ffi::c_void,
+    _class: *mut std::ffi::c_void,
+) -> jni::sys::jboolean {
+    WANTS_TEXT.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Android asks what the focused field currently holds.
+///
+/// # Safety
+///
+/// Called by the JVM, with the signature declared in `RuxActivity.java`.
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "system" fn Java_dev_ruxlang_shell_RuxActivity_nativeFocusedText<'frame>(
+    mut env: jni::EnvUnowned<'frame>,
+    _class: jni::objects::JClass<'frame>,
+) -> jni::sys::jstring {
+    // The pointer travels back as a `usize` and is cast at the end, because
+    // `resolve` requires a type with a `Default` and a raw pointer has none.
+    // Zero is null, which is what the Java side already reads as "no text", so
+    // the failure path degrades to an empty field rather than a crash.
+    let pointer = env
+        .with_env(|env| {
+            let text = FOCUSED_TEXT.lock().map(|t| t.clone()).unwrap_or_default();
+            Ok::<usize, jni::errors::Error>(env.new_string(&text)?.into_raw() as usize)
+        })
+        .resolve::<jni::errors::LogErrorAndDefault>();
+    pointer as jni::sys::jstring
+}
+
+/// An input method edited the focused field.
+///
+/// Offsets arrive as UTF-16 code units, which is what Java counts in, and are
+/// converted here rather than on the Java side. The conversion belongs to
+/// whichever side indexes the string, and that is this one.
+///
+/// # Safety
+///
+/// Called by the JVM, with the signature declared in `RuxActivity.java`.
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "system" fn Java_dev_ruxlang_shell_RuxActivity_nativeTextChanged<'frame>(
+    mut env: jni::EnvUnowned<'frame>,
+    _class: jni::objects::JClass<'frame>,
+    text: jni::objects::JString<'frame>,
+    caret: i32,
+    anchor: i32,
+    compose_start: i32,
+    compose_end: i32,
+) {
+    env.with_env(|env| {
+        let value: String = text.try_to_string(env)?;
+        let at = |units: i32| utf16_to_byte(&value, units);
+        // -1 from `getComposingSpanStart` means nothing is being composed, and
+        // the two ends are either both set or both absent.
+        let compose = (compose_start >= 0 && compose_end >= 0)
+            .then(|| (at(compose_start.min(compose_end)), at(compose_start.max(compose_end))));
+        let event = RuxEvent::AndroidText { caret: at(caret), anchor: at(anchor), compose, value };
+        if let Ok(proxy) = PROXY.lock() {
+            if let Some(proxy) = proxy.as_ref() {
+                // A closed loop is the ordinary case while the app is going
+                // away, and there is nothing to do about it.
+                let _ = proxy.send_event(event);
+            }
+        }
+        Ok::<(), jni::errors::Error>(())
+    })
+    .resolve::<jni::errors::LogErrorAndDefault>();
+}
+
+/// A UTF-16 offset, as a byte offset into the same text.
+///
+/// Java counts a string in UTF-16 code units and Rust indexes bytes, and the
+/// two agree only while the text is ASCII. They diverge at the first accented
+/// letter and wildly at the first emoji, which is a surrogate pair: two code
+/// units to Java, four bytes to Rust. Every offset an input method sends has to
+/// come through here, or the caret lands mid-character and the next edit
+/// panics on a byte that is not a boundary.
+#[cfg(target_os = "android")]
+fn utf16_to_byte(text: &str, units: i32) -> usize {
+    if units <= 0 {
+        return 0;
+    }
+    let wanted = units as usize;
+    let mut seen = 0;
+    for (offset, c) in text.char_indices() {
+        if seen >= wanted {
+            return offset;
+        }
+        seen += c.len_utf16();
+    }
+    text.len()
+}
+
+/// Whether Android has already been told the keyboard is wanted.
+///
+/// Guards the call below against being made again with the answer it already
+/// has. See [`android_set_text_input`].
+#[cfg(target_os = "android")]
+static IME_ON: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The activity, handed over by Java so Rust can call back into it.
+///
+/// **Not `ndk_context`'s, and that distinction cost an afternoon.**
+/// `ndk_context` is filled in by `android-activity`, and what it stores as the
+/// "context" is the **Application** object, not the Activity. Calling an
+/// activity method on it fails with `NoSuchMethodError`, which the error policy
+/// logs and swallows, so the symptom is a keyboard that never opens and a log
+/// with nothing in it.
+///
+/// So the activity arrives the only way that is unambiguous: it passes itself
+/// in. A global reference, because a local one dies when `onCreate` returns.
+#[cfg(target_os = "android")]
+static ACTIVITY: std::sync::Mutex<Option<jni::objects::Global<jni::objects::JObject<'static>>>> =
+    std::sync::Mutex::new(None);
+
+/// Java hands over the activity, once, from `onCreate`.
+///
+/// # Safety
+///
+/// Called by the JVM, with the signature declared in `RuxActivity.java`.
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "system" fn Java_dev_ruxlang_shell_RuxActivity_nativeActivityCreated<'frame>(
+    mut env: jni::EnvUnowned<'frame>,
+    _class: jni::objects::JClass<'frame>,
+    activity: jni::objects::JObject<'frame>,
+) {
+    env.with_env(|env| {
+        let global = env.new_global_ref(&activity)?;
+        if let Ok(mut slot) = ACTIVITY.lock() {
+            *slot = Some(global);
+        }
+        Ok::<(), jni::errors::Error>(())
+    })
+    .resolve::<jni::errors::LogErrorAndDefault>();
+}
+
+/// Tell Android that what it knows about the focused field is out of date.
+///
+/// **The one call that goes from Rust into Java, and it is not avoidable.** An
+/// input method asks a view once whether it is a text editor and then caches
+/// the answer for as long as that view keeps focus. Rux's view keeps focus for
+/// the life of the app, so the first answer, taken before anything was tapped,
+/// would be the only one: tapping a field would set the flag and no keyboard
+/// would ever appear. Driven and confirmed, not assumed.
+///
+/// `restartInput` is what throws that cache away, and it can only be asked for
+/// in Java. So this reaches the activity through `ndk_context`, which
+/// `android-activity` has already filled in, and calls a method on it.
+///
+/// Failure is logged by the policy and otherwise ignored: the consequence is a
+/// keyboard that does not open, not a broken app, and there is nothing useful
+/// to do about it from here.
+#[cfg(target_os = "android")]
+fn android_set_text_input(on: bool) {
+    // **Only on a change, and this is not an optimisation.** Focus state is
+    // recomputed on every edit, so without this guard the sequence is: an edit
+    // arrives, the field is rewritten, focus is recomputed, the input is
+    // restarted, the restart builds a fresh connection, the fresh connection
+    // reports its contents as an edit, and around again. Driven: 178 reports of
+    // an empty field from one tap, and a field that could never hold a
+    // character because the loop overwrote it faster than typing could fill it.
+    if IME_ON.swap(on, std::sync::atomic::Ordering::Relaxed) == on {
+        return;
+    }
+    let Ok(activity) = ACTIVITY.lock() else { return };
+    let Some(activity) = activity.as_ref() else { return };
+    let ctx = ndk_context::android_context();
+    // Safety: `ndk_context` is filled in by `android-activity` before any Rux
+    // code runs, and the VM pointer is valid for the life of the process. Only
+    // the VM is taken from here; the activity comes from `ACTIVITY` above, for
+    // the reason recorded on it.
+    let vm = unsafe { jni::JavaVM::from_raw(ctx.vm().cast()) };
+    let _ = vm.attach_current_thread(|env| {
+        env.call_method(
+            activity,
+            jni::jni_str!("ruxSetTextInput"),
+            jni::jni_sig!("(Z)V"),
+            &[jni::JValue::Bool(on)],
+        )?;
+        Ok::<(), jni::errors::Error>(())
+    });
+}
+
 /// The last reported insets, in logical pixels.
 ///
 /// Divided by the scale factor on the way out, because Android counts insets in
@@ -5456,8 +5764,15 @@ pub fn run_android(app: android_activity::AndroidApp, path: PathBuf) {
     // cost nothing. It matters more here, where the cost is someone's battery.
     event_loop.set_control_flow(ControlFlow::Wait);
 
-    // No proxy: nothing outside the loop speaks to an Android app yet. See
-    // `user_event`, which is not compiled here for the same reason.
+    // Left where the JNI callbacks can find it. They run on Android's main
+    // thread and have no other way to reach this loop.
+    if let Ok(mut slot) = PROXY.lock() {
+        *slot = Some(event_loop.create_proxy());
+    }
+
+    // `App` itself takes no proxy here. The only thing outside this loop with
+    // anything to say is a JNI callback, and it reaches the proxy above rather
+    // than going through the app.
     let mut app = App::new(path);
     event_loop.run_app(&mut app).expect("run app");
 }

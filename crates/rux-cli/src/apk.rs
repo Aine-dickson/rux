@@ -148,8 +148,27 @@ const ACTIVITY_JAVA: &str = include_str!("../java/RuxActivity.java");
 /// read twice.
 pub(crate) const ACTIVITY_CLASS: &str = "dev.ruxlang.shell.RuxActivity";
 
-/// Where the class file lands, relative to the compiler's output directory.
-const ACTIVITY_PATH: [&str; 4] = ["dev", "ruxlang", "shell", "RuxActivity.class"];
+/// Every `.class` under `dir`, which is more files than there are sources.
+///
+/// `javac` writes one file per class, and a nested class is a class: one
+/// `.java` here produces `RuxActivity.class` beside
+/// `RuxActivity$RuxInputView.class` and `RuxActivity$RuxInputConnection.class`.
+/// Collecting by walking rather than by naming is the same choice `rux build`
+/// makes about a project's files, for the same reason: the naming version is
+/// exact right up until it silently misses something.
+fn collect_classes(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), String> {
+    let entries = std::fs::read_dir(dir).map_err(|e| format!("reading {}: {e}", dir.display()))?;
+    for entry in entries {
+        let entry = entry.map_err(|e| format!("reading {}: {e}", dir.display()))?;
+        let path = entry.path();
+        if path.is_dir() {
+            collect_classes(&path, out)?;
+        } else if path.extension().is_some_and(|e| e == "class") {
+            out.push(path);
+        }
+    }
+    Ok(())
+}
 
 /// The dex's entry name, which the platform requires to be exactly this.
 fn dex_entry() -> &'static str {
@@ -186,17 +205,28 @@ fn build_dex(toolchain: &Toolchain, staging: &Path) -> Result<PathBuf, String> {
         "javac",
     )?;
 
-    let compiled = ACTIVITY_PATH.iter().fold(classes.clone(), |path, part| path.join(part));
-    run(
-        Command::new(toolchain.d8())
-            .arg("--lib")
-            .arg(toolchain.android_jar())
-            .args(["--min-api", &MIN_API.to_string()])
-            .arg("--output")
-            .arg(staging)
-            .arg(&compiled),
-        "d8",
-    )?;
+    // **Every class file, not just the one named after the source.** A nested
+    // class compiles to its own file, `RuxActivity$RuxInputView.class` and so
+    // on, and handing `d8` only the outer one produces a dex that loads and
+    // then dies at the first `new` with `ClassNotFoundException`. Which is what
+    // it did: the app started, created the activity, and crashed reaching for
+    // the view that provides the input connection.
+    let mut compiled = Vec::new();
+    collect_classes(&classes, &mut compiled)?;
+    if compiled.is_empty() {
+        return Err(format!("javac produced no class files in {}", classes.display()));
+    }
+    compiled.sort();
+    let mut d8 = Command::new(toolchain.d8());
+    d8.arg("--lib")
+        .arg(toolchain.android_jar())
+        .args(["--min-api", &MIN_API.to_string()])
+        .arg("--output")
+        .arg(staging);
+    for class in &compiled {
+        d8.arg(class);
+    }
+    run(&mut d8, "d8")?;
 
     let dex = staging.join(dex_entry());
     if !dex.is_file() {
@@ -276,6 +306,13 @@ fn dirs_home() -> PathBuf {
 ///   by being told about it. Leaving them out means Android destroys and
 ///   recreates the activity on a rotation, which for a GPU surface means
 ///   tearing down the swapchain to redraw the same thing.
+/// - **`windowSoftInputMode="adjustResize"`**, which tells the app it has less
+///   room while the keyboard is up. It briefly also carried `stateHidden`,
+///   because the view that receives an input connection holds focus from the
+///   moment the app opens and Android reads a focused text editor as a reason
+///   to raise the keyboard. That is now answered properly, by the view saying
+///   it is not an editor until Rux focuses a field, and `stateHidden` turned
+///   out to suppress the keyboard afterwards as well.
 fn android_manifest(manifest: &Manifest) -> String {
     format!(
         r#"<?xml version="1.0" encoding="utf-8"?>
@@ -292,6 +329,7 @@ fn android_manifest(manifest: &Manifest) -> String {
         <activity
             android:name="{activity}"
             android:exported="true"
+            android:windowSoftInputMode="adjustResize"
             android:configChanges="orientation|keyboardHidden|screenSize|screenLayout|density|uiMode">
             <meta-data android:name="android.app.lib_name" android:value="{lib}" />
             <intent-filter>

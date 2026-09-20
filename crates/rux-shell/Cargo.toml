@@ -81,6 +81,13 @@ windows-sys = { version = "0.61", features = ["Win32_UI_WindowsAndMessaging"] }
 [target.'cfg(target_os = "android")'.dependencies]
 winit = { workspace = true, features = ["android-native-activity"] }
 android-activity = { version = "0.6", features = ["native-activity"] }
+# Reading the `String` an input method hands back, which is the one piece of JNI
+# that cannot be done with primitives alone. Already in the lockfile by way of
+# `android-activity`, so it costs a line here and nothing at build time.
+jni = "0.22"
+# The JavaVM and the activity object, for the one call that has to go from Rust
+# into Java. Also already in the lockfile by way of `android-activity`.
+ndk-context = "0.1"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen-futures = "0.4"

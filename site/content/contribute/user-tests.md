@@ -1018,6 +1018,23 @@ An APK now carries one Java class of its own, compiled by `javac` and dexed by
 | `examples/safe-area.rux` on a device | emulator | **The insets are real.** The bar pads below the status bar and the dock clears the gesture bar, on a screen where the scaffolded app overlaps both. Nothing in the file changed between the desktop and the phone |
 | The scaffolded app under the status bar | emulator | Still overlaps, and it is **correct**: `env(safe-area-inset-*)` is opt-in and the template never asks. Logged as an author-side trap, since the first Android app a new user builds inherits the fault |
 
+## The input connection, 2026-09-20
+
+The composing half of text input, in the same Java class. Every row below was
+driven on the emulator, and four of them are defects that only a device could
+have shown.
+
+| Case | Where | Result |
+|---|---|---|
+| Typing through the input connection | emulator | **Works.** Tapping `h` then `i` puts `hi` in the field, `r-model` updates and the Add task button goes live. The connection reports the whole editing state, not a keystroke |
+| Autocorrect and suggestions | emulator | **The thing that was structurally missing.** Gboard now shows a suggestion strip, `hi / Hi / HI`, which only exists when an input method has a real `InputConnection` to talk to |
+| The whole flow by finger | emulator | Tap the tab, tap the field, type, tap Add task, tap back to the list: the new task `hi` is in it and the counter reads 1 of 3 done |
+| Touch under a full-window overlay | emulator | Unaffected. The view that receives typing covers the whole app, and a field, a button and a tab all still reach Rux, because a plain view with no click listener does not consume a touch |
+| Nested classes in the dex | emulator | **Found a defect.** `javac` writes one class file per class, including nested ones, and `d8` was handed only the outer one. The app started and died with `ClassNotFoundException` on the view it needed. Collected by walking now |
+| Calling an activity method from Rust | emulator | **Found a defect.** `ndk_context` holds the **Application** object, not the Activity, so an activity method called on it fails with `NoSuchMethodError`, which the error policy logs and swallows. The symptom was a keyboard that never opened and an empty log. The activity hands itself to Rust now |
+| The restart loop | emulator | **Found a defect.** An edit rewrote the field, which recomputed focus, which restarted input, which built a connection, which reported an edit. **178 reports of an empty field from one tap**, and a field that could never hold a character. Android is told only when the answer changes |
+| A one-pixel editor | emulator | **Found a defect, and the one that cost the most.** An input method declines to open for an editor that small, and `showSoftInput` still returns `true`, because true means the request was delivered and never that a keyboard appeared. The failure reads as success in every log. At full size the same code opens the keyboard every time |
+
 **A test caught the caveat in the act.** The first version of the empty-SDK
 test asserted that everything under the SDK was missing, and it failed: the JDK
 was found, because this machine has one on `PATH` and the lookup asked the real
