@@ -26,7 +26,11 @@
 /// which must ship wherever these bytes do. It is a variable font, so one file
 /// covers every weight the examples ask for (400 through 700) instead of
 /// needing a static face per weight.
-pub const DEFAULT_FONT: &[u8] = include_bytes!("../assets/Inter-Variable.ttf");
+/// The font the playground renders with.
+///
+/// Re-exported from `rux-shell` rather than carried here: a built web app needs
+/// the same font, and the shell is what needs one when the platform has none.
+pub use rux_shell::DEFAULT_FONT;
 
 /// The TextMate grammar, embedded from the file the site and the VS Code
 /// extension both read. Including it by path rather than copying it is the whole

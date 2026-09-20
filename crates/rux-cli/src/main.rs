@@ -34,6 +34,7 @@ mod fmt;
 mod manifest;
 mod new;
 mod vocab;
+mod web;
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;

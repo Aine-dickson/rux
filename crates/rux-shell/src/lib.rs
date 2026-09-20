@@ -5175,6 +5175,88 @@ pub fn start_web(
     event_loop.spawn_app(app);
 }
 
+/// A font to render with when the platform supplies none.
+///
+/// **Only on the web, and that is the whole reason it exists.** A desktop or a
+/// phone has system fonts; a browser canvas has nothing, so a web build that
+/// shipped no font would draw no text at all. Inter, variable, under the SIL
+/// Open Font License, with the licence beside it in `assets/`.
+///
+/// It lives here rather than in `rux-web` because it is the *shell* that needs
+/// a font when there is nothing to ask, and both the playground and an app
+/// built by `rux build --target web` need the same one. Two copies of 876 KB
+/// would be two copies to keep in step.
+#[cfg(target_arch = "wasm32")]
+pub const DEFAULT_FONT: &[u8] = include_bytes!("../assets/Inter-Variable.ttf");
+
+/// Run a whole project in a canvas, loading it through the installed
+/// [`rux_runtime::Source`].
+///
+/// The difference from [`start_web`] is the difference between a playground and
+/// an app. `start_web` takes one document as text and
+/// `Document::from_source` **discards its imports**: no components, no
+/// `<style src>`, no pages behind a router. That is right for a page where
+/// somebody is typing a single document into an editor, and useless for
+/// `rux build --target web`, where the whole point is a project of many files.
+///
+/// So this loads by path instead, and the caller installs a `MemorySource`
+/// holding every file first, exactly as a desktop release build does. The
+/// import graph then resolves out of memory with no filesystem anywhere, which
+/// is what the source provider was built for.
+#[cfg(target_arch = "wasm32")]
+pub fn start_web_app(
+    canvas: web_sys::HtmlCanvasElement,
+    entry: String,
+    font: Vec<u8>,
+    base: Option<String>,
+) {
+    use winit::platform::web::EventLoopExtWebSys;
+
+    let mut document = match Document::load(std::path::Path::new(&entry)) {
+        Ok(doc) => doc,
+        Err(err) => {
+            web_sys::console::error_1(&format!("rux: {err}").into());
+            Document::from_source("<template><screen></screen></template>").expect("empty document")
+        }
+    };
+
+    // A built app owns its address bar, unlike the playground, which is why
+    // `base` is threaded through at all: a `<router>` in an app someone
+    // deployed should put its routes in the URL.
+    if let Some(base) = base {
+        WEB_BASE.with(|b| *b.borrow_mut() = Some(base));
+        if let Some(route) = web_route_now() {
+            document.start_at(&route);
+        }
+        web_watch_history();
+    }
+
+    let event_loop = EventLoop::<RuxEvent>::with_user_event()
+        .build()
+        .expect("create event loop");
+    event_loop.set_control_flow(ControlFlow::Wait);
+
+    let (mut lw, mut lh) = (canvas.client_width() as f64, canvas.client_height() as f64);
+    if lw <= 0.0 || lh <= 0.0 {
+        lw = canvas.width() as f64;
+        lh = canvas.height() as f64;
+    }
+    if lw > 0.0 && lh > 0.0 {
+        WEB_SIZE.with(|s| *s.borrow_mut() = (lw, lh));
+    }
+
+    WEB_CANVAS.with(|c| *c.borrow_mut() = Some(canvas));
+    WEB_PROXY.with(|p| *p.borrow_mut() = Some(event_loop.create_proxy()));
+
+    let mut app = App::new(document);
+    if !app.text.register_font(font) {
+        web_sys::console::error_1(
+            &"rux: the supplied font had no usable faces, so text will not render".into(),
+        );
+    }
+    event_loop.spawn_app(app);
+}
+
 /// Resize the canvas to `w` x `h` logical pixels. No-op before `start_web`.
 ///
 /// The host page owns the layout, so it has to push the size in. Everything

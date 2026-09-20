@@ -11,10 +11,11 @@ rux build                      # a dev build: reads the project from disk
 rux build --release            # embeds the documents into one executable
 rux build --target desktop     # the default
 rux build --target android     # an APK, in dist/, ready to install
+rux build --target web         # wasm and a page, in dist/web/
 ```
 
-The result lands in `dist/`, as a single executable named after the app, or as
-an APK for Android.
+The result lands in `dist/`: a single executable named after the app, an APK for
+Android, or a `web/` directory you can serve.
 
 ## Android
 
@@ -84,6 +85,42 @@ starts compiling rather than partway through:
 rustup target add aarch64-linux-android armv7-linux-androideabi i686-linux-android
 ```
 
+## The web
+
+```bash
+rux build --target web         # writes dist/web/
+```
+
+Three files: the compiled module, the JavaScript that loads it, and an
+`index.html` that puts the two together. The page is a starting point rather
+than a framework, and nothing regenerates it once it is there, so it is yours
+to edit.
+
+**Serve it; do not open it as a file.** A browser will not load an ES module
+from a `file://` path, and the failure is a blank page with a CORS message in
+the console. Any static server does:
+
+```bash
+cd dist/web && python -m http.server
+```
+
+It needs `wasm-bindgen`, which turns the compiled module into something a
+browser can load:
+
+```bash
+cargo install wasm-bindgen-cli
+```
+
+The generated crate pins its `wasm-bindgen` dependency to **the version of the
+tool you have installed**, because the tool writes the glue and the crate
+compiles it. Left to resolve independently they drift, and the failure is a wall
+of errors in generated code that mentions no versions.
+
+Like Android, a web build always embeds its documents: there is no filesystem
+behind a URL. Unlike the playground, which runs one document typed into an
+editor, this loads a whole project, so components, stylesheets and routed pages
+all work as they do on a desktop.
+
 ## Signing a release
 
 Every APK is signed, because Android refuses to install one that is not. Without
@@ -119,7 +156,7 @@ exported, is reported before anything compiles, not after sixteen minutes.
 If you have no keystore yet, `keytool` comes with the JDK you already installed:
 
 ```bash
-keytool -genkeypair -keystore release.jks -alias upload   -keyalg RSA -keysize 2048 -validity 9000
+keytool -genkeypair -keystore release.jks -alias upload -keyalg RSA -keysize 2048 -validity 9000
 ```
 
 Keep it, and keep it backed up. An app updated with a different key is not an

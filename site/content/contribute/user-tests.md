@@ -1019,6 +1019,15 @@ An APK now carries one Java class of its own, compiled by `javac` and dexed by
 | The scaffolded app under the status bar | emulator | Still overlaps, and it is **correct**: `env(safe-area-inset-*)` is opt-in and the template never asks. Logged as an author-side trap, since the first Android app a new user builds inherits the fault |
 | The scaffold, after padding its own bars | emulator | **Fixed.** `rux new` now pads the screen by the top and bottom insets, and the header and the tab bar both clear the system bars. `rux check` on the fresh scaffold reports no problems, so `env()` in a shorthand-free longhand is honored rather than warned about. `calc()` does not exist yet, which is why the insets go on the screen rather than being added to the header's own padding |
 
+## `rux build --target web`, 2026-09-20
+
+| Case | Where | Result |
+|---|---|---|
+| A multi-file project to wasm | desktop, then Edge over `http://localhost` | The bundle loads and the app starts. The console shows `rux: canvas 750x485 css, surface 750x485 physical, dpr 1`, which the shell only prints after the GPU surface is created |
+| **Did the documents load from memory?** | the same run | **Yes, and the absence is the evidence.** `start_web_app` logs `rux: <error>` and falls back to an empty document when `Document::load` fails, and that line is printed before the canvas line. The canvas line appears and the error does not, so a project of nine files resolved its entry, components, pages and stylesheet out of a `MemorySource` with no filesystem anywhere |
+| A wasm-bindgen version mismatch | desktop | **Found by running it.** The tool was 0.2.126 and the generated crate resolved 0.2.128, after three minutes of compiling. The generated crate now pins the dependency to the version of the tool on `PATH`, so they agree by construction; the check that caught it stays as a guard |
+| A rendered frame on screen | **not verified** | Headless WebGPU does not composite into a screenshot, with hardware or with swiftshader, and screen capture is unavailable in this session. The bundle initialises correctly and no frame has been seen |
+
 ## Release signing, 2026-09-20
 
 | Case | Where | Result |
