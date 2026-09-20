@@ -994,6 +994,23 @@ machine at any stage, and `adb` cannot tell the difference.
 | The library entry path | emulator | **Found a defect.** The APK built, signed and installed, then died at launch: `unable to find native library counter_app`. `Path::join` on Windows had written the zip entry with backslashes, and a zip separator is `/` on every platform, so the library arrived as one oddly named file at the archive root rather than inside a directory Android looks in. Nothing before the device could have caught it: every earlier step was happy |
 | The status bar | emulator | **Found a gap.** The header draws under the status bar. `env(safe-area-inset-*)` answers on desktop under `--preview`, and nothing populates it on Android yet, so a real notch is still unhandled on the one platform that has one |
 
+## The Java shim, and safe areas on a phone, 2026-09-20
+
+An APK now carries one Java class of its own, compiled by `javac` and dexed by
+`d8`. No Gradle, no AAR, no AndroidX, no resources.
+
+| Case | Where | Result |
+|---|---|---|
+| A dex in the APK at all | emulator | Proven first with a five-line subclass that did nothing, before any of it mattered. The app installed and ran identically, so packaging a dex was ruled out as a suspect before the real class existed |
+| Soft keyboard on a text field | emulator | **It already worked, and that was the surprise.** Tapping a field raises Gboard, because `rux-shell` already calls `set_ime_allowed` and winit maps that to `show_soft_input`, which NativeActivity does implement |
+| Typing `hi` on the soft keyboard | emulator | Both letters land, `r-model` updates, and the disabled Add task button goes live. Gboard falls back to plain key events when nothing offers it an InputConnection, and Rux handles key events already |
+| Backspace | emulator | Deletes one character: `hi` becomes `h` |
+| What is still missing | reading the crates | winit's Android backend never emits `Ime::Preedit` or `Ime::Commit`, and `android-activity` has `set_text_input_state` as a literal `NOP: Unsupported` on NativeActivity. So composition, autocorrect and swipe typing are absent, and the keyboard shows no suggestion strip. That is what the InputConnection in this class is for, and it is not written yet |
+| `RuxActivity` loading the library | emulator | **Found a defect, and a subtle one.** The first build crashed with `UnsatisfiedLinkError: No implementation found for nativeSafeArea`, while `llvm-nm` showed the symbol exported from the very `.so` that was loaded. `NativeActivity` does not use `System.loadLibrary`; it `dlopen`s the file directly, which finds `ANativeActivity_onCreate` and registers with no class loader, so JNI cannot resolve anything against it. The class now loads the library itself, before `super.onCreate` |
+| The activity name in two places | emulator | **Found a second defect**, caught by its own error message: `rux run --device` still started `android.app.NativeActivity` while the generated manifest named ours. Packaged and installed fine, refused to start. Both now read one constant |
+| `examples/safe-area.rux` on a device | emulator | **The insets are real.** The bar pads below the status bar and the dock clears the gesture bar, on a screen where the scaffolded app overlaps both. Nothing in the file changed between the desktop and the phone |
+| The scaffolded app under the status bar | emulator | Still overlaps, and it is **correct**: `env(safe-area-inset-*)` is opt-in and the template never asks. Logged as an author-side trap, since the first Android app a new user builds inherits the fault |
+
 **A test caught the caveat in the act.** The first version of the empty-SDK
 test asserted that everything under the SDK was missing, and it failed: the JDK
 was found, because this machine has one on `PATH` and the lookup asked the real

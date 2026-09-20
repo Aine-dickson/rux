@@ -179,7 +179,11 @@ fn install(toolchain: &Toolchain, serial: &str, apk: &Path) -> Result<(), String
 }
 
 fn start(toolchain: &Toolchain, serial: &str, manifest: &Manifest) -> Result<(), String> {
-    let component = format!("{}/android.app.NativeActivity", manifest.id);
+    // Taken from the one place that defines it, rather than written out again.
+    // It was written out again once, and the result was a build that packaged
+    // and installed correctly and then refused to start, because this string
+    // and the generated manifest had stopped agreeing.
+    let component = format!("{}/{}", manifest.id, crate::apk::ACTIVITY_CLASS);
     let output = Command::new(&toolchain.adb)
         .args(["-s", serial, "shell", "am", "start", "-n", &component])
         .output()

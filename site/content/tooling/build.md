@@ -24,11 +24,27 @@ rux run --device               # builds it, installs it, starts it
 ```
 
 No Gradle and no Android Studio, at any point. What the build actually runs is
-four command-line tools out of the Android SDK: `aapt2` writes the base APK
-from a generated manifest, the native library is added to it, `zipalign` aligns
-it and `apksigner` signs it. A debug keystore is generated once, at
-`~/.rux/debug.keystore`, and reused for every project on the machine, which is
-what lets a reinstall replace a previous build instead of being refused.
+a handful of command-line tools that come with the SDK and the JDK: `javac` and
+`d8` build the one Java class an app carries, `aapt2` writes the base APK from a
+generated manifest, the native library and that class are added to it,
+`zipalign` aligns it and `apksigner` signs it. A debug keystore is generated
+once, at `~/.rux/debug.keystore`, and reused for every project on the machine,
+which is what lets a reinstall replace a previous build instead of being
+refused.
+
+### The one Java class
+
+A Rux app contains exactly one class, and Rux writes it. It exists because a
+plain `NativeActivity` cannot answer questions that are asked as method
+overrides, which native code has no way to provide: how much of the display
+belongs to the status bar and the gesture bar, and what an input method should
+attach to. It depends on nothing but the Android platform, so there is no AAR,
+no AndroidX and no resources to merge, which is the step that would drag Gradle
+back in.
+
+Nothing about it is yours to maintain, and nothing about it changes what you
+write. It is mentioned here because an APK that says `android:hasCode="true"`
+usually means a Java project, and this one does not.
 
 `rux doctor` says what an Android build needs, what is here, and the one command
 that installs whatever is not. Start there; see [Android](@/tooling/android.md).
@@ -39,6 +55,14 @@ meet them:
 - **The documents are embedded whether or not you pass `--release`.** There is
   no filesystem inside an APK to read them back from, so a dev build for Android
   does not hot reload yet.
+- **Safe areas are opt-in, and a phone is where that first shows.** A desktop
+  window has no unsafe edges, so `env(safe-area-inset-*)` is zero there and a
+  layout that never mentions it looks correct. On a device the same layout draws
+  under the status bar. Pad the bars that need it, as
+  `examples/safe-area.rux` does.
+- **A soft keyboard types, but does not compose.** Latin text and backspace work.
+  Composing input, autocorrect and swipe typing need an input connection, which
+  is the next piece of work.
 - **It builds `x86_64` only**, which is the emulator's architecture rather than
   a phone's. That is deliberate while the loop is being built: it means an APK
   can be run without owning a device. The other ABIs, `arm64-v8a` among them,

@@ -303,6 +303,16 @@ impl Toolchain {
         self.java_bin.join(exe("keytool", Kind::Native))
     }
 
+    /// Compiles `RuxActivity.java`, the one Java class an app carries.
+    pub fn javac(&self) -> PathBuf {
+        self.java_bin.join(exe("javac", Kind::Native))
+    }
+
+    /// Turns that class into a `classes.dex` the platform can load.
+    pub fn d8(&self) -> PathBuf {
+        self.build_tools.join(exe("d8", Kind::Script))
+    }
+
     pub fn android_jar(&self) -> PathBuf {
         self.platform.join("android.jar")
     }
@@ -452,13 +462,28 @@ fn sdkmanager(sdk: &Path) -> Finding {
     }
 }
 
-fn build_tools(sdk: &Path) -> Finding {
-    let root = sdk.join("build-tools");
-    let wanted = [
+/// Every tool a build runs out of the build-tools directory.
+///
+/// One list, because the survey and the test fixtures both need it and a second
+/// copy drifts: adding `aapt` and `d8` here first broke a fixture that still
+/// wrote the older three, which is the cheap version of the same mistake
+/// reaching a user as "build-tools not found" on a directory that has them.
+fn build_tool_names() -> [String; 5] {
+    [
         exe("aapt2", Kind::Native),
+        // The deprecated one, and the only tool that can add a file to a built
+        // APK. See `Toolchain::aapt`.
+        exe("aapt", Kind::Native),
         exe("zipalign", Kind::Native),
         exe("apksigner", Kind::Script),
-    ];
+        // Turns the one compiled Java class into a `classes.dex`.
+        exe("d8", Kind::Script),
+    ]
+}
+
+fn build_tools(sdk: &Path) -> Finding {
+    let root = sdk.join("build-tools");
+    let wanted = build_tool_names();
     for (key, dir) in versions_in(&root) {
         if wanted.iter().all(|tool| dir.join(tool).is_file()) {
             let version =
@@ -566,10 +591,10 @@ fn ndk(sdk: &Path) -> Finding {
 
 fn jdk(search: &Search) -> Finding {
     let what = "JDK".to_string();
-    let needed_for = "apksigner and the SDK's own tools are java programs";
+    let needed_for = "apksigner is a java program, and javac compiles the one class an app needs";
     let mut looked = Vec::new();
     if let Some(home) = &search.java_home {
-        let at = home.join("bin").join(exe("java", Kind::Native));
+        let at = home.join("bin").join(exe("javac", Kind::Native));
         if at.is_file() {
             return Finding {
                 what,
@@ -579,7 +604,7 @@ fn jdk(search: &Search) -> Finding {
         }
         looked.push(at);
     }
-    if let Some(at) = on_path(&search.path, &exe("java", Kind::Native)) {
+    if let Some(at) = on_path(&search.path, &exe("javac", Kind::Native)) {
         return Finding {
             what,
             needed_for,
@@ -774,11 +799,7 @@ mod tests {
         write_tool(&dir.join("cmdline-tools/latest/bin"), &exe("sdkmanager", Kind::Script));
         for version in ["9.0.0", "35.0.0"] {
             let bt = dir.join("build-tools").join(version);
-            for tool in [
-                exe("aapt2", Kind::Native),
-                exe("zipalign", Kind::Native),
-                exe("apksigner", Kind::Script),
-            ] {
+            for tool in build_tool_names() {
                 write_tool(&bt, &tool);
             }
         }

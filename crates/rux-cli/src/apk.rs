@@ -56,6 +56,8 @@ pub fn pack(
     let library = lib_dir.join(built.file_name().unwrap_or_default());
     run(Command::new(toolchain.strip()).arg("-o").arg(&library).arg(built), "llvm-strip")?;
 
+    let dex = build_dex(toolchain, &staging)?;
+
     let manifest_xml = staging.join("AndroidManifest.xml");
     std::fs::write(&manifest_xml, android_manifest(manifest))
         .map_err(|e| format!("writing {}: {e}", manifest_xml.display()))?;
@@ -92,10 +94,14 @@ pub fn pack(
         Command::new(toolchain.aapt())
             .arg("add")
             .arg("base.apk")
+            // `classes.dex` has to sit at the archive root under exactly that
+            // name, which is where the platform looks for an app's code.
+            .arg(dex_entry())
             .arg(&inside)
             .current_dir(&staging),
         "aapt add",
     )?;
+    debug_assert!(dex.is_file(), "the dex was added to the APK without existing");
 
     let aligned = staging.join("aligned.apk");
     run(
@@ -121,6 +127,82 @@ pub fn pack(
     )?;
 
     Ok(())
+}
+
+/// The Java source for the one class a Rux app carries.
+///
+/// Carried as text and compiled on every build rather than shipped as a
+/// prebuilt `classes.dex`. Compiling costs about a second, and both tools it
+/// needs are already required: `javac` comes with the JDK that `apksigner` runs
+/// on, and `d8` is in the build-tools beside `aapt2`. The alternative, a dex
+/// blob committed to the repo, would be a binary nobody can read in a diff and
+/// a build artifact checked into source, to save a step that costs a second.
+const ACTIVITY_JAVA: &str = include_str!("../java/RuxActivity.java");
+
+/// The fully-qualified name of that class, as the manifest names it.
+///
+/// Fixed rather than derived from the app's id, so the Java is one constant
+/// file rather than something generated per project. An activity class does not
+/// have to live in the application's own package, and giving every Rux app the
+/// same activity class means the Java is compiled from source nobody has to
+/// read twice.
+pub(crate) const ACTIVITY_CLASS: &str = "dev.ruxlang.shell.RuxActivity";
+
+/// Where the class file lands, relative to the compiler's output directory.
+const ACTIVITY_PATH: [&str; 4] = ["dev", "ruxlang", "shell", "RuxActivity.class"];
+
+/// The dex's entry name, which the platform requires to be exactly this.
+fn dex_entry() -> &'static str {
+    "classes.dex"
+}
+
+/// Compile and dex `RuxActivity.java`.
+///
+/// Two commands, and neither of them is Gradle. `javac` is pinned to Java 8
+/// bytecode because that is what `d8` and the platform expect, and a JDK 17
+/// left to its own defaults emits class files too new for either.
+fn build_dex(toolchain: &Toolchain, staging: &Path) -> Result<PathBuf, String> {
+    let java_dir = staging.join("java").join("dev").join("ruxlang").join("shell");
+    std::fs::create_dir_all(&java_dir)
+        .map_err(|e| format!("creating {}: {e}", java_dir.display()))?;
+    let source = java_dir.join("RuxActivity.java");
+    std::fs::write(&source, ACTIVITY_JAVA)
+        .map_err(|e| format!("writing {}: {e}", source.display()))?;
+
+    let classes = staging.join("classes");
+    std::fs::create_dir_all(&classes).map_err(|e| format!("creating {}: {e}", classes.display()))?;
+    run(
+        Command::new(toolchain.javac())
+            // Java 8 bytecode. `--release` rather than `-source`/`-target`,
+            // which is the pair that compiles against the running JDK's own
+            // library and then fails at runtime on a method that did not exist
+            // in 8.
+            .args(["--release", "8"])
+            .arg("-classpath")
+            .arg(toolchain.android_jar())
+            .arg("-d")
+            .arg(&classes)
+            .arg(&source),
+        "javac",
+    )?;
+
+    let compiled = ACTIVITY_PATH.iter().fold(classes.clone(), |path, part| path.join(part));
+    run(
+        Command::new(toolchain.d8())
+            .arg("--lib")
+            .arg(toolchain.android_jar())
+            .args(["--min-api", &MIN_API.to_string()])
+            .arg("--output")
+            .arg(staging)
+            .arg(&compiled),
+        "d8",
+    )?;
+
+    let dex = staging.join(dex_entry());
+    if !dex.is_file() {
+        return Err(format!("d8 produced no {} in {}", dex_entry(), staging.display()));
+    }
+    Ok(dex)
 }
 
 /// Where the native library sits inside the APK, as a zip entry name.
@@ -182,10 +264,14 @@ fn dirs_home() -> PathBuf {
 ///
 /// Three lines carry the weight:
 ///
-/// - **`android:hasCode="false"`.** There is no Java and no dex file in this
-///   APK at all. Without this the platform looks for a class it will not find.
+/// - **`android:hasCode="true"`, and the activity is ours.** It was `false`
+///   until an app needed to answer questions only a real Java class can be
+///   asked: window insets, and soon the input connection a soft keyboard
+///   attaches to. The APK now carries exactly one class, in one `classes.dex`,
+///   compiled from one file Rux ships. See [`ACTIVITY_JAVA`].
 /// - **`android.app.lib_name`.** How `NativeActivity` knows which `.so` to
-///   load, given without the `lib` prefix or the `.so` suffix.
+///   load, given without the `lib` prefix or the `.so` suffix. It is inherited
+///   by the subclass, so naming our own activity changes nothing about it.
 /// - **`configChanges`.** Every one of these is a change a native app handles
 ///   by being told about it. Leaving them out means Android destroys and
 ///   recreates the activity on a rotation, which for a GPU surface means
@@ -201,10 +287,10 @@ fn android_manifest(manifest: &Manifest) -> String {
     <uses-sdk android:minSdkVersion="{MIN_API}" android:targetSdkVersion="{TARGET_API}" />
     <application
         android:label="{label}"
-        android:hasCode="false"
+        android:hasCode="true"
         android:extractNativeLibs="true">
         <activity
-            android:name="android.app.NativeActivity"
+            android:name="{activity}"
             android:exported="true"
             android:configChanges="orientation|keyboardHidden|screenSize|screenLayout|density|uiMode">
             <meta-data android:name="android.app.lib_name" android:value="{lib}" />
@@ -219,6 +305,7 @@ fn android_manifest(manifest: &Manifest) -> String {
         id = manifest.id,
         version = manifest.version,
         label = escape(&manifest.name),
+        activity = ACTIVITY_CLASS,
         lib = manifest.artifact_stem().replace('-', "_"),
     )
 }
@@ -296,11 +383,25 @@ mod tests {
     }
 
     #[test]
-    fn there_is_no_java_in_the_apk_and_the_manifest_says_so() {
-        // Without `hasCode="false"` the platform looks for a dex file that no
-        // part of this pipeline produces.
+    fn the_apk_declares_its_one_class_and_names_our_activity() {
+        // These two go together and are wrong apart. `hasCode="true"` without a
+        // dex makes the platform look for code that is not there, and naming
+        // our activity without the dex is the same failure by another road.
         let xml = android_manifest(&manifest("Task List"));
-        assert!(xml.contains(r#"android:hasCode="false""#), "{xml}");
+        assert!(xml.contains(r#"android:hasCode="true""#), "{xml}");
+        assert!(xml.contains(&format!(r#"android:name="{ACTIVITY_CLASS}""#)), "{xml}");
+    }
+
+    #[test]
+    fn the_activity_class_matches_the_java_that_is_shipped() {
+        // The class name is written twice, in the manifest and in the Java, and
+        // a mismatch is an app that installs and dies on launch. The JNI symbol
+        // in `rux-shell` is a third copy of the same name, which is why the
+        // package is checked here rather than only the class.
+        assert!(ACTIVITY_JAVA.contains("package dev.ruxlang.shell;"), "package moved");
+        assert!(ACTIVITY_JAVA.contains("class RuxActivity"), "class renamed");
+        assert_eq!(ACTIVITY_CLASS, "dev.ruxlang.shell.RuxActivity");
+        assert!(ACTIVITY_JAVA.contains("nativeSafeArea"), "the inset callback is gone");
     }
 
     #[test]

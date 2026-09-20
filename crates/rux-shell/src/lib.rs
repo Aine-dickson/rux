@@ -2004,8 +2004,18 @@ impl App {
             },
             // Zero on a desktop, which is the honest answer and also a useless
             // one to develop against: a window that owns its whole surface has
-            // no unsafe edges, and every phone does.
+            // no unsafe edges, and every phone does. A preview answers with a
+            // named device's insets; Android answers with the real ones.
+            #[cfg(not(target_os = "android"))]
             safe_area: self.preview.map(|p| p.safe_area).unwrap_or_default(),
+            // Read here rather than delivered, for the reason on `SAFE_AREA`:
+            // the insets arrive on another thread and there is no event to
+            // carry them. So they are picked up wherever the environment is
+            // rebuilt, which is startup and every resize. A rotation is a
+            // resize, and it is the case that moves an inset from one edge to
+            // another, so the one that matters is covered.
+            #[cfg(target_os = "android")]
+            safe_area: android_safe_area(scale),
             ..Default::default()
         };
         if self.document.set_environment(environment) {
@@ -5351,6 +5361,64 @@ pub fn run_previewing(path: PathBuf, route: Option<String>, preview: Option<Devi
 /// would be one more version to keep in step for no benefit.
 #[cfg(target_os = "android")]
 pub use android_activity;
+
+/// The safe-area insets a phone last reported, in physical pixels.
+///
+/// A static rather than an event, because on Android there is nothing to send an
+/// event *to*: the insets arrive on Android's main thread from a Java callback,
+/// while the shell runs its loop on another, and `RuxEvent` has no variants here
+/// (see `user_event`). An atomic is the whole of the synchronisation needed for
+/// four numbers that are only ever written together and read together.
+///
+/// Packed into one `u64` so a reader cannot catch a top from one dispatch and a
+/// bottom from the next. Insets are small: 16 bits each is 65535 physical
+/// pixels, and a display with a 65535-pixel status bar is not a phone.
+#[cfg(target_os = "android")]
+static SAFE_AREA: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Android hands the shell its safe-area insets, from `RuxActivity`.
+///
+/// Named for the JVM rather than for Rust: this is what
+/// `dev.ruxlang.shell.RuxActivity.nativeSafeArea` resolves to, so the name is
+/// load-bearing and has to match the class and method exactly. Changing the
+/// package or the method name in the Java means changing it here, and the
+/// failure is an `UnsatisfiedLinkError` at the first inset dispatch rather than
+/// anything at build time.
+///
+/// Takes the two leading JNI arguments as raw pointers and ignores them, which
+/// is what lets this be a plain `extern "system"` function with no `jni` types
+/// in its signature: the values are primitives and nothing has to be converted.
+///
+/// # Safety
+///
+/// Called by the JVM, with the signature declared in `RuxActivity.java`.
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "system" fn Java_dev_ruxlang_shell_RuxActivity_nativeSafeArea(
+    _env: *mut std::ffi::c_void,
+    _class: *mut std::ffi::c_void,
+    top: i32,
+    right: i32,
+    bottom: i32,
+    left: i32,
+) {
+    let clamp = |v: i32| (v.clamp(0, u16::MAX as i32) as u64) & 0xffff;
+    let packed = (clamp(top) << 48) | (clamp(right) << 32) | (clamp(bottom) << 16) | clamp(left);
+    SAFE_AREA.store(packed, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// The last reported insets, in logical pixels.
+///
+/// Divided by the scale factor on the way out, because Android counts insets in
+/// physical pixels while `env(safe-area-inset-*)` is a CSS length like every
+/// other. The device profiles behind `--preview` are written in logical pixels
+/// for the same reason, so both roads reach the stylesheet in one unit.
+#[cfg(target_os = "android")]
+fn android_safe_area(scale: f64) -> Insets {
+    let packed = SAFE_AREA.load(std::sync::atomic::Ordering::Relaxed);
+    let at = |shift: u32| ((packed >> shift) & 0xffff) as f32 / scale.max(0.01) as f32;
+    Insets { top: at(48), right: at(32), bottom: at(16), left: at(0) }
+}
 
 /// Run a document as an Android activity.
 ///
