@@ -193,6 +193,67 @@ public class RuxActivity extends NativeActivity {
     }
 
     /**
+     * Report which option a picker settled on, or -1 if it was dismissed.
+     *
+     * <p>Resolved against the already-loaded library, like {@link #nativeSafeArea}.
+     */
+    private static native void nativeSelectChosen(int index);
+
+    /** The picker currently up, so a second request cannot stack two dialogs. */
+    private android.app.AlertDialog picker;
+
+    /**
+     * Show the platform's own picker for a {@code <select>}.
+     *
+     * <p><b>Why this is not the drawn dropdown.</b> Rux draws one on a desktop
+     * and it is the right answer there. On a phone it is a browser emulation:
+     * it does not fling, does not dismiss on Back, is not announced as a picker
+     * by a screen reader, and does not look like the control the person uses in
+     * every other app. The spec has asked for the platform control since before
+     * there was a phone to run it on.
+     *
+     * <p>Called from the render thread, so it hops to the UI thread, and it
+     * answers through {@link #nativeSelectChosen} rather than by returning: a
+     * picker is not answered in the gesture that opened it.
+     *
+     * <p><b>Dismissal is an answer.</b> Back, or a tap outside, reports -1
+     * rather than nothing, because a shell still waiting for a reply would
+     * leave that field unable to open a picker ever again.
+     */
+    void ruxOpenSelect(final String[] options, final int selected) {
+        runOnUiThread(
+                () -> {
+                    if (picker != null) {
+                        return;
+                    }
+                    final boolean[] answered = {false};
+                    picker =
+                            new android.app.AlertDialog.Builder(this)
+                                    .setSingleChoiceItems(
+                                            options,
+                                            selected,
+                                            (dialog, which) -> {
+                                                answered[0] = true;
+                                                nativeSelectChosen(which);
+                                                dialog.dismiss();
+                                            })
+                                    .setOnDismissListener(
+                                            dialog -> {
+                                                picker = null;
+                                                // Only when nothing was chosen:
+                                                // choosing dismisses too, and
+                                                // reporting twice would apply an
+                                                // edit and then undo it.
+                                                if (!answered[0]) {
+                                                    nativeSelectChosen(-1);
+                                                }
+                                            })
+                                    .create();
+                    picker.show();
+                });
+    }
+
+    /**
      * Load the Rux shared object under this class's own class loader.
      *
      * <p><b>This is not redundant, and leaving it out fails in a way that looks

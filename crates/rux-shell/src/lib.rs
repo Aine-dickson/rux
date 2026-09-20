@@ -134,6 +134,20 @@ enum RuxEvent {
     /// composed.
     #[cfg(target_os = "android")]
     AndroidText { value: String, caret: usize, anchor: usize, compose: Option<(usize, usize)> },
+    /// The platform's picker closed, having been opened for a `<select>`.
+    ///
+    /// `index` is the option chosen, or `None` if the picker was dismissed
+    /// without choosing. Carried through the proxy rather than answered inline
+    /// because the dialog runs on Android's main thread while the shell loops
+    /// on another, and because a picker is not answered in the tap that opened
+    /// it: the person may think about it for a while first.
+    ///
+    /// The select it belongs to is not carried. It is held in
+    /// [`App::pending_select`], because the answer has to be matched against
+    /// the field as it was when the picker opened, and a rebuild in between
+    /// could have moved it.
+    #[cfg(target_os = "android")]
+    AndroidSelect { index: Option<usize> },
     /// Assistive technology asked us something (it attached, it wants the
     /// tree, it moved focus). Delivered through the same proxy as hot-reload.
     #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
@@ -1182,6 +1196,15 @@ struct App {
     /// one's dropdown, drew it over row one, hit-tested the options against row
     /// one's box, and wrote the chosen option into row one.
     open_select: Option<(String, Option<String>, Option<String>)>,
+    /// The `<select>` a platform picker is currently open for.
+    ///
+    /// Android only, and separate from [`App::open_select`] because the two are
+    /// different things: `open_select` is a dropdown Rux is drawing and can hit
+    /// test, this is a dialog the platform owns and will answer later. Held so
+    /// the answer reaches the field that asked, since the tree may have been
+    /// rebuilt while the picker was up.
+    #[cfg(target_os = "android")]
+    pending_select: Option<(String, Option<String>, Option<String>, Vec<String>)>,
     /// Caret position in the focused input, as a byte index into its value.
     caret: usize,
     /// Where the current selection started, as a byte index. Equal to `caret`
@@ -1304,6 +1327,8 @@ impl App {
             focused_instance: None,
             focused_multiline: false,
             open_select: None,
+            #[cfg(target_os = "android")]
+            pending_select: None,
             caret: 0,
             anchor: 0,
             overlay_dismissed: None,
@@ -2255,11 +2280,37 @@ impl App {
 
         // A tap on a closed select opens its dropdown.
         if let Some(sel) = self.selects.iter().find(|s| s.contains(fx, fy)) {
-            self.open_select =
-                Some((sel.model.clone(), sel.row.clone(), sel.instance.clone()));
-            self.set_focus(None);
-            self.request_redraw();
-            return;
+            // **On a phone the platform owns this control**, which the spec has
+            // asked for since before there was a phone to run it on. A drawn
+            // dropdown is a browser emulation: it does not scroll, dismiss,
+            // announce or look like every other picker the person has used, and
+            // on a small screen those are most of what a picker is.
+            #[cfg(target_os = "android")]
+            {
+                // Cloned out before anything else touches `self`: the search
+                // above borrows `self.selects`, and reading the field's current
+                // value needs the document mutably.
+                let (model, row, instance, options) = (
+                    sel.model.clone(),
+                    sel.row.clone(),
+                    sel.instance.clone(),
+                    sel.options.clone(),
+                );
+                let chosen = self.document.value_in(&model, row.as_deref(), instance.as_deref());
+                let at = options.iter().position(|o| *o == chosen);
+                self.pending_select = Some((model, row, instance, options.clone()));
+                self.set_focus(None);
+                android_open_select(&options, at);
+                return;
+            }
+            #[cfg(not(target_os = "android"))]
+            {
+                self.open_select =
+                    Some((sel.model.clone(), sel.row.clone(), sel.instance.clone()));
+                self.set_focus(None);
+                self.request_redraw();
+                return;
+            }
         }
 
         // Inputs are handled at press time (`press_text`), which is where a
@@ -3997,6 +4048,27 @@ impl ApplicationHandler<RuxEvent> for App {
             #[cfg(target_os = "android")]
             RuxEvent::AndroidText { value, caret, anchor, compose } => {
                 self.apply_soft_keyboard_text(value, caret, anchor, compose)
+            }
+
+            // The platform picker closed. Taken rather than read, so a second
+            // answer for a picker that is no longer open cannot arrive and edit
+            // a field nobody was looking at.
+            #[cfg(target_os = "android")]
+            RuxEvent::AndroidSelect { index } => {
+                if let Some((model, row, instance, options)) = self.pending_select.take() {
+                    // `None` is a dismissal, which keeps what the field had.
+                    // Out of range would mean Java and Rux disagreed about the
+                    // list, which is worth ignoring rather than guessing at.
+                    if let Some(option) = index.and_then(|i| options.get(i)) {
+                        self.document.apply_edit_in(
+                            &model,
+                            row.as_deref(),
+                            instance.as_deref(),
+                            option,
+                        );
+                    }
+                    self.request_redraw();
+                }
             }
 
             #[cfg(target_arch = "wasm32")]
@@ -5843,6 +5915,78 @@ fn android_first_frame() {
 /// Whether [`android_first_frame`] has already reported.
 #[cfg(target_os = "android")]
 static FIRST_FRAME: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Ask the platform to pick one of `options`, with `selected` already chosen.
+///
+/// **The dialog is the platform's, and so is the thread it runs on.** This hops
+/// to Android's main thread inside the Java, and the answer comes back through
+/// [`Java_dev_ruxlang_shell_RuxActivity_nativeSelectChosen`] rather than from
+/// this call, which returns as soon as the picker has been asked for.
+///
+/// Failure is logged by the policy and otherwise ignored, as with the other
+/// calls into the activity: the consequence is a select that does not open, not
+/// a broken app.
+#[cfg(target_os = "android")]
+fn android_open_select(options: &[String], selected: Option<usize>) {
+    let Ok(activity) = ACTIVITY.lock() else { return };
+    let Some(activity) = activity.as_ref() else { return };
+    let ctx = ndk_context::android_context();
+    // Safety: as in `android_set_text_input`, which records the reasoning.
+    let vm = unsafe { jni::JavaVM::from_raw(ctx.vm().cast()) };
+    let _ = vm.attach_current_thread(|env| {
+        // A Java `String[]`, built one element at a time because there is no
+        // bulk path for object arrays.
+        let class = env.find_class(jni::jni_str!("java/lang/String"))?;
+        let empty = env.new_string("")?;
+        let array = env.new_object_array(options.len() as i32, &class, &empty)?;
+        for (i, option) in options.iter().enumerate() {
+            let value = env.new_string(option.as_str())?;
+            array.set_element(env, i, &value)?;
+        }
+        env.call_method(
+            activity,
+            jni::jni_str!("ruxOpenSelect"),
+            jni::jni_sig!("([Ljava/lang/String;I)V"),
+            &[
+                jni::JValue::Object(&array),
+                // -1 rather than an Option, because this crosses into Java and
+                // a primitive is the honest shape there.
+                jni::JValue::Int(selected.map(|i| i as i32).unwrap_or(-1)),
+            ],
+        )?;
+        Ok::<(), jni::errors::Error>(())
+    });
+}
+
+/// The platform picker closed. Called from Java, on Android's main thread.
+///
+/// `index` is `-1` when the picker was dismissed without a choice, which is a
+/// real outcome and not a failure: a person who opens a picker and changes
+/// their mind expects the field to keep what it had.
+#[cfg(target_os = "android")]
+#[no_mangle]
+/// # Safety
+///
+/// Called by the JVM, with the signature declared in `RuxActivity.java`.
+///
+/// **Raw pointers, not `jni::Env`.** The first version took `Env` by value, the
+/// compiler warned that it is not FFI-safe, and the warning was right: the
+/// argument slots shift, `index` reads the wrong one, and the picker's answer
+/// arrives as a number no option has. Nothing fails loudly. The dialog opens,
+/// the choice is made, Java logs the correct index, and the field does not
+/// change, which reads as a missing event rather than a mangled argument.
+pub extern "system" fn Java_dev_ruxlang_shell_RuxActivity_nativeSelectChosen(
+    _env: *mut std::ffi::c_void,
+    _class: *mut std::ffi::c_void,
+    index: i32,
+) {
+    let index = (index >= 0).then_some(index as usize);
+    if let Ok(proxy) = PROXY.lock() {
+        if let Some(proxy) = proxy.as_ref() {
+            let _ = proxy.send_event(RuxEvent::AndroidSelect { index });
+        }
+    }
+}
 
 /// The last reported insets, in logical pixels.
 ///

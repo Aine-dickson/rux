@@ -39,6 +39,13 @@ on tap, opens a **dropdown** of the `:options` (evaluated to strings), a floatin
 panel with a shadow, the current value picked out as a pill, and separators.
 Tapping a row writes it back to the signal; any other tap closes it. The open
 state lives in the shell and survives rebuilds (like scroll offsets).
+
+**On Android the platform's own picker opens instead**, a Material dialog with
+the current value already selected. A drawn dropdown is the right answer on a
+desktop and a browser emulation on a phone: it does not fling, does not dismiss
+on Back, and is not announced as a picker by a screen reader. Dismissing the
+dialog, by Back or by tapping outside, leaves the value alone. `:options` and
+`r-model` are the same either way, so a document never knows which it got.
 `background-size` and native mobile pickers are not done.
 
 **Keyboard focus:** **Tab** / **Shift+Tab** move a focus ring through every

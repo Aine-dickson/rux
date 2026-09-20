@@ -1137,6 +1137,33 @@ two days. The module said a manifest would commit decisions `rux build` owned
 and had not made; `rux build` has since made all of them. `docs/05-as-built.md`
 had the same shape of staleness and was corrected alongside the icon work.
 
+## The native picker, 2026-09-20
+
+`<input type="select">` opened a drawn dropdown on every platform. The spec has
+asked for the platform control on mobile since before there was a phone to run
+it on.
+
+| Case | Where | Result |
+|---|---|---|
+| Tapping a select | emulator | **The platform's own dialog**, Material, with a scrim, and the current value already selected, which proves the value round-trips out as well as back |
+| Choosing an option | emulator | Writes back through the same `apply_edit_in` the drawn dropdown uses: the field reads `mango` and the echo follows it |
+| Dismissing with Back | emulator | Leaves the value alone. Dismissal is reported as an answer of -1 rather than as silence, because a shell still waiting for a reply would never open that picker again |
+| The desktop dropdown | host | Unchanged. The drawn one is right there and is what `--preview` still shows |
+
+**`jni::Env` by value in an `extern "system"` fn is not FFI-safe, and the
+compiler said so.** The warning was read as noise because the surrounding JNI
+functions carry a similar one. They do not: they take raw pointers. Taking
+`Env` by value shifts the argument slots, so the picker's answer arrived as a
+number no option had.
+
+**Nothing failed loudly.** The dialog opened, the choice was made, Java logged
+the correct index, `nativeSelectChosen` returned cleanly, no exception, no
+`UnsatisfiedLinkError`, and the field did not change. It reads exactly like an
+event that was never delivered, which is where the search started and is the
+wrong place. The Java-side probe is what proved the answer had left Java, and
+that turned the question from "why is the event lost" into "what is it
+arriving as".
+
 ## Standing gaps
 
 Cases nothing here can currently exercise. They are the shape of what v0.8 has

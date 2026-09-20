@@ -541,6 +541,12 @@ mod tests {
         // show up only as a splash screen that hangs for five seconds on a
         // device. Nothing else would say a word.
         assert!(ACTIVITY_JAVA.contains("ruxFirstFrame"), "the splash release is gone");
+        // The picker crosses the boundary in both directions, and both names
+        // are strings on the Rust side. A rename would open no picker, or open
+        // one whose answer never arrives, and the error policy swallows the
+        // lookup failure either way.
+        assert!(ACTIVITY_JAVA.contains("ruxOpenSelect"), "the picker call is gone");
+        assert!(ACTIVITY_JAVA.contains("nativeSelectChosen"), "the picker answer is gone");
     }
 
     #[test]
