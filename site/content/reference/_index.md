@@ -382,14 +382,19 @@ To see a non-zero inset on a desktop, see `rux run --preview` below.
 @media (orientation: portrait) { … }
 @media (prefers-color-scheme: dark) { .app { background: #11111b; } }
 @media (prefers-reduced-motion: reduce) { … }
+@media (min-resolution: 2dppx) { .logo { background-image: url(logo@2x.png); } }
 ```
 Supported features: `min-`/`max-width`, `min-`/`max-height`, `orientation`,
-`prefers-color-scheme`, `prefers-reduced-motion`, the
+`resolution` (`dppx`, `x`, `dpi`, `dpcm`), `prefers-color-scheme`,
+`prefers-reduced-motion`, the
 `screen`/`all` types, `and` chains and comma alternatives. A block adds **no
 specificity**: rules inside it cascade by ordinary source order, so a later
 `@media` rule beats an earlier plain one, and `#id` still beats a `.class` in a
-media block. Anything else (`min-resolution`, `not …`, `(hover)`) warns once and
-never applies.
+media block. Anything else (`not …`, `(hover)`) warns once and never applies.
+
+**`orientation` and `resolution` are answered by the device**, and both were
+driven on one: rotating a phone re-cascades live, and a Pixel 6 reports 2.625,
+so `min-resolution: 2dppx` matches there and `3dppx` does not.
 
 Resizing re-cascades **only when a query changes answer**: dragging a window
 edge within a breakpoint costs nothing, and a document with no `@media` never

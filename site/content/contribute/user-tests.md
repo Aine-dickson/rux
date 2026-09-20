@@ -1164,6 +1164,26 @@ wrong place. The Java-side probe is what proved the answer had left Java, and
 that turned the question from "why is the event lost" into "what is it
 arriving as".
 
+## Orientation and density, on a device, 2026-09-20
+
+`@media (orientation)` has existed since v0.4 and had never been rotated. The
+claim that it worked was an inference from a unit test, which is the kind of
+claim this file exists to stop.
+
+| Case | Where | Result |
+|---|---|---|
+| Rotating the device | emulator, `user_rotation` 0 then 1 | **Works, and live.** Portrait green, landscape orange, without the activity being recreated: the manifest declares `configChanges` for orientation, so the surface resizes and the environment is rebuilt underneath |
+| `min-resolution: 2dppx` | emulator, Pixel 6 at 2.625 | Matches |
+| `min-resolution: 3dppx` | emulator | Does not match |
+| `max-resolution: 3dppx` | emulator | Matches. The three together pin the density between 2 and 3 rather than just asserting that something happened |
+
+**The axis list in the range parser is not a formality.** `min-resolution: 2dppx`
+never reaches the `name: value` path at all: lightningcss normalizes it to the
+range form `resolution >= 2dppx` first. The range parser decides which side is
+the axis from a list of names, and an unlisted name is read as the **value**
+instead, so the failure was a warning that `resolution` is not a length. The
+message names the axis, which is precisely the wrong end to start looking at.
+
 ## Standing gaps
 
 Cases nothing here can currently exercise. They are the shape of what v0.8 has

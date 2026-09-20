@@ -2242,6 +2242,13 @@ enum Feature {
     ReducedMotion(bool),
     /// `prefers-color-scheme: dark`, or its `light` half.
     Scheme(ColorScheme),
+    /// `resolution`, in device pixels per CSS pixel.
+    ///
+    /// The environment has carried `density` since the struct was built, and
+    /// this is the query that finally asks it. Compared in `dppx` whatever the
+    /// author wrote, because a ratio is what the value means and `dpi` is that
+    /// ratio times a constant.
+    Resolution(Cmp, f32),
     /// A media *type* we're always in (`screen`, `all`).
     Always,
     /// Unsupported, never matches.
@@ -2256,6 +2263,7 @@ impl Feature {
             Self::Height(cmp, v) => cmp.holds(vp.height, v),
             Self::Portrait => vp.height >= vp.width,
             Self::Landscape => vp.width > vp.height,
+            Self::Resolution(cmp, v) => cmp.holds(env.density, v),
             Self::ReducedMotion(want) => env.reduced_motion == want,
             Self::Scheme(want) => env.color_scheme == want,
             Self::Always => true,
@@ -2349,6 +2357,22 @@ fn parse_media_feature(token: &str) -> Vec<Feature> {
             "light" => Feature::Scheme(ColorScheme::Light),
             _ => Feature::Never,
         },
+        // `resolution` is how CSS asks how dense the screen is, and the answer
+        // is what an author reaches for to pick heavier artwork on a phone.
+        // Prefixed forms are deliberately not accepted: `-webkit-` spellings
+        // are what a stylesheet carries for browsers that needed them, and Rux
+        // is not one.
+        "resolution" | "min-resolution" | "max-resolution" => {
+            let Some(dppx) = parse_resolution(value) else {
+                warn_unsupported_media(&format!("{name}: {value}"));
+                return vec![Feature::Never];
+            };
+            match name.as_str() {
+                "min-resolution" => Feature::Resolution(Cmp::Ge, dppx),
+                "max-resolution" => Feature::Resolution(Cmp::Le, dppx),
+                _ => Feature::Resolution(Cmp::Eq, dppx),
+            }
+        }
         "min-width" | "max-width" | "min-height" | "max-height" => {
             // Media lengths are absolute; the viewport-relative units a
             // stylesheet can use elsewhere would be circular here.
@@ -2420,6 +2444,21 @@ fn split_on_comparators(body: &str) -> Vec<RangePart> {
 fn parse_range(parts: &[RangePart]) -> Vec<Feature> {
     // Which side is the axis name decides how the comparison reads.
     let feature = |axis: &str, cmp: Cmp, value: &str| -> Feature {
+        // **`min-resolution: 2dppx` arrives here, not at the `name: value`
+        // path.** The stylesheet is parsed and re-serialized by lightningcss,
+        // which normalizes the prefixed forms into modern range syntax, so what
+        // this sees is `resolution >= 2dppx`. Written where it is answered
+        // rather than where it was authored, and its value is a ratio rather
+        // than a length, so it is read before the `parse_px` below.
+        if axis == "resolution" {
+            return match parse_resolution(value) {
+                Some(dppx) => Feature::Resolution(cmp, dppx),
+                None => {
+                    warn_unsupported_media(&format!("resolution: {value}"));
+                    Feature::Never
+                }
+            };
+        }
         let Some(px) = parse_px(value) else {
             warn_unsupported_media(value);
             return Feature::Never;
@@ -2445,7 +2484,12 @@ fn parse_range(parts: &[RangePart]) -> Vec<Feature> {
     match parts.len() {
         3 => {
             let (left, right) = (operand(0), operand(2));
-            if left == "width" || left == "height" {
+            // Every axis name has to be listed here, not just the length ones:
+            // an unlisted name is read as the *value* and the value as the
+            // axis, so `resolution >= 2dppx` came back complaining that
+            // `resolution` is not a length. The symptom names the axis, which
+            // is exactly the wrong end to go looking at.
+            if left == "width" || left == "height" || left == "resolution" {
                 vec![feature(&left, op(1), &right)]
             } else {
                 // `600px >= width`: same relation, read the other way.
@@ -2472,7 +2516,7 @@ fn warn_unsupported_media(what: &str) {
     static SEEN: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
     let message = format!(
         "`@media` condition `{what}` is not supported, its rules will never apply \
-         (supported: screen/all, min-/max-width, min-/max-height, orientation)"
+         (supported: screen/all, min-/max-width, min-/max-height, orientation, resolution)"
     );
     warn(message.clone());
     let seen = SEEN.get_or_init(|| Mutex::new(HashSet::new()));
@@ -6311,6 +6355,22 @@ fn parse_box_shadow(value: &str) -> Option<BoxShadow> {
 
 /// `line-height`: a unitless number (× font size), a length, or `normal` (→
 /// `None`, keep the font's own metrics).
+/// A `resolution` value to device pixels per CSS pixel.
+///
+/// `dppx` is the ratio itself, `x` is its shorthand, and `dpi` and `dpcm` are
+/// that ratio against the CSS reference of 96 dots per inch. A bare number is
+/// refused, as CSS refuses it: `resolution: 2` says nothing about what unit.
+fn parse_resolution(v: &str) -> Option<f32> {
+    let v = v.trim().to_ascii_lowercase();
+    for (suffix, per_dppx) in [("dppx", 1.0), ("dpcm", 96.0 / 2.54), ("dpi", 96.0), ("x", 1.0)] {
+        if let Some(number) = v.strip_suffix(suffix) {
+            let n: f32 = number.trim().parse().ok()?;
+            return (n > 0.0).then_some(n / per_dppx);
+        }
+    }
+    None
+}
+
 fn parse_line_height(v: &str, font_size: f32) -> Option<f32> {
     let s = first(v);
     if s == "normal" {
@@ -7450,6 +7510,21 @@ mod tests {
         // An unrecognised or malformed entity is left as written.
         assert_eq!(decode_entities("R&D, AT&T"), "R&D, AT&T");
         assert_eq!(decode_entities("&notanentity;"), "&notanentity;");
+    }
+
+    #[test]
+    fn resolution_reads_every_unit_css_allows() {
+        use super::parse_resolution;
+        assert_eq!(parse_resolution("2dppx"), Some(2.0));
+        assert_eq!(parse_resolution("2x"), Some(2.0));
+        // 96 dots per inch is the CSS reference, so 192dpi is exactly 2.
+        assert_eq!(parse_resolution("192dpi"), Some(2.0));
+        assert!((parse_resolution("75.5906dpcm").unwrap() - 2.0).abs() < 1e-3);
+
+        // A bare number says nothing about which unit, and CSS refuses it too.
+        assert_eq!(parse_resolution("2"), None);
+        assert_eq!(parse_resolution("0dppx"), None, "a screen cannot have no density");
+        assert_eq!(parse_resolution("nonsense"), None);
     }
 
     #[test]
