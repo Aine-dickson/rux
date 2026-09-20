@@ -82,8 +82,8 @@ pub fn pack(
     // becomes a number of processes.
     let resources = match manifest.icon_source()? {
         None => None,
-        Some((foreground, background)) => {
-            let res = crate::icon::generate(&foreground, background, &staging)?;
+        Some((foreground, background, splash)) => {
+            let res = crate::icon::generate(&foreground, background, splash, &staging)?;
             let compiled = staging.join("res.zip");
             run(
                 Command::new(toolchain.aapt2())
@@ -382,7 +382,7 @@ fn android_manifest(manifest: &Manifest) -> String {
         android:hasCode="true"
         android:extractNativeLibs="true">
         <activity
-            android:name="{activity}"
+            android:name="{activity}"{theme}
             android:exported="true"
             android:windowSoftInputMode="adjustResize"
             android:configChanges="orientation|keyboardHidden|screenSize|screenLayout|density|uiMode">
@@ -403,6 +403,13 @@ fn android_manifest(manifest: &Manifest) -> String {
         // was never compiled, so an app with no art would not package at all.
         icon = match manifest.icon {
             Some(_) => format!("\n        android:icon=\"{}\"", crate::icon::manifest_reference()),
+            None => String::new(),
+        },
+        // The splash screen and nothing else. An app with no icon keeps the
+        // themeless activity it has always had, because the theme exists to
+        // carry splash attributes and a splash screen is the icon on a plate.
+        theme = match manifest.icon {
+            Some(_) => format!("\n            android:theme=\"{}\"", crate::icon::theme_reference()),
             None => String::new(),
         },
         activity = ACTIVITY_CLASS,
@@ -485,6 +492,31 @@ mod tests {
     }
 
     #[test]
+    fn an_app_with_no_icon_names_neither_an_icon_nor_a_theme() {
+        // Both would be references to resources that were never compiled, and
+        // `aapt2 link` fails on one of those rather than ignoring it, so an app
+        // without art would not package at all.
+        let xml = android_manifest(&manifest("Task List"));
+        assert!(!xml.contains("android:icon"), "{xml}");
+        assert!(!xml.contains("android:theme"), "{xml}");
+    }
+
+    #[test]
+    fn an_app_with_an_icon_names_the_resources_that_will_be_generated() {
+        let mut with_icon = manifest("Task List");
+        with_icon.icon = Some(crate::manifest::Icon {
+            foreground: PathBuf::from("icon.png"),
+            background: "#7c3aed".into(),
+            splash: "#7c3aed".into(),
+        });
+        let xml = android_manifest(&with_icon);
+        // Against the generator rather than a literal: the names are written in
+        // two files, and that is exactly how the activity class drifted once.
+        assert!(xml.contains(&crate::icon::manifest_reference()), "{xml}");
+        assert!(xml.contains(&crate::icon::theme_reference()), "{xml}");
+    }
+
+    #[test]
     fn the_apk_declares_its_one_class_and_names_our_activity() {
         // These two go together and are wrong apart. `hasCode="true"` without a
         // dex makes the platform look for code that is not there, and naming
@@ -504,6 +536,11 @@ mod tests {
         assert!(ACTIVITY_JAVA.contains("class RuxActivity"), "class renamed");
         assert_eq!(ACTIVITY_CLASS, "dev.ruxlang.shell.RuxActivity");
         assert!(ACTIVITY_JAVA.contains("nativeSafeArea"), "the inset callback is gone");
+        // `rux-shell` calls this one by name through JNI, and a failed lookup is
+        // logged and swallowed by the error policy, so renaming it here would
+        // show up only as a splash screen that hangs for five seconds on a
+        // device. Nothing else would say a word.
+        assert!(ACTIVITY_JAVA.contains("ruxFirstFrame"), "the splash release is gone");
     }
 
     #[test]

@@ -225,10 +225,9 @@ of Rux that built it.
 `index.rux` that `rux run` would, so a project following the convention writes
 nothing.
 
-`icon` and `icon-background` are the launcher icon; see below. `[signing]`
-names the key a release is signed with; see below as well. A splash screen has
-a manifest key waiting for it, and it lands in the release that makes it do
-something rather than ahead of it.
+`icon` and `icon-background` are the launcher icon, and `splash-background`
+colours the splash screen that comes with it; all three are below. `[signing]`
+names the key a release is signed with, below as well.
 
 ## The icon is two layers, not one image
 
@@ -268,6 +267,40 @@ enlarged; smaller than that and the build says so and carries on.
 accepted, and neither is transparency: the plate is composited against whatever
 the launcher has behind it, so a translucent one looks different from device to
 device.
+
+## The splash screen comes with the icon
+
+An app that has an icon has a splash screen, and there is nothing else to
+write. Android 12 and up draw one themselves, from the app's icon on a coloured
+plate, and `rux build` points them at the icon that is already there.
+
+```toml
+[app]
+splash-background = "#101018"
+```
+
+That one optional key is the whole surface. It colours the splash, and without
+it the splash uses the icon's own `icon-background`. Set it when the app's
+first screen is a different colour from its icon plate, so that the splash does
+not flash against what follows it.
+
+**There is no splash image, and that is the platform's decision rather than
+ours.** The system draws the splash before the app has started, so the app does
+not get to put a picture there. An app that wants a branded first screen draws
+one itself, as its first route.
+
+Below Android 12 there is no system splash at all, and the most an app can do
+is start on the right colour rather than on black. `rux build` sets the window
+background to the same colour, so those releases get a plain coloured screen
+instead of a branded one.
+
+**The splash stays up until Rux has drawn.** Android takes a splash away as
+soon as the app reports its first frame, and a native app reports one when its
+surface exists rather than when anything is in it, so the default behaviour is
+a splash followed by a second or so of black. The app holds its first draw back
+until the first real frame is ready, which is what makes the splash cover the
+startup it is there to cover. If the app fails before it ever draws, the splash
+gives up after five seconds rather than hanging.
 
 ## Dev builds and release builds differ in one way
 

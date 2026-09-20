@@ -3815,6 +3815,12 @@ impl App {
 
         surface_texture.present();
 
+        // After the present and not before: the splash is covering an empty
+        // surface, and telling Android to take it away while the frame is still
+        // queued would put the black back.
+        #[cfg(target_os = "android")]
+        android_first_frame();
+
         // The hidden input is placed from `self.focuses`, which only becomes the
         // *current* layout here. Placing it during the focus change instead
         // would use the previous frame's geometry, so it sat one edit behind
@@ -5803,6 +5809,40 @@ fn android_set_text_input(on: bool) {
         Ok::<(), jni::errors::Error>(())
     });
 }
+
+/// Tell the activity that a frame has reached the surface, once.
+///
+/// **The splash screen is waiting on this.** A `NativeActivity` reports a first
+/// frame to the platform as soon as its surface exists, which is about a second
+/// before the shell has rendered anything, so the activity holds the splash
+/// until this says the picture is real. See `keepSplashUntilDrawn` in the Java.
+///
+/// Called from the render path on every frame and guarded by an atomic rather
+/// than by the caller, so that the "once" cannot be lost if the draw path grows
+/// a second exit. The cost after the first frame is one relaxed load.
+///
+/// Failure is logged by the policy and otherwise ignored, as with
+/// [`android_set_text_input`]: the consequence is a splash that stays up until
+/// the activity's own deadline takes it away, not a broken app.
+#[cfg(target_os = "android")]
+fn android_first_frame() {
+    if FIRST_FRAME.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        return;
+    }
+    let Ok(activity) = ACTIVITY.lock() else { return };
+    let Some(activity) = activity.as_ref() else { return };
+    let ctx = ndk_context::android_context();
+    // Safety: as in `android_set_text_input`, which records the reasoning.
+    let vm = unsafe { jni::JavaVM::from_raw(ctx.vm().cast()) };
+    let _ = vm.attach_current_thread(|env| {
+        env.call_method(activity, jni::jni_str!("ruxFirstFrame"), jni::jni_sig!("()V"), &[])?;
+        Ok::<(), jni::errors::Error>(())
+    });
+}
+
+/// Whether [`android_first_frame`] has already reported.
+#[cfg(target_os = "android")]
+static FIRST_FRAME: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// The last reported insets, in logical pixels.
 ///

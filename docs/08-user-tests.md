@@ -1091,9 +1091,31 @@ build at all** and each attempt cost seconds.
 | An app with no icon at all | emulator | Still builds, installs and runs, and shows the platform default. The `android:icon` attribute is absent rather than naming a resource that was never compiled, which `aapt2` would refuse to link |
 | Two tests sharing one staging directory | host | **The generator's cleanup proved itself by accident.** The icon tests keyed their temp directory on the process id, so they shared one; `generate` clears the tree it is about to write, and parallel tests deleted each other's output. The product was right and the tests were wrong |
 
-**Not covered, deliberately:** the splash screen, which is a theme and so a
-`values/themes.xml` and an `android:theme`, and would have hit the `-R` trap
-above. It is the last of slice 5.
+## The splash screen, 2026-09-20
+
+Started by looking rather than by building, because Android 12 and up draw a
+splash for every app whether or not it asks, and Rux targets 35. **So the
+question was not "how do we add one" but "what does an app do today".**
+
+| Case | Where | Result |
+|---|---|---|
+| What a cold start looks like now | emulator, frames captured across a launch | **Black. The whole way.** Launcher, then a flat black screen, then the app. Re-checked at 10x animation scale in case a frame was being missed; still black |
+| Is a splash created at all? | emulator, logcat | **Yes, and this is why looking beat assuming.** `SplashScreenView: Icon: ... size: 504` says the platform builds one. It was being created and thrown away before anything could see it |
+| The theme, packaged | build only | `values/themes.xml` and `values-v31/themes.xml`, the activity carrying `android:theme`. Confirmed in the APK's resource table, both configurations under one style |
+| The splash, on screen | emulator | **Violet plate, white icon, full screen.** Caught only by starting the capture loop *before* the launch: it lasts about 660ms and a `screencap` takes about 400ms, so sampling after `am start` lands either side of it |
+| What follows the splash | emulator, timestamped frames | **Found the defect. 1.1 seconds of black**, measured between the splash going and the first Rux frame arriving. The splash was correct and useless: it covered the first half second of a two second start |
+| Holding the splash by keeping its view | emulator | **Does not work, and the log says it did.** `setOnExitAnimationListener` hands over the splash view and the app removes it when ready; the listener fired, the view was held, the release came 1.05s later exactly as designed, **and the screen was black throughout**. A `NativeActivity` renders into the window surface itself, so a view the platform hands back is never composited |
+| Holding the first draw instead | emulator | **Works.** An `OnPreDrawListener` that returns false until Rux has presented keeps the platform from reporting a first frame, so the splash is never asked to leave. Frames across a launch are now splash, splash, splash, app |
+| The app after the change | emulator | Re-driven rather than assumed: routing by finger, a task detail page, the Add tab, the field, the keyboard, `hi` typed into it and the button going live. Safe areas still clear both bars |
+| An app with no icon | build only | No `android:icon` and no `android:theme`, so no reference to a resource that was never compiled, which `aapt2 link` would refuse |
+
+**The trap that cost the most, and it is not an Android one.**
+`RuxActivity.java` is `include_str!`ed into the `rux` binary, so **editing the
+Java changes nothing until `rux` itself is rebuilt**. Two APKs were built,
+installed and driven against the old class, and the second of those looked like
+proof that the exit-listener approach worked when it had never run. The
+symptom is silence: no error, no warning, just the previous behaviour. Probe
+logging is what found it, by printing nothing at all.
 
 ## Standing gaps
 

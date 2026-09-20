@@ -93,6 +93,13 @@ pub struct Icon {
     pub foreground: PathBuf,
     /// The plate behind it, normalized to `#rrggbb`.
     pub background: String,
+    /// The colour behind the splash screen, normalized to `#rrggbb`.
+    ///
+    /// **Defaults to [`Icon::background`]**, because on Android a splash screen
+    /// is the launcher icon on a plate and the obvious plate is the one the
+    /// icon already has. It is separate only so that an app whose first screen
+    /// is a different colour can stop the splash flashing against it.
+    pub splash: String,
 }
 
 /// Where a release build's signing key lives.
@@ -212,9 +219,22 @@ impl Manifest {
         // Named in the one spelling, because a key that is silently ignored is
         // worse than one that is refused: the author sees a robot on the
         // launcher and has nothing to read that explains it.
-        if app.contains_key("icon_background") {
+        for (wrong, right) in
+            [("icon_background", "icon-background"), ("splash_background", "splash-background")]
+        {
+            if app.contains_key(wrong) {
+                return Err(format!("[app] `{wrong}` is spelled `{right}`, with a dash"));
+            }
+        }
+
+        // A splash screen is the launcher icon on a plate, so there is nothing
+        // to colour the plate of without one. Refused rather than ignored, for
+        // the same reason the misspellings above are.
+        if app.contains_key("splash-background") && !app.contains_key("icon") {
             return Err(
-                "[app] `icon_background` is spelled `icon-background`, with a dash".to_string()
+                "[app] names a `splash-background` and no `icon`. A splash screen is the app's \
+                 icon on a coloured plate, so there is nothing to show without one"
+                    .to_string(),
             );
         }
 
@@ -234,10 +254,15 @@ impl Manifest {
                 let toml::Value::String(background) = background else {
                     return Err("[app] `icon-background` must be a string".into());
                 };
-                Some(Icon {
-                    foreground: PathBuf::from(path),
-                    background: normalize_color(background)?,
-                })
+                let background = normalize_color(background)?;
+                let splash = match app.get("splash-background") {
+                    // The icon's own plate, which is what a splash screen is
+                    // drawn on when nobody says otherwise.
+                    None => background.clone(),
+                    Some(toml::Value::String(s)) => normalize_color(s)?,
+                    Some(_) => return Err("[app] `splash-background` must be a string".into()),
+                };
+                Some(Icon { foreground: PathBuf::from(path), background, splash })
             }
             (Some(toml::Value::String(_)), Some(_)) => {
                 return Err("[app] `icon` is empty".to_string())
@@ -288,7 +313,7 @@ impl Manifest {
     /// [`Manifest::signing_key`] gives: a release build spends sixteen minutes
     /// on four ABIs before it packages anything, and a typo in a path should
     /// not cost that.
-    pub fn icon_source(&self) -> Result<Option<(PathBuf, &str)>, String> {
+    pub fn icon_source(&self) -> Result<Option<(PathBuf, &str, &str)>, String> {
         let Some(icon) = &self.icon else { return Ok(None) };
         let foreground = if icon.foreground.is_absolute() {
             icon.foreground.clone()
@@ -302,7 +327,7 @@ impl Manifest {
                 foreground.display()
             ));
         }
-        Ok(Some((foreground, icon.background.as_str())))
+        Ok(Some((foreground, icon.background.as_str(), icon.splash.as_str())))
     }
 
     /// The keystore to sign with, and the two passwords, or why not.
@@ -476,6 +501,43 @@ entry = "Cargo.toml"
         let text = format!("{MINIMAL}icon = \"i.png\"\nicon-background = \"violet\"\n");
         let error = parse(&text).expect_err("a colour name");
         assert!(error.contains("violet"), "{error}");
+    }
+
+    #[test]
+    fn the_splash_defaults_to_the_icons_own_plate() {
+        let text = format!("{MINIMAL}icon = \"i.png\"\nicon-background = \"#7c3aed\"\n");
+        let icon = parse(&text).unwrap().icon.expect("an icon");
+        assert_eq!(icon.splash, icon.background);
+    }
+
+    #[test]
+    fn a_splash_colour_overrides_the_plate_without_changing_it() {
+        let text = format!(
+            "{MINIMAL}icon = \"i.png\"\nicon-background = \"#7c3aed\"\n\
+             splash-background = \"#101018\"\n"
+        );
+        let icon = parse(&text).unwrap().icon.expect("an icon");
+        assert_eq!(icon.background, "#7c3aed");
+        assert_eq!(icon.splash, "#101018");
+    }
+
+    #[test]
+    fn a_splash_colour_with_no_icon_is_refused() {
+        // Silently ignored, this is an author wondering why the colour they set
+        // never appears. There is no splash without an icon to put on it.
+        let text = format!("{MINIMAL}splash-background = \"#101018\"\n");
+        let error = parse(&text).expect_err("a splash with nothing on it");
+        assert!(error.contains("icon"), "{error}");
+    }
+
+    #[test]
+    fn the_splash_underscore_spelling_is_refused_by_name() {
+        let text = format!(
+            "{MINIMAL}icon = \"i.png\"\nicon-background = \"#7c3aed\"\n\
+             splash_background = \"#101018\"\n"
+        );
+        let error = parse(&text).expect_err("the wrong spelling");
+        assert!(error.contains("splash-background"), "{error}");
     }
 
     #[test]

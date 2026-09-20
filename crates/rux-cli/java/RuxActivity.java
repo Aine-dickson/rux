@@ -13,6 +13,7 @@ import android.text.SpannableStringBuilder;
 import android.view.KeyEvent;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.ViewTreeObserver;
 import android.view.WindowInsets;
 import android.view.inputmethod.BaseInputConnection;
 import android.view.inputmethod.EditorInfo;
@@ -90,11 +91,105 @@ public class RuxActivity extends NativeActivity {
                         ViewGroup.LayoutParams.MATCH_PARENT));
         input.requestFocus();
 
+        keepSplashUntilDrawn();
+
         // Hand the activity to the Rust side, which has no other way to get it.
         // `ndk_context`, which `android-activity` fills in, holds the
         // Application object rather than this, and an activity method called on
         // that fails with `NoSuchMethodError`.
         nativeActivityCreated(this);
+    }
+
+    /**
+     * The system splash screen, held until Rux has actually drawn something.
+     *
+     * <p><b>Without this the splash is correct and useless.</b> The platform
+     * takes the splash away as soon as the activity reports a first frame, and
+     * a {@link NativeActivity} reports one the moment its surface exists, which
+     * is long before anything has been rendered into it. Measured on the
+     * emulator: splash for about half a second, then <b>1.1 seconds of black</b>
+     * while the shell starts, then the app. The black is the exact stretch the
+     * splash exists to cover.
+     *
+     * <p><b>The splash is held by refusing to draw, not by keeping its view.</b>
+     * {@code setOnExitAnimationListener} looks like the answer: it hands the
+     * splash view over and makes the app responsible for removing it. It was
+     * built that way first, and it fails in a way that reads as success. The
+     * listener fires, the view is held, the release arrives a second later
+     * exactly as intended, and <em>the screen is black the whole time</em>,
+     * because a {@link NativeActivity} renders into the window surface itself
+     * and a view handed back by the platform is never composited over it.
+     *
+     * <p>So instead nothing lets the first draw happen until Rux has presented.
+     * The platform takes the splash away when the activity reports a frame, and
+     * an {@code OnPreDrawListener} that returns {@code false} is what stops it
+     * reporting one. The splash is then never asked to leave.
+     *
+     * <p>API 31 and up only, because that is where the system splash exists at
+     * all; below it there is nothing to hold and the window background is
+     * already the right colour.
+     */
+    private void keepSplashUntilDrawn() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
+            return;
+        }
+        final View content = findViewById(android.R.id.content);
+        content.getViewTreeObserver()
+                .addOnPreDrawListener(
+                        new ViewTreeObserver.OnPreDrawListener() {
+                            @Override
+                            public boolean onPreDraw() {
+                                if (!drawn && !deadlinePassed) {
+                                    return false;
+                                }
+                                content.getViewTreeObserver().removeOnPreDrawListener(this);
+                                return true;
+                            }
+                        });
+        // **A deadline, because holding the splash forever is a hung app.** If
+        // the shell fails before it draws, the honest failure is the app's own
+        // window and a log, not a splash screen that never leaves. Generous on
+        // purpose: it is a backstop, and a slow cold start on a slow device
+        // must not trip it.
+        content.postDelayed(
+                () -> {
+                    if (!drawn) {
+                        deadlinePassed = true;
+                        content.invalidate();
+                    }
+                },
+                SPLASH_DEADLINE_MS);
+    }
+
+    /** How long the splash may be held before it is taken away regardless. */
+    private static final long SPLASH_DEADLINE_MS = 5_000L;
+
+    /** Whether Rux has presented a frame. */
+    private boolean drawn;
+
+    /** Whether the backstop above has given up waiting for one. */
+    private boolean deadlinePassed;
+
+    /**
+     * Called from Rust the first time a frame reaches the surface.
+     *
+     * <p>Named like the other direction's calls and invoked the same way, by
+     * name through JNI. It arrives on the render thread, and a splash view may
+     * only be touched on the UI thread, hence the hop.
+     */
+    void ruxFirstFrame() {
+        runOnUiThread(
+                () -> {
+                    drawn = true;
+                    // The listener only runs when something asks for a draw, and
+                    // nothing will: the view hierarchy is idle and the frame
+                    // that matters was drawn by native code into the same
+                    // surface. This is what releases it.
+                    final View content = findViewById(android.R.id.content);
+                    if (content != null) {
+                        content.invalidate();
+                    }
+                });
     }
 
     /**
