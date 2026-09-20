@@ -18,7 +18,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::android::{Toolchain, DEV_ABI, MIN_API};
+use crate::android::{Abi, Toolchain, MIN_API};
 use crate::manifest::Manifest;
 
 /// The API level the app declares it was built against.
@@ -32,29 +32,44 @@ const TARGET_API: u32 = 35;
 pub fn pack(
     manifest: &Manifest,
     toolchain: &Toolchain,
-    built: &Path,
+    built: &[(Abi, PathBuf)],
     work: &Path,
     out: &Path,
 ) -> Result<(), String> {
-    if !built.is_file() {
-        return Err(format!("the generated crate built nothing at {}", built.display()));
+    if built.is_empty() {
+        return Err("an APK needs at least one ABI".to_string());
     }
 
-    // Laid out as the APK wants it, because the tool that adds the library
-    // takes the path to store it under from the path on disk.
+    // Laid out as the APK wants it, because the tool that adds a library takes
+    // the path to store it under from the path on disk.
     let staging = work.join("apk");
-    let lib_dir = staging.join("lib").join(DEV_ABI.name);
-    // Removed rather than written over: a rename in `rux.toml` would otherwise
-    // leave the previous `.so` beside the new one, and both would be packed.
+    // Removed rather than written over: a rename in `rux.toml`, or a build that
+    // produced four ABIs followed by one that produced a single ABI, would
+    // otherwise leave the previous libraries beside the new ones and pack them
+    // all. An APK claiming an ABI whose library is a build old is worse than
+    // one that never claimed it.
     let _ = std::fs::remove_dir_all(&staging);
-    std::fs::create_dir_all(&lib_dir).map_err(|e| format!("creating {}: {e}", lib_dir.display()))?;
 
-    // Debug symbols are most of the size of a Rust shared object and none of
-    // them are any use on a device: 339 MB became 51 MB the first time this
-    // ran. Stripping is not an optimisation here so much as the difference
-    // between an APK that installs over adb in seconds and one that does not.
-    let library = lib_dir.join(built.file_name().unwrap_or_default());
-    run(Command::new(toolchain.strip()).arg("-o").arg(&library).arg(built), "llvm-strip")?;
+    let mut entries = Vec::new();
+    for (abi, from) in built {
+        if !from.is_file() {
+            return Err(format!("the generated crate built nothing at {}", from.display()));
+        }
+        let lib_dir = staging.join("lib").join(abi.name);
+        std::fs::create_dir_all(&lib_dir)
+            .map_err(|e| format!("creating {}: {e}", lib_dir.display()))?;
+        // Debug symbols are most of the size of a Rust shared object and none of
+        // them are any use on a device: 339 MB became 51 MB the first time this
+        // ran. Stripping is not an optimisation here so much as the difference
+        // between an APK that installs over adb in seconds and one that does
+        // not, and with four ABIs it is that difference four times over.
+        let library = lib_dir.join(from.file_name().unwrap_or_default());
+        run(Command::new(toolchain.strip()).arg("-o").arg(&library).arg(from), "llvm-strip")?;
+        entries.push(library_entry(
+            *abi,
+            &library.file_name().unwrap_or_default().to_string_lossy(),
+        ));
+    }
 
     let dex = build_dex(toolchain, &staging)?;
 
@@ -89,18 +104,17 @@ pub fn pack(
     // signed and installed, and the activity died on launch with "unable to
     // find native library". Found by running it; nothing earlier could have
     // caught it, because every step before the device was happy.
-    let inside = library_entry(&library.file_name().unwrap_or_default().to_string_lossy());
-    run(
-        Command::new(toolchain.aapt())
-            .arg("add")
-            .arg("base.apk")
-            // `classes.dex` has to sit at the archive root under exactly that
-            // name, which is where the platform looks for an app's code.
-            .arg(dex_entry())
-            .arg(&inside)
-            .current_dir(&staging),
-        "aapt add",
-    )?;
+    let mut add = Command::new(toolchain.aapt());
+    add.arg("add")
+        .arg("base.apk")
+        // `classes.dex` has to sit at the archive root under exactly that
+        // name, which is where the platform looks for an app's code.
+        .arg(dex_entry())
+        .current_dir(&staging);
+    for entry in &entries {
+        add.arg(entry);
+    }
+    run(&mut add, "aapt add")?;
     debug_assert!(dex.is_file(), "the dex was added to the APK without existing");
 
     let aligned = staging.join("aligned.apk");
@@ -243,8 +257,8 @@ fn build_dex(toolchain: &Toolchain, staging: &Path) -> Result<PathBuf, String> {
 /// complaint, then fails at launch with "unable to find native library",
 /// because Android is looking inside a `lib/x86_64/` directory that the archive
 /// does not have.
-fn library_entry(file_name: &str) -> String {
-    format!("lib/{}/{file_name}", DEV_ABI.name)
+fn library_entry(abi: Abi, file_name: &str) -> String {
+    format!("lib/{}/{file_name}", abi.name)
 }
 
 /// The debug keystore, generated once and kept.
@@ -448,7 +462,7 @@ mod tests {
         // is separated by `/` everywhere, and `Path::join` on Windows is not,
         // so the library went in as one file called `lib\x86_64\libapp.so` and
         // the activity died looking for a directory that was never there.
-        let entry = library_entry("libcounter_app.so");
+        let entry = library_entry(crate::android::DEV_ABI, "libcounter_app.so");
         assert_eq!(entry, "lib/x86_64/libcounter_app.so");
         assert!(!entry.contains('\\'), "a zip entry never contains a backslash: {entry}");
     }

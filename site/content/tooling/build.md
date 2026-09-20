@@ -53,7 +53,7 @@ usually means a Java project, and this one does not.
 `rux doctor` says what an Android build needs, what is here, and the one command
 that installs whatever is not. Start there; see [Android](@/tooling/android.md).
 
-Two things are true of an Android build today and are worth knowing before you
+A few things are true of an Android build today and are worth knowing before you
 meet them:
 
 - **The documents are embedded whether or not you pass `--release`.** There is
@@ -67,10 +67,43 @@ meet them:
 - **A soft keyboard works, composition included.** The one Java class provides
   the input connection an input method attaches to, so typing, backspace,
   autocorrect and suggestions all behave as they do in any other Android app.
-- **It builds `x86_64` only**, which is the emulator's architecture rather than
-  a phone's. That is deliberate while the loop is being built: it means an APK
-  can be run without owning a device. The other ABIs, `arm64-v8a` among them,
-  arrive with release builds.
+- **A dev build produces one ABI and a release build produces all four.** Four
+  compiles of the same code is four times the wait, and three of those artifacts
+  are for machines you are not about to run it on. A release cannot make that
+  trade: an APK carrying one ABI installs on a fraction of the devices it claims
+  to support, and Android does not explain why to the person holding the phone.
+- **`rux run --device` builds for whatever is plugged in.** It asks the device
+  what it runs and compiles that one ABI, so an emulator gets `x86_64` and a
+  phone gets `arm64-v8a` without you choosing.
+
+The four are `x86_64`, `arm64-v8a`, `armeabi-v7a` and `x86`. A release build
+needs a Rust target installed for each, and says which are missing before it
+starts compiling rather than partway through:
+
+```bash
+rustup target add aarch64-linux-android armv7-linux-androideabi i686-linux-android
+```
+
+## What a build costs
+
+Worth knowing before you wait for one. Measured on an ordinary laptop, for the
+project `rux new` writes:
+
+| Build | Time |
+|---|---|
+| First Android build, one ABI | about 3 minutes |
+| Rebuild after editing a document | 10 to 30 seconds |
+| Release, all four ABIs, cold | about 16 minutes |
+
+**The slow part is the first build, not the loop.** Rux sits on a GPU renderer
+and real text shaping, which is roughly 250 crates of dependencies, and those
+compile once per ABI per project. After that only the small generated wrapper
+recompiles, which is why editing a document and seeing it on the device is tens
+of seconds rather than minutes.
+
+Nothing is shared between ABIs: a target triple is a separate compilation all
+the way down, so four ABIs is close to four times one. That is the whole reason
+a dev build produces one and only a release produces four.
 
 ## It needs a `rux.toml`
 
@@ -116,8 +149,9 @@ from disk, the artifact carries its own contents, and what ships cannot drift
 from what was tested. Move it to another machine with no Rux and no project
 directory and it still runs.
 
-The same split is what Android will use: documents served as assets and
-reloaded over `adb` while developing, embedded for release.
+**Android is the exception, and always embeds.** There is no filesystem behind
+an APK to read documents back from, so a dev build for Android carries them too
+and does not hot reload yet.
 
 ## What it needs installed
 

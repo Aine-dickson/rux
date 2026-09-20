@@ -174,10 +174,14 @@ const ENTRIES: &[&str] = &["app.rux", "index.rux"];
 /// not care about at the moment they asked to run something.
 /// `rux build [--release] [--target <name>] [--rux-source <dir>]`.
 fn build_command(args: &[String]) -> ExitCode {
+    // `abis: None` lets the build choose: one for a dev build, every one for a
+    // release. `rux run --device` is the only caller that names them, because
+    // it is the only one that knows what is plugged in.
     let mut options = build::Options {
         release: false,
         target: build::Target::Desktop,
         rux_source: None,
+        abis: None,
     };
     let mut i = 0;
     while i < args.len() {

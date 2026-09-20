@@ -83,7 +83,24 @@ pub fn run(args: &[String]) -> i32 {
         }
     };
 
-    let apk = match crate::build::run(Options { release, target: Target::Android, rux_source }) {
+    // Built for what is actually plugged in, rather than for the emulator this
+    // all started on. It is the answer to the divergence the ABI choice was
+    // taken with its eyes open about: develop on x86_64 and ship arm64, until a
+    // phone is attached, at which point the build follows the phone.
+    let abis = match device_abi(&toolchain, &serial) {
+        Ok(abi) => Some(vec![abi]),
+        Err(why) => {
+            eprintln!("rux: {why}");
+            return 2;
+        }
+    };
+
+    let apk = match crate::build::run(Options {
+        release,
+        target: Target::Android,
+        rux_source,
+        abis,
+    }) {
         Ok(apk) => apk,
         Err(why) => {
             eprintln!("rux: {why}");
@@ -148,6 +165,32 @@ fn one_device(toolchain: &Toolchain) -> Result<String, String> {
             ready.join(", ")
         )),
     }
+}
+
+/// What this device runs, as an ABI Rux can build.
+///
+/// `ro.product.cpu.abi` is the device's own primary ABI, which is the one to
+/// build: a 64-bit phone will run a 32-bit library, but slower and with a
+/// second copy of every system library loaded to do it.
+///
+/// An architecture Rux has no target for is reported as exactly that. The
+/// alternative is building something the device cannot load and letting Android
+/// explain it, which it does with `INSTALL_FAILED_NO_MATCHING_ABIS`.
+fn device_abi(toolchain: &Toolchain, serial: &str) -> Result<crate::android::Abi, String> {
+    let output = Command::new(&toolchain.adb)
+        .args(["-s", serial, "shell", "getprop", "ro.product.cpu.abi"])
+        .output()
+        .map_err(|e| format!("could not run adb: {e}"))?;
+    let name = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if name.is_empty() {
+        return Err(format!("{serial} did not say what architecture it is"));
+    }
+    crate::android::Abi::by_android_name(&name).ok_or_else(|| {
+        format!(
+            "{serial} runs {name}, which Rux does not build for.\n\nRux builds {}.",
+            crate::android::ABIS.iter().map(|a| a.name).collect::<Vec<_>>().join(", ")
+        )
+    })
 }
 
 fn install(toolchain: &Toolchain, serial: &str, apk: &Path) -> Result<(), String> {

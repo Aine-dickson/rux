@@ -1012,6 +1012,16 @@ An APK now carries one Java class of its own, compiled by `javac` and dexed by
 | The scaffolded app under the status bar | emulator | Still overlaps, and it is **correct**: `env(safe-area-inset-*)` is opt-in and the template never asks. Logged as an author-side trap, since the first Android app a new user builds inherits the fault |
 | The scaffold, after padding its own bars | emulator | **Fixed.** `rux new` now pads the screen by the top and bottom insets, and the header and the tab bar both clear the system bars. `rux check` on the fresh scaffold reports no problems, so `env()` in a shorthand-free longhand is honored rather than warned about. `calc()` does not exist yet, which is why the insets go on the screen rather than being added to the header's own padding |
 
+## Four ABIs, 2026-09-20
+
+| Case | Where | Result |
+|---|---|---|
+| `rux run --device` against the emulator | emulator | Asks `ro.product.cpu.abi`, gets `x86_64`, builds exactly that and says so: `wrote ...apk [x86_64]`. A phone would get its own ABI the same way, which is what closes the develop-on-x86_64 divergence |
+| A missing Rust target | `cargo test` | Named before any compiling starts, with one `rustup target add` line per missing ABI, rather than on the third of four builds |
+| A four-ABI release build at a very long path | desktop | **Failed, and not because of the ABIs.** `LNK1104: cannot open file`, on a path of about 270 characters where Windows allows 260. Most of that is the scratchpad these tests run in; a project at `C:/Users/Name/projects/app` is around 150 and has room. Worth knowing because Android's generated crate path is deeper than desktop's, and because the error names a crate rather than the real cause |
+| A four-ABI release build | desktop, then the emulator | **16m 34s**: 4m 39s, 3m 58s, 3m 46s, 4m 11s. The four times being nearly equal is the proof that nothing is shared between target triples. The APK carries all four libraries and is 27.3 MB |
+| Installing the four-ABI APK | emulator | Android picks the right one out of the four by itself: `/proc/<pid>/maps` shows `lib/x86_64/libcounter_app.so` loaded, and the app runs with its safe areas intact |
+
 ## The input connection, 2026-09-20
 
 The composing half of text input, in the same Java class. Every row below was

@@ -28,39 +28,59 @@ use std::path::{Path, PathBuf};
 /// have already shipped.
 pub const MIN_API: u32 = 26;
 
-/// The ABI the first APK is built for, and it is the emulator's, not a phone's.
+/// The ABI a dev build produces, and it is the emulator's, not a phone's.
 ///
 /// **x86_64, deliberately, and the reasoning is worth keeping.** arm64 is what
-/// a shipped phone runs, so it looks like the obvious first ABI, and it was the
+/// a shipped phone runs, so it looks like the obvious default, and it was the
 /// first plan. It is the wrong one to build first: the goal is that someone can
 /// develop without a phone, the emulator is what makes that true, and
 /// `ro.product.cpu.abi` on the emulator is x86_64. A first APK in arm64 could
 /// not be installed or driven by anyone who does not already own the device the
 /// whole milestone is trying not to require.
 ///
-/// So the dev loop is x86_64 from day one. What a phone actually runs,
-/// `arm64-v8a` on `aarch64-linux-android`, arrives when a build produces every
-/// ABI, and is left unwritten here until something builds it: a constant with
-/// no caller is how the four-ABI table that preceded this one earned its
-/// deletion.
+/// It is only a default. `rux run --device` asks the attached device what it
+/// runs and builds that, so the old "develop on x86_64 while shipping arm64"
+/// divergence closes by itself the moment a real phone is plugged in.
+pub const DEV_ABI: Abi = ABIS[0];
+
+/// Every ABI a release build produces.
 ///
-/// Developing on one architecture while shipping another is a real divergence
-/// that will eventually hide a bug, and it is accepted with its eyes open: an
-/// APK nobody here can run hides all of them.
-pub const DEV_ABI: Abi = Abi {
-    name: "x86_64",
-    rust_target: "x86_64-linux-android",
-    clang_prefix: "x86_64-linux-android",
-};
+/// All four, because an APK that carries one is an APK that installs on a
+/// fraction of the devices it claims to support, and Android will not tell the
+/// person installing it why. A dev build produces one of these and a release
+/// build produces the lot; see `rux build`.
+///
+/// **`armeabi-v7a` carries a trap in plain sight.** The Rust target is
+/// `armv7-linux-androideabi` and the NDK's clang driver for the same
+/// architecture is `armv7a-linux-androideabi`. The two names differ by one
+/// letter, in the middle, and neither side is wrong. Reading them as the same
+/// string is how a four-ABI build fails on exactly one ABI.
+pub const ABIS: [Abi; 4] = [
+    Abi {
+        name: "x86_64",
+        rust_target: "x86_64-linux-android",
+        clang_prefix: "x86_64-linux-android",
+    },
+    Abi {
+        name: "arm64-v8a",
+        rust_target: "aarch64-linux-android",
+        clang_prefix: "aarch64-linux-android",
+    },
+    Abi {
+        name: "armeabi-v7a",
+        rust_target: "armv7-linux-androideabi",
+        // One letter different from the Rust target, on purpose. See above.
+        clang_prefix: "armv7a-linux-androideabi",
+    },
+    Abi { name: "x86", rust_target: "i686-linux-android", clang_prefix: "i686-linux-android" },
+];
 
 /// One Android ABI, under the three names it goes by.
 ///
-/// Only the one exists here, because only one is used. The other three
-/// (`arm64-v8a`, `armeabi-v7a`, `x86`) arrive when a build produces every ABI,
-/// and one of them carries a trap worth knowing before then: the 32-bit ARM
-/// Rust target is `armv7-linux-androideabi` while the NDK's clang driver for
-/// the same architecture is spelled `armv7a-linux-androideabi`. The two names
-/// differ by one letter and neither side is wrong.
+/// Three names, because three different tools each have their own spelling for
+/// the same architecture, and nothing checks that a build used the right one in
+/// the right place. Keeping them in one struct is what stops a build asking
+/// `rustup` for a name only the NDK knows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Abi {
     /// What the APK calls it, and what the `.so` is packed under.
@@ -69,6 +89,37 @@ pub struct Abi {
     pub rust_target: &'static str,
     /// What the NDK calls the clang driver for it.
     pub clang_prefix: &'static str,
+}
+
+impl Abi {
+    /// The ABI a device reports as `ro.product.cpu.abi`, if Rux builds it.
+    ///
+    /// `None` for an architecture Rux has no target for, which is a real answer
+    /// rather than a failure: it is how `rux run --device` can say "this device
+    /// is a kind Rux does not build for" instead of building the wrong thing
+    /// and failing at install with Android's own unhelpful message.
+    pub fn by_android_name(name: &str) -> Option<Abi> {
+        ABIS.iter().copied().find(|abi| abi.name == name)
+    }
+}
+
+/// Which of `wanted` rustup has no target installed for.
+///
+/// Asked **before** a build rather than during one. Four ABIs is four compiles,
+/// and discovering on the third that a target was never installed means waiting
+/// through two to be told something that was knowable at the start.
+///
+/// An empty answer when rustup cannot be asked at all: that is a different
+/// problem, it is already reported by `rux doctor`, and refusing to build
+/// because rustup is missing would be wrong for anyone whose toolchain came
+/// from somewhere else.
+pub fn missing_rust_targets(wanted: &[Abi]) -> Vec<Abi> {
+    let Some(installed) = installed_rust_targets() else { return Vec::new() };
+    wanted
+        .iter()
+        .copied()
+        .filter(|abi| !installed.iter().any(|t| t == abi.rust_target))
+        .collect()
 }
 
 /// Where to look, which is the whole input to a survey.
@@ -621,9 +672,17 @@ fn jdk(search: &Search) -> Finding {
     }
 }
 
+/// Whether the target for one ABI is installed.
+///
+/// **Only the dev ABI is a requirement here, and that is deliberate.** A
+/// release build produces all four and checks all four before it compiles
+/// anything, but demanding four targets from someone who only wants to run
+/// their app on an emulator would be a wall in front of the first thing they
+/// try. `rux doctor` answers "could a build happen", and the build that a
+/// person is about to attempt is a dev one.
 fn rust_target(search: &Search, abi: Abi) -> Finding {
     let what = format!("rust target {}", abi.rust_target);
-    let needed_for = "the Rust half of the app is cross-compiled to it";
+    let needed_for = "the Rust half of the app is cross-compiled to it (a release needs all four)";
     let fix = format!("rustup target add {}", abi.rust_target);
     match &search.rust_targets {
         Some(installed) if installed.iter().any(|t| t == abi.rust_target) => Finding {

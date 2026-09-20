@@ -65,13 +65,18 @@ rustup target add x86_64-linux-android
 ```
 
 That is the emulator's target, and the emulator is where an app is developed
-before there is a phone to put it on. It is deliberately not the phone's target:
-`rux build --target android` produces x86_64 today, so an APK can be installed
-and driven on a machine with no Android device attached at all.
+before there is a phone to put it on. It is enough for `rux run --device`
+against an emulator, and `rux run --device` against a real phone installs
+whichever target that phone needs.
 
-The other three (`aarch64-linux-android`, `armv7-linux-androideabi`,
-`i686-linux-android`) matter when building for every ABI. `aarch64` is the one a
-shipped phone almost certainly needs, and it arrives with release builds.
+A **release** build produces all four ABIs, so it needs all four targets:
+
+```bash
+rustup target add aarch64-linux-android armv7-linux-androideabi i686-linux-android
+```
+
+`rux build --release --target android` says which of them are missing before it
+starts compiling, rather than on the third of four builds.
 
 ## Then
 
