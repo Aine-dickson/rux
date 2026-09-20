@@ -7471,6 +7471,26 @@ mod tests {
         assert!(parse_transform("none").is_none());
     }
 
+    /// The CSS half of the icon question: does the string an `<icon>` will emit
+    /// compose into the matrix that maps a 24 grid onto its own box?
+    ///
+    /// The other half, that the layout pass bakes the fixed origin so the
+    /// mapping lands, is `rux-layout/tests/icon_grid.rs`. Neither is worth much
+    /// alone: this proves the text composes, that proves the composition lands.
+    #[test]
+    fn an_icons_grid_transform_composes_as_written() {
+        use super::parse_transform;
+        // A 24-unit drawing in a 16px box: scale 16/24, translate 16/2 - 12.
+        let m = parse_transform("scale(0.6666667) translate(-4px, -4px)").unwrap();
+        assert!((m[0] - 0.6666667).abs() < 1e-5, "scale: {m:?}");
+        assert!((m[3] - 0.6666667).abs() < 1e-5, "scale: {m:?}");
+        // **The translate is scaled by the scale**, because it composes inside
+        // it: -4 * 2/3 is -2.667, not -4. An element emitting these as separate
+        // numbers has to know that, or it is out by a third at every size.
+        assert!((m[4] + 2.6666667).abs() < 1e-4, "translate: {m:?}");
+        assert!((m[5] + 2.6666667).abs() < 1e-4, "translate: {m:?}");
+    }
+
     /// A parent holding structural directives is recorded (with its tree path,
     /// template path, and the signals its directives read) so the runtime can
     /// reconcile just that parent instead of rebuilding the whole tree.

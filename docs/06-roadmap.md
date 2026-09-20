@@ -2519,13 +2519,23 @@ translate of `N/2 - 12px` maps the grid onto the box at any size. Path
 coordinates are already measured from the content corner, which is what makes
 it land.
 
-That has been derived and not yet seen, so it is the first thing to drive,
-exactly as the `1em` question was. It carries a consequence either way: the
-transform depends on the resolved pixel size, so it cannot be written in a
-stylesheet and must be emitted by the element from its own size. That turns the
-`size` attribute from a convenience into a requirement. It also means an icon's
-stroke scales with it, so a set drawn at one stroke weight stays right at every
-size for nothing.
+**Driven and confirmed on a device, 2026-09-20.** A 24-unit square drawn into
+boxes of 16, 32 and 64 pixels lands exactly on a reference box of each size,
+with none of the reference showing at any edge, and a stroked drawing scales
+with its stroke weight intact. Two tests hold the halves of it so it cannot
+quietly stop being true: `rux-layout/tests/icon_grid.rs` asserts the engine's
+own transform maps the grid's corners onto the box at seven sizes, and a case
+in `rux-style` asserts the CSS text composes into the matrix that does it.
+
+It carries a consequence: the transform depends on the resolved pixel size, so
+it cannot be written in a stylesheet and must be emitted by the element from
+its own size. **That turns the `size` attribute from a convenience into a
+requirement.** It also means an icon's stroke scales with it, so a set drawn at
+one stroke weight stays right at every size for nothing.
+
+**The translate is scaled by the scale**, because it composes inside it: at
+16px a `-4px` translate arrives as `-2.667`. An element emitting the two
+numbers separately has to know that, or it is out by a third at every size.
 
 #### Why this is unusually cheap for Rux
 
