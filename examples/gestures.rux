@@ -1,20 +1,20 @@
 <template>
   <screen class="app">
     <text class="title">the pointer vocabulary</text>
-    <text class="lead">Five events beyond tap. Press and hold the pad, flick it, or drag it around. With a mouse or a touchpad: hold the button, move quickly and let go, and you get both a drag and a swipe. The finger count is always 1 unless the hardware is a real touchscreen, because a touchpad reaches the app as a mouse.</text>
+    <text class="lead">Five events beyond tap. Press and hold the pad, flick it, or drag it around. With a mouse or a touchpad: hold the button, move quickly and let go, and you get both a drag and a swipe. On a real touchscreen, put a second finger down and drag: the count follows the hand. A press only ever reports one finger, because the first finger down owns the gesture and later ones join the list instead of starting a competing press, so the count to watch is the one the drag reports. A touchpad reaches the app as a mouse, and reports 1 however many fingers are on it.</text>
 
     <view class="pad"
           @press="log = &quot;press at &quot; + event.x + &quot;,&quot; + event.y; fingers = event.touches.length; page = event.pageX + &quot;,&quot; + event.pageY"
           @release="log = &quot;release&quot;"
           @longpress="log = &quot;long press, held still&quot;"
           @swipe="flick = &quot;swiped &quot; + event.direction + &quot;, &quot; + event.totalX + &quot; across&quot;"
-          @drag="log = &quot;drag &quot; + event.phase + &quot;: total &quot; + event.totalX + &quot;,&quot; + event.totalY + &quot; move &quot; + event.moveX + &quot;,&quot; + event.moveY; dx = event.totalX; dy = event.totalY">
+          @drag="log = &quot;drag &quot; + event.phase + &quot;: total &quot; + event.totalX + &quot;,&quot; + event.totalY + &quot; move &quot; + event.moveX + &quot;,&quot; + event.moveY; dx = event.totalX; dy = event.totalY; fingers = event.touches.length">
       <text class="pad-label">press, hold, flick or drag me</text>
     </view>
 
     <text class="read">{{ log }}</text>
     <text class="read">{{ flick }}</text>
-    <text class="foot">fingers on the last press: {{ fingers }}</text>
+    <text class="foot">fingers down, as of the last press or drag: {{ fingers }}</text>
     <text class="foot">last drag total: {{ dx }}, {{ dy }}</text>
     <text class="foot">where the press landed in the window: {{ page }}</text>
   </screen>

@@ -2152,6 +2152,65 @@ here.
    `@drag` claims the finger, and whether a scroll can take it back mid-gesture
    waits for a real screen.
 
+   **The reporting half is verified, 2026-09-21.** On a phone the runtime
+   reported **four simultaneous points**, and a three-finger drag fired `@drag`
+   carrying all three. Nothing in the vocabulary had to change to meet a second
+   finger, which is the payoff for `touches` having been a list from the first
+   day rather than one synthesised pointer. The whole vocabulary was driven by
+   hand at the same time: `@press`, `@release`, `@longpress`, `@swipe` and
+   `@drag` all fire, and a flick fires a drag end and a swipe together, as
+   designed.
+
+   **What is left is interpretation, not reporting.** Nothing turns two fingers
+   into a pinch or a rotate, and the axis-claim rule is still half-settled: the
+   real screen it was waiting for now exists, and the question of whether a
+   scroll can take the finger back from a running `@drag` is still open. That
+   question is now answerable rather than blocked.
+
+9. **Device diagnostics in `rux doctor`.** Added 2026-09-21, the first time a
+   physical phone was attached to this project.
+
+   A Tecno Spark 20 was plugged in with USB debugging on. Windows bound WinUSB
+   to it, the interface advertised `Class_ff / SubClass_42 / Prot_01`, which is
+   the ADB signature, the device reported problem code 0, and `adb devices`
+   listed nothing at all. The cause is that adb's Windows backend enumerates by
+   the ADB device interface GUID, and a generic inbox WinUSB binding publishes
+   no interface GUID, so a working device is invisible to the one tool that
+   matters. `rux run --device` answered "no device is attached. Plug in a phone
+   with USB debugging turned on", which was already true, and that is the whole
+   problem: the advice is correct, already followed, and a dead end.
+
+   **The bug is not Rux's and the silence is.** Every toolkit reaches a phone
+   through adb, so nothing here caused it. What is specific to Rux is that this
+   milestone removed Android Studio from the path deliberately, and Studio is
+   what ships the Google USB driver and prompts a first-time user to install
+   it. Hiding a toolchain means inheriting its failures, because the ceremony
+   that was removed was also the diagnosis. Someone whose phone is one of the
+   very many MediaTek devices sold in the markets this project most wants to
+   reach will conclude that Rux does not support their phone, and nothing in
+   the output will correct them.
+
+   The work is a device survey beside the toolchain survey, and every fact it
+   needs is machine-readable: the PnP enumeration, the compatible IDs that name
+   the interface class, and the empty `Device Parameters` key. It has to
+   separate "nothing is plugged in" from "a device is present, it is offering
+   ADB, and adb cannot claim it", and then name the repair instead of
+   describing the symptom.
+
+   **What `rux doctor` reports today, with an arm64 phone connected, is eight
+   of eight and `rust target x86_64-linux-android`.** Both statements are true
+   and neither is useful, because the survey answers "could a build happen on
+   this machine" and the question in front of the user is "why can nothing see
+   my phone". A device survey also closes that second gap for free: once the
+   attached device is known, so is the ABI it needs. Wireless debugging belongs in the same output, since
+   it routes around the entire class of problem rather than fixing one instance
+   of it.
+
+   **Windows is where this was found and not where it ends.** The Linux form is
+   a missing udev rule, with the same shape: a device that works, a daemon that
+   cannot open it, and a tool that reports nothing. The survey wants writing so
+   that a second platform is another case rather than a second implementation.
+
 ### v0.9: text, depth, and the CSS pass
 
 1. **True inline text flow**, the standing known ceiling. Two `<text>` siblings

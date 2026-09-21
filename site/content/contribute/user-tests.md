@@ -1184,16 +1184,106 @@ the axis from a list of names, and an unlisted name is read as the **value**
 instead, so the failure was a warning that `resolution` is not a length. The
 message names the axis, which is precisely the wrong end to start looking at.
 
+## A physical phone, and why adb could not see it, 2026-09-21
+
+The first attempt to attach real hardware to this project. No Rux code ran on
+the device, because nothing could reach it.
+
+| Case | Where | Result |
+|---|---|---|
+| Tecno Spark 20, USB debugging on | Windows 11, adb 37.0.0 | **`adb devices` lists nothing.** The emulator on the same server is listed throughout, so adb itself is healthy |
+| What Windows sees | `Get-PnpDevice` | The phone enumerates as a MediaTek composite, `VID_0E8D / PID_201D`: MI_00 is MTP, MI_01 is ADB |
+| The interface class | compatible IDs | `Class_ff & SubClass_42 & Prot_01`, the ADB signature exactly. A phone exposes that interface only when USB debugging is on, so debugging was never in doubt |
+| The bound driver | `DEVPKEY_Device_Service` | `WINUSB`, from `winusb.inf`, problem code 0. Nothing is broken, missing or unsigned |
+| The interface GUID | `Device Parameters` | **Empty.** No `DeviceInterfaceGUIDs` value, and that absence is the entire failure |
+| Writing the GUID by hand | elevated registry write | The value takes and persists, and the interface registers under the ADB class, but its `Control` subkey never appears, so the interface is never linked |
+| `pnputil /restart-device`, then a physical replug | both | Both report success. The instance id comes back identical and the interface is still not active |
+
+**adb's Windows backend finds devices by interface GUID, not by interface
+class.** `usb_windows.cpp` works through `AdbWinUsbApi.dll`, which enumerates
+the ADB device interface class `{F72FE0D4-CAE5-11D3-A5C4-0050BF3B4E1E}`. A
+device can therefore be plugged in, powered, driver-bound and advertising the
+ADB interface class, and still be invisible, because none of that is what gets
+enumerated.
+
+**A generic WinUSB binding publishes no GUID.** The device carries an
+`ExtPropDescSemaphore`, so Windows configured WinUSB from the device's own MS OS
+extended-properties descriptor, and that descriptor names no interface GUID. The
+descriptor path wins over a hand-written registry value, which is why writing
+the value registered the interface without ever activating it. The Google USB
+driver is what normally supplies the GUID on a device the inbox INF does not
+cover, and it was not installed, because it ships with Android Studio and this
+milestone exists to avoid Android Studio.
+
+**The failure reads as "no phone".** `rux run --device` prints "no device is
+attached. Plug in a phone with USB debugging turned on." Both halves of that
+sentence were already true. Everything above is machine-readable, and none of it
+is read, which is what put device diagnostics into the roadmap as v0.8 item 9.
+
+## The pointer vocabulary, on a real screen, 2026-09-21
+
+The same phone, reached over wireless debugging. **The first arm64 APK Rux has
+ever built**: `rux run --device` read `ro.product.cpu.abi` off the phone and
+compiled `aarch64-linux-android` without being told, which is the whole point of
+reversing `DEV_ABI` to the emulator's x86_64. 3m 03s cold, and **7.9s to rebuild
+after editing the document**, on a device none of the four ABIs had ever run on.
+
+Driven on a TECNO Spark 20, Android 13, 720x1612 at density 2.0.
+
+| Case | How | Result |
+|---|---|---|
+| `@press`, `@release` | real finger | Both fire |
+| Coordinates | `input tap` at known points | **Exact.** A tap at physical 360,200 reported `rel 164,50 page 180,100`; at 360,600, `rel 164,250 page 180,300`. Predicted to the pixel at density 2.0, in both axes |
+| `@drag` | `input swipe`, 1000ms | `drag end, total 0,185`. The swipe crossed 370 physical pixels, which is 185 logical. `totalX` 0 |
+| `@swipe` | `input swipe`, 80ms | `swipe up, totalX 0 totalY -185`, **and** a `drag end` from the same gesture. Confirms on hardware that a drag ending as a flick fires both, which was a design decision no screen had yet tested |
+| `@longpress` | real finger, held still | **Fires.** A synthetic `input swipe X Y X Y 1200` did *not* produce one, so the injector is not a substitute for a hand here |
+| **Two or more fingers** | real hand | **Works, and this is the item's whole premise.** Four simultaneous points reported, and a three-finger drag fired `@drag` carrying all three. `touches` being a list from the start was the right shape: nothing in the vocabulary had to change to meet a second finger |
+| Timers, with no input at all | `examples/interval.rux` | Counts 0 to 5 unaided, so `ControlFlow::WaitUntil` wakes the loop on Android. The same five clocks drive caret blink and the animator, so both are covered by this one run |
+
+**The example that demonstrates the vocabulary could not demonstrate it.**
+`examples/gestures.rux` read `event.touches.length` only in `@press`, and a
+press reports one finger by construction, so the file written to show multi-touch
+showed 1 on a four-finger hand. Fixed the same day by reading the count in
+`@drag` as well, and driven: a two-finger drag now reports **2**. The lead text
+was wrong in the same way and says what actually happens now.
+
+**A coordinate on a touchscreen is fractional.** The same drag reported
+`total 90.5,6.5` and a press at `165.5,307`, and an earlier one reported
+`-70.82003784179688`. Android's `MotionEvent` carries sub-pixel positions, so
+dividing by the scale factor lands anywhere, and a value that is tidy on a
+desktop is seventeen digits on a phone. Logged in `docs/09-author-notes.md`.
+
+**Two wrong conclusions were reached and corrected, both by evidence rather than
+by argument, and both are the reason this file exists.**
+
+1. **A press reported `y` of 49 three times running, which read as a scaling
+   bug.** Injected taps at known coordinates proved every value exact. The
+   presses had simply landed near the top of the pad. **A suspicious number is
+   not a defect until something with known inputs disagrees.**
+2. **A screenshot came back black and was read as a failed render**, which sent
+   the search into `gralloc4: Unrecognized and/or unsupported format 0x38` and
+   the `AHardwareBuffer` failures under it. The user said the app was on screen
+   and running. The capture had caught the splash transition, and those gralloc
+   lines are vendor noise that appears while the app renders correctly. **On
+   this device `adb exec-out screencap` is reliable only once the app has
+   settled**, and the earlier lesson about a black capture applies again in a
+   new form: run the control, and ask the person holding the phone.
+
 ## Standing gaps
 
 Cases nothing here can currently exercise. They are the shape of what v0.8 has
 to prove.
 
-- **Two or more fingers**: reported by the runtime, never yet produced.
-- **Kinetic scrolling and inertial fling**: unimplemented, untestable here.
+- ~~**Two or more fingers**: reported by the runtime, never yet produced.~~
+  **CLOSED 2026-09-21**, above: four at once, and a three-finger drag.
+- **Kinetic scrolling and inertial fling**: unimplemented. Now testable.
 - **The axis claim in full**: a `@drag` claims the finger, but whether a scroll
   can take it back mid-gesture needs a real screen to have an opinion about.
-- **Native pickers, safe areas, orientation, density**: no device.
+  **The screen now exists; the question is still open.**
+- ~~**Native pickers, safe areas, orientation, density**: no device.~~ Driven on
+  the emulator 2026-09-20, and **not yet re-driven on the phone**.
+- **IME on real hardware**: composition is proven only against
+  AnySoftKeyboard on the emulator.
 - **A locked screen captures as pure black.** Not a standing gap, but worth
   knowing: on 2026-08-19 every screenshot came back black until the user
   unlocked the machine, including one of a known-good example. Run the control
