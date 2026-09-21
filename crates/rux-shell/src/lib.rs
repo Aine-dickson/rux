@@ -342,6 +342,30 @@ struct GesturePress {
     /// A long press fires once. Without this it would fire on every wake-up
     /// while the finger rested.
     long_fired: bool,
+    /// `touch-action` on the element the press landed on, which decides whether
+    /// a scroller is allowed to take this gesture instead.
+    touch_action: rux_layout::TouchAction,
+    /// Whether this press came from a finger rather than a mouse button.
+    ///
+    /// The axis claim is **touch only**, and not as a simplification: a mouse
+    /// does not scroll by dragging, it scrolls by wheel, so the mouse path has
+    /// no `scroll_at` at all. Letting a scroller "win" a mouse drag would hand
+    /// the gesture to something that does nothing with it, and the drag would
+    /// simply stop working on the desktop.
+    from_touch: bool,
+    /// The axis arbitration, decided once when the finger first passes the slop
+    /// threshold and never revisited.
+    ///
+    /// `None` means the question has not been asked yet. `Some(true)` means a
+    /// scroller took this gesture and `@drag` must stay out of it for the rest
+    /// of the press; `Some(false)` means the element has it.
+    ///
+    /// It is settled once rather than re-evaluated per move because a gesture
+    /// that changes owner mid-flight is visibly wrong, and because no platform
+    /// does it: iOS arbitrates its pan recognizers on the initial translation,
+    /// Android intercepts at the slop crossing, and the web decides ahead of
+    /// time from `touch-action`.
+    scroll_won: Option<bool>,
 }
 
 /// The fields a drag or swipe adds: which part of the gesture this is, how far
@@ -1531,6 +1555,25 @@ impl App {
         }
     }
 
+    /// Whether some scroller under `at` can actually travel on the axis a
+    /// gesture is heading down, which is what decides the axis claim.
+    ///
+    /// `at` is the point the press landed, in logical px, and not where the
+    /// finger is now: the question is which box the gesture started inside, and
+    /// a fast move can already be outside it by the time the slop is crossed.
+    ///
+    /// "Can travel" is deliberately stricter than "is a scroller": a box whose
+    /// content fits has `max` zero on that axis, and taking a gesture it cannot
+    /// use would swallow the drag and then do nothing, which is the worst of
+    /// both answers.
+    fn scroller_can_take(&self, at: (f32, f32), vertical: bool) -> bool {
+        self.scrolls
+            .iter()
+            .rev()
+            .find(|s| s.contains(at.0, at.1) && s.scrollable())
+            .is_some_and(|s| if vertical { s.max.y > 0.0 } else { s.max.x > 0.0 })
+    }
+
     /// Start a scrollbar drag if the press landed on a thumb. Returns whether it
     /// did, in which case the press is the bar's, not a tap's.
     fn press_scrollbar(&mut self, pointer: (f64, f64)) -> bool {
@@ -2348,14 +2391,14 @@ impl App {
     ///
     /// Called from both the mouse and the touchscreen, with the position already
     /// in logical pixels, so the two cannot drift apart in what a gesture means.
-    fn begin_gesture(&mut self, fx: f32, fy: f32) {
+    fn begin_gesture(&mut self, fx: f32, fy: f32, from_touch: bool) {
         let found = self
             .hits
             .iter()
             .rev()
             .find(|h| !h.gestures.is_empty() && h.contains(fx, fy))
-            .map(|h| (h.gestures.clone(), h.instance.clone(), (h.x, h.y)));
-        let Some((handlers, instance, origin)) = found else {
+            .map(|h| (h.gestures.clone(), h.instance.clone(), (h.x, h.y), h.touch_action));
+        let Some((handlers, instance, origin, touch_action)) = found else {
             self.gesture = None;
             self.gesture_deadline = None;
             return;
@@ -2370,6 +2413,9 @@ impl App {
             at: Instant::now(),
             dragging: false,
             long_fired: false,
+            touch_action,
+            from_touch,
+            scroll_won: None,
         });
         // Only armed when something is listening, so a page full of ordinary
         // buttons still sleeps between events.
@@ -2387,6 +2433,30 @@ impl App {
             self.gesture_deadline = None;
         }
         if !press.handlers.iter().any(|(g, _)| *g == rux_layout::Gesture::Drag) {
+            return;
+        }
+        // The axis claim. Asked once, the moment the finger first passes the
+        // slop threshold, because before that the dominant axis is noise and
+        // after that the answer must not change under the hand.
+        if press.from_touch && press.scroll_won.is_none() && travelled > TAP_SLOP as f32 {
+            let (dx, dy) = (fx - press.start.0, fy - press.start.1);
+            let vertical = dy.abs() >= dx.abs();
+            // A scroller only wins an axis it can actually scroll. That is what
+            // lets a horizontal carousel inside a vertical page take horizontal
+            // drags with no CSS written at all, while a vertical thumb-swipe
+            // over the same carousel still scrolls the page.
+            let scroll_won = press.touch_action.scroller_may_take(vertical)
+                && self.scroller_can_take(press.start, vertical);
+            if let Some(g) = self.gesture.as_mut() {
+                g.scroll_won = Some(scroll_won);
+            }
+            if scroll_won {
+                return;
+            }
+        }
+        // The scroller took this gesture at the slop crossing, so `@drag` stays
+        // out of it for the rest of the press.
+        if press.scroll_won == Some(true) {
             return;
         }
         if !press.dragging {
@@ -4217,7 +4287,7 @@ impl ApplicationHandler<RuxEvent> for App {
                         // the `touches` list every handler reads, rather than
                         // starting a competing press.
                         if self.points.len() == 1 {
-                            self.begin_gesture(here.0, here.1);
+                            self.begin_gesture(here.0, here.1, true);
                         }
                         // Same order as the mouse: the dev overlay is above
                         // everything, so a finger on it arms a dismiss rather
@@ -4374,7 +4444,7 @@ impl ApplicationHandler<RuxEvent> for App {
                 // selection or a scrollbar drag: those are the shell's, this is
                 // the app's, and an element that asked for `@press` asked for
                 // every press on it.
-                self.begin_gesture(here.0, here.1);
+                self.begin_gesture(here.0, here.1, false);
                 if self.overlay_covers_physical(self.pointer) {
                     self.press = Some(self.pointer);
                 } else if !self.press_scrollbar(self.pointer) && !self.press_text(self.pointer) {

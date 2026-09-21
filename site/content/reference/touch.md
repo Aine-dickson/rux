@@ -20,4 +20,6 @@ a drag.
 
 **Not done:** no kinetic or inertial fling after the finger lifts, and no pinch
 zoom. Multi-touch is *reported* (see the pointer vocabulary below) but nothing
-in the runtime interprets a second finger yet.
+in the runtime interprets a second finger yet. The reporting was confirmed on a
+phone on 2026-09-21: four simultaneous points, and a three-finger drag carrying
+all three.

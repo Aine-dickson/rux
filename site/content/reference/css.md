@@ -40,6 +40,8 @@ overflow, overflow-x, overflow-y     (hidden|clip = clip; auto|scroll = scroll;
                                       both axes together; x and y can't differ)
 overflow-wrap (break-word), word-wrap (the legacy alias for it), word-break (break-all)
 cursor (pointer, on @tap boxes only)
+touch-action (auto | none | pan-x | pan-y; who wins between a @drag and a
+                       scroller, settled at the drag threshold; touch only)
 fill, fill-rule, stroke, stroke-width, stroke-linecap, stroke-linejoin
   (<path> only; see above)
 ```

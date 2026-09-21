@@ -19,7 +19,7 @@ use lightningcss::traits::ToCss;
 use rux_layout::{
     Access, AccessRole, Align, Axis, Background, BoxShadow, Cursor, Display, Gradient, GridPlace, ImageContent, Justify,
     Len, Node as LayoutNode, Overflow, Position, Rgba, Sides, Style, TextAlign, TextContent,
-    TextWrap, Track, TrackSide,
+    TextWrap, TouchAction, Track, TrackSide,
 };
 use rux_layout::{AnimProp, Easing, GradientKind, GridFlow, Transform, Transition};
 use rux_layout::{FillRule, LineCap, LineJoin, PathContent};
@@ -2775,7 +2775,7 @@ const HONORED_PROPERTIES: &[&str] = &[
     "border-bottom-right-radius", "border-bottom-left-radius",
     "border-top", "border-right", "border-bottom", "border-left",
     "border-top-width", "border-right-width", "border-bottom-width", "border-left-width",
-    "overflow", "overflow-x", "overflow-y", "opacity", "cursor", "box-shadow", "transform",
+    "overflow", "overflow-x", "overflow-y", "opacity", "cursor", "touch-action", "box-shadow", "transform",
     "transition",
     // Flex / grid
     "flex", "flex-grow", "flex-shrink", "flex-basis", "flex-wrap", "flex-direction",
@@ -5853,6 +5853,18 @@ fn interpret(p: &HashMap<String, String>) -> Style {
             _ => {}
         }
     }
+    if let Some(v) = p.get("touch-action") {
+        // Which axes a scroller may still take from a finger that starts here.
+        // `manipulation` is accepted as a synonym for `auto`: on the web it only
+        // turns off double-tap zoom, which Rux has no equivalent of, so the two
+        // mean the same thing here rather than the keyword being an error.
+        st.touch_action = match v.trim() {
+            "none" => TouchAction::None,
+            "pan-x" => TouchAction::PanX,
+            "pan-y" => TouchAction::PanY,
+            _ => TouchAction::Auto,
+        };
+    }
     if let Some(v) = p.get("cursor") {
         // Only `pointer` maps to a distinct shape today; everything else keeps
         // the default arrow. The shell applies this on hover for tappable boxes.
@@ -6933,6 +6945,28 @@ mod tests {
     }
     use rux_script::{Builder, Engine};
     use std::collections::HashMap;
+
+    /// `touch-action` decides who wins when a `@drag` and a scroller both want
+    /// the same finger, so an unparsed value would silently hand every gesture
+    /// to the element and reinstate the dead zone this property exists to fix.
+    #[test]
+    fn touch_action_parses() {
+        use super::TouchAction;
+        let of = |v: &str| {
+            interpret(&HashMap::from([("touch-action".to_string(), v.to_string())])).touch_action
+        };
+        assert_eq!(of("none"), TouchAction::None);
+        assert_eq!(of("pan-x"), TouchAction::PanX);
+        assert_eq!(of("pan-y"), TouchAction::PanY);
+        assert_eq!(of("auto"), TouchAction::Auto);
+        // Whitespace is CSS-legal and must not change the meaning.
+        assert_eq!(of("  none  "), TouchAction::None);
+        // `manipulation` only disables double-tap zoom on the web, which has no
+        // equivalent here, so it means `auto` rather than being an error.
+        assert_eq!(of("manipulation"), TouchAction::Auto);
+        // The default is CSS's, and is NOT "the element wins".
+        assert_eq!(interpret(&HashMap::new()).touch_action, TouchAction::Auto);
+    }
 
     /// `honored_pseudo_classes` is what the editor completes `:` from, and
     /// `Pseudo::parse` is what actually matches. A name in the first that the

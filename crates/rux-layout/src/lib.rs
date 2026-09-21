@@ -201,6 +201,53 @@ pub enum Cursor {
     Pointer,
 }
 
+/// `touch-action`: which axes a finger may still scroll when it starts on this
+/// element, and therefore who wins when a `@drag` and a scroller both want the
+/// same gesture.
+///
+/// This exists because a `@drag` used to claim every finger that landed on it,
+/// in any direction, which made a draggable row inside a scrolling list a dead
+/// zone: a thumb that happened to start on it could not scroll the page at all.
+/// Found on a phone, where scrolling is the primary gesture and the failure is
+/// immediate.
+///
+/// The default is **not** "the element wins". It is CSS's `auto`, under which a
+/// scroller keeps whichever axis it can actually scroll and the drag takes what
+/// is left. An author who wants the element to have the finger outright says so,
+/// exactly as on the web.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum TouchAction {
+    /// The scroller keeps any axis it can scroll. A drag still starts on an
+    /// axis nothing can scroll, which is what makes a horizontal carousel work
+    /// inside a vertical page with no CSS at all.
+    #[default]
+    Auto,
+    /// The element takes the finger whatever it does, and nothing scrolls.
+    /// The opt-out, for a drag that genuinely owns both axes.
+    None,
+    /// The scroller keeps the horizontal axis only.
+    PanX,
+    /// The scroller keeps the vertical axis only.
+    PanY,
+}
+
+impl TouchAction {
+    /// Whether a scroller may take a gesture whose dominant axis is vertical
+    /// (`vertical = true`) or horizontal.
+    ///
+    /// The question is asked once, at the moment the finger passes the slop
+    /// threshold, because that is when the dominant axis first means anything
+    /// and because no platform hands a gesture back once it has started.
+    pub fn scroller_may_take(self, vertical: bool) -> bool {
+        match self {
+            TouchAction::Auto => true,
+            TouchAction::None => false,
+            TouchAction::PanX => !vertical,
+            TouchAction::PanY => vertical,
+        }
+    }
+}
+
 /// `position`, with CSS's meanings.
 ///
 /// `Static` is the default and the only value that is **not** a containing
@@ -581,6 +628,10 @@ pub struct Style {
     pub transform: Option<Transform>,
     /// `cursor`: the pointer shape over this box.
     pub cursor: Cursor,
+    /// `touch-action`: which axes a scroller may still take from a finger that
+    /// starts here. Read only where a gesture handler exists, since it only
+    /// arbitrates between a `@drag` and a scroller.
+    pub touch_action: TouchAction,
     /// `position` and its `inset` (top, right, bottom, left). `None` per side =
     /// `auto`. Only meaningful when `position: absolute`.
     pub position: Position,
@@ -689,6 +740,7 @@ impl Default for Style {
             box_shadow: None,
             transform: None,
             cursor: Cursor::Default,
+            touch_action: TouchAction::Auto,
             position: Position::Static,
             inset: [None; 4],
             aspect_ratio: None,
@@ -1291,6 +1343,10 @@ pub struct HitRegion {
     /// it hovers here. Carried on the hit region because that is the geometry the
     /// shell already hit-tests; a `cursor` on a non-tappable box is not honored.
     pub cursor: Cursor,
+    /// The `touch-action` for this region, carried for the same reason as
+    /// `cursor`: the shell arbitrates the gesture against the geometry it
+    /// already hit-tests, and the answer has to travel with it.
+    pub touch_action: TouchAction,
     /// The component instance this handler was written in, if any. Its state is
     /// what the handler reads and writes, and two instances of one component
     /// carry identical handler text, so the text alone cannot say which.
@@ -2026,7 +2082,14 @@ fn build(
     tree: &mut TaffyTree<TextContent>,
     node: &Node,
     paint: &mut Vec<(NodeId, PaintKind)>,
-    handlers: &mut Vec<(NodeId, Option<String>, Vec<(Gesture, String)>, Cursor, Option<String>)>,
+    handlers: &mut Vec<(
+        NodeId,
+        Option<String>,
+        Vec<(Gesture, String)>,
+        Cursor,
+        TouchAction,
+        Option<String>,
+    )>,
     models: &mut Vec<Bound>,
     focus_labels: &mut Vec<(NodeId, String, Option<String>)>,
     hidden: &mut Vec<NodeId>,
@@ -2246,6 +2309,7 @@ fn build(
             node.on_tap.clone(),
             node.gestures.clone(),
             node.style.cursor,
+            node.style.touch_action,
             node.instance.clone(),
         ));
     }
@@ -2313,7 +2377,14 @@ fn collect(
     origin_x: f32,
     origin_y: f32,
     paint: &[(NodeId, PaintKind)],
-    handlers: &[(NodeId, Option<String>, Vec<(Gesture, String)>, Cursor, Option<String>)],
+    handlers: &[(
+        NodeId,
+        Option<String>,
+        Vec<(Gesture, String)>,
+        Cursor,
+        TouchAction,
+        Option<String>,
+    )],
     models: &[Bound],
     focus_labels: &[(NodeId, String, Option<String>)],
     hidden: &[NodeId],
@@ -2563,7 +2634,7 @@ fn collect(
         });
     }
 
-    if let Some((_, handler, gestures, cursor, instance)) =
+    if let Some((_, handler, gestures, cursor, touch_action, instance)) =
         handlers.iter().find(|(nid, ..)| *nid == id)
     {
         out.hits.push(HitRegion {
@@ -2575,6 +2646,7 @@ fn collect(
             on_tap: handler.clone(),
             gestures: gestures.clone(),
             cursor: *cursor,
+            touch_action: *touch_action,
             instance: instance.clone(),
         });
     }
@@ -2664,7 +2736,7 @@ fn collect(
                 scroll: inside_scroll,
             });
         }
-    } else if let Some((_, Some(handler), _, _, instance)) =
+    } else if let Some((_, Some(handler), _, _, _, instance)) =
         handlers.iter().find(|(nid, ..)| *nid == id)
     {
         // A button / checkbox / radio (anything with a `@tap` handler) is
@@ -3032,6 +3104,7 @@ mod hit_transform_tests {
             on_tap: None,
             gestures: Vec::new(),
             cursor: Cursor::default(),
+            touch_action: TouchAction::default(),
             instance: None,
         }
     }
@@ -3148,5 +3221,43 @@ mod reveal_tests {
         });
         let offsets = vec![Offset { x: 0.0, y: 0.0 }, Offset { x: 0.0, y: 0.0 }];
         assert_eq!(containing_scroller(&scrolls, &offsets, 40.0, 500.0), Some(1));
+    }
+}
+
+#[cfg(test)]
+mod touch_action_tests {
+    use super::TouchAction;
+
+    /// The axis claim in one table. `scroller_may_take` is asked once, at the
+    /// slop crossing, and its answer decides whether a `@drag` ever starts.
+    ///
+    /// The row that matters most is `Auto` with a vertical gesture: before this
+    /// existed, a `@drag` took every finger in every direction, which made a
+    /// draggable row inside a scrolling list impossible to scroll past.
+    #[test]
+    fn scroller_may_take_by_axis() {
+        // vertical = true means the gesture's dominant axis is vertical.
+        assert!(TouchAction::Auto.scroller_may_take(true));
+        assert!(TouchAction::Auto.scroller_may_take(false));
+
+        // The opt-out: the element owns the finger on both axes.
+        assert!(!TouchAction::None.scroller_may_take(true));
+        assert!(!TouchAction::None.scroller_may_take(false));
+
+        // `pan-x` keeps horizontal scrolling and gives the element vertical.
+        assert!(!TouchAction::PanX.scroller_may_take(true));
+        assert!(TouchAction::PanX.scroller_may_take(false));
+
+        // `pan-y` is the mirror, and is what a horizontal carousel inside a
+        // vertical page would declare if it wanted the page to keep vertical.
+        assert!(TouchAction::PanY.scroller_may_take(true));
+        assert!(!TouchAction::PanY.scroller_may_take(false));
+    }
+
+    /// The default is CSS's `auto`, not "the element wins". A change here is a
+    /// change to what every existing document does with a finger.
+    #[test]
+    fn default_is_auto() {
+        assert_eq!(TouchAction::default(), TouchAction::Auto);
     }
 }

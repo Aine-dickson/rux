@@ -2171,11 +2171,19 @@ here.
    `@drag` all fire, and a flick fires a drag end and a swipe together, as
    designed.
 
+   **The axis claim is settled, same day.** It was filed as "can a scroll take
+   the finger back mid-gesture", and a real screen showed that was the wrong
+   question: nothing is taken back, the decision simply happens earlier and on
+   direction. The dominant axis at the slop crossing is compared against what a
+   scroller under the press can actually travel on, once, and `touch-action`
+   overrides it with CSS's own keywords. The failure it fixes was demonstrated
+   first: a vertical drag beginning on a `@drag` box inside a scrolling list
+   fired six drag events and scrolled the list by nothing, which made any
+   draggable row a dead zone for the primary gesture on a phone. Written up in
+   `docs/05-as-built.md`.
+
    **What is left is interpretation, not reporting.** Nothing turns two fingers
-   into a pinch or a rotate, and the axis-claim rule is still half-settled: the
-   real screen it was waiting for now exists, and the question of whether a
-   scroll can take the finger back from a running `@drag` is still open. That
-   question is now answerable rather than blocked.
+   into a pinch or a rotate. That is the remainder of this item.
 
 9. **Device diagnostics in `rux doctor`.** Added 2026-09-21, the first time a
    physical phone was attached to this project.

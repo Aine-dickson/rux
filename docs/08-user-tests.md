@@ -1262,6 +1262,48 @@ by argument, and both are the reason this file exists.**
    settled**, and the earlier lesson about a black capture applies again in a
    new form: run the control, and ask the person holding the phone.
 
+## The axis claim, settled on the phone, 2026-09-21
+
+The rule had been half-settled since v0.7 for one reason: no screen to argue
+with. The argument took about five minutes once there was one.
+
+The probe is a scrolling list of sixteen rows with one `@drag` box in the middle
+of it, which is the shape every real app has: a swipe-to-delete row, a slider, a
+carousel, a drag handle.
+
+| Case | Before | After |
+|---|---|---|
+| Vertical drag starting on a plain row | Page scrolls | Page scrolls |
+| **Vertical drag starting on the `@drag` box** | **`@drag` fires six times and the page does not move at all** | **`@drag` does not fire, the page scrolls** |
+| **Horizontal drag starting on the `@drag` box** | `@drag` fires | **`@drag` fires five times, `totalY 0`, page unmoved** |
+
+The middle row is the defect, and it is the whole argument for the change: a
+draggable element inside a scrolling list was a **dead zone**, where a thumb
+that happened to land on it could not scroll the page. Scrolling is the primary
+gesture on a phone, and no desktop could show this because a mouse scrolls by
+wheel.
+
+The bottom row is the half that proves the rule is a rule and not just "the
+scroller always wins": nothing can scroll sideways here, so the element keeps
+the horizontal axis, and a carousel inside a vertical page works with no CSS
+written at all.
+
+**The question was filed wrong, and the hardware is what showed it.** It had
+been recorded as "can a scroll take the finger back mid-gesture", which assumes
+the decision is about time. Nothing is taken back. The decision happens earlier
+and on direction, which is what every platform does and what `touch-action`
+already expresses on the web.
+
+**A desktop regression was nearly shipped with it.** `move_gesture` is shared
+with `CursorMoved`, and the mouse path has no drag-scroll at all, so a scroller
+"winning" a mouse drag would have handed the gesture to something with nothing
+to do with it, and drags would have stopped working in a desktop window while
+every touch test stayed green. It is gated behind `from_touch`.
+
+**Two vocabulary gates earned their keep.** `touch-action` was honored and
+undescribed, and then described with no worked example; both were caught by
+tests rather than by review, which is the arrangement working as designed.
+
 ## Standing gaps
 
 Cases nothing here can currently exercise. They are the shape of what v0.8 has
@@ -1270,9 +1312,10 @@ to prove.
 - ~~**Two or more fingers**: reported by the runtime, never yet produced.~~
   **CLOSED 2026-09-21**, above: four at once, and a three-finger drag.
 - **Kinetic scrolling and inertial fling**: unimplemented. Now testable.
-- **The axis claim in full**: a `@drag` claims the finger, but whether a scroll
-  can take it back mid-gesture needs a real screen to have an opinion about.
-  **The screen now exists; the question is still open.**
+- ~~**The axis claim in full**: a `@drag` claims the finger, but whether a
+  scroll can take it back mid-gesture needs a real screen to have an opinion
+  about.~~ **CLOSED 2026-09-21**, above. The screen had an opinion, and it was
+  that the question was the wrong one.
 - ~~**Native pickers, safe areas, orientation, density**: no device.~~ Driven on
   the emulator 2026-09-20, and **not yet re-driven on the phone**.
 - **IME on real hardware**: composition is proven only against

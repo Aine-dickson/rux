@@ -492,6 +492,8 @@ overflow, overflow-x, overflow-y     (hidden|clip = clip; auto|scroll = scroll;
                                       both axes together; x and y can't differ)
 overflow-wrap (break-word), word-wrap (the legacy alias for it), word-break (break-all)
 cursor (pointer, on @tap boxes only)
+touch-action (auto | none | pan-x | pan-y; who wins between a @drag and a
+                       scroller, settled at the drag threshold; touch only)
 fill, fill-rule, stroke, stroke-width, stroke-linecap, stroke-linejoin
   (<path> only; see above)
 ```
@@ -1242,7 +1244,9 @@ a drag.
 
 **Not done:** no kinetic or inertial fling after the finger lifts, and no pinch
 zoom. Multi-touch is *reported* (see the pointer vocabulary below) but nothing
-in the runtime interprets a second finger yet.
+in the runtime interprets a second finger yet. The reporting was confirmed on a
+phone on 2026-09-21: four simultaneous points, and a three-finger drag carrying
+all three.
 
 ### The pointer vocabulary
 
@@ -1279,10 +1283,41 @@ They were exclusive at first, and that made `@swipe` unreachable on any element
 that also declared `@drag`, since movement starts the drag first. A long press
 stays exclusive, because a press that moved is not resting.
 
-**A `@drag` claims the finger**: the page under it does not scroll while the
-drag runs. That is the settled half of the axis-claim rule. Whether a scroll can
-take the finger back mid-gesture is deliberately undecided until there is touch
-hardware to argue with.
+**The axis claim, settled on hardware 2026-09-21.** A `@drag` used to take every
+finger that landed on it, in any direction, and the page under it never scrolled.
+That is fine on a desktop and wrong on a phone: it made a draggable row inside a
+scrolling list a **dead zone**, where a thumb that happened to start on the wrong
+element could not scroll the page at all. Driven on a device before the change: a
+purely vertical drag beginning on a `@drag` box fired six drag events and moved
+the list by nothing.
+
+**The winner is decided by direction, once.** At the moment the finger passes
+`TAP_SLOP`, the dominant axis is compared against what a scroller under the press
+can actually travel on. If some scroller can move on that axis, it takes the
+gesture and `@drag` never starts for that press. Otherwise the element keeps it.
+The answer is never revisited: a gesture that changes owner under the hand is
+visibly wrong, and no platform does it. iOS arbitrates its pan recognizers on the
+initial translation, Android intercepts at the slop crossing, and the web decides
+ahead of time from `touch-action`.
+
+So the question this was filed under, "can a scroll take the finger back
+mid-gesture", turned out to be the wrong question. Nothing is taken back. The
+decision simply happens earlier, and on direction rather than on time.
+
+**"Can travel" is stricter than "is a scroller".** A box whose content fits has
+no room on that axis, so it does not take the gesture: winning a finger and then
+doing nothing with it is the worst of both answers. This is also what makes a
+horizontal carousel inside a vertical page work with **no CSS at all**, since
+nothing can scroll sideways there and the drag keeps the axis it needs.
+
+**`touch-action` overrides it**, with CSS's own values: `none` gives the element
+the finger outright, `pan-x` and `pan-y` reserve one axis for the scroller, and
+the default `auto` is the rule above. The default is deliberately not "the
+element wins", because that was the behaviour that produced the dead zone.
+
+**It is touch only.** A mouse scrolls by wheel and never by dragging, so the
+mouse path has no drag-scroll to hand a gesture to; letting a scroller win there
+would stop drags working on the desktop for nothing gained.
 
 **A laptop touchpad reaches the app as a mouse**, so it reports one finger
 however many are on the pad. Only a touchscreen, or a browser's touch emulation
