@@ -1304,6 +1304,38 @@ every touch test stayed green. It is gated behind `from_touch`.
 undescribed, and then described with no worked example; both were caught by
 tests rather than by review, which is the arrangement working as designed.
 
+## Kinetic scrolling, and a build that hid it, 2026-09-21
+
+An 80-row list, then a 30-row one, on the phone. The gesture is the same drag
+every time, 700 physical px, and only its **speed** changes: a slow one should
+stop where the finger did, a fast one should carry on.
+
+| Case | Build | Result |
+|---|---|---|
+| Slow drag, 600 ms | debug | Row 1 to row 7 at the top. Tracks the finger |
+| **Fast flick, 100 ms** | debug | **Row 7 as well.** Identical, so no coast at all |
+| Slow drag, 600 ms | **release** | Row 1 to row 8, about 126 px past the finger |
+| **Fast flick, 100 ms** | **release** | **Runs the list to its end** |
+
+**The debug build made a working fling look broken**, and it is worth knowing
+exactly how. The lift velocity is timed by when the shell *processes* each move,
+because winit carries no timestamp on a touch event. A build that cannot keep up
+spreads a 100 ms flick over about a second of wall clock and concludes the
+finger was moving ten times slower than it was. Everything downstream is then
+correct and tiny.
+
+**The arithmetic is what identified it, before the release build confirmed it.**
+A fling coasts `TAU * (v0 - MIN_V)` before it stalls. Rebuilding with
+`TAU = 2500` and `MIN_V = 0.001` sent the same flick to the end of the list,
+which puts `v0` near 0.33 px/ms; the finger had actually moved 350 px in 100 ms,
+which is 3.5. A tenfold gap is not a tuning problem, and that is what pointed at
+the clock rather than at the constants.
+
+**An 80-row list in a debug build barely scrolled at all**, moving about one row
+for a 350 px drag, because Android coalesces touch events an app is too slow to
+consume. That is not a scrolling defect either, and it is the same cause wearing
+different clothes. Thirty rows tracked the finger correctly.
+
 ## Standing gaps
 
 Cases nothing here can currently exercise. They are the shape of what v0.8 has
@@ -1311,7 +1343,8 @@ to prove.
 
 - ~~**Two or more fingers**: reported by the runtime, never yet produced.~~
   **CLOSED 2026-09-21**, above: four at once, and a three-finger drag.
-- **Kinetic scrolling and inertial fling**: unimplemented. Now testable.
+- ~~**Kinetic scrolling and inertial fling**: unimplemented.~~ **CLOSED
+  2026-09-21**, above. Built and driven, and judge it in a release build.
 - ~~**The axis claim in full**: a `@drag` claims the finger, but whether a
   scroll can take it back mid-gesture needs a real screen to have an opinion
   about.~~ **CLOSED 2026-09-21**, above. The screen had an opinion, and it was

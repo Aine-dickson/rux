@@ -173,6 +173,63 @@ const TAP_SLOP: f64 = 6.0;
 /// longer and the field feels unresponsive.
 const LONG_PRESS: Duration = Duration::from_millis(500);
 
+/// How fast the finger must still be moving when it lifts for the scroller to
+/// carry on, in **logical px per millisecond**. Below it, a lift is a stop.
+///
+/// Without a floor every scroll ends in a tiny creep, which reads as the list
+/// failing to settle rather than as momentum.
+const FLING_MIN_V: f32 = 0.05;
+
+/// The time constant of the fling's decay, in milliseconds: velocity falls by
+/// `1/e` every `FLING_TAU`.
+///
+/// The decay is **time-based rather than per-frame**. A per-frame multiplier is
+/// the usual shortcut and it makes the distance thrown depend on the refresh
+/// rate, so the same flick travels further on a 120 Hz phone than a 60 Hz one.
+/// Phones vary their refresh rate while running, so that is not even stable on
+/// one device.
+const FLING_TAU: f32 = 325.0;
+
+/// How far back to look when measuring the lift velocity, in milliseconds.
+///
+/// Measuring the **last move alone** is the obvious thing and it is wrong in the
+/// case that matters: dragging a list, holding it still, then lifting would
+/// throw it, because the final event pair can be a stale delta over a tiny
+/// interval. A window over the recent path reports what the hand was actually
+/// doing, and reports roughly zero for a finger that had stopped.
+const FLING_SAMPLE_MS: f32 = 100.0;
+
+/// One step of the fling's decay: how far it travels in `dt_ms`, and what
+/// velocity is left afterwards.
+///
+/// Split out from the stepping so the property the whole design rests on can be
+/// tested: with `v = v0 * e^(-t/tau)`, the distance over a step is the integral,
+/// `v0 * tau * (1 - e^(-dt/tau))`, and **one long step travels exactly as far as
+/// many short ones**. Multiplying velocity by elapsed time instead is the usual
+/// shortcut, and it undershoots by more the longer the frame, so a list thrown
+/// on a busy frame would travel less than the same throw on an idle one.
+fn fling_step(v: f32, dt_ms: f32) -> (f32, f32) {
+    let decay = (-dt_ms / FLING_TAU).exp();
+    (v * FLING_TAU * (1.0 - decay), v * decay)
+}
+
+/// A scroller still moving after the finger left it.
+#[derive(Clone, Copy, Debug)]
+struct Fling {
+    /// Which scroller is moving. Captured when the drag scrolled, not looked up
+    /// again per frame: the finger has gone, so there is no pointer to ask, and
+    /// a fling that re-tested position could hand itself to a different box
+    /// halfway through.
+    id: usize,
+    /// Content velocity in logical px per ms, already in the sense `scroll_to`
+    /// wants: positive moves the content the way a downward drag does.
+    vx: f32,
+    vy: f32,
+    /// When the last step ran, so a step advances by real elapsed time rather
+    /// than by an assumed frame.
+    last: Instant,
+}
+
 /// The selection toolbar's height and the padding around its labels, in logical
 /// px.
 const TOOLBAR_H: f32 = 34.0;
@@ -1183,6 +1240,18 @@ struct App {
     bar_drag: Option<BarDrag>,
     /// Where the finger last was during a touch drag, in logical px.
     touch: Option<(f32, f32)>,
+    /// Recent finger positions with the time each arrived, for the lift
+    /// velocity. Trimmed to `FLING_SAMPLE_MS`, so it stays a handful of entries
+    /// and never grows with the length of a drag.
+    touch_track: Vec<(Instant, (f32, f32))>,
+    /// Which scroller the current touch drag actually moved, if any.
+    ///
+    /// Recorded rather than recomputed at lift because by then the finger is
+    /// gone. It is also the test for whether a fling is allowed at all: a lift
+    /// that never scrolled anything has nothing to throw.
+    scroll_target: Option<usize>,
+    /// A scroller coasting after the finger left. `None` when nothing is.
+    fling: Option<Fling>,
     /// The pointer handlers of whatever is being pressed, and what has happened
     /// to that press so far. `None` when nothing is held, or when the press
     /// landed on something with no pointer handlers at all.
@@ -1346,6 +1415,9 @@ impl App {
             gesture_deadline: None,
             points: Vec::new(),
             touch: None,
+            touch_track: Vec::new(),
+            scroll_target: None,
+            fling: None,
             focused: None,
             focused_row: None,
             focused_instance: None,
@@ -1535,6 +1607,10 @@ impl App {
             return;
         };
         let (id, max) = (region.id, region.max);
+        // Remembered for the fling: at lift there is no finger left to hit-test
+        // with, and the box that was being scrolled is the only one that may be
+        // thrown.
+        self.scroll_target = Some(id);
         self.scroll_to(
             id,
             Offset {
@@ -1553,6 +1629,91 @@ impl App {
                 self.request_redraw();
             }
         }
+    }
+
+    /// Record where the finger is now, for the lift velocity, and drop samples
+    /// that have aged out of the window.
+    fn track_touch(&mut self, here: (f32, f32)) {
+        let now = Instant::now();
+        self.touch_track.push((now, here));
+        let window = Duration::from_secs_f32(FLING_SAMPLE_MS / 1000.0);
+        // Keep one sample older than the window so a slow drag, which may have
+        // only two samples in 100 ms, still has a pair to measure between.
+        let cut = self
+            .touch_track
+            .iter()
+            .rposition(|(t, _)| now.duration_since(*t) > window);
+        if let Some(i) = cut {
+            self.touch_track.drain(..i);
+        }
+    }
+
+    /// Start a fling if the finger left fast enough, having actually scrolled
+    /// something. Called once, as the finger lifts.
+    fn start_fling(&mut self) {
+        let Some(id) = self.scroll_target.take() else { return };
+        let (Some((t0, p0)), Some((t1, p1))) =
+            (self.touch_track.first().copied(), self.touch_track.last().copied())
+        else {
+            return;
+        };
+        let ms = t1.duration_since(t0).as_secs_f32() * 1000.0;
+        // Two samples at the same instant say nothing about speed, and dividing
+        // by that interval is how a flick becomes infinitely fast.
+        if ms < 1.0 {
+            return;
+        }
+        // The content moves opposite to the finger, which is the same sense the
+        // drag itself used: `scroll_at` is handed `last - now`.
+        let (vx, vy) = ((p0.0 - p1.0) / ms, (p0.1 - p1.1) / ms);
+        if vx.hypot(vy) < FLING_MIN_V {
+            return;
+        }
+        self.fling = Some(Fling { id, vx, vy, last: Instant::now() });
+    }
+
+    /// Advance a running fling. Returns whether anything moved, so the caller
+    /// knows whether to ask for another frame.
+    ///
+    /// The integral of the decay is used rather than "velocity times elapsed",
+    /// so a long frame travels exactly as far as several short ones would: with
+    /// `v = v0 * e^(-t/tau)`, the distance over a step is
+    /// `v0 * tau * (1 - e^(-dt/tau))`.
+    fn step_fling(&mut self) -> bool {
+        let Some(mut f) = self.fling else { return false };
+        let now = Instant::now();
+        let dt = now.duration_since(f.last).as_secs_f32() * 1000.0;
+        if dt <= 0.0 {
+            return false;
+        }
+        let (dx, vx) = fling_step(f.vx, dt);
+        let (dy, vy) = fling_step(f.vy, dt);
+        f.vx = vx;
+        f.vy = vy;
+        f.last = now;
+
+        let Some(max) = self.scrolls.iter().find(|s| s.id == f.id).map(|s| s.max) else {
+            // The tree rebuilt and this scroller is gone. Nothing to move, and
+            // nothing to keep waking up for.
+            self.fling = None;
+            return false;
+        };
+        let before = self.offsets.get(f.id).copied().unwrap_or_default();
+        let next = Offset { x: before.x + dx, y: before.y + dy }.clamp_to(max);
+        self.scroll_to(f.id, next);
+
+        // Stop on any of three: too slow to see, or run into an edge on the
+        // axis that was carrying it. Hitting the end is a stop rather than a
+        // bounce because there is no overscroll to bounce into yet.
+        let stalled = f.vx.hypot(f.vy) < FLING_MIN_V;
+        let stuck = (next.x - before.x).abs() < f32::EPSILON
+            && (next.y - before.y).abs() < f32::EPSILON;
+        if stalled || stuck {
+            self.fling = None;
+            return !stuck;
+        }
+        self.fling = Some(f);
+        true
     }
 
     /// Whether some scroller under `at` can actually travel on the axis a
@@ -4278,6 +4439,15 @@ impl ApplicationHandler<RuxEvent> for App {
                         // Every helper below reads it.
                         self.pointer = at;
                         self.touch = Some(here);
+                        // A finger landing on a list that is still coasting
+                        // stops it, which is how every phone behaves and is the
+                        // only way to catch a long throw. It happens before
+                        // anything else in this arm so the press lands on the
+                        // content where the finger actually met it.
+                        self.fling = None;
+                        self.scroll_target = None;
+                        self.touch_track.clear();
+                        self.track_touch(here);
                         // Recorded before anything decides what this press means,
                         // so a handler sees every finger that is down whether or
                         // not this one turned out to be a tap.
@@ -4306,13 +4476,13 @@ impl ApplicationHandler<RuxEvent> for App {
                         if let Some(p) = self.points.iter_mut().find(|(id, _)| *id == touch.id) {
                             p.1 = here;
                         }
+                        self.track_touch(here);
                         self.move_gesture(here.0, here.1);
-                        // The axis claim, in its first form: an element that
-                        // declared `@drag` takes the finger, and the page under
-                        // it does not scroll while that drag is running. An
-                        // explicit handler beats an implicit gesture; the finer
-                        // rule (whether the loser can take over later) waits for
-                        // real hardware to argue with.
+                        // The axis claim. An element that declared `@drag` may
+                        // take the finger, but only on an axis no scroller under
+                        // it can travel, and the winner was decided once when
+                        // this gesture passed the slop threshold. See
+                        // `TouchAction` and `move_gesture`.
                         if self.gesture.as_ref().is_some_and(|g| g.dragging) {
                             return;
                         }
@@ -4366,6 +4536,10 @@ impl ApplicationHandler<RuxEvent> for App {
                             self.points.retain(|(id, _)| *id != lifted);
                             return;
                         }
+                        // The throw. Harmless after a tap: nothing was scrolled,
+                        // so there is no target and no fling starts.
+                        self.start_fling();
+                        self.touch_track.clear();
                         // A finger wanders more than a mouse, but the slop that
                         // separates a tap from a drag is the same idea.
                         if let Some((sx, sy)) = self.press.take() {
@@ -4378,6 +4552,10 @@ impl ApplicationHandler<RuxEvent> for App {
                     TouchPhase::Cancelled => {
                         self.touch = None;
                         self.press = None;
+                        // A cancelled gesture is not a throw: the system took
+                        // the finger, and the hand never let go of anything.
+                        self.scroll_target = None;
+                        self.touch_track.clear();
                         self.points.retain(|(id, _)| *id != touch.id);
                         // A cancelled touch is not a release: nothing fires, and
                         // the press is simply forgotten.
@@ -4556,6 +4734,14 @@ impl ApplicationHandler<RuxEvent> for App {
             }
         }
 
+        // The fifth clock: a scroller still coasting after the finger left. It
+        // is the shell's own animation rather than the document's, because what
+        // moves is a scroll offset and not a style, and the animator works on
+        // the tree.
+        if self.fling.is_some() && self.step_fling() {
+            self.request_redraw();
+        }
+
         // An entering element has now been painted wearing `:enter-from`, so it
         // can let go of it and the animator has somewhere to walk from. This
         // happens *here*, after the frame, rather than in `render` beside the
@@ -4585,10 +4771,23 @@ impl ApplicationHandler<RuxEvent> for App {
             Some(TouchText::Pending { deadline, .. }) => Some(deadline),
             _ => None,
         };
-        match [self.blink_deadline, long_press, self.anim_deadline, timer, self.gesture_deadline]
-            .into_iter()
-            .flatten()
-            .min()
+        // A running fling wants the next frame, and nothing else will ask for
+        // it: the finger has gone, so no event is coming to wake the loop.
+        let fling = self
+            .fling
+            .is_some()
+            .then(|| Instant::now() + Duration::from_secs_f64(rux_runtime::FRAME_MS / 1000.0));
+        match [
+            self.blink_deadline,
+            long_press,
+            self.anim_deadline,
+            timer,
+            self.gesture_deadline,
+            fling,
+        ]
+        .into_iter()
+        .flatten()
+        .min()
         {
             Some(next) => event_loop.set_control_flow(ControlFlow::WaitUntil(next)),
             None => event_loop.set_control_flow(ControlFlow::Wait),
@@ -5103,6 +5302,85 @@ fn floor_char_boundary(s: &str, mut index: usize) -> usize {
         index -= 1;
     }
     index
+}
+
+#[cfg(test)]
+mod fling {
+    use super::{FLING_MIN_V, FLING_TAU, fling_step};
+
+    /// The property the decay exists for: **one long frame travels exactly as
+    /// far as many short ones**, so how far a list is thrown does not depend on
+    /// the refresh rate or on whether a frame was slow.
+    ///
+    /// This is what a per-frame multiplier gets wrong, and the failure is
+    /// invisible on the machine it was tuned on.
+    #[test]
+    fn distance_does_not_depend_on_frame_size() {
+        let v0 = 2.0_f32;
+
+        let (one_step, _) = fling_step(v0, 100.0);
+
+        let (mut v, mut total) = (v0, 0.0);
+        for _ in 0..10 {
+            let (d, next) = fling_step(v, 10.0);
+            total += d;
+            v = next;
+        }
+        assert!(
+            (one_step - total).abs() < 0.001,
+            "one 100ms step travelled {one_step}, ten 10ms steps travelled {total}"
+        );
+
+        // And against an uneven run, since real frames are not uniform either.
+        let (mut v, mut total) = (v0, 0.0);
+        for dt in [3.0, 41.0, 9.0, 17.0, 30.0] {
+            let (d, next) = fling_step(v, dt);
+            total += d;
+            v = next;
+        }
+        assert!((one_step - total).abs() < 0.001, "uneven frames travelled {total}");
+    }
+
+    /// Velocity decays towards zero and never reverses, so a fling cannot crawl
+    /// backwards at the end.
+    #[test]
+    fn velocity_decays_towards_zero_and_keeps_its_sign() {
+        let mut v = 1.5_f32;
+        for _ in 0..200 {
+            let (_, next) = fling_step(v, 16.0);
+            assert!(next.abs() <= v.abs(), "velocity grew: {v} -> {next}");
+            assert!(next >= 0.0, "velocity changed sign: {next}");
+            v = next;
+        }
+        assert!(v < FLING_MIN_V, "a fling that never stalls never stops: {v}");
+
+        // The same, thrown the other way.
+        let mut v = -1.5_f32;
+        for _ in 0..200 {
+            let (_, next) = fling_step(v, 16.0);
+            assert!(next <= 0.0, "velocity changed sign: {next}");
+            v = next;
+        }
+        assert!(v.abs() < FLING_MIN_V);
+    }
+
+    /// One time constant sheds `1/e` of the speed, which is what `FLING_TAU`
+    /// means. A change to the constant is a change to how the scroll feels, so
+    /// it should have to be made on purpose.
+    #[test]
+    fn tau_is_the_time_constant() {
+        let (_, left) = fling_step(1.0, FLING_TAU);
+        assert!((left - std::f32::consts::E.recip()).abs() < 0.0001, "{left}");
+    }
+
+    /// A step of no time moves nothing and costs no speed. The stepper guards
+    /// this too, and it should not depend on that guard.
+    #[test]
+    fn a_zero_step_is_a_no_op() {
+        let (d, left) = fling_step(3.0, 0.0);
+        assert_eq!(d, 0.0);
+        assert_eq!(left, 3.0);
+    }
 }
 
 #[cfg(test)]

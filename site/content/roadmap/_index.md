@@ -2112,8 +2112,20 @@ here.
    it is not descoped for convenience: it cannot be built, or driven, on the
    hardware this project runs on, and leaving it in the milestone made the
    milestone's own promise untrue.
-2. **Touch for real.** Kinetic scrolling is unimplemented and touch drag is
-   marked untested because there is no touch hardware here.
+2. **Touch for real.** ✅ **DONE 2026-09-21.** Touch drag was driven by hand on
+   a phone, and **kinetic scrolling is built**: a finger that leaves the screen
+   still moving throws the scroller, which coasts to a stop on a time-based
+   decay. Velocity comes from a window over the last 100 ms of the path rather
+   than the closing pair of events, so a list the hand had already stopped is
+   not thrown. Described in `docs/05-as-built.md`.
+
+   **The one thing to carry forward:** a debug build under-flings badly, because
+   the lift velocity is timed by when the shell processes each move and winit
+   puts no timestamp on a touch event. The same flick coasted one row in debug
+   and ran the list to its end in release. A slow app and a broken fling are
+   indistinguishable from the outside, so the feel is judged in a release build.
+   If that ever needs fixing rather than documenting, the move is a timestamp
+   carried from the platform's own event.
 3. **Native pickers** for `<input type="select">`, promised in the spec and
    currently a drawn dropdown.
 4. **Safe areas, orientation, density.** `@media (orientation)` already exists

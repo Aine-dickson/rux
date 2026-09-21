@@ -29,7 +29,8 @@ Offsets live in the shell keyed by the scroller's index in tree order, so they
 survive the whole-tree rebuild, so tapping a row doesn't scroll the list to the top.
 A press on a thumb never becomes a tap on the content beneath it.
 
-**Not done:** no click-on-track paging, no kinetic/inertial touch fling, no
-scrollbar hover/fade states, no `scrollbar-width`/`scrollbar-color`, no
-`overscroll-behavior`, and `overflow-x`/`overflow-y` can't yet differ (one
-`overflow` governs both axes).
+**Not done:** no click-on-track paging, no scrollbar hover/fade states, no
+`scrollbar-width`/`scrollbar-color`, no `overscroll-behavior`, and
+`overflow-x`/`overflow-y` can't yet differ (one `overflow` governs both axes).
+**Kinetic fling after a touch drag landed 2026-09-21**, described under touch
+above.
