@@ -2231,6 +2231,22 @@ here.
    cannot open it, and a tool that reports nothing. The survey wants writing so
    that a second platform is another case rather than a second implementation.
 
+10. **Hot reload on a device.** Added 2026-09-21, and named here because it had
+    been living only in a code comment while a doc header claimed the opposite.
+
+    Everywhere else a dev build reads the project from disk, so an edited
+    document is picked up without rebuilding. **Android embeds its documents
+    whether or not `--release` is passed**, because there is no filesystem
+    behind an APK, so editing a `.rux` file means running `rux run --device`
+    again. That is a few seconds once the Rust side is warm, since only the
+    generated wrapper is rebuilt, but it is not the loop the rest of Rux has.
+
+    The shape that fixes it is documents served as assets through Android's
+    `AssetManager`, with edits pushed over `adb` and a reload triggered on the
+    device. It also brings `RuxEvent` and `user_event` back into use on Android.
+    Worth doing before the milestone claims mobile development feels like the
+    rest of Rux, because right now it does not.
+
 ### v0.9: text, depth, and the CSS pass
 
 1. **True inline text flow**, the standing known ceiling. Two `<text>` siblings

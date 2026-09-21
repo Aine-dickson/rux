@@ -16,9 +16,14 @@
 //! build embeds every document, so the artifact is self-contained and its
 //! contents cannot drift from what was tested. A dev build points the same
 //! wrapper at the project directory, so a document edited on disk is picked up
-//! by hot reload exactly as under `rux run`. This is the rule for every target,
-//! not a desktop convenience: on Android the dev build serves documents as APK
-//! assets and reloads them over `adb`.
+//! by hot reload exactly as under `rux run`.
+//!
+//! **Android is the exception, and it embeds either way.** There is no
+//! filesystem on the other side of an APK, so a dev build there carries its
+//! documents too and **does not hot reload**. Serving them as assets through
+//! Android's `AssetManager` and pushing edits over `adb` is the shape that
+//! would fix it, and it is not built. See `wrapper_main`, which is where the
+//! decision actually lives.
 //!
 //! Images took a second step to get there, and it was found by driving a build
 //! rather than by reasoning about one. An image is read twice: the runtime

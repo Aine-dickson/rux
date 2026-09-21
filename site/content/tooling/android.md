@@ -86,6 +86,71 @@ rux doctor
 
 Everything found, exit code 0, and the machine is ready.
 
+## 5. A phone, when you want one
+
+An emulator is enough to build and run, and most work happens in the desktop
+window. This is for when the app needs a real screen and a real finger.
+
+**Turn on USB debugging.** Settings, About phone, tap Build number seven times,
+then Developer options, USB debugging. Plug the phone in and accept the
+"Allow USB debugging?" prompt, which names this computer:
+
+```bash
+adb devices
+```
+
+One line with `device` after the serial means everything below will work.
+`unauthorized` means the prompt has not been accepted yet: unlock the phone and
+look for it.
+
+### When `adb devices` shows nothing at all
+
+The phone is plugged in, debugging is on, and adb lists nothing. **Use wireless
+debugging instead of hunting for the cause**, because it avoids the whole class
+of problem:
+
+Developer options, Wireless debugging, turn it on, then **Pair device with
+pairing code**. That dialog shows an address and a six digit code, and its port
+is **not** the one on the screen behind it:
+
+```bash
+adb pair 192.168.1.10:41234 123456
+```
+
+Once paired, the phone is usually found automatically over mDNS, and
+`adb devices` lists it as a long `adb-...._adb-tls-connect._tcp` name. Both
+devices have to be on the same network.
+
+The USB cause worth knowing, since it is invisible and common: on Windows, adb
+finds devices by a specific driver interface, and a phone that Windows binds to
+its generic driver never advertises it. The device works perfectly and is simply
+not listed. Vendors outside the inbox driver list, which includes many phones
+built on MediaTek, hit this. Installing Google's USB driver is the USB-side fix;
+wireless debugging routes around it entirely.
+
+### Then
+
+```bash
+rux run --device
+```
+
+builds for the ABI that phone actually reports, installs, and starts it. Rux
+does not pick between devices, so **stop the emulator if one is running**.
+
+**The installed app does not need any of this.** An APK carries its documents
+and its compiled library, so once it is installed the phone can leave the
+network, and the app starts from its launcher icon like any other. The
+connection is only for installing a new build and for reading `adb logcat`.
+
+**A dev build for Android does not hot reload.** There is no filesystem behind
+an APK, so both dev and release builds embed their documents, and changing a
+`.rux` file means running `rux run --device` again. That is a few seconds once
+the Rust side is warm, because only the generated wrapper is rebuilt.
+
+**Judge anything about feel in a release build.** A debug build on a phone can
+be slow enough that Android drops touch events it cannot deliver, which makes
+scrolling and flinging look broken when they are not.
+
 ## What is deliberately absent
 
 **Android Studio.** It is an IDE, and installing an IDE to produce a file is a

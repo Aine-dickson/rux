@@ -1343,6 +1343,56 @@ for a 350 px drag, because Android coalesces touch events an app is too slow to
 consume. That is not a scrolling defect either, and it is the same cause wearing
 different clothes. Thirty rows tracked the finger correctly.
 
+## The app came back black, 2026-09-21
+
+Reported by the user, not by a test: leave the app and return to it, or let the
+screen go off and wake it, and the app is **black**. It had been driven for a
+whole day without anyone leaving it and coming back.
+
+| Case | Before | After |
+|---|---|---|
+| Home, then return to the app | **Black**, status bar and scrollbar edge still drawn | Renders, **and keeps its scroll position** |
+| Screen off, then on | Black | Goes through the same path; left for the user to confirm, since the phone is locked |
+
+**Android takes the activity's surface away and hands back a different one.**
+The log says so plainly: returning to the app produced a fresh
+`outSurfaceControl` for the same process, so the activity was never recreated
+and only its surface was. The shell was still drawing into the dead one, which
+is why the app looks crashed while it is in fact working perfectly into a
+surface nobody is showing.
+
+**The bug was one line, and it was a correct line on a desktop.** `resumed`
+begins `if self.state.is_some() { return; }`, which is right where `resumed`
+fires once for the life of a process. On Android it fires on every return, so
+the stale state made the guard skip the rebuild forever. There was **no
+`suspended` handler at all**. Adding one that drops the render state turns that
+same guard back into "build the state when there is none".
+
+**Nothing the person sees is lost**, and that is a property of where state
+lives rather than luck: the document, the signals and the scroll offsets are on
+`App`, and only the window, surface, renderer and scene are in `RenderState`.
+The list came back at the row it was left on.
+
+**The first fix was correct and too slow, and only the user could say so.** With
+the whole of `RenderState` dropped, the app came back right but showed **up to
+three seconds of black**, sometimes after a half-second flash of the old frame,
+which is Android's task snapshot shown before our empty surface takes over.
+Rebuilding a renderer compiles shaders, and that was most of it. A renderer is
+built from the device rather than the surface, and the device survives a
+suspend, so it is now set aside and picked back up. The user's verdict on the
+second version: instant, with no black screen visible at all.
+
+**Measurement could not have settled the second half.** Screen capture over
+wireless adb takes about 800 ms, so the floor is coarser than the thing being
+judged: the first capture after returning already showed a rendered frame both
+before and after the renderer cache. A person watching the screen resolved it in
+one try. Prefer the eye for anything this short.
+
+**This is the failure mode a whole day of testing could not find**, because
+every test launched the app and drove it without ever leaving. Worth a standing
+case: leave the app and come back, on every platform that can take a surface
+away.
+
 ## Standing gaps
 
 Cases nothing here can currently exercise. They are the shape of what v0.8 has

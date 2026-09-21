@@ -1180,6 +1180,14 @@ type Pending = Rc<RefCell<Option<(RenderContext, RenderState)>>>;
 struct App {
     context: RenderContext,
     state: Option<RenderState>,
+    /// A renderer set aside while the app is suspended, with the device id it
+    /// was built for.
+    ///
+    /// Only Android suspends, but the field is not gated: `resumed` is shared
+    /// with the desktop, and one branch there that reads a field which does not
+    /// exist on half the targets is worse than a field that is always `None` on
+    /// those targets.
+    spare_renderer: Option<(usize, Renderer)>,
     /// Proxy for events raised outside the loop: the file watcher and the
     /// accessibility adapter both deliver through it.
     #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
@@ -1388,6 +1396,7 @@ impl App {
         Self {
             context: RenderContext::new(),
             state: None,
+            spare_renderer: None,
             #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
             proxy,
             #[cfg(target_arch = "wasm32")]
@@ -4176,7 +4185,15 @@ impl ApplicationHandler<RuxEvent> for App {
         ))
         .expect("create surface");
 
-        let renderer = make_renderer(&self.context, &surface);
+        // A renderer outlives the surface it was made for: it is built from the
+        // *device*, and the device survives a suspend. Building one compiles
+        // shaders, which is most of the delay when coming back to an app, so
+        // the one taken apart in `suspended` is put back rather than remade.
+        // Only for the same device, since that is the one thing it is tied to.
+        let renderer = match self.spare_renderer.take() {
+            Some((dev, renderer)) if dev == surface.dev_id => renderer,
+            _ => make_renderer(&self.context, &surface),
+        };
         self.state = Some(RenderState {
             window,
             surface,
@@ -4186,6 +4203,37 @@ impl ApplicationHandler<RuxEvent> for App {
             access,
         });
         self.request_redraw();
+    }
+
+    /// Android takes the activity's surface away whenever the app leaves the
+    /// screen, and hands back a **different** one on the way in. The old one is
+    /// dead, so the render state built on it has to go with it.
+    ///
+    /// Without this the app comes back **black**, and looks like it crashed
+    /// while in fact it is drawing perfectly into a surface nobody is showing.
+    /// `resumed` returns early when `state` is already `Some`, which is correct
+    /// on a desktop, where it fires once for the life of the process. On Android
+    /// it fires again on every return, so leaving the dead state in place is
+    /// what makes the guard skip the rebuild. Dropping it here is what turns
+    /// that same guard back into "build the state when there is none".
+    ///
+    /// **Nothing the person sees is lost.** The document, the signals and the
+    /// scroll offsets live on `App`, not in `RenderState`, so the app comes back
+    /// where it was; only the window, surface, renderer and scene are rebuilt.
+    ///
+    /// Gated to Android on purpose. A desktop window is never suspended, and a
+    /// handler that threw the surface away there would be a way to lose a window
+    /// that nothing ever exercises.
+    /// **The renderer is kept.** Dropping the whole of `RenderState` is correct
+    /// and was visibly slow: rebuilding a renderer compiles shaders, and the app
+    /// showed up to three seconds of black on every return. It is tied to the
+    /// device, not to the surface, and the device survives, so it is set aside
+    /// here and picked up again in `resumed`.
+    #[cfg(target_os = "android")]
+    fn suspended(&mut self, _event_loop: &ActiveEventLoop) {
+        if let Some(state) = self.state.take() {
+            self.spare_renderer = Some((state.surface.dev_id, state.renderer));
+        }
     }
 
     /// The web version of the same thing. `create_surface` is async and there is

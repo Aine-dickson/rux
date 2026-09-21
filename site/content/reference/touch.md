@@ -49,3 +49,26 @@ carries no timestamp on a touch event. An app that cannot keep up spreads a
 times slower than it was. On the same phone and the same gesture, a debug build
 coasted about one row and a release build ran the list to its end. **Judge the
 feel of a fling in a release build**, and see `docs/08-user-tests.md`.
+
+**The Android surface is not the app's to keep.** Leaving the app destroys the
+activity's surface, and returning gives it a **different** one, in the same
+process with the activity never recreated. So `RenderState` (the window, the
+surface, the renderer and the scene) is dropped in `suspended` and rebuilt by
+`resumed`, which is the pattern winit asks for. Nothing the person sees is lost,
+because the document, the signals and the scroll offsets live on `App` rather
+than in the render state, and the app returns to the row it was left on.
+
+**The renderer is kept across the suspend**, and that is not an optimisation to
+skip. Dropping the whole of `RenderState` is correct and was visibly slow:
+building a renderer compiles shaders, and the app showed up to three seconds of
+black on every return, sometimes after a half-second flash of the old frame,
+which is Android's own task snapshot being shown before our empty surface takes
+over. A renderer is built from the **device**, not from the surface, and the
+device survives, so it is set aside on suspend and picked back up on resume if
+the device still matches. With it, returning to the app is immediate.
+
+The failure this fixes is worth naming, because it reads as a crash: an app that
+drew into the dead surface came back **black** while working perfectly. It hid
+behind `resumed`'s `if self.state.is_some() { return; }`, which is correct on a
+desktop, where `resumed` fires once for the life of a process, and wrong on
+Android, where it fires on every return.
