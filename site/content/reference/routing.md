@@ -212,6 +212,18 @@ ids only line up when the tree has the same shape, and an entry is always one
 route: by the time the offsets are read back, the shape is the one they were
 recorded against.
 
+**After Android kills the app.** Android ends a backgrounded app whenever it
+wants the memory, and a phone of ordinary size wants it within seconds of Home.
+The activity keeps the whole history, each entry with its offsets, and the
+focused field with its text and caret, and puts them back before the first
+frame, so coming back looks like the app never left. The page on screen gets
+its scroll back even with `restore-scroll="false"`: that flag is about Back and
+Forward, and here the person never left the page. The guards are asked again
+about that page, because the new process has only the first values of its
+signals, and one that refuses or redirects sends the app there as an arrival,
+with the rest of the old history dropped. A password field comes back focused
+and empty. **Signals are not kept**: an app's data is its own to save.
+
 **Route guards.** `guard="expr"` on a `<router>` runs on every navigation; on a
 `<route>` it runs whenever that route is part of what matched, so a guard on a
 section covers every page inside it without being written on each one. Outermost

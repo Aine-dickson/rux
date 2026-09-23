@@ -468,6 +468,136 @@ impl Entry {
     }
 }
 
+/// Where the app was, kept by the platform while the process is gone.
+///
+/// **Android kills a backgrounded app whenever it wants the memory**, and on a
+/// phone of ordinary size it wants it within a second of Home: driven on the
+/// Spark 20, the low-memory killer took a Rux app from the cached bucket before
+/// the launcher had finished animating. Coming back then started the app from
+/// its first page, which a person reads as the app having quit. Every Android
+/// app is expected to come back where it was, so the activity hands this to
+/// `onSaveInstanceState` and gets it back in `onCreate`.
+///
+/// **Where, not what.** The history with each entry's scroll, and the focused
+/// field with its text and caret. Signals are not here: an app's data is the
+/// author's to keep, and a persistence library's to help with. The route alone
+/// is most of the answer, because a page is built from its route.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SavedState {
+    /// Each history entry as `(location, scroll offsets)`, oldest first.
+    pub entries: Vec<(String, Vec<Offset>)>,
+    /// Which entry was on screen.
+    pub at: usize,
+    /// The field that had focus, if one did.
+    pub focus: Option<SavedFocus>,
+}
+
+/// The focused field in a [`SavedState`]: its identity, its caret, and the
+/// text in it, which lives in a signal and would otherwise be lost.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SavedFocus {
+    pub model: String,
+    pub row: Option<String>,
+    pub instance: Option<String>,
+    pub caret: usize,
+    pub anchor: usize,
+    /// `None` for a field whose text is not kept, a password above all: the
+    /// platform writes this to disk, and a password has no business there.
+    pub text: Option<String>,
+}
+
+impl SavedState {
+    /// The version written first, so a state saved by one build and read by
+    /// another that changed the format is refused rather than misread. An
+    /// app update keeps the task, so this does happen.
+    const HEADER: &'static str = "rux-state 1";
+
+    /// As text, one fact a line, with the strings escaped.
+    pub fn encode(&self) -> String {
+        let mut out = format!("{}\nat {}\n", Self::HEADER, self.at);
+        for (location, scroll) in &self.entries {
+            let offsets: Vec<String> = scroll.iter().map(|o| format!("{},{}", o.x, o.y)).collect();
+            out += &format!("entry {} {}\n", offsets.join(";"), escape_line(location));
+        }
+        if let Some(f) = &self.focus {
+            out += &format!("focus {} {} {}\n", f.caret, f.anchor, escape_line(&f.model));
+            if let Some(row) = &f.row {
+                out += &format!("row {}\n", escape_line(row));
+            }
+            if let Some(instance) = &f.instance {
+                out += &format!("instance {}\n", escape_line(instance));
+            }
+            if let Some(text) = &f.text {
+                out += &format!("text {}\n", escape_line(text));
+            }
+        }
+        out
+    }
+
+    /// Read back what [`SavedState::encode`] wrote. `None` for anything else,
+    /// including another version: starting fresh is always safe, and
+    /// restoring a misread history is not.
+    pub fn decode(text: &str) -> Option<Self> {
+        let mut lines = text.lines();
+        if lines.next()? != Self::HEADER {
+            return None;
+        }
+        let mut state = SavedState::default();
+        for line in lines {
+            let (key, rest) = line.split_once(' ').unwrap_or((line, ""));
+            match key {
+                "at" => state.at = rest.parse().ok()?,
+                "entry" => {
+                    // Split once: the location is last and may hold a space.
+                    let (scroll, location) = rest.split_once(' ')?;
+                    let mut offsets = Vec::new();
+                    for pair in scroll.split(';').filter(|p| !p.is_empty()) {
+                        let (x, y) = pair.split_once(',')?;
+                        offsets.push(Offset { x: x.parse().ok()?, y: y.parse().ok()? });
+                    }
+                    state.entries.push((unescape_line(location), offsets));
+                }
+                "focus" => {
+                    let mut parts = rest.splitn(3, ' ');
+                    let caret = parts.next()?.parse().ok()?;
+                    let anchor = parts.next()?.parse().ok()?;
+                    let model = unescape_line(parts.next()?);
+                    state.focus = Some(SavedFocus { model, caret, anchor, ..SavedFocus::default() });
+                }
+                "row" => state.focus.as_mut()?.row = Some(unescape_line(rest)),
+                "instance" => state.focus.as_mut()?.instance = Some(unescape_line(rest)),
+                "text" => state.focus.as_mut()?.text = Some(unescape_line(rest)),
+                _ => return None,
+            }
+        }
+        (state.at < state.entries.len()).then_some(state)
+    }
+}
+
+/// A string on one line: the backslash and the line break escaped, and
+/// nothing else, so an ordinary route reads as itself.
+fn escape_line(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('\n', "\\n").replace('\r', "\\r")
+}
+
+fn unescape_line(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
+        match chars.next() {
+            Some('n') => out.push('\n'),
+            Some('r') => out.push('\r'),
+            Some(other) => out.push(other),
+            None => out.push('\\'),
+        }
+    }
+    out
+}
+
 impl Default for History {
     fn default() -> Self {
         Self { entries: vec![Entry::new(ROOT_PATH)], at: 0 }
@@ -2651,6 +2781,53 @@ impl Document {
     /// obeyed does not keep being told.
     pub fn take_scroll(&mut self) -> Option<Vec<Offset>> {
         self.pending_scroll.take()
+    }
+
+    /// The history as a [`SavedState`] keeps it, focus left for the shell,
+    /// which is where focus lives.
+    pub fn saved_state(&self) -> SavedState {
+        SavedState {
+            entries: self
+                .history
+                .entries
+                .iter()
+                .map(|e| (e.location.clone(), e.scroll.clone()))
+                .collect(),
+            at: self.history.at,
+            focus: None,
+        }
+    }
+
+    /// Put the history back as it was saved, before the first frame.
+    ///
+    /// **The guards are asked again**, about the entry being shown. The state
+    /// was saved by a process that had its signals, and this one has only
+    /// their first values: someone signed in when the app was killed is
+    /// signed out now, and restoring them straight onto `/account` would skip
+    /// the guard that exists to stop exactly that. A guard that refuses or
+    /// redirects is taken as an arrival, as [`Document::start_at`] takes a deep
+    /// link, and the rest of the saved history goes with it: its pages were
+    /// reached through the page the guard just turned away.
+    ///
+    /// The scroll comes back **whatever `restore-scroll` says**. That flag is
+    /// about Back and Forward; here the person never left the page, and it
+    /// coming back anywhere else is the very thing being fixed.
+    pub fn restore_state(&mut self, state: &SavedState) -> bool {
+        if state.at >= state.entries.len() {
+            return false;
+        }
+        let here = state.entries[state.at].0.clone();
+        match self.resolve_route(&here) {
+            Some(target) if target == here => {
+                let entries =
+                    state.entries.iter().map(|(l, s)| Entry { location: l.clone(), scroll: s.clone() });
+                self.history = History { entries: entries.collect(), at: state.at };
+                self.pending_scroll = Some(state.entries[state.at].1.clone());
+                self.show_current_route()
+            }
+            Some(target) => self.start_at(&target),
+            None => self.start_at(ROOT_PATH),
+        }
     }
 
     /// Decide where the page that is arriving should sit.
@@ -5839,10 +6016,8 @@ use components::detail;
         assert_eq!(doc.take_scroll(), None, "and then stopped speaking");
     }
 
-    /// Turned off, every arrival is the top, including a return.
-    #[test]
-    fn restore_scroll_false_always_starts_at_the_top() {
-        let mut doc = with_router(
+    fn router_app_forgetting() -> Document {
+        with_router(
             "<template><screen>\
                <router restore-scroll=\"false\">\
                  <route path=\"/\" view=\"home\" />\
@@ -5852,7 +6027,13 @@ use components::detail;
              </screen></template>\n\
              <script>\nuse components::home;\nuse components::settings;\n\
              use components::missing;\n</script>",
-        );
+        )
+    }
+
+    /// Turned off, every arrival is the top, including a return.
+    #[test]
+    fn restore_scroll_false_always_starts_at_the_top() {
+        let mut doc = router_app_forgetting();
         doc.record_scroll(&at_y(150.0));
         doc.navigate("/settings");
         assert_eq!(doc.take_scroll(), Some(Vec::new()));
@@ -5867,6 +6048,76 @@ use components::detail;
         doc.record_scroll(&at_y(90.0));
         doc.replace("/settings");
         assert_eq!(doc.take_scroll(), Some(Vec::new()));
+    }
+
+    /// Android keeps the state as text while the process is gone. What comes
+    /// back must be what went, strings with line breaks and spaces included.
+    #[test]
+    fn a_saved_state_reads_back_as_written() {
+        let state = SavedState {
+            entries: vec![
+                ("/".into(), Vec::new()),
+                ("/search?q=a b".into(), vec![Offset { x: 0.0, y: 120.5 }, Offset { x: 3.25, y: 0.0 }]),
+            ],
+            at: 1,
+            focus: Some(SavedFocus {
+                model: "draft".into(),
+                row: Some("r 2".into()),
+                instance: None,
+                caret: 7,
+                anchor: 3,
+                text: Some("two\nlines \\ and a slash".into()),
+            }),
+        };
+        assert_eq!(SavedState::decode(&state.encode()), Some(state));
+        let bare = SavedState { entries: vec![("/".into(), Vec::new())], ..SavedState::default() };
+        assert_eq!(SavedState::decode(&bare.encode()), Some(bare));
+    }
+
+    /// Anything else starts the app fresh, which is always safe.
+    #[test]
+    fn a_saved_state_from_elsewhere_is_refused() {
+        assert_eq!(SavedState::decode(""), None);
+        assert_eq!(SavedState::decode("rux-state 2\nat 0\nentry  /\n"), None, "another version");
+        assert_eq!(SavedState::decode("rux-state 1\nat 1\nentry  /\n"), None, "at past the end");
+        assert_eq!(SavedState::decode("rux-state 1\nat 0\n"), None, "no history");
+        assert_eq!(SavedState::decode("rux-state 1\nat 0\nentry x /\n"), None, "bad scroll");
+    }
+
+    /// The history comes back, where the person was in it, and the page they
+    /// were on comes back scrolled where they left it.
+    #[test]
+    fn a_restored_app_is_where_it_was() {
+        let mut doc = router_app();
+        doc.navigate("/settings");
+        doc.record_scroll(&at_y(80.0));
+        doc.navigate("/user/3");
+        doc.record_scroll(&at_y(40.0));
+        doc.back();
+        let saved = doc.saved_state();
+
+        let mut fresh = router_app();
+        let _ = fresh.take_scroll();
+        assert!(fresh.restore_state(&saved));
+        assert_eq!(fresh.route(), "/settings");
+        assert!(find_text(&fresh.root, "settings live here"), "{:?}", text_of(&fresh.root));
+        assert_eq!(fresh.take_scroll(), Some(at_y(80.0)), "where it was left");
+        assert_eq!(fresh.history_position(), (1, 3), "Back and Forward both still go somewhere");
+        assert!(fresh.forward());
+        assert_eq!(fresh.route(), "/user/3");
+        assert_eq!(fresh.take_scroll(), Some(at_y(40.0)));
+    }
+
+    /// Where the person never left, the scroll comes back even with the
+    /// Back-and-Forward flag off.
+    #[test]
+    fn a_restore_keeps_the_scroll_with_the_flag_off() {
+        let mut doc = router_app_forgetting();
+        doc.record_scroll(&at_y(60.0));
+        let saved = doc.saved_state();
+        let mut fresh = router_app_forgetting();
+        fresh.restore_state(&saved);
+        assert_eq!(fresh.take_scroll(), Some(at_y(60.0)));
     }
 
     /// A trailing slash is not a different path. Anyone typing one by hand

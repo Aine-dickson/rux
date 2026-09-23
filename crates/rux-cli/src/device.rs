@@ -227,8 +227,25 @@ fn start(toolchain: &Toolchain, serial: &str, manifest: &Manifest) -> Result<(),
     // and installed correctly and then refused to start, because this string
     // and the generated manifest had stopped agreeing.
     let component = format!("{}/{}", manifest.id, crate::apk::ACTIVITY_CLASS);
+    // **Started as the launcher starts it**, with its action and category. A
+    // bare `-n` makes a task whose root intent the launcher's icon does not
+    // match, so tapping the icon later stacked a second, fresh activity on the
+    // task instead of bringing it back, and an app Android had killed came back
+    // at its first page with its saved state never read.
     let output = Command::new(&toolchain.adb)
-        .args(["-s", serial, "shell", "am", "start", "-n", &component])
+        .args([
+            "-s",
+            serial,
+            "shell",
+            "am",
+            "start",
+            "-a",
+            "android.intent.action.MAIN",
+            "-c",
+            "android.intent.category.LAUNCHER",
+            "-n",
+            &component,
+        ])
         .output()
         .map_err(|e| format!("could not run adb: {e}"))?;
     let text = format!(

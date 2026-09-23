@@ -538,7 +538,7 @@ fn field_of(
     el: &Element,
     disabled: bool,
     readonly: bool,
-    locals: &Locals,
+    locals: &[(String, Value)],
     part: rux_layout::Field,
 ) -> rux_layout::Field {
     let handler = |name: &str| el.attr(name).map(|h| bind_locals(h, locals));
@@ -566,7 +566,31 @@ fn field_of(
     }
 }
 
-fn bind_locals(src: &str, locals: &Locals) -> String {
+/// The part of `locals` a handler has to carry with it: what follows the
+/// instance's own state and props, which means the `r-for` rows.
+///
+/// **The instance's own names must not be baked.** The runtime hands a handler
+/// run in an instance that instance's state as it is *then*, and a baked
+/// `let note = "";` shadows it with the value from the last build. A field
+/// types without a build in between, so its `@input` was always one keystroke
+/// behind, and the write-back put that stale value into the field: driven on a
+/// phone, `@input="typed += 1"` in a routed page counted every key while the
+/// field stayed empty.
+fn handler_locals<'a>(
+    locals: &'a [(String, Value)],
+    instance: Option<&str>,
+    instances: &Instances,
+) -> &'a [(String, Value)] {
+    let Some(entry) = instance.and_then(|k| instances.get(k)) else { return locals };
+    let own = entry.state.iter().chain(entry.props.iter());
+    // The locals start with exactly these names, in this order, where the
+    // instance was expanded. Matched by name so a mismatch bakes everything,
+    // which is the old behaviour, rather than dropping a row's variable.
+    let skip = locals.iter().zip(own).take_while(|((a, _), (b, _))| a == b).count();
+    &locals[skip..]
+}
+
+fn bind_locals(src: &str, locals: &[(String, Value)]) -> String {
     if locals.is_empty() {
         return src.to_string();
     }
@@ -3996,6 +4020,8 @@ fn build_node_inner(
     // inherit the visual effect through the cascade, not through this.
     swap: Option<SwapSide>,
 ) -> LayoutNode {
+    // What a handler written here carries with it. See `handler_locals`.
+    let baked = handler_locals(locals, instance, instances);
     // A tag that is neither one of Rux's own elements nor anything this file
     // imported can never render anything, so it is an error and not a warning.
     //
@@ -4270,7 +4296,7 @@ fn build_node_inner(
     // A disabled control answers nothing: no tap, no link, no gesture. Taken
     // away here rather than refused later, so that nothing downstream (the hit
     // regions, the keyboard's Enter, a label's `for=`) has a handler to find.
-    let on_tap = el.attr("@tap").map(|h| bind_locals(h, locals)).or_else(|| {
+    let on_tap = el.attr("@tap").map(|h| bind_locals(h, baked)).or_else(|| {
         to.as_ref().map(|p| format!("navigate({})", Value::Text(p.clone()).to_rhai_literal()))
     }).filter(|_| !disabled);
     // `<button type="submit">` submits the form around it, after its own `@tap`
@@ -4302,7 +4328,7 @@ fn build_node_inner(
     .filter_map(|(name, kind)| {
         // An `r-for` local is baked in the same way a `@tap`'s is: the body runs
         // long after the build that could still see the row.
-        el.attr(&format!("@{name}")).map(|h| (kind, bind_locals(h, locals)))
+        el.attr(&format!("@{name}")).map(|h| (kind, bind_locals(h, baked)))
     })
     .filter(|_| !disabled)
     .collect();
@@ -4616,7 +4642,7 @@ fn build_node_inner(
         // text field's is.
         if let (Some(tap), Some(change)) = (&mut node.on_tap, el.attr("@change")) {
             if !model.is_empty() {
-                let change = bind_locals(change, locals);
+                let change = bind_locals(change, baked);
                 *tap = format!("{tap}; let event = #{{ value: {model} }}; {change}");
             }
         }
@@ -4709,8 +4735,8 @@ fn build_node_inner(
 
         if !model.is_empty() && !disabled {
             let set = range.assignment(&model_target(&model, locals));
-            let input = el.attr("@input").map(|h| bind_locals(h, locals));
-            let change = el.attr("@change").map(|h| bind_locals(h, locals));
+            let input = el.attr("@input").map(|h| bind_locals(h, baked));
+            let change = el.attr("@change").map(|h| bind_locals(h, baked));
             let block = |h: &Option<String>| h.as_ref().map(|h| format!("{{ {h} }}")).unwrap_or_default();
             // `@input` as the value moves, `@change` when the hand lets go,
             // as HTML has them for a range, both handed the number as
@@ -4883,7 +4909,7 @@ fn build_node_inner(
         node.instance = instance.map(str::to_string);
         node.kind = kind;
         node.field =
-            field_of(el, disabled, readonly, locals, form_part.clone().unwrap_or_default());
+            field_of(el, disabled, readonly, baked, form_part.clone().unwrap_or_default());
         node.options = options;
         node.on_tap = on_tap;
         node.gestures = gestures;
@@ -4986,8 +5012,8 @@ fn build_node_inner(
         // Baked with the row's locals, like a `@tap`: a form inside an `r-for`
         // submits for its own row.
         form: is_form.then(|| rux_layout::Form {
-            on_submit: el.attr("@submit").map(|h| bind_locals(h, locals)),
-            on_invalid: el.attr("@invalid").map(|h| bind_locals(h, locals)),
+            on_submit: el.attr("@submit").map(|h| bind_locals(h, baked)),
+            on_invalid: el.attr("@invalid").map(|h| bind_locals(h, baked)),
         }),
     };
     // A tappable box is a button, named by the text inside it, that is how
@@ -5077,7 +5103,7 @@ fn expand_component(
         // here. Evaluating it would run the caller's statements at build time,
         // once per build, which is the opposite of an event.
         if let Some(name) = key.strip_prefix('@') {
-            listeners.push((name.to_string(), bind_locals(expr, parent_locals)));
+            listeners.push((name.to_string(), bind_locals(expr, handler_locals(parent_locals, caller, instances))));
             continue;
         }
         if let Some(name) = key.strip_prefix(':') {

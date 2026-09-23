@@ -338,3 +338,25 @@ fn a_refused_back_is_not_an_empty_history() {
     assert_eq!(doc.route(), "/about", "and nothing moved");
     assert!(doc.can_back(), "but the history still has a page in it");
 }
+
+/// **A restore after Android killed the app asks the guards again.** The
+/// state was saved by a process with its signals, and the new one has only
+/// their first values: someone signed in then is signed out now, and putting
+/// them straight back on the guarded page would skip the guard.
+#[test]
+fn a_restored_history_goes_through_the_guard() {
+    let mut open = gated();
+    assert!(open.navigate("/about"));
+    let saved = open.saved_state();
+
+    let mut fresh = gated();
+    assert!(fresh.apply_handler("gate = false"), "signed out in the new process");
+    fresh.restore_state(&saved);
+    assert_eq!(fresh.route(), "/", "turned away, and arrived at the start");
+    assert!(!fresh.can_back(), "with nothing of the old history behind it");
+
+    let mut fresh = gated();
+    fresh.restore_state(&saved);
+    assert_eq!(fresh.route(), "/about", "and let through while the gate is open");
+    assert!(fresh.can_back());
+}

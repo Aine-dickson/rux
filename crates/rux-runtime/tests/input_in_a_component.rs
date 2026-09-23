@@ -63,6 +63,16 @@ fn shown(node: &rux_layout::Node, model: &str) -> Option<String> {
     node.children.iter().find_map(|c| shown(c, model))
 }
 
+/// The `@input` body the last build baked into the input bound to `model`,
+/// which is what the shell runs: it holds the frame that was on screen when
+/// the key arrived, not one built after it.
+fn baked_input(node: &rux_layout::Node, model: &str) -> Option<String> {
+    if node.model.as_deref() == Some(model) {
+        return node.field.on_input.clone();
+    }
+    node.children.iter().find_map(|c| baked_input(c, model))
+}
+
 const FIELD: &str = "<template><view><input r-model=\"mine\" /></view></template>\
                      <script>let mine = signal(\"start\");</script>";
 
@@ -166,4 +176,48 @@ fn an_r_model_on_a_prop_does_not_stick() {
         "from the caller",
         "a prop is the caller's, so the edit is dropped rather than half-kept"
     );
+}
+
+/// **An `@input` that touches other state must not put the field back.** A
+/// handler in an instance writes back the names the instance owns, and the
+/// field's own name is one of them, so a stale copy of it undoes the typing.
+/// Found on the phone: `@input="typed += 1"` counted every key while the field
+/// stayed on its first letter.
+#[test]
+fn an_input_handler_in_a_component_keeps_the_typing() {
+    let mut doc = load(
+        APP,
+        "<template><view><input r-model=\"mine\" @input=\"typed += 1\" /></view></template>\
+         <script>let mine = signal(\"\");\nlet typed = signal(0);</script>",
+    );
+    let instance = inputs(&doc)[0].0.clone();
+    for text in ["a", "ab", "abc"] {
+        let body = baked_input(&doc.root, "mine").expect("an @input");
+        doc.apply_edit_in("mine", None, instance.as_deref(), text);
+        let event = rux_reactive::Value::Text(text.into());
+        doc.apply_handler_with_event(&body, instance.as_deref(), &event);
+        assert_eq!(doc.value_in("mine", None, instance.as_deref()), text, "after the handler");
+    }
+    assert_eq!(doc.value_in("typed", None, instance.as_deref()), "3");
+}
+
+/// The same, on a routed page, which is where the phone found it.
+#[test]
+fn an_input_handler_on_a_routed_page_keeps_the_typing() {
+    let mut doc = load(
+        "<template><screen><router><route path=\"/\" view=\"field\" /></router></screen></template>\
+         <script>use components::field;</script>",
+        "<template><view><input r-model=\"mine\" @input=\"typed += 1\" /></view></template>\
+         <script>let mine = signal(\"\");\nlet typed = signal(0);</script>",
+    );
+    let instance = inputs(&doc)[0].0.clone();
+    for text in ["a", "ab", "abc"] {
+        let body = baked_input(&doc.root, "mine").expect("an @input");
+        doc.apply_edit_in("mine", None, instance.as_deref(), text);
+        let event = rux_reactive::Value::Text(text.into());
+        doc.apply_handler_with_event(&body, instance.as_deref(), &event);
+        let now = inputs(&doc)[0].0.clone();
+        assert_eq!(now, instance, "the page is still the same instance");
+        assert_eq!(doc.value_in("mine", None, instance.as_deref()), text, "after the handler");
+    }
 }

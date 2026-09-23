@@ -1845,6 +1845,48 @@ Join; field B outside any form; form C, a search; field 8 low on the page).
 | Sign in, then save | D | "Save password to Google?" with the address and the password typed | adb: pass. Answered Not now, since Save would store a test password in the user's account |
 | `autocomplete="off"` | any | No suggestions, no Autofill item | |
 
+## Coming back after Android kills the app, 2026-09-23
+
+Phase 7 of the inputs plan. Android reclaims a backgrounded app whenever it
+wants the memory, and on the Spark 20 it wants it within a second of Home, so
+"switch away and come back" used to mean "start again at the first page". The
+activity now keeps the history (each entry with its scroll) and the focused
+field (text and caret) in `onSaveInstanceState`, and puts them back before the
+first frame. Signals are not kept: an app's data is the app's. The history
+half is under test in `crates/rux-runtime` (`a_restored_app_is_where_it_was`,
+`a_restored_history_goes_through_the_guard`). Driven against
+`rux-harness/phase7-restore`: a nav bar, a list of 80 rows, an item page of 60
+lines, and a form page with a text field, a password, a number and a textarea.
+*adb* rows were driven over wireless adb: Home, `am kill` (which ends only a
+backgrounded process, as the low-memory killer does), then the launcher intent.
+
+| Case | Where | Expect | Result |
+|---|---|---|---|
+| Page and scroll | item page | Open the list, scroll, open a row, scroll it, Home, kill: reopening shows the same item at the same line | adb: pass (`/item/20` at line 14, in a new process) |
+| Back after a restore | item page | Back lands on the list at its own scroll | adb: pass |
+| Focused field and its text | form, note | Type, Home, kill: reopening shows the text, the field focused, the keyboard up | adb: pass |
+| Caret inside the text | top-level field | Put the caret after the first letter, kill: typing after the restore goes in there | adb: pass ("h\|it", then "s" made "hsit") |
+| A password | form, secret | Comes back focused and **empty**, with the password keyboard | adb: pass |
+| A textarea | form, long | Two lines come back with the line break | adb: pass |
+| A number half typed | form, age | "42." comes back as typed, with the number keyboard | adb: pass |
+| Other signals | form | `typed` and the button's count start again; one `@input` runs for the restored text | adb: as designed |
+| A guarded page | any | Signed out in the new process, the guard turns the restore away | runtime test only |
+| "Don't keep activities" | any | The activity is destroyed with the process alive; coming back must not crash | adb: no crash, state intact, but the log showed no destroy, so the case was probably not provoked on this ROM |
+| Reopened from the launcher icon, by hand | any | As above, from the real icon rather than the adb intent | |
+
+Two defects came out of driving this, neither of them phase 7's:
+
+- **`rux run --device` started the app with a bare `am start -n`.** The task's
+  root intent then did not match the launcher's, so reopening stacked a fresh
+  activity on the task and the saved state was never read. It now starts the
+  app as the launcher does.
+- **A field inside a component with an `@input` lost every keystroke.**
+  Handlers were baked with the instance's own state as it was at the last
+  build, so `@input="typed += 1"` wrote the field's previous text back over
+  what had just been typed. Every platform, not only Android; `tests/input_in_a_component.rs`
+  now covers it with the handler taken from the laid-out tree, and fails
+  without the fix.
+
 ## Standing gaps
 
 Cases nothing here can currently exercise. They are the shape of what v0.8 has

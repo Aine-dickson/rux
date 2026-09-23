@@ -82,9 +82,29 @@ public class RuxActivity extends NativeActivity {
     /** The on-screen keyboard's height in pixels, 0 when it is down. */
     private static native void nativeKeyboard(int bottom);
 
+    /**
+     * Where the app is, as the Rux shell last drew it, or {@code null} when
+     * there is nothing to keep. See {@link #onSaveInstanceState}.
+     */
+    private static native String nativeSaveState();
+
+    /** Hand back what {@link #nativeSaveState} gave, before the loop starts. */
+    private static native void nativeRestoreState(String state);
+
+    /** The key the Rux state is kept under in the saved {@link Bundle}. */
+    private static final String STATE_KEY = "dev.ruxlang.shell.state";
+
     @Override
     protected void onCreate(Bundle state) {
         loadNativeLibrary();
+        // Before super.onCreate, which is what starts the Rux loop: the state
+        // has to be waiting for it, not arrive after its first frame.
+        if (state != null) {
+            String saved = state.getString(STATE_KEY);
+            if (saved != null) {
+                nativeRestoreState(saved);
+            }
+        }
         super.onCreate(state);
         final View root = getWindow().getDecorView();
         root.setOnApplyWindowInsetsListener(
@@ -116,6 +136,28 @@ public class RuxActivity extends NativeActivity {
         // Application object rather than this, and an activity method called on
         // that fails with `NoSuchMethodError`.
         nativeActivityCreated(this);
+    }
+
+    /**
+     * Keep where the app is, for the activity Android builds if it kills this
+     * one.
+     *
+     * <p><b>Android kills a backgrounded app whenever it wants the memory</b>,
+     * and a Rux app, with a GPU renderer behind it, is one of the first things
+     * it takes: driven on a 4 GB phone, the low-memory killer took it within a
+     * second of Home. Without this, coming back started the app from its first
+     * page, which reads as the app having quit. With it, the route, each
+     * page's scroll and the focused field come back. The platform keeps the
+     * Bundle while the process is gone; the app's own data is the app's to
+     * keep.
+     */
+    @Override
+    protected void onSaveInstanceState(Bundle out) {
+        super.onSaveInstanceState(out);
+        String state = nativeSaveState();
+        if (state != null) {
+            out.putString(STATE_KEY, state);
+        }
     }
 
     /**

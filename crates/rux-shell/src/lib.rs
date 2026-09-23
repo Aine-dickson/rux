@@ -1575,6 +1575,11 @@ struct App {
     /// when it *appears* and not on every frame it stays. See
     /// [`App::adopt_autofocus`].
     autofocus_seen: Vec<(String, Option<String>, Option<String>)>,
+    /// The focus Android kept when it killed the app, waiting for the first
+    /// frame that has fields to put it in: `Some(None)` when nothing had
+    /// focus. See [`App::adopt_restored_focus`].
+    #[cfg(target_os = "android")]
+    restored_focus: Option<Option<rux_runtime::SavedFocus>>,
     /// What the input method's connection holds for the focused field: its
     /// text, caret and anchor, as bytes. See [`App::sync_android_ime`].
     #[cfg(target_os = "android")]
@@ -1768,6 +1773,8 @@ impl App {
             decimal: '.',
             field_events: std::collections::VecDeque::new(),
             autofocus_seen: Vec::new(),
+            #[cfg(target_os = "android")]
+            restored_focus: None,
             #[cfg(target_os = "android")]
             ime_mirror: None,
             caret_menu: false,
@@ -4592,6 +4599,89 @@ impl App {
         self.set_focus(Some((model, row, instance, caret)));
     }
 
+    /// Put back the field that had focus when Android killed the app, its
+    /// text and its caret, once there is a laid-out frame to find it in.
+    ///
+    /// Tried on one frame only. A field that is not in the first frame is
+    /// on a page still waiting for its data, and focus arriving a second later,
+    /// in the middle of whatever the person has started doing, is worse than
+    /// focus not arriving.
+    ///
+    /// The text goes through [`App::write_focused`], so the field's `@input`
+    /// runs with it: whatever the app derives from the field (a search's
+    /// results, a counter) is rebuilt from the text rather than disagreeing
+    /// with it.
+    #[cfg(target_os = "android")]
+    fn adopt_restored_focus(&mut self) {
+        if self.state.is_none() {
+            return;
+        }
+        let Some(saved) = self.restored_focus.take() else { return };
+        let Some(saved) = saved else {
+            // Nothing had focus, so an `autofocus` field must not take it now:
+            // counting them as already seen is what stops it.
+            self.autofocus_seen = self
+                .focuses
+                .iter()
+                .filter(|f| f.field.autofocus && f.text.is_some())
+                .map(|f| (f.model.clone(), f.row.clone(), f.instance.clone()))
+                .collect();
+            return;
+        };
+        let Some(region) = self.focuses.iter().find(|f| {
+            f.text.is_some() && f.model == saved.model && f.row == saved.row && f.instance == saved.instance
+        }) else {
+            return;
+        };
+        self.focused_kind = region.kind;
+        let model = saved.model.clone();
+        self.set_focus(Some((model.clone(), saved.row, saved.instance, 0)));
+        if let Some(text) = saved.text {
+            if text != self.focused_value() {
+                self.write_focused(&text, text.len(), false);
+            }
+        }
+        let value = self.focused_value();
+        let fit = |at: usize| {
+            let mut at = at.min(value.len());
+            while !value.is_char_boundary(at) {
+                at -= 1;
+            }
+            at
+        };
+        let mut focus = self.focus_here(&model, fit(saved.caret));
+        focus.anchor = fit(saved.anchor);
+        self.set_focus_range(Some(focus));
+    }
+
+    /// Leave where the app is for `onSaveInstanceState`. See [`SAVED_STATE`].
+    ///
+    /// A password is never kept: the platform writes the state to disk, and
+    /// the field comes back focused and empty, as a native one would.
+    #[cfg(target_os = "android")]
+    fn publish_saved_state(&mut self) {
+        let mut state = self.document.saved_state();
+        if let Some(model) = self.focused.clone() {
+            let text = (self.focused_kind != InputKind::Password)
+                .then(|| self.focused_value())
+                .filter(|t| t.len() <= SAVED_TEXT_MAX);
+            state.focus = Some(rux_runtime::SavedFocus {
+                model,
+                row: self.focused_row.clone(),
+                instance: self.focused_instance.clone(),
+                caret: self.caret,
+                anchor: self.anchor,
+                text,
+            });
+        }
+        let encoded = state.encode();
+        if let Ok(mut slot) = SAVED_STATE.lock() {
+            if *slot != encoded {
+                *slot = encoded;
+            }
+        }
+    }
+
     /// The focused input's region, matched on both halves of its identity.
     fn focused_region(&self) -> Option<&FocusRegion> {
         let model = self.focused.as_deref()?;
@@ -6644,6 +6734,8 @@ impl ApplicationHandler<RuxEvent> for App {
                 self.render();
                 #[cfg(target_os = "android")]
                 self.sync_text_menu();
+                #[cfg(target_os = "android")]
+                self.publish_saved_state();
                 // A `tap()` or `focus()` asked for by something that is not an
                 // input event has nowhere else to be picked up: the only other
                 // drain runs after a handler the shell itself dispatched. A
@@ -6653,6 +6745,10 @@ impl ApplicationHandler<RuxEvent> for App {
                 // requests are answered against a laid-out frame: before the
                 // first layout there are no focusables to focus and no hit
                 // regions to tap.
+                // Before anything else can take focus: the app is being put
+                // back as it was, and that includes which field had it.
+                #[cfg(target_os = "android")]
+                self.adopt_restored_focus();
                 self.adopt_element_requests();
                 // After any `focus()`, which is the more specific request: an
                 // `autofocus` only takes a field nobody else has put focus in.
@@ -8381,6 +8477,73 @@ pub extern "system" fn Java_dev_ruxlang_shell_RuxActivity_nativeTextChanged<'fra
     .resolve::<jni::errors::LogErrorAndDefault>();
 }
 
+/// Where the app is, as `onSaveInstanceState` will store it: the last frame's
+/// [`rux_runtime::SavedState`], encoded. Kept ready for the same reason as
+/// [`FOCUSED_TEXT`]: Android asks on its main thread and wants the answer
+/// before the call returns.
+#[cfg(target_os = "android")]
+static SAVED_STATE: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
+
+/// What `onCreate` was handed back after Android killed the app, waiting for
+/// the loop to start. Set before `super.onCreate`, which is what starts it.
+#[cfg(target_os = "android")]
+static RESTORED_STATE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// Android is about to stop the activity and asks where the app is.
+///
+/// # Safety
+///
+/// Called by the JVM, with the signature declared in `RuxActivity.java`.
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "system" fn Java_dev_ruxlang_shell_RuxActivity_nativeSaveState<'frame>(
+    mut env: jni::EnvUnowned<'frame>,
+    _class: jni::objects::JClass<'frame>,
+) -> jni::sys::jstring {
+    // As in `nativeFocusedText`: zero is null, which Java reads as "nothing
+    // to keep", so a failure starts the app fresh next time.
+    let pointer = env
+        .with_env(|env| {
+            let state = SAVED_STATE.lock().map(|s| s.clone()).unwrap_or_default();
+            if state.is_empty() {
+                return Ok::<usize, jni::errors::Error>(0);
+            }
+            Ok(env.new_string(&state)?.into_raw() as usize)
+        })
+        .resolve::<jni::errors::LogErrorAndDefault>();
+    pointer as jni::sys::jstring
+}
+
+/// The activity was created again with what [`nativeSaveState`] kept.
+///
+/// [`nativeSaveState`]: Java_dev_ruxlang_shell_RuxActivity_nativeSaveState
+///
+/// # Safety
+///
+/// Called by the JVM, with the signature declared in `RuxActivity.java`.
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "system" fn Java_dev_ruxlang_shell_RuxActivity_nativeRestoreState<'frame>(
+    mut env: jni::EnvUnowned<'frame>,
+    _class: jni::objects::JClass<'frame>,
+    state: jni::objects::JString<'frame>,
+) {
+    env.with_env(|env| {
+        let state: String = state.try_to_string(env)?;
+        if let Ok(mut slot) = RESTORED_STATE.lock() {
+            *slot = Some(state);
+        }
+        Ok::<(), jni::errors::Error>(())
+    })
+    .resolve::<jni::errors::LogErrorAndDefault>();
+}
+
+/// The longest field text kept across a kill. The platform refuses a saved
+/// state over about a megabyte and takes the app down with it, and a person
+/// who pasted a book into a field loses the book rather than the app.
+#[cfg(target_os = "android")]
+const SAVED_TEXT_MAX: usize = 64 * 1024;
+
 /// The fields autofill can see, as the last frame laid them out: each one's
 /// id and identity, and the same list packed for Java. See [`App::publish_autofill`].
 #[cfg(target_os = "android")]
@@ -9363,6 +9526,13 @@ pub fn run_android(app: android_activity::AndroidApp, path: PathBuf) {
     // anything to say is a JNI callback, and it reaches the proxy above rather
     // than going through the app.
     let mut app = App::new(path);
+    // Before the first frame, like a deep link: Android killed the app and is
+    // bringing it back where it was.
+    let restored = RESTORED_STATE.lock().ok().and_then(|mut s| s.take());
+    if let Some(state) = restored.as_deref().and_then(rux_runtime::SavedState::decode) {
+        app.document.restore_state(&state);
+        app.restored_focus = Some(state.focus);
+    }
     event_loop.run_app(&mut app).expect("run app");
 
     // **Returning from here is not enough: the process has to end with it.**
