@@ -149,13 +149,27 @@ const ELEMENT_ATTRIBUTES: &[(&str, &[Entry])] = &[
     (
         "input",
         &[
-            Entry { name: "type", detail: "text | textarea | select | checkbox | radio", doc: "Omitted means a single-line text field." },
+            Entry { name: "type", detail: "text | textarea | password | search | select | checkbox | radio", doc: "Omitted means a single-line text field." },
             Entry { name: "placeholder", detail: "text shown while empty", doc: "Shown until the field has a value. Not a label." },
             Entry { name: "value", detail: "the field's value", doc: "The literal starting value. For state that changes, use `r-model`." },
             Entry { name: "checked", detail: "checkbox / radio state", doc: "Live state for `type=\"checkbox\"` and `type=\"radio\"`, and matched by the `:checked` pseudo-class." },
             Entry { name: "name", detail: "radio group", doc: "Radios sharing a `name` are one group, so choosing one clears the others." },
             Entry { name: "options", detail: "the choices for a select", doc: "For `type=\"select\"`. `:options` binds an array." },
+            Entry { name: "disabled", detail: "cannot be focused, tapped or changed", doc: "On whenever it is written, so `disabled=\"false\"` is still disabled: bind it with `:disabled=\"expr\"` instead. Matched by `:disabled`. Also on `<button>`." },
+            Entry { name: "readonly", detail: "can be selected and copied, not changed", doc: "The caret and the selection work and no keyboard opens. `:readonly` binds it." },
+            Entry { name: "maxlength", detail: "the most characters it takes", doc: "Counted as HTML counts them, in UTF-16 units. Typing past it is refused and a paste is cut short." },
+            Entry { name: "inputmode", detail: "text | numeric | decimal | tel | email | url | search | none", doc: "Which keyboard a phone raises. The field is still a text field and its value still text: a PIN or a phone number is `inputmode=\"numeric\"`, not a number." },
+            Entry { name: "enterkeyhint", detail: "enter | done | go | next | previous | search | send", doc: "What the keyboard's action key says. `next` and `previous` move focus like Tab, `done` closes the field; every one commits it first, which fires `@change`." },
+            Entry { name: "autofocus", detail: "take focus when it appears", doc: "Valueless. Focuses the field when it first appears, a route or an `r-if` bringing it in included, unless something already has focus." },
+            Entry { name: "@input", detail: "the text changed", doc: "After every change, however it was made. `event.value` is the new text." },
+            Entry { name: "@change", detail: "a changed value was committed", doc: "When the field is left with a different value than it had, or Enter is pressed in a one-line field. A select fires it on choosing, a checkbox or radio on toggling. `event.value` is the value." },
+            Entry { name: "@focus", detail: "the field gained focus", doc: "`event.value` is its text." },
+            Entry { name: "@blur", detail: "the field lost focus", doc: "After `@change`, when both fire. `event.value` is its text." },
         ],
+    ),
+    (
+        "button",
+        &[Entry { name: "disabled", detail: "cannot be tapped", doc: "No `@tap`, no link, no gesture, and nothing for Tab to land on. On whenever it is written; `:disabled=\"expr\"` binds it. Matched by `:disabled`." }],
     ),
     (
         "route",
@@ -200,9 +214,34 @@ const ATTRIBUTE_VALUES: &[(&str, &[(&str, &[Entry])])] = &[(
         &[
             Entry { name: "text", detail: "a single-line field", doc: "The default, so `type` may be left off entirely." },
             Entry { name: "textarea", detail: "a multi-line field", doc: "Enter inserts a newline instead of being ignored, and the box scrolls its own content." },
+            Entry { name: "password", detail: "a masked field", doc: "Shows bullets, refuses Copy and Cut, and asks a phone's keyboard not to learn what is typed. The bound signal holds the real text." },
+            Entry { name: "search", detail: "a field whose action key searches", doc: "A one-line field in every other respect." },
             Entry { name: "select", detail: "a dropdown", doc: "Shows the bound value and opens a list on tap. Takes its choices from `:options`." },
             Entry { name: "checkbox", detail: "a tap-toggle", doc: "No caret and no focus of its own: a tap flips the bound value, and `:checked` matches it. Space or Enter activates it when tabbed to." },
             Entry { name: "radio", detail: "one of a group", doc: "Radios sharing a `name` are one group, so choosing one clears the others. Carries the chosen value in `value`." },
+        ],
+    ), (
+        "inputmode",
+        &[
+            Entry { name: "text", detail: "the ordinary keyboard", doc: "The default." },
+            Entry { name: "numeric", detail: "digits", doc: "PINs, codes, card and phone numbers: digit strings, not quantities." },
+            Entry { name: "decimal", detail: "digits and a decimal point", doc: "For amounts typed as text." },
+            Entry { name: "tel", detail: "a phone keypad", doc: "Digits with `+`, `*` and `#`." },
+            Entry { name: "email", detail: "a keyboard with @", doc: "Also turns off autocapitalisation on most keyboards." },
+            Entry { name: "url", detail: "a keyboard with / and .", doc: "For addresses." },
+            Entry { name: "search", detail: "a Search action key", doc: "The same field, with Search where Enter was." },
+            Entry { name: "none", detail: "no on-screen keyboard", doc: "For an app that draws its own keys. The field still takes a hardware keyboard." },
+        ],
+    ), (
+        "enterkeyhint",
+        &[
+            Entry { name: "enter", detail: "a plain return key", doc: "No action label." },
+            Entry { name: "done", detail: "Done: closes the field", doc: "Commits, then drops focus and the keyboard." },
+            Entry { name: "go", detail: "Go", doc: "Commits; what going means is the app's `@change`." },
+            Entry { name: "next", detail: "Next: the following field", doc: "Commits, then moves focus as Tab does." },
+            Entry { name: "previous", detail: "Previous: the field before", doc: "Commits, then moves focus as Shift+Tab does." },
+            Entry { name: "search", detail: "Search", doc: "Commits; the search is the app's `@change`." },
+            Entry { name: "send", detail: "Send", doc: "Commits; sending is the app's `@change`." },
         ],
     )],
 )];
@@ -242,6 +281,8 @@ const PSEUDO_CLASSES: &[Entry] = &[
     Entry { name: "current", detail: "this link names the path you are on", doc: "Matches an element whose `to` is the route you are currently on. It is the nav highlight, without a signal to track it." },
     Entry { name: "enter-from", detail: "the frame an element enters from", doc: "Under `r-transition`: the style the element holds for exactly one frame as it arrives, and animates away from. The *hidden* end of the animation goes here." },
     Entry { name: "leave-to", detail: "the state an element leaves to", doc: "Under `r-transition`: the style the element animates towards while it is held on screen on its way out. `position: absolute` here takes it out of flow, so the rest of a list closes up under it rather than waiting." },
+    Entry { name: "disabled", detail: "an input or button that is switched off", doc: "Matches a `<input>` or `<button>` with `disabled` (or a truthy `:disabled`). Rux draws no default look for it, so this is where the dimming goes." },
+    Entry { name: "enabled", detail: "an input or button that is not disabled", doc: "Form controls only: a plain box is neither enabled nor disabled, as in CSS." },
 ];
 
 /// Keyword values, per property, for the properties whose values are a closed
@@ -1030,7 +1071,12 @@ mod tests {
         }
         for (tag, attrs) in ELEMENT_ATTRIBUTES {
             for e in *attrs {
-                if !doc.plain.contains(e.name) {
+                // An input's events carry their `@`, as the gestures do.
+                let found = match e.name.strip_prefix('@') {
+                    Some(bare) => doc.at.contains(bare),
+                    None => doc.plain.contains(e.name),
+                };
+                if !found {
                     missing.push(format!("{}            (attribute of <{tag}>)", e.name));
                 }
             }

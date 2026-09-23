@@ -45,7 +45,8 @@ use std::rc::Rc;
 #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
 use notify::{EventKind, RecursiveMode, Watcher};
 use rux_layout::{
-    Background, Cursor, FocusItem, FocusKind, FocusRegion, HitRegion, InputKind,
+    Background, Cursor, EnterKey, Field, FocusItem, FocusKind, FocusRegion, HitRegion, InputKind,
+    Keyboard,
     Offset, Paint, PaintRect, PaintText, Rgba, ScrollRegion, SelectRegion, Sides, StateRegion,
     TextAlign,
     TextContent, TextWrap,
@@ -1335,6 +1336,20 @@ struct App {
     /// Which text field has focus: a textarea takes Enter as a newline, a
     /// password refuses copy and cut. See [`InputKind`].
     focused_kind: InputKind,
+    /// The focused field's attributes and handlers, taken when it gained
+    /// focus. Kept rather than looked up, because `@blur` and `@change` belong
+    /// to the field being *left*, whose region may be gone by then.
+    focused_field: Field,
+    /// The focused field's value when it was focused or last committed:
+    /// `@change` fires when the value being committed differs from this.
+    committed: Option<String>,
+    /// `@input`, `@change`, `@focus` and `@blur` waiting to run: handler,
+    /// instance, and the `event` it is handed. See [`App::flush_field_events`].
+    field_events: std::collections::VecDeque<(String, Option<String>, rux_reactive::Value)>,
+    /// The `autofocus` fields that were in the last frame, so one takes focus
+    /// when it *appears* and not on every frame it stays. See
+    /// [`App::adopt_autofocus`].
+    autofocus_seen: Vec<(String, Option<String>, Option<String>)>,
     /// What the input method's connection holds for the focused field: its
     /// text, caret and anchor, as bytes. See [`App::sync_android_ime`].
     #[cfg(target_os = "android")]
@@ -1485,6 +1500,10 @@ impl App {
             focused_row: None,
             focused_instance: None,
             focused_kind: InputKind::Text,
+            focused_field: Field::default(),
+            committed: None,
+            field_events: std::collections::VecDeque::new(),
+            autofocus_seen: Vec::new(),
             #[cfg(target_os = "android")]
             ime_mirror: None,
             caret_menu: false,
@@ -2078,7 +2097,13 @@ impl App {
     /// The buttons for the focused field as it stands. See [`offered_actions`].
     fn toolbar_actions(&mut self) -> Vec<TextAction> {
         let has_text = !self.focused_value().is_empty();
+        let readonly = self.live_field().readonly;
         offered_actions(self.focused_kind.secret(), self.caret != self.anchor, has_text)
+            .into_iter()
+            // A read-only field can be copied from and nothing else: Cut and
+            // Paste would both be edits it is going to refuse.
+            .filter(|a| !readonly || matches!(a, TextAction::Copy | TextAction::SelectAll))
+            .collect()
     }
 
     /// The action under `(fx, fy)` in logical px, if the toolbar is up and the
@@ -2587,12 +2612,7 @@ impl App {
                 for (i, option) in sel.options.iter().enumerate() {
                     let (rx, ry, rw, rh) = dropdown_row(&sel, i);
                     if fx >= rx && fx <= rx + rw && fy >= ry && fy <= ry + rh {
-                        self.document.apply_edit_in(
-                            &model,
-                            row.as_deref(),
-                            instance.as_deref(),
-                            option,
-                        );
+                        self.choose_option(&model, row, instance, option, sel.field.on_change);
                         self.request_redraw();
                         return;
                     }
@@ -3074,10 +3094,15 @@ impl App {
                 new_caret = replace_selection(&mut value, " ");
                 edited = true;
             }
-            // Enter inserts a newline in a textarea; single-line inputs ignore it.
+            // Enter inserts a newline in a textarea. In a one-line field it
+            // commits, and does what `enterkeyhint` says.
             Key::Named(NamedKey::Enter) if self.focused_kind.multiline() => {
                 new_caret = replace_selection(&mut value, "\n");
                 edited = true;
+            }
+            Key::Named(NamedKey::Enter) => {
+                self.enter_in_field();
+                return;
             }
             Key::Character(s) => {
                 let typed: String = s.chars().filter(|c| !c.is_control()).collect();
@@ -3090,15 +3115,22 @@ impl App {
         }
 
         if edited || moved {
+            // Patch the input's value in place (no rebuild) unless `model` is also
+            // structural; then set the caret on the resulting tree. A field that
+            // refuses the edit (`readonly`) leaves the caret where it was.
+            if edited {
+                match self.write_focused(&value, new_caret, false) {
+                    Some((written, caret)) => {
+                        value = written;
+                        new_caret = caret;
+                    }
+                    None => return,
+                }
+            }
             // Shift+movement keeps the anchor, extending the selection; anything
             // else collapses it to the caret.
             let new_anchor = if moved && extend { self.anchor } else { new_caret };
             self.scroll_caret_into_view(&value, new_caret);
-            // Patch the input's value in place (no rebuild) unless `model` is also
-            // structural; then set the caret on the resulting tree.
-            if edited {
-                self.write_focused(&value);
-            }
             self.set_focus_range(Some(Focus {
                 model,
                 // Still the same field being typed into.
@@ -3197,7 +3229,9 @@ impl App {
         // Refused outright rather than degraded to a delete: Cut on a password
         // is asking for the text, and quietly destroying it instead would be a
         // different surprise, not a smaller one.
-        if !self.clipboard_may_read_field() {
+        // A read-only field refuses it before the clipboard is touched, or Cut
+        // would quietly become Copy.
+        if !self.clipboard_may_read_field() || self.live_field().readonly {
             return;
         }
         let Some(text) = self.selected_text() else { return };
@@ -3209,7 +3243,9 @@ impl App {
         let (start, end) = self.selection();
         let mut value = value;
         value.replace_range(start.min(value.len())..end.min(value.len()), "");
-        self.write_focused(&value);
+        if self.write_focused(&value, start, false).is_none() {
+            return;
+        }
         self.set_focus_range(Some(Focus::at(model, start)));
     }
 
@@ -3263,8 +3299,9 @@ impl App {
         let mut value = value;
         let (start, end) = (start.min(value.len()), end.min(value.len()));
         value.replace_range(start..end, &pasted);
-        let caret = start + pasted.len();
-        self.write_focused(&value);
+        let Some((value, caret)) = self.write_focused(&value, start + pasted.len(), false) else {
+            return;
+        };
         self.scroll_caret_into_view(&value, caret);
         self.set_focus_range(Some(Focus::at(model, caret)));
     }
@@ -3472,12 +3509,206 @@ impl App {
         self.document.value_in(&model, row.as_deref(), instance.as_deref())
     }
 
-    /// Write the focused input's value back, in that same scope.
-    fn write_focused(&mut self, value: &str) {
-        let Some(model) = self.focused.clone() else { return };
+    /// Write the focused input's value back, in that same scope, as far as the
+    /// field allows, and say what was written and where the caret now belongs.
+    ///
+    /// **The one place a field's constraints are enforced**, because every way
+    /// text reaches a field (a key, a paste, a cut, a composition, a phone's
+    /// keyboard, a browser's) ends here. `None` means nothing was written: no
+    /// field, or a `readonly` one. `maxlength` cuts the *inserted* text short
+    /// rather than the end of the value, so typing in the middle of a full
+    /// field does not eat its last character; a value already over the limit
+    /// may still shrink, as HTML allows. It is not applied mid-composition,
+    /// where cutting the word being composed would fight the input method; the
+    /// commit that ends the composition is cut instead.
+    ///
+    /// A change is `@input`, queued to run once the edit is complete.
+    fn write_focused(
+        &mut self,
+        value: &str,
+        caret: usize,
+        composing: bool,
+    ) -> Option<(String, usize)> {
+        let model = self.focused.clone()?;
+        let field = self.live_field();
+        if field.readonly {
+            return None;
+        }
         let row = self.focused_row.clone();
         let instance = self.focused_instance.clone();
-        self.document.apply_edit_in(&model, row.as_deref(), instance.as_deref(), value);
+        let old = self.document.value_in(&model, row.as_deref(), instance.as_deref());
+        let (value, caret) = match field.maxlength.filter(|_| !composing) {
+            Some(max) => fit_length(&old, value, caret, max),
+            None => (value.to_string(), caret),
+        };
+        self.document.apply_edit_in(&model, row.as_deref(), instance.as_deref(), &value);
+        if value != old {
+            self.queue_field_event(field.on_input.as_deref(), &value);
+        }
+        Some((value, caret))
+    }
+
+    /// The focused field's attributes as the last layout has them, so a bound
+    /// `:readonly` that changed while it had focus is honoured. Falls back to
+    /// what it had when focused, for a field whose region is not laid out yet.
+    fn live_field(&self) -> Field {
+        self.focused_region().map_or_else(|| self.focused_field.clone(), |r| r.field.clone())
+    }
+
+    /// Queue a field handler, if there is one, handed `event.value`. Runs in
+    /// the focused field's instance.
+    fn queue_field_event(&mut self, body: Option<&str>, value: &str) {
+        self.queue_field_event_in(body, self.focused_instance.clone(), value);
+    }
+
+    fn queue_field_event_in(&mut self, body: Option<&str>, instance: Option<String>, value: &str) {
+        let Some(body) = body else { return };
+        let event = rux_reactive::Value::Map(vec![(
+            "value".to_string(),
+            rux_reactive::Value::Text(value.to_string()),
+        )]);
+        self.field_events.push_back((body.to_string(), instance, event));
+    }
+
+    /// Run the field handlers the last batch of events queued.
+    ///
+    /// **Queued and run afterwards, never from inside the edit or the focus
+    /// change that caused them.** A handler may write the field's own signal,
+    /// focus another field or blur this one, and every one of those re-enters
+    /// the code that was still half way through deciding where the caret goes.
+    /// Run from `about_to_wait`, the shell has finished with the event, and a
+    /// handler sees the field exactly as the person does.
+    ///
+    /// Bounded, because a `@blur` that focuses the field and a `@focus` that
+    /// blurs it is a loop with no exit; cut off the way a `tap()` chain is.
+    fn flush_field_events(&mut self) {
+        const MAX_FIELD_EVENTS: usize = 64;
+        if self.field_events.is_empty() {
+            return;
+        }
+        let before = self.focused.is_some().then(|| self.focused_value());
+        let mut ran = 0;
+        while let Some((body, instance, event)) = self.field_events.pop_front() {
+            if ran == MAX_FIELD_EVENTS {
+                self.field_events.clear();
+                rux_runtime::warn_script(format!(
+                    "field events were still firing after {MAX_FIELD_EVENTS} handlers and have                      been stopped; a @focus or @blur is probably moving focus back and forth"
+                ));
+                break;
+            }
+            ran += 1;
+            if self.document.apply_handler_with_event(&body, instance.as_deref(), &event) {
+                self.request_redraw();
+            }
+            self.adopt_element_requests();
+        }
+        // **A handler that rewrote the focused field** (an `@input` that
+        // upper-cases, one that strips spaces) changed it behind the input
+        // method's back, which is exactly the stale copy that doubled a paste
+        // in phase 2. Put the caret back inside the new text and focus the
+        // same field again: that goes through `set_ime_enabled`, which brings
+        // the keyboard's copy back in step. Only on a change, because a
+        // re-focus abandons a desktop composition in progress.
+        let Some(model) = self.focused.clone() else { return };
+        let value = self.focused_value();
+        if before.as_deref() == Some(value.as_str()) {
+            return;
+        }
+        let clamp = |mut i: usize| {
+            i = i.min(value.len());
+            while !value.is_char_boundary(i) {
+                i -= 1;
+            }
+            i
+        };
+        let (caret, anchor) = (clamp(self.caret), clamp(self.anchor));
+        self.set_focus_range(Some(Focus {
+            model,
+            row: self.focused_row.clone(),
+            instance: self.focused_instance.clone(),
+            caret,
+            anchor,
+            preedit: None,
+        }));
+    }
+
+    /// Write a select's chosen option, and `@change` if that changed it. A
+    /// select commits as it is chosen, as HTML's does: there is no typing to
+    /// wait out.
+    fn choose_option(
+        &mut self,
+        model: &str,
+        row: Option<String>,
+        instance: Option<String>,
+        option: &str,
+        on_change: Option<String>,
+    ) {
+        let before = self.document.value_in(model, row.as_deref(), instance.as_deref());
+        self.document.apply_edit_in(model, row.as_deref(), instance.as_deref(), option);
+        if before != option {
+            self.queue_field_event_in(on_change.as_deref(), instance, option);
+        }
+    }
+
+    /// Commit the focused field: `@change`, if its value differs from what it
+    /// held when it was focused or last committed.
+    fn commit_focused(&mut self) {
+        if self.focused.is_none() {
+            return;
+        }
+        let value = self.focused_value();
+        if self.committed.as_deref() != Some(value.as_str()) {
+            let change = self.focused_field.on_change.clone();
+            self.queue_field_event(change.as_deref(), &value);
+            self.committed = Some(value);
+        }
+    }
+
+    /// Enter in a one-line field: commit it, then do what the action key said.
+    ///
+    /// `next` and `previous` move focus as Tab does and `done` closes the
+    /// field, because those three name something the field itself can do. The
+    /// others (`go`, `search`, `send`) name what the *app* will do, and are
+    /// answered by `@change`.
+    fn enter_in_field(&mut self) {
+        self.commit_focused();
+        match self.live_field().enter_key {
+            EnterKey::Next => self.move_focus(false),
+            EnterKey::Previous => self.move_focus(true),
+            EnterKey::Done => self.set_focus(None),
+            _ => {}
+        }
+    }
+
+    /// Focus an `autofocus` field when it appears, if nothing has focus.
+    ///
+    /// On appearance rather than at load, because a route view or an `r-if`
+    /// can bring a field in long after the document loaded, and that is when
+    /// the author meant it. Nothing is taken from a field that already has
+    /// focus: the person put the caret there, and a field arriving elsewhere
+    /// on the page is not a reason to move it.
+    fn adopt_autofocus(&mut self) {
+        let present: Vec<(String, Option<String>, Option<String>)> = self
+            .focuses
+            .iter()
+            .filter(|f| f.field.autofocus && f.text.is_some())
+            .map(|f| (f.model.clone(), f.row.clone(), f.instance.clone()))
+            .collect();
+        let arrived = present.iter().find(|id| !self.autofocus_seen.contains(id)).cloned();
+        self.autofocus_seen = present;
+        if self.focused.is_some() {
+            return;
+        }
+        let Some((model, row, instance)) = arrived else { return };
+        if let Some(region) = self
+            .focuses
+            .iter()
+            .find(|f| f.model == model && f.row == row && f.instance == instance)
+        {
+            self.focused_kind = region.kind;
+        }
+        let caret = self.document.value_in(&model, row.as_deref(), instance.as_deref()).len();
+        self.set_focus(Some((model, row, instance, caret)));
     }
 
     /// The focused input's region, matched on both halves of its identity.
@@ -3515,6 +3746,14 @@ impl App {
             });
         if !same_field {
             self.text_scroll = 0.0;
+            // The field being left commits and blurs, in that order, as HTML
+            // has it, and with its own handlers and its own instance.
+            if self.focused.is_some() {
+                self.commit_focused();
+                let blur = self.focused_field.on_blur.clone();
+                let value = self.focused_value();
+                self.queue_field_event(blur.as_deref(), &value);
+            }
         }
         self.focused = focus.as_ref().map(|f| f.model.clone());
         self.focused_row = focus.as_ref().and_then(|f| f.row.clone());
@@ -3528,7 +3767,22 @@ impl App {
         let row = self.focused_row.clone();
         let instance = self.focused_instance.clone();
         self.update_focus_state(model, row, instance);
-        self.set_ime_enabled(self.focused.is_some());
+        if !same_field {
+            self.focused_field = self.focused_region().map(|r| r.field.clone()).unwrap_or_default();
+            self.committed = None;
+            if self.focused.is_some() {
+                let value = self.focused_value();
+                let focus = self.focused_field.on_focus.clone();
+                self.queue_field_event(focus.as_deref(), &value);
+                self.committed = Some(value);
+            }
+        }
+        // A read-only field, or one whose keyboard is `none`, is focused
+        // without one: the caret and the selection work, the keyboard stays
+        // down.
+        let keyboard =
+            !self.focused_field.readonly && self.focused_field.keyboard != Keyboard::None;
+        self.set_ime_enabled(self.focused.is_some() && keyboard);
         self.reset_blink();
         self.request_redraw();
     }
@@ -3569,15 +3823,38 @@ impl App {
             }
             // What kind of field it is, which decides the keyboard Android
             // raises for it. See [`FOCUSED_KIND`].
-            FOCUSED_KIND.store(
-                match (on, self.focused_kind) {
-                    (false, _) | (true, InputKind::Text) => KIND_TEXT,
-                    (true, InputKind::Textarea) => KIND_TEXTAREA,
-                    (true, InputKind::Password) => KIND_PASSWORD,
-                    (true, InputKind::Search) => KIND_SEARCH,
-                },
-                std::sync::atomic::Ordering::Relaxed,
-            );
+            let kind = match (on, self.focused_kind) {
+                (false, _) | (true, InputKind::Text) => KIND_TEXT,
+                (true, InputKind::Textarea) => KIND_TEXTAREA,
+                (true, InputKind::Password) => KIND_PASSWORD,
+                (true, InputKind::Search) => KIND_SEARCH,
+            };
+            // `inputmode` and `enterkeyhint` ride in the upper bytes, so one
+            // native call still answers everything the `EditorInfo` needs.
+            // Exhaustive for the same reason the kind is.
+            let keyboard = match self.focused_field.keyboard {
+                Keyboard::Text => 0,
+                Keyboard::Numeric => 1,
+                Keyboard::Decimal => 2,
+                Keyboard::Tel => 3,
+                Keyboard::Email => 4,
+                Keyboard::Url => 5,
+                Keyboard::Search => 6,
+                // Never raised, see `set_focus_range`; a text keyboard if it is.
+                Keyboard::None => 0,
+            };
+            let enter = match self.focused_field.enter_key {
+                EnterKey::Default => 0,
+                EnterKey::Enter => 1,
+                EnterKey::Done => 2,
+                EnterKey::Go => 3,
+                EnterKey::Next => 4,
+                EnterKey::Previous => 5,
+                EnterKey::Search => 6,
+                EnterKey::Send => 7,
+            };
+            let (keyboard, enter) = if on { (keyboard, enter) } else { (0, 0) };
+            FOCUSED_KIND.store(kind | keyboard << 8 | enter << 16, std::sync::atomic::Ordering::Relaxed);
             // Written after the text, so an input method that reads both in the
             // same breath cannot see "yes, and it is empty" for a field that
             // has contents.
@@ -3703,6 +3980,17 @@ impl App {
             // Leaving this out is what made copy on a phone act on no text.
             let _ = el.set_selection_range_with_direction(start, end, direction);
         }
+        // The keyboard the field asks for, said to the browser in the words it
+        // already reads, so a phone's keyboard matches the one Android raises.
+        let _ = el.set_attribute("inputmode", self.focused_field.keyboard.name());
+        match self.focused_field.enter_key.name() {
+            Some(hint) => {
+                let _ = el.set_attribute("enterkeyhint", hint);
+            }
+            None => {
+                let _ = el.remove_attribute("enterkeyhint");
+            }
+        }
         let _ = el.focus();
         self.position_web_ime();
     }
@@ -3761,7 +4049,19 @@ impl App {
         // The input method is running the composition, so the shell's own
         // composition state stays empty and must not be restored over this.
         self.preedit = None;
-        self.write_focused(&value);
+        // A field that refused or cut the edit leaves the keyboard's copy
+        // ahead of it; the focus below puts the caret back on what was kept,
+        // and the drift it leaves is what brings the keyboard back in step.
+        let (value, caret, anchor, preedit) =
+            match self.write_focused(&value, caret, preedit.is_some()) {
+                Some((written, _)) if written == value => (written, caret, anchor, preedit),
+                Some((written, at)) => (written, at, at, None),
+                None => {
+                    let kept = self.focused_value();
+                    let (caret, anchor) = (self.caret.min(kept.len()), self.anchor.min(kept.len()));
+                    (kept, caret, anchor, None)
+                }
+            };
         self.scroll_caret_into_view(&value, caret);
         if let Ok(mut text) = FOCUSED_TEXT.lock() {
             *text = value.clone();
@@ -3793,7 +4093,19 @@ impl App {
         // The browser is running the composition, so the shell's own
         // composition state stays empty and must not be restored over this.
         self.preedit = None;
-        self.write_focused(&value);
+        // A field that refused or cut the edit leaves the keyboard's copy
+        // ahead of it; the focus below puts the caret back on what was kept,
+        // and the drift it leaves is what brings the keyboard back in step.
+        let (value, caret, anchor, preedit) =
+            match self.write_focused(&value, caret, preedit.is_some()) {
+                Some((written, _)) if written == value => (written, caret, anchor, preedit),
+                Some((written, at)) => (written, at, at, None),
+                None => {
+                    let kept = self.focused_value();
+                    let (caret, anchor) = (self.caret.min(kept.len()), self.anchor.min(kept.len()));
+                    (kept, caret, anchor, None)
+                }
+            };
         self.scroll_caret_into_view(&value, caret);
         // The row and the instance travel with the model: an input inside an
         // `r-for` is identified by both, and one inside a component by the
@@ -3883,14 +4195,17 @@ impl App {
             value.insert_str(at, &composing.replaced);
             let caret = at + composing.replaced.len();
             self.preedit = None;
-            self.write_focused(&value);
+            let caret = self.write_focused(&value, caret, false).map_or(self.caret, |(_, c)| c);
             self.set_focus_range(Some(Focus::at(model, caret)));
             return;
         }
 
         let caret = at + cursor.map(|(s, _)| s.min(text.len())).unwrap_or(text.len());
+        // A read-only field takes no composition at all.
+        if self.write_focused(&value, caret, true).is_none() {
+            return;
+        }
         self.preedit = Some(Preedit { at, len: text.len(), replaced: composing.replaced });
-        self.write_focused(&value);
         self.scroll_caret_into_view(&value, caret);
         self.set_focus_range(Some(Focus {
             model,
@@ -3928,8 +4243,9 @@ impl App {
             text.lines().next().unwrap_or("").to_string()
         };
         value.replace_range(start..end, &text);
-        let caret = start + text.len();
-        self.write_focused(&value);
+        let Some((value, caret)) = self.write_focused(&value, start + text.len(), false) else {
+            return;
+        };
         self.scroll_caret_into_view(&value, caret);
         self.set_focus_range(Some(Focus::at(model, caret)));
         self.update_ime_area();
@@ -3944,7 +4260,7 @@ impl App {
         let at = p.at.min(value.len());
         let end = (at + p.len).min(value.len());
         value.replace_range(at..end, &p.replaced);
-        self.write_focused(&value);
+        self.write_focused(&value, at, false);
     }
 
     /// The focused input's selected byte range, low to high. Empty when there's
@@ -4666,12 +4982,12 @@ impl ApplicationHandler<RuxEvent> for App {
                     // Out of range would mean Java and Rux disagreed about the
                     // list, which is worth ignoring rather than guessing at.
                     if let Some(option) = index.and_then(|i| options.get(i)) {
-                        self.document.apply_edit_in(
-                            &model,
-                            row.as_deref(),
-                            instance.as_deref(),
-                            option,
-                        );
+                        let change = self
+                            .selects
+                            .iter()
+                            .find(|s| s.model == model && s.row == row && s.instance == instance)
+                            .and_then(|s| s.field.on_change.clone());
+                        self.choose_option(&model, row, instance, option, change);
                     }
                     self.request_redraw();
                 }
@@ -5092,6 +5408,9 @@ impl ApplicationHandler<RuxEvent> for App {
                 // first layout there are no focusables to focus and no hit
                 // regions to tap.
                 self.adopt_element_requests();
+                // After any `focus()`, which is the more specific request: an
+                // `autofocus` only takes a field nobody else has put focus in.
+                self.adopt_autofocus();
             }
             _ => {}
         }
@@ -5101,6 +5420,10 @@ impl ApplicationHandler<RuxEvent> for App {
     /// focused, wake every `BLINK` to toggle the caret. With no focus the
     /// deadline is `None`, so we wait indefinitely for the next real event.
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        // Whatever `@input`, `@change`, `@focus` and `@blur` the events since
+        // the last wake-up queued, now that the shell is done with them.
+        self.flush_field_events();
+
         // A resting finger is the second clock, and the reason this is not just
         // the blink any more: nothing arrives to say a press has gone on long
         // enough, so the deadline has to be waited on and checked here.
@@ -5721,6 +6044,100 @@ fn floor_char_boundary(s: &str, mut index: usize) -> usize {
         index -= 1;
     }
     index
+}
+
+/// Cut an edit short so the field holds at most `max` UTF-16 code units, the
+/// unit HTML's `maxlength` counts in. Returns the value and where `caret` (a
+/// byte index into `new`) lands in it.
+///
+/// **What is cut is what was inserted**, found as whatever lies between the
+/// longest common prefix and suffix of the old and new values. Cutting the end
+/// of the value instead would make typing in the middle of a full field delete
+/// its last character. The insertion is cut at a whole character, never half
+/// way through a surrogate pair. An edit that does not lengthen the value is
+/// let through untouched, so a value that was already too long can still be
+/// shortened.
+fn fit_length(old: &str, new: &str, caret: usize, max: usize) -> (String, usize) {
+    let units = |s: &str| s.chars().map(char::len_utf16).sum::<usize>();
+    let new_units = units(new);
+    if new_units <= max || new_units <= units(old) {
+        return (new.to_string(), caret);
+    }
+    let prefix = old
+        .char_indices()
+        .zip(new.chars())
+        .take_while(|((_, a), b)| a == b)
+        .last()
+        .map_or(0, |((i, a), _)| i + a.len_utf8());
+    let suffix = old[prefix..]
+        .chars()
+        .rev()
+        .zip(new[prefix..].chars().rev())
+        .take_while(|(a, b)| a == b)
+        .map(|(a, _)| a.len_utf8())
+        .sum::<usize>();
+    let inserted = &new[prefix..new.len() - suffix];
+    let mut room = max.saturating_sub(new_units - units(inserted));
+    let kept_len = inserted
+        .chars()
+        .take_while(|c| {
+            let fits = c.len_utf16() <= room;
+            if fits {
+                room -= c.len_utf16();
+            }
+            fits
+        })
+        .map(char::len_utf8)
+        .sum::<usize>();
+    let cut = inserted.len() - kept_len;
+    let value = format!("{}{}{}", &new[..prefix], &inserted[..kept_len], &new[new.len() - suffix..]);
+    let caret = if caret <= prefix {
+        caret
+    } else if caret >= new.len() - suffix {
+        caret - cut
+    } else {
+        prefix + (caret - prefix).min(kept_len)
+    };
+    (value, caret)
+}
+
+#[cfg(test)]
+mod fit_length_tests {
+    use super::fit_length;
+
+    #[test]
+    fn typing_past_the_limit_is_refused() {
+        assert_eq!(fit_length("abc", "abcd", 4, 3), ("abc".to_string(), 3));
+    }
+
+    #[test]
+    fn a_paste_is_cut_short_and_the_caret_follows() {
+        assert_eq!(fit_length("ab", "ab12345", 7, 4), ("ab12".to_string(), 4));
+    }
+
+    /// Typing in the middle of a full field must not eat the end of it.
+    #[test]
+    fn an_insertion_in_the_middle_is_what_gets_cut() {
+        assert_eq!(fit_length("abcd", "abXYcd", 4, 5), ("abXcd".to_string(), 3));
+    }
+
+    #[test]
+    fn a_value_already_too_long_may_shrink() {
+        assert_eq!(fit_length("abcdef", "abcde", 5, 3), ("abcde".to_string(), 5));
+    }
+
+    /// Counted in UTF-16 as HTML counts, and never cut through a pair.
+    #[test]
+    fn an_emoji_is_two_units_and_is_kept_or_dropped_whole() {
+        assert_eq!(fit_length("ab", "ab😀", 6, 3), ("ab".to_string(), 2));
+        assert_eq!(fit_length("ab", "ab😀", 6, 4), ("ab😀".to_string(), 6));
+    }
+
+    /// A repeated letter must not confuse where the insertion is.
+    #[test]
+    fn a_repeated_character_is_still_found_as_the_insertion() {
+        assert_eq!(fit_length("aa", "aaaa", 4, 3), ("aaa".to_string(), 3));
+    }
 }
 
 #[cfg(test)]
@@ -6652,6 +7069,11 @@ const KIND_SEARCH: i32 = 3;
 /// A number rather than a bool because this is the seam every other input type
 /// arrives through: one constant per [`InputKind`], matched exhaustively where
 /// it is stored, so a new kind cannot reach Android without a keyboard.
+///
+/// Packed: the kind in the low byte, `inputmode` in the next ([`Keyboard`],
+/// 0 text, 1 numeric, 2 decimal, 3 tel, 4 email, 5 url, 6 search) and
+/// `enterkeyhint` in the third ([`EnterKey`], 0 unset, then enter, done, go,
+/// next, previous, search, send). `RuxActivity.java` unpacks the same layout.
 #[cfg(target_os = "android")]
 static FOCUSED_KIND: std::sync::atomic::AtomicI32 =
     std::sync::atomic::AtomicI32::new(KIND_TEXT);

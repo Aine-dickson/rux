@@ -541,7 +541,9 @@ combinators: descendant (`.a .b`), child (`.a > .b`), next-sibling (`.a + .b`),
 subsequent-sibling (`.a ~ .b`).
 
 **Pseudo-classes:** `:hover`, `:focus`, `:active`, `:checked`, `:current` (a
-link whose `to` names the path you are on), and `:enter-from` / `:leave-to`
+link whose `to` names the path you are on), `:disabled` / `:enabled` (an
+`<input>` or `<button>` with or without `disabled`; a plain box is neither, as in
+CSS), and `:enter-from` / `:leave-to`
 (the two sides of an enter/leave swap, below). They stack
 (`.btn:hover:active`), count as class-level specificity, and work anywhere in a
 chain, `.card:hover .title` recolours the title while the pointer is over the
@@ -549,7 +551,7 @@ card. `:hover`/`:active` hold for the whole chain under the pointer, as in CSS;
 `:active` is press-to-release and drops if you drag off the element; `:focus`
 matches the input holding the caret. Driven in `examples/pseudo.rux`.
 
-Any *other* pseudo-class (`:disabled`, `:nth-child(…)`, `::selection`) **never
+Any *other* pseudo-class (`:nth-child(…)`, `::selection`) **never
 matches**, and says so once on stderr. Before this existed the `:` was silently
 dropped, so `.box:hover` parsed as `.box` and applied *unconditionally*, failing
 closed is the safer half of that trade.
@@ -1151,7 +1153,7 @@ a field doesn't shrink as you type, and single-line inputs **never wrap** and
 **clip** overflow (no horizontal scroll yet).
 
 `<input type="textarea" r-model="sig">` is the same, but **Enter inserts a
-newline** (single-line inputs ignore it), the value wraps across lines,
+newline** (in a single-line input it commits the field, below), the value wraps across lines,
 **Up/Down move the caret between lines**, and it **scrolls vertically**: the
 wheel scrolls it and typing keeps the caret in view.
 
@@ -1195,6 +1197,72 @@ letter), a dot for a radio. Keep the checked `border` a shade apart from the
 checked `background`, or the ring dissolves into the fill. A radio is **round** unless you give it a `border-radius` (and a
 huge radius like `9999px` is clamped to a circle, so that's how you re-round one
 that inherited a radius from another class).
+
+### Field attributes and events
+
+The attributes are HTML's, named and valued as HTML names them, and they mean
+what HTML means by them.
+
+| Attribute | On | What it does |
+|---|---|---|
+| `disabled` | `<input>`, `<button>` | No tap, no link, no gesture, no focus, and nothing for Tab or a label's `for=` to reach. The value still shows. Matched by `:disabled` |
+| `readonly` | text inputs | Focusable, selectable and copyable. Every edit is refused, the toolbar offers only Copy and Select all, and no keyboard opens |
+| `maxlength` | text inputs | The most text the field takes, in UTF-16 units as HTML counts. Typing past it is refused; a paste is cut short. The *inserted* text is what gets cut, so typing into the middle of a full field does not eat its end. Not applied mid-composition, where the commit is cut instead |
+| `inputmode` | text inputs | Which keyboard a phone raises: `text`, `numeric`, `decimal`, `tel`, `email`, `url`, `search`, or `none` for no on-screen keyboard at all |
+| `enterkeyhint` | text inputs | What the action key says: `enter`, `done`, `go`, `next`, `previous`, `search`, `send` |
+| `autofocus` | text inputs | Takes focus when it first appears, if nothing has focus |
+
+`disabled` and `readonly` are **boolean attributes**: written means on, whatever
+they say, so `disabled="false"` is disabled, exactly as in HTML, and warns.
+`:disabled="expr"` and `:readonly="expr"` are the bound forms, and a change to
+what they read restyles the element in place. An unknown `inputmode` or
+`enterkeyhint`, or a `maxlength` that is not a whole number, is an error naming
+the line, because each would otherwise give an ordinary field in silence.
+
+**`inputmode` is a keyboard, not a type.** `email`, `tel` and `url` are text
+fields that want different keys, so they are hints and not `type=` values. A PIN,
+a card number or a phone number is a digit *string*: `inputmode="numeric"`,
+never a number. On a password field only `numeric` changes the keyboard (to a
+PIN pad that still learns nothing), because trading the password variation for
+an email layout would give up the no-learning guarantee.
+
+**Enter in a one-line field commits it.** It fires `@change` if the value
+changed, then does what `enterkeyhint` says the field can do by itself: `next`
+and `previous` move focus as Tab and Shift+Tab do, `done` drops focus and the
+keyboard. `go`, `search` and `send` name what the *app* will do, which is its
+`@change`. On Android the action key is a real Enter, so all of this is one path.
+
+Rux draws no default look for a disabled control, the same way it draws no
+default look for a button. Style `:disabled`:
+```css
+.field:disabled { color: #6c7086; border-color: #313244; }
+button:disabled { opacity: 0.5; }
+```
+
+**Events.** Four, on an input, each handed `event.value`:
+
+| Event | When |
+|---|---|
+| `@input` | After every change to the text, however it was made: a key, a paste, a cut, a phone's keyboard |
+| `@change` | A changed value is committed: the field is left, or Enter is pressed in a one-line field. A select fires it on choosing a different option, a checkbox or radio on every toggle |
+| `@focus` | The field gained focus |
+| `@blur` | The field lost focus, after its `@change` when both fire |
+
+```xml
+<input r-model="query" enterkeyhint="search" @change="run_search(event.value)" />
+<input r-model="code" inputmode="numeric" maxlength="6" autofocus />
+<button :disabled="code.len() < 6" @tap="verify()">Verify</button>
+```
+
+Handlers run **after** the edit or the focus change that caused them is
+complete, never from inside it, so a handler that writes the field's own
+signal, focuses another field or blurs this one sees the field as the person
+does. A `@blur` that focuses the field it left, answered by a `@focus` that
+blurs it, is stopped after 64 handlers with a warning. A handler written in a
+component runs in that instance, and one in an `r-for` row sees the row.
+
+Not yet: `@submit` and `role="form"` (Enter in a field does not submit
+anything), validation (`required`, `pattern`), and `autocomplete`.
 
 ### Text input and composition
 Typing is not only key presses. Anything past unaccented Latin is *composed*:

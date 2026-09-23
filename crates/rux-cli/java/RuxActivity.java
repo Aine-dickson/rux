@@ -456,7 +456,12 @@ public class RuxActivity extends NativeActivity {
             // No full-screen editor either way. A phone in landscape will
             // otherwise replace the whole app with the IME's own editor, which
             // would cover the Rux document being edited.
-            int kind = nativeFieldKind();
+            // The kind in the low byte, `inputmode` and `enterkeyhint` above
+            // it; the layout is written down on `FOCUSED_KIND` in rux-shell.
+            int packed = nativeFieldKind();
+            int kind = packed & 0xff;
+            int keyboard = (packed >> 8) & 0xff;
+            int enter = (packed >> 16) & 0xff;
             boolean multiline = kind == KIND_TEXTAREA;
             if (kind == KIND_PASSWORD) {
                 // **The variation is not cosmetic and not about the glyphs.**
@@ -495,6 +500,10 @@ public class RuxActivity extends NativeActivity {
                 out.inputType = EditorInfo.TYPE_CLASS_TEXT;
                 out.imeOptions = EditorInfo.IME_FLAG_NO_FULLSCREEN | EditorInfo.IME_ACTION_DONE;
             }
+            applyKeyboard(out, kind, keyboard);
+            if (!multiline) {
+                applyEnterKey(out, enter);
+            }
             String current = nativeFocusedText();
             if (current == null) {
                 current = "";
@@ -509,6 +518,82 @@ public class RuxActivity extends NativeActivity {
             out.initialSelEnd = Math.max(anchor, caret);
             connection = new RuxInputConnection(this, current, anchor, caret, multiline);
             return connection;
+        }
+
+        /**
+         * {@code inputmode}: which keys the keyboard offers. Only the class
+         * and variation change; the field is a text field whatever this says.
+         *
+         * <p>A password keeps its variation, because trading it for an email
+         * keyboard would give up the no-learning guarantee for a key layout.
+         * The one exception is {@code numeric}, which Android has a password
+         * variation of its own for: a PIN pad that still learns nothing.
+         */
+        private void applyKeyboard(EditorInfo out, int kind, int keyboard) {
+            boolean password = kind == KIND_PASSWORD;
+            int multi = out.inputType & EditorInfo.TYPE_TEXT_FLAG_MULTI_LINE;
+            switch (keyboard) {
+                case KEYBOARD_NUMERIC:
+                    out.inputType = EditorInfo.TYPE_CLASS_NUMBER
+                            | (password ? EditorInfo.TYPE_NUMBER_VARIATION_PASSWORD : 0);
+                    break;
+                case KEYBOARD_DECIMAL:
+                    if (!password) {
+                        out.inputType = EditorInfo.TYPE_CLASS_NUMBER
+                                | EditorInfo.TYPE_NUMBER_FLAG_DECIMAL;
+                    }
+                    break;
+                case KEYBOARD_TEL:
+                    if (!password) {
+                        out.inputType = EditorInfo.TYPE_CLASS_PHONE;
+                    }
+                    break;
+                case KEYBOARD_EMAIL:
+                    if (!password) {
+                        out.inputType = EditorInfo.TYPE_CLASS_TEXT
+                                | EditorInfo.TYPE_TEXT_VARIATION_EMAIL_ADDRESS | multi;
+                    }
+                    break;
+                case KEYBOARD_URL:
+                    if (!password) {
+                        out.inputType = EditorInfo.TYPE_CLASS_TEXT
+                                | EditorInfo.TYPE_TEXT_VARIATION_URI | multi;
+                    }
+                    break;
+                case KEYBOARD_SEARCH:
+                    if (multi == 0) {
+                        out.imeOptions = (out.imeOptions & ~EditorInfo.IME_MASK_ACTION)
+                                | EditorInfo.IME_ACTION_SEARCH;
+                    }
+                    break;
+                default:
+                    break;
+            }
+        }
+
+        /**
+         * {@code enterkeyhint}: what the action key says. Pressing it still
+         * sends Enter, which is {@code BaseInputConnection}'s own answer to
+         * {@code performEditorAction}, and Rux decides what Enter does.
+         */
+        private void applyEnterKey(EditorInfo out, int enter) {
+            int action;
+            switch (enter) {
+                case ENTER_ENTER:
+                    // A plain return key: no action at all.
+                    out.imeOptions = (out.imeOptions & ~EditorInfo.IME_MASK_ACTION)
+                            | EditorInfo.IME_ACTION_UNSPECIFIED
+                            | EditorInfo.IME_FLAG_NO_ENTER_ACTION;
+                    return;
+                case ENTER_DONE: action = EditorInfo.IME_ACTION_DONE; break;
+                case ENTER_GO: action = EditorInfo.IME_ACTION_GO; break;
+                case ENTER_NEXT: action = EditorInfo.IME_ACTION_NEXT; break;
+                case ENTER_PREVIOUS: action = EditorInfo.IME_ACTION_PREVIOUS; break;
+                case ENTER_SEARCH: action = EditorInfo.IME_ACTION_SEARCH; break;
+                case ENTER_SEND: action = EditorInfo.IME_ACTION_SEND; break;
+                default: return;
+            }
+            out.imeOptions = (out.imeOptions & ~EditorInfo.IME_MASK_ACTION) | action;
         }
 
         /** The connection most recently handed to an input method. */
@@ -861,12 +946,31 @@ public class RuxActivity extends NativeActivity {
     /** {@code type="search"}. */
     private static final int KIND_SEARCH = 3;
 
+    // `inputmode`, the second byte of {@link #nativeFieldKind}. 0 is text.
+    private static final int KEYBOARD_NUMERIC = 1;
+    private static final int KEYBOARD_DECIMAL = 2;
+    private static final int KEYBOARD_TEL = 3;
+    private static final int KEYBOARD_EMAIL = 4;
+    private static final int KEYBOARD_URL = 5;
+    private static final int KEYBOARD_SEARCH = 6;
+
+    // `enterkeyhint`, the third byte. 0 is unset: the kind decides.
+    private static final int ENTER_ENTER = 1;
+    private static final int ENTER_DONE = 2;
+    private static final int ENTER_GO = 3;
+    private static final int ENTER_NEXT = 4;
+    private static final int ENTER_PREVIOUS = 5;
+    private static final int ENTER_SEARCH = 6;
+    private static final int ENTER_SEND = 7;
+
     /**
      * What kind of field has focus, so the right keyboard can be asked for.
      *
-     * <p>One of the {@code KIND_} constants above. Every other input type Rux
-     * grows will arrive through here, because an {@code EditorInfo} is the only
-     * thing that decides which keys an input method offers.
+     * <p>One of the {@code KIND_} constants above in the low byte, with a
+     * {@code KEYBOARD_} in the next and an {@code ENTER_} in the third. Every
+     * other input type Rux grows will arrive through here, because an
+     * {@code EditorInfo} is the only thing that decides which keys an input
+     * method offers.
      */
     private static native int nativeFieldKind();
 

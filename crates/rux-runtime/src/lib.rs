@@ -249,6 +249,10 @@ fn check_handlers(
 /// silently means six is worse than a list of six.
 const EVENT_NAMES: &[&str] = &["tap", "press", "release", "longpress", "swipe", "drag"];
 
+/// The events only an `<input>` has, on top of [`EVENT_NAMES`]: what happens to
+/// its value and its focus, which no other element has.
+const FIELD_EVENT_NAMES: &[&str] = &["input", "change", "focus", "blur"];
+
 /// Attributes that mean something only by being present.
 ///
 /// Writing `r-else=""` is not the same mistake as writing `r-else`: it reads as
@@ -271,15 +275,31 @@ fn check_attribute_shapes(
         if let Some(event) = attr.name.strip_prefix('@') {
             // A component's `@name` is a listener for whatever it emits, so any
             // name is legitimate there.
-            if is_component || EVENT_NAMES.contains(&event) {
+            let field = el.tag == "input";
+            if is_component
+                || EVENT_NAMES.contains(&event)
+                || (field && FIELD_EVENT_NAMES.contains(&event))
+            {
                 continue;
             }
+            let names = EVENT_NAMES
+                .iter()
+                .chain(FIELD_EVENT_NAMES.iter().filter(|_| field))
+                .map(|n| format!("`@{n}`"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            // Off an input, a field event is the likely mistake, so say where
+            // it does belong.
+            let only_input = if !field && FIELD_EVENT_NAMES.contains(&event) {
+                format!(" `@{event}` belongs on an `<input>`.")
+            } else {
+                String::new()
+            };
             rux_script::located(Some(attr.line), || {
                 rux_script::error_script(format!(
                     "`@{event}` on <{}> is not an event Rux dispatches, so nothing \
-                     will ever run it. The events are {}",
+                     will ever run it. The events are {names}.{only_input}",
                     el.tag,
-                    EVENT_NAMES.iter().map(|n| format!("`@{n}`")).collect::<Vec<_>>().join(", ")
                 ));
             });
         }

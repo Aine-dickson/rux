@@ -343,6 +343,94 @@ pub struct BindingRegistry {
 /// Bake the active `r-for` loop bindings into a handler as a `let` prelude, so it
 /// still resolves them when it runs later in global scope (the loop variables are
 /// gone by then). With no locals the handler is returned unchanged.
+/// A boolean attribute, the way HTML has them: written means on, and what it
+/// says does not matter. `:name="expr"` is the bound form, on when the
+/// expression is truthy, and the signals it reads go into `deps` so a change
+/// restyles the element.
+///
+/// **`disabled="false"` is on**, in HTML and here, and it is the classic trap:
+/// the author wrote the word that switches it off and the attribute read only
+/// that it was present. Warned rather than reinterpreted, because matching
+/// HTML is the rule and the bound form is the right way to say it.
+fn bool_attr(
+    el: &Element,
+    name: &str,
+    engine: &mut Engine,
+    locals: &Locals,
+    deps: &mut HashSet<String>,
+) -> bool {
+    if let Some(written) = el.attr(name) {
+        if written.eq_ignore_ascii_case("false") {
+            located(el.attr_line(name), || {
+                warn(format!(
+                    "`{name}=\"false\"` still means {name}: a boolean attribute is on                      whenever it is written, whatever it says. Leave it off, or bind it                      with `:{name}=\"expr\"`"
+                ))
+            });
+        }
+        return true;
+    }
+    let bound = format!(":{name}");
+    let Some(expr) = el.attr(&bound) else { return false };
+    let (on, read) =
+        located(el.attr_line(&bound), || engine.eval_bool_tracked(expr, locals));
+    deps.extend(read);
+    on
+}
+
+/// Refuse an `<input>` attribute value Rux cannot act on, the way an unknown
+/// `type=` is refused: a keyboard hint that is misspelt is otherwise an
+/// ordinary keyboard, and nothing says why.
+fn check_field_attributes(el: &Element) {
+    for (name, names) in [
+        ("inputmode", &rux_layout::Keyboard::NAMES[..]),
+        ("enterkeyhint", &rux_layout::EnterKey::NAMES[..]),
+    ] {
+        let Some(value) = el.attr(name) else { continue };
+        if !names.contains(&value) {
+            located(el.attr_line(name), || {
+                error(format!(
+                    "`{name}=\"{value}\"` is not a value Rux knows, so the field would get                      the ordinary keyboard. Use one of {}",
+                    names.join(", ")
+                ))
+            });
+        }
+    }
+    if let Some(value) = el.attr("maxlength") {
+        if value.trim().parse::<usize>().is_err() {
+            located(el.attr_line("maxlength"), || {
+                error(format!(
+                    "`maxlength=\"{value}\"` is not a whole number of characters, so the                      field would take any length"
+                ))
+            });
+        }
+    }
+}
+
+/// What an `<input>` says about itself beyond its type. See
+/// [`rux_layout::Field`]. Handlers are baked with the row's locals, like a
+/// `@tap`, because they run long after the build that could still see the row.
+fn field_of(el: &Element, disabled: bool, readonly: bool, locals: &Locals) -> rux_layout::Field {
+    let handler = |name: &str| el.attr(name).map(|h| bind_locals(h, locals));
+    rux_layout::Field {
+        disabled,
+        readonly,
+        maxlength: el.attr("maxlength").and_then(|v| v.trim().parse().ok()),
+        keyboard: el
+            .attr("inputmode")
+            .and_then(rux_layout::Keyboard::parse)
+            .unwrap_or_default(),
+        enter_key: el
+            .attr("enterkeyhint")
+            .and_then(rux_layout::EnterKey::parse)
+            .unwrap_or_default(),
+        autofocus: el.attr("autofocus").is_some(),
+        on_input: handler("@input"),
+        on_change: handler("@change"),
+        on_focus: handler("@focus"),
+        on_blur: handler("@blur"),
+    }
+}
+
 fn bind_locals(src: &str, locals: &Locals) -> String {
     if locals.is_empty() {
         return src.to_string();
@@ -1466,10 +1554,16 @@ fn apply_label_names(node: &mut LayoutNode, names: &HashMap<String, String>) {
 }
 
 fn collect_label_targets(node: &LayoutNode, targets: &mut HashMap<String, LabelTarget>) {
+    // A disabled target is still a target, so a second element with its id
+    // cannot take the label over, but it hands the label nothing to do.
     if let Some(id) = &node.id {
-        targets
-            .entry(id.clone())
-            .or_insert_with(|| (node.on_tap.clone(), node.model.clone()));
+        targets.entry(id.clone()).or_insert_with(|| {
+            if node.field.disabled {
+                (None, None)
+            } else {
+                (node.on_tap.clone(), node.model.clone())
+            }
+        });
     }
     for child in &node.children {
         collect_label_targets(child, targets);
@@ -1824,6 +1918,10 @@ enum Pseudo {
     /// The side an element ends at as it leaves. Held from the moment the swap
     /// opens until it commits, so it is a target the whole way.
     LeaveTo,
+    /// `:disabled`, a control with `disabled` on it.
+    Disabled,
+    /// `:enabled`, a control without.
+    Enabled,
     Unknown(String),
 }
 
@@ -1846,6 +1944,12 @@ pub struct ElemStates {
     /// This element is leaving: the build no longer asks for it, and it is on
     /// screen only because a swap is holding it there.
     pub leave_to: bool,
+    /// A `disabled` `<input>` or `<button>`. Resolved at build time from the
+    /// attribute, like `checked`.
+    pub disabled: bool,
+    /// An `<input>` or `<button>` that is not disabled: CSS's `:enabled`
+    /// matches form controls only, never a plain box.
+    pub enabled: bool,
 }
 
 /// The interaction state the *shell* owns, handed to the build so pseudo-class
@@ -1905,6 +2009,8 @@ impl Pseudo {
             "current" => Self::Current,
             "enter-from" => Self::EnterFrom,
             "leave-to" => Self::LeaveTo,
+            "disabled" => Self::Disabled,
+            "enabled" => Self::Enabled,
             other => Self::Unknown(other.to_string()),
         }
     }
@@ -1918,6 +2024,8 @@ impl Pseudo {
             Self::Current => s.current,
             Self::EnterFrom => s.enter_from,
             Self::LeaveTo => s.leave_to,
+            Self::Disabled => s.disabled,
+            Self::Enabled => s.enabled,
             // Fails closed, see the type docs.
             Self::Unknown(_) => false,
         }
@@ -2962,7 +3070,7 @@ pub fn honored_pseudo_classes() -> &'static [&'static str] {
 }
 
 const HONORED_PSEUDO_CLASSES: &[&str] =
-    &["hover", "focus", "active", "checked", "current", "enter-from", "leave-to"];
+    &["hover", "focus", "active", "checked", "current", "enter-from", "leave-to", "disabled", "enabled"];
 
 /// The properties `transition` can name, in the order `all` expands them.
 ///
@@ -3593,7 +3701,21 @@ fn build_node_inner(
         }
     }
 
+    // `disabled`, on the two elements that can be operated. Worked out before
+    // the cascade, because `:disabled` is matched by it.
+    let mut disabled_deps: HashSet<String> = HashSet::new();
+    let disabled = matches!(el.tag.as_str(), "input" | "button")
+        && bool_attr(el, "disabled", engine, locals, &mut disabled_deps);
+    // `readonly` beside it, for the same reason and with the same bound form.
+    let readonly =
+        el.tag == "input" && bool_attr(el, "readonly", engine, locals, &mut disabled_deps);
+    if el.tag == "input" {
+        check_field_attributes(el);
+    }
+
     let mut desc = ElemDesc::of(el);
+    desc.states.disabled = disabled;
+    desc.states.enabled = matches!(el.tag.as_str(), "input" | "button") && !disabled;
     // A ticked checkbox / selected radio is matched by `:checked`. It *also* still
     // carries the synthetic `checked` class, the pre-pseudo-class hack, so
     // stylesheets written against `.box.checked` keep working for one release.
@@ -3626,7 +3748,7 @@ fn build_node_inner(
     };
     // `:class`: dynamic classes fed into the cascade (the `checked` pattern,
     // generalized). Signals it reads are collected for reconcile.
-    let mut dyn_deps: HashSet<String> = HashSet::new();
+    let mut dyn_deps: HashSet<String> = disabled_deps;
     // Where this element links to, if anywhere. `:to` is the computed form, which
     // is what a list of rows needs: every row links somewhere different, and the
     // path is built from the row's own data.
@@ -3751,9 +3873,13 @@ fn build_node_inner(
     // is written as a handler: it then travels the one route a tap already
     // takes, through the hit region and `apply_handler`. An explicit `@tap`
     // wins, so a link can still do something else on the way.
+    //
+    // A disabled control answers nothing: no tap, no link, no gesture. Taken
+    // away here rather than refused later, so that nothing downstream (the hit
+    // regions, the keyboard's Enter, a label's `for=`) has a handler to find.
     let on_tap = el.attr("@tap").map(|h| bind_locals(h, locals)).or_else(|| {
         to.as_ref().map(|p| format!("navigate({})", Value::Text(p.clone()).to_rhai_literal()))
-    });
+    }).filter(|_| !disabled);
     // The pointer handlers, in the order the vocabulary lists them rather than
     // the order they happen to be written, so two elements with the same set
     // dispatch in the same order.
@@ -3770,6 +3896,7 @@ fn build_node_inner(
         // long after the build that could still see the row.
         el.attr(&format!("@{name}")).map(|h| (kind, bind_locals(h, locals)))
     })
+    .filter(|_| !disabled)
     .collect();
     // r-show="false" keeps the layout slot but paints nothing. It only flips
     // `hidden`, never the shape, so it's patchable: record it and a change rewrites
@@ -4024,7 +4151,7 @@ fn build_node_inner(
                         });
         }
         node.on_tap = on_tap.or_else(|| {
-            if model.is_empty() {
+            if model.is_empty() || disabled {
                 None
             } else if radio {
                 Some(format!("{model} = \"{value}\""))
@@ -4032,6 +4159,16 @@ fn build_node_inner(
                 Some(format!("{model} = !{model}"))
             }
         });
+        // `@change` runs after the toggle, in the same handler, so it reads the
+        // value the tap just wrote, and is handed it as `event.value` the way a
+        // text field's is.
+        if let (Some(tap), Some(change)) = (&mut node.on_tap, el.attr("@change")) {
+            if !model.is_empty() {
+                let change = bind_locals(change, locals);
+                *tap = format!("{tap}; let event = #{{ value: {model} }}; {change}");
+            }
+        }
+        node.field.disabled = disabled;
         node.hidden = hidden;
         node.id = el.attr("id").map(str::to_string);
         node.label_for = el.attr("for").map(str::to_string);
@@ -4178,6 +4315,7 @@ fn build_node_inner(
         // did, which is exactly the branch every `r-model` goes through.
         node.instance = instance.map(str::to_string);
         node.kind = kind;
+        node.field = field_of(el, disabled, readonly, locals);
         node.options = options;
         node.on_tap = on_tap;
         node.gestures = gestures;
@@ -4257,6 +4395,7 @@ fn build_node_inner(
         gestures,
         model: None,
         kind: InputKind::Text,
+        field: rux_layout::Field::default(),
         options: None,
         hidden,
         id: el.attr("id").map(str::to_string),
@@ -8670,8 +8809,12 @@ mod tests {
             current: false,
             enter_from: false,
             leave_to: false,
+            disabled: true,
+            enabled: false,
         };
         assert!(hits_state("input:focus", "input", s));
+        assert!(hits_state("input:disabled", "input", s));
+        assert!(!hits_state("input:enabled", "input", s));
         assert!(hits_state("input:checked", "input", s));
         assert!(!hits_state("input:hover", "input", s));
         assert!(!hits_state("input:active", "input", s));
@@ -8698,8 +8841,10 @@ mod tests {
             current: true,
             enter_from: true,
             leave_to: true,
+            disabled: true,
+            enabled: true,
         };
-        assert!(!hits_state(".box:disabled", ".box", all_on));
+        assert!(!hits_state(".box:first-child", ".box", all_on));
         assert!(!hits_state(".box:nth-child(2)", ".box", all_on));
         assert!(!hits_state(".box::selection", ".box", all_on));
     }

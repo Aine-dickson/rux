@@ -1021,6 +1021,157 @@ impl InputKind {
     }
 }
 
+/// Which keyboard a text field asks for: `inputmode=`, named and valued as
+/// HTML names it.
+///
+/// **A keyboard, not a control.** An email field is a text field that happens
+/// to want an `@` key, and nothing about its value, binding or rendering is
+/// different. That is why these are not `type=` values: a type is a different
+/// control, and claiming `email` was one would promise a distinction that
+/// exists nowhere but the keyboard. Phone numbers, card numbers and one-time
+/// codes are digit *strings*, which is `inputmode="numeric"` on a text field
+/// and never a `number`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Keyboard {
+    /// The platform's ordinary text keyboard, the default.
+    #[default]
+    Text,
+    /// Digits only: PINs, codes, card numbers.
+    Numeric,
+    /// Digits and the locale's decimal separator.
+    Decimal,
+    /// A telephone keypad.
+    Tel,
+    /// A text keyboard with `@` and `.` to hand.
+    Email,
+    /// A text keyboard with `/` and `.` to hand.
+    Url,
+    /// A text keyboard whose action key searches.
+    Search,
+    /// No on-screen keyboard at all: the app draws its own keys.
+    None,
+}
+
+impl Keyboard {
+    /// Every value `inputmode=` accepts, for the error that names them.
+    pub const NAMES: [&'static str; 8] =
+        ["text", "numeric", "decimal", "tel", "email", "url", "search", "none"];
+
+    pub fn parse(value: &str) -> Option<Self> {
+        Some(match value {
+            "text" => Self::Text,
+            "numeric" => Self::Numeric,
+            "decimal" => Self::Decimal,
+            "tel" => Self::Tel,
+            "email" => Self::Email,
+            "url" => Self::Url,
+            "search" => Self::Search,
+            "none" => Self::None,
+            _ => return None,
+        })
+    }
+    /// The `inputmode` value that names it, the inverse of [`Self::parse`].
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Text => "text",
+            Self::Numeric => "numeric",
+            Self::Decimal => "decimal",
+            Self::Tel => "tel",
+            Self::Email => "email",
+            Self::Url => "url",
+            Self::Search => "search",
+            Self::None => "none",
+        }
+    }
+}
+
+/// What the keyboard's action key says: `enterkeyhint=`, as HTML names it.
+///
+/// A label, and for two of them a behaviour: `next` and `previous` move focus
+/// the way Tab does, and `done` closes the field. The rest only name what the
+/// app is about to do with Enter, which is the app's business.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum EnterKey {
+    /// Whatever the platform shows when nobody says.
+    #[default]
+    Default,
+    Enter,
+    Done,
+    Go,
+    Next,
+    Previous,
+    Search,
+    Send,
+}
+
+impl EnterKey {
+    /// Every value `enterkeyhint=` accepts, for the error that names them.
+    pub const NAMES: [&'static str; 7] =
+        ["enter", "done", "go", "next", "previous", "search", "send"];
+
+    pub fn parse(value: &str) -> Option<Self> {
+        Some(match value {
+            "enter" => Self::Enter,
+            "done" => Self::Done,
+            "go" => Self::Go,
+            "next" => Self::Next,
+            "previous" => Self::Previous,
+            "search" => Self::Search,
+            "send" => Self::Send,
+            _ => return None,
+        })
+    }
+    /// The `enterkeyhint` value that names it; `None` when it was not given.
+    pub fn name(self) -> Option<&'static str> {
+        Some(match self {
+            Self::Default => return None,
+            Self::Enter => "enter",
+            Self::Done => "done",
+            Self::Go => "go",
+            Self::Next => "next",
+            Self::Previous => "previous",
+            Self::Search => "search",
+            Self::Send => "send",
+        })
+    }
+}
+
+/// What an `<input>` says about itself beyond its type: the attributes that
+/// constrain editing, what its keyboard looks like, and who to tell when
+/// something happens to it.
+///
+/// Carried from the build to the shell on the field's [`FocusRegion`], because
+/// the shell is where every one of them is enforced: it owns the keystrokes,
+/// the focus and the input method. Default is an ordinary editable field that
+/// tells nobody anything.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Field {
+    /// `disabled`: cannot be focused, tapped or edited. A disabled field has no
+    /// focus region at all, so the shell never sees one.
+    pub disabled: bool,
+    /// `readonly`: can be focused, selected and copied, but not changed, and
+    /// raises no keyboard.
+    pub readonly: bool,
+    /// `maxlength`: the most text the field accepts, in UTF-16 code units as
+    /// HTML counts them. Typing past it is refused; a paste is cut short.
+    pub maxlength: Option<usize>,
+    /// `inputmode`.
+    pub keyboard: Keyboard,
+    /// `enterkeyhint`.
+    pub enter_key: EnterKey,
+    /// `autofocus`: takes focus when it first appears, if nothing has it.
+    pub autofocus: bool,
+    /// `@input`: after every change to the text, however it was made.
+    pub on_input: Option<String>,
+    /// `@change`: when a changed value is committed, by leaving the field or
+    /// by Enter in a one-line field.
+    pub on_change: Option<String>,
+    /// `@focus`.
+    pub on_focus: Option<String>,
+    /// `@blur`.
+    pub on_blur: Option<String>,
+}
+
 /// A node in the view tree: a style, optional text, children, and an optional
 /// `@tap` handler (raw handler source, run by the shell on tap).
 #[derive(Clone, Debug)]
@@ -1045,6 +1196,8 @@ pub struct Node {
     pub model: Option<String>,
     /// Which text field an `<input>` is. See [`InputKind`].
     pub kind: InputKind,
+    /// An `<input>`'s attributes and handlers. See [`Field`].
+    pub field: Field,
     /// `type="select"`: the bound `:options`, so the shell can open a dropdown.
     pub options: Option<Vec<String>>,
     /// `r-show="false"`: laid out (space reserved) but not painted.
@@ -1096,6 +1249,7 @@ impl Node {
             gestures: Vec::new(),
             model: None,
             kind: InputKind::Text,
+            field: Field::default(),
             options: None,
             hidden: false,
             id: None,
@@ -1120,6 +1274,7 @@ impl Node {
             gestures: Vec::new(),
             model: None,
             kind: InputKind::Text,
+            field: Field::default(),
             options: None,
             hidden: false,
             id: None,
@@ -1144,6 +1299,7 @@ impl Node {
             gestures: Vec::new(),
             model: None,
             kind: InputKind::Text,
+            field: Field::default(),
             options: None,
             hidden: false,
             id: None,
@@ -1173,6 +1329,7 @@ impl Node {
             gestures: Vec::new(),
             model: None,
             kind: InputKind::Text,
+            field: Field::default(),
             options: None,
             hidden: false,
             id: None,
@@ -1494,6 +1651,8 @@ pub struct FocusRegion {
     pub text: Option<PaintText>,
     /// Which text field this is. See [`InputKind`].
     pub kind: InputKind,
+    /// Its attributes and handlers. See [`Field`].
+    pub field: Field,
     /// If this input scrolls (a textarea), the index of its `ScrollRegion` in
     /// `Layout.scrolls`, so the shell can scroll the caret into view.
     pub scroll_id: Option<usize>,
@@ -1524,6 +1683,8 @@ pub struct SelectRegion {
     /// write in the wrong scope lands nowhere.
     pub instance: Option<String>,
     pub options: Vec<String>,
+    /// Its attributes; the shell reads `@change` off it. See [`Field`].
+    pub field: Field,
 }
 
 impl SelectRegion {
@@ -2138,6 +2299,7 @@ struct Bound {
     instance: Option<String>,
     /// Which text field. See [`InputKind`].
     kind: InputKind,
+    field: Field,
     options: Option<Vec<String>>,
 }
 
@@ -2410,13 +2572,17 @@ fn build(
             node.instance.clone(),
         ));
     }
-    if let Some(model) = &node.model {
+    // A disabled field is not a field as far as focus is concerned: no region
+    // to tap, nothing for Tab to land on, no label that can focus it. What it
+    // shows still paints, from the node, like any other box.
+    if let Some(model) = node.model.as_ref().filter(|_| !node.field.disabled) {
         models.push(Bound {
             id,
             model: model.clone(),
             row: row.map(str::to_string),
             instance: node.instance.clone(),
             kind: node.kind,
+            field: node.field.clone(),
             options: node.options.clone(),
         });
     }
@@ -2675,10 +2841,13 @@ fn collect(
         // label: `for=` names a model, and a model only means anything where it
         // was written. A label that finds no such input carries no instance,
         // which is the same answer as before this field existed.
-        let instance = models
-            .iter()
-            .find(|b| b.model == *model && b.row == *row)
-            .and_then(|b| b.instance.clone());
+        let target = models.iter().find(|b| b.model == *model && b.row == *row);
+        let instance = target.and_then(|b| b.instance.clone());
+        // The target's attributes too, because the shell reads them off
+        // whichever region shares the field's identity, and a label's region
+        // can come first. A `readonly` field focused from its label must still
+        // refuse the keyboard.
+        let field = target.map(|b| b.field.clone()).unwrap_or_default();
         out.focuses.push(FocusRegion {
             x,
             y,
@@ -2688,7 +2857,8 @@ fn collect(
             row: row.clone(),
             instance,
             text: None,
-            kind: InputKind::Text,
+            kind: target.map_or(InputKind::Text, |b| b.kind),
+            field,
             scroll_id: None,
         });
     }
@@ -2761,6 +2931,7 @@ fn collect(
                 row: bound.row.clone(),
                 instance: bound.instance.clone(),
                 options: options.clone(),
+                field: bound.field.clone(),
             });
             out.focusables.push(FocusItem {
                 transform: child_xform,
@@ -2812,6 +2983,7 @@ fn collect(
                 instance: bound.instance.clone(),
                 text: text.clone(),
                 kind: bound.kind,
+                field: bound.field.clone(),
                 // The scroll block below assigns ids as `out.scrolls.len()`, so if
                 // this node scrolls it will get the current length as its id.
                 scroll_id: scrolls.contains(&id).then(|| out.scrolls.len()),
