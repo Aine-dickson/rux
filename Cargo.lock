@@ -3245,6 +3245,7 @@ dependencies = [
  "android-activity",
  "arboard",
  "jni",
+ "js-sys",
  "ndk-context",
  "notify",
  "pollster",

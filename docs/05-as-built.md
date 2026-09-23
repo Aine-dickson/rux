@@ -1206,8 +1206,21 @@ is typed is not a number yet (`-`, `1.`, an emptied field) the signal keeps the
 last number it had and the field shows the typing, the same way a composition
 lives in the field before it is committed. Nothing typed is refused: a letter
 stays in the field and changes nothing. Leaving the field shows the number
-again. A comma is read as the decimal point when there is no point, because
-many phone keyboards offer only the comma. `@input` fires when the *number*
+again.
+
+**The decimal point is the person's own**, read from the device's language
+(Android's locale, Windows' regional setting, the browser's language; a dot
+elsewhere). The other of comma and dot is a thousands separator and is
+dropped, as are spaces, but only before the point:
+
+| Typed | English (`.`) | German (`,`) |
+|---|---|---|
+| `24,000` | 24000 | 24 |
+| `2,5` | 25 | 2.5 |
+| `1.234,5` | not a number yet | 1234.5 |
+
+That is more forgiving than HTML and Android, which both refuse `24,000` in a
+number field, and it keeps the rule that nothing typed is refused. `@input` fires when the *number*
 changes, and every event hands over the number as `event.value`. A phone raises
 a number keyboard with a minus sign and a decimal point; an `inputmode` still
 wins, so `inputmode="numeric"` gives a digits-only pad.

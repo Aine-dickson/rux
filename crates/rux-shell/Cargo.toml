@@ -62,11 +62,12 @@ accesskit_winit = "0.33.2"
 
 # The browser's stand-ins: a task spawner instead of blocking, and the
 # canvas/console bindings winit and the loader need.
-# Asking Windows whether the person has turned animations off. winit 0.30
+# Asking Windows whether the person has turned animations off, and which
+# character their language writes a decimal point with. winit 0.30
 # exposes nothing for it, and this is already in the lockfile several times over
 # by way of winit and arboard, so it costs a feature flag and no build time.
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_UI_WindowsAndMessaging"] }
+windows-sys = { version = "0.61", features = ["Win32_UI_WindowsAndMessaging", "Win32_Globalization"] }
 
 # Android reaches winit through `android-activity`, which is why an Android app
 # is a cdylib exporting `android_main` rather than a binary with a `fn main`.
@@ -92,6 +93,8 @@ ndk-context = "0.1"
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen-futures = "0.4"
 wasm-bindgen = "0.2"
+# `Number.toLocaleString`, to learn the browser's decimal separator.
+js-sys = "0.3"
 # The extra features past the canvas are the soft-keyboard sink: a browser only
 # raises a phone's keyboard for a focused DOM element, and a `<canvas>` is not
 # one, so the shell keeps a real `<input>` over the field it is editing.

@@ -1702,7 +1702,7 @@ Written before the phone session. Results are filled in as driven.
 | Type `-`, then `1.`, then `1.5` | phone, desktop | The field shows each as typed; `qty` stays 2 through `-` and `1.`, then reads 1.5; `type` says `f64` |
 | Type a letter into the number field | desktop | It stays in the field; `qty` does not change |
 | Clear the number field, then tap elsewhere | phone | Empty while focused (placeholder shows), then the last number comes back |
-| `2,5` on a keyboard that offers a comma | phone | `qty` reads 2.5 |
+| `24,000` on an English phone | phone | `qty` reads 24000; `2,5` reads 25; `1.234,5` stays a draft |
 | `@input` and `@change` on the number | phone | `input` fires only when the number changes; `CHANGE` once on leaving |
 | `inputmode="numeric"` on a number | phone | A digits-only pad |
 | Tap each switch | phone, desktop | The thumb jumps to the other end, the track turns blue (green for the second); `CHANGE wifi true/false` |
@@ -1734,8 +1734,11 @@ knowing about. `,959494956262.22` showed as typed while `age` held
 `0.959494956262`, the last text that *was* a number (a leading comma read as
 the point). `284846,65946564,659594` held `284846.65946564` for the same
 reason. Nothing marks such a field as not holding what it shows; that is
-`:invalid`, phase 6. **The comma rule guesses**: `1,000` typed as a thousand
-reads as 1. The fix is the device's own decimal separator, not a guess. Swiping
+`:invalid`, phase 6. **The comma rule guessed**: `24,000` typed as a thousand
+read as 24, and caught the user out. HTML and Android both refuse `24,000`
+in a number field; the user chose the forgiving answer instead, and it is
+built: the decimal separator is the device language's, and the other one is a
+thousands separator before the point. Swiping
 up and down starting on a slider scrolled the page and left the slider alone.
 
 The keyboard on this phone is not Gboard, and it offered the same keys (minus,

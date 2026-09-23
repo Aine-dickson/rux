@@ -272,6 +272,16 @@ public class RuxActivity extends NativeActivity {
                 });
     }
 
+    /**
+     * The decimal separator of the phone's language, which decides whether a
+     * comma typed into a {@code type="number"} is the point or a thousands
+     * separator. Called from the render thread; reading a locale needs no
+     * view.
+     */
+    char ruxDecimalSeparator() {
+        return java.text.DecimalFormatSymbols.getInstance().getDecimalSeparator();
+    }
+
     /** {@code YYYY-MM-DD} as year, month from 1 and day, or null. Rux has checked it. */
     private static int[] parseDate(String text) {
         if (text == null) {

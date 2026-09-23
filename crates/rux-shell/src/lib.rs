@@ -1360,6 +1360,9 @@ struct App {
     /// text it shows, and the bound value as text when that was written. See
     /// [`App::focused_value`].
     typed_draft: Option<(String, String)>,
+    /// The person's decimal separator, `,` or `.`, which decides what a
+    /// number field's comma means. See [`parse_number`].
+    decimal: char,
     /// `@input`, `@change`, `@focus` and `@blur` waiting to run: handler,
     /// instance, and the `event` it is handed. See [`App::flush_field_events`].
     field_events: std::collections::VecDeque<(String, Option<String>, rux_reactive::Value)>,
@@ -1524,6 +1527,7 @@ impl App {
             focused_field: Field::default(),
             committed: None,
             typed_draft: None,
+            decimal: '.',
             field_events: std::collections::VecDeque::new(),
             autofocus_seen: Vec::new(),
             #[cfg(target_os = "android")]
@@ -3644,7 +3648,7 @@ impl App {
             // Only a number, or a date, reaches the signal. Whatever was
             // typed stays in the field as its draft, valid or not, so no
             // keystroke is lost.
-            if let Some(typed) = typed_value(kind, &value, &field) {
+            if let Some(typed) = typed_value(kind, &value, &field, self.decimal) {
                 self.document.apply_value_in(&model, row.as_deref(), instance.as_deref(), &typed);
             }
             let written = self.document.value_in(&model, row.as_deref(), instance.as_deref());
@@ -3905,6 +3909,9 @@ impl App {
         self.update_focus_state(model, row, instance);
         if !same_field {
             self.focused_field = self.focused_region().map(|r| r.field.clone()).unwrap_or_default();
+            if self.focused_is_number() {
+                self.decimal = os_decimal_separator();
+            }
             self.committed = None;
             if self.focused.is_some() {
                 let value = self.focused_signal_text();
@@ -6206,10 +6213,15 @@ fn floor_char_boundary(s: &str, mut index: usize) -> usize {
 
 /// What a number or date field's text writes to its signal, if it is one
 /// yet: a number, or a date inside the field's `min` and `max`, written back
-/// the way HTML writes one.
-fn typed_value(kind: InputKind, text: &str, field: &Field) -> Option<rux_reactive::Value> {
+/// the way HTML writes one. `decimal` is the person's decimal separator.
+fn typed_value(
+    kind: InputKind,
+    text: &str,
+    field: &Field,
+    decimal: char,
+) -> Option<rux_reactive::Value> {
     match kind {
-        InputKind::Number => parse_number(text).map(rux_reactive::Value::Number),
+        InputKind::Number => parse_number(text, decimal).map(rux_reactive::Value::Number),
         InputKind::Date => rux_layout::parse_date(text)
             .filter(|d| field.min.is_none_or(|min| *d >= min))
             .filter(|d| field.max.is_none_or(|max| *d <= max))
@@ -6218,20 +6230,82 @@ fn typed_value(kind: InputKind, text: &str, field: &Field) -> Option<rux_reactiv
     }
 }
 
-/// What a `type="number"` field's text means as a number, if it is one yet.
+/// What a `type="number"` field's text means as a number, if it is one yet,
+/// read in a language whose decimal separator is `decimal`.
 ///
-/// Not Rust's parse alone, which also reads `inf`, `NaN` and `infinity`: a
-/// field is typed into, and those are words. A comma is read as the decimal
-/// point when there is no point already, because a phone keyboard in much of
-/// the world offers only the comma.
-fn parse_number(text: &str) -> Option<f64> {
+/// **The separator is the person's, not a guess.** The first version read a
+/// comma as the point whenever there was no dot, so `24,000` typed on an
+/// English phone held 24. Driven on the phone, and it caught the user out.
+/// Now the language decides: the other of comma and dot is a thousands
+/// separator, and is dropped. That is more forgiving than HTML or Android,
+/// which both refuse `24,000` in a number field, and it keeps the rule that
+/// nothing typed is thrown away. Thousands separators, and spaces, count only
+/// before the decimal point, so `1.234,5` on an English phone is not a number
+/// yet rather than a surprising one.
+///
+/// Not Rust's parse alone either, which also reads `inf`, `NaN` and
+/// `infinity`: a field is typed into, and those are words.
+fn parse_number(text: &str, decimal: char) -> Option<f64> {
     let text = text.trim();
-    let numeric = |c: char| matches!(c, '0'..='9' | '.' | ',' | '-' | '+' | 'e' | 'E');
+    let group = if decimal == ',' { '.' } else { ',' };
+    let space = |c: char| matches!(c, ' ' | '\u{a0}' | '\u{202f}');
+    let numeric = |c: char| {
+        matches!(c, '0'..='9' | '.' | ',' | '-' | '+' | 'e' | 'E') || space(c)
+    };
     if text.is_empty() || !text.chars().all(numeric) {
         return None;
     }
-    let text = if text.contains('.') { text.to_string() } else { text.replacen(',', ".", 1) };
-    text.parse::<f64>().ok().filter(|n| n.is_finite())
+    let (whole, fraction) = match text.find(decimal) {
+        Some(at) => (&text[..at], Some(&text[at + decimal.len_utf8()..])),
+        None => (text, None),
+    };
+    let whole: String = whole.chars().filter(|&c| c != group && !space(c)).collect();
+    let number = match fraction {
+        Some(f) if f.contains(group) || f.chars().any(space) => return None,
+        Some(f) => format!("{whole}.{f}"),
+        None => whole,
+    };
+    number.parse::<f64>().ok().filter(|n| n.is_finite())
+}
+
+/// The character the person's language writes a decimal point with: `,` or
+/// `.`. Any other answer (Arabic's `٫`) is read as `.`, which is what such a
+/// keyboard's number pad also offers.
+///
+/// Asked when a number field takes focus rather than once at startup, so a
+/// language changed while the app runs is noticed at the next field.
+#[cfg(windows)]
+fn os_decimal_separator() -> char {
+    use windows_sys::Win32::Globalization::{GetLocaleInfoEx, LOCALE_SDECIMAL};
+    let mut buf = [0u16; 8];
+    // A null locale name is the user's default locale.
+    let len = unsafe {
+        GetLocaleInfoEx(std::ptr::null(), LOCALE_SDECIMAL, buf.as_mut_ptr(), buf.len() as i32)
+    };
+    decimal_from(char::decode_utf16(buf[..len.max(1) as usize - 1].iter().copied()).next().and_then(Result::ok))
+}
+
+#[cfg(target_os = "android")]
+fn os_decimal_separator() -> char {
+    decimal_from(android_decimal_separator())
+}
+
+#[cfg(target_arch = "wasm32")]
+fn os_decimal_separator() -> char {
+    let language = web_sys::window().and_then(|w| w.navigator().language()).unwrap_or_default();
+    let shown: String = js_sys::Number::from(1.5).to_locale_string(&language).into();
+    decimal_from(shown.chars().find(|c| !c.is_ascii_digit()))
+}
+
+/// A desktop that has not been taught to ask: the dot, which is what a
+/// number is written with in code and in HTML's own value.
+#[cfg(not(any(windows, target_os = "android", target_arch = "wasm32")))]
+fn os_decimal_separator() -> char {
+    '.'
+}
+
+fn decimal_from(c: Option<char>) -> char {
+    if c == Some(',') { ',' } else { '.' }
 }
 
 /// Cut an edit short so the field holds at most `max` UTF-16 code units, the
@@ -7565,6 +7639,23 @@ fn android_open_date(value: &str, min: Option<(i32, u32, u32)>, max: Option<(i32
     });
 }
 
+/// The phone's decimal separator, from its language. `None` if the activity
+/// could not be asked, which the caller reads as a dot.
+#[cfg(target_os = "android")]
+fn android_decimal_separator() -> Option<char> {
+    let Ok(activity) = ACTIVITY.lock() else { return None };
+    let Some(activity) = activity.as_ref() else { return None };
+    let ctx = ndk_context::android_context();
+    // Safety: as in `android_set_text_input`, which records the reasoning.
+    let vm = unsafe { jni::JavaVM::from_raw(ctx.vm().cast()) };
+    vm.attach_current_thread(|env| {
+        env.call_method(activity, jni::jni_str!("ruxDecimalSeparator"), jni::jni_sig!("()C"), &[])?
+            .c()
+    })
+    .ok()
+    .and_then(|unit| char::from_u32(unit as u32))
+}
+
 /// Put `text` on Android's clipboard, and say whether it got there.
 ///
 /// `false` for any failure, the activity not yet handed over included, because
@@ -7772,15 +7863,35 @@ mod tests {
     /// read as numbers are words here.
     #[test]
     fn a_number_field_reads_numbers_and_only_numbers() {
-        assert_eq!(parse_number("42"), Some(42.0));
-        assert_eq!(parse_number(" -3.5 "), Some(-3.5));
-        assert_eq!(parse_number("1."), Some(1.0));
-        assert_eq!(parse_number(".5"), Some(0.5));
-        assert_eq!(parse_number("2,5"), Some(2.5), "a comma is a decimal point");
-        assert_eq!(parse_number("1e3"), Some(1000.0));
-        for draft in ["", "-", ".", "+", "1e", "abc", "inf", "NaN", "1.2.3", "1,000.5,"] {
-            assert_eq!(parse_number(draft), None, "{draft:?} is not a number yet");
+        let dot = |t: &str| parse_number(t, '.');
+        assert_eq!(dot("42"), Some(42.0));
+        assert_eq!(dot(" -3.5 "), Some(-3.5));
+        assert_eq!(dot("1."), Some(1.0));
+        assert_eq!(dot(".5"), Some(0.5));
+        assert_eq!(dot("1e3"), Some(1000.0));
+        for draft in ["", "-", ".", ",", "+", "1e", "abc", "inf", "NaN", "1.2.3", "1,000.5,"] {
+            assert_eq!(dot(draft), None, "{draft:?} is not a number yet");
         }
+    }
+
+    /// The comma means what the person's language says it means. `24,000`
+    /// on an English phone is twenty-four thousand: typed on the phone and
+    /// read as 24 by the version that guessed.
+    #[test]
+    fn a_comma_means_what_the_language_says() {
+        let english = |t: &str| parse_number(t, '.');
+        assert_eq!(english("24,000"), Some(24000.0));
+        assert_eq!(english("1,234,567.5"), Some(1234567.5));
+        assert_eq!(english("2,5"), Some(25.0), "a thousands separator, dropped");
+        assert_eq!(english("1.234,5"), None, "no thousands after the point");
+        assert_eq!(english("1\u{a0}000"), Some(1000.0), "a space groups too");
+
+        let german = |t: &str| parse_number(t, ',');
+        assert_eq!(german("24,000"), Some(24.0));
+        assert_eq!(german("2,5"), Some(2.5));
+        assert_eq!(german("1.234,5"), Some(1234.5));
+        assert_eq!(german(",5"), Some(0.5));
+        assert_eq!(german("1,2.3"), None);
     }
 
     /// A date field writes a day only once it is one, inside its range,
@@ -7788,12 +7899,12 @@ mod tests {
     #[test]
     fn a_date_field_writes_only_real_days_in_range() {
         let field = Field { min: Some((2026, 1, 1)), max: Some((2026, 12, 31)), ..Field::default() };
-        let date = |text: &str| typed_value(InputKind::Date, text, &field);
+        let date = |text: &str| typed_value(InputKind::Date, text, &field, '.');
         assert_eq!(date("2026-9-3"), Some(rux_reactive::Value::Text("2026-09-03".into())));
         assert_eq!(date("2026-09"), None, "not a day yet");
         assert_eq!(date("2025-12-31"), None, "before min");
         assert_eq!(date("2027-01-01"), None, "after max");
-        assert_eq!(typed_value(InputKind::Text, "2026-09-03", &field), None, "text is not typed");
+        assert_eq!(typed_value(InputKind::Text, "2026-09-03", &field, '.'), None, "text is not typed");
     }
 
     fn focusable(y: f32, scroll: Option<usize>) -> FocusItem {
