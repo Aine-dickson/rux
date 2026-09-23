@@ -255,6 +255,14 @@ impl TextAction {
     const ALL: [TextAction; 4] =
         [TextAction::Copy, TextAction::Cut, TextAction::Paste, TextAction::SelectAll];
 
+    /// Whether this action may be offered on a `type="password"`.
+    ///
+    /// Paste puts text in, Select all moves no text anywhere. Copy and Cut
+    /// take it out, which is the one thing a masked field exists to prevent.
+    fn allowed_on_secret(self) -> bool {
+        matches!(self, TextAction::Paste | TextAction::SelectAll)
+    }
+
     fn label(self) -> &'static str {
         match self {
             TextAction::Copy => "Copy",
@@ -284,8 +292,15 @@ impl TextAction {
 fn toolbar_layout(
     field: (f32, f32, f32, f32),
     viewport: (f32, f32),
+    secret: bool,
 ) -> ((f32, f32, f32, f32), Vec<(TextAction, f32, f32, f32, f32)>) {
-    let total: f32 = TextAction::ALL.iter().map(|a| a.width()).sum();
+    // **A password field offers fewer buttons, and the toolbar shrinks to
+    // fit.** Copy and Cut are refused on one, and a button that does nothing
+    // when tapped teaches the person the app is broken. Every platform's own
+    // toolbar drops them here too, so this is what a phone user expects.
+    let offered: Vec<TextAction> =
+        TextAction::ALL.into_iter().filter(|a| a.allowed_on_secret() || !secret).collect();
+    let total: f32 = offered.iter().map(|a| a.width()).sum();
     let (fx, fy, _, fh) = field;
     let x = fx.min(viewport.0 - total).max(0.0);
     // Above by preference: a finger selecting text is usually below the line it
@@ -293,9 +308,9 @@ fn toolbar_layout(
     let above = fy - TOOLBAR_H - TOOLBAR_GAP;
     let y = if above >= 0.0 { above } else { fy + fh + TOOLBAR_GAP };
 
-    let mut buttons = Vec::with_capacity(TextAction::ALL.len());
+    let mut buttons = Vec::with_capacity(offered.len());
     let mut bx = x;
-    for action in TextAction::ALL {
+    for action in offered {
         let w = action.width();
         buttons.push((action, bx, y, w, TOOLBAR_H));
         bx += w;
@@ -598,13 +613,17 @@ fn focus_ring(item: &FocusItem, within: Option<&ScrollRegion>, alpha: f32) -> Ve
 /// selected value picked out as a pill, and thin separators between options.
 /// The selection toolbar: one rounded strip of actions above (or below) the
 /// focused field. Same palette as the dropdown, so the two read as one system.
-fn toolbar_paints(field: (f32, f32, f32, f32), viewport: (f32, f32)) -> Vec<Paint> {
+fn toolbar_paints(
+    field: (f32, f32, f32, f32),
+    viewport: (f32, f32),
+    secret: bool,
+) -> Vec<Paint> {
     let panel_bg = Rgba::new(0.19, 0.20, 0.27, 1.0); // #313244
     let border = Rgba::new(0.27, 0.28, 0.35, 1.0); // #45475a
     let ink = Rgba::new(0.80, 0.84, 0.96, 1.0); // #cdd6f4
     let divider = Rgba::new(0.35, 0.36, 0.44, 1.0); // #585b70
 
-    let ((x, y, w, h), buttons) = toolbar_layout(field, viewport);
+    let ((x, y, w, h), buttons) = toolbar_layout(field, viewport, secret);
     let mut out = Vec::with_capacity(buttons.len() * 2 + 2);
     out.push(Paint::Shadow {
         x,
@@ -1288,6 +1307,10 @@ struct App {
     focused_instance: Option<String>,
     /// Whether the focused input is a `type="textarea"` (Enter → newline).
     focused_multiline: bool,
+    /// The focused field is a `type="password"`: refuse copy and cut.
+    focused_secret: bool,
+    /// The focused field is a `type="search"`: a keyboard hint and nothing else.
+    focused_search: bool,
     /// The currently open `select` dropdown, as `(r-model, row key)`. Survives
     /// the rebuild after a state change, like scroll offsets.
     ///
@@ -1431,6 +1454,8 @@ impl App {
             focused_row: None,
             focused_instance: None,
             focused_multiline: false,
+            focused_secret: false,
+            focused_search: false,
             open_select: None,
             #[cfg(target_os = "android")]
             pending_select: None,
@@ -1876,13 +1901,18 @@ impl App {
         match region.text.as_ref() {
             Some(t) if !value.is_empty() => {
                 let (tx, ty) = self.text_point(region, t, px, py);
-                self.text.index_at_point(
-                    &value,
+                // A tap lands on a bullet in a masked field, so it is resolved
+                // against the painted string and converted back. See
+                // `shown_text`.
+                let (shown, _) = self.shown_text(&value, 0);
+                let hit = self.text.index_at_point(
+                    &shown,
                     &rux_paint::text_style(&t.content),
                     Some(t.width),
                     tx,
                     ty,
-                )
+                );
+                self.real_caret(&value, hit)
             }
             _ => 0,
         }
@@ -1923,6 +1953,7 @@ impl App {
         scroll: &mut f32,
         text: &mut rux_text::TextEngine,
         document: &mut rux_runtime::Document,
+        secret: bool,
     ) -> f32 {
         let Some(model) = focused else {
             *scroll = 0.0;
@@ -1947,7 +1978,14 @@ impl App {
         };
         let value = document.value_in(model, focused_row, focused_instance);
         let style = rux_paint::text_style(&t.content);
-        let (cx, _, _) = text.caret_geometry(&value, &style, Some(t.width), caret.min(value.len()));
+        // The painted string, for the same reason as everywhere else: a bullet
+        // is not as wide as the letter it stands for.
+        let (shown, shown_caret) = if secret {
+            (rux_layout::mask(&value), rux_layout::masked_offset(&value, caret))
+        } else {
+            (value.clone(), caret.min(value.len()))
+        };
+        let (cx, _, _) = text.caret_geometry(&shown, &style, Some(t.width), shown_caret);
 
         // The text starts inset from the box by its padding and border. Mirroring
         // that inset on the right gives the span actually visible, without the
@@ -1962,7 +2000,7 @@ impl App {
         }
         // `None` for the width: the caret is tracked against the text's true
         // length, not a re-wrap at the box width.
-        let full = text.measure(&value, &style, None).0;
+        let full = text.measure(&shown, &style, None).0;
         *scroll = scroll.clamp(0.0, (full - visible).max(0.0));
         *scroll
     }
@@ -1984,7 +2022,7 @@ impl App {
     /// point is on one of its buttons.
     fn toolbar_action_at(&self, fx: f32, fy: f32) -> Option<TextAction> {
         let field = self.toolbar_field()?;
-        let (_, buttons) = toolbar_layout(field, self.logical_size());
+        let (_, buttons) = toolbar_layout(field, self.logical_size(), self.focused_secret);
         buttons
             .into_iter()
             .find(|(_, bx, by, bw, bh)| fx >= *bx && fx <= bx + bw && fy >= *by && fy <= by + bh)
@@ -1995,7 +2033,7 @@ impl App {
     /// press on whatever is underneath. The same rule the dev overlay follows.
     fn toolbar_covers(&self, fx: f32, fy: f32) -> bool {
         let Some(field) = self.toolbar_field() else { return false };
-        let ((x, y, w, h), _) = toolbar_layout(field, self.logical_size());
+        let ((x, y, w, h), _) = toolbar_layout(field, self.logical_size(), self.focused_secret);
         fx >= x && fx <= x + w && fy >= y && fy <= y + h
     }
 
@@ -2056,6 +2094,8 @@ impl App {
         // A tap also moves keyboard focus, so Tab continues from what you clicked.
         self.focus_index = self.focusables.iter().rposition(|f| f.contains(fx, fy));
         self.focused_multiline = region.multiline;
+        self.focused_secret = region.secret;
+        self.focused_search = region.search;
 
         let double = self
             .last_click
@@ -2932,10 +2972,13 @@ impl App {
                     .and_then(|f| f.text.clone())
                 {
                     let style = rux_paint::text_style(&t.content);
-                    let (cx, cy, ch) = self.text.caret_geometry(&value, &style, Some(t.width), caret);
+                    let (shown, shown_caret) = self.shown_text(&value, caret);
+                    let (cx, cy, ch) =
+                        self.text.caret_geometry(&shown, &style, Some(t.width), shown_caret);
                     let dir = if matches!(key, Key::Named(NamedKey::ArrowUp)) { -1.0 } else { 1.0 };
                     let target_y = cy + ch / 2.0 + dir * ch;
-                    new_caret = self.text.index_at_point(&value, &style, Some(t.width), cx, target_y);
+                    let hit = self.text.index_at_point(&shown, &style, Some(t.width), cx, target_y);
+                    new_caret = self.real_caret(&value, hit);
                     moved = new_caret != caret;
                 }
             }
@@ -3023,13 +3066,64 @@ impl App {
         }));
     }
 
+    /// The string the focused field actually paints, and a caret inside it.
+    ///
+    /// **Geometry has to be measured against what is drawn, not what is
+    /// stored.** A `type="password"` paints bullets, and a bullet's advance is
+    /// nothing like the average letter's, so measuring the real text puts the
+    /// caret wherever the real glyphs would have ended. Reported from the
+    /// phone: typing into a password field left the caret a third of the way
+    /// along, and it could never reach the end.
+    ///
+    /// Returns the value unchanged for every ordinary field, so the callers
+    /// read the same either way.
+    fn shown_text(&self, value: &str, caret: usize) -> (String, usize) {
+        if self.focused_secret {
+            (rux_layout::mask(value), rux_layout::masked_offset(value, caret))
+        } else {
+            (value.to_string(), caret.min(value.len()))
+        }
+    }
+
+    /// Turn a caret found in the painted string back into one in the value.
+    ///
+    /// The other direction of [`Self::shown_text`], for a tap: it lands on a
+    /// bullet, and what has to be recorded is an offset in the real text.
+    fn real_caret(&self, value: &str, shown_caret: usize) -> usize {
+        if self.focused_secret {
+            rux_layout::unmasked_offset(value, shown_caret)
+        } else {
+            shown_caret.min(value.len())
+        }
+    }
+
+    /// Whether the focused field will let its text leave by the clipboard.
+    ///
+    /// **A mask that can be copied is decoration.** Select all, Copy, and the
+    /// password is in the clipboard in plain text, where the next paste
+    /// anywhere reveals it. Every platform's own password field refuses this,
+    /// and the refusal is the reason masking means anything at all. Paste
+    /// *into* the field stays allowed: text arriving is not text leaving.
+    fn clipboard_may_read_field(&self) -> bool {
+        !self.focused_secret
+    }
+
     fn copy_selection(&mut self) {
+        if !self.clipboard_may_read_field() {
+            return;
+        }
         if let Some(text) = self.selected_text() {
             self.clipboard_write(&text);
         }
     }
 
     fn cut_selection(&mut self, model: &str) {
+        // Refused outright rather than degraded to a delete: Cut on a password
+        // is asking for the text, and quietly destroying it instead would be a
+        // different surprise, not a smaller one.
+        if !self.clipboard_may_read_field() {
+            return;
+        }
         let Some(text) = self.selected_text() else { return };
         self.clipboard_write(&text);
         let value = self.focused_value();
@@ -3111,7 +3205,9 @@ impl App {
             return;
         };
         let style = rux_paint::text_style(&t.content);
-        let (_, cy, ch) = self.text.caret_geometry(value, &style, Some(t.width), caret);
+        // Measured against what is painted; see `shown_text`.
+        let (shown, shown_caret) = self.shown_text(value, caret);
+        let (_, cy, ch) = self.text.caret_geometry(&shown, &style, Some(t.width), shown_caret);
         let visible = region.height;
         let mut off = self.offsets.get(sid).copied().unwrap_or_default();
         if cy < off.y {
@@ -3170,6 +3266,42 @@ impl App {
         self.scroll_key(key);
     }
 
+    /// Answer a Back. `false` means there was nowhere to go and the app should
+    /// close.
+    ///
+    /// **On a phone this is the only place Back can be answered, and that is
+    /// not a preference.** A `NativeActivity` takes the input queue, so a key
+    /// reaches native code before the view hierarchy, and `winit` reports every
+    /// key it decodes back to Android as handled (only the volume keys are
+    /// excepted). The platform therefore never runs the stage that would call
+    /// `onBackPressed`, so overriding that, or `onKeyDown`, or registering an
+    /// `OnBackInvokedCallback` would each wait for a call that never arrives.
+    /// Found on a phone rather than reasoned about: before this existed Back
+    /// did nothing at all, and the app could only be left through the task
+    /// switcher.
+    ///
+    /// **Leaving is a real outcome, not a fallback.** Back at the root of the
+    /// history closes the app everywhere else on Android, and one that swallows
+    /// it instead is the first thing a person notices.
+    ///
+    /// **A guard's refusal is not "nowhere to go".** `Document::back` answers
+    /// `false` both when the history is at its first page and when a route
+    /// guard cancelled the step, and treating those alike would turn an
+    /// "unsaved changes" guard into an app that quits on the Back it was
+    /// written to block. So the history is asked first, and only a genuinely
+    /// empty one is reported as a close.
+    fn on_back(&mut self) -> bool {
+        if !self.document.can_back() {
+            return false;
+        }
+        if self.document.back() {
+            self.request_redraw();
+        }
+        // Refused, but by a guard, which is the app answering rather than
+        // declining to. Nothing more to do and nothing to close.
+        true
+    }
+
     /// Move keyboard focus to the next (or previous) focusable, wrapping around.
     fn move_focus(&mut self, backward: bool) {
         let n = self.focusables.len();
@@ -3190,7 +3322,7 @@ impl App {
     fn set_keyboard_focus(&mut self, index: Option<usize>) {
         self.focus_index = index;
         match index.and_then(|i| self.focusables.get(i)).map(|f| f.kind.clone()) {
-            Some(FocusKind::Text { model, row, instance, multiline, .. }) => {
+            Some(FocusKind::Text { model, row, instance, multiline, secret, search, .. }) => {
                 // Read against the field being moved *to*, not the one being
                 // left: focus has not moved yet, so `focused_value` is still the
                 // old field and Tab would drop the caret at its length. In the
@@ -3199,6 +3331,8 @@ impl App {
                 let caret =
                     self.document.value_in(&model, row.as_deref(), instance.as_deref()).len();
                 self.focused_multiline = multiline;
+                self.focused_secret = secret;
+                self.focused_search = search;
                 self.set_focus(Some((model, row, instance, caret)));
             }
             _ => self.set_focus(None),
@@ -3338,6 +3472,20 @@ impl App {
             if let Ok(mut text) = FOCUSED_TEXT.lock() {
                 *text = value;
             }
+            // What kind of field it is, which decides the keyboard Android
+            // raises for it. See [`FOCUSED_KIND`].
+            FOCUSED_KIND.store(
+                match () {
+                    _ if !on => KIND_TEXT,
+                    // Checked before multiline: the two cannot both be true,
+                    // and a password asks for the stronger answer.
+                    _ if self.focused_secret => KIND_PASSWORD,
+                    _ if self.focused_multiline => KIND_TEXTAREA,
+                    _ if self.focused_search => KIND_SEARCH,
+                    _ => KIND_TEXT,
+                },
+                std::sync::atomic::Ordering::Relaxed,
+            );
             // Written after the text, so an input method that reads both in the
             // same breath cannot see "yes, and it is empty" for a field that
             // has contents.
@@ -3346,7 +3494,25 @@ impl App {
             // It cannot be done from here: an input method only serves the
             // focused view, and once Rux's own view took focus, the decor view
             // that `set_ime_allowed` asks for stopped being served.
-            android_set_text_input(on);
+            //
+            // **Which field, not just whether there is one.** Moving from one
+            // input to another is two "yes" answers in a row, and an input
+            // method has to be told about the second or it keeps editing the
+            // first. See [`android_set_text_input`].
+            let field = on.then(|| {
+                (
+                    self.focused.clone().unwrap_or_default(),
+                    self.focused_row.clone(),
+                    self.focused_instance.clone(),
+                )
+            });
+            // Bumped before the restart is asked for, so that anything the
+            // outgoing connection says from here on carries a token that no
+            // longer matches and is dropped. See [`FIELD_TOKEN`].
+            if IME_FIELD.lock().map(|current| *current != field).unwrap_or(false) {
+                FIELD_TOKEN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
+            android_set_text_input(field);
         }
         let Some(state) = self.state.as_ref() else { return };
         state.window.set_ime_allowed(on);
@@ -3515,7 +3681,8 @@ impl App {
         let value = self.focused_value();
         let style = rux_paint::text_style(&t.content);
         let caret = self.caret.min(value.len());
-        let (cx, cy, ch) = self.text.caret_geometry(&value, &style, Some(t.width), caret);
+        let (shown, shown_caret) = self.shown_text(&value, caret);
+        let (cx, cy, ch) = self.text.caret_geometry(&shown, &style, Some(t.width), shown_caret);
         window.set_ime_cursor_area(
             winit::dpi::LogicalPosition::new((t.x + cx) as f64, (t.y + cy) as f64)
                 .to_physical::<f64>(scale),
@@ -3781,6 +3948,7 @@ impl App {
             focused,
             focused_row,
             focused_instance,
+            focused_secret,
             #[cfg(not(target_arch = "wasm32"))]
             path,
             ..
@@ -3893,6 +4061,7 @@ impl App {
             text_scroll,
             text,
             document,
+            *focused_secret,
         );
         if shift != 0.0 {
             // Only the focused input has a caret, so this finds exactly one text
@@ -3966,6 +4135,7 @@ impl App {
                 let strip = toolbar_paints(
                     (r.x, r.y, r.width, r.height),
                     (logical.0 as f32, logical.1 as f32),
+                    self.focused_secret,
                 );
                 let scene = rux_paint::build_scene(&strip, text, images, false);
                 state.scene.append(&scene, Some(Affine::scale(scale)));
@@ -4645,6 +4815,30 @@ impl ApplicationHandler<RuxEvent> for App {
                 // keyboard: the same keystrokes also arrive here, and acting on
                 // them would type the letters twice, once raw and once composed.
                 if event.state == ElementState::Pressed && self.preedit.is_none() {
+                    // **Android's Back button, and it closes the app the same
+                    // way a desktop window does.** winit decodes it as
+                    // `BrowserBack` and hands it over like any other key; there
+                    // is no separate lifecycle event for it. Answered here
+                    // rather than inside `on_key` so that a focused text field
+                    // cannot eat it, and so that leaving is `event_loop.exit()`
+                    // and nothing more exotic.
+                    //
+                    // **Exiting the loop is what closes the activity, not a
+                    // `finish()` over JNI.** `android-activity` calls
+                    // `ANativeActivity_finish` itself once `android_main`
+                    // returns, and it is the return that matters: winit 0.30
+                    // leaves `MainEvent::Destroy` as a `warn!("TODO")`, so a
+                    // `finish()` asked for any other way destroys the Java
+                    // activity while this loop runs on. Driven: `onDestroy`
+                    // then waits ten seconds, logs "Activity destroy timeout",
+                    // and the next launch reuses the wedged process and sits on
+                    // the splash screen.
+                    if let Key::Named(NamedKey::BrowserBack) = event.logical_key {
+                        if !self.on_back() {
+                            event_loop.exit();
+                        }
+                        return;
+                    }
                     self.on_key(&event.logical_key);
                 }
             }
@@ -5509,7 +5703,7 @@ mod caret_index {
     #[test]
     fn the_toolbar_sits_where_its_buttons_are_hit() {
         let viewport = (400.0, 800.0);
-        let ((x, y, w, h), buttons) = toolbar_layout((20.0, 300.0, 200.0, 40.0), viewport);
+        let ((x, y, w, h), buttons) = toolbar_layout((20.0, 300.0, 200.0, 40.0), viewport, false);
 
         // Buttons tile the strip exactly: no gap to fall through, no overlap.
         assert_eq!(buttons.len(), 4);
@@ -5526,11 +5720,11 @@ mod caret_index {
         assert!(y + h < 300.0, "sits above the field: {y}");
 
         // A field at the top has no room above, so the strip goes below it.
-        let ((_, below_y, _, _), _) = toolbar_layout((20.0, 0.0, 200.0, 40.0), viewport);
+        let ((_, below_y, _, _), _) = toolbar_layout((20.0, 0.0, 200.0, 40.0), viewport, false);
         assert!(below_y >= 40.0, "drops below the field instead: {below_y}");
 
         // A field against the right edge must not push the strip off screen.
-        let ((right_x, _, right_w, _), _) = toolbar_layout((380.0, 300.0, 200.0, 40.0), viewport);
+        let ((right_x, _, right_w, _), _) = toolbar_layout((380.0, 300.0, 200.0, 40.0), viewport, false);
         assert!(right_x >= 0.0, "never off the left edge");
         assert!(right_x + right_w <= viewport.0 + 0.001, "nor off the right: {right_x}");
     }
@@ -6137,12 +6331,21 @@ pub extern "system" fn Java_dev_ruxlang_shell_RuxActivity_nativeFocusedText<'fra
 pub extern "system" fn Java_dev_ruxlang_shell_RuxActivity_nativeTextChanged<'frame>(
     mut env: jni::EnvUnowned<'frame>,
     _class: jni::objects::JClass<'frame>,
+    token: i64,
     text: jni::objects::JString<'frame>,
     caret: i32,
     anchor: i32,
     compose_start: i32,
     compose_end: i32,
 ) {
+    // **An edit belonging to a field that no longer has focus is dropped.** The
+    // connection that sent it was built for an earlier focus and is on its way
+    // out, and applying it writes the old field's text into the new one. See
+    // `RuxInputConnection.token` in the Java, and note that this is only ever
+    // visible for about half a second, so it is the eye that catches it.
+    if token != FIELD_TOKEN.load(std::sync::atomic::Ordering::Relaxed) {
+        return;
+    }
     env.with_env(|env| {
         let value: String = text.try_to_string(env)?;
         let at = |units: i32| utf16_to_byte(&value, units);
@@ -6187,12 +6390,90 @@ fn utf16_to_byte(text: &str, units: i32) -> usize {
     text.len()
 }
 
-/// Whether Android has already been told the keyboard is wanted.
+/// Which field Android has already been told about, if any.
 ///
-/// Guards the call below against being made again with the answer it already
-/// has. See [`android_set_text_input`].
+/// A field's identity, not a yes/no: the model it binds, the row it sits in and
+/// the component instance it belongs to, which is what tells two inputs apart
+/// when they are the same element in different rows. Guards the call below
+/// against being made again with the answer it already has, and only that. See
+/// [`android_set_text_input`].
 #[cfg(target_os = "android")]
-static IME_ON: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static IME_FIELD: std::sync::Mutex<Option<(String, Option<String>, Option<String>)>> =
+    std::sync::Mutex::new(None);
+
+/// Which focus an input method's edits belong to.
+///
+/// Bumped whenever the focused field changes, read by Java when it builds an
+/// input connection, and handed back with every edit that connection reports.
+/// An edit carrying an old token is one from a connection that has not caught
+/// up yet, and is dropped rather than applied to whatever has focus now.
+#[cfg(target_os = "android")]
+static FIELD_TOKEN: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+
+/// Java asks which focus it is building a connection for.
+///
+/// # Safety
+///
+/// Called by the JVM, with the signature declared in `RuxActivity.java`.
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "system" fn Java_dev_ruxlang_shell_RuxActivity_nativeFieldToken<'frame>(
+    _env: jni::EnvUnowned<'frame>,
+    _class: jni::objects::JClass<'frame>,
+) -> i64 {
+    FIELD_TOKEN.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// A one-line text field. See [`FOCUSED_KIND`].
+#[cfg(target_os = "android")]
+const KIND_TEXT: i32 = 0;
+
+/// `type="textarea"`. See [`FOCUSED_KIND`].
+#[cfg(target_os = "android")]
+const KIND_TEXTAREA: i32 = 1;
+
+/// `type="password"`: no autocorrect, no learning, and masked by the IME too.
+/// See [`FOCUSED_KIND`].
+#[cfg(target_os = "android")]
+const KIND_PASSWORD: i32 = 2;
+
+/// `type="search"`: a Search key where the action key sits. See [`FOCUSED_KIND`].
+#[cfg(target_os = "android")]
+const KIND_SEARCH: i32 = 3;
+
+/// What kind of field has focus, so Android can raise the right keyboard.
+///
+/// **An `EditorInfo` is the only thing an app ever tells an input method about
+/// what is being edited**, and Rux used to fill one in with a constant: a
+/// one-line text field, with Done as its action key, for every input there is.
+/// So a `type="textarea"` got a keyboard with no newline key on it, and the
+/// documented behaviour of a textarea, that Enter inserts a newline, was true
+/// on a desktop and false on a phone.
+///
+/// Driven on the phone: type `ab`, press the action key, type `c`, and the
+/// field reads `abc` on one line. Nothing was inserted, because Gboard sent an
+/// editor action rather than a key, which is exactly what it was asked to do.
+///
+/// A number rather than a bool because this is the seam every other input type
+/// will arrive through. Only the two that exist are defined; the rest are a
+/// language question before they are an Android one.
+#[cfg(target_os = "android")]
+static FOCUSED_KIND: std::sync::atomic::AtomicI32 =
+    std::sync::atomic::AtomicI32::new(KIND_TEXT);
+
+/// Java asks what kind of field it is building a connection for.
+///
+/// # Safety
+///
+/// Called by the JVM, with the signature declared in `RuxActivity.java`.
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "system" fn Java_dev_ruxlang_shell_RuxActivity_nativeFieldKind<'frame>(
+    _env: jni::EnvUnowned<'frame>,
+    _class: jni::objects::JClass<'frame>,
+) -> i32 {
+    FOCUSED_KIND.load(std::sync::atomic::Ordering::Relaxed)
+}
 
 /// The activity, handed over by Java so Rust can call back into it.
 ///
@@ -6210,6 +6491,13 @@ static ACTIVITY: std::sync::Mutex<Option<jni::objects::Global<jni::objects::JObj
     std::sync::Mutex::new(None);
 
 /// Java hands over the activity, once, from `onCreate`.
+///
+/// **Once per process is a guarantee, not an assumption**, and it is the
+/// process exit at the end of [`run_android`] that makes it one. Everything
+/// this module keeps in a `static` describes one activity, so a second activity
+/// built inside a surviving process would read the first one's state; winit
+/// would refuse the second event loop anyway. See that function for what was
+/// driven.
 ///
 /// # Safety
 ///
@@ -6244,11 +6532,23 @@ pub extern "system" fn Java_dev_ruxlang_shell_RuxActivity_nativeActivityCreated<
 /// in Java. So this reaches the activity through `ndk_context`, which
 /// `android-activity` has already filled in, and calls a method on it.
 ///
+/// **`field` is which input is focused, and `None` is none.** It was a `bool`
+/// first, and that is the whole of a defect the emulator could not show. An
+/// input connection is built once per restart and holds its own copy of the
+/// text; moving from one field to another asked for the keyboard twice in a
+/// row, so a guard on "is it wanted" saw no change and skipped the restart.
+/// Gboard then carried on editing the connection built for the *previous*
+/// field. Driven on a phone: type `abc` in one input, tap the next, type one
+/// character, and the second input reads `abcs` — the first field's contents,
+/// including a letter already deleted from it. Backspace in that state does
+/// nothing at all, because the offsets an input method is deleting at no longer
+/// mean anything in the text it is deleting from: four presses, no change.
+///
 /// Failure is logged by the policy and otherwise ignored: the consequence is a
 /// keyboard that does not open, not a broken app, and there is nothing useful
 /// to do about it from here.
 #[cfg(target_os = "android")]
-fn android_set_text_input(on: bool) {
+fn android_set_text_input(field: Option<(String, Option<String>, Option<String>)>) {
     // **Only on a change, and this is not an optimisation.** Focus state is
     // recomputed on every edit, so without this guard the sequence is: an edit
     // arrives, the field is rewritten, focus is recomputed, the input is
@@ -6256,8 +6556,16 @@ fn android_set_text_input(on: bool) {
     // reports its contents as an edit, and around again. Driven: 178 reports of
     // an empty field from one tap, and a field that could never hold a
     // character because the loop overwrote it faster than typing could fill it.
-    if IME_ON.swap(on, std::sync::atomic::Ordering::Relaxed) == on {
-        return;
+    //
+    // Typing does not change which field is focused, so that loop is still cut
+    // here; only moving between fields gets through, which is once per tap.
+    let on = field.is_some();
+    {
+        let Ok(mut current) = IME_FIELD.lock() else { return };
+        if *current == field {
+            return;
+        }
+        *current = field;
     }
     let Ok(activity) = ACTIVITY.lock() else { return };
     let Some(activity) = activity.as_ref() else { return };
@@ -6444,6 +6752,24 @@ pub fn run_android(app: android_activity::AndroidApp, path: PathBuf) {
     // than going through the app.
     let mut app = App::new(path);
     event_loop.run_app(&mut app).expect("run app");
+
+    // **Returning from here is not enough: the process has to end with it.**
+    // The loop is only left when the app has asked to close, and Android does
+    // not end a process just because its activity finished. It keeps it cached
+    // and builds the next activity inside it, which calls this function a
+    // second time, and winit refuses a second `EventLoop` in one process.
+    //
+    // Driven, and the failure is not subtle: after closing with Back, the next
+    // launch panicked with `create event loop: RecreationAttempt` and the app
+    // bounced straight back to the launcher. Ending the process makes the next
+    // launch a cold start, which is the only kind that works.
+    //
+    // After `run_app`, so everything the loop owns has already been dropped.
+    // The activity is finished by `android-activity` when `android_main`
+    // returns, and it does not get the chance here; Android tears down an
+    // activity whose process is gone, which is the same outcome by a shorter
+    // road.
+    std::process::exit(0);
 }
 
 #[cfg(test)]

@@ -219,7 +219,17 @@ pub struct ValueBinding {
     pub locals: Vec<(String, Value)>,
     /// Signals the value reads, normally just `model`.
     pub deps: HashSet<String>,
+    /// `type="password"`: paint bullets instead of the text.
+    ///
+    /// **Only the painting.** The signal keeps the real value, and so does
+    /// every read of it: an input method has to be handed the true text or
+    /// editing breaks outright, and a handler that reads the model is reading
+    /// what the person typed. Masking here, at the one place the shown string
+    /// is computed, is what keeps that true on all three platforms at once.
+    pub secret: bool,
 }
+
+use rux_layout::mask;
 
 /// An `r-show` condition, patchable in place: it only flips the node's `hidden`
 /// flag (paint on/off), never the tree shape, so a change rewrites one bool with
@@ -1501,7 +1511,12 @@ pub fn eval_options_binding(binding: &AttrBinding, engine: &mut Engine) -> Vec<S
 pub fn eval_value_binding(binding: &ValueBinding, engine: &mut Engine) -> (String, Rgba) {
     let value = engine.eval_display(&binding.model, &binding.locals);
     if value.is_empty() {
+        // **The placeholder is not masked.** It is not the person's text, it is
+        // the author's label, and a row of bullets where "Password" should be
+        // reads as a field that already has something in it.
         (binding.placeholder.clone(), binding.placeholder_color)
+    } else if binding.secret {
+        (mask(&value), binding.color)
     } else {
         (value, binding.color)
     }
@@ -3545,6 +3560,39 @@ fn build_node_inner(
         );
     }
 
+    // **An `<input type=>` nobody recognises is a plain text field, and used to
+    // be one in silence.** Four values are acted on, and anything else fell
+    // through to the text path with nothing said. That is tolerable for a
+    // misspelling and not tolerable for `type="password"`, which rendered a
+    // working field that showed every character it was given. The author had
+    // written the one thing that says "hide this" and the engine had ignored
+    // it.
+    //
+    // Checked here rather than in the text branch below, because a checkbox, a
+    // radio and a select never reach that branch and a typo in any of them
+    // deserves the same answer.
+    //
+    // Reported 2026-09-21 by the user, asking whether the keyboard could tell
+    // the types apart. It could not, and the deeper answer was that neither
+    // could Rux.
+    if el.tag == "input" {
+        if let Some(kind) = el.attr("type") {
+            const KNOWN: [&str; 7] =
+                ["text", "textarea", "password", "search", "select", "checkbox", "radio"];
+            if !KNOWN.contains(&kind) {
+                located(Some(el.line), || {
+                    error(format!(
+                        "`<input type=\"{kind}\">` is not a kind of input Rux has: it would \
+                         render as a plain text field, which for something like `password` \
+                         means showing every character. Use one of {}, or leave `type` off \
+                         for a single-line text field",
+                        KNOWN.join(", ")
+                    ))
+                });
+            }
+        }
+    }
+
     let mut desc = ElemDesc::of(el);
     // A ticked checkbox / selected radio is matched by `:checked`. It *also* still
     // carries the synthetic `checked` class, the pre-pseudo-class hack, so
@@ -4058,6 +4106,8 @@ fn build_node_inner(
                     .unwrap_or_default()
             });
         let model = el.attr("r-model").map(str::to_string);
+        let secret = el.attr("type") == Some("password");
+        let search = el.attr("type") == Some("search");
         let placeholder = el.attr("placeholder").unwrap_or_default().to_string();
         const PLACEHOLDER_COLOR: Rgba = Rgba::new(0.42, 0.44, 0.52, 1.0); // #6c7086
         // The value display is patchable: record where it lives and how to render
@@ -4078,12 +4128,19 @@ fn build_node_inner(
                     placeholder_color: PLACEHOLDER_COLOR,
                     locals: locals.clone(),
                     deps,
+                    secret,
                 });
                 v
             })
             .unwrap_or_default();
+        // The same three-way choice as `eval_value_binding`, which handles every
+        // keystroke after this one. Both are here rather than shared because the
+        // build has the colours to hand and the patch has the binding; they must
+        // agree, and a password shown in full for one frame is a real leak.
         let (shown, shown_color) = if value.is_empty() {
             (placeholder.clone(), PLACEHOLDER_COLOR)
+        } else if secret {
+            (mask(&value), color)
         } else {
             (value, color)
         };
@@ -4121,6 +4178,8 @@ fn build_node_inner(
         // did, which is exactly the branch every `r-model` goes through.
         node.instance = instance.map(str::to_string);
         node.multiline = multiline;
+        node.secret = secret;
+        node.search = search;
         node.options = options;
         node.on_tap = on_tap;
         node.gestures = gestures;
@@ -4200,6 +4259,8 @@ fn build_node_inner(
         gestures,
         model: None,
         multiline: false,
+        secret: false,
+        search: false,
         options: None,
         hidden,
         id: el.attr("id").map(str::to_string),
@@ -6944,6 +7005,41 @@ mod tests {
         HashMap::from([(super::DOCUMENT_NAMESPACE.to_string(), namespace)])
     }
     use rux_script::{Builder, Engine};
+
+    /// **A password is painted as bullets, and nothing of the text survives.**
+    ///
+    /// The mask is display only: every read of the signal, and the text handed
+    /// to an input method, stays the real thing, or editing breaks outright.
+    #[test]
+    fn a_password_field_paints_one_bullet_per_character() {
+        let shown = super::mask("hunter2");
+        assert_eq!(shown, "•••••••");
+        assert_eq!(shown.chars().count(), "hunter2".chars().count(), "one bullet per char");
+        assert!(!shown.contains("hunter"), "and none of the text is left");
+    }
+
+    /// An empty value masks to nothing, so the placeholder still wins.
+    ///
+    /// The placeholder is the author's label and not the person's secret, and a
+    /// row of bullets where "Password" belongs reads as a field already filled.
+    #[test]
+    fn an_empty_password_masks_to_nothing() {
+        assert_eq!(super::mask(""), "");
+    }
+
+    /// The mask counts the way the caret moves, which is by `char`.
+    ///
+    /// Deliberately not by grapheme. The shell steps the caret and Backspace by
+    /// scalar, so a grapheme mask would paint one bullet where the caret has
+    /// two places to stand. Written down as a test so that whoever makes text
+    /// editing grapheme-aware finds this and moves it with them.
+    #[test]
+    fn the_mask_counts_by_char_because_the_caret_does() {
+        // 'e' plus a combining acute: one thing to read, two to the caret.
+        let combining = "e\u{301}";
+        assert_eq!(combining.chars().count(), 2);
+        assert_eq!(super::mask(combining).chars().count(), 2);
+    }
     use std::collections::HashMap;
 
     /// `touch-action` decides who wins when a `@drag` and a scroller both want

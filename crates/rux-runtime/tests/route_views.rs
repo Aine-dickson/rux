@@ -258,6 +258,61 @@ fn an_input_with_no_model_is_reported() {
     assert!(said.contains("level: Error"), "as an error, since it can never work: {said}");
 }
 
+/// **A `type=` Rux does not know is refused, and `password` is why.**
+///
+/// Four values were acted on; anything else fell through to the plain text
+/// path with nothing said. Asked by the user 2026-09-21, and the honest answer
+/// was that `<input type="password">` rendered a working field that showed
+/// every character typed into it. The author had written the one thing that
+/// says "hide this" and the engine had ignored it.
+///
+/// `password` is real now, so this uses `email`, which is not: it is a
+/// keyboard hint rather than a control, and is deliberately still refused.
+#[test]
+fn an_input_type_rux_does_not_know_is_refused() {
+    let doc = app(
+        &[],
+        r#"<input type="email" r-model="pw" />"#,
+        "let pw = signal(\"\");
+",
+    );
+    let said = problems(&doc);
+    assert!(said.contains("is not a kind of input"), "reported: {said}");
+    assert!(said.contains("level: Error"), "as an error, not a warning: {said}");
+    // The message names the way out, not just the problem.
+    assert!(said.contains("textarea"), "and lists what is allowed: {said}");
+}
+
+/// Every kind Rux does have is left alone, including an absent one.
+#[test]
+fn the_input_types_rux_has_are_accepted() {
+    for kind in ["text", "textarea", "password", "search", "checkbox", "radio"] {
+        let doc = app(
+            &[],
+            &format!(r#"<input type="{kind}" r-model="v" />"#),
+            "let v = signal(\"\");
+",
+        );
+        let said = problems(&doc);
+        assert!(!said.contains("is not a kind of input"), "{kind} is real: {said}");
+    }
+    // `select` wants its options, so it is written the way an author would.
+    let doc = app(
+        &[],
+        r#"<input type="select" r-model="v" :options="opts" />"#,
+        "let v = signal(\"a\");
+let opts = signal([\"a\", \"b\"]);
+",
+    );
+    let said = problems(&doc);
+    assert!(!said.contains("is not a kind of input"), "select is real: {said}");
+    // And no `type` at all is a text field, which is the common case.
+    let doc = app(&[], r#"<input r-model="v" />"#, "let v = signal(\"\");
+");
+    let said = problems(&doc);
+    assert!(!said.contains("is not a kind of input"), "absent is text: {said}");
+}
+
 /// And a bound one says nothing.
 #[test]
 fn a_bound_input_is_left_alone() {

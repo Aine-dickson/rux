@@ -793,6 +793,51 @@ thread_local! {
         const { std::cell::RefCell::new(None) };
 }
 
+/// The bullet a masked character is painted as.
+///
+/// U+2022, which is what every platform uses and what a font is certain to
+/// have. Not an asterisk: that reads as a footnote and as a required-field
+/// marker.
+pub const SECRET_BULLET: char = '\u{2022}';
+
+/// Replace every character of a `type="password"` value with a bullet.
+///
+/// **By `char`, because that is what the caret counts.** A grapheme is the
+/// better unit in the abstract, but the shell steps the caret and Backspace by
+/// scalar, so a grapheme mask would paint one bullet where the caret has two
+/// places to stand. A second way of counting inside one field is worse than a
+/// coarse one used everywhere. Whether editing should be grapheme-aware is a
+/// codebase-wide question, and when it is answered this follows it.
+///
+/// **Lives here because both sides of the split need it.** `rux-style` masks
+/// what is painted; `rux-shell` has to measure the same string to put a caret
+/// in it, and the two crates share only this one. Measuring the real text
+/// while painting bullets is what put the caret a third of the way along a
+/// password on a phone.
+pub fn mask(text: &str) -> String {
+    text.chars().map(|_| SECRET_BULLET).collect()
+}
+
+/// A byte offset into a value, as a byte offset into [`mask`] of that value.
+///
+/// One bullet per `char`, and a bullet is three bytes in UTF-8, so this is a
+/// character count rather than anything to do with the original widths.
+pub fn masked_offset(value: &str, byte: usize) -> usize {
+    let byte = byte.min(value.len());
+    let chars = value[..byte].chars().count();
+    chars * SECRET_BULLET.len_utf8()
+}
+
+/// The inverse of [`masked_offset`]: a byte offset into a mask, back into the
+/// value it was made from.
+///
+/// Needed because a tap lands on a bullet and has to become a caret in the real
+/// text.
+pub fn unmasked_offset(value: &str, masked_byte: usize) -> usize {
+    let chars = masked_byte / SECRET_BULLET.len_utf8();
+    value.char_indices().nth(chars).map(|(i, _)| i).unwrap_or(value.len())
+}
+
 /// Install the reader the painter asks for image bytes.
 pub fn set_image_reader(reader: ImageReader) {
     IMAGE_READER.with(|r| *r.borrow_mut() = Some(reader));
@@ -950,6 +995,15 @@ pub struct Node {
     pub model: Option<String>,
     /// `type="textarea"`: a multi-line text input, `Enter` inserts a newline.
     pub multiline: bool,
+    /// `type="password"`: the shown text is bullets, and the clipboard is
+    /// refused. The bound signal still holds the real value.
+    pub secret: bool,
+    /// `type="search"`: only the keyboard differs, a Search key for its action.
+    ///
+    /// Three bools for what is one enum. They are separate because each was
+    /// added on its own; **collapse them into a `kind` the moment a fourth
+    /// arrives**, or the combinations start meaning things nobody chose.
+    pub search: bool,
     /// `type="select"`: the bound `:options`, so the shell can open a dropdown.
     pub options: Option<Vec<String>>,
     /// `r-show="false"`: laid out (space reserved) but not painted.
@@ -1001,6 +1055,8 @@ impl Node {
             gestures: Vec::new(),
             model: None,
             multiline: false,
+            secret: false,
+            search: false,
             options: None,
             hidden: false,
             id: None,
@@ -1025,6 +1081,8 @@ impl Node {
             gestures: Vec::new(),
             model: None,
             multiline: false,
+            secret: false,
+            search: false,
             options: None,
             hidden: false,
             id: None,
@@ -1049,6 +1107,8 @@ impl Node {
             gestures: Vec::new(),
             model: None,
             multiline: false,
+            secret: false,
+            search: false,
             options: None,
             hidden: false,
             id: None,
@@ -1078,6 +1138,8 @@ impl Node {
             gestures: Vec::new(),
             model: None,
             multiline: false,
+            secret: false,
+            search: false,
             options: None,
             hidden: false,
             id: None,
@@ -1399,6 +1461,10 @@ pub struct FocusRegion {
     pub text: Option<PaintText>,
     /// `type="textarea"`: `Enter` inserts a newline instead of being ignored.
     pub multiline: bool,
+    /// `type="password"`: refuse copy and cut out of this field.
+    pub secret: bool,
+    /// `type="search"`: a keyboard hint and nothing else.
+    pub search: bool,
     /// If this input scrolls (a textarea), the index of its `ScrollRegion` in
     /// `Layout.scrolls`, so the shell can scroll the caret into view.
     pub scroll_id: Option<usize>,
@@ -1518,6 +1584,10 @@ pub enum FocusKind {
         /// is read and written in. See [`FocusRegion::instance`].
         instance: Option<String>,
         multiline: bool,
+        /// `type="password"`. See [`FocusRegion::secret`].
+        secret: bool,
+        /// `type="search"`. See [`FocusRegion::search`].
+        search: bool,
         text: Option<PaintText>,
     },
     /// A button / checkbox / radio: Space or Enter runs its handler.
@@ -2041,6 +2111,10 @@ struct Bound {
     /// resolved in. See [`FocusRegion::instance`].
     instance: Option<String>,
     multiline: bool,
+    /// `type="password"`. See [`FocusRegion::secret`].
+    secret: bool,
+    /// `type="search"`. See [`FocusRegion::search`].
+    search: bool,
     options: Option<Vec<String>>,
 }
 
@@ -2320,6 +2394,8 @@ fn build(
             row: row.map(str::to_string),
             instance: node.instance.clone(),
             multiline: node.multiline,
+            secret: node.secret,
+            search: node.search,
             options: node.options.clone(),
         });
     }
@@ -2592,6 +2668,8 @@ fn collect(
             instance,
             text: None,
             multiline: false,
+            secret: false,
+            search: false,
             scroll_id: None,
         });
     }
@@ -2715,6 +2793,8 @@ fn collect(
                 instance: bound.instance.clone(),
                 text: text.clone(),
                 multiline: bound.multiline,
+                secret: bound.secret,
+                search: bound.search,
                 // The scroll block below assigns ids as `out.scrolls.len()`, so if
                 // this node scrolls it will get the current length as its id.
                 scroll_id: scrolls.contains(&id).then(|| out.scrolls.len()),
@@ -2731,6 +2811,8 @@ fn collect(
                     row: bound.row.clone(),
                     instance: bound.instance.clone(),
                     multiline: bound.multiline,
+                secret: bound.secret,
+                search: bound.search,
                     text,
                 },
                 scroll: inside_scroll,
@@ -3221,6 +3303,52 @@ mod reveal_tests {
         });
         let offsets = vec![Offset { x: 0.0, y: 0.0 }, Offset { x: 0.0, y: 0.0 }];
         assert_eq!(containing_scroller(&scrolls, &offsets, 40.0, 500.0), Some(1));
+    }
+}
+
+#[cfg(test)]
+mod mask_tests {
+    use super::{mask, masked_offset, unmasked_offset};
+
+    /// **The caret bug, in arithmetic.** A bullet is three bytes in UTF-8 and a
+    /// caret is a byte offset into the *real* text, so reading one as the other
+    /// puts the caret a third of the way along. Reported from the phone twice:
+    /// six characters typed and the caret sat after two bullets, and "the
+    /// longer the value, the further forward it moves, about one character for
+    /// every three".
+    #[test]
+    fn a_caret_maps_from_real_bytes_to_bullets() {
+        let value = "abcdef";
+        assert_eq!(mask(value).len(), 18, "six bullets, three bytes each");
+        // What the caret meant before the mapping existed: byte 6 of an
+        // 18-byte string, which the painter reads as two bullets in.
+        assert_eq!(6 / super::SECRET_BULLET.len_utf8(), 2, "the reported symptom");
+        // And what it means now.
+        assert_eq!(masked_offset(value, 6), 18, "the end is the end");
+        assert_eq!(masked_offset(value, 3), 9, "and half way is half way");
+    }
+
+    /// A tap lands on a bullet and has to come back as an offset in the value.
+    #[test]
+    fn a_tap_maps_from_bullets_back_to_real_bytes() {
+        let value = "abcdef";
+        for byte in [0usize, 3, 6] {
+            assert_eq!(unmasked_offset(value, masked_offset(value, byte)), byte);
+        }
+    }
+
+    /// Multi-byte text is where clamping and mapping visibly disagree.
+    ///
+    /// `é` is two bytes and one bullet, so a caret after it is byte 2 in the
+    /// value and byte 3 in the mask. Clamping would have left it at 2, which is
+    /// not a boundary in a string of three-byte bullets at all.
+    #[test]
+    fn a_multibyte_character_is_one_bullet() {
+        let value = "é";
+        assert_eq!(value.len(), 2);
+        assert_eq!(mask(value).chars().count(), 1);
+        assert_eq!(masked_offset(value, 2), 3);
+        assert_eq!(unmasked_offset(value, 3), 2);
     }
 }
 

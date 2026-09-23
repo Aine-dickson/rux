@@ -375,18 +375,62 @@ public class RuxActivity extends NativeActivity {
             if (!nativeWantsText()) {
                 return null;
             }
-            // A plain single-line text field, and no full-screen editor. A phone
-            // in landscape will otherwise replace the whole app with the IME's
-            // own editor, which would cover the Rux document being edited.
-            out.inputType = EditorInfo.TYPE_CLASS_TEXT;
-            out.imeOptions = EditorInfo.IME_FLAG_NO_FULLSCREEN | EditorInfo.IME_ACTION_DONE;
+            // **What the field is, not what every field is.** This was a
+            // constant, and a constant is a lie for any input that is not a
+            // one-line text box. An `EditorInfo` is the only thing an app ever
+            // says to an input method about what is being edited: the keys it
+            // offers, the action in the corner and whether autocorrect runs are
+            // all decided here and nowhere else.
+            //
+            // No full-screen editor either way. A phone in landscape will
+            // otherwise replace the whole app with the IME's own editor, which
+            // would cover the Rux document being edited.
+            int kind = nativeFieldKind();
+            boolean multiline = kind == KIND_TEXTAREA;
+            if (kind == KIND_PASSWORD) {
+                // **The variation is not cosmetic and not about the glyphs.**
+                // Rux draws its own bullets, so this is not what masks the
+                // field. What it buys is everything an input method would
+                // otherwise do with the text: no autocorrect, no suggestion
+                // strip built from it, and no adding it to the personal
+                // dictionary. `IME_FLAG_NO_PERSONALIZED_LEARNING` is the same
+                // refusal said again, because the variation alone is advisory
+                // and keyboards have differed on honouring it.
+                //
+                // The realistic leak this closes is not someone reading the
+                // screen. It is the keyboard learning the password and then
+                // offering it as a suggestion in a different app.
+                out.inputType =
+                        EditorInfo.TYPE_CLASS_TEXT | EditorInfo.TYPE_TEXT_VARIATION_PASSWORD;
+                out.imeOptions =
+                        EditorInfo.IME_FLAG_NO_FULLSCREEN
+                                | EditorInfo.IME_ACTION_DONE
+                                | EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING;
+            } else if (kind == KIND_SEARCH) {
+                // The whole of `search`: the action key says Search. The field
+                // is an ordinary one-line text box in every other respect,
+                // which is exactly why this is a keyboard hint and not a
+                // control of its own.
+                out.inputType = EditorInfo.TYPE_CLASS_TEXT;
+                out.imeOptions = EditorInfo.IME_FLAG_NO_FULLSCREEN | EditorInfo.IME_ACTION_SEARCH;
+            } else if (multiline) {
+                // `IME_FLAG_NO_ENTER_ACTION` is what turns the action key back
+                // into a newline key. Without it Gboard shows Done and sends an
+                // editor action, and a textarea cannot be given a second line.
+                out.inputType = EditorInfo.TYPE_CLASS_TEXT | EditorInfo.TYPE_TEXT_FLAG_MULTI_LINE;
+                out.imeOptions =
+                        EditorInfo.IME_FLAG_NO_FULLSCREEN | EditorInfo.IME_FLAG_NO_ENTER_ACTION;
+            } else {
+                out.inputType = EditorInfo.TYPE_CLASS_TEXT;
+                out.imeOptions = EditorInfo.IME_FLAG_NO_FULLSCREEN | EditorInfo.IME_ACTION_DONE;
+            }
             String current = nativeFocusedText();
             if (current == null) {
                 current = "";
             }
             out.initialSelStart = current.length();
             out.initialSelEnd = current.length();
-            return new RuxInputConnection(this, current);
+            return new RuxInputConnection(this, current, multiline);
         }
 
         /**
@@ -428,13 +472,41 @@ public class RuxActivity extends NativeActivity {
 
         private final Editable editable;
 
-        RuxInputConnection(View target, String initial) {
+        /**
+         * Which focused field this connection was built for.
+         *
+         * <p><b>A connection outlives the field it belongs to, and that is a
+         * defect you can watch happen.</b> {@code restartInput} is
+         * asynchronous: it asks the input method to fetch a new connection and
+         * returns immediately. Between the tap that moves focus and the new
+         * connection arriving, the input method still holds this one, and it
+         * usually has something to say on the way out, because finishing a
+         * composition is the first thing it does. That report carries the *old*
+         * field's text and is applied to the field that now has focus.
+         *
+         * <p>Reported by the user watching the screen, which is the only place
+         * it shows: tapping the second input made the first one's text appear
+         * in it for about half a second before being cleared. Every screenshot
+         * taken after that was of an empty field, so the capture agreed with
+         * the fix while the eye did not.
+         *
+         * <p>So Rux stamps each focus with a token and ignores a report that
+         * does not carry the current one.
+         */
+        private final long token;
+
+        /** Whether Enter belongs in the text rather than to the keyboard. */
+        private final boolean multiline;
+
+        RuxInputConnection(View target, String initial, boolean multiline) {
             // `true`: this is a full editor, so the base class maintains the
             // composing spans and the selection on the editable below, which is
             // the part of an input method's protocol worth not reimplementing.
             super(target, true);
             editable = new SpannableStringBuilder(initial);
             Selection.setSelection(editable, initial.length());
+            token = nativeFieldToken();
+            this.multiline = multiline;
         }
 
         @Override
@@ -484,9 +556,95 @@ public class RuxActivity extends NativeActivity {
 
         @Override
         public boolean sendKeyEvent(KeyEvent event) {
+            // **The base class does not edit anything here, and that is the
+            // whole of why Backspace did nothing.** `BaseInputConnection`
+            // implements this by dispatching the key to the target view, on the
+            // assumption that the view is a `TextView` that will act on it.
+            // Rux's view is not: it exists only to hold focus and returns false
+            // from `onKeyDown`, so the key reached nothing, the editable was
+            // untouched, and the report that followed carried text that had not
+            // changed. Driven on a phone with Gboard: four presses of Backspace,
+            // no change to the field.
+            //
+            // It only showed once the text was no longer being composed. While
+            // an input method is composing a word it edits through
+            // `setComposingText`, which does maintain the editable, so the
+            // first Backspace of a fresh word works and the ones after a space,
+            // a suggestion or a change of field do not. That is a hard shape to
+            // catch by hand and it is why this was reported as "Backspace
+            // doesn't work" rather than as anything narrower.
+            if (event.getAction() == KeyEvent.ACTION_DOWN) {
+                switch (event.getKeyCode()) {
+                    case KeyEvent.KEYCODE_DEL:
+                        deleteAround(true);
+                        return true;
+                    case KeyEvent.KEYCODE_FORWARD_DEL:
+                        deleteAround(false);
+                        return true;
+                    case KeyEvent.KEYCODE_ENTER:
+                        // A newline is an edit, in a field that takes one. In a
+                        // one-line field it is not, and falls through to the
+                        // dispatch below so that the action key keeps meaning
+                        // what the `EditorInfo` said it means.
+                        if (multiline) {
+                            commitText("\n", 1);
+                            return true;
+                        }
+                        break;
+                    default:
+                        // A printable key sent this way would be dropped for the
+                        // same reason, so it is committed rather than dispatched.
+                        //
+                        // **Printable, and control characters are not.** Tab
+                        // and Enter both have a unicode value, and committing
+                        // those would put a literal tab in the field instead of
+                        // moving focus, and a newline in a single-line input.
+                        // They are not edits, so they go to the dispatch below
+                        // with the arrow keys.
+                        int unicode = event.getUnicodeChar();
+                        if (unicode >= 0x20 && unicode != 0x7f) {
+                            commitText(String.valueOf((char) unicode), 1);
+                            return true;
+                        }
+                }
+            }
+            // Anything else is not an edit: arrows, Enter, a hardware key. Those
+            // do belong to the dispatch the base class performs.
             boolean handled = super.sendKeyEvent(event);
             report();
             return handled;
+        }
+
+        /**
+         * Delete the selection, or one character to one side of the caret.
+         *
+         * <p>{@code before} is Backspace; false is Forward Delete. Counted in
+         * <em>code points</em> rather than {@code char}s, so one press removes
+         * one emoji instead of half of one and leaving a lone surrogate behind.
+         */
+        private void deleteAround(boolean before) {
+            int start = Selection.getSelectionStart(editable);
+            int end = Selection.getSelectionEnd(editable);
+            if (start < 0 || end < 0) {
+                return;
+            }
+            if (start != end) {
+                editable.delete(Math.min(start, end), Math.max(start, end));
+                report();
+                return;
+            }
+            if (before && start > 0) {
+                int from = Character.offsetByCodePoints(editable, start, -1);
+                editable.delete(from, start);
+            } else if (!before && start < editable.length()) {
+                int to = Character.offsetByCodePoints(editable, start, 1);
+                editable.delete(start, to);
+            } else {
+                // Nothing to remove, and reporting an unchanged field would be
+                // one more edit for Rux to apply for no reason.
+                return;
+            }
+            report();
         }
 
         /**
@@ -502,6 +660,7 @@ public class RuxActivity extends NativeActivity {
             int start = getComposingSpanStart(editable);
             int end = getComposingSpanEnd(editable);
             nativeTextChanged(
+                    token,
                     editable.toString(),
                     Selection.getSelectionEnd(editable),
                     Selection.getSelectionStart(editable),
@@ -569,15 +728,47 @@ public class RuxActivity extends NativeActivity {
     /** Whether Rux currently has a text field focused. */
     private static native boolean nativeWantsText();
 
+    /** A one-line text field, and what {@link #nativeFieldKind} falls back to. */
+    private static final int KIND_TEXT = 0;
+
+    /** {@code type="textarea"}, the one field that takes a newline. */
+    private static final int KIND_TEXTAREA = 1;
+
+    /** {@code type="password"}. */
+    private static final int KIND_PASSWORD = 2;
+
+    /** {@code type="search"}. */
+    private static final int KIND_SEARCH = 3;
+
+    /**
+     * What kind of field has focus, so the right keyboard can be asked for.
+     *
+     * <p>One of the {@code KIND_} constants above. Every other input type Rux
+     * grows will arrive through here, because an {@code EditorInfo} is the only
+     * thing that decides which keys an input method offers.
+     */
+    private static native int nativeFieldKind();
+
     /** The focused field's current text, so an input method starts from it. */
     private static native String nativeFocusedText();
 
     /**
+     * Which field has focus right now, as a number that changes when it moves.
+     *
+     * <p>Taken once, when a connection is built, and handed back with every
+     * report that connection makes. See {@link RuxInputConnection#token} for
+     * what goes wrong without it.
+     */
+    private static native long nativeFieldToken();
+
+    /**
      * An input method edited the text. Offsets are UTF-16 code units.
      *
-     * <p>{@code composeStart} and {@code composeEnd} are -1 when nothing is being
-     * composed, which is what {@code getComposingSpanStart} reports.
+     * <p>{@code token} is the focus this edit belongs to; Rux drops the edit if
+     * focus has moved on since. {@code composeStart} and {@code composeEnd} are
+     * -1 when nothing is being composed, which is what
+     * {@code getComposingSpanStart} reports.
      */
     private static native void nativeTextChanged(
-            String text, int caret, int anchor, int composeStart, int composeEnd);
+            long token, String text, int caret, int anchor, int composeStart, int composeEnd);
 }

@@ -307,3 +307,34 @@ fn a_guard_that_cannot_answer_refuses() {
         doc.diagnostics().warnings
     );
 }
+
+/// **`back` answering `false` does not mean the history is empty**, and on a
+/// phone that difference is the difference between a guard doing its job and
+/// the app quitting.
+///
+/// Android's Back button is answered by the shell: pop a page if there is one,
+/// and otherwise finish the activity. The only thing it can ask is `can_back`,
+/// because `back` returns `false` for two unrelated reasons. If it read a
+/// guard's refusal as "nothing left to pop", an unsaved-changes guard would
+/// close the app on the very press it was written to block.
+#[test]
+fn a_refused_back_is_not_an_empty_history() {
+    let mut doc = app(
+        &[("home", HOME), ("about", ABOUT)],
+        // The guard is on the page being returned *to*, which is how a "you
+        // have unsaved changes" guard is actually written.
+        r#"<router>
+             <route path="/" view="home" guard="gate" />
+             <route path="/about" view="about" />
+           </router>"#,
+        "let gate = signal(true);\n",
+    );
+    assert!(!doc.can_back(), "a freshly loaded app has nowhere to go back to");
+
+    assert!(doc.navigate("/about"), "somewhere to come back from");
+    assert!(doc.apply_handler("gate = false"), "and a guard that will refuse");
+
+    assert!(!doc.back(), "the step is refused");
+    assert_eq!(doc.route(), "/about", "and nothing moved");
+    assert!(doc.can_back(), "but the history still has a page in it");
+}

@@ -1393,6 +1393,191 @@ every test launched the app and drove it without ever leaving. Worth a standing
 case: leave the app and come back, on every platform that can take a surface
 away.
 
+## Back, and what closing an app costs, 2026-09-21
+
+Reported by the user from the phone: **the phone's Back button does not close a
+Rux app.** Worked out on the emulator, because the phone was not attached at the
+time, and then **driven on the Spark 20 itself** once wireless debugging came
+back: arm64, API 33, 720x1612 at 2.0dppx.
+
+| Case | Before | After |
+|---|---|---|
+| Back on an inner page | Nothing at all | Pops to the previous page |
+| Back at the root | Nothing at all | Closes the app, whatever was behind it comes forward |
+| Reopen after closing | (unreachable: nothing could close it) | Opens normally, on the phone and twice in a row on the emulator |
+| Back while a guard refuses | (unreachable) | Stays put, app does not close (under test, not driven by hand) |
+
+**The key arrives and is thrown away twice over.** A `NativeActivity` takes the
+window's input queue, so a key reaches native code before any view. winit then
+reports every key it decodes back to Android as handled, excepting only the
+volume keys, which means the platform never runs the stage that would call
+`onBackPressed`. Overriding `onKeyDown` in the Java, or `onBackPressed`, or
+registering an `OnBackInvokedCallback`, would each wait for a call that never
+comes. The key was there the whole time, decoded as `BrowserBack`, and nothing
+was listening.
+
+**Closing an app is not `finish()`, and believing otherwise cost two rebuilds.**
+The first version asked Java to finish the activity. Back worked, the launcher
+came forward, and it looked finished. It was not: winit 0.30 leaves
+`MainEvent::Destroy` as a literal `warn!("TODO")`, so the Rust event loop ran on
+while the Java activity was torn down. `onDestroy` waited ten seconds for a
+thread that was never going to return, logged `Activity destroy timeout`, and
+the next launch reused the wedged process and sat on the splash screen.
+
+**The second version fixed the wrong thing and proved it in the log.** Exiting
+the event loop makes `android_main` return, `android-activity` finishes the
+activity itself, and the destroy is clean with no timeout. Reopening still
+failed, and this time said why: `create event loop: RecreationAttempt`. winit
+refuses a second `EventLoop` in one process, and Android had kept the process
+cached and built the new activity inside it.
+
+**So closing a Rux app ends its process**, by a `process::exit(0)` after the
+loop returns. Every launch is then a cold start, which is the only kind winit
+supports. Nothing is lost that was not already gone: the activity was closing.
+
+**Three failures, three different logcat lines, and the eye would have called
+all three the same thing.** "The app doesn't reopen properly" was a splash
+screen, then a launcher bounce, and the cause was different each time. The
+screenshots agreed; only the log distinguished them. Read logcat even when the
+screen has already told you what happened.
+
+## Text input, against a keyboard that was not the emulator's, 2026-09-21
+
+Reported by the user from the phone, in the new-task form: **Backspace does not
+work, and typing in one input after another attaches the first one's contents.**
+Driven on the Spark 20 with Gboard, by tapping the real keys rather than
+injecting key events, because injection never reaches an input method at all.
+
+| Case | Before | After |
+|---|---|---|
+| Type into an input | Correct | Correct |
+| Backspace inside the word being composed | Correct | Correct |
+| Backspace anywhere else | **Nothing at all**, four presses, no change | Deletes, across the committed boundary and down to empty |
+| Tap a second input and type | Second input reads **`abcs`**: the first field's buffer, including a letter deleted from it | Second input holds only what was typed into it |
+| The moment of switching | First field's text appears in the second for about **half a second** | Not seen in a three-frame burst; left for the eye to confirm |
+
+**Three defects, and the first one found was the least of them.**
+
+**1. The guard asked the wrong question.** `android_set_text_input` took a
+`bool` and skipped its work when the answer had not changed. Moving between two
+inputs is "yes" then "yes", so `restartInput` was never called and Gboard went
+on editing the connection built for the *previous* field, whose `Editable` still
+held that field's text. It now takes which field has focus, as model, row and
+instance. Typing does not change that triple, so the report loop the `bool` was
+really there to cut is still cut.
+
+**2. `restartInput` is asynchronous, and the outgoing connection gets the last
+word.** Between the tap and the new connection arriving, the input method still
+holds the old one and finishes its composition through it. That report carries
+the old text and lands in the field that now has focus. Each focus now carries a
+token, stamped on the connection when it is built and returned with every
+report; a report under a stale token is dropped.
+
+**This one is invisible to a screenshot and was reported by the user watching
+the screen.** Fixing (1) made the end state correct, so every capture agreed
+with the fix while the behaviour was still wrong for half a second. A burst of
+three on-device captures did not catch it either. Where a defect is measured in
+hundreds of milliseconds, the eye is the instrument.
+
+**3. Backspace never reached the text.** `BaseInputConnection.sendKeyEvent`
+does not edit the editable: it dispatches the key to the target view, assuming
+a `TextView` that will act on it. Rux's view exists only to hold focus and
+returns false from `onKeyDown`, so `KEYCODE_DEL` reached nothing, and the report
+that followed carried text that had not changed. The connection now deletes for
+itself, by code point rather than by `char` so one press takes a whole emoji.
+
+**Why it looked intermittent.** While an input method composes a word it edits
+through `setComposingText`, which does maintain the editable, so the first
+Backspace of a fresh word works. Every one after a space, a suggestion or a
+change of field does not. Testing Backspace on a single freshly typed character
+passes and proves nothing; the user said so directly, and was right.
+
+**4. A textarea's Enter did nothing, and the keyboard was right.**
+Asked afterwards by the user, and worth asking: `EditorInfo` was a constant,
+`TYPE_CLASS_TEXT` with `IME_ACTION_DONE`, for every input there is. It is the
+only thing an app ever tells an input method about what is being edited, so a
+`type="textarea"` was declaring itself one line deep. Driven: type `ab`, press
+the action key, type `c`, and the field reads `abc` on one line, because Gboard
+sent an editor action rather than a newline, exactly as it had been asked to.
+The field's kind now reaches the connection, a textarea asks for
+`TYPE_TEXT_FLAG_MULTI_LINE` with `IME_FLAG_NO_ENTER_ACTION`, and the action key
+is a return arrow that inserts a line. **The documented behaviour of a shipped
+type was true on a desktop and false on a phone**, which is the shape to look
+for in everything else the spec claims.
+
+**The emulator could not have found any of this.** It runs AnySoftKeyboard and
+the phone runs Gboard, and the two use different halves of the
+`InputConnection` protocol. Every keyboard test before today was on the
+emulator. **An input method is a second implementation, not a detail:** what
+the text stack is really being tested against is the keyboard, not the device.
+
+## `password` and `search`, on the phone, 2026-09-22
+
+Built after the user asked whether the keyboard could tell one input type from
+another. It could not, and the deeper answer was that neither could Rux: four
+`type=` values were acted on and everything else was silently a plain text
+field. Driven on the Spark 20 with Gboard.
+
+| Case | Result |
+|---|---|
+| Type into `type="password"` | Shows bullets, one per character |
+| The keyboard it raises | Gboard's **incognito** mode: suggestion strip replaced by the no-learning indicator, dictation crossed out, number row added |
+| Selection toolbar on that field | **Paste and Select all only.** Copy and Cut are gone and the bar has narrowed to fit |
+| `type="search"` | The action key reads Search |
+
+**Masking is display only, and that is the whole design.** The bound signal,
+every handler read, and the text handed to the input method all keep the real
+value; only the painted string is substituted, at the one place the shown text
+is computed. Masking anywhere else breaks editing outright, because an input
+method that is handed bullets will compose against bullets.
+
+**The keyboard's part is not the masking.** Rux draws its own text, so
+`TYPE_TEXT_VARIATION_PASSWORD` changes nothing on screen. What it buys is
+everything an input method would otherwise do with the text: autocorrect, the
+suggestion strip, and the personal dictionary. **The realistic leak it closes
+is not someone reading over a shoulder. It is the keyboard learning the
+password and offering it as a suggestion in a different app.** The incognito
+indicator in the screenshot is Gboard confirming it will not.
+
+**A mask that can be copied is decoration**, so Copy and Cut are refused, and
+the toolbar drops them rather than showing buttons that do nothing. Paste
+stays: text arriving is not text leaving.
+
+**Bullets are counted by `char`, not by grapheme, and that is deliberate.** A
+grapheme is the better unit in the abstract, but the shell steps the caret and
+Backspace by scalar, so a grapheme mask would paint one bullet where the caret
+has two places to stand. **A second way of counting inside one field is worse
+than a coarse one used everywhere.** Whether editing should be grapheme-aware
+is a real question and a codebase-wide one; a test records this so that
+whoever answers it moves this too.
+
+**The first version put the caret in the wrong place, and the user's
+description of it named the bug.** Typing into a password field left the caret
+part way along and it could never reach the end; the report added that "the
+longer the value, the further forward it moves, about one character for every
+three". That ratio *is* the defect: a bullet is three bytes in UTF-8, a caret is
+a byte offset into the real value, and reading one as the other divides by
+three. Six characters typed, caret after two bullets.
+
+**It was not where it looked.** The obvious suspects were the shell's
+`caret_geometry` calls, which measure text to place a caret; those were wrong
+too and were fixed, but they drive the IME cursor rectangle and the
+scroll-to-caret, not the caret anyone can see. The visible one comes from
+`apply_focus_in` in the runtime, which attached the offset to the painted text
+with `.min(len)` -- a clamp, where a conversion was needed. Selection and the
+composing region had the same fault.
+
+**Every offset that meets painted text now maps through one pair of functions**
+(`masked_offset` and `unmasked_offset`, beside `mask` itself), and the
+arithmetic the user observed is a test.
+
+**`search` is one line, and that is the point.** It sets `IME_ACTION_SEARCH`
+and nothing else, because a search field is a text field with a different key
+in the corner. Building it proved the distinction the design rests on: **a
+`type=` is a different control, and a keyboard is not a control.** `email`,
+`tel` and `url` belong with `search` on the hint side, and are deliberately
+still refused until that hint attribute exists.
+
 ## Standing gaps
 
 Cases nothing here can currently exercise. They are the shape of what v0.8 has
@@ -1408,8 +1593,19 @@ to prove.
   that the question was the wrong one.
 - ~~**Native pickers, safe areas, orientation, density**: no device.~~ Driven on
   the emulator 2026-09-20, and **not yet re-driven on the phone**.
-- **IME on real hardware**: composition is proven only against
-  AnySoftKeyboard on the emulator.
+- ~~**IME on real hardware**: composition is proven only against
+  AnySoftKeyboard on the emulator.~~ Partly closed 2026-09-21, above:
+  typing, Backspace and moving between fields are driven against Gboard on
+  the phone. **Composition proper is still not**, because English Gboard
+  composes a word rather than a character; CJK and a dead key remain
+  emulator-only.
+- **Every `type=` that is not one of the five is silently a text field.**
+  The only values any code inspects are `radio`, `checkbox`, `textarea`
+  and `select`, and nothing validates the rest. `<input type="password">`
+  parses, renders and accepts typing **as visible plain text**, with no
+  masking and no warning; `email`, `number` and `search` likewise become
+  plain text. Not a missing feature but a silence, and the password case
+  is one an author would not notice until it mattered.
 - **A locked screen captures as pure black.** Not a standing gap, but worth
   knowing: on 2026-08-19 every screenshot came back black until the user
   unlocked the machine, including one of a known-good example. Run the control

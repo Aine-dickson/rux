@@ -663,8 +663,11 @@ impl Focus {
 /// only against a freshly built one. Setting without clearing left the caret
 /// showing in the input you just left, until some unrelated rebuild wiped it.
 /// The selection is one more thing that can be left behind the same way.
-fn apply_focus(node: &mut LayoutNode, focus: Option<&Focus>) {
-    apply_focus_in(node, focus, None);
+///
+/// `value` is the focused field's **real** text, which a masked field needs and
+/// nothing else uses. See the offset mapping in [`apply_focus_in`].
+fn apply_focus(node: &mut LayoutNode, focus: Option<&Focus>, value: Option<&str>) {
+    apply_focus_in(node, focus, None, value);
 }
 
 /// [`apply_focus`], carrying the `r-key` of the row being walked.
@@ -672,26 +675,42 @@ fn apply_focus(node: &mut LayoutNode, focus: Option<&Focus>) {
 /// A splice starts partway down the tree, so the row a subtree sits in cannot be
 /// recovered from the subtree itself; `row` is what the caller already knew. It
 /// is `None` at the root and everywhere outside a keyed list.
-fn apply_focus_in(node: &mut LayoutNode, focus: Option<&Focus>, row: Option<&str>) {
+fn apply_focus_in(
+    node: &mut LayoutNode,
+    focus: Option<&Focus>,
+    row: Option<&str>,
+    value: Option<&str>,
+) {
     let row = node.key.as_deref().or(row);
     if node.model.is_some() {
         if let Some(text) = node.children.first_mut().and_then(|c| c.text.as_mut()) {
             let mine = focus.filter(|f| {
                 node.model.as_deref().is_some_and(|m| f.is(m, row, node.instance.as_deref()))
             });
+            // **Every offset here indexes the text as painted, and a masked
+            // field is not painted as it is stored.** A caret is a byte offset
+            // into the real value; the bullets are three bytes each, so
+            // clamping rather than converting put the caret a third of the way
+            // along. Driven on a phone: six characters typed, caret after two
+            // bullets, and it could never reach the end.
+            let at = |i: usize| match (node.secret, value) {
+                (true, Some(real)) => rux_layout::masked_offset(real, i),
+                // Not masked, or nothing to measure against: clamping is right,
+                // and is what every ordinary field has always done.
+                _ => i.min(text.text.len()),
+            };
             // An empty input shows its placeholder; the caret still sits at 0.
-            text.caret = mine.map(|f| f.caret.min(text.text.len()));
+            text.caret = mine.map(|f| at(f.caret));
             text.selection = mine.filter(|f| !f.is_collapsed()).map(|f| {
                 let (start, end) = f.range();
-                (start.min(text.text.len()), end.min(text.text.len()))
+                (at(start), at(end))
             });
-            text.preedit = mine.and_then(|f| f.preedit).map(|(start, end)| {
-                (start.min(text.text.len()), end.min(text.text.len()))
-            });
+            text.preedit =
+                mine.and_then(|f| f.preedit).map(|(start, end)| (at(start), at(end)));
         }
     }
     for child in &mut node.children {
-        apply_focus_in(child, focus, row);
+        apply_focus_in(child, focus, row, value);
     }
 }
 
@@ -1466,7 +1485,8 @@ impl Document {
 
     pub fn set_focus(&mut self, focus: Option<Focus>) {
         self.focus = focus;
-        apply_focus(&mut self.root, self.focus.as_ref());
+        let real = self.focused_real_value();
+        apply_focus(&mut self.root, self.focus.as_ref(), real.as_deref());
     }
 
     /// The pointer/focus state pseudo-class selectors match against.
@@ -1578,9 +1598,10 @@ impl Document {
             let Some(fresh) = node_at(&fresh_root, path) else { continue };
             let fresh_node = fresh.clone();
             let row = row_at(&fresh_root, path);
+            let real = self.focused_real_value();
             if let Some(live) = node_at_mut(&mut self.root, path) {
                 *live = fresh_node;
-                apply_focus_in(live, self.focus.as_ref(), row.as_deref());
+                apply_focus_in(live, self.focus.as_ref(), row.as_deref(), real.as_deref());
             }
         }
         self.registry = fresh_reg;
@@ -1660,7 +1681,8 @@ impl Document {
             self.environment,
         ) {
             resolve_images(&mut root, &self.base);
-            apply_focus(&mut root, self.focus.as_ref());
+            let real = self.focused_real_value();
+            apply_focus(&mut root, self.focus.as_ref(), real.as_deref());
             self.registry = registry;
             self.root = root;
             // Refresh what the overlay lists: a rebuild re-runs the cascade and
@@ -1831,12 +1853,13 @@ impl Document {
             let Some(fresh) = node_at(&fresh_root, p) else { continue };
             let fresh_children = fresh.children.clone();
             let row = row_at(&fresh_root, p);
+            let real = self.focused_real_value();
             if let Some(live) = node_at_mut(&mut self.root, p) {
                 live.children = fresh_children;
                 // Put the caret back only within this rebuilt subtree. The rows
                 // carry their own keys, so a caret in a row that moved lands in
                 // that row rather than in the position it used to hold.
-                apply_focus_in(live, self.focus.as_ref(), row.as_deref());
+                apply_focus_in(live, self.focus.as_ref(), row.as_deref(), real.as_deref());
             }
         }
         // Toggles: replace just the single node (its checked style + mark). No
@@ -1861,9 +1884,10 @@ impl Document {
             if let Some(fresh) = node_at(&fresh_root, p) {
                 let fresh_node = fresh.clone();
                 let row = row_at(&fresh_root, p);
+                let real = self.focused_real_value();
                 if let Some(live) = node_at_mut(&mut self.root, p) {
                     *live = fresh_node;
-                    apply_focus_in(live, self.focus.as_ref(), row.as_deref());
+                    apply_focus_in(live, self.focus.as_ref(), row.as_deref(), real.as_deref());
                 }
             }
         }
@@ -2389,6 +2413,26 @@ impl Document {
         // Still an arrival rather than a return: a redirect lands at the top.
         self.set_scroll_intent(None);
         self.show_current_route()
+    }
+
+    /// Whether there is a page to step back to at all.
+    ///
+    /// **Not the same question as "did [`back`] move", and a phone is why the
+    /// difference matters.** `back` answers `false` for two unrelated reasons:
+    /// the history is at its first entry, or a route guard refused the step.
+    /// Android's Back button leaves the app when there is nowhere to go, and a
+    /// guard that says "you have unsaved changes" must not be read as that. So
+    /// the shell asks this first and only then tries the step.
+    ///
+    /// [`back`]: Self::back
+    /// The focused field's real text, for the offset mapping a masked field
+    /// needs. `None` when nothing is focused.
+    fn focused_real_value(&mut self) -> Option<String> {
+        let f = self.focus.clone()?;
+        Some(self.value_in(&f.model, f.row.as_deref(), f.instance.as_deref()))
+    }
+    pub fn can_back(&self) -> bool {
+        self.history.at > 0
     }
 
     /// Step back through the history. Returns whether there was anywhere to go.
