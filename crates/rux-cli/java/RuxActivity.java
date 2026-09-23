@@ -1,6 +1,8 @@
 package dev.ruxlang.shell;
 
 import android.app.NativeActivity;
+import android.content.ClipData;
+import android.content.ClipboardManager;
 import android.content.Context;
 import android.content.pm.ActivityInfo;
 import android.content.pm.PackageManager;
@@ -90,6 +92,8 @@ public class RuxActivity extends NativeActivity {
                         ViewGroup.LayoutParams.MATCH_PARENT,
                         ViewGroup.LayoutParams.MATCH_PARENT));
         input.requestFocus();
+
+        clipboard = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
 
         keepSplashUntilDrawn();
 
@@ -251,6 +255,73 @@ public class RuxActivity extends NativeActivity {
                                     .create();
                     picker.show();
                 });
+    }
+
+    /**
+     * The system clipboard, taken once in {@link #onCreate}.
+     *
+     * <p>Fetched on the UI thread and kept, rather than looked up by each call
+     * below, because those calls arrive on the Rux render thread, and on older
+     * platforms a system service built for the first time off the main thread
+     * binds to a thread with no looper.
+     */
+    private ClipboardManager clipboard;
+
+    /**
+     * Put {@code text} on the system clipboard. Called from Rust for Copy and Cut.
+     *
+     * <p><b>Why this exists at all.</b> The first APK stubbed the clipboard out,
+     * on the grounds that copy and paste doing nothing was better than half
+     * working. That stopped being true when the drawn text toolbar reached the
+     * phone: Cut removed the selection and stored it nowhere, which is not a
+     * clipboard that does nothing but a delete with no undo.
+     *
+     * <p>Called on the render thread and not hopped to the UI thread. A
+     * clipboard write is a binder call, not a view operation, and running it
+     * here is what lets Cut be sure the text has landed before it removes it.
+     *
+     * <p><b>Returns whether the write happened</b>, and never throws: an
+     * exception left pending across JNI poisons every later call from the same
+     * thread, and Cut asks precisely so that it can refuse to delete when this
+     * failed.
+     */
+    boolean ruxClipboardWrite(final String text) {
+        try {
+            if (clipboard == null) {
+                return false;
+            }
+            clipboard.setPrimaryClip(ClipData.newPlainText("text", text));
+            return true;
+        } catch (RuntimeException e) {
+            android.util.Log.w("rux", "clipboard write failed", e);
+            return false;
+        }
+    }
+
+    /**
+     * The system clipboard as text, or null if it holds none. Called from Rust
+     * for Paste.
+     *
+     * <p>{@code coerceToText} rather than {@code getText}, so that a copied link
+     * or a styled span pastes as the text it shows, the same as it would into
+     * any other field on the device. Never throws, for the reason on
+     * {@link #ruxClipboardWrite}.
+     */
+    String ruxClipboardRead() {
+        try {
+            if (clipboard == null || !clipboard.hasPrimaryClip()) {
+                return null;
+            }
+            final ClipData clip = clipboard.getPrimaryClip();
+            if (clip == null || clip.getItemCount() == 0) {
+                return null;
+            }
+            final CharSequence text = clip.getItemAt(0).coerceToText(this);
+            return text == null ? null : text.toString();
+        } catch (RuntimeException e) {
+            android.util.Log.w("rux", "clipboard read failed", e);
+            return null;
+        }
     }
 
     /**
@@ -428,10 +499,20 @@ public class RuxActivity extends NativeActivity {
             if (current == null) {
                 current = "";
             }
-            out.initialSelStart = current.length();
-            out.initialSelEnd = current.length();
-            return new RuxInputConnection(this, current, multiline);
+            // Where Rux has the selection, not the end of the text. Clamped,
+            // because the two natives are read separately and a field can
+            // change between them.
+            final long selection = nativeFocusedSelection();
+            final int anchor = Math.min((int) (selection >>> 32), current.length());
+            final int caret = Math.min((int) selection, current.length());
+            out.initialSelStart = Math.min(anchor, caret);
+            out.initialSelEnd = Math.max(anchor, caret);
+            connection = new RuxInputConnection(this, current, anchor, caret, multiline);
+            return connection;
         }
+
+        /** The connection most recently handed to an input method. */
+        RuxInputConnection connection;
 
         /**
          * Let every key that is not text carry on to the native side.
@@ -498,13 +579,14 @@ public class RuxActivity extends NativeActivity {
         /** Whether Enter belongs in the text rather than to the keyboard. */
         private final boolean multiline;
 
-        RuxInputConnection(View target, String initial, boolean multiline) {
+        RuxInputConnection(
+                View target, String initial, int anchor, int caret, boolean multiline) {
             // `true`: this is a full editor, so the base class maintains the
             // composing spans and the selection on the editable below, which is
             // the part of an input method's protocol worth not reimplementing.
             super(target, true);
             editable = new SpannableStringBuilder(initial);
-            Selection.setSelection(editable, initial.length());
+            Selection.setSelection(editable, anchor, caret);
             token = nativeFieldToken();
             this.multiline = multiline;
         }
@@ -722,6 +804,45 @@ public class RuxActivity extends NativeActivity {
                 });
     }
 
+    /**
+     * Move the selection in the connection's copy of the text, because Rux
+     * moved it: a tap, a drag, a double tap, Select all.
+     *
+     * <p>Without this the connection kept the caret wherever the keyboard last
+     * put it, and the next thing typed went in there, not where the caret was
+     * drawn. {@code updateSelection} is how an editor tells the input method
+     * its selection moved by itself, which is exactly what happened.
+     *
+     * <p>A text change does not come here: Rux rebuilds the connection for that
+     * through {@link #ruxSetTextInput}. {@code token} is Rux's focus when it
+     * asked; a connection built for any other is left alone.
+     */
+    void ruxSyncSelection(final long token, final int anchor, final int caret) {
+        runOnUiThread(
+                () -> {
+                    if (input == null) {
+                        return;
+                    }
+                    final RuxInputConnection connection = input.connection;
+                    if (connection == null || connection.token != token) {
+                        return;
+                    }
+                    final Editable editable = connection.getEditable();
+                    final int length = editable.length();
+                    final int a = Math.min(Math.max(anchor, 0), length);
+                    final int c = Math.min(Math.max(caret, 0), length);
+                    // Whatever was being composed is abandoned, as it is when
+                    // the caret moves in any other editor.
+                    BaseInputConnection.removeComposingSpans(editable);
+                    Selection.setSelection(editable, a, c);
+                    InputMethodManager imm =
+                            (InputMethodManager) getSystemService(Context.INPUT_METHOD_SERVICE);
+                    if (imm != null) {
+                        imm.updateSelection(input, Math.min(a, c), Math.max(a, c), -1, -1);
+                    }
+                });
+    }
+
     /** Hand this activity to the Rust side. See {@link #ruxSetTextInput}. */
     private static native void nativeActivityCreated(RuxActivity activity);
 
@@ -751,6 +872,12 @@ public class RuxActivity extends NativeActivity {
 
     /** The focused field's current text, so an input method starts from it. */
     private static native String nativeFocusedText();
+
+    /**
+     * The focused field's selection in UTF-16 units: anchor in the high 32
+     * bits, caret in the low. So a new connection starts where Rux's caret is.
+     */
+    private static native long nativeFocusedSelection();
 
     /**
      * Which field has focus right now, as a number that changes when it moves.

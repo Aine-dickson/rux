@@ -693,7 +693,7 @@ fn apply_focus_in(
             // clamping rather than converting put the caret a third of the way
             // along. Driven on a phone: six characters typed, caret after two
             // bullets, and it could never reach the end.
-            let at = |i: usize| match (node.secret, value) {
+            let at = |i: usize| match (node.kind.secret(), value) {
                 (true, Some(real)) => rux_layout::masked_offset(real, i),
                 // Not masked, or nothing to measure against: clamping is right,
                 // and is what every ordinary field has always done.

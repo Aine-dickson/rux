@@ -971,6 +971,56 @@ impl Access {
     }
 }
 
+/// Which text field an `<input>` is, from its `type=`.
+///
+/// **One value, not a bool per type.** It was three bools (`multiline`,
+/// `secret`, `search`), each added on its own, and three bools make eight
+/// states of which four were ever chosen: nothing stopped a field from being a
+/// password *and* a textarea, and the shell's answer to that depended on which
+/// `if` it happened to check first. The spec's list of types grows by several
+/// in the same release (number, and the keyboard hints beside it), which is the
+/// point past which the combinations stop being hypothetical.
+///
+/// Only the fields a person types into. A `type="select"` is told apart by its
+/// `options`, and becomes a region of its own in the layout; for one of those
+/// this reads `Text` and nothing consults it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum InputKind {
+    /// A one-line field, the default.
+    #[default]
+    Text,
+    /// `type="textarea"`: wraps, scrolls, and `Enter` inserts a newline.
+    Textarea,
+    /// `type="password"`: the shown text is bullets and the clipboard is
+    /// refused. The bound signal still holds the real value.
+    Password,
+    /// `type="search"`: only the keyboard differs, a Search key for its action.
+    Search,
+}
+
+impl InputKind {
+    /// The kind a `type=` attribute names. Anything that is not a text field of
+    /// its own, `select` and an absent `type` included, is `Text`.
+    pub fn from_type(ty: Option<&str>) -> Self {
+        match ty {
+            Some("textarea") => Self::Textarea,
+            Some("password") => Self::Password,
+            Some("search") => Self::Search,
+            _ => Self::Text,
+        }
+    }
+
+    /// Whether the text runs over several lines, and `Enter` breaks one.
+    pub fn multiline(self) -> bool {
+        self == Self::Textarea
+    }
+
+    /// Whether the text is masked, and may not leave by the clipboard.
+    pub fn secret(self) -> bool {
+        self == Self::Password
+    }
+}
+
 /// A node in the view tree: a style, optional text, children, and an optional
 /// `@tap` handler (raw handler source, run by the shell on tap).
 #[derive(Clone, Debug)]
@@ -993,17 +1043,8 @@ pub struct Node {
     pub gestures: Vec<(Gesture, String)>,
     /// `r-model` signal name for `<input>` nodes (focus target + edit binding).
     pub model: Option<String>,
-    /// `type="textarea"`: a multi-line text input, `Enter` inserts a newline.
-    pub multiline: bool,
-    /// `type="password"`: the shown text is bullets, and the clipboard is
-    /// refused. The bound signal still holds the real value.
-    pub secret: bool,
-    /// `type="search"`: only the keyboard differs, a Search key for its action.
-    ///
-    /// Three bools for what is one enum. They are separate because each was
-    /// added on its own; **collapse them into a `kind` the moment a fourth
-    /// arrives**, or the combinations start meaning things nobody chose.
-    pub search: bool,
+    /// Which text field an `<input>` is. See [`InputKind`].
+    pub kind: InputKind,
     /// `type="select"`: the bound `:options`, so the shell can open a dropdown.
     pub options: Option<Vec<String>>,
     /// `r-show="false"`: laid out (space reserved) but not painted.
@@ -1054,9 +1095,7 @@ impl Node {
             on_tap: None,
             gestures: Vec::new(),
             model: None,
-            multiline: false,
-            secret: false,
-            search: false,
+            kind: InputKind::Text,
             options: None,
             hidden: false,
             id: None,
@@ -1080,9 +1119,7 @@ impl Node {
             on_tap: None,
             gestures: Vec::new(),
             model: None,
-            multiline: false,
-            secret: false,
-            search: false,
+            kind: InputKind::Text,
             options: None,
             hidden: false,
             id: None,
@@ -1106,9 +1143,7 @@ impl Node {
             on_tap: None,
             gestures: Vec::new(),
             model: None,
-            multiline: false,
-            secret: false,
-            search: false,
+            kind: InputKind::Text,
             options: None,
             hidden: false,
             id: None,
@@ -1137,9 +1172,7 @@ impl Node {
             on_tap: None,
             gestures: Vec::new(),
             model: None,
-            multiline: false,
-            secret: false,
-            search: false,
+            kind: InputKind::Text,
             options: None,
             hidden: false,
             id: None,
@@ -1459,12 +1492,8 @@ pub struct FocusRegion {
     /// The input's text box (its laid-out child). The shell needs it to turn a
     /// click into a caret position.
     pub text: Option<PaintText>,
-    /// `type="textarea"`: `Enter` inserts a newline instead of being ignored.
-    pub multiline: bool,
-    /// `type="password"`: refuse copy and cut out of this field.
-    pub secret: bool,
-    /// `type="search"`: a keyboard hint and nothing else.
-    pub search: bool,
+    /// Which text field this is. See [`InputKind`].
+    pub kind: InputKind,
     /// If this input scrolls (a textarea), the index of its `ScrollRegion` in
     /// `Layout.scrolls`, so the shell can scroll the caret into view.
     pub scroll_id: Option<usize>,
@@ -1583,11 +1612,8 @@ pub enum FocusKind {
         /// The component instance the input was written in: the scope its model
         /// is read and written in. See [`FocusRegion::instance`].
         instance: Option<String>,
-        multiline: bool,
-        /// `type="password"`. See [`FocusRegion::secret`].
-        secret: bool,
-        /// `type="search"`. See [`FocusRegion::search`].
-        search: bool,
+        /// Which text field. See [`InputKind`].
+        kind: InputKind,
         text: Option<PaintText>,
     },
     /// A button / checkbox / radio: Space or Enter runs its handler.
@@ -2110,11 +2136,8 @@ struct Bound {
     /// The component instance the input was written in, the scope its model is
     /// resolved in. See [`FocusRegion::instance`].
     instance: Option<String>,
-    multiline: bool,
-    /// `type="password"`. See [`FocusRegion::secret`].
-    secret: bool,
-    /// `type="search"`. See [`FocusRegion::search`].
-    search: bool,
+    /// Which text field. See [`InputKind`].
+    kind: InputKind,
     options: Option<Vec<String>>,
 }
 
@@ -2393,9 +2416,7 @@ fn build(
             model: model.clone(),
             row: row.map(str::to_string),
             instance: node.instance.clone(),
-            multiline: node.multiline,
-            secret: node.secret,
-            search: node.search,
+            kind: node.kind,
             options: node.options.clone(),
         });
     }
@@ -2667,9 +2688,7 @@ fn collect(
             row: row.clone(),
             instance,
             text: None,
-            multiline: false,
-            secret: false,
-            search: false,
+            kind: InputKind::Text,
             scroll_id: None,
         });
     }
@@ -2792,9 +2811,7 @@ fn collect(
                 row: bound.row.clone(),
                 instance: bound.instance.clone(),
                 text: text.clone(),
-                multiline: bound.multiline,
-                secret: bound.secret,
-                search: bound.search,
+                kind: bound.kind,
                 // The scroll block below assigns ids as `out.scrolls.len()`, so if
                 // this node scrolls it will get the current length as its id.
                 scroll_id: scrolls.contains(&id).then(|| out.scrolls.len()),
@@ -2810,9 +2827,7 @@ fn collect(
                     model: bound.model.clone(),
                     row: bound.row.clone(),
                     instance: bound.instance.clone(),
-                    multiline: bound.multiline,
-                secret: bound.secret,
-                search: bound.search,
+                    kind: bound.kind,
                     text,
                 },
                 scroll: inside_scroll,
@@ -2859,9 +2874,21 @@ fn collect(
     if scrolls.contains(&id) {
         let sid = out.scrolls.len();
         child_scroll = Some(sid);
+        // **The end padding is part of what scrolls.** Taffy's content size
+        // stops at the far edge of the last child, so without this a scroller
+        // could not travel far enough to show its own bottom padding, and the
+        // last line of a textarea stayed half under it however far it was
+        // scrolled. Reported from the phone while typing past the bottom.
+        // CSS counts the padding (css-overflow-3, scrollable overflow), and so
+        // does every current browser. The border is added because the clip is
+        // the border box.
         let max = Offset {
-            x: (layout.content_size.width - layout.size.width).max(0.0),
-            y: (layout.content_size.height - layout.size.height).max(0.0),
+            x: (layout.content_size.width + layout.padding.right + layout.border.right
+                - layout.size.width)
+                .max(0.0),
+            y: (layout.content_size.height + layout.padding.bottom + layout.border.bottom
+                - layout.size.height)
+                .max(0.0),
         };
         shift = offsets.get(sid).copied().unwrap_or_default().clamp_to(max);
         out.scrolls.push(ScrollRegion {
@@ -2872,8 +2899,12 @@ fn collect(
             y,
             width: layout.size.width,
             height: layout.size.height,
-            content_width: layout.content_size.width,
-            content_height: layout.content_size.height,
+            // The same extent `max` was measured against, end padding in, so
+            // the scrollbar's thumb and its travel agree.
+            content_width: layout.content_size.width + layout.padding.right + layout.border.right,
+            content_height: layout.content_size.height
+                + layout.padding.bottom
+                + layout.border.bottom,
             max,
         });
     }

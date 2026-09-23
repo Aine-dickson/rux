@@ -1571,6 +1571,56 @@ in the corner. Building it proved the distinction the design rests on: **a
 `tel` and `url` belong with `search` on the hint side, and are deliberately
 still refused until that hint attribute exists.
 
+## The clipboard, and a textarea driven by hand, 2026-09-23
+
+Phase 2 of the inputs plan: Android's clipboard wired through
+`ClipboardManager`, where it had been a stub. The stub was a data-loss bug,
+not a missing feature: the drawn toolbar offered Cut on the phone, and Cut
+removed the selection after a write that stored it nowhere. Cut now removes
+nothing until the clipboard write has succeeded, on every platform.
+
+Driven on the Spark 20 with Gboard, against a four-field test app (text,
+textarea, password, search), each field's signal echoed on screen.
+
+| Case | Result |
+|---|---|
+| Copy from one field, Paste into another from the toolbar | Pastes |
+| Select all, Cut, Paste | **Doubled the text** when the Paste came from Gboard's clipboard strip, not the toolbar. Fixed, re-driven: once |
+| Tap or select inside a scrolled textarea | **Landed one scroll-distance above the finger.** Fixed, re-driven: lands under it |
+| Long press in an empty field | **No toolbar, so nothing to Paste with.** Fixed: Paste is offered |
+| Select text in the first field on the page | **Toolbar drawn under the status bar**, hard to hit. Fixed: goes below the field |
+| Drag inside an overflowing textarea | **Moved the caret; only the scrollbar scrolled.** Fixed: the text scrolls under the finger and flings |
+| Type past the last visible line of a textarea | **Last line stayed half hidden.** Fixed, re-driven: fully visible |
+| Paste a copied emoji; copy out to another app | Not reported separately |
+
+**The doubled paste was the input connection's copy of the text going
+stale.** An Android input connection keeps its own `Editable`, and only the
+keyboard edited it. Everything Rux did to a field by itself (toolbar Cut,
+Paste, Select all, a tap moving the caret) left that copy as it was. After Cut,
+Gboard's copy still held the whole text with the caret at the end, and its
+paste appended to it. The same fault put typing after a tap wherever the
+keyboard last had the caret. The web shell has always resynced its hidden
+input (`sync_web_ime`); Android now does the equivalent, rebuilding the
+connection when the text changed and calling `updateSelection` when only the
+selection did. **Copy never showed it, because Copy changes no text.**
+
+**The textarea tap was the field's own scroll, left out.** The layout records
+a field's text box before it shifts the field's children by their scroll, and
+the tap-to-text conversion added only a one-line field's horizontal scroll. So
+at the top of the field it was right, and after scrolling it was wrong by
+exactly the distance scrolled, which read as coming and going.
+
+**The hidden last line had two causes, and fixing one proved nothing.** The
+shell scrolled until the line met the box's edge rather than its padding, and
+the layout's maximum scroll ended at the last child without the container's
+end padding, so no amount of asking could reach the right place. Scrollable
+overflow now includes the end padding, as css-overflow-3 and every current
+browser have it. **That changes every scroller with bottom padding**, which
+can now scroll far enough to show it.
+
+**The toolbar fixes are for the drawn toolbar**, which Android replaces with
+`ActionMode` in phase 5. The web keeps the drawn one, so they are not wasted.
+
 ## Standing gaps
 
 Cases nothing here can currently exercise. They are the shape of what v0.8 has

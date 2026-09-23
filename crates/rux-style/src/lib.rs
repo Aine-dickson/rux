@@ -22,7 +22,7 @@ use rux_layout::{
     TextWrap, TouchAction, Track, TrackSide,
 };
 use rux_layout::{AnimProp, Easing, GradientKind, GridFlow, Transform, Transition};
-use rux_layout::{FillRule, LineCap, LineJoin, PathContent};
+use rux_layout::{FillRule, InputKind, LineCap, LineJoin, PathContent};
 use rux_parser::{Element, Node as TplNode, Sfc};
 use rux_reactive::Value;
 /// Re-exported so the runtime and the shell can name a warning without
@@ -4053,7 +4053,8 @@ fn build_node_inner(
     // `type="textarea"` is the same, but `Enter` inserts a newline.
     if el.tag == "input" {
         let mut style = style;
-        let multiline = el.attr("type") == Some("textarea");
+        let kind = InputKind::from_type(el.attr("type"));
+        let multiline = kind.multiline();
         // An input with nothing bound to it is inert, and was inert in silence.
         //
         // `r-model` is not decoration: it is the whole of an input's identity.
@@ -4106,8 +4107,7 @@ fn build_node_inner(
                     .unwrap_or_default()
             });
         let model = el.attr("r-model").map(str::to_string);
-        let secret = el.attr("type") == Some("password");
-        let search = el.attr("type") == Some("search");
+        let secret = kind.secret();
         let placeholder = el.attr("placeholder").unwrap_or_default().to_string();
         const PLACEHOLDER_COLOR: Rgba = Rgba::new(0.42, 0.44, 0.52, 1.0); // #6c7086
         // The value display is patchable: record where it lives and how to render
@@ -4177,9 +4177,7 @@ fn build_node_inner(
         // The general element branch below has always set it; this one never
         // did, which is exactly the branch every `r-model` goes through.
         node.instance = instance.map(str::to_string);
-        node.multiline = multiline;
-        node.secret = secret;
-        node.search = search;
+        node.kind = kind;
         node.options = options;
         node.on_tap = on_tap;
         node.gestures = gestures;
@@ -4258,9 +4256,7 @@ fn build_node_inner(
         on_tap,
         gestures,
         model: None,
-        multiline: false,
-        secret: false,
-        search: false,
+        kind: InputKind::Text,
         options: None,
         hidden,
         id: el.attr("id").map(str::to_string),
@@ -7915,12 +7911,12 @@ mod tests {
             select.options.as_ref().expect("select has options"),
             &vec!["apple".to_string(), "pear".to_string(), "plum".to_string()]
         );
-        assert!(!select.multiline);
+        assert_eq!(select.kind, rux_layout::InputKind::Text);
         assert_eq!(select.children[0].text.as_ref().unwrap().text, "pear");
 
         // The textarea is a multiline input (Enter → newline in the shell).
         let textarea = &root.children[1];
-        assert!(textarea.multiline);
+        assert_eq!(textarea.kind, rux_layout::InputKind::Textarea);
         assert!(textarea.options.is_none());
     }
 
