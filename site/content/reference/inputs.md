@@ -30,7 +30,7 @@ a field doesn't shrink as you type, and single-line inputs **never wrap** and
 **clip** overflow (no horizontal scroll yet).
 
 `<input type="textarea" r-model="sig">` is the same, but **Enter inserts a
-newline** (single-line inputs ignore it), the value wraps across lines,
+newline** (in a single-line input it commits the field, below), the value wraps across lines,
 **Up/Down move the caret between lines**, and it **scrolls vertically**: the
 wheel scrolls it and typing keeps the caret in view.
 

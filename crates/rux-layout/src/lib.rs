@@ -920,6 +920,12 @@ pub enum AccessRole {
     Button,
     CheckBox,
     RadioButton,
+    /// `type="switch"`: on or off, announced as a switch rather than a box.
+    Switch,
+    /// `type="slider"`: a number chosen along a track.
+    Slider,
+    /// `type="date"`.
+    DateInput,
     TextInput,
     /// `type="textarea"`.
     MultilineTextInput,
@@ -996,6 +1002,18 @@ pub enum InputKind {
     Password,
     /// `type="search"`: only the keyboard differs, a Search key for its action.
     Search,
+    /// `type="number"`: the bound signal holds a number, never text.
+    ///
+    /// While what is typed is not yet a number (`-`, `1.`, nothing at all)
+    /// the signal keeps the last number it had, and the half-typed text lives
+    /// only in the field, the way a composition does. Nothing typed is
+    /// refused: a keystroke that vanishes reads as a broken keyboard.
+    Number,
+    /// `type="date"`: the bound signal holds `YYYY-MM-DD`, as HTML's does, or
+    /// nothing. A phone opens the platform's date picker; elsewhere it is
+    /// typed, with the same rule as a number: only a real date reaches the
+    /// signal.
+    Date,
 }
 
 impl InputKind {
@@ -1006,6 +1024,8 @@ impl InputKind {
             Some("textarea") => Self::Textarea,
             Some("password") => Self::Password,
             Some("search") => Self::Search,
+            Some("number") => Self::Number,
+            Some("date") => Self::Date,
             _ => Self::Text,
         }
     }
@@ -1019,6 +1039,43 @@ impl InputKind {
     pub fn secret(self) -> bool {
         self == Self::Password
     }
+
+    /// Whether the field's signal holds something narrower than text, so
+    /// that what is typed reaches it only once it is one: a number, a date.
+    pub fn typed(self) -> bool {
+        matches!(self, Self::Number | Self::Date)
+    }
+}
+
+/// A calendar date written `YYYY-MM-DD`, as HTML writes one: `(year, month,
+/// day)` if it is a day that exists, month and day counting from 1.
+///
+/// One or two digits are taken for the month and day, so a date typed by hand
+/// as `2026-9-3` is still a date; [`format_date`] writes it back padded.
+pub fn parse_date(text: &str) -> Option<(i32, u32, u32)> {
+    let mut parts = text.trim().split('-');
+    let (y, m, d) = (parts.next()?, parts.next()?, parts.next()?);
+    let digits = |s: &str, min: usize, max: usize| {
+        (min..=max).contains(&s.len()) && s.bytes().all(|b| b.is_ascii_digit())
+    };
+    if parts.next().is_some() || !digits(y, 4, 4) || !digits(m, 1, 2) || !digits(d, 1, 2) {
+        return None;
+    }
+    let (year, month, day): (i32, u32, u32) = (y.parse().ok()?, m.parse().ok()?, d.parse().ok()?);
+    let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+    let days = match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if leap => 29,
+        2 => 28,
+        _ => return None,
+    };
+    (year >= 1 && (1..=days).contains(&day)).then_some((year, month, day))
+}
+
+/// A date as `YYYY-MM-DD`, the inverse of [`parse_date`].
+pub fn format_date((year, month, day): (i32, u32, u32)) -> String {
+    format!("{year:04}-{month:02}-{day:02}")
 }
 
 /// Which keyboard a text field asks for: `inputmode=`, named and valued as
@@ -1170,6 +1227,10 @@ pub struct Field {
     pub on_focus: Option<String>,
     /// `@blur`.
     pub on_blur: Option<String>,
+    /// A date field's earliest and latest day, `YYYY-MM-DD`. A day outside
+    /// them is not offered by the picker and does not reach the signal.
+    pub min: Option<(i32, u32, u32)>,
+    pub max: Option<(i32, u32, u32)>,
 }
 
 /// A node in the view tree: a style, optional text, children, and an optional
@@ -3590,5 +3651,24 @@ mod touch_action_tests {
     #[test]
     fn default_is_auto() {
         assert_eq!(TouchAction::default(), TouchAction::Auto);
+    }
+}
+
+#[cfg(test)]
+mod date_tests {
+    use super::*;
+
+    /// A day that exists, written as HTML writes one or with the padding
+    /// left off; a day that does not is not a date.
+    #[test]
+    fn a_date_is_a_day_that_exists() {
+        assert_eq!(parse_date("2026-09-23"), Some((2026, 9, 23)));
+        assert_eq!(parse_date("2026-9-3"), Some((2026, 9, 3)));
+        assert_eq!(parse_date("2024-02-29"), Some((2024, 2, 29)), "a leap day");
+        for not in ["", "2026", "2026-09", "2025-02-29", "1900-02-29", "2026-13-01", "2026-04-31",
+                    "2026-00-10", "26-09-23", "2026-09-23-1", "2026/09/23", "2026-09-2x"] {
+            assert_eq!(parse_date(not), None, "{not:?}");
+        }
+        assert_eq!(format_date((2026, 9, 3)), "2026-09-03");
     }
 }

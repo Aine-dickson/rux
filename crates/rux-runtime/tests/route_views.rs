@@ -286,7 +286,10 @@ fn an_input_type_rux_does_not_know_is_refused() {
 /// Every kind Rux does have is left alone, including an absent one.
 #[test]
 fn the_input_types_rux_has_are_accepted() {
-    for kind in ["text", "textarea", "password", "search", "checkbox", "radio"] {
+    for kind in [
+        "text", "textarea", "password", "search", "number", "date", "checkbox", "radio", "switch",
+        "slider",
+    ] {
         let doc = app(
             &[],
             &format!(r#"<input type="{kind}" r-model="v" />"#),

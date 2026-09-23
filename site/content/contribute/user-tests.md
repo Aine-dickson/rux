@@ -1628,6 +1628,103 @@ can now scroll far enough to show it.
 **The toolbar fixes are for the drawn toolbar**, which Android replaces with
 `ActionMode` in phase 5. The web keeps the drawn one, so they are not wasted.
 
+## Field attributes and events, 2026-09-23
+
+Phase 3 of the inputs plan: `disabled`, `readonly`, `maxlength`, `inputmode`,
+`enterkeyhint`, `autofocus`, and `@input` / `@change` / `@focus` / `@blur`.
+The build side is under test in `crates/rux-runtime/tests/field_attributes.rs`
+and `maxlength`'s trim in `fit_length_tests`. Everything the shell does with
+them (keystrokes, focus, the keyboard) is not, and is driven here.
+
+**Driven on the desktop without hands, and only partly.** A probe with an
+`autofocus` field, a `readonly` one, a `disabled` one and a `:disabled`
+button: the autofocused field took focus and its `:focus` ring at load, and
+`@focus` ran and printed; the disabled field and button drew their `:disabled`
+colour. **No keystroke could be delivered**: `SendKeys` was refused the
+foreground, and messages posted straight to the window were ignored. The
+control, a plain field focused by `mounted`, took no keys through the same
+harness either, so this says nothing about the code. Typing is a hand case.
+
+Written before the phone session. Results are filled in as driven.
+
+| Case | Where | Expect |
+|---|---|---|
+| Open a page with an `autofocus` field | phone, desktop | Caret in it and the keyboard up, with no tap |
+| Type 7 letters into `maxlength="5"` | phone, desktop | Stops at 5; nothing is swallowed from the end |
+| Home, then type in a full `maxlength` field | desktop | Nothing inserted, the end is kept |
+| Paste 10 characters into `maxlength="5"` with 2 in it | phone | First 3 of the paste land |
+| Tap a `readonly` field | phone | Caret and selection work, **no keyboard**, toolbar offers only Copy and Select all |
+| Type or Backspace in a `readonly` field | desktop | Nothing changes |
+| Tap a `disabled` field, its label, a `disabled` button | phone, desktop | Nothing at all |
+| `inputmode` numeric, decimal, tel, email, url | phone | Digits; digits and a point; phone pad; `@` to hand; `/` to hand |
+| `type="password" inputmode="numeric"` | phone | A PIN pad, and Gboard suggests nothing |
+| `enterkeyhint` go, send, search, next, done | phone | The action key's label says so |
+| Action key on `next` | phone | Focus moves to the next field, keyboard stays |
+| Action key on `done` | phone | Field loses focus, keyboard goes down |
+| Type, then tap another field | phone | `@change` then `@blur` on the first, `@focus` on the second, in that order |
+| Leave a field without changing it | phone | `@blur` only, no `@change` |
+| Enter in a changed one-line field | desktop | `@change` once; leaving afterwards does not fire it again |
+| `@input` that writes the field in upper case | phone | Text is upper-cased as typed and the keyboard does not double it |
+| Choose a different option in a select | phone | `@change` with the option; choosing the same one does not fire |
+| Toggle a checkbox with `@change` | phone | `event.value` is the new state |
+
+**Driven on the Spark 20 the same day**, against a sign-up showcase (a
+two-step form using every attribute above, events logged on screen). The user
+reports every case working. Seen in their screenshots: `autofocus` raising the
+keyboard at launch, the email keyboard with `@` and a Next action key, the
+`readonly` referral code selected with a toolbar of only Copy and Select all,
+the textarea's `@input` counter at "60 characters left", and `@change` on the
+select logging `Tanzania`. The desktop keystroke cases remain undriven, for the
+harness reason above.
+
+**The same session reopened the selection toolbar**, by setting Rux's beside
+WhatsApp's on the same phone. Three differences, all phase 5 work:
+
+- **Highlight colour.** WhatsApp tints the selection in its accent (green at
+  partial alpha); Rux uses one fixed blue-grey for every app.
+- **Handles.** WhatsApp draws a teardrop handle at each end of a selection,
+  and a single one under the caret after a tap or a long press on empty text.
+  Rux draws none, so a selection cannot be adjusted by finger.
+- **The toolbar itself.** The system's floating toolbar is a rounded dark
+  surface with no dividers, offers Autofill and an overflow arrow, and matches
+  every other app on the phone. Rux's drawn one has borders, dividers and a
+  different type, and reads as foreign.
+
+## Numbers, switches, sliders and dates, 2026-09-23
+
+Phase 4 of the inputs plan: `type="number"`, `switch`, `slider` and `date`.
+The build and the document are under test in
+`crates/rux-runtime/tests/new_controls.rs`, including the slider's generated
+script run through the real engine (a tap, a drag, a fractional step, a tap
+with no pointer). The number and date parsers are under test in the shell.
+The keyboard, the finger, the axis claim and the platform picker are not, and
+are driven here, against `rux-harness/phase4-controls` (six numbered sections,
+events logged at the top).
+
+Written before the phone session. Results are filled in as driven.
+
+| Case | Where | Expect |
+|---|---|---|
+| Tap the number field | phone | A number keyboard with a minus sign and a decimal point |
+| Type `-`, then `1.`, then `1.5` | phone, desktop | The field shows each as typed; `qty` stays 2 through `-` and `1.`, then reads 1.5; `type` says `f64` |
+| Type a letter into the number field | desktop | It stays in the field; `qty` does not change |
+| Clear the number field, then tap elsewhere | phone | Empty while focused (placeholder shows), then the last number comes back |
+| `2,5` on a keyboard that offers a comma | phone | `qty` reads 2.5 |
+| `@input` and `@change` on the number | phone | `input` fires only when the number changes; `CHANGE` once on leaving |
+| `inputmode="numeric"` on a number | phone | A digits-only pad |
+| Tap each switch | phone, desktop | The thumb jumps to the other end, the track turns blue (green for the second); `CHANGE wifi true/false` |
+| Tap the disabled switch | phone | Nothing |
+| Tap along the volume slider | phone, desktop | The thumb lands under the finger, snapped to whole steps; one `input` and one `CHANGE` |
+| Drag the volume thumb sideways | phone, desktop | The value follows the finger; `input` per step, `CHANGE` once on lifting |
+| Drag the pink slider | phone | 0.1 steps, reading `0.3` and never `0.30000000000000004`; the swatch fades |
+| Swipe up or down starting on a slider, and on a switch | phone | The page scrolls; the slider does not move |
+| Tap the first date | phone | The platform date picker, on 15 October 2026, with days before September and after December greyed out |
+| Choose a day, then dismiss with Back | phone | The day is written and `CHANGE due` fires; Back leaves the day alone |
+| Tap the empty date | phone | The picker opens on today |
+| Tap the read-only date | phone | No picker |
+| Type `2026-9-3` into a date | desktop | Written back as `2026-09-03` on leaving; a half-typed date never reaches the signal |
+| A screen reader on each control | phone | Announced as a number field, a switch, a slider with its value, a date |
+
 ## Standing gaps
 
 Cases nothing here can currently exercise. They are the shape of what v0.8 has

@@ -1683,6 +1683,41 @@ WhatsApp's on the same phone. Three differences, all phase 5 work:
   every other app on the phone. Rux's drawn one has borders, dividers and a
   different type, and reads as foreign.
 
+## Numbers, switches, sliders and dates, 2026-09-23
+
+Phase 4 of the inputs plan: `type="number"`, `switch`, `slider` and `date`.
+The build and the document are under test in
+`crates/rux-runtime/tests/new_controls.rs`, including the slider's generated
+script run through the real engine (a tap, a drag, a fractional step, a tap
+with no pointer). The number and date parsers are under test in the shell.
+The keyboard, the finger, the axis claim and the platform picker are not, and
+are driven here, against `rux-harness/phase4-controls` (six numbered sections,
+events logged at the top).
+
+Written before the phone session. Results are filled in as driven.
+
+| Case | Where | Expect |
+|---|---|---|
+| Tap the number field | phone | A number keyboard with a minus sign and a decimal point |
+| Type `-`, then `1.`, then `1.5` | phone, desktop | The field shows each as typed; `qty` stays 2 through `-` and `1.`, then reads 1.5; `type` says `f64` |
+| Type a letter into the number field | desktop | It stays in the field; `qty` does not change |
+| Clear the number field, then tap elsewhere | phone | Empty while focused (placeholder shows), then the last number comes back |
+| `2,5` on a keyboard that offers a comma | phone | `qty` reads 2.5 |
+| `@input` and `@change` on the number | phone | `input` fires only when the number changes; `CHANGE` once on leaving |
+| `inputmode="numeric"` on a number | phone | A digits-only pad |
+| Tap each switch | phone, desktop | The thumb jumps to the other end, the track turns blue (green for the second); `CHANGE wifi true/false` |
+| Tap the disabled switch | phone | Nothing |
+| Tap along the volume slider | phone, desktop | The thumb lands under the finger, snapped to whole steps; one `input` and one `CHANGE` |
+| Drag the volume thumb sideways | phone, desktop | The value follows the finger; `input` per step, `CHANGE` once on lifting |
+| Drag the pink slider | phone | 0.1 steps, reading `0.3` and never `0.30000000000000004`; the swatch fades |
+| Swipe up or down starting on a slider, and on a switch | phone | The page scrolls; the slider does not move |
+| Tap the first date | phone | The platform date picker, on 15 October 2026, with days before September and after December greyed out |
+| Choose a day, then dismiss with Back | phone | The day is written and `CHANGE due` fires; Back leaves the day alone |
+| Tap the empty date | phone | The picker opens on today |
+| Tap the read-only date | phone | No picker |
+| Type `2026-9-3` into a date | desktop | Written back as `2026-09-03` on leaving; a half-typed date never reaches the signal |
+| A screen reader on each control | phone | Announced as a number field, a switch, a slider with its value, a date |
+
 ## Standing gaps
 
 Cases nothing here can currently exercise. They are the shape of what v0.8 has

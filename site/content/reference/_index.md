@@ -460,6 +460,126 @@ colour list (`red`, `rebeccapurple`, …). The named list matters because
 lightningcss *minifies* hex to keywords (`#ff0000` → `red`), so without it a
 plain `color: #ff0000` would fall back to the default.
 
+### Numbers, switches and sliders
+
+`<input type="number" r-model="qty">` is a one-line field whose signal **always
+holds a number**, never the text of one, so `qty + 1` is arithmetic. While what
+is typed is not a number yet (`-`, `1.`, an emptied field) the signal keeps the
+last number it had and the field shows the typing, the same way a composition
+lives in the field before it is committed. Nothing typed is refused: a letter
+stays in the field and changes nothing. Leaving the field shows the number
+again. A comma is read as the decimal point when there is no point, because
+many phone keyboards offer only the comma. `@input` fires when the *number*
+changes, and every event hands over the number as `event.value`. A phone raises
+a number keyboard with a minus sign and a decimal point; an `inputmode` still
+wins, so `inputmode="numeric"` gives a digits-only pad.
+
+`<input type="switch" r-model="wifi">` is a checkbox in all but looks: a pill
+track with a round thumb at the end the value points to, announced to a screen
+reader as a switch. `:checked` matches it on, and `@change` fires on each flip.
+Unstyled it is 44 by 24 with a grey track that turns blue when on; `width`,
+`height`, `padding`, `background` and `color` (the thumb) override each part,
+and `accent-color` sets the "on" track alone:
+
+```css
+.wifi         { accent-color: #a6e3a1; }
+.wifi:checked { background: #40a02b; }   /* or style the on track directly */
+```
+
+`<input type="slider" r-model="volume" min="0" max="11" step="1">` holds a
+number between `min` and `max` (0 and 100 when left off), moving in steps of
+`step` (1; `step="any"` for none). The value is rounded to as many decimal
+places as the step is written with, so ten steps of `0.1` read `1`. A **tap**
+puts the thumb where it lands and a **sideways drag** moves it. The drag is an
+ordinary `@drag` on the element, so the axis claim applies: a vertical swipe
+that starts on a slider inside a scrolling page scrolls the page. `@input`
+fires as the value moves and `@change` when the finger lifts, as HTML has them
+for a range. `accent-color` colours the fill and the thumb; the element's own
+`height` (32 unstyled) is the touch target, and the bar is drawn centred in it.
+A `min`, `max` or `step` that is not a number, or a `max` not above `min`, is an
+error naming the line.
+
+`<input type="date" r-model="due" min="2026-01-01" max="2026-12-31">` holds a
+day as `YYYY-MM-DD`, the format HTML's date input holds, or an empty string.
+**On Android a tap opens the platform's date picker**, starting on the day the
+field holds (today when empty) and offering only the days between `min` and
+`max`. Choosing commits at once and fires `@change`, as a select does;
+dismissing leaves the day alone. A read-only date offers no picker. Elsewhere,
+until a drawn picker exists, the field is typed into with the rule a number
+follows: only a real day inside the range reaches the signal (`2026-9-3` is
+written back as `2026-09-03`), and anything short of one stays in the field. A
+`min` or `max` that is not a date is an error.
+
+Not yet: arrow keys on a focused slider, a thumb that slides rather than jumps
+between the switch's two ends, a drawn date picker on desktop, and the
+browser's own date picker on the web.
+
+### Field attributes and events
+
+The attributes are HTML's, named and valued as HTML names them, and they mean
+what HTML means by them.
+
+| Attribute | On | What it does |
+|---|---|---|
+| `disabled` | `<input>`, `<button>` | No tap, no link, no gesture, no focus, and nothing for Tab or a label's `for=` to reach. The value still shows. Matched by `:disabled` |
+| `readonly` | text inputs | Focusable, selectable and copyable. Every edit is refused, the toolbar offers only Copy and Select all, and no keyboard opens |
+| `maxlength` | text inputs | The most text the field takes, in UTF-16 units as HTML counts. Typing past it is refused; a paste is cut short. The *inserted* text is what gets cut, so typing into the middle of a full field does not eat its end. Not applied mid-composition, where the commit is cut instead |
+| `inputmode` | text inputs | Which keyboard a phone raises: `text`, `numeric`, `decimal`, `tel`, `email`, `url`, `search`, or `none` for no on-screen keyboard at all |
+| `enterkeyhint` | text inputs | What the action key says: `enter`, `done`, `go`, `next`, `previous`, `search`, `send` |
+| `autofocus` | text inputs | Takes focus when it first appears, if nothing has focus |
+
+`disabled` and `readonly` are **boolean attributes**: written means on, whatever
+they say, so `disabled="false"` is disabled, exactly as in HTML, and warns.
+`:disabled="expr"` and `:readonly="expr"` are the bound forms, and a change to
+what they read restyles the element in place. An unknown `inputmode` or
+`enterkeyhint`, or a `maxlength` that is not a whole number, is an error naming
+the line, because each would otherwise give an ordinary field in silence.
+
+**`inputmode` is a keyboard, not a type.** `email`, `tel` and `url` are text
+fields that want different keys, so they are hints and not `type=` values. A PIN,
+a card number or a phone number is a digit *string*: `inputmode="numeric"`,
+never a number. On a password field only `numeric` changes the keyboard (to a
+PIN pad that still learns nothing), because trading the password variation for
+an email layout would give up the no-learning guarantee.
+
+**Enter in a one-line field commits it.** It fires `@change` if the value
+changed, then does what `enterkeyhint` says the field can do by itself: `next`
+and `previous` move focus as Tab and Shift+Tab do, `done` drops focus and the
+keyboard. `go`, `search` and `send` name what the *app* will do, which is its
+`@change`. On Android the action key is a real Enter, so all of this is one path.
+
+Rux draws no default look for a disabled control, the same way it draws no
+default look for a button. Style `:disabled`:
+```css
+.field:disabled { color: #6c7086; border-color: #313244; }
+button:disabled { opacity: 0.5; }
+```
+
+**Events.** Four, on an input, each handed `event.value`:
+
+| Event | When |
+|---|---|
+| `@input` | After every change to the text, however it was made: a key, a paste, a cut, a phone's keyboard |
+| `@change` | A changed value is committed: the field is left, or Enter is pressed in a one-line field. A select fires it on choosing a different option, a checkbox or radio on every toggle |
+| `@focus` | The field gained focus |
+| `@blur` | The field lost focus, after its `@change` when both fire |
+
+```xml
+<input r-model="query" enterkeyhint="search" @change="run_search(event.value)" />
+<input r-model="code" inputmode="numeric" maxlength="6" autofocus />
+<button :disabled="code.len() < 6" @tap="verify()">Verify</button>
+```
+
+Handlers run **after** the edit or the focus change that caused them is
+complete, never from inside it, so a handler that writes the field's own
+signal, focuses another field or blurs this one sees the field as the person
+does. A `@blur` that focuses the field it left, answered by a `@focus` that
+blurs it, is stopped after 64 handlers with a warning. A handler written in a
+component runs in that instance, and one in an `r-for` row sees the row.
+
+Not yet: `@submit` and `role="form"` (Enter in a field does not submit
+anything), validation (`required`, `pattern`), and `autocomplete`.
+
 ### The pointer vocabulary
 
 Beyond `@tap`, five attributes report what a finger or button is doing:
@@ -476,6 +596,7 @@ Every handler, `@tap` included, is handed an `event`:
 |---|---|
 | `x`, `y` | the pointer, relative to the element the handler is on |
 | `pageX`, `pageY` | the same point, relative to the window |
+| `width`, `height` | the element's own size, so `event.x / event.width` is how far across it the pointer is |
 | `touches` | every finger down, each with `id`, `x`, `y` |
 
 `touches` is **a list even when there is one finger**, and a mouse counts as one

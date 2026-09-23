@@ -29,7 +29,7 @@ which was ever built.
 | This says | What shipped |
 |---|---|
 | "exactly **six** elements" | ten: `<path>`, `<slot>`, `<router>` and `<route>` arrived after this was written |
-| `<input type=>` covering `number`, `switch`, `slider`, `date` | `text`, `textarea`, `select`, `checkbox`, `radio` |
+| `<input type=>` covering `number`, `switch`, `slider`, `date` | all four, beside `text`, `textarea`, `password`, `search`, `select`, `checkbox`, `radio`; `email`, `tel` and `url` became `inputmode` values |
 | a capability set per element (`appear`, `scroll`, `load`, `change`, `blur`, `submit`, …) | one gesture vocabulary on every element: `@tap`, `@press`, `@release`, `@longpress`, `@swipe`, `@drag` |
 | `count.get()` / `.set()` / `.update()` | a signal is read and written as an ordinary variable: `count += 1` |
 | "_Deferred:_ slots/children projection" | `<slot>` shipped in v0.6 |

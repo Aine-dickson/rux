@@ -66,6 +66,9 @@ pub struct Document {
     /// The focused input, with its caret and selection, if any. Re-applied on
     /// every rebuild so both survive a state change.
     focus: Option<Focus>,
+    /// Text the focused field shows in place of its value. See
+    /// [`Document::set_draft`].
+    draft: Option<String>,
     /// Where each patchable text binding lives and which signals force a rebuild,
     /// refreshed on every full build. Lets [`Document::patch`] update value
     /// bindings in place instead of throwing the tree away.
@@ -686,8 +689,19 @@ impl Focus {
 ///
 /// `value` is the focused field's **real** text, which a masked field needs and
 /// nothing else uses. See the offset mapping in [`apply_focus_in`].
-fn apply_focus(node: &mut LayoutNode, focus: Option<&Focus>, value: Option<&str>) {
+fn apply_focus(node: &mut LayoutNode, focus: Option<&Focus>, value: Option<&Shown>) {
     apply_focus_in(node, focus, None, value);
+}
+
+/// What the focused field holds, beside where its caret is.
+///
+/// `real` is its true text, which a masked field needs for the offset
+/// mapping and nothing else uses. `draft` is text the field shows *instead*
+/// of its value, with the colour to show it in: a number field part way
+/// through being typed (`-`, `1.`) holds a number the text cannot be yet.
+struct Shown {
+    real: String,
+    draft: Option<(String, rux_layout::Rgba)>,
 }
 
 /// [`apply_focus`], carrying the `r-key` of the row being walked.
@@ -699,7 +713,7 @@ fn apply_focus_in(
     node: &mut LayoutNode,
     focus: Option<&Focus>,
     row: Option<&str>,
-    value: Option<&str>,
+    value: Option<&Shown>,
 ) {
     let row = node.key.as_deref().or(row);
     if node.model.is_some() {
@@ -707,6 +721,12 @@ fn apply_focus_in(
             let mine = focus.filter(|f| {
                 node.model.as_deref().is_some_and(|m| f.is(m, row, node.instance.as_deref()))
             });
+            // A draft replaces the shown text before any offset is measured
+            // against it, since the caret indexes the draft.
+            if let Some((draft, color)) = mine.and(value).and_then(|v| v.draft.as_ref()) {
+                text.text = draft.clone();
+                text.color = *color;
+            }
             // **Every offset here indexes the text as painted, and a masked
             // field is not painted as it is stored.** A caret is a byte offset
             // into the real value; the bullets are three bytes each, so
@@ -714,7 +734,7 @@ fn apply_focus_in(
             // along. Driven on a phone: six characters typed, caret after two
             // bullets, and it could never reach the end.
             let at = |i: usize| match (node.kind.secret(), value) {
-                (true, Some(real)) => rux_layout::masked_offset(real, i),
+                (true, Some(shown)) => rux_layout::masked_offset(&shown.real, i),
                 // Not masked, or nothing to measure against: clamping is right,
                 // and is what every ordinary field has always done.
                 _ => i.min(text.text.len()),
@@ -1324,6 +1344,7 @@ impl Document {
             engine,
             base: base.to_path_buf(),
             focus: None,
+            draft: None,
             registry,
             state: InteractionState::default(),
             environment: Environment::sane(),
@@ -1425,6 +1446,7 @@ impl Document {
             engine,
             base,
             focus: None,
+            draft: None,
             registry,
             state: InteractionState::default(),
             environment: Environment::sane(),
@@ -1504,9 +1526,57 @@ impl Document {
     }
 
     pub fn set_focus(&mut self, focus: Option<Focus>) {
+        let same = match (&self.focus, &focus) {
+            (Some(a), Some(b)) => b.is(&a.model, a.row.as_deref(), a.instance.as_deref()),
+            _ => false,
+        };
+        let left = if same { None } else { self.focus.take() };
         self.focus = focus;
-        let real = self.focused_real_value();
-        apply_focus(&mut self.root, self.focus.as_ref(), real.as_deref());
+        // A draft belongs to one field and ends with its focus. The field it
+        // was shown in goes back to showing its value.
+        if left.is_some() && self.draft.take().is_some() {
+            let left = left.unwrap();
+            let deps: HashSet<String> = self
+                .registry
+                .value
+                .iter()
+                .filter(|b| b.model == left.model && b.row == left.row && b.instance == left.instance)
+                .flat_map(|b| b.deps.iter().cloned())
+                .collect();
+            self.patch_values(&deps);
+        }
+        let real = self.focused_shown();
+        apply_focus(&mut self.root, self.focus.as_ref(), real.as_ref());
+    }
+
+    /// Show `draft` in the focused field instead of its value, or stop.
+    ///
+    /// For a `type="number"` part way through being typed: `-` and `1.` are
+    /// on the way to a number and are not one yet, so the signal keeps the
+    /// last number it had and the field shows what was typed. The shell owns
+    /// the text, as it owns a composition; the document only paints it. It
+    /// ends when focus leaves the field.
+    pub fn set_draft(&mut self, draft: Option<String>) {
+        if self.draft == draft {
+            return;
+        }
+        let had = self.draft.is_some();
+        self.draft = draft;
+        if had && self.draft.is_none() {
+            // Back to the value, which a patch writes.
+            if let Some(f) = self.focus.clone() {
+                let deps: HashSet<String> = self
+                    .registry
+                    .value
+                    .iter()
+                    .filter(|b| b.model == f.model && b.row == f.row && b.instance == f.instance)
+                    .flat_map(|b| b.deps.iter().cloned())
+                    .collect();
+                self.patch_values(&deps);
+            }
+        }
+        let real = self.focused_shown();
+        apply_focus(&mut self.root, self.focus.as_ref(), real.as_ref());
     }
 
     /// The pointer/focus state pseudo-class selectors match against.
@@ -1618,10 +1688,10 @@ impl Document {
             let Some(fresh) = node_at(&fresh_root, path) else { continue };
             let fresh_node = fresh.clone();
             let row = row_at(&fresh_root, path);
-            let real = self.focused_real_value();
+            let real = self.focused_shown();
             if let Some(live) = node_at_mut(&mut self.root, path) {
                 *live = fresh_node;
-                apply_focus_in(live, self.focus.as_ref(), row.as_deref(), real.as_deref());
+                apply_focus_in(live, self.focus.as_ref(), row.as_deref(), real.as_ref());
             }
         }
         self.registry = fresh_reg;
@@ -1701,8 +1771,8 @@ impl Document {
             self.environment,
         ) {
             resolve_images(&mut root, &self.base);
-            let real = self.focused_real_value();
-            apply_focus(&mut root, self.focus.as_ref(), real.as_deref());
+            let real = self.focused_shown();
+            apply_focus(&mut root, self.focus.as_ref(), real.as_ref());
             self.registry = registry;
             self.root = root;
             // Refresh what the overlay lists: a rebuild re-runs the cascade and
@@ -1769,6 +1839,12 @@ impl Document {
                     content.color = color;
                 }
             }
+        }
+        // A number field part way through being typed shows its draft, not
+        // the number a keystroke just wrote, which the loop above painted.
+        if self.draft.is_some() {
+            let real = self.focused_shown();
+            apply_focus(&mut self.root, self.focus.as_ref(), real.as_ref());
         }
         // `r-show` only flips paint on/off, rewrite the `hidden` bool in place.
         for binding in &self.registry.show {
@@ -1873,13 +1949,13 @@ impl Document {
             let Some(fresh) = node_at(&fresh_root, p) else { continue };
             let fresh_children = fresh.children.clone();
             let row = row_at(&fresh_root, p);
-            let real = self.focused_real_value();
+            let real = self.focused_shown();
             if let Some(live) = node_at_mut(&mut self.root, p) {
                 live.children = fresh_children;
                 // Put the caret back only within this rebuilt subtree. The rows
                 // carry their own keys, so a caret in a row that moved lands in
                 // that row rather than in the position it used to hold.
-                apply_focus_in(live, self.focus.as_ref(), row.as_deref(), real.as_deref());
+                apply_focus_in(live, self.focus.as_ref(), row.as_deref(), real.as_ref());
             }
         }
         // Toggles: replace just the single node (its checked style + mark). No
@@ -1904,10 +1980,10 @@ impl Document {
             if let Some(fresh) = node_at(&fresh_root, p) {
                 let fresh_node = fresh.clone();
                 let row = row_at(&fresh_root, p);
-                let real = self.focused_real_value();
+                let real = self.focused_shown();
                 if let Some(live) = node_at_mut(&mut self.root, p) {
                     *live = fresh_node;
-                    apply_focus_in(live, self.focus.as_ref(), row.as_deref(), real.as_deref());
+                    apply_focus_in(live, self.focus.as_ref(), row.as_deref(), real.as_ref());
                 }
             }
         }
@@ -1948,9 +2024,24 @@ impl Document {
         instance: Option<&str>,
         value: &str,
     ) {
+        self.apply_value_in(model, row, instance, &rux_reactive::Value::Text(value.to_string()));
+    }
+
+    /// [`apply_edit_in`](Self::apply_edit_in) for any value, not only text: a
+    /// `type="number"` writes a number and a slider does too.
+    pub fn apply_value_in(
+        &mut self,
+        model: &str,
+        row: Option<&str>,
+        instance: Option<&str>,
+        value: &rux_reactive::Value,
+    ) {
         let Some(key) = instance.filter(|k| self.instances.contains_key(*k)) else {
             let locals = self.locals_for(model, row, None);
-            let changed = self.engine.assign_string(model, value, &locals);
+            let changed = match value {
+                rux_reactive::Value::Text(text) => self.engine.assign_string(model, text, &locals),
+                other => self.engine.assign_value(model, other, &locals),
+            };
             if changed.is_empty() {
                 return;
             }
@@ -1960,11 +2051,13 @@ impl Document {
 
         // The same shape as `dispatch_handler`: run the assignment with the
         // instance's own names in scope, then write back only the names the
-        // instance owns. The value is quoted as a literal, because it is
-        // somebody's typing and may hold a quote or a backslash.
+        // instance owns. The value is handed over as a local rather than
+        // spelled out, because text is somebody's typing and may hold a quote
+        // or a backslash.
         let key = key.to_string();
-        let locals = self.scope_for(model, row, Some(&key));
-        let src = format!("{model} = {}", rux_reactive::json_string(value));
+        let mut locals = self.scope_for(model, row, Some(&key));
+        locals.push((rux_script::ASSIGNED.to_string(), value.clone()));
+        let src = format!("{model} = {}", rux_script::ASSIGNED);
         let (after, changed) = self.engine.run_scoped_handler(&src, &locals);
         let moved = self.write_back_instance(&key, after);
 
@@ -1984,6 +2077,18 @@ impl Document {
     pub fn value_in(&mut self, model: &str, row: Option<&str>, instance: Option<&str>) -> String {
         let locals = self.scope_for(model, row, instance);
         self.engine.get_string_in(model, &locals)
+    }
+
+    /// [`value_in`](Self::value_in) as the value itself rather than its text,
+    /// so a number field can tell a number from text that looks like one.
+    pub fn typed_value_in(
+        &mut self,
+        model: &str,
+        row: Option<&str>,
+        instance: Option<&str>,
+    ) -> Option<rux_reactive::Value> {
+        let locals = self.scope_for(model, row, instance);
+        self.engine.eval_value(model, &locals)
     }
 
     /// Everything that was in scope where this input was built: the component
@@ -2237,7 +2342,8 @@ impl Document {
                 // cost, and the overlay names the expression and the reason.
                 None => {
                     rux_script::warn_script(format!(
-                        "the guard `{expr}` failed, so the navigation to `{to}` was refused; a                          guard that cannot answer is treated as a refusal rather than as consent"
+                        "the guard `{expr}` failed, so the navigation to `{to}` was refused; a \
+                         guard that cannot answer is treated as a refusal rather than as consent"
                     ));
                     return Verdict::Block;
                 }
@@ -2267,7 +2373,8 @@ impl Document {
             }
         }
         rux_script::warn_script(format!(
-            "a route guard redirected {} times without settling, starting from `{to}`; the              guards are sending each other in a circle",
+            "a route guard redirected {} times without settling, starting from `{to}`; the \
+             guards are sending each other in a circle",
             Self::GUARD_REDIRECTS
         ));
         self.surface_guard_warnings();
@@ -2447,9 +2554,20 @@ impl Document {
     /// [`back`]: Self::back
     /// The focused field's real text, for the offset mapping a masked field
     /// needs. `None` when nothing is focused.
-    fn focused_real_value(&mut self) -> Option<String> {
+    fn focused_shown(&mut self) -> Option<Shown> {
         let f = self.focus.clone()?;
-        Some(self.value_in(&f.model, f.row.as_deref(), f.instance.as_deref()))
+        let real = self.value_in(&f.model, f.row.as_deref(), f.instance.as_deref());
+        let draft = self.draft.as_ref().and_then(|draft| {
+            let binding = self.registry.value.iter().find(|b| {
+                b.model == f.model && b.row == f.row && b.instance == f.instance
+            })?;
+            Some(if draft.is_empty() {
+                (binding.placeholder.clone(), binding.placeholder_color)
+            } else {
+                (draft.clone(), binding.color)
+            })
+        });
+        Some(Shown { real, draft })
     }
     pub fn can_back(&self) -> bool {
         self.history.at > 0
@@ -8295,7 +8413,8 @@ use components::about;
         let (_, first) = samples[0];
         assert!(
             first > 0.95,
-            "the page being left starts where it was, rather than jumping to              `:leave-to` on the first frame: {first}"
+            "the page being left starts where it was, rather than jumping to \
+             `:leave-to` on the first frame: {first}"
         );
         let (_, half) = *samples
             .iter()
@@ -8305,12 +8424,14 @@ use components::about;
             .expect("a sample near the halfway point");
         assert!(
             (0.15..0.85).contains(&half),
-            "halfway through it is halfway out, so the leave is something you              can see: {half}"
+            "halfway through it is halfway out, so the leave is something you \
+             can see: {half}"
         );
         let (_, last) = *samples.last().expect("a last painted frame");
         assert!(
             last < 0.05,
-            "and it is at its target when it is taken away, so there is no pop              at the end: {last}"
+            "and it is at its target when it is taken away, so there is no pop \
+             at the end: {last}"
         );
     }
 

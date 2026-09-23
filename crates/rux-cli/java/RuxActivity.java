@@ -207,6 +207,98 @@ public class RuxActivity extends NativeActivity {
     private android.app.AlertDialog picker;
 
     /**
+     * Report the day a date picker settled on, month counting from 1, or
+     * -1 in all three if it was dismissed.
+     */
+    private static native void nativeDateChosen(int year, int month, int day);
+
+    /**
+     * Show the platform's date picker for a {@code type="date"}, starting on
+     * {@code value} ({@code YYYY-MM-DD}, or empty for today) and offering only
+     * the days between {@code min} and {@code max}, each empty for no limit.
+     *
+     * <p>Built like {@link #ruxOpenSelect}, and for the same reasons: the UI
+     * thread, an answer through a native call rather than a return, and a
+     * dismissal that is reported rather than left unanswered.
+     */
+    void ruxOpenDate(final String value, final String min, final String max) {
+        runOnUiThread(
+                () -> {
+                    if (picker != null) {
+                        return;
+                    }
+                    int[] start = parseDate(value);
+                    if (start == null) {
+                        java.util.Calendar today = java.util.Calendar.getInstance();
+                        start =
+                                new int[] {
+                                    today.get(java.util.Calendar.YEAR),
+                                    today.get(java.util.Calendar.MONTH) + 1,
+                                    today.get(java.util.Calendar.DAY_OF_MONTH)
+                                };
+                    }
+                    final boolean[] answered = {false};
+                    android.app.DatePickerDialog dialog =
+                            new android.app.DatePickerDialog(
+                                    this,
+                                    (view, year, month, day) -> {
+                                        answered[0] = true;
+                                        // Java's months count from 0; a date
+                                        // written down counts from 1.
+                                        nativeDateChosen(year, month + 1, day);
+                                    },
+                                    start[0],
+                                    start[1] - 1,
+                                    start[2]);
+                    int[] low = parseDate(min);
+                    if (low != null) {
+                        dialog.getDatePicker().setMinDate(dayMillis(low));
+                    }
+                    int[] high = parseDate(max);
+                    if (high != null) {
+                        dialog.getDatePicker().setMaxDate(dayMillis(high));
+                    }
+                    dialog.setOnDismissListener(
+                            d -> {
+                                picker = null;
+                                // Choosing dismisses too; report a dismissal
+                                // only when nothing was chosen.
+                                if (!answered[0]) {
+                                    nativeDateChosen(-1, -1, -1);
+                                }
+                            });
+                    picker = dialog;
+                    dialog.show();
+                });
+    }
+
+    /** {@code YYYY-MM-DD} as year, month from 1 and day, or null. Rux has checked it. */
+    private static int[] parseDate(String text) {
+        if (text == null) {
+            return null;
+        }
+        String[] parts = text.split("-");
+        if (parts.length != 3) {
+            return null;
+        }
+        try {
+            return new int[] {
+                Integer.parseInt(parts[0]), Integer.parseInt(parts[1]), Integer.parseInt(parts[2])
+            };
+        } catch (NumberFormatException e) {
+            return null;
+        }
+    }
+
+    /** Midnight at the start of a day, local time, which is what a picker's limits are in. */
+    private static long dayMillis(int[] date) {
+        java.util.Calendar c = java.util.Calendar.getInstance();
+        c.clear();
+        c.set(date[0], date[1] - 1, date[2]);
+        return c.getTimeInMillis();
+    }
+
+    /**
      * Show the platform's own picker for a {@code <select>}.
      *
      * <p><b>Why this is not the drawn dropdown.</b> Rux draws one on a desktop
@@ -489,6 +581,15 @@ public class RuxActivity extends NativeActivity {
                 // control of its own.
                 out.inputType = EditorInfo.TYPE_CLASS_TEXT;
                 out.imeOptions = EditorInfo.IME_FLAG_NO_FULLSCREEN | EditorInfo.IME_ACTION_SEARCH;
+            } else if (kind == KIND_NUMBER) {
+                // A number keyboard that can type any number the field
+                // accepts: a minus sign and a decimal point, the two keys a
+                // bare number class leaves off. An `inputmode` still wins
+                // below, so `inputmode="numeric"` gives a digits-only pad.
+                out.inputType = EditorInfo.TYPE_CLASS_NUMBER
+                        | EditorInfo.TYPE_NUMBER_FLAG_SIGNED
+                        | EditorInfo.TYPE_NUMBER_FLAG_DECIMAL;
+                out.imeOptions = EditorInfo.IME_FLAG_NO_FULLSCREEN | EditorInfo.IME_ACTION_DONE;
             } else if (multiline) {
                 // `IME_FLAG_NO_ENTER_ACTION` is what turns the action key back
                 // into a newline key. Without it Gboard shows Done and sends an
@@ -945,6 +1046,9 @@ public class RuxActivity extends NativeActivity {
 
     /** {@code type="search"}. */
     private static final int KIND_SEARCH = 3;
+
+    /** {@code type="number"}. */
+    private static final int KIND_NUMBER = 4;
 
     // `inputmode`, the second byte of {@link #nativeFieldKind}. 0 is text.
     private static final int KEYBOARD_NUMERIC = 1;

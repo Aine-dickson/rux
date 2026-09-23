@@ -1198,6 +1198,60 @@ checked `background`, or the ring dissolves into the fill. A radio is **round** 
 huge radius like `9999px` is clamped to a circle, so that's how you re-round one
 that inherited a radius from another class).
 
+### Numbers, switches and sliders
+
+`<input type="number" r-model="qty">` is a one-line field whose signal **always
+holds a number**, never the text of one, so `qty + 1` is arithmetic. While what
+is typed is not a number yet (`-`, `1.`, an emptied field) the signal keeps the
+last number it had and the field shows the typing, the same way a composition
+lives in the field before it is committed. Nothing typed is refused: a letter
+stays in the field and changes nothing. Leaving the field shows the number
+again. A comma is read as the decimal point when there is no point, because
+many phone keyboards offer only the comma. `@input` fires when the *number*
+changes, and every event hands over the number as `event.value`. A phone raises
+a number keyboard with a minus sign and a decimal point; an `inputmode` still
+wins, so `inputmode="numeric"` gives a digits-only pad.
+
+`<input type="switch" r-model="wifi">` is a checkbox in all but looks: a pill
+track with a round thumb at the end the value points to, announced to a screen
+reader as a switch. `:checked` matches it on, and `@change` fires on each flip.
+Unstyled it is 44 by 24 with a grey track that turns blue when on; `width`,
+`height`, `padding`, `background` and `color` (the thumb) override each part,
+and `accent-color` sets the "on" track alone:
+
+```css
+.wifi         { accent-color: #a6e3a1; }
+.wifi:checked { background: #40a02b; }   /* or style the on track directly */
+```
+
+`<input type="slider" r-model="volume" min="0" max="11" step="1">` holds a
+number between `min` and `max` (0 and 100 when left off), moving in steps of
+`step` (1; `step="any"` for none). The value is rounded to as many decimal
+places as the step is written with, so ten steps of `0.1` read `1`. A **tap**
+puts the thumb where it lands and a **sideways drag** moves it. The drag is an
+ordinary `@drag` on the element, so the axis claim applies: a vertical swipe
+that starts on a slider inside a scrolling page scrolls the page. `@input`
+fires as the value moves and `@change` when the finger lifts, as HTML has them
+for a range. `accent-color` colours the fill and the thumb; the element's own
+`height` (32 unstyled) is the touch target, and the bar is drawn centred in it.
+A `min`, `max` or `step` that is not a number, or a `max` not above `min`, is an
+error naming the line.
+
+`<input type="date" r-model="due" min="2026-01-01" max="2026-12-31">` holds a
+day as `YYYY-MM-DD`, the format HTML's date input holds, or an empty string.
+**On Android a tap opens the platform's date picker**, starting on the day the
+field holds (today when empty) and offering only the days between `min` and
+`max`. Choosing commits at once and fires `@change`, as a select does;
+dismissing leaves the day alone. A read-only date offers no picker. Elsewhere,
+until a drawn picker exists, the field is typed into with the rule a number
+follows: only a real day inside the range reaches the signal (`2026-9-3` is
+written back as `2026-09-03`), and anything short of one stays in the field. A
+`min` or `max` that is not a date is an error.
+
+Not yet: arrow keys on a focused slider, a thumb that slides rather than jumps
+between the switch's two ends, a drawn date picker on desktop, and the
+browser's own date picker on the web.
+
 ### Field attributes and events
 
 The attributes are HTML's, named and valued as HTML names them, and they mean
@@ -1381,6 +1435,7 @@ Every handler, `@tap` included, is handed an `event`:
 |---|---|
 | `x`, `y` | the pointer, relative to the element the handler is on |
 | `pageX`, `pageY` | the same point, relative to the window |
+| `width`, `height` | the element's own size, so `event.x / event.width` is how far across it the pointer is |
 | `touches` | every finger down, each with `id`, `x`, `y` |
 
 `touches` is **a list even when there is one finger**, and a mouse counts as one

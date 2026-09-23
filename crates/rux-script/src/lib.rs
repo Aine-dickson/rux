@@ -2210,7 +2210,33 @@ impl Engine {
         }
         names.into_iter().filter(|n| self.read_signal(n) != before[n]).collect()
     }
+
+    /// [`assign_string`](Self::assign_string) for a value that is not text: a
+    /// `type="number"` writes a number, and a slider does too.
+    ///
+    /// Handed over as a local rather than spelled as a literal, so no value
+    /// has to survive a round trip through script syntax (`1e21`, `-0`).
+    pub fn assign_value(
+        &mut self,
+        target: &str,
+        value: &Value,
+        locals: &[(String, Value)],
+    ) -> HashSet<String> {
+        let names: Vec<String> = self.signals.iter().cloned().collect();
+        let before: HashMap<String, Option<Value>> =
+            names.iter().map(|n| (n.clone(), self.read_signal(n))).collect();
+        let mut locals = locals.to_vec();
+        locals.push((ASSIGNED.to_string(), value.clone()));
+        if self.eval(&format!("{target} = {ASSIGNED}"), &locals).is_none() {
+            return HashSet::new();
+        }
+        names.into_iter().filter(|n| self.read_signal(n) != before[n]).collect()
+    }
 }
+
+/// The local [`Engine::assign_value`] hands its value over in. Spelled so no
+/// author's name can shadow it.
+pub const ASSIGNED: &str = "__rux_assigned";
 
 /// Every name an AST declares: `fn` parameters, `let` bindings, and the
 /// variables a `for` loop brings in.

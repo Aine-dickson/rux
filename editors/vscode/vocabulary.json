@@ -14,7 +14,7 @@
   ],
   "globalAttributes": [
     { "name": "@tap", "detail": "run script when this element is tapped", "doc": "A click and a finger are the same event. `@tap=\"count += 1\"` takes an expression, and the element becomes focusable and announces as tappable." },
-    { "name": "@press", "detail": "a finger or button went down", "doc": "Runs when a press lands on this element. `event.x` / `event.y` are relative to the element, `event.pageX` / `event.pageY` to the window; `event.touches` lists every finger down." },
+    { "name": "@press", "detail": "a finger or button went down", "doc": "Runs when a press lands on this element. `event.x` / `event.y` are relative to the element, `event.pageX` / `event.pageY` to the window, and `event.width` / `event.height` are the element's own size; `event.touches` lists every finger down." },
     { "name": "@release", "detail": "the press came up", "doc": "Runs on release, whether or not the press stayed still enough to be a tap." },
     { "name": "@longpress", "detail": "the press rested", "doc": "Runs once, after the press has been held still for half a second." },
     { "name": "@swipe", "detail": "a flick, with a direction", "doc": "Runs once at the end of a press that travelled far enough, fast enough. `event.direction` is `left`, `right`, `up` or `down`, and `event.totalX` / `event.totalY` are how far it came. A drag that ends as a flick fires this too." },
@@ -45,12 +45,28 @@
       { "name": "alt", "detail": "accessible description", "doc": "What the drawing shows. Without it the path is treated as decoration and left out of the accessibility tree." }
     ],
     "input": [
-      { "name": "type", "detail": "text | textarea | select | checkbox | radio", "doc": "Omitted means a single-line text field." },
+      { "name": "type", "detail": "text | textarea | password | search | number | date | select | checkbox | switch | slider | radio", "doc": "Omitted means a single-line text field." },
       { "name": "placeholder", "detail": "text shown while empty", "doc": "Shown until the field has a value. Not a label." },
       { "name": "value", "detail": "the field's value", "doc": "The literal starting value. For state that changes, use `r-model`." },
       { "name": "checked", "detail": "checkbox / radio state", "doc": "Live state for `type=\"checkbox\"` and `type=\"radio\"`, and matched by the `:checked` pseudo-class." },
       { "name": "name", "detail": "radio group", "doc": "Radios sharing a `name` are one group, so choosing one clears the others." },
-      { "name": "options", "detail": "the choices for a select", "doc": "For `type=\"select\"`. `:options` binds an array." }
+      { "name": "options", "detail": "the choices for a select", "doc": "For `type=\"select\"`. `:options` binds an array." },
+      { "name": "disabled", "detail": "cannot be focused, tapped or changed", "doc": "On whenever it is written, so `disabled=\"false\"` is still disabled: bind it with `:disabled=\"expr\"` instead. Matched by `:disabled`. Also on `<button>`." },
+      { "name": "readonly", "detail": "can be selected and copied, not changed", "doc": "The caret and the selection work and no keyboard opens. `:readonly` binds it." },
+      { "name": "min", "detail": "the lowest value or earliest day", "doc": "A number for `type=\"slider\"` (0 when left off), a `YYYY-MM-DD` day for `type=\"date\"`." },
+      { "name": "max", "detail": "the highest value or latest day", "doc": "A number above `min` for `type=\"slider\"` (100 when left off), a `YYYY-MM-DD` day for `type=\"date\"`." },
+      { "name": "step", "detail": "what a slider's value moves by", "doc": "For `type=\"slider\"`. 1 when left off; `any` for no steps. The value is rounded to as many decimal places as the step is written with." },
+      { "name": "maxlength", "detail": "the most characters it takes", "doc": "Counted as HTML counts them, in UTF-16 units. Typing past it is refused and a paste is cut short." },
+      { "name": "inputmode", "detail": "text | numeric | decimal | tel | email | url | search | none", "doc": "Which keyboard a phone raises. The field is still a text field and its value still text: a PIN or a phone number is `inputmode=\"numeric\"`, not a number." },
+      { "name": "enterkeyhint", "detail": "enter | done | go | next | previous | search | send", "doc": "What the keyboard's action key says. `next` and `previous` move focus like Tab, `done` closes the field; every one commits it first, which fires `@change`." },
+      { "name": "autofocus", "detail": "take focus when it appears", "doc": "Valueless. Focuses the field when it first appears, a route or an `r-if` bringing it in included, unless something already has focus." },
+      { "name": "@input", "detail": "the text changed", "doc": "After every change, however it was made. `event.value` is the new text." },
+      { "name": "@change", "detail": "a changed value was committed", "doc": "When the field is left with a different value than it had, or Enter is pressed in a one-line field. A select fires it on choosing, a checkbox or radio on toggling. `event.value` is the value." },
+      { "name": "@focus", "detail": "the field gained focus", "doc": "`event.value` is its text." },
+      { "name": "@blur", "detail": "the field lost focus", "doc": "After `@change`, when both fire. `event.value` is its text." }
+    ],
+    "button": [
+      { "name": "disabled", "detail": "cannot be tapped", "doc": "No `@tap`, no link, no gesture, and nothing for Tab to land on. On whenever it is written; `:disabled=\"expr\"` binds it. Matched by `:disabled`." }
     ],
     "route": [
       { "name": "path", "detail": "the path to match", "doc": "`/crew/:id` captures `id` and hands it to the view as a prop. A child route's path is relative to its parent, and `path=\"\"` is the index route that fills the parent's outlet at the parent's own path." },
@@ -71,9 +87,34 @@
       "type": [
         { "name": "text", "detail": "a single-line field", "doc": "The default, so `type` may be left off entirely." },
         { "name": "textarea", "detail": "a multi-line field", "doc": "Enter inserts a newline instead of being ignored, and the box scrolls its own content." },
+        { "name": "password", "detail": "a masked field", "doc": "Shows bullets, refuses Copy and Cut, and asks a phone's keyboard not to learn what is typed. The bound signal holds the real text." },
+        { "name": "search", "detail": "a field whose action key searches", "doc": "A one-line field in every other respect." },
+        { "name": "number", "detail": "a number field", "doc": "The bound signal always holds a number. While what is typed is not one yet (`-`, `1.`, nothing) the signal keeps its last number and the field shows the typing; leaving the field shows the number again. A phone raises a signed decimal keyboard." },
+        { "name": "date", "detail": "a day", "doc": "The bound signal holds `YYYY-MM-DD`, as HTML's does, or is empty. A phone opens the platform's date picker; a desktop types the date, and only a real day inside `min` and `max` reaches the signal." },
         { "name": "select", "detail": "a dropdown", "doc": "Shows the bound value and opens a list on tap. Takes its choices from `:options`." },
         { "name": "checkbox", "detail": "a tap-toggle", "doc": "No caret and no focus of its own: a tap flips the bound value, and `:checked` matches it. Space or Enter activates it when tabbed to." },
+        { "name": "switch", "detail": "an on/off switch", "doc": "A checkbox that draws as a track and a thumb and is announced as a switch. `:checked` matches it on; `accent-color` colours the track when on." },
+        { "name": "slider", "detail": "a number along a track", "doc": "Bound to a number between `min` and `max`, in steps of `step`. A tap puts the thumb where it lands and a sideways drag moves it; a vertical swipe still scrolls the page. `@input` fires as it moves, `@change` when the finger lifts. `accent-color` colours it." },
         { "name": "radio", "detail": "one of a group", "doc": "Radios sharing a `name` are one group, so choosing one clears the others. Carries the chosen value in `value`." }
+      ],
+      "inputmode": [
+        { "name": "text", "detail": "the ordinary keyboard", "doc": "The default." },
+        { "name": "numeric", "detail": "digits", "doc": "PINs, codes, card and phone numbers: digit strings, not quantities." },
+        { "name": "decimal", "detail": "digits and a decimal point", "doc": "For amounts typed as text." },
+        { "name": "tel", "detail": "a phone keypad", "doc": "Digits with `+`, `*` and `#`." },
+        { "name": "email", "detail": "a keyboard with @", "doc": "Also turns off autocapitalisation on most keyboards." },
+        { "name": "url", "detail": "a keyboard with / and .", "doc": "For addresses." },
+        { "name": "search", "detail": "a Search action key", "doc": "The same field, with Search where Enter was." },
+        { "name": "none", "detail": "no on-screen keyboard", "doc": "For an app that draws its own keys. The field still takes a hardware keyboard." }
+      ],
+      "enterkeyhint": [
+        { "name": "enter", "detail": "a plain return key", "doc": "No action label." },
+        { "name": "done", "detail": "Done: closes the field", "doc": "Commits, then drops focus and the keyboard." },
+        { "name": "go", "detail": "Go", "doc": "Commits; what going means is the app's `@change`." },
+        { "name": "next", "detail": "Next: the following field", "doc": "Commits, then moves focus as Tab does." },
+        { "name": "previous", "detail": "Previous: the field before", "doc": "Commits, then moves focus as Shift+Tab does." },
+        { "name": "search", "detail": "Search", "doc": "Commits; the search is the app's `@change`." },
+        { "name": "send", "detail": "Send", "doc": "Commits; sending is the app's `@change`." }
       ]
     }
   },
@@ -137,7 +178,9 @@
     { "name": "checked", "detail": "a checkbox or radio is on", "doc": "Resolved during the build from the input's live state, rather than supplied by the shell as `:hover` and `:active` are." },
     { "name": "current", "detail": "this link names the path you are on", "doc": "Matches an element whose `to` is the route you are currently on. It is the nav highlight, without a signal to track it." },
     { "name": "enter-from", "detail": "the frame an element enters from", "doc": "Under `r-transition`: the style the element holds for exactly one frame as it arrives, and animates away from. The *hidden* end of the animation goes here." },
-    { "name": "leave-to", "detail": "the state an element leaves to", "doc": "Under `r-transition`: the style the element animates towards while it is held on screen on its way out. `position: absolute` here takes it out of flow, so the rest of a list closes up under it rather than waiting." }
+    { "name": "leave-to", "detail": "the state an element leaves to", "doc": "Under `r-transition`: the style the element animates towards while it is held on screen on its way out. `position: absolute` here takes it out of flow, so the rest of a list closes up under it rather than waiting." },
+    { "name": "disabled", "detail": "an input or button that is switched off", "doc": "Matches a `<input>` or `<button>` with `disabled` (or a truthy `:disabled`). Rux draws no default look for it, so this is where the dimming goes." },
+    { "name": "enabled", "detail": "an input or button that is not disabled", "doc": "Form controls only: a plain box is neither enabled nor disabled, as in CSS." }
   ],
   "voidTags": [
     "image", "input", "path", "router-view", "area", "base",
@@ -145,23 +188,23 @@
     "meta", "param", "source", "track", "wbr"
   ],
   "cssProperties": [
-    "display", "width", "height", "gap", "min-width", "max-width",
-    "min-height", "max-height", "padding", "padding-top", "padding-right", "padding-bottom",
-    "padding-left", "margin", "margin-top", "margin-right", "margin-bottom", "margin-left",
-    "border", "border-width", "border-color", "border-radius", "border-top-left-radius", "border-top-right-radius",
-    "border-bottom-right-radius", "border-bottom-left-radius", "border-top", "border-right", "border-bottom", "border-left",
-    "border-top-width", "border-right-width", "border-bottom-width", "border-left-width", "overflow", "overflow-x",
-    "overflow-y", "opacity", "cursor", "touch-action", "box-shadow", "transform",
-    "transition", "flex", "flex-grow", "flex-shrink", "flex-basis", "flex-wrap",
-    "flex-direction", "justify-content", "align-items", "align-self", "justify-self", "justify-items",
-    "align-content", "row-gap", "column-gap", "grid-template-columns", "grid-template-rows", "grid-column",
-    "grid-row", "grid-column-start", "grid-column-end", "grid-row-start", "grid-row-end", "grid-auto-flow",
-    "grid-auto-rows", "grid-auto-columns", "position", "top", "right", "bottom",
-    "left", "aspect-ratio", "background", "background-color", "background-image", "color",
-    "font-size", "font-weight", "font-family", "font-style", "text-align", "letter-spacing",
-    "word-spacing", "line-height", "white-space", "text-decoration", "text-decoration-line", "overflow-wrap",
-    "word-wrap", "word-break", "fill", "fill-rule", "stroke", "stroke-width",
-    "stroke-linecap", "stroke-linejoin"
+    "accent-color", "display", "width", "height", "gap", "min-width",
+    "max-width", "min-height", "max-height", "padding", "padding-top", "padding-right",
+    "padding-bottom", "padding-left", "margin", "margin-top", "margin-right", "margin-bottom",
+    "margin-left", "border", "border-width", "border-color", "border-radius", "border-top-left-radius",
+    "border-top-right-radius", "border-bottom-right-radius", "border-bottom-left-radius", "border-top", "border-right", "border-bottom",
+    "border-left", "border-top-width", "border-right-width", "border-bottom-width", "border-left-width", "overflow",
+    "overflow-x", "overflow-y", "opacity", "cursor", "touch-action", "box-shadow",
+    "transform", "transition", "flex", "flex-grow", "flex-shrink", "flex-basis",
+    "flex-wrap", "flex-direction", "justify-content", "align-items", "align-self", "justify-self",
+    "justify-items", "align-content", "row-gap", "column-gap", "grid-template-columns", "grid-template-rows",
+    "grid-column", "grid-row", "grid-column-start", "grid-column-end", "grid-row-start", "grid-row-end",
+    "grid-auto-flow", "grid-auto-rows", "grid-auto-columns", "position", "top", "right",
+    "bottom", "left", "aspect-ratio", "background", "background-color", "background-image",
+    "color", "font-size", "font-weight", "font-family", "font-style", "text-align",
+    "letter-spacing", "word-spacing", "line-height", "white-space", "text-decoration", "text-decoration-line",
+    "overflow-wrap", "word-wrap", "word-break", "fill", "fill-rule", "stroke",
+    "stroke-width", "stroke-linecap", "stroke-linejoin"
   ],
   "cssPropertyDocs": [
     { "name": "display", "detail": "how this box lays its children out", "doc": "`block` (the default), `flex`, `grid`, `inline` or `none`. **Rux defaults to `block`**, so a box does not lay its children out in a row until you say `display: flex`.", "usage": ".row { display: flex; }" },
@@ -241,6 +284,7 @@
     { "name": "background", "detail": "the colour or gradient behind the content", "doc": "A colour, `linear-gradient(…)` or `radial-gradient(…)`. `url()` is not supported; use `<image>` for a picture.", "usage": ".app { background: #1e1e2e; }" },
     { "name": "background-color", "detail": "a flat colour behind the content", "doc": "Animatable, so it is what a hover or pressed state usually changes.", "usage": ".send:hover { background-color: #b4befe; }" },
     { "name": "background-image", "detail": "a gradient behind the content", "doc": "`linear-gradient` and `radial-gradient` only.", "usage": ".hero { background-image: linear-gradient(#89b4fa, #1e1e2e); }" },
+    { "name": "accent-color", "detail": "the colour a control is drawn in", "doc": "A switch's track when on, and a slider's fill and thumb. Not inherited.", "usage": ".volume { accent-color: #f38ba8; }" },
     { "name": "color", "detail": "the colour of the text", "doc": "Inherited, so setting it on a container covers the text inside. Animatable.", "usage": ".label { color: #cdd6f4; }" },
     { "name": "font-size", "detail": "how large the text is", "doc": "Also the reference for `em` on this box, so changing it moves anything sized in `em`.", "usage": ".title { font-size: 22px; }" },
     { "name": "font-weight", "detail": "how heavy the text is", "doc": "`normal`, `bold`, `lighter`, `bolder`, or a number from 100 to 900.", "usage": ".title { font-weight: 700; }" },

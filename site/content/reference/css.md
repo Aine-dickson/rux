@@ -89,7 +89,9 @@ combinators: descendant (`.a .b`), child (`.a > .b`), next-sibling (`.a + .b`),
 subsequent-sibling (`.a ~ .b`).
 
 **Pseudo-classes:** `:hover`, `:focus`, `:active`, `:checked`, `:current` (a
-link whose `to` names the path you are on), and `:enter-from` / `:leave-to`
+link whose `to` names the path you are on), `:disabled` / `:enabled` (an
+`<input>` or `<button>` with or without `disabled`; a plain box is neither, as in
+CSS), and `:enter-from` / `:leave-to`
 (the two sides of an enter/leave swap, below). They stack
 (`.btn:hover:active`), count as class-level specificity, and work anywhere in a
 chain, `.card:hover .title` recolours the title while the pointer is over the
@@ -97,7 +99,7 @@ card. `:hover`/`:active` hold for the whole chain under the pointer, as in CSS;
 `:active` is press-to-release and drops if you drag off the element; `:focus`
 matches the input holding the caret. Driven in `examples/pseudo.rux`.
 
-Any *other* pseudo-class (`:disabled`, `:nth-child(…)`, `::selection`) **never
+Any *other* pseudo-class (`:nth-child(…)`, `::selection`) **never
 matches**, and says so once on stderr. Before this existed the `:` was silently
 dropped, so `.box:hover` parsed as `.box` and applied *unconditionally*, failing
 closed is the safer half of that trade.

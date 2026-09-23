@@ -363,7 +363,9 @@ fn bool_attr(
         if written.eq_ignore_ascii_case("false") {
             located(el.attr_line(name), || {
                 warn(format!(
-                    "`{name}=\"false\"` still means {name}: a boolean attribute is on                      whenever it is written, whatever it says. Leave it off, or bind it                      with `:{name}=\"expr\"`"
+                    "`{name}=\"false\"` still means {name}: a boolean attribute is on \
+                     whenever it is written, whatever it says. Leave it off, or bind it \
+                     with `:{name}=\"expr\"`"
                 ))
             });
         }
@@ -389,7 +391,8 @@ fn check_field_attributes(el: &Element) {
         if !names.contains(&value) {
             located(el.attr_line(name), || {
                 error(format!(
-                    "`{name}=\"{value}\"` is not a value Rux knows, so the field would get                      the ordinary keyboard. Use one of {}",
+                    "`{name}=\"{value}\"` is not a value Rux knows, so the field would get \
+                     the ordinary keyboard. Use one of {}",
                     names.join(", ")
                 ))
             });
@@ -399,7 +402,58 @@ fn check_field_attributes(el: &Element) {
         if value.trim().parse::<usize>().is_err() {
             located(el.attr_line("maxlength"), || {
                 error(format!(
-                    "`maxlength=\"{value}\"` is not a whole number of characters, so the                      field would take any length"
+                    "`maxlength=\"{value}\"` is not a whole number of characters, so the \
+                     field would take any length"
+                ))
+            });
+        }
+    }
+    // A date's range is two dates, and each would otherwise be dropped in
+    // silence, leaving a picker that offers every day there is.
+    if el.attr("type") == Some("date") {
+        for name in ["min", "max"] {
+            let Some(value) = el.attr(name) else { continue };
+            if rux_layout::parse_date(value).is_none() {
+                located(el.attr_line(name), || {
+                    error(format!(
+                        "`{name}=\"{value}\"` is not a date written `YYYY-MM-DD`, so the \
+                         field would accept any day"
+                    ))
+                });
+            }
+        }
+        return;
+    }
+    // A slider's range. Each would otherwise fall back to HTML's default in
+    // silence, and a volume control reading 0 to 100 where 0 to 11 was
+    // written is not something anyone would think to look for.
+    let number = |name: &str| el.attr(name).map(|v| (v, v.trim().parse::<f64>().ok()));
+    for name in ["min", "max"] {
+        if let Some((value, None)) = number(name) {
+            located(el.attr_line(name), || {
+                error(format!(
+                    "`{name}=\"{value}\"` is not a number, so the slider would use its \
+                     default range of 0 to 100"
+                ))
+            });
+        }
+    }
+    if let (Some((_, Some(min))), Some((max_text, Some(max)))) = (number("min"), number("max")) {
+        if max <= min {
+            located(el.attr_line("max"), || {
+                error(format!(
+                    "`max=\"{max_text}\"` is not above `min`, so the slider has no range \
+                     to move along"
+                ))
+            });
+        }
+    }
+    if let Some((value, parsed)) = number("step") {
+        if value.trim() != "any" && !parsed.is_some_and(|s| s > 0.0) {
+            located(el.attr_line("step"), || {
+                error(format!(
+                    "`step=\"{value}\"` is not a number above zero, so the slider would \
+                     move in steps of 1. Write `step=\"any\"` for no steps at all"
                 ))
             });
         }
@@ -428,6 +482,8 @@ fn field_of(el: &Element, disabled: bool, readonly: bool, locals: &Locals) -> ru
         on_change: handler("@change"),
         on_focus: handler("@focus"),
         on_blur: handler("@blur"),
+        min: el.attr("min").and_then(rux_layout::parse_date),
+        max: el.attr("max").and_then(rux_layout::parse_date),
     }
 }
 
@@ -1358,11 +1414,81 @@ fn warn_undefined_var(name: &str) {
 /// which makes the box a circle/pill whatever its size.
 const CIRCLE: f32 = 9999.0;
 
+/// A slider's thumb diameter and bar thickness, and the colour of the bar
+/// past the thumb.
+const SLIDER_THUMB: f32 = 20.0;
+const SLIDER_BAR: f32 = 4.0;
+const SLIDER_REST: Rgba = Rgba::new(0.82, 0.84, 0.86, 1.0); // #d1d5db
+
+/// A slider's `min`, `max` and `step`, with HTML's defaults for a range:
+/// 0, 100 and 1. `step="any"` is continuous.
+struct SliderRange {
+    min: f64,
+    max: f64,
+    /// Zero for `any`.
+    step: f64,
+    /// Decimal places the step is written with, which is what the value is
+    /// rounded to, so ten steps of `0.1` read `1` and not `0.9999999999999999`.
+    places: i32,
+}
+
+impl SliderRange {
+    fn of(el: &Element) -> Self {
+        let number = |name: &str| el.attr(name).and_then(|v| v.trim().parse::<f64>().ok());
+        let min = number("min").unwrap_or(0.0);
+        let max = number("max").filter(|m| *m > min).unwrap_or(min.max(0.0) + 100.0);
+        let (step, places) = match el.attr("step").map(str::trim) {
+            Some("any") => (0.0, 12),
+            Some(v) => match v.parse::<f64>() {
+                Ok(s) if s > 0.0 => (s, v.split_once('.').map_or(0, |(_, f)| f.len() as i32)),
+                _ => (1.0, 0),
+            },
+            None => (1.0, 0),
+        };
+        Self { min, max, step, places }
+    }
+
+    /// How far along the track `value` sits, 0 to 1.
+    fn fraction(&self, value: f64) -> f32 {
+        ((value - self.min) / (self.max - self.min)).clamp(0.0, 1.0) as f32
+    }
+
+    /// The script that writes `model` from where the pointer is: along the
+    /// track between the thumb's two resting centres, snapped to the step
+    /// and kept inside the range.
+    fn assignment(&self, model: &str) -> String {
+        let (min, max, span) = (self.min, self.max, self.max - self.min);
+        let (half, thumb) = (SLIDER_THUMB as f64 / 2.0, SLIDER_THUMB as f64);
+        let scale = 10f64.powi(self.places);
+        let snapped = if self.step > 0.0 {
+            let step = self.step;
+            format!("{min:?} + (__f * {span:?} / {step:?}).round() * {step:?}")
+        } else {
+            format!("{min:?} + __f * {span:?}")
+        };
+        format!(
+            "if event.width > {thumb:?} {{ \
+             let __f = (event.x - {half:?}) / (event.width - {thumb:?}); \
+             if __f < 0.0 {{ __f = 0.0; }} if __f > 1.0 {{ __f = 1.0; }} \
+             let __v = (({snapped}) * {scale:?}).round() / {scale:?}; \
+             if __v > {max:?} {{ __v = {max:?}; }} \
+             {model} = __v; }}"
+        )
+    }
+}
+
+/// An unstyled switch's track, off and on.
+const SWITCH_OFF: Rgba = Rgba::new(0.61, 0.64, 0.69, 1.0); // #9ca3af
+const SWITCH_ON: Rgba = Rgba::new(0.15, 0.39, 0.92, 1.0); // #2563eb
+
 /// An `<input type=checkbox|radio>`: whether it is currently checked, and the
 /// signals its checked state reads (so a change can reconcile just this node).
 #[derive(Clone)]
 struct Toggle {
     radio: bool,
+    /// `type="switch"`: a checkbox in every way but how it looks and what it
+    /// is announced as.
+    switch: bool,
     checked: bool,
     deps: HashSet<String>,
 }
@@ -1372,9 +1498,10 @@ impl Toggle {
         if el.tag != "input" {
             return None;
         }
-        let radio = match el.attr("type") {
-            Some("radio") => true,
-            Some("checkbox") => false,
+        let (radio, switch) = match el.attr("type") {
+            Some("radio") => (true, false),
+            Some("checkbox") => (false, false),
+            Some("switch") => (false, true),
             _ => return None,
         };
         let model = el.attr("r-model").unwrap_or_default();
@@ -1388,7 +1515,7 @@ impl Toggle {
         } else {
             engine.eval_bool_tracked(model, locals)
         };
-        Some(Self { radio, checked, deps })
+        Some(Self { radio, switch, checked, deps })
     }
 }
 
@@ -2888,6 +3015,8 @@ fn collect_style_rule(
 /// a new property is honored in `interpret` (or the text/border helpers), add it
 /// here too, or authors will be told a working property does nothing.
 const HONORED_PROPERTIES: &[&str] = &[
+    // Controls: the colour a switch and a slider are drawn in.
+    "accent-color",
     // Box / display
     "display", "width", "height", "gap",
     "min-width", "max-width", "min-height", "max-height",
@@ -3116,7 +3245,7 @@ const UNIMPLEMENTED_PROPERTIES: &[&str] = &[
     // Text
     "text-transform", "text-overflow", "text-indent", "text-decoration-color",
     "text-decoration-style", "vertical-align", "font-variant", "font-stretch",
-    "direction", "writing-mode", "user-select", "caret-color", "accent-color",
+    "direction", "writing-mode", "user-select", "caret-color",
     "appearance", "list-style", "list-style-type", "list-style-position",
     // Motion. `transition` is honored; keyframe animation and the origin a
     // transform turns about are not.
@@ -3685,8 +3814,10 @@ fn build_node_inner(
     // could Rux.
     if el.tag == "input" {
         if let Some(kind) = el.attr("type") {
-            const KNOWN: [&str; 7] =
-                ["text", "textarea", "password", "search", "select", "checkbox", "radio"];
+            const KNOWN: [&str; 11] = [
+                "text", "textarea", "password", "search", "number", "date", "select", "checkbox",
+                "radio", "switch", "slider",
+            ];
             if !KNOWN.contains(&kind) {
                 located(Some(el.line), || {
                     error(format!(
@@ -4107,7 +4238,7 @@ fn build_node_inner(
     // `type=checkbox|radio` are tap-toggles, not text fields: they get no focus
     // and no keyboard, they just write the bound signal through the ordinary
     // handler path (`sig = !sig` / `sig = "value"`). An authored @tap wins.
-    if let Some(Toggle { radio, checked, deps }) = toggle {
+    if let Some(Toggle { radio, switch, checked, deps }) = toggle {
         // Recorded so a change to the bound signal reconciles just this node.
         reg.toggles.push(ToggleBinding { path: path.to_vec(), deps });
         let model = el.attr("r-model").unwrap_or_default().to_string();
@@ -4125,8 +4256,49 @@ fn build_node_inner(
             style.radius = [CIRCLE; 4];
         }
 
+        // A switch is a pill with a thumb that sits at the end it points to.
+        // Everything it draws is overridable, and what is not written comes
+        // from the defaults below, so an unstyled switch is still a switch
+        // rather than a box with nothing in it.
+        let mut thumb = color;
+        if switch {
+            if !props.contains_key("width") {
+                style.width = Some(Len::Px(44.0));
+            }
+            if !props.contains_key("height") {
+                style.height = Some(Len::Px(24.0));
+            }
+            if style.radius == [0.0; 4] {
+                style.radius = [CIRCLE; 4];
+            }
+            if !props.contains_key("padding") {
+                style.padding = Sides { top: 3.0, right: 3.0, bottom: 3.0, left: 3.0 };
+            }
+            if style.background.is_none() {
+                style.background = Some(Background::Color(if checked {
+                    props.get("accent-color").and_then(|v| parse_color(v)).unwrap_or(SWITCH_ON)
+                } else {
+                    SWITCH_OFF
+                }));
+            }
+            if !props.contains_key("color") {
+                thumb = Rgba::new(1.0, 1.0, 1.0, 1.0);
+            }
+            style.justify = Some(if checked { Justify::End } else { Justify::Start });
+        }
+
         let mut node = LayoutNode::new(style);
-        if checked {
+        if switch {
+            // The thumb: as tall as the track's content box, and round.
+            node.children.push(LayoutNode::new(Style {
+                display: Display::Flex,
+                height: Some(Len::Pct(1.0)),
+                aspect_ratio: Some(1.0),
+                background: Some(Background::Color(thumb)),
+                radius: [CIRCLE; 4],
+                ..Default::default()
+            }));
+        } else if checked {
             node.children.push(if radio {
                 // A dot, in the box's text colour.
                 LayoutNode::new(Style {
@@ -4176,11 +4348,120 @@ fn build_node_inner(
         // The checked state is what a screen reader announces alongside the name,
         // so it has to be the resolved boolean, not the class hack.
         node.access = Access {
-            role: if radio { AccessRole::RadioButton } else { AccessRole::CheckBox },
+            role: if radio {
+                AccessRole::RadioButton
+            } else if switch {
+                AccessRole::Switch
+            } else {
+                AccessRole::CheckBox
+            },
             label: authored_label(el),
             placeholder: None,
             checked: Some(checked),
             value: None,
+        };
+        return node;
+    }
+
+    // `type="slider"`: a number chosen along a track.
+    //
+    // **Built from parts the language already has, not from a region of its
+    // own.** The finger is `@tap` and `@drag` on the element, whose events
+    // carry the pointer's `x` and the element's `width`; the value is one
+    // line of script computed from those. So a slider inside a scrolling page
+    // gets the axis claim every `@drag` gets: a vertical swipe that starts on
+    // it still scrolls the page, and only a sideways one moves the thumb.
+    //
+    // The track is three boxes in a row: the filled part, the thumb, and the
+    // rest. The two bars grow in the proportion of the value, so the thumb
+    // never overhangs either end, which a percentage width cannot promise.
+    if el.tag == "input" && el.attr("type") == Some("slider") {
+        let model = el.attr("r-model").unwrap_or_default().to_string();
+        let range = SliderRange::of(el);
+        let (value, deps) = if model.is_empty() {
+            (range.min, HashSet::new())
+        } else {
+            let (v, deps) = engine.eval_value_tracked(&model, locals);
+            (v.and_then(|v| v.as_number()).unwrap_or(range.min), deps)
+        };
+        // Reconciled like a toggle: a change moves the thumb and changes
+        // nothing about the tree's shape.
+        reg.toggles.push(ToggleBinding { path: path.to_vec(), deps });
+        let fraction = range.fraction(value);
+        let accent = props
+            .get("accent-color")
+            .and_then(|v| parse_color(v))
+            .unwrap_or(SWITCH_ON);
+
+        let mut style = style;
+        if style.width.is_none() {
+            style.width = Some(Len::Pct(1.0));
+        }
+        if !props.contains_key("height") {
+            style.height = Some(Len::Px(32.0));
+        }
+        style.display = Display::Flex;
+        style.align = Some(Align::Center);
+        let bar = |grow: f32, color: Rgba| {
+            LayoutNode::new(Style {
+                display: Display::Flex,
+                grow,
+                basis: Some(Len::Px(0.0)),
+                height: Some(Len::Px(SLIDER_BAR)),
+                background: Some(Background::Color(color)),
+                radius: [CIRCLE; 4],
+                ..Default::default()
+            })
+        };
+        let mut node = LayoutNode::new(style);
+        node.children.push(bar(fraction, accent));
+        node.children.push(LayoutNode::new(Style {
+            display: Display::Flex,
+            width: Some(Len::Px(SLIDER_THUMB)),
+            height: Some(Len::Px(SLIDER_THUMB)),
+            shrink: 0.0,
+            background: Some(Background::Color(accent)),
+            radius: [CIRCLE; 4],
+            ..Default::default()
+        }));
+        node.children.push(bar(1.0 - fraction, SLIDER_REST));
+
+        if !model.is_empty() && !disabled {
+            let set = range.assignment(&model);
+            let input = el.attr("@input").map(|h| bind_locals(h, locals));
+            let change = el.attr("@change").map(|h| bind_locals(h, locals));
+            let block = |h: &Option<String>| h.as_ref().map(|h| format!("{{ {h} }}")).unwrap_or_default();
+            // `@input` as the value moves, `@change` when the hand lets go,
+            // as HTML has them for a range, both handed the number as
+            // `event.value`, like every field. A tap that lands on the value
+            // already held fires neither.
+            //
+            // Guarded on `event.x`, because a `@tap` is also what Space and
+            // `tap()` run, and neither has a pointer to place the thumb at.
+            let (input, change) = (block(&input), block(&change));
+            node.on_tap = Some(format!(
+                "if event.contains(\"x\") {{ let __before = {model}; {set}; \
+                 if {model} != __before {{ let event = #{{ value: {model} }}; {input} {change} }} }}"
+            ));
+            node.gestures.push((
+                rux_layout::Gesture::Drag,
+                format!(
+                    "let __before = {model}; let __end = event.phase == \"end\"; {set}; \
+                     let event = #{{ value: {model} }}; \
+                     if {model} != __before {{ {input} }} if __end {{ {change} }}"
+                ),
+            ));
+        }
+        node.field.disabled = disabled;
+        node.hidden = hidden;
+        node.id = el.attr("id").map(str::to_string);
+        node.state_path = state_path.clone();
+        node.access = Access {
+            role: AccessRole::Slider,
+            label: authored_label(el),
+            placeholder: None,
+            checked: None,
+            value: Some(rux_reactive::Value::Number(value).to_display()),
         };
         return node;
     }
@@ -4331,6 +4612,8 @@ fn build_node_inner(
                 AccessRole::ComboBox
             } else if multiline {
                 AccessRole::MultilineTextInput
+            } else if kind == InputKind::Date {
+                AccessRole::DateInput
             } else {
                 AccessRole::TextInput
             }),
@@ -5961,7 +6244,8 @@ fn interpret(p: &HashMap<String, String>) -> Style {
                 // a box that quietly stayed where it was and an author who could
                 // not tell a misspelling from a rule that does nothing.
                 warn(format!(
-                    "`position: {other}` is not a value Rux knows; use `static`, `relative`,                      `sticky`, `absolute` or `fixed`"
+                    "`position: {other}` is not a value Rux knows; use `static`, `relative`, \
+                     `sticky`, `absolute` or `fixed`"
                 ));
                 Position::Static
             }
@@ -5974,9 +6258,11 @@ fn interpret(p: &HashMap<String, String>) -> Style {
             && !p.keys().any(|k| INSETS.contains(&k.as_str()))
         {
             let what = if st.position == Position::Sticky {
-                "`position: sticky` with no `top`, `right`, `bottom` or `left` has no edge to                  stick to, so it will never move; name at least one inset"
+                "`position: sticky` with no `top`, `right`, `bottom` or `left` has no edge to \
+                 stick to, so it will never move; name at least one inset"
             } else {
-                "`position: fixed` with no `top`, `right`, `bottom` or `left` pins this box to                  the top-left of the window; name at least one inset"
+                "`position: fixed` with no `top`, `right`, `bottom` or `left` pins this box to \
+                 the top-left of the window; name at least one inset"
             };
             warn(what.to_string());
         }

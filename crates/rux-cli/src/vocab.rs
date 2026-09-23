@@ -64,7 +64,12 @@ const ELEMENTS: &[Entry] = &[
     Entry {
         name: "path",
         detail: "vector geometry from SVG path data",
-        doc: "`d` is SVG path data, in the element's own coordinates. Paint is               CSS, not attributes: `fill`, `stroke`, `stroke-width`,               `stroke-linecap`, `stroke-linejoin`, `fill-rule`. With no CSS size               it lays out at the size of its own geometry. `:d` binds an               expression, and two paths with the same command sequence animate               between one another under `transition: d`.",
+        doc: "`d` is SVG path data, in the element's own coordinates. Paint is \
+              CSS, not attributes: `fill`, `stroke`, `stroke-width`, \
+              `stroke-linecap`, `stroke-linejoin`, `fill-rule`. With no CSS size \
+              it lays out at the size of its own geometry. `:d` binds an \
+              expression, and two paths with the same command sequence animate \
+              between one another under `transition: d`.",
     },
     Entry {
         name: "button",
@@ -104,7 +109,7 @@ const ELEMENTS: &[Entry] = &[
 /// Attributes that mean something on any element.
 const GLOBAL_ATTRIBUTES: &[Entry] = &[
     Entry { name: "@tap", detail: "run script when this element is tapped", doc: "A click and a finger are the same event. `@tap=\"count += 1\"` takes an expression, and the element becomes focusable and announces as tappable." },
-    Entry { name: "@press", detail: "a finger or button went down", doc: "Runs when a press lands on this element. `event.x` / `event.y` are relative to the element, `event.pageX` / `event.pageY` to the window; `event.touches` lists every finger down." },
+    Entry { name: "@press", detail: "a finger or button went down", doc: "Runs when a press lands on this element. `event.x` / `event.y` are relative to the element, `event.pageX` / `event.pageY` to the window, and `event.width` / `event.height` are the element's own size; `event.touches` lists every finger down." },
     Entry { name: "@release", detail: "the press came up", doc: "Runs on release, whether or not the press stayed still enough to be a tap." },
     Entry { name: "@longpress", detail: "the press rested", doc: "Runs once, after the press has been held still for half a second." },
     Entry { name: "@swipe", detail: "a flick, with a direction", doc: "Runs once at the end of a press that travelled far enough, fast enough. `event.direction` is `left`, `right`, `up` or `down`, and `event.totalX` / `event.totalY` are how far it came. A drag that ends as a flick fires this too." },
@@ -149,7 +154,7 @@ const ELEMENT_ATTRIBUTES: &[(&str, &[Entry])] = &[
     (
         "input",
         &[
-            Entry { name: "type", detail: "text | textarea | password | search | select | checkbox | radio", doc: "Omitted means a single-line text field." },
+            Entry { name: "type", detail: "text | textarea | password | search | number | date | select | checkbox | switch | slider | radio", doc: "Omitted means a single-line text field." },
             Entry { name: "placeholder", detail: "text shown while empty", doc: "Shown until the field has a value. Not a label." },
             Entry { name: "value", detail: "the field's value", doc: "The literal starting value. For state that changes, use `r-model`." },
             Entry { name: "checked", detail: "checkbox / radio state", doc: "Live state for `type=\"checkbox\"` and `type=\"radio\"`, and matched by the `:checked` pseudo-class." },
@@ -157,6 +162,9 @@ const ELEMENT_ATTRIBUTES: &[(&str, &[Entry])] = &[
             Entry { name: "options", detail: "the choices for a select", doc: "For `type=\"select\"`. `:options` binds an array." },
             Entry { name: "disabled", detail: "cannot be focused, tapped or changed", doc: "On whenever it is written, so `disabled=\"false\"` is still disabled: bind it with `:disabled=\"expr\"` instead. Matched by `:disabled`. Also on `<button>`." },
             Entry { name: "readonly", detail: "can be selected and copied, not changed", doc: "The caret and the selection work and no keyboard opens. `:readonly` binds it." },
+            Entry { name: "min", detail: "the lowest value or earliest day", doc: "A number for `type=\"slider\"` (0 when left off), a `YYYY-MM-DD` day for `type=\"date\"`." },
+            Entry { name: "max", detail: "the highest value or latest day", doc: "A number above `min` for `type=\"slider\"` (100 when left off), a `YYYY-MM-DD` day for `type=\"date\"`." },
+            Entry { name: "step", detail: "what a slider's value moves by", doc: "For `type=\"slider\"`. 1 when left off; `any` for no steps. The value is rounded to as many decimal places as the step is written with." },
             Entry { name: "maxlength", detail: "the most characters it takes", doc: "Counted as HTML counts them, in UTF-16 units. Typing past it is refused and a paste is cut short." },
             Entry { name: "inputmode", detail: "text | numeric | decimal | tel | email | url | search | none", doc: "Which keyboard a phone raises. The field is still a text field and its value still text: a PIN or a phone number is `inputmode=\"numeric\"`, not a number." },
             Entry { name: "enterkeyhint", detail: "enter | done | go | next | previous | search | send", doc: "What the keyboard's action key says. `next` and `previous` move focus like Tab, `done` closes the field; every one commits it first, which fires `@change`." },
@@ -216,8 +224,12 @@ const ATTRIBUTE_VALUES: &[(&str, &[(&str, &[Entry])])] = &[(
             Entry { name: "textarea", detail: "a multi-line field", doc: "Enter inserts a newline instead of being ignored, and the box scrolls its own content." },
             Entry { name: "password", detail: "a masked field", doc: "Shows bullets, refuses Copy and Cut, and asks a phone's keyboard not to learn what is typed. The bound signal holds the real text." },
             Entry { name: "search", detail: "a field whose action key searches", doc: "A one-line field in every other respect." },
+            Entry { name: "number", detail: "a number field", doc: "The bound signal always holds a number. While what is typed is not one yet (`-`, `1.`, nothing) the signal keeps its last number and the field shows the typing; leaving the field shows the number again. A phone raises a signed decimal keyboard." },
+            Entry { name: "date", detail: "a day", doc: "The bound signal holds `YYYY-MM-DD`, as HTML's does, or is empty. A phone opens the platform's date picker; a desktop types the date, and only a real day inside `min` and `max` reaches the signal." },
             Entry { name: "select", detail: "a dropdown", doc: "Shows the bound value and opens a list on tap. Takes its choices from `:options`." },
             Entry { name: "checkbox", detail: "a tap-toggle", doc: "No caret and no focus of its own: a tap flips the bound value, and `:checked` matches it. Space or Enter activates it when tabbed to." },
+            Entry { name: "switch", detail: "an on/off switch", doc: "A checkbox that draws as a track and a thumb and is announced as a switch. `:checked` matches it on; `accent-color` colours the track when on." },
+            Entry { name: "slider", detail: "a number along a track", doc: "Bound to a number between `min` and `max`, in steps of `step`. A tap puts the thumb where it lands and a sideways drag moves it; a vertical swipe still scrolls the page. `@input` fires as it moves, `@change` when the finger lifts. `accent-color` colours it." },
             Entry { name: "radio", detail: "one of a group", doc: "Radios sharing a `name` are one group, so choosing one clears the others. Carries the chosen value in `value`." },
         ],
     ), (
@@ -477,6 +489,7 @@ const CSS_PROPERTY_DOCS: &[Entry] = &[
     Entry { name: "background", detail: "the colour or gradient behind the content", doc: "A colour, `linear-gradient(…)` or `radial-gradient(…)`. `url()` is not supported; use `<image>` for a picture." },
     Entry { name: "background-color", detail: "a flat colour behind the content", doc: "Animatable, so it is what a hover or pressed state usually changes." },
     Entry { name: "background-image", detail: "a gradient behind the content", doc: "`linear-gradient` and `radial-gradient` only." },
+    Entry { name: "accent-color", detail: "the colour a control is drawn in", doc: "A switch's track when on, and a slider's fill and thumb. Not inherited." },
     Entry { name: "color", detail: "the colour of the text", doc: "Inherited, so setting it on a container covers the text inside. Animatable." },
     Entry { name: "font-size", detail: "how large the text is", doc: "Also the reference for `em` on this box, so changing it moves anything sized in `em`." },
     Entry { name: "font-weight", detail: "how heavy the text is", doc: "`normal`, `bold`, `lighter`, `bolder`, or a number from 100 to 900." },
@@ -536,6 +549,7 @@ const CSS_PROPERTY_USAGE: &[(&str, &str)] = &[
     ("border-width", ".field { border-width: 2px; }"),
     ("bottom", ".bar { position: fixed; bottom: 0; }"),
     ("box-shadow", ".modal { box-shadow: 0 8px 24px #00000066; }"),
+    ("accent-color", ".volume { accent-color: #f38ba8; }"),
     ("color", ".label { color: #cdd6f4; }"),
     ("column-gap", ".grid { column-gap: 8px; }"),
     ("cursor", ".send { cursor: pointer; }"),
@@ -974,7 +988,8 @@ mod tests {
             .collect();
         assert!(
             extra.is_empty(),
-            "these are described and not honored: {extra:?}. The editor would be              offering help for a property the runtime warns does nothing."
+            "these are described and not honored: {extra:?}. The editor would be \
+             offering help for a property the runtime warns does nothing."
         );
     }
 
@@ -1011,7 +1026,8 @@ mod tests {
         for e in CSS_PROPERTY_DOCS {
             assert!(
                 !e.detail.contains("honored"),
-                "`{}` is described as \"{}\", which says the editor approves of the                  word and nothing about what it does",
+                "`{}` is described as \"{}\", which says the editor approves of the \
+                 word and nothing about what it does",
                 e.name,
                 e.detail
             );

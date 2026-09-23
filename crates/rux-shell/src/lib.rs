@@ -149,6 +149,10 @@ enum RuxEvent {
     /// could have moved it.
     #[cfg(target_os = "android")]
     AndroidSelect { index: Option<usize> },
+    /// The platform date picker closed: the day chosen as `YYYY-MM-DD`, or
+    /// `None` if it was dismissed. The field is in [`App::pending_date`].
+    #[cfg(target_os = "android")]
+    AndroidDate { value: Option<String> },
     /// Assistive technology asked us something (it attached, it wants the
     /// tree, it moved focus). Delivered through the same proxy as hot-reload.
     #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
@@ -425,6 +429,9 @@ struct GesturePress {
     /// The element's top-left in logical px, so every coordinate handed to a
     /// handler is relative to the element it was written on.
     origin: (f32, f32),
+    /// The element's width and height, handed over beside the position so a
+    /// handler can say how far across it the pointer is.
+    size: (f32, f32),
     handlers: Vec<(rux_layout::Gesture, String)>,
     instance: Option<String>,
     /// Where the press landed, in window-global logical px.
@@ -805,6 +812,9 @@ fn to_accesskit_role(role: AccessRole) -> Role {
         AccessRole::Button => Role::Button,
         AccessRole::CheckBox => Role::CheckBox,
         AccessRole::RadioButton => Role::RadioButton,
+        AccessRole::Switch => Role::Switch,
+        AccessRole::Slider => Role::Slider,
+        AccessRole::DateInput => Role::DateInput,
         AccessRole::TextInput => Role::TextInput,
         AccessRole::MultilineTextInput => Role::MultilineTextInput,
         AccessRole::ComboBox => Role::ComboBox,
@@ -869,6 +879,9 @@ fn access_tree(nodes: &[AccessNode], focused_model: Option<&str>, scale: f64, ti
                 | AccessRole::Link
                 | AccessRole::CheckBox
                 | AccessRole::RadioButton
+                | AccessRole::Switch
+                | AccessRole::Slider
+                | AccessRole::DateInput
                 | AccessRole::TextInput
                 | AccessRole::MultilineTextInput
                 | AccessRole::ComboBox
@@ -1343,6 +1356,10 @@ struct App {
     /// The focused field's value when it was focused or last committed:
     /// `@change` fires when the value being committed differs from this.
     committed: Option<String>,
+    /// A `type="number"` or `type="date"` part way through being typed: the
+    /// text it shows, and the bound value as text when that was written. See
+    /// [`App::focused_value`].
+    typed_draft: Option<(String, String)>,
     /// `@input`, `@change`, `@focus` and `@blur` waiting to run: handler,
     /// instance, and the `event` it is handed. See [`App::flush_field_events`].
     field_events: std::collections::VecDeque<(String, Option<String>, rux_reactive::Value)>,
@@ -1375,6 +1392,10 @@ struct App {
     /// rebuilt while the picker was up.
     #[cfg(target_os = "android")]
     pending_select: Option<(String, Option<String>, Option<String>, Vec<String>)>,
+    /// The `type="date"` a platform date picker is open for: its model, row,
+    /// instance and `@change`, held for the same reason as `pending_select`.
+    #[cfg(target_os = "android")]
+    pending_date: Option<(String, Option<String>, Option<String>, Option<String>)>,
     /// Caret position in the focused input, as a byte index into its value.
     caret: usize,
     /// Where the current selection started, as a byte index. Equal to `caret`
@@ -1502,6 +1523,7 @@ impl App {
             focused_kind: InputKind::Text,
             focused_field: Field::default(),
             committed: None,
+            typed_draft: None,
             field_events: std::collections::VecDeque::new(),
             autofocus_seen: Vec::new(),
             #[cfg(target_os = "android")]
@@ -1510,6 +1532,8 @@ impl App {
             open_select: None,
             #[cfg(target_os = "android")]
             pending_select: None,
+            #[cfg(target_os = "android")]
+            pending_date: None,
             caret: 0,
             anchor: 0,
             overlay_dismissed: None,
@@ -2193,6 +2217,12 @@ impl App {
         let Some(region) = self.focuses.iter().rev().find(|f| f.contains(fx, fy)).cloned() else {
             return false;
         };
+        // A date on a phone is not typed into: the tap opens the platform's
+        // picker, in `dispatch_tap`.
+        #[cfg(target_os = "android")]
+        if region.kind == InputKind::Date {
+            return false;
+        }
 
         // A tap also moves keyboard focus, so Tab continues from what you clicked.
         self.focus_index = self.focusables.iter().rposition(|f| f.contains(fx, fy));
@@ -2627,6 +2657,30 @@ impl App {
         // (topmost focusable under the pointer, or nothing on empty space).
         self.focus_index = self.focusables.iter().rposition(|f| f.contains(fx, fy));
 
+        // A tap on a date on a phone opens the platform's date picker. On the
+        // tap rather than the press (see `press_text`), so a scroll that
+        // happens to start on the field scrolls. A read-only date shows its
+        // day and offers no picker, as a read-only field offers no keyboard.
+        #[cfg(target_os = "android")]
+        if let Some(region) = self
+            .focuses
+            .iter()
+            .rev()
+            .find(|f| f.kind == InputKind::Date && f.contains(fx, fy))
+            .cloned()
+        {
+            if !region.field.readonly {
+                let value =
+                    self.document.value_in(&region.model, region.row.as_deref(), region.instance.as_deref());
+                let (min, max) = (region.field.min, region.field.max);
+                self.pending_date =
+                    Some((region.model, region.row, region.instance, region.field.on_change));
+                self.set_focus(None);
+                android_open_date(&value, min, max);
+            }
+            return;
+        }
+
         // A tap on a closed select opens its dropdown.
         if let Some(sel) = self.selects.iter().find(|s| s.contains(fx, fy)) {
             // **On a phone the platform owns this control**, which the spec has
@@ -2676,16 +2730,19 @@ impl App {
             // `@drag` is hit-testable but is not a tap target, and letting it
             // swallow the tap would hide the button underneath it.
             .find(|h| h.on_tap.is_some() && h.contains(px as f32, py as f32))
-            .map(|h| (h.on_tap.clone().unwrap_or_default(), h.instance.clone(), (h.x, h.y)));
+            .map(|h| {
+                let rect = ((h.x, h.y), (h.width, h.height));
+                (h.on_tap.clone().unwrap_or_default(), h.instance.clone(), rect)
+            });
 
-        if let Some((src, instance, origin)) = handler {
+        if let Some((src, instance, (origin, size))) = handler {
             // Patch in place when the change is display-only; rebuild only when it
             // touches structure/attributes/input values. Either way, repaint.
             //
             // The instance travels with the handler because two instances of one
             // component carry identical handler text: the string alone cannot
             // say whose state to run it against.
-            let event = self.pointer_event(fx, fy, origin);
+            let event = self.pointer_event(fx, fy, origin, size);
             if self.document.apply_handler_with_event(&src, instance.as_deref(), &event) {
                 self.request_redraw();
             }
@@ -2703,8 +2760,11 @@ impl App {
             .iter()
             .rev()
             .find(|h| !h.gestures.is_empty() && h.contains(fx, fy))
-            .map(|h| (h.gestures.clone(), h.instance.clone(), (h.x, h.y), h.touch_action));
-        let Some((handlers, instance, origin, touch_action)) = found else {
+            .map(|h| {
+                let rect = ((h.x, h.y), (h.width, h.height));
+                (h.gestures.clone(), h.instance.clone(), rect, h.touch_action)
+            });
+        let Some((handlers, instance, (origin, size), touch_action)) = found else {
             self.gesture = None;
             self.gesture_deadline = None;
             return;
@@ -2712,6 +2772,7 @@ impl App {
         let listening_long = handlers.iter().any(|(g, _)| *g == rux_layout::Gesture::LongPress);
         self.gesture = Some(GesturePress {
             origin,
+            size,
             handlers,
             instance,
             start: (fx, fy),
@@ -2849,7 +2910,7 @@ impl App {
     ) {
         let Some(press) = self.gesture.clone() else { return };
         let Some((_, body)) = press.handlers.iter().find(|(g, _)| *g == kind) else { return };
-        let mut event = self.pointer_event(fx, fy, press.origin);
+        let mut event = self.pointer_event(fx, fy, press.origin, press.size);
         if let rux_reactive::Value::Map(fields) = &mut event {
             fields.extend(extra);
         }
@@ -2872,7 +2933,17 @@ impl App {
     /// with id 0. The shape does not change when a second finger arrives, which
     /// is the point: pinch and rotate can be added later without rewriting what
     /// every existing handler reads.
-    fn pointer_event(&self, fx: f32, fy: f32, origin: (f32, f32)) -> rux_reactive::Value {
+    ///
+    /// `width` and `height` are the element's own, so "how far across" is
+    /// `event.x / event.width` with nothing else to look up. A slider is
+    /// built on exactly that.
+    fn pointer_event(
+        &self,
+        fx: f32,
+        fy: f32,
+        origin: (f32, f32),
+        size: (f32, f32),
+    ) -> rux_reactive::Value {
         use rux_reactive::Value;
         let touches: Vec<Value> = self
             .points
@@ -2893,6 +2964,8 @@ impl App {
             // moving under the finger, or anything comparing two elements.
             ("pageX".to_string(), Value::Number(fx as f64)),
             ("pageY".to_string(), Value::Number(fy as f64)),
+            ("width".to_string(), Value::Number(size.0 as f64)),
+            ("height".to_string(), Value::Number(size.1 as f64)),
             ("touches".to_string(), Value::List(touches)),
         ])
     }
@@ -3503,10 +3576,34 @@ impl App {
     /// `Variable not found` warning, which is how a row's field looked editable
     /// and swallowed every keystroke.
     fn focused_value(&mut self) -> String {
+        let value = self.focused_signal_text();
+        // A number or date field's draft is its text for as long as the signal still
+        // holds what the draft wrote. A handler that writes the signal has
+        // said what the field holds, and the draft gives way to it.
+        match self.typed_draft.take() {
+            Some((draft, written)) if written == value => {
+                self.typed_draft = Some((draft.clone(), written));
+                draft
+            }
+            Some(_) => {
+                self.document.set_draft(None);
+                value
+            }
+            None => value,
+        }
+    }
+
+    /// The focused field's bound value, as text, whatever the field shows.
+    fn focused_signal_text(&mut self) -> String {
         let Some(model) = self.focused.clone() else { return String::new() };
         let row = self.focused_row.clone();
         let instance = self.focused_instance.clone();
         self.document.value_in(&model, row.as_deref(), instance.as_deref())
+    }
+
+    /// Whether the focused field is a `type="number"`.
+    fn focused_is_number(&self) -> bool {
+        self.focused_region().is_some_and(|r| r.kind == InputKind::Number)
     }
 
     /// Write the focused input's value back, in that same scope, as far as the
@@ -3537,10 +3634,27 @@ impl App {
         let row = self.focused_row.clone();
         let instance = self.focused_instance.clone();
         let old = self.document.value_in(&model, row.as_deref(), instance.as_deref());
+        // What the field shows, which `maxlength` measures: a number's draft.
+        let shown = self.focused_value();
         let (value, caret) = match field.maxlength.filter(|_| !composing) {
-            Some(max) => fit_length(&old, value, caret, max),
+            Some(max) => fit_length(&shown, value, caret, max),
             None => (value.to_string(), caret),
         };
+        if let Some(kind) = self.focused_region().map(|r| r.kind).filter(|k| k.typed()) {
+            // Only a number, or a date, reaches the signal. Whatever was
+            // typed stays in the field as its draft, valid or not, so no
+            // keystroke is lost.
+            if let Some(typed) = typed_value(kind, &value, &field) {
+                self.document.apply_value_in(&model, row.as_deref(), instance.as_deref(), &typed);
+            }
+            let written = self.document.value_in(&model, row.as_deref(), instance.as_deref());
+            if written != old {
+                self.queue_field_event(field.on_input.as_deref(), &written);
+            }
+            self.typed_draft = Some((value.clone(), written));
+            self.document.set_draft(Some(value.clone()));
+            return Some((value, caret));
+        }
         self.document.apply_edit_in(&model, row.as_deref(), instance.as_deref(), &value);
         if value != old {
             self.queue_field_event(field.on_input.as_deref(), &value);
@@ -3557,16 +3671,31 @@ impl App {
 
     /// Queue a field handler, if there is one, handed `event.value`. Runs in
     /// the focused field's instance.
+    ///
+    /// A number field hands over its number, not the text it came from, so
+    /// `event.value` is what the signal holds.
     fn queue_field_event(&mut self, body: Option<&str>, value: &str) {
+        if body.is_none() {
+            return;
+        }
+        let value = match self.focused.clone() {
+            Some(model) if self.focused_is_number() => self
+                .document
+                .typed_value_in(&model, self.focused_row.as_deref(), self.focused_instance.as_deref())
+                .unwrap_or_else(|| rux_reactive::Value::Text(value.to_string())),
+            _ => rux_reactive::Value::Text(value.to_string()),
+        };
         self.queue_field_event_in(body, self.focused_instance.clone(), value);
     }
 
-    fn queue_field_event_in(&mut self, body: Option<&str>, instance: Option<String>, value: &str) {
+    fn queue_field_event_in(
+        &mut self,
+        body: Option<&str>,
+        instance: Option<String>,
+        value: rux_reactive::Value,
+    ) {
         let Some(body) = body else { return };
-        let event = rux_reactive::Value::Map(vec![(
-            "value".to_string(),
-            rux_reactive::Value::Text(value.to_string()),
-        )]);
+        let event = rux_reactive::Value::Map(vec![("value".to_string(), value)]);
         self.field_events.push_back((body.to_string(), instance, event));
     }
 
@@ -3592,7 +3721,8 @@ impl App {
             if ran == MAX_FIELD_EVENTS {
                 self.field_events.clear();
                 rux_runtime::warn_script(format!(
-                    "field events were still firing after {MAX_FIELD_EVENTS} handlers and have                      been stopped; a @focus or @blur is probably moving focus back and forth"
+                    "field events were still firing after {MAX_FIELD_EVENTS} handlers and have \
+                     been stopped; a @focus or @blur is probably moving focus back and forth"
                 ));
                 break;
             }
@@ -3646,6 +3776,7 @@ impl App {
         let before = self.document.value_in(model, row.as_deref(), instance.as_deref());
         self.document.apply_edit_in(model, row.as_deref(), instance.as_deref(), option);
         if before != option {
+            let option = rux_reactive::Value::Text(option.to_string());
             self.queue_field_event_in(on_change.as_deref(), instance, option);
         }
     }
@@ -3656,7 +3787,9 @@ impl App {
         if self.focused.is_none() {
             return;
         }
-        let value = self.focused_value();
+        // The bound value, not what the field shows: a number field's draft
+        // `1.` commits the `1` it holds.
+        let value = self.focused_signal_text();
         if self.committed.as_deref() != Some(value.as_str()) {
             let change = self.focused_field.on_change.clone();
             self.queue_field_event(change.as_deref(), &value);
@@ -3751,9 +3884,12 @@ impl App {
             if self.focused.is_some() {
                 self.commit_focused();
                 let blur = self.focused_field.on_blur.clone();
-                let value = self.focused_value();
+                let value = self.focused_signal_text();
                 self.queue_field_event(blur.as_deref(), &value);
             }
+            // A draft ends with its field. The document drops its own copy
+            // when its focus moves.
+            self.typed_draft = None;
         }
         self.focused = focus.as_ref().map(|f| f.model.clone());
         self.focused_row = focus.as_ref().and_then(|f| f.row.clone());
@@ -3771,7 +3907,7 @@ impl App {
             self.focused_field = self.focused_region().map(|r| r.field.clone()).unwrap_or_default();
             self.committed = None;
             if self.focused.is_some() {
-                let value = self.focused_value();
+                let value = self.focused_signal_text();
                 let focus = self.focused_field.on_focus.clone();
                 self.queue_field_event(focus.as_deref(), &value);
                 self.committed = Some(value);
@@ -3828,6 +3964,10 @@ impl App {
                 (true, InputKind::Textarea) => KIND_TEXTAREA,
                 (true, InputKind::Password) => KIND_PASSWORD,
                 (true, InputKind::Search) => KIND_SEARCH,
+                (true, InputKind::Number) => KIND_NUMBER,
+                // Opened as a picker, never typed into on a phone; a text
+                // keyboard if a hardware Tab lands on one.
+                (true, InputKind::Date) => KIND_TEXT,
             };
             // `inputmode` and `enterkeyhint` ride in the upper bytes, so one
             // native call still answers everything the `EditorInfo` needs.
@@ -3982,7 +4122,13 @@ impl App {
         }
         // The keyboard the field asks for, said to the browser in the words it
         // already reads, so a phone's keyboard matches the one Android raises.
-        let _ = el.set_attribute("inputmode", self.focused_field.keyboard.name());
+        // A number field with no `inputmode` of its own asks for `decimal`,
+        // the closest a browser has to a number keyboard on a text input.
+        let keyboard = match self.focused_field.keyboard {
+            Keyboard::Text if self.focused_is_number() => Keyboard::Decimal,
+            other => other,
+        };
+        let _ = el.set_attribute("inputmode", keyboard.name());
         match self.focused_field.enter_key.name() {
             Some(hint) => {
                 let _ = el.set_attribute("enterkeyhint", hint);
@@ -4988,6 +5134,18 @@ impl ApplicationHandler<RuxEvent> for App {
                             .find(|s| s.model == model && s.row == row && s.instance == instance)
                             .and_then(|s| s.field.on_change.clone());
                         self.choose_option(&model, row, instance, option, change);
+                    }
+                    self.request_redraw();
+                }
+            }
+
+            // A date is committed as it is chosen, as a select is, so the
+            // same write serves it: `@change` if the day moved.
+            #[cfg(target_os = "android")]
+            RuxEvent::AndroidDate { value } => {
+                if let Some((model, row, instance, change)) = self.pending_date.take() {
+                    if let Some(value) = value {
+                        self.choose_option(&model, row, instance, &value, change);
                     }
                     self.request_redraw();
                 }
@@ -6046,6 +6204,36 @@ fn floor_char_boundary(s: &str, mut index: usize) -> usize {
     index
 }
 
+/// What a number or date field's text writes to its signal, if it is one
+/// yet: a number, or a date inside the field's `min` and `max`, written back
+/// the way HTML writes one.
+fn typed_value(kind: InputKind, text: &str, field: &Field) -> Option<rux_reactive::Value> {
+    match kind {
+        InputKind::Number => parse_number(text).map(rux_reactive::Value::Number),
+        InputKind::Date => rux_layout::parse_date(text)
+            .filter(|d| field.min.is_none_or(|min| *d >= min))
+            .filter(|d| field.max.is_none_or(|max| *d <= max))
+            .map(|d| rux_reactive::Value::Text(rux_layout::format_date(d))),
+        _ => None,
+    }
+}
+
+/// What a `type="number"` field's text means as a number, if it is one yet.
+///
+/// Not Rust's parse alone, which also reads `inf`, `NaN` and `infinity`: a
+/// field is typed into, and those are words. A comma is read as the decimal
+/// point when there is no point already, because a phone keyboard in much of
+/// the world offers only the comma.
+fn parse_number(text: &str) -> Option<f64> {
+    let text = text.trim();
+    let numeric = |c: char| matches!(c, '0'..='9' | '.' | ',' | '-' | '+' | 'e' | 'E');
+    if text.is_empty() || !text.chars().all(numeric) {
+        return None;
+    }
+    let text = if text.contains('.') { text.to_string() } else { text.replacen(',', ".", 1) };
+    text.parse::<f64>().ok().filter(|n| n.is_finite())
+}
+
 /// Cut an edit short so the field holds at most `max` UTF-16 code units, the
 /// unit HTML's `maxlength` counts in. Returns the value and where `caret` (a
 /// byte index into `new`) lands in it.
@@ -7053,6 +7241,10 @@ const KIND_PASSWORD: i32 = 2;
 #[cfg(target_os = "android")]
 const KIND_SEARCH: i32 = 3;
 
+/// `type="number"`: digits, a sign and a decimal point. See [`FOCUSED_KIND`].
+#[cfg(target_os = "android")]
+const KIND_NUMBER: i32 = 4;
+
 /// What kind of field has focus, so Android can raise the right keyboard.
 ///
 /// **An `EditorInfo` is the only thing an app ever tells an input method about
@@ -7348,6 +7540,31 @@ fn android_open_select(options: &[String], selected: Option<usize>) {
     });
 }
 
+/// Ask the platform for a day, starting on `value` (`YYYY-MM-DD`, or empty
+/// for today) and limited to `min` and `max`. Answered through
+/// [`Java_dev_ruxlang_shell_RuxActivity_nativeDateChosen`], like the select.
+#[cfg(target_os = "android")]
+fn android_open_date(value: &str, min: Option<(i32, u32, u32)>, max: Option<(i32, u32, u32)>) {
+    let Ok(activity) = ACTIVITY.lock() else { return };
+    let Some(activity) = activity.as_ref() else { return };
+    let ctx = ndk_context::android_context();
+    // Safety: as in `android_set_text_input`, which records the reasoning.
+    let vm = unsafe { jni::JavaVM::from_raw(ctx.vm().cast()) };
+    let limit = |d: Option<(i32, u32, u32)>| d.map(rux_layout::format_date).unwrap_or_default();
+    let _ = vm.attach_current_thread(|env| {
+        let value = env.new_string(value)?;
+        let min = env.new_string(limit(min))?;
+        let max = env.new_string(limit(max))?;
+        env.call_method(
+            activity,
+            jni::jni_str!("ruxOpenDate"),
+            jni::jni_sig!("(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)V"),
+            &[jni::JValue::Object(&value), jni::JValue::Object(&min), jni::JValue::Object(&max)],
+        )?;
+        Ok::<(), jni::errors::Error>(())
+    });
+}
+
 /// Put `text` on Android's clipboard, and say whether it got there.
 ///
 /// `false` for any failure, the activity not yet handed over included, because
@@ -7430,6 +7647,33 @@ pub extern "system" fn Java_dev_ruxlang_shell_RuxActivity_nativeSelectChosen(
     if let Ok(proxy) = PROXY.lock() {
         if let Some(proxy) = proxy.as_ref() {
             let _ = proxy.send_event(RuxEvent::AndroidSelect { index });
+        }
+    }
+}
+
+/// The platform date picker closed. Called from Java, on Android's main
+/// thread, with the month counting from 1, or `-1` in all three for a
+/// dismissal.
+///
+/// # Safety
+///
+/// Called by the JVM, with the signature declared in `RuxActivity.java`.
+/// Raw pointers for the reason [`Java_dev_ruxlang_shell_RuxActivity_nativeSelectChosen`]
+/// records.
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "system" fn Java_dev_ruxlang_shell_RuxActivity_nativeDateChosen(
+    _env: *mut std::ffi::c_void,
+    _class: *mut std::ffi::c_void,
+    year: i32,
+    month: i32,
+    day: i32,
+) {
+    let value = (year > 0 && month > 0 && day > 0)
+        .then(|| rux_layout::format_date((year, month as u32, day as u32)));
+    if let Ok(proxy) = PROXY.lock() {
+        if let Some(proxy) = proxy.as_ref() {
+            let _ = proxy.send_event(RuxEvent::AndroidDate { value });
         }
     }
 }
@@ -7521,6 +7765,35 @@ mod tests {
 
     fn warned(message: &str) -> Diagnostics {
         Diagnostics { warnings: vec![Warning::new(message)], ..Diagnostics::default() }
+    }
+
+    /// What a number field makes of its text: a number once it is one, and
+    /// nothing while it is on the way to one. The words Rust would also
+    /// read as numbers are words here.
+    #[test]
+    fn a_number_field_reads_numbers_and_only_numbers() {
+        assert_eq!(parse_number("42"), Some(42.0));
+        assert_eq!(parse_number(" -3.5 "), Some(-3.5));
+        assert_eq!(parse_number("1."), Some(1.0));
+        assert_eq!(parse_number(".5"), Some(0.5));
+        assert_eq!(parse_number("2,5"), Some(2.5), "a comma is a decimal point");
+        assert_eq!(parse_number("1e3"), Some(1000.0));
+        for draft in ["", "-", ".", "+", "1e", "abc", "inf", "NaN", "1.2.3", "1,000.5,"] {
+            assert_eq!(parse_number(draft), None, "{draft:?} is not a number yet");
+        }
+    }
+
+    /// A date field writes a day only once it is one, inside its range,
+    /// padded the way HTML writes it.
+    #[test]
+    fn a_date_field_writes_only_real_days_in_range() {
+        let field = Field { min: Some((2026, 1, 1)), max: Some((2026, 12, 31)), ..Field::default() };
+        let date = |text: &str| typed_value(InputKind::Date, text, &field);
+        assert_eq!(date("2026-9-3"), Some(rux_reactive::Value::Text("2026-09-03".into())));
+        assert_eq!(date("2026-09"), None, "not a day yet");
+        assert_eq!(date("2025-12-31"), None, "before min");
+        assert_eq!(date("2027-01-01"), None, "after max");
+        assert_eq!(typed_value(InputKind::Text, "2026-09-03", &field), None, "text is not typed");
     }
 
     fn focusable(y: f32, scroll: Option<usize>) -> FocusItem {
