@@ -1997,6 +1997,38 @@ guarded to redirect to `/login`. Under test in `manifest.rs`, `apk.rs`,
 | A verified https link | a real domain serving the file | Tapping `https://<host>/x` in a browser opens the app on `/x` with no chooser | not driven: needs a served domain |
 | A link tapped in a browser | phone, Chrome | `myapp://x` in a page opens the app | not driven |
 
+## Inputs in a phone's browser, 2026-09-24
+
+The web half of the inputs plan: everything the Android app learned in phases
+2 to 7, checked against the web build. Driven in Edge on the desktop with
+touch emulation over CDP (`pointer: coarse` true, taps as touch events), which
+exercises the shipped build but not a real phone keyboard. The page is
+`rux-harness/web-parity/` (outside the repo), with a driver that reads the
+hidden input, the pickers and session storage back as text.
+
+Before this the audit found: Enter did nothing at all (no submit, no Next, no
+new line in a textarea), select and date opened drawn controls, a discarded
+tab came back empty, and `env(safe-area-inset-*)` and `prefers-reduced-motion`
+always answered "none". Driving it found one more: a textarea's text went
+through a hidden `<input>`, which drops line feeds, so the first letter typed
+after a new line flattened the whole text.
+
+| Case | Steps | Expected | Result |
+|---|---|---|---|
+| Next | tap the first of two form fields, Enter | the second field takes the caret; the key reads Next, then Go | Edge touch: pass |
+| Go submits | Enter in the second field | `@submit` runs with both values | Edge touch: pass |
+| Done outside a form | tap a loose field, Enter | the key reads Done, the keyboard goes | Edge touch: pass (hidden input blurred) |
+| Textarea new line | tap a textarea, Enter, type `x` | `note`, new line, `x` in the field and the signal | Edge touch: pass after the `<textarea>` twin |
+| Select | tap a select | the browser's own picker, on the current option; choosing fires `@change` | Edge touch: picker element shown with the options; choice by script: pass |
+| Date | tap a date | the browser's date picker with `min` and `max`; choosing fires `@change` | Edge touch: pass (choice by script) |
+| Password | tap a password field | hidden input is `type="password"` | Edge touch: pass |
+| Reload keeps the page | type in a field, reload | the field comes back focused, with its text and caret; other fields keep theirs | Edge touch: pass |
+| A new visit starts fresh | type, then open the address again | nothing restored | Edge touch: pass |
+| Keyboard over a low field | phone, Chrome, tap the lowest field | the page shortens and the field stays above the keyboard | not driven: needs a phone |
+| Pickers on a phone | phone, Chrome | the native select sheet and date dialog, by hand | not driven: needs a phone |
+| Safe area | phone with a notch, built page | `env(safe-area-inset-top)` non-zero | not driven: needs a phone |
+| Gboard in Chrome | phone | composition, Backspace, Next/Go labels on the real keyboard | not driven: needs a phone |
+
 ## Standing gaps
 
 Cases nothing here can currently exercise. They are the shape of what v0.8 has

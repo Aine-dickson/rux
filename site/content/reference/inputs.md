@@ -46,7 +46,9 @@ desktop and a browser emulation on a phone: it does not fling, does not dismiss
 on Back, and is not announced as a picker by a screen reader. Dismissing the
 dialog, by Back or by tapping outside, leaves the value alone. `:options` and
 `r-model` are the same either way, so a document never knows which it got.
-`background-size` and native mobile pickers are not done.
+**A phone's browser opens its own picker too**, from a hidden `<select>` laid
+over the field, and a browser with a mouse keeps the drawn dropdown.
+`background-size` is not done.
 
 **Keyboard focus:** **Tab** / **Shift+Tab** move focus through every
 interactive element (text/textarea/select inputs, buttons, checkboxes, radios) in

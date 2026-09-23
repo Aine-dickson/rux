@@ -224,6 +224,15 @@ signals, and one that refuses or redirects sends the app there as an arrival,
 with the rest of the old history dropped. A password field comes back focused
 and empty. **Signals are not kept**: an app's data is its own to save.
 
+**After a phone's browser discards the tab.** A browser does to a background
+tab what Android does to a background app, and brings it back by loading the
+page again. A web app that owns its address (`start` was given a `base`, as a
+built app's page is) keeps the same state in the tab's session storage, and
+puts it back when the page is reloaded, walked back or forward to, or restored
+after a discard. A link followed or an address typed is a new visit and starts
+fresh, and so does a page whose URL no longer names the route that was on
+screen. The playground keeps nothing, since it runs whatever is typed into it.
+
 **Route guards.** `guard="expr"` on a `<router>` runs on every navigation; on a
 `<route>` it runs whenever that route is part of what matched, so a guard on a
 section covers every page inside it without being written on each one. Outermost

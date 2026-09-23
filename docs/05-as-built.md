@@ -955,7 +955,9 @@ Four names, `safe-area-inset-top`, `-right`, `-bottom` and `-left`, resolving to
 a length. **On a desktop window every one of them is zero**, and zero is an
 answer rather than a placeholder: a window that owns its whole surface has no
 unsafe edges, so the same stylesheet is correct in both places and the phone
-simply has more to avoid.
+simply has more to avoid. **In a browser they are the browser's own**, which
+are zero unless the page draws under the notch with `viewport-fit=cover`; the
+page `rux build --target web` writes does.
 
 It resolves wherever `var()` does, a custom property's own value included, so
 `--gutter: env(safe-area-inset-bottom)` is the way to write it once. A fallback
@@ -1002,7 +1004,8 @@ re-cascades at all. Driven in `examples/responsive.rux`.
 that has a notion of one answers, and a change made while the app is running
 arrives as an event, so flipping the system between light and dark repaints
 within a frame. `prefers-reduced-motion` is asked of Windows directly, since
-winit exposes nothing for it, and it is re-read when the environment is next
+winit exposes nothing for it, and of the browser's own media query on the web
+(Android does not ask yet, and reads "no preference"). It is re-read when the environment is next
 rebuilt, which is at startup and on a resize: turning that setting off
 mid-session is not noticed until then. A stylesheet that never mentions reduced
 motion is stilled anyway, because honoring only the written query would leave
@@ -1212,7 +1215,9 @@ desktop and a browser emulation on a phone: it does not fling, does not dismiss
 on Back, and is not announced as a picker by a screen reader. Dismissing the
 dialog, by Back or by tapping outside, leaves the value alone. `:options` and
 `r-model` are the same either way, so a document never knows which it got.
-`background-size` and native mobile pickers are not done.
+**A phone's browser opens its own picker too**, from a hidden `<select>` laid
+over the field, and a browser with a mouse keeps the drawn dropdown.
+`background-size` is not done.
 
 **Keyboard focus:** **Tab** / **Shift+Tab** move focus through every
 interactive element (text/textarea/select inputs, buttons, checkboxes, radios) in
@@ -1297,7 +1302,8 @@ error naming the line.
 
 `<input type="date" r-model="due" min="2026-01-01" max="2026-12-31">` holds a
 day as `YYYY-MM-DD`, the format HTML's date input holds, or an empty string.
-**On Android a tap opens the platform's date picker**, starting on the day the
+**On Android, and in a phone's browser, a tap opens the platform's date
+picker**, starting on the day the
 field holds (today when empty) and offering only the days between `min` and
 `max`. Choosing commits at once and fires `@change`, as a select does;
 dismissing leaves the day alone. A read-only date offers no picker. Elsewhere,
@@ -1307,8 +1313,8 @@ written back as `2026-09-03`), and anything short of one stays in the field. A
 `min` or `max` that is not a date is an error.
 
 Not yet: arrow keys on a focused slider, a thumb that slides rather than jumps
-between the switch's two ends, a drawn date picker on desktop, and the
-browser's own date picker on the web.
+between the switch's two ends, and a drawn date picker on desktop or in a
+browser with a mouse.
 
 ### Field attributes and events
 
@@ -1402,7 +1408,10 @@ fills every field it has a value for, and the caret menu offers Autofill. A
 fill is `@input` then `@change`, as a browser fires them. When a form's
 `@submit` runs, the service may ask to save what was typed, which is where
 "Save password?" comes from. In a browser, the hidden input the keyboard types
-into carries the focused field's `autocomplete`.
+into carries the focused field's `autocomplete`, and is a `type="password"`
+input while a password field has focus, so the keyboard neither suggests nor
+learns it. A browser's password manager is not offered a form to save, because
+there is no `<form>` for it to see submitted.
 
 ### Forms
 
@@ -1421,7 +1430,8 @@ it, so a form inside another sends only its own fields.
 
 **Submitting.** Three things submit a form: a `<button type="submit">` inside
 it, after the button's own `@tap` has run, a keyboard's Enter in any of its
-one-line fields, and a phone's action key in its last typing field. Every field is checked first, and the outcome is one of two events on the
+one-line fields, and a phone's action key in its last typing field, in an app or in a
+phone's browser alike. Every field is checked first, and the outcome is one of two events on the
 form:
 
 | Event | When | `event` carries |
@@ -2268,6 +2278,15 @@ about that page, because the new process has only the first values of its
 signals, and one that refuses or redirects sends the app there as an arrival,
 with the rest of the old history dropped. A password field comes back focused
 and empty. **Signals are not kept**: an app's data is its own to save.
+
+**After a phone's browser discards the tab.** A browser does to a background
+tab what Android does to a background app, and brings it back by loading the
+page again. A web app that owns its address (`start` was given a `base`, as a
+built app's page is) keeps the same state in the tab's session storage, and
+puts it back when the page is reloaded, walked back or forward to, or restored
+after a discard. A link followed or an address typed is a new visit and starts
+fresh, and so does a page whose URL no longer names the route that was on
+screen. The playground keeps nothing, since it runs whatever is typed into it.
 
 **Route guards.** `guard="expr"` on a `<router>` runs on every navigation; on a
 `<route>` it runs whenever that route is part of what matched, so a guard on a

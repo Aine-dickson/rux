@@ -119,4 +119,10 @@ web-sys = { version = "0.3", features = [
     "History",
     "Location",
     "PopStateEvent",
+    # A phone browser's Enter, a textarea's new lines, its own select and date
+    # pickers, and where the app was when the tab was discarded.
+    "KeyboardEvent",
+    "HtmlSelectElement",
+    "HtmlTextAreaElement",
+    "Storage",
 ] }

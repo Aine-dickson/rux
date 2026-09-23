@@ -155,7 +155,11 @@ fn index_html(manifest: &Manifest) -> String {
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <!-- `viewport-fit=cover`: the app draws to the display's edges and keeps
+         clear of the notch with `env(safe-area-inset-*)`, as it does on a
+         phone. `interactive-widget=resizes-content`: the keyboard makes the
+         page shorter, so the app lays out above it, as it does on a phone. -->
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content" />
     <title>{title}</title>
     <style>
       html, body {{ height: 100%; margin: 0; background: #1e1e2e; }}
@@ -221,6 +225,17 @@ mod tests {
     fn the_page_names_the_canvas_the_generated_code_looks_for() {
         let html = index_html(&manifest("Task List"));
         assert!(html.contains(r#"<canvas id="rux">"#), "{html}");
+    }
+
+    #[test]
+    fn the_page_draws_to_the_edges_and_gives_way_to_the_keyboard() {
+        // Without `viewport-fit=cover` every safe-area inset reads 0 in a
+        // browser, and without `resizes-content` Chrome on a phone lays the
+        // keyboard over the page instead of shortening it, so a low field is
+        // typed into blind.
+        let html = index_html(&manifest("Task List"));
+        assert!(html.contains("viewport-fit=cover"), "{html}");
+        assert!(html.contains("interactive-widget=resizes-content"), "{html}");
     }
 
     #[test]

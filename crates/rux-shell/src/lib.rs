@@ -124,6 +124,13 @@ enum RuxEvent {
     /// has to be read back off the URL instead.
     #[cfg(target_arch = "wasm32")]
     WebRoute(Option<usize>),
+    /// Enter from a phone's keyboard, typed into the hidden input. It never
+    /// reaches the window as a key, because the canvas is not what has focus,
+    /// and an `<input>` does nothing with it on its own: before this a form
+    /// could not be submitted from a phone's browser, Next moved nowhere and a
+    /// textarea could not take a new line. The web half of `AndroidEnter`.
+    #[cfg(target_arch = "wasm32")]
+    WebEnter,
     /// An input method on Android edited the focused field.
     ///
     /// Carries the whole editing state rather than a keystroke, for the same
@@ -147,12 +154,12 @@ enum RuxEvent {
     /// [`App::pending_select`], because the answer has to be matched against
     /// the field as it was when the picker opened, and a rebuild in between
     /// could have moved it.
-    #[cfg(target_os = "android")]
-    AndroidSelect { index: Option<usize> },
+    #[cfg(any(target_os = "android", target_arch = "wasm32"))]
+    PickedSelect { index: Option<usize> },
     /// The platform date picker closed: the day chosen as `YYYY-MM-DD`, or
     /// `None` if it was dismissed. The field is in [`App::pending_date`].
-    #[cfg(target_os = "android")]
-    AndroidDate { value: Option<String> },
+    #[cfg(any(target_os = "android", target_arch = "wasm32"))]
+    PickedDate { value: Option<String> },
     /// A choice from the platform's text menu: one of the `MENU_ACTION_`
     /// codes. Share and the `PROCESS_TEXT` apps are Java's to run and never
     /// arrive here.
@@ -723,6 +730,19 @@ fn keyboard_px() -> u32 {
     #[cfg(not(target_os = "android"))]
     {
         0
+    }
+}
+
+/// Whether typing here is done on an on-screen keyboard: always on Android,
+/// on the web when the browser says its pointer is a finger.
+fn touch_first() -> bool {
+    #[cfg(target_arch = "wasm32")]
+    {
+        web_is_touch()
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        cfg!(target_os = "android")
     }
 }
 
@@ -1558,11 +1578,11 @@ struct App {
     /// The focus Android kept when it killed the app, waiting for the first
     /// frame that has fields to put it in: `Some(None)` when nothing had
     /// focus. See [`App::adopt_restored_focus`].
-    #[cfg(target_os = "android")]
+    #[cfg(any(target_os = "android", target_arch = "wasm32"))]
     restored_focus: Option<Option<rux_runtime::SavedFocus>>,
     /// The text Android kept for every other field, waiting for the same
     /// frame. See [`App::adopt_restored_fields`].
-    #[cfg(target_os = "android")]
+    #[cfg(any(target_os = "android", target_arch = "wasm32"))]
     restored_fields: Vec<rux_runtime::SavedField>,
     /// A dev build's documents, as the app last loaded them, for hot reload
     /// to patch. `None` in a release build, which never reloads.
@@ -1621,11 +1641,11 @@ struct App {
     /// test, this is a dialog the platform owns and will answer later. Held so
     /// the answer reaches the field that asked, since the tree may have been
     /// rebuilt while the picker was up.
-    #[cfg(target_os = "android")]
+    #[cfg(any(target_os = "android", target_arch = "wasm32"))]
     pending_select: Option<(String, Option<String>, Option<String>, Vec<String>)>,
     /// The `type="date"` a platform date picker is open for: its model, row,
     /// instance and `@change`, held for the same reason as `pending_select`.
-    #[cfg(target_os = "android")]
+    #[cfg(any(target_os = "android", target_arch = "wasm32"))]
     pending_date: Option<(String, Option<String>, Option<String>, Option<String>)>,
     /// Caret position in the focused input, as a byte index into its value.
     caret: usize,
@@ -1762,9 +1782,9 @@ impl App {
             decimal: '.',
             field_events: std::collections::VecDeque::new(),
             autofocus_seen: Vec::new(),
-            #[cfg(target_os = "android")]
+            #[cfg(any(target_os = "android", target_arch = "wasm32"))]
             restored_focus: None,
-            #[cfg(target_os = "android")]
+            #[cfg(any(target_os = "android", target_arch = "wasm32"))]
             restored_fields: Vec::new(),
             #[cfg(target_os = "android")]
             dev_files: None,
@@ -1784,9 +1804,9 @@ impl App {
             #[cfg(target_os = "android")]
             text_menu_dismissed: None,
             open_select: None,
-            #[cfg(target_os = "android")]
+            #[cfg(any(target_os = "android", target_arch = "wasm32"))]
             pending_select: None,
-            #[cfg(target_os = "android")]
+            #[cfg(any(target_os = "android", target_arch = "wasm32"))]
             pending_date: None,
             caret: 0,
             anchor: 0,
@@ -2492,9 +2512,8 @@ impl App {
             return false;
         };
         // A date on a phone is not typed into: the tap opens the platform's
-        // picker, in `dispatch_tap`.
-        #[cfg(target_os = "android")]
-        if region.kind == InputKind::Date {
+        // picker, in `dispatch_tap`. Nor in a phone's browser.
+        if region.kind == InputKind::Date && touch_first() {
             return false;
         }
 
@@ -2906,8 +2925,13 @@ impl App {
             // one to develop against: a window that owns its whole surface has
             // no unsafe edges, and every phone does. A preview answers with a
             // named device's insets; Android answers with the real ones.
-            #[cfg(not(target_os = "android"))]
+            #[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
             safe_area: self.preview.map(|p| p.safe_area).unwrap_or_default(),
+            // What the browser says, which is zero unless the page asked to
+            // draw under the notch (`viewport-fit=cover`, as a built app's
+            // page does). See [`web_safe_area`].
+            #[cfg(target_arch = "wasm32")]
+            safe_area: web_safe_area(),
             // Read here rather than delivered, for the reason on `SAFE_AREA`:
             // the insets arrive on another thread and there is no event to
             // carry them. So they are picked up wherever the environment is
@@ -2957,7 +2981,15 @@ impl App {
 
     /// Every platform that has not been taught to ask. Saying no preference
     /// is honest; guessing would be worse than the gap.
-    #[cfg(not(windows))]
+    /// A browser answers the media query itself, so a web app asks it.
+    #[cfg(target_arch = "wasm32")]
+    fn os_reduced_motion() -> bool {
+        web_sys::window()
+            .and_then(|w| w.match_media("(prefers-reduced-motion: reduce)").ok().flatten())
+            .is_some_and(|m| m.matches())
+    }
+
+    #[cfg(not(any(windows, target_arch = "wasm32")))]
     fn os_reduced_motion() -> bool {
         false
     }
@@ -3180,22 +3212,29 @@ impl App {
         // tap rather than the press (see `press_text`), so a scroll that
         // happens to start on the field scrolls. A read-only date shows its
         // day and offers no picker, as a read-only field offers no keyboard.
-        #[cfg(target_os = "android")]
+        // A phone's browser is a phone here too: its own picker, not a field
+        // typed into.
+        #[cfg(any(target_os = "android", target_arch = "wasm32"))]
         if let Some(region) = self
             .focuses
             .iter()
             .rev()
-            .find(|f| f.kind == InputKind::Date && f.contains(fx, fy))
+            .find(|f| f.kind == InputKind::Date && f.contains(fx, fy) && touch_first())
             .cloned()
         {
             if !region.field.readonly {
                 let value =
                     self.document.value_in(&region.model, region.row.as_deref(), region.instance.as_deref());
                 let (min, max) = (region.field.min, region.field.max);
+                #[cfg(target_arch = "wasm32")]
+                let rect = (region.x, region.y, region.width, region.height);
                 self.pending_date =
                     Some((region.model, region.row, region.instance, region.field.on_change));
                 self.set_focus(None);
+                #[cfg(target_os = "android")]
                 android_open_date(&value, min, max);
+                #[cfg(target_arch = "wasm32")]
+                web_open_date(&value, min, max, rect);
             }
             return;
         }
@@ -3207,8 +3246,8 @@ impl App {
             // dropdown is a browser emulation: it does not scroll, dismiss,
             // announce or look like every other picker the person has used, and
             // on a small screen those are most of what a picker is.
-            #[cfg(target_os = "android")]
-            {
+            #[cfg(any(target_os = "android", target_arch = "wasm32"))]
+            if touch_first() {
                 // Cloned out before anything else touches `self`: the search
                 // above borrows `self.selects`, and reading the field's current
                 // value needs the document mutably.
@@ -3220,19 +3259,20 @@ impl App {
                 );
                 let chosen = self.document.value_in(&model, row.as_deref(), instance.as_deref());
                 let at = options.iter().position(|o| *o == chosen);
+                #[cfg(target_arch = "wasm32")]
+                let rect = (sel.x, sel.y, sel.width, sel.height);
                 self.pending_select = Some((model, row, instance, options.clone()));
                 self.set_focus(None);
+                #[cfg(target_os = "android")]
                 android_open_select(&options, at);
+                #[cfg(target_arch = "wasm32")]
+                web_open_select(&options, at, rect);
                 return;
             }
-            #[cfg(not(target_os = "android"))]
-            {
-                self.open_select =
-                    Some((sel.model.clone(), sel.row.clone(), sel.instance.clone()));
-                self.set_focus(None);
-                self.request_redraw();
-                return;
-            }
+            self.open_select = Some((sel.model.clone(), sel.row.clone(), sel.instance.clone()));
+            self.set_focus(None);
+            self.request_redraw();
+            return;
         }
 
         // Inputs are handled at press time (`press_text`), which is where a
@@ -3616,7 +3656,9 @@ impl App {
         match &field.form {
             Some(form) if self.form_neighbour(form, false).is_some() => EnterKey::Next,
             Some(_) => EnterKey::Go,
-            None if cfg!(target_os = "android") => EnterKey::Done,
+            // A phone's keyboard outside a form: its key closes the field, in
+            // an app or in a phone's browser alike.
+            None if touch_first() => EnterKey::Done,
             None => EnterKey::Default,
         }
     }
@@ -4648,7 +4690,7 @@ impl App {
     /// runs with it: whatever the app derives from the field (a search's
     /// results, a counter) is rebuilt from the text rather than disagreeing
     /// with it.
-    #[cfg(target_os = "android")]
+    #[cfg(any(target_os = "android", target_arch = "wasm32"))]
     fn adopt_restored_focus(&mut self) {
         if self.state.is_none() {
             return;
@@ -4705,7 +4747,7 @@ impl App {
     /// A field whose text already matches is left alone, so its `@input` does
     /// not run for nothing, and a `readonly` one is left alone because its
     /// text is the app's, which the rebuilt page has already put there.
-    #[cfg(target_os = "android")]
+    #[cfg(any(target_os = "android", target_arch = "wasm32"))]
     fn adopt_restored_fields(&mut self, fields: Vec<rux_runtime::SavedField>) {
         for saved in fields {
             let Some(region) = self.focuses.iter().find(|f| {
@@ -4740,12 +4782,14 @@ impl App {
     }
 
     /// Leave where the app is for `onSaveInstanceState`. See [`SAVED_STATE`].
+    /// On the web, in the tab's session storage, for the tab a phone's browser
+    /// discards: see [`web_save_state`].
     ///
     /// Every text field on the page keeps its text, as every native
     /// `EditText` does, within one [`SAVED_TEXT_MAX`] for them all. A password
     /// is never kept: the platform writes the state to disk, and the field
     /// comes back empty, as a native one would.
-    #[cfg(target_os = "android")]
+    #[cfg(any(target_os = "android", target_arch = "wasm32"))]
     fn publish_saved_state(&mut self) {
         let mut state = self.document.saved_state();
         let mut budget = SAVED_TEXT_MAX;
@@ -4786,11 +4830,14 @@ impl App {
             state.fields.push(rux_runtime::SavedField { model, row, instance, text });
         }
         let encoded = state.encode();
+        #[cfg(target_os = "android")]
         if let Ok(mut slot) = SAVED_STATE.lock() {
             if *slot != encoded {
                 *slot = encoded;
             }
         }
+        #[cfg(target_arch = "wasm32")]
+        web_save_state(encoded);
     }
 
     /// The focused input's region, matched on both halves of its identity.
@@ -5099,8 +5146,14 @@ impl App {
         if !web_is_touch() {
             return;
         }
-        let Some(el) = web_ime_element() else { return };
         // Nothing focused means nothing to type into, so the keyboard goes away.
+        let Some(el) = (if self.focused.is_none() {
+            web_ime_current()
+        } else {
+            web_ime_element(self.focused_kind.multiline())
+        }) else {
+            return;
+        };
         if self.focused.is_none() {
             let _ = el.blur();
             return;
@@ -5116,16 +5169,14 @@ impl App {
         let (start, end, direction) = browser_selection(anchor16, caret16);
         if el.value() != value {
             el.set_value(&value);
-            let _ = el.set_selection_range_with_direction(start, end, direction);
-        } else if el.selection_start().ok().flatten() != Some(start)
-            || el.selection_end().ok().flatten() != Some(end)
-        {
+            el.set_selection(start, end, direction);
+        } else if el.selection_start() != Some(start) || el.selection_end() != Some(end) {
             // The text is unchanged but the selection moved on our side: a drag
             // across the canvas, a double-tap on a word, a handler selecting
             // all. The browser has to be told, because its own copy, cut and
             // select-all read the hidden input's selection and nothing else.
             // Leaving this out is what made copy on a phone act on no text.
-            let _ = el.set_selection_range_with_direction(start, end, direction);
+            el.set_selection(start, end, direction);
         }
         // The keyboard the field asks for, said to the browser in the words it
         // already reads, so a phone's keyboard matches the one Android raises.
@@ -5154,6 +5205,15 @@ impl App {
                 let _ = el.remove_attribute("autocomplete");
             }
         }
+        // A password is typed as one: the keyboard neither suggests nor learns
+        // it, and the browser's password manager knows what it is looking at.
+        // What Android's password input type does for a native field.
+        if let WebIme::Line(input) = &el {
+            let kind = if self.focused_kind == InputKind::Password { "password" } else { "text" };
+            if input.type_() != kind {
+                input.set_type(kind);
+            }
+        }
         let _ = el.focus();
         self.position_web_ime();
     }
@@ -5164,7 +5224,7 @@ impl App {
     /// text rather than in the corner of the page.
     #[cfg(target_arch = "wasm32")]
     fn position_web_ime(&mut self) {
-        let Some(el) = WEB_IME.with(|c| c.borrow().clone()) else { return };
+        let Some(el) = web_ime_current() else { return };
         let Some(canvas) = WEB_CANVAS.with(|c| c.borrow().clone()) else { return };
         let Some(region) = self.focused_region() else { return };
         // Rux's logical pixels are CSS pixels, and the input is the canvas's
@@ -5952,7 +6012,7 @@ impl App {
                 *focused_instance = None;
                 *text_scroll = 0.0;
                 #[cfg(target_arch = "wasm32")]
-                if let Some(el) = web_ime_element() {
+                if let Some(el) = web_ime_current() {
                     let _ = el.blur();
                 }
             }
@@ -6243,8 +6303,8 @@ impl ApplicationHandler<RuxEvent> for App {
             // The platform picker closed. Taken rather than read, so a second
             // answer for a picker that is no longer open cannot arrive and edit
             // a field nobody was looking at.
-            #[cfg(target_os = "android")]
-            RuxEvent::AndroidSelect { index } => {
+            #[cfg(any(target_os = "android", target_arch = "wasm32"))]
+            RuxEvent::PickedSelect { index } => {
                 if let Some((model, row, instance, options)) = self.pending_select.take() {
                     // `None` is a dismissal, which keeps what the field had.
                     // Out of range would mean Java and Rux disagreed about the
@@ -6263,8 +6323,8 @@ impl ApplicationHandler<RuxEvent> for App {
 
             // A date is committed as it is chosen, as a select is, so the
             // same write serves it: `@change` if the day moved.
-            #[cfg(target_os = "android")]
-            RuxEvent::AndroidDate { value } => {
+            #[cfg(any(target_os = "android", target_arch = "wasm32"))]
+            RuxEvent::PickedDate { value } => {
                 if let Some((model, row, instance, change)) = self.pending_date.take() {
                     if let Some(value) = value {
                         self.choose_option(&model, row, instance, &value, change);
@@ -6435,6 +6495,18 @@ impl ApplicationHandler<RuxEvent> for App {
 
             #[cfg(target_arch = "wasm32")]
             RuxEvent::WebRoute(index) => self.apply_web_route(index),
+
+            // The key is the phone keyboard's action key, labelled from
+            // `enterkeyhint`, so it does what its label says, as on Android. A
+            // textarea's hidden twin takes its Enter as a new line itself.
+            #[cfg(target_arch = "wasm32")]
+            RuxEvent::WebEnter => {
+                if self.focused.is_some() && !self.focused_kind.multiline() {
+                    self.enter_in_field(true);
+                    self.sync_web_ime();
+                    self.request_redraw();
+                }
+            }
 
             // The clipboard read started by a paste has come back. The field may
             // have lost focus in the meantime, in which case there is nowhere to
@@ -6863,7 +6935,7 @@ impl ApplicationHandler<RuxEvent> for App {
                 self.render();
                 #[cfg(target_os = "android")]
                 self.sync_text_menu();
-                #[cfg(target_os = "android")]
+                #[cfg(any(target_os = "android", target_arch = "wasm32"))]
                 self.publish_saved_state();
                 // A `tap()` or `focus()` asked for by something that is not an
                 // input event has nowhere else to be picked up: the only other
@@ -6876,7 +6948,7 @@ impl ApplicationHandler<RuxEvent> for App {
                 // regions to tap.
                 // Before anything else can take focus: the app is being put
                 // back as it was, and that includes which field had it.
-                #[cfg(target_os = "android")]
+                #[cfg(any(target_os = "android", target_arch = "wasm32"))]
                 self.adopt_restored_focus();
                 self.adopt_element_requests();
                 // After any `focus()`, which is the more specific request: an
@@ -7255,7 +7327,11 @@ thread_local! {
     /// because that hands composition, autocorrect, dictation and the keyboard's
     /// own backspace to the browser, which already does all of it properly. The
     /// shell reads the value back out and copies it into the bound signal.
-    static WEB_IME: RefCell<Option<web_sys::HtmlInputElement>> = const { RefCell::new(None) };
+    static WEB_IME: RefCell<Option<WebIme>> = const { RefCell::new(None) };
+    /// Its multi-line twin, a hidden `<textarea>`. See [`WebIme`].
+    static WEB_IME_AREA: RefCell<Option<WebIme>> = const { RefCell::new(None) };
+    /// Which of the two the focused field is using.
+    static WEB_IME_MULTILINE: RefCell<bool> = const { RefCell::new(false) };
     /// Byte length of the composition in flight in that input, `0` when none.
     static WEB_COMPOSING: RefCell<usize> = const { RefCell::new(0) };
     /// The path the app is served under, and the switch that turns URL routing
@@ -7358,21 +7434,120 @@ fn web_clipboard() -> Option<web_sys::Clipboard> {
     Some(web_sys::window()?.navigator().clipboard())
 }
 
-/// The hidden input, created and wired on first use.
+/// The element standing in for the focused field: an `<input>` for a
+/// one-line field, a `<textarea>` for a textarea.
+///
+/// **Two, because an `<input>` cannot hold a new line.** Its value is
+/// sanitised: a line feed written into it is dropped, so a textarea's text
+/// went into it without its line breaks, and the next letter typed reported
+/// the flattened text back over the real one. Driven in Edge under touch
+/// emulation: Enter in a textarea, then a letter, and `note`, new line, `x`
+/// came back as `notex`. A `<textarea>` keeps them, and takes Enter as a new
+/// line itself.
 #[cfg(target_arch = "wasm32")]
-fn web_ime_element() -> Option<web_sys::HtmlInputElement> {
+#[derive(Clone)]
+enum WebIme {
+    Line(web_sys::HtmlInputElement),
+    Area(web_sys::HtmlTextAreaElement),
+}
+
+#[cfg(target_arch = "wasm32")]
+impl std::ops::Deref for WebIme {
+    type Target = web_sys::HtmlElement;
+    fn deref(&self) -> &web_sys::HtmlElement {
+        match self {
+            WebIme::Line(el) => el,
+            WebIme::Area(el) => el,
+        }
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+impl WebIme {
+    /// The element an event came from, if it is one of the two.
+    fn of(target: Option<web_sys::EventTarget>) -> Option<WebIme> {
+        use wasm_bindgen::JsCast;
+        match target?.dyn_into::<web_sys::HtmlInputElement>() {
+            Ok(el) => Some(WebIme::Line(el)),
+            Err(target) => target.dyn_into::<web_sys::HtmlTextAreaElement>().ok().map(WebIme::Area),
+        }
+    }
+    fn value(&self) -> String {
+        match self {
+            WebIme::Line(el) => el.value(),
+            WebIme::Area(el) => el.value(),
+        }
+    }
+    fn set_value(&self, value: &str) {
+        match self {
+            WebIme::Line(el) => el.set_value(value),
+            WebIme::Area(el) => el.set_value(value),
+        }
+    }
+    fn selection_start(&self) -> Option<u32> {
+        match self {
+            WebIme::Line(el) => el.selection_start().ok().flatten(),
+            WebIme::Area(el) => el.selection_start().ok().flatten(),
+        }
+    }
+    fn selection_end(&self) -> Option<u32> {
+        match self {
+            WebIme::Line(el) => el.selection_end().ok().flatten(),
+            WebIme::Area(el) => el.selection_end().ok().flatten(),
+        }
+    }
+    fn backward(&self) -> bool {
+        let direction = match self {
+            WebIme::Line(el) => el.selection_direction().ok().flatten(),
+            WebIme::Area(el) => el.selection_direction().ok().flatten(),
+        };
+        direction.as_deref() == Some("backward")
+    }
+    fn set_selection(&self, start: u32, end: u32, direction: &str) {
+        let _ = match self {
+            WebIme::Line(el) => el.set_selection_range_with_direction(start, end, direction),
+            WebIme::Area(el) => el.set_selection_range_with_direction(start, end, direction),
+        };
+    }
+}
+
+/// The hidden element in use now, if one has been made.
+#[cfg(target_arch = "wasm32")]
+fn web_ime_current() -> Option<WebIme> {
+    if WEB_IME_MULTILINE.with(|m| *m.borrow()) {
+        WEB_IME_AREA.with(|c| c.borrow().clone())
+    } else {
+        WEB_IME.with(|c| c.borrow().clone())
+    }
+}
+
+/// The hidden element for a one-line or a multi-line field, created and wired
+/// on first use, and remembered as the one in use.
+#[cfg(target_arch = "wasm32")]
+fn web_ime_element(multiline: bool) -> Option<WebIme> {
     use wasm_bindgen::JsCast;
     use wasm_bindgen::prelude::Closure;
 
-    if let Some(el) = WEB_IME.with(|c| c.borrow().clone()) {
+    let slot = if multiline { &WEB_IME_AREA } else { &WEB_IME };
+    let other = if multiline { &WEB_IME } else { &WEB_IME_AREA };
+    if WEB_IME_MULTILINE.with(|m| m.replace(multiline)) != multiline {
+        // Left focused, the other one would go on taking what is typed.
+        if let Some(el) = other.with(|c| c.borrow().clone()) {
+            let _ = el.blur();
+        }
+    }
+    if let Some(el) = slot.with(|c| c.borrow().clone()) {
         return Some(el);
     }
     let canvas = WEB_CANVAS.with(|c| c.borrow().clone())?;
     let document = web_sys::window()?.document()?;
-    let el: web_sys::HtmlInputElement =
-        document.create_element("input").ok()?.dyn_into().ok()?;
-
-    el.set_type("text");
+    let el = if multiline {
+        WebIme::Area(document.create_element("textarea").ok()?.dyn_into().ok()?)
+    } else {
+        let el: web_sys::HtmlInputElement = document.create_element("input").ok()?.dyn_into().ok()?;
+        el.set_type("text");
+        WebIme::Line(el)
+    };
     // Turn off every helper that would rewrite what is typed behind our back.
     // Autocorrect on a phone is welcome inside a text field, but capitalising
     // the first letter of a password or a code is not, and Rux has no way yet
@@ -7405,7 +7580,7 @@ fn web_ime_element() -> Option<web_sys::HtmlInputElement> {
     // composition, dictation, autocorrect and the keyboard's own backspace, so
     // one listener covers all of them and no key mapping is needed.
     let on_input = Closure::<dyn FnMut(web_sys::Event)>::new(move |event: web_sys::Event| {
-        if let Some(target) = event.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok()) {
+        if let Some(target) = WebIme::of(event.target()) {
             web_send_text(&target);
         }
     });
@@ -7422,9 +7597,7 @@ fn web_ime_element() -> Option<web_sys::HtmlInputElement> {
                 _ => event.data().unwrap_or_default().len(),
             };
             WEB_COMPOSING.with(|c| *c.borrow_mut() = composing);
-            if let Some(target) =
-                event.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok())
-            {
+            if let Some(target) = WebIme::of(event.target()) {
                 web_send_text(&target);
             }
         },
@@ -7434,25 +7607,324 @@ fn web_ime_element() -> Option<web_sys::HtmlInputElement> {
     }
     on_comp.forget();
 
-    WEB_IME.with(|c| *c.borrow_mut() = Some(el.clone()));
+    // Enter is the one key the `input` event never carries: an `<input>`
+    // takes no new line and, outside a `<form>`, does nothing with it at all.
+    // Default prevented so a browser that would act on it (an implicit submit
+    // of some enclosing page form) does not. A textarea takes Enter as a new
+    // line, which reaches `input` like any other text, so it is not listened to.
+    let on_key = Closure::<dyn FnMut(web_sys::KeyboardEvent)>::new(
+        move |event: web_sys::KeyboardEvent| {
+            if event.key() != "Enter" {
+                return;
+            }
+            event.prevent_default();
+            WEB_PROXY.with(|p| {
+                if let Some(proxy) = p.borrow().as_ref() {
+                    let _ = proxy.send_event(RuxEvent::WebEnter);
+                }
+            });
+        },
+    );
+    if !multiline {
+        let _ = el.add_event_listener_with_callback("keydown", on_key.as_ref().unchecked_ref());
+    }
+    on_key.forget();
+
+    slot.with(|c| *c.borrow_mut() = Some(el.clone()));
     Some(el)
+}
+
+#[cfg(target_arch = "wasm32")]
+thread_local! {
+    /// The hidden `<select>` a phone's browser shows its own picker for.
+    static WEB_SELECT: RefCell<Option<web_sys::HtmlSelectElement>> = const { RefCell::new(None) };
+    /// The hidden `<input type="date">`, the same for a day.
+    static WEB_DATE: RefCell<Option<web_sys::HtmlInputElement>> = const { RefCell::new(None) };
+}
+
+/// A hidden control beside the canvas, laid over the field it stands in for
+/// so the browser anchors its picker there, and answering through `answer`
+/// when the person chooses. Rendered, which `showPicker` requires, and
+/// invisible, as the hidden input is.
+#[cfg(target_arch = "wasm32")]
+fn web_picker_element(tag: &str, answer: fn(&web_sys::Element) -> RuxEvent) -> Option<web_sys::Element> {
+    use wasm_bindgen::JsCast;
+    use wasm_bindgen::prelude::Closure;
+
+    let canvas = WEB_CANVAS.with(|c| c.borrow().clone())?;
+    let document = web_sys::window()?.document()?;
+    let el = document.create_element(tag).ok()?;
+    let _ = el.set_attribute("aria-hidden", "true");
+    let _ = el.set_attribute("tabindex", "-1");
+    let _ = el.set_attribute(
+        "style",
+        "position: absolute; opacity: 0; pointer-events: none; z-index: 1; \
+         border: 0; padding: 0; margin: 0; font-size: 16px; \
+         width: 1px; height: 1px; left: 0; top: 0;",
+    );
+    canvas.parent_element()?.append_child(&el).ok()?;
+    let on_change = Closure::<dyn FnMut(web_sys::Event)>::new(move |event: web_sys::Event| {
+        let Some(target) = event.target().and_then(|t| t.dyn_into::<web_sys::Element>().ok()) else {
+            return;
+        };
+        let event = answer(&target);
+        WEB_PROXY.with(|p| {
+            if let Some(proxy) = p.borrow().as_ref() {
+                let _ = proxy.send_event(event);
+            }
+        });
+    });
+    let _ = el.add_event_listener_with_callback("change", on_change.as_ref().unchecked_ref());
+    on_change.forget();
+    Some(el)
+}
+
+/// Lay a picker over the field's box, then ask the browser to open it.
+///
+/// `showPicker` is looked up rather than called through a binding because it
+/// is new (a select's arrived in 2024) and a browser without it still opens a
+/// focused control's picker on a phone, which is what the fallback does.
+#[cfg(target_arch = "wasm32")]
+fn web_show_picker(el: &web_sys::HtmlElement, (x, y, width, height): (f32, f32, f32, f32)) {
+    use wasm_bindgen::JsCast;
+
+    if let Some(canvas) = WEB_CANVAS.with(|c| c.borrow().clone()) {
+        let (ox, oy) = (canvas.offset_left() as f32, canvas.offset_top() as f32);
+        let style = el.style();
+        let _ = style.set_property("left", &format!("{}px", ox + x));
+        let _ = style.set_property("top", &format!("{}px", oy + y));
+        let _ = style.set_property("width", &format!("{}px", width.max(1.0)));
+        let _ = style.set_property("height", &format!("{}px", height.max(1.0)));
+    }
+    let shown = js_sys::Reflect::get(el, &"showPicker".into())
+        .ok()
+        .and_then(|f| f.dyn_into::<js_sys::Function>().ok())
+        .is_some_and(|f| f.call0(el).is_ok());
+    if !shown {
+        let _ = el.focus();
+    }
+}
+
+/// The browser's own picker for a `<select>`, on a phone. Answered by
+/// [`RuxEvent::PickedSelect`]; a dismissal sends nothing, which leaves the
+/// field as it was.
+#[cfg(target_arch = "wasm32")]
+fn web_open_select(options: &[String], selected: Option<usize>, rect: (f32, f32, f32, f32)) {
+    use wasm_bindgen::JsCast;
+
+    let el = WEB_SELECT.with(|c| c.borrow().clone()).or_else(|| {
+        let el: web_sys::HtmlSelectElement = web_picker_element("select", |target| {
+            let index = target
+                .dyn_ref::<web_sys::HtmlSelectElement>()
+                .map(|s| s.selected_index())
+                .filter(|i| *i >= 0)
+                .map(|i| i as usize);
+            RuxEvent::PickedSelect { index }
+        })?
+        .dyn_into()
+        .ok()?;
+        WEB_SELECT.with(|c| *c.borrow_mut() = Some(el.clone()));
+        Some(el)
+    });
+    let Some(el) = el else { return };
+    el.set_inner_html("");
+    let Some(document) = web_sys::window().and_then(|w| w.document()) else { return };
+    for option in options {
+        if let Ok(o) = document.create_element("option") {
+            o.set_text_content(Some(option));
+            let _ = el.append_child(&o);
+        }
+    }
+    // Nothing chosen yet shows as no option, so choosing the first one is a
+    // change the browser reports.
+    el.set_selected_index(selected.map_or(-1, |i| i as i32));
+    web_show_picker(&el, rect);
+}
+
+/// The browser's own date picker, on a phone. Answered by
+/// [`RuxEvent::PickedDate`] with the day as `YYYY-MM-DD`, which is how a
+/// date input writes one; cleared in the picker reads as no answer.
+#[cfg(target_arch = "wasm32")]
+fn web_open_date(
+    value: &str,
+    min: Option<(i32, u32, u32)>,
+    max: Option<(i32, u32, u32)>,
+    rect: (f32, f32, f32, f32),
+) {
+    use wasm_bindgen::JsCast;
+
+    let el = WEB_DATE.with(|c| c.borrow().clone()).or_else(|| {
+        let el: web_sys::HtmlInputElement = web_picker_element("input", |target| {
+            let value = target
+                .dyn_ref::<web_sys::HtmlInputElement>()
+                .map(|i| i.value())
+                .filter(|v| !v.is_empty());
+            RuxEvent::PickedDate { value }
+        })?
+        .dyn_into()
+        .ok()?;
+        el.set_type("date");
+        WEB_DATE.with(|c| *c.borrow_mut() = Some(el.clone()));
+        Some(el)
+    });
+    let Some(el) = el else { return };
+    for (name, bound) in [("min", min), ("max", max)] {
+        match bound {
+            Some(day) => {
+                let _ = el.set_attribute(name, &rux_layout::format_date(day));
+            }
+            None => {
+                let _ = el.remove_attribute(name);
+            }
+        }
+    }
+    el.set_value(value);
+    web_show_picker(&el, rect);
+}
+
+#[cfg(target_arch = "wasm32")]
+thread_local! {
+    /// What [`web_save_state`] last wrote, so an unchanged frame writes nothing.
+    static WEB_SAVED: RefCell<String> = const { RefCell::new(String::new()) };
+}
+
+/// Where the app is, kept in the tab's session storage, under the path the
+/// app is served from.
+///
+/// **A phone's browser discards a background tab as Android kills a
+/// background app**, and brings it back by loading the page again. A browser
+/// puts a form's fields and the page's scroll back when it does; a canvas
+/// has neither for it to put back, so the app came back on its route (the URL
+/// has that) with every field empty and every list at the top. This is the
+/// same [`rux_runtime::SavedState`] Android keeps, and nothing new is kept:
+/// never a password, and session storage is the tab's own and goes with it.
+///
+/// Only for a page that owns its address, as `start`'s `base` says. The
+/// playground runs whatever is typed into it, and one document's fields
+/// have no business turning up in the next.
+#[cfg(target_arch = "wasm32")]
+fn web_save_state(encoded: String) {
+    let Some(base) = WEB_BASE.with(|b| b.borrow().clone()) else { return };
+    if WEB_SAVED.with(|s| *s.borrow() == encoded) {
+        return;
+    }
+    let Some(storage) = web_sys::window().and_then(|w| w.session_storage().ok().flatten()) else {
+        return;
+    };
+    // Full, or refused in a private window: the app goes on, and a discarded
+    // tab comes back as a fresh one, as it always did.
+    if storage.set_item(&web_state_key(&base), &encoded).is_ok() {
+        WEB_SAVED.with(|s| *s.borrow_mut() = encoded);
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn web_state_key(base: &str) -> String {
+    format!("rux:saved:{base}")
+}
+
+/// What [`web_save_state`] kept, when this load is the tab coming back rather
+/// than someone opening the page: a reload, Back or Forward onto it, or the
+/// browser restoring a tab it discarded. A link followed or an address typed
+/// is a new visit and starts fresh, as it would for a form.
+///
+/// And only when the entry on screen then is still the one the URL names, so
+/// an address edited by hand is taken at its word.
+#[cfg(target_arch = "wasm32")]
+fn web_restored_state() -> Option<rux_runtime::SavedState> {
+    use wasm_bindgen::JsCast;
+
+    let window = web_sys::window()?;
+    let base = WEB_BASE.with(|b| b.borrow().clone())?;
+    let get = |target: &wasm_bindgen::JsValue, name: &str| {
+        js_sys::Reflect::get(target, &name.into()).ok()
+    };
+    let discarded = window
+        .document()
+        .and_then(|d| get(&d, "wasDiscarded"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    // `performance.getEntriesByType("navigation")[0].type`, looked up rather
+    // than bound: two features and a type for one string.
+    let kind = get(&window, "performance")
+        .and_then(|p| {
+            let find = get(&p, "getEntriesByType")?.dyn_into::<js_sys::Function>().ok()?;
+            find.call1(&p, &"navigation".into()).ok()
+        })
+        .and_then(|list| get(&list, "0"))
+        .and_then(|entry| get(&entry, "type"))
+        .and_then(|t| t.as_string())
+        .unwrap_or_default();
+    if !discarded && kind != "reload" && kind != "back_forward" {
+        return None;
+    }
+    let storage = window.session_storage().ok().flatten()?;
+    let state = rux_runtime::SavedState::decode(&storage.get_item(&web_state_key(&base)).ok()??)?;
+    let here = web_route_now()?;
+    (state.entries.get(state.at)?.0 == here).then_some(state)
+}
+
+/// The page's safe-area insets, in CSS pixels, which are Rux's logical ones.
+///
+/// **Only CSS can read them**: there is no script API for
+/// `env(safe-area-inset-*)`. So an invisible probe is padded with the four and
+/// its computed padding read back. Rebuilt with the environment, at startup
+/// and on every resize, and a rotation is a resize.
+#[cfg(target_arch = "wasm32")]
+fn web_safe_area() -> Insets {
+    use wasm_bindgen::JsCast;
+
+    thread_local! {
+        static PROBE: RefCell<Option<web_sys::HtmlElement>> = const { RefCell::new(None) };
+    }
+    let Some(window) = web_sys::window() else { return Default::default() };
+    let probe = PROBE.with(|c| c.borrow().clone()).or_else(|| {
+        let document = window.document()?;
+        let el: web_sys::HtmlElement = document.create_element("div").ok()?.dyn_into().ok()?;
+        let _ = el.set_attribute("aria-hidden", "true");
+        let _ = el.set_attribute(
+            "style",
+            "position: fixed; visibility: hidden; pointer-events: none; left: 0; top: 0; \
+             padding: env(safe-area-inset-top) env(safe-area-inset-right) \
+             env(safe-area-inset-bottom) env(safe-area-inset-left);",
+        );
+        document.body()?.append_child(&el).ok()?;
+        PROBE.with(|c| *c.borrow_mut() = Some(el.clone()));
+        Some(el)
+    });
+    let Some(style) = probe.and_then(|el| window.get_computed_style(&el).ok().flatten()) else {
+        return Default::default();
+    };
+    let px = |name: &str| {
+        style
+            .get_property_value(name)
+            .ok()
+            .and_then(|v| v.trim().trim_end_matches("px").parse::<f32>().ok())
+            .unwrap_or(0.0)
+    };
+    Insets {
+        top: px("padding-top"),
+        right: px("padding-right"),
+        bottom: px("padding-bottom"),
+        left: px("padding-left"),
+    }
 }
 
 /// Push the hidden input's contents at the event loop.
 #[cfg(target_arch = "wasm32")]
-fn web_send_text(el: &web_sys::HtmlInputElement) {
+fn web_send_text(el: &WebIme) {
     let value = el.value();
     // `selection_start` is in UTF-16 code units, which is not where Rux counts
     // from: it indexes strings by byte. Converting through the prefix keeps a
     // caret after an emoji or a CJK character in the right place instead of
     // several bytes short.
-    let start16 = el.selection_start().ok().flatten().unwrap_or(0) as usize;
-    let end16 = el.selection_end().ok().flatten().map_or(start16, |v| v as usize);
+    let start16 = el.selection_start().unwrap_or(0) as usize;
+    let end16 = el.selection_end().map_or(start16, |v| v as usize);
     // `selectionStart`/`End` are ordered, so on their own they cannot say which
     // end the caret is at. `selectionDirection` is what distinguishes a
     // selection dragged leftwards from the same range dragged rightwards, and
     // getting it wrong makes Shift+arrow extend from the wrong end afterwards.
-    let backward = el.selection_direction().ok().flatten().as_deref() == Some("backward");
+    let backward = el.backward();
     let (anchor16, caret16) = rux_selection(start16, end16, backward);
     let caret = utf16_to_byte_index(&value, caret16);
     let anchor = utf16_to_byte_index(&value, anchor16);
@@ -8044,6 +8516,12 @@ pub fn start_web(
     WEB_PROXY.with(|p| *p.borrow_mut() = Some(event_loop.create_proxy()));
 
     let mut app = App::new(document);
+    // Before the first frame, as on Android: the tab is coming back.
+    if let Some(state) = web_restored_state() {
+        app.document.restore_state(&state);
+        app.restored_focus = Some(state.focus);
+        app.restored_fields = state.fields;
+    }
     if !app.text.register_font(font) {
         web_sys::console::error_1(&"rux: the supplied font had no usable faces, so text will not render".into());
     }
@@ -8131,6 +8609,12 @@ pub fn start_web_app(
     WEB_PROXY.with(|p| *p.borrow_mut() = Some(event_loop.create_proxy()));
 
     let mut app = App::new(document);
+    // Before the first frame, as on Android: the tab is coming back.
+    if let Some(state) = web_restored_state() {
+        app.document.restore_state(&state);
+        app.restored_focus = Some(state.focus);
+        app.restored_fields = state.fields;
+    }
     if !app.text.register_font(font) {
         web_sys::console::error_1(
             &"rux: the supplied font had no usable faces, so text will not render".into(),
@@ -8759,7 +9243,7 @@ pub(crate) fn link_route(uri: &str) -> Option<String> {
 /// platform refuses a saved state over about a megabyte and takes the app
 /// down with it, and a person who pasted a book into a field loses the book
 /// rather than the app.
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", target_arch = "wasm32"))]
 const SAVED_TEXT_MAX: usize = 64 * 1024;
 
 /// The fields autofill can see, as the last frame laid them out: each one's
@@ -9578,7 +10062,7 @@ pub extern "system" fn Java_dev_ruxlang_shell_RuxActivity_nativeSelectChosen(
     let index = (index >= 0).then_some(index as usize);
     if let Ok(proxy) = PROXY.lock() {
         if let Some(proxy) = proxy.as_ref() {
-            let _ = proxy.send_event(RuxEvent::AndroidSelect { index });
+            let _ = proxy.send_event(RuxEvent::PickedSelect { index });
         }
     }
 }
@@ -9605,7 +10089,7 @@ pub extern "system" fn Java_dev_ruxlang_shell_RuxActivity_nativeDateChosen(
         .then(|| rux_layout::format_date((year, month as u32, day as u32)));
     if let Ok(proxy) = PROXY.lock() {
         if let Some(proxy) = proxy.as_ref() {
-            let _ = proxy.send_event(RuxEvent::AndroidDate { value });
+            let _ = proxy.send_event(RuxEvent::PickedDate { value });
         }
     }
 }
