@@ -20,10 +20,9 @@
 //!
 //! **Android is the exception, and it embeds either way.** There is no
 //! filesystem on the other side of an APK, so a dev build there carries its
-//! documents too and **does not hot reload**. Serving them as assets through
-//! Android's `AssetManager` and pushing edits over `adb` is the shape that
-//! would fix it, and it is not built. See `wrapper_main`, which is where the
-//! decision actually lives.
+//! documents too, and hot reloads by having them sent again: the app dials
+//! `rux run --device` through `adb reverse` and patches what it embedded.
+//! See `wrapper_main` and `crate::device::serve`.
 //!
 //! Images took a second step to get there, and it was found by driving a build
 //! rather than by reasoning about one. An image is read twice: the runtime
@@ -106,7 +105,7 @@ impl Target {
 /// or a route loaded by a string, silently missing from the build: the failure
 /// would be a missing file at runtime in someone else's hands. A directory walk
 /// is a few kilobytes too generous and never wrong in that direction.
-fn collect(root: &Path) -> Result<Vec<PathBuf>, String> {
+pub(crate) fn collect(root: &Path) -> Result<Vec<PathBuf>, String> {
     let mut out = Vec::new();
     walk(root, root, &mut out)?;
     out.sort();
@@ -139,7 +138,7 @@ fn walk(root: &Path, dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), String> {
 }
 
 /// One spelling for a path used as a key, matching `MemorySource`'s own.
-fn key(path: &Path) -> String {
+pub(crate) fn key(path: &Path) -> String {
     path.to_string_lossy().replace('\\', "/")
 }
 
@@ -295,6 +294,12 @@ fn lib_stem(manifest: &Manifest) -> String {
 /// file had when this was generated, which is why the generated crate is
 /// disposable.
 fn embed(manifest: &Manifest, files: &[PathBuf], out: &mut String) {
+    embed_files(manifest, files, out);
+    out.push_str("    rux_runtime::set_source(std::rc::Rc::new(files));\n");
+}
+
+/// The `MemorySource` alone, left in a local called `files` for the caller.
+fn embed_files(manifest: &Manifest, files: &[PathBuf], out: &mut String) {
     out.push_str("    let mut files = rux_runtime::MemorySource::new();\n");
     for file in files {
         let absolute = manifest.root.join(file);
@@ -305,7 +310,20 @@ fn embed(manifest: &Manifest, files: &[PathBuf], out: &mut String) {
             literal(&absolute.display().to_string()),
         ));
     }
-    out.push_str("    rux_runtime::set_source(std::rc::Rc::new(files));\n");
+}
+
+/// The port a dev build and `rux run --device` meet on, one per app.
+///
+/// Derived from the app id rather than chosen per run, so the generated crate
+/// does not change (and rebuild) every time, and two apps on one machine
+/// rarely want the same port. FNV-1a, spelled out, because `DefaultHasher`
+/// may change between Rust releases and both ends must agree.
+pub fn dev_port(manifest: &Manifest) -> u16 {
+    let mut hash: u32 = 0x811c_9dc5;
+    for byte in manifest.id.bytes() {
+        hash = (hash ^ u32::from(byte)).wrapping_mul(0x0100_0193);
+    }
+    40_000 + (hash % 20_000) as u16
 }
 
 fn wrapper_main(manifest: &Manifest, files: &[PathBuf], options: &Options) -> String {
@@ -321,10 +339,9 @@ fn wrapper_main(manifest: &Manifest, files: &[PathBuf], options: &Options) -> St
         //
         // **Android always embeds, `--release` or not.** Everywhere else a dev
         // build reads the project from disk so hot reload works, and there is
-        // no disk on the other side of this one: an APK's documents would have
-        // to be assets read through Android's `AssetManager`. Embedding is what
-        // makes the first APK possible without that, and the cost is named
-        // rather than hidden: a dev build for Android does not hot reload yet.
+        // no disk on the other side of this one. A dev build hot reloads
+        // anyway: it starts from what it embedded and `rux run --device` sends
+        // it every file that changes after that.
         out.push_str(
             "// An Android app is entered here, in a shared object the platform loads.\n\
              // Documents are embedded whether or not this is a release build: there is\n\
@@ -332,11 +349,22 @@ fn wrapper_main(manifest: &Manifest, files: &[PathBuf], options: &Options) -> St
         );
         out.push_str("#[no_mangle]\n");
         out.push_str("fn android_main(app: rux_shell::android_activity::AndroidApp) {\n");
-        embed(manifest, files, &mut out);
-        out.push_str(&format!(
-            "    rux_shell::run_android(app, std::path::PathBuf::from({}));\n",
-            literal(&entry)
-        ));
+        if options.release {
+            embed(manifest, files, &mut out);
+            out.push_str(&format!(
+                "    rux_shell::run_android(app, std::path::PathBuf::from({}));\n",
+                literal(&entry)
+            ));
+        } else {
+            // A dev build hot reloads: it keeps a line open to `rux run
+            // --device` and patches these files with whatever it is sent.
+            embed_files(manifest, files, &mut out);
+            out.push_str(&format!(
+                "    rux_shell::run_android_dev(app, std::path::PathBuf::from({}), files, {});\n",
+                literal(&entry),
+                dev_port(manifest)
+            ));
+        }
         out.push_str("}\n");
         return out;
     }
@@ -568,7 +596,7 @@ pub fn run(options: Options) -> Result<PathBuf, String> {
 
     if let Some(toolchain) = &toolchain {
         let out = dist.join(format!("{}.apk", manifest.artifact_stem()));
-        crate::apk::pack(&manifest, toolchain, &compiles, &work, &out)?;
+        crate::apk::pack(&manifest, toolchain, &compiles, &work, &out, !options.release)?;
         println!(
             "rux: wrote {} [{}]",
             out.display(),

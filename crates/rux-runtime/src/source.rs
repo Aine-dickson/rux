@@ -93,7 +93,7 @@ impl Source for FsSource {
 /// test uses when it would rather not touch a temporary directory. Keys are
 /// normalised to `/` so a document written on Windows and a map built by hand
 /// agree about what a path is.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct MemorySource {
     files: HashMap<String, Vec<u8>>,
 }
@@ -111,6 +111,16 @@ impl MemorySource {
 
     pub fn insert(&mut self, path: impl AsRef<str>, contents: impl Into<Vec<u8>>) {
         self.files.insert(normalise(path.as_ref()), contents.into());
+    }
+
+    /// Drop a file, as hot reload does for one deleted on the host.
+    pub fn remove(&mut self, path: impl AsRef<str>) {
+        self.files.remove(&normalise(path.as_ref()));
+    }
+
+    /// The file at `path`, keyed as [`MemorySource::insert`] keys it.
+    pub fn file(&self, path: impl AsRef<str>) -> Option<&[u8]> {
+        self.files.get(&normalise(path.as_ref())).map(Vec::as_slice)
     }
 
     fn get(&self, path: &Path) -> Option<&Vec<u8>> {

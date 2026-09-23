@@ -1894,6 +1894,24 @@ Three defects came out of driving this, none of them phase 7's own logic:
   process, which a Rux app cannot survive: winit stays on the old one. The
   generated manifest now lists every change API 26 knows.
 
+## Hot reload on Android, 2026-09-23
+
+`rux run --device` now stays running after it starts a dev build, watches the
+project and sends every changed file to the app, which reloads. Driven on the
+`rux_test` emulator against `rux-harness/phase7-restore`, with the phone
+attached too, so it was also the first run of `--serial`.
+
+| Case | Where | Expect | Result |
+|---|---|---|---|
+| Connect | any | After the install the terminal says "the app is connected"; logcat `-s rux` says the port | emulator: pass |
+| Edit a page | home | Change a heading's text and colour, save: the screen changes without a build | emulator: pass, about three seconds from save to screen |
+| Edit off the root route | list | On `/list`, edit `list.rux`: it reloads and stays on `/list` | emulator: pass |
+| A broken file | list | The error overlay over the last good screen; fixing the file clears it | emulator: pass. The overlay named `app.rux` rather than `components/list.rux`, and it draws under the status bar |
+| The app restarted | any | Force-stop and reopen: it dials back in on its own and catches up | emulator: pass |
+| Two devices | any | `--serial emulator-5554` picks one; without it, a terminal is asked which | emulator: `--serial` pass; the question not yet driven by hand |
+| A release build | any | `--release` installs and exits, with no socket and no network permission | tested in `apk.rs`, not driven |
+| On a phone, over wireless adb | phone | As above | |
+
 ## Standing gaps
 
 Cases nothing here can currently exercise. They are the shape of what v0.8 has

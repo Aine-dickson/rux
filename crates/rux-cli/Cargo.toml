@@ -26,6 +26,9 @@ path = "src/main.rs"
 
 [dependencies]
 rux-shell.workspace = true
+# `rux run --device` watches the project for hot reload, as `rux run` does
+# through rux-shell. The same crate and version, so nothing new is built.
+notify = "8.2.0"
 # `rux check` loads documents through the same path the window does, so the
 # checker cannot disagree with the runtime about what a valid file is.
 rux-runtime.workspace = true

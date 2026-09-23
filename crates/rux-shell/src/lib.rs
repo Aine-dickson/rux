@@ -167,6 +167,10 @@ enum RuxEvent {
     /// The on-screen keyboard changed height. See `KEYBOARD`.
     #[cfg(target_os = "android")]
     AndroidKeyboard,
+    /// `rux run --device` sent the project's files again: each path with its
+    /// new contents, or `None` for one deleted. See [`dev_link`].
+    #[cfg(target_os = "android")]
+    DevFiles(Vec<(String, Option<Vec<u8>>)>),
     /// Autofill filled a field, by its [`autofill_id`].
     #[cfg(target_os = "android")]
     AndroidAutofill { id: i32, value: String },
@@ -1580,6 +1584,10 @@ struct App {
     /// focus. See [`App::adopt_restored_focus`].
     #[cfg(target_os = "android")]
     restored_focus: Option<Option<rux_runtime::SavedFocus>>,
+    /// A dev build's documents, as the app last loaded them, for hot reload
+    /// to patch. `None` in a release build, which never reloads.
+    #[cfg(target_os = "android")]
+    dev_files: Option<rux_runtime::MemorySource>,
     /// What the input method's connection holds for the focused field: its
     /// text, caret and anchor, as bytes. See [`App::sync_android_ime`].
     #[cfg(target_os = "android")]
@@ -1776,6 +1784,8 @@ impl App {
             #[cfg(target_os = "android")]
             restored_focus: None,
             #[cfg(target_os = "android")]
+            dev_files: None,
+            #[cfg(target_os = "android")]
             ime_mirror: None,
             caret_menu: false,
             handles: false,
@@ -1900,7 +1910,10 @@ impl App {
     /// Re-load the document after a file change. On a parse/load error the last
     /// good tree stays on screen and the dev overlay reports the error, so a typo
     /// mid-edit neither blanks the window nor passes unnoticed.
-    #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+    ///
+    /// Android reloads too, from files `rux run --device` pushed; see
+    /// [`RuxEvent::DevFiles`].
+    #[cfg(not(target_arch = "wasm32"))]
     fn reload(&mut self) {
         match Document::load(&self.path) {
             Ok(doc) => {
@@ -6179,6 +6192,21 @@ impl ApplicationHandler<RuxEvent> for App {
             // Enter in a one-line field. See `nativeEnter`.
             // The page now has less room (or all of it back): lay it out
             // again, and bring the focused field above the keyboard.
+            // Hot reload: patch the documents and load again, only if the
+            // files differ from what is loaded. The first batch on every
+            // connection is the whole project, and it usually matches.
+            #[cfg(target_os = "android")]
+            RuxEvent::DevFiles(changes) => {
+                if let Some(files) = self.dev_files.as_mut() {
+                    if apply_dev_changes(files, changes) {
+                        rux_runtime::set_source(std::rc::Rc::new(files.clone()));
+                        self.reload();
+                        android_log("hot reload: reloaded");
+                        self.request_redraw();
+                    }
+                }
+            }
+
             #[cfg(target_os = "android")]
             RuxEvent::AndroidKeyboard => {
                 self.update_viewport();
@@ -9467,6 +9495,119 @@ pub extern "system" fn Java_dev_ruxlang_shell_RuxActivity_nativeProcessedText<'f
     .resolve::<jni::errors::LogErrorAndDefault>();
 }
 
+/// One batch of hot-reload changes, read off the connection to `rux run`.
+///
+/// The protocol is lines, with file contents inline:
+///
+/// ```text
+/// put <length> <path>
+/// <length bytes>
+/// del <path>
+/// reload
+/// ```
+///
+/// A batch ends at `reload`. `Ok(None)` is the other end closing cleanly
+/// between batches. Plain functions rather than methods, so the desktop tests
+/// cover what only ever runs on a phone.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+fn read_dev_batch(
+    reader: &mut impl std::io::BufRead,
+) -> std::io::Result<Option<Vec<(String, Option<Vec<u8>>)>>> {
+    use std::io::{Error, ErrorKind};
+    let bad = |what: &str| Error::new(ErrorKind::InvalidData, what.to_string());
+    let mut batch = Vec::new();
+    let mut line = String::new();
+    loop {
+        line.clear();
+        if reader.read_line(&mut line)? == 0 {
+            return if batch.is_empty() { Ok(None) } else { Err(bad("closed mid-batch")) };
+        }
+        let text = line.trim_end_matches(['\r', '\n']);
+        if text == "reload" {
+            return Ok(Some(batch));
+        }
+        if let Some(path) = text.strip_prefix("del ") {
+            batch.push((path.to_string(), None));
+        } else if let Some(rest) = text.strip_prefix("put ") {
+            let (length, path) = rest.split_once(' ').ok_or_else(|| bad("put without a path"))?;
+            let length: usize = length.parse().map_err(|_| bad("put without a length"))?;
+            let mut bytes = vec![0; length];
+            reader.read_exact(&mut bytes)?;
+            batch.push((path.to_string(), Some(bytes)));
+        } else {
+            return Err(bad("unknown line"));
+        }
+    }
+}
+
+/// Apply a batch, and say whether anything actually changed: a file that
+/// arrives with the contents already held is not a reason to reload.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+fn apply_dev_changes(
+    files: &mut rux_runtime::MemorySource,
+    changes: Vec<(String, Option<Vec<u8>>)>,
+) -> bool {
+    let mut changed = false;
+    for (path, contents) in changes {
+        match contents {
+            Some(bytes) if files.file(&path) != Some(bytes.as_slice()) => {
+                files.insert(&path, bytes);
+                changed = true;
+            }
+            None if files.file(&path).is_some() => {
+                files.remove(&path);
+                changed = true;
+            }
+            _ => {}
+        }
+    }
+    changed
+}
+
+/// Stay connected to `rux run --device` for as long as the app runs.
+///
+/// **The app dials out, the host listens.** `adb reverse` makes the host's
+/// port a port on the device's own loopback, which is the one direction that
+/// works the same on an emulator and on a phone over USB or wireless adb.
+/// Nobody listening is the ordinary case (the app was opened without
+/// `rux run`), so a refused connection is retried quietly, once a second.
+#[cfg(target_os = "android")]
+fn dev_link(port: u16) {
+    loop {
+        if let Ok(stream) = std::net::TcpStream::connect(("127.0.0.1", port)) {
+            android_log(&format!("hot reload: connected to rux on port {port}"));
+            let mut reader = std::io::BufReader::new(stream);
+            while let Ok(Some(batch)) = read_dev_batch(&mut reader) {
+                if let Ok(proxy) = PROXY.lock() {
+                    if let Some(proxy) = proxy.as_ref() {
+                        let _ = proxy.send_event(RuxEvent::DevFiles(batch));
+                    }
+                }
+            }
+            android_log("hot reload: rux went away");
+        }
+        std::thread::sleep(std::time::Duration::from_secs(1));
+    }
+}
+
+/// A line in logcat under the tag `rux`, which is where a dev reads what the
+/// app is doing: `adb logcat -s rux`.
+#[cfg(target_os = "android")]
+fn android_log(message: &str) {
+    #[link(name = "log")]
+    extern "C" {
+        fn __android_log_write(
+            priority: i32,
+            tag: *const std::ffi::c_char,
+            text: *const std::ffi::c_char,
+        ) -> i32;
+    }
+    const INFO: i32 = 4;
+    let Ok(text) = std::ffi::CString::new(message.replace(char::from(0), "")) else { return };
+    // Safety: both pointers are to NUL-terminated strings that outlive the call.
+    unsafe { __android_log_write(INFO, c"rux".as_ptr(), text.as_ptr()) };
+}
+
 /// The last reported insets, in logical pixels.
 ///
 /// Divided by the scale factor on the way out, because Android counts insets in
@@ -9506,6 +9647,31 @@ fn android_safe_area(scale: f64) -> Insets {
 /// app is entered: there is no `fn main` on the other side.
 #[cfg(target_os = "android")]
 pub fn run_android(app: android_activity::AndroidApp, path: PathBuf) {
+    run_android_with(app, path, None);
+}
+
+/// [`run_android`] for a dev build: the same app, which also keeps a
+/// connection to `rux run --device` on `port` and reloads when it sends files.
+///
+/// `files` are the documents the build embedded, which this installs as the
+/// source and then patches. A release build never calls this, so it carries
+/// no socket and asks for no network permission.
+#[cfg(target_os = "android")]
+pub fn run_android_dev(
+    app: android_activity::AndroidApp,
+    path: PathBuf,
+    files: rux_runtime::MemorySource,
+    port: u16,
+) {
+    run_android_with(app, path, Some((files, port)));
+}
+
+#[cfg(target_os = "android")]
+fn run_android_with(
+    app: android_activity::AndroidApp,
+    path: PathBuf,
+    dev: Option<(rux_runtime::MemorySource, u16)>,
+) {
     use winit::platform::android::EventLoopBuilderExtAndroid;
 
     let event_loop = EventLoop::<RuxEvent>::with_user_event()
@@ -9525,7 +9691,15 @@ pub fn run_android(app: android_activity::AndroidApp, path: PathBuf) {
     // `App` itself takes no proxy here. The only thing outside this loop with
     // anything to say is a JNI callback, and it reaches the proxy above rather
     // than going through the app.
+    // Installed before the app loads its entry document, so the first load
+    // and every reload read the same copy.
+    let dev = dev.map(|(files, port)| {
+        rux_runtime::set_source(std::rc::Rc::new(files.clone()));
+        std::thread::spawn(move || dev_link(port));
+        files
+    });
     let mut app = App::new(path);
+    app.dev_files = dev;
     // Before the first frame, like a deep link: Android killed the app and is
     // bringing it back where it was.
     let restored = RESTORED_STATE.lock().ok().and_then(|mut s| s.take());
@@ -9558,6 +9732,43 @@ pub fn run_android(app: android_activity::AndroidApp, path: PathBuf) {
 mod tests {
     use super::*;
     use rux_runtime::{Diagnostics, Warning};
+
+    /// A batch from `rux run --device`: files with their bytes, a deletion,
+    /// and the line that ends it. Contents may hold anything, a line break
+    /// included, because they are counted rather than read as lines.
+    #[test]
+    fn a_hot_reload_batch_reads_back() {
+        let wire = b"put 12 app.rux\n<x>\nline</x>del old.css\nreload\nput 1 a\nbreload\n";
+        let mut reader = std::io::BufReader::new(&wire[..]);
+        let first = read_dev_batch(&mut reader).unwrap().unwrap();
+        assert_eq!(
+            first,
+            vec![("app.rux".to_string(), Some(b"<x>\nline</x>".to_vec())), ("old.css".to_string(), None)]
+        );
+        let second = read_dev_batch(&mut reader).unwrap().unwrap();
+        assert_eq!(second, vec![("a".to_string(), Some(b"b".to_vec()))]);
+        assert!(read_dev_batch(&mut reader).unwrap().is_none(), "a clean close");
+
+        let mut cut = std::io::BufReader::new(&b"put 5 a\nab"[..]);
+        assert!(read_dev_batch(&mut cut).is_err(), "a file cut short is not a file");
+        let mut junk = std::io::BufReader::new(&b"hello\n"[..]);
+        assert!(read_dev_batch(&mut junk).is_err());
+    }
+
+    /// The first batch on every connection is the whole project, and a
+    /// reload is only worth its cost when something in it differs.
+    #[test]
+    fn a_hot_reload_changes_only_what_differs() {
+        let mut files = rux_runtime::MemorySource::new().with("app.rux", "one").with("x.css", "c");
+        let same = vec![("app.rux".to_string(), Some(b"one".to_vec()))];
+        assert!(!apply_dev_changes(&mut files, same), "the same bytes are no change");
+        assert!(!apply_dev_changes(&mut files, vec![("gone.rux".to_string(), None)]));
+
+        let edit = vec![("app.rux".to_string(), Some(b"two".to_vec())), ("x.css".to_string(), None)];
+        assert!(apply_dev_changes(&mut files, edit));
+        assert_eq!(files.file("app.rux"), Some(&b"two"[..]));
+        assert_eq!(files.file("x.css"), None);
+    }
 
     /// Android keeps the id between asking for the structure and filling it,
     /// so it has to name the field, be positive, and never be 0.

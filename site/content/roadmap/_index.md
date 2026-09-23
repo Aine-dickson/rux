@@ -2258,6 +2258,15 @@ here.
     Worth doing before the milestone claims mobile development feels like the
     rest of Rux, because right now it does not.
 
+    **Closed 2026-09-23, by a different shape.** Not assets: the dev APK still
+    embeds its documents, and `rux run --device` then stays running, watches
+    the project and sends each changed file down a socket. The app dials the
+    host through `adb reverse`, which works alike on an emulator and a phone,
+    patches its in-memory copy and reloads on the route it was on. A save
+    reaches the screen in about three seconds, with no build. Only a dev
+    build carries the socket and the `INTERNET` permission it needs; a
+    release build has neither. `--no-watch` gives the old install-and-exit.
+
 ### v0.9: text, depth, and the CSS pass
 
 1. **True inline text flow**, the standing known ceiling. Two `<text>` siblings

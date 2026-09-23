@@ -71,7 +71,12 @@ Run options:
                              do (phone, phone-small, phone-android, tablet)
   --device                   Build an APK, install it and start it on the
                              attached device or running emulator. Needs a
-                             `rux.toml`; `rux doctor` says what it needs
+                             `rux.toml`; `rux doctor` says what it needs.
+                             Then stays, and hot reloads on every save
+  --no-watch                 With --device: install, start and exit
+  --serial <serial>          With --device: which device, when several are
+                             attached (or set ANDROID_SERIAL). Without
+                             either, rux asks
 
 Check options:
   --format json              Emit diagnostics as JSON, for an editor
