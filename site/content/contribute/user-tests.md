@@ -1850,9 +1850,10 @@ Join; field B outside any form; form C, a search; field 8 low on the page).
 Phase 7 of the inputs plan. Android reclaims a backgrounded app whenever it
 wants the memory, and on the Spark 20 it wants it within a second of Home, so
 "switch away and come back" used to mean "start again at the first page". The
-activity now keeps the history (each entry with its scroll) and the focused
-field (text and caret) in `onSaveInstanceState`, and puts them back before the
-first frame. Signals are not kept: an app's data is the app's. The history
+activity now keeps the history (each entry with its scroll), the focused
+field (text and caret) and the text of every other field on the page, as native
+Android keeps every `EditText`'s, in `onSaveInstanceState`, and puts them back
+before the first frame. Other signals are not kept: an app's data is the app's. The history
 half is under test in `crates/rux-runtime` (`a_restored_app_is_where_it_was`,
 `a_restored_history_goes_through_the_guard`). Driven against
 `rux-harness/phase7-restore`: a nav bar, a list of 80 rows, an item page of 60
@@ -1876,13 +1877,41 @@ backgrounded process, as the low-memory killer does), then the launcher intent.
 | Reopened from Recents | list | Kill in the background, tap the app's card: the list comes back at its scroll | emulator: pass (a new process, `/list` at row 12) |
 | Reopened from the launcher icon, by hand | any | As above, from the real icon rather than the adb intent | |
 | Tap to move the caret in a component field | form, note | The next letter goes in where the tap put the caret | emulator: pass. The phone's miss was a lost tap |
+| Every field's text | form, and the top-level field | Fill the top-level field, note, secret and age, leave focus in the textarea, kill: every field but the password comes back, the textarea focused | emulator: pass. note's `@input` ran once for its restored text; the password came back empty |
+| Every field's text, again on the final build | form | "hzello" in note, "oh" in the textarea, kill | emulator: pass |
 
-Found alongside, not yet fixed: tapping inside a word the keyboard is still
-composing moves the caret, but AnySoftKeyboard keeps composing the old word, and
-the next letter leaves it doubled ("hello", tap after the h, "z" gives
-"hzelloo"). Any field, not only a component's. And adb's injected keys garble a
-field on the phone under Gboard but type cleanly on the emulator under
-AnySoftKeyboard, so that one needs the phone again.
+Found alongside, and fixed the next session: tapping inside a word the
+keyboard was still composing left the next letter doubled ("hello", tap after
+the h, "z" gave "hzelloo"), in any field. Driven on the emulator with
+AnySoftKeyboard's own keys, and a log of every input connection call found two
+things the input connection did not do that a `TextView` does:
+
+- **It never confirmed an edit.** A `TextView` calls
+  `InputMethodManager.updateSelection` after every edit the keyboard makes;
+  Rux only called it for caret moves of its own. The keyboard's idea of the
+  caret stayed where the field was first focused, so when the tap came it
+  re-took the word one character short (`setComposingRegion(-1, 4)`), and the
+  "z" replaced "hell" and left the "o". Each edit is now confirmed at the end
+  of the keyboard's batch, and a tap keeps the composing region and reports
+  it, leaving the keyboard to decide what the word becomes.
+- **It answered `getExtractedText` with null.** On Backspace AnySoftKeyboard
+  asks for it to place the caret in the whole text before re-taking the word
+  around it; with null it took the caret to be at 0, and "hza|ello" plus
+  Backspace gave "hzellollo". It now answers, and sends later changes to a
+  keyboard that asks to watch.
+
+| Case | Where | Expect | Result |
+|---|---|---|---|
+| Tap inside the word being composed | form, note | "hello", tap after the h, "z": "hzello", caret after the z | emulator: pass (was "hzelloo") |
+| Keep typing there | form, note | "a": "hzaello" | emulator: pass |
+| Space mid-word | form, note | Commits: "hza ello" | emulator: pass |
+| Backspace, three times | form, note | "hzaello", "hzello", "hello", caret after the h | emulator: pass (was "hzellollo") |
+| Another field while composing | note, then long | Tap the textarea mid-word and type: note keeps its text, nothing leaks across | emulator: pass |
+| The same, with Gboard on the phone | phone | As above | |
+
+adb's injected keys still garble a field on the phone under Gboard but type
+cleanly on the emulator under AnySoftKeyboard, so that one needs the phone
+again.
 
 Three defects came out of driving this, none of them phase 7's own logic:
 

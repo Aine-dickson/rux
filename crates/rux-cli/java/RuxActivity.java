@@ -30,6 +30,8 @@ import android.view.autofill.AutofillManager;
 import android.view.autofill.AutofillValue;
 import android.view.inputmethod.BaseInputConnection;
 import android.view.inputmethod.EditorInfo;
+import android.view.inputmethod.ExtractedText;
+import android.view.inputmethod.ExtractedTextRequest;
 import android.view.inputmethod.InputConnection;
 import android.view.inputmethod.InputMethodManager;
 
@@ -1276,10 +1278,146 @@ public class RuxActivity extends NativeActivity {
             token = nativeFieldToken();
             this.multiline = multiline;
             this.view = target;
+            // What `EditorInfo.initialSelStart` already told the input method.
+            sentSelStart = Math.min(anchor, caret);
+            sentSelEnd = Math.max(anchor, caret);
+            sentText = initial;
         }
 
         /** The view this connection edits for, which autofill is told about. */
         private final View view;
+
+        /** How deep the input method is in {@link #beginBatchEdit} calls. */
+        private int batch;
+
+        /**
+         * The selection and composing region the input method was last told
+         * of, so it is told again only when one of them changed.
+         */
+        private int sentSelStart;
+        private int sentSelEnd;
+        private int sentCompStart = -1;
+        private int sentCompEnd = -1;
+
+        /**
+         * Tell the input method where the selection and the composing region
+         * are now, if that is news, and not in the middle of a batch.
+         *
+         * <p><b>Every edit an input method makes is confirmed this way, not
+         * only the caret moves Rux makes by itself.</b> A {@code TextView}
+         * does it after each one. An input method keeps its own idea of where
+         * the caret should be, and a move it did not expect is how it learns
+         * the person tapped somewhere. Unconfirmed, its idea stayed where the
+         * field was first focused, and a tap inside a word it was still
+         * composing was read against that: it re-took the word one character
+         * short and typing into it left the last letter doubled. Driven with
+         * AnySoftKeyboard, and the same {@code hzelloo} Gboard made on the
+         * phone: "hello", a tap after the h, and "z".
+         *
+         * <p>Held until the outermost batch ends, as a {@code TextView} holds
+         * it, because a change in the middle of one is not the result.
+         */
+        void notifySelection() {
+            if (batch > 0) {
+                return;
+            }
+            final int a = Selection.getSelectionStart(editable);
+            final int c = Selection.getSelectionEnd(editable);
+            final int selStart = Math.min(a, c);
+            final int selEnd = Math.max(a, c);
+            final int compStart = getComposingSpanStart(editable);
+            final int compEnd = getComposingSpanEnd(editable);
+            final String text = editable.toString();
+            final boolean moved =
+                    selStart != sentSelStart
+                            || selEnd != sentSelEnd
+                            || compStart != sentCompStart
+                            || compEnd != sentCompEnd;
+            // A Forward Delete changes the text and leaves the caret where it
+            // was, so the text is compared too, for a watching input method.
+            final boolean edited = monitor != -1 && !text.equals(sentText);
+            if (!moved && !edited) {
+                return;
+            }
+            InputMethodManager imm =
+                    (InputMethodManager)
+                            view.getContext().getSystemService(Context.INPUT_METHOD_SERVICE);
+            if (imm == null) {
+                return;
+            }
+            if (monitor != -1) {
+                final ExtractedTextRequest request = new ExtractedTextRequest();
+                request.token = monitor;
+                imm.updateExtractedText(view, monitor, extracted(request));
+            }
+            if (moved) {
+                imm.updateSelection(view, selStart, selEnd, compStart, compEnd);
+            }
+            sentSelStart = selStart;
+            sentSelEnd = selEnd;
+            sentCompStart = compStart;
+            sentCompEnd = compEnd;
+            sentText = text;
+        }
+
+        /** The text a watching input method was last sent. */
+        private String sentText;
+
+        /**
+         * The whole text and where the selection is in it.
+         *
+         * <p><b>{@code BaseInputConnection} answers null, and an input method
+         * then does not know where the caret is.</b> AnySoftKeyboard asks for
+         * this to find the caret's place in the whole text before it re-takes
+         * the word around it, which it does on Backspace. With null it took
+         * the caret to be at the start: "hza|ello" and a Backspace composed
+         * the wrong four characters and left {@code hzellollo}.
+         *
+         * <p>Asked for with {@link InputConnection#GET_EXTRACTED_TEXT_MONITOR},
+         * every later change is sent as well, as a {@code TextView} sends it.
+         */
+        @Override
+        public ExtractedText getExtractedText(ExtractedTextRequest request, int flags) {
+            if (request == null) {
+                return null;
+            }
+            if ((flags & GET_EXTRACTED_TEXT_MONITOR) != 0) {
+                monitor = request.token;
+                sentText = editable.toString();
+            }
+            return extracted(request);
+        }
+
+        /** The request token of an input method watching the text, or -1. */
+        private int monitor = -1;
+
+        private ExtractedText extracted(ExtractedTextRequest request) {
+            final ExtractedText out = new ExtractedText();
+            final boolean styled = (request.flags & GET_TEXT_WITH_STYLES) != 0;
+            out.text = styled ? new SpannableStringBuilder(editable) : editable.toString();
+            out.startOffset = 0;
+            out.partialStartOffset = -1;
+            out.partialEndOffset = -1;
+            out.selectionStart = Selection.getSelectionStart(editable);
+            out.selectionEnd = Selection.getSelectionEnd(editable);
+            out.flags = multiline ? 0 : ExtractedText.FLAG_SINGLE_LINE;
+            return out;
+        }
+
+        @Override
+        public boolean beginBatchEdit() {
+            batch++;
+            return true;
+        }
+
+        @Override
+        public boolean endBatchEdit() {
+            if (batch > 0) {
+                batch--;
+            }
+            notifySelection();
+            return batch > 0;
+        }
 
         @Override
         public Editable getEditable() {
@@ -1315,6 +1453,15 @@ public class RuxActivity extends NativeActivity {
         @Override
         public boolean deleteSurroundingText(int before, int after) {
             boolean handled = super.deleteSurroundingText(before, after);
+            report();
+            return handled;
+        }
+
+        // An input method taking back a word it had committed, to compose
+        // it again. Unreported, the field went on drawing it as plain text.
+        @Override
+        public boolean setComposingRegion(int start, int end) {
+            boolean handled = super.setComposingRegion(start, end);
             report();
             return handled;
         }
@@ -1456,6 +1603,7 @@ public class RuxActivity extends NativeActivity {
                     Selection.getSelectionStart(editable),
                     start,
                     end);
+            notifySelection();
             // Autofill keeps its own copy of each field's value, which is what
             // it offers to save at the end; without this it would save what
             // the field held when it was entered.
@@ -1608,15 +1756,15 @@ public class RuxActivity extends NativeActivity {
                     final int length = editable.length();
                     final int a = Math.min(Math.max(anchor, 0), length);
                     final int c = Math.min(Math.max(caret, 0), length);
-                    // Whatever was being composed is abandoned, as it is when
-                    // the caret moves in any other editor.
-                    BaseInputConnection.removeComposingSpans(editable);
+                    // **The composing region is left where it is, and the
+                    // input method told where it is.** What happens to a word
+                    // being composed when the caret moves is the input
+                    // method's call, as it is in a `TextView`: it commits it,
+                    // or composes on from where the caret landed. Dropping
+                    // it here and reporting none left the keyboard still
+                    // composing a word the field no longer had.
                     Selection.setSelection(editable, a, c);
-                    InputMethodManager imm =
-                            (InputMethodManager) getSystemService(Context.INPUT_METHOD_SERVICE);
-                    if (imm != null) {
-                        imm.updateSelection(input, Math.min(a, c), Math.max(a, c), -1, -1);
-                    }
+                    connection.notifySelection();
                 });
     }
 
