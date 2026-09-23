@@ -154,6 +154,9 @@ pub struct Document {
     pending_reveals: Vec<Vec<usize>>,
     /// `tap()` requests the shell has not taken yet, in the order asked.
     pending_taps: Vec<Vec<usize>>,
+    /// Forms a submit button asked to submit, by tree path, that the shell has
+    /// not taken yet. The shell's, because a refused submission moves focus.
+    pending_submits: Vec<Vec<usize>>,
     /// A `focus()` or `blur()` the shell has not taken yet. `Some(None)` is a
     /// blur, `Some(Some(f))` a focus, `None` nothing asked.
     ///
@@ -256,6 +259,10 @@ const EVENT_NAMES: &[&str] = &["tap", "press", "release", "longpress", "swipe", 
 /// its value and its focus, which no other element has.
 const FIELD_EVENT_NAMES: &[&str] = &["input", "change", "focus", "blur"];
 
+/// The events only a `role="form"` has: a submission that passed its checks,
+/// and one that did not.
+const FORM_EVENT_NAMES: &[&str] = &["submit", "invalid"];
+
 /// Attributes that mean something only by being present.
 ///
 /// Writing `r-else=""` is not the same mistake as writing `r-else`: it reads as
@@ -279,22 +286,27 @@ fn check_attribute_shapes(
             // A component's `@name` is a listener for whatever it emits, so any
             // name is legitimate there.
             let field = el.tag == "input";
+            let form = el.role().is_some_and(|r| r.eq_ignore_ascii_case("form"));
             if is_component
                 || EVENT_NAMES.contains(&event)
                 || (field && FIELD_EVENT_NAMES.contains(&event))
+                || (form && FORM_EVENT_NAMES.contains(&event))
             {
                 continue;
             }
             let names = EVENT_NAMES
                 .iter()
                 .chain(FIELD_EVENT_NAMES.iter().filter(|_| field))
+                .chain(FORM_EVENT_NAMES.iter().filter(|_| form))
                 .map(|n| format!("`@{n}`"))
                 .collect::<Vec<_>>()
                 .join(", ");
-            // Off an input, a field event is the likely mistake, so say where
-            // it does belong.
+            // Off an input or a form, its events are the likely mistake, so
+            // say where they do belong.
             let only_input = if !field && FIELD_EVENT_NAMES.contains(&event) {
                 format!(" `@{event}` belongs on an `<input>`.")
+            } else if !form && FORM_EVENT_NAMES.contains(&event) {
+                format!(" `@{event}` belongs on the `<view role=\"form\">` around the fields.")
             } else {
                 String::new()
             };
@@ -1374,6 +1386,7 @@ impl Document {
             metrics: Vec::new(),
             pending_reveals: Vec::new(),
             pending_taps: Vec::new(),
+            pending_submits: Vec::new(),
             pending_focus: None,
             root,
         };
@@ -1476,6 +1489,7 @@ impl Document {
             metrics: Vec::new(),
             pending_reveals: Vec::new(),
             pending_taps: Vec::new(),
+            pending_submits: Vec::new(),
             pending_focus: None,
             root,
         };
@@ -1602,8 +1616,12 @@ impl Document {
         // the root. It is rare, one click or Tab, and the caret is being moved
         // anyway, so there is no ephemeral state left to preserve.
         let mut roots: Vec<Vec<usize>> = Vec::new();
+        // A field touched or a form attempted re-cascades from the root too:
+        // `:user-invalid` reaches every field of the form at once.
         if next.focused_model == self.state.focused_model
             && next.focused_row == self.state.focused_row
+            && next.touched == self.state.touched
+            && next.attempted == self.state.attempted
         {
             roots.push(divergence(self.state.hovered.as_deref(), next.hovered.as_deref()));
             roots.push(divergence(self.state.active.as_deref(), next.active.as_deref()));
@@ -2800,6 +2818,62 @@ impl Document {
         std::mem::take(&mut self.pending_taps)
     }
 
+    /// Take the forms submit buttons asked to submit, by tree path.
+    pub fn take_submits(&mut self) -> Vec<Vec<usize>> {
+        std::mem::take(&mut self.pending_submits)
+    }
+
+    /// Check the fields of the `role="form"` at `path` and gather their values.
+    ///
+    /// `None` when nothing at `path` is a form, which a rebuild between the
+    /// request and now can cause. A field belongs to the nearest form around
+    /// it, so a form inside another sends only its own. Disabled fields are
+    /// left out entirely, and readonly ones are sent unchecked, as HTML has
+    /// both; so is a field hidden by `r-show`, which nobody could fix.
+    pub fn check_form(&mut self, path: &[usize]) -> Option<FormReport> {
+        let node = node_at(&self.root, path)?;
+        let form = node.form.clone()?;
+        let instance = node.instance.clone();
+        let mut fields = Vec::new();
+        form_fields(node, path, row_at(&self.root, path), &mut fields);
+        let mut seen: Vec<(String, Option<String>, Option<String>)> = Vec::new();
+        let mut values: Vec<(String, rux_reactive::Value)> = Vec::new();
+        let mut failures = Vec::new();
+        for (field, row, field_instance, focusable) in fields {
+            let Some(bind) = field.bind.clone() else { continue };
+            // A radio group is several inputs bound to one signal, and one
+            // value.
+            let identity = (bind.clone(), row.clone(), field_instance.clone());
+            if seen.contains(&identity) {
+                continue;
+            }
+            seen.push(identity);
+            let value = self.typed_value_in(&bind, row.as_deref(), field_instance.as_deref());
+            let name = field.name.clone().unwrap_or_else(|| bind.clone());
+            if !field.readonly {
+                if let Some(problem) = rux_style::checks::field_problem(&field, value.as_ref()) {
+                    failures.push(FormFailure {
+                        name: name.clone(),
+                        message: problem.message(),
+                        focus: focusable.then(|| (bind.clone(), row.clone(), field_instance.clone())),
+                    });
+                }
+            }
+            let value = value.unwrap_or(rux_reactive::Value::Text(String::new()));
+            // A name used twice (a field in every row of a list) sends every
+            // value under it, in order, rather than keeping only the last.
+            match values.iter_mut().find(|(k, _)| *k == name) {
+                Some((_, rux_reactive::Value::List(items))) => items.push(value),
+                Some((_, existing)) => {
+                    let first = std::mem::replace(existing, rux_reactive::Value::Bool(false));
+                    *existing = rux_reactive::Value::List(vec![first, value]);
+                }
+                None => values.push((name, value)),
+            }
+        }
+        Some(FormReport { form, instance, values, failures })
+    }
+
     /// Take the `focus()` / `blur()` the last handler asked for, if any.
     ///
     /// The shell applies it through its own focus funnel, so keystrokes, the
@@ -2863,6 +2937,10 @@ impl Document {
                 // element's box and runs the same dispatch a finger does.
                 rux_script::ElementAction::Tap(path) => {
                     self.pending_taps.push(path);
+                    acted = true;
+                }
+                rux_script::ElementAction::Submit(path) => {
+                    self.pending_submits.push(path);
                     acted = true;
                 }
             }
@@ -3545,6 +3623,54 @@ fn node_at<'a>(root: &'a LayoutNode, path: &[usize]) -> Option<&'a LayoutNode> {
         node = node.children.get(i)?;
     }
     Some(node)
+}
+
+/// What [`Document::check_form`] found.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FormReport {
+    /// The form's handlers.
+    pub form: rux_layout::Form,
+    /// The component instance the form was written in, which is where its
+    /// handlers run.
+    pub instance: Option<String>,
+    /// Every field's value, by `name=` or else by `r-model`, in document order.
+    pub values: Vec<(String, rux_reactive::Value)>,
+    /// The fields that failed their checks, in document order. Empty means the
+    /// form may be submitted.
+    pub failures: Vec<FormFailure>,
+}
+
+/// One field that failed its checks.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FormFailure {
+    /// The key it is sent under.
+    pub name: String,
+    /// What is wrong, as a sentence.
+    pub message: String,
+    /// `(r-model, row, instance)` when the field takes a caret, so a refused
+    /// submission can put the person in it. `None` for a checkbox and the like.
+    pub focus: Option<(String, Option<String>, Option<String>)>,
+}
+
+/// The fields of the form at `form_path`, in document order: each field's
+/// attributes, its row, its instance and whether it takes a caret.
+fn form_fields(
+    node: &LayoutNode,
+    form_path: &[usize],
+    row: Option<String>,
+    out: &mut Vec<(rux_layout::Field, Option<String>, Option<String>, bool)>,
+) {
+    if node.hidden || node.style.display == rux_layout::Display::None {
+        return;
+    }
+    let row = node.key.clone().or(row);
+    let field = &node.field;
+    if field.bind.is_some() && !field.disabled && field.form.as_deref() == Some(form_path) {
+        out.push((field.clone(), row.clone(), node.instance.clone(), node.model.is_some()));
+    }
+    for child in &node.children {
+        form_fields(child, form_path, row.clone(), out);
+    }
 }
 
 /// The `r-key` of the row `path` lands inside, if any.

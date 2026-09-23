@@ -1252,6 +1252,50 @@ pub struct Field {
     /// them is not offered by the picker and does not reach the signal.
     pub min: Option<(i32, u32, u32)>,
     pub max: Option<(i32, u32, u32)>,
+    /// `name=`: the key its value is sent under in a form's `event.values`.
+    /// Without one, the `r-model` is.
+    pub name: Option<String>,
+    /// The tree path of the `role="form"` around it, the nearest one. `None`
+    /// for a field in no form.
+    pub form: Option<Vec<usize>>,
+    /// What a submission checks. See [`Checks`].
+    pub checks: Checks,
+    /// The `r-model` a submission reads the value from. Set on every kind of
+    /// input, the tap-toggles included, which carry no `model` of their own.
+    pub bind: Option<String>,
+    /// What kind of value that is. See [`Shape`].
+    pub shape: Shape,
+}
+
+/// What kind of value a field holds, which decides how its checks read it and
+/// what `event.values` carries for it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Shape {
+    /// Text, as every text field, a select and a radio group hold.
+    #[default]
+    Text,
+    /// On or off: a checkbox or a switch.
+    Flag,
+    /// A number field or a slider.
+    Number,
+}
+
+/// The constraints a field states about its value, checked when its form is
+/// submitted and matched by `:invalid` once the person has been through it.
+///
+/// An empty field fails only `required`: every other check is about a value
+/// that is there, as HTML has it.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Checks {
+    /// `required`: not empty; for a checkbox or switch, on.
+    pub required: bool,
+    /// `minlength`, in UTF-16 code units like `maxlength`.
+    pub minlength: Option<usize>,
+    /// `pattern`: a regular expression the *whole* value matches.
+    pub pattern: Option<String>,
+    /// A number field's `min` and `max`.
+    pub low: Option<f64>,
+    pub high: Option<f64>,
 }
 
 /// A node in the view tree: a style, optional text, children, and an optional
@@ -1316,6 +1360,22 @@ pub struct Node {
     /// most visibly) stays behind with the slot. The runtime uses this to follow
     /// a row across a reorder. Layout itself ignores it.
     pub key: Option<String>,
+    /// `role="form"`: what submitting this form runs. See [`Form`]. Layout
+    /// ignores it; the runtime finds it by the node's path.
+    pub form: Option<Form>,
+}
+
+/// A `<view role="form">`: the handlers its submission runs.
+///
+/// The role only says which fields belong together. What happens when they
+/// are sent is the `@submit` the author wrote, and a submission whose fields
+/// fail their checks runs `@invalid` instead, as HTML refuses to submit.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Form {
+    /// `@submit`, handed `event.values`.
+    pub on_submit: Option<String>,
+    /// `@invalid`, handed `event.errors` and `event.values`.
+    pub on_invalid: Option<String>,
 }
 
 impl Node {
@@ -1341,6 +1401,7 @@ impl Node {
             access: Access::default(),
             instance: None,
             key: None,
+            form: None,
         }
     }
 
@@ -1366,6 +1427,7 @@ impl Node {
             access: Access::default(),
             instance: None,
             key: None,
+            form: None,
         }
     }
 
@@ -1391,6 +1453,7 @@ impl Node {
             access: Access::default(),
             instance: None,
             key: None,
+            form: None,
         }
     }
 
@@ -1421,6 +1484,7 @@ impl Node {
             access: Access::default(),
             instance: None,
             key: None,
+            form: None,
         }
     }
 

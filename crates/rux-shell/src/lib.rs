@@ -1525,6 +1525,12 @@ struct App {
     /// The focused field's value when it was focused or last committed:
     /// `@change` fires when the value being committed differs from this.
     committed: Option<String>,
+    /// The focused field's value when it was focused, so leaving it can tell
+    /// whether the person changed it. See `:user-invalid`.
+    focus_value: Option<String>,
+    /// The window changed size while a field had focus: reveal it after the
+    /// next layout. See watchlist #19.
+    reveal_focus: bool,
     /// A `type="number"` or `type="date"` part way through being typed: the
     /// text it shows, and the bound value as text when that was written. See
     /// [`App::focused_value`].
@@ -1725,6 +1731,8 @@ impl App {
             focused_kind: InputKind::Text,
             focused_field: Field::default(),
             committed: None,
+            focus_value: None,
+            reveal_focus: false,
             typed_draft: None,
             decimal: '.',
             field_events: std::collections::VecDeque::new(),
@@ -2820,13 +2828,9 @@ impl App {
         // Pressing and then dragging off the element drops `:active`, the way a
         // button un-presses when the pointer leaves it.
         let active = self.press.is_some().then(|| hovered.clone()).flatten();
-        let next = InteractionState {
-            hovered,
-            active,
-            focused_model: self.document.interaction().focused_model.clone(),
-            focused_row: self.document.interaction().focused_row.clone(),
-            focused_instance: self.document.interaction().focused_instance.clone(),
-        };
+        // Everything but the pointer is kept as the document has it: focus and
+        // which fields have been touched are not the pointer's to change.
+        let next = InteractionState { hovered, active, ..self.document.interaction().clone() };
         if self.document.set_interaction(next) {
             self.request_redraw();
         }
@@ -2995,6 +2999,7 @@ impl App {
         model: Option<String>,
         row: Option<String>,
         instance: Option<String>,
+        left: Option<(String, Option<String>, Option<String>)>,
     ) {
         let mut next = self.document.interaction().clone();
         if next.focused_model == model
@@ -3002,6 +3007,12 @@ impl App {
             && next.focused_instance == instance
         {
             return;
+        }
+        // The field being left has now been through, for `:user-invalid`.
+        // Recorded in the same change as the focus move, so the two cost one
+        // re-cascade between them.
+        if let Some(left) = left.filter(|l| !next.touched.contains(l)) {
+            next.touched.push(left);
         }
         next.focused_model = model;
         next.focused_row = row;
@@ -3449,6 +3460,119 @@ impl App {
             }
         }
         self.adopt_focus_request();
+        // Last, so a refused submission's focus on the first bad field is the
+        // focus the person ends up with.
+        for form in self.document.take_submits() {
+            self.submit_form(&form);
+        }
+    }
+
+    /// Submit the form at `path`: its `@submit` with `event.values` when every
+    /// field passes, and otherwise `@invalid` with `event.errors`, the caret in
+    /// the first field that failed and `:user-invalid` on every field that did.
+    ///
+    /// Refused as HTML refuses, so a form's `@submit` only ever sees values that
+    /// passed. Both handlers are queued like a field's, and run once the event
+    /// that submitted has finished with the focus.
+    fn submit_form(&mut self, path: &[usize]) {
+        use rux_reactive::Value;
+        let Some(report) = self.document.check_form(path) else { return };
+        let values = Value::Map(report.values);
+        if report.failures.is_empty() {
+            if let Some(body) = report.form.on_submit {
+                let event = Value::Map(vec![("values".to_string(), values)]);
+                self.field_events.push_back((body, report.instance, event));
+            }
+            return;
+        }
+        let mut next = self.document.interaction().clone();
+        if !next.attempted.iter().any(|f| f == path) {
+            next.attempted.push(path.to_vec());
+            self.document.set_interaction(next);
+        }
+        let errors = report
+            .failures
+            .iter()
+            .map(|f| (f.name.clone(), Value::Text(f.message.clone())))
+            .collect();
+        if let Some(body) = report.form.on_invalid {
+            let event = Value::Map(vec![
+                ("errors".to_string(), Value::Map(errors)),
+                ("values".to_string(), values),
+            ]);
+            self.field_events.push_back((body, report.instance, event));
+        }
+        // The first field that failed takes the caret, if it is one that can.
+        // A checkbox cannot, and the keyboard goes down so it can be seen.
+        match report.failures.into_iter().next().and_then(|f| f.focus) {
+            Some((model, row, instance)) => {
+                let index = self.focusables.iter().position(|item| {
+                    matches!(&item.kind, FocusKind::Text { model: m, row: r, instance: i, .. }
+                        if *m == model && *r == row && *i == instance)
+                });
+                match index {
+                    Some(i) => self.set_keyboard_focus(Some(i)),
+                    None => {
+                        let caret = self.document.value_in(&model, row.as_deref(), instance.as_deref()).len();
+                        self.set_focus(Some((model, row, instance, caret)));
+                    }
+                }
+            }
+            None => self.set_focus(None),
+        }
+        self.request_redraw();
+    }
+
+    /// The focused field's action key, with the default worked out.
+    ///
+    /// What the author wrote wins. A textarea keeps its Enter. Otherwise a
+    /// field in a form says Next, and the form's last field says Go, which
+    /// submits it; outside a form a phone's keyboard says Done, which closes
+    /// it, where before it said Done and did nothing.
+    fn enter_key(&self) -> EnterKey {
+        let field = self.live_field();
+        if field.enter_key != EnterKey::Default || self.focused_kind.multiline() {
+            return field.enter_key;
+        }
+        match &field.form {
+            Some(form) if self.form_neighbour(form, false).is_some() => EnterKey::Next,
+            Some(_) => EnterKey::Go,
+            None if cfg!(target_os = "android") => EnterKey::Done,
+            None => EnterKey::Default,
+        }
+    }
+
+    /// The typing field after (or before) the focused one in `form`, as an
+    /// index into `focusables`. Buttons, toggles and selects are passed over,
+    /// as a phone's Next passes over them, and so is a date, which a phone
+    /// answers with a picker rather than a keyboard.
+    fn form_neighbour(&self, form: &[usize], backward: bool) -> Option<usize> {
+        let focused = self.focused.as_deref()?;
+        fn typing(item: &FocusItem) -> Option<(&str, Option<&str>, Option<&str>)> {
+            match &item.kind {
+                FocusKind::Text { model, row, instance, kind, .. } => (*kind != InputKind::Date)
+                    .then_some((model.as_str(), row.as_deref(), instance.as_deref())),
+                _ => None,
+            }
+        }
+        let here = self.focusables.iter().position(|item| {
+            typing(item) == Some((focused, self.focused_row.as_deref(), self.focused_instance.as_deref()))
+        })?;
+        let in_form = |i: &usize| {
+            typing(&self.focusables[*i]).is_some_and(|(model, row, instance)| {
+                self.focuses.iter().any(|r| {
+                    r.model == model
+                        && r.row.as_deref() == row
+                        && r.instance.as_deref() == instance
+                        && r.field.form.as_deref() == Some(form)
+                })
+            })
+        };
+        if backward {
+            (0..here).rev().find(in_form)
+        } else {
+            (here + 1..self.focusables.len()).find(in_form)
+        }
     }
 
     /// Press an element as a finger would, at the centre of its box.
@@ -4359,11 +4483,25 @@ impl App {
     /// answered by `@change`.
     fn enter_in_field(&mut self) {
         self.commit_focused();
-        match self.live_field().enter_key {
-            EnterKey::Next => self.move_focus(false),
-            EnterKey::Previous => self.move_focus(true),
+        let form = self.live_field().form;
+        match self.enter_key() {
+            // Inside a form, Next and Previous stay among its typing fields.
+            // Outside one, or past its ends, they move as Tab does.
+            key @ (EnterKey::Next | EnterKey::Previous) => {
+                let backward = key == EnterKey::Previous;
+                match form.as_deref().and_then(|f| self.form_neighbour(f, backward)) {
+                    Some(i) => self.set_keyboard_focus(Some(i)),
+                    None => self.move_focus(backward),
+                }
+            }
             EnterKey::Done => self.set_focus(None),
-            _ => {}
+            // Every other key in a form's field submits it, as Enter in a
+            // one-line field submits an HTML form.
+            _ => {
+                if let Some(form) = form {
+                    self.submit_form(&form);
+                }
+            }
         }
     }
 
@@ -4446,6 +4584,17 @@ impl App {
                     self.focused_instance.as_deref(),
                 )
             });
+        // Only a field whose value the person changed counts as having been
+        // through, as browsers decide `:user-invalid`: tabbing past an empty
+        // required field is not getting it wrong.
+        let left = (!same_field)
+            .then(|| {
+                let model = self.focused.clone()?;
+                let now = self.focused_signal_text();
+                let changed = self.focus_value.as_deref() != Some(now.as_str());
+                changed.then(|| (model, self.focused_row.clone(), self.focused_instance.clone()))
+            })
+            .flatten();
         if !same_field {
             self.text_scroll = 0.0;
             self.handles = false;
@@ -4474,7 +4623,7 @@ impl App {
         let model = self.focused.clone();
         let row = self.focused_row.clone();
         let instance = self.focused_instance.clone();
-        self.update_focus_state(model, row, instance);
+        self.update_focus_state(model, row, instance, left);
         if !same_field {
             self.focused_field = self.focused_region().map(|r| r.field.clone()).unwrap_or_default();
             if self.focused_is_number() {
@@ -4485,6 +4634,7 @@ impl App {
                 let value = self.focused_signal_text();
                 let focus = self.focused_field.on_focus.clone();
                 self.queue_field_event(focus.as_deref(), &value);
+                self.focus_value = Some(value.clone());
                 self.committed = Some(value);
             }
         }
@@ -4558,7 +4708,9 @@ impl App {
                 // Never raised, see `set_focus_range`; a text keyboard if it is.
                 Keyboard::None => 0,
             };
-            let enter = match self.focused_field.enter_key {
+            // What the key will do, not only what was written: Next and Go in
+            // a form, Done outside one.
+            let enter = match self.enter_key() {
                 EnterKey::Default => 0,
                 EnterKey::Enter => 1,
                 EnterKey::Done => 2,
@@ -4704,7 +4856,7 @@ impl App {
             other => other,
         };
         let _ = el.set_attribute("inputmode", keyboard.name());
-        match self.focused_field.enter_key.name() {
+        match self.enter_key().name() {
             Some(hint) => {
                 let _ = el.set_attribute("enterkeyhint", hint);
             }
@@ -5165,6 +5317,7 @@ impl App {
             focused_instance,
             focused_kind,
             selection_ends,
+            reveal_focus,
             #[cfg(not(target_arch = "wasm32"))]
             path,
             ..
@@ -5253,6 +5406,33 @@ impl App {
             }
             *off = off.clamp_to(region.max);
             revealed = true;
+        }
+        // The window changed size under a focused field, which is what a
+        // phone's keyboard opening does to it: `adjustResize` shrinks the
+        // window, and the field that raised the keyboard can end up beneath
+        // it. Bring it back into view, as Android's own apps do. Watchlist #19.
+        if std::mem::take(reveal_focus) {
+            let field = focused.as_deref().and_then(|model| {
+                layout.focuses.iter().find(|f| {
+                    f.text.is_some()
+                        && f.model == model
+                        && f.row == *focused_row
+                        && f.instance == *focused_instance
+                })
+            });
+            if let Some(f) = field {
+                if let Some(at) = rux_layout::containing_scroller(&layout.scrolls, offsets, f.x, f.y) {
+                    let region = &layout.scrolls[at];
+                    let off = &mut offsets[region.id];
+                    if f.y < region.y {
+                        off.y -= region.y - f.y;
+                    } else if f.y + f.height > region.y + region.height {
+                        off.y += (f.y + f.height) - (region.y + region.height);
+                    }
+                    *off = off.clamp_to(region.max);
+                    revealed = true;
+                }
+            }
         }
         // The corrected offset takes effect on the next layout, so ask for one.
         // Through `state` rather than `self.request_redraw()`: `self` is already
@@ -5935,6 +6115,8 @@ impl ApplicationHandler<RuxEvent> for App {
                     );
                 }
                 self.update_viewport();
+                // Revealed once the next layout says where the field now is.
+                self.reveal_focus = self.focused.is_some();
                 self.request_redraw();
             }
             // The person changed light or dark mode while the app was running.

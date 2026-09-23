@@ -119,6 +119,8 @@ const GLOBAL_ATTRIBUTES: &[Entry] = &[
     Entry { name: "style", detail: "inline declarations", doc: "Inline CSS for this element. `:style` is the bound form." },
     Entry { name: "role", detail: "accessibility role", doc: "Honored for selectors (`[role=\"heading\"]`) and for the accessibility tree. Matches case-insensitively." },
     Entry { name: "to", detail: "make this element a link", doc: "Tapping navigates to this path, the element announces as a link, and it matches `:current` when it names the path you are on. `:to` is the bound form." },
+    Entry { name: "@submit", detail: "the form was sent, and every field passed", doc: "On a `role=\"form\"` only. Sent by a `<button type=\"submit\">` inside it or by the action key in its last field. `event.values` maps each field's `name` (or its `r-model`) to its value." },
+    Entry { name: "@invalid", detail: "the form was sent, and a field failed", doc: "On a `role=\"form\"` only. Runs instead of `@submit`: the first failing field takes the caret and every field matches `:user-invalid` from then on. `event.errors` maps each failing field's name to a sentence saying why; `event.values` is as for `@submit`." },
 ];
 
 /// The structural directives. These are attributes, but they are the ones worth
@@ -158,16 +160,19 @@ const ELEMENT_ATTRIBUTES: &[(&str, &[Entry])] = &[
             Entry { name: "placeholder", detail: "text shown while empty", doc: "Shown until the field has a value. Not a label." },
             Entry { name: "value", detail: "the field's value", doc: "The literal starting value. For state that changes, use `r-model`." },
             Entry { name: "checked", detail: "checkbox / radio state", doc: "Live state for `type=\"checkbox\"` and `type=\"radio\"`, and matched by the `:checked` pseudo-class." },
-            Entry { name: "name", detail: "radio group", doc: "Radios sharing a `name` are one group, so choosing one clears the others." },
+            Entry { name: "name", detail: "radio group, and the key a form sends it under", doc: "Radios sharing a `name` are one group, so choosing one clears the others. In a `role=\"form\"`, `event.values` carries the field under this name; without one, under its `r-model`." },
+            Entry { name: "required", detail: "must have a value to submit", doc: "Valueless, or bound with `:required`. Empty text, or a checkbox or switch that is off, fails it. Matched by `:required`, and by `:invalid` while it fails." },
+            Entry { name: "minlength", detail: "the fewest characters it takes", doc: "Checked when its form is submitted, counted like `maxlength`. An empty field fails only `required`." },
+            Entry { name: "pattern", detail: "a regular expression the value matches", doc: "Matches the whole value, as HTML's does: `pattern=\"\\d{4}\"` takes `1906` and refuses `19064`. An empty field fails only `required`." },
             Entry { name: "options", detail: "the choices for a select", doc: "For `type=\"select\"`. `:options` binds an array." },
             Entry { name: "disabled", detail: "cannot be focused, tapped or changed", doc: "On whenever it is written, so `disabled=\"false\"` is still disabled: bind it with `:disabled=\"expr\"` instead. Matched by `:disabled`. Also on `<button>`." },
             Entry { name: "readonly", detail: "can be selected and copied, not changed", doc: "The caret and the selection work and no keyboard opens. `:readonly` binds it." },
-            Entry { name: "min", detail: "the lowest value or earliest day", doc: "A number for `type=\"slider\"` (0 when left off), a `YYYY-MM-DD` day for `type=\"date\"`." },
-            Entry { name: "max", detail: "the highest value or latest day", doc: "A number above `min` for `type=\"slider\"` (100 when left off), a `YYYY-MM-DD` day for `type=\"date\"`." },
+            Entry { name: "min", detail: "the lowest value or earliest day", doc: "A number for `type=\"slider\"` (0 when left off), a `YYYY-MM-DD` day for `type=\"date\"`. On `type=\"number\"`, a check its form's submission makes." },
+            Entry { name: "max", detail: "the highest value or latest day", doc: "A number above `min` for `type=\"slider\"` (100 when left off), a `YYYY-MM-DD` day for `type=\"date\"`. On `type=\"number\"`, a check its form's submission makes." },
             Entry { name: "step", detail: "what a slider's value moves by", doc: "For `type=\"slider\"`. 1 when left off; `any` for no steps. The value is rounded to as many decimal places as the step is written with." },
             Entry { name: "maxlength", detail: "the most characters it takes", doc: "Counted as HTML counts them, in UTF-16 units. Typing past it is refused and a paste is cut short." },
             Entry { name: "inputmode", detail: "text | numeric | decimal | tel | email | url | search | none", doc: "Which keyboard a phone raises. The field is still a text field and its value still text: a PIN or a phone number is `inputmode=\"numeric\"`, not a number." },
-            Entry { name: "enterkeyhint", detail: "enter | done | go | next | previous | search | send", doc: "What the keyboard's action key says. `next` and `previous` move focus like Tab, `done` closes the field; every one commits it first, which fires `@change`." },
+            Entry { name: "enterkeyhint", detail: "enter | done | go | next | previous | search | send", doc: "What the keyboard's action key says. `next` and `previous` move focus like Tab, `done` closes the field, and in a form every other one submits it; every one commits the field first, which fires `@change`. Left off in a form, it is `next` on each typing field and `go` on the last." },
             Entry { name: "autofocus", detail: "take focus when it appears", doc: "Valueless. Focuses the field when it first appears, a route or an `r-if` bringing it in included, unless something already has focus." },
             Entry { name: "@input", detail: "the text changed", doc: "After every change, however it was made. `event.value` is the new text." },
             Entry { name: "@change", detail: "a changed value was committed", doc: "When the field is left with a different value than it had, or Enter is pressed in a one-line field. A select fires it on choosing, a checkbox or radio on toggling. `event.value` is the value." },
@@ -177,7 +182,10 @@ const ELEMENT_ATTRIBUTES: &[(&str, &[Entry])] = &[
     ),
     (
         "button",
-        &[Entry { name: "disabled", detail: "cannot be tapped", doc: "No `@tap`, no link, no gesture, and nothing for Tab to land on. On whenever it is written; `:disabled=\"expr\"` binds it. Matched by `:disabled`." }],
+        &[
+            Entry { name: "disabled", detail: "cannot be tapped", doc: "No `@tap`, no link, no gesture, and nothing for Tab to land on. On whenever it is written; `:disabled=\"expr\"` binds it. Matched by `:disabled`." },
+            Entry { name: "type", detail: "submit | button", doc: "`submit` sends the `role=\"form\"` around it once its own `@tap` has run: `@submit` if every field passes, `@invalid` if not. `button`, or leaving it off, is an ordinary button." },
+        ],
     ),
     (
         "route",
@@ -295,6 +303,12 @@ const PSEUDO_CLASSES: &[Entry] = &[
     Entry { name: "leave-to", detail: "the state an element leaves to", doc: "Under `r-transition`: the style the element animates towards while it is held on screen on its way out. `position: absolute` here takes it out of flow, so the rest of a list closes up under it rather than waiting." },
     Entry { name: "disabled", detail: "an input or button that is switched off", doc: "Matches a `<input>` or `<button>` with `disabled` (or a truthy `:disabled`). Rux draws no default look for it, so this is where the dimming goes." },
     Entry { name: "enabled", detail: "an input or button that is not disabled", doc: "Form controls only: a plain box is neither enabled nor disabled, as in CSS." },
+    Entry { name: "valid", detail: "an input whose value passes its checks", doc: "Matched from the start, as in CSS. A disabled or readonly input is neither valid nor invalid." },
+    Entry { name: "invalid", detail: "an input whose value fails a check", doc: "`required`, `minlength`, `pattern`, a number's `min`/`max`, or the shape `inputmode=\"email\"` or `\"url\"` implies. Matched from the start, so an empty required field is invalid before anyone has touched it: `:user-invalid` waits." },
+    Entry { name: "user-valid", detail: "valid, once the person has been through it", doc: "Like `:valid`, but only after the field was changed and left, or its form's submission was tried." },
+    Entry { name: "user-invalid", detail: "invalid, once the person has been through it", doc: "Like `:invalid`, but only after the field was changed and left, or its form's submission was tried. The one to put error styling on." },
+    Entry { name: "required", detail: "an input with `required`", doc: "Inputs only." },
+    Entry { name: "optional", detail: "an input without `required`", doc: "Inputs only." },
 ];
 
 /// Keyword values, per property, for the properties whose values are a closed

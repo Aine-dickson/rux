@@ -543,7 +543,8 @@ subsequent-sibling (`.a ~ .b`).
 **Pseudo-classes:** `:hover`, `:focus`, `:active`, `:checked`, `:current` (a
 link whose `to` names the path you are on), `:disabled` / `:enabled` (an
 `<input>` or `<button>` with or without `disabled`; a plain box is neither, as in
-CSS), and `:enter-from` / `:leave-to`
+CSS), `:valid` / `:invalid`, `:user-valid` / `:user-invalid` and `:required` /
+`:optional` (an input's checks, under [Forms](#forms)), and `:enter-from` / `:leave-to`
 (the two sides of an enter/leave swap, below). They stack
 (`.btn:hover:active`), count as class-level specificity, and work anywhere in a
 chain, `.card:hover .title` recolours the title while the pointer is over the
@@ -1307,8 +1308,11 @@ an email layout would give up the no-learning guarantee.
 **Enter in a one-line field commits it.** It fires `@change` if the value
 changed, then does what `enterkeyhint` says the field can do by itself: `next`
 and `previous` move focus as Tab and Shift+Tab do, `done` drops focus and the
-keyboard. `go`, `search` and `send` name what the *app* will do, which is its
-`@change`. On Android the action key is a real Enter, so all of this is one path.
+keyboard. `go`, `search` and `send` name what the *app* will do: in a
+[form](#forms) they submit it, and outside one the app answers with `@change`.
+Left off, the key is worked out: `next` on a form's typing fields and `go` on
+its last, and outside a form `done` on a phone. On Android the action key is a
+real Enter, so all of this is one path.
 
 Rux draws no default look for a disabled control, the same way it draws no
 default look for a button. Style `:disabled`:
@@ -1339,8 +1343,78 @@ does. A `@blur` that focuses the field it left, answered by a `@focus` that
 blurs it, is stopped after 64 handlers with a warning. A handler written in a
 component runs in that instance, and one in an `r-for` row sees the row.
 
-Not yet: `@submit` and `role="form"` (Enter in a field does not submit
-anything), validation (`required`, `pattern`), and `autocomplete`.
+Not yet: `autocomplete` and the platform's autofill.
+
+### Forms
+
+A form is a `<view role="form">`. The role groups the fields inside it; it
+draws nothing and lays nothing out. A field belongs to the nearest form around
+it, so a form inside another sends only its own fields.
+
+```xml
+<view role="form" class="signup" @submit="join(event.values)" @invalid="errors = event.errors">
+  <input r-model="email" name="email" inputmode="email" required />
+  <input r-model="code" name="code" inputmode="numeric" minlength="4" pattern="\d+" />
+  <input type="checkbox" r-model="terms" name="terms" required />
+  <button type="submit">Join</button>
+</view>
+```
+
+**Submitting.** Two things submit a form: a `<button type="submit">` inside it,
+after the button's own `@tap` has run, and the action key in its last typing
+field. Every field is checked first, and the outcome is one of two events on the
+form:
+
+| Event | When | `event` carries |
+|---|---|---|
+| `@submit` | Every field passed | `values`: each field's value under its `name`, or under its `r-model` when it has no name |
+| `@invalid` | A field failed | `errors`: each failing field's name mapped to a sentence saying why. `values` as above |
+
+A failed submission is **refused**, as HTML refuses one: `@submit` does not run,
+the first field that failed takes the caret (a checkbox cannot, so the keyboard
+goes down instead), and every field of the form matches `:user-invalid` from
+then on. A disabled field is neither checked nor sent. A readonly one is sent
+and not checked, since nobody could fix it, and so is a field hidden by
+`r-show`. A name that appears in every row of a list sends every row's value,
+as an array under that name. A radio group sends its one value.
+
+**The checks.** HTML's, with HTML's rule that an empty field fails only
+`required`:
+
+| Attribute | Fails when |
+|---|---|
+| `required` | Empty, or a checkbox or switch that is off. `:required="expr"` binds it |
+| `minlength` | Shorter than this, counted like `maxlength` |
+| `pattern` | The *whole* value does not match this regular expression: `\d{4}` takes `1906` and refuses `19064` |
+| `min`, `max` on `type="number"` | The number is outside them. A slider's range is its travel and a date's is its picker, so neither is a check |
+| `inputmode="email"` | Not an address, by HTML's own definition of one |
+| `inputmode="url"` | Not an absolute URL, `scheme:` and something after it |
+
+A `pattern` that is not a regular expression, a `minlength` that is not a whole
+number, a `<button type="submit">` with no form around it and `@submit` on
+anything but a form are errors, because each would otherwise do nothing in
+silence.
+
+**The pseudo-classes.** `:invalid` and `:valid` match from the start, as in CSS,
+so an empty required field is `:invalid` before anyone has touched it.
+`:user-invalid` and `:user-valid` wait for the person: they match once the field
+was changed and left, or once its form's submission was tried. Error styling
+belongs on `:user-invalid`. A disabled or readonly field matches neither pair.
+`:required` and `:optional` match any input.
+
+```css
+.field:user-invalid { border-color: #f38ba8; }
+.field:focus:user-invalid { outline: 2px solid #f38ba8; }
+```
+
+**The action key.** A form's typing fields say Next and its last says Go, unless
+`enterkeyhint` says otherwise. Next moves among the form's own typing fields,
+passing over buttons, toggles, selects and dates, as a phone's Next does. Go
+(or any key but Next, Previous and Done) submits. A textarea keeps its Enter.
+
+**A field the keyboard covers.** When the window shrinks under a focused field,
+which is what a phone's keyboard opening does to it, the scroller holding the
+field is moved to bring it back into view.
 
 ### Text input and composition
 Typing is not only key presses. Anything past unaccented Latin is *composed*:

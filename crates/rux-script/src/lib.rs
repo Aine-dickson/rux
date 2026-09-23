@@ -162,6 +162,10 @@ fn register_elements(engine: &mut RhaiEngine) {
     engine.register_fn("blur", || {
         ELEMENT_ACTIONS.with(|a| a.borrow_mut().push(ElementAction::Blur));
     });
+    engine.register_fn(SUBMIT_FN, |form: ImmutableString| {
+        let path = form.split('.').filter_map(|i| i.parse().ok()).collect();
+        ELEMENT_ACTIONS.with(|a| a.borrow_mut().push(ElementAction::Submit(path)));
+    });
 
     engine.register_fn(
         "query",
@@ -1127,7 +1131,16 @@ pub enum ElementAction {
     /// will get it wrong. The shell resolves it against the element's box and
     /// runs the same dispatch a pointer does.
     Tap(Vec<usize>),
+    /// Submit the `role="form"` at this tree path: check its fields, then run
+    /// its `@submit` or its `@invalid`. Asked for by a `<button type="submit">`,
+    /// whose tap the build ends with a call to [`SUBMIT_FN`].
+    Submit(Vec<usize>),
 }
+
+/// The function a submit button's tap calls, with its form's tree path
+/// written as `"0.2.1"`. Not for authors: a form is submitted by a
+/// `type="submit"` button or by Enter in its last field.
+pub const SUBMIT_FN: &str = "__rux_submit";
 
 thread_local! {
     /// Element actions asked for since the last drain, in order.

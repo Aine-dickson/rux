@@ -35,6 +35,9 @@ use rux_script::Engine;
 mod anim;
 pub use anim::{Animator, FRAME_MS};
 
+/// A form field's built-in checks, shared by `:invalid` and submission.
+pub mod checks;
+
 /// Loop-variable bindings introduced by `r-for`, layered as a scope stack and
 /// injected into the script engine for each evaluation.
 type Locals = Vec<(String, Value)>;
@@ -398,12 +401,25 @@ fn check_field_attributes(el: &Element) {
             });
         }
     }
-    if let Some(value) = el.attr("maxlength") {
+    for name in ["maxlength", "minlength"] {
+        let Some(value) = el.attr(name) else { continue };
         if value.trim().parse::<usize>().is_err() {
-            located(el.attr_line("maxlength"), || {
+            located(el.attr_line(name), || {
                 error(format!(
-                    "`maxlength=\"{value}\"` is not a whole number of characters, so the \
+                    "`{name}=\"{value}\"` is not a whole number of characters, so the \
                      field would take any length"
+                ))
+            });
+        }
+    }
+    // A pattern that does not compile would accept everything, which is the
+    // one answer nobody who wrote a pattern wanted.
+    if let Some(pattern) = el.attr("pattern") {
+        if let Err(why) = checks::check_pattern(pattern) {
+            located(el.attr_line("pattern"), || {
+                error(format!(
+                    "`pattern=\"{pattern}\"` is not a regular expression Rux can read, so \
+                     the field would accept anything: {why}"
                 ))
             });
         }
@@ -460,10 +476,48 @@ fn check_field_attributes(el: &Element) {
     }
 }
 
+/// The part of a field every kind of input has: which form it is in, the name
+/// it is sent under, what it holds and what its value is checked against.
+fn form_part(el: &Element, required: bool, ancestors: &[AncNode]) -> rux_layout::Field {
+    let ty = el.attr("type");
+    let number = |name: &str| el.attr(name).and_then(|v| v.trim().parse::<f64>().ok());
+    rux_layout::Field {
+        name: el.attr("name").map(str::to_string),
+        form: enclosing_form(ancestors),
+        bind: el.attr("r-model").map(str::to_string),
+        shape: match ty {
+            Some("checkbox" | "switch") => rux_layout::Shape::Flag,
+            Some("number" | "slider") => rux_layout::Shape::Number,
+            _ => rux_layout::Shape::Text,
+        },
+        keyboard: el
+            .attr("inputmode")
+            .and_then(rux_layout::Keyboard::parse)
+            .unwrap_or_default(),
+        checks: rux_layout::Checks {
+            required,
+            minlength: el.attr("minlength").and_then(|v| v.trim().parse().ok()),
+            pattern: el.attr("pattern").map(str::to_string),
+            // A slider's `min` and `max` are its travel, which it cannot leave,
+            // and a date's are the picker's: only a number field is checked
+            // against them.
+            low: (ty == Some("number")).then(|| number("min")).flatten(),
+            high: (ty == Some("number")).then(|| number("max")).flatten(),
+        },
+        ..rux_layout::Field::default()
+    }
+}
+
 /// What an `<input>` says about itself beyond its type. See
 /// [`rux_layout::Field`]. Handlers are baked with the row's locals, like a
 /// `@tap`, because they run long after the build that could still see the row.
-fn field_of(el: &Element, disabled: bool, readonly: bool, locals: &Locals) -> rux_layout::Field {
+fn field_of(
+    el: &Element,
+    disabled: bool,
+    readonly: bool,
+    locals: &Locals,
+    part: rux_layout::Field,
+) -> rux_layout::Field {
     let handler = |name: &str| el.attr(name).map(|h| bind_locals(h, locals));
     rux_layout::Field {
         disabled,
@@ -484,6 +538,7 @@ fn field_of(el: &Element, disabled: bool, readonly: bool, locals: &Locals) -> ru
         on_blur: handler("@blur"),
         min: el.attr("min").and_then(rux_layout::parse_date),
         max: el.attr("max").and_then(rux_layout::parse_date),
+        ..part
     }
 }
 
@@ -2057,6 +2112,18 @@ enum Pseudo {
     Disabled,
     /// `:enabled`, a control without.
     Enabled,
+    /// `:valid` and `:invalid`: whether the field's value passes its checks.
+    /// Matched from the start, as CSS does.
+    Valid,
+    Invalid,
+    /// `:user-valid` and `:user-invalid`: the same answer, but only once the
+    /// person has left the field or tried to submit its form, so a form does
+    /// not open covered in complaints about fields nobody has touched.
+    UserValid,
+    UserInvalid,
+    /// `:required` and `:optional`, on any input.
+    Required,
+    Optional,
     Unknown(String),
 }
 
@@ -2085,6 +2152,14 @@ pub struct ElemStates {
     /// An `<input>` or `<button>` that is not disabled: CSS's `:enabled`
     /// matches form controls only, never a plain box.
     pub enabled: bool,
+    /// Whether an input's value passes its checks. `None` for anything that
+    /// is not checked at all: not an input, or a disabled or readonly one,
+    /// which HTML leaves out of validation.
+    pub valid: Option<bool>,
+    /// The person has left this field, or tried to submit its form.
+    pub user: bool,
+    /// `required`, on an input; `None` on anything else.
+    pub required: Option<bool>,
 }
 
 /// The interaction state the *shell* owns, handed to the build so pseudo-class
@@ -2110,6 +2185,12 @@ pub struct InteractionState {
     /// it `:focus` lights the same input in *every* instance of a component,
     /// since they all carry the same `r-model` text as well.
     pub focused_instance: Option<String>,
+    /// Fields the person has left, as `(r-model, row, instance)`, the same
+    /// three-part identity focus uses. What `:user-invalid` waits for.
+    pub touched: Vec<(String, Option<String>, Option<String>)>,
+    /// Forms whose submission has been tried, by tree path. Every field in
+    /// one counts as touched from then on.
+    pub attempted: Vec<Vec<usize>>,
 }
 
 impl InteractionState {
@@ -2146,6 +2227,12 @@ impl Pseudo {
             "leave-to" => Self::LeaveTo,
             "disabled" => Self::Disabled,
             "enabled" => Self::Enabled,
+            "valid" => Self::Valid,
+            "invalid" => Self::Invalid,
+            "user-valid" => Self::UserValid,
+            "user-invalid" => Self::UserInvalid,
+            "required" => Self::Required,
+            "optional" => Self::Optional,
             other => Self::Unknown(other.to_string()),
         }
     }
@@ -2161,6 +2248,12 @@ impl Pseudo {
             Self::LeaveTo => s.leave_to,
             Self::Disabled => s.disabled,
             Self::Enabled => s.enabled,
+            Self::Valid => s.valid == Some(true),
+            Self::Invalid => s.valid == Some(false),
+            Self::UserValid => s.user && s.valid == Some(true),
+            Self::UserInvalid => s.user && s.valid == Some(false),
+            Self::Required => s.required == Some(true),
+            Self::Optional => s.required == Some(false),
             // Fails closed, see the type docs.
             Self::Unknown(_) => false,
         }
@@ -2279,6 +2372,7 @@ impl ElementIndex {
                 AncNode {
                     desc: self.at(at).cloned().unwrap_or_else(ElemDesc::unknown),
                     prev: self.siblings_before(at),
+                    form: None,
                 }
             })
             .collect();
@@ -2325,6 +2419,50 @@ struct ElemDesc {
 struct AncNode {
     desc: ElemDesc,
     prev: Vec<ElemDesc>,
+    /// This ancestor's tree path, when it is a `role="form"`: the form a
+    /// field below it belongs to. Only the build fills it in; a query's
+    /// match context has no use for it.
+    form: Option<Vec<usize>>,
+}
+
+/// The form a field built here belongs to: the nearest `role="form"` above.
+fn enclosing_form(ancestors: &[AncNode]) -> Option<Vec<usize>> {
+    ancestors.iter().rev().find_map(|a| a.form.clone())
+}
+
+/// The form a `<button type="submit">` submits, if it is one.
+///
+/// A `type` Rux does not know, or a submit button with no form around it, is
+/// reported: either way the button would do nothing it was written to do.
+fn submit_target(el: &Element, ancestors: &[AncNode]) -> Option<Vec<usize>> {
+    if el.tag != "button" {
+        return None;
+    }
+    match el.attr("type")? {
+        "submit" => {
+            let form = enclosing_form(ancestors);
+            if form.is_none() {
+                located(el.attr_line("type"), || {
+                    error(
+                        "`<button type=\"submit\">` has no `<view role=\"form\">` around it, \
+                         so there is nothing for it to submit"
+                            .to_string(),
+                    )
+                });
+            }
+            form
+        }
+        "button" => None,
+        other => {
+            located(el.attr_line("type"), || {
+                error(format!(
+                    "`<button type=\"{other}\">` is not a kind of button Rux has. Use \
+                     `type=\"submit\"` to submit the form around it, or leave `type` off"
+                ))
+            });
+            None
+        }
+    }
 }
 
 impl ElemDesc {
@@ -3215,7 +3353,10 @@ pub fn honored_pseudo_classes() -> &'static [&'static str] {
 }
 
 const HONORED_PSEUDO_CLASSES: &[&str] =
-    &["hover", "focus", "active", "checked", "current", "enter-from", "leave-to", "disabled", "enabled"];
+    &[
+        "hover", "focus", "active", "checked", "current", "enter-from", "leave-to", "disabled",
+        "enabled", "valid", "invalid", "user-valid", "user-invalid", "required", "optional",
+    ];
 
 /// The properties `transition` can name, in the order `all` expands them.
 ///
@@ -3919,10 +4060,31 @@ fn build_node_inner(
     if el.tag == "input" {
         check_field_attributes(el);
     }
+    // What an input says about its value, for its form and for `:invalid`.
+    // Every kind of input, since a form sends them all.
+    let form_part = (el.tag == "input").then(|| {
+        let required = bool_attr(el, "required", engine, locals, &mut disabled_deps);
+        form_part(el, required, ancestors)
+    });
 
     let mut desc = ElemDesc::of(el);
     desc.states.disabled = disabled;
     desc.states.enabled = matches!(el.tag.as_str(), "input" | "button") && !disabled;
+    if let Some(part) = &form_part {
+        desc.states.required = Some(part.checks.required);
+        // A disabled or readonly field is not checked, as HTML leaves both out
+        // of validation: nobody could fix what it holds.
+        if let Some(model) = part.bind.as_deref().filter(|_| !disabled && !readonly) {
+            let (value, deps) = engine.eval_value_tracked(model, locals);
+            disabled_deps.extend(deps);
+            desc.states.valid = Some(checks::field_problem(part, value.as_ref()).is_none());
+            let touched = state.touched.iter().any(|(m, r, i)| {
+                m == model && r.as_deref() == row && i.as_deref() == instance
+            });
+            let attempted = part.form.as_ref().is_some_and(|f| state.attempted.contains(f));
+            desc.states.user = touched || attempted;
+        }
+    }
     // A ticked checkbox / selected radio is matched by `:checked`. It *also* still
     // carries the synthetic `checked` class, the pre-pseudo-class hack, so
     // stylesheets written against `.box.checked` keep working for one release.
@@ -4087,6 +4249,21 @@ fn build_node_inner(
     let on_tap = el.attr("@tap").map(|h| bind_locals(h, locals)).or_else(|| {
         to.as_ref().map(|p| format!("navigate({})", Value::Text(p.clone()).to_rhai_literal()))
     }).filter(|_| !disabled);
+    // `<button type="submit">` submits the form around it, after its own `@tap`
+    // has run. Written onto the tap itself, so a finger, Enter on a focused
+    // button and a script's `tap()` all submit alike: each of them already
+    // runs the tap.
+    let on_tap = match submit_target(el, ancestors) {
+        Some(form) if !disabled => {
+            let form: Vec<String> = form.iter().map(usize::to_string).collect();
+            let submit = format!("{}(\"{}\")", rux_script::SUBMIT_FN, form.join("."));
+            Some(match on_tap {
+                Some(tap) => format!("{{ {tap} }} {submit}"),
+                None => submit,
+            })
+        }
+        _ => on_tap,
+    };
     // The pointer handlers, in the order the vocabulary lists them rather than
     // the order they happen to be written, so two elements with the same set
     // dispatch in the same order.
@@ -4419,7 +4596,8 @@ fn build_node_inner(
                 *tap = format!("{tap}; let event = #{{ value: {model} }}; {change}");
             }
         }
-        node.field.disabled = disabled;
+        node.field =
+            rux_layout::Field { disabled, ..form_part.clone().unwrap_or_default() };
         node.hidden = hidden;
         node.id = el.attr("id").map(str::to_string);
         node.label_for = el.attr("for").map(str::to_string);
@@ -4531,7 +4709,8 @@ fn build_node_inner(
                 ),
             ));
         }
-        node.field.disabled = disabled;
+        node.field =
+            rux_layout::Field { disabled, ..form_part.clone().unwrap_or_default() };
         node.hidden = hidden;
         node.id = el.attr("id").map(str::to_string);
         node.state_path = state_path.clone();
@@ -4679,7 +4858,8 @@ fn build_node_inner(
         // did, which is exactly the branch every `r-model` goes through.
         node.instance = instance.map(str::to_string);
         node.kind = kind;
-        node.field = field_of(el, disabled, readonly, locals);
+        node.field =
+            field_of(el, disabled, readonly, locals, form_part.clone().unwrap_or_default());
         node.options = options;
         node.on_tap = on_tap;
         node.gestures = gestures;
@@ -4714,7 +4894,11 @@ fn build_node_inner(
         return node;
     }
 
-    ancestors.push(AncNode { desc, prev: prev.to_vec() });
+    // A form is only a grouping: the fields below it belong to it, and what a
+    // submission does is the `@submit` written on it.
+    // (`@submit` anywhere else is refused by the runtime's attribute check.)
+    let is_form = el.role().is_some_and(|r| r.eq_ignore_ascii_case("form"));
+    ancestors.push(AncNode { desc, prev: prev.to_vec(), form: is_form.then(|| path.to_vec()) });
     let element_children = element_children(el);
     let (children, structural_deps) = build_children(
         &element_children,
@@ -4775,6 +4959,12 @@ fn build_node_inner(
         // Filled in by the `r-for` expansion, which is the only place that knows
         // an element is a row and which item it stands for.
         key: None,
+        // Baked with the row's locals, like a `@tap`: a form inside an `r-for`
+        // submits for its own row.
+        form: is_form.then(|| rux_layout::Form {
+            on_submit: el.attr("@submit").map(|h| bind_locals(h, locals)),
+            on_invalid: el.attr("@invalid").map(|h| bind_locals(h, locals)),
+        }),
     };
     // A tappable box is a button, named by the text inside it, that is how
     // `<view @tap><text>Save</text></view>` announces as "Save, button". A
@@ -9234,7 +9424,14 @@ mod tests {
             leave_to: false,
             disabled: true,
             enabled: false,
+            valid: Some(false),
+            user: false,
+            required: Some(true),
         };
+        assert!(hits_state("input:invalid", "input", s));
+        assert!(!hits_state("input:user-invalid", "input", s), "nobody has been through it");
+        assert!(hits_state("input:required", "input", s));
+        assert!(!hits_state("input:optional", "input", s));
         assert!(hits_state("input:focus", "input", s));
         assert!(hits_state("input:disabled", "input", s));
         assert!(!hits_state("input:enabled", "input", s));
@@ -9266,6 +9463,9 @@ mod tests {
             leave_to: true,
             disabled: true,
             enabled: true,
+            valid: Some(true),
+            user: true,
+            required: Some(true),
         };
         assert!(!hits_state(".box:first-child", ".box", all_on));
         assert!(!hits_state(".box:nth-child(2)", ".box", all_on));
@@ -9329,7 +9529,7 @@ mod tests {
     }
 
     fn anc(spec: &str, prev: &[&str]) -> AncNode {
-        AncNode { desc: el(spec), prev: prev.iter().map(|s| el(s)).collect() }
+        AncNode { desc: el(spec), prev: prev.iter().map(|s| el(s)).collect(), form: None }
     }
 
     /// `selector` against element `target` with the given ancestor chain

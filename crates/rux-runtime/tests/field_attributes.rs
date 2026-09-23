@@ -61,7 +61,9 @@ fn every_attribute_reaches_the_field() {
 #[test]
 fn a_plain_field_has_the_defaults() {
     let d = doc(r#"<input r-model="name" />"#, "let name = signal(\"\");");
-    assert_eq!(input(&d, "name").field, rux_layout::Field::default());
+    // All but where a form would read its value from.
+    let plain = rux_layout::Field { bind: Some("name".into()), ..rux_layout::Field::default() };
+    assert_eq!(input(&d, "name").field, plain);
 }
 
 /// A disabled field keeps showing its value, and has nothing to focus: no

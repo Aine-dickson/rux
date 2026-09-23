@@ -15,4 +15,5 @@ rux-layout.workspace = true
 rux-reactive.workspace = true
 rux-script.workspace = true
 lightningcss = "1.0.0-alpha.71"
+regex-lite = "0.1.9"
 # lightningcss added via `cargo add` so the exact published version is pinned.

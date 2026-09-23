@@ -155,7 +155,11 @@ Role-specific attributes:
   (ecosystem), not a URL fetch.
 - `role="label"` → `for="<input id>"`: associates the label with an input;
   tapping the label focuses the input.
-- `role="form"` → pairs with `@submit`.
+- `role="form"` → groups the fields inside it. A `<button type="submit">` or
+  the action key in its last field submits it: `@submit` runs with
+  `event.values` when every field passes its checks (`required`, `minlength`,
+  `pattern`, a number's `min`/`max`), and `@invalid` with `event.errors` when
+  one fails. See [05, Forms](./05-as-built.md#forms).
 
 ```xml
 <view role="nav" class="bar">

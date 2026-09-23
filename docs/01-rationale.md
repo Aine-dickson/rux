@@ -93,6 +93,12 @@ core tiny (Law 4) while leaving room for a real ecosystem.
 
 **Why:** browsers were built mouse-first and bolted touch on afterward, which is why touch on the web is full of hacks. Rux is device-first, so it doesn't inherit that debt. You may still bind `hover`; the runtime knows it's desktop-conditional and won't pretend otherwise.
 
+### A form submits as HTML's does, refusal included
+
+**Decided 2026-09-23.** `role="form"` groups fields, and the behaviour a form has comes from what is written on and in it: `<button type="submit">` submits it, `@submit` says what submitting does, and the checks are HTML's attributes (`required`, `minlength`, `pattern`, a number's `min`/`max`). A submission whose fields fail is refused, as HTML refuses one: `@submit` does not run, `@invalid` does, and the first failing field takes the caret.
+
+**What it costs:** Law 3 says a role never adds behaviour, and this bends it in two places. The action key in a form's last field submits the form, which it does only because the role put that field in a form, and the refusal is the engine deciding against the author's `@submit`. The alternative that kept the law whole (the form always submits and hands the failures to script) was proposed and turned down: every author would have written the same refusal by hand, and a phone's Next and Go, which Android users expect of any form, need to know where a form ends. The role still draws nothing and lays nothing out, and a form with no submit button and no fields does nothing at all.
+
 ## The element audit
 
 The table that proves Law 3. Every commonly-requested "missing element" and where it actually goes:
@@ -103,7 +109,7 @@ The table that proves Law 3. Every commonly-requested "missing element" and wher
 | `a` / link | `role="link"` + `to=` (router is ecosystem) | Law 3 |
 | `ul` / `ol` / `li` | `role="list"` + `r-for` loop + CSS `list-style` | Laws 1 & 3 |
 | `label` | `role="label"` + `for=` | Law 3 |
-| `form` | `role="form"` + `@submit` (validation in script) | Laws 2 & 3 |
+| `form` | `role="form"` + `@submit`, `<button type="submit">`, HTML's check attributes ([decision](#a-form-submits-as-htmls-does-refusal-included)) | Laws 2 & 3 |
 | `select`, `option`, `textarea`, checkbox, radio | `<input type=…>` with options as **bound data** | Laws 3 & 4 |
 | `table` | *deferred*: `display: grid` + row/col roles cover most; true data-grids are ecosystem | Law 1 |
 
