@@ -412,6 +412,29 @@ fn check_field_attributes(el: &Element) {
             });
         }
     }
+    // An `autocomplete` token Rux does not know is passed to nobody, so a
+    // misspelt `new-pasword` would leave a password manager guessing.
+    if let Some(value) = el.attr("autocomplete") {
+        for token in value.split_whitespace() {
+            let known = token.eq_ignore_ascii_case("off")
+                || rux_layout::AUTOCOMPLETE_MODIFIERS.iter().any(|m| m.eq_ignore_ascii_case(token))
+                || rux_layout::AUTOCOMPLETE.iter().any(|(n, _)| n.eq_ignore_ascii_case(token))
+                || token.starts_with("section-");
+            if !known {
+                located(el.attr_line("autocomplete"), || {
+                    warn(format!(
+                        "`autocomplete=\"{value}\"`: `{token}` is not a field name Rux passes \
+                         to autofill, so it is ignored. Rux knows {}, and `off`",
+                        rux_layout::AUTOCOMPLETE
+                            .iter()
+                            .map(|(n, _)| *n)
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ))
+                });
+            }
+        }
+    }
     // A pattern that does not compile would accept everything, which is the
     // one answer nobody who wrote a pattern wanted.
     if let Some(pattern) = el.attr("pattern") {
@@ -538,6 +561,7 @@ fn field_of(
         on_blur: handler("@blur"),
         min: el.attr("min").and_then(rux_layout::parse_date),
         max: el.attr("max").and_then(rux_layout::parse_date),
+        autocomplete: el.attr("autocomplete").map(str::to_string),
         ..part
     }
 }

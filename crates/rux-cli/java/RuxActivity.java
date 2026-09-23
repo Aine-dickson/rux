@@ -23,7 +23,11 @@ import android.view.MenuItem;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.ViewTreeObserver;
+import android.view.ViewStructure;
 import android.view.WindowInsets;
+import android.util.SparseArray;
+import android.view.autofill.AutofillManager;
+import android.view.autofill.AutofillValue;
 import android.view.inputmethod.BaseInputConnection;
 import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputConnection;
@@ -301,6 +305,7 @@ public class RuxActivity extends NativeActivity {
     private static final int MENU_PROCESS = 32;
     private static final int MENU_READONLY = 64;
     private static final int MENU_SELECT = 128;
+    private static final int MENU_AUTOFILL = 256;
 
     // What {@link #nativeTextAction} reports. Also in rux-shell.
     private static final int MENU_ACTION_COPY = 0;
@@ -448,6 +453,13 @@ public class RuxActivity extends NativeActivity {
             if ((menuFlags & MENU_SELECT_ALL) != 0) {
                 add(menu, android.R.id.selectAll, order++, getString(android.R.string.selectAll));
             }
+            // Autofill, as TextView offers it: only with a service switched on.
+            if ((menuFlags & MENU_AUTOFILL) != 0 && autofillCurrent != 0) {
+                final AutofillManager afm = getSystemService(AutofillManager.class);
+                if (afm != null && afm.isEnabled()) {
+                    add(menu, android.R.id.autofill, order++, getString(android.R.string.autofill));
+                }
+            }
             if ((menuFlags & MENU_PROCESS) != 0) {
                 // After everything the field itself offers, as TextView puts
                 // them. Each carries the intent that reaches its app.
@@ -482,6 +494,12 @@ public class RuxActivity extends NativeActivity {
                 nativeTextAction(MENU_ACTION_SELECT_ALL);
             } else if (id == android.R.id.selectTextMode) {
                 nativeTextAction(MENU_ACTION_SELECT_WORD);
+            } else if (id == android.R.id.autofill) {
+                final AutofillManager afm = getSystemService(AutofillManager.class);
+                if (afm != null && autofillCurrent != 0) {
+                    afm.requestAutofill(input, autofillCurrent, autofillRect);
+                }
+                closeMenu(true);
             } else if (id == ID_SHARE) {
                 final Intent send =
                         new Intent(Intent.ACTION_SEND)
@@ -879,6 +897,77 @@ public class RuxActivity extends NativeActivity {
             super(context);
             setFocusable(true);
             setFocusableInTouchMode(true);
+            // Autofill sees Rux's fields through this view, each one a
+            // virtual child. See `onProvideAutofillVirtualStructure`.
+            setImportantForAutofill(IMPORTANT_FOR_AUTOFILL_YES);
+        }
+
+        /**
+         * Rux's typing fields, for the autofill service: one virtual child per
+         * field, with its hints, its box and its value, so a password manager
+         * can fill a whole sign-in form from one choice.
+         *
+         * <p>Answered from what the last frame laid out, which Rust keeps
+         * ready, because this is asked on the main thread and must return
+         * with the answer.
+         */
+        @Override
+        public void onProvideAutofillVirtualStructure(ViewStructure structure, int flags) {
+            structure.setClassName(RuxInputView.class.getName());
+            final String packed = nativeAutofillFields();
+            final java.util.List<String[]> fields = new java.util.ArrayList<>();
+            if (packed != null && !packed.isEmpty()) {
+                for (String record : packed.split("\u0002")) {
+                    final String[] f = record.split("\u0001", 8);
+                    if (f.length == 8) {
+                        fields.add(f);
+                    }
+                }
+            }
+            final int[] at = new int[2];
+            getLocationInWindow(at);
+            int index = structure.addChildCount(fields.size());
+            for (String[] f : fields) {
+                final int id = Integer.parseInt(f[0]);
+                final boolean password = f[2].equals("1");
+                final ViewStructure child = structure.newChild(index++);
+                child.setAutofillId(structure.getAutofillId(), id);
+                if (!f[1].isEmpty()) {
+                    child.setAutofillHints(f[1].split(","));
+                }
+                child.setAutofillType(AUTOFILL_TYPE_TEXT);
+                child.setAutofillValue(AutofillValue.forText(f[7]));
+                child.setInputType(
+                        password
+                                ? EditorInfo.TYPE_CLASS_TEXT
+                                        | EditorInfo.TYPE_TEXT_VARIATION_PASSWORD
+                                : EditorInfo.TYPE_CLASS_TEXT);
+                // What a person typed is theirs: a service must not keep it
+                // unless they say save.
+                child.setDataIsSensitive(true);
+                child.setClassName("android.widget.EditText");
+                child.setDimens(
+                        Integer.parseInt(f[3]) - at[0],
+                        Integer.parseInt(f[4]) - at[1],
+                        0,
+                        0,
+                        Integer.parseInt(f[5]),
+                        Integer.parseInt(f[6]));
+                child.setVisibility(VISIBLE);
+                child.setEnabled(true);
+                child.setFocused(id == autofillCurrent);
+            }
+        }
+
+        /** The service's choice, one value per field it fills. */
+        @Override
+        public void autofill(SparseArray<AutofillValue> values) {
+            for (int i = 0; i < values.size(); i++) {
+                final AutofillValue value = values.valueAt(i);
+                if (value != null && value.isText()) {
+                    nativeAutofill(values.keyAt(i), value.getTextValue().toString());
+                }
+            }
         }
 
         /**
@@ -1144,7 +1233,11 @@ public class RuxActivity extends NativeActivity {
             Selection.setSelection(editable, anchor, caret);
             token = nativeFieldToken();
             this.multiline = multiline;
+            this.view = target;
         }
+
+        /** The view this connection edits for, which autofill is told about. */
+        private final View view;
 
         @Override
         public Editable getEditable() {
@@ -1321,6 +1414,17 @@ public class RuxActivity extends NativeActivity {
                     Selection.getSelectionStart(editable),
                     start,
                     end);
+            // Autofill keeps its own copy of each field's value, which is what
+            // it offers to save at the end; without this it would save what
+            // the field held when it was entered.
+            final int field = autofillCurrent;
+            if (field != 0) {
+                final AutofillManager afm =
+                        view.getContext().getSystemService(AutofillManager.class);
+                if (afm != null) {
+                    afm.notifyValueChanged(view, field, AutofillValue.forText(editable.toString()));
+                }
+            }
         }
     }
 
@@ -1337,6 +1441,64 @@ public class RuxActivity extends NativeActivity {
      * event loop is running on and every one of these calls must be made on the
      * thread that owns the view.
      */
+    /** The autofill id of the field with focus, 0 for none. Set from Rux. */
+    static volatile int autofillCurrent;
+
+    /** That field's box on screen, for the menu's Autofill item. */
+    private final Rect autofillRect = new Rect();
+
+    /** The fields autofill can see, packed; see {@code nativeAutofillFields} in rux-shell. */
+    private static native String nativeAutofillFields();
+
+    /** The autofill service filled field {@code id}. */
+    private static native void nativeAutofill(int id, String text);
+
+    /**
+     * Rux moved focus to field {@code id} (0: to none), whose box is given in
+     * window pixels. Entering a field is what brings up a password manager's
+     * suggestions under it.
+     */
+    public void ruxAutofillFocus(final int id, final int x, final int y, final int w, final int h) {
+        runOnUiThread(
+                () -> {
+                    final AutofillManager afm = getSystemService(AutofillManager.class);
+                    if (afm == null || input == null) {
+                        return;
+                    }
+                    if (autofillCurrent != 0 && autofillCurrent != id) {
+                        afm.notifyViewExited(input, autofillCurrent);
+                    }
+                    autofillCurrent = id;
+                    if (id == 0) {
+                        return;
+                    }
+                    // Window pixels to screen pixels, which is what entering
+                    // a virtual view is measured in.
+                    final int[] window = new int[2];
+                    final int[] screen = new int[2];
+                    input.getLocationInWindow(window);
+                    input.getLocationOnScreen(screen);
+                    final int dx = screen[0] - window[0];
+                    final int dy = screen[1] - window[1];
+                    autofillRect.set(x + dx, y + dy, x + dx + w, y + dy + h);
+                    afm.notifyViewEntered(input, id, autofillRect);
+                });
+    }
+
+    /**
+     * A form passed and was submitted: what was typed may be offered for
+     * saving. This is when a password manager asks to save a new password.
+     */
+    public void ruxAutofillCommit() {
+        runOnUiThread(
+                () -> {
+                    final AutofillManager afm = getSystemService(AutofillManager.class);
+                    if (afm != null) {
+                        afm.commit();
+                    }
+                });
+    }
+
     public void ruxSetTextInput(final boolean on) {
         runOnUiThread(
                 () -> {

@@ -245,3 +245,15 @@ fn a_buttons_bare_text_is_drawn() {
     assert!(words("Join 3"), "bare text, interpolated");
     assert!(words("Kept"), "a written <text> is untouched");
 }
+
+/// `autocomplete` reaches the field, and a token Rux cannot pass on warns.
+#[test]
+fn autocomplete_reaches_the_field_and_a_typo_warns() {
+    let d = doc(
+        r#"<input r-model="a" autocomplete="section-x shipping postal-code" /><input r-model="b" autocomplete="new-pasword" />"#,
+        "let a = signal(\"\"); let b = signal(\"\");",
+    );
+    assert_eq!(input(&d, "a").field.autocomplete.as_deref(), Some("section-x shipping postal-code"));
+    let said = problems(&d);
+    assert!(said.contains("new-pasword") && !said.contains("postal-code` is not"), "{said}");
+}

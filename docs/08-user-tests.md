@@ -1833,6 +1833,10 @@ Join; field B outside any form; form C, a search; field 8 low on the page).
 | A field under the keyboard | 8 | Scroll so 8 is low on the screen, tap it: the page moves it above the keyboard | adb: pass on the second build. The user found the first covered: it waited for the window to shrink, and from Android 11 `adjustResize` never shrinks it (the frame stayed 720x1612 with the keyboard up). Now the keyboard's inset is read and the page is laid out above it |
 | Next after typing a word | A 1 | The caret moves on, and the typed word stays | adb and by hand: pass on the third build. The first two never moved: the input method's Enter is dispatched from no device and never reaches the window, so Next had never worked, only been reported as working. Now Enter comes over JNI |
 | Close the keyboard after a reveal | C | The page goes back to where it was before the field was moved; a page the person scrolled meanwhile stays put | adb: pass. Asked for by the user. Once, the tap that raised the keyboard also showed the caret handle and Paste; not reproduced |
+| Autofill suggestions | D email | Tap it: the password manager's accounts appear under the field or in the keyboard strip; the caret menu offers Autofill | adb: pass, both the dropdown under the field and Gboard's inline strip |
+| Pick a suggestion | D email | That field fills, the caret after the text; form A below is untouched | adb: pass on the third build. The first offered every field on screen and Google also filled A's name and email; the second filled A but wiped D, because the keyboard's connection was restarted without a new token |
+| Sign in, then save | D | "Save password to Google?" with the address and the password typed | adb: pass. Answered Not now, since Save would store a test password in the user's account |
+| `autocomplete="off"` | any | No suggestions, no Autofill item | |
 
 ## Standing gaps
 

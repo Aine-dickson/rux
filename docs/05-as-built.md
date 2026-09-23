@@ -1349,7 +1349,32 @@ does. A `@blur` that focuses the field it left, answered by a `@focus` that
 blurs it, is stopped after 64 handlers with a warning. A handler written in a
 component runs in that instance, and one in an `r-for` row sees the row.
 
-Not yet: `autocomplete` and the platform's autofill.
+**Autofill.** `autocomplete` says what a field holds, in HTML's field names
+(`username`, `current-password`, `new-password`, `email`, `tel`, `name`,
+`given-name`, `family-name`, `street-address`, `postal-code`, `country-name`,
+`cc-number`, `cc-exp`, `cc-csc`, `bday`, `one-time-code`, and a few more).
+Section and address-kind tokens (`section-a`, `shipping`, `billing`, `home`)
+are accepted and change nothing; an unknown token warns. `autocomplete="off"`
+keeps the field away from autofill. With no `autocomplete`, a password, an
+`inputmode="email"` and an `inputmode="tel"` field are recognised anyway.
+
+```xml
+<view role="form" @submit="sign_in(event.values)">
+  <input r-model="user" autocomplete="username" inputmode="email" />
+  <input r-model="pass" type="password" autocomplete="current-password" />
+  <button type="submit">Sign in</button>
+</view>
+```
+
+On Android the phone's autofill service (Google Password Manager, or whatever
+the person chose) sees the fields of the **focused field's form** only, so a
+sign-in address is never poured into a sign-up form further down the page. It
+offers its suggestions under the field or in the keyboard's strip, a choice
+fills every field it has a value for, and the caret menu offers Autofill. A
+fill is `@input` then `@change`, as a browser fires them. When a form's
+`@submit` runs, the service may ask to save what was typed, which is where
+"Save password?" comes from. In a browser, the hidden input the keyboard types
+into carries the focused field's `autocomplete`.
 
 ### Forms
 

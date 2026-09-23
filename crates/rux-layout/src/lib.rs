@@ -1265,6 +1265,76 @@ pub struct Field {
     pub bind: Option<String>,
     /// What kind of value that is. See [`Shape`].
     pub shape: Shape,
+    /// `autocomplete=`: what the field holds, for the platform's autofill,
+    /// as HTML's tokens. `off` keeps the field away from autofill entirely.
+    pub autocomplete: Option<String>,
+}
+
+/// HTML's `autocomplete` field names Rux passes on, with the Android autofill
+/// hint each one becomes. Android's own names where the platform has one,
+/// and AndroidX's `HintConstants` where only it does; autofill services read
+/// both.
+pub const AUTOCOMPLETE: &[(&str, &str)] = &[
+    ("username", "username"),
+    ("current-password", "password"),
+    ("new-password", "newPassword"),
+    ("email", "emailAddress"),
+    ("tel", "phone"),
+    ("tel-national", "phoneNational"),
+    ("name", "name"),
+    ("given-name", "personGivenName"),
+    ("family-name", "personFamilyName"),
+    ("street-address", "postalAddress"),
+    ("address-line1", "streetAddress"),
+    ("address-level1", "addressRegion"),
+    ("address-level2", "addressLocality"),
+    ("country-name", "addressCountry"),
+    ("postal-code", "postalCode"),
+    ("cc-name", "personName"),
+    ("cc-number", "creditCardNumber"),
+    ("cc-exp", "creditCardExpirationDate"),
+    ("cc-exp-month", "creditCardExpirationMonth"),
+    ("cc-exp-year", "creditCardExpirationYear"),
+    ("cc-csc", "creditCardSecurityCode"),
+    ("bday", "birthDateFull"),
+    ("one-time-code", "smsOTPCode"),
+];
+
+/// Tokens that may come before a field name and change nothing on a phone:
+/// which address, which phone. `on` says only that autofill is welcome.
+pub const AUTOCOMPLETE_MODIFIERS: &[&str] =
+    &["on", "shipping", "billing", "home", "work", "mobile", "fax", "pager"];
+
+/// The Android autofill hints for a field, from its `autocomplete` or, with
+/// none, from what it is: a password, or an email or phone keyboard.
+/// Empty for `autocomplete="off"`, which [`Field::autofill`] also refuses.
+pub fn autofill_hints(field: &Field, kind: InputKind) -> Vec<&'static str> {
+    if let Some(tokens) = &field.autocomplete {
+        let hints: Vec<&'static str> = tokens
+            .split_whitespace()
+            .filter_map(|t| AUTOCOMPLETE.iter().find(|(name, _)| name.eq_ignore_ascii_case(t)))
+            .map(|(_, hint)| *hint)
+            .collect();
+        if !hints.is_empty() || tokens.trim().eq_ignore_ascii_case("off") {
+            return hints;
+        }
+    }
+    match (kind, field.keyboard) {
+        (InputKind::Password, _) => vec!["password"],
+        (_, Keyboard::Email) => vec!["emailAddress"],
+        (_, Keyboard::Tel) => vec!["phone"],
+        _ => Vec::new(),
+    }
+}
+
+impl Field {
+    /// Whether the platform's autofill may see and fill this field: not
+    /// `autocomplete="off"`, and something a person could type into.
+    pub fn autofill(&self) -> bool {
+        !self.disabled
+            && !self.readonly
+            && !self.autocomplete.as_deref().is_some_and(|a| a.trim().eq_ignore_ascii_case("off"))
+    }
 }
 
 /// What kind of value a field holds, which decides how its checks read it and

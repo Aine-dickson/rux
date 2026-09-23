@@ -167,6 +167,9 @@ enum RuxEvent {
     /// The on-screen keyboard changed height. See `KEYBOARD`.
     #[cfg(target_os = "android")]
     AndroidKeyboard,
+    /// Autofill filled a field, by its [`autofill_id`].
+    #[cfg(target_os = "android")]
+    AndroidAutofill { id: i32, value: String },
     /// The platform's text menu closed without Rux asking it to. `collapse`
     /// says whether the selection goes with it: yes for Back or Share, as in
     /// any Android field, and no when an app was handed the text and will
@@ -3508,6 +3511,10 @@ impl App {
         let Some(report) = self.document.check_form(path) else { return };
         let values = Value::Map(report.values);
         if report.failures.is_empty() {
+            // What was typed can now be offered for saving: this is the moment
+            // a password manager asks "save password?".
+            #[cfg(target_os = "android")]
+            android_autofill_commit();
             if let Some(body) = report.form.on_submit {
                 let event = Value::Map(vec![("values".to_string(), values)]);
                 self.field_events.push_back((body, report.instance, event));
@@ -3900,6 +3907,11 @@ impl App {
         // has no words to show.
         if !selected && !secret && !self.focused_value().is_empty() {
             flags |= MENU_SELECT;
+        }
+        // At a caret, Autofill, as any other field on the phone offers it.
+        // Java drops it when no autofill service is switched on.
+        if !selected && self.live_field().autofill() {
+            flags |= MENU_AUTOFILL;
         }
         if flags == 0 {
             return None;
@@ -4670,6 +4682,29 @@ impl App {
         self.update_focus_state(model, row, instance, left);
         if !same_field {
             self.focused_field = self.focused_region().map(|r| r.field.clone()).unwrap_or_default();
+            // Autofill follows focus: the field entered is where a password
+            // manager puts its suggestions. The field's own box, not a label's.
+            #[cfg(target_os = "android")]
+            {
+                let scale = self.scale();
+                let entered = self.focused.as_deref().and_then(|model| {
+                    self.focuses.iter().find(|f| {
+                        f.text.is_some()
+                            && f.model == model
+                            && f.row == self.focused_row
+                            && f.instance == self.focused_instance
+                            && f.field.autofill()
+                    })
+                });
+                match entered {
+                    Some(f) => {
+                        let px = |v: f32| (v as f64 * scale).round() as i32;
+                        let id = autofill_id(&f.model, f.row.as_deref(), f.instance.as_deref());
+                        android_autofill_focus(id, [px(f.x), px(f.y), px(f.width), px(f.height)]);
+                    }
+                    None => android_autofill_focus(0, [0; 4]),
+                }
+            }
             if self.focused_is_number() {
                 self.decimal = os_decimal_separator();
             }
@@ -4906,6 +4941,16 @@ impl App {
             }
             None => {
                 let _ = el.remove_attribute("enterkeyhint");
+            }
+        }
+        // What the field holds, for the browser's own autofill. The hidden
+        // input stands in for every field in turn, so it is told each time.
+        match self.focused_field.autocomplete.as_deref() {
+            Some(tokens) => {
+                let _ = el.set_attribute("autocomplete", tokens);
+            }
+            None => {
+                let _ = el.remove_attribute("autocomplete");
             }
         }
         let _ = el.focus();
@@ -5421,6 +5466,12 @@ impl App {
         // these are the boxes currently on screen, which is what a script
         // asking "where is this" means.
         document.set_metrics(layout.metrics.clone());
+
+        // What autofill would see if it asked now. Kept ready, because the
+        // question arrives on Android's main thread and must be answered
+        // before it returns.
+        #[cfg(target_os = "android")]
+        publish_autofill(&layout, document, scale, focused.as_deref(), focused_row, focused_instance);
 
         // `scrollIntoView()`: nudge the containing scroller until the element is
         // inside it. Applied here because the offsets are the shell's, and taken
@@ -6054,6 +6105,45 @@ impl ApplicationHandler<RuxEvent> for App {
                     self.reveal_focus = self.focused.is_some();
                 }
                 self.request_redraw();
+            }
+
+            // Autofill filled a field. HTML fires `input` and then `change` on
+            // a field autofill fills; a focused field gets `@change` when it is
+            // left, as for typing, so it is not told twice.
+            #[cfg(target_os = "android")]
+            RuxEvent::AndroidAutofill { id, value } => {
+                let known = AUTOFILL
+                    .lock()
+                    .ok()
+                    .and_then(|a| a.0.iter().find(|(i, _)| *i == id).map(|(_, f)| f.clone()));
+                if let Some((model, row, instance)) = known {
+                    let focused = self.focused.as_deref() == Some(model.as_str())
+                        && self.focused_row == row
+                        && self.focused_instance == instance;
+                    let field = self
+                        .focuses
+                        .iter()
+                        .find(|f| f.model == model && f.row == row && f.instance == instance)
+                        .map(|f| f.field.clone())
+                        .unwrap_or_default();
+                    if focused {
+                        // The keyboard's copy is brought up to date by the next
+                        // frame's `sync_android_ime`, with a new token. A
+                        // restart from here kept the old token, and the old
+                        // connection's empty report then wiped the fill.
+                        // It queues the field's `@input` itself, as for typing,
+                        // and hands back where the caret goes: after the text.
+                        if let Some((_, caret)) = self.write_focused(&value, value.len(), false) {
+                            self.set_focus_range(Some(self.focus_here(&model, caret)));
+                        }
+                    } else {
+                        self.document.apply_edit_in(&model, row.as_deref(), instance.as_deref(), &value);
+                        let text = rux_reactive::Value::Text(value);
+                        self.queue_field_event_in(field.on_input.as_deref(), instance.clone(), text.clone());
+                        self.queue_field_event_in(field.on_change.as_deref(), instance, text);
+                    }
+                    self.request_redraw();
+                }
             }
 
             #[cfg(target_os = "android")]
@@ -8291,6 +8381,184 @@ pub extern "system" fn Java_dev_ruxlang_shell_RuxActivity_nativeTextChanged<'fra
     .resolve::<jni::errors::LogErrorAndDefault>();
 }
 
+/// The fields autofill can see, as the last frame laid them out: each one's
+/// id and identity, and the same list packed for Java. See [`App::publish_autofill`].
+#[cfg(target_os = "android")]
+static AUTOFILL: std::sync::Mutex<(Vec<(i32, FieldId)>, String)> =
+    std::sync::Mutex::new((Vec::new(), String::new()));
+
+/// A field's three-part identity: `r-model`, row, instance.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+type FieldId = (String, Option<String>, Option<String>);
+
+/// A field's autofill id: a virtual view id Android keeps between asking what
+/// the fields are and handing values back, so it has to name the *field*
+/// rather than its place in a list that a rebuild can reorder. A hash of the
+/// identity, positive and never 0, which Android reads as the host view.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+fn autofill_id(model: &str, row: Option<&str>, instance: Option<&str>) -> i32 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    (model, row, instance).hash(&mut hasher);
+    ((hasher.finish() as u32) & 0x7fff_ffff).max(1) as i32
+}
+
+/// What autofill can fill, asked by Java when Android wants the structure.
+/// One record per field, `\u{2}` between records and `\u{1}` between fields:
+/// id, hints (comma separated), 1 for a password, left, top, width, height in
+/// window pixels, and the value.
+///
+/// # Safety
+///
+/// As [`Java_dev_ruxlang_shell_RuxActivity_nativeFocusedText`].
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "system" fn Java_dev_ruxlang_shell_RuxActivity_nativeAutofillFields<'frame>(
+    mut env: jni::EnvUnowned<'frame>,
+    _class: jni::objects::JClass<'frame>,
+) -> jni::sys::jstring {
+    let pointer = env
+        .with_env(|env| {
+            let text = AUTOFILL.lock().map(|a| a.1.clone()).unwrap_or_default();
+            Ok::<usize, jni::errors::Error>(env.new_string(&text)?.into_raw() as usize)
+        })
+        .resolve::<jni::errors::LogErrorAndDefault>();
+    pointer as jni::sys::jstring
+}
+
+/// Autofill filled field `id` with `text`.
+///
+/// # Safety
+///
+/// As [`Java_dev_ruxlang_shell_RuxActivity_nativeTextChanged`].
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "system" fn Java_dev_ruxlang_shell_RuxActivity_nativeAutofill<'frame>(
+    mut env: jni::EnvUnowned<'frame>,
+    _class: jni::objects::JClass<'frame>,
+    id: i32,
+    text: jni::objects::JString<'frame>,
+) {
+    env.with_env(|env| {
+        let value: String = text.try_to_string(env)?;
+        if let Ok(proxy) = PROXY.lock() {
+            if let Some(proxy) = proxy.as_ref() {
+                let _ = proxy.send_event(RuxEvent::AndroidAutofill { id, value });
+            }
+        }
+        Ok::<(), jni::errors::Error>(())
+    })
+    .resolve::<jni::errors::LogErrorAndDefault>();
+}
+
+/// Pack the laid-out typing fields for [`AUTOFILL`]. Only a field autofill
+/// may see ([`Field::autofill`]); a field with a label has two regions, and
+/// only the one with the field's own text box counts.
+///
+/// **Only the focused field's form.** Offered every field on the screen,
+/// Google's service filled a sign-in address into a sign-up form's name and
+/// email further down as well. A form is what a browser hands autofill, so a
+/// form is what this hands it; a field in no form goes with the others in no
+/// form.
+#[cfg(target_os = "android")]
+fn publish_autofill(
+    layout: &rux_layout::Layout,
+    document: &mut rux_runtime::Document,
+    scale: f64,
+    focused: Option<&str>,
+    focused_row: &Option<String>,
+    focused_instance: &Option<String>,
+) {
+    let scope = focused.and_then(|model| {
+        layout
+            .focuses
+            .iter()
+            .find(|f| {
+                f.text.is_some()
+                    && f.model == model
+                    && f.row == *focused_row
+                    && f.instance == *focused_instance
+            })
+            .map(|f| f.field.form.clone())
+    });
+    let mut ids: Vec<(i32, FieldId)> = Vec::new();
+    let mut packed = String::new();
+    for f in &layout.focuses {
+        if f.text.is_none() || !f.field.autofill() {
+            continue;
+        }
+        if scope.as_ref().is_some_and(|form| *form != f.field.form) {
+            continue;
+        }
+        let id = autofill_id(&f.model, f.row.as_deref(), f.instance.as_deref());
+        if ids.iter().any(|(i, _)| *i == id) {
+            continue;
+        }
+        let px = |v: f32| (v as f64 * scale).round() as i32;
+        let value = document.value_in(&f.model, f.row.as_deref(), f.instance.as_deref());
+        if !packed.is_empty() {
+            packed.push('\u{2}');
+        }
+        packed.push_str(&format!(
+            "{id}\u{1}{}\u{1}{}\u{1}{}\u{1}{}\u{1}{}\u{1}{}\u{1}{value}",
+            rux_layout::autofill_hints(&f.field, f.kind).join(","),
+            u8::from(f.kind == InputKind::Password),
+            px(f.x),
+            px(f.y),
+            px(f.width),
+            px(f.height),
+        ));
+        ids.push((id, (f.model.clone(), f.row.clone(), f.instance.clone())));
+    }
+    if let Ok(mut slot) = AUTOFILL.lock() {
+        if slot.1 != packed {
+            *slot = (ids, packed);
+        }
+    }
+}
+
+/// Tell Android's autofill which field has focus (`id` 0 for none) and where
+/// it is in the window, which is what puts a password manager's suggestions
+/// under it.
+#[cfg(target_os = "android")]
+fn android_autofill_focus(id: i32, rect: [i32; 4]) {
+    let Ok(activity) = ACTIVITY.lock() else { return };
+    let Some(activity) = activity.as_ref() else { return };
+    let ctx = ndk_context::android_context();
+    // Safety: as in `call_set_text_input`, which records the reasoning.
+    let vm = unsafe { jni::JavaVM::from_raw(ctx.vm().cast()) };
+    let _ = vm.attach_current_thread(|env| {
+        env.call_method(
+            activity,
+            jni::jni_str!("ruxAutofillFocus"),
+            jni::jni_sig!("(IIIII)V"),
+            &[
+                jni::JValue::Int(id),
+                jni::JValue::Int(rect[0]),
+                jni::JValue::Int(rect[1]),
+                jni::JValue::Int(rect[2]),
+                jni::JValue::Int(rect[3]),
+            ],
+        )?;
+        Ok::<(), jni::errors::Error>(())
+    });
+}
+
+/// A form was submitted and passed: let autofill offer to save what was
+/// typed, a new password above all.
+#[cfg(target_os = "android")]
+fn android_autofill_commit() {
+    let Ok(activity) = ACTIVITY.lock() else { return };
+    let Some(activity) = activity.as_ref() else { return };
+    let ctx = ndk_context::android_context();
+    // Safety: as in `call_set_text_input`, which records the reasoning.
+    let vm = unsafe { jni::JavaVM::from_raw(ctx.vm().cast()) };
+    let _ = vm.attach_current_thread(|env| {
+        env.call_method(activity, jni::jni_str!("ruxAutofillCommit"), jni::jni_sig!("()V"), &[])?;
+        Ok::<(), jni::errors::Error>(())
+    });
+}
+
 /// A UTF-16 offset, as a byte offset into the same text.
 ///
 /// Java counts a string in UTF-16 code units and Rust indexes bytes, and the
@@ -8767,6 +9035,9 @@ const MENU_READONLY: i32 = 64;
 /// Select, at a caret: take the word there.
 #[cfg(target_os = "android")]
 const MENU_SELECT: i32 = 128;
+/// Autofill, at a caret: ask the autofill service for this field.
+#[cfg(target_os = "android")]
+const MENU_AUTOFILL: i32 = 256;
 
 // What Java reports back when an item is chosen. Also in RuxActivity.java.
 #[cfg(target_os = "android")]
@@ -9117,6 +9388,32 @@ pub fn run_android(app: android_activity::AndroidApp, path: PathBuf) {
 mod tests {
     use super::*;
     use rux_runtime::{Diagnostics, Warning};
+
+    /// Android keeps the id between asking for the structure and filling it,
+    /// so it has to name the field, be positive, and never be 0.
+    #[test]
+    fn an_autofill_id_names_the_field() {
+        let a = autofill_id("email", None, None);
+        assert_eq!(a, autofill_id("email", None, None), "stable");
+        assert!(a > 0);
+        assert_ne!(a, autofill_id("email", Some("2"), None), "another row");
+        assert_ne!(a, autofill_id("email", None, Some("c1")), "another instance");
+    }
+
+    #[test]
+    fn autofill_hints_from_autocomplete_or_the_field() {
+        use rux_layout::{autofill_hints, Field, InputKind, Keyboard};
+        let with = |ac: &str| Field { autocomplete: Some(ac.into()), ..Field::default() };
+        assert_eq!(autofill_hints(&with("username"), InputKind::Text), ["username"]);
+        assert_eq!(autofill_hints(&with("section-a shipping postal-code"), InputKind::Text), ["postalCode"]);
+        assert_eq!(autofill_hints(&with("new-password"), InputKind::Password), ["newPassword"]);
+        assert!(autofill_hints(&with("off"), InputKind::Password).is_empty());
+        assert!(!with("off").autofill());
+        assert_eq!(autofill_hints(&Field::default(), InputKind::Password), ["password"]);
+        let email = Field { keyboard: Keyboard::Email, ..Field::default() };
+        assert_eq!(autofill_hints(&email, InputKind::Text), ["emailAddress"]);
+        assert!(autofill_hints(&Field::default(), InputKind::Text).is_empty());
+    }
 
     fn warned(message: &str) -> Diagnostics {
         Diagnostics { warnings: vec![Warning::new(message)], ..Diagnostics::default() }
