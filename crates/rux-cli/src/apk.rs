@@ -182,7 +182,87 @@ pub fn pack(
     }
     run(sign.arg("--out").arg(out).arg(&aligned), "apksigner")?;
 
+    if !manifest.link_hosts.is_empty() {
+        write_asset_links(manifest, toolchain, out)?;
+    }
+
     Ok(())
+}
+
+/// Write the `assetlinks.json` each of `link-hosts` must serve, beside the APK.
+///
+/// **This file is what makes an https link open the app, and it cannot be
+/// written by hand without a tool most people do not know they have.** Android
+/// fetches `https://<host>/.well-known/assetlinks.json` at install and hands the
+/// host's links to the app only if that file names the app's id and the SHA-256
+/// of the certificate it was signed with. The fingerprint is read back from the
+/// APK just signed rather than from the keystore, so it is the one Android will
+/// see, whichever key signed it.
+///
+/// Named after the APK rather than `assetlinks.json`, because a debug and a
+/// release build sit side by side with different keys, and one would silently
+/// replace the other's.
+fn write_asset_links(manifest: &Manifest, toolchain: &Toolchain, apk: &Path) -> Result<(), String> {
+    let output = Command::new(toolchain.apksigner())
+        .args(["verify", "--print-certs"])
+        .arg(apk)
+        .output()
+        .map_err(|e| format!("could not run apksigner: {e}"))?;
+    let printed = String::from_utf8_lossy(&output.stdout);
+    let digests = signing_digests(&printed);
+    if !output.status.success() || digests.is_empty() {
+        return Err(format!(
+            "apksigner did not report the certificate this APK was signed with, so there is \
+             no assetlinks.json to write:\n{}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    let path = apk.with_extension("assetlinks.json");
+    std::fs::write(&path, asset_links(&manifest.id, &digests))
+        .map_err(|e| format!("writing {}: {e}", path.display()))?;
+    println!("rux: https links need {} served at:", path.display());
+    for host in &manifest.link_hosts {
+        // A wildcard is verified against the bare domain.
+        let host = host.strip_prefix("*.").unwrap_or(host);
+        println!("       https://{host}/.well-known/assetlinks.json");
+    }
+    if manifest.signing.is_none() {
+        println!(
+            "     It names the debug key, which only this machine has. A release build writes \
+             one for the release key."
+        );
+    }
+    Ok(())
+}
+
+/// The SHA-256 certificate digests in `apksigner verify --print-certs` output,
+/// as the colon-separated uppercase pairs `assetlinks.json` takes.
+fn signing_digests(printed: &str) -> Vec<String> {
+    printed
+        .lines()
+        .filter_map(|line| line.split_once("certificate SHA-256 digest:"))
+        .map(|(_, hex)| {
+            let hex = hex.trim().to_ascii_uppercase();
+            let pairs: Vec<&str> = (0..hex.len())
+                .step_by(2)
+                .filter_map(|i| hex.get(i..i + 2))
+                .collect();
+            pairs.join(":")
+        })
+        .filter(|digest| digest.len() == 32 * 3 - 1)
+        .collect()
+}
+
+/// The Digital Asset Links statement granting `id`'s links to these keys.
+fn asset_links(id: &str, digests: &[String]) -> String {
+    let fingerprints: Vec<String> = digests.iter().map(|d| format!("\"{d}\"")).collect();
+    format!(
+        "[\n  {{\n    \"relation\": [\"delegate_permission/common.handle_all_urls\"],\n    \
+         \"target\": {{\n      \"namespace\": \"android_app\",\n      \
+         \"package_name\": \"{id}\",\n      \
+         \"sha256_cert_fingerprints\": [{}]\n    }}\n  }}\n]\n",
+        fingerprints.join(", ")
+    )
 }
 
 /// The Java source for the one class a Rux app carries.
@@ -381,6 +461,13 @@ fn dirs_home() -> PathBuf {
 /// - **`INTERNET`, in a dev build only.** Hot reload is a socket to the host
 ///   through `adb reverse`, and Android refuses to open one without it. A
 ///   release build asks for nothing, because nothing in it connects anywhere.
+/// - **`launchMode="singleTask"`, whether or not the app takes links.** By
+///   default an intent from another app, a link tapped in a browser most of
+///   all, builds a second instance of the activity inside that app's task and,
+///   when Rux is already running, **inside Rux's process**. That is a second
+///   `EventLoop`, which winit refuses, so the link would crash the app it was
+///   meant to open. One instance means a link to a running app arrives at the
+///   running app, through `onNewIntent`.
 fn android_manifest(manifest: &Manifest, dev: bool) -> String {
     let internet = if dev {
         "\n    <!-- A dev build only: hot reload is a socket to the host, through adb. -->\n    \
@@ -388,6 +475,7 @@ fn android_manifest(manifest: &Manifest, dev: bool) -> String {
     } else {
         ""
     };
+    let links = link_filters(manifest);
     format!(
         r#"<?xml version="1.0" encoding="utf-8"?>
 <!-- Generated by `rux build`. Edits are overwritten on the next build. -->
@@ -412,13 +500,14 @@ fn android_manifest(manifest: &Manifest, dev: bool) -> String {
         <activity
             android:name="{activity}"{theme}
             android:exported="true"
+            android:launchMode="singleTask"
             android:windowSoftInputMode="adjustResize"
             android:configChanges="mcc|mnc|locale|touchscreen|keyboard|keyboardHidden|navigation|screenLayout|fontScale|uiMode|orientation|screenSize|smallestScreenSize|layoutDirection|colorMode|density">
             <meta-data android:name="android.app.lib_name" android:value="{lib}" />
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
-            </intent-filter>
+            </intent-filter>{links}
         </activity>
     </application>
 </manifest>
@@ -443,6 +532,52 @@ fn android_manifest(manifest: &Manifest, dev: bool) -> String {
         activity = ACTIVITY_CLASS,
         lib = manifest.artifact_stem().replace('-', "_"),
     )
+}
+
+/// The intent filters that let a link open the app: one for the custom scheme,
+/// one for the https hosts. Empty when `rux.toml` names neither.
+///
+/// **Two filters, never one.** Android matches every `<data>` in a filter
+/// against every other, so a scheme and a host in the same filter would also
+/// claim `myapp://example.com`, and the custom scheme would sit inside a filter
+/// that asks Android to verify it against a website, which it cannot be.
+///
+/// `BROWSABLE` is what lets a browser hand the link over at all; without it a
+/// tapped link only ever opens the web page. `DEFAULT` is what an implicit
+/// intent needs to find an activity.
+fn link_filters(manifest: &Manifest) -> String {
+    let mut out = String::new();
+    let open = "\n            <intent-filter";
+    let body = "\n                <action android:name=\"android.intent.action.VIEW\" />\
+                \n                <category android:name=\"android.intent.category.DEFAULT\" />\
+                \n                <category android:name=\"android.intent.category.BROWSABLE\" />";
+    if let Some(scheme) = &manifest.scheme {
+        out.push_str(&format!(
+            // The comment names the key and not the scheme, which may hold a
+            // double hyphen, and XML forbids one inside a comment.
+            "\n            <!-- The custom scheme, from rux.toml's `scheme`. -->\
+             {open}>{body}\
+             \n                <data android:scheme=\"{scheme}\" />\
+             \n            </intent-filter>",
+            scheme = escape(scheme),
+        ));
+    }
+    if !manifest.link_hosts.is_empty() {
+        // Verified: Android fetches `/.well-known/assetlinks.json` from each
+        // host at install and opens the links here without asking only if
+        // every host vouches for this app's signing key.
+        out.push_str(&format!(
+            "\n            <!-- https links to rux.toml's `link-hosts`, verified against each \
+             host's assetlinks.json. -->\
+             {open} android:autoVerify=\"true\">{body}\
+             \n                <data android:scheme=\"https\" />"
+        ));
+        for host in &manifest.link_hosts {
+            out.push_str(&format!("\n                <data android:host=\"{}\" />", escape(host)));
+        }
+        out.push_str("\n            </intent-filter>");
+    }
+    out
 }
 
 /// XML-escape a value going into an attribute.
@@ -500,6 +635,8 @@ mod tests {
             entry: PathBuf::from("app.rux"),
             signing: None,
             icon: None,
+            scheme: None,
+            link_hosts: Vec::new(),
         }
     }
 
@@ -610,8 +747,12 @@ mod tests {
     /// a comment and did not link.
     #[test]
     fn no_manifest_comment_holds_a_double_hyphen() {
-        for dev in [false, true] {
-            let xml = android_manifest(&manifest("Task List"), dev);
+        // With links too, whose scheme may itself hold a double hyphen.
+        let mut linked = manifest("Task List");
+        linked.scheme = Some("my--app".into());
+        linked.link_hosts = vec!["example.com".into()];
+        for (m, dev) in [(manifest("Task List"), false), (manifest("Task List"), true), (linked, false)] {
+            let xml = android_manifest(&m, dev);
             for comment in xml.split("<!--").skip(1) {
                 let body = comment.split("-->").next().unwrap_or_default();
                 assert!(!body.contains("--"), "a comment with `--` in it: {body}");
@@ -627,5 +768,61 @@ mod tests {
         for flag in ["fontScale", "locale", "keyboard|", "navigation", "smallestScreenSize"] {
             assert!(xml.contains(flag), "{flag} missing: {xml}");
         }
+    }
+
+    fn with_links(scheme: Option<&str>, hosts: &[&str]) -> Manifest {
+        let mut m = manifest("Task List");
+        m.scheme = scheme.map(String::from);
+        m.link_hosts = hosts.iter().map(|h| h.to_string()).collect();
+        m
+    }
+
+    #[test]
+    fn an_app_without_links_has_no_view_filter_and_is_still_single_task() {
+        let xml = android_manifest(&manifest("Task List"), false);
+        assert!(!xml.contains("android.intent.action.VIEW"), "{xml}");
+        // Not only for links: any intent from another app would otherwise
+        // build a second activity in this process, and a second EventLoop.
+        assert!(xml.contains("android:launchMode=\"singleTask\""), "{xml}");
+    }
+
+    #[test]
+    fn a_scheme_gets_a_browsable_filter_that_is_not_verified() {
+        let xml = android_manifest(&with_links(Some("tasks"), &[]), false);
+        assert!(xml.contains("<data android:scheme=\"tasks\" />"), "{xml}");
+        assert!(xml.contains("android.intent.category.BROWSABLE"), "{xml}");
+        assert!(!xml.contains("autoVerify"), "a custom scheme cannot be verified: {xml}");
+    }
+
+    #[test]
+    fn hosts_share_one_verified_https_filter_apart_from_the_scheme() {
+        let xml = android_manifest(&with_links(Some("tasks"), &["example.com", "*.example.org"]), false);
+        assert_eq!(xml.matches("android.intent.action.VIEW").count(), 2, "{xml}");
+        let verified = xml.split("android:autoVerify=\"true\"").nth(1).expect("a verified filter");
+        let verified = verified.split("</intent-filter>").next().unwrap();
+        assert!(verified.contains("android:scheme=\"https\""), "{verified}");
+        assert!(verified.contains("android:host=\"example.com\""), "{verified}");
+        assert!(verified.contains("android:host=\"*.example.org\""), "{verified}");
+        // The custom scheme stays out of it, or Android would try to verify it
+        // against a website and `tasks://example.com` would match as well.
+        assert!(!verified.contains("tasks"), "{verified}");
+    }
+
+    #[test]
+    fn the_signing_digest_is_read_as_assetlinks_wants_it() {
+        // What apksigner 34 prints: lowercase hex, no separators.
+        let printed = "Signer #1 certificate DN: C=US, O=Android, CN=Android Debug
+                       Signer #1 certificate SHA-256 digest:                        0a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f9
+                       Signer #1 certificate SHA-1 digest: 0a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d
+";
+        let digests = signing_digests(printed);
+        assert_eq!(
+            digests,
+            ["0A:1B:2C:3D:4E:5F:60:71:82:93:A4:B5:C6:D7:E8:F9:0A:1B:2C:3D:4E:5F:60:71:82:93:A4:B5:C6:D7:E8:F9"]
+        );
+        let json = asset_links("dev.example.tasks", &digests);
+        assert!(json.contains("\"package_name\": \"dev.example.tasks\""), "{json}");
+        assert!(json.contains("handle_all_urls"), "{json}");
+        assert!(json.contains(&digests[0]), "{json}");
     }
 }

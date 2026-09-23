@@ -63,7 +63,8 @@ Usage:
 
 Run options:
   --route <path>             Open on this route instead of `/`, the way a
-                             deep link arrives
+                             deep link arrives. With --device it is sent
+                             as a real link, so rux.toml needs a `scheme`
   --preview <device>         Size the window to a device and answer as one:
                              density and safe-area insets, which a desktop
                              window has no honest values for. Naming a

@@ -25,6 +25,7 @@ pub fn run(args: &[String]) -> i32 {
     let mut rux_source = None;
     let mut release = false;
     let mut watch = true;
+    let mut route: Option<String> = None;
     // adb's own variable, so a shell already set up for adb needs nothing new.
     let mut wanted = std::env::var("ANDROID_SERIAL").ok().filter(|s| !s.is_empty());
     let mut rest = args.iter();
@@ -60,14 +61,17 @@ pub fn run(args: &[String]) -> i32 {
                 );
                 return 2;
             }
-            "--route" => {
-                eprintln!(
-                    "rux: `--route` does not reach a device yet.\n\n\
-                     On a device a route arrives as an Intent, which is not built. \
-                     The app starts at its entry document."
-                );
-                return 2;
-            }
+            "--route" => match rest.next() {
+                Some(value) if value.starts_with('/') => route = Some(value.clone()),
+                Some(value) => {
+                    eprintln!("rux: `--route` takes a path starting with `/`, like `/{value}`");
+                    return 2;
+                }
+                None => {
+                    eprintln!("rux: `--route` needs a path, like `/settings`");
+                    return 2;
+                }
+            },
             flag => {
                 eprintln!("rux: unknown option `{flag}`");
                 return 2;
@@ -101,6 +105,22 @@ pub fn run(args: &[String]) -> i32 {
         }
     };
 
+    // Checked before the build, for the same reason as the device: a route
+    // the app has no way to be sent should not cost three minutes to learn.
+    let link = match (&route, &manifest.scheme) {
+        (None, _) => None,
+        (Some(route), Some(scheme)) => Some(route_link(scheme, route)),
+        (Some(_), None) => {
+            eprintln!(
+                "rux: `--route` reaches a device as a link, and {} declares no `scheme`.\n\n\
+                 Add one under [app], like `scheme = \"myapp\"`, and `myapp://settings` \
+                 will open the app on `/settings`, from here and from anywhere else.",
+                crate::manifest::MANIFEST
+            );
+            return 2;
+        }
+    };
+
     // Built for what is actually plugged in, rather than for the emulator this
     // all started on. It is the answer to the divergence the ABI choice was
     // taken with its eyes open about: develop on x86_64 and ship arm64, until a
@@ -130,7 +150,11 @@ pub fn run(args: &[String]) -> i32 {
         eprintln!("rux: {why}");
         return 1;
     }
-    if let Err(why) = start(&toolchain, &serial, &manifest) {
+    let started = match &link {
+        Some(link) => open_link(&toolchain, &serial, link),
+        None => start(&toolchain, &serial, &manifest),
+    };
+    if let Err(why) = started {
         eprintln!("rux: {why}");
         return 1;
     }
@@ -423,6 +447,47 @@ fn install(toolchain: &Toolchain, serial: &str, apk: &Path) -> Result<(), String
     Err(format!("installing failed:\n{}", text.trim()))
 }
 
+/// The link that opens the app on `route`: `/settings` is `myapp://settings`,
+/// the inverse of what the shell reads out of one.
+fn route_link(scheme: &str, route: &str) -> String {
+    format!("{scheme}://{}", route.strip_prefix('/').unwrap_or(route))
+}
+
+/// Open `link` on the device the way a tapped link opens it.
+///
+/// **Implicit, and not aimed at the app's own activity.** Naming the component
+/// would start it whether or not the manifest's filter matched, which is
+/// exactly the thing a link needs to prove. `BROWSABLE` is the category a
+/// browser adds, so a filter this reaches is one a real link reaches too.
+///
+/// Installing ended the app, so this is a cold start and the link is its first
+/// page, as a person tapping a link to an app that is not running sees it.
+fn open_link(toolchain: &Toolchain, serial: &str, link: &str) -> Result<(), String> {
+    // One argument to the device's shell, quoted there, since a query string's
+    // `&` and `?` mean something to it. A `'` cannot be quoted that way, and a
+    // real link would carry it escaped anyway.
+    if link.contains('\'') {
+        return Err(format!("`{link}` holds a `'`; write it as `%27`, as a link would"));
+    }
+    let command = format!(
+        "am start -a android.intent.action.VIEW -c android.intent.category.BROWSABLE -d '{link}'"
+    );
+    let output = Command::new(&toolchain.adb)
+        .args(["-s", serial, "shell", &command])
+        .output()
+        .map_err(|e| format!("could not run adb: {e}"))?;
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    if output.status.success() && !text.contains("Error") {
+        println!("rux: opened {link}");
+        return Ok(());
+    }
+    Err(format!("opening {link} failed:\n{}", text.trim()))
+}
+
 fn start(toolchain: &Toolchain, serial: &str, manifest: &Manifest) -> Result<(), String> {
     // Taken from the one place that defines it, rather than written out again.
     // It was written out again once, and the result was a build that packaged
@@ -459,4 +524,18 @@ fn start(toolchain: &Toolchain, serial: &str, manifest: &Manifest) -> Result<(),
         return Ok(());
     }
     Err(format!("starting it failed:\n{}", text.trim()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The inverse of the shell's `link_route`, so what `--route` sends is
+    /// read back as the route it was given.
+    #[test]
+    fn a_route_is_sent_as_the_link_that_names_it() {
+        assert_eq!(route_link("tasks", "/settings/profile"), "tasks://settings/profile");
+        assert_eq!(route_link("tasks", "/user/7?tab=2"), "tasks://user/7?tab=2");
+        assert_eq!(route_link("tasks", "/"), "tasks://");
+    }
 }

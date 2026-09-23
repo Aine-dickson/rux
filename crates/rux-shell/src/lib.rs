@@ -184,6 +184,10 @@ enum RuxEvent {
     /// answered with text to put in place of the selection.
     #[cfg(target_os = "android")]
     AndroidProcessedText(String),
+    /// A link opened the app while it was already running, already turned
+    /// into a route by [`link_route`].
+    #[cfg(target_os = "android")]
+    AndroidLink(String),
     /// Assistive technology asked us something (it attached, it wants the
     /// tree, it moved focus). Delivered through the same proxy as hot-reload.
     #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
@@ -6418,6 +6422,17 @@ impl ApplicationHandler<RuxEvent> for App {
                 }
             }
 
+            // A link to an app that was already open. **Pushed, not started
+            // at**: the person was somewhere, and Back should return them
+            // there rather than out of the app. Guards run as for any tap.
+            #[cfg(target_os = "android")]
+            RuxEvent::AndroidLink(route) => {
+                android_log(&format!("link: {route}"));
+                if self.document.navigate(&route) {
+                    self.request_redraw();
+                }
+            }
+
             #[cfg(target_arch = "wasm32")]
             RuxEvent::WebRoute(index) => self.apply_web_route(index),
 
@@ -8654,6 +8669,92 @@ pub extern "system" fn Java_dev_ruxlang_shell_RuxActivity_nativeRestoreState<'fr
     .resolve::<jni::errors::LogErrorAndDefault>();
 }
 
+/// A link that arrived before the loop was there to take it, as a route.
+///
+/// Set from `onCreate` on a cold start, before `super.onCreate` starts the
+/// loop, and taken once before the first frame. Also set when a link arrives
+/// through `onNewIntent` in the moment between Android recreating a killed
+/// activity and the loop starting, which is why the loop checks it after
+/// restoring rather than instead.
+#[cfg(target_os = "android")]
+static PENDING_LINK: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// A link opened the activity: `myapp://settings` or `https://host/settings`.
+///
+/// Java decides whether an intent is a link to act on (a VIEW with data, not a
+/// relaunch from Recents carrying the old one); this only turns it into a route
+/// and delivers it: to the running loop when there is one, and otherwise to
+/// [`PENDING_LINK`] for the loop to open on.
+///
+/// # Safety
+///
+/// Called by the JVM, with the signature declared in `RuxActivity.java`.
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "system" fn Java_dev_ruxlang_shell_RuxActivity_nativeLink<'frame>(
+    mut env: jni::EnvUnowned<'frame>,
+    _class: jni::objects::JClass<'frame>,
+    uri: jni::objects::JString<'frame>,
+) {
+    env.with_env(|env| {
+        let uri: String = uri.try_to_string(env)?;
+        let Some(route) = link_route(&uri) else {
+            android_log(&format!("link: {uri} names no route, ignored"));
+            return Ok(());
+        };
+        if let Ok(proxy) = PROXY.lock() {
+            if let Some(proxy) = proxy.as_ref() {
+                let _ = proxy.send_event(RuxEvent::AndroidLink(route));
+                return Ok(());
+            }
+        }
+        if let Ok(mut slot) = PENDING_LINK.lock() {
+            *slot = Some(route);
+        }
+        Ok::<(), jni::errors::Error>(())
+    })
+    .resolve::<jni::errors::LogErrorAndDefault>();
+}
+
+/// The route a link names, query included, or `None` when it is not a URL.
+///
+/// **A custom scheme's host is the first segment of the route.** In
+/// `myapp://settings/profile` the URL grammar makes `settings` the authority,
+/// but nobody writing that link means a server called `settings`: they mean
+/// `/settings/profile`, and every app platform reads it that way. `myapp:///x`
+/// and `myapp:x` are accepted as `/x` too, because all three get written.
+///
+/// An https link's host is the site, already matched by the intent filter, so
+/// only its path is the route.
+///
+/// The fragment is dropped, as a browser drops it before a request: it names a
+/// place in a page, and the router has no such thing. Percent-escapes are kept,
+/// as `location.pathname` keeps them, so a route parameter reads the same from
+/// a link as from the web build.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub(crate) fn link_route(uri: &str) -> Option<String> {
+    let (scheme, rest) = uri.split_once(':')?;
+    if scheme.is_empty() || !scheme.chars().all(|c| c.is_ascii_alphanumeric() || "+-.".contains(c)) {
+        return None;
+    }
+    let rest = rest.split('#').next().unwrap_or_default();
+    let web = scheme.eq_ignore_ascii_case("http") || scheme.eq_ignore_ascii_case("https");
+    let path = match rest.strip_prefix("//") {
+        Some(after) => {
+            let end = after.find(['/', '?']).unwrap_or(after.len());
+            let (authority, tail) = after.split_at(end);
+            if web || authority.is_empty() {
+                tail.to_string()
+            } else {
+                format!("/{authority}{tail}")
+            }
+        }
+        None if web => return None,
+        None => rest.to_string(),
+    };
+    Some(if path.starts_with('/') { path } else { format!("/{path}") })
+}
+
 /// The most field text kept across a kill, every field's together. The
 /// platform refuses a saved state over about a megabyte and takes the app
 /// down with it, and a person who pasted a book into a field loses the book
@@ -9792,10 +9893,24 @@ fn run_android_with(
     // Before the first frame, like a deep link: Android killed the app and is
     // bringing it back where it was.
     let restored = RESTORED_STATE.lock().ok().and_then(|mut s| s.take());
-    if let Some(state) = restored.as_deref().and_then(rux_runtime::SavedState::decode) {
+    let restored = restored.as_deref().and_then(rux_runtime::SavedState::decode);
+    let was_restored = restored.is_some();
+    if let Some(state) = restored {
         app.document.restore_state(&state);
         app.restored_focus = Some(state.focus);
         app.restored_fields = state.fields;
+    }
+    // After the restore, so a link that arrives as Android brings a killed app
+    // back is pushed on top of where the person was, the same as a link to a
+    // running app. Otherwise this is a cold start and the link is the first
+    // page, as `--route` makes it on the desktop.
+    if let Some(route) = PENDING_LINK.lock().ok().and_then(|mut s| s.take()) {
+        android_log(&format!("link: {route}, before the first frame"));
+        if was_restored {
+            app.document.navigate(&route);
+        } else {
+            app.document.start_at(&route);
+        }
     }
     event_loop.run_app(&mut app).expect("run app");
 
@@ -9822,6 +9937,41 @@ fn run_android_with(
 mod tests {
     use super::*;
     use rux_runtime::{Diagnostics, Warning};
+
+    /// A custom scheme's host is the route's first segment, because that is
+    /// what anyone writing `myapp://settings` means.
+    #[test]
+    fn a_custom_scheme_link_names_its_route() {
+        assert_eq!(link_route("tasks://settings/profile").as_deref(), Some("/settings/profile"));
+        assert_eq!(link_route("tasks://user/7?tab=2").as_deref(), Some("/user/7?tab=2"));
+        assert_eq!(link_route("tasks:///settings").as_deref(), Some("/settings"));
+        assert_eq!(link_route("tasks:settings").as_deref(), Some("/settings"));
+        assert_eq!(link_route("tasks://").as_deref(), Some("/"));
+        assert_eq!(link_route("tasks://?q=1").as_deref(), Some("/?q=1"));
+    }
+
+    /// An https link's host is the site, already matched by the filter.
+    #[test]
+    fn a_web_link_names_only_its_path() {
+        assert_eq!(link_route("https://example.com/user/7").as_deref(), Some("/user/7"));
+        assert_eq!(link_route("https://example.com").as_deref(), Some("/"));
+        assert_eq!(link_route("https://example.com?x=1").as_deref(), Some("/?x=1"));
+        assert_eq!(link_route("https://example.com/a#section").as_deref(), Some("/a"));
+    }
+
+    /// Kept escaped, as `location.pathname` keeps it, so a parameter reads
+    /// the same from a link as from the web build.
+    #[test]
+    fn a_link_keeps_its_percent_escapes() {
+        assert_eq!(link_route("tasks://user/J%C3%BCrgen").as_deref(), Some("/user/J%C3%BCrgen"));
+    }
+
+    #[test]
+    fn a_link_that_is_not_a_url_names_no_route() {
+        assert_eq!(link_route("settings"), None);
+        assert_eq!(link_route(":x"), None);
+        assert_eq!(link_route("https:nothing"), None);
+    }
 
     /// A batch from `rux run --device`: files with their bytes, a deletion,
     /// and the line that ends it. Contents may hold anything, a line break

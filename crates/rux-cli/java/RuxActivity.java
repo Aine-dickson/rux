@@ -96,6 +96,13 @@ public class RuxActivity extends NativeActivity {
     /** The key the Rux state is kept under in the saved {@link Bundle}. */
     private static final String STATE_KEY = "dev.ruxlang.shell.state";
 
+    /**
+     * A link opened the app, as its whole URI. The Rust side turns it into a
+     * route, and opens on it or navigates to it depending on whether the loop
+     * is running yet.
+     */
+    private static native void nativeLink(String uri);
+
     @Override
     protected void onCreate(Bundle state) {
         loadNativeLibrary();
@@ -106,6 +113,14 @@ public class RuxActivity extends NativeActivity {
             if (saved != null) {
                 nativeRestoreState(saved);
             }
+        } else if ((getIntent().getFlags() & Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY) == 0) {
+            // A link is acted on only on a genuinely fresh start. **getIntent()
+            // is the intent that first built the task, not this launch's**, so
+            // an app opened by a link, closed with Back and reopened from
+            // Recents would otherwise be sent to the linked page again, and one
+            // Android killed and restored would be pulled off where it was.
+            // Recents marks its relaunch; a restore is the branch above.
+            link(getIntent());
         }
         super.onCreate(state);
         final View root = getWindow().getDecorView();
@@ -159,6 +174,29 @@ public class RuxActivity extends NativeActivity {
         String state = nativeSaveState();
         if (state != null) {
             out.putString(STATE_KEY, state);
+        }
+    }
+
+    /**
+     * An intent for the activity that is already running, which with
+     * {@code singleTask} is every intent after the first: a link tapped while
+     * the app is open, and also the launcher icon tapped while it is in the
+     * background. Only the first is a link, and {@link #link} tells them apart.
+     */
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        // So a later getIntent() sees this one, as Activity documents.
+        setIntent(intent);
+        link(intent);
+    }
+
+    /** Hand a VIEW intent's URI to Rux. Anything else is not a link. */
+    private static void link(Intent intent) {
+        if (intent != null
+                && Intent.ACTION_VIEW.equals(intent.getAction())
+                && intent.getDataString() != null) {
+            nativeLink(intent.getDataString());
         }
     }
 

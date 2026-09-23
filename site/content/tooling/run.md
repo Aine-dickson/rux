@@ -43,7 +43,7 @@ they typed produced a panic out of the file watcher.
 
 | | |
 |---|---|
-| `--route <path>` | Open on this route instead of `/`, the way a deep link arrives |
+| `--route <path>` | Open on this route instead of `/`, the way a deep link arrives. With `--device` it is sent as a real link, which needs a [`scheme`](@/tooling/build.md#links-open-the-app) |
 | `--preview <device>` | Size the window to a device, and answer as one |
 
 ```bash

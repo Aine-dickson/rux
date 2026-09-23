@@ -1977,6 +1977,26 @@ The layout now records which scroller holds each element and each scroller,
 and only that chain moves. Re-driven: row three, then the field by a click,
 then Shift+Tab to "none", and the list stays where it was.
 
+## Deep links on Android, 2026-09-24
+
+`scheme` and `link-hosts` in `rux.toml`, a `singleTask` activity, and
+`rux run --device --route` sending a real VIEW intent. Driven on the `rux_test`
+emulator against a scratch app with `/`, `/user/:id`, `/login`, and `/admin`
+guarded to redirect to `/login`. Under test in `manifest.rs`, `apk.rs`,
+`device.rs` and the shell's `link_route`.
+
+| Case | Where | Expect | Result |
+|---|---|---|---|
+| Cold link | `--route "/user/7?tab=2"` | Opens on `/user/7`, `query.tab` is 2, nothing to go back to | emulator: pass |
+| Warm link | on `/`, send `linktest://admin` | The same process takes it (no second activity); the guard redirects to `/login`; Back is possible | emulator: pass, same pid |
+| Back after a warm link | `/login` | Back returns to `/`, where the person was | emulator: pass |
+| The launcher icon while running | Home, then the icon | Same page, the old link not replayed | emulator: pass |
+| Recents after Back closed it | Back out, reopen from Recents | Fresh at `/`; the link that first built the task is not replayed | emulator: pass |
+| A link after Android killed it | on `/user/7`, Home, `am kill`, send `linktest://login` | Restored to `/user/7`, then `/login` pushed on top; Back returns to `/user/7` | emulator: pass |
+| `assetlinks.json` | `rux build` with `link-hosts` | Written beside the APK with the id and the debug key's SHA-256, and the URL to serve it at printed | emulator build: pass; content checked by eye |
+| A verified https link | a real domain serving the file | Tapping `https://<host>/x` in a browser opens the app on `/x` with no chooser | not driven: needs a served domain |
+| A link tapped in a browser | phone, Chrome | `myapp://x` in a page opens the app | not driven |
+
 ## Standing gaps
 
 Cases nothing here can currently exercise. They are the shape of what v0.8 has

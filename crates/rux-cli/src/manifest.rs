@@ -29,6 +29,19 @@
 //! foreground bleed to the edges of a circle without the corners of a square
 //! showing. See `icon.rs`.
 //!
+//! Two more do as of deep links, and each is opt-in:
+//!
+//! - `scheme`, a custom URL scheme: `myapp://settings` opens the app on
+//!   `/settings`.
+//! - `link-hosts`, the https domains whose links the app claims:
+//!   `https://example.com/settings` opens it on `/settings`. Android only hands
+//!   these to the app once the domain has vouched for it, which is what the
+//!   `assetlinks.json` a build writes beside the APK is for.
+//!
+//! **Neither has a default.** An app with no key has no link filter at all,
+//! because a scheme invented from the id is one nobody would think to type and
+//! a claim on a domain nobody named is not a claim.
+//!
 //! **Deliberately absent, and each for the same reason.** `splash` names an
 //! asset nothing yet draws. `permissions` would be a list the runtime cannot
 //! request, since no Rux API needs one. Both are scheduled, and each lands in
@@ -69,6 +82,10 @@ pub struct Manifest {
     /// An app with no icon still builds, installs and runs: this is the one
     /// piece of polish that must not be a wall in front of a first build.
     pub icon: Option<Icon>,
+    /// The custom URL scheme that opens the app, lowercase and without `://`.
+    pub scheme: Option<String>,
+    /// The https domains whose links open the app, lowercase. Empty means none.
+    pub link_hosts: Vec<String>,
 }
 
 /// The launcher icon, as two layers.
@@ -304,7 +321,37 @@ impl Manifest {
             Some(_) => return Err("[signing] must be a table".into()),
         };
 
-        Ok(Manifest { root, name, id, version, entry, signing, icon })
+        if app.contains_key("link_hosts") {
+            return Err("[app] `link_hosts` is spelled `link-hosts`, with a dash".to_string());
+        }
+        let scheme = match app.get("scheme") {
+            None => None,
+            Some(toml::Value::String(s)) => Some(check_scheme(s)?),
+            Some(_) => return Err("[app] `scheme` must be a string".into()),
+        };
+        let link_hosts = match app.get("link-hosts") {
+            None => Vec::new(),
+            Some(toml::Value::Array(hosts)) => {
+                let mut out = Vec::with_capacity(hosts.len());
+                for host in hosts {
+                    let toml::Value::String(host) = host else {
+                        return Err("[app] `link-hosts` must be a list of strings".into());
+                    };
+                    out.push(check_host(host)?);
+                }
+                out
+            }
+            // One host written bare is the likeliest slip, and a list of one
+            // is what was meant.
+            Some(toml::Value::String(host)) => {
+                return Err(format!(
+                    "[app] `link-hosts` is a list, even of one: `link-hosts = [\"{host}\"]`"
+                ))
+            }
+            Some(_) => return Err("[app] `link-hosts` must be a list of strings".into()),
+        };
+
+        Ok(Manifest { root, name, id, version, entry, signing, icon, scheme, link_hosts })
     }
 
     /// The icon's foreground file, checked to be there.
@@ -387,6 +434,94 @@ impl Manifest {
             out
         }
     }
+}
+
+/// Schemes that already belong to something, which an app claiming them would
+/// put itself in the chooser for every phone number or email address on the
+/// device. Refused rather than warned about, since the author meant a scheme of
+/// their own and picked one that was taken.
+const TAKEN_SCHEMES: [&str; 10] =
+    ["http", "https", "file", "content", "intent", "mailto", "tel", "sms", "geo", "javascript"];
+
+/// A custom scheme, checked and lowercased.
+///
+/// **Lowercased, not refused.** RFC 3986 says a scheme is case-insensitive and
+/// browsers lowercase one on the way through, while Android matches an
+/// intent-filter's scheme case-sensitively. An app declaring `MyApp` would
+/// match nothing a browser sent it, so the one spelling that works is the only
+/// one written into the filter.
+fn check_scheme(text: &str) -> Result<String, String> {
+    let bare = text.trim_end_matches("://").trim_end_matches(':');
+    if bare != text {
+        return Err(format!("[app] `scheme` is the name alone, without `:` or `://`: `{bare}`"));
+    }
+    let scheme = text.to_ascii_lowercase();
+    let mut chars = scheme.chars();
+    let valid = chars.next().is_some_and(|c| c.is_ascii_lowercase())
+        && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || "+-.".contains(c));
+    if !valid {
+        return Err(format!(
+            "[app] `scheme` should be letters, digits, `+`, `-` or `.`, starting with a letter, \
+             like `myapp`, and `{text}` is not"
+        ));
+    }
+    if scheme == "http" || scheme == "https" {
+        return Err(format!(
+            "[app] `scheme = \"{scheme}\"` would claim every web link on the device.\n\n\
+             To open links to your own site, name the site instead: \
+             `link-hosts = [\"example.com\"]`."
+        ));
+    }
+    if TAKEN_SCHEMES.contains(&scheme.as_str()) {
+        return Err(format!(
+            "[app] `scheme = \"{scheme}\"` belongs to the system already, and claiming it would \
+             offer this app for every `{scheme}:` link on the device. Pick a name of your own, \
+             like the app's."
+        ));
+    }
+    Ok(scheme)
+}
+
+/// One entry of `link-hosts`, checked and lowercased.
+///
+/// A bare domain, optionally with a leading `*.` for its subdomains, which is
+/// the form Android's intent filter takes. A URL is the likely mistake, and
+/// the message says what to cut off it.
+fn check_host(text: &str) -> Result<String, String> {
+    if let Some((_, rest)) = text.split_once("://") {
+        let host = rest.split('/').next().unwrap_or(rest);
+        return Err(format!(
+            "[app] `link-hosts` holds domains, not URLs: `\"{host}\"` rather than `\"{text}\"`.\n\n\
+             Every path on a listed domain opens the app, and the path is the route."
+        ));
+    }
+    if text.contains('/') {
+        return Err(format!(
+            "[app] `link-hosts` entry `{text}` has a path in it. List the domain alone; every path \
+             on it opens the app, and the path is the route"
+        ));
+    }
+    if text.contains(':') {
+        return Err(format!(
+            "[app] `link-hosts` entry `{text}` has a port in it. App links are https on port 443, \
+             so the domain alone is what Android verifies"
+        ));
+    }
+    let host = text.to_ascii_lowercase();
+    let name = host.strip_prefix("*.").unwrap_or(&host);
+    let labels_ok = name.split('.').all(|label| {
+        !label.is_empty()
+            && !label.starts_with('-')
+            && !label.ends_with('-')
+            && label.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+    });
+    if !name.contains('.') || !labels_ok {
+        return Err(format!(
+            "[app] `link-hosts` entry `{text}` is not a domain like `example.com` or \
+             `*.example.com`"
+        ));
+    }
+    Ok(host)
 }
 
 /// `#rgb` or `#rrggbb` to the `#rrggbb` an Android colour resource wants.
@@ -578,6 +713,70 @@ entry = "Cargo.toml"
         let text = format!("{MINIMAL}\n[signing]\nkeystore = \"nope.jks\"\nalias = \"a\"\n");
         let error = parse(&text).unwrap().signing_key().expect_err("no such keystore");
         assert!(error.contains("nope.jks"), "{error}");
+    }
+
+    #[test]
+    fn deep_links_are_opt_in() {
+        let m = parse(MINIMAL).unwrap();
+        assert_eq!(m.scheme, None);
+        assert!(m.link_hosts.is_empty());
+    }
+
+    #[test]
+    fn a_scheme_and_hosts_read_lowercased() {
+        let text = format!(
+            "{MINIMAL}scheme = \"Tasks\"\nlink-hosts = [\"Example.com\", \"*.example.org\"]\n"
+        );
+        let m = parse(&text).unwrap();
+        // Android matches a filter's scheme case-sensitively and a browser
+        // lowercases what it sends, so `Tasks` would match nothing.
+        assert_eq!(m.scheme.as_deref(), Some("tasks"));
+        assert_eq!(m.link_hosts, ["example.com", "*.example.org"]);
+    }
+
+    #[test]
+    fn a_scheme_written_as_a_url_prefix_says_what_to_write() {
+        let error = parse(&format!("{MINIMAL}scheme = \"tasks://\"\n")).unwrap_err();
+        assert!(error.contains("`tasks`"), "{error}");
+    }
+
+    #[test]
+    fn claiming_the_web_or_a_system_scheme_is_refused() {
+        let error = parse(&format!("{MINIMAL}scheme = \"https\"\n")).unwrap_err();
+        assert!(error.contains("link-hosts"), "should point at the real way: {error}");
+        let error = parse(&format!("{MINIMAL}scheme = \"tel\"\n")).unwrap_err();
+        assert!(error.contains("every `tel:` link"), "{error}");
+    }
+
+    #[test]
+    fn a_scheme_that_is_not_one_is_refused() {
+        for bad in ["1app", "my app", "my_app", ""] {
+            let error = parse(&format!("{MINIMAL}scheme = \"{bad}\"\n")).unwrap_err();
+            assert!(error.contains("scheme"), "{bad}: {error}");
+        }
+    }
+
+    #[test]
+    fn a_host_written_as_a_url_says_what_to_cut() {
+        let text = format!("{MINIMAL}link-hosts = [\"https://example.com/app\"]\n");
+        let error = parse(&text).unwrap_err();
+        assert!(error.contains("`\"example.com\"`"), "{error}");
+    }
+
+    #[test]
+    fn a_host_with_a_path_or_port_or_no_dot_is_refused() {
+        for bad in ["example.com/app", "example.com:8443", "localhost", "-x.com", "a..com"] {
+            let text = format!("{MINIMAL}link-hosts = [\"{bad}\"]\n");
+            assert!(parse(&text).is_err(), "{bad} should be refused");
+        }
+    }
+
+    #[test]
+    fn one_host_written_bare_is_told_it_is_a_list() {
+        let error = parse(&format!("{MINIMAL}link-hosts = \"example.com\"\n")).unwrap_err();
+        assert!(error.contains("[\"example.com\"]"), "{error}");
+        let error = parse(&format!("{MINIMAL}link_hosts = [\"example.com\"]\n")).unwrap_err();
+        assert!(error.contains("link-hosts"), "{error}");
     }
 
     #[test]

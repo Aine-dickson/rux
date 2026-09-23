@@ -231,7 +231,8 @@ nothing.
 
 `icon` and `icon-background` are the launcher icon, and `splash-background`
 colours the splash screen that comes with it; all three are below. `[signing]`
-names the key a release is signed with, below as well.
+names the key a release is signed with, below as well. `scheme` and
+`link-hosts` let a link open the app, also below.
 
 ## The icon is two layers, not one image
 
@@ -305,6 +306,55 @@ a splash followed by a second or so of black. The app holds its first draw back
 until the first real frame is ready, which is what makes the splash cover the
 startup it is there to cover. If the app fails before it ever draws, the splash
 gives up after five seconds rather than hanging.
+
+## Links open the app
+
+A link can open an Android app on a route, the way a URL opens the web build on
+one. There are two kinds, and an app takes either, both or neither. Neither is
+on by default.
+
+```toml
+[app]
+scheme = "tasks"
+link-hosts = ["tasks.example.com"]
+```
+
+**`scheme`** is a name of the app's own. `tasks://settings/profile` opens it on
+`/settings/profile`: the part after `://` is the route, query string included.
+It works anywhere a link can be tapped, with nothing to set up, and any other
+app can claim the same name, so it is for links the app hands out itself.
+Schemes that already belong to something, `https` and `tel` among them, are
+refused. The scheme is written lowercase whatever case it is given in, because
+Android matches it case-sensitively and a browser lowercases what it sends.
+
+**`link-hosts`** claims ordinary https links to the listed domains:
+`https://tasks.example.com/user/7` opens the app on `/user/7`. List domains, not
+URLs; `*.example.com` covers the subdomains. Android hands these links to the
+app only once each domain has said the app may have them, by serving a file at
+`https://<domain>/.well-known/assetlinks.json`. **`rux build` writes that file**
+beside the APK, as `<name>.assetlinks.json`, holding the app's id and the
+fingerprint of the key that signed it, and says where to put it:
+
+```text
+rux: https links need dist/task-list.assetlinks.json served at:
+       https://tasks.example.com/.well-known/assetlinks.json
+```
+
+A dev build is signed with this machine's debug key and a release build with the
+release key, so each writes its own file. A site that serves both builds lists
+both fingerprints in one file. An app that Google Play re-signs needs Play's
+fingerprint as well, from the Play Console. Until the file is served, a tapped
+link opens the web page, as it would with no app installed.
+
+**A link to an app that is not running opens it on the linked page**, with
+nothing to go back to, the same as `rux run --route`. **A link to an app that is
+running navigates**, the same as tapping a link inside it: route guards run, and
+Back returns to where the person was. Either way a guard sees the navigation, so
+a link straight to `/admin` passes the same check a tap would.
+
+`rux run --device --route /settings` sends the app a real `scheme` link, so it
+needs a `scheme` and proves the whole path: the manifest's filter, the handoff
+and the route.
 
 ## Dev builds and release builds differ in one way
 

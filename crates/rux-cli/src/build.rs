@@ -657,6 +657,8 @@ mod tests {
             entry: PathBuf::from("app.rux"),
             signing: None,
             icon: None,
+            scheme: None,
+            link_hosts: Vec::new(),
         }
     }
 
