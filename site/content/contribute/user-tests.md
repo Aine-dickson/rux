@@ -1794,11 +1794,19 @@ hand.
 | Copy | 1 | Text on the clipboard, the selection lets go, caret at its end | |
 | Translate or Gemini on a selection | 1 | The app opens on the selected text; if it answers, the answer replaces the selection | |
 | Share | 1 | The share sheet with the selected text | |
-| Paste into a list row | 6 | Stays in that row. Before this phase paste, cut and a committed composition refocused a field with no row, so an input in an `r-for` or a component lost focus mid-edit | |
+| Paste into a list row | 6 | Stays in that row. Before this phase paste, cut and a committed composition refocused a field with no row, so an input in an `r-for` or a component lost focus mid-edit | adb: pass after a second fix. The user found cut copying but the field keeping its text: `r-model="item.name"` wrote to the loop variable, a copy, so no edit in a row ever stuck. Now Cut empties row 2 and Paste after "gamma" gives "gammabeta" in row 3 |
+| Password with a space, long press on the bullets | 4 | All of it selected, not the part on one side of the space | adb: pass ("hunter2 hunter2") |
+| Password, long press past the bullets | 4 | Caret at the end, its handle, Paste and Select all | adb: pass |
 | Long press in the empty field | 7 | Paste (if the clipboard has text), the caret handle | |
 | Caret menu contents | 3 | Paste only with something on the clipboard, Select text, Select all | adb: pass. First build: the menu never showed when the long press also focused the field, because the keyboard attaching restated the focus and that closed the menu; now only a caret that moves closes it |
 | Select text | 3 | Takes the word before the caret: "letters" | adb: pass |
 | Handles in the textarea | 2 | Across lines; a handle whose end scrolls out of the field disappears | |
+
+**Seen while driving, outside this phase:** a field low on the page is
+focused under the keyboard and the page does not scroll it into view; and Cut
+or Paste raises the keyboard even when it was down, because a text change
+rebuilds the input connection through the call that also shows the keyboard.
+Both are on the watchlist.
 
 **The menu sits below the selection near the top of the screen.** On field 1
 there is no room between the status bar and the text, so the platform's own

@@ -2490,13 +2490,15 @@ impl App {
             return false;
         };
         let (tx, ty) = self.text_point(&region, t, fx, fy);
-        let (start, end) = self.text.word_at_point(
-            &value,
-            &rux_paint::text_style(&t.content),
-            Some(t.width),
-            tx,
-            ty,
-        );
+        // **A password is taken whole.** Split at its spaces, a long press
+        // showed where the spaces were, which is the one thing a masked field
+        // must not tell anyone. Android's own password fields select all
+        // here for the same reason.
+        let (start, end) = if region.kind.secret() {
+            (0, value.len())
+        } else {
+            self.text.word_at_point(&value, &rux_paint::text_style(&t.content), Some(t.width), tx, ty)
+        };
         self.set_focus_range(Some(Focus {
             model: region.model,
             row: region.row,
@@ -2673,12 +2675,16 @@ impl App {
         if value.is_empty() {
             return false;
         }
-        // A masked field is one run of bullets with no words in it to miss.
-        if self.focused_kind.secret() {
-            return true;
-        }
         let style = rux_paint::text_style(&t.content);
         let (tx, ty) = self.text_point(&region, t, fx, fy);
+        // A masked field is one run of bullets: on it is on the "word", past
+        // it is empty space, exactly as in any other field.
+        if region.kind.secret() {
+            let shown = rux_layout::mask(&value);
+            let (sx, sy, sh) = self.text.caret_geometry(&shown, &style, Some(t.width), 0);
+            let (ex, _, _) = self.text.caret_geometry(&shown, &style, Some(t.width), shown.len());
+            return tx >= sx && tx <= ex && ty >= sy && ty <= sy + sh;
+        }
         let (start, end) = self.text.word_at_point(&value, &style, Some(t.width), tx, ty);
         if value.get(start..end).is_none_or(|w| w.trim().is_empty()) {
             return false;

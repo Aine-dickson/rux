@@ -4401,12 +4401,13 @@ fn build_node_inner(
                         });
         }
         node.on_tap = on_tap.or_else(|| {
+            let target = model_target(&model, locals);
             if model.is_empty() || disabled {
                 None
             } else if radio {
-                Some(format!("{model} = \"{value}\""))
+                Some(format!("{target} = \"{value}\""))
             } else {
-                Some(format!("{model} = !{model}"))
+                Some(format!("{target} = !{target}"))
             }
         });
         // `@change` runs after the toggle, in the same handler, so it reads the
@@ -4505,7 +4506,7 @@ fn build_node_inner(
         node.children.push(bar(1.0 - fraction, SLIDER_REST));
 
         if !model.is_empty() && !disabled {
-            let set = range.assignment(&model);
+            let set = range.assignment(&model_target(&model, locals));
             let input = el.attr("@input").map(|h| bind_locals(h, locals));
             let change = el.attr("@change").map(|h| bind_locals(h, locals));
             let block = |h: &Option<String>| h.as_ref().map(|h| format!("{{ {h} }}")).unwrap_or_default();
@@ -5463,6 +5464,55 @@ pub fn restore_scroll(template: &Element) -> bool {
         .is_none_or(|v| v.trim() != "false")
 }
 
+/// The hidden local that says where a row's loop variable came from:
+/// `_rux_at_item = "items[2]"` beside `item`. See [`model_target`].
+pub const ROW_PLACE: &str = "_rux_at_";
+
+/// Where the rows of `r-for="… in coll"` live, as a path a write can land on,
+/// or `None` when the collection is computed (`items.filter(…)`) and a row
+/// has nowhere to be written back to.
+///
+/// A collection that starts with an outer row's loop variable is placed
+/// through that row, so a list nested in a list writes into the real inner
+/// list and not a copy of it.
+fn row_place(coll: &str, locals: &Locals) -> Option<String> {
+    let coll = coll.trim();
+    let path = coll.chars().next().is_some_and(|c| c.is_alphabetic() || c == '_')
+        && coll.chars().all(|c| c.is_alphanumeric() || matches!(c, '_' | '.' | '[' | ']'));
+    if !path {
+        return None;
+    }
+    let root_len = coll.find(['.', '[']).unwrap_or(coll.len());
+    let root = &coll[..root_len];
+    let marker = format!("{ROW_PLACE}{root}");
+    match locals.iter().rev().find(|(n, _)| *n == marker) {
+        Some((_, Value::Text(place))) => Some(format!("{place}{}", &coll[root_len..])),
+        // An outer loop variable with no place of its own: its list was
+        // computed, so this one has nowhere to go either.
+        _ if locals.iter().any(|(n, _)| n == root) => None,
+        _ => Some(coll.to_string()),
+    }
+}
+
+/// What a field's `r-model` really writes to.
+///
+/// **A loop variable is a copy of its row**, so inside `r-for="item in
+/// items"` the model `item.name` wrote to the copy, and every edit, typed,
+/// pasted or cut, was thrown away on the next build without a word. Only
+/// `items[i].name` worked, and nobody writes that: `v-model="item.name"` is
+/// what Vue authors write and what Vue makes work. So a model that starts
+/// with a loop variable is rewritten through the row's place in its list,
+/// `items[2].name`, which is the real thing.
+pub fn model_target(model: &str, locals: &[(String, Value)]) -> String {
+    let model = model.trim();
+    let root_len = model.find(['.', '[']).unwrap_or(model.len());
+    let marker = format!("{ROW_PLACE}{}", &model[..root_len]);
+    match locals.iter().rev().find(|(n, _)| *n == marker) {
+        Some((_, Value::Text(place))) => format!("{place}{}", &model[root_len..]),
+        _ => model.to_string(),
+    }
+}
+
 /// Parse `r-for="item in items"` into `(binding, collection_expr)`.
 ///
 /// Public because the checker needs the same answer: a loop variable is a name
@@ -5975,9 +6025,14 @@ fn build_children(
                     // value all need to know which row they are in while they
                     // are being recorded.
                     let mut plan: Vec<(Option<String>, Locals)> = Vec::new();
-                    for item in items {
+                    let place = row_place(coll, locals);
+                    for (index, item) in items.into_iter().enumerate() {
                         let mut child_locals = locals.clone();
                         child_locals.push((var.to_string(), item));
+                        if let Some(place) = &place {
+                            child_locals
+                                .push((format!("{ROW_PLACE}{var}"), Value::Text(format!("{place}[{index}]"))));
+                        }
                         let key = key_expr.map(|expr| {
                             let key = engine.eval_display(expr, &child_locals);
                             if key.is_empty() {

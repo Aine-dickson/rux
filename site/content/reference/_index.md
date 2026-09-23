@@ -263,6 +263,17 @@ Writing goes through an assignment rather than setting a scope variable, so an
 the real target. It previously created a variable *named* `user.name` and left
 `user` untouched, in or out of a list.
 
+**The loop variable writes through, too.** `r-model="item.name"` inside
+`r-for="item in items"` writes `items[2].name`, the real row, and so does a
+checkbox's `item.done` and a slider's value. `item` is a copy of its row, and
+before this the write landed on the copy: every edit in a list row, typed,
+pasted or cut, was thrown away on the next build without a word. Found on the
+phone in inputs phase 5. Each row carries its place in its list as a hidden
+local (`_rux_at_item = "items[2]"`, see `rux_style::model_target`), a list
+nested in a row is placed through that row, and a computed collection
+(`items.filter(…)`) has no place, so its rows still cannot be written to.
+Under test in `crates/rux-runtime/tests/list_rows.rs`.
+
 Two consequences worth knowing. Numbers are f64, so an index needs `to_int()`.
 And the caret follows its row across a reorder with nothing to remap, because
 the identity *is* the row; tapping a button to reorder still moves keyboard

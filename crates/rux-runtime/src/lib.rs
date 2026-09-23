@@ -2038,6 +2038,10 @@ impl Document {
     ) {
         let Some(key) = instance.filter(|k| self.instances.contains_key(*k)) else {
             let locals = self.locals_for(model, row, None);
+            // Through the row's place in its list, not its loop variable,
+            // which is a copy. See `rux_style::model_target`.
+            let target = rux_style::model_target(model, &locals);
+            let model = target.as_str();
             let changed = match value {
                 rux_reactive::Value::Text(text) => self.engine.assign_string(model, text, &locals),
                 other => self.engine.assign_value(model, other, &locals),
@@ -2056,8 +2060,9 @@ impl Document {
         // or a backslash.
         let key = key.to_string();
         let mut locals = self.scope_for(model, row, Some(&key));
+        let target = rux_style::model_target(model, &locals);
         locals.push((rux_script::ASSIGNED.to_string(), value.clone()));
-        let src = format!("{model} = {}", rux_script::ASSIGNED);
+        let src = format!("{target} = {}", rux_script::ASSIGNED);
         let (after, changed) = self.engine.run_scoped_handler(&src, &locals);
         let moved = self.write_back_instance(&key, after);
 

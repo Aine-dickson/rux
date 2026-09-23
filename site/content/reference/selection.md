@@ -84,7 +84,10 @@ app is invisible without it, and the list is simply empty. The menu is held back
 while a finger is on the glass and returns on lift. Copy lets go of the selection
 as Android's fields do; Share closes the menu; Back with a selection lets go of
 it rather than closing the app. A password offers no Copy, Cut, Share or apps,
-and Select all is left out when everything is already selected. The shell
+and Select all is left out when everything is already selected. **A long press
+on a password takes all of it**, as Android's own password fields do: split at
+its spaces, the selection showed where the spaces were. A long press past the
+bullets is empty space, as in any other field. The shell
 computes the whole menu state each frame and calls Java only when it changed
 (`App::sync_text_menu`).
 
