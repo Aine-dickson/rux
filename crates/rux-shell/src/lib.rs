@@ -1584,6 +1584,10 @@ struct App {
     /// focus. See [`App::adopt_restored_focus`].
     #[cfg(target_os = "android")]
     restored_focus: Option<Option<rux_runtime::SavedFocus>>,
+    /// The text Android kept for every other field, waiting for the same
+    /// frame. See [`App::adopt_restored_fields`].
+    #[cfg(target_os = "android")]
+    restored_fields: Vec<rux_runtime::SavedField>,
     /// A dev build's documents, as the app last loaded them, for hot reload
     /// to patch. `None` in a release build, which never reloads.
     #[cfg(target_os = "android")]
@@ -1783,6 +1787,8 @@ impl App {
             autofocus_seen: Vec::new(),
             #[cfg(target_os = "android")]
             restored_focus: None,
+            #[cfg(target_os = "android")]
+            restored_fields: Vec::new(),
             #[cfg(target_os = "android")]
             dev_files: None,
             #[cfg(target_os = "android")]
@@ -4629,6 +4635,8 @@ impl App {
         if self.state.is_none() {
             return;
         }
+        let fields = std::mem::take(&mut self.restored_fields);
+        self.adopt_restored_fields(fields);
         let Some(saved) = self.restored_focus.take() else { return };
         let Some(saved) = saved else {
             // Nothing had focus, so an `autofocus` field must not take it now:
@@ -4667,17 +4675,67 @@ impl App {
         self.set_focus_range(Some(focus));
     }
 
+    /// Put back the text Android kept for the fields that did not have focus,
+    /// on the same frame as focus and before it.
+    ///
+    /// Written straight to each field's signal, not through focus: focusing
+    /// every field in turn would run every `@focus` and `@blur` on the page
+    /// for a person who touched none of them. Each field's `@input` does run,
+    /// for the same reason as the focused field's: whatever the app derives
+    /// from a field is rebuilt from its text.
+    ///
+    /// A field whose text already matches is left alone, so its `@input` does
+    /// not run for nothing, and a `readonly` one is left alone because its
+    /// text is the app's, which the rebuilt page has already put there.
+    #[cfg(target_os = "android")]
+    fn adopt_restored_fields(&mut self, fields: Vec<rux_runtime::SavedField>) {
+        for saved in fields {
+            let Some(region) = self.focuses.iter().find(|f| {
+                f.text.is_some()
+                    && f.kind != InputKind::Password
+                    && f.model == saved.model
+                    && f.row == saved.row
+                    && f.instance == saved.instance
+            }) else {
+                continue;
+            };
+            let (kind, field) = (region.kind, region.field.clone());
+            if field.readonly {
+                continue;
+            }
+            let (model, row, instance) = (saved.model.as_str(), saved.row.as_deref(), saved.instance.as_deref());
+            if self.document.value_in(model, row, instance) == saved.text {
+                continue;
+            }
+            let value = if kind.typed() {
+                // Read back as it was written: a number's text as the signal
+                // gave it, with a point whatever the person's language.
+                let Some(value) = typed_value(kind, &saved.text, &field, '.') else { continue };
+                self.document.apply_value_in(model, row, instance, &value);
+                value
+            } else {
+                self.document.apply_edit_in(model, row, instance, &saved.text);
+                rux_reactive::Value::Text(saved.text.clone())
+            };
+            self.queue_field_event_in(field.on_input.as_deref(), saved.instance.clone(), value);
+        }
+    }
+
     /// Leave where the app is for `onSaveInstanceState`. See [`SAVED_STATE`].
     ///
-    /// A password is never kept: the platform writes the state to disk, and
-    /// the field comes back focused and empty, as a native one would.
+    /// Every text field on the page keeps its text, as every native
+    /// `EditText` does, within one [`SAVED_TEXT_MAX`] for them all. A password
+    /// is never kept: the platform writes the state to disk, and the field
+    /// comes back empty, as a native one would.
     #[cfg(target_os = "android")]
     fn publish_saved_state(&mut self) {
         let mut state = self.document.saved_state();
+        let mut budget = SAVED_TEXT_MAX;
         if let Some(model) = self.focused.clone() {
             let text = (self.focused_kind != InputKind::Password)
                 .then(|| self.focused_value())
-                .filter(|t| t.len() <= SAVED_TEXT_MAX);
+                .filter(|t| t.len() <= budget);
+            budget -= text.as_ref().map_or(0, String::len);
             state.focus = Some(rux_runtime::SavedFocus {
                 model,
                 row: self.focused_row.clone(),
@@ -4686,6 +4744,28 @@ impl App {
                 anchor: self.anchor,
                 text,
             });
+        }
+        let others: Vec<(String, Option<String>, Option<String>)> = self
+            .focuses
+            .iter()
+            .filter(|f| f.text.is_some() && f.kind != InputKind::Password && !f.field.readonly)
+            .filter(|f| {
+                self.focused.as_deref() != Some(f.model.as_str())
+                    || f.row != self.focused_row
+                    || f.instance != self.focused_instance
+            })
+            .map(|f| (f.model.clone(), f.row.clone(), f.instance.clone()))
+            .collect();
+        for (model, row, instance) in others {
+            if state.fields.iter().any(|f| f.model == model && f.row == row && f.instance == instance) {
+                continue;
+            }
+            let text = self.document.value_in(&model, row.as_deref(), instance.as_deref());
+            if text.len() > budget {
+                continue;
+            }
+            budget -= text.len();
+            state.fields.push(rux_runtime::SavedField { model, row, instance, text });
         }
         let encoded = state.encode();
         if let Ok(mut slot) = SAVED_STATE.lock() {
@@ -8566,9 +8646,10 @@ pub extern "system" fn Java_dev_ruxlang_shell_RuxActivity_nativeRestoreState<'fr
     .resolve::<jni::errors::LogErrorAndDefault>();
 }
 
-/// The longest field text kept across a kill. The platform refuses a saved
-/// state over about a megabyte and takes the app down with it, and a person
-/// who pasted a book into a field loses the book rather than the app.
+/// The most field text kept across a kill, every field's together. The
+/// platform refuses a saved state over about a megabyte and takes the app
+/// down with it, and a person who pasted a book into a field loses the book
+/// rather than the app.
 #[cfg(target_os = "android")]
 const SAVED_TEXT_MAX: usize = 64 * 1024;
 
@@ -9706,6 +9787,7 @@ fn run_android_with(
     if let Some(state) = restored.as_deref().and_then(rux_runtime::SavedState::decode) {
         app.document.restore_state(&state);
         app.restored_focus = Some(state.focus);
+        app.restored_fields = state.fields;
     }
     event_loop.run_app(&mut app).expect("run app");
 

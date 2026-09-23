@@ -478,10 +478,11 @@ impl Entry {
 /// app is expected to come back where it was, so the activity hands this to
 /// `onSaveInstanceState` and gets it back in `onCreate`.
 ///
-/// **Where, not what.** The history with each entry's scroll, and the focused
-/// field with its text and caret. Signals are not here: an app's data is the
-/// author's to keep, and a persistence library's to help with. The route alone
-/// is most of the answer, because a page is built from its route.
+/// **Where, not what.** The history with each entry's scroll, the focused
+/// field with its caret, and the text in every field on the page, as native
+/// Android keeps every `EditText`'s. Other signals are not here: an app's data
+/// is the author's to keep, and a persistence library's to help with. The
+/// route alone is most of the answer, because a page is built from its route.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct SavedState {
     /// Each history entry as `(location, scroll offsets)`, oldest first.
@@ -490,6 +491,21 @@ pub struct SavedState {
     pub at: usize,
     /// The field that had focus, if one did.
     pub focus: Option<SavedFocus>,
+    /// The text in every other field on the page on screen. Half a form
+    /// filled in and then left for a minute is exactly what the low-memory
+    /// killer interrupts, and only the focused field coming back loses the
+    /// rest of it.
+    pub fields: Vec<SavedField>,
+}
+
+/// A field in a [`SavedState`] that did not have focus: who it is and what
+/// was in it. Never a password.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SavedField {
+    pub model: String,
+    pub row: Option<String>,
+    pub instance: Option<String>,
+    pub text: String,
 }
 
 /// The focused field in a [`SavedState`]: its identity, its caret, and the
@@ -510,7 +526,11 @@ impl SavedState {
     /// The version written first, so a state saved by one build and read by
     /// another that changed the format is refused rather than misread. An
     /// app update keeps the task, so this does happen.
-    const HEADER: &'static str = "rux-state 1";
+    const HEADER: &'static str = "rux-state 2";
+
+    /// The version before the other fields were kept. Everything it says still
+    /// means the same, so it is read rather than thrown away.
+    const HEADER_1: &'static str = "rux-state 1";
 
     /// As text, one fact a line, with the strings escaped.
     pub fn encode(&self) -> String {
@@ -531,6 +551,16 @@ impl SavedState {
                 out += &format!("text {}\n", escape_line(text));
             }
         }
+        for f in &self.fields {
+            out += &format!("field {}\n", escape_line(&f.model));
+            if let Some(row) = &f.row {
+                out += &format!("field-row {}\n", escape_line(row));
+            }
+            if let Some(instance) = &f.instance {
+                out += &format!("field-instance {}\n", escape_line(instance));
+            }
+            out += &format!("field-text {}\n", escape_line(&f.text));
+        }
         out
     }
 
@@ -539,7 +569,7 @@ impl SavedState {
     /// restoring a misread history is not.
     pub fn decode(text: &str) -> Option<Self> {
         let mut lines = text.lines();
-        if lines.next()? != Self::HEADER {
+        if !matches!(lines.next()?, Self::HEADER | Self::HEADER_1) {
             return None;
         }
         let mut state = SavedState::default();
@@ -567,6 +597,10 @@ impl SavedState {
                 "row" => state.focus.as_mut()?.row = Some(unescape_line(rest)),
                 "instance" => state.focus.as_mut()?.instance = Some(unescape_line(rest)),
                 "text" => state.focus.as_mut()?.text = Some(unescape_line(rest)),
+                "field" => state.fields.push(SavedField { model: unescape_line(rest), ..SavedField::default() }),
+                "field-row" => state.fields.last_mut()?.row = Some(unescape_line(rest)),
+                "field-instance" => state.fields.last_mut()?.instance = Some(unescape_line(rest)),
+                "field-text" => state.fields.last_mut()?.text = unescape_line(rest),
                 _ => return None,
             }
         }
@@ -2783,8 +2817,8 @@ impl Document {
         self.pending_scroll.take()
     }
 
-    /// The history as a [`SavedState`] keeps it, focus left for the shell,
-    /// which is where focus lives.
+    /// The history as a [`SavedState`] keeps it, focus and fields left for
+    /// the shell, which is where focus and fields live.
     pub fn saved_state(&self) -> SavedState {
         SavedState {
             entries: self
@@ -2795,6 +2829,7 @@ impl Document {
                 .collect(),
             at: self.history.at,
             focus: None,
+            fields: Vec::new(),
         }
     }
 
@@ -6068,17 +6103,37 @@ use components::detail;
                 anchor: 3,
                 text: Some("two\nlines \\ and a slash".into()),
             }),
+            fields: vec![
+                SavedField { model: "name".into(), text: "Ada Lovelace".into(), ..SavedField::default() },
+                SavedField {
+                    model: "note".into(),
+                    row: Some("7".into()),
+                    instance: Some("c 1".into()),
+                    text: "field-text in\nthe text".into(),
+                },
+                SavedField { model: "empty".into(), ..SavedField::default() },
+            ],
         };
         assert_eq!(SavedState::decode(&state.encode()), Some(state));
         let bare = SavedState { entries: vec![("/".into(), Vec::new())], ..SavedState::default() };
         assert_eq!(SavedState::decode(&bare.encode()), Some(bare));
     }
 
+    /// A state the build before this one saved still reads: an app update
+    /// keeps the task, and nothing it wrote changed meaning.
+    #[test]
+    fn a_first_version_state_still_reads() {
+        let state = SavedState::decode("rux-state 1\nat 0\nentry  /\nfocus 1 1 q\ntext a\n").expect("reads");
+        assert_eq!(state.focus.and_then(|f| f.text).as_deref(), Some("a"));
+        assert!(state.fields.is_empty());
+    }
+
     /// Anything else starts the app fresh, which is always safe.
     #[test]
     fn a_saved_state_from_elsewhere_is_refused() {
         assert_eq!(SavedState::decode(""), None);
-        assert_eq!(SavedState::decode("rux-state 2\nat 0\nentry  /\n"), None, "another version");
+        assert_eq!(SavedState::decode("rux-state 3\nat 0\nentry  /\n"), None, "another version");
+        assert_eq!(SavedState::decode("rux-state 2\nat 0\nentry  /\nfield-text x\n"), None, "text for no field");
         assert_eq!(SavedState::decode("rux-state 1\nat 1\nentry  /\n"), None, "at past the end");
         assert_eq!(SavedState::decode("rux-state 1\nat 0\n"), None, "no history");
         assert_eq!(SavedState::decode("rux-state 1\nat 0\nentry x /\n"), None, "bad scroll");
