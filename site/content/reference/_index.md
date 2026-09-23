@@ -720,7 +720,7 @@ drag-selects.
   the latest release rather than from `main`, and a tag push does not itself
   trigger a deploy.
 - Text editing: no word-wise movement (Ctrl+arrows), no triple-click line-select,
-  no drag-and-drop of selected text, no `::selection` styling.
+  no drag-and-drop of selected text.
 - Scrolling: no track-click paging, no kinetic touch fling, no scrollbar
   hover/fade, and `overflow-x` / `overflow-y` can't differ from each other.
 - CSS: `box-shadow`, `position`/`top`/`left`, per-corner radius, per-side border

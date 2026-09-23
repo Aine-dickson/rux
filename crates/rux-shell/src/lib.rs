@@ -153,6 +153,21 @@ enum RuxEvent {
     /// `None` if it was dismissed. The field is in [`App::pending_date`].
     #[cfg(target_os = "android")]
     AndroidDate { value: Option<String> },
+    /// A choice from the platform's text menu: one of the `MENU_ACTION_`
+    /// codes. Share and the `PROCESS_TEXT` apps are Java's to run and never
+    /// arrive here.
+    #[cfg(target_os = "android")]
+    AndroidTextAction(i32),
+    /// The platform's text menu closed without Rux asking it to. `collapse`
+    /// says whether the selection goes with it: yes for Back or Share, as in
+    /// any Android field, and no when an app was handed the text and will
+    /// answer through [`RuxEvent::AndroidProcessedText`].
+    #[cfg(target_os = "android")]
+    AndroidTextMenuClosed { collapse: bool },
+    /// An app offered through `PROCESS_TEXT` (a translator, a spell checker)
+    /// answered with text to put in place of the selection.
+    #[cfg(target_os = "android")]
+    AndroidProcessedText(String),
     /// Assistive technology asked us something (it attached, it wants the
     /// tree, it moved focus). Delivered through the same proxy as hot-reload.
     #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
@@ -709,6 +724,158 @@ fn toolbar_paints(
     out
 }
 
+/// The word at byte `caret` in `text`, or the one just before it when the
+/// caret sits in spaces or at the end: what Select takes from a caret menu,
+/// which is usually opened after the last word. `None` when there is no word
+/// before or at the caret.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+fn word_near(text: &str, caret: usize) -> Option<(usize, usize)> {
+    let is_word = |c: char| c.is_alphanumeric() || c == '_' || c == '\'';
+    let caret = caret.min(text.len());
+    let caret = (0..=caret).rev().find(|i| text.is_char_boundary(*i))?;
+    // Step back over spaces and punctuation to the word before, unless the
+    // caret is already on one.
+    let on_word = text[caret..].chars().next().is_some_and(is_word);
+    let mut end = caret;
+    if !on_word {
+        end = text[..caret].char_indices().rev().find(|(_, c)| is_word(*c)).map(|(i, c)| i + c.len_utf8())?;
+    } else {
+        end += text[caret..].chars().take_while(|c| is_word(*c)).map(char::len_utf8).sum::<usize>();
+    }
+    let start = text[..end]
+        .char_indices()
+        .rev()
+        .take_while(|(_, c)| is_word(*c))
+        .last()
+        .map(|(i, _)| i)?;
+    Some((start, end))
+}
+
+// ── Selection handles ────────────────────────────────────────────────────────
+//
+// The teardrops a finger drags to change a selection, and the single one under
+// a caret that a finger drags to move it. Drawn by Rux on every platform rather
+// than borrowed from Android: the platform's handles belong to `TextView`'s
+// editor and are not offered to any other view, which is why every app that
+// draws its own text (Chrome, Flutter, Compose) draws its own handles too.
+
+/// Radius of a handle's round part, in logical px. Android's own handle is a
+/// 22dp square with three corners rounded, so this is that.
+const HANDLE_R: f32 = 11.0;
+
+/// How far from a handle's middle a finger still takes it, in logical px. A
+/// 48dp target, the size Android asks every touch target to be, around a
+/// shape half that.
+const HANDLE_REACH: f32 = 24.0;
+
+/// How long the lone caret handle, and the Paste menu that came with it, stay
+/// up with nothing touching them. A selection has no such clock: it stays
+/// until it is let go of.
+const CARET_HANDLE_FADE: Duration = Duration::from_secs(5);
+
+/// The handle colour where neither the field nor the platform names one: the
+/// focus-ring blue, opaque.
+const HANDLE_DEFAULT: Rgba = Rgba::new(0x89 as f32 / 255.0, 0xb4 as f32 / 255.0, 0xfa as f32 / 255.0, 1.0);
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Handle {
+    /// The start of a selection, hanging to the left of it.
+    Start,
+    /// The end of a selection, hanging to the right.
+    End,
+    /// Under a caret with nothing selected, pointing straight up at it.
+    Caret,
+}
+
+impl Handle {
+    /// The middle of the round part, for a handle hanging from the text point
+    /// `(x, y)`: the bottom of the line at its end of the selection.
+    fn centre(self, (x, y): (f32, f32)) -> (f32, f32) {
+        match self {
+            Handle::Start => (x - HANDLE_R, y + HANDLE_R),
+            Handle::End => (x + HANDLE_R, y + HANDLE_R),
+            Handle::Caret => (x, y + HANDLE_R * std::f32::consts::SQRT_2),
+        }
+    }
+
+    /// How far `(fx, fy)` is from this handle's middle, or `None` when it is
+    /// out of a finger's reach.
+    fn reach(self, point: (f32, f32), (fx, fy): (f32, f32)) -> Option<f32> {
+        let (cx, cy) = self.centre(point);
+        let distance = (fx - cx).hypot(fy - cy);
+        (distance <= HANDLE_REACH).then_some(distance)
+    }
+}
+
+/// A handle hanging from `point`, in logical px.
+///
+/// Each is a square with the corner that touches the text left sharp and the
+/// other three rounded to a circle, which is the whole of Android's teardrop.
+/// The caret's is the same square turned 45 degrees, so its point is on top.
+fn handle_paints(handle: Handle, (x, y): (f32, f32), color: Rgba) -> Vec<Paint> {
+    let d = HANDLE_R * 2.0;
+    let r = HANDLE_R;
+    let square = |x: f32, radius: [f32; 4]| {
+        Paint::Rect(PaintRect {
+            x,
+            y,
+            width: d,
+            height: d,
+            background: Some(Background::Color(color)),
+            radius,
+            border: Sides::ZERO,
+            border_color: None,
+        })
+    };
+    match handle {
+        // Radii run top-left, top-right, bottom-right, bottom-left.
+        Handle::Start => vec![square(x - d, [r, 0.0, r, r])],
+        Handle::End => vec![square(x, [0.0, r, r, r])],
+        Handle::Caret => {
+            // The End shape turned about its sharp corner, which carries the
+            // corner-to-corner diagonal from pointing down-right to pointing
+            // straight down.
+            let (s, c) = std::f32::consts::FRAC_PI_4.sin_cos();
+            vec![
+                Paint::PushTransform([c, s, -s, c, x - c * x + s * y, y - s * x - c * y]),
+                square(x, [0.0, r, r, r]),
+                Paint::PopTransform,
+            ]
+        }
+    }
+}
+
+/// One end of the focused field's selection as the last frame drew it, in
+/// logical px: its x, the bottom of its line, the line's height, and whether
+/// the point is inside the field's box rather than scrolled out of it.
+///
+/// Measured in [`App::render`], from the text paint the frame actually draws,
+/// and kept for the touch that follows, so a handle is hit where it is seen.
+#[derive(Clone, Copy, Debug)]
+struct SelectionEnd {
+    x: f32,
+    bottom: f32,
+    height: f32,
+    visible: bool,
+}
+
+/// A handle a finger is holding.
+#[derive(Clone, Copy, Debug)]
+struct HandleDrag {
+    handle: Handle,
+    /// The other end of the selection, which stays put. The caret's own index
+    /// for the caret handle.
+    fixed: usize,
+    /// From the finger to the point the handle hangs from, so the handle does
+    /// not jump to put its tip under the finger when the drag starts.
+    grab: (f32, f32),
+    /// Where the finger went down, physical px.
+    from: (f64, f64),
+    /// Past the tap slop. A caret handle that never moved was tapped, which
+    /// opens the menu.
+    moved: bool,
+}
+
 fn dropdown_paints(sel: &SelectRegion, value: &str) -> Vec<Paint> {
     let panel_bg = Rgba::new(0.19, 0.20, 0.27, 1.0); // #313244
     let border = Rgba::new(0.27, 0.28, 0.35, 1.0); // #45475a
@@ -791,6 +958,7 @@ fn dropdown_paints(sel: &SelectRegion, value: &str) -> Vec<Paint> {
                 caret: None,
                 selection: None,
                 preedit: None,
+                selection_style: Default::default(),
             },
         }));
     }
@@ -1171,6 +1339,7 @@ fn overlay_text(text: String, font_size: f32, weight: u16, color: Rgba) -> TextC
         caret: None,
         selection: None,
         preedit: None,
+        selection_style: Default::default(),
     }
 }
 
@@ -1377,6 +1546,36 @@ struct App {
     /// The toolbar is up at a caret, with nothing selected: a long press found
     /// no word to take. Cleared by the next change of focus or caret.
     caret_menu: bool,
+    /// The selection handles belong to this focus: a finger placed its caret
+    /// or made its selection. A mouse press, or a change of field, puts them
+    /// away, because a handle under a mouse pointer is something to aim at for
+    /// no reason.
+    handles: bool,
+    /// When the lone caret handle goes, if it is up. See [`CARET_HANDLE_FADE`].
+    caret_handle_until: Option<Instant>,
+    /// The handle a finger is dragging, if one is.
+    handle_drag: Option<HandleDrag>,
+    /// The word a long press or double tap took, as byte offsets, while the
+    /// finger that took it is still down. See [`App::extend_from_word`].
+    pressed_word: Option<(usize, usize)>,
+    /// The focused field's selection start and end as last drawn, the caret
+    /// twice when nothing is selected. See [`SelectionEnd`].
+    selection_ends: Option<[SelectionEnd; 2]>,
+    /// The colour handles take when the field names none: the platform's accent
+    /// where there is one to read.
+    handle_accent: Rgba,
+    /// Whether the platform's highlight and accent have been read yet.
+    #[cfg(target_os = "android")]
+    theme_read: bool,
+    /// The platform text menu as last asked of Java, so it is asked again only
+    /// when something about it changed. See [`App::sync_text_menu`].
+    #[cfg(target_os = "android")]
+    text_menu_sent: Option<TextMenu>,
+    /// The selection the platform text menu was closed over without the
+    /// selection going, as `(anchor, caret)`: it stays closed until the
+    /// selection moves.
+    #[cfg(target_os = "android")]
+    text_menu_dismissed: Option<(usize, usize)>,
     /// The currently open `select` dropdown, as `(r-model, row key)`. Survives
     /// the rebuild after a state change, like scroll offsets.
     ///
@@ -1533,6 +1732,18 @@ impl App {
             #[cfg(target_os = "android")]
             ime_mirror: None,
             caret_menu: false,
+            handles: false,
+            caret_handle_until: None,
+            handle_drag: None,
+            pressed_word: None,
+            selection_ends: None,
+            handle_accent: HANDLE_DEFAULT,
+            #[cfg(target_os = "android")]
+            theme_read: false,
+            #[cfg(target_os = "android")]
+            text_menu_sent: None,
+            #[cfg(target_os = "android")]
+            text_menu_dismissed: None,
             open_select: None,
             #[cfg(target_os = "android")]
             pending_select: None,
@@ -2115,6 +2326,10 @@ impl App {
     /// Tied to the selection rather than to focus so the strip is not sitting
     /// over the page the whole time an input has a caret in it.
     fn toolbar_field(&self) -> Option<(f32, f32, f32, f32)> {
+        // Android has the platform's own. See `App::sync_text_menu`.
+        if cfg!(target_os = "android") {
+            return None;
+        }
         if self.caret == self.anchor && !self.caret_menu {
             return None;
         }
@@ -2124,10 +2339,15 @@ impl App {
 
     /// The buttons for the focused field as it stands. See [`offered_actions`].
     fn toolbar_actions(&mut self) -> Vec<TextAction> {
-        let has_text = !self.focused_value().is_empty();
+        let length = self.focused_value().len();
+        let has_text = length > 0;
         let readonly = self.live_field().readonly;
+        // Select all when all of it is selected already is a button that does
+        // nothing, and Android's own fields leave it out.
+        let all = self.selection() == (0, length);
         offered_actions(self.focused_kind.secret(), self.caret != self.anchor, has_text)
             .into_iter()
+            .filter(|a| !(all && *a == TextAction::SelectAll))
             // A read-only field can be copied from and nothing else: Cut and
             // Paste would both be edits it is going to refuse.
             .filter(|a| !readonly || matches!(a, TextAction::Copy | TextAction::SelectAll))
@@ -2298,13 +2518,216 @@ impl App {
         // `press_text` set this for the mouse's model; touch resolves the drag
         // itself and must not also be dragging a selection.
         self.text_drag = false;
+        // A finger placed this caret, so the handles are the finger's. A plain
+        // tap shows none: the caret handle comes with a long press on empty
+        // space. See `App::handle_set`.
+        self.handles = true;
         // A double-tap has already taken a word, so there is nothing pending.
+        self.pressed_word = (self.anchor != self.caret).then(|| self.selection());
         self.touch_text = Some(if self.anchor == self.caret {
             TouchText::Pending { at: pointer, deadline: Instant::now() + LONG_PRESS }
         } else {
             TouchText::Selecting
         });
         true
+    }
+
+    /// Which handles are up, before asking whether each end is on screen.
+    ///
+    /// Both ends while something is selected. With nothing selected, the lone
+    /// caret handle, from a long press on empty space until
+    /// [`CARET_HANDLE_FADE`] of idleness later, and for as long as a finger
+    /// holds it.
+    ///
+    /// **Not on a plain tap.** It was, as Android's own fields do on some
+    /// versions, and the user asked for it gone: a tap puts the caret where
+    /// the finger is, and a handle nobody asked for sits over the next field.
+    fn handle_set(&mut self) -> Vec<Handle> {
+        if !self.handles || self.focused.is_none() {
+            return Vec::new();
+        }
+        if self.caret != self.anchor {
+            return vec![Handle::Start, Handle::End];
+        }
+        let held = self.handle_drag.is_some_and(|d| d.handle == Handle::Caret);
+        let up = held || self.caret_handle_until.is_some_and(|until| Instant::now() < until);
+        if up {
+            vec![Handle::Caret]
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// A finger landing on a handle takes it. Returns whether it did, in which
+    /// case the press is the handle's and nothing else's.
+    ///
+    /// When two are in reach, which happens on a one-letter selection, the
+    /// nearer wins.
+    fn press_handle(&mut self, pointer: (f64, f64)) -> bool {
+        let Some(ends) = self.selection_ends else { return false };
+        let (fx, fy) = self.logical(pointer);
+        let best = self
+            .handle_set()
+            .into_iter()
+            .filter_map(|handle| {
+                let end = if handle == Handle::End { ends[1] } else { ends[0] };
+                if !end.visible {
+                    return None;
+                }
+                handle.reach((end.x, end.bottom), (fx, fy)).map(|d| (d, handle, end))
+            })
+            .min_by(|a, b| a.0.total_cmp(&b.0));
+        let Some((_, handle, end)) = best else { return false };
+        let (start, stop) = self.selection();
+        let fixed = match handle {
+            Handle::Start => stop,
+            Handle::End => start,
+            Handle::Caret => self.caret,
+        };
+        self.handle_drag = Some(HandleDrag {
+            handle,
+            fixed,
+            // Aimed at the middle of the handle's line, not its bottom edge:
+            // the bottom of one line is the top of the next, and a lookup
+            // there lands on whichever the rounding favours.
+            grab: (end.x - fx, end.bottom - end.height / 2.0 - fy),
+            from: pointer,
+            moved: false,
+        });
+        self.request_redraw();
+        true
+    }
+
+    /// Move the end of the selection a finger is holding.
+    ///
+    /// The other end stays put, and the held end becomes the caret, so a
+    /// field that scrolls to keep its caret in view follows the finger. The
+    /// ends may cross, which swaps which handle is which, as on Android. They
+    /// may not meet: a selection dragged to nothing would take its handles
+    /// with it, under the finger that was still holding one.
+    fn drag_handle(&mut self, pointer: (f64, f64)) {
+        let Some(mut drag) = self.handle_drag else { return };
+        if !drag.moved {
+            if (pointer.0 - drag.from.0).hypot(pointer.1 - drag.from.1) <= TAP_SLOP {
+                return;
+            }
+            drag.moved = true;
+            self.handle_drag = Some(drag);
+            self.request_redraw();
+        }
+        let Some(region) = self.focused_region().cloned() else { return };
+        let (fx, fy) = self.logical(pointer);
+        let index = self.index_in(&region, fx + drag.grab.0, fy + drag.grab.1);
+        let (caret, anchor) = match drag.handle {
+            Handle::Caret => (index, index),
+            _ if index == drag.fixed => return,
+            _ => (index, drag.fixed),
+        };
+        if caret == self.caret && anchor == self.anchor {
+            return;
+        }
+        self.set_focus_range(Some(Focus {
+            model: region.model,
+            row: region.row,
+            instance: region.instance,
+            caret,
+            anchor,
+            preedit: None,
+        }));
+    }
+
+    /// The finger holding a handle lifted. Returns whether one was held.
+    ///
+    /// A caret handle that was tapped rather than dragged opens the Paste and
+    /// Select all menu, and a second tap closes it, which is what a caret
+    /// handle does on Android.
+    fn release_handle(&mut self) -> bool {
+        let Some(drag) = self.handle_drag.take() else { return false };
+        if drag.handle == Handle::Caret {
+            if !drag.moved {
+                self.caret_menu = !self.caret_menu;
+            }
+            self.caret_handle_until = Some(Instant::now() + CARET_HANDLE_FADE);
+        }
+        self.request_redraw();
+        true
+    }
+
+    /// Whether a long press at `pointer` is on a word rather than on empty
+    /// space: past the end of a line, after the last word, or on the spaces
+    /// between two words.
+    ///
+    /// `word_at_point` answers with the nearest word wherever the finger is,
+    /// which is right for a double click and wrong here: a long press after
+    /// the last word selected that word, where the person was asking for
+    /// Paste at the end of the text. So the finger has to be inside the word's
+    /// own box.
+    fn press_on_word(&mut self, pointer: (f64, f64)) -> bool {
+        let (fx, fy) = self.logical(pointer);
+        let Some(region) = self.focuses.iter().rev().find(|f| f.contains(fx, fy)).cloned() else {
+            return false;
+        };
+        let value =
+            self.document.value_in(&region.model, region.row.as_deref(), region.instance.as_deref());
+        let Some(t) = region.text.as_ref() else { return false };
+        if value.is_empty() {
+            return false;
+        }
+        // A masked field is one run of bullets with no words in it to miss.
+        if self.focused_kind.secret() {
+            return true;
+        }
+        let style = rux_paint::text_style(&t.content);
+        let (tx, ty) = self.text_point(&region, t, fx, fy);
+        let (start, end) = self.text.word_at_point(&value, &style, Some(t.width), tx, ty);
+        if value.get(start..end).is_none_or(|w| w.trim().is_empty()) {
+            return false;
+        }
+        let (sx, sy, sh) = self.text.caret_geometry(&value, &style, Some(t.width), start);
+        let (ex, ey, _) = self.text.caret_geometry(&value, &style, Some(t.width), end);
+        // A word that wraps is taken anywhere on its lines.
+        if (ey - sy).abs() > 0.5 {
+            return true;
+        }
+        tx >= sx && tx <= ex && ty >= sy && ty <= sy + sh
+    }
+
+    /// Extend a selection that began as a word, from a finger still down.
+    ///
+    /// **The word stays whole.** This was `drag_text`, which moves the caret
+    /// to the finger and keeps the anchor at the word's start, so the first
+    /// movement after a long press, however small, cut the word back to
+    /// wherever the finger sat inside it. A finger resting on "brown" selected
+    /// "br". Driven on the phone with `adb shell input swipe`, whose held
+    /// press reports moves of zero distance, and a real finger's tremor does
+    /// the same. Now the finger only extends past the word, from its far end,
+    /// which is what a browser does after a double click and a drag.
+    fn extend_from_word(&mut self, pointer: (f64, f64)) {
+        let Some((start, end)) = self.pressed_word else {
+            self.drag_text(pointer);
+            return;
+        };
+        let Some(region) = self.focused_region().cloned() else { return };
+        let (fx, fy) = self.logical(pointer);
+        let index = self.index_in(&region, fx, fy);
+        let (anchor, caret) = if index > end {
+            (start, index)
+        } else if index < start {
+            (end, index)
+        } else {
+            (start, end)
+        };
+        if (anchor, caret) == (self.anchor, self.caret) {
+            return;
+        }
+        self.set_focus_range(Some(Focus {
+            model: region.model,
+            row: region.row,
+            instance: region.instance,
+            caret,
+            anchor,
+            preedit: None,
+        }));
     }
 
     /// Move the caret to the pointer *without* selecting: the anchor follows it,
@@ -3239,6 +3662,114 @@ impl App {
         true
     }
 
+    /// A caret at `caret` in the focused field, the whole of its identity kept.
+    ///
+    /// **Not `Focus::at`, which is a field outside any list or component.** Cut,
+    /// paste and committed composition all refocused through it, so in an
+    /// input inside an `r-for` or a component each one moved focus to a field
+    /// with no row and no instance: the field blurred, committed and lost its
+    /// caret in the middle of an edit.
+    fn focus_here(&self, model: &str, caret: usize) -> Focus {
+        Focus::at_row_in(model, self.focused_row.clone(), self.focused_instance.clone(), caret)
+    }
+
+    /// Let go of the selection, leaving the caret at its end.
+    #[cfg(target_os = "android")]
+    fn collapse_selection(&mut self) {
+        let Some(model) = self.focused.clone() else { return };
+        let (_, end) = self.selection();
+        self.set_focus_range(Some(self.focus_here(&model, end)));
+    }
+
+    /// Ask Java for the text menu the field wants now, when that differs from
+    /// what it was last asked for. See [`App::wanted_text_menu`].
+    #[cfg(target_os = "android")]
+    fn sync_text_menu(&mut self) {
+        let want = self.wanted_text_menu();
+        if want == self.text_menu_sent {
+            return;
+        }
+        android_text_menu(want.as_ref());
+        self.text_menu_sent = want;
+    }
+
+    /// The platform text menu this moment calls for, or `None` for none.
+    ///
+    /// **The platform's menu, not the drawn one.** It is the one every other
+    /// app on the phone shows: its shape, its overflow, and the apps that
+    /// register for `PROCESS_TEXT` (Translate, a dictionary), which no drawn
+    /// strip can reach. Up while something is selected, or while a caret has
+    /// asked for Paste; held back while a finger is on the glass, since
+    /// Android's own steps aside for a drag or a scroll and returns on lift.
+    #[cfg(target_os = "android")]
+    fn wanted_text_menu(&mut self) -> Option<TextMenu> {
+        self.focused.as_ref()?;
+        let selected = self.caret != self.anchor;
+        if !selected && !self.caret_menu {
+            self.text_menu_dismissed = None;
+            return None;
+        }
+        if !self.points.is_empty() || self.handle_drag.is_some() || self.touch_text.is_some() {
+            return None;
+        }
+        if let Some(closed) = self.text_menu_dismissed {
+            if closed == (self.anchor, self.caret) {
+                return None;
+            }
+            self.text_menu_dismissed = None;
+        }
+        let [a, b] = self.selection_ends?;
+        if !a.visible && !b.visible {
+            return None;
+        }
+        let secret = self.focused_kind.secret();
+        let mut flags = 0;
+        for action in self.toolbar_actions() {
+            flags |= match action {
+                TextAction::Copy => MENU_COPY,
+                TextAction::Cut => MENU_CUT,
+                TextAction::Paste => MENU_PASTE,
+                TextAction::SelectAll => MENU_SELECT_ALL,
+            };
+        }
+        // Handing the text to another app is taking it out of the field,
+        // which a password refuses for the reason it refuses Copy.
+        if selected && !secret {
+            flags |= MENU_SHARE | MENU_PROCESS;
+        }
+        // At a caret, Select takes the word there. Not in a password, which
+        // has no words to show.
+        if !selected && !secret && !self.focused_value().is_empty() {
+            flags |= MENU_SELECT;
+        }
+        if flags == 0 {
+            return None;
+        }
+        if self.live_field().readonly {
+            flags |= MENU_READONLY;
+        }
+        let region = self.focused_region()?.clone();
+        // The box the menu floats beside: the selection on one line, the
+        // field's width when it runs over several, and down past the handles
+        // so the menu never lands on one.
+        let top = (a.bottom - a.height).min(b.bottom - b.height).max(region.y);
+        let (left, right) = if (a.bottom - b.bottom).abs() < 0.5 {
+            (a.x.min(b.x), a.x.max(b.x))
+        } else {
+            (region.x, region.x + region.width)
+        };
+        let reach = if self.handles { HANDLE_R * 2.0 } else { 0.0 };
+        let bottom = a.bottom.max(b.bottom).min(region.y + region.height) + reach;
+        let scale = self.scale() as f32;
+        let px = |v: f32| (v * scale).round() as i32;
+        let text = if selected && !secret { self.selected_text().unwrap_or_default() } else { String::new() };
+        Some(TextMenu {
+            rect: [px(left), px(top), px(right).max(px(left) + 1), px(bottom)],
+            flags,
+            text,
+        })
+    }
+
     fn select_all_text(&mut self, model: &str) {
         let value = self.focused_value();
         self.set_focus_range(Some(Focus {
@@ -3323,7 +3854,7 @@ impl App {
         if self.write_focused(&value, start, false).is_none() {
             return;
         }
-        self.set_focus_range(Some(Focus::at(model, start)));
+        self.set_focus_range(Some(self.focus_here(model, start)));
     }
 
     /// Ask for the clipboard's contents and paste them.
@@ -3380,7 +3911,7 @@ impl App {
             return;
         };
         self.scroll_caret_into_view(&value, caret);
-        self.set_focus_range(Some(Focus::at(model, caret)));
+        self.set_focus_range(Some(self.focus_here(model, caret)));
     }
 
     /// Keep the caret visible in a scrolling textarea: adjust its scroll offset
@@ -3491,6 +4022,13 @@ impl App {
     /// written to block. So the history is asked first, and only a genuinely
     /// empty one is reported as a close.
     fn on_back(&mut self) -> bool {
+        // A selection is let go of before anything else, as in every Android
+        // field: Back with text selected closes the text menu, not the app.
+        #[cfg(target_os = "android")]
+        if self.focused.is_some() && (self.caret != self.anchor || self.caret_menu) {
+            self.collapse_selection();
+            return true;
+        }
         if !self.document.can_back() {
             return false;
         }
@@ -3640,6 +4178,12 @@ impl App {
         let old = self.document.value_in(&model, row.as_deref(), instance.as_deref());
         // What the field shows, which `maxlength` measures: a number's draft.
         let shown = self.focused_value();
+        // Typing puts the caret handle away, as it does in every phone field.
+        // Only a real change: an input method reports unchanged text as it
+        // attaches, and that must not take the handle a tap just put up.
+        if value != shown {
+            self.caret_handle_until = None;
+        }
         let (value, caret) = match field.maxlength.filter(|_| !composing) {
             Some(max) => fit_length(&shown, value, caret, max),
             None => (value.to_string(), caret),
@@ -3865,7 +4409,22 @@ impl App {
     /// field, tabbing away or pressing Escape mid-composition all put the field
     /// back the way it was, rather than stranding half-typed text nobody chose.
     fn set_focus_range(&mut self, focus: Option<Focus>) {
-        self.caret_menu = false;
+        // The caret menu closes when the caret moves, not whenever focus is
+        // restated. A long press on empty space focuses the field, the
+        // keyboard attaches and reports the unchanged text straight back, and
+        // closing the menu on that report closed it before it ever showed.
+        // Driven on the phone: the handle came up, the menu never did.
+        let restated = focus.as_ref().is_some_and(|f| {
+            f.is(
+                self.focused.as_deref().unwrap_or(""),
+                self.focused_row.as_deref(),
+                self.focused_instance.as_deref(),
+            ) && f.caret == self.caret
+                && f.anchor == self.anchor
+        });
+        if !restated {
+            self.caret_menu = false;
+        }
         if focus.as_ref().and_then(|f| f.preedit).is_none() {
             self.cancel_preedit();
         }
@@ -3883,6 +4442,9 @@ impl App {
             });
         if !same_field {
             self.text_scroll = 0.0;
+            self.handles = false;
+            self.caret_handle_until = None;
+            self.handle_drag = None;
             // The field being left commits and blurs, in that order, as HTML
             // has it, and with its own handlers and its own instance.
             if self.focused.is_some() {
@@ -4349,7 +4911,7 @@ impl App {
             let caret = at + composing.replaced.len();
             self.preedit = None;
             let caret = self.write_focused(&value, caret, false).map_or(self.caret, |(_, c)| c);
-            self.set_focus_range(Some(Focus::at(model, caret)));
+            self.set_focus_range(Some(self.focus_here(&model, caret)));
             return;
         }
 
@@ -4400,7 +4962,7 @@ impl App {
             return;
         };
         self.scroll_caret_into_view(&value, caret);
-        self.set_focus_range(Some(Focus::at(model, caret)));
+        self.set_focus_range(Some(self.focus_here(&model, caret)));
         self.update_ime_area();
     }
 
@@ -4513,6 +5075,17 @@ impl App {
     }
 
     fn render(&mut self) {
+        // The phone's own highlight and accent, so a Rux field selects like
+        // every other field on it. Retried until the activity has been handed
+        // over, which can be after the first frame.
+        #[cfg(target_os = "android")]
+        if !self.theme_read {
+            if let Some((highlight, accent)) = android_theme_colors() {
+                rux_paint::set_default_selection(highlight);
+                self.handle_accent = accent;
+                self.theme_read = true;
+            }
+        }
         // Catches the first frame and any resize that arrived without an event
         // (hot-reload, scale change); a no-op unless a breakpoint moved.
         self.update_viewport();
@@ -4543,6 +5116,21 @@ impl App {
         let safe_top = self.safe_top();
         let caret_menu = self.caret_menu;
         let toolbar_actions = self.toolbar_actions();
+        let handle_set = self.handle_set();
+        let handle_color = self
+            .focused_region()
+            .and_then(|r| r.text.as_ref())
+            .and_then(|t| t.content.selection_style.handle)
+            .unwrap_or(self.handle_accent);
+        // A masked field paints bullets, so its ends are measured in the
+        // bullets' offsets. See `shown_text`.
+        let (sel_start, sel_end) = self.selection();
+        let (sel_start, sel_end) = if self.focused_kind.secret() {
+            let value = self.focused_value();
+            (rux_layout::masked_offset(&value, sel_start), rux_layout::masked_offset(&value, sel_end))
+        } else {
+            (sel_start, sel_end)
+        };
         // Split borrows so the text engine (used both to measure during layout
         // and to draw during paint) doesn't conflict with the render state.
         let App {
@@ -4570,6 +5158,7 @@ impl App {
             focused_row,
             focused_instance,
             focused_kind,
+            selection_ends,
             #[cfg(not(target_arch = "wasm32"))]
             path,
             ..
@@ -4698,6 +5287,33 @@ impl App {
             }
         }
 
+        // Where the selection's two ends are drawn this frame, for the handles
+        // below and for the touch that follows. Measured on the text paint as
+        // it will be drawn, scroll and all, so a handle cannot sit one frame
+        // behind the text it belongs to while a list scrolls.
+        *selection_ends = focused.as_deref().and_then(|m| {
+            let region = layout.focuses.iter().find(|f| {
+                f.model == m
+                    && f.row.as_deref() == focused_row.as_deref()
+                    && f.instance.as_deref() == focused_instance.as_deref()
+            })?;
+            let t = layout.paints.iter().find_map(|p| match p {
+                Paint::Text(t) if t.content.caret.is_some() => Some(t),
+                _ => None,
+            })?;
+            let style = rux_paint::text_style(&t.content);
+            let mut end = |index: usize| {
+                let (cx, cy, ch) = text.caret_geometry(&t.content.text, &style, Some(t.width), index);
+                let (x, bottom) = (t.x + cx, t.y + cy + ch);
+                let visible = x >= region.x - 1.0
+                    && x <= region.x + region.width + 1.0
+                    && bottom > region.y
+                    && bottom <= region.y + region.height + 1.0;
+                SelectionEnd { x, bottom, height: ch, visible }
+            };
+            Some([end(sel_start), end(sel_end)])
+        });
+
         let content = rux_paint::build_scene(&layout.paints, text, images, caret_visible);
         state.scene.reset();
         state
@@ -4742,7 +5358,7 @@ impl App {
         // The selection toolbar, over the content while something is selected.
         // It is the only route to copy and paste on a phone, and on the web at
         // all, so it is drawn above the page rather than inside it.
-        if *caret != *anchor || caret_menu {
+        if (*caret != *anchor || caret_menu) && !cfg!(target_os = "android") {
             if let Some(r) = focused.as_deref().and_then(|m| {
                 layout
                     .focuses
@@ -4760,6 +5376,23 @@ impl App {
                     &toolbar_actions,
                 );
                 let scene = rux_paint::build_scene(&strip, text, images, false);
+                state.scene.append(&scene, Some(Affine::scale(scale)));
+            }
+        }
+
+        // The selection handles, over the page and the toolbar, under a
+        // dropdown. Only an end that is inside its field gets one: a handle
+        // pointing at text scrolled out of sight points at nothing.
+        if let Some(ends) = *selection_ends {
+            let mut marks = Vec::new();
+            for &handle in &handle_set {
+                let end = if handle == Handle::End { ends[1] } else { ends[0] };
+                if end.visible {
+                    marks.extend(handle_paints(handle, (end.x, end.bottom), handle_color));
+                }
+            }
+            if !marks.is_empty() {
+                let scene = rux_paint::build_scene(&marks, text, images, false);
                 state.scene.append(&scene, Some(Affine::scale(scale)));
             }
         }
@@ -5158,6 +5791,71 @@ impl ApplicationHandler<RuxEvent> for App {
                 }
             }
 
+            #[cfg(target_os = "android")]
+            RuxEvent::AndroidTextAction(MENU_ACTION_SELECT_WORD) => {
+                let value = self.focused_value();
+                if let (Some(model), Some((start, end))) =
+                    (self.focused.clone(), word_near(&value, self.caret))
+                {
+                    self.set_focus_range(Some(Focus {
+                        model,
+                        row: self.focused_row.clone(),
+                        instance: self.focused_instance.clone(),
+                        caret: end,
+                        anchor: start,
+                        preedit: None,
+                    }));
+                    self.handles = true;
+                }
+            }
+
+            #[cfg(target_os = "android")]
+            RuxEvent::AndroidTextAction(code) => {
+                let action = match code {
+                    MENU_ACTION_COPY => Some(TextAction::Copy),
+                    MENU_ACTION_CUT => Some(TextAction::Cut),
+                    MENU_ACTION_PASTE => Some(TextAction::Paste),
+                    MENU_ACTION_SELECT_ALL => Some(TextAction::SelectAll),
+                    _ => None,
+                };
+                if let Some(action) = action {
+                    self.run_text_action(action);
+                    match action {
+                        // Android's own fields let go of a selection once it
+                        // is copied, leaving the caret at its end. The drawn
+                        // toolbar keeps it, which is what a desktop does.
+                        TextAction::Copy => self.collapse_selection(),
+                        TextAction::SelectAll => self.handles = true,
+                        _ => {}
+                    }
+                }
+            }
+
+            #[cfg(target_os = "android")]
+            RuxEvent::AndroidTextMenuClosed { collapse } => {
+                // Java's menu is gone either way, so the next one is asked
+                // for fresh rather than compared against one that is not up.
+                self.text_menu_sent = None;
+                if collapse {
+                    self.collapse_selection();
+                } else {
+                    self.text_menu_dismissed = Some((self.anchor, self.caret));
+                }
+                self.request_redraw();
+            }
+
+            // The answer lands on whatever is selected now, which is what
+            // was selected when the app was opened: the token Java checked
+            // says the field is the same, and nothing else could move the
+            // selection while the other app was in front.
+            #[cfg(target_os = "android")]
+            RuxEvent::AndroidProcessedText(text) => {
+                if let Some(model) = self.focused.clone() {
+                    self.apply_paste(&model, &text);
+                    self.request_redraw();
+                }
+            }
+
             #[cfg(target_arch = "wasm32")]
             RuxEvent::WebRoute(index) => self.apply_web_route(index),
 
@@ -5309,6 +6007,12 @@ impl ApplicationHandler<RuxEvent> for App {
                         // not this one turned out to be a tap.
                         self.points.retain(|(id, _)| *id != touch.id);
                         self.points.push((touch.id, here));
+                        // A selection handle is the shell's and is above the
+                        // page, so a finger on one takes it before anything
+                        // under it, the app's own gestures included.
+                        if self.points.len() == 1 && self.press_handle(at) {
+                            return;
+                        }
                         // First finger down owns the gesture. A second one joins
                         // the `touches` list every handler reads, rather than
                         // starting a competing press.
@@ -5333,6 +6037,10 @@ impl ApplicationHandler<RuxEvent> for App {
                             p.1 = here;
                         }
                         self.track_touch(here);
+                        if self.handle_drag.is_some() {
+                            self.drag_handle(at);
+                            return;
+                        }
                         self.move_gesture(here.0, here.1);
                         // The axis claim. An element that declared `@drag` may
                         // take the finger, but only on an axis no scroller under
@@ -5373,7 +6081,7 @@ impl ApplicationHandler<RuxEvent> for App {
                             }
                             self.touch_text = Some(next);
                             match next {
-                                TouchText::Selecting => self.drag_text(at),
+                                TouchText::Selecting => self.extend_from_word(at),
                                 TouchText::Caret => self.drag_caret(at),
                                 // Still resting inside the slop: the press has
                                 // not decided yet, so nothing moves.
@@ -5390,6 +6098,10 @@ impl ApplicationHandler<RuxEvent> for App {
                         // finger that caused the event is part of the event, so
                         // it is removed once, at the end of this arm.
                         let lifted = touch.id;
+                        if self.release_handle() {
+                            self.points.retain(|(id, _)| *id != lifted);
+                            return;
+                        }
                         self.end_gesture(here.0, here.1);
                         // Each of the three below leaves early, and a finger
                         // that is not removed on every path out of here is one
@@ -5439,6 +6151,7 @@ impl ApplicationHandler<RuxEvent> for App {
                         // Dropping this also disarms a pending long press, so a
                         // cancelled touch cannot select a word after the fact.
                         self.touch_text = None;
+                        self.handle_drag = None;
                     }
                 }
             }
@@ -5520,6 +6233,7 @@ impl ApplicationHandler<RuxEvent> for App {
                 // the app's, and an element that asked for `@press` asked for
                 // every press on it.
                 self.begin_gesture(here.0, here.1, false);
+                self.handles = false;
                 if self.overlay_covers_physical(self.pointer) {
                     self.press = Some(self.pointer);
                 } else if !self.press_scrollbar(self.pointer) && !self.press_text(self.pointer) {
@@ -5563,6 +6277,8 @@ impl ApplicationHandler<RuxEvent> for App {
             // is issued on resume, resize, reload, and tap, not every frame.
             WindowEvent::RedrawRequested => {
                 self.render();
+                #[cfg(target_os = "android")]
+                self.sync_text_menu();
                 // A `tap()` or `focus()` asked for by something that is not an
                 // input event has nowhere else to be picked up: the only other
                 // drain runs after a handler the shell itself dispatched. A
@@ -5589,6 +6305,11 @@ impl ApplicationHandler<RuxEvent> for App {
         // the last wake-up queued, now that the shell is done with them.
         self.flush_field_events();
 
+        // A finger lifting does not always draw a frame, and the text menu
+        // waits on the lift.
+        #[cfg(target_os = "android")]
+        self.sync_text_menu();
+
         // A resting finger is the second clock, and the reason this is not just
         // the blink any more: nothing arrives to say a press has gone on long
         // enough, so the deadline has to be waited on and checked here.
@@ -5597,12 +6318,31 @@ impl ApplicationHandler<RuxEvent> for App {
                 // Whether or not a word was there to take, the press has
                 // resolved: it must not stay pending and fire again later.
                 self.touch_text = Some(TouchText::Selecting);
-                if self.select_word_at(at) {
+                if self.press_on_word(at) && self.select_word_at(at) {
+                    self.pressed_word = Some(self.selection());
                     self.request_redraw();
                 } else if self.focused.is_some() {
+                    // Empty space: the caret goes where the finger is, with
+                    // its handle and the menu of what a caret can do.
+                    self.drag_caret(at);
+                    self.touch_text = Some(TouchText::Caret);
                     self.caret_menu = true;
+                    self.handles = true;
+                    self.caret_handle_until = Some(Instant::now() + CARET_HANDLE_FADE);
                     self.request_redraw();
                 }
+            }
+        }
+
+        if let Some(until) = self.caret_handle_until {
+            if Instant::now() >= until {
+                self.caret_handle_until = None;
+                // The Paste menu goes with its handle. A selection's menu has
+                // no clock, so only a caret's is closed.
+                if self.caret == self.anchor {
+                    self.caret_menu = false;
+                }
+                self.request_redraw();
             }
         }
 
@@ -5686,6 +6426,7 @@ impl ApplicationHandler<RuxEvent> for App {
             .then(|| Instant::now() + Duration::from_secs_f64(rux_runtime::FRAME_MS / 1000.0));
         match [
             self.blink_deadline,
+            self.caret_handle_until,
             long_press,
             self.anim_deadline,
             timer,
@@ -7656,6 +8397,116 @@ fn android_decimal_separator() -> Option<char> {
     .and_then(|unit| char::from_u32(unit as u32))
 }
 
+/// What the platform text menu is asked to show: where, which items, and the
+/// selected text for Share and `PROCESS_TEXT`.
+#[cfg(target_os = "android")]
+#[derive(Clone, Debug, PartialEq)]
+struct TextMenu {
+    /// Left, top, right, bottom of the selection, physical px in the window.
+    rect: [i32; 4],
+    /// `MENU_` bits.
+    flags: i32,
+    /// Empty for a password, which shares nothing.
+    text: String,
+}
+
+// The items the menu offers, as bits. The same numbers are in RuxActivity.java.
+#[cfg(target_os = "android")]
+const MENU_COPY: i32 = 1;
+#[cfg(target_os = "android")]
+const MENU_CUT: i32 = 2;
+#[cfg(target_os = "android")]
+const MENU_PASTE: i32 = 4;
+#[cfg(target_os = "android")]
+const MENU_SELECT_ALL: i32 = 8;
+#[cfg(target_os = "android")]
+const MENU_SHARE: i32 = 16;
+#[cfg(target_os = "android")]
+const MENU_PROCESS: i32 = 32;
+/// Not an item: tells `PROCESS_TEXT` apps their answer will not be used.
+#[cfg(target_os = "android")]
+const MENU_READONLY: i32 = 64;
+/// Select, at a caret: take the word there.
+#[cfg(target_os = "android")]
+const MENU_SELECT: i32 = 128;
+
+// What Java reports back when an item is chosen. Also in RuxActivity.java.
+#[cfg(target_os = "android")]
+const MENU_ACTION_COPY: i32 = 0;
+#[cfg(target_os = "android")]
+const MENU_ACTION_CUT: i32 = 1;
+#[cfg(target_os = "android")]
+const MENU_ACTION_PASTE: i32 = 2;
+#[cfg(target_os = "android")]
+const MENU_ACTION_SELECT_ALL: i32 = 3;
+#[cfg(target_os = "android")]
+const MENU_ACTION_SELECT_WORD: i32 = 4;
+
+/// Show, move or close the platform text menu. `None` closes it.
+///
+/// Failure is logged by the policy and otherwise ignored, as with the other
+/// calls into the activity: the consequence is a menu that does not appear,
+/// and the selection and its handles still work.
+#[cfg(target_os = "android")]
+fn android_text_menu(menu: Option<&TextMenu>) {
+    let Ok(activity) = ACTIVITY.lock() else { return };
+    let Some(activity) = activity.as_ref() else { return };
+    let ctx = ndk_context::android_context();
+    // Safety: as in `android_set_text_input`, which records the reasoning.
+    let vm = unsafe { jni::JavaVM::from_raw(ctx.vm().cast()) };
+    let (show, [l, t, r, b], flags, text) = match menu {
+        Some(m) => (true, m.rect, m.flags, m.text.as_str()),
+        None => (false, [0; 4], 0, ""),
+    };
+    let _ = vm.attach_current_thread(|env| {
+        let text = env.new_string(text)?;
+        env.call_method(
+            activity,
+            jni::jni_str!("ruxTextMenu"),
+            jni::jni_sig!("(ZIIIIILjava/lang/String;)V"),
+            &[
+                jni::JValue::Bool(show),
+                jni::JValue::Int(l),
+                jni::JValue::Int(t),
+                jni::JValue::Int(r),
+                jni::JValue::Int(b),
+                jni::JValue::Int(flags),
+                jni::JValue::Object(&text),
+            ],
+        )?;
+        Ok::<(), jni::errors::Error>(())
+    });
+}
+
+/// The theme's text highlight and accent, as the phone has them. `None` when
+/// the activity could not be asked yet.
+#[cfg(target_os = "android")]
+fn android_theme_colors() -> Option<(Rgba, Rgba)> {
+    let Ok(activity) = ACTIVITY.lock() else { return None };
+    let Some(activity) = activity.as_ref() else { return None };
+    let ctx = ndk_context::android_context();
+    // Safety: as in `android_set_text_input`, which records the reasoning.
+    let vm = unsafe { jni::JavaVM::from_raw(ctx.vm().cast()) };
+    let packed = vm
+        .attach_current_thread(|env| {
+            env.call_method(activity, jni::jni_str!("ruxThemeColors"), jni::jni_sig!("()J"), &[])?
+                .j()
+        })
+        .ok()?;
+    // Two ARGB ints, highlight in the high half.
+    let argb = |v: u32| {
+        let at = |shift: u32| ((v >> shift) & 0xff) as f32 / 255.0;
+        Rgba::new(at(16), at(8), at(0), at(24))
+    };
+    let (highlight, accent) = ((packed >> 32) as u32, packed as u32);
+    // A theme that names neither says 0, which is transparent and would hide
+    // the selection entirely. Only what was actually said is used.
+    if highlight == 0 || accent == 0 {
+        return None;
+    }
+    Some((argb(highlight), argb(accent)))
+}
+
 /// Put `text` on Android's clipboard, and say whether it got there.
 ///
 /// `false` for any failure, the activity not yet handed over included, because
@@ -7767,6 +8618,81 @@ pub extern "system" fn Java_dev_ruxlang_shell_RuxActivity_nativeDateChosen(
             let _ = proxy.send_event(RuxEvent::AndroidDate { value });
         }
     }
+}
+
+/// An item was chosen from the platform text menu. Called from Java, on
+/// Android's main thread, with one of the `MENU_ACTION_` codes.
+///
+/// # Safety
+///
+/// Called by the JVM, with the signature declared in `RuxActivity.java`.
+/// Raw pointers for the reason [`Java_dev_ruxlang_shell_RuxActivity_nativeSelectChosen`]
+/// records.
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "system" fn Java_dev_ruxlang_shell_RuxActivity_nativeTextAction(
+    _env: *mut std::ffi::c_void,
+    _class: *mut std::ffi::c_void,
+    action: i32,
+) {
+    if let Ok(proxy) = PROXY.lock() {
+        if let Some(proxy) = proxy.as_ref() {
+            let _ = proxy.send_event(RuxEvent::AndroidTextAction(action));
+        }
+    }
+}
+
+/// The platform text menu closed without Rux asking it to. `collapse` is a
+/// JNI `jboolean`, one byte.
+///
+/// # Safety
+///
+/// As [`Java_dev_ruxlang_shell_RuxActivity_nativeTextAction`].
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "system" fn Java_dev_ruxlang_shell_RuxActivity_nativeTextMenuClosed(
+    _env: *mut std::ffi::c_void,
+    _class: *mut std::ffi::c_void,
+    collapse: u8,
+) {
+    if let Ok(proxy) = PROXY.lock() {
+        if let Some(proxy) = proxy.as_ref() {
+            let _ = proxy.send_event(RuxEvent::AndroidTextMenuClosed { collapse: collapse != 0 });
+        }
+    }
+}
+
+/// An app handed the selection through `PROCESS_TEXT` answered.
+///
+/// `token` is the focus the text was taken from; an answer for a field that
+/// has since lost focus is dropped rather than written into whichever field
+/// has it now, the rule [`Java_dev_ruxlang_shell_RuxActivity_nativeTextChanged`]
+/// follows for the same reason.
+///
+/// # Safety
+///
+/// Called by the JVM, with the signature declared in `RuxActivity.java`.
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "system" fn Java_dev_ruxlang_shell_RuxActivity_nativeProcessedText<'frame>(
+    mut env: jni::EnvUnowned<'frame>,
+    _class: jni::objects::JClass<'frame>,
+    token: i64,
+    text: jni::objects::JString<'frame>,
+) {
+    if token != FIELD_TOKEN.load(std::sync::atomic::Ordering::Relaxed) {
+        return;
+    }
+    env.with_env(|env| {
+        let value: String = text.try_to_string(env)?;
+        if let Ok(proxy) = PROXY.lock() {
+            if let Some(proxy) = proxy.as_ref() {
+                let _ = proxy.send_event(RuxEvent::AndroidProcessedText(value));
+            }
+        }
+        Ok::<(), jni::errors::Error>(())
+    })
+    .resolve::<jni::errors::LogErrorAndDefault>();
 }
 
 /// The last reported insets, in logical pixels.
@@ -8131,5 +9057,87 @@ mod tests {
         // …and with one axis only, the track runs the full length.
         let (_, _, _, full) = bar_track(&tall(), Axis2::Y);
         assert_eq!(full, 200.0);
+    }
+}
+
+#[cfg(test)]
+mod selection_handles {
+    use super::{handle_paints, Handle, Paint, HANDLE_R, HANDLE_REACH};
+
+    /// Each handle hangs below the text point: the start's to the left, the
+    /// end's to the right, and the caret's straight down, so the two ends of
+    /// a one-letter selection do not cover each other.
+    #[test]
+    fn handles_hang_below_their_point_on_their_own_side() {
+        let point = (100.0, 50.0);
+        let (sx, sy) = Handle::Start.centre(point);
+        let (ex, ey) = Handle::End.centre(point);
+        let (cx, cy) = Handle::Caret.centre(point);
+        assert!(sx < 100.0 && sy > 50.0);
+        assert!(ex > 100.0 && ey > 50.0);
+        assert!((cx - 100.0).abs() < 1e-4 && cy > 50.0);
+    }
+
+    #[test]
+    fn a_finger_reaches_a_handle_only_near_it() {
+        let point = (100.0, 50.0);
+        let (cx, cy) = Handle::End.centre(point);
+        assert!(Handle::End.reach(point, (cx, cy)).is_some());
+        assert!(Handle::End.reach(point, (cx + HANDLE_REACH - 1.0, cy)).is_some());
+        assert!(Handle::End.reach(point, (cx + HANDLE_REACH + 1.0, cy)).is_none());
+    }
+
+    /// The caret's teardrop is the end's square turned about its point: the
+    /// square's far corner must come out straight below the point, a
+    /// diagonal's length away. A turn the wrong way puts it off to the side.
+    #[test]
+    fn the_caret_handle_points_straight_up() {
+        let (x, y) = (100.0f32, 50.0f32);
+        let paints = handle_paints(Handle::Caret, (x, y), super::HANDLE_DEFAULT);
+        let Paint::PushTransform(m) = paints[0] else { panic!("turned: {paints:?}") };
+        let far = (x + 2.0 * HANDLE_R, y + 2.0 * HANDLE_R);
+        let tx = m[0] * far.0 + m[2] * far.1 + m[4];
+        let ty = m[1] * far.0 + m[3] * far.1 + m[5];
+        assert!((tx - x).abs() < 1e-3, "x {tx}");
+        assert!((ty - (y + 2.0 * HANDLE_R * std::f32::consts::SQRT_2)).abs() < 1e-3, "y {ty}");
+        // The point itself does not move.
+        let (px, py) = (m[0] * x + m[2] * y + m[4], m[1] * x + m[3] * y + m[5]);
+        assert!((px - x).abs() < 1e-3 && (py - y).abs() < 1e-3);
+    }
+
+    /// The sharp corner is the one touching the text: top-right for the
+    /// start, top-left for the end.
+    #[test]
+    fn the_sharp_corner_touches_the_text() {
+        let point = (100.0, 50.0);
+        let Paint::Rect(start) = &handle_paints(Handle::Start, point, super::HANDLE_DEFAULT)[0] else {
+            panic!()
+        };
+        assert_eq!((start.x + start.width, start.y), point);
+        assert_eq!(start.radius[1], 0.0);
+        let Paint::Rect(end) = &handle_paints(Handle::End, point, super::HANDLE_DEFAULT)[0] else {
+            panic!()
+        };
+        assert_eq!((end.x, end.y), point);
+        assert_eq!(end.radius[0], 0.0);
+    }
+}
+
+#[cfg(test)]
+mod word_near_tests {
+    use super::word_near;
+
+    #[test]
+    fn select_takes_the_word_at_or_before_the_caret() {
+        let text = "Gold highlight, dark letters";
+        // After the last word, the usual place a caret menu is opened.
+        assert_eq!(word_near(text, text.len()), Some((21, 28)));
+        // Inside a word, and at its start.
+        assert_eq!(word_near(text, 7), Some((5, 14)));
+        assert_eq!(word_near(text, 5), Some((5, 14)));
+        // In the gap after a comma, the word before it.
+        assert_eq!(word_near(text, 15), Some((5, 14)));
+        assert_eq!(word_near("   ", 2), None);
+        assert_eq!(word_near("", 0), None);
     }
 }

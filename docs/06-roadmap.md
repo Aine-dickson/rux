@@ -136,8 +136,9 @@ carries `model` + `caret` + `anchor`; the range between them is the selection, a
   `image-data` off). A multi-line paste into a single-line input keeps the first
   line only. No clipboard → a warning at startup and copy/paste no-ops, rather
   than a crash.
-- **Done.** **The highlight** is painted behind the glyphs in the focus-ring blue (no
-  `::selection` yet, so it isn't author-controlled).
+- **Done.** **The highlight** is painted behind the glyphs: the author's `::selection`,
+  else the platform's highlight, else the focus-ring blue (`::selection` landed
+  2026-09-23, inputs phase 5).
 
 **The trap worth remembering:** parley's `Selection::geometry` returns rects laid
 out on *parley's* line pitch, but we draw lines with the leading trimmed
@@ -152,7 +153,7 @@ press), but declines while a dropdown is open, since otherwise an option floatin
 a textarea would focus the textarea instead of picking the option.
 
 **Not done:** word-wise movement (Ctrl+arrows), triple-click line-select,
-drag-and-drop of selected text, `::selection` styling, middle-click paste on X11.
+drag-and-drop of selected text, middle-click paste on X11.
 
 ### 2. The last two input types: mostly done (2026-07-16)
 - **Done.** **`type="textarea"`**: a multi-line text input. It's the ordinary text
@@ -2268,7 +2269,7 @@ here.
    not to break is the kind of job that never gets done, and the result is a
    toolkit that quietly only serves left-to-right languages.
 3. **Text editing gaps**: word-wise movement, triple-click line select,
-   drag-and-drop of a selection, `::selection` styling.
+   drag-and-drop of a selection.
 4. **Scrolling gaps**: click-on-track paging, scrollbar hover and fade,
    independent `overflow-x` / `overflow-y`, `overscroll-behavior`.
 

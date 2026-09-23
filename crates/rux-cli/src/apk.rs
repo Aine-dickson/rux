@@ -377,6 +377,15 @@ fn android_manifest(manifest: &Manifest) -> String {
     android:versionCode="1"
     android:versionName="{version}">
     <uses-sdk android:minSdkVersion="{MIN_API}" android:targetSdkVersion="{TARGET_API}" />
+    <!-- The apps that offer to act on selected text (Translate, a dictionary),
+         which the text menu lists. Since Android 11 another app is invisible
+         unless the manifest says it will look for it. -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.PROCESS_TEXT" />
+            <data android:mimeType="text/plain" />
+        </intent>
+    </queries>
     <application
         android:label="{label}"{icon}
         android:hasCode="true"

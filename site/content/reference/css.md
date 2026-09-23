@@ -99,7 +99,7 @@ card. `:hover`/`:active` hold for the whole chain under the pointer, as in CSS;
 `:active` is press-to-release and drops if you drag off the element; `:focus`
 matches the input holding the caret. Driven in `examples/pseudo.rux`.
 
-Any *other* pseudo-class (`:nth-child(…)`, `::selection`) **never
+Any *other* pseudo-class (`:nth-child(…)`, `::before`) **never
 matches**, and says so once on stderr. Before this existed the `:` was silently
 dropped, so `.box:hover` parsed as `.box` and applied *unconditionally*, failing
 closed is the safer half of that trade.

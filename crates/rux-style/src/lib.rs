@@ -18,7 +18,7 @@ use lightningcss::stylesheet::{ParserOptions, PrinterOptions, StyleSheet};
 use lightningcss::traits::ToCss;
 use rux_layout::{
     Access, AccessRole, Align, Axis, Background, BoxShadow, Cursor, Display, Gradient, GridPlace, ImageContent, Justify,
-    Len, Node as LayoutNode, Overflow, Position, Rgba, Sides, Style, TextAlign, TextContent,
+    Len, Node as LayoutNode, Overflow, Position, Rgba, SelectionStyle, Sides, Style, TextAlign, TextContent,
     TextWrap, TouchAction, Track, TrackSide,
 };
 use rux_layout::{AnimProp, Easing, GradientKind, GridFlow, Transform, Transition};
@@ -1156,6 +1156,8 @@ const DEFAULT_FONT_SIZE: f32 = 16.0;
 #[derive(Clone)]
 struct Inherited {
     color: Rgba,
+    /// The nearest `::selection` above, see [`matched_selection`].
+    selection: SelectionStyle,
     font_size: f32,
     font_family: Option<String>,
     /// Custom properties (`--name`) in scope. They inherit like the text
@@ -1866,6 +1868,7 @@ pub fn build_styled_tree_stateful(
         &[],
         &Inherited {
             color: DEFAULT_COLOR,
+            selection: SelectionStyle::default(),
             font_size: DEFAULT_FONT_SIZE,
             font_family: None,
             vars: Vars::default(),
@@ -2021,6 +2024,11 @@ struct Compound {
     classes: Vec<String>,
     role: Option<String>,
     pseudos: Vec<Pseudo>,
+    /// Ends in `::selection`. Such a compound never matches an element: it
+    /// names the element's highlighted text, which [`matched_selection`]
+    /// styles. Legal only on the last compound; anywhere else the selector
+    /// matches nothing, as a browser drops it.
+    selection: bool,
 }
 
 /// A pseudo-class in a compound selector. Each one tests a bit of interaction
@@ -2182,6 +2190,9 @@ struct Rule {
     specificity: (u32, u32, u32),
     order: usize,
     decls: Vec<(String, String)>,
+    /// A `::selection` rule: its chain picks the element, and its
+    /// declarations style that element's selected text, not the element.
+    selection: bool,
 }
 
 /// One built node, as a selector can see it: what it is, and where it sits.
@@ -2995,13 +3006,18 @@ fn collect_style_rule(
         // One Rule per selector in the list (they share the declarations).
         for selector in &style.selectors.0 {
             if let Ok(text) = selector.to_css_string(PrinterOptions::default()) {
-                if let Some((chain, combs, specificity)) = parse_selector(&text) {
+                if let Some((mut chain, combs, specificity)) = parse_selector(&text) {
+                    // The flag moves from the last compound onto the rule, so
+                    // the chain can match the element the highlight belongs to.
+                    let selection =
+                        chain.last_mut().is_some_and(|last| std::mem::take(&mut last.selection));
                     out.push(Rule {
                         chain,
                         combs,
                         specificity,
                         order: *order,
                         decls: decls.clone(),
+                        selection,
                     });
                 }
             }
@@ -3511,6 +3527,13 @@ fn parse_compound(token: &str, spec: &mut (u32, u32, u32)) -> Option<Compound> {
                         }
                     }
                 }
+                // `::selection`, the one pseudo-element Rux styles. Counted
+                // like a type selector, which is where CSS puts it.
+                if name.eq_ignore_ascii_case(":selection") {
+                    c.selection = true;
+                    spec.2 += 1;
+                    continue;
+                }
                 if !name.is_empty() {
                     let pseudo = Pseudo::parse(&name);
                     if let Pseudo::Unknown(n) = &pseudo {
@@ -3548,6 +3571,10 @@ fn warn_unknown_pseudo(name: &str) {
 // ── Matching & cascade ──────────────────────────────────────────────────────
 
 fn matches_compound(c: &Compound, el: &ElemDesc) -> bool {
+    // A highlight is not an element. See `Compound::selection`.
+    if c.selection {
+        return false;
+    }
     if let Some(t) = &c.tag {
         if *t != el.tag {
             return false;
@@ -3664,7 +3691,7 @@ fn matched_props(
 ) -> HashMap<String, String> {
     let mut matched: Vec<&Rule> = rules
         .iter()
-        .filter(|r| matches_chain(&r.chain, &r.combs, desc, ancestors, prev))
+        .filter(|r| !r.selection && matches_chain(&r.chain, &r.combs, desc, ancestors, prev))
         .collect();
     matched.sort_by(|a, b| a.specificity.cmp(&b.specificity).then(a.order.cmp(&b.order)));
 
@@ -3675,6 +3702,55 @@ fn matched_props(
         }
     }
     props
+}
+
+/// What `::selection` rules say about this element's selected text, over
+/// what its parent's said.
+///
+/// **Inherited, both halves.** `::selection { background: gold }` on a page
+/// has to reach the text inside every input on it, and a rule that stopped at
+/// the element it was written on would reach none: the selected glyphs belong
+/// to an input's text, several elements down. That is how browsers behaved for
+/// the whole life of `::selection` before highlight inheritance, and it is
+/// what authors write against.
+fn matched_selection(
+    desc: &ElemDesc,
+    ancestors: &[AncNode],
+    prev: &[ElemDesc],
+    rules: &[Rule],
+    inherited: SelectionStyle,
+) -> SelectionStyle {
+    let mut matched: Vec<&Rule> = rules
+        .iter()
+        .filter(|r| r.selection && matches_chain(&r.chain, &r.combs, desc, ancestors, prev))
+        .collect();
+    if matched.is_empty() {
+        return inherited;
+    }
+    matched.sort_by(|a, b| a.specificity.cmp(&b.specificity).then(a.order.cmp(&b.order)));
+    let mut out = inherited;
+    for rule in matched {
+        for (k, v) in &rule.decls {
+            match k.as_str() {
+                "color" => {
+                    if let Some(c) = parse_color(v) {
+                        out.color = Some(c);
+                    }
+                }
+                // `background` counts only for its colour: a highlight has
+                // no image.
+                "background" | "background-color" => {
+                    if let Some(c) = parse_color(v) {
+                        out.background = Some(c);
+                    }
+                }
+                other => warn_once(format!(
+                    "`{other}` does nothing in `::selection`; a highlight honours `color` and                      `background-color` only"
+                )),
+            }
+        }
+    }
+    out
 }
 
 /// Build one element into a layout node. Structural directives on the element
@@ -4048,6 +4124,7 @@ fn build_node_inner(
         .get("color")
         .and_then(|v| parse_color(v))
         .unwrap_or(inherited.color);
+    let selection = matched_selection(&desc, ancestors, prev, rules, inherited.selection);
     // Already resolved above, against the inherited size, so that the `em` pass
     // had something to resolve against.
     let font_size = own_font_size;
@@ -4121,6 +4198,7 @@ fn build_node_inner(
                 caret: None,
                 selection: None,
                 preedit: None,
+                selection_style: Default::default(),
             },
         );
         node.on_tap = on_tap;
@@ -4584,6 +4662,10 @@ fn build_node_inner(
                 caret: None,
                 selection: None,
                 preedit: None,
+                selection_style: SelectionStyle {
+                    handle: props.get("accent-color").and_then(|v| parse_color(v)),
+                    ..selection
+                },
             },
         );
         let mut node = LayoutNode::new(style);
@@ -4638,7 +4720,7 @@ fn build_node_inner(
         rules,
         comps,
         ancestors,
-        &Inherited { color, font_size, font_family, vars: Rc::clone(&vars) },
+        &Inherited { color, selection, font_size, font_family, vars: Rc::clone(&vars) },
         engine,
         locals,
         path,

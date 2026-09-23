@@ -4,15 +4,22 @@ import android.app.NativeActivity;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Context;
+import android.content.Intent;
 import android.content.pm.ActivityInfo;
 import android.content.pm.PackageManager;
+import android.content.pm.ResolveInfo;
+import android.content.res.TypedArray;
 import android.graphics.Insets;
+import android.graphics.Rect;
 import android.os.Build;
 import android.os.Bundle;
 import android.text.Editable;
 import android.text.Selection;
 import android.text.SpannableStringBuilder;
+import android.view.ActionMode;
 import android.view.KeyEvent;
+import android.view.Menu;
+import android.view.MenuItem;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.ViewTreeObserver;
@@ -280,6 +287,351 @@ public class RuxActivity extends NativeActivity {
      */
     char ruxDecimalSeparator() {
         return java.text.DecimalFormatSymbols.getInstance().getDecimalSeparator();
+    }
+
+    // The text menu's items, as bits. The same numbers are in rux-shell.
+    private static final int MENU_COPY = 1;
+    private static final int MENU_CUT = 2;
+    private static final int MENU_PASTE = 4;
+    private static final int MENU_SELECT_ALL = 8;
+    private static final int MENU_SHARE = 16;
+    private static final int MENU_PROCESS = 32;
+    private static final int MENU_READONLY = 64;
+    private static final int MENU_SELECT = 128;
+
+    // What {@link #nativeTextAction} reports. Also in rux-shell.
+    private static final int MENU_ACTION_COPY = 0;
+    private static final int MENU_ACTION_CUT = 1;
+    private static final int MENU_ACTION_PASTE = 2;
+    private static final int MENU_ACTION_SELECT_ALL = 3;
+    private static final int MENU_ACTION_SELECT_WORD = 4;
+
+    /** The menu item id for Share, which has no platform id of its own. */
+    private static final int ID_SHARE = 0x52555801;
+
+    /** Where a {@code PROCESS_TEXT} app's answer comes back. */
+    private static final int REQUEST_PROCESS_TEXT = 0x5258;
+
+    /** An item from the text menu was chosen: a {@code MENU_ACTION_} code. */
+    private static native void nativeTextAction(int action);
+
+    /**
+     * The text menu closed without Rux asking. {@code collapse}: the
+     * selection goes with it.
+     */
+    private static native void nativeTextMenuClosed(boolean collapse);
+
+    /** An app given the selection answered with {@code text}, for focus {@code token}. */
+    private static native void nativeProcessedText(long token, String text);
+
+    /** The text menu that is up, or null. */
+    private ActionMode textMenu;
+
+    /** What the menu offers, {@code MENU_} bits. */
+    private int menuFlags;
+
+    /** The selected text, for Share and {@code PROCESS_TEXT}. */
+    private String menuText = "";
+
+    /** The selection, in this view's pixels, which the menu floats beside. */
+    private final Rect menuRect = new Rect();
+
+    /** A {@code PROCESS_TEXT} app is open, and the field it answers for. */
+    private long processToken;
+    private boolean processReadonly;
+
+    /**
+     * Show the platform's floating text menu beside a selection, move it, or
+     * close it.
+     *
+     * <p><b>Why the platform's and not a drawn one.</b> Rux drew its own strip
+     * of four buttons first, the one a browser needs because a page cannot
+     * reach the platform's. On a phone that strip is the only one on the device
+     * shaped like it, it has no overflow, and it cannot offer the apps that
+     * register for {@code PROCESS_TEXT}, which is how Translate and every
+     * dictionary appear in other apps' menus. A floating {@link ActionMode} is
+     * that menu: {@code TextView} uses exactly this, and the platform draws it,
+     * places it clear of the keyboard and handles its overflow.
+     *
+     * <p>Started on the input view because an action mode belongs to a view,
+     * and that is the one view Rux has. Called from the render thread with the
+     * whole state each time, and only when that state changed.
+     *
+     * <p><b>A menu Rux closes does not report closing.</b> {@code textMenu} is
+     * cleared before {@code finish()}, so the callback can tell a close Rux
+     * asked for from one the platform made, which is the only kind worth
+     * telling Rux about.
+     */
+    void ruxTextMenu(
+            final boolean show,
+            final int left,
+            final int top,
+            final int right,
+            final int bottom,
+            final int flags,
+            final String text) {
+        runOnUiThread(
+                () -> {
+                    if (input == null) {
+                        return;
+                    }
+                    if (!show) {
+                        final ActionMode open = textMenu;
+                        textMenu = null;
+                        if (open != null) {
+                            open.finish();
+                        }
+                        return;
+                    }
+                    // Rux measures in the window; the menu asks in the view.
+                    final int[] at = new int[2];
+                    input.getLocationInWindow(at);
+                    menuRect.set(left - at[0], top - at[1], right - at[0], bottom - at[1]);
+                    final boolean changed = flags != menuFlags;
+                    menuFlags = flags;
+                    menuText = text == null ? "" : text;
+                    if (textMenu == null) {
+                        textMenu = input.startActionMode(new TextMenu(), ActionMode.TYPE_FLOATING);
+                    } else {
+                        if (changed) {
+                            textMenu.invalidate();
+                        }
+                        textMenu.invalidateContentRect();
+                    }
+                });
+    }
+
+    /**
+     * The menu's items and what choosing one does.
+     *
+     * <p>Items in {@code TextView}'s order, with its ids and its strings, so
+     * the menu reads the same as in any other field on the phone, in the
+     * phone's language.
+     */
+    private final class TextMenu extends ActionMode.Callback2 {
+
+        @Override
+        public boolean onCreateActionMode(ActionMode mode, Menu menu) {
+            fill(menu);
+            return true;
+        }
+
+        @Override
+        public boolean onPrepareActionMode(ActionMode mode, Menu menu) {
+            menu.clear();
+            fill(menu);
+            return true;
+        }
+
+        private void fill(Menu menu) {
+            int order = 0;
+            if ((menuFlags & MENU_CUT) != 0) {
+                add(menu, android.R.id.cut, order++, getString(android.R.string.cut));
+            }
+            if ((menuFlags & MENU_COPY) != 0) {
+                add(menu, android.R.id.copy, order++, getString(android.R.string.copy));
+            }
+            // Paste only with something to paste, as in any other field: an
+            // item that does nothing when tapped is worse than no item.
+            if ((menuFlags & MENU_PASTE) != 0 && clipboardHasText()) {
+                add(menu, android.R.id.paste, order++, getString(android.R.string.paste));
+            }
+            if ((menuFlags & MENU_SHARE) != 0) {
+                add(menu, ID_SHARE, order++, platformString("share", "Share"));
+            }
+            if ((menuFlags & MENU_SELECT) != 0) {
+                add(menu, android.R.id.selectTextMode, order++, platformString("selectTextMode", "Select"));
+            }
+            if ((menuFlags & MENU_SELECT_ALL) != 0) {
+                add(menu, android.R.id.selectAll, order++, getString(android.R.string.selectAll));
+            }
+            if ((menuFlags & MENU_PROCESS) != 0) {
+                // After everything the field itself offers, as TextView puts
+                // them. Each carries the intent that reaches its app.
+                final PackageManager pm = getPackageManager();
+                for (ResolveInfo app : processTextApps()) {
+                    final Intent intent =
+                            new Intent(Intent.ACTION_PROCESS_TEXT)
+                                    .setType("text/plain")
+                                    .setClassName(
+                                            app.activityInfo.packageName, app.activityInfo.name);
+                    menu.add(Menu.NONE, Menu.NONE, 100 + order++, app.loadLabel(pm))
+                            .setIntent(intent)
+                            .setShowAsAction(MenuItem.SHOW_AS_ACTION_IF_ROOM);
+                }
+            }
+        }
+
+        private void add(Menu menu, int id, int order, CharSequence title) {
+            menu.add(Menu.NONE, id, order, title).setShowAsAction(MenuItem.SHOW_AS_ACTION_IF_ROOM);
+        }
+
+        @Override
+        public boolean onActionItemClicked(ActionMode mode, MenuItem item) {
+            final int id = item.getItemId();
+            if (id == android.R.id.copy) {
+                nativeTextAction(MENU_ACTION_COPY);
+            } else if (id == android.R.id.cut) {
+                nativeTextAction(MENU_ACTION_CUT);
+            } else if (id == android.R.id.paste) {
+                nativeTextAction(MENU_ACTION_PASTE);
+            } else if (id == android.R.id.selectAll) {
+                nativeTextAction(MENU_ACTION_SELECT_ALL);
+            } else if (id == android.R.id.selectTextMode) {
+                nativeTextAction(MENU_ACTION_SELECT_WORD);
+            } else if (id == ID_SHARE) {
+                final Intent send =
+                        new Intent(Intent.ACTION_SEND)
+                                .setType("text/plain")
+                                .putExtra(Intent.EXTRA_TEXT, menuText);
+                closeMenu(true);
+                startSafely(Intent.createChooser(send, null), -1);
+            } else if (item.getIntent() != null) {
+                // Taken before the menu closes: the answer must reach the
+                // field the text came from and nothing else.
+                processToken = nativeFieldToken();
+                processReadonly = (menuFlags & MENU_READONLY) != 0;
+                final Intent intent =
+                        new Intent(item.getIntent())
+                                .putExtra(Intent.EXTRA_PROCESS_TEXT, menuText)
+                                .putExtra(Intent.EXTRA_PROCESS_TEXT_READONLY, processReadonly);
+                closeMenu(false);
+                startSafely(intent, REQUEST_PROCESS_TEXT);
+            }
+            return true;
+        }
+
+        @Override
+        public void onDestroyActionMode(ActionMode mode) {
+            // Only a close Rux did not ask for is news. See `ruxTextMenu`.
+            if (mode == textMenu) {
+                textMenu = null;
+                nativeTextMenuClosed(true);
+            }
+        }
+
+        @Override
+        public void onGetContentRect(ActionMode mode, View view, Rect out) {
+            out.set(menuRect);
+        }
+    }
+
+    /** Whether the clipboard holds anything a field could paste. Never throws. */
+    private boolean clipboardHasText() {
+        try {
+            return clipboard != null && clipboard.hasPrimaryClip();
+        } catch (RuntimeException e) {
+            return false;
+        }
+    }
+
+    /**
+     * Close the menu from Java's side, because an item handed the text to
+     * another app, and tell Rux, which did not ask for it.
+     */
+    private void closeMenu(boolean collapse) {
+        final ActionMode open = textMenu;
+        textMenu = null;
+        if (open != null) {
+            open.finish();
+        }
+        nativeTextMenuClosed(collapse);
+    }
+
+    /**
+     * Start another app's activity, and survive its not being there: an app
+     * can be uninstalled between the menu being built and the item tapped.
+     */
+    private void startSafely(Intent intent, int request) {
+        try {
+            if (request >= 0) {
+                startActivityForResult(intent, request);
+            } else {
+                startActivity(intent);
+            }
+        } catch (RuntimeException e) {
+            android.util.Log.w("rux", "could not start " + intent, e);
+        }
+    }
+
+    /**
+     * The apps that take selected text, the way {@code TextView} finds them.
+     *
+     * <p>Visible at all only because the manifest declares a
+     * {@code <queries>} entry for {@code PROCESS_TEXT}: since Android 11 an app
+     * sees only the other apps it has said it will look for, and without the
+     * entry this list is empty and nothing says why.
+     */
+    private java.util.List<ResolveInfo> processTextApps() {
+        try {
+            return getPackageManager()
+                    .queryIntentActivities(
+                            new Intent(Intent.ACTION_PROCESS_TEXT).setType("text/plain"), 0);
+        } catch (RuntimeException e) {
+            return java.util.Collections.emptyList();
+        }
+    }
+
+    /** A string the platform has but does not publish, by name, or {@code fallback}. */
+    private String platformString(String name, String fallback) {
+        final int id = getResources().getIdentifier(name, "string", "android");
+        if (id == 0) {
+            return fallback;
+        }
+        try {
+            return getString(id);
+        } catch (RuntimeException e) {
+            return fallback;
+        }
+    }
+
+    @Override
+    protected void onActivityResult(int request, int result, Intent data) {
+        super.onActivityResult(request, result, data);
+        if (request != REQUEST_PROCESS_TEXT || result != RESULT_OK || data == null) {
+            return;
+        }
+        // A read-only field was only showing the text to the app; whatever
+        // came back is not for it.
+        if (processReadonly) {
+            return;
+        }
+        final CharSequence answer = data.getCharSequenceExtra(Intent.EXTRA_PROCESS_TEXT);
+        if (answer != null) {
+            nativeProcessedText(processToken, answer.toString());
+        }
+    }
+
+    /**
+     * The theme's text highlight and accent, as two ARGB ints: highlight in
+     * the high half. Called from the render thread; reading a theme needs no
+     * view.
+     *
+     * <p>{@code textColorHighlight} is what every {@code TextView} on the
+     * phone paints a selection with, and {@code colorControlActivated} is
+     * what its handles are tinted with. From {@code DeviceDefault}, which
+     * the activity's theme extends, both are the phone's own: its maker's
+     * accent, or the wallpaper's on Android 12 and up.
+     */
+    long ruxThemeColors() {
+        final TypedArray a =
+                getTheme()
+                        .obtainStyledAttributes(
+                                new int[] {
+                                    android.R.attr.textColorHighlight,
+                                    android.R.attr.colorControlActivated,
+                                    android.R.attr.colorAccent
+                                });
+        try {
+            final int highlight = a.getColor(0, 0);
+            int accent = a.getColor(1, 0);
+            if (accent == 0) {
+                accent = a.getColor(2, 0);
+            }
+            return ((long) highlight << 32) | (accent & 0xffffffffL);
+        } finally {
+            a.recycle();
+        }
     }
 
     /** {@code YYYY-MM-DD} as year, month from 1 and day, or null. Rux has checked it. */

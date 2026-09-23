@@ -31,6 +31,7 @@ fn plain_text(text: &str) -> TextContent {
         caret: None,
         selection: None,
         preedit: None,
+        selection_style: Default::default(),
     }
 }
 

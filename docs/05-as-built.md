@@ -551,7 +551,7 @@ card. `:hover`/`:active` hold for the whole chain under the pointer, as in CSS;
 `:active` is press-to-release and drops if you drag off the element; `:focus`
 matches the input holding the caret. Driven in `examples/pseudo.rux`.
 
-Any *other* pseudo-class (`:nth-child(…)`, `::selection`) **never
+Any *other* pseudo-class (`:nth-child(…)`, `::before`) **never
 matches**, and says so once on stderr. Before this existed the `:` was silently
 dropped, so `.box:hover` parsed as `.box` and applied *unconditionally*, failing
 closed is the safer half of that trade.
@@ -1551,11 +1551,62 @@ field never scrolls past the start nor leaves a gap after the end. Hit testing
 applies the same offset, or a tap in a scrolled field would land a character out
 by exactly the scroll distance.
 
-The highlight is painted behind the glyphs in the focus-ring blue: **not
-author-controlled**: there is no `::selection` yet. Its rectangles come from
+The highlight is painted behind the glyphs. Its colour is the author's
+`::selection` background when one applies, the platform's own highlight on
+Android (the theme's `textColorHighlight`), and the focus-ring blue elsewhere.
+Its rectangles come from
 parley, but only their *horizontal* extent: the vertical position is recomputed
 from our own leading-trimmed line stepping, since parley's line pitch isn't ours
 (see `rux-text::selection_rects`).
+
+**`::selection`** honours `background-color` (or the colour in `background`)
+and `color`, the two properties a browser applies to a highlight. Anything else
+written there warns. The rule's selector picks the element, and its colours
+reach every field below it, so `::selection { background: gold }` on its own
+styles every field in the app, and a nearer rule overrides one property at a
+time. `color` is drawn by painting the glyphs a second time, clipped to the
+highlight, so a glyph cut by the selection's edge is two colours as it is in a
+browser. `::selection` anywhere but the end of a selector matches nothing.
+Under test in `crates/rux-runtime/tests/selection_style.rs`.
+
+**Selection handles.** A finger that selects gets Android's teardrops: one
+hanging left of the selection's start, one right of its end, drawn by Rux on
+every platform, because the platform's belong to `TextView` and are offered to
+no other view. Dragging one moves that end and keeps the other; the ends may
+cross and may not meet. A mouse press puts them away. Their colour is the
+field's own `accent-color` (CSS defines it as the accent of the controls an
+element generates), else the platform accent (`colorControlActivated`), else
+the focus-ring blue.
+
+**The caret handle comes only from a long press on empty space**: past the end
+of a line, after the last word, or on the spaces between words. That press puts
+the caret where the finger is, with its handle and the menu of what a caret can
+do: Paste (only when the clipboard holds something, as in any Android field),
+Select text (the word at the caret, or the one before it when the caret is
+after it; the label is the phone's own) and Select all. Autofill, which
+WhatsApp's fields also offer there, waits for phase 6: it needs the input view
+to describe its fields to Android's autofill service, and an item that does
+nothing is worse than none. Both go after five seconds with nothing touching them;
+dragging the handle or tapping it resets the clock, and a tap on it toggles the
+menu. A plain tap places a caret and shows nothing, which is the user's call
+from the phone session. A selection has no clock. A long press *on* a word takes
+the word, and a finger that then moves keeps the whole word and extends from its
+far end; it used to cut the word back to wherever the finger sat inside it.
+
+**Android uses the platform's text menu, not the drawn toolbar.** A floating
+`ActionMode` started on the input view: the same menu `TextView` shows, in its
+order (Cut, Copy, Paste, Share, Select all), with its ids and strings, its
+overflow, and after them every app registered for `PROCESS_TEXT` (Translate,
+Gemini, a dictionary). A chosen app gets the selected text and, unless the field
+is read-only, its answer replaces the selection. Seeing those apps at all needs
+the manifest's `<queries>` entry for `PROCESS_TEXT`: since Android 11 another
+app is invisible without it, and the list is simply empty. The menu is held back
+while a finger is on the glass and returns on lift. Copy lets go of the selection
+as Android's fields do; Share closes the menu; Back with a selection lets go of
+it rather than closing the app. A password offers no Copy, Cut, Share or apps,
+and Select all is left out when everything is already selected. The shell
+computes the whole menu state each frame and calls Java only when it changed
+(`App::sync_text_menu`).
 
 **A selection toolbar** appears above the focused field whenever something is
 selected (below it when there is no room above), offering **Copy**, **Cut**,
@@ -2297,7 +2348,7 @@ for the reasons under "Checking a file without opening a window".
   the latest release rather than from `main`, and a tag push does not itself
   trigger a deploy.
 - Text editing: no word-wise movement (Ctrl+arrows), no triple-click line-select,
-  no drag-and-drop of selected text, no `::selection` styling.
+  no drag-and-drop of selected text.
 - Scrolling: no track-click paging, no kinetic touch fling, no scrollbar
   hover/fade, and `overflow-x` / `overflow-y` can't differ from each other.
 - CSS: `box-shadow`, `position`/`top`/`left`, per-corner radius, per-side border

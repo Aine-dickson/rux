@@ -1759,6 +1759,45 @@ inside the clip) and pinned by `crates/rux-runtime/tests/text_overflow.rs`,
 which fails without the fix. Re-driven on the phone: twenty taps on a switch
 fill the log and it stops at its border.
 
+## Native selection on Android, 2026-09-23
+
+Phase 5 of the inputs plan: the platform's text menu, selection handles,
+`PROCESS_TEXT`, `::selection` and the platform highlight. The cascade is under
+test in `crates/rux-runtime/tests/selection_style.rs` and the handle geometry
+in the shell; the finger, the menu and the other apps are driven here, against
+`rux-harness/phase5-selection` (seven numbered fields). Rows marked *adb* were
+driven over `adb shell input` and read from `screencap`; the rest are for a
+hand.
+
+| Case | Where | Expect | Result |
+|---|---|---|---|
+| Long press a word | 1 | The whole word selected, a teardrop at each end, the platform menu: Cut, Copy, Paste, Share, then an overflow | adb: pass, "brown" selected. Before a fix it took "br": the first move after the press cut the word back to the finger |
+| Overflow | 1 | Select all, then the `PROCESS_TEXT` apps | adb: pass, Select all and "Ask Gemini" |
+| Drag the end handle right | 1 | The selection grows by the finger, the start stays, the menu steps aside and returns on lift | adb: pass, "brown" became "brown fox" |
+| Drag a handle past the other | 1 | The ends swap sides; the selection never collapses to nothing | |
+| Back with a selection | 1 | The selection goes; the app stays open | adb: pass |
+| Plain tap on text | 3 | Caret only, no handle, no menu | adb: pass |
+| Long press after the last word | 3 | Caret at the end, the caret handle, Paste and Select all; all gone after about 5 seconds idle | adb: pass, at 3 seconds; the user then asked for 5 as 3 was too short |
+| Tap the caret handle | 3 | The menu toggles; the handle's 5 seconds restart | |
+| Drag the caret handle | 1 | The caret follows the finger, the field scrolls when it reaches an edge | |
+| `::selection` and `accent-color` | 3 | Gold highlight, dark letters, orange handles | adb: pass |
+| Default colours | 1 | Highlight and handles in the phone's own accent, as in WhatsApp's fields | |
+| Password | 4 | The run of bullets selects as one; menu offers Paste only (Select all is gone once all is selected) | adb: pass for the selection; Select all fix re-driven below |
+| Read-only | 5 | Copy, Share, Select all and the apps; no keyboard | adb: pass |
+| Copy | 1 | Text on the clipboard, the selection lets go, caret at its end | |
+| Translate or Gemini on a selection | 1 | The app opens on the selected text; if it answers, the answer replaces the selection | |
+| Share | 1 | The share sheet with the selected text | |
+| Paste into a list row | 6 | Stays in that row. Before this phase paste, cut and a committed composition refocused a field with no row, so an input in an `r-for` or a component lost focus mid-edit | |
+| Long press in the empty field | 7 | Paste (if the clipboard has text), the caret handle | |
+| Caret menu contents | 3 | Paste only with something on the clipboard, Select text, Select all | adb: pass. First build: the menu never showed when the long press also focused the field, because the keyboard attaching restated the focus and that closed the menu; now only a caret that moves closes it |
+| Select text | 3 | Takes the word before the caret: "letters" | adb: pass |
+| Handles in the textarea | 2 | Across lines; a handle whose end scrolls out of the field disappears | |
+
+**The menu sits below the selection near the top of the screen.** On field 1
+there is no room between the status bar and the text, so the platform's own
+placement rule puts it under the handles, over the next field. That is
+`FloatingToolbar`'s decision, the same one it makes for a `TextView`.
+
 ## Standing gaps
 
 Cases nothing here can currently exercise. They are the shape of what v0.8 has

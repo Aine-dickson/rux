@@ -4941,9 +4941,15 @@ mod tests {
     /// temp dir, then load it. Returns the document.
     fn with_component(component: &str, app: &str) -> Document {
         use std::fs;
+        // A counter as well as the clock: tests run in parallel, two of them
+        // could read the same time, and the second then wrote its component
+        // over the first's. Seen once as a failure of a test that passed on
+        // every rerun.
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let dir = std::env::temp_dir().join(format!(
-            "rux_slot_{}_{}",
+            "rux_slot_{}_{}_{}",
             std::process::id(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()

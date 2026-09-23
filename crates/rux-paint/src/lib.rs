@@ -25,8 +25,9 @@
 //! - The text engine's font and layout contexts, which `rux-text` owns and this
 //!   crate borrows.
 //!
-//! Selection and composition colours are not author-controlled. Rux has no
-//! `::selection` yet, so both are constants here.
+//! The selection highlight is `::selection` when the author wrote one, and the
+//! platform's highlight otherwise, which the shell hands over through
+//! [`set_default_selection`]. The composition underline is the text's colour.
 
 use std::collections::HashMap;
 
@@ -42,9 +43,37 @@ use vello::peniko::{
 };
 use vello::Scene;
 
-/// The selection highlight, `#89b4fa` at 45%, the focus-ring blue. Not
-/// author-controlled: Rux has no `::selection` yet.
-const SELECTION: Color = Color::from_rgba8(0x89, 0xb4, 0xfa, 0x73);
+/// The selection highlight when neither the author nor the platform has said
+/// one: `#89b4fa` at 45%, the focus-ring blue.
+const SELECTION: Rgba = Rgba::new(0x89 as f32 / 255.0, 0xb4 as f32 / 255.0, 0xfa as f32 / 255.0, 0x73 as f32 / 255.0);
+
+/// The platform's highlight, packed RGBA8, or 0 for none yet.
+///
+/// A process-wide value rather than an argument, because it is a fact about
+/// the device, like the font list, and every caller of [`build_scene`] would
+/// otherwise have to carry it to reach the one place it is read.
+static DEFAULT_SELECTION: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+/// The highlight a selection gets where no `::selection` names one. The shell
+/// calls this with the system's own on a platform that has one, so a Rux field
+/// highlights like every other field on the device. See CSS's `Highlight`
+/// system colour, which is the same idea.
+pub fn set_default_selection(color: Rgba) {
+    let byte = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u32;
+    let packed = (byte(color.r) << 24) | (byte(color.g) << 16) | (byte(color.b) << 8) | byte(color.a);
+    DEFAULT_SELECTION.store(packed, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// The highlight for text with no `::selection` background.
+pub fn default_selection() -> Rgba {
+    match DEFAULT_SELECTION.load(std::sync::atomic::Ordering::Relaxed) {
+        0 => SELECTION,
+        p => {
+            let at = |shift: u32| ((p >> shift) & 0xff) as f32 / 255.0;
+            Rgba::new(at(24), at(16), at(8), at(0))
+        }
+    }
+}
 
 /// Thickness of the rule under an in-progress IME composition, in logical px.
 /// Deliberately the caret's width, so the two read as the same pen.
@@ -311,9 +340,9 @@ pub fn build_scene(
                 scene.draw_blurred_rounded_rect(cur, rect, to_color(*color), *radius as f64, std_dev);
             }
             Paint::Text(t) => {
-                // The selection highlight goes behind the glyphs. There is no
-                // `::selection` in Rux yet, so the colour is ours, not the
-                // author's, the focus-ring blue, faded enough to read through.
+                // The selection highlight goes behind the glyphs: the author's
+                // `::selection` background, or the platform's highlight.
+                let mut selected = Vec::new();
                 if let Some((start, end)) = t.content.selection {
                     let rects = text.selection_rects(
                         &t.content.text,
@@ -322,6 +351,9 @@ pub fn build_scene(
                         start,
                         end,
                     );
+                    let fill = to_color(
+                        t.content.selection_style.background.unwrap_or_else(default_selection),
+                    );
                     for (sx, sy, sw, sh) in rects {
                         let rect = Rect::new(
                             (t.x + sx) as f64,
@@ -329,7 +361,8 @@ pub fn build_scene(
                             (t.x + sx + sw) as f64,
                             (t.y + sy + sh) as f64,
                         );
-                        scene.fill(Fill::NonZero, cur, SELECTION, None, &rect);
+                        scene.fill(Fill::NonZero, cur, fill, None, &rect);
+                        selected.push(rect);
                     }
                 }
                 text.draw(
@@ -343,6 +376,27 @@ pub fn build_scene(
                     Some(t.width),
                     cur,
                 );
+                // `::selection { color }`: the selected glyphs drawn a second
+                // time in that colour, clipped to the highlight, so a glyph cut
+                // by the selection's edge is two colours exactly as it is in a
+                // browser.
+                if let Some(ink) = t.content.selection_style.color {
+                    for rect in &selected {
+                        scene.push_clip_layer(Fill::NonZero, cur, rect);
+                        text.draw(
+                            &mut scene,
+                            t.x,
+                            t.y,
+                            &t.content.text,
+                            &text_style(&t.content),
+                            to_color(ink),
+                            to_align(t.content.align),
+                            Some(t.width),
+                            cur,
+                        );
+                        scene.pop_layer();
+                    }
+                }
                 // An in-progress IME composition, underlined so it reads as
                 // provisional. Reuses the selection geometry, which already
                 // returns one rect per line a range spans, and puts a rule along

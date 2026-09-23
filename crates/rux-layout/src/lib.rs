@@ -900,6 +900,27 @@ pub struct TextContent {
     /// committed yet, so it can be drawn as provisional rather than as text the
     /// author typed and meant.
     pub preedit: Option<(usize, usize)>,
+    /// What `::selection` said for this text: the highlight behind the
+    /// selected range and the colour of the glyphs inside it. `None` in either
+    /// leaves that half to the platform, which is what CSS does when no rule
+    /// names it.
+    pub selection_style: SelectionStyle,
+}
+
+/// How a field's selection is drawn: the two properties `::selection`
+/// honours, and the colour of the handles a finger drags.
+///
+/// `::selection` gets a background and a text colour and nothing else, which
+/// matches what browsers apply to a highlight: nothing that would move the
+/// text.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SelectionStyle {
+    pub background: Option<Rgba>,
+    pub color: Option<Rgba>,
+    /// The field's own `accent-color`, which CSS defines as the accent of the
+    /// controls an element generates. Selection handles are exactly that.
+    /// `None` leaves them the platform's accent.
+    pub handle: Option<Rgba>,
 }
 
 /// What an element *is*, for assistive technology. Deliberately a small enum
