@@ -232,3 +232,16 @@ fn what_cannot_work_is_reported() {
         assert!(problems(&d).contains(says), "{template}: {}", problems(&d));
     }
 }
+
+/// `<button>Join</button>` draws its words, as if they were in a `<text>`:
+/// they used to be dropped, leaving an empty button and no warning.
+#[test]
+fn a_buttons_bare_text_is_drawn() {
+    let d = doc(
+        r#"<button class="b">Join {{ n }}</button><button><text>Kept</text></button>"#,
+        "let n = signal(3);",
+    );
+    let words = |t: &str| find(&d.root, &|n| n.text.as_ref().is_some_and(|x| x.text.trim() == t)).is_some();
+    assert!(words("Join 3"), "bare text, interpolated");
+    assert!(words("Kept"), "a written <text> is untouched");
+}

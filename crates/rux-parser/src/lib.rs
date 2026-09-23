@@ -389,6 +389,7 @@ pub fn parse_sfc(src: &str) -> Result<Sfc, ParseError> {
     // Shifted once here rather than threaded through the parser, which is the
     // same trade `offset_lines` already makes for a ParseError.
     offset_element_lines(&mut template, lines_before);
+    wrap_button_text(&mut template);
 
     Ok(Sfc {
         file: None,
@@ -401,6 +402,34 @@ pub fn parse_sfc(src: &str) -> Result<Sfc, ParseError> {
         style_scoped,
         style_includes: Vec::new(),
     })
+}
+
+/// `<button>Join</button>` means `<button><text>Join</text></button>`.
+///
+/// Only a `<text>` draws words, so a button's bare text used to be dropped:
+/// the button drew, empty, and nothing said why. Wrapped here, once, so every
+/// later stage (the cascade, the paths, `{{ }}` bindings, the accessibility
+/// name) sees exactly the tree the author would have written by hand. Text
+/// that is only whitespace is left alone, as it is everywhere else. The
+/// formatter reads the source through its own parser, so what is written on
+/// disk is never rewritten.
+fn wrap_button_text(el: &mut Element) {
+    let is_button = el.tag == "button";
+    for child in &mut el.children {
+        match child {
+            Node::Element(inner) => wrap_button_text(inner),
+            Node::Text(text, line) if is_button && !text.trim().is_empty() => {
+                let wrapped = Element {
+                    tag: "text".to_string(),
+                    attrs: Vec::new(),
+                    children: vec![Node::Text(std::mem::take(text), *line)],
+                    line: *line,
+                };
+                *child = Node::Element(wrapped);
+            }
+            Node::Text(..) => {}
+        }
+    }
 }
 
 /// Move every line in a parsed subtree onto the file's numbering.

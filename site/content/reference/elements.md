@@ -12,6 +12,11 @@ components as custom tags, plus two that render no box of their own: `<slot>`
 [Routing](/reference/routing/)). `role=` is honored for **selectors and semantics**
 (and matches **case-insensitively**: `role="Heading"` matches `[role="heading"]`).
 
+**Words go in a `<text>`, except in a `<button>`.** `<button>Join</button>` is
+read as `<button><text>Join</text></button>`, `{{ }}` included, so a button's
+label can be written the way it would be in HTML. Anywhere else, bare text
+draws nothing.
+
 **`<screen>` is the display, wherever it is written.** At the document root
 that is nothing new: the root has always been forced to the viewport, whatever
 its tag. Below the root it now means what the word says. A `<screen>` inside a

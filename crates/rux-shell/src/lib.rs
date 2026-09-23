@@ -158,6 +158,15 @@ enum RuxEvent {
     /// arrive here.
     #[cfg(target_os = "android")]
     AndroidTextAction(i32),
+    /// Enter from the input method, which never reaches the window as a key:
+    /// Android drops the event an input method dispatches before winit sees
+    /// it. `true` for the action key, which does what its label says; `false`
+    /// for a plain Enter, which submits a form.
+    #[cfg(target_os = "android")]
+    AndroidEnter(bool),
+    /// The on-screen keyboard changed height. See `KEYBOARD`.
+    #[cfg(target_os = "android")]
+    AndroidKeyboard,
     /// The platform's text menu closed without Rux asking it to. `collapse`
     /// says whether the selection goes with it: yes for Back or Share, as in
     /// any Android field, and no when an app was handed the text and will
@@ -722,6 +731,20 @@ fn toolbar_paints(
         }));
     }
     out
+}
+
+/// The on-screen keyboard's height in physical pixels, which the layout gives
+/// up. Always 0 off Android: a desktop has no such keyboard, and a phone's
+/// browser resizes the page itself.
+fn keyboard_px() -> u32 {
+    #[cfg(target_os = "android")]
+    {
+        KEYBOARD.load(std::sync::atomic::Ordering::Relaxed)
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        0
+    }
 }
 
 /// The word at byte `caret` in `text`, or the one just before it when the
@@ -1531,6 +1554,10 @@ struct App {
     /// The window changed size while a field had focus: reveal it after the
     /// next layout. See watchlist #19.
     reveal_focus: bool,
+    /// What the last reveal did to its scroller: `(scroller id, where it was,
+    /// where the reveal put it)`. Undone when the keyboard closes, if nobody
+    /// has scrolled since, so the page goes back to where the person had it.
+    keyboard_reveal: Option<(usize, rux_layout::Offset, rux_layout::Offset)>,
     /// A `type="number"` or `type="date"` part way through being typed: the
     /// text it shows, and the bound value as text when that was written. See
     /// [`App::focused_value`].
@@ -1733,6 +1760,7 @@ impl App {
             committed: None,
             focus_value: None,
             reveal_focus: false,
+            keyboard_reveal: None,
             typed_draft: None,
             decimal: '.',
             field_events: std::collections::VecDeque::new(),
@@ -2845,7 +2873,8 @@ impl App {
         let scale = state.window.scale_factor();
         let viewport = Viewport {
             width: (state.surface.config.width as f64 / scale) as f32,
-            height: (state.surface.config.height as f64 / scale) as f32,
+            height: (state.surface.config.height.saturating_sub(keyboard_px()) as f64 / scale)
+                as f32,
         };
         let environment = rux_runtime::Environment {
             viewport,
@@ -3731,7 +3760,7 @@ impl App {
                 edited = true;
             }
             Key::Named(NamedKey::Enter) => {
-                self.enter_in_field();
+                self.enter_in_field(false);
                 return;
             }
             Key::Character(s) => {
@@ -4481,9 +4510,24 @@ impl App {
     /// field, because those three name something the field itself can do. The
     /// others (`go`, `search`, `send`) name what the *app* will do, and are
     /// answered by `@change`.
-    fn enter_in_field(&mut self) {
+    fn enter_in_field(&mut self, action_key: bool) {
+        // A word still being composed is accepted as it stands, as the
+        // keyboard itself accepts it before acting. Left as a composition,
+        // moving focus below would abandon it and put the field back the way
+        // it was before the word, which is what `cancel_preedit` is for.
+        self.preedit = None;
         self.commit_focused();
         let form = self.live_field().form;
+        // A keyboard's Enter in a form's field submits it, from any field, as
+        // HTML's does; Tab is what moves between them. Only a phone's action
+        // key does what its label says, because the label is all a person
+        // tapping it has to go on.
+        if !action_key {
+            if let Some(form) = form {
+                self.submit_form(&form);
+                return;
+            }
+        }
         match self.enter_key() {
             // Inside a form, Next and Previous stay among its typing fields.
             // Outside one, or past its ends, they move as Tab does.
@@ -5318,6 +5362,7 @@ impl App {
             focused_kind,
             selection_ends,
             reveal_focus,
+            keyboard_reveal,
             #[cfg(not(target_arch = "wasm32"))]
             path,
             ..
@@ -5332,7 +5377,9 @@ impl App {
         // on every display, then scale the scene up to the physical surface.
         // Without this, everything renders half-size on a 2x screen.
         let scale = state.window.scale_factor();
-        let logical = (width as f64 / scale, height as f64 / scale);
+        // Laid out in the part of the window the keyboard leaves, as
+        // `adjustResize` promises and no longer delivers. See `keyboard_px`.
+        let logical = (width as f64 / scale, height.saturating_sub(keyboard_px()) as f64 / scale);
 
         // A navigation has chosen where the arriving page should sit: the top
         // for one being opened, wherever it was left for one being returned to.
@@ -5424,12 +5471,22 @@ impl App {
                 if let Some(at) = rux_layout::containing_scroller(&layout.scrolls, offsets, f.x, f.y) {
                     let region = &layout.scrolls[at];
                     let off = &mut offsets[region.id];
+                    let before = *off;
                     if f.y < region.y {
                         off.y -= region.y - f.y;
                     } else if f.y + f.height > region.y + region.height {
                         off.y += (f.y + f.height) - (region.y + region.height);
                     }
                     *off = off.clamp_to(region.max);
+                    if *off != before {
+                        // The first place the page was, kept across a
+                        // second reveal, so closing the keyboard goes back
+                        // to where the person had it.
+                        let first = keyboard_reveal
+                            .filter(|(id, ..)| *id == region.id)
+                            .map_or(before, |(_, first, _)| first);
+                        *keyboard_reveal = Some((region.id, first, *off));
+                    }
                     revealed = true;
                 }
             }
@@ -5973,6 +6030,36 @@ impl ApplicationHandler<RuxEvent> for App {
                     if let Some(value) = value {
                         self.choose_option(&model, row, instance, &value, change);
                     }
+                    self.request_redraw();
+                }
+            }
+
+            // Enter from the input method: its action key (`true`) or a plain
+            // Enter in a one-line field. See `nativeEnter`.
+            // The page now has less room (or all of it back): lay it out
+            // again, and bring the focused field above the keyboard.
+            #[cfg(target_os = "android")]
+            RuxEvent::AndroidKeyboard => {
+                self.update_viewport();
+                if keyboard_px() == 0 {
+                    // Closed: put back what the reveal moved, unless the
+                    // person has scrolled since, in which case where they
+                    // scrolled to is where they want to be.
+                    if let Some((id, before, after)) = self.keyboard_reveal.take() {
+                        if self.offsets.get(id) == Some(&after) {
+                            self.offsets[id] = before;
+                        }
+                    }
+                } else {
+                    self.reveal_focus = self.focused.is_some();
+                }
+                self.request_redraw();
+            }
+
+            #[cfg(target_os = "android")]
+            RuxEvent::AndroidEnter(action) => {
+                if self.focused.is_some() && !self.focused_kind.multiline() {
+                    self.enter_in_field(action);
                     self.request_redraw();
                 }
             }
@@ -8053,6 +8140,41 @@ pub extern "system" fn Java_dev_ruxlang_shell_RuxActivity_nativeSafeArea(
     SAFE_AREA.store(packed, std::sync::atomic::Ordering::Relaxed);
 }
 
+/// How tall the on-screen keyboard is, in physical pixels; 0 when it is down.
+///
+/// **`adjustResize` does not resize the window any more.** From Android 11 the
+/// keyboard is reported as an inset, which an ordinary view pads itself for,
+/// and the window keeps the whole display: driven on the Spark 20, the frame
+/// stayed `[0,0][720,1612]` with the keyboard up. A native surface pads for
+/// nothing, so a field low on the page was drawn under the keyboard and
+/// nothing moved it (watchlist #19). So the keyboard's inset is read here and
+/// the page is laid out in the space above it, which is what the manifest
+/// asked for.
+#[cfg(target_os = "android")]
+static KEYBOARD: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+/// The keyboard's height, with the keyboard up. See [`KEYBOARD`].
+///
+/// # Safety
+///
+/// As [`Java_dev_ruxlang_shell_RuxActivity_nativeSafeArea`].
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "system" fn Java_dev_ruxlang_shell_RuxActivity_nativeKeyboard(
+    _env: *mut std::ffi::c_void,
+    _class: *mut std::ffi::c_void,
+    bottom: i32,
+) {
+    let bottom = bottom.max(0) as u32;
+    if KEYBOARD.swap(bottom, std::sync::atomic::Ordering::Relaxed) != bottom {
+        if let Ok(proxy) = PROXY.lock() {
+            if let Some(proxy) = proxy.as_ref() {
+                let _ = proxy.send_event(RuxEvent::AndroidKeyboard);
+            }
+        }
+    }
+}
+
 /// How the JNI callbacks reach the event loop.
 ///
 /// An input method calls in on Android's main thread, and the shell runs its
@@ -8225,6 +8347,34 @@ pub extern "system" fn Java_dev_ruxlang_shell_RuxActivity_nativeFieldToken<'fram
     _class: jni::objects::JClass<'frame>,
 ) -> i64 {
     FIELD_TOKEN.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Enter from the input method. `action` is a JNI `jboolean`: 1 for the
+/// action key (`performEditorAction`), 0 for a plain Enter in a one-line field.
+///
+/// **A key dispatched by an input method never reaches winit on this phone.**
+/// `BaseInputConnection` answers the action key by dispatching an Enter from
+/// no device (source 0, device -1), and it goes nowhere: driven with Gboard,
+/// Java logged the Enter going out and the window never received it, while
+/// `adb shell input` keys arrived. So Next did nothing, phase 3's note of
+/// "should, not seen" was the accurate one, and Enter is handed over here
+/// instead of as a key.
+///
+/// # Safety
+///
+/// As [`Java_dev_ruxlang_shell_RuxActivity_nativeTextAction`].
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "system" fn Java_dev_ruxlang_shell_RuxActivity_nativeEnter(
+    _env: *mut std::ffi::c_void,
+    _class: *mut std::ffi::c_void,
+    action: u8,
+) {
+    if let Ok(proxy) = PROXY.lock() {
+        if let Some(proxy) = proxy.as_ref() {
+            let _ = proxy.send_event(RuxEvent::AndroidEnter(action != 0));
+        }
+    }
 }
 
 /// A one-line text field. See [`FOCUSED_KIND`].

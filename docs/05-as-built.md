@@ -324,6 +324,11 @@ components as custom tags, plus two that render no box of their own: `<slot>`
 [Routing](#routing)). `role=` is honored for **selectors and semantics**
 (and matches **case-insensitively**: `role="Heading"` matches `[role="heading"]`).
 
+**Words go in a `<text>`, except in a `<button>`.** `<button>Join</button>` is
+read as `<button><text>Join</text></button>`, `{{ }}` included, so a button's
+label can be written the way it would be in HTML. Anywhere else, bare text
+draws nothing.
+
 **`<screen>` is the display, wherever it is written.** At the document root
 that is nothing new: the root has always been forced to the viewport, whatever
 its tag. Below the root it now means what the word says. A `<screen>` inside a
@@ -1311,8 +1316,9 @@ and `previous` move focus as Tab and Shift+Tab do, `done` drops focus and the
 keyboard. `go`, `search` and `send` name what the *app* will do: in a
 [form](#forms) they submit it, and outside one the app answers with `@change`.
 Left off, the key is worked out: `next` on a form's typing fields and `go` on
-its last, and outside a form `done` on a phone. On Android the action key is a
-real Enter, so all of this is one path.
+its last, and outside a form `done` on a phone. That is the phone's action
+key. A keyboard's Enter in a form's field submits the form from any field, as
+HTML's does, and Tab is what moves between fields.
 
 Rux draws no default look for a disabled control, the same way it draws no
 default look for a button. Style `:disabled`:
@@ -1360,9 +1366,9 @@ it, so a form inside another sends only its own fields.
 </view>
 ```
 
-**Submitting.** Two things submit a form: a `<button type="submit">` inside it,
-after the button's own `@tap` has run, and the action key in its last typing
-field. Every field is checked first, and the outcome is one of two events on the
+**Submitting.** Three things submit a form: a `<button type="submit">` inside
+it, after the button's own `@tap` has run, a keyboard's Enter in any of its
+one-line fields, and a phone's action key in its last typing field. Every field is checked first, and the outcome is one of two events on the
 form:
 
 | Event | When | `event` carries |
@@ -1407,8 +1413,8 @@ belongs on `:user-invalid`. A disabled or readonly field matches neither pair.
 .field:focus:user-invalid { outline: 2px solid #f38ba8; }
 ```
 
-**The action key.** A form's typing fields say Next and its last says Go, unless
-`enterkeyhint` says otherwise. Next moves among the form's own typing fields,
+**The action key.** On a phone, a form's typing fields say Next and its last
+says Go, unless `enterkeyhint` says otherwise. Next moves among the form's own typing fields,
 passing over buttons, toggles, selects and dates, as a phone's Next does. Go
 (or any key but Next, Previous and Done) submits. A textarea keeps its Enter.
 

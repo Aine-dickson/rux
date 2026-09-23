@@ -1806,6 +1806,34 @@ there is no room between the status bar and the text, so the platform's own
 placement rule puts it under the handles, over the next field. That is
 `FloatingToolbar`'s decision, the same one it makes for a `TextView`.
 
+## Forms, 2026-09-23
+
+Phase 6 of the inputs plan: `role="form"`, submitting, the checks and the
+pseudo-classes that show them, the action key, and a field the keyboard
+covers. What a submission checks and sends is under test in
+`crates/rux-runtime/tests/forms.rs`; the keys, the keyboard and the screen are
+driven here, against `rux-harness/phase6-forms` (form A, fields 1 to 7 and
+Join; field B outside any form; form C, a search; field 8 low on the page).
+*desktop* rows were driven in the window with SendKeys.
+
+| Case | Where | Expect | Result |
+|---|---|---|---|
+| Action key on each field | A 1 to 5, 7 | Next on 1, 2, 3 and 4; Go on 7. The textarea (6) shows Enter | |
+| Next | A 1 | The caret moves to 2, then 3, then 4, then 6; the checkbox is passed over; the keyboard stays up | desktop: pass, with Tab-style Enter before the Enter rule changed |
+| Next into the textarea, then out | A 6 | Enter makes a new line; tapping 7 moves on | |
+| Go with bad values | A 7 | Refused: 2, 3, 5 go red, the caret goes to the first bad field, `errors` lists why, `tries` counts 1 | desktop: pass |
+| Nothing red before it is touched | A | A fresh form shows no red; a field goes red or green only after it was changed and left | desktop: pass |
+| Join with good values | A | `taps` and `tries` count 1, `sent` shows every value, `age` a number, `terms` true | desktop: pass |
+| Age below 18 | A 4 | Refused with "Value must be 18 or more." | desktop: pass |
+| Tap the label "1. name" | A | The caret goes to field 1 | desktop: pass |
+| The button's label | A | "Join" shows, written without a `<text>` | |
+| Keyboard Enter in field 1 | A, desktop or a hardware keyboard | Submits (refused, since the form is empty); Tab moves to 2 | |
+| Done outside a form | B | The key says Done and closes the keyboard | |
+| Search | C | The key says Search; with text it submits and `searched` shows it; empty, it is refused and the caret stays | |
+| A field under the keyboard | 8 | Scroll so 8 is low on the screen, tap it: the page moves it above the keyboard | adb: pass on the second build. The user found the first covered: it waited for the window to shrink, and from Android 11 `adjustResize` never shrinks it (the frame stayed 720x1612 with the keyboard up). Now the keyboard's inset is read and the page is laid out above it |
+| Next after typing a word | A 1 | The caret moves on, and the typed word stays | adb and by hand: pass on the third build. The first two never moved: the input method's Enter is dispatched from no device and never reaches the window, so Next had never worked, only been reported as working. Now Enter comes over JNI |
+| Close the keyboard after a reveal | C | The page goes back to where it was before the field was moved; a page the person scrolled meanwhile stays put | adb: pass. Asked for by the user. Once, the tap that raised the keyboard also showed the caret handle and Paste; not reproduced |
+
 ## Standing gaps
 
 Cases nothing here can currently exercise. They are the shape of what v0.8 has

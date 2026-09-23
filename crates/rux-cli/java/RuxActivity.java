@@ -75,6 +75,9 @@ public class RuxActivity extends NativeActivity {
      */
     private static native void nativeSafeArea(int top, int right, int bottom, int left);
 
+    /** The on-screen keyboard's height in pixels, 0 when it is down. */
+    private static native void nativeKeyboard(int bottom);
+
     @Override
     protected void onCreate(Bundle state) {
         loadNativeLibrary();
@@ -830,6 +833,10 @@ public class RuxActivity extends NativeActivity {
                     insets.getInsets(
                             WindowInsets.Type.systemBars() | WindowInsets.Type.displayCutout());
             nativeSafeArea(bars.top, bars.right, bars.bottom, bars.left);
+            // The keyboard, as an inset: from API 30 that is the only way it
+            // is reported, and `adjustResize` no longer shrinks the window.
+            // Below 30 it still does, and the window's resize says it.
+            nativeKeyboard(insets.getInsets(WindowInsets.Type.ime()).bottom);
         } else {
             // API 26 to 29. Deprecated in 30 and correct before it. A display
             // cutout is API 28 and up, and on 26 and 27 there were no cutouts to
@@ -1184,6 +1191,20 @@ public class RuxActivity extends NativeActivity {
             return handled;
         }
 
+        /**
+         * The action key, handed to Rux directly, so it does what its label
+         * said (Next, Go, Done).
+         *
+         * <p>Not through the base class, whose answer is to dispatch an Enter
+         * from no device, and that Enter never reaches the native side: driven
+         * with Gboard, the key went out and the window never saw it.
+         */
+        @Override
+        public boolean performEditorAction(int action) {
+            nativeEnter(true);
+            return true;
+        }
+
         @Override
         public boolean sendKeyEvent(KeyEvent event) {
             // **The base class does not edit anything here, and that is the
@@ -1220,7 +1241,11 @@ public class RuxActivity extends NativeActivity {
                             commitText("\n", 1);
                             return true;
                         }
-                        break;
+                        // In a one-line field it is Enter, handed over the way
+                        // the action key is, for the same reason: dispatched,
+                        // it would never arrive.
+                        nativeEnter(false);
+                        return true;
                     default:
                         // A printable key sent this way would be dropped for the
                         // same reason, so it is committed rather than dispatched.
@@ -1457,6 +1482,9 @@ public class RuxActivity extends NativeActivity {
      * what goes wrong without it.
      */
     private static native long nativeFieldToken();
+
+    /** Enter from the input method: its action key, or a plain Enter. */
+    private static native void nativeEnter(boolean action);
 
     /**
      * An input method edited the text. Offsets are UTF-16 code units.
