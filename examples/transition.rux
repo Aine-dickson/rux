@@ -48,7 +48,6 @@
   /* A transition names the properties to walk and how long to take. It is a
      property of the element, not of the change: whatever moves an element's
      style, a signal or a pseudo-class, animates the same way. */
-
   .card {
     display: flex;
     flex-direction: column;
@@ -64,12 +63,10 @@
   .card-title { color: #cdd6f4; font-size: 16px; font-weight: 700; }
   .card-body { color: #9399b2; font-size: 13px; }
   .card:hover { background: #45475a; border-color: #89b4fa; transform: translateY(-4px); }
-
   .lift { transition: background-color 200ms ease-out, border-color 200ms ease-out, transform 200ms ease-out; }
   .slow { transition: all 900ms ease-in-out; }
 
   /* The switch: one class flip, three properties. */
-
   .switch {
     width: 56px;
     height: 30px;
@@ -93,7 +90,6 @@
   .switch.on .knob { transform: translateX(26px); background: #11111b; }
 
   /* Opening: the panel is a strip of nothing until the same signal opens it. */
-
   .panel {
     height: 0;
     padding: 0 16px;

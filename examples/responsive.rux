@@ -39,9 +39,9 @@
   .card-title { color: #cdd6f4; font-size: 16px; font-weight: 700; }
   .badge { padding: 6px 12px; background: #89b4fa; border-radius: 9999px; }
   .badge-label { color: #11111b; font-size: 12px; font-weight: 700; }
+
   /* Narrow: stack them, tighten the padding, and recolour so the breakpoint is
        unmistakable when you drag the window. */
-
   @media (max-width: 600px) {
     .app { --gap: 10px; padding: 20px; background: #11111b; }
     .row { flex-direction: column; }

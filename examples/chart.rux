@@ -52,12 +52,12 @@
 
   .btn:hover { background: #45475a; }
   .btn-text { color: #cdd6f4; font-size: 14px; }
+
   /* The paths are positioned by the frame, so they need a box to sit in and a
      size to be measured against. Both are given an explicit width and height
      rather than being left to their own geometry, since a chart whose box
      changed with its data would move the buttons under it every time a reading
      arrived. */
-
   .frame {
     position: relative;
     width: 340px;
@@ -68,10 +68,10 @@
   }
 
   .band, .line { position: absolute; width: 340px; height: 150px; }
+
   /* The geometry itself is animatable, so a redraw walks. Two paths
      interpolate when their command sequences match, which is exactly what
      happens when a reading's value changes and the point count does not. */
-
   .band {
     fill: #89b4fa;
     opacity: 0.18;

@@ -26,11 +26,11 @@
            the write has to go through `items` itself, by index. -->
       <view class="row" r-for="t in items" :class='#{ done: t.done }'
       @tap='for i in 0..items.len() { if items[i].label == t.label { items[i].done = !items[i].done; } }'>
-      <view class="box" />
-      <text class="label">{{ t.label }}</text>
+        <view class="box" />
+        <text class="label">{{ t.label }}</text>
+      </view>
     </view>
-  </view>
-</screen>
+  </screen>
 </template>
 
 <style>
@@ -82,9 +82,9 @@
 
   .addlabel { color: #11111b; font-size: 15px; font-weight: 700; }
   .empty { color: #6c7086; font-size: 14px; }
+
   /* A scroll container needs a bounded height, or it just grows and there is
      nothing to scroll. */
-
   .list {
     display: flex;
     flex-direction: column;
@@ -96,7 +96,6 @@
 
   /* And its rows need `flex-shrink: 0`, or the column squeezes them all in to
      fit. This is the most common "why won't it scroll". CSS behaves the same way. */
-
   .row {
     display: flex;
     flex-direction: row;
@@ -128,7 +127,7 @@
 <script>
   let draft = signal("");
   let items = signal([
-      #{ label: "read the reference", done: true },
-      #{ label: "build a task list", done: false },
+    #{ label: "read the reference", done: true },
+    #{ label: "build a task list", done: false },
   ]);
 </script>

@@ -66,7 +66,13 @@
   .lead { color: #a6adc8; font-size: 13px; line-height: 20px; }
   .result { color: #a6e3a1; font-size: 13px; height: 18px; }
 
-  .filler { width: 100%; padding: 12px; background: #313244; border-radius: 8px; }
+  .filler {
+    width: 100%;
+    padding: 12px;
+    background: #313244;
+    border-radius: 8px;
+  }
+
   .filler-text { color: #6c7086; font-size: 13px; }
 
   .btn {
@@ -127,10 +133,15 @@
      carried along by the same `:enter-from` / `:leave-to` pass. */
   .scrim:enter-from .dialog { transform: translateY(12px) scale(0.96); }
   .scrim:leave-to .dialog { transform: translateY(12px) scale(0.96); }
-
   .dialog-title { color: #cdd6f4; font-size: 17px; font-weight: 700; }
   .dialog-body { color: #a6adc8; font-size: 13px; line-height: 20px; }
-  .dialog-row { display: flex; flex-direction: row; gap: 8px; justify-content: flex-end; }
+
+  .dialog-row {
+    display: flex;
+    flex-direction: row;
+    gap: 8px;
+    justify-content: flex-end;
+  }
 </style>
 
 <script>

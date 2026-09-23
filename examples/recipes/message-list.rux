@@ -93,7 +93,12 @@
 
   /* The gap lives here now rather than on `.thread`, so the anchor is not
      pushed a gap's width away from the last message. */
-  .rows { display: flex; flex-direction: column; gap: 8px; width: 100%; }
+  .rows {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    width: 100%;
+  }
 
   .msg {
     display: flex;
@@ -111,18 +116,21 @@
      of the composer. There is no `:leave-to` here on purpose: nothing removes a
      message, so a leaving rule would be a rule nobody can reach. */
   .msg:enter-from { opacity: 0; transform: translateY(10px); }
-
   .mine { background: #45475a; align-self: flex-end; }
-
   .who { color: #89b4fa; font-size: 11px; font-weight: 700; }
   .body { color: #cdd6f4; font-size: 14px; line-height: 20px; }
-
   /* Height rather than nothing: a zero-height box is still laid out, but giving
      it the gap's worth of room means the newest message clears the bottom edge
      instead of sitting flush against it. */
   .anchor { height: 4px; }
 
-  .composer { display: flex; flex-direction: row; gap: 8px; align-items: center; width: 100%; }
+  .composer {
+    display: flex;
+    flex-direction: row;
+    gap: 8px;
+    align-items: center;
+    width: 100%;
+  }
 
   .field {
     flex: 1;

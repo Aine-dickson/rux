@@ -3,10 +3,10 @@
     <text class="heading">about</text>
     <text class="lead">A route maps a path to a component, so a page is a component like any other: it takes props, holds its own state, and renders slots.</text>
     <text class="lead">Alt+Left and the mouse's side button walk the history, the same as everywhere else on the machine.</text>
-    </view>
-  </template>
+  </view>
+</template>
 
-  <style>
+<style>
   .page {
     display: flex;
     flex-direction: column;

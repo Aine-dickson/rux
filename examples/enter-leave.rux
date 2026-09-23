@@ -26,18 +26,18 @@
          short of it and the swap runs backwards and the card comes home. -->
     <view class="card" r-if="card" :r-transition="dismiss"
     @drag="onDrag(event)">
-    <text class="card-title">drag me sideways</text>
-    <text class="card-body">Past half way, this card leaves. Short of it, it settles back where it started. The swap is the same one the buttons above use; only what is driving it is different.</text>
-  </view>
-  <!-- `gone`, not `!card`. Turning the condition off is what opens the swap, so
+      <text class="card-title">drag me sideways</text>
+      <text class="card-body">Past half way, this card leaves. Short of it, it settles back where it started. The swap is the same one the buttons above use; only what is driving it is different.</text>
+    </view>
+    <!-- `gone`, not `!card`. Turning the condition off is what opens the swap, so
        it goes false the instant the drag starts and anything reading it would
        appear while the card is still on screen being dragged. What this button
        is about is the swap having *committed*. -->
-  <view class="restore" r-if="gone" @tap="card = true; gone = false; dismiss = null">
-    <text class="btn-text">bring the card back</text>
-  </view>
+    <view class="restore" r-if="gone" @tap="card = true; gone = false; dismiss = null">
+      <text class="btn-text">bring the card back</text>
+    </view>
 
-  <!-- A chain animates branch by branch, and both branches are really there
+    <!-- A chain animates branch by branch, and both branches are really there
        while the swap runs, so they can cross over. The wrapper is what makes
        that a crossover rather than a queue: a departing box with no inset keeps
        the place it would have had, and with both branches live the place the
@@ -46,32 +46,31 @@
 
        The router does not need this only because it builds the outgoing page
        first, so the page on its way out is the one standing at the top. -->
-  <view class="banners">
-    <view class="banner good" r-if="banner" r-transition>
-      <text class="banner-text">saved</text>
+    <view class="banners">
+      <view class="banner good" r-if="banner" r-transition>
+        <text class="banner-text">saved</text>
+      </view>
+      <view class="banner idle" r-else r-transition>
+        <text class="banner-text">nothing to save</text>
+      </view>
     </view>
-    <view class="banner idle" r-else r-transition>
-      <text class="banner-text">nothing to save</text>
-    </view>
-  </view>
 
-  <!-- On a row, `r-transition` needs `r-key` on the same element and says so
+    <!-- On a row, `r-transition` needs `r-key` on the same element and says so
        if it is missing: without a key there is nothing to hold a departing row
        by, and a removal and a reorder are the same picture. Take one from the
        middle and watch where it leaves from. -->
-  <text class="hint">Tap a task to drop it. Take one from the middle, not the end.</text>
-  <view class="list">
-    <view class="task" r-for="t in tasks" r-key="t.id" r-transition @tap="drop(t.id)">
-      <text class="task-text">{{ t.text }}</text>
+    <text class="hint">Tap a task to drop it. Take one from the middle, not the end.</text>
+    <view class="list">
+      <view class="task" r-for="t in tasks" r-key="t.id" r-transition @tap="drop(t.id)">
+        <text class="task-text">{{ t.text }}</text>
+      </view>
     </view>
-  </view>
-</screen>
+  </screen>
 </template>
 
 <style>
   /* The example outgrew the window once it had a list in it, so it scrolls.
      Everything below has to be reachable to be driven. */
-
   .app {
     display: flex;
     flex-direction: column;
@@ -94,9 +93,9 @@
 
   .btn:hover { background: #45475a; }
   .btn-text { color: #cdd6f4; font-size: 14px; }
+
   /* The element's own `transition` is what a swap lasts. One place to write a
      duration, so the swap and the walk cannot disagree about it. */
-
   .panel {
     display: flex;
     flex-direction: column;
@@ -158,7 +157,6 @@
   /* `flex-shrink: 0` because the box holds no content of its own: both banners
      are out of the flow, so a shrunk wrapper would let them spill over whatever
      came next rather than getting shorter with it. */
-
   .banners {
     position: relative;
     height: 44px;
@@ -245,11 +243,11 @@
 
   /* Long enough that there is a middle to take a row out of. */
   let tasks = signal([
-      #{ id: "tanks",   text: "check the tanks" },
-      #{ id: "heading", text: "log the heading" },
-      #{ id: "watch",   text: "wake the second watch" },
-      #{ id: "aerial",  text: "stow the aerial" },
-      #{ id: "log",     text: "close the log" },
+    #{ id: "tanks",   text: "check the tanks" },
+    #{ id: "heading", text: "log the heading" },
+    #{ id: "watch",   text: "wake the second watch" },
+    #{ id: "aerial",  text: "stow the aerial" },
+    #{ id: "log",     text: "close the log" },
   ]);
 
   /* Rebuilt rather than filtered. `filter` would be a method call, and a method

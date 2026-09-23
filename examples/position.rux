@@ -39,7 +39,13 @@
 
   .title { color: #cdd6f4; font-size: 22px; font-weight: 700; }
   .lead { color: #a6adc8; font-size: 13px; line-height: 20px; }
-  .tag { color: #1e1e2e; font-size: 12px; font-weight: 700; line-height: 16px; }
+
+  .tag {
+    color: #1e1e2e;
+    font-size: 12px;
+    font-weight: 700;
+    line-height: 16px;
+  }
 
   /* The containing block, said out loud, which is what CSS asks for and what
      Rux now honors. */
@@ -56,7 +62,10 @@
 
   .cover {
     position: absolute;
-    top: 0; left: 0; right: 0; bottom: 0;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
     padding: 10px;
     background: #89b4fa;
     border-radius: 10px;
@@ -71,7 +80,12 @@
     border-radius: 10px;
   }
 
-  .section { display: flex; flex-direction: column; width: 100%; flex-shrink: 0; }
+  .section {
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+    flex-shrink: 0;
+  }
 
   .head {
     position: sticky;
@@ -81,8 +95,8 @@
     padding: 8px 14px;
     background: #89b4fa;
   }
-  .head-text { color: #1e1e2e; font-size: 13px; font-weight: 700; }
 
+  .head-text { color: #1e1e2e; font-size: 13px; font-weight: 700; }
   .row { padding: 10px 14px; flex-shrink: 0; }
   .row-text { color: #cdd6f4; font-size: 14px; }
 

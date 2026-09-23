@@ -17,12 +17,12 @@
     <view class="card">
       <text class="cardtitle">Inherited family</text>
       <text>Both lines inherit the card's serif family,</text>
-        <text>because font-family cascades like color.</text>
-      </view>
-    </screen>
-  </template>
+      <text>because font-family cascades like color.</text>
+    </view>
+  </screen>
+</template>
 
-  <style>
+<style>
   .app {
     display: flex;
     flex-direction: column;

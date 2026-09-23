@@ -23,7 +23,15 @@
 
   .name { color: #cdd6f4; font-size: 14px; font-weight: 700; }
   .controls { display: flex; align-items: center; gap: 12px; }
-  .count { color: #a6e3a1; font-size: 24px; font-weight: 700; width: 52px; text-align: center; }
+
+  .count {
+    color: #a6e3a1;
+    font-size: 24px;
+    font-weight: 700;
+    width: 52px;
+    text-align: center;
+  }
+
   .hint { color: #6c7086; font-size: 12px; }
 
   .btn {

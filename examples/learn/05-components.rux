@@ -22,10 +22,10 @@
            two values it needs and owns how they look. -->
       <view class="slot" r-for="t in items"
       @tap='for i in 0..items.len() { if items[i].label == t.label { items[i].done = !items[i].done; } }'>
-      <row :label="t.label" :done="t.done" />
+        <row :label="t.label" :done="t.done" />
+      </view>
     </view>
-  </view>
-</screen>
+  </screen>
 </template>
 
 <style>
@@ -89,7 +89,6 @@
 
   /* The tappable wrapper. The component fills it, so the whole row is the
      hit target rather than just the text. */
-
   .slot {
     display: flex;
     flex-shrink: 0;
@@ -103,7 +102,7 @@
 
   let draft = signal("");
   let items = signal([
-      #{ label: "read the reference", done: true },
-      #{ label: "build a task list", done: false },
+    #{ label: "read the reference", done: true },
+    #{ label: "build a task list", done: false },
   ]);
 </script>

@@ -203,6 +203,17 @@ fn emit(items: &[Item], out: &mut String, unit: &str, level: usize) {
     for (n, item) in items.iter().enumerate() {
         match item {
             Item::Comment(text) => {
+                // A comment right above a multi-line rule is that rule's, so the
+                // air the rule gets goes above the comment. Left to the rule,
+                // the gap landed between the two and the comment read as the
+                // tail of whatever came before it.
+                if items.get(n + 1).is_some_and(is_multi)
+                    && !out.is_empty()
+                    && !out.ends_with("\n\n")
+                    && !(n > 0 && matches!(items[n - 1], Item::Comment(_)))
+                {
+                    out.push('\n');
+                }
                 push_line(out, &pad, text);
             }
             Item::Decl(text) => {
@@ -213,12 +224,13 @@ fn emit(items: &[Item], out: &mut String, unit: &str, level: usize) {
             }
             Item::Block { prelude, items: inner } => {
                 let decls_only = inner.iter().all(|i| matches!(i, Item::Decl(_)));
-                let multi = !inner.is_empty() && !(decls_only && inner.len() <= INLINE_MAX);
+                let multi = is_multi(item);
                 // A block that spans lines gets air on both sides, so it reads as
                 // a unit rather than merging into the one-liners around it. The
                 // `ends_with` guard is what stops two blocks producing a gap of
                 // two blank lines between them.
-                if multi && !out.is_empty() && !out.ends_with("\n\n") {
+                let after_comment = n > 0 && matches!(items[n - 1], Item::Comment(_));
+                if multi && !after_comment && !out.is_empty() && !out.ends_with("\n\n") {
                     out.push('\n');
                 }
                 if inner.is_empty() {
@@ -242,6 +254,17 @@ fn emit(items: &[Item], out: &mut String, unit: &str, level: usize) {
                 }
             }
         }
+    }
+}
+
+/// Whether a block is written over several lines rather than as a one-liner.
+fn is_multi(item: &Item) -> bool {
+    match item {
+        Item::Block { items: inner, .. } => {
+            let decls_only = inner.iter().all(|i| matches!(i, Item::Decl(_)));
+            !inner.is_empty() && !(decls_only && inner.len() <= INLINE_MAX)
+        }
+        _ => false,
     }
 }
 

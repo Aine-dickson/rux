@@ -26,9 +26,9 @@
 
   .title { color: #cdd6f4; font-size: 22px; font-weight: 700; }
   .hint { color: #6c7086; font-size: 13px; max-width: 520px; }
+
   /* Responsive: fills the screen up to a readable cap, so resizing the window
      actually re-flows the rows instead of leaving dead space. */
-
   .list {
     display: flex;
     flex-direction: column;
@@ -46,7 +46,6 @@
 
   /* Without flex-shrink: 0 the column squeezes every row in to fit and there
      is nothing left to scroll. CSS behaves the same way. */
-
   .row {
     display: flex;
     flex-shrink: 0;
@@ -65,7 +64,7 @@
 <script>
   let picked = signal("");
   let items = signal([
-      "Alpha", "Bravo", "Charlie", "Delta", "Echo", "Foxtrot", "Golf", "Hotel",
-      "India", "Juliett", "Kilo", "Lima", "Mike", "November", "Oscar", "Papa",
+    "Alpha", "Bravo", "Charlie", "Delta", "Echo", "Foxtrot", "Golf", "Hotel",
+    "India", "Juliett", "Kilo", "Lima", "Mike", "November", "Oscar", "Papa",
   ]);
 </script>

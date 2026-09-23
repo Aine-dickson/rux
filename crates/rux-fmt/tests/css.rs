@@ -102,3 +102,17 @@ fn indent_level_is_respected() {
     let out = format(".a { color: red; }", UNIT, 2);
     assert_eq!(out, "    .a { color: red; }\n");
 }
+
+/// A comment right above a multi-line rule stays with that rule: the blank
+/// line goes above the comment, not between it and the rule it describes.
+/// Found as 17 committed examples that `rux fmt --check` rejected.
+#[test]
+fn a_comment_keeps_to_the_rule_below_it() {
+    let out = fmt(".lead { color: red; }\n/* why rows scroll */\n.rows { display: flex; gap: 1px; padding: 2px; color: red; }");
+    assert_eq!(
+        out,
+        ".lead { color: red; }\n\n/* why rows scroll */\n.rows {\n  display: flex;\n  gap: 1px;\n  padding: 2px;\n  color: red;\n}\n"
+    );
+    // Formatting again changes nothing.
+    assert_eq!(fmt(&out), out);
+}

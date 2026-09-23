@@ -45,6 +45,10 @@ pub enum Pending {
     Html,
     /// `/* …`, closed by `*/`.
     Block,
+    /// A start tag whose attributes run onto the next line, closed by its
+    /// `>`. `counted` is whether the tag was counted as opening a level, which
+    /// is undone if it turns out to close itself with `/>`.
+    Tag { counted: bool },
 }
 
 /// Tags that never nest, so an opening tag must not increase the indent.
@@ -101,10 +105,34 @@ fn style_span(text: &str) -> Option<(usize, usize)> {
 
 fn reindent_lines(text: &str, unit: &str) -> String {
     let mut out: Vec<String> = Vec::new();
-    let mut depth: i32 = 0;
+    // One entry per level of indentation, holding how many brackets and tags
+    // the line that opened it left open. A line opening two at once, as
+    // `signal([` does, is one level: its contents sit one step in, as every
+    // other formatter puts them, and the level goes when both are closed.
+    let mut levels: Vec<i32> = Vec::new();
     let mut pending = Pending::None;
+    let mut in_script = false;
+    let mut previous: Option<Previous> = None;
 
     for raw in text.split('\n') {
+        // The attributes of a start tag written over several lines. They keep
+        // the author's alignment, as a comment does: lining them up under the
+        // first attribute is a choice, and the tag's own line already carries
+        // the indent. What follows the tag's `>` on the same line counts as
+        // usual.
+        if let Pending::Tag { counted } = pending {
+            out.push(raw.to_string());
+            let trimmed = raw.trim();
+            let Some(end) = tag_end(trimmed.as_bytes()) else { continue };
+            if counted && trimmed[..end].ends_with('/') {
+                close_levels(&mut levels, 1);
+            }
+            let (delta, next_pending) = scan(&trimmed[end + 1..]);
+            apply(&mut levels, delta);
+            pending = next_pending;
+            continue;
+        }
+
         // Inside a multi-line comment the author's alignment is theirs to keep,
         // re-indenting ASCII art or a wrapped sentence would be vandalism.
         if pending != Pending::None {
@@ -119,14 +147,99 @@ fn reindent_lines(text: &str, unit: &str) -> String {
             continue;
         }
 
+        if trimmed.starts_with("<script") {
+            in_script = true;
+        } else if trimmed.starts_with("</script") {
+            in_script = false;
+        }
+
         let (delta, next_pending) = scan(trimmed);
-        let indent = (depth - delta.leading_close as i32).max(0) as usize;
-        out.push(unit.repeat(indent) + trimmed);
-        depth = (depth + delta.net).max(0);
+        close_levels(&mut levels, delta.leading_close as i32);
+        let indent = levels.len();
+        let author = raw.len() - raw.trim_start().len();
+        // A wrapped expression's next line, in a script: the line before ended
+        // on an operator, so this one carries on its statement. Levelled with
+        // the statement it read as a new one; it keeps the author's offset
+        // from that line instead (lining up under the right-hand side is a
+        // choice), and at least one level. A third line keeps its offset from
+        // the second rather than stepping in again.
+        let lead = match (in_script, &previous) {
+            (true, Some(prev)) if prev.open_ended && unit != "\t" => {
+                let offset = author.saturating_sub(prev.author);
+                let offset = if prev.continued { offset } else { offset.max(unit.len()) };
+                " ".repeat(prev.written + offset)
+            }
+            (true, Some(prev)) if prev.open_ended => unit.repeat(indent + 1),
+            _ => unit.repeat(indent),
+        };
+        let written = lead.len();
+        let continued = previous.as_ref().is_some_and(|p| in_script && p.open_ended);
+        out.push(lead + trimmed);
+        // A section's own tag is never part of an expression.
+        let code = in_script && !trimmed.starts_with('<');
+        previous = Some(Previous { author, written, open_ended: code && open_ended(trimmed), continued });
+        apply(
+            &mut levels,
+            Delta { net: delta.net + delta.leading_close as i32, leading_close: 0 },
+        );
         pending = next_pending;
     }
 
     out.join("\n")
+}
+
+/// Close `n` brackets or tags, dropping each level whose last one closes.
+fn close_levels(levels: &mut Vec<i32>, mut n: i32) {
+    while n > 0 {
+        match levels.last_mut() {
+            Some(open) if *open > n => {
+                *open -= n;
+                n = 0;
+            }
+            Some(open) => {
+                n -= *open;
+                levels.pop();
+            }
+            None => break,
+        }
+    }
+}
+
+/// What a line leaves open or closes, as levels: anything it leaves open is
+/// one new level, however many brackets that is.
+fn apply(levels: &mut Vec<i32>, delta: Delta) {
+    close_levels(levels, delta.leading_close as i32);
+    match delta.net.cmp(&0) {
+        std::cmp::Ordering::Greater => levels.push(delta.net),
+        std::cmp::Ordering::Less => close_levels(levels, -delta.net),
+        std::cmp::Ordering::Equal => {}
+    }
+}
+
+/// The last written line, for [`reindent_lines`] to tell a continuation by.
+struct Previous {
+    /// Its leading whitespace as the author wrote it, in bytes.
+    author: usize,
+    /// And as it was written out.
+    written: usize,
+    /// Whether it ended on an operator, so the next line carries it on.
+    open_ended: bool,
+    /// Whether it was itself a continuation.
+    continued: bool,
+}
+
+/// Whether a script line ends partway through an expression: on a binary
+/// operator, an assignment or an arrow. `x++` and `x--` end a statement, and a
+/// comment is not code.
+fn open_ended(line: &str) -> bool {
+    let code = match line.find("//") {
+        Some(at) => line[..at].trim_end(),
+        None => line,
+    };
+    if code.ends_with("++") || code.ends_with("--") || code.ends_with("*/") {
+        return false;
+    }
+    code.ends_with(['+', '-', '*', '/', '%', '=', '&', '|', '?', ':']) || code.ends_with("=>")
 }
 
 /// The indent level a new line should get, given the line it follows and the
@@ -136,7 +249,7 @@ fn reindent_lines(text: &str, unit: &str) -> String {
 pub fn indent_after(line: &str, current_indent: usize) -> usize {
     let (delta, _) = scan(line.trim());
     if delta.net > 0 {
-        current_indent + delta.net as usize
+        current_indent + 1
     } else {
         current_indent
     }
@@ -155,7 +268,7 @@ fn close_pending(line: &str, pending: Pending) -> Pending {
     let closer = match pending {
         Pending::Html => "-->",
         Pending::Block => "*/",
-        Pending::None => return Pending::None,
+        Pending::None | Pending::Tag { .. } => return Pending::None,
     };
     if line.contains(closer) {
         Pending::None
@@ -229,13 +342,25 @@ fn scan(line: &str) -> (Delta, Pending) {
                 }
             }
             b'<' if b.get(i + 1).is_some_and(|c| c.is_ascii_alphabetic()) => {
-                let Some(end) = find(b, i, b">") else { break };
                 let name_end = i + 1
-                    + b[i + 1..end]
+                    + b[i + 1..]
                         .iter()
                         .position(|c| !(c.is_ascii_alphanumeric() || *c == b'.' || *c == b'-' || *c == b'_'))
-                        .unwrap_or(end - i - 1);
+                        .unwrap_or(b.len() - i - 1);
                 let name = &line[i + 1..name_end];
+                // A start tag whose attributes go on past this line: it opens a
+                // level now, and whatever closes it is on a later line. Before
+                // this the tag was not counted at all, so its children lost a
+                // level and every closer after it dedented one too far, down to
+                // a `</view>` at the left margin.
+                let Some(end) = tag_end(&b[i..]).map(|e| e + i) else {
+                    let counted = !is_void(name);
+                    if counted {
+                        net += 1;
+                    }
+                    pending = Pending::Tag { counted };
+                    break;
+                };
                 let self_closing = b[..end].ends_with(b"/");
                 if !self_closing && !is_void(name) {
                     net += 1;
@@ -257,6 +382,23 @@ fn scan(line: &str) -> (Delta, Pending) {
     }
 
     (Delta { net, leading_close }, pending)
+}
+
+/// The `>` that ends a tag starting in `b`, skipping quoted attribute values,
+/// so a `>` inside `:show="n > 2"` does not end the tag.
+fn tag_end(b: &[u8]) -> Option<usize> {
+    let mut i = 0;
+    while i < b.len() {
+        match b[i] {
+            b'"' | b'\'' => match string_end(b, i) {
+                Some(end) => i = end + 1,
+                None => return None,
+            },
+            b'>' => return Some(i),
+            _ => i += 1,
+        }
+    }
+    None
 }
 
 /// Where the string opened at `start` closes, or `None` if it does not close on

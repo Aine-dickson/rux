@@ -34,7 +34,6 @@
   .title { color: #cdd6f4; font-size: 22px; font-weight: 700; }
   .lead { color: #9399b2; font-size: 13px; max-width: 620px; }
   .row { display: flex; gap: 16px; align-items: flex-start; }
-
   /* These rules style the slot content, and the component never sees them. */
   .stat { color: #a6e3a1; font-size: 28px; font-weight: 700; }
   .note { color: #9399b2; font-size: 13px; }

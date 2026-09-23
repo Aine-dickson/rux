@@ -180,3 +180,50 @@ fn a_closed_string_still_hides_what_is_inside_it() {
         "the brace inside the string opened nothing: {out}"
     );
 }
+
+/// A start tag whose attributes run onto the next line opens a level like any
+/// other, and its attribute lines keep the author's alignment.
+///
+/// Before this the tag was not counted at all: its children sat level with it
+/// and every closer after it dedented one too far, so `examples/components/
+/// crew_list.rux` came out of `rux fmt` with a `</view>` at the left margin.
+#[test]
+fn a_start_tag_over_two_lines_opens_a_level() {
+    let src = "<template>\n  <view class=\"rows\">\n    <view class=\"row\" r-for=\"m in crew\"\n          :to=\"path_for(&quot;x&quot;, #{ id: m.id })\">\n      <text>{{ m.name }}</text>\n    </view>\n  </view>\n</template>\n";
+    let out = reindent(src, UNIT);
+    assert_eq!(out, src, "already formatted, so nothing moves");
+
+    // A self-closing one gives its level back.
+    let src = "<template>\n  <view>\n    <input r-model=\"a\"\n           placeholder=\"b\" />\n    <text>after</text>\n  </view>\n</template>\n";
+    assert_eq!(reindent(src, UNIT), src);
+
+    // And a `>` inside a quoted value does not end the tag early.
+    let src = "<template>\n  <view>\n    <view :show=\"n > 2\"\n          class=\"c\">\n      <text>in</text>\n    </view>\n  </view>\n</template>\n";
+    assert_eq!(reindent(src, UNIT), src);
+}
+
+/// A wrapped expression keeps its second line's offset from the first, so it
+/// does not read as a statement of its own.
+#[test]
+fn a_wrapped_expression_keeps_its_continuation() {
+    let src = "<script>\n  fn measure() {\n    report = \"a \" + w +\n             \" at \" + x;\n    done = true;\n  }\n</script>\n";
+    assert_eq!(reindent(src, UNIT), src);
+    // Written flush, it gets one level.
+    let flush = "<script>\n  fn f() {\n    total = a +\n    b;\n  }\n</script>\n";
+    assert_eq!(
+        reindent(flush, UNIT),
+        "<script>\n  fn f() {\n    total = a +\n      b;\n  }\n</script>\n"
+    );
+    // And a statement after an ordinary one is not moved.
+    let plain = "<script>\n  let a = 1;\n  let b = 2;\n</script>\n";
+    assert_eq!(reindent(plain, UNIT), plain);
+}
+
+/// Two brackets opened on one line are one level, as `signal([` is written
+/// everywhere, and the level goes when both close.
+#[test]
+fn two_brackets_opened_on_one_line_are_one_level() {
+    let src = "<script>\n  let rows = signal([\n    #{ name: \"a\" },\n    #{ name: \"b\" },\n  ]);\n  let after = 1;\n</script>\n";
+    assert_eq!(reindent(src, UNIT), src);
+    assert_eq!(indent_after("let rows = signal([", 1), 2, "Enter steps in once");
+}

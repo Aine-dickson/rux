@@ -58,7 +58,12 @@
   .title { color: #cdd6f4; font-size: 28px; font-weight: 700; }
   .hint { color: #a6e3a1; font-size: 16px; }
 
-  .row { display: flex; flex-direction: row; gap: 12px; align-items: center; }
+  .row {
+    display: flex;
+    flex-direction: row;
+    gap: 12px;
+    align-items: center;
+  }
 
   .btn {
     padding: 10px 16px;
@@ -67,6 +72,7 @@
     color: #cdd6f4;
     cursor: pointer;
   }
+
   .btn:hover { background: #45475a; }
 
   .card {
@@ -77,6 +83,7 @@
     color: #cdd6f4;
     padding: 12px;
   }
+
   .card.wide { width: 220px; background: #45475a; }
 
   .field {
@@ -86,6 +93,7 @@
     color: #cdd6f4;
     width: 320px;
   }
+
   .field:focus { background: #181825; }
 
   .scroller {

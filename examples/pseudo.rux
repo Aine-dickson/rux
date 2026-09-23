@@ -47,8 +47,8 @@
   .row { display: flex; align-items: center; gap: 16px; }
   .label { color: #a6adc8; font-size: 14px; }
   .echo { color: #a6e3a1; font-size: 14px; }
-  /* :hover, the card, and its title through a descendant selector. */
 
+  /* :hover, the card, and its title through a descendant selector. */
   .card {
     display: flex;
     flex-direction: column;
@@ -65,8 +65,8 @@
   .card-body { color: #9399b2; font-size: 13px; }
   .card:hover { background: #45475a; border-color: #89b4fa; }
   .card:hover .card-title { color: #89b4fa; }
-  /* :hover + :active, the pressed state is the two stacked. */
 
+  /* :hover + :active, the pressed state is the two stacked. */
   .btn {
     padding: 10px 18px;
     background: #89b4fa;
@@ -77,8 +77,8 @@
   .btn-label { color: #11111b; font-size: 14px; font-weight: 700; }
   .btn:hover { background: #b4befe; }
   .btn:active { background: #7287fd; }
-  /* :focus, the field lights up while it holds the caret. */
 
+  /* :focus, the field lights up while it holds the caret. */
   .field {
     display: flex;
     flex-direction: column;
@@ -97,8 +97,8 @@
   }
 
   .input:focus { border-color: #a6e3a1; background: #1e1e2e; }
-  /* :checked, replaces the synthetic `.checked` class. */
 
+  /* :checked, replaces the synthetic `.checked` class. */
   .check {
     width: 22px;
     height: 22px;

@@ -50,8 +50,8 @@
   .t2 { transform: scale(1.15); }
   .t3 { transform: translate(0, -12px); background: #a6e3a1; }
   .t4 { transform: rotate(-6deg) scale(1.1); background: #f9e2af; }
-  /* Two rows, filled column-first: 1,2 | 3,4 | 5,6 read top-to-bottom. */
 
+  /* Two rows, filled column-first: 1,2 | 3,4 | 5,6 read top-to-bottom. */
   .autogrid {
     display: grid;
     grid-template-rows: 1fr 1fr;

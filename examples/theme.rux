@@ -29,7 +29,6 @@
 
 <style>
   /* The palette. Declared once; everything below reads it through var(). */
-
   .app {
     --bg: #1e1e2e;
     --surface: #313244;
@@ -49,7 +48,6 @@
 
   /* The light theme is the same sheet with different values, nothing below
        this rule knows a theme exists. */
-
   .app.light {
     --bg: #eff1f5;
     --surface: #ffffff;

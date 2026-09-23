@@ -28,7 +28,6 @@
 
   /* A row. Without `display: flex` these two would stack: there is no inline
      text flow, so two <text> siblings never share a line. */
-
   .head {
     display: flex;
     flex-direction: row;

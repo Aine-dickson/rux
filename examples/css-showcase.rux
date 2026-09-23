@@ -85,7 +85,6 @@
   }
 
   /* Pinned to the top-right corner by inset, out of normal flow. */
-
   .badge {
     position: absolute;
     top: 10px;
