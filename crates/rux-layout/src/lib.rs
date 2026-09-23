@@ -555,6 +555,34 @@ pub struct BoxShadow {
     pub inset: bool,
 }
 
+/// `outline`: a line drawn outside the border box, over the element's own
+/// content, taking no room in the layout.
+///
+/// It follows the box's `border-radius`, as it does in every current browser:
+/// an outline `offset + width` outside a rounded corner is rounded by that much
+/// more. A corner with no radius stays square, except in `auto`.
+#[derive(Clone, Copy, Debug)]
+pub struct Outline {
+    /// Logical px. The line's thickness, drawn outward from `offset`.
+    pub width: f32,
+    /// Resolved: `currentColor` has already been replaced by the element's own
+    /// `color`. `None` only for `auto` with no colour written, which is the
+    /// focus ring's own colour.
+    pub color: Option<Rgba>,
+    /// `outline-offset`, logical px: the gap between the border edge and the
+    /// line. Negative draws it inside the box.
+    pub offset: f32,
+    /// `outline-style: auto`, the platform's focus ring. It is what the default
+    /// stylesheet gives a focused element, so an author's `outline` of any
+    /// kind replaces it, and `outline: none` removes it, as in CSS.
+    pub auto: bool,
+}
+
+impl Outline {
+    /// The focus ring's colour when an `auto` outline names none.
+    pub const RING: Rgba = Rgba { r: 0.54, g: 0.71, b: 0.98, a: 1.0 }; // #89b4fa
+}
+
 /// The style subset M-series understands (a stand-in for the CSS `ComputedStyle`).
 #[derive(Clone, Debug)]
 pub struct Style {
@@ -623,6 +651,9 @@ pub struct Style {
     pub radius_pct: [Option<f32>; 4],
     /// `box-shadow` (single, outer). Drawn behind the box's own background.
     pub box_shadow: Option<BoxShadow>,
+    /// `outline`. `None` for `outline-style: none`, the initial value, and for
+    /// a width of zero.
+    pub outline: Option<Outline>,
     /// `transform`: an affine applied to this box and its subtree at paint time.
     /// Visual only: hit regions are not transformed.
     pub transform: Option<Transform>,
@@ -738,6 +769,7 @@ impl Default for Style {
             radius: [0.0; 4],
             radius_pct: [None; 4],
             box_shadow: None,
+            outline: None,
             transform: None,
             cursor: Cursor::Default,
             touch_action: TouchAction::Auto,
@@ -1413,6 +1445,11 @@ pub struct Node {
     /// tell what the pointer is over and hand the path back as interaction state.
     /// `None`: the common case, costs nothing.
     pub state_path: Option<Vec<usize>>,
+    /// This node's tree path, set on anything keyboard focus can land on that
+    /// is not a text field (a `@tap` box, a select). The layout hands it to
+    /// the [`FocusItem`], and the shell hands it back as the focused path, so
+    /// `:focus` can match an element that has no `r-model` to be known by.
+    pub focus_path: Option<Vec<usize>>,
     /// What this element is, for assistive technology.
     pub access: Access,
     /// Which component instance this node belongs to, when it is inside one.
@@ -1468,6 +1505,7 @@ impl Node {
             label_for: None,
             focus_model: None,
             state_path: None,
+            focus_path: None,
             access: Access::default(),
             instance: None,
             key: None,
@@ -1494,6 +1532,7 @@ impl Node {
             label_for: None,
             focus_model: None,
             state_path: None,
+            focus_path: None,
             access: Access::default(),
             instance: None,
             key: None,
@@ -1520,6 +1559,7 @@ impl Node {
             label_for: None,
             focus_model: None,
             state_path: None,
+            focus_path: None,
             access: Access::default(),
             instance: None,
             key: None,
@@ -1551,6 +1591,7 @@ impl Node {
             label_for: None,
             focus_model: None,
             state_path: None,
+            focus_path: None,
             access: Access::default(),
             instance: None,
             key: None,
@@ -1721,8 +1762,8 @@ pub struct ScrollRegion {
     /// The accumulated `transform` in force where this box sits, and the
     /// accumulated `opacity`.
     ///
-    /// Scrollbars and focus rings are drawn *outside* the paint list, over the
-    /// content, because a scroller clips its own children and would eat them.
+    /// Scrollbars are drawn *outside* the paint list, over the content,
+    /// because a scroller clips its own children and would eat them.
     /// That means they do not inherit the transform and opacity stack the paint
     /// list carries, and until these were recorded they did not follow at all:
     /// a page transitioning at `opacity: 0` still showed its scrollbar at full
@@ -1949,29 +1990,20 @@ pub struct AccessNode {
     pub model: Option<String>,
 }
 
-/// One keyboard-focusable element, in document (Tab) order. Carries the geometry
-/// (for the focus ring) plus how the shell should act on it.
+/// One keyboard-focusable element, in document (Tab) order. Carries its box,
+/// for a tap to find it and for scrolling it into view, and how the shell
+/// should act on it. Its focus ring is not drawn from here: it is the
+/// element's own `outline`, painted with the element.
 #[derive(Clone, Debug)]
 pub struct FocusItem {
-    /// See [`ScrollRegion::transform`]: a ring is drawn over the content and so
-    /// has to be told what the content is being drawn through.
-    pub transform: Option<Transform>,
-    pub alpha: f32,
     pub x: f32,
     pub y: f32,
     pub width: f32,
     pub height: f32,
     pub kind: FocusKind,
-    /// The scroller this item sits inside, if any, as an index into
-    /// [`Layout::scrolls`].
-    ///
-    /// The focus ring is painted by the shell as its own scene *after* the
-    /// document's, so it never passes through the `PushClip` a scroller emits
-    /// around its children. Without knowing the enclosing scroller, a ring on a
-    /// row scrolled out of a list draws over whatever is above the list. This
-    /// is the enclosing one, not the item's own: a scroller that is itself
-    /// focusable is clipped by its parent, not by itself.
-    pub scroll: Option<usize>,
+    /// The element's tree path, for anything that is not a text field. See
+    /// [`Node::focus_path`]. A text field is known by its model instead.
+    pub path: Option<Vec<usize>>,
 }
 
 impl FocusItem {
@@ -2112,6 +2144,8 @@ enum PaintKind {
     /// come from a `:hover`, from a `:class`, or from halfway through a
     /// `transition`, and the value that matters is the one this frame computed.
     Path(PathContent, PathPaint),
+    /// Drawn after the node's subtree, not with its box. See [`Outline`].
+    Outline(Outline),
 }
 
 /// The resolved paint for one `<path>`, lifted off the style at build time.
@@ -2505,6 +2539,18 @@ fn to_inset(l: Option<Len>, vp: (f32, f32)) -> LengthPercentageAuto {
 
 /// A laid-out `<input>`: its model plus what kind it is. Becomes either a
 /// `FocusRegion` (text/textarea) or a `SelectRegion` (select) in `collect`.
+/// A node a pointer can reach: its `@tap`, its gestures, its cursor, its
+/// `touch-action`, its component instance, and its [`Node::focus_path`].
+type Handler = (
+    NodeId,
+    Option<String>,
+    Vec<(Gesture, String)>,
+    Cursor,
+    TouchAction,
+    Option<String>,
+    Option<Vec<usize>>,
+);
+
 struct Bound {
     id: NodeId,
     model: String,
@@ -2517,6 +2563,8 @@ struct Bound {
     kind: InputKind,
     field: Field,
     options: Option<Vec<String>>,
+    /// See [`Node::focus_path`]. Only a select's is ever read.
+    focus_path: Option<Vec<usize>>,
 }
 
 /// The widest a box can ever be, given its own CSS and everything above it.
@@ -2557,14 +2605,7 @@ fn build(
     tree: &mut TaffyTree<TextContent>,
     node: &Node,
     paint: &mut Vec<(NodeId, PaintKind)>,
-    handlers: &mut Vec<(
-        NodeId,
-        Option<String>,
-        Vec<(Gesture, String)>,
-        Cursor,
-        TouchAction,
-        Option<String>,
-    )>,
+    handlers: &mut Vec<Handler>,
     models: &mut Vec<Bound>,
     focus_labels: &mut Vec<(NodeId, String, Option<String>)>,
     hidden: &mut Vec<NodeId>,
@@ -2776,6 +2817,11 @@ fn build(
         ));
         id
     };
+    // Last of the node's own paint, and read after its children: see
+    // `PaintKind::Outline` in `collect`.
+    if let Some(outline) = node.style.outline {
+        paint.push((id, PaintKind::Outline(outline)));
+    }
     // A hit region is needed for anything a pointer can reach, not only for a
     // `@tap`: an element with just `@drag` still has to be found by a hit test.
     if node.on_tap.is_some() || !node.gestures.is_empty() {
@@ -2786,6 +2832,7 @@ fn build(
             node.style.cursor,
             node.style.touch_action,
             node.instance.clone(),
+            node.focus_path.clone(),
         ));
     }
     // A disabled field is not a field as far as focus is concerned: no region
@@ -2800,6 +2847,7 @@ fn build(
             kind: node.kind,
             field: node.field.clone(),
             options: node.options.clone(),
+            focus_path: node.focus_path.clone(),
         });
     }
     if let Some(fm) = &node.focus_model {
@@ -2856,14 +2904,7 @@ fn collect(
     origin_x: f32,
     origin_y: f32,
     paint: &[(NodeId, PaintKind)],
-    handlers: &[(
-        NodeId,
-        Option<String>,
-        Vec<(Gesture, String)>,
-        Cursor,
-        TouchAction,
-        Option<String>,
-    )],
+    handlers: &[Handler],
     models: &[Bound],
     focus_labels: &[(NodeId, String, Option<String>)],
     hidden: &[NodeId],
@@ -3056,6 +3097,8 @@ fn collect(
                 height: layout.size.height,
                 content: ic.clone(),
             })),
+            // Drawn after the children, below.
+            PaintKind::Outline(_) => {}
             // From the content corner, not the border corner, so padding moves
             // the drawing the way it moves text rather than being ignored.
             PaintKind::Path(pc, pp) => {
@@ -3137,7 +3180,7 @@ fn collect(
         });
     }
 
-    if let Some((_, handler, gestures, cursor, touch_action, instance)) =
+    if let Some((_, handler, gestures, cursor, touch_action, instance, _)) =
         handlers.iter().find(|(nid, ..)| *nid == id)
     {
         out.hits.push(HitRegion {
@@ -3170,8 +3213,6 @@ fn collect(
                 field: bound.field.clone(),
             });
             out.focusables.push(FocusItem {
-                transform: child_xform,
-                alpha: child_dim,
                 x,
                 y,
                 width: fw,
@@ -3182,7 +3223,7 @@ fn collect(
                     instance: bound.instance.clone(),
                     options: options.clone(),
                 },
-                scroll: inside_scroll,
+                path: bound.focus_path.clone(),
             });
         } else {
             // A text/textarea input: its value is rendered by its single text
@@ -3225,8 +3266,6 @@ fn collect(
                 scroll_id: scrolls.contains(&id).then(|| out.scrolls.len()),
             });
             out.focusables.push(FocusItem {
-                transform: child_xform,
-                alpha: child_dim,
                 x,
                 y,
                 width: fw,
@@ -3238,10 +3277,10 @@ fn collect(
                     kind: bound.kind,
                     text,
                 },
-                scroll: inside_scroll,
+                path: None,
             });
         }
-    } else if let Some((_, Some(handler), _, _, _, instance)) =
+    } else if let Some((_, Some(handler), _, _, _, instance, focus_path)) =
         handlers.iter().find(|(nid, ..)| *nid == id)
     {
         // A button / checkbox / radio (anything with a `@tap` handler) is
@@ -3251,14 +3290,12 @@ fn collect(
         // only `@drag` has nothing a key could stand in for, and offering Enter
         // as a fake drag would be worse than leaving it alone.
         out.focusables.push(FocusItem {
-            transform: child_xform,
-            alpha: child_dim,
             x,
             y,
             width: fw,
             height: fh,
             kind: FocusKind::Activate { on_tap: handler.clone(), instance: instance.clone() },
-            scroll: inside_scroll,
+            path: focus_path.clone(),
         });
     }
 
@@ -3372,12 +3409,53 @@ fn collect(
     if clip {
         out.paints.push(Paint::PopClip);
     }
+    // **The outline goes over everything the element contains**, as CSS paints
+    // it, and after its own clip is popped, because an outline sits outside
+    // the box and `overflow` on the element does not cut it. It is still
+    // inside the element's transform and opacity, and inside every ancestor's
+    // clip, so it slides, fades and scrolls out of view with the element: the
+    // focus ring used to be drawn by the shell as a separate layer and had to
+    // be taught each of those one at a time.
+    for (_, kind) in paint.iter().filter(|(nid, _)| *nid == id) {
+        if let PaintKind::Outline(o) = kind {
+            out.paints.push(outline_paint(o, x, y, layout.size.width, layout.size.height, clip_radius));
+        }
+    }
     if transform.is_some() {
         out.paints.push(Paint::PopTransform);
     }
     if alpha < 1.0 {
         out.paints.push(Paint::PopOpacity);
     }
+}
+
+/// An outline as a stroked rect around a `width` x `height` box at `(x, y)`
+/// whose corners are `radius`.
+///
+/// Drawn as a border on the rect `offset + width` outside the box, since a
+/// border is drawn inward. Each rounded corner grows by the same distance, so
+/// the line stays parallel to the curve; a square corner stays square. An
+/// `auto` ring is always a little round, as a platform's focus ring is.
+fn outline_paint(o: &Outline, x: f32, y: f32, width: f32, height: f32, radius: Corners) -> Paint {
+    let out = o.offset + o.width;
+    let corner = |r: f32| {
+        let grown = if r > 0.0 { (r + out).max(0.0) } else { 0.0 };
+        if o.auto {
+            grown.max(4.0)
+        } else {
+            grown
+        }
+    };
+    Paint::Rect(PaintRect {
+        x: x - out,
+        y: y - out,
+        width: (width + 2.0 * out).max(0.0),
+        height: (height + 2.0 * out).max(0.0),
+        background: None,
+        radius: [corner(radius[0]), corner(radius[1]), corner(radius[2]), corner(radius[3])],
+        border: Sides::uniform(o.width),
+        border_color: Some(o.color.unwrap_or(Outline::RING)),
+    })
 }
 
 /// Bake a transform-origin at `(ox, oy)` into a local transform matrix `m`, so

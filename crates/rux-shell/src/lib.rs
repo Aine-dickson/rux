@@ -642,38 +642,6 @@ fn scrollbar_paints(scrolls: &[ScrollRegion], offsets: &[Offset], alpha: f32) ->
     out
 }
 
-/// A 2px focus ring just outside the focused element's box.
-///
-/// `within` is the scroller the item sits in, if any. The ring is painted as
-/// its own scene after the document's, so it never passes through the
-/// `PushClip` a scroller emits around its children; without clipping it here, a
-/// ring on a row scrolled out of a list draws over whatever is above the list.
-/// The ring is allowed the 2px it sits outside its element by, so a focused row
-/// flush with the top of its container still shows one.
-fn focus_ring(item: &FocusItem, within: Option<&ScrollRegion>, alpha: f32) -> Vec<Paint> {
-    let ring = Paint::Rect(PaintRect {
-        x: item.x - 2.0,
-        y: item.y - 2.0,
-        width: item.width + 4.0,
-        height: item.height + 4.0,
-        background: None,
-        radius: [7.0; 4],
-        border: Sides::uniform(2.0),
-        border_color: Some(Rgba::new(0.54, 0.71, 0.98, alpha)), // #89b4fa
-    });
-    let Some(r) = within else { return vec![ring] };
-    // Scrolled entirely out of view: draw nothing rather than a ring clipped to
-    // a sliver at the edge, which reads as a rendering fault.
-    if item.y + item.height < r.y || item.y > r.y + r.height {
-        return Vec::new();
-    }
-    vec![
-        Paint::PushClip { x: r.x - 2.0, y: r.y - 2.0, width: r.width + 4.0, height: r.height + 4.0, radius: [0.0; 4] },
-        ring,
-        Paint::PopClip,
-    ]
-}
-
 /// Paint items for an open dropdown: a single floating panel with a shadow, the
 /// selected value picked out as a pill, and thin separators between options.
 /// The selection toolbar: one rounded strip of actions above (or below) the
@@ -1483,6 +1451,10 @@ struct App {
     focusables: Vec<FocusItem>,
     /// Index into `focusables` of the keyboard-focused element, if any.
     focus_index: Option<usize>,
+    /// Whether the last thing the person did was on the keyboard rather than
+    /// with a pointer or a finger. It decides whether a focused button shows
+    /// its focus: see [`App::sync_focus_state`].
+    keyboard_modality: bool,
     /// Whether Shift is held (Shift+Tab reverse traversal; Shift+arrows extend a
     /// selection; Shift+wheel scrolls sideways).
     shift_held: bool,
@@ -1759,6 +1731,7 @@ impl App {
             selects: Vec::new(),
             focusables: Vec::new(),
             focus_index: None,
+            keyboard_modality: false,
             shift_held: false,
             ctrl_held: false,
             alt_held: false,
@@ -3051,6 +3024,38 @@ impl App {
         }
     }
 
+    /// Tell the document which element that is not a text field has focus, and
+    /// whether to show it, so `:focus` and `:focus-visible` match it and the
+    /// default stylesheet's ring is drawn on it.
+    ///
+    /// **Shown after the keyboard, not after a tap**, which is the rule
+    /// browsers settled on: a button pressed with a finger or a mouse does not
+    /// grow a ring, and the same button reached with Tab does, because only
+    /// then is the ring the one way to see where you are. A text field shows
+    /// its focus either way, and is not decided here (see
+    /// `rux_style::ElemStates::focus_visible`). The ring used to be drawn by
+    /// the shell on every focus, tapped or not, and nothing could restyle it.
+    ///
+    /// Run once per wake-up rather than at each place focus moves: Tab, a tap,
+    /// Escape, a `focus()` and a rebuild that lost the element all move it,
+    /// and this catches every one.
+    fn sync_focus_state(&mut self) {
+        let path = self.focus_index.and_then(|i| self.focusables.get(i)).and_then(|f| f.path.clone());
+        // Whether it would be shown only matters while something is focused
+        // this way, and leaving it false otherwise saves a re-cascade every
+        // time the person goes from typing to clicking.
+        let visible = path.is_some() && self.keyboard_modality;
+        let mut next = self.document.interaction().clone();
+        if next.focused_path == path && next.focus_visible == visible {
+            return;
+        }
+        next.focused_path = path;
+        next.focus_visible = visible;
+        if self.document.set_interaction(next) {
+            self.request_redraw();
+        }
+    }
+
     /// Tell the document which input has focus, so `:focus` rules match it.
     fn update_focus_state(
         &mut self,
@@ -4253,7 +4258,8 @@ impl App {
     }
 
     /// Point keyboard focus at `index`. A text input also gets caret editing (with
-    /// the caret at the end); anything else just gets the focus ring.
+    /// the caret at the end); anything else is only focused, and shows it
+    /// through `:focus-visible`.
     fn set_keyboard_focus(&mut self, index: Option<usize>) {
         self.focus_index = index;
         match index.and_then(|i| self.focusables.get(i)).map(|f| f.kind.clone()) {
@@ -5819,19 +5825,6 @@ impl App {
             state.scene.append(&scene, Some(Affine::scale(scale) * to_affine(region.transform)));
         }
 
-        // A keyboard focus ring, drawn over the content (but under a dropdown),
-        // and through the same lens for the same reason.
-        if let Some(item) = focus_index.and_then(|i| layout.focusables.get(i)) {
-            if item.alpha > 0.001 {
-                let within = item.scroll.and_then(|s| layout.scrolls.get(s));
-                let ring =
-                    rux_paint::build_scene(&focus_ring(item, within, item.alpha), text, images, false);
-                state
-                    .scene
-                    .append(&ring, Some(Affine::scale(scale) * to_affine(item.transform)));
-            }
-        }
-
         // The selection toolbar, over the content while something is selected.
         // It is the only route to copy and paste on a phone, and on the web at
         // all, so it is drawn above the page rather than inside it.
@@ -6551,6 +6544,7 @@ impl ApplicationHandler<RuxEvent> for App {
                 let here = ((at.0 / scale) as f32, (at.1 / scale) as f32);
                 match touch.phase {
                     TouchPhase::Started => {
+                        self.keyboard_modality = false;
                         // There is no hover on a touchscreen, so the pointer only
                         // exists while a finger is down and has to be set here.
                         // Every helper below reads it.
@@ -6745,6 +6739,9 @@ impl ApplicationHandler<RuxEvent> for App {
                 // While a composition is running the input method owns the
                 // keyboard: the same keystrokes also arrive here, and acting on
                 // them would type the letters twice, once raw and once composed.
+                if event.state == ElementState::Pressed {
+                    self.keyboard_modality = true;
+                }
                 if event.state == ElementState::Pressed && self.preedit.is_none() {
                     // **Android's Back button, and it closes the app the same
                     // way a desktop window does.** winit decodes it as
@@ -6787,6 +6784,7 @@ impl ApplicationHandler<RuxEvent> for App {
                     (self.pointer.0 / scale) as f32,
                     (self.pointer.1 / scale) as f32,
                 );
+                self.keyboard_modality = false;
                 // A mouse is one finger with id 0 for as long as its button is
                 // held, so a handler written for a phone reads the same here.
                 self.points.clear();
@@ -6873,6 +6871,8 @@ impl ApplicationHandler<RuxEvent> for App {
         // Whatever `@input`, `@change`, `@focus` and `@blur` the events since
         // the last wake-up queued, now that the shell is done with them.
         self.flush_field_events();
+
+        self.sync_focus_state();
 
         // A finger lifting does not always draw a frame, and the text menu
         // waits on the lift.
@@ -9931,34 +9931,6 @@ mod tests {
         assert_eq!(typed_value(InputKind::Text, "2026-09-03", &field, '.'), None, "text is not typed");
     }
 
-    fn focusable(y: f32, scroll: Option<usize>) -> FocusItem {
-        FocusItem {
-            transform: None,
-            alpha: 1.0,
-            x: 40.0,
-            y,
-            width: 200.0,
-            height: 50.0,
-            kind: FocusKind::Activate { on_tap: String::new(), instance: None },
-            scroll,
-        }
-    }
-
-    fn scroller() -> ScrollRegion {
-        ScrollRegion {
-            transform: None,
-            alpha: 1.0,
-            id: 0,
-            x: 30.0,
-            y: 100.0,
-            width: 220.0,
-            height: 220.0,
-            content_width: 220.0,
-            content_height: 600.0,
-            max: Offset { x: 0.0, y: 380.0 },
-        }
-    }
-
     /// The names on the command line are the names in the table, and a wrong
     /// one is answered with the list rather than with "unknown".
     #[test]
@@ -9986,41 +9958,6 @@ mod tests {
             );
             assert!(profile.density >= 2.0, "{} is not a device density", profile.name);
         }
-    }
-
-    /// Outside a scroller there is nothing to clip against, so the ring is one
-    /// plain rectangle, as it always was.
-    #[test]
-    fn a_focus_ring_outside_a_scroller_is_unclipped() {
-        assert_eq!(focus_ring(&focusable(150.0, None), None, 1.0).len(), 1);
-    }
-
-    /// The ring is painted as its own scene after the document's, so it never
-    /// passes through the clip a scroller puts around its children. It has to
-    /// carry its own, or a ring on a row scrolled up out of a list draws over
-    /// whatever sits above the list. That is a real defect, seen in
-    /// `examples/router.rux`: the crew list drew a ring over the paragraph
-    /// above it.
-    #[test]
-    fn a_focus_ring_inside_a_scroller_is_clipped_to_it() {
-        let paints = focus_ring(&focusable(150.0, Some(0)), Some(&scroller()), 1.0);
-        assert_eq!(paints.len(), 3, "a clip, the ring, and the matching pop");
-        assert!(matches!(paints[0], Paint::PushClip { .. }), "{:?}", paints[0]);
-        assert!(matches!(paints[2], Paint::PopClip), "{:?}", paints[2]);
-    }
-
-    /// Scrolled fully out of view it draws nothing at all. A ring clipped to a
-    /// sliver at the container's edge reads as a rendering fault rather than as
-    /// a focused element that happens to be off-screen.
-    #[test]
-    fn a_focus_ring_scrolled_out_of_view_is_not_drawn() {
-        let above = focus_ring(&focusable(-90.0, Some(0)), Some(&scroller()), 1.0);
-        assert!(above.is_empty(), "scrolled off the top: {above:?}");
-        let below = focus_ring(&focusable(400.0, Some(0)), Some(&scroller()), 1.0);
-        assert!(below.is_empty(), "scrolled off the bottom: {below:?}");
-        // And one straddling the edge is still drawn, clipped.
-        let edge = focus_ring(&focusable(90.0, Some(0)), Some(&scroller()), 1.0);
-        assert_eq!(edge.len(), 3, "partly visible, so still drawn: {edge:?}");
     }
 
     /// The overlay covers the app it is describing, so it has to be dismissable.

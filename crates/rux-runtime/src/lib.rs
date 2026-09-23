@@ -1775,15 +1775,18 @@ impl Document {
         if next == self.state {
             return false;
         }
-        // A focus move can restyle anything (`:focus` is matched by model, not by
-        // path, and `.field:focus .hint` reaches elsewhere), so it re-cascades from
-        // the root. It is rare, one click or Tab, and the caret is being moved
-        // anyway, so there is no ephemeral state left to preserve.
+        // A focus move can restyle anything (a field's `:focus` is matched by
+        // model, not by path, and `.field:focus .hint` reaches elsewhere), so it
+        // re-cascades from the root. It is rare, one click or Tab, and the caret
+        // is being moved anyway, so there is no ephemeral state left to preserve.
         let mut roots: Vec<Vec<usize>> = Vec::new();
         // A field touched or a form attempted re-cascades from the root too:
         // `:user-invalid` reaches every field of the form at once.
         if next.focused_model == self.state.focused_model
             && next.focused_row == self.state.focused_row
+            && next.focused_instance == self.state.focused_instance
+            && next.focused_path == self.state.focused_path
+            && next.focus_visible == self.state.focus_visible
             && next.touched == self.state.touched
             && next.attempted == self.state.attempted
         {

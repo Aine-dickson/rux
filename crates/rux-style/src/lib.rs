@@ -22,7 +22,7 @@ use rux_layout::{
     TextWrap, TouchAction, Track, TrackSide,
 };
 use rux_layout::{AnimProp, Easing, GradientKind, GridFlow, Transform, Transition};
-use rux_layout::{FillRule, InputKind, LineCap, LineJoin, PathContent};
+use rux_layout::{FillRule, InputKind, LineCap, LineJoin, Outline, PathContent};
 use rux_parser::{Element, Node as TplNode, Sfc};
 use rux_reactive::Value;
 /// Re-exported so the runtime and the shell can name a warning without
@@ -2146,6 +2146,9 @@ struct Compound {
 enum Pseudo {
     Hover,
     Focus,
+    /// `:focus-visible`: focused, and in a way the person should be shown.
+    /// See [`ElemStates::focus_visible`].
+    FocusVisible,
     Active,
     Checked,
     Current,
@@ -2183,6 +2186,11 @@ enum Pseudo {
 pub struct ElemStates {
     pub hover: bool,
     pub focus: bool,
+    /// Focused, and the focus should be shown: a text field whenever it has
+    /// focus, anything else only when focus got there from the keyboard. That
+    /// is the rule browsers use, and the reason a button tapped with a finger
+    /// shows no ring while the same button reached with Tab does.
+    pub focus_visible: bool,
     pub active: bool,
     pub checked: bool,
     /// This element's `to` names the path we are on. Resolved at build time from
@@ -2233,6 +2241,13 @@ pub struct InteractionState {
     /// it `:focus` lights the same input in *every* instance of a component,
     /// since they all carry the same `r-model` text as well.
     pub focused_instance: Option<String>,
+    /// Path of the focused element when it is not a text field: a `@tap` box
+    /// or a select, which Tab reaches and which have no `r-model` to be known
+    /// by. A text field is known by the three fields above instead.
+    pub focused_path: Option<Vec<usize>>,
+    /// Whether focus got where it is from the keyboard, which is when
+    /// anything but a text field shows it. See [`ElemStates::focus_visible`].
+    pub focus_visible: bool,
     /// Fields the person has left, as `(r-model, row, instance)`, the same
     /// three-part identity focus uses. What `:user-invalid` waits for.
     pub touched: Vec<(String, Option<String>, Option<String>)>,
@@ -2268,6 +2283,7 @@ impl Pseudo {
         match name.to_ascii_lowercase().as_str() {
             "hover" => Self::Hover,
             "focus" => Self::Focus,
+            "focus-visible" => Self::FocusVisible,
             "active" => Self::Active,
             "checked" => Self::Checked,
             "current" => Self::Current,
@@ -2289,6 +2305,7 @@ impl Pseudo {
         match self {
             Self::Hover => s.hover,
             Self::Focus => s.focus,
+            Self::FocusVisible => s.focus_visible,
             Self::Active => s.active,
             Self::Checked => s.checked,
             Self::Current => s.current,
@@ -3231,6 +3248,7 @@ const HONORED_PROPERTIES: &[&str] = &[
     "border-top-width", "border-right-width", "border-bottom-width", "border-left-width",
     "overflow", "overflow-x", "overflow-y", "opacity", "cursor", "touch-action", "box-shadow", "transform",
     "transition",
+    "outline", "outline-color", "outline-offset", "outline-style", "outline-width",
     // Flex / grid
     "flex", "flex-grow", "flex-shrink", "flex-basis", "flex-wrap", "flex-direction",
     "justify-content", "align-items", "align-self", "justify-self", "justify-items",
@@ -3402,8 +3420,9 @@ pub fn honored_pseudo_classes() -> &'static [&'static str] {
 
 const HONORED_PSEUDO_CLASSES: &[&str] =
     &[
-        "hover", "focus", "active", "checked", "current", "enter-from", "leave-to", "disabled",
-        "enabled", "valid", "invalid", "user-valid", "user-invalid", "required", "optional",
+        "hover", "focus", "focus-visible", "active", "checked", "current", "enter-from",
+        "leave-to", "disabled", "enabled", "valid", "invalid", "user-valid", "user-invalid",
+        "required", "optional",
     ];
 
 /// The properties `transition` can name, in the order `all` expands them.
@@ -3435,7 +3454,6 @@ const INSETS: [&str; 4] = ["top", "right", "bottom", "left"];
 /// moving it to [`HONORED_PROPERTIES`] is the second.
 const UNIMPLEMENTED_PROPERTIES: &[&str] = &[
     // Painting and compositing
-    "outline", "outline-color", "outline-offset", "outline-style", "outline-width",
     "z-index", "filter", "backdrop-filter", "mix-blend-mode", "isolation",
     "visibility", "clip-path", "mask", "text-shadow",
     // Boxes
@@ -3747,7 +3765,8 @@ fn warn_unknown_pseudo(name: &str) {
     static SEEN: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
     let message = format!(
         "pseudo-class `:{name}` is not supported, rules using it will never match \
-         (supported: :hover, :focus, :active, :checked)"
+         (supported: :{})",
+        HONORED_PSEUDO_CLASSES.join(", :")
     );
     warn(message.clone());
     let seen = SEEN.get_or_init(|| Mutex::new(HashSet::new()));
@@ -3983,12 +4002,19 @@ fn build_node(
     row: Option<&str>,
     swap: Option<SwapSide>,
 ) -> LayoutNode {
-    rux_script::located(Some(el.line), || {
+    let mut node = rux_script::located(Some(el.line), || {
         build_node_inner(
             el, rules, comps, ancestors, prev, inherited, engine, locals, path, tpl_path, reg,
             state, instances, swaps, instance, slot, outlet, row, swap,
         )
-    })
+    });
+    // Anything keyboard focus can land on carries the path `:focus` is matched
+    // by, the same path `:hover` uses. A component expands in place at the
+    // element's own path, so its root may already carry it.
+    if node.focus_path.is_none() && (node.on_tap.is_some() || node.model.is_some()) {
+        node.focus_path = Some(path.to_vec());
+    }
+    node
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -4157,7 +4183,7 @@ fn build_node_inner(
     desc.states.leave_to = swap.is_some_and(|s| s.phase == Phase::Leaving);
     // Both halves, or every row of a list matches at once: they all carry the
     // same `r-model` text, so the model alone cannot pick one out.
-    desc.states.focus = match (&state.focused_model, el.attr("r-model")) {
+    let field_focused = match (&state.focused_model, el.attr("r-model")) {
         (Some(focused), Some(model)) => {
             focused == model
                 && state.focused_row.as_deref() == row
@@ -4165,6 +4191,13 @@ fn build_node_inner(
         }
         _ => false,
     };
+    // Anything else is known by where it is. The element itself only: an
+    // ancestor of the focused element is `:focus-within`, not `:focus`.
+    let other_focused = state.focused_path.as_deref() == Some(path);
+    desc.states.focus = field_focused || other_focused;
+    // A text field shows its focus however it got it, since it is about to be
+    // typed into; anything else only after the keyboard put it there.
+    desc.states.focus_visible = field_focused || (other_focused && state.focus_visible);
     // `:class`: dynamic classes fed into the cascade (the `checked` pattern,
     // generalized). Signals it reads are collected for reconcile.
     let mut dyn_deps: HashSet<String> = disabled_deps;
@@ -4283,7 +4316,18 @@ fn build_node_inner(
     // reported as the length it turned out to be rather than as `var(--x)`.
     warn_unparseable_lengths(&props);
 
-    let style = screen_fills_the_display(interpret(&props), el, path, &props);
+    // **The focus ring is the default stylesheet's, and the author's rules
+    // come after it.** Every browser ships `:focus-visible { outline: auto }`,
+    // so any `outline` an author writes for the element replaces the ring and
+    // `outline: none` removes it. Added only where the author said nothing
+    // about the outline's style, which is exactly where a user-agent rule
+    // would survive the cascade.
+    if desc.states.focus_visible && !props.contains_key("outline") && !props.contains_key("outline-style")
+    {
+        props.insert("outline-style".to_string(), "auto".to_string());
+    }
+
+    let mut style = screen_fills_the_display(interpret(&props), el, path, &props);
     // A `@tap` handler runs later, in global scope, where the `r-for` loop
     // variable no longer exists, so `@tap="picked = item"` would see `item`
     // undefined and silently do nothing. Bake the current loop bindings into the
@@ -4351,6 +4395,11 @@ fn build_node_inner(
         .get("color")
         .and_then(|v| parse_color(v))
         .unwrap_or(inherited.color);
+    // An outline with no colour of its own is drawn in the element's `color`,
+    // which is only known now. An `auto` ring keeps the ring's colour.
+    if let Some(o) = style.outline.as_mut().filter(|o| !o.auto) {
+        o.color.get_or_insert(color);
+    }
     let selection = matched_selection(&desc, ancestors, prev, rules, inherited.selection);
     // Already resolved above, against the inherited size, so that the `em` pass
     // had something to resolve against.
@@ -5002,6 +5051,7 @@ fn build_node_inner(
         label_for: el.attr("for").map(str::to_string),
         focus_model: None,
         state_path,
+        focus_path: None,
         access: Access::default(),
         // Set when this node is inside a component, so a handler on it knows
         // whose state it is running against.
@@ -6670,6 +6720,7 @@ fn interpret(p: &HashMap<String, String>) -> Style {
     if let Some(v) = p.get("box-shadow") {
         st.box_shadow = parse_box_shadow(v);
     }
+    st.outline = interpret_outline(p);
     // `border-radius` shorthand (1–4 values, CSS diagonal grouping), then the
     // per-corner longhands override.
     if let Some(v) = p.get("border-radius") {
@@ -7607,6 +7658,86 @@ fn interpret_path_paint(p: &HashMap<String, String>, st: &mut Style) {
     }
 }
 
+/// `outline` and its longhands, as CSS reads them: the shorthand resets all
+/// three of its parts, the longhands then override one each, and
+/// `outline-offset` is on its own.
+///
+/// `None` is no outline: the initial `outline-style: none`, `hidden`, or a
+/// width of zero, which is how `outline: 0` removes one. The colour is left
+/// `None` for the caller to fill with the element's `color`, CSS's
+/// `currentColor`, which is not known yet here.
+///
+/// An `auto` style is the platform's ring and is 2px unless a width is
+/// written. Only solid lines are drawn, as with `border`, so a `dashed` or
+/// `dotted` outline is drawn solid and says so once.
+fn interpret_outline(p: &HashMap<String, String>) -> Option<Outline> {
+    let mut width: Option<f32> = None;
+    let mut style: Option<String> = None;
+    let mut color: Option<Rgba> = None;
+    if let Some(v) = p.get("outline") {
+        for token in v.split_whitespace() {
+            if let Some(w) = outline_width(token) {
+                width = Some(w);
+            } else if OUTLINE_STYLES.contains(&token) {
+                style = Some(token.to_string());
+            } else if let Some(c) = parse_color(token) {
+                color = Some(c);
+            }
+        }
+    }
+    if let Some(w) = p.get("outline-width").and_then(|v| outline_width(first(v))) {
+        width = Some(w);
+    }
+    if let Some(v) = p.get("outline-style") {
+        style = Some(first(v).to_string());
+    }
+    if let Some(c) = p.get("outline-color").and_then(|v| parse_color(v)) {
+        color = Some(c);
+    }
+    let style = style?;
+    let auto = style == "auto";
+    match style.as_str() {
+        "none" | "hidden" => return None,
+        "auto" | "solid" => {}
+        other if OUTLINE_STYLES.contains(&other) => warn_once(format!(
+            "`outline-style: {other}` is drawn solid: Rux draws outlines, like borders, \
+             as solid lines only."
+        )),
+        other => {
+            warn_once(format!(
+                "`outline-style: {other}` is not an outline style, so the outline is not \
+                 drawn. Use solid, auto or none."
+            ));
+            return None;
+        }
+    }
+    // CSS's initial width is `medium`, 3px. The ring is the platform's own.
+    let width = width.unwrap_or(if auto { 2.0 } else { 3.0 });
+    if width <= 0.0 {
+        return None;
+    }
+    let offset = p.get("outline-offset").and_then(|v| parse_px(first(v))).unwrap_or(0.0);
+    Some(Outline { width, color, offset, auto })
+}
+
+/// Every `outline-style` keyword CSS has. What Rux draws of each is decided
+/// in [`interpret_outline`].
+const OUTLINE_STYLES: &[&str] = &[
+    "none", "hidden", "auto", "solid", "dotted", "dashed", "double", "groove", "ridge", "inset",
+    "outset",
+];
+
+/// An `outline-width`: a length, or one of the three keywords with the sizes
+/// browsers give them.
+fn outline_width(token: &str) -> Option<f32> {
+    match token {
+        "thin" => Some(1.0),
+        "medium" => Some(3.0),
+        "thick" => Some(5.0),
+        _ => parse_px(token),
+    }
+}
+
 /// Parse `border` box-model props: `border`, `border-width`, `border-color`,
 /// `border-<side>`, `border-<side>-width`.
 fn interpret_border(p: &HashMap<String, String>, st: &mut Style) {
@@ -7958,7 +8089,7 @@ mod tests {
 
     /// The three states an unhonored property can be in have to stay three.
     ///
-    /// They were one message for a long time, so `outline` (real CSS, not
+    /// They were one message for a long time, so `z-index` (real CSS, not
     /// built), `paddding` (a typo) and `florble` (invented) all read as "parsed
     /// but not yet honored", and an author with a typo waited for a release.
     #[test]
@@ -7967,7 +8098,7 @@ mod tests {
 
         // Real CSS, unbuilt: named as such, and never offered as a correction
         // for itself.
-        assert!(UNIMPLEMENTED_PROPERTIES.contains(&"outline"));
+        assert!(UNIMPLEMENTED_PROPERTIES.contains(&"z-index"));
         assert!(UNIMPLEMENTED_PROPERTIES.contains(&"transform-origin"));
 
         // A typo finds the property it was reaching for.
@@ -9467,6 +9598,7 @@ mod tests {
         let s = ElemStates {
             hover: false,
             focus: true,
+            focus_visible: false,
             active: false,
             checked: true,
             current: false,
@@ -9483,6 +9615,7 @@ mod tests {
         assert!(hits_state("input:required", "input", s));
         assert!(!hits_state("input:optional", "input", s));
         assert!(hits_state("input:focus", "input", s));
+        assert!(!hits_state("input:focus-visible", "input", s), "focused, but not to be shown");
         assert!(hits_state("input:disabled", "input", s));
         assert!(!hits_state("input:enabled", "input", s));
         assert!(hits_state("input:checked", "input", s));
@@ -9506,6 +9639,7 @@ mod tests {
         let all_on = ElemStates {
             hover: true,
             focus: true,
+            focus_visible: true,
             active: true,
             checked: true,
             current: true,

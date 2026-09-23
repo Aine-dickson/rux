@@ -485,6 +485,9 @@ border-top-width, border-right-width, border-bottom-width, border-left-width
 background, background-color, background-image, opacity
   (colour, linear-/radial-gradient, or url(…) image, cover-sized, clipped to corners)
 box-shadow (single, outer; inset parsed but not drawn)
+outline, outline-width, outline-style, outline-color, outline-offset
+  (none | solid | auto; drawn outside the border box, over the content, following
+   border-radius; the colour defaults to the element's color; see below)
 transition (property duration easing delay, comma-separated; see below)
 border-radius (1–4 diagonal shorthand; px/rem/em, and % against the box)
 border-top-left-radius, border-top-right-radius
@@ -545,7 +548,7 @@ uses to draw a radio button.
 combinators: descendant (`.a .b`), child (`.a > .b`), next-sibling (`.a + .b`),
 subsequent-sibling (`.a ~ .b`).
 
-**Pseudo-classes:** `:hover`, `:focus`, `:active`, `:checked`, `:current` (a
+**Pseudo-classes:** `:hover`, `:focus`, `:focus-visible`, `:active`, `:checked`, `:current` (a
 link whose `to` names the path you are on), `:disabled` / `:enabled` (an
 `<input>` or `<button>` with or without `disabled`; a plain box is neither, as in
 CSS), `:valid` / `:invalid`, `:user-valid` / `:user-invalid` and `:required` /
@@ -555,7 +558,30 @@ CSS), `:valid` / `:invalid`, `:user-valid` / `:user-invalid` and `:required` /
 chain, `.card:hover .title` recolours the title while the pointer is over the
 card. `:hover`/`:active` hold for the whole chain under the pointer, as in CSS;
 `:active` is press-to-release and drops if you drag off the element; `:focus`
-matches the input holding the caret. Driven in `examples/pseudo.rux`.
+matches the focused element itself (a field, a select or a `@tap` box), not its
+ancestors; `:focus-visible` matches it when the focus should show, which is
+browsers' rule: a text field always, anything else only when the keyboard put
+focus there. Driven in `examples/pseudo.rux`.
+
+**The focus ring is an `outline`.** The default stylesheet is
+`:focus-visible { outline: auto }`, as every browser's is, so the ring is
+restyled and removed with ordinary CSS:
+
+```css
+.send:focus-visible { outline: 2px solid #f9e2af; outline-offset: 2px; }
+.tab:focus-visible  { outline: none; background: #313244; }
+.card               { outline-color: #f38ba8; }   /* recolours the ring only */
+```
+
+An author's `outline-style` (or the `outline` shorthand) on the focused element
+replaces the ring; `outline-color`, `outline-width` or `outline-offset` alone
+adjust it. `auto` is 2px in the ring's own blue, a little round even on a
+square box. `outline` works on any element, focused or not, and takes no room
+in the layout. It is painted over the element's content, outside the element's
+own `overflow` clip and inside every ancestor's, so an outline on a row in a
+scrolled list is clipped by the list, as in a browser. **Only solid lines are
+drawn**, as for `border`: `dashed`, `dotted`, `double` and the 3D styles are
+drawn solid and say so once. That is a capability Rux lacks, not a choice.
 
 Any *other* pseudo-class (`:nth-child(…)`, `::before`) **never
 matches**, and says so once on stderr. Before this existed the `:` was silently
@@ -1012,7 +1038,7 @@ happened, because they are not the same problem:
 
 | You wrote | It says |
 |---|---|
-| `outline: 1px solid red` | ``CSS property `outline` is real CSS that Rux does not honor yet, so it will have no effect`` |
+| `z-index: 2` | ``CSS property `z-index` is real CSS that Rux does not honor yet, so it will have no effect`` |
 | `paddding: 8px` | ``` `paddding` is not a CSS property Rux knows, so it will have no effect. Did you mean `padding`? ``` |
 | `florble: 3` | ``` `florble` is not a CSS property Rux knows, so it will have no effect ``` |
 
@@ -1020,9 +1046,9 @@ The middle case is the one worth having. Until v0.7.1 a typo got the same "not
 yet honored" line a real unbuilt property got, so it read as a feature on its
 way and an author could wait for a release that was never going to fix it.
 
-Real CSS Rux has not built includes `outline`, `z-index`, `box-sizing`,
+Real CSS Rux has not built includes `z-index`, `box-sizing`,
 `transform-origin`, `visibility`, `filter`, `text-transform`, `background-size`,
-`list-style` and the `animation` family. `line-height`, `box-shadow`,
+`list-style` and the `animation` family. `line-height`, `box-shadow`, `outline`,
 gradients, `transform`, CSS variables and all five `position` values used to be
 on that list and are honored now.
 
@@ -1188,9 +1214,11 @@ dialog, by Back or by tapping outside, leaves the value alone. `:options` and
 `r-model` are the same either way, so a document never knows which it got.
 `background-size` and native mobile pickers are not done.
 
-**Keyboard focus:** **Tab** / **Shift+Tab** move a focus ring through every
+**Keyboard focus:** **Tab** / **Shift+Tab** move focus through every
 interactive element (text/textarea/select inputs, buttons, checkboxes, radios) in
-document order; tapping one also moves the ring there. A focused text input edits;
+document order, and the focused one shows the ring; tapping one also moves focus
+there, and only a text field shows the ring after a tap (see `:focus-visible`
+above). A focused text input edits;
 a focused **button/checkbox/radio** activates on **Space/Enter** (running the same
 handler as a tap); a focused **select** opens on Space/Enter. So checkboxes and
 radios are now keyboard-reachable, not tap-only.

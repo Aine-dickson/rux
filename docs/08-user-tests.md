@@ -1941,6 +1941,32 @@ attached too, so it was also the first run of `--serial`.
 | A release build | any | `--release` installs and exits, with no socket and no network permission | tested in `apk.rs`, not driven |
 | On a phone, over wireless adb | phone | As above | |
 
+## `outline`, and the focus ring as one, 2026-09-24
+
+Watchlist #4. The ring was drawn by the shell on every focus, tapped or tabbed,
+in one fixed look nothing could change. It is now the default stylesheet's
+`:focus-visible { outline: auto }`, and `outline` is honoured on any element.
+Under test in `crates/rux-runtime/tests/outline.rs`. Driven in the desktop
+window against `rux-harness/outline-probe.rux` with `outline-drive.ps1`
+(SendKeys for Tab, `mouse_event` for clicks).
+
+| Case | Where | Expect | Result |
+|---|---|---|---|
+| An outline on a box nobody focused | the green card | Drawn outside the border, following its 12px corners, 4px out | window: pass |
+| Tab to a plain button | plain | The default ring, following the button's corners | window: pass |
+| An author's ring | custom | `outline: 3px solid` yellow, 3px out, instead of the default | window: pass |
+| `outline: none` | none | No ring; the author's focus background instead | window: pass |
+| Tab into a field | the field | The ring | window: pass |
+| Tab into a list that scrolls | row three | The list scrolls to it; the ring is clipped by the list, as in a browser | window: pass. The ring's lower edge is cut where the row sits flush with the list's edge |
+| Click a button | plain | Its tap runs and **no ring** shows | window: pass (`taps: 1`, no ring) |
+| Click a field | the field | The ring shows after a click too | window: pass |
+| Shift+Tab after a click | none | Keyboard again, so focus shows | window: pass |
+| On a phone | any | A tapped button shows nothing; a field shows the ring | |
+
+Found alongside: focusing "none" by Shift+Tab scrolled the list below it back
+to the top. Scrolling focus into view moved every scroller the element
+overlapped sideways, not only the ones it sits in.
+
 ## Standing gaps
 
 Cases nothing here can currently exercise. They are the shape of what v0.8 has

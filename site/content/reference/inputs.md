@@ -48,9 +48,11 @@ dialog, by Back or by tapping outside, leaves the value alone. `:options` and
 `r-model` are the same either way, so a document never knows which it got.
 `background-size` and native mobile pickers are not done.
 
-**Keyboard focus:** **Tab** / **Shift+Tab** move a focus ring through every
+**Keyboard focus:** **Tab** / **Shift+Tab** move focus through every
 interactive element (text/textarea/select inputs, buttons, checkboxes, radios) in
-document order; tapping one also moves the ring there. A focused text input edits;
+document order, and the focused one shows the ring; tapping one also moves focus
+there, and only a text field shows the ring after a tap (see `:focus-visible`
+above). A focused text input edits;
 a focused **button/checkbox/radio** activates on **Space/Enter** (running the same
 handler as a tap); a focused **select** opens on Space/Enter. So checkboxes and
 radios are now keyboard-reachable, not tap-only.
