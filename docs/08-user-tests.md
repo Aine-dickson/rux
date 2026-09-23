@@ -1718,6 +1718,22 @@ Written before the phone session. Results are filled in as driven.
 | Type `2026-9-3` into a date | desktop | Written back as `2026-09-03` on leaving; a half-typed date never reaches the signal |
 | A screen reader on each control | phone | Announced as a number field, a switch, a slider with its value, a date |
 
+**First phone results, same day.** The date picker opened on today for the
+empty field. Dragging the volume slider back and forth logged one `input` per
+whole step and one `CHANGE` on release, and the thumb **hops from step to
+step**, as the user put it "just like the switch". That is the step doing its
+job: HTML's range input and Android's discrete `SeekBar` both snap while
+dragging, and `step="any"` is the continuous one. The switch's jump is the
+missing slide animation, a gap already written down.
+
+**A defect the log itself showed, outside this phase.** The event log is a
+`<text>` with `height: 72px; overflow: clip`, and its lines ran down over the
+whole page. `overflow` clipped a node's *children* and never its own glyphs,
+and a text has no children. Fixed in `rux-layout` (the glyphs are painted
+inside the clip) and pinned by `crates/rux-runtime/tests/text_overflow.rs`,
+which fails without the fix. Re-driven on the phone: twenty taps on a switch
+fill the log and it stops at its border.
+
 ## Standing gaps
 
 Cases nothing here can currently exercise. They are the shape of what v0.8 has

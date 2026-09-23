@@ -2857,15 +2857,35 @@ fn collect(
             // against the edge of its own background: the box grew, the words
             // did not move. The size matters as much as the origin, since it is
             // what the run is aligned and wrapped within.
+            //
+            // **`overflow` clips a text's own glyphs, not only its children.**
+            // The clip below is pushed after a node's own paints, which is
+            // right for a box (it bounds what is inside it) and left a `<text>`
+            // with `height` and `overflow: clip` spilling its lines over
+            // everything under it: a text has no children, its content *is*
+            // the glyphs. Found on the phone, an event log written with
+            // exactly that CSS running down over the page.
             PaintKind::Text(tc) => {
                 let (cx, cy, cw, ch) = content_box(layout);
+                if clip {
+                    out.paints.push(Paint::PushClip {
+                        x,
+                        y,
+                        width: layout.size.width,
+                        height: layout.size.height,
+                        radius: clip_radius,
+                    });
+                }
                 out.paints.push(Paint::Text(PaintText {
                     x: x + cx,
                     y: y + cy,
                     width: cw,
                     height: ch,
                     content: tc.clone(),
-                }))
+                }));
+                if clip {
+                    out.paints.push(Paint::PopClip);
+                }
             }
             PaintKind::Tick(color) => out.paints.push(Paint::Tick(PaintTick {
                 x,
