@@ -357,10 +357,19 @@ fn dirs_home() -> PathBuf {
 /// - **`android.app.lib_name`.** How `NativeActivity` knows which `.so` to
 ///   load, given without the `lib` prefix or the `.so` suffix. It is inherited
 ///   by the subclass, so naming our own activity changes nothing about it.
-/// - **`configChanges`.** Every one of these is a change a native app handles
-///   by being told about it. Leaving them out means Android destroys and
-///   recreates the activity on a rotation, which for a GPU surface means
-///   tearing down the swapchain to redraw the same thing.
+/// - **`configChanges`: all of them, not a chosen few.** A change listed here
+///   is one the app is told about; any other makes Android destroy the
+///   activity and build a new one **in the same process**, and a Rux app does
+///   not survive that. winit keeps its loop on the old activity (it ignores
+///   `MainEvent::Destroy`, see the Back handling in rux-shell), so the new one
+///   shows the last frame, answers nothing, and is killed as not responding.
+///   Driven on the emulator by changing the system font size, which is not
+///   exotic: so are a change of language and a Bluetooth keyboard attaching
+///   (`keyboard`, `navigation`). The list is every flag API 26 knows, the
+///   oldest platform the build accepts; `fontWeightAdjustment` (31) and
+///   `grammaticalGender` (34) would fail `aapt2` on an older `android.jar`.
+///   Nothing is lost by claiming them: Rux redraws from its own state, and a
+///   rotation no longer tears down the swapchain to draw the same thing.
 /// - **`windowSoftInputMode="adjustResize"`**, which tells the app it has less
 ///   room while the keyboard is up. It briefly also carried `stateHidden`,
 ///   because the view that receives an input connection holds focus from the
@@ -394,7 +403,7 @@ fn android_manifest(manifest: &Manifest) -> String {
             android:name="{activity}"{theme}
             android:exported="true"
             android:windowSoftInputMode="adjustResize"
-            android:configChanges="orientation|keyboardHidden|screenSize|screenLayout|density|uiMode">
+            android:configChanges="mcc|mnc|locale|touchscreen|keyboard|keyboardHidden|navigation|screenLayout|fontScale|uiMode|orientation|screenSize|smallestScreenSize|layoutDirection|colorMode|density">
             <meta-data android:name="android.app.lib_name" android:value="{lib}" />
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

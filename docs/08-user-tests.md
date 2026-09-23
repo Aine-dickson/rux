@@ -1864,10 +1864,20 @@ backgrounded process, as the low-memory killer does), then the launcher intent.
 | A number half typed | form, age | "42." comes back as typed, with the number keyboard | adb: pass |
 | Other signals | form | `typed` and the button's count start again; one `@input` runs for the restored text | adb: as designed |
 | A guarded page | any | Signed out in the new process, the guard turns the restore away | runtime test only |
-| "Don't keep activities" | any | The activity is destroyed with the process alive; coming back must not crash | adb: no crash, state intact, but the log showed no destroy, so the case was probably not provoked on this ROM |
+| "Don't keep activities" | any | The activity is destroyed with the process alive; coming back must not crash | Not provoked: neither the phone nor the emulator applied the setting when it was set over adb |
+| The activity rebuilt in the same process | form | Change the system font size with the app open: it keeps working | emulator: **failed, then fixed.** Android rebuilt the activity in the same process, the app showed its last frame and was killed as not responding. The manifest now claims every configuration change, so nothing rebuilds it; re-driven, the font size changed twice and the app kept taking taps in the same process |
+| Reopened from Recents | list | Kill in the background, tap the app's card: the list comes back at its scroll | emulator: pass (a new process, `/list` at row 12) |
 | Reopened from the launcher icon, by hand | any | As above, from the real icon rather than the adb intent | |
+| Tap to move the caret in a component field | form, note | The next letter goes in where the tap put the caret | emulator: pass. The phone's miss was a lost tap |
 
-Two defects came out of driving this, neither of them phase 7's:
+Found alongside, not yet fixed: tapping inside a word the keyboard is still
+composing moves the caret, but AnySoftKeyboard keeps composing the old word, and
+the next letter leaves it doubled ("hello", tap after the h, "z" gives
+"hzelloo"). Any field, not only a component's. And adb's injected keys garble a
+field on the phone under Gboard but type cleanly on the emulator under
+AnySoftKeyboard, so that one needs the phone again.
+
+Three defects came out of driving this, none of them phase 7's own logic:
 
 - **`rux run --device` started the app with a bare `am start -n`.** The task's
   root intent then did not match the launcher's, so reopening stacked a fresh
@@ -1879,6 +1889,10 @@ Two defects came out of driving this, neither of them phase 7's:
   what had just been typed. Every platform, not only Android; `tests/input_in_a_component.rs`
   now covers it with the handler taken from the laid-out tree, and fails
   without the fix.
+- **A configuration change Android was not told the app handles** (font
+  size, language, a Bluetooth keyboard) rebuilt the activity in the same
+  process, which a Rux app cannot survive: winit stays on the old one. The
+  generated manifest now lists every change API 26 knows.
 
 ## Standing gaps
 
