@@ -287,6 +287,11 @@ const SCRIPT_GLOBALS: &[Entry] = &[
     Entry { name: "clearInterval", detail: "clearInterval(handle)", doc: "Stop a timer started by `setInterval`. The handle is what `setInterval` returned." },
     Entry { name: "print", detail: "print(x)", doc: "Printf-debugging. Reaches the dev overlay, not just stderr." },
     Entry { name: "debug", detail: "debug(x)", doc: "Like `print`, with the value's structure shown." },
+    Entry { name: "Number", detail: "Number(text)", doc: "The whole text as a number, as JavaScript reads it: `Number(\"2\")` is 2, `Number(\"\")` is 0, `Number(\"12px\")` is `NaN`. How a route parameter, which is always text, meets a numeric id." },
+    Entry { name: "parseInt", detail: "parseInt(text, radix)", doc: "The whole number that leads the text: `parseInt(\"42px\")` is 42. The radix is optional." },
+    Entry { name: "parseFloat", detail: "parseFloat(text)", doc: "The number that leads the text: `parseFloat(\"12.5px\")` is 12.5, `parseFloat(\"px\")` is `NaN`." },
+    Entry { name: "String", detail: "String(x)", doc: "Any value as the text a `{{ }}` binding would show." },
+    Entry { name: "isNaN", detail: "isNaN(n)", doc: "Whether a number is `NaN`, the answer `Number` and the parsers give for text that is not a number." },
 ];
 
 /// The pseudo-classes a selector may name, with the one line each needs.

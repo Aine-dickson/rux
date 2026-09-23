@@ -504,6 +504,33 @@ fn register_js_names(engine: &mut RhaiEngine) {
     engine.register_get("length", |a: &mut Array| a.len() as i64);
     engine.register_get("length", |s: &mut ImmutableString| s.chars().count() as i64);
 
+    // Text to a number, and back, under JavaScript's names and with its
+    // answers. A route parameter arrives as text (`/task/:id` gives `"2"`), and
+    // a list whose ids are numbers could not be matched against it: rhai's
+    // `parse_int` and `parse_float` exist, but nobody arriving from JS looks
+    // for them, and they raise on bad input where JS says `NaN`.
+    //
+    // `Number` reads the whole text or nothing (`Number("12px")` is `NaN`,
+    // `Number("")` is 0); `parseInt` and `parseFloat` read what leads and stop
+    // (`parseFloat("12.5px")` is 12.5). Every answer is an f64, like every
+    // other number in Rux.
+    engine.register_fn("Number", |s: ImmutableString| js_number(&s));
+    engine.register_fn("Number", |b: bool| if b { 1.0 } else { 0.0 });
+    engine.register_fn("Number", |n: f64| n);
+    engine.register_fn("Number", |n: i64| n as f64);
+    engine.register_fn("parseInt", |s: ImmutableString| js_parse_int(&s, 10));
+    engine.register_fn("parseInt", |s: ImmutableString, radix: Dynamic| {
+        js_parse_int(&s, num(&radix) as u32)
+    });
+    engine.register_fn("parseInt", |n: f64| n.trunc());
+    engine.register_fn("parseInt", |n: i64| n as f64);
+    engine.register_fn("parseFloat", |s: ImmutableString| js_parse_float(&s));
+    engine.register_fn("parseFloat", |n: f64| n);
+    engine.register_fn("parseFloat", |n: i64| n as f64);
+    engine.register_fn("String", |v: Dynamic| from_dynamic(&v).to_display());
+    engine.register_fn("isNaN", |n: f64| n.is_nan());
+    engine.register_fn("isNaN", |_: i64| false);
+
     // Membership and position. rhai spells these `contains` and `index_of`.
     //
     // Comparison goes through `Value`, so `includes` answers the same question
@@ -702,6 +729,88 @@ fn register_js_names(engine: &mut RhaiEngine) {
 /// A literal is an integer and a signal is a float, so any argument a user might
 /// write either way has to accept both. The fork's all-f64 change is what
 /// removes the need for this.
+/// JavaScript's `Number(text)`: the whole text, trimmed, as a number, 0 for
+/// nothing, `NaN` for anything that is not one. `Infinity` is JS's word for
+/// it; Rust's `inf` and `nan` are not, so they are `NaN` here as there.
+fn js_number(s: &str) -> f64 {
+    let t = s.trim();
+    if t.is_empty() {
+        return 0.0;
+    }
+    let (sign, body) = match t.strip_prefix('-') {
+        Some(rest) => (-1.0, rest),
+        None => (1.0, t.strip_prefix('+').unwrap_or(t)),
+    };
+    if body == "Infinity" {
+        return sign * f64::INFINITY;
+    }
+    for (prefix, radix) in [("0x", 16), ("0X", 16), ("0o", 8), ("0O", 8), ("0b", 2), ("0B", 2)] {
+        if let Some(digits) = t.strip_prefix(prefix) {
+            return i64::from_str_radix(digits, radix).map_or(f64::NAN, |n| n as f64);
+        }
+    }
+    let numeric = body.chars().all(|c| c.is_ascii_digit() || matches!(c, '.' | 'e' | 'E' | '+' | '-'));
+    if !numeric || !body.starts_with(|c: char| c.is_ascii_digit() || c == '.') {
+        return f64::NAN;
+    }
+    body.parse::<f64>().map_or(f64::NAN, |n| sign * n)
+}
+
+/// JavaScript's `parseInt(text, radix)`: the digits that lead, after space
+/// and a sign, in `radix` (a `0x` prefix means 16 when none is given).
+fn js_parse_int(s: &str, radix: u32) -> f64 {
+    let t = s.trim_start();
+    let (sign, mut t) = match t.strip_prefix('-') {
+        Some(rest) => (-1.0, rest),
+        None => (1.0, t.strip_prefix('+').unwrap_or(t)),
+    };
+    let mut radix = if radix == 0 { 10 } else { radix };
+    if (radix == 16 || radix == 10) && (t.starts_with("0x") || t.starts_with("0X")) {
+        radix = 16;
+        t = &t[2..];
+    }
+    if !(2..=36).contains(&radix) {
+        return f64::NAN;
+    }
+    let digits: String = t.chars().take_while(|c| c.is_digit(radix)).collect();
+    if digits.is_empty() {
+        return f64::NAN;
+    }
+    let mut n = 0.0f64;
+    for c in digits.chars() {
+        n = n * radix as f64 + c.to_digit(radix).unwrap_or(0) as f64;
+    }
+    sign * n
+}
+
+/// JavaScript's `parseFloat(text)`: the longest number that leads, after
+/// space. `parseFloat("12.5px")` is 12.5, `parseFloat("px")` is `NaN`.
+fn js_parse_float(s: &str) -> f64 {
+    let t = s.trim_start();
+    let (sign, body) = match t.strip_prefix('-') {
+        Some(rest) => (-1.0, rest),
+        None => (1.0, t.strip_prefix('+').unwrap_or(t)),
+    };
+    if body.starts_with("Infinity") {
+        return sign * f64::INFINITY;
+    }
+    // Grow the candidate one character at a time and keep the longest that
+    // parses, so `1e5x` is 1e5 and `1.2.3` is 1.2, as a browser reads them.
+    if !body.starts_with(|c: char| c.is_ascii_digit() || c == '.') {
+        return f64::NAN;
+    }
+    let mut best = None;
+    for (i, c) in body.char_indices() {
+        if !(c.is_ascii_digit() || matches!(c, '.' | 'e' | 'E' | '+' | '-')) {
+            break;
+        }
+        if let Ok(n) = body[..i + c.len_utf8()].parse::<f64>() {
+            best = Some(n);
+        }
+    }
+    best.map_or(f64::NAN, |n| sign * n)
+}
+
 fn num(d: &Dynamic) -> f64 {
     if let Ok(i) = d.as_int() {
         return i as f64;
@@ -2800,6 +2909,36 @@ mod tests {
         // still works, which is the form nearly everyone writes.
         e.eval("items.forEach(|x, i| print(`${i} ${x}`))", &locals);
         assert_eq!(take_logs(), vec!["0 1", "1 2"]);
+    }
+
+    /// Text becomes a number under JavaScript's names, with JavaScript's
+    /// answers, which is what matching a route parameter against numeric ids
+    /// needs (watchlist #11).
+    #[test]
+    fn text_becomes_a_number_as_in_javascript() {
+        let mut e = engine();
+        let n = |e: &mut Engine, src: &str| match e.eval_value(src, &[]) {
+            Some(Value::Number(n)) => n,
+            other => panic!("{src} gave {other:?}"),
+        };
+        assert_eq!(n(&mut e, "Number(\"2\") + 1"), 3.0);
+        assert_eq!(n(&mut e, "Number(\" 2.5 \")"), 2.5);
+        assert_eq!(n(&mut e, "Number(\"\")"), 0.0);
+        assert!(n(&mut e, "Number(\"12px\")").is_nan());
+        assert_eq!(n(&mut e, "Number(\"0x1F\")"), 31.0);
+        assert_eq!(n(&mut e, "Number(true)"), 1.0);
+        assert_eq!(n(&mut e, "parseInt(\"42px\")"), 42.0);
+        assert_eq!(n(&mut e, "parseInt(\"-7.9\")"), -7.0);
+        assert_eq!(n(&mut e, "parseInt(\"ff\", 16)"), 255.0);
+        assert!(n(&mut e, "parseInt(\"px\")").is_nan());
+        assert_eq!(n(&mut e, "parseFloat(\"12.5px\")"), 12.5);
+        assert_eq!(n(&mut e, "parseFloat(\"1e3\")"), 1000.0);
+        assert_eq!(n(&mut e, "parseFloat(\".5\")"), 0.5);
+        assert!(n(&mut e, "parseFloat(\"abc\")").is_nan());
+        assert!(e.eval_bool("isNaN(Number(\"x\"))", &[]));
+        assert_eq!(e.eval_display("String(2.5) + \"!\"", &[]), "2.5!");
+        // The case that found it: an id from a route matched to a number.
+        assert!(e.eval_bool("Number(\"2\") == 2", &[]));
     }
 
     /// `log` is the printf-debugging the script tier had no way to do at all.

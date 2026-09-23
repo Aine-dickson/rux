@@ -142,7 +142,12 @@
     { "name": "setInterval", "detail": "setInterval(ms) { … }", "doc": "Run a block on a period, handing back a handle. A **block, not a callback**: `setInterval(1000) { seconds++ }`. Stop it with `clearInterval(handle)`." },
     { "name": "clearInterval", "detail": "clearInterval(handle)", "doc": "Stop a timer started by `setInterval`. The handle is what `setInterval` returned." },
     { "name": "print", "detail": "print(x)", "doc": "Printf-debugging. Reaches the dev overlay, not just stderr." },
-    { "name": "debug", "detail": "debug(x)", "doc": "Like `print`, with the value's structure shown." }
+    { "name": "debug", "detail": "debug(x)", "doc": "Like `print`, with the value's structure shown." },
+    { "name": "Number", "detail": "Number(text)", "doc": "The whole text as a number, as JavaScript reads it: `Number(\"2\")` is 2, `Number(\"\")` is 0, `Number(\"12px\")` is `NaN`. How a route parameter, which is always text, meets a numeric id." },
+    { "name": "parseInt", "detail": "parseInt(text, radix)", "doc": "The whole number that leads the text: `parseInt(\"42px\")` is 42. The radix is optional." },
+    { "name": "parseFloat", "detail": "parseFloat(text)", "doc": "The number that leads the text: `parseFloat(\"12.5px\")` is 12.5, `parseFloat(\"px\")` is `NaN`." },
+    { "name": "String", "detail": "String(x)", "doc": "Any value as the text a `{{ }}` binding would show." },
+    { "name": "isNaN", "detail": "isNaN(n)", "doc": "Whether a number is `NaN`, the answer `Number` and the parsers give for text that is not a number." }
   ],
   "elementProperties": [
     { "name": "tag", "detail": "the element's tag name", "doc": "`\"view\"`, `\"text\"`, and so on." },

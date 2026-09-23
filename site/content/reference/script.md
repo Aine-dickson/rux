@@ -352,7 +352,17 @@ do. That is worth saying because rhai's own string methods are in-place
 mutators: its `trim` empties the string it was given and returns nothing, so
 `{{ name.trim() }}` rendered blank. Rux's `trim` shadows it.
 
-`forEach` is called with `(item, index)` and falls back to `(item)`.
+`forEach` is called with `(item, index)` and falls back to `(item)`. rhai's own
+`for_each` is still there and is **not** the same thing: it hands the item over
+as `this` and the *index* as the argument, so `items.for_each(|x| total += x)`
+adds up the indexes. Write `forEach`.
+
+**Text to a number**, under JavaScript's names and with its answers:
+`Number("2")` is 2, `Number("")` is 0, `Number("12px")` is `NaN`;
+`parseInt("42px")` is 42 and `parseFloat("12.5px")` is 12.5, reading only what
+leads; `isNaN(n)` asks. `String(x)` goes the other way. A route parameter is
+always text, so this is how `/task/:id` meets a list whose ids are numbers:
+`tasks.find(|t| t.id == Number(params.id))`.
 
 **`.length` is a property, not `len()`.** Arrays and strings only: JavaScript has
 no `length` on a plain object, and inventing one for maps would be making up a
