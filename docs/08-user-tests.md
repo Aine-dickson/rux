@@ -1726,6 +1726,28 @@ job: HTML's range input and Android's discrete `SeekBar` both snap while
 dragging, and `step="any"` is the continuous one. The switch's jump is the
 missing slide animation, a gap already written down.
 
+**Second round, same day, from the user's screenshots.** Typing `-0.356`
+digit by digit logged `input 0 · -0.3 · -0.35 · -0.356` with `type f64`
+throughout, and `-23.3` in the second field gave `age + 1 = -22.3`: the draft
+rule holds. Two drafts that are not numbers behaved as decided, and are worth
+knowing about. `,959494956262.22` showed as typed while `age` held
+`0.959494956262`, the last text that *was* a number (a leading comma read as
+the point). `284846,65946564,659594` held `284846.65946564` for the same
+reason. Nothing marks such a field as not holding what it shows; that is
+`:invalid`, phase 6. **The comma rule guesses**: `1,000` typed as a thousand
+reads as 1. The fix is the device's own decimal separator, not a guess. Swiping
+up and down starting on a slider scrolled the page and left the slider alone.
+
+The keyboard on this phone is not Gboard, and it offered the same keys (minus,
+comma, point, space) for `type="number"` and for `inputmode="numeric"`. What
+Android is told differs; which keys appear is the keyboard's decision.
+
+**The screen reader case cannot pass yet**, and asking for it here was a
+mistake in the table. Rux publishes its accessibility tree only on the desktop:
+accesskit is not built for Android or the web, so TalkBack finds nothing inside
+a Rux app at all. That is a gap far wider than this phase, and it is recorded
+as one.
+
 **A defect the log itself showed, outside this phase.** The event log is a
 `<text>` with `height: 72px; overflow: clip`, and its lines ran down over the
 whole page. `overflow` clipped a node's *children* and never its own glyphs,
