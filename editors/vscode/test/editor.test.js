@@ -152,11 +152,20 @@ test('the pseudo-classes offered are the ones that match', () => {
   assert.deepEqual(names, [
     'hover',
     'focus',
+    'focus-visible',
     'active',
     'checked',
     'current',
     'enter-from',
     'leave-to',
+    'disabled',
+    'enabled',
+    'valid',
+    'invalid',
+    'user-valid',
+    'user-invalid',
+    'required',
+    'optional',
   ]);
 });
 
@@ -376,11 +385,20 @@ test('a colon in a selector offers pseudo-classes, not properties', () => {
   assert.deepEqual(labels, [
     'hover',
     'focus',
+    'focus-visible',
     'active',
     'checked',
     'current',
     'enter-from',
     'leave-to',
+    'disabled',
+    'enabled',
+    'valid',
+    'invalid',
+    'user-valid',
+    'user-invalid',
+    'required',
+    'optional',
   ]);
 });
 

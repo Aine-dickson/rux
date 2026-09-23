@@ -105,12 +105,26 @@ test('a quote opens the value list, or nobody ever sees it', () => {
   assert.ok(provider.triggers.includes("'"), 'and so must a single quote');
 });
 
-test('an input type offers the five kinds and nothing else', () => {
+test('an input type offers the kinds the runtime accepts and nothing else', () => {
+  // Every kind the runtime knows, in the vocabulary's order. An unknown
+  // `type=` is an error, so offering one more than this would suggest an error.
   const offered = offeredAt('<template><input type="TYPE_VALUE" /></template>', 'TYPE_VALUE');
   assert.deepEqual(
     offered,
-    ['text', 'textarea', 'select', 'checkbox', 'radio'],
-    'the five kinds, in the order an author meets them'
+    [
+      'text',
+      'textarea',
+      'password',
+      'search',
+      'number',
+      'date',
+      'select',
+      'checkbox',
+      'switch',
+      'slider',
+      'radio',
+    ],
+    'the kinds, in the vocabulary order'
   );
 });
 
