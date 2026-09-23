@@ -2185,21 +2185,29 @@ impl App {
     /// scroller it belongs to, nudge that scroller just far enough. Tabbing to
     /// something below the fold is otherwise a focus ring you can't see.
     ///
+    /// **Only the scrollers the element is inside move.** This used to be
+    /// guessed from geometry, any scroller the element overlapped sideways,
+    /// and a button above a list scrolled the list back to its top when it
+    /// took focus. The layout records which scroller holds each element and
+    /// each scroller, so the chain is known rather than guessed.
+    ///
     /// Geometry here is the *painted* (already-shifted) position from the last
     /// layout, so the adjustment is a plain delta; the next layout re-clamps it.
     fn scroll_focus_into_view(&mut self) {
         let Some(item) = self.focus_index.and_then(|i| self.focusables.get(i)).cloned() else {
             return;
         };
+        let mut chain = Vec::new();
+        let mut at = item.scroll;
+        while let Some(id) = at.filter(|id| !chain.contains(id)) {
+            chain.push(id);
+            at = self.scrolls.iter().find(|r| r.id == id).and_then(|r| r.within);
+        }
         // Outermost first: scrolling an ancestor moves the box inside it, so the
-        // inner scroller's own correction must be computed after.
+        // inner scroller's own correction must be computed after. A scroller is
+        // recorded before the ones inside it, so tree order is that order.
         for r in self.scrolls.clone() {
-            if !r.scrollable() {
-                continue;
-            }
-            // Only a scroller the item is horizontally within can own it, a
-            // cheap stand-in for a real ancestor test (we don't carry parentage).
-            if item.x + item.width < r.x || item.x > r.x + r.width {
+            if !r.scrollable() || !chain.contains(&r.id) {
                 continue;
             }
             let here = self.offsets[r.id];
@@ -10011,6 +10019,7 @@ mod tests {
             content_width: 200.0,
             content_height: 500.0,
             max: Offset { x: 0.0, y: 300.0 },
+            within: None,
         }
     }
 

@@ -1780,6 +1780,10 @@ pub struct ScrollRegion {
     pub content_height: f32,
     /// How far the content can travel on each axis: content - visible (>= 0).
     pub max: Offset,
+    /// The id of the scroller this one sits inside, if any. With
+    /// [`FocusItem::scroll`] it is the chain of scrollers that hold an
+    /// element, which is the only chain that should move to show it.
+    pub within: Option<usize>,
 }
 
 impl ScrollRegion {
@@ -2004,6 +2008,10 @@ pub struct FocusItem {
     /// The element's tree path, for anything that is not a text field. See
     /// [`Node::focus_path`]. A text field is known by its model instead.
     pub path: Option<Vec<usize>>,
+    /// The innermost scroller this element sits in, as an index into
+    /// [`Layout::scrolls`]. A scroller that is itself focusable is held by its
+    /// parent, not by itself. See [`ScrollRegion::within`].
+    pub scroll: Option<usize>,
 }
 
 impl FocusItem {
@@ -2921,8 +2929,8 @@ fn collect(
     // coordinates. Only `sticky` reads it, to stop travelling when its parent
     // runs out from under it.
     holder: (f32, f32, f32, f32),
-    // The nearest scroller above this node, so a focus ring can be clipped to
-    // the box that clips everything else in it.
+    // The nearest scroller above this node: what holds a focusable, and what
+    // holds a scroller, so focus scrolls only the boxes an element is in.
     inside_scroll: Option<usize>,
     // The `transform` and `opacity` accumulated from the ancestors, so anything
     // drawn outside the paint list can be drawn through the same lens.
@@ -3224,6 +3232,7 @@ fn collect(
                     options: options.clone(),
                 },
                 path: bound.focus_path.clone(),
+                scroll: inside_scroll,
             });
         } else {
             // A text/textarea input: its value is rendered by its single text
@@ -3278,6 +3287,7 @@ fn collect(
                     text,
                 },
                 path: None,
+                scroll: inside_scroll,
             });
         }
     } else if let Some((_, Some(handler), _, _, _, instance, focus_path)) =
@@ -3296,6 +3306,7 @@ fn collect(
             height: fh,
             kind: FocusKind::Activate { on_tap: handler.clone(), instance: instance.clone() },
             path: focus_path.clone(),
+            scroll: inside_scroll,
         });
     }
 
@@ -3351,6 +3362,7 @@ fn collect(
                 + layout.padding.bottom
                 + layout.border.bottom,
             max,
+            within: inside_scroll,
         });
     }
 
@@ -3753,6 +3765,7 @@ mod reveal_tests {
             content_width: 400.0,
             content_height: 900.0,
             max: Offset { x: 0.0, y: 600.0 },
+            within: None,
         }]
     }
 
@@ -3817,6 +3830,7 @@ mod reveal_tests {
             content_width: 200.0,
             content_height: 400.0,
             max: Offset { x: 0.0, y: 300.0 },
+            within: Some(0),
         });
         let offsets = vec![Offset { x: 0.0, y: 0.0 }, Offset { x: 0.0, y: 0.0 }];
         assert_eq!(containing_scroller(&scrolls, &offsets, 40.0, 500.0), Some(1));

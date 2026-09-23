@@ -1970,9 +1970,12 @@ window against `rux-harness/outline-probe.rux` with `outline-drive.ps1`
 | Shift+Tab after a click | none | Keyboard again, so focus shows | window: pass |
 | On a phone | any | A tapped button shows nothing; a field shows the ring | |
 
-Found alongside: focusing "none" by Shift+Tab scrolled the list below it back
-to the top. Scrolling focus into view moved every scroller the element
-overlapped sideways, not only the ones it sits in.
+Found alongside, and fixed the same day: focusing "none" by Shift+Tab
+scrolled the list below it back to the top. Scrolling focus into view moved
+every scroller the element overlapped sideways, not only the ones it sits in.
+The layout now records which scroller holds each element and each scroller,
+and only that chain moves. Re-driven: row three, then the field by a click,
+then Shift+Tab to "none", and the list stays where it was.
 
 ## Standing gaps
 
