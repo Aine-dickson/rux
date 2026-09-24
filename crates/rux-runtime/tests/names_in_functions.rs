@@ -121,6 +121,21 @@ fn a_function_name_is_not_reported_as_an_undeclared_variable() {
     assert!(!found.contains("declared nowhere"), "both functions exist: {found}");
 }
 
+/// A component's prop with no default is declared by `prop`, not by a `let`,
+/// since whoever uses the tag passes it. Found in the type-system sweep,
+/// 2026-09-24: checked on its own, the component was told its function read a
+/// name declared nowhere.
+#[test]
+fn a_prop_with_no_default_is_in_scope() {
+    let found = problems(
+        "<template><screen><text>{{ label }}</text></screen></template>\
+         <script>prop label: string;\nlet last = signal(\"\");\n\
+         fn remember() {\nlast = label;\n}</script>",
+    );
+    assert!(!found.contains("declared nowhere"), "a prop is the component's own: {found}");
+    assert!(!found.contains("reads `label`"), "and a typed fn may read it: {found}");
+}
+
 /// It is an **error**, and it carries the line the name is read on.
 ///
 /// The severity is the user's call, 2026-09-17, made while looking at the

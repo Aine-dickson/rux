@@ -699,6 +699,16 @@ fn check_script_types(
     }
 }
 
+/// `callers`, plus the file's own props. A prop with no default is not in the
+/// script at all, since whoever uses the tag passes it, so without this a
+/// component's function reading one was "declared nowhere" whenever the
+/// component was the file being checked.
+fn with_props(callers: &HashSet<String>, sfc: &rux_parser::Sfc) -> HashSet<String> {
+    let mut names = callers.clone();
+    names.extend(sfc.props.iter().map(|p| p.name.clone()));
+    names
+}
+
 /// Every name the template puts in scope for something a handler calls.
 ///
 /// Two sources, and both are callers: an `r-for` binds a name for the whole
@@ -1935,7 +1945,7 @@ impl Document {
         for component in components.values() {
             callers.extend(names_callers_bring(&component.template, &engine));
         }
-        check_script_functions(&engine, &callers, main_script_lines, sfc.script_line);
+        check_script_functions(&engine, &with_props(&callers, &sfc), main_script_lines, sfc.script_line);
         check_script_types(
             &engine,
             &sfc,
@@ -2055,7 +2065,7 @@ impl Document {
         // Nothing is appended here, so the whole compiled text is this
         // document's own.
         let callers = names_callers_bring(&sfc.template, &engine);
-        check_script_functions(&engine, &callers, usize::MAX, sfc.script_line);
+        check_script_functions(&engine, &with_props(&callers, &sfc), usize::MAX, sfc.script_line);
         // With no filesystem there are no type imports either.
         check_script_types(&engine, &sfc, usize::MAX, Vec::new(), Vec::new(), &computeds, &callers);
         // Everything the load-time checks said, kept: a rebuild re-raises what
