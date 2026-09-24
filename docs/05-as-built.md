@@ -158,6 +158,7 @@ rux check                       # every .rux under the current directory
 rux check examples              # or a named file or directory
 rux check --deny-warnings .     # warnings fail too, which is what CI wants
 rux check --format json .       # for an editor to turn into squiggles
+rux check --format json --types app.rux   # and the types, for hover and completion
 ```
 
 Output is `path:line:col: severity: message`, the shape every compiler emits and

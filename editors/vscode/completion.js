@@ -20,6 +20,7 @@ const context = require('./context');
 const vocabulary = require('./vocabulary');
 const locals = require('./locals');
 const snippets = require('./snippets');
+const types = require('./types');
 
 /** Sort keys, so the useful things are not buried under the merely valid. */
 const ORDER = {
@@ -41,7 +42,7 @@ function register(vscode) {
       const offset = document.offsetAt(position);
       switch (context.sectionAt(text, offset)) {
         case 'template':
-          return template(vscode, text, offset);
+          return template(vscode, text, offset, document);
         case 'style':
           return style(vscode, text, offset);
         case 'script':
@@ -71,7 +72,7 @@ function register(vscode) {
 
 // ── <template> ───────────────────────────────────────────────────────────────
 
-function template(vscode, text, offset) {
+function template(vscode, text, offset, document) {
   const before = text.slice(0, offset);
 
   // `</` offers the tag that is actually open, and only that one. A list of
@@ -89,7 +90,7 @@ function template(vscode, text, offset) {
   // Inside `{{ … }}` or an attribute expression, the useful list is the
   // document's own state, not more markup.
   if (context.inTemplateExpression(text, offset)) {
-    return expression(vscode, text, offset);
+    return expression(vscode, text, offset, document);
   }
 
   // Inside a literal value whose values are a closed set: `type="…"` on an
@@ -129,8 +130,8 @@ function attributeValueItem(vscode, value, index) {
  * added when one is open, since inside an `r-for` row it is usually the whole
  * point of the expression.
  */
-function expression(vscode, text, offset) {
-  const member = members(vscode, text, offset);
+function expression(vscode, text, offset, document) {
+  const member = members(vscode, text, offset, document);
   if (member) return member;
 
   const items = localItems(vscode, locals.declarations(text));
@@ -392,7 +393,7 @@ function script(vscode, text, offset, document) {
   const importing = usePathBeing(text, offset);
   if (importing !== null) return importPath(vscode, document, importing);
 
-  const member = members(vscode, text, offset);
+  const member = members(vscode, text, offset, document);
   if (member) return member;
 
   return localItems(vscode, locals.declarations(text))
@@ -442,7 +443,7 @@ function localItems(vscode, declared) {
  * usually reaching for. Being wrong here is cheap in one direction and not the
  * other, so nothing is offered that would not exist on *some* value.
  */
-function members(vscode, text, offset) {
+function members(vscode, text, offset, document) {
   // A dot decides this on its own. The two probes below can only recognise a
   // receiver they can *name*, and after `search_item.map().` neither did, so
   // this returned null and the caller went on to offer every global in the
@@ -451,6 +452,11 @@ function members(vscode, text, offset) {
   // Not knowing which members is a reason to offer a smaller list, never a
   // reason to offer an unrelated one.
   if (!locals.afterDot(text, offset)) return null;
+
+  // What the checker said the receiver is, at the last save, when it is a
+  // record: its fields are exactly what may follow.
+  const fields = typedFields(vscode, text, offset, document);
+  if (fields) return fields;
 
   const indexed = locals.indexedReceiver(text, offset);
   const receiver = locals.memberReceiver(text, offset);
@@ -510,6 +516,39 @@ function members(vscode, text, offset) {
   // An empty list lets VS Code fall back to words from the document, which are
   // at least the author's own.
   return [];
+}
+
+/**
+ * The fields of the record before the `.` at `offset`, from the type table, or
+ * null when the table has nothing to say about it.
+ *
+ * A field that may be absent is read with `?.` (decision 10 in
+ * `docs/10-types.md`), and so is any field of a value that may be `null`, so
+ * choosing one after a plain `.` turns that `.` into `?.` rather than leaving
+ * the author a line the checker will reject.
+ */
+function typedFields(vscode, text, offset, document) {
+  if (!document || !document.uri || document.uri.scheme !== 'file') return null;
+  const before = types.chainBefore(text, offset);
+  if (!before) return null;
+  const line = document.positionAt(offset).line + 1;
+  const e = types.chain(document.uri.fsPath, line, before.chain);
+  if (!e || !e.fields || e.fields.length === 0) return null;
+  const dot = new vscode.Range(document.positionAt(before.dot), document.positionAt(before.dot + 1));
+  return e.fields.map((f, i) => {
+    const item = new vscode.CompletionItem(f.name, vscode.CompletionItemKind.Field);
+    item.detail = `${f.name}${f.optional ? '?' : ''}: ${f.type}`;
+    item.sortText = ORDER.local + String(i).padStart(3, '0');
+    if (!before.optional && (f.optional || e.nullable)) {
+      item.additionalTextEdits = [vscode.TextEdit.replace(dot, '?.')];
+      item.documentation = new vscode.MarkdownString(
+        f.optional
+          ? `\`${f.name}\` may be absent, so it is read with \`?.\`.`
+          : `\`${before.chain}\` may be \`null\`, so it is read with \`?.\`.`
+      );
+    }
+    return item;
+  });
 }
 
 /** Whether a built-in method exists on arrays, on strings, or on both. */

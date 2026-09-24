@@ -19,6 +19,7 @@ const vocabulary = require('./vocabulary');
 const locals = require('./locals');
 // For `propertyHelp`, so a property's explanation has exactly one source.
 const completion = require('./completion');
+const types = require('./types');
 
 function register(vscode) {
   return vscode.languages.registerHoverProvider('rux', {
@@ -36,10 +37,14 @@ function register(vscode) {
       const docPath =
         document.uri && document.uri.scheme === 'file' ? document.uri.fsPath : null;
       const found = lookUp(section, text, at, docPath);
-      if (!found) return undefined;
+      // What the checker said this is, at the last save. Only in an
+      // expression: a tag or a property name is not a value.
+      const typed = inExpr ? typeAt(document, at, docPath) : null;
+      if (!found && !typed) return undefined;
 
       const md = new vscode.MarkdownString();
-      md.appendMarkdown(`**${found.title}** — ${found.detail}\n\n${found.doc}`);
+      if (typed) md.appendMarkdown(typed);
+      if (found) md.appendMarkdown(`**${found.title}** — ${found.detail}\n\n${found.doc}`);
       const range = new vscode.Range(
         document.positionAt(at.start),
         document.positionAt(at.end)
@@ -47,6 +52,19 @@ function register(vscode) {
       return new vscode.Hover(md, range);
     },
   });
+}
+
+/**
+ * The checker's type for the word at `at`, as a fenced block, or null. A
+ * function shows its signature, anything else `name: Type`.
+ */
+function typeAt(document, at, docPath) {
+  if (!docPath) return null;
+  const start = document.positionAt(at.start);
+  const e = types.at(docPath, start.line + 1, start.character + 1, at.word);
+  if (!e) return null;
+  const shown = e.kind === 'fn' ? e.type : `${e.name}: ${e.type}`;
+  return '```rux\n' + shown + '\n```\n';
 }
 
 /** What `word` means in `section`, or `null` if this is not a word we know. */

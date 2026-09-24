@@ -81,6 +81,8 @@ Run options:
 
 Check options:
   --format json              Emit diagnostics as JSON, for an editor
+  --types                    With --format json: also the types the checker
+                             worked out, for hover and completion
   --deny-warnings            Exit non-zero on warnings as well as errors
 
 Build options:
@@ -368,11 +370,12 @@ fn run(path: PathBuf, args: &[String]) -> ExitCode {
 }
 
 fn check(args: &[String]) -> i32 {
-    let mut options = check::Options { paths: Vec::new(), json: false, deny_warnings: false };
+    let mut options = check::Options { paths: Vec::new(), json: false, types: false, deny_warnings: false };
     let mut rest = args.iter();
     while let Some(arg) = rest.next() {
         match arg.as_str() {
             "--deny-warnings" => options.deny_warnings = true,
+            "--types" => options.types = true,
             "--format" => match rest.next().map(String::as_str) {
                 Some("json") => options.json = true,
                 Some("text") => options.json = false,
@@ -395,6 +398,10 @@ fn check(args: &[String]) -> i32 {
             }
             path => options.paths.push(PathBuf::from(path)),
         }
+    }
+    if options.types && !options.json {
+        eprintln!("rux: `--types` is for an editor, so it needs `--format json`");
+        return 2;
     }
     check::run(options)
 }

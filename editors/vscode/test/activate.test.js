@@ -61,6 +61,7 @@ function makeVscode(record) {
       registerDocumentSymbolProvider: () => (record.providers.push('symbols'), disposable),
       registerDocumentFormattingEditProvider: () => (record.providers.push('formatter'), disposable),
       registerDocumentSemanticTokensProvider: () => (record.providers.push('semantic'), disposable),
+      registerCodeActionsProvider: () => (record.providers.push('codeActions'), disposable),
       // Re-declared as the cursor moves between sections, so that Ctrl+/ writes
       // the comment the section's language actually has. See `comments.js`.
       setLanguageConfiguration: () => (record.providers.push('languageConfiguration'), disposable),
@@ -95,6 +96,7 @@ function makeVscode(record) {
     Location: class {},
     Diagnostic: class {},
     DiagnosticSeverity: { Error: 0, Warning: 1 },
+    CodeActionKind: { QuickFix: 'quickfix' },
     DocumentSymbol: class {},
     SymbolKind: new Proxy({}, { get: (_t, k) => String(k) }),
     TextEdit: { replace: () => ({}) },
@@ -162,7 +164,7 @@ test('activate() runs to completion', () => {
 
 test('every provider the extension advertises is registered', () => {
   const { providers } = activate();
-  for (const name of ['completion', 'hover', 'definition', 'symbols', 'formatter', 'semantic']) {
+  for (const name of ['completion', 'hover', 'definition', 'symbols', 'formatter', 'semantic', 'codeActions']) {
     assert.ok(providers.includes(name), `the ${name} provider was never registered`);
   }
 });

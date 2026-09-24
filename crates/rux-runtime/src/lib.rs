@@ -689,7 +689,26 @@ fn check_script_types(
     if !sfc.props.is_empty() {
         cx.placeholders = computeds.iter().map(|c| (c.name.clone(), typed(&c.ty))).collect();
     }
-    for finding in engine.check_types(&cx) {
+    let recording = TYPE_TABLE.with(|t| t.borrow().is_some());
+    let (findings, mut table) = engine.check_types_recording(&cx, recording);
+    if recording {
+        // The same arithmetic as the findings below.
+        for seen in &mut table.seen {
+            if !seen.template {
+                seen.line += sfc.script_line - 1;
+            }
+        }
+        for guess in &mut table.guesses {
+            guess.line += sfc.script_line - 1;
+        }
+        TYPE_TABLE.with(|t| {
+            if let Some(kept) = t.borrow_mut().as_mut() {
+                kept.seen.extend(table.seen);
+                kept.guesses.extend(table.guesses);
+            }
+        });
+    }
+    for finding in findings {
         // A template's finding is on a line of the file already.
         let line = if finding.template { finding.line } else { finding.line.map(|l| l + sfc.script_line - 1) };
         rux_script::located(line, || {
@@ -1554,6 +1573,29 @@ pub fn take_prints() -> Vec<String> {
 pub fn set_stderr_echo(on: bool) {
     rux_script::set_stderr_echo(on);
     rux_style::set_stderr_echo(on);
+}
+
+thread_local! {
+    /// What the type checker worked out on the loads since the last drain,
+    /// with every line a line of the file. `None` when nobody asked: an
+    /// ordinary load pays nothing for an editor's hover.
+    static TYPE_TABLE: std::cell::RefCell<Option<rux_script::check::Table>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// What `rux check --types` prints. See [`record_types`].
+pub type TypeTable = rux_script::check::Table;
+
+/// Keep (or stop keeping) the types the checker works out, for `rux check
+/// --types`. See `docs/10-types.md`, "Editor".
+pub fn record_types(on: bool) {
+    TYPE_TABLE.with(|t| *t.borrow_mut() = on.then(rux_script::check::Table::default));
+}
+
+/// The types kept since the last call, emptying the sink. Empty when
+/// [`record_types`] is off.
+pub fn take_type_table() -> rux_script::check::Table {
+    TYPE_TABLE.with(|t| t.borrow_mut().as_mut().map(std::mem::take).unwrap_or_default())
 }
 
 thread_local! {

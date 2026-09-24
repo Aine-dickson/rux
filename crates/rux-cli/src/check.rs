@@ -51,6 +51,10 @@ pub struct Diagnostic {
 pub struct Options {
     pub paths: Vec<PathBuf>,
     pub json: bool,
+    /// Print the types the checker worked out beside the diagnostics, which
+    /// makes the JSON an object rather than an array. See `docs/10-types.md`,
+    /// "Editor".
+    pub types: bool,
     /// Treat warnings as failures, which is what CI wants and what keeps
     /// `examples/` clean.
     pub deny_warnings: bool,
@@ -61,6 +65,7 @@ pub fn run(options: Options) -> i32 {
     // The sink is reported as diagnostics, so the runtime must not also print
     // each warning to stderr as prose.
     rux_runtime::set_stderr_echo(false);
+    rux_runtime::record_types(options.types);
 
     let collected = match collect_files(&options.paths) {
         Ok(it) => it,
@@ -121,6 +126,7 @@ pub fn run(options: Options) -> i32 {
     }
 
     let mut found = Vec::new();
+    let mut tables: Vec<(PathBuf, rux_runtime::TypeTable)> = Vec::new();
     let mut reached: Vec<PathBuf> = Vec::new();
     for file in &files {
         // Whether anything in this project writes this file as a tag, which is
@@ -131,6 +137,11 @@ pub fn run(options: Options) -> i32 {
         rux_runtime::set_may_have_caller(has_caller);
         let checked = check_file(file);
         found.extend(checked.diagnostics);
+        if options.types {
+            // Only the document's own script is checked for types, so what was
+            // kept is all this file's.
+            tables.push((file.clone(), rux_runtime::take_type_table()));
+        }
         for page in checked.reached {
             if !reached.contains(&page) {
                 reached.push(page);
@@ -148,7 +159,9 @@ pub fn run(options: Options) -> i32 {
         found.retain(|d| only_about.iter().any(|p| same_file(p, &d.file)));
     }
 
-    if options.json {
+    if options.json && options.types {
+        print!("{}", to_json_with_types(&found, &tables));
+    } else if options.json {
         print!("{}", to_json(&found));
     } else {
         for d in &found {
@@ -187,6 +200,7 @@ fn check_file(file: &Path) -> Checked {
     // carried silently into whichever document happens to be built next.
     let _ = rux_runtime::take_warnings();
     let _ = rux_runtime::take_prints();
+    let _ = rux_runtime::take_type_table();
 
     match Document::load_checked(file) {
         Ok(mut doc) => {
@@ -381,6 +395,72 @@ fn to_json(found: &[Diagnostic]) -> String {
     out
 }
 
+/// `{ "diagnostics": [...], "types": [...], "guesses": [...] }`: what
+/// [`to_json`] prints, beside every name, field and function the checker gave
+/// a type, and the type each unannotated parameter was handed by its calls.
+fn to_json_with_types(found: &[Diagnostic], tables: &[(PathBuf, rux_runtime::TypeTable)]) -> String {
+    let mut out = String::from("{\"diagnostics\": ");
+    out.push_str(to_json(found).trim_end());
+    out.push_str(",
+\"types\": [");
+    let mut first = true;
+    for (file, table) in tables {
+        let file = json_string(&file.display().to_string());
+        for s in &table.seen {
+            out.push_str(if first { "
+  " } else { ",
+  " });
+            first = false;
+            let fields: Vec<String> = s
+                .fields
+                .iter()
+                .map(|(name, ty, optional)| {
+                    format!(
+                        "{{\"name\": {}, \"type\": {}, \"optional\": {optional}}}",
+                        json_string(name),
+                        json_string(ty)
+                    )
+                })
+                .collect();
+            out.push_str(&format!(
+                "{{\"file\": {file}, \"line\": {}, \"column\": {}, \"kind\": \"{}\", \"name\": {}, \
+                 \"path\": {}, \"type\": {}, \"nullable\": {}, \"fields\": [{}]}}",
+                s.line,
+                s.column.map_or("null".to_string(), |c| c.to_string()),
+                s.kind,
+                json_string(&s.name),
+                s.path.as_deref().map_or("null".to_string(), json_string),
+                json_string(&s.ty),
+                s.nullable,
+                fields.join(", ")
+            ));
+        }
+    }
+    out.push_str("
+],
+\"guesses\": [");
+    let mut first = true;
+    for (file, table) in tables {
+        let file = json_string(&file.display().to_string());
+        for g in &table.guesses {
+            out.push_str(if first { "
+  " } else { ",
+  " });
+            first = false;
+            out.push_str(&format!(
+                "{{\"file\": {file}, \"line\": {}, \"function\": {}, \"param\": {}, \"type\": {}}}",
+                g.line,
+                json_string(&g.function),
+                json_string(&g.param),
+                json_string(&g.ty)
+            ));
+        }
+    }
+    out.push_str("
+]}
+");
+    out
+}
 
 /// Expand the requested paths into `.rux` files: a file is itself, a directory
 /// is everything under it. No paths at all means the current directory, so

@@ -17,7 +17,7 @@ the row below says so.
 | Functions: typed and untyped, the caller-local rule | **Built** 2026-09-24. Parameters, results and calls came with the checker; the caller-local rule is on, and the sweep before it found no existing function it breaks |
 | Templates: `r-for`, `r-if`, bindings, `r-model`, events, props at the tag | **Built** 2026-09-24 for the file being checked: a document's own template, or a component's when it is the file. A form's `event.values` is a record of its fields, not a dictionary; see below |
 | Boundaries: prop checks at run time, `x is T` | **Built** 2026-09-24. A prop that does not fit is left out and reported; a route parameter becomes the type its prop takes. See [Script](./07-script.md#is-and-props-at-run-time) |
-| Editor: hover, completion, the parameter quick-fix | Pending |
+| Editor: hover, completion, the parameter quick-fix | **Built** 2026-09-24 in the VS Code extension, from `rux check --format json --types`. Answers are as of the last save; see [Editor](#editor) |
 
 ## The shape of it
 
@@ -509,6 +509,41 @@ inferred, including every unannotated parameter.
 That line is deliberate. An untyped program is not wrong, and a warning is how
 it is told where checking stops; a typed program that contradicts itself is
 wrong, and says so.
+
+## Editor
+
+The types exist only in the checker, so the editor does not work them out. It
+asks for them: `rux check --format json --types` prints an object instead of
+the usual array, with the diagnostics beside two lists.
+
+- `types`: every name read, field read, `let`, parameter and function call the
+  checker gave a type, with its file, line, column, the type as written
+  (`Task?`, or a function's signature), whether it may be `null`, and the
+  fields a `.` after it may read.
+- `guesses`: for each unannotated parameter, the type its calls hand it, when
+  every call hands it something known.
+
+The extension already runs `rux check` when a file is opened and saved, so it
+asks for the table on the same run and keeps it per file. There is no language
+server and no second process.
+
+- **Hover** shows `name: Type` above what hover already said, and a function's
+  signature on a call.
+- **Completion** after `x.` offers the fields of `x`'s record. Choosing an
+  optional field, or any field of a value that may be `null`, turns the `.` into
+  `?.`, so the line written is one the checker accepts.
+- **The quick-fix** on "`s` has no type" writes `: T` after the parameter, `T`
+  being its guess. Checking never uses a guess (see [Functions](#functions));
+  this only writes an annotation the author then reads.
+
+Every answer is as old as the last save. Entries are matched by name and line,
+not by exact position, so an edit moves them only as far as the lines moved,
+and a name that is no longer on its line gets no type rather than a wrong one.
+Only the file being checked has a table: a page checked through its app, or a
+component a document uses, is answered when it is the file opened and saved.
+
+An older `rux` refuses `--types` as an unknown option. The extension then asks
+again without it, keeps the diagnostics, and stops asking for the session.
 
 ## How it is built
 

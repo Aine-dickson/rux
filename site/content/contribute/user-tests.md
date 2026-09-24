@@ -2119,6 +2119,26 @@ types file), and `<route path="/task/:id">` into `prop id: int = 0`, shown as
 | A `null` prop | `prop task: Task? = null`, read `task?.title ?? "(no task)"` | the fallback text | desktop: pass **after a fix**. Found here: a prop's value had no null, `null` arrived as `""`, and `?.` on text raised, in a program the checker passed. Older than this step. Fixed the same day with a null value of its own |
 | Release build | the same probe from `cargo build --release` | the same errors | not driven |
 
+## Types in the editor, 2026-09-24
+
+Step 7 of `docs/10-types.md`: hover, completion after a `.`, and the quick-fix
+that writes a parameter's type, all read from `rux check --format json
+--types`. Under test in `rux-script` (`check.rs`, the table) and the extension
+(`test/types.test.js`). The table was driven from the debug binary on a probe:
+`Task` with an optional `note`, `sel: Task?`, a typed `label(t: Task)`, an
+untyped `shout(s, n)` called as `shout("hi", 1)` and `shout("yo", 2)`, and
+`{{ label(t) }}` in an `r-for`.
+
+| Case | Where | Expect | Result |
+|---|---|---|---|
+| The table's positions | `rux check --types` on the probe | each name on its file line and column | desktop: pass, `t` in `t.title` at the column it is written |
+| The guesses | the same | `s: string`, `n: number`, on the warning's line | desktop: pass |
+| A template name | `{{ label(t) }}` | `t: Task` and `label`'s signature, by line | desktop: pass |
+| An older `rux` on PATH | the extension with 0.7.1 | diagnostics as before, no error | under test only |
+| Hover on a name, a field, a call | VS Code, after a save | `t: Task`, `title: string`, `fn label(t: Task): string` above the usual hover | not driven |
+| Completion after `t.` and `sel.` | VS Code | the four fields; choosing `note`, or any field of `sel`, writes `?.` | not driven |
+| The quick-fix | the lightbulb on `shout`'s warning | `: string` after `s`, `: number` after `n`, and one action for both | not driven |
+
 ## Standing gaps
 
 Cases nothing here can currently exercise. They are the shape of what v0.8 has

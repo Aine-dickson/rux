@@ -27,6 +27,10 @@ const context_ = require('./context');
 const locals = require('./locals');
 const comments = require('./comments');
 const semantic = require('./semantic');
+const types = require('./types');
+
+// Whether `rux check` takes `--types`. Assumed until a binary refuses it.
+let typesSupported = true;
 
 /**
  * When this module was loaded into the extension host.
@@ -58,7 +62,7 @@ function stale() {
     'extension.js', 'completion.js', 'hover.js', 'locals.js', 'context.js',
     'vocabulary.js', 'vocabulary.json', 'definition.js', 'symbols.js',
     'snippets.js', 'autoclose.js', 'comments.js', 'semantic.js', 'routes.js',
-    'project.js',
+    'project.js', 'types.js',
     'package.json',
   ]) {
     let at;
@@ -207,7 +211,13 @@ function activate(context) {
     comments.register(vscode),
     // `view=""` and `to=""` hold names rather than text, and a name that
     // resolves is painted like the thing it names. See `semantic.js`.
-    semantic.register(vscode, routeIndex)
+    semantic.register(vscode, routeIndex),
+    // The quick-fix on "`x` has no type": write the type its calls hand it.
+    vscode.languages.registerCodeActionsProvider(
+      'rux',
+      { provideCodeActions: (document, _range, context) => paramFixes(vscode, document, context) },
+      { providedCodeActionKinds: [vscode.CodeActionKind.QuickFix] }
+    )
   );
 
   // Which vocabulary is in force. `vocabulary.js` prefers whatever `rux vocab`
@@ -479,7 +489,21 @@ function activate(context) {
       return;
     }
     const file = document.uri.fsPath;
-    const result = runRux(vscode, ['check', '--format', 'json', file], undefined, path.dirname(file));
+    const check = (withTypes) =>
+      runRux(
+        vscode,
+        ['check', '--format', 'json', ...(withTypes ? ['--types'] : []), file],
+        undefined,
+        path.dirname(file)
+      );
+    let result = check(typesSupported);
+    // A `rux` from before the type table refuses `--types` as a usage error.
+    // It still has diagnostics to give, so ask again without it, and stop
+    // asking for the rest of the session.
+    if (typesSupported && result.ok && result.code === 2 && /--types/.test(result.stderr || '')) {
+      typesSupported = false;
+      result = check(false);
+    }
     if (!result.ok) {
       noticeMissingBinary();
       return;
@@ -487,7 +511,15 @@ function activate(context) {
 
     let found;
     try {
-      found = JSON.parse(result.stdout || '[]');
+      const output = JSON.parse(result.stdout || '[]');
+      // With `--types` the answer is an object: the diagnostics, and what the
+      // checker worked out, which hover, completion and the quick-fix read.
+      if (Array.isArray(output)) {
+        found = output;
+      } else {
+        found = output.diagnostics || [];
+        types.remember(file, output);
+      }
     } catch (e) {
       // Exit code 2 is a usage error, where stdout is legitimately empty and
       // stderr says why. Anything else parsing badly is worth surfacing.
@@ -511,7 +543,10 @@ function activate(context) {
       if (document.languageId === 'rux') routeIndex.clear();
       refresh(document);
     }),
-    vscode.workspace.onDidCloseTextDocument((document) => diagnostics.delete(document.uri)),
+    vscode.workspace.onDidCloseTextDocument((document) => {
+      diagnostics.delete(document.uri);
+      if (document.uri.scheme === 'file') types.forget(document.uri.fsPath);
+    }),
     vscode.workspace.onDidChangeConfiguration((event) => {
       if (event.affectsConfiguration('rux')) {
         vscode.workspace.textDocuments.forEach(refresh);
@@ -547,6 +582,52 @@ function toDiagnostic(vscode, document, d) {
   return diagnostic;
 }
 
+/**
+ * One quick-fix per parameter the checker has a guess for, on each "has no
+ * type" warning in `context`, plus one for all of them when there are several.
+ *
+ * The guess is the type the function's calls hand that parameter, as `rux check
+ * --types` reported it at the last save. Checking never uses it: a parameter's
+ * type is only ever what is written (decision 11 in `docs/10-types.md`), and
+ * this is a way of writing it.
+ */
+function paramFixes(vscode, document, context) {
+  if (document.uri.scheme !== 'file') return [];
+  const lines = document.getText().split(/\r?\n/);
+  const actions = [];
+  for (const diagnostic of context.diagnostics || []) {
+    if (diagnostic.source !== 'rux' || !/\b(?:has|have) no type, so what `/.test(diagnostic.message)) continue;
+    const line = diagnostic.range.start.line;
+    const edits = [];
+    for (const g of types.guesses(document.uri.fsPath, line + 1)) {
+      const at = types.insertionPoint(lines, line, g.function, g.param);
+      if (!at) continue;
+      const position = new vscode.Position(at.line, at.character);
+      edits.push({ g, position });
+      const action = new vscode.CodeAction(
+        `Annotate \`${g.param}\` as \`${g.type}\`, the type its calls hand it`,
+        vscode.CodeActionKind.QuickFix
+      );
+      action.edit = new vscode.WorkspaceEdit();
+      action.edit.insert(document.uri, position, `: ${g.type}`);
+      action.diagnostics = [diagnostic];
+      actions.push(action);
+    }
+    if (edits.length > 1) {
+      const all = new vscode.CodeAction(
+        `Annotate every parameter of \`${edits[0].g.function}\` from its calls`,
+        vscode.CodeActionKind.QuickFix
+      );
+      all.edit = new vscode.WorkspaceEdit();
+      for (const { g, position } of edits) all.edit.insert(document.uri, position, `: ${g.type}`);
+      all.diagnostics = [diagnostic];
+      all.isPreferred = true;
+      actions.push(all);
+    }
+  }
+  return actions;
+}
+
 /** Compare two paths without tripping over separators or drive-letter case. */
 function samePath(a, b) {
   if (!a || !b) return false;
@@ -566,4 +647,4 @@ function deactivate() {}
 // `indentArgs` is exported for the tests. What it returns is the difference
 // between the editor agreeing with `rux fmt --check` and quietly reformatting
 // every file it is asked to format, which is worth holding down.
-module.exports = { activate, deactivate, indentArgs };
+module.exports = { activate, deactivate, indentArgs, paramFixes };

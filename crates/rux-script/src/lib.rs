@@ -1858,10 +1858,16 @@ impl Engine {
     /// Check the script against its type annotations. See [`check`] and
     /// `docs/10-types.md`. `cx.host` is filled in from what was registered.
     pub fn check_types(&self, cx: &check::Context) -> Vec<check::Finding> {
+        self.check_types_recording(cx, false).0
+    }
+
+    /// [`Engine::check_types`], and with `record` set, the types it worked
+    /// out, for an editor. See [`check::check_recording`].
+    pub fn check_types_recording(&self, cx: &check::Context, record: bool) -> (Vec<check::Finding>, check::Table) {
         let mut cx = cx.clone();
         cx.host.extend(self.host_types.iter().cloned());
         // A template's pieces compile as the runtime compiles them to run.
-        check::check(&self.checked, &cx, &|src| self.engine.compile(rewrite_intervals(src)).ok())
+        check::check_recording(&self.checked, &cx, &|src| self.engine.compile(rewrite_intervals(src)).ok(), record)
     }
 
     /// The `type` declarations in `script`, as name and text, for another file

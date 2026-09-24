@@ -98,12 +98,72 @@ pub struct Context {
 /// turns a template's expression or handler into an AST, the way the runtime
 /// will when it runs it.
 pub fn check(ast: &AST, cx: &Context, compile: &dyn Fn(&str) -> Option<AST>) -> Vec<Finding> {
+    check_recording(ast, cx, compile, false).0
+}
+
+/// What the checker worked out a name, a field or a function to be, for an
+/// editor's hover and completion. See `docs/10-types.md`, "Editor".
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Seen {
+    /// A line of the script, or of the file when [`Seen::template`] is set.
+    pub line: usize,
+    /// 1-based column within the line. `None` in a template piece, whose
+    /// columns count from the piece and not from the file, and for what is
+    /// placed at a function's line rather than where it is written.
+    pub column: Option<usize>,
+    pub template: bool,
+    /// `value` for a name read, `field` for a property, `let` where a name is
+    /// declared, `param` for a parameter, `fn` for a function.
+    pub kind: &'static str,
+    /// As written: `note` for `t.note`.
+    pub name: String,
+    /// The whole chain it ends, `t.note`, when it is one a condition could
+    /// talk about. What completion after `t.` looks up.
+    pub path: Option<String>,
+    /// The type as written (`Task`), or a function's signature.
+    pub ty: String,
+    /// The fields a `.` after it may read: name, type, and whether the field
+    /// may be absent.
+    pub fields: Vec<(String, String, bool)>,
+    /// Whether the value may be `null`, so a field is read with `?.`.
+    pub nullable: bool,
+}
+
+/// The type an unannotated parameter was handed at every call the checker
+/// saw, for the editor's quick-fix. Never used to check anything: decision 11
+/// in `docs/10-types.md` is that a parameter is not inferred from its calls.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Guess {
+    /// The script line the function is written on.
+    pub line: usize,
+    pub function: String,
+    pub param: String,
+    pub ty: String,
+}
+
+/// Everything [`check_recording`] saw.
+#[derive(Clone, Debug, Default)]
+pub struct Table {
+    pub seen: Vec<Seen>,
+    pub guesses: Vec<Guess>,
+}
+
+/// [`check`], and when `record` is set, what it worked out along the way. An
+/// ordinary load does not record: nobody is there to read it.
+pub fn check_recording(
+    ast: &AST,
+    cx: &Context,
+    compile: &dyn Fn(&str) -> Option<AST>,
+    record: bool,
+) -> (Vec<Finding>, Table) {
     let mut checker = Checker::new(ast, cx, compile);
+    checker.record = record;
     checker.run();
+    let table = if record { checker.table() } else { Table::default() };
     let mut findings = checker.findings;
     findings.sort_by_key(|f| f.line);
     findings.dedup();
-    findings
+    (findings, table)
 }
 
 /// The state of a function's checking.
@@ -172,6 +232,11 @@ struct Checker<'a> {
     /// value against each member of a union.
     quiet: usize,
     quiet_errors: usize,
+    /// Whether to keep what is seen, for [`check_recording`].
+    record: bool,
+    seen: Vec<Seen>,
+    /// What each unannotated parameter was handed, by function and position.
+    given: HashMap<(String, usize), Vec<(usize, Type)>>,
 }
 
 /// How deep a type is unfolded before giving up, so a recursive type such as
@@ -200,7 +265,157 @@ impl<'a> Checker<'a> {
             findings: Vec::new(),
             quiet: 0,
             quiet_errors: 0,
+            record: false,
+            seen: Vec::new(),
+            given: HashMap::new(),
         }
+    }
+
+    // ----- Recording, for the editor --------------------------------------
+
+    /// Keep that `name` at `pos` is `ty`. `path` is the chain it ends.
+    /// Whether it was kept.
+    fn saw(&mut self, pos: Position, kind: &'static str, name: &str, path: Option<&str>, ty: &Type) -> bool {
+        if !self.record || self.quiet > 0 {
+            return false;
+        }
+        let Some(l) = pos.line() else { return false };
+        let (line, column, template) = match &self.in_template {
+            Some((start, _)) => (start + l - 1, None, true),
+            None => {
+                if self.cx.own_lines.is_some_and(|own| l > own) {
+                    return false;
+                }
+                (l, pos.position(), false)
+            }
+        };
+        let resolved = self.resolve(ty);
+        let nullable = !matches!(resolved, Type::Any) && may_be_null(&resolved);
+        let fields = self
+            .fields_of(&self.resolve(&without_null(&resolved)))
+            .into_iter()
+            .map(|f| (f.name, f.ty.to_string(), f.optional))
+            .collect();
+        self.seen.push(Seen {
+            line,
+            column,
+            template,
+            kind,
+            name: name.to_string(),
+            path: path.map(str::to_string),
+            ty: ty.to_string(),
+            fields,
+            nullable,
+        });
+        true
+    }
+
+    /// The fields a `.` may read on a value of `ty`, already resolved: a
+    /// record's own, or those every member of a union of records has.
+    fn fields_of(&self, ty: &Type) -> Vec<Field> {
+        match ty {
+            Type::Record(fields) => fields.clone(),
+            Type::Union(members) => {
+                let records: Vec<Vec<Field>> = members
+                    .iter()
+                    .map(|m| match self.resolve(m) {
+                        Type::Record(f) => Some(f),
+                        _ => None,
+                    })
+                    .collect::<Option<_>>()
+                    .unwrap_or_default();
+                let Some((first, rest)) = records.split_first() else { return Vec::new() };
+                first
+                    .iter()
+                    .filter_map(|f| {
+                        let mut tys = vec![f.ty.clone()];
+                        let mut optional = f.optional;
+                        for r in rest {
+                            let other = r.iter().find(|o| o.name == f.name)?;
+                            tys.push(other.ty.clone());
+                            optional |= other.optional;
+                        }
+                        Some(Field { name: f.name.clone(), optional, ty: Type::union(tys) })
+                    })
+                    .collect()
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    /// `fn label(t: Task, i: int): string`, as far as it is known.
+    fn signature(&self, name: &str, arity: usize) -> Option<String> {
+        let info = self.fns.get(&(name.to_string(), arity))?;
+        let params: Vec<String> = info
+            .params
+            .iter()
+            .map(|(p, t)| match t {
+                Some(t) => format!("{p}: {t}"),
+                None => p.clone(),
+            })
+            .collect();
+        let result = match (&info.result, &info.state) {
+            (Some(t), _) | (None, FnState::Done(t)) => format!(": {t}"),
+            _ => String::new(),
+        };
+        Some(format!("fn {name}({}){result}", params.join(", ")))
+    }
+
+    /// What was kept, with every function and parameter placed at the line
+    /// its function is written on, and each unannotated parameter's guess.
+    fn table(&mut self) -> Table {
+        let mut guesses = Vec::new();
+        let mut named: Vec<(String, usize)> =
+            self.fns.iter().filter(|(_, f)| !f.is_anonymous()).map(|(k, _)| k.clone()).collect();
+        named.sort();
+        for key in named {
+            let info = self.fns[&key].clone();
+            let at = info.def.body.position();
+            let Some(line) = at.line() else { continue };
+            if self.cx.own_lines.is_some_and(|own| line > own) {
+                continue;
+            }
+            // Placed on the line, not at a column: rhai keeps no position for
+            // a function's name or its parameters.
+            let place = Position::new(line as u16, 0);
+            if let Some(sig) = self.signature(&key.0, key.1) {
+                if self.saw(place, "fn", &key.0, None, &Type::Any) {
+                    let last = self.seen.last_mut().unwrap();
+                    last.ty = sig;
+                    last.column = None;
+                    last.fields.clear();
+                    last.nullable = false;
+                }
+            }
+            for (i, (param, ty)) in info.params.iter().enumerate() {
+                if self.saw(place, "param", param, Some(param), ty.as_ref().unwrap_or(&Type::Any)) {
+                    self.seen.last_mut().unwrap().column = None;
+                }
+                if ty.is_some() {
+                    continue;
+                }
+                let handed: Vec<Type> = self
+                    .given
+                    .get(&key)
+                    .map(|g| g.iter().filter(|(n, _)| *n == i).map(|(_, t)| t.clone()).collect())
+                    .unwrap_or_default();
+                if handed.is_empty() || handed.iter().any(|t| self.resolve(t) == Type::Any) {
+                    continue;
+                }
+                guesses.push(Guess {
+                    line,
+                    function: key.0.clone(),
+                    param: param.clone(),
+                    ty: widen(&Type::union(handed)).to_string(),
+                });
+            }
+        }
+        let mut seen = std::mem::take(&mut self.seen);
+        // The same expression is inferred more than once on some paths; the
+        // first answer is the one given where it stands.
+        let mut kept = std::collections::HashSet::new();
+        seen.retain(|s| kept.insert((s.template, s.line, s.column, s.kind, s.name.clone(), s.path.clone())));
+        Table { seen, guesses }
     }
 
     // ----- Reporting -------------------------------------------------------
@@ -1294,11 +1509,13 @@ impl<'a> Checker<'a> {
     fn check_let(&mut self, name: &str, pos: Position, value: &Expr) {
         if let Some((_, ty)) = self.cx.placeholders.iter().find(|(n, _)| n == name) {
             let ty = ty.clone().unwrap_or(Type::Any);
+            self.saw(pos, "let", name, Some(name), &ty);
             self.bind(name, ty);
             return;
         }
         if let Some(ty) = self.declared.get(&pos).cloned() {
             self.check_expr(value, &ty);
+            self.saw(pos, "let", name, Some(name), &ty);
             self.bind(name, ty);
             return;
         }
@@ -1330,9 +1547,11 @@ impl<'a> Checker<'a> {
                 ),
             };
             self.warn(pos, hint);
+            self.saw(pos, "let", name, Some(name), &Type::Any);
             self.bind(name, Type::Any);
             return;
         }
+        self.saw(pos, "let", name, Some(name), &ty);
         self.bind(name, ty);
     }
 
@@ -1566,7 +1785,10 @@ impl<'a> Checker<'a> {
                 }
                 let name = v.1.as_str();
                 match self.lookup(name) {
-                    Some(t) => t,
+                    Some(t) => {
+                        self.saw(e.position(), "value", name, Some(name), &t);
+                        t
+                    }
                     None => {
                         self.caller_local(name, e.position());
                         Type::Any
@@ -1665,6 +1887,8 @@ impl<'a> Checker<'a> {
             if !may_be_null(&self.resolve(known)) {
                 if index {
                     self.infer(what);
+                } else if let Expr::Property(p, pos) = what {
+                    self.saw(*pos, "field", p.2.as_str(), here.as_deref(), known);
                 }
                 return (known.clone(), here);
             }
@@ -1696,7 +1920,17 @@ impl<'a> Checker<'a> {
                 }
             }
         };
-        (known.unwrap_or(ty), here)
+        let ty = known.unwrap_or(ty);
+        match what {
+            Expr::Property(p, pos) if !index => {
+                self.saw(*pos, "field", p.2.as_str(), here.as_deref(), &ty);
+            }
+            Expr::Variable(v, ..) if !index => {
+                self.saw(what.position(), "field", v.1.as_str(), here.as_deref(), &ty);
+            }
+            _ => {}
+        }
+        (ty, here)
     }
 
     fn property(&mut self, base: &Type, shown: &Type, name: &str, pos: Position, read: Read) -> Type {
@@ -2029,7 +2263,13 @@ impl<'a> Checker<'a> {
 
         // A function of the script's own.
         if self.fns.contains_key(&(name.to_string(), args.len())) {
-            return self.call_script_fn(name, args, pos);
+            let result = self.call_script_fn(name, args, pos);
+            if let Some(sig) = self.signature(name, args.len()) {
+                if self.saw(pos, "fn", name, None, &Type::Any) {
+                    self.seen.last_mut().unwrap().ty = sig;
+                }
+            }
+            return result;
         }
         // An arrow kept in a variable, called by name.
         if let Some(Type::Function(params, result)) = self.lookup(name).map(|t| self.resolve(&t)) {
@@ -2140,7 +2380,7 @@ impl<'a> Checker<'a> {
     fn call_script_fn(&mut self, name: &str, args: &[Expr], pos: Position) -> Type {
         let key = (name.to_string(), args.len());
         let params: Vec<(String, Option<Type>)> = self.fns[&key].params.clone();
-        for (arg, (param, ty)) in args.iter().zip(params.iter()) {
+        for (i, (arg, (param, ty))) in args.iter().zip(params.iter()).enumerate() {
             match ty {
                 Some(ty) => {
                     let before = self.findings.len();
@@ -2156,7 +2396,10 @@ impl<'a> Checker<'a> {
                     }
                 }
                 None => {
-                    self.infer(arg);
+                    let t = self.infer(arg);
+                    if self.record && self.quiet == 0 {
+                        self.given.entry(key.clone()).or_default().push((i, widen(&t)));
+                    }
                 }
             }
         }
@@ -3147,5 +3390,78 @@ mod tests {
         let f = findings("let a = 1;\n\nlet n: int = \"x\";");
         assert_eq!(f.len(), 1, "{f:?}");
         assert_eq!(f[0].line, Some(3));
+    }
+
+    fn table(src: &str) -> Table {
+        let engine = Builder::new().build(src).unwrap_or_else(|e| panic!("{src}
+{e:?}"));
+        engine.check_types_recording(&Context::default(), true).1
+    }
+
+    fn seen<'t>(t: &'t Table, kind: &str, name: &str) -> Vec<&'t Seen> {
+        t.seen.iter().filter(|s| s.kind == kind && s.name == name).collect()
+    }
+
+    #[test]
+    fn an_ordinary_check_records_nothing() {
+        let engine = Builder::new().build(&format!("{TASK}let n = 1;")).unwrap();
+        let (_, t) = engine.check_types_recording(&Context::default(), false);
+        assert!(t.seen.is_empty() && t.guesses.is_empty());
+    }
+
+    #[test]
+    fn a_name_is_recorded_where_it_is_read_with_its_fields() {
+        let t = table(&format!("{TASK}let sel: Task? = signal(());
+fn f(): string {{ sel?.title ?? \"\" }}"));
+        let read = seen(&t, "value", "sel");
+        assert_eq!(read.len(), 1, "{:?}", t.seen);
+        let read = read[0];
+        assert_eq!((read.line, read.ty.as_str(), read.nullable), (3, "Task?", true));
+        assert!(read.column.is_some());
+        let names: Vec<&str> = read.fields.iter().map(|f| f.0.as_str()).collect();
+        assert_eq!(names, ["id", "title", "done", "note"]);
+        assert!(read.fields.iter().any(|f| f.0 == "note" && f.2), "note is optional");
+        let title = seen(&t, "field", "title");
+        assert_eq!(title[0].path.as_deref(), Some("sel.title"));
+        // Read through `?.` on a value that may be null, so it may be null too.
+        assert_eq!(title[0].ty, "string?");
+        assert_eq!(seen(&t, "let", "sel")[0].line, 2);
+    }
+
+    #[test]
+    fn a_narrowed_name_is_recorded_as_narrowed() {
+        let t = table(&format!("{TASK}let sel: Task? = signal(());
+fn f(): string {{ if sel != null {{ sel.title }} else {{ \"\" }} }}"));
+        let tys: Vec<&str> = seen(&t, "value", "sel").iter().map(|s| s.ty.as_str()).collect();
+        assert!(tys.contains(&"Task"), "{tys:?}");
+    }
+
+    #[test]
+    fn a_function_is_recorded_with_its_signature() {
+        let t = table(&format!("{TASK}fn label(t: Task, i: int): string {{ t.title }}
+fn count() {{ 1 }}
+fn g() {{ label(#{{ id: 1, title: \"a\", done: false }}, 0) }}"));
+        let call = seen(&t, "fn", "label");
+        assert!(call.iter().any(|s| s.line == 4 && s.column.is_some()), "{call:?}");
+        assert!(call.iter().all(|s| s.ty == "fn label(t: Task, i: int): string"), "{call:?}");
+        assert_eq!(seen(&t, "fn", "count")[0].ty, "fn count(): number");
+        let param = seen(&t, "param", "t");
+        assert_eq!((param[0].line, param[0].ty.as_str(), param[0].column), (2, "Task", None));
+    }
+
+    #[test]
+    fn an_unannotated_parameter_gets_a_guess_from_its_calls() {
+        let t = table("fn shout(s, n) { s }
+fn a() { shout(\"hi\", 1) }
+fn b() { shout(\"yo\", 2) }");
+        assert_eq!(t.guesses.len(), 2, "{:?}", t.guesses);
+        assert_eq!((t.guesses[0].param.as_str(), t.guesses[0].ty.as_str(), t.guesses[0].line), ("s", "string", 1));
+        assert_eq!((t.guesses[1].param.as_str(), t.guesses[1].ty.as_str()), ("n", "number"));
+        // Handed something unknown, or never called: no guess.
+        let t = table("let x = signal([]);
+fn shout(s) { s }
+fn a() { shout(x[0]) }
+fn lone(q) { q }");
+        assert!(t.guesses.is_empty(), "{:?}", t.guesses);
     }
 }
