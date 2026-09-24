@@ -2052,7 +2052,8 @@ not "is it small", it is "did v0.7 say this works".
   collides with a deliberate divergence: the flex cross-axis defaults to
   `flex-start` (children hug) rather than CSS's `stretch`, for ergonomics. The
   report is evidence that the divergence surprises people in the column case.
-  Worth re-opening, worth deciding rather than patching.
+  Worth re-opening, worth deciding rather than patching. **Decided 2026-09-18
+  (CSS follows CSS) and reverted in v0.8: the default is `stretch`.**
 
 **Probably correct, and therefore an author note:**
 

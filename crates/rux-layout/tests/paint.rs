@@ -92,6 +92,10 @@ fn padding_insets_the_glyphs_not_just_the_box() {
         Style {
             padding: Sides { top: 8.0, right: 40.0, bottom: 8.0, left: 40.0 },
             background: Some(Background::Color(Rgba::new(0.2, 0.2, 0.2, 1.0))),
+            // This test is about padding, not cross-axis sizing: hug
+            // explicitly so it keeps its meaning under the flex default
+            // of `stretch`.
+            align_self: Some(Align::Start),
             ..Default::default()
         },
         label("hi"),

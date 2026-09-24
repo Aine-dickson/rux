@@ -31,6 +31,7 @@
   .row { display: flex; gap: 14px; align-items: flex-start; }
 
   .btn {
+    align-self: flex-start;
     padding: 8px 14px;
     background: #89b4fa;
     border-radius: 8px;

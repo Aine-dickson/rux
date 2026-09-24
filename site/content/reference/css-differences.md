@@ -17,7 +17,7 @@ So this list is short on purpose, and each entry says which kind it is.
 
 | Difference | Kind | Standing |
 |---|---|---|
-| Flex cross-axis defaults to `flex-start`, not `stretch` | a preference, taken for ergonomics | **To be reverted.** It changes the layout of every existing document, so it is scheduled rather than patched |
+| ~~Flex cross-axis defaults to `flex-start`, not `stretch`~~ | a preference, taken for ergonomics | **Reverted in v0.8.** The default is `stretch`, as in CSS |
 | `border-radius` in percent resolves against the **shorter side**, so `50%` on a 160x60 box is a pill and not CSS's ellipse | a capability: Rux draws one radius per corner and cannot draw an elliptical corner | Keep |
 | No inline text flow: two `<text>` siblings stack instead of sharing a line | a capability: the layout engine has no inline layout, which is why `display: inline` was built and then removed | Keep |
 

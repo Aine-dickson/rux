@@ -24,6 +24,7 @@
   .hint { color: #6c7086; font-size: 12px; }
 
   .btn {
+    align-self: flex-start;
     padding: 6px 10px;
     background: #45475a;
     border-radius: 8px;

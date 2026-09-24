@@ -39,6 +39,7 @@
   .note { color: #9399b2; font-size: 13px; }
 
   .btn {
+    align-self: flex-start;
     padding: 6px 12px;
     background: #89b4fa;
     border-radius: 8px;

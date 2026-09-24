@@ -185,3 +185,51 @@ fn clip_alone_does_not_scroll() {
     let layout = layout_scrolled(&screen, 400.0, 600.0, &[], &mut measure);
     assert!(layout.scrolls.is_empty());
 }
+
+/// A flex scroller's end padding is counted once. Taffy's content size for a
+/// flex container already ends with it; adding it again let the box travel its
+/// padding too far, and a row whose children exactly filled it showed a
+/// scrollbar with nothing to scroll.
+#[test]
+fn a_flex_scroller_counts_its_end_padding_once() {
+    let pad = Sides { top: 8.0, right: 8.0, bottom: 8.0, left: 8.0 };
+    let row = |h: f32| {
+        boxed(
+            Style {
+                display: Display::Flex,
+                width: Some(Len::Px(100.0)),
+                height: Some(Len::Px(h)),
+                shrink: 0.0,
+                ..Default::default()
+            },
+            vec![],
+        )
+    };
+    let scroller = |children: Vec<Node>| {
+        boxed(
+            Style {
+                display: Display::Flex,
+                axis: Axis::Column,
+                width: Some(Len::Px(300.0)),
+                height: Some(Len::Px(96.0)),
+                padding: pad,
+                overflow: Overflow::Scroll,
+                ..Default::default()
+            },
+            children,
+        )
+    };
+    let mut measure = |_: &rux_layout::TextContent, _: Option<f32>| (0.0, 0.0);
+    let run = |inner: Node, measure: &mut dyn FnMut(&rux_layout::TextContent, Option<f32>) -> (f32, f32)| {
+        let screen = boxed(Style { display: Display::Flex, axis: Axis::Column, ..Default::default() }, vec![inner]);
+        layout_scrolled(&screen, 400.0, 600.0, &[], measure)
+    };
+
+    // 8 + 80 + 8 fills 96 exactly: nothing to scroll.
+    let exact = run(scroller(vec![row(80.0)]), &mut measure);
+    assert_eq!(exact.scrolls[0].max.y, 0.0, "{:?}", exact.scrolls[0]);
+
+    // 8 + 200 + 8 in a 96 box: 120 of travel, the bottom padding counted once.
+    let over = run(scroller(vec![row(200.0)]), &mut measure);
+    assert_eq!(over.scrolls[0].max.y, 120.0, "{:?}", over.scrolls[0]);
+}

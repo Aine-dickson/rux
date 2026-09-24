@@ -427,11 +427,11 @@ Driven in `examples/chart.rux` and `examples/morph.rux`.
 > confusing. It's gone.
 
 - **Everything defaults to `display: block`.** Block containers make children fill.
-- **Use `display: flex` for layout.** Flex cross-axis defaults to **flex-start**
-  (children hug), not CSS's `stretch`. **This is a divergence Rux intends to
-  drop**: see "Where Rux differs from CSS". Until it does, every flex
-  column needs its own `align-items: stretch` for its children to fill, because
-  `align-items` does not inherit.
+- **Use `display: flex` for layout.** Flex cross-axis defaults to **`stretch`**,
+  as in CSS: a child of a flex column fills its width, and a child of a row its
+  height. A button or a badge that should hug says `align-self: flex-start`, or
+  its parent says `align-items`. This was `flex-start` until v0.8, a preference
+  taken for ergonomics and reverted because Rux follows CSS's defaults.
 - **Hug means `fit-content`**: a box with no `width` is clamped to its parent's
   inner width, so it can't burst out of a narrower parent. An explicit `width` (or
   `flex-shrink: 0`) is your call and *will* overflow, so clip it with `overflow: hidden`.
@@ -454,7 +454,7 @@ So this list is short on purpose, and each entry says which kind it is.
 
 | Difference | Kind | Standing |
 |---|---|---|
-| Flex cross-axis defaults to `flex-start`, not `stretch` | a preference, taken for ergonomics | **To be reverted.** It changes the layout of every existing document, so it is scheduled rather than patched |
+| ~~Flex cross-axis defaults to `flex-start`, not `stretch`~~ | a preference, taken for ergonomics | **Reverted in v0.8.** The default is `stretch`, as in CSS |
 | `border-radius` in percent resolves against the **shorter side**, so `50%` on a 160x60 box is a pill and not CSS's ellipse | a capability: Rux draws one radius per corner and cannot draw an elliptical corner | Keep |
 | No inline text flow: two `<text>` siblings stack instead of sharing a line | a capability: the layout engine has no inline layout, which is why `display: inline` was built and then removed | Keep |
 

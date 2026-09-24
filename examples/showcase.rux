@@ -26,6 +26,7 @@
   .app {
     display: flex;
     justify-content: center;
+    align-items: flex-start;
     padding: 28px;
     background: #181825;
   }

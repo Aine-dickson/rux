@@ -12,11 +12,11 @@ weight = 3
 > confusing. It's gone.
 
 - **Everything defaults to `display: block`.** Block containers make children fill.
-- **Use `display: flex` for layout.** Flex cross-axis defaults to **flex-start**
-  (children hug), not CSS's `stretch`. **This is a divergence Rux intends to
-  drop**: see "Where Rux differs from CSS". Until it does, every flex
-  column needs its own `align-items: stretch` for its children to fill, because
-  `align-items` does not inherit.
+- **Use `display: flex` for layout.** Flex cross-axis defaults to **`stretch`**,
+  as in CSS: a child of a flex column fills its width, and a child of a row its
+  height. A button or a badge that should hug says `align-self: flex-start`, or
+  its parent says `align-items`. This was `flex-start` until v0.8, a preference
+  taken for ergonomics and reverted because Rux follows CSS's defaults.
 - **Hug means `fit-content`**: a box with no `width` is clamped to its parent's
   inner width, so it can't burst out of a narrower parent. An explicit `width` (or
   `flex-shrink: 0`) is your call and *will* overflow, so clip it with `overflow: hidden`.

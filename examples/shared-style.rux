@@ -42,6 +42,7 @@
   .card.loud { --surface: var(--brand); --ink: var(--on-brand); --muted: var(--on-brand); }
 
   .btn {
+    align-self: flex-start;
     padding: 8px 14px;
     background: var(--brand);
     border-radius: var(--radius);

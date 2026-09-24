@@ -76,7 +76,6 @@ const APP: &str = r#"<!-- The entry point. `rux run` looks for this file here an
   .app {
     display: flex;
     flex-direction: column;
-    align-items: stretch;
     height: 100vh;
     background: #1e1e2e;
     font-family: sans-serif;
@@ -106,7 +105,6 @@ const APP: &str = r#"<!-- The entry point. `rux run` looks for this file here an
     flex: 1;
     display: flex;
     flex-direction: column;
-    align-items: stretch;
     overflow-y: auto;
     overflow-x: hidden;
     padding: 0 20px;
@@ -223,7 +221,6 @@ const HOME: &str = r#"<!-- The list. A page is an ordinary component that a `<ro
     width: 100%;
     display: flex;
     flex-direction: column;
-    align-items: stretch;
     gap: 8px;
     padding-bottom: 16px;
   }
@@ -232,7 +229,6 @@ const HOME: &str = r#"<!-- The list. A page is an ordinary component that a `<ro
     width: 100%;
     display: flex;
     flex-direction: column;
-    align-items: stretch;
     gap: 8px;
   }
 
@@ -295,20 +291,12 @@ const NEW_TASK: &str = r#"<!-- The form. Every input needs an `r-model`: it is t
     width: 100%;
     display: flex;
     flex-direction: column;
-    align-items: stretch;
     gap: 16px;
     padding: 8px 0 24px 0;
   }
 
   .heading { color: #cdd6f4; font-size: 20px; font-weight: 700; }
-
-  .field {
-    display: flex;
-    flex-direction: column;
-    align-items: stretch;
-    gap: 6px;
-  }
-
+  .field { display: flex; flex-direction: column; gap: 6px; }
   .field-label { color: #6c7086; font-size: 12px; }
 
   .input {
@@ -396,7 +384,6 @@ const DETAIL: &str = r#"<!-- One task, opened from the list.
     width: 100%;
     display: flex;
     flex-direction: column;
-    align-items: stretch;
     gap: 16px;
     padding: 8px 0 24px 0;
   }
@@ -407,7 +394,6 @@ const DETAIL: &str = r#"<!-- One task, opened from the list.
   .card {
     display: flex;
     flex-direction: column;
-    align-items: stretch;
     gap: 8px;
     padding: 18px;
     border-radius: 14px;
@@ -421,7 +407,6 @@ const DETAIL: &str = r#"<!-- One task, opened from the list.
   .actions {
     width: 100%;
     display: flex;
-    align-items: stretch;
     gap: 8px;
     margin-top: 8px;
   }

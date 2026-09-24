@@ -430,12 +430,12 @@ const VALUE_METHODS: &[Entry] = &[
 /// runtime cannot reach the editor undocumented.
 ///
 /// Where Rux differs from CSS, the difference **is** the sentence: the `block`
-/// default, `align-items` starting at `flex-start`, `overflow` being what makes
+/// default, `overflow` being what makes
 /// a scroller, a `transform` becoming a containing block. Those are the places
 /// a general CSS reference is actively wrong here.
 const CSS_PROPERTY_DOCS: &[Entry] = &[
     Entry { name: "display", detail: "how this box lays its children out", doc: "`block` (the default), `flex`, `grid`, `inline` or `none`. **Rux defaults to `block`**, so a box does not lay its children out in a row until you say `display: flex`." },
-    Entry { name: "width", detail: "how wide the box is", doc: "A length or a percentage of the parent's width. `100%` is the usual way to make a child fill a flex parent, because Rux's cross-axis default is `flex-start` rather than CSS's `stretch`." },
+    Entry { name: "width", detail: "how wide the box is", doc: "A length or a percentage of the parent's width. A child of a flex column already fills its width, since the cross-axis default is `stretch`; `width` is for when it should not." },
     Entry { name: "height", detail: "how tall the box is", doc: "A length or a percentage. A definite height is half of what makes a scroller; the other half is `overflow`." },
     Entry { name: "gap", detail: "space between children", doc: "On a flex or grid parent. Space *between* items only, never outside them, which is what makes it different from margin." },
     Entry { name: "min-width", detail: "a width it will not go under", doc: "Stops a flex item shrinking past this. `min-width: 0` is the escape hatch when an item refuses to shrink at all." },
@@ -489,7 +489,7 @@ const CSS_PROPERTY_DOCS: &[Entry] = &[
     Entry { name: "flex-wrap", detail: "whether items may move onto another line", doc: "`wrap` or `wrap-reverse` allow it; anything else keeps one line." },
     Entry { name: "flex-direction", detail: "which way the children are laid out", doc: "`row` (the default) or `column`. This is the axis every alignment property below is described against." },
     Entry { name: "justify-content", detail: "alignment along the main axis", doc: "The axis `flex-direction` set. On a `row`, this is horizontal." },
-    Entry { name: "align-items", detail: "alignment across the main axis", doc: "On a `row`, this is vertical. **Rux defaults to `flex-start`, not CSS's `stretch`**, so a child hugs its content unless told to fill." },
+    Entry { name: "align-items", detail: "alignment across the main axis", doc: "On a `row`, this is vertical. Defaults to `stretch`, as in CSS, so a child fills the cross axis. `align-self: flex-start` makes one child hug." },
     Entry { name: "align-self", detail: "this one item's cross-axis alignment", doc: "Overrides the parent's `align-items` for this item only. `align-self: flex-end` is how one row in a list moves to the far side." },
     Entry { name: "justify-self", detail: "this one item's main-axis alignment", doc: "Grid mostly; a single item's override." },
     Entry { name: "justify-items", detail: "the default main-axis alignment for children", doc: "Grid mostly; set on the parent." },

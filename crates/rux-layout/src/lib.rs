@@ -2265,16 +2265,7 @@ fn to_taffy(style: &Style, vp: (f32, f32)) -> taffy::Style {
             Justify::SpaceBetween => JustifyContent::SpaceBetween,
             Justify::SpaceAround => JustifyContent::SpaceAround,
         }),
-        // Default flex cross-alignment is flex-start (hug), not taffy's stretch,
-        // so children keep their own width unless the author asks to stretch.
-        align_items: style
-            .align
-            .map(to_align_items)
-            .or(if style.display == Display::Flex {
-                Some(AlignItems::FlexStart)
-            } else {
-                None
-            }),
+        align_items: style.align.map(to_align_items),
         align_self: style.align_self.map(to_align_items),
         justify_self: style.justify_self.map(to_align_items),
         justify_items: style.justify_items.map(to_align_items),
@@ -3338,12 +3329,21 @@ fn collect(
         // CSS counts the padding (css-overflow-3, scrollable overflow), and so
         // does every current browser. The border is added because the clip is
         // the border box.
+        //
+        // **Only where Taffy has not already.** A flex or grid container's
+        // content size already ends with its end padding, and a leaf's counts
+        // all of it; only block layout stops at the last child. Adding it to
+        // all of them let every flex scroller travel its padding too far, and
+        // a row whose cards stretched to exactly fill it grew a vertical bar
+        // for nothing (examples/scroll.rux, found reverting `align-items`).
+        let taffy_padded = tree.child_count(id) == 0
+            || matches!(tree.style(id).map(|s| s.display), Ok(taffy::style::Display::Flex | taffy::style::Display::Grid));
+        let (pad_right, pad_bottom) =
+            if taffy_padded { (0.0, 0.0) } else { (layout.padding.right, layout.padding.bottom) };
         let max = Offset {
-            x: (layout.content_size.width + layout.padding.right + layout.border.right
-                - layout.size.width)
+            x: (layout.content_size.width + pad_right + layout.border.right - layout.size.width)
                 .max(0.0),
-            y: (layout.content_size.height + layout.padding.bottom + layout.border.bottom
-                - layout.size.height)
+            y: (layout.content_size.height + pad_bottom + layout.border.bottom - layout.size.height)
                 .max(0.0),
         };
         shift = offsets.get(sid).copied().unwrap_or_default().clamp_to(max);
@@ -3357,10 +3357,8 @@ fn collect(
             height: layout.size.height,
             // The same extent `max` was measured against, end padding in, so
             // the scrollbar's thumb and its travel agree.
-            content_width: layout.content_size.width + layout.padding.right + layout.border.right,
-            content_height: layout.content_size.height
-                + layout.padding.bottom
-                + layout.border.bottom,
+            content_width: layout.content_size.width + pad_right + layout.border.right,
+            content_height: layout.content_size.height + pad_bottom + layout.border.bottom,
             max,
             within: inside_scroll,
         });
