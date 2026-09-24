@@ -645,6 +645,7 @@ fn check_script_types(
     support_types: Vec<(String, String, String)>,
     computeds: &[Computed],
     callers: &HashSet<String>,
+    tags: &TagProps,
 ) {
     use rux_script::types::{parse_type, Type};
     let typed = |ty: &Option<String>| ty.as_deref().and_then(|t| parse_type(t).ok());
@@ -653,6 +654,7 @@ fn check_script_types(
         support_types,
         own_lines: Some(own_lines),
         caller_names: callers.clone(),
+        template: template_for_types(&sfc.template, tags),
         ..Default::default()
     };
     // The router's names are in scope in every document. `params` and `query`
@@ -688,7 +690,8 @@ fn check_script_types(
         cx.placeholders = computeds.iter().map(|c| (c.name.clone(), typed(&c.ty))).collect();
     }
     for finding in engine.check_types(&cx) {
-        let line = finding.line.map(|l| l + sfc.script_line - 1);
+        // A template's finding is on a line of the file already.
+        let line = if finding.template { finding.line } else { finding.line.map(|l| l + sfc.script_line - 1) };
         rux_script::located(line, || {
             if finding.is_error {
                 rux_script::error_script(finding.message);
@@ -696,6 +699,253 @@ fn check_script_types(
                 rux_script::warn_script(finding.message);
             }
         });
+    }
+}
+
+/// The template as the type checker reads it: what every expression in it has
+/// to be, which only the runtime knows, since it is what an attribute of an
+/// element takes and what an event hands over. See `docs/10-types.md`,
+/// "Templates".
+fn template_for_types(root: &rux_parser::Element, tags: &TagProps) -> Vec<rux_script::check::Tpl> {
+    let mut out = Vec::new();
+    element_for_types(root, tags, &mut out);
+    out
+}
+
+/// A type written as text here, where it is a constant of the runtime's.
+fn runtime_type(text: &str) -> rux_script::types::Type {
+    rux_script::types::parse_type(text).unwrap_or_else(|e| panic!("`{text}`: {}", e.message))
+}
+
+/// Where a pointer is, as every gesture's `event` has it.
+const POINTER_FIELDS: &str = "x: number, y: number, pageX: number, pageY: number, \
+    width: number, height: number, touches: { id: number, x: number, y: number }[]";
+/// How far a drag or a swipe has gone, from where it landed and from the last move.
+const TRAVEL_FIELDS: &str = "totalX: number, totalY: number, moveX: number, moveY: number";
+
+/// What `event` is in `@name` on `el`. `any` where nothing is known.
+fn event_type(el: &rux_parser::Element, name: &str, tags: &TagProps) -> rux_script::types::Type {
+    use rux_script::types::Type;
+    let text = match name {
+        "tap" | "press" | "release" | "longpress" => format!("{{ {POINTER_FIELDS} }}"),
+        "drag" => format!("{{ {POINTER_FIELDS}, {TRAVEL_FIELDS}, phase: \"start\" | \"move\" | \"end\" }}"),
+        "swipe" => format!(
+            "{{ {POINTER_FIELDS}, {TRAVEL_FIELDS}, direction: \"left\" | \"right\" | \"up\" | \"down\" }}"
+        ),
+        "input" | "change" | "focus" | "blur" if el.tag == "input" => {
+            // A number field bound to a signal hands over the number the signal
+            // holds; everything else hands over text, or has not been measured.
+            let value = match el.attr("type") {
+                Some("number") if el.attr("r-model").is_some() => "number",
+                Some("checkbox" | "switch" | "slider") => "any",
+                _ => "string",
+            };
+            format!("{{ value: {value} }}")
+        }
+        // Every failure, by field; one that passed is not there at all.
+        "submit" | "invalid" => {
+            let mut fields = vec![rux_script::types::Field {
+                name: "values".to_string(),
+                optional: false,
+                ty: form_values_type(el, tags),
+            }];
+            if name == "invalid" {
+                fields.push(rux_script::types::Field {
+                    name: "errors".to_string(),
+                    optional: false,
+                    ty: runtime_type("{ [string]: string }"),
+                });
+            }
+            return Type::Record(fields);
+        }
+        _ => return Type::Any,
+    };
+    runtime_type(&text)
+}
+
+/// What a form's `event.values` holds: an entry for every bound field in it,
+/// under its `name`, or the name of what it binds when it has none. The fields
+/// are in the markup, so it is a record of them. One under an `r-if` or an
+/// `r-for` may not be there, or may be several, so it is optional and `any`.
+/// A component inside the form can hold fields the markup here does not show,
+/// and then all that is known is that it is a dictionary.
+fn form_values_type(form: &rux_parser::Element, tags: &TagProps) -> rux_script::types::Type {
+    use rux_script::types::{Field, Type};
+    fn walk(el: &rux_parser::Element, tags: &TagProps, maybe: bool, out: &mut Vec<Field>) -> bool {
+        for child in &el.children {
+            let rux_parser::Node::Element(c) = child else { continue };
+            if props_of(tags, &c.tag).is_some() || c.tag == "slot" {
+                return false;
+            }
+            let maybe = maybe || ["r-if", "r-elif", "r-else", "r-for"].iter().any(|d| c.attrs.iter().any(|a| a.name == *d));
+            if let (true, Some(bind)) = (c.tag == "input", c.attr("r-model")) {
+                let name = c.attr("name").unwrap_or(bind).trim().to_string();
+                let ty = match c.attr("type") {
+                    _ if maybe => Type::Any,
+                    Some("number" | "slider") => Type::Number,
+                    Some("checkbox" | "switch") => Type::Bool,
+                    _ => Type::String,
+                };
+                match out.iter_mut().find(|f| f.name == name) {
+                    // Twice, as a radio group is: one value. A name used by
+                    // fields of different kinds is left unchecked.
+                    Some(f) if f.ty != ty => f.ty = Type::Any,
+                    Some(_) => {}
+                    None => out.push(Field { name, optional: maybe, ty }),
+                }
+            }
+            if !walk(c, tags, maybe, out) {
+                return false;
+            }
+        }
+        true
+    }
+    let mut fields = Vec::new();
+    if walk(form, tags, false, &mut fields) {
+        Type::Record(fields)
+    } else {
+        runtime_type("{ [string]: any }")
+    }
+}
+
+/// What a bound `:name` on a built-in `<tag>` takes. `None` for one that is
+/// not a bound form at all, which is reported elsewhere.
+fn bound_type(tag: &str, name: &str) -> Option<rux_script::types::Type> {
+    let text = match (tag, name) {
+        (_, "class") => "string | string[] | { [string]: bool }",
+        (_, "style") => "string | { [string]: any }",
+        (_, "to") => "string",
+        // Progress, 0 to 1, or nothing while no swap is being driven.
+        (_, "r-transition") => "number?",
+        ("image", "src") | ("path", "d") => "string",
+        ("input", "options") => "string[]",
+        ("input" | "button", "disabled") | ("input", "readonly" | "required") => "bool",
+        _ => return None,
+    };
+    Some(runtime_type(text))
+}
+
+/// What an `r-model` input writes into its target and shows from it.
+fn model_types(el: &rux_parser::Element) -> (rux_script::types::Type, rux_script::types::Type) {
+    use rux_script::types::Type;
+    match el.attr("type") {
+        Some("number" | "slider") => (Type::Number, Type::Number),
+        Some("checkbox" | "switch") => (Type::Bool, Type::Bool),
+        // A radio writes its own `value`, and shows whether the target is it.
+        Some("radio") => (el.attr("value").map_or(Type::String, |v| Type::Literal(v.to_string())), Type::Any),
+        // A select writes one of its options, which may be a narrower type
+        // than `string`: only what it shows is held to text.
+        Some("select") => (Type::Any, Type::String),
+        _ => (Type::String, Type::String),
+    }
+}
+
+/// `el` itself: an `r-for` makes its whole element the loop's body.
+fn element_for_types(el: &rux_parser::Element, tags: &TagProps, out: &mut Vec<rux_script::check::Tpl>) {
+    use rux_script::check::Tpl;
+    if let Some((var, src)) = el.attr("r-for").and_then(rux_style::parse_for) {
+        let line = el.attr_line("r-for").unwrap_or(el.line);
+        out.push(Tpl::For { var: var.to_string(), src: src.to_string(), line, body: element_body(el, tags) });
+    } else {
+        out.extend(element_body(el, tags));
+    }
+}
+
+/// An element's attributes and children, without its `r-for` or `r-if`.
+fn element_body(el: &rux_parser::Element, tags: &TagProps) -> Vec<rux_script::check::Tpl> {
+    use rux_script::check::Tpl;
+    use rux_script::types::{parse_type, Type};
+    let mut out = Vec::new();
+    let component = props_of(tags, &el.tag);
+    let prop = |name: &str| -> Option<Type> {
+        let snake = name.replace('-', "_");
+        let decl = component?.iter().find(|p| p.name == snake)?;
+        decl.ty.as_deref().and_then(|t| parse_type(t).ok())
+    };
+    for a in &el.attrs {
+        let (name, src, line) = (a.name.as_str(), a.value.clone(), a.line);
+        if let Some(event) = name.strip_prefix('@') {
+            // A component's `@name` hears what it emits, with whatever payload.
+            let event_ty = if component.is_some() { Type::Any } else { event_type(el, event, tags) };
+            let what = format!("`@{event}` on <{}>", el.tag);
+            out.push(Tpl::Handler { src, event: event_ty, line, what });
+        } else if let Some(bound) = name.strip_prefix(':') {
+            let want = match component {
+                Some(_) if bound == "r-transition" => bound_type(&el.tag, bound),
+                Some(_) => prop(bound),
+                None => bound_type(&el.tag, bound),
+            };
+            out.push(Tpl::Expr { src, want, line, what: format!("`:{bound}` on <{}>", el.tag) });
+        } else if name == "r-model" && el.tag == "input" {
+            let (writes, shows) = model_types(el);
+            out.push(Tpl::Model { src, writes, shows, line, what: "`r-model`".to_string() });
+        } else if matches!(name, "r-show" | "r-key") {
+            out.push(Tpl::Expr { src, want: None, line, what: format!("`{name}`") });
+        } else if let Some(want) = prop(name) {
+            // Written plainly, a prop is handed its text.
+            let what = format!("`{name}` on <{}>", el.tag);
+            out.push(Tpl::Given { given: Type::Literal(src), want, line, what });
+        }
+    }
+    children_for_types(&el.children, tags, &mut out);
+    out
+}
+
+/// A run of siblings, where an `r-if` and the `r-elif`s and `r-else` after it
+/// are one chain.
+fn children_for_types(children: &[rux_parser::Node], tags: &TagProps, out: &mut Vec<rux_script::check::Tpl>) {
+    use rux_parser::Node;
+    use rux_script::check::Tpl;
+    // The next sibling that is not blank text, from `i`.
+    let next = |mut i: usize| {
+        while let Some(Node::Text(t, _)) = children.get(i) {
+            if !t.trim().is_empty() {
+                break;
+            }
+            i += 1;
+        }
+        i
+    };
+    let mut i = 0;
+    while i < children.len() {
+        match &children[i] {
+            Node::Text(text, line) => {
+                for src in rux_style::interpolations(text) {
+                    out.push(Tpl::Expr { src: src.to_string(), want: None, line: *line, what: "`{{ }}`".into() });
+                }
+                i += 1;
+            }
+            // `r-for` wins over an `r-if` on the same element, as it does when
+            // the tree is built.
+            Node::Element(el) if el.attr("r-if").is_some() && el.attr("r-for").is_none() => {
+                let branch = |el: &rux_parser::Element, name: &str| {
+                    let cond = el.attr(name).map(str::to_string).filter(|_| name != "r-else");
+                    (cond, el.attr_line(name).unwrap_or(el.line), element_body(el, tags))
+                };
+                let mut branches = vec![branch(el, "r-if")];
+                i += 1;
+                loop {
+                    let j = next(i);
+                    match children.get(j) {
+                        Some(Node::Element(e)) if e.attr("r-elif").is_some() => {
+                            branches.push(branch(e, "r-elif"));
+                            i = j + 1;
+                        }
+                        Some(Node::Element(e)) if e.attr("r-else").is_some() => {
+                            branches.push(branch(e, "r-else"));
+                            i = j + 1;
+                            break;
+                        }
+                        _ => break,
+                    }
+                }
+                out.push(Tpl::If { branches });
+            }
+            Node::Element(el) => {
+                element_for_types(el, tags, out);
+                i += 1;
+            }
+        }
     }
 }
 
@@ -1954,6 +2204,7 @@ impl Document {
             support_types,
             &computeds,
             &callers,
+            &tags_in(DOCUMENT_NAMESPACE),
         );
         // Everything the load-time checks said, kept: a rebuild re-raises what
         // the build finds and nothing else, so without this a document whose
@@ -2067,7 +2318,7 @@ impl Document {
         let callers = names_callers_bring(&sfc.template, &engine);
         check_script_functions(&engine, &with_props(&callers, &sfc), usize::MAX, sfc.script_line);
         // With no filesystem there are no type imports either.
-        check_script_types(&engine, &sfc, usize::MAX, Vec::new(), Vec::new(), &computeds, &callers);
+        check_script_types(&engine, &sfc, usize::MAX, Vec::new(), Vec::new(), &computeds, &callers, &TagProps::new());
         // Everything the load-time checks said, kept: a rebuild re-raises what
         // the build finds and nothing else, so without this a document whose
         // `mounted` or `computed` ran lost every check error before anyone saw it.

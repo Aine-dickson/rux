@@ -2069,6 +2069,27 @@ originals at `f5aeb53`, then diffing the two sets.
 | `rux fmt` over the examples | `rux fmt` on the ten files that used `#{` | only the `#` removed, no re-indent | desktop: pass, 41 lines, each differing by `#` alone |
 | The scaffold | `rux new`, then `rux fmt --check .` | clean | desktop: pass (`rux-cli` test) |
 
+## Templates, type-checked, 2026-09-24
+
+Step 5 of `docs/10-types.md`: a file's template is checked against its script.
+Under test in `rux-script` (`check.rs`, the rules) and `rux-runtime`
+(`tests/type_check.rs`, the wiring). Driven with `rux check` from the debug
+binary, on probe files written to be wrong and on every `.rux` in `examples/`
+and in the apps built so far.
+
+| Case | Where | Expect | Result |
+|---|---|---|---|
+| A misspelt field on an `r-for` variable | `{{ t.titel }}` over a `Task[]` | an error on that line suggesting `title` | desktop: pass |
+| A `:class` map holding a record | `:class="{ active: t }"` | an error | desktop: pass |
+| A number field bound to text | `<input type="number" r-model="name">` | an error naming both types | desktop: pass |
+| A swipe direction that does not exist | `event.direction == "lefty"` | an error suggesting `"left"` | desktop: pass |
+| A prop given the wrong thing at the tag | `kind="big"` for `"primary" \| "quiet"`, `:label` a number | an error each; the correct tag beside it silent | desktop: pass |
+| `r-if` narrowing an optional field | `r-if="t?.note != null"` then `r-else`, both reading `t.note` | the `r-else` alone is an error | desktop: pass |
+| A component checked on its own | its template reading its typed props | clean | desktop: pass |
+| The examples and the apps | `rux check`, 83 files | nothing new | desktop: pass, no finding from the template in any of them |
+| A form's `event.errors.email` | `tests/forms.rs`'s signup form | an error: only failed fields are there | desktop: pass. **A real one**: that handler raised whenever `code` failed and `email` did not |
+| The overlay and the editor showing a template error | `rux run`, VS Code | the error, on its line | not driven |
+
 ## Standing gaps
 
 Cases nothing here can currently exercise. They are the shape of what v0.8 has

@@ -70,7 +70,7 @@ fn get<'a>(values: &'a [(String, Value)], key: &str) -> Option<&'a Value> {
 }
 
 const SIGNUP: &str = r#"
-<view role="form" @submit="sent = event.values.email" @invalid="why = event.errors.email">
+<view role="form" @submit="sent = event.values.email" @invalid="why = event.errors?.email ?? &quot;&quot;">
   <input r-model="email" name="email" inputmode="email" required />
   <input r-model="code" minlength="4" pattern="\d+" />
   <input type="checkbox" r-model="terms" name="terms" required />

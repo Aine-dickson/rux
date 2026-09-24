@@ -1847,7 +1847,8 @@ impl Engine {
     pub fn check_types(&self, cx: &check::Context) -> Vec<check::Finding> {
         let mut cx = cx.clone();
         cx.host.extend(self.host_types.iter().cloned());
-        check::check(&self.checked, &cx)
+        // A template's pieces compile as the runtime compiles them to run.
+        check::check(&self.checked, &cx, &|src| self.engine.compile(rewrite_intervals(src)).ok())
     }
 
     /// The `type` declarations in `script`, as name and text, for another file

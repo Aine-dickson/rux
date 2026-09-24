@@ -32,6 +32,33 @@ pub struct Finding {
     /// An error when the program contradicts itself, a warning when checking
     /// had to stop for want of a type.
     pub is_error: bool,
+    /// Found in the template, so [`Finding::line`] is a line of the file, not
+    /// of the script.
+    pub template: bool,
+}
+
+/// A template, as the checker sees it: what each expression in it must be.
+/// The runtime builds this from the markup, since it is the one that knows
+/// what an attribute of an element takes and what an event hands over.
+#[derive(Clone, Debug)]
+pub enum Tpl {
+    /// A `{{ }}` or a bound attribute. `want` is what it must be, `None` for
+    /// anything at all.
+    Expr { src: String, want: Option<Type>, line: usize, what: String },
+    /// A handler's statements, run with `event` bound to `event`.
+    Handler { src: String, event: Type, line: usize, what: String },
+    /// `r-model`: `src` names what the input writes `writes` into, and shows
+    /// as `shows`.
+    Model { src: String, writes: Type, shows: Type, line: usize, what: String },
+    /// A value that is not an expression, as `label="Save"` passes a string,
+    /// handed to something that takes `want`.
+    Given { given: Type, want: Type, line: usize, what: String },
+    /// `r-for="var in src"`: the body sees `var` as one element of `src`.
+    For { var: String, src: String, line: usize, body: Vec<Tpl> },
+    /// An `r-if` chain. Each branch is its condition, `None` for `r-else`, its
+    /// line, and its subtree, which sees its condition true and every earlier
+    /// one false.
+    If { branches: Vec<(Option<String>, usize, Vec<Tpl>)> },
 }
 
 /// What the checker is told about the world outside the script.
@@ -59,15 +86,19 @@ pub struct Context {
     /// not: see `docs/10-types.md`, "A typed function cannot read its caller's
     /// locals".
     pub caller_names: std::collections::HashSet<String>,
+    /// The template of the file being checked. See [`Tpl`].
+    pub template: Vec<Tpl>,
     /// Report nothing past this script line. The document's script has the
     /// components' functions appended to it, and a finding in one of those is
     /// the component's to report when it is checked.
     pub own_lines: Option<usize>,
 }
 
-/// Check `ast` against its own annotations and the [`Context`].
-pub fn check(ast: &AST, cx: &Context) -> Vec<Finding> {
-    let mut checker = Checker::new(ast, cx);
+/// Check `ast` against its own annotations and the [`Context`]. `compile`
+/// turns a template's expression or handler into an AST, the way the runtime
+/// will when it runs it.
+pub fn check(ast: &AST, cx: &Context, compile: &dyn Fn(&str) -> Option<AST>) -> Vec<Finding> {
+    let mut checker = Checker::new(ast, cx, compile);
     checker.run();
     let mut findings = checker.findings;
     findings.sort_by_key(|f| f.line);
@@ -105,6 +136,10 @@ impl FnInfo {
 struct Checker<'a> {
     ast: &'a AST,
     cx: &'a Context,
+    compile: &'a dyn Fn(&str) -> Option<AST>,
+    /// While a template piece is checked: the file line it starts on, and what
+    /// it is (`:disabled` on <button>), which prefixes what is said about it.
+    in_template: Option<(usize, String)>,
     /// Declared and imported types, by name.
     types: HashMap<String, Type>,
     /// Types that resolve here without being nameable here, with the `use`
@@ -144,10 +179,12 @@ struct Checker<'a> {
 const MAX_DEPTH: usize = 24;
 
 impl<'a> Checker<'a> {
-    fn new(ast: &'a AST, cx: &'a Context) -> Self {
+    fn new(ast: &'a AST, cx: &'a Context, compile: &'a dyn Fn(&str) -> Option<AST>) -> Self {
         Checker {
             ast,
             cx,
+            compile,
+            in_template: None,
             types: HashMap::new(),
             hidden: HashMap::new(),
             fns: HashMap::new(),
@@ -175,13 +212,19 @@ impl<'a> Checker<'a> {
             }
             return;
         }
+        if let Some((start, what)) = &self.in_template {
+            let line = Some(start + pos.line().unwrap_or(1) - 1);
+            let message = format!("{what}: {message}");
+            self.findings.push(Finding { message, line, is_error, template: true });
+            return;
+        }
         let line = pos.line();
         if let (Some(line), Some(own)) = (line, self.cx.own_lines) {
             if line > own {
                 return;
             }
         }
-        self.findings.push(Finding { message, line, is_error });
+        self.findings.push(Finding { message, line, is_error, template: false });
     }
 
     fn error(&mut self, pos: Position, message: String) {
@@ -306,6 +349,164 @@ impl<'a> Checker<'a> {
         named.sort();
         for key in named {
             self.function_result(&key.0, key.1);
+        }
+
+        // Last, the template: every function it can call is checked by now,
+        // so nothing found in one is reported against a template line.
+        let cx = self.cx;
+        for item in &cx.template {
+            self.template_item(item);
+        }
+    }
+
+    // ----- Templates -------------------------------------------------------
+
+    /// Run `f` as the template piece `what`, written on file line `line`.
+    fn in_piece<T>(&mut self, line: usize, what: &str, f: impl FnOnce(&mut Self) -> T) -> T {
+        let saved = self.in_template.replace((line, what.to_string()));
+        let out = f(self);
+        self.in_template = saved;
+        out
+    }
+
+    /// Compile a piece of the template, making its arrows known. `None` when
+    /// it does not compile, which the runtime reports in its own words.
+    fn compile_piece(&mut self, src: &str) -> Option<AST> {
+        let ast = (self.compile)(src)?;
+        for def in ast.iter_fn_def() {
+            let arity = def.params.len();
+            let params = def
+                .params
+                .iter()
+                .map(|p| {
+                    let ty = ast.annotations().iter().find_map(|a| match &a.kind {
+                        AnnotationKind::Param { function, arity: n }
+                            if function == &def.name && *n == arity && a.name == *p =>
+                        {
+                            parse_type(&a.ty).ok()
+                        }
+                        _ => None,
+                    });
+                    (p.to_string(), ty)
+                })
+                .collect();
+            let info = FnInfo { def: def.clone(), params, result: None, state: FnState::Unchecked };
+            self.fns.entry((def.name.to_string(), arity)).or_insert(info);
+        }
+        Some(ast)
+    }
+
+    /// The one expression a piece is, when it is one.
+    fn piece_expr(ast: &AST) -> Option<Expr> {
+        match ast.statements() {
+            [Stmt::Expr(e)] => Some((**e).clone()),
+            _ => None,
+        }
+    }
+
+    fn template_item(&mut self, item: &Tpl) {
+        match item {
+            Tpl::Expr { src, want, line, what } => {
+                let Some(ast) = self.compile_piece(src) else { return };
+                self.in_piece(*line, what, |c| match (Self::piece_expr(&ast), want) {
+                    (Some(e), Some(want)) => c.check_expr(&e, want),
+                    (Some(e), None) => {
+                        c.infer(&e);
+                    }
+                    (None, _) => {
+                        c.with_scope(|c| c.check_statements(ast.statements()));
+                    }
+                });
+            }
+            Tpl::Handler { src, event, line, what } => {
+                let Some(ast) = self.compile_piece(src) else { return };
+                self.in_piece(*line, what, |c| {
+                    c.with_scope(|c| {
+                        c.bind("event", event.clone());
+                        c.check_statements(ast.statements());
+                    })
+                });
+            }
+            Tpl::Model { src, writes, shows, line, what } => {
+                let Some(ast) = self.compile_piece(src) else { return };
+                let Some(e) = Self::piece_expr(&ast) else { return };
+                self.in_piece(*line, what, |c| {
+                    let held = c.infer(&e);
+                    if c.resolve(&held) == Type::Any {
+                        return;
+                    }
+                    let name = src.trim();
+                    if !c.assignable(writes, &held) {
+                        let message = format!(
+                            "the field writes {} into `{name}`, which holds {}",
+                            c.show(writes),
+                            c.show(&held)
+                        );
+                        c.error(e.position(), message);
+                    } else if !c.assignable(&held, shows) {
+                        let message = format!(
+                            "the field shows {}, and `{name}` holds {}",
+                            c.show(shows),
+                            c.show(&held)
+                        );
+                        c.error(e.position(), message);
+                    }
+                });
+            }
+            Tpl::Given { given, want, line, what } => {
+                self.in_piece(*line, what, |c| {
+                    if !c.assignable(given, want) {
+                        c.mismatch_ty(Position::NONE, given, want);
+                    }
+                });
+            }
+            Tpl::For { var, src, line, body } => {
+                let Some(ast) = self.compile_piece(src) else { return };
+                let Some(e) = Self::piece_expr(&ast) else { return };
+                let element = self.in_piece(*line, "`r-for`", |c| {
+                    let ty = c.infer(&e);
+                    c.element_of(&e, &ty)
+                });
+                self.with_scope(|c| {
+                    c.bind(var, element);
+                    for item in body {
+                        c.template_item(item);
+                    }
+                });
+            }
+            Tpl::If { branches } => {
+                // What every earlier branch not being taken established.
+                let mut earlier: Vec<(String, Type)> = Vec::new();
+                for (cond, line, body) in branches {
+                    let cond = cond.as_deref().and_then(|src| {
+                        let ast = self.compile_piece(src)?;
+                        Self::piece_expr(&ast)
+                    });
+                    let facts = match &cond {
+                        Some(e) => self.with_facts(earlier.clone(), |c| {
+                            c.in_piece(*line, "the condition", |c| {
+                                c.infer(e);
+                            });
+                            c.facts_of(e, true)
+                        }),
+                        None => Vec::new(),
+                    };
+                    let mut here = earlier.clone();
+                    here.extend(facts);
+                    self.with_facts(here, |c| {
+                        for item in body {
+                            c.template_item(item);
+                        }
+                    });
+                    match &cond {
+                        Some(e) => {
+                            let not = self.with_facts(earlier.clone(), |c| c.facts_of(e, false));
+                            earlier.extend(not);
+                        }
+                        None => break,
+                    }
+                }
+            }
         }
     }
 
@@ -2756,6 +2957,104 @@ mod tests {
              fn first(): string {{ let item = \"a\"; [item].map(x => x + picked)[0] }}"
         ));
         assert!(e.is_empty(), "{e:?}");
+    }
+
+    /// What the template pieces in `template` produce against `script`.
+    fn template_findings(script: &str, template: Vec<Tpl>) -> Vec<Finding> {
+        let cx = Context { template, ..Default::default() };
+        findings_with(script, &cx).into_iter().filter(|f| f.template).collect()
+    }
+
+    fn ty(text: &str) -> Type {
+        parse_type(text).unwrap()
+    }
+
+    fn expr(src: &str, want: Option<&str>) -> Tpl {
+        Tpl::Expr { src: src.into(), want: want.map(ty), line: 7, what: "`x`".into() }
+    }
+
+    #[test]
+    fn a_loop_variable_is_an_element_of_its_list() {
+        let script = format!("{TASK}let tasks: Task[] = signal([]);");
+        let body = vec![expr("t.titel", None)];
+        let f = template_findings(&script, vec![Tpl::For { var: "t".into(), src: "tasks".into(), line: 5, body }]);
+        assert!(f.iter().any(|f| f.message.contains("titel") && f.is_error), "{f:?}");
+        let body = vec![expr("t.title", Some("string"))];
+        let f = template_findings(&script, vec![Tpl::For { var: "t".into(), src: "tasks".into(), line: 5, body }]);
+        assert!(f.is_empty(), "{f:?}");
+    }
+
+    #[test]
+    fn a_binding_is_checked_against_what_its_attribute_takes() {
+        let f = template_findings("let count = signal(0);", vec![expr("count", Some("bool"))]);
+        assert_eq!(f.len(), 1, "{f:?}");
+        assert!(f[0].message.starts_with("`x`: "), "says which attribute: {f:?}");
+        assert_eq!(f[0].line, Some(7), "on the template's line");
+        let class = "string | string[] | { [string]: bool }";
+        let script = format!("{TASK}let t: Task = {{ id: 1, title: \"a\", done: false }};");
+        let f = template_findings(&script, vec![expr("{ active: t }", Some(class))]);
+        assert!(f.iter().any(|f| f.is_error), "a map of classes takes bools: {f:?}");
+        let f = template_findings(&script, vec![expr("{ active: t.done }", Some(class))]);
+        assert!(f.is_empty(), "{f:?}");
+    }
+
+    #[test]
+    fn an_r_if_narrows_its_subtree() {
+        let script = format!("{TASK}let t: Task = signal({{ id: 1, title: \"a\", done: false }});");
+        let f = template_findings(&script, vec![expr("t.note", None)]);
+        assert!(f.iter().any(|f| f.is_error), "outside a check, `note` may be absent: {f:?}");
+        let read = |line: usize| Tpl::Expr { src: "t.note".into(), want: None, line, what: "`x`".into() };
+        let chain = |first: &str| Tpl::If {
+            branches: vec![(Some(first.to_string()), 3, vec![read(3)]), (None, 4, vec![read(4)])],
+        };
+        let f = template_findings(&script, vec![chain("t?.note != null")]);
+        assert_eq!(f.len(), 1, "the r-if branch is clean, the r-else is not: {f:?}");
+        assert_eq!(f[0].line, Some(4));
+        let f = template_findings(&script, vec![chain("t?.note == null")]);
+        assert_eq!(f.len(), 1, "and the other way round: {f:?}");
+        assert_eq!(f[0].line, Some(3));
+    }
+
+    #[test]
+    fn r_model_names_something_of_the_field_s_value_type() {
+        let model = |src: &str, value: &str| Tpl::Model {
+            src: src.into(),
+            writes: ty(value),
+            shows: ty(value),
+            line: 2,
+            what: "`r-model`".into(),
+        };
+        let script = "let n = signal(0);\nlet on = signal(false);\nlet name = signal(\"\");";
+        let f = template_findings(script, vec![model("n", "string")]);
+        assert!(f.iter().any(|f| f.message.contains("writes `string` into `n`")), "{f:?}");
+        let f = template_findings(script, vec![model("on", "bool"), model("name", "string"), model("n", "number")]);
+        assert!(f.is_empty(), "{f:?}");
+    }
+
+    #[test]
+    fn a_handler_s_event_has_its_event_s_type() {
+        let swipe = ty("{ direction: \"left\" | \"right\" | \"up\" | \"down\" }");
+        let handler = |src: &str| Tpl::Handler { src: src.into(), event: swipe.clone(), line: 9, what: "`@swipe`".into() };
+        let script = "let n = signal(0);";
+        let f = template_findings(script, vec![handler("if event.direction == \"lefty\" { n = 1; }")]);
+        assert!(f.iter().any(|f| f.message.contains("did you mean \"left\"")), "{f:?}");
+        let f = template_findings(script, vec![handler("if event.direction == \"left\" { n = 1; }")]);
+        assert!(f.is_empty(), "{f:?}");
+        let f = template_findings(script, vec![handler("n = \"x\"")]);
+        assert!(f.iter().any(|f| f.is_error), "a handler's write is checked too: {f:?}");
+    }
+
+    #[test]
+    fn a_plain_attribute_passes_its_text() {
+        let given = |text: &str| Tpl::Given {
+            given: Type::Literal(text.into()),
+            want: ty("\"primary\" | \"quiet\""),
+            line: 4,
+            what: "`kind` on <btn>".into(),
+        };
+        let f = template_findings("", vec![given("big")]);
+        assert!(f.iter().any(|f| f.is_error && f.message.contains("`kind` on <btn>")), "{f:?}");
+        assert!(template_findings("", vec![given("quiet")]).is_empty());
     }
 
     #[test]

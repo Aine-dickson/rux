@@ -144,3 +144,80 @@ fn a_clean_typed_page_is_quiet() {
     let doc = Document::load(dir.join("app.rux")).expect("loads");
     assert!(found(&doc).is_empty(), "{:?}", found(&doc));
 }
+
+/// A template is checked against the script: an `r-for` variable is an
+/// element of its list, a bound attribute takes what it takes, `r-model`
+/// matches its field, and each finding is on the template's own line.
+#[test]
+fn a_template_is_checked_against_its_script() {
+    let app = "<template><screen>\n\
+        <text r-for=\"t in tasks\">{{ t.titel }}</text>\n\
+        <button :disabled=\"count\">go</button>\n\
+        <input type=\"number\" r-model=\"name\" />\n\
+        <text :class=\"{ on: tasks }\">x</text>\n\
+        </screen></template>\n\
+        <script>\nuse types::Task;\nlet tasks: Task[] = signal([]);\n\
+        let count = signal(0);\nlet name = signal(\"\");\n</script>\n";
+    let dir = project(&[("app.rux", app), ("types.rux", TYPES)]);
+    let doc = Document::load(dir.join("app.rux")).expect("loads");
+    let f = found(&doc);
+    let at = |line: usize, part: &str| f.iter().any(|(l, err, m)| *l == Some(line) && *err && m.contains(part));
+    assert!(at(2, "`{{ }}`: `Task` has no field `titel`; did you mean `title`?"), "{f:?}");
+    assert!(at(3, "`:disabled` on <button>: this is `number`, where `bool` is expected"), "{f:?}");
+    assert!(at(4, "`r-model`: the field writes `number` into `name`, which holds `string`"), "{f:?}");
+    assert!(at(5, "`:class` on <text>"), "{f:?}");
+}
+
+/// `r-if` narrows what is under it, and `r-else` learns the opposite.
+#[test]
+fn an_r_if_narrows_the_elements_under_it() {
+    let app = "<template><screen>\n\
+        <text r-if=\"t?.note != null\">{{ t.note }}</text>\n\
+        <text r-else>{{ t.note }}</text>\n\
+        </screen></template>\n\
+        <script>\ntype T = { note?: string };\nlet t: T = signal({});\n</script>\n";
+    let dir = project(&[("app.rux", app)]);
+    let doc = Document::load(dir.join("app.rux")).expect("loads");
+    let f: Vec<_> = found(&doc).into_iter().filter(|(_, _, m)| m.contains("may be absent")).collect();
+    assert_eq!(f.len(), 1, "{f:?}");
+    assert_eq!(f[0].0, Some(3), "only the r-else reads it unchecked");
+}
+
+/// A prop is checked at the tag: a plain attribute passes its text, a bound
+/// one its expression's type.
+#[test]
+fn a_prop_is_checked_at_the_tag() {
+    let comp = "<template><view><text>{{ label }}</text></view></template>\n\
+        <script>\n  prop label: string;\n  prop kind: \"primary\" | \"quiet\" = \"quiet\";\n</script>\n";
+    let app = "<template><screen>\n\
+        <btn kind=\"big\" :label=\"n\" />\n\
+        <btn kind=\"primary\" label=\"ok\" />\n\
+        </screen></template>\n\
+        <script>\nuse components::btn;\nlet n = signal(0);\n</script>\n";
+    let dir = project(&[("app.rux", app), ("components/btn.rux", comp)]);
+    let doc = Document::load(dir.join("app.rux")).expect("loads");
+    let f = found(&doc);
+    assert!(f.iter().any(|(l, e, m)| *l == Some(2) && *e && m.contains("`kind` on <btn>: \"big\" is not")), "{f:?}");
+    assert!(f.iter().any(|(l, e, m)| *l == Some(2) && *e && m.contains("`:label` on <btn>: this is `number`")), "{f:?}");
+    assert!(!f.iter().any(|(l, _, _)| *l == Some(3)), "the second tag is right: {f:?}");
+}
+
+/// An event is typed by what hands it over: a swipe's direction is one of
+/// four, and a form's values are its fields while its errors may lack any.
+#[test]
+fn an_event_has_the_type_of_what_sent_it() {
+    let app = "<template><screen>\n\
+        <view @swipe=\"if event.direction == &quot;lefty&quot; { n = 1; }\"><text>x</text></view>\n\
+        <view role=\"form\" @submit=\"said = event.values.email + event.values.emial\" @invalid=\"said = event.errors.email\">\n\
+        <input r-model=\"email\" name=\"email\" required />\n\
+        </view>\n\
+        </screen></template>\n\
+        <script>\nlet n = signal(0);\nlet email = signal(\"\");\nlet said = signal(\"\");\n</script>\n";
+    let dir = project(&[("app.rux", app)]);
+    let doc = Document::load(dir.join("app.rux")).expect("loads");
+    let f = found(&doc);
+    assert!(f.iter().any(|(l, e, m)| *l == Some(2) && *e && m.contains("did you mean \"left\"")), "{f:?}");
+    assert!(f.iter().any(|(l, e, m)| *l == Some(3) && *e && m.contains("no field `emial`; did you mean `email`")), "{f:?}");
+    assert!(!f.iter().any(|(_, _, m)| m.contains("`values`") && m.contains("`email`") && !m.contains("emial")), "values.email reads plainly: {f:?}");
+    assert!(f.iter().any(|(l, e, m)| *l == Some(3) && *e && m.contains("`@invalid` on <view>") && m.contains("event.errors?.email")), "{f:?}");
+}

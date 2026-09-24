@@ -2085,6 +2085,24 @@ fn interpolate_tracked(
     (out, deps)
 }
 
+/// The expression of each `{{ }}` in `text`, trimmed, in order: what
+/// [`interpolate_tracked`] evaluates, for the type checker to read.
+pub fn interpolations(text: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut rest = text;
+    while let Some(start) = rest.find("{{") {
+        let after = &rest[start + 2..];
+        match interpolation_end(after) {
+            Some(end) => {
+                out.push(after[..end].trim());
+                rest = &after[end + 2..];
+            }
+            None => rest = after,
+        }
+    }
+    out
+}
+
 /// Where the `}}` closing an interpolation starts, given the text just after its
 /// `{{`. Braces are counted, and strings skipped, so a map inside it,
 /// `{{ {a: {b: 1}}.a.b }}`, does not end at the map's own `}}`.

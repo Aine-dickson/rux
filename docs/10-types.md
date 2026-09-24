@@ -12,10 +12,10 @@ the row below says so.
 | Part | State |
 |---|---|
 | Annotations parsed and erased (`: T`, `type`, `prop x: T`, `use types::X`) | **Built** 2026-09-24. Accepted and ignored at run time; a malformed one is a syntax error. See [Script](./07-script.md#type-annotations) |
-| The checker: primitives, arrays, records, dictionaries, `T?`, inference | **Built** 2026-09-24 for a file's `<script>`: its `let`s, functions (parameters, results, calls) and closures. Handlers, bindings and templates are not checked yet |
-| Unions, narrowing, `switch` exhaustiveness, forced `?.` | **Built** 2026-09-24 in a file's `<script>`, with `?[` for a dictionary. `r-if` narrowing waits for templates, and `await` for async |
+| The checker: primitives, arrays, records, dictionaries, `T?`, inference | **Built** 2026-09-24 for a file's `<script>`: its `let`s, functions (parameters, results, calls) and closures. Its template came with the templates row |
+| Unions, narrowing, `switch` exhaustiveness, forced `?.` | **Built** 2026-09-24 in a file's `<script>`, with `?[` for a dictionary. `r-if` narrowing came with templates; `await` waits for async |
 | Functions: typed and untyped, the caller-local rule | **Built** 2026-09-24. Parameters, results and calls came with the checker; the caller-local rule is on, and the sweep before it found no existing function it breaks |
-| Templates: `r-for`, `r-if`, bindings, `r-model`, events, props at the tag | Pending |
+| Templates: `r-for`, `r-if`, bindings, `r-model`, events, props at the tag | **Built** 2026-09-24 for the file being checked: a document's own template, or a component's when it is the file. A form's `event.values` is a record of its fields, not a dictionary; see below |
 | Boundaries: prop checks at run time, `x is T` | Pending |
 | Editor: hover, completion, the parameter quick-fix | Pending |
 
@@ -342,26 +342,55 @@ app.rux:4: error: `pick` reads `item`, which only whoever calls it has. A functi
 A template is checked against the script it binds to.
 
 - **`r-for`** gives its loop variable the element type: in
-  `r-for="t in visible()"`, `t` is a `Task`, and an index variable is an `int`.
+  `r-for="t in visible()"`, `t` is a `Task`. `r-for` binds one name and has
+  no index form.
 - **`r-if`, `r-elif` and `r-else`** narrow the subtree under them, as in
   [Unions and narrowing](#unions-and-narrowing).
 - **A binding** (`{{ }}`, `:class`, `:style`, any bound attribute) is checked as
   an expression. A bound attribute of a built-in element is checked against
-  what that attribute takes: `:disabled` a `bool`, `:options` a `string[]`,
-  `:src` a `string`.
+  what that attribute takes: `:disabled`, `:readonly` and `:required` a
+  `bool`, `:options` a `string[]`, `:src`, `:d` and `:to` a `string`,
+  `:style` a `string` or a `{ [string]: any }`, and `:r-transition` a
+  `number?`, the progress of a swap or nothing.
 - **A `:class` map** is a `{ [string]: bool }`; a value that is not a `bool`
   is an error, which catches `{ active: item }` meant as `{ active: item.on }`.
+  `:class` also takes a `string` or a `string[]`.
 - **`r-model` must name something of the input's value type**: `string` for
-  text, password, textarea, select and date; `number` for number and slider;
-  `bool` for checkbox and switch. A radio's `r-model` has the type of its
-  `value`s.
-- **`event` in a handler has the type of that event**: `event.value` in a
-  number field's `@input` is a `number`, `event.direction` in `@swipe` is
-  `"left" | "right" | "up" | "down"`, and `event.values` in `@submit` is a
-  `{ [string]: any }`.
+  text, password, textarea, search and date; `number` for number and slider;
+  `bool` for checkbox and switch. A select shows its target as text and
+  writes one of its options, so a `Filter` may be bound to one. A radio
+  writes its `value`, so its target must take that string.
+- **`event` in a handler has the type of that event.** Every gesture's has
+  `x`, `y`, `pageX`, `pageY`, `width`, `height` and `touches`. `@drag` adds
+  `phase`, `"start" | "move" | "end"`, and the four distances, `totalX`,
+  `totalY`, `moveX` and `moveY`; `@swipe` adds those distances and
+  `direction`, `"left" | "right" | "up" | "down"`. A field's `@input`,
+  `@change`, `@focus` and `@blur` hand over `event.value`: a `number` from a
+  number field bound with `r-model`, and text from the others. A component's
+  `@name` hands over whatever it emits, which is `any`.
+- **A form's `event.values` is a record of its fields**, under each field's
+  `name`, or the name of what it binds when it has none. The fields are in the
+  markup, so `event.values.email` reads plainly and `event.values.emial` is an
+  error. A field under an `r-if` or an `r-for` may be missing, or may be
+  several, so it is optional and `any`; a form holding a component, which may
+  hold fields of its own, has a `{ [string]: any }` instead. `@invalid`'s
+  `event.errors` is a `{ [string]: string }`, because it holds only the fields
+  that failed, and is read with `?.`.
 - **Props are checked at the tag**, against the component's declaration: a
   missing required prop, an unknown attribute (both already errors) and now a
-  value of the wrong type.
+  value of the wrong type. A plain attribute passes its text, so
+  `kind="big"` is checked as the string `"big"`.
+
+A finding in a template is on the template's line and names where it is:
+
+```text
+app.rux:9: error: `:disabled` on <button>: this is `number`, where `bool` is expected
+app.rux:10: error: `r-model`: the field writes `number` into `name`, which holds `string`
+```
+
+**What is checked is the file being checked.** A document's template is
+checked with the document; a component's template is checked when the
+component is the file, with its props typed as it declares them.
 
 ## Props
 

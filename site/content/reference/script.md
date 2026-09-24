@@ -335,14 +335,16 @@ and that is how `use` tells it from a component. A file holding only a
 `=`, so `let type = 1;` still works. An annotation that is not a type is a
 syntax error at the place it goes wrong.
 
-**What is checked so far** is a file's `<script>`: every `let` against its
+**What is checked so far** is a file's `<script>` and its template. In the
+script, every `let` against its
 annotation or its starting value, every call against the function's
 parameters, every result against a declared `): T`, fields read and written
 against their record, and a closure handed to `filter` or `map` against the
 list's element type. An optional field (`note?: string`) must be read with
 `?.`, and a dictionary's keys with `?.` or `?[`, except where a check has
 already ruled out their absence: inside `if t?.note != null`, after
-`"note" in t`, after an early `return`, and in the arms of a `switch`. A
+`"note" in t`, after an early `return`, in the arms of a `switch`, and under
+an `r-if` that tested it. A
 `switch` on a literal union with no `_` arm must handle every member, and a
 comparison that can never be true is an error. A name nothing can type
 (`signal([])`, a parameter with no annotation) is a warning and is not checked
@@ -354,7 +356,18 @@ app.rux:14: error: `count` holds `int`, so it cannot be given `number` here. If 
 app.rux:16: warning: `x` has no type, so what `old` is given there is not checked. Annotate it: `fn old(x: T)`
 ```
 
-Handlers, `{{ }}` bindings and templates are not checked yet.
+In the template, an `r-for` variable is one element of its list, and every
+`{{ }}`, bound attribute and handler is checked as an expression: a bound
+attribute against what it takes (`:disabled` a `bool`, a `:class` map's
+values `bool`s), a handler with `event` typed by what sends it
+(`event.direction` in `@swipe` is one of four strings, a form's
+`event.values` a record of its fields), `r-model` against its field's value
+type, and a prop against its declaration, at the tag:
+
+```text
+app.rux:21: error: `kind` on <btn>: "big" is not `"primary" | "quiet"`, which is one of "primary", "quiet"
+```
+
 [Types](https://github.com/Aine-dickson/rux/blob/main/docs/10-types.md) is the whole design, with a table saying which parts
 run.
 
