@@ -56,15 +56,9 @@ pub struct Context {
     /// Names some caller has in scope when it calls a function: an `r-for`'s
     /// variable, a handler's own `let`s. Under the fork a plain call runs in
     /// its caller's scope, so a function can read these, and a typed one may
-    /// not (see [`Context::forbid_caller_locals`]).
+    /// not: see `docs/10-types.md`, "A typed function cannot read its caller's
+    /// locals".
     pub caller_names: std::collections::HashSet<String>,
-    /// Whether a typed function reading one of [`Context::caller_names`] is an
-    /// error. Off until the sweep of existing code has been read; see
-    /// `docs/10-types.md`, "A typed function cannot read its caller's locals".
-    pub forbid_caller_locals: bool,
-    /// Report every function reading a caller's local, typed or not, as a
-    /// warning. For surveying code before the rule goes on.
-    pub survey_caller_locals: bool,
     /// Report nothing past this script line. The document's script has the
     /// components' functions appended to it, and a finding in one of those is
     /// the component's to report when it is checked.
@@ -132,6 +126,9 @@ struct Checker<'a> {
     /// The named function whose body is being checked, whether it is typed,
     /// and where it is: what a read of a caller's local is reported against.
     in_fn: Vec<(String, bool)>,
+    /// Every name declared anywhere in the script: a `let`, a parameter or a
+    /// loop variable. One a function cannot see itself is some caller's.
+    script_names: std::collections::HashSet<String>,
     /// The declared result of each function being checked, innermost last,
     /// with the function's name; `None` for one whose result is inferred.
     results: Vec<Option<(String, Type)>>,
@@ -162,6 +159,7 @@ impl<'a> Checker<'a> {
             returns: Vec::new(),
             results: Vec::new(),
             in_fn: Vec::new(),
+            script_names: crate::declared_in(ast),
             findings: Vec::new(),
             quiet: 0,
             quiet_errors: 0,
@@ -1791,23 +1789,23 @@ impl<'a> Checker<'a> {
     }
 
     /// A name a function body read that is none of its own and no document
-    /// name: it can only come from whoever called it.
+    /// name: it can only come from whoever called it, a template (an `r-for`,
+    /// a handler's `let`) or another function (its `let`s and parameters).
     fn caller_local(&mut self, name: &str, pos: Position) {
         let Some((function, typed)) = self.in_fn.last().cloned() else { return };
-        if !self.cx.caller_names.contains(name) {
+        if !self.cx.caller_names.contains(name) && !self.script_names.contains(name) {
             // Declared nowhere at all: the undefined-name check says so.
             return;
         }
-        if self.cx.survey_caller_locals {
-            let kind = if typed { "typed" } else { "untyped" };
-            self.warn(pos, format!("survey: {kind} `{function}` reads its caller's `{name}`"));
-        } else if typed && self.cx.forbid_caller_locals {
+        // An untyped function keeps the fork's behaviour: it runs in its
+        // caller's scope and may read what the caller has.
+        if typed {
             self.error(
                 pos,
                 format!(
-                    "`{function}` reads `{name}`, which only whoever calls it has. A function whose \
-                     parameters all have types sees its own names and the document's, not its \
-                     caller's: pass `{name}` in as a parameter"
+                    "`{function}` reads `{name}`, which only whoever calls it has. A function \
+                     whose parameters are all typed, or that has none, sees its own names and the \
+                     document's, not its caller's: pass `{name}` in as a parameter"
                 ),
             );
         }
@@ -2726,6 +2724,38 @@ mod tests {
         let v = "let v: string | { n: int } = \"x\";\n";
         clean(&format!("{v}fn f(): int {{ if type_of(v) == \"map\" {{ v.n }} else {{ 0 }} }}"));
         one_error(&format!("{v}fn f() {{ v.n }}"), "no property `n`");
+    }
+
+    #[test]
+    fn a_typed_function_cannot_read_its_callers_locals() {
+        let cx = Context {
+            caller_names: ["item".to_string()].into_iter().collect(),
+            ..Default::default()
+        };
+        let errors_in = |src: &str| -> Vec<String> {
+            findings_with(src, &cx).into_iter().filter(|f| f.is_error).map(|f| f.message).collect()
+        };
+        let head = "let picked = signal(\"\");\n";
+        // No parameters counts as typed.
+        let e = errors_in(&format!("{head}fn pick() {{ picked = item; }}"));
+        assert!(e.iter().any(|m| m.contains("`pick` reads `item`")), "{e:?}");
+        let e = errors_in(&format!("{head}fn pick(x: string) {{ picked = x + item; }}"));
+        assert!(e.iter().any(|m| m.contains("`pick` reads `item`")), "{e:?}");
+        // Another function's `let` is a caller's local too, with no template
+        // involved.
+        let e = errors(&format!(
+            "{head}fn outer() {{ let helper = \"h\"; inner(); }}\nfn inner() {{ picked = helper; }}"
+        ));
+        assert!(e.iter().any(|m| m.contains("`inner` reads `helper`")), "{e:?}");
+        // An untyped one keeps the fork's behaviour.
+        let e = errors_in(&format!("{head}fn pick(x) {{ picked = x + item; }}"));
+        assert!(!e.iter().any(|m| m.contains("reads `item`")), "{e:?}");
+        // Its own names, the document's, and an arrow's parameters are its to read.
+        let e = errors_in(&format!(
+            "{head}fn pick(item: string) {{ picked = item; }}\n\
+             fn first(): string {{ let item = \"a\"; [item].map(x => x + picked)[0] }}"
+        ));
+        assert!(e.is_empty(), "{e:?}");
     }
 
     #[test]

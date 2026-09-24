@@ -14,7 +14,7 @@ the row below says so.
 | Annotations parsed and erased (`: T`, `type`, `prop x: T`, `use types::X`) | **Built** 2026-09-24. Accepted and ignored at run time; a malformed one is a syntax error. See [Script](./07-script.md#type-annotations) |
 | The checker: primitives, arrays, records, dictionaries, `T?`, inference | **Built** 2026-09-24 for a file's `<script>`: its `let`s, functions (parameters, results, calls) and closures. Handlers, bindings and templates are not checked yet |
 | Unions, narrowing, `switch` exhaustiveness, forced `?.` | **Built** 2026-09-24 in a file's `<script>`, with `?[` for a dictionary. `r-if` narrowing waits for templates, and `await` for async |
-| Functions: typed and untyped, the caller-local rule | Pending |
+| Functions: typed and untyped, the caller-local rule | **Built** 2026-09-24. Parameters, results and calls came with the checker; the caller-local rule is on, and the sweep before it found no existing function it breaks |
 | Templates: `r-for`, `r-if`, bindings, `r-model`, events, props at the tag | Pending |
 | Boundaries: prop checks at run time, `x is T` | Pending |
 | Editor: hover, completion, the parameter quick-fix | Pending |
@@ -324,8 +324,18 @@ it always did.
 An untyped function keeps today's behaviour exactly, caller locals included,
 and is where code that relies on it can stay. Because a function with no
 parameters is typed, this rule reaches functions that were never touched by an
-annotation. Before it is switched on, every existing function that reads a
-caller's local is found and listed, so none breaks without being named.
+annotation. Before it was switched on, every function in the repository's
+examples, recipes and `/learn` chapters, and in the apps built with Rux so far,
+was surveyed for a read of a caller's local. None did.
+
+A caller's local is any name the function cannot see itself that something
+could have in scope when it calls: an `r-for`'s variable, a handler's own
+`let`, or a `let`, parameter or loop variable of another function. The fix the
+error suggests is the one that makes the function honest, passing the name in:
+
+```text
+app.rux:4: error: `pick` reads `item`, which only whoever calls it has. A function whose parameters are all typed, or that has none, sees its own names and the document's, not its caller's: pass `item` in as a parameter
+```
 
 ## Templates
 

@@ -38,21 +38,36 @@ fn a_name_declared_nowhere_is_reported() {
     assert!(found.contains("declared nowhere"), "and it must say why: {found}");
 }
 
-/// **The false positive that matters most.** A function reads a local of the
-/// function that called it, which is legal, driven, and the reason the fork
-/// exists. Reporting it would make the check worse than the silence.
+/// **The false positive that matters most.** An untyped function reads a local
+/// of the function that called it, which is legal, driven, and the reason the
+/// fork exists. Reporting it would make the check worse than the silence.
 #[test]
 fn a_caller_s_local_is_in_scope_and_stays_silent() {
+    let found = problems(
+        "<template><screen><text>hi</text></screen></template>\
+         <script>let n = signal(0);\n\
+         fn outer() {\nlet helper_local = 42;\ninner(1);\n}\n\
+         fn inner(by) {\nn = helper_local + by;\n}</script>",
+    );
+    assert!(
+        !found.contains("helper_local"),
+        "a caller's local is in scope, and saying otherwise flags working code: {found}"
+    );
+}
+
+/// A typed function does not get that scope, and one with no parameters is
+/// typed (`docs/10-types.md`). That is the type checker's to say, in its own
+/// words; the undefined-name check still says nothing, since the name exists.
+#[test]
+fn a_typed_function_reading_a_caller_s_local_is_the_type_checker_s_error() {
     let found = problems(
         "<template><screen><text>hi</text></screen></template>\
          <script>let n = signal(0);\n\
          fn outer() {\nlet helper_local = 42;\ninner();\n}\n\
          fn inner() {\nn = helper_local;\n}</script>",
     );
-    assert!(
-        !found.contains("helper_local"),
-        "a caller's local is in scope, and saying otherwise flags working code: {found}"
-    );
+    assert!(!found.contains("declared nowhere"), "the name exists: {found}");
+    assert!(found.contains("`inner` reads `helper_local`"), "a typed fn cannot read it: {found}");
 }
 
 /// A handler is a caller too, so its `let`s reach whatever it calls.
@@ -63,7 +78,9 @@ fn a_handler_s_local_is_in_scope() {
          </screen></template>\
          <script>let n = signal(0);\nfn use_it() {\nn = picked;\n}</script>",
     );
-    assert!(!found.contains("picked"), "a handler's local reaches what it calls: {found}");
+    assert!(!found.contains("declared nowhere"), "a handler's local reaches what it calls: {found}");
+    // `use_it` has no parameters, so it is typed and may not rely on that.
+    assert!(found.contains("`use_it` reads `picked`"), "{found}");
 }
 
 /// An `r-for` binds a name for the whole row, including inside anything the
@@ -77,7 +94,9 @@ fn a_loop_variable_is_in_scope() {
          <script>let items = signal([]);\nlet chosen = signal(0);\n\
          fn pick() {\nchosen = item.id;\n}</script>",
     );
-    assert!(!found.contains("`item`"), "a loop variable is in scope in the row: {found}");
+    assert!(!found.contains("declared nowhere"), "a loop variable is in scope in the row: {found}");
+    // `pick` has no parameters, so it is typed and may not rely on that.
+    assert!(found.contains("`pick` reads `item`"), "{found}");
 }
 
 /// The document's own signals are the ordinary case, and a parameter is the

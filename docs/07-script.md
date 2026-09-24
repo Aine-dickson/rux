@@ -289,6 +289,14 @@ cannot reach `level`; `helper(thing)` can. Method dispatch passes its receiver b
 reference, and the scope cannot be borrowed at the same time. This is upstream's
 limitation and it stands.
 
+**A call runs in its caller's scope**, so an untyped function can read a `let`
+of whoever called it, or the `r-for` variable of the row whose handler called
+it. **A typed function cannot**: one whose parameters all have types, or that
+has none, sees only its own names and the document's, and `rux check` reports
+a caller's local as an error. Pass the name in instead: `@tap="pick(item)"` and
+`fn pick(item: Task)`. See
+[Types](./10-types.md#a-typed-function-cannot-read-its-callers-locals).
+
 **Anything heavy belongs behind `host::`.** Script describes what the UI does; it
 is not where work gets done.
 

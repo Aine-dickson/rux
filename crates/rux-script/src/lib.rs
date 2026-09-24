@@ -2579,7 +2579,7 @@ pub const ASSIGNED: &str = "__rux_assigned";
 /// really reach a sibling block, but pretending it might is the safe direction
 /// of wrong: it can only make this quieter, never louder, and quiet is the side
 /// a name check has to fail towards.
-fn declared_in(ast: &AST) -> HashSet<String> {
+pub(crate) fn declared_in(ast: &AST) -> HashSet<String> {
     let mut names: HashSet<String> = HashSet::new();
     for f in ast.iter_functions() {
         names.extend(f.params.iter().map(|p| p.to_string()));
