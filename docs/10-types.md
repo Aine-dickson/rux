@@ -432,9 +432,8 @@ app.rux:12: error: `<stat>` was given the text "lots" for `:value`, which is not
 literal union; a segment that cannot be one (`/task/abc` for an `int`) is a
 prop that does not fit, left out and reported.
 
-A prop's value has no `null` of its own: a `null` passed to a prop arrives as
-the empty text. So the check lets the empty text through wherever `null` fits,
-which means a `""` passed to a `Task?` is not caught.
+A `null` passed to a prop arrives as `null`, so `prop task: Task? = null`
+reads `task?.title` safely whether the tag passed nothing or passed `null`.
 
 ## Boundaries
 

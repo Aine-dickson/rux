@@ -619,6 +619,7 @@ fn describe_value(value: &Value) -> String {
         Value::Bool(b) => format!("`{b}`"),
         Value::List(items) => format!("a list of {}", items.len()),
         Value::Map(_) => "a map".to_string(),
+        Value::Null => "`null`".to_string(),
     }
 }
 

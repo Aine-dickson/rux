@@ -190,3 +190,26 @@ fn the_checkers_placeholder_segment_is_not_a_bad_prop() {
     assert!(errors(&doc).is_empty(), "{:?}", errors(&doc));
     assert!(shown(&doc).contains(&"1".to_string()), "a stand-in 0: {:?}", shown(&doc));
 }
+
+/// Watchlist #33: a prop's value had no null, so `null` arrived as `""` and
+/// `task?.title` on a `Task?` raised, in a program the checker had passed.
+#[test]
+fn a_null_prop_arrives_as_null() {
+    let card = "<template><view><text>{{ task?.title ?? \"(none)\" }}</text></view></template>\n\
+                <script>\n  prop task: { title: string }? = null;\n</script>";
+    for tag in ["<card :task=\"sel\" />", "<card />"] {
+        let dir = project(&[
+            (
+                "app.rux",
+                &format!(
+                    "<template><screen>{tag}</screen></template>\n\
+                     <script>\nuse components::card;\nlet sel: {{ title: string }}? = signal(null);\n</script>"
+                ),
+            ),
+            ("components/card.rux", card),
+        ]);
+        let doc = Document::load(dir.join("app.rux")).expect("loads");
+        assert!(errors(&doc).is_empty(), "{tag}: {:?}", errors(&doc));
+        assert!(shown(&doc).contains(&"(none)".to_string()), "{tag}: {:?}", shown(&doc));
+    }
+}

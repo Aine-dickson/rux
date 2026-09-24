@@ -2116,7 +2116,7 @@ types file), and `<route path="/task/:id">` into `prop id: int = 0`, shown as
 | A route segment that cannot convert | `/task/abc` | overlay names the route and `int`; the default shows | desktop: pass, `1` |
 | `rux check` on a routed page | the same project | nothing about the placeholder segment | desktop: pass, **after a fix**: the first run reported `"rux-check"` as a bad `int`, so every typed route parameter failed the check |
 | `x is T` in a `mounted` body | an `any` against an imported `Task` | `true` | desktop: pass, under test |
-| A `null` prop | `prop task: Task? = null`, read `task?.title` | the fallback text | **fail, found here**: a prop's value has no null, `null` arrives as `""`, and `?.` on text raises. Older than this step; watchlist |
+| A `null` prop | `prop task: Task? = null`, read `task?.title ?? "(no task)"` | the fallback text | desktop: pass **after a fix**. Found here: a prop's value had no null, `null` arrived as `""`, and `?.` on text raised, in a program the checker passed. Older than this step. Fixed the same day with a null value of its own |
 | Release build | the same probe from `cargo build --release` | the same errors | not driven |
 
 ## Standing gaps

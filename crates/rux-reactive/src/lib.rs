@@ -156,6 +156,13 @@ pub enum Value {
     /// A rhai object map (`#{ key: value }`), key order as rhai yields it. Backs the
     /// object forms of `:class` (`#{ active: cond }`) and `:style` (`#{ bg: c }`).
     Map(Vec<(String, Value)>),
+    /// The empty value: script's `null`, rhai's `()`.
+    ///
+    /// Written as the empty text until 2026-09-24, which is how it displays.
+    /// That made a `null` handed to a prop arrive as `""`, and `task?.title`
+    /// on a `Task?` prop then raised, since `?.` guards `()` and not text: a
+    /// program the type checker had passed failed when it ran.
+    Null,
 }
 
 impl Value {
@@ -179,6 +186,7 @@ impl Value {
             }
             Value::Text(s) => s.clone(),
             Value::Bool(b) => b.to_string(),
+            Value::Null => String::new(),
             Value::List(items) => items
                 .iter()
                 .map(Value::to_display)
@@ -227,6 +235,7 @@ impl Value {
             Value::Text(s) => !s.is_empty(),
             Value::Bool(b) => *b,
             Value::List(..) | Value::Map(..) => true,
+            Value::Null => false,
         }
     }
 
@@ -269,6 +278,7 @@ impl Value {
                 out
             }
             Value::Bool(b) => b.to_string(),
+            Value::Null => "()".to_string(),
             Value::List(items) => {
                 let inner: Vec<_> = items.iter().map(Value::to_rhai_literal).collect();
                 format!("[{}]", inner.join(", "))
@@ -311,6 +321,8 @@ mod tests {
         // you ask whether there are any.
         assert!(Value::List(Vec::new()).is_truthy());
         assert!(Value::Map(Vec::new()).is_truthy());
+        assert!(!Value::Null.is_truthy());
+        assert_eq!(Value::Null.to_display(), "", "null shows as nothing");
     }
 
     #[test]

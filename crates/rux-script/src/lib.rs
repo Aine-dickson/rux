@@ -2621,6 +2621,7 @@ fn to_dynamic(v: &Value) -> Dynamic {
         Value::Number(n) => Dynamic::from(*n),
         Value::Text(s) => Dynamic::from(s.clone()),
         Value::Bool(b) => Dynamic::from(*b),
+        Value::Null => Dynamic::UNIT,
         Value::List(items) => {
             let arr: rhai::Array = items.iter().map(to_dynamic).collect();
             Dynamic::from(arr)
@@ -2634,6 +2635,10 @@ fn to_dynamic(v: &Value) -> Dynamic {
 }
 
 fn from_dynamic(d: &Dynamic) -> Value {
+    // Before the fallback below, which wrote `()` as the empty text.
+    if d.is_unit() {
+        return Value::Null;
+    }
     if let Ok(i) = d.as_int() {
         return Value::Number(i as f64);
     }
@@ -3244,6 +3249,20 @@ mod tests {
         // It is a literal, not state: it never reaches the signal set, so
         // nothing can subscribe to it.
         assert!(!e.signals.contains("null"));
+    }
+
+    /// `null` leaves script as `Value::Null`, not the empty text, and comes
+    /// back as `null`: in scope, and baked into a handler as a literal.
+    #[test]
+    fn null_survives_the_trip_out_of_script_and_back() {
+        let mut e = engine();
+        assert_eq!(e.eval_value("null", &[]), Some(Value::Null));
+        let row = e.eval_value("{ title: \"a\", note: null }", &[]).unwrap();
+        assert_eq!(row, Value::Map(vec![("note".into(), Value::Null), ("title".into(), Value::Text("a".into()))]));
+        let locals = [("row".to_string(), row.clone())];
+        assert_eq!(e.eval_value("row?.note ?? \"none\"", &locals), Some(Value::Text("none".into())));
+        let baked = format!("let row = {}; row.note == null", row.to_rhai_literal());
+        assert_eq!(e.eval_value(&baked, &[]), Some(Value::Bool(true)));
     }
 
     /// The JS names for operations rhai already had under other names, plus the

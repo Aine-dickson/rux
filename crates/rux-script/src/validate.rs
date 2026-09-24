@@ -132,12 +132,8 @@ fn sample_at(ty: &Type, named: &dyn Fn(&str) -> Option<Type>, depth: usize) -> O
 }
 
 impl Checkable for Value {
-    /// A prop has no null: `from_dynamic` writes rhai's `()` as the empty
-    /// text, so the empty text is where a null that was passed ends up, and it
-    /// is accepted where null is. A real `""` passed to a `T?` gets through
-    /// with it; refusing a null that was passed would be worse.
     fn is_null(&self) -> bool {
-        matches!(self, Value::Text(s) if s.is_empty())
+        matches!(self, Value::Null)
     }
     fn as_number(&self) -> Option<f64> {
         match self {
@@ -355,12 +351,13 @@ mod tests {
     fn a_prop_value_is_checked_as_a_value() {
         let none = |_: &str| None;
         let parse = |t: &str| parse_type(t).unwrap();
-        let task = Value::Map(vec![("id".into(), Value::Number(1.0)), ("note".into(), Value::Text(String::new()))]);
+        let task = Value::Map(vec![("id".into(), Value::Number(1.0)), ("note".into(), Value::Null)]);
         assert!(fits(&task, &parse("{ id: int, note?: string }"), &none));
         assert!(fits(&task, &parse("{ id: int, note: string? }"), &none));
+        assert!(!fits(&task, &parse("{ id: int, note: string }"), &none));
         assert!(!fits(&task, &parse("{ id: string }"), &none));
-        // A null that was passed arrives as the empty text.
-        assert!(fits(&Value::Text(String::new()), &parse("{ id: int }?"), &none));
-        assert!(!fits(&Value::Text("x".into()), &parse("{ id: int }?"), &none));
+        assert!(fits(&Value::Null, &parse("{ id: int }?"), &none));
+        // The empty text is text, not null: it was, until `Value::Null`.
+        assert!(!fits(&Value::Text(String::new()), &parse("{ id: int }?"), &none));
     }
 }
