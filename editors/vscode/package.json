@@ -17,6 +17,12 @@
     "Programming Languages"
   ],
   "main": "./extension.js",
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": false,
+      "description": "Diagnostics and formatting run the `rux` binary, so the extension waits until the workspace is trusted."
+    }
+  },
   "activationEvents": [
     "onLanguage:rux"
   ],
@@ -26,6 +32,7 @@
       "properties": {
         "rux.path": {
           "type": "string",
+          "scope": "machine",
           "default": "rux",
           "markdownDescription": "Path to the `rux` binary, which provides formatting and diagnostics. Install it with `cargo install ruxlang`. Leave as `rux` to find it on your PATH."
         },

@@ -97,8 +97,10 @@ Formatting and diagnostics shell out to it:
 cargo install ruxlang        # puts a `rux` command on your PATH
 ```
 
-Set `rux.path` if it lives somewhere else, and `rux.check.enable` to `false` to
-turn the squiggles off. The extension says so once, rather than on every
+Set `rux.path` if it lives somewhere else, in your user settings: it is
+ignored in a workspace's own `.vscode/settings.json`, so a repository you
+clone cannot point the extension at a program of its choosing. Set
+`rux.check.enable` to `false` to turn the squiggles off. The extension says so once, rather than on every
 keystroke, if it cannot run the binary.
 
 This used to be a re-indenter written in JavaScript here. Two implementations of

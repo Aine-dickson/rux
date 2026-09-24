@@ -733,6 +733,34 @@ fn keyboard_px() -> u32 {
     }
 }
 
+/// Whether a field's text may be kept for when the app comes back after the
+/// platform ended it, which writes it to disk while the process is dead.
+///
+/// Never a password, as before. Never a card number, its security code or
+/// expiry, or a one-time code either: the same text a password manager treats
+/// as secret. And never a field whose author said `autocomplete="off"`,
+/// which is what that attribute already asks of a browser, whose history does
+/// not restore such a field on Back.
+#[cfg_attr(not(any(target_os = "android", target_arch = "wasm32")), allow(dead_code))]
+fn kept_across_a_kill(kind: InputKind, field: &Field) -> bool {
+    const SECRET: &[&str] = &[
+        "off",
+        "current-password",
+        "new-password",
+        "one-time-code",
+        "cc-number",
+        "cc-csc",
+        "cc-exp",
+        "cc-exp-month",
+        "cc-exp-year",
+    ];
+    kind != InputKind::Password
+        && !field
+            .autocomplete
+            .as_deref()
+            .is_some_and(|tokens| tokens.split_whitespace().any(|t| SECRET.contains(&t)))
+}
+
 /// Whether typing here is done on an on-screen keyboard: always on Android,
 /// on the web when the browser says its pointer is a finger.
 fn touch_first() -> bool {
@@ -4794,7 +4822,7 @@ impl App {
         let mut state = self.document.saved_state();
         let mut budget = SAVED_TEXT_MAX;
         if let Some(model) = self.focused.clone() {
-            let text = (self.focused_kind != InputKind::Password)
+            let text = kept_across_a_kill(self.focused_kind, &self.live_field())
                 .then(|| self.focused_value())
                 .filter(|t| t.len() <= budget);
             budget -= text.as_ref().map_or(0, String::len);
@@ -4810,7 +4838,7 @@ impl App {
         let others: Vec<(String, Option<String>, Option<String>)> = self
             .focuses
             .iter()
-            .filter(|f| f.text.is_some() && f.kind != InputKind::Password && !f.field.readonly)
+            .filter(|f| f.text.is_some() && kept_across_a_kill(f.kind, &f.field) && !f.field.readonly)
             .filter(|f| {
                 self.focused.as_deref() != Some(f.model.as_str())
                     || f.row != self.focused_row
@@ -8166,6 +8194,29 @@ fn fit_length(old: &str, new: &str, caret: usize, max: usize) -> (String, usize)
         prefix + (caret - prefix).min(kept_len)
     };
     (value, caret)
+}
+
+#[cfg(test)]
+mod saved_text_tests {
+    use super::{kept_across_a_kill, Field, InputKind};
+
+    /// What an app keeps of a field while the platform holds it on disk
+    /// (watchlist #30): ordinary text yes; a password, a card, a one-time
+    /// code, or a field its author marked `autocomplete="off"`, no.
+    #[test]
+    fn secrets_are_not_kept_across_a_kill() {
+        let with = |tokens: Option<&str>| Field {
+            autocomplete: tokens.map(str::to_string),
+            ..Default::default()
+        };
+        assert!(kept_across_a_kill(InputKind::Text, &with(None)));
+        assert!(kept_across_a_kill(InputKind::Text, &with(Some("email"))));
+        assert!(!kept_across_a_kill(InputKind::Password, &with(None)));
+        assert!(!kept_across_a_kill(InputKind::Text, &with(Some("cc-number"))));
+        assert!(!kept_across_a_kill(InputKind::Text, &with(Some("billing cc-csc"))));
+        assert!(!kept_across_a_kill(InputKind::Text, &with(Some("one-time-code"))));
+        assert!(!kept_across_a_kill(InputKind::Textarea, &with(Some("off"))));
+    }
 }
 
 #[cfg(test)]

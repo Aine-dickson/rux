@@ -222,7 +222,9 @@ Forward, and here the person never left the page. The guards are asked again
 about that page, because the new process has only the first values of its
 signals, and one that refuses or redirects sends the app there as an arrival,
 with the rest of the old history dropped. A password field comes back focused
-and empty. **Signals are not kept**: an app's data is its own to save.
+and empty, and so does a card number, a security code, a one-time code, or
+any field its author marked `autocomplete="off"`, which is what that attribute
+asks of a browser's history too: the platform keeps saved state on disk. **Signals are not kept**: an app's data is its own to save.
 
 **After a phone's browser discards the tab.** A browser does to a background
 tab what Android does to a background app, and brings it back by loading the
