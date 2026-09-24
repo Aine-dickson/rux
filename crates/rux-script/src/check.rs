@@ -1646,6 +1646,7 @@ impl<'a> Checker<'a> {
             }
         }
         // Messages name the type as written (`Task`), not what it expands to.
+        let base_written = base;
         let shown = if optional { without_null(base) } else { base.clone() };
         let base = self.resolve(&shown);
         let read = Read { optional, path: path.as_deref() };
@@ -1654,6 +1655,10 @@ impl<'a> Checker<'a> {
             self.index(&base, &shown, &key, what, read)
         } else {
             match what {
+                // `a?.b` on an `a` that may be `null` may be `null` itself.
+                Expr::Property(p, pos) if optional && may_be_null(&self.resolve(base_written)) => {
+                    self.property(&base, &shown, p.2.as_str(), *pos, read).optional()
+                }
                 Expr::Property(p, pos) => self.property(&base, &shown, p.2.as_str(), *pos, read),
                 Expr::MethodCall(call, pos) => self.method(&base, call, *pos),
                 // A chain whose first step is a variable used as a property,
@@ -1719,6 +1724,18 @@ impl<'a> Checker<'a> {
             }
             Type::Union(members) => {
                 let members = members.clone();
+                // A value that may be `null` has no fields when it is, and
+                // reading one raises: `?.` or a check first, as for an
+                // optional field.
+                if members.contains(&Type::Null) && !read.optional {
+                    let whole = read.path.map_or_else(|| "…".to_string(), str::to_string);
+                    self.error(
+                        pos,
+                        format!(
+                            "`{whole}` may be `null`, so read it as `{whole}?.{name}`, or check it                              first: `if {whole} != null {{ … }}`"
+                        ),
+                    );
+                }
                 // Reported once for the union rather than once per member.
                 let before = self.findings.len();
                 let out: Vec<Type> = members
@@ -2856,6 +2873,18 @@ mod tests {
         one_error(&format!("{NOTE}fn f() {{ t.note }}"), "`note` may be absent from `T`, so read it as `t?.note`");
         clean(&format!("{NOTE}fn f(): string? {{ t?.note }}"));
         clean(&format!("{NOTE}fn f(): string {{ t?.note ?? \"none\" }}"));
+    }
+
+    /// The user's call, 2026-09-24: a value that may be `null` is read the way
+    /// an optional field is, with `?.` or after a check.
+    #[test]
+    fn a_value_that_may_be_null_is_read_with_a_question_mark() {
+        let sel = format!("{TASK}let sel: Task? = signal(null);\n");
+        one_error(&format!("{sel}fn f() {{ sel.title }}"), "`sel` may be `null`, so read it as `sel?.title`");
+        clean(&format!("{sel}fn f(): string? {{ sel?.title }}"));
+        clean(&format!("{sel}fn f(): string {{ if sel != null {{ sel.title }} else {{ \"\" }} }}"));
+        clean(&format!("{sel}fn f(): string {{ if sel == null {{ return \"\"; }} sel.title }}"));
+        one_error(&format!("{sel}fn f(): string {{ sel?.title }}"), "string");
     }
 
     #[test]

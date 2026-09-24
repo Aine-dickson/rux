@@ -333,8 +333,9 @@ script, every `let` against its
 annotation or its starting value, every call against the function's
 parameters, every result against a declared `): T`, fields read and written
 against their record, and a closure handed to `filter` or `map` against the
-list's element type. An optional field (`note?: string`) must be read with
-`?.`, and a dictionary's keys with `?.` or `?[`, except where a check has
+list's element type. An optional field (`note?: string`), and a field of a
+value that may be `null` (`sel: Task?`), must be read with `?.`, and a
+dictionary's keys with `?.` or `?[`, except where a check has
 already ruled out their absence: inside `if t?.note != null`, after
 `"note" in t`, after an early `return`, in the arms of a `switch`, and under
 an `r-if` that tested it. A

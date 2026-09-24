@@ -200,6 +200,11 @@ if t?.note != null {
 The same holds after `"note" in t`, after an early return on its absence, and
 inside an `r-if` that tested it. Outside such a region, `?.` is still required.
 
+**So is a value that may be `null`.** `sel.title` on a `sel: Task?` raises
+when `sel` is `null`, so it is an error unless something has ruled `null` out:
+`if sel != null`, an early `return` when it is, an `r-if` that tested it, or
+reading it as `sel?.title`, which is a `string?`.
+
 **A dictionary is read the same way.** Any key of a `{ [string]: T }` may be
 missing, and a missing key raises exactly as a missing field does, so
 `m[k]` is an error unless `k in m` has been established. `m?[k]` reads it as a
