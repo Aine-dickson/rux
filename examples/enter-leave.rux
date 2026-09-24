@@ -236,13 +236,14 @@
   /* Progress for the card's swap. A number between 0 and 1 puts the swap
      exactly there; `null` hands it back to the clock, which is how a released
      finger settles instead of snapping. */
-  let dismiss = signal(0);
+  let dismiss: number? = signal(0);
 
   /* Whether the card has actually left, as opposed to being mid-swap. */
   let gone = signal(false);
 
   /* Long enough that there is a middle to take a row out of. */
-  let tasks = signal([
+  type Task = { id: string, text: string };
+  let tasks: Task[] = signal([
     { id: "tanks",   text: "check the tanks" },
     { id: "heading", text: "log the heading" },
     { id: "watch",   text: "wake the second watch" },
@@ -254,8 +255,8 @@
      call does not capture the scope it was written in, so its closure could not
      see `id`. A plain call does capture, which is what lets this one read and
      write `tasks` at all. */
-  fn drop(id) {
-    let left = [];
+  fn drop(id: string) {
+    let left: Task[] = [];
     for t in tasks {
       if t.id != id {
         left.push(t);
@@ -264,7 +265,7 @@
     tasks = left;
   }
 
-  fn onDrag(event) {
+  fn onDrag(event: { phase: string, totalX: number }) {
     if event.phase == "start" {
       /* Turning the condition off is what opens the swap. The card does not
          disappear: the build keeps emitting it while the swap is pending, and

@@ -102,6 +102,14 @@ impl Type {
                 }
             }
         }
+        // A member a wider one already covers says nothing: `int | number` is
+        // `number`, and `"a" | string` is `string`.
+        if out.contains(&Type::Number) {
+            out.retain(|t| *t != Type::Int);
+        }
+        if out.contains(&Type::String) {
+            out.retain(|t| !matches!(t, Type::Literal(_)));
+        }
         if out.len() == 1 {
             out.pop().unwrap()
         } else {

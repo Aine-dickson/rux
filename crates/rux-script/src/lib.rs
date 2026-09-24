@@ -9,6 +9,7 @@
 //! with a real scripting language: named `fn` handlers, full expressions, and
 //! the compiled-Rust boundary (`docs/04-architecture.md`, script/host tiers).
 
+pub mod check;
 pub mod types;
 
 use std::cell::RefCell;
@@ -195,6 +196,8 @@ fn register_elements(engine: &mut RhaiEngine) {
 pub struct Builder {
     engine: RhaiEngine,
     host: Module,
+    /// The type of every `host::` function registered, for the checker.
+    host_types: Vec<(String, types::Type)>,
 }
 
 impl Default for Builder {
@@ -447,6 +450,7 @@ impl Builder {
         Self {
             engine,
             host: Module::new(),
+            host_types: Vec::new(),
         }
     }
 
@@ -459,6 +463,8 @@ impl Builder {
         self.host.set_native_fn(name, move || -> Result<f64, Box<rhai::EvalAltResult>> {
             Ok(f())
         });
+        self.host_types
+            .push((name.to_string(), types::Type::Function(Vec::new(), Box::new(types::Type::Number))));
         self
     }
 
@@ -496,6 +502,8 @@ impl Builder {
             scope,
             funcs,
             signals,
+            checked: ast,
+            host_types: self.host_types,
         })
     }
 }
@@ -1054,6 +1062,12 @@ pub struct Engine {
     funcs: AST,
     /// Names of the top-level signals, the universe of reactive dependencies.
     signals: HashSet<String>,
+    /// The whole script as compiled, statements and annotations included, for
+    /// the type checker. `funcs` keeps only the functions, which is all
+    /// running needs.
+    checked: AST,
+    /// The `host::` functions' types, as registered.
+    host_types: Vec<(String, types::Type)>,
 }
 
 // ── Warning collection ──────────────────────────────────────────────────────
@@ -1828,6 +1842,29 @@ fn strip_rhai_position(message: &str) -> String {
 }
 
 impl Engine {
+    /// Check the script against its type annotations. See [`check`] and
+    /// `docs/10-types.md`. `cx.host` is filled in from what was registered.
+    pub fn check_types(&self, cx: &check::Context) -> Vec<check::Finding> {
+        let mut cx = cx.clone();
+        cx.host.extend(self.host_types.iter().cloned());
+        check::check(&self.checked, &cx)
+    }
+
+    /// The `type` declarations in `script`, as name and text, for another file
+    /// that imports them with `use`. A script that does not compile declares
+    /// nothing here; its own load says why.
+    pub fn declared_types(script: &str) -> Vec<(String, String)> {
+        match RhaiEngine::new().compile(rewrite_intervals(script)) {
+            Ok(ast) => ast
+                .annotations()
+                .iter()
+                .filter(|a| a.kind == rhai::AnnotationKind::Type)
+                .map(|a| (a.name.to_string(), a.ty.clone()))
+                .collect(),
+            Err(_) => Vec::new(),
+        }
+    }
+
     /// Evaluate `src` (an expression or statements) with `locals` temporarily in
     /// scope. Script functions are available. Returns the resulting value.
     fn eval(&mut self, src: &str, locals: &[(String, Value)]) -> Option<Dynamic> {

@@ -92,5 +92,5 @@
 
   // A helper used in a binding rather than a handler: it answers a question
   // instead of changing anything.
-  fn hours(n) { n / 10 }
+  fn hours(n: number) { n / 10 }
 </script>

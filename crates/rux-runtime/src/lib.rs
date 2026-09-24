@@ -621,6 +621,72 @@ fn check_script_functions(
     }
 }
 
+/// The `type` declarations in a `.rux` file, as name and text. A file that
+/// cannot be read or parsed declares none here; loading it says why.
+fn declared_types_in(path: &Path) -> Vec<(String, String)> {
+    let Some(sfc) = source::read_text(path).ok().and_then(|s| rux_parser::parse_sfc(&s).ok()) else {
+        return Vec::new();
+    };
+    let (script, _) = extract_imports(&sfc.script);
+    rux_script::Engine::declared_types(&script)
+}
+
+/// Run the type checker over the document's own script and report what it
+/// finds on the file's lines. See `docs/10-types.md`.
+///
+/// Only the document's own lines are reported: a component's functions ride
+/// in the same script, and are the component's to answer for when it is the
+/// file being checked, the rule [`check_script_functions`] follows too.
+fn check_script_types(
+    engine: &rux_script::Engine,
+    sfc: &rux_parser::Sfc,
+    own_lines: usize,
+    imported_types: Vec<(String, String)>,
+    support_types: Vec<(String, String, String)>,
+    computeds: &[Computed],
+) {
+    use rux_script::types::{parse_type, Type};
+    let typed = |ty: &Option<String>| ty.as_deref().and_then(|t| parse_type(t).ok());
+    let mut cx = rux_script::check::Context {
+        imported_types,
+        support_types,
+        own_lines: Some(own_lines),
+        ..Default::default()
+    };
+    // A prop with no default is not in the script at all: the caller passes
+    // it. Its type is what it was declared with. One with a default is a typed
+    // `let` of that default, so the checker sees it declared.
+    for prop in &sfc.props {
+        if prop.default.is_none() {
+            cx.provided.push((prop.name.clone(), typed(&prop.ty).unwrap_or(Type::Any)));
+            if prop.ty.is_none() {
+                rux_script::located(Some(prop.line + sfc.script_line - 1), || {
+                    rux_script::warn_script(format!(
+                        "`prop {0}` has no type, so nothing a tag passes as `{0}` is checked. \
+                         Say what it takes: `prop {0}: T;`",
+                        prop.name
+                    ))
+                });
+            }
+        }
+    }
+    // Opened on its own, a component's computeds are placeholders until a
+    // caller's props exist (`defer_computeds`), so they are taken at their word.
+    if !sfc.props.is_empty() {
+        cx.placeholders = computeds.iter().map(|c| (c.name.clone(), typed(&c.ty))).collect();
+    }
+    for finding in engine.check_types(&cx) {
+        let line = finding.line.map(|l| l + sfc.script_line - 1);
+        rux_script::located(line, || {
+            if finding.is_error {
+                rux_script::error_script(finding.message);
+            } else {
+                rux_script::warn_script(finding.message);
+            }
+        });
+    }
+}
+
 /// Every name the template puts in scope for something a handler calls.
 ///
 /// Two sources, and both are callers: an `r-for` binds a name for the whole
@@ -1580,6 +1646,10 @@ impl Document {
         // not a stack overflow: a file already loaded contributes its tag to the
         // importing file's namespace and is not walked a second time.
         let mut namespaces: HashMap<String, Namespace> = HashMap::new();
+        // Types the document brings in with `use types::Task;`, and the other
+        // types beside them that those may be built from.
+        let mut imported_types: Vec<(String, String)> = Vec::new();
+        let mut support_types: Vec<(String, String, String)> = Vec::new();
         let mut queue: Vec<ImportJob> = vec![ImportJob {
             owner: DOCUMENT_NAMESPACE.to_string(),
             owner_path: path.to_path_buf(),
@@ -1619,19 +1689,47 @@ impl Document {
                             &job.owner_path,
                         ));
                     }
-                    if let Err((beside, from_root)) = resolve_import(&job.base, &import.file) {
-                        let mut looked = format!("`{}`", beside.display());
-                        if let Some(root) = from_root.filter(|r| *r != beside) {
-                            looked.push_str(&format!(" and `{}`", root.display()));
+                    let written = import.file.trim_end_matches(".rux").replace('/', "::");
+                    let types_path = match resolve_import(&job.base, &import.file) {
+                        Ok(p) => p,
+                        Err((beside, from_root)) => {
+                            let mut looked = format!("`{}`", beside.display());
+                            if let Some(root) = from_root.filter(|r| *r != beside) {
+                                looked.push_str(&format!(" and `{}`", root.display()));
+                            }
+                            return Err(LoadError::at_line(
+                                format!(
+                                    "no file for `use {written}::{type_name};`: looked in {looked}"
+                                ),
+                                at,
+                                &job.owner_path,
+                            ));
                         }
-                        let written = import.file.trim_end_matches(".rux").replace('/', "::");
+                    };
+                    let declared = declared_types_in(&types_path);
+                    if !declared.iter().any(|(n, _)| n == type_name) {
+                        let names: Vec<String> = declared.iter().map(|(n, _)| format!("`{n}`")).collect();
+                        let has = if names.is_empty() {
+                            "it declares no types at all".to_string()
+                        } else {
+                            format!("it declares {}", names.join(", "))
+                        };
                         return Err(LoadError::at_line(
-                            format!(
-                                "no file for `use {written}::{type_name};`: looked in {looked}"
-                            ),
+                            format!("`{written}.rux` has no type `{type_name}`: {has}"),
                             at,
                             &job.owner_path,
                         ));
+                    }
+                    // The document's own imports are what its checker sees.
+                    // A component's are for when that component is checked.
+                    if job.owner == DOCUMENT_NAMESPACE {
+                        for (name, text) in declared {
+                            if name == *type_name {
+                                imported_types.push((name, text));
+                            } else {
+                                support_types.push((name.clone(), text, format!("{written}::{name}")));
+                            }
+                        }
                     }
                     continue;
                 }
@@ -1826,6 +1924,7 @@ impl Document {
             callers.extend(names_callers_bring(&component.template, &engine));
         }
         check_script_functions(&engine, &callers, main_script_lines, sfc.script_line);
+        check_script_types(&engine, &sfc, main_script_lines, imported_types, support_types, &computeds);
         // Everything the load-time checks said, kept: a rebuild re-raises what
         // the build finds and nothing else, so without this a document whose
         // `mounted` or `computed` ran lost every check error before anyone saw it.
@@ -1941,6 +2040,8 @@ impl Document {
             usize::MAX,
             sfc.script_line,
         );
+        // With no filesystem there are no type imports either.
+        check_script_types(&engine, &sfc, usize::MAX, Vec::new(), Vec::new(), &computeds);
         // Everything the load-time checks said, kept: a rebuild re-raises what
         // the build finds and nothing else, so without this a document whose
         // `mounted` or `computed` ran lost every check error before anyone saw it.
@@ -4494,7 +4595,11 @@ fn extract_props(
                 } else {
                     if defaults_as_let {
                         if let Some(d) = &default {
-                            line_out = format!("let {name} = {d};");
+                            // Typed, so the checker holds the default to it.
+                            line_out = match ty {
+                                Some(ty) => format!("let {name}: {ty} = {d};"),
+                                None => format!("let {name} = {d};"),
+                            };
                         }
                     }
                     props.push(rux_parser::PropDecl {

@@ -294,8 +294,9 @@ is not where work gets done.
 
 ## Type annotations
 
-**Written, and not yet checked.** Rux script takes TypeScript's annotations,
-and a program with them runs exactly as it would with them deleted:
+Rux script takes TypeScript's annotations. They are checked by `rux check`,
+the dev overlay and the editor, and erased before anything runs, so a program
+with them runs exactly as it would with them deleted:
 
 ```rux
 type Filter = "all" | "open" | "done";
@@ -319,10 +320,23 @@ and that is how `use` tells it from a component. A file holding only a
 `=`, so `let type = 1;` still works. An annotation that is not a type is a
 syntax error at the place it goes wrong.
 
-The checker that reads these is being built. Until it lands nothing compares a
-value with its annotation, so an annotation is documentation the parser
-insists is well formed. [Types](./10-types.md) is the whole design, with a
-table saying which parts run.
+**What is checked so far** is a file's `<script>`: every `let` against its
+annotation or its starting value, every call against the function's
+parameters, every result against a declared `): T`, fields read and written
+against their record, and a closure handed to `filter` or `map` against the
+list's element type. A name nothing can type (`signal([])`, a parameter with no
+annotation) is a warning and is not checked further; a contradiction is an
+error:
+
+```text
+app.rux:9: error: "al" is not `Filter`, which is one of "all", "open", "done"; did you mean "all"?
+app.rux:14: error: `count` holds `int`, so it cannot be given `number` here. If it may hold either, say so: `let count: number = …`
+app.rux:16: warning: `x` has no type, so what `old` is given there is not checked. Annotate it: `fn old(x: T)`
+```
+
+Handlers, `{{ }}` bindings and templates are not checked yet, nor is `?.` on
+an optional field. [Types](./10-types.md) is the whole design, with a table
+saying which parts run.
 
 ## Values
 

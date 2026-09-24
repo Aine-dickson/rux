@@ -12,7 +12,7 @@ the row below says so.
 | Part | State |
 |---|---|
 | Annotations parsed and erased (`: T`, `type`, `prop x: T`, `use types::X`) | **Built** 2026-09-24. Accepted and ignored at run time; a malformed one is a syntax error. See [Script](./07-script.md#type-annotations) |
-| The checker: primitives, arrays, records, dictionaries, `T?`, inference | Pending |
+| The checker: primitives, arrays, records, dictionaries, `T?`, inference | **Built** 2026-09-24 for a file's `<script>`: its `let`s, functions (parameters, results, calls) and closures. Handlers, bindings and templates are not checked yet |
 | Unions, narrowing, `switch` exhaustiveness, forced `?.` | Pending |
 | Functions: typed and untyped, the caller-local rule | Pending |
 | Templates: `r-for`, `r-if`, bindings, `r-model`, events, props at the tag | Pending |
@@ -53,7 +53,10 @@ Three things decide almost everything else:
    `x is T`. Those are checked at run time, in release builds too.
 3. **A program with no annotations still runs exactly as before.** What the
    checker cannot infer becomes `any` and is reported as a warning, never an
-   error, so `rux check` keeps exiting 0 on an untyped program.
+   error. A name that starts with a value takes that value's type, though, so
+   an unannotated program can still contradict itself: a signal that starts
+   as `0` and is later set to `null` is an error, and the message gives the
+   fix, `let x: number? = signal(0)`.
 
 ## Where an annotation goes
 
@@ -110,6 +113,9 @@ integer literal is a `number`, not an `int`, because otherwise
 see. `int` comes only from an annotation, `.length`, `to_int()` or a range.
 Arithmetic keeps it where it can: `int + int`, `int - int`, `int * int` and
 `int % int` are `int`, and `/` is always `number`, because `3 / 2` is `1.5`.
+A whole-number literal goes wherever an `int` is expected, and beside an `int`
+it counts as one, so `count + 1`, `count += 1` and `count++` keep an `int` an
+`int`.
 
 **A record and a dictionary are both written with braces**, and so are map
 values since `{ a: 1 }` became a map. The difference is the square brackets:
@@ -424,7 +430,7 @@ the type has to come from.
 ## What is an error and what is a warning
 
 **Errors**, which make `rux check` exit 1: a value that does not fit where it
-goes, a missing or misspelled field, a plain read of an optional field outside
+goes, including a value that does not fit what a name started as, a missing or misspelled field, a plain read of an optional field outside
 a narrowed region, an impossible comparison, a `switch` that misses a case, a
 typed function reading a caller's local, an annotation naming no type, and a
 wrong prop at a tag.

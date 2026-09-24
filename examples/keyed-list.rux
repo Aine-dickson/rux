@@ -71,7 +71,9 @@
 </style>
 
 <script>
-  let items = signal([
+  type Row = { id: string, at: number, note: string };
+
+  let items: Row[] = signal([
     { id: "one", at: 0, note: "first" },
     { id: "two", at: 1, note: "second" },
     { id: "three", at: 2, note: "third" }
@@ -82,7 +84,7 @@
   //
   // Renumbering is by index, not `for row in out`: rhai's for-loop hands you a
   // copy of each element, so assigning to it changes nothing.
-  fn rotate(list) {
+  fn rotate(list: Row[]) {
     let out = [list[list.length - 1]];
     for i in 0..(list.length - 1) {
       out.push(list[i]);
@@ -95,5 +97,5 @@
 
   // `.length`, `.map` and `.join` are the names they have in JS, and an arrow
   // function is a closure. The loop this replaced was six lines.
-  fn order(list) { list.map(row => row.id).join(", ") }
+  fn order(list: Row[]) { list.map(row => row.id).join(", ") }
 </script>
