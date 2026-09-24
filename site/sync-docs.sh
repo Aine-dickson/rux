@@ -22,6 +22,8 @@ content="$repo/site/content"
 # Not every doc is publishable, and that is deliberate:
 #   03-guide      -> opens by saying it does not work as written; /learn is
 #                    authored against 05-as-built instead, by hand
+#   10-types      -> the type system while it is being built; each part's
+#                    rules move into 07-script as it lands
 # See docs/README.md.
 #
 # `01-rationale.md` used to be on that list, on the grounds that the
@@ -189,6 +191,7 @@ rewrite_links() {
     -e 's;\.\/04-architecture\.md;/contribute/;g' \
     -e 's;\.\/01-rationale\.md;/reference/rationale/;g' \
     -e 's;\.\/03-guide\.md;https://github.com/Aine-dickson/rux/blob/main/docs/03-guide.md;g' \
+    -e 's;\.\/10-types\.md;https://github.com/Aine-dickson/rux/blob/main/docs/10-types.md;g' \
     -e 's;\.\/README\.md;https://github.com/Aine-dickson/rux/tree/main/docs;g'
 }
 

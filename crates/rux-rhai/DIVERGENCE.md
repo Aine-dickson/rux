@@ -213,6 +213,42 @@ block, which is `()`. It is now an empty map. No example or test relied on it.
 Shorthand, `{ a, b }` for `{ a: a, b: b }`, is left out: a lone `{ a }` would
 have to stay a block, and a rule with that hole in it is worse than no rule.
 
+### 8. Type annotations are parsed, kept aside, and erased
+
+**Status: designed 2026-09-24, being built.** This entry is written ahead of
+the code, as the type system's first step; the file list is the plan and is
+corrected when the change lands.
+
+**Files:** `src/parser.rs` (`parse_let`, `parse_fn`, the arrow parameter
+lookahead from item 3, and a `type` statement), `src/ast/ast.rs` (the side
+table on `AST`)
+
+Rux script takes TypeScript's annotations: `let n: int = 0;`,
+`fn f(x: Task): string { … }`, `(a: number) => a`, and
+`type Filter = "all" | "open";`. The full design is `docs/10-types.md`.
+Upstream has no annotations at all, so this cannot be done from outside the
+engine: the tokens after `:` have to be consumed where the parser stands, or
+the `:` is a syntax error.
+
+The shape of the change, chosen to keep the merge surface small:
+
+- **The fork recognises a type; it does not understand one.** A small
+  recognizer follows the type grammar far enough to know where a type ends,
+  which is the only hard part (`fn f(): { a: number } { … }` has two braces in
+  a row, and only the grammar says which one opens the body). What it records
+  is the type's source text and position. Parsing that text into a type, and
+  everything done with it, belongs to `rux-script`.
+- **Annotations go in a side table, not the AST.** Each entry is the position
+  of the annotated name, what kind of name it is (a `let`, a parameter, a
+  result, a `type`), and the type's text. `Stmt`, `Expr` and `FnDef` keep
+  upstream's shape, so the evaluator, the optimizer and every upstream fix to
+  them apply unchanged.
+- **Erased means erased.** Evaluation never reads the side table. A `type`
+  statement parses to a no-op. An annotated program and the same program with
+  its annotations deleted produce the same AST.
+- **`type` is contextual.** It is a keyword only at the start of a statement,
+  followed by a name and `=`. `let type = 1;` and `type_of(x)` are untouched.
+
 ## Keeping up with upstream
 
 A fork does not receive upstream's fixes, and RustSec files any advisory under

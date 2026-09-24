@@ -2052,7 +2052,9 @@ not "is it small", it is "did v0.7 say this works".
   `filter`. It is the root of two other requests (completions on element handles
   from `query()`, and errors on impossible comparisons), and it is the largest
   thing on this list by a wide margin. Needs its own milestone and a decision
-  about how far inference goes before annotations are required.
+  about how far inference goes before annotations are required. **Designed in
+  full 2026-09-24 and being built:** see [Types](https://github.com/Aine-dickson/rux/blob/main/docs/10-types.md), whose status
+  table says which parts run.
 - **Errors on impossible comparisons.** Downstream of the above; without types
   there is nothing to compare.
 - **Handlers without `()`.** `@tap="refresh"` where `refresh` takes no
