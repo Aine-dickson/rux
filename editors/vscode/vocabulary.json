@@ -22,6 +22,7 @@
     { "name": "class", "detail": "CSS classes", "doc": "Space-separated class names, matched by `.name` selectors. `:class` is the bound form." },
     { "name": "id", "detail": "unique id", "doc": "Matched by `#name` selectors, and by `query(\"#name\")` from script." },
     { "name": "style", "detail": "inline declarations", "doc": "Inline CSS for this element. `:style` is the bound form." },
+    { "name": "label", "detail": "accessible name", "doc": "What a screen reader calls this element, in place of the text inside it. On an `<image>` or `<path>`, `alt` says the same." },
     { "name": "role", "detail": "accessibility role", "doc": "Honored for selectors (`[role=\"heading\"]`) and for the accessibility tree. Matches case-insensitively." },
     { "name": "to", "detail": "make this element a link", "doc": "Tapping navigates to this path, the element announces as a link, and it matches `:current` when it names the path you are on. `:to` is the bound form." },
     { "name": "@submit", "detail": "the form was sent, and every field passed", "doc": "On a `role=\"form\"` only. Sent by a `<button type=\"submit\">` inside it or by the action key in its last field. `event.values` maps each field's `name` (or its `r-model`) to its value." },
@@ -78,8 +79,9 @@
     "route": [
       { "name": "path", "detail": "the path to match", "doc": "`/crew/:id` captures `id` and hands it to the view as a prop. A child route's path is relative to its parent, and `path=\"\"` is the index route that fills the parent's outlet at the parent's own path." },
       { "name": "view", "detail": "the component to render", "doc": "Names an imported component. Either spelling: `view=\"crew-detail\"` as the tag is written, or `view=\"crew_detail\"` as the `use` that imports it is written. They are the same component." },
+      { "name": "name", "detail": "a name to build this route's path from", "doc": "`path_for(\"crew-detail\", #{ id: \"ada\" })` builds the path from the name and the parameters, so a link survives the path being changed." },
       { "name": "fallback", "detail": "match anything unmatched", "doc": "Valueless. Renders when no other route matched, wherever it sits among them." },
-      { "name": "guard", "detail": "decide whether this route may be entered", "doc": "`guard=\"expr\"`, run whenever this route is part of the match. `false` cancels the navigation, a string redirects to that path, and anything else allows it, `()` included, so a function that falls off the end has consented. Outer guards run first." }
+      { "name": "guard", "detail": "decide whether this route may be entered", "doc": "`guard=\"expr\"`, run whenever this route is part of the match. `false` cancels the navigation, a string redirects to that path, and anything else allows it, `()` included, so a function that falls off the end has consented. Outer guards run first. In scope: `to`, `from`, the path's parameters, and `linked`, true when a deep link or a browser URL started the navigation rather than the app itself." }
     ],
     "router": [
       { "name": "restore-scroll", "detail": "restore scroll position on Back", "doc": "Puts a page back where it was when you return to it." },
@@ -128,6 +130,7 @@
   "scriptGlobals": [
     { "name": "signal", "detail": "signal(value)", "doc": "Declare a piece of reactive state." },
     { "name": "computed", "detail": "computed name = expr;", "doc": "Derived state, readable anywhere a signal is. A **declaration, not a call**: there is no `computed(|| …)`. Refreshing is one pass in declaration order, so a computed may read one declared above it and not below. Inside a component it runs per instance." },
+    { "name": "prop", "detail": "prop name;", "doc": "In a component: something its caller passes, as `:name=\"expr\"` or `name=\"text\"` on the tag. `prop size = 16;` gives a default, so the caller may leave it off; without one the caller must pass it. A **declaration, not state**: the component reads it and cannot write it. A tag writes a two-word prop kebab or snake alike, so `:id-of` reaches `prop id_of;`. Any attribute on a component tag that is not a declared prop, a listener or a directive is an error." },
     { "name": "effect", "detail": "effect { … }", "doc": "Runs when what it read changes, and once on load. A **block, not a call**: there is no `effect(|| …)`. It subscribes to what it actually read on its last run, and is never woken by its own writes." },
     { "name": "mounted", "detail": "mounted { … }", "doc": "Runs once the document is on screen. Document level today; a component declaring one is warned." },
     { "name": "unmounted", "detail": "unmounted { … }", "doc": "Runs when the document stops being the one on screen." },

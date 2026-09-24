@@ -2,7 +2,7 @@
   <view class="section">
     <text class="head">crew ({{ names.length }})</text>
     <view class="tabs">
-      <text class="tab" r-for="name in names" :key="name" :to="&quot;/crew/&quot; + name">{{ name }}</text>
+      <text class="tab" r-for="name in names" r-key="name" :to="&quot;/crew/&quot; + name">{{ name }}</text>
     </view>
     <text class="hint">this list is the parent view; it keeps its own state while the panel below changes</text>
     <text class="hint">looked at {{ looks }} so far</text>

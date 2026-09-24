@@ -232,7 +232,7 @@ fn every_example_highlights_without_loss() {
 #[test]
 fn a_declaration_is_not_a_call() {
     let mut g = grammar();
-    let src = "<script>\n  let search_item = signal([]);\n  computed name = search_item;\n  effect { print(name); }\n</script>\n";
+    let src = "<script>\n  prop label;\n  let search_item = signal([]);\n  computed name = search_item;\n  effect { print(name); }\n</script>\n";
     let spans = g.spans(src);
     let class_at = |needle: &str| {
         let at = src.find(needle).unwrap();
@@ -241,6 +241,7 @@ fn a_declaration_is_not_a_call() {
 
     assert_eq!(class_at("computed"), Some("hl-keyword"), "`computed` declares, it does not call");
     assert_eq!(class_at("effect"), Some("hl-function"), "the block form of effect");
+    assert_eq!(class_at("prop"), Some("hl-keyword"), "`prop` declares too");
 }
 
 /// A declared name gets a scope of its own, so a variable is identifiable by

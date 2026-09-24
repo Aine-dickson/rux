@@ -50,6 +50,10 @@
 </style>
 
 <script>
+  // What the caller hands in. `step` may be left off.
+  prop label;
+  prop step = 1;
+
   // This is the component's own state. Each <counter> on the page gets its own
   // copy, and nothing declared here is visible to the document. The reverse is
   // not true: a document signal this file does not shadow can be read, and

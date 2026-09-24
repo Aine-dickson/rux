@@ -68,6 +68,19 @@ document signal and re-reads it when that signal moves; an instance's computeds
 and effects are dropped when the instance is, so nothing left behind can be woken
 by a signal later. See [As Built](/reference/) for the detail on both.
 
+**`prop name;`** declares, in a component, something its caller passes on the
+tag. `prop size = 16;` gives it a default, so the caller may leave it off;
+without one the caller must pass it, and `rux check` says so at the tag. A prop
+is read like any name and is not state: a handler in the component cannot write
+it. The tag writes a two-word prop either way round, so `:id-of` reaches
+`prop id_of;`. Any attribute on a component tag that is not a declared prop, a
+listener or a directive is an error.
+
+```rux
+prop label;
+prop done = false;
+```
+
 ## Lifecycle
 
 **`mounted { … }`** runs once, after the first tree exists. **`unmounted { … }`**

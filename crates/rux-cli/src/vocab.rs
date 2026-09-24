@@ -117,6 +117,7 @@ const GLOBAL_ATTRIBUTES: &[Entry] = &[
     Entry { name: "class", detail: "CSS classes", doc: "Space-separated class names, matched by `.name` selectors. `:class` is the bound form." },
     Entry { name: "id", detail: "unique id", doc: "Matched by `#name` selectors, and by `query(\"#name\")` from script." },
     Entry { name: "style", detail: "inline declarations", doc: "Inline CSS for this element. `:style` is the bound form." },
+    Entry { name: "label", detail: "accessible name", doc: "What a screen reader calls this element, in place of the text inside it. On an `<image>` or `<path>`, `alt` says the same." },
     Entry { name: "role", detail: "accessibility role", doc: "Honored for selectors (`[role=\"heading\"]`) and for the accessibility tree. Matches case-insensitively." },
     Entry { name: "to", detail: "make this element a link", doc: "Tapping navigates to this path, the element announces as a link, and it matches `:current` when it names the path you are on. `:to` is the bound form." },
     Entry { name: "@submit", detail: "the form was sent, and every field passed", doc: "On a `role=\"form\"` only. Sent by a `<button type=\"submit\">` inside it or by the action key in its last field. `event.values` maps each field's `name` (or its `r-model`) to its value." },
@@ -193,8 +194,9 @@ const ELEMENT_ATTRIBUTES: &[(&str, &[Entry])] = &[
         &[
             Entry { name: "path", detail: "the path to match", doc: "`/crew/:id` captures `id` and hands it to the view as a prop. A child route's path is relative to its parent, and `path=\"\"` is the index route that fills the parent's outlet at the parent's own path." },
             Entry { name: "view", detail: "the component to render", doc: "Names an imported component. Either spelling: `view=\"crew-detail\"` as the tag is written, or `view=\"crew_detail\"` as the `use` that imports it is written. They are the same component." },
+            Entry { name: "name", detail: "a name to build this route's path from", doc: "`path_for(\"crew-detail\", #{ id: \"ada\" })` builds the path from the name and the parameters, so a link survives the path being changed." },
             Entry { name: "fallback", detail: "match anything unmatched", doc: "Valueless. Renders when no other route matched, wherever it sits among them." },
-            Entry { name: "guard", detail: "decide whether this route may be entered", doc: "`guard=\"expr\"`, run whenever this route is part of the match. `false` cancels the navigation, a string redirects to that path, and anything else allows it, `()` included, so a function that falls off the end has consented. Outer guards run first." },
+            Entry { name: "guard", detail: "decide whether this route may be entered", doc: "`guard=\"expr\"`, run whenever this route is part of the match. `false` cancels the navigation, a string redirects to that path, and anything else allows it, `()` included, so a function that falls off the end has consented. Outer guards run first. In scope: `to`, `from`, the path's parameters, and `linked`, true when a deep link or a browser URL started the navigation rather than the app itself." },
         ],
     ),
     (
@@ -272,6 +274,7 @@ const ATTRIBUTE_VALUES: &[(&str, &[(&str, &[Entry])])] = &[(
 const SCRIPT_GLOBALS: &[Entry] = &[
     Entry { name: "signal", detail: "signal(value)", doc: "Declare a piece of reactive state." },
     Entry { name: "computed", detail: "computed name = expr;", doc: "Derived state, readable anywhere a signal is. A **declaration, not a call**: there is no `computed(|| …)`. Refreshing is one pass in declaration order, so a computed may read one declared above it and not below. Inside a component it runs per instance." },
+    Entry { name: "prop", detail: "prop name;", doc: "In a component: something its caller passes, as `:name=\"expr\"` or `name=\"text\"` on the tag. `prop size = 16;` gives a default, so the caller may leave it off; without one the caller must pass it. A **declaration, not state**: the component reads it and cannot write it. A tag writes a two-word prop kebab or snake alike, so `:id-of` reaches `prop id_of;`. Any attribute on a component tag that is not a declared prop, a listener or a directive is an error." },
     Entry { name: "effect", detail: "effect { … }", doc: "Runs when what it read changes, and once on load. A **block, not a call**: there is no `effect(|| …)`. It subscribes to what it actually read on its last run, and is never woken by its own writes." },
     Entry { name: "mounted", detail: "mounted { … }", doc: "Runs once the document is on screen. Document level today; a component declaring one is warned." },
     Entry { name: "unmounted", detail: "unmounted { … }", doc: "Runs when the document stops being the one on screen." },
@@ -947,6 +950,34 @@ mod tests {
         let missing: Vec<&&str> =
             rux_parser::element_tags().iter().filter(|t| !offered.contains(t)).collect();
         assert_eq!(missing, vec![&"router-view"], "the only element not documented alone");
+    }
+
+    /// The attributes offered per element are the ones the runtime accepts, and
+    /// no others. The runtime refuses any attribute it does not read, so an
+    /// attribute offered here and missing there is a completion that fails
+    /// `rux check`, and one missing here is a working attribute nobody can find.
+    #[test]
+    fn every_attribute_offered_is_one_the_runtime_accepts() {
+        let listener = |n: &str| n.starts_with('@');
+        for tag in rux_parser::element_tags() {
+            let mut offered: Vec<&str> = GLOBAL_ATTRIBUTES
+                .iter()
+                .chain(DIRECTIVES.iter())
+                .map(|e| e.name)
+                .filter(|n| !listener(n))
+                .collect();
+            if let Some((_, own)) = ELEMENT_ATTRIBUTES.iter().find(|(t, _)| t == tag) {
+                offered.extend(own.iter().map(|e| e.name).filter(|n| !listener(n)));
+            }
+            let mut accepted = rux_parser::attributes_of(tag);
+            offered.sort_unstable();
+            accepted.sort_unstable();
+            // `r-model` is a directive offered everywhere and only accepted on an
+            // `<input>`, which is the one element that has a value to bind.
+            offered.retain(|n| *n != "r-model" || *tag == "input");
+            offered.dedup();
+            assert_eq!(offered, accepted, "<{tag}>: the vocabulary and the runtime disagree");
+        }
     }
 
     /// The completion list shows `detail` beside a name, and for a script global

@@ -1152,6 +1152,29 @@ pub fn is_fragment() -> bool {
     IS_FRAGMENT.with(std::cell::Cell::get)
 }
 
+thread_local! {
+    /// The props the file being loaded declares with `prop` and gives no
+    /// default. Read on its own, a component has no caller to pass them, so
+    /// reading one fails, and that failure is the caller's to owe rather than
+    /// this file's mistake. Only consulted in a fragment.
+    static DECLARED_PROPS: std::cell::RefCell<std::collections::HashSet<String>> =
+        std::cell::RefCell::new(std::collections::HashSet::new());
+}
+
+/// Record the props this document declares. See [`DECLARED_PROPS`].
+pub fn set_declared_props(names: impl IntoIterator<Item = String>) {
+    DECLARED_PROPS.with(|p| *p.borrow_mut() = names.into_iter().collect());
+}
+
+/// Whether a failure is only a declared prop that nobody passed, which a
+/// fragment read on its own always has.
+fn is_owed_prop(rhai_message: &str) -> bool {
+    let Some(rest) = rhai_message.strip_prefix("Variable not found:") else { return false };
+    let name: String =
+        rest.trim_start().chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
+    is_fragment() && DECLARED_PROPS.with(|p| p.borrow().contains(&name))
+}
+
 /// Whether a failed expression is definitely wrong or only probably.
 ///
 /// Only the undefined-name case is softened, and only for a fragment. Anything
@@ -1575,6 +1598,13 @@ fn rux_phrasing(message: &str) -> String {
     // create, or a loop variable used outside its `r-for`.
     if let Some(name) = message.strip_prefix("Variable not found: ") {
         let name = name.trim();
+        // In a component the likelier miss is a prop nobody declared.
+        if is_fragment() {
+            return format!(
+                "`{name}` is not defined; if the caller passes it, declare it in <script> \
+                 as `prop {name};`, otherwise as `let {name} = signal(…)`, or check the spelling"
+            );
+        }
         return format!(
             "`{name}` is not defined; declare it in <script> as \
              `let {name} = signal(…)`, or check the spelling"
@@ -1807,6 +1837,9 @@ impl Engine {
             Ok(value) => Some(value),
             Err(e) => {
                 let raw = e.to_string();
+                if is_owed_prop(&raw) {
+                    return None;
+                }
                 raise(
                     format!("expression `{}` failed: {}", trim_expr(src), explain(&raw)),
                     level_for(&raw),
@@ -3105,6 +3138,52 @@ mod tests {
         // And the engine is still usable afterwards.
         e.run_handler("level = 5");
         assert_eq!(e.eval_display("level", &[]), "5");
+    }
+
+    /// Upstream rhai #1126 (fixed in 1.26.0, after this fork's 1.25.1 base):
+    /// the optimizer could delete a block's `let` while its reads kept their
+    /// scope slot, so `b` below answered with `a`'s value, 1, and said nothing.
+    /// Reproduced in the fork on 2026-09-24. Rux is clear of it only because
+    /// it runs with the optimizer off, for its own reason (see `Builder::new`);
+    /// this fails first if that is ever turned back on before the fix is in.
+    #[test]
+    fn a_block_local_read_by_a_switch_keeps_its_own_value() {
+        let mut e = engine();
+        assert!(e.run_handler("let a = 1; level = { let b = 99; switch b { _ => b } };"));
+        assert_eq!(e.eval_display("level", &[]), "99");
+    }
+
+    /// Upstream rhai #1123 and #1117, backported into the fork 2026-09-24: a
+    /// variable an arrow had captured never matched its `switch` case, and an
+    /// exact case whose guard failed skipped the ranges. Both answered with
+    /// the default branch and said nothing, and Rux arrows capture all the time.
+    #[test]
+    fn a_captured_variable_still_matches_its_switch_case() {
+        let mut e = engine();
+        assert!(e.run_handler(
+            "let x = 5; let f = || x; level = switch x { 5 => 1, _ => 0 };"
+        ));
+        assert_eq!(e.eval_display("level", &[]), "1");
+        assert!(e.run_handler(
+            "let x = 5; level = switch x { 5 if false => 1, 0..10 => 2, _ => 0 };"
+        ));
+        assert_eq!(e.eval_display("level", &[]), "2");
+    }
+
+    /// The same loop, inside a closure a native method calls back. Upstream
+    /// rhai found (after 1.26.1, unreleased at the fork's base) that
+    /// operations counted inside such a callback were discarded, so this is
+    /// the shape that could walk past the limit.
+    #[test]
+    fn an_endless_loop_inside_a_callback_is_stopped_too() {
+        let mut e = engine();
+        e.engine.set_max_operations(100_000);
+        let _ = take_warnings();
+        let started = std::time::Instant::now();
+        assert!(!e.run_handler("[1, 2].map(|x| { let n = 0; while true { n += 1; } })"));
+        assert!(started.elapsed().as_secs() < 30, "stopped, not left running");
+        let said: Vec<String> = take_warnings().into_iter().map(|w| w.message).collect();
+        assert!(said.iter().any(|m| m.contains("without finishing")), "{said:?}");
     }
 
     /// The callback methods JavaScript has that rhai lacked or answered

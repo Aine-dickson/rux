@@ -61,6 +61,10 @@
 </style>
 
 <script>
+  // `id` is the segment the path captured, `crew` what the route passes.
+  prop id;
+  prop crew;
+
   // Private to this page, and gone when you leave it: a route's view starts
   // fresh on a second visit. Anything meant to outlive a visit belongs to the
   // document.

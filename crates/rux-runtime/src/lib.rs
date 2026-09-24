@@ -52,6 +52,15 @@ pub use rux_script::warn_script;
 /// script engine, and the current tree.
 pub struct Document {
     sfc: Sfc,
+    /// What the load found that no later build can find again: the import,
+    /// prop and attribute checks, which read the whole template once. A
+    /// rebuild replaces the overlay's list with what it raised, so these are
+    /// put back each time, or a document whose `mounted` or `computed` ran
+    /// dropped every one of them before `rux check` or the overlay saw it.
+    load_checks: Vec<Warning>,
+    /// Whether the navigation now being guarded came from outside the app.
+    /// True only for the length of an [`open_link`](Self::open_link) call.
+    linked: bool,
     /// Every component file this document reached, by the key
     /// [`component_key`] gives it. Flat, because it is a registry and not a
     /// scope.
@@ -202,9 +211,10 @@ fn check_handlers(
     // listener for an event it emits, so the fixed gesture vocabulary does not
     // apply to one and checking against it would flag every custom event in
     // every app that uses them.
-    component_tags: &std::collections::HashSet<String>,
+    component_tags: &TagProps,
 ) {
     check_attribute_shapes(template, component_tags);
+    check_attribute_names(template, component_tags);
     for rux_parser::Attr { name, value, line, .. } in &template.attrs {
         if !name.starts_with('@') || value.trim().is_empty() {
             continue;
@@ -276,11 +286,8 @@ const VALUELESS_ATTRS: &[&str] = &["r-else", "fallback"];
 /// nothing, which is the same silent-failure class the unhonored-CSS message
 /// exists to close, and it is worse here because the gesture vocabulary is
 /// fixed and known: there is no "not yet honored" to hide behind.
-fn check_attribute_shapes(
-    el: &rux_parser::Element,
-    component_tags: &std::collections::HashSet<String>,
-) {
-    let is_component = component_tags.contains(&el.tag);
+fn check_attribute_shapes(el: &rux_parser::Element, component_tags: &TagProps) {
+    let is_component = props_of(component_tags, &el.tag).is_some();
     for attr in &el.attrs {
         if let Some(event) = attr.name.strip_prefix('@') {
             // A component's `@name` is a listener for whatever it emits, so any
@@ -326,6 +333,225 @@ fn check_attribute_shapes(
                     attr.name, attr.name, attr.value, attr.name
                 ));
             });
+        }
+    }
+}
+
+/// The tags one file may write as components, each with the props its file
+/// declares.
+type TagProps = HashMap<String, Vec<rux_parser::PropDecl>>;
+
+/// The declared props of the component `tag` names, written either way round,
+/// as a tag may be: `<crew-detail>` and `<crew_detail>` are one component.
+fn props_of<'a>(tags: &'a TagProps, tag: &str) -> Option<&'a [rux_parser::PropDecl]> {
+    tags.get(tag)
+        .or_else(|| tags.get(&tag.replace('_', "-")))
+        .or_else(|| tags.get(&tag.replace('-', "_")))
+        .map(Vec::as_slice)
+}
+
+/// The directives a component tag takes. It is not an element, so it has no
+/// class, style, id or link of its own: those would land on nothing.
+const COMPONENT_TAG_DIRECTIVES: &[&str] =
+    &["r-for", "r-key", "r-if", "r-elif", "r-else", "r-transition", ":r-transition"];
+
+/// The closest of `candidates` to `written`, if one is close enough to mean.
+fn nearest<'a>(written: &str, candidates: impl IntoIterator<Item = &'a str>) -> Option<&'a str> {
+    let budget = match written.chars().count() {
+        0..=3 => 1,
+        4..=7 => 2,
+        _ => 3,
+    };
+    candidates
+        .into_iter()
+        .map(|c| (rux_style::edit_distance(written, c), c))
+        .filter(|(d, _)| *d <= budget)
+        .min_by_key(|(d, _)| *d)
+        .map(|(_, c)| c)
+}
+
+fn backticked(names: &[String]) -> String {
+    names.iter().map(|n| format!("`{n}`")).collect::<Vec<_>>().join(", ")
+}
+
+/// Refuse an attribute that means nothing where it is written.
+///
+/// An invented attribute used to be accepted in silence, and so did a near
+/// miss: `:clas`, `:frobnicate`, a `:id` that looked like the bound form of
+/// `id`. The rule is short: on one of Rux's elements, an attribute is one Rux
+/// reads there; on a component tag, it is a prop that component declares with
+/// `prop`, a listener, or a directive. Everything else is an error, since
+/// nothing will ever read it.
+///
+/// A component tag also has to be given every prop it declared without a
+/// default, since the component cannot show one it was never handed.
+fn check_attribute_names(el: &rux_parser::Element, component_tags: &TagProps) {
+    let report = |line: usize, message: String| {
+        rux_script::located(Some(line), || rux_script::error_script(message));
+    };
+    if let Some(declared) = props_of(component_tags, &el.tag) {
+        let names: Vec<String> = declared.iter().map(|p| p.name.clone()).collect();
+        let mut passed: Vec<String> = Vec::new();
+        for attr in &el.attrs {
+            if attr.name.starts_with('@') || COMPONENT_TAG_DIRECTIVES.contains(&attr.name.as_str()) {
+                continue;
+            }
+            let bare = attr.name.strip_prefix(':').unwrap_or(&attr.name);
+            let snake = bare.replace('-', "_");
+            if names.contains(&snake) {
+                passed.push(snake);
+                continue;
+            }
+            let declare = format!("Declare it in the component's <script> as `prop {snake};`");
+            let theirs = if names.is_empty() {
+                "it declares no props".to_string()
+            } else {
+                format!("its props are {}", backticked(&names))
+            };
+            let hint = if let Some(near) = nearest(&snake, names.iter().map(String::as_str)) {
+                format!(" Did you mean `{near}`?")
+            } else if ["class", "style", "id", "to", "role", "r-show"].contains(&bare) {
+                format!(
+                    " A component tag is not an element, so `{}` has nothing to land on: put it \
+                     on an element inside the component, or wrap the tag in a `<view>`.",
+                    attr.name
+                )
+            } else {
+                String::new()
+            };
+            report(
+                attr.line,
+                format!(
+                    "`{}` on <{}> is not a prop, so nothing reads it: {theirs}.{hint} {declare} \
+                     if it should be one",
+                    attr.name, el.tag
+                ),
+            );
+        }
+        for prop in declared.iter().filter(|p| p.default.is_none()) {
+            if !passed.contains(&prop.name) {
+                report(
+                    el.line,
+                    format!(
+                        "<{}> needs `{}`: it is declared `prop {};` with no default, so the \
+                         component has nothing to show for it. Pass `:{}=\"\u{2026}\"`, or give \
+                         the declaration a default",
+                        el.tag, prop.name, prop.name, prop.name.replace('_', "-")
+                    ),
+                );
+            }
+        }
+    } else if rux_parser::is_element(&el.tag) {
+        // A `<route>` stands in for its view's tag, so its bound attributes are
+        // the view's props, checked as a tag's would be.
+        let view = (el.tag == "route")
+            .then(|| el.attr("view").and_then(|v| props_of(component_tags, v)))
+            .flatten();
+        for attr in &el.attrs {
+            let name = attr.name.as_str();
+            if name.starts_with('@') || rux_parser::is_known_attribute(&el.tag, name) {
+                continue;
+            }
+            if let (Some(declared), Some(bare)) = (view, name.strip_prefix(':')) {
+                let snake = bare.replace('-', "_");
+                if declared.iter().any(|p| p.name == snake) {
+                    continue;
+                }
+                let names: Vec<String> = declared.iter().map(|p| p.name.clone()).collect();
+                let theirs = if names.is_empty() {
+                    "it declares no props".to_string()
+                } else {
+                    format!("its props are {}", backticked(&names))
+                };
+                report(
+                    attr.line,
+                    format!(
+                        "`{name}` on this <route> is handed to its view `{}` as a prop, and \
+                         the view does not declare one: {theirs}. Declare it in the view's \
+                         <script> as `prop {snake};`",
+                        el.attr("view").unwrap_or_default()
+                    ),
+                );
+                continue;
+            }
+            let known = rux_parser::attributes_of(&el.tag);
+            let message = match name.strip_prefix(':') {
+                Some(bare) if rux_parser::is_known_attribute(&el.tag, bare) => format!(
+                    "`{name}` on <{}> is thrown away: `{bare}` has no bound form and is read \
+                     once, as written. Write `{bare}=\"\u{2026}\"`, or bind something that \
+                     has one, like `:class`",
+                    el.tag
+                ),
+                _ => {
+                    let bare = name.strip_prefix(':').unwrap_or(name);
+                    // Two habits from Vue, worth naming outright: its `key` is
+                    // `r-key` here, and its `v-` directives are `r-`.
+                    let habit = match bare {
+                        "key" => Some("r-key".to_string()),
+                        _ => bare.strip_prefix("v-").map(|d| format!("r-{d}")),
+                    };
+                    let hint = habit
+                        .as_deref()
+                        .filter(|h| known.contains(h))
+                        .or_else(|| nearest(bare, known.iter().copied()))
+                        .map(|n| {
+                            let n = if name.starts_with(':') && rux_parser::has_bound_form(&el.tag, n) {
+                                format!(":{n}")
+                            } else {
+                                n.to_string()
+                            };
+                            format!(" Did you mean `{n}`?")
+                        })
+                        .unwrap_or_default();
+                    format!(
+                        "`{name}` is not an attribute of <{}>, so nothing reads it.{hint} \
+                         <{}> takes {}",
+                        el.tag,
+                        el.tag,
+                        known.iter().map(|k| format!("`{k}`")).collect::<Vec<_>>().join(", ")
+                    )
+                }
+            };
+            report(attr.line, message);
+        }
+    }
+}
+
+/// Check every `<route view>` against what its view declares: a prop it needs
+/// and the path does not capture is one nothing will ever pass. `captured` is
+/// what the enclosing routes' paths captured, which a nested view is handed
+/// too.
+fn check_route_views(el: &rux_parser::Element, component_tags: &TagProps, captured: &[String]) {
+    let mut captured = captured.to_vec();
+    if el.tag == "route" {
+        if let Some(path) = el.attr("path") {
+            captured.extend(
+                path.split('/').filter_map(|seg| seg.strip_prefix(':')).map(str::to_string),
+            );
+        }
+        let view = el.attr("view").and_then(|v| props_of(component_tags, v));
+        let bound: Vec<String> = el
+            .attrs
+            .iter()
+            .filter_map(|a| a.name.strip_prefix(':'))
+            .map(|n| n.replace('-', "_"))
+            .collect();
+        for prop in view.into_iter().flatten().filter(|p| p.default.is_none()) {
+            if !captured.contains(&prop.name) && !bound.contains(&prop.name) {
+                rux_script::located(Some(el.line), || {
+                    rux_script::error_script(format!(
+                        "the view of this <route> needs `{0}`, declared `prop {0};` with no \
+                         default, and neither the path captures `:{0}` nor the route passes \
+                         `:{0}=\"\u{2026}\"`. Pass it, or give the declaration a default",
+                        prop.name
+                    ))
+                });
+            }
+        }
+    }
+    for child in &el.children {
+        if let rux_parser::Node::Element(child) = child {
+            check_route_views(child, component_tags, &captured);
         }
     }
 }
@@ -950,6 +1176,15 @@ fn divergence(a: Option<&[usize]>, b: Option<&[usize]>) -> Vec<usize> {
 /// Drain both warning sinks, the cascade's (unhonored properties, unknown
 /// pseudo-classes, undefined `var()`s, unsupported `@media`) and the script's
 /// (expressions that failed to compile or evaluate).
+impl Document {
+    /// The load's checks, then whatever the build just raised.
+    fn fresh_warnings(&self) -> Vec<Warning> {
+        let mut warnings = self.load_checks.clone();
+        warnings.extend(collect_warnings());
+        warnings
+    }
+}
+
 fn collect_warnings() -> Vec<Warning> {
     let mut warnings = rux_style::take_warnings();
     warnings.extend(rux_script::take_warnings());
@@ -1140,7 +1375,17 @@ fn resolve_images(node: &mut LayoutNode, base: &Path) {
                     .into_dimensions()
                     .ok()
             }) {
-                Some((w, h)) => img.intrinsic = (w as f32, h as f32),
+                Some((w, h)) => {
+                    img.intrinsic = (w as f32, h as f32);
+                    // Said here, where it can be a diagnostic with the image's
+                    // name, rather than only by the painter, which can print.
+                    if let Some(why) = rux_layout::image_too_large(w, h) {
+                        rux_style::warn_stylesheet(format!(
+                            "`<image src=\"{}\">` will not be drawn: {why}",
+                            img.src
+                        ));
+                    }
+                }
                 None => eprintln!("rux: cannot read image {}", path.display()),
             }
             img.src = path.to_string_lossy().into_owned();
@@ -1291,7 +1536,9 @@ impl Document {
         let base = path.parent().unwrap_or_else(|| Path::new("."));
         resolve_style_includes(&mut sfc, base)?;
         let (main_script, imports) = extract_imports(&sfc.script);
+        let main_script = own_props(&mut sfc, &main_script, Some(path));
         let (main_script, computeds, effects, hooks) = extract_reactives(&main_script);
+        let main_script = defer_computeds(&sfc, main_script, &computeds);
 
         let mut components = HashMap::new();
         let mut component_hooks: HashMap<String, Hooks> = HashMap::new();
@@ -1406,6 +1653,11 @@ impl Document {
                     comp_path.parent().unwrap_or_else(|| Path::new(".")).to_path_buf();
                 resolve_style_includes(&mut comp_sfc, &comp_base)?;
                 let (comp_script, nested) = extract_imports(&comp_sfc.script);
+                // Its props are its caller's to pass, so they leave the script:
+                // a `let` would be state any handler in here could write.
+                let (comp_script, comp_props, problems) = extract_props(&comp_script, false);
+                report_prop_problems(&problems, comp_sfc.script_line, Some(comp_path.clone()));
+                comp_sfc.props = comp_props;
                 // A component's own computed/effect declarations are not
                 // supported yet; strip them so the merged script still compiles.
                 let (comp_script, comp_computeds, comp_effects, comp_hooks) =
@@ -1474,7 +1726,7 @@ impl Document {
         // Decided by whoever opened this file, not by its root tag: see
         // `MAY_HAVE_CALLER`. Set before the first build, since that is when
         // expressions are evaluated.
-        rux_script::set_is_fragment(MAY_HAVE_CALLER.with(std::cell::Cell::get));
+        rux_script::set_is_fragment(may_have_caller(&sfc));
         // Before the first build: a `:to` calling `path_for` is evaluated
         // during that build, so the names have to be known by then.
         rux_script::set_routes(rux_style::named_routes(&sfc.template));
@@ -1485,9 +1737,13 @@ impl Document {
             .map_err(|e| LoadError::in_script(e, sfc.script_line, main_script_lines, Some(path)))?;
         let mut instances = Instances::new();
         let mut swaps = Swaps::new();
+        // What was found before the build (imports, props) is load-time, like
+        // the checks after it. See `Document::load_checks`.
+        let early = collect_warnings();
         let (mut root, registry) = rux_style::build_styled_tree_tracked(&sfc, &components, &namespaces, &mut engine, &mut instances, &mut swaps)
             .map_err(LoadError::plain)?;
         resolve_images(&mut root, base);
+        let built = collect_warnings();
         // Before the warnings are drained below, so a handler that cannot
         // compile is reported by `rux check` and by the overlay alike.
         // Which tags are components is a per-file question now, not a
@@ -1495,10 +1751,21 @@ impl Document {
         // event it emits, and a tag that is a component in one file may be
         // nothing at all in the next. Reading it from the whole registry would
         // excuse a typo'd `@handler` on a tag this file cannot even write.
-        let tags_in = |key: &str| -> std::collections::HashSet<String> {
-            namespaces.get(key).map(|ns| ns.keys().cloned().collect()).unwrap_or_default()
+        let tags_in = |key: &str| -> TagProps {
+            namespaces
+                .get(key)
+                .map(|ns| {
+                    ns.iter()
+                        .map(|(tag, comp)| {
+                            let props = components.get(comp).map(|c| c.props.clone());
+                            (tag.clone(), props.unwrap_or_default())
+                        })
+                        .collect()
+                })
+                .unwrap_or_default()
         };
         check_handlers(&sfc.template, &engine, &tags_in(DOCUMENT_NAMESPACE));
+        check_route_views(&sfc.template, &tags_in(DOCUMENT_NAMESPACE), &[]);
         for (key, component) in &components {
             // Its handlers are on its lines, so they are reported against its
             // file. Without this they carried the component's line number and
@@ -1513,6 +1780,11 @@ impl Document {
             callers.extend(names_callers_bring(&component.template, &engine));
         }
         check_script_functions(&engine, &callers, main_script_lines, sfc.script_line);
+        // Everything the load-time checks said, kept: a rebuild re-raises what
+        // the build finds and nothing else, so without this a document whose
+        // `mounted` or `computed` ran lost every check error before anyone saw it.
+        let mut load_checks = early;
+        load_checks.extend(collect_warnings());
         let mut doc = Self {
             sfc,
             components,
@@ -1526,8 +1798,10 @@ impl Document {
             environment: Environment::sane(),
             // Whatever the build just complained about, or printed, ready for the
             // overlay.
+            load_checks: load_checks.clone(),
+            linked: false,
             diagnostics: Diagnostics {
-                warnings: collect_warnings(),
+                warnings: built.into_iter().chain(load_checks.iter().cloned()).collect(),
                 prints: rux_script::take_logs(),
                 ..Diagnostics::default()
             },
@@ -1579,10 +1853,13 @@ impl Document {
             warn_unresolvable_include(path);
         }
         let (main_script, _imports) = extract_imports(&sfc.script);
+        let mut sfc = sfc;
+        let main_script = own_props(&mut sfc, &main_script, None);
         let (main_script, computeds, effects, hooks) = extract_reactives(&main_script);
+        let main_script = defer_computeds(&sfc, main_script, &computeds);
         // Same rule as the file loader above, and the same answer: whoever
         // asked for this source knows whether anything supplies it.
-        rux_script::set_is_fragment(MAY_HAVE_CALLER.with(std::cell::Cell::get));
+        rux_script::set_is_fragment(may_have_caller(&sfc));
         rux_script::set_routes(rux_style::named_routes(&sfc.template));
         // Same mapping as `load_checked`, and the playground is the case that
         // most wants it: this is the only error surface it has. Nothing is
@@ -1592,6 +1869,7 @@ impl Document {
             .map_err(|e| LoadError::in_script(e, sfc.script_line, main_script_lines, None))?;
         let mut instances = Instances::new();
         let mut swaps = Swaps::new();
+        let early = collect_warnings();
         let (mut root, registry) =
             rux_style::build_styled_tree_tracked(
                 &sfc,
@@ -1604,8 +1882,9 @@ impl Document {
                 .map_err(LoadError::plain)?;
         let base = PathBuf::from(".");
         resolve_images(&mut root, &base);
+        let built = collect_warnings();
         // `from_source` has no filesystem, so it has no components either.
-        check_handlers(&sfc.template, &engine, &std::collections::HashSet::new());
+        check_handlers(&sfc.template, &engine, &TagProps::new());
         // No components here either, so the document's own template is the whole
         // of what a caller can bring.
         // Nothing is appended here, so the whole compiled text is this
@@ -1616,6 +1895,11 @@ impl Document {
             usize::MAX,
             sfc.script_line,
         );
+        // Everything the load-time checks said, kept: a rebuild re-raises what
+        // the build finds and nothing else, so without this a document whose
+        // `mounted` or `computed` ran lost every check error before anyone saw it.
+        let mut load_checks = early;
+        load_checks.extend(collect_warnings());
         let mut doc = Self {
             sfc,
             components: HashMap::new(),
@@ -1627,8 +1911,10 @@ impl Document {
             registry,
             state: InteractionState::default(),
             environment: Environment::sane(),
+            load_checks: load_checks.clone(),
+            linked: false,
             diagnostics: Diagnostics {
-                warnings: collect_warnings(),
+                warnings: built.into_iter().chain(load_checks.iter().cloned()).collect(),
                 prints: rux_script::take_logs(),
                 ..Diagnostics::default()
             },
@@ -1883,7 +2169,7 @@ impl Document {
         // A restyle is a whole build, so it raises whatever this document has
         // wrong, and it creates and prunes instances like any other even though
         // only some subtrees are spliced in.
-        self.diagnostics.warnings = collect_warnings();
+        self.diagnostics.warnings = self.fresh_warnings();
         self.settle_lifecycle(0);
     }
 
@@ -1963,7 +2249,7 @@ impl Document {
             // Refresh what the overlay lists: a rebuild re-runs the cascade and
             // every binding, so it re-raises exactly what this document still has
             // wrong.
-            self.diagnostics.warnings = collect_warnings();
+            self.diagnostics.warnings = self.fresh_warnings();
             self.collect_prints();
             // After the tree is in place, never during the build: a hook body is
             // author code, and it must not run while the tree it will look at is
@@ -2177,7 +2463,7 @@ impl Document {
         // usually reconciles instead, so anything a build newly complained about
         // sat in the sink until something else forced a full rebuild. The
         // overlay is supposed to list what the document has wrong *now*.
-        self.diagnostics.warnings = collect_warnings();
+        self.diagnostics.warnings = self.fresh_warnings();
         // The reconcile path is where an `r-if` actually opens and closes, so it
         // is where most mounts and unmounts are found.
         self.settle_lifecycle(0);
@@ -2512,6 +2798,9 @@ impl Document {
             let mut locals: Vec<(String, Value)> = vec![
                 ("to".to_string(), Value::Text(to.to_string())),
                 ("from".to_string(), Value::Text(from.clone())),
+                // Whether something outside the app started this navigation.
+                // See `open_link`.
+                ("linked".to_string(), Value::Bool(self.linked)),
             ];
             locals.extend(params);
             match self.engine.eval_value(&expr, &locals) {
@@ -2661,6 +2950,24 @@ impl Document {
         self.history = History::starting_at(&path);
         self.set_scroll_intent(None);
         self.show_current_route()
+    }
+
+    /// Go to `path` because something **outside the app** asked: a deep link,
+    /// an App Link, a URL typed or followed in a browser. Pushed onto the
+    /// history when `push` is true (the app was already open), started at
+    /// otherwise.
+    ///
+    /// The difference from [`navigate`](Self::navigate) is only what the
+    /// guards are told: `linked` is `true` in their scope. A route is input any
+    /// app on the phone or any web page can send, so `myapp://delete?id=4`
+    /// arrives exactly as an in-app tap on that link would, and a guard is the
+    /// one place that runs before the page does. Without this it had `to` and
+    /// `from` and no way to tell the two apart.
+    pub fn open_link(&mut self, path: &str, push: bool) -> bool {
+        self.linked = true;
+        let moved = if push { self.navigate(path) } else { self.start_at(path) };
+        self.linked = false;
+        moved
     }
 
     /// How far along the history the document is, and how long the history is.
@@ -4049,6 +4356,161 @@ fn extract_reactives(script: &str) -> (String, Vec<Computed>, Vec<Effect>, Hooks
         i += 1;
     }
     (cleaned, computeds, effects, Hooks { mounted, unmounted })
+}
+
+/// Pull the `prop` declarations out of a script.
+///
+/// `prop label;` is a prop the caller must pass, `prop size = 16;` one it may,
+/// and `prop a, b;` declares two at once. The line is blanked so the file's
+/// numbering holds, or, with `defaults_as_let`, replaced by `let name =
+/// default;`: that is how a component read on its own, with no caller, still
+/// has a value to show for a prop that has one.
+///
+/// The third half is what could not be read, as (script line, sentence).
+fn extract_props(
+    script: &str,
+    defaults_as_let: bool,
+) -> (String, Vec<rux_parser::PropDecl>, Vec<(usize, String)>) {
+    let mut cleaned = String::new();
+    let mut props: Vec<rux_parser::PropDecl> = Vec::new();
+    let mut problems = Vec::new();
+    for (i, line) in script.lines().enumerate() {
+        let at = i + 1;
+        let trimmed = line.trim();
+        // `prop = 3;` assigns a variable that happens to be called `prop`.
+        let Some(rest) = trimmed
+            .strip_prefix("prop ")
+            .filter(|r| !r.trim_start().starts_with('=') && !r.trim_start().starts_with('('))
+        else {
+            cleaned.push_str(line);
+            cleaned.push('\n');
+            continue;
+        };
+        let rest = rest.trim().trim_end_matches(';').trim();
+        // The first `=` that is not part of `==`, `!=`, `<=` or `>=`, since a
+        // default is an expression and may compare.
+        let split = rest.char_indices().find(|&(p, c)| {
+            c == '='
+                && !rest[p + 1..].starts_with('=')
+                && !rest[..p].ends_with(['=', '!', '<', '>'])
+        });
+        let (names, default) = match split {
+            Some((p, _)) => (rest[..p].trim(), Some(rest[p + 1..].trim().to_string())),
+            None => (rest, None),
+        };
+        let names: Vec<&str> = names.split(',').map(str::trim).collect();
+        let mut line_out = String::new();
+        if default.as_deref().is_some_and(str::is_empty) {
+            problems.push((at, format!("`prop {}` has an `=` and no default after it", names.join(", "))));
+        } else if default.is_some() && names.len() > 1 {
+            problems.push((
+                at,
+                format!(
+                    "`prop {} = …` gives one default to {} props; declare each on its own line",
+                    names.join(", "),
+                    names.len()
+                ),
+            ));
+        } else {
+            for name in names {
+                if let Some((bare, _)) = name.split_once(':') {
+                    problems.push((
+                        at,
+                        format!(
+                            "`prop {name}`: Rux has no types yet, so a prop is declared by name \
+                             alone. Write `prop {};`",
+                            bare.trim()
+                        ),
+                    ));
+                } else if name.contains('-') && is_identifier(&name.replace('-', "_")) {
+                    problems.push((
+                        at,
+                        format!(
+                            "`prop {name}` cannot be read by script: `-` is minus there. Declare \
+                             `prop {};`, and a caller may still write `:{name}` on the tag",
+                            name.replace('-', "_")
+                        ),
+                    ));
+                } else if !is_identifier(name) {
+                    problems.push((at, format!("`{name}` is not a name a prop can have")));
+                } else if props.iter().any(|p| p.name == name) {
+                    problems.push((at, format!("`prop {name}` is declared twice")));
+                } else {
+                    if defaults_as_let {
+                        if let Some(d) = &default {
+                            line_out = format!("let {name} = {d};");
+                        }
+                    }
+                    props.push(rux_parser::PropDecl {
+                        name: name.to_string(),
+                        default: default.clone(),
+                        line: at,
+                    });
+                }
+            }
+        }
+        cleaned.push_str(&line_out);
+        cleaned.push('\n');
+    }
+    (cleaned, props, problems)
+}
+
+/// Take the `prop` lines out of the script of the file being opened.
+///
+/// Opened on its own, a component has no caller, so its props with a default
+/// become ordinary `let`s holding the default and the rest are recorded as
+/// owed, which keeps reading them from being reported.
+///
+/// A file that declares a prop is a component by its own say-so, whoever
+/// opened it: checked on its own, its undeclared names are then warnings, as
+/// a component's are, rather than a page's errors.
+fn own_props(sfc: &mut rux_parser::Sfc, script: &str, file: Option<&Path>) -> String {
+    let (script, props, problems) = extract_props(script, true);
+    report_prop_problems(&problems, sfc.script_line, file.map(Path::to_path_buf));
+    rux_script::set_declared_props(
+        props.iter().filter(|p| p.default.is_none()).map(|p| p.name.clone()),
+    );
+    sfc.props = props;
+    script
+}
+
+/// In a component opened on its own, start each `computed` as a placeholder.
+///
+/// A computed is a top-level `let` of its expression, run as the script
+/// starts, and a component's computed routinely reads a prop no caller is
+/// there to pass, so the whole script failed and nothing else in the file was
+/// checked. The refresh pass computes the real value a moment later, where an
+/// owed prop is not reported. The same trade an instance's script makes.
+fn defer_computeds(sfc: &rux_parser::Sfc, script: String, computeds: &[Computed]) -> String {
+    if sfc.props.is_empty() {
+        return script;
+    }
+    let mut script = script;
+    for computed in computeds {
+        script = script.replace(
+            &format!("let {} = {};", computed.name, computed.expr),
+            &format!("let {} = ();", computed.name),
+        );
+    }
+    script
+}
+
+/// Whether what the file being opened is missing may come from a caller: its
+/// opener says one might, or it declares props, which only a caller passes.
+fn may_have_caller(sfc: &rux_parser::Sfc) -> bool {
+    MAY_HAVE_CALLER.with(std::cell::Cell::get) || !sfc.props.is_empty()
+}
+
+/// Report what [`extract_props`] could not read, against `file`, whose
+/// `<script>` starts on `script_line`.
+fn report_prop_problems(problems: &[(usize, String)], script_line: usize, file: Option<PathBuf>) {
+    for (at, message) in problems {
+        rux_script::in_file(file.clone(), || {
+            rux_script::located(Some(script_line + at - 1), || {
+                rux_script::error_script(message.clone())
+            })
+        });
+    }
 }
 
 /// The lifecycle bodies a script declared.

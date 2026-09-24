@@ -52,6 +52,9 @@
 </style>
 
 <script>
+  prop label;
+  prop price;
+
   let qty = signal(1);
   let note = signal("");
 

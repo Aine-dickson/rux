@@ -115,7 +115,8 @@ fn components_are_skipped_when_walking_but_not_when_named() {
             ),
             (
                 "components/row.rux",
-                r#"<template><view><text>{{ label }}</text></view></template>"#,
+                "<template><view><text>{{ label }} {{ greeting }}</text></view></template>\n\
+                 <script>\n  prop label;\n</script>",
             ),
         ],
     );
@@ -125,12 +126,13 @@ fn components_are_skipped_when_walking_but_not_when_named() {
     assert!(walked.status.success(), "{}", stdout(&walked));
     assert_eq!(stdout(&walked), "", "walking must not report the component");
 
+    // Named, it is checked: the declared prop is owed by a caller and says
+    // nothing, while the document signal it reads by name cannot be seen from
+    // here and is reported, as a warning.
     let named = check(&[dir.join("components/row.rux").to_str().unwrap()]);
-    assert!(
-        stdout(&named).contains("label"),
-        "naming a component explicitly should still check it: {}",
-        stdout(&named)
-    );
+    let said = stdout(&named);
+    assert!(said.contains("`greeting`"),"naming a component explicitly should still check it: {said}");
+    assert!(!said.contains("`label` is not defined"), "a declared prop is not a finding: {said}");
 }
 
 /// A file nothing uses is a document, and it is checked like one.

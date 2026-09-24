@@ -41,10 +41,19 @@ The row has grown enough markup and CSS to deserve its own file. Put it in a
   .task.done .box   { background: #a6e3a1; border: 2px #a6e3a1 solid; }
   .task.done .label { color: #6c7086; text-decoration: line-through; }
 </style>
+
+<script>
+  prop label;
+  prop done;
+</script>
 ```
 
-Import it and use it as a tag. Props are the `:`-prefixed attributes, evaluated
-in the caller's scope:
+The two `prop` lines are the component's inputs: what its caller has to hand
+it. `prop done = false;` would give one a default, so a caller could leave it
+off.
+
+Import it and use it as a tag. A prop is passed as a `:`-prefixed attribute,
+evaluated in the caller's scope:
 
 ```rux
 <script>
@@ -65,6 +74,10 @@ in the caller's scope:
 `use components::row;` resolves to `components/row.rux`, relative to the file
 doing the importing. It has to be **alone on its own line**: the import is
 picked out of the script by a line scan, not parsed.
+
+The declarations are checked at the tag. Misspell one (`:lable`) or pass
+something `row.rux` never declared, and `rux check` says so, naming the props
+it does have. Leave off `:done` and it says that too.
 
 ## What isolation means
 

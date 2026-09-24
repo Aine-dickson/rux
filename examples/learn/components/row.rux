@@ -33,3 +33,8 @@
   .task.done .box { background: #a6e3a1; border: 2px #a6e3a1 solid; }
   .task.done .label { color: #6c7086; text-decoration: line-through; }
 </style>
+
+<script>
+  prop label;
+  prop done;
+</script>

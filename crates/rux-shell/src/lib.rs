@@ -1924,7 +1924,7 @@ impl App {
         let moved = match index {
             Some(index) => self.document.go_to(index),
             None => match web_route_now() {
-                Some(route) => self.document.start_at(&route),
+                Some(route) => self.document.open_link(&route, false),
                 None => false,
             },
         };
@@ -6561,7 +6561,7 @@ impl ApplicationHandler<RuxEvent> for App {
             #[cfg(target_os = "android")]
             RuxEvent::AndroidLink(route) => {
                 android_log(&format!("link: {route}"));
-                if self.document.navigate(&route) {
+                if self.document.open_link(&route, true) {
                     self.request_redraw();
                 }
             }
@@ -7886,7 +7886,10 @@ thread_local! {
 ///
 /// Only for a page that owns its address, as `start`'s `base` says. The
 /// playground runs whatever is typed into it, and one document's fields
-/// have no business turning up in the next.
+/// have no business turning up in the next. **That gate is also what keeps
+/// the playground safe to share**: it runs other people's documents on the
+/// ruxlang.dev origin, and must not reach that origin's storage. Lifting it
+/// means moving the playground into a sandboxed frame first (watchlist #31).
 #[cfg(target_arch = "wasm32")]
 fn web_save_state(encoded: String) {
     let Some(base) = WEB_BASE.with(|b| b.borrow().clone()) else { return };
@@ -8658,7 +8661,7 @@ pub fn start_web(
     if let Some(base) = base {
         WEB_BASE.with(|b| *b.borrow_mut() = Some(base));
         if let Some(route) = web_route_now() {
-            document.start_at(&route);
+            document.open_link(&route, false);
         }
         web_watch_history();
     }
@@ -8754,7 +8757,7 @@ pub fn start_web_app(
     if let Some(base) = base {
         WEB_BASE.with(|b| *b.borrow_mut() = Some(base));
         if let Some(route) = web_route_now() {
-            document.start_at(&route);
+            document.open_link(&route, false);
         }
         web_watch_history();
     }
@@ -9046,8 +9049,10 @@ pub fn run_previewing(path: PathBuf, route: Option<String>, preview: Option<Devi
     app.preview = preview;
     // Before the first frame, and before the watcher can reload: `start_at`
     // replaces the history, so it has to be the first thing that touches it.
+    // `--route` stands in for a link, so the guards are told it is one: it is
+    // how an author sees what a deep link to that page would do.
     if let Some(route) = route {
-        app.document.start_at(&route);
+        app.document.open_link(&route, false);
     }
     event_loop.run_app(&mut app).expect("run app");
 
@@ -10721,11 +10726,7 @@ fn run_android_with(
     // page, as `--route` makes it on the desktop.
     if let Some(route) = PENDING_LINK.lock().ok().and_then(|mut s| s.take()) {
         android_log(&format!("link: {route}, before the first frame"));
-        if was_restored {
-            app.document.navigate(&route);
-        } else {
-            app.document.start_at(&route);
-        }
+        app.document.open_link(&route, was_restored);
     }
     event_loop.run_app(&mut app).expect("run app");
 

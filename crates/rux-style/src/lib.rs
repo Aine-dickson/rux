@@ -623,6 +623,9 @@ struct Component {
     /// definitions are not here: those are shared, merged into the one engine,
     /// because a function is code and state is not.
     script: String,
+    /// What it declared with `prop`: which attributes on its tag are props, and
+    /// the default for any the caller leaves off.
+    props: Vec<rux_parser::PropDecl>,
 }
 
 /// One component instance's private world: the state its own script declared,
@@ -1943,6 +1946,7 @@ pub fn build_styled_tree_stateful(
                     template: c.template.clone(),
                     rules: merged,
                     script: component_statements(&c.script),
+                    props: c.props.clone(),
                 },
             )
         })
@@ -3487,7 +3491,7 @@ const UNIMPLEMENTED_PROPERTIES: &[&str] = &[
 /// Two rows rather than a full matrix: the operands are property names, so this
 /// runs on a warning path against a couple of hundred candidates and there is no
 /// reason to allocate a grid for it.
-fn edit_distance(a: &str, b: &str) -> usize {
+pub fn edit_distance(a: &str, b: &str) -> usize {
     let b: Vec<char> = b.chars().collect();
     let mut previous: Vec<usize> = (0..=b.len()).collect();
     let mut current = vec![0usize; b.len() + 1];
@@ -5159,10 +5163,44 @@ fn expand_component(
         if let Some(name) = key.strip_prefix(':') {
             // Props are evaluated in the caller's scope and become the component's
             // only locals, a prop change re-expands this subtree (a reconcile).
+            //
+            // Written kebab on a tag, read snake in script, the same mapping
+            // tags have: `:id-of` is `prop id_of`. A hyphenated name was
+            // unreadable by any script, so nothing depended on it staying one.
             let (value, deps) = engine.eval_value_tracked(expr, parent_locals);
             prop_deps.extend(deps);
             if let Some(value) = value {
-                props.push((name.to_string(), value));
+                props.push((name.replace('-', "_"), value));
+            }
+            continue;
+        }
+        // A plain attribute naming a declared prop passes its text, as HTML
+        // would: `<stat label="Battery">`. Anything else on a component tag is
+        // either a directive or an error the checker has already reported.
+        //
+        // Not on a `<route>`, which stands in for the tag of its view: its plain
+        // attributes are its own (`path`, `name`), and a view declaring
+        // `prop name` must not be handed the route's name. It passes props
+        // only in the bound form.
+        let name = key.replace('-', "_");
+        if el.tag != "route" && component.props.iter().any(|p| p.name == name) {
+            props.push((name, Value::Text(expr.clone())));
+        }
+    }
+    // A declared prop the caller left off takes its default. Evaluated with no
+    // caller locals: it was written in the component, where a caller's `r-for`
+    // variable means nothing, so only the document's names reach it. One the
+    // caller owed and did not pass is left out: the checker has said so at
+    // the tag, and reading it fails inside with the prop's name.
+    for decl in &component.props {
+        if props.iter().any(|(n, _)| *n == decl.name) || extra_props.iter().any(|(n, _)| *n == decl.name) {
+            continue;
+        }
+        if let Some(default) = &decl.default {
+            let (value, deps) = engine.eval_value_tracked(default, &Locals::new());
+            prop_deps.extend(deps);
+            if let Some(value) = value {
+                props.push((decl.name.clone(), value));
             }
         }
     }

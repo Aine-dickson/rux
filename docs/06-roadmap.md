@@ -2016,7 +2016,12 @@ not "is it small", it is "did v0.7 say this works".
   re-derived on every build and are **not** writable from inside. A declaration
   form is worth considering, because "used and never declared" is
   indistinguishable from a typo to a reader and to a checker, but it is new
-  surface and not a patch.
+  surface and not a patch. **Built 2026-09-24, in v0.8:** `prop label;` and
+  `prop size = 16;` in the component's `<script>`. A tag may pass only what its
+  component declares, a required prop left off is an error at the tag, and the
+  same pass made every Rux element refuse an attribute it does not read. The
+  type system is still to come; a declaration is the name it will hang a type
+  on, and `prop a: number` is refused for now rather than ignored.
 
 **New surface, so scheduled, not 0.7.x:**
 

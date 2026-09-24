@@ -486,9 +486,9 @@ const MISSING: &str = r#"<!-- The fallback route: shown for any path no other ro
 /// worth meeting early rather than discovering.
 const TASK_ROW: &str = r#"<!-- One row of the list.
 
-     A component reads its props (`label`, `note`, `done`, `id_of`) and nothing
-     else of its caller's, so this file can be dropped into another app as it
-     is. Its CSS styles this subtree only. -->
+     A component declares its props at the bottom (`label`, `note`, `done`,
+     `id_of`) and reads nothing else of its caller's, so this file can be
+     dropped into another app as it is. Its CSS styles this subtree only. -->
 <template>
   <view class="row" :class='#{ done: done }' :to='path_for("task", #{ id: id_of })'>
     <view class="box">
@@ -553,6 +553,15 @@ const TASK_ROW: &str = r#"<!-- One row of the list.
   .row.done .tick { opacity: 1; }
   .row.done .label { color: #6c7086; text-decoration: line-through; }
 </style>
+
+<script>
+  // What the caller hands in, and all this file reads of the caller's. A tag
+  // writes them kebab or snake alike: `:id-of` and `:id_of` both reach `id_of`.
+  prop label;
+  prop note = "";
+  prop done = false;
+  prop id_of;
+</script>
 "#;
 
 const README: &str = r#"# {name}

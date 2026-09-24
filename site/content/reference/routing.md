@@ -262,6 +262,18 @@ fn gate() {
 level captured, so a guard on `/crew/:id` can read `id` and decide about that
 member rather than only about the section.
 
+**`linked` says whether something outside the app started the navigation**: a
+deep link or App Link on Android, a URL opened or typed in a browser, or
+`rux run --route`, which stands in for one. A route is input any app on the
+phone or any web page can send, so `myapp://delete?id=4` arrives exactly as an
+in-app tap on that link would. A page that acts on arrival is the mistake; a
+guard is the place to catch it, and without `linked` it could not tell the two
+apart:
+
+```xml
+<route path="/delete" view="delete-page" guard='if linked { "/confirm" }' />
+```
+
 **A guard runs before the history moves**, which is the whole reason it is here
 rather than in a page: a refused navigation leaves no entry behind and opens no
 route transition, and by the time a page could refuse to render itself both have

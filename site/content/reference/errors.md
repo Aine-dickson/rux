@@ -49,10 +49,17 @@ app is watching.
 
   **Reading an undefined name is an error in a page and a warning in a
   fragment.** A page (`<screen>` root) has no caller, so a name it does not
-  declare can come from nowhere. A fragment is a component, and **props are not
-  declared**, so its `{{ label }}` is indistinguishable from a typo when the
-  file is read on its own. A declaration form would make that answerable instead
-  of inferable; until then the severity follows the root element.
+  declare can come from nowhere. A fragment is a component: a name it declares
+  with `prop` is owed by its caller and is not reported at all, and one it
+  neither declares nor defines may still be a document signal it reads by name,
+  so it stays a warning. Which of the two a file is comes from whoever opened
+  it, or from the file itself: declaring a `prop` makes it a component.
+- **Load-time findings stay listed.** The import, prop and attribute checks read
+  the whole template once, at load, and a rebuild re-raises only what the build
+  finds. Every rebuild used to replace the list, so a document whose `mounted`,
+  `computed` or `effect` ran lost every one of those errors before the overlay
+  or `rux check` saw it: a bogus `@frob` on a page with a `mounted` block checked
+  clean. They are kept on the document and put back after each rebuild.
 - **Tapping the panel dismisses it**, and it says so. The panel covers the app it
   is describing, which was a problem when the thing you needed to look at was
   underneath. The dismissal is remembered against *those* diagnostics, so it

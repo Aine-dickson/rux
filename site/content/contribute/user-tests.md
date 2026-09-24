@@ -2029,6 +2029,32 @@ after a new line flattened the whole text.
 | Safe area | phone with a notch, built page | `env(safe-area-inset-top)` non-zero | not driven: needs a phone |
 | Gboard in Chrome | phone | composition, Backspace, Next/Go labels on the real keyboard | not driven: needs a phone |
 
+## Props, and attributes nothing reads, 2026-09-24
+
+Watchlist #5, #7 and #13. A component declares `prop label;` or
+`prop size = 16;`, a component tag may pass only what it declares, and every
+Rux element refuses an attribute it does not read. Under test in
+`crates/rux-runtime/tests/props.rs`. Driven with `rux check` over the examples
+and in the window: every example shot in the phone preview before and after
+(`rux-harness/shoot-all.ps1`, then a pixel diff of the client area against the
+previous night's shots).
+
+| Case | Where | Expect | Result |
+|---|---|---|---|
+| The examples, once their components declare props | `rux check examples` | clean | desktop: pass, after declaring props in nine components |
+| Every example still draws the same | phone preview, all 67 | no change but timing and hover | window: pass. Diffs only in animated examples and hover; `cart_row.rux` and `panel.rux` opened on their own went from load errors to drawing |
+| A near miss on an element | `:key` on a `<text>` in `crew_section.rux` | an error suggesting `r-key` | desktop: pass. **A real one**, silently doing nothing since it was written |
+| A route passing props | `router.rux`, `:crew` on two `<route>`s | an error until the views declare `prop crew;` | desktop: pass |
+| A component checked on its own | `rux check examples/components/cart_row.rux` | loads; declared props say nothing; a document signal read by name is a warning | desktop: pass (it used to fail to load: its `computed` read a prop at script start) |
+| A load-time error in a page with `mounted` | `@frob` on `lifecycle.rux`'s screen | reported | desktop: pass. It was not, before: see below |
+| The editor, on a component tag | VS Code, typing an undeclared prop | the squiggle names the props it has | not driven: needs the extension rebuilt against this binary |
+
+Found alongside, and fixed the same day: every load-time check (unknown
+`@event`, valueless `r-else=""`, and now the attribute errors) was thrown away
+in any document whose `mounted`, `computed` or `effect` ran, because each
+rebuild replaced the overlay's list. `lifecycle.rux` with a bogus `@frob`
+checked clean.
+
 ## Standing gaps
 
 Cases nothing here can currently exercise. They are the shape of what v0.8 has

@@ -65,6 +65,91 @@ pub fn element_tags() -> &'static [&'static str] {
     ELEMENT_TAGS
 }
 
+/// Attributes every element takes: identity, styling, accessibility, a link,
+/// and the structural directives.
+///
+/// `label` is the accessible name. It was honored all along (the accessibility
+/// tree reads it before an element's own text) and advertised nowhere.
+const GLOBAL_ATTRIBUTES: &[&str] = &[
+    "class", "id", "style", "role", "label", "to", //
+    "r-for", "r-key", "r-if", "r-elif", "r-else", "r-show", "r-transition",
+];
+
+/// Attributes that mean something on one element only. `rux vocab` advertises
+/// the same set to the editor, and `rux-cli` has a test that the two agree.
+const ELEMENT_ATTRIBUTES: &[(&str, &[&str])] = &[
+    ("image", &["src", "alt"]),
+    ("path", &["d", "alt"]),
+    (
+        "input",
+        &[
+            "type", "placeholder", "value", "checked", "name", "required", "minlength",
+            "pattern", "options", "disabled", "readonly", "min", "max", "step", "maxlength",
+            "inputmode", "enterkeyhint", "autocomplete", "autofocus", "r-model",
+        ],
+    ),
+    ("button", &["disabled", "type"]),
+    ("route", &["path", "view", "fallback", "guard", "name"]),
+    ("router", &["restore-scroll", "guard"]),
+    ("text", &["for"]),
+];
+
+/// The attributes with a bound `:name` form, and where. Everything else is read
+/// once, as written, so `:id="row + n"` used to be accepted and thrown away.
+const BOUND_GLOBAL: &[&str] = &["class", "style", "to", "r-transition"];
+const BOUND_ELEMENT: &[(&str, &[&str])] = &[
+    ("image", &["src"]),
+    ("path", &["d"]),
+    ("input", &["options", "disabled", "readonly", "required"]),
+    ("button", &["disabled"]),
+];
+
+/// Whether `<tag name>` means something to Rux, `name` written as it appears
+/// (so `:src` is asked as `:src`). `@` listeners are not answered here: the
+/// runtime checks those against the events it dispatches.
+pub fn is_known_attribute(tag: &str, name: &str) -> bool {
+    let of = |table: &[(&str, &'static [&'static str])], n: &str| {
+        table.iter().any(|(t, names)| *t == tag && names.contains(&n))
+    };
+    match name.strip_prefix(':') {
+        Some(bound) => BOUND_GLOBAL.contains(&bound) || of(BOUND_ELEMENT, bound),
+        None => GLOBAL_ATTRIBUTES.contains(&name) || of(ELEMENT_ATTRIBUTES, name),
+    }
+}
+
+/// Every attribute `<tag>` takes, globals first, for an error to list and for
+/// `rux vocab` to agree with.
+pub fn attributes_of(tag: &str) -> Vec<&'static str> {
+    let mut out: Vec<&'static str> = GLOBAL_ATTRIBUTES.to_vec();
+    if let Some((_, own)) = ELEMENT_ATTRIBUTES.iter().find(|(t, _)| *t == tag) {
+        out.extend_from_slice(own);
+    }
+    out
+}
+
+/// Whether `name` has a bound `:name` form on `<tag>`.
+pub fn has_bound_form(tag: &str, name: &str) -> bool {
+    is_known_attribute(tag, &format!(":{name}"))
+}
+
+/// A `prop name;` or `prop name = default;` line from a component's `<script>`.
+///
+/// Carried on the [`Sfc`] rather than left in the script: a prop is not state
+/// the component owns, it is an input its caller owes, so it cannot be a `let`
+/// that a handler could write. The runtime fills this in when it strips the
+/// lines; the parser leaves it empty, like [`Sfc::file`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct PropDecl {
+    /// As a script reads it, which is snake: `id_of`, written on a tag as
+    /// either `:id-of` or `:id_of`.
+    pub name: String,
+    /// The expression used when the caller passes nothing. `None` means the
+    /// caller must pass it.
+    pub default: Option<String>,
+    /// 1-based line within the `<script>` body.
+    pub line: usize,
+}
+
 /// Whether `tag` is one that never takes children or a closing tag.
 pub fn is_void(tag: &str) -> bool {
     VOID_TAGS.contains(&tag)
@@ -181,6 +266,9 @@ pub struct Sfc {
     /// override the palette it included without reaching for `!important`, the
     /// same way source order works in CSS.
     pub style_includes: Vec<StyleInclude>,
+    /// The props this file declares with `prop`, when it is a component. See
+    /// [`PropDecl`].
+    pub props: Vec<PropDecl>,
 }
 
 /// One resolved external stylesheet: where it came from, and what it said.
@@ -401,6 +489,7 @@ pub fn parse_sfc(src: &str) -> Result<Sfc, ParseError> {
         style_src,
         style_scoped,
         style_includes: Vec::new(),
+        props: Vec::new(),
     })
 }
 

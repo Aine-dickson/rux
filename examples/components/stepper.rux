@@ -68,5 +68,7 @@
 </style>
 
 <script>
+  prop label;
+
   let count = signal(0);
 </script>

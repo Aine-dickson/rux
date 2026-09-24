@@ -36,6 +36,8 @@
 </style>
 
 <script>
+  prop label;
+
   // This instance's own state. Nothing here survives the instance.
   let draft = signal("");
   let opened = signal(0);

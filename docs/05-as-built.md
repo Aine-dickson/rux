@@ -201,10 +201,11 @@ Two kinds are still unplaced, deliberately rather than by omission:
 
 Walking a directory **skips components**, and a component is a file that
 something else in the project writes as a tag. A component's `{{ prop }}`
-values come from whoever uses it, so loading one on its own reports every prop
-as undefined. Naming one explicitly checks it anyway, since that was asked for
-on purpose, and its undeclared names are warnings rather than errors there:
-without a way to declare a prop, a typo and a prop look the same.
+values come from whoever uses it, so loading one on its own has nothing to
+show for them. Naming one explicitly checks it anyway, since that was asked for
+on purpose. Its declared props say nothing there, being owed by a caller, and
+a name it reads without declaring is a warning rather than an error, because a
+component may read a document signal by name and the document is not loaded.
 
 It used to skip the files whose template root was not `<screen>`, which let a
 layout choice decide whether a file was opened at all. A page under a router
@@ -1834,8 +1835,60 @@ above.
 ```xml
 <stat :label="title" :value="level" />         // props evaluated in caller scope
 ```
+```rust
+<script>                                        // in components/stat.rux
+  prop label;                                   // the caller must pass it
+  prop value = 0;                               // the caller may leave it off
+</script>
+```
 Component instances are isolated (only props are visible inside). Their CSS styles
 their own subtree. Editing a component hot-reloads.
+
+**A component declares its props with `prop`.** `prop label;` is one the caller
+must pass, `prop value = 0;` one it may leave off, and `prop a, b;` declares two.
+A prop is an input, not state: it is not a `let`, and a handler inside the
+component cannot write it. A default is an expression, evaluated where the
+document's names are visible and the caller's `r-for` variables are not, since
+it was written in the component.
+
+A prop is passed as `:name="expr"`, evaluated in the caller's scope, or as a
+plain `name="text"`, which passes the text as HTML would. A two-word prop is
+written the tag's way or the script's, so `:id-of` and `:id_of` both reach
+`prop id_of;`: tags are kebab and scripts are snake, and the attribute follows
+the tag.
+
+**What a component tag takes, and nothing else:** its declared props, `@event`
+listeners, and the directives `r-if`, `r-elif`, `r-else`, `r-for`, `r-key` and
+`r-transition`. Any other attribute is an error at the tag, with the props the
+component does declare and the nearest one if it looks like a misspelling. That
+includes `class`, `style`, `id`, `to` and `r-show`: a component tag is not an
+element, so there is nothing for them to land on, and until props were declared
+all five were dropped without a word. Put them on an element inside the
+component, wrap the tag in a `<view>`, or declare a prop of that name, in which
+case it is simply a prop. A declared prop without a default that the tag does
+not pass is an error at the tag too.
+
+A `<route>` stands in for its view's tag. Its bound attributes are the view's
+props (`<route path="/crew" view="crew-list" :crew="crew" />`), checked the same
+way, and a path segment `:id` passes `id`, so a view needing a prop that neither
+the path captures nor the route passes is an error on the `<route>`. A route's
+plain attributes (`path`, `name`, `guard`) are its own and never reach the view.
+
+A file that declares a prop is a component whoever opens it. Checked on its own,
+its declared props are owed by a caller and say nothing, and a name it reads
+without declaring is a warning rather than an error, since a component may still
+read a document signal by name.
+
+**Rux's own elements take a fixed set of attributes too.** Each element accepts
+the attributes Rux reads on it (the globals `class`, `id`, `style`, `role`,
+`label`, `to` and the `r-` directives, plus its own, such as `src` on `<image>`),
+and a bound `:name` form only where one is honored: `:class`, `:style`, `:to`
+and `:r-transition` everywhere, `:src` on `<image>`, `:d` on `<path>`, and
+`:options`, `:disabled`, `:readonly`, `:required` on `<input>`, `:disabled` on
+`<button>`. Anything else is an error: an invented attribute, a near miss like
+`:clas`, and a bound form that does not exist, like `:id` or `:placeholder`,
+which used to be evaluated and thrown away. `key` and `v-if` are named as the
+Vue habits they are, with `r-key` and `r-if` offered in their place.
 
 **One component, two spellings, and the template takes either.**
 `use components::crew_detail;` names the file `components/crew_detail.rux` and
@@ -2317,6 +2370,18 @@ fn gate() {
 level captured, so a guard on `/crew/:id` can read `id` and decide about that
 member rather than only about the section.
 
+**`linked` says whether something outside the app started the navigation**: a
+deep link or App Link on Android, a URL opened or typed in a browser, or
+`rux run --route`, which stands in for one. A route is input any app on the
+phone or any web page can send, so `myapp://delete?id=4` arrives exactly as an
+in-app tap on that link would. A page that acts on arrival is the mistake; a
+guard is the place to catch it, and without `linked` it could not tell the two
+apart:
+
+```xml
+<route path="/delete" view="delete-page" guard='if linked { "/confirm" }' />
+```
+
 **A guard runs before the history moves**, which is the whole reason it is here
 rather than in a page: a refused navigation leaves no entry behind and opens no
 route transition, and by the time a page could refuse to render itself both have
@@ -2433,10 +2498,17 @@ app is watching.
 
   **Reading an undefined name is an error in a page and a warning in a
   fragment.** A page (`<screen>` root) has no caller, so a name it does not
-  declare can come from nowhere. A fragment is a component, and **props are not
-  declared**, so its `{{ label }}` is indistinguishable from a typo when the
-  file is read on its own. A declaration form would make that answerable instead
-  of inferable; until then the severity follows the root element.
+  declare can come from nowhere. A fragment is a component: a name it declares
+  with `prop` is owed by its caller and is not reported at all, and one it
+  neither declares nor defines may still be a document signal it reads by name,
+  so it stays a warning. Which of the two a file is comes from whoever opened
+  it, or from the file itself: declaring a `prop` makes it a component.
+- **Load-time findings stay listed.** The import, prop and attribute checks read
+  the whole template once, at load, and a rebuild re-raises only what the build
+  finds. Every rebuild used to replace the list, so a document whose `mounted`,
+  `computed` or `effect` ran lost every one of those errors before the overlay
+  or `rux check` saw it: a bogus `@frob` on a page with a `mounted` block checked
+  clean. They are kept on the document and put back after each rebuild.
 - **Tapping the panel dismisses it**, and it says so. The panel covers the app it
   is describing, which was a problem when the thing you needed to look at was
   underneath. The dismissal is remembered against *those* diagnostics, so it

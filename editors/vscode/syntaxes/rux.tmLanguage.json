@@ -682,8 +682,8 @@
       "comment": "The declared name gets a scope of its own so a variable is identifiable by sight. `computed` is a keyword here rather than a function, which is the whole difference between what the language has and what it looked like it had.",
       "patterns": [
         {
-          "comment": "`computed name = expr;` — a declaration, not a call.",
-          "match": "\\b(computed)\\s+([A-Za-z_]\\w*)",
+          "comment": "`computed name = expr;` and `prop name;` — declarations, not calls.",
+          "match": "\\b(computed|prop)\\s+([A-Za-z_]\\w*)",
           "captures": {
             "1": {
               "name": "storage.type.rux"

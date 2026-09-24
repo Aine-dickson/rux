@@ -48,3 +48,8 @@
 
   .empty { color: #6c7086; font-size: 13px; font-style: italic; }
 </style>
+
+<script>
+  prop title;
+  prop badge;
+</script>
