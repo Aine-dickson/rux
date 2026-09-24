@@ -374,6 +374,10 @@ pub use func::{locked_read, locked_write, NativeCallContextStore, RhaiFunc};
 #[cfg(feature = "internals")]
 pub use func::get_hasher;
 
+// RUX DIVERGENCE: what `x is T` parses to, a call to this name with the type's
+// text, for the host to register. See DIVERGENCE.md, item 10.
+pub use parser::IS_FUNCTION;
+
 #[cfg(feature = "internals")]
 #[cfg(feature = "metadata")]
 pub use api::definitions::Definitions;

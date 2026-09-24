@@ -700,6 +700,30 @@ impl<'a> Checker<'a> {
                     None => self.facts_of_equality(b, a, equal).unwrap_or_default(),
                 }
             }
+            // `x is T`: a `T` where it held; where it did not, a union loses
+            // the members that are all `T`.
+            Expr::FnCall(call, _) if call.name == rhai::IS_FUNCTION && call.args.len() == 2 => {
+                let (Some(path), Expr::StringConstant(text, _)) = (path_of(&call.args[0]), &call.args[1]) else {
+                    return Vec::new();
+                };
+                let Ok(ty) = parse_type(text) else { return Vec::new() };
+                if truth {
+                    return vec![(path, ty)];
+                }
+                let t = self.infer_quietly(&call.args[0]);
+                match self.resolve(&t) {
+                    Type::Union(members) => {
+                        let kept: Vec<Type> =
+                            members.iter().filter(|m| !self.assignable(m, &ty)).cloned().collect();
+                        if kept.is_empty() || kept.len() == members.len() {
+                            Vec::new()
+                        } else {
+                            vec![(path, Type::union(kept))]
+                        }
+                    }
+                    _ => Vec::new(),
+                }
+            }
             // `"note" in t` and `k in m`, which rhai writes `t.contains("note")`.
             Expr::FnCall(call, _) if call.name == "contains" && call.args.len() == 2 && truth => {
                 self.facts_of_in(&call.args[0], &call.args[1])
@@ -1903,6 +1927,18 @@ impl<'a> Checker<'a> {
             return Type::Any;
         }
 
+        // `x is T`, which the fork writes as `$is(x, "T")`.
+        if name == rhai::IS_FUNCTION && args.len() == 2 {
+            self.infer(&args[0]);
+            if let Expr::StringConstant(text, at) = &args[1] {
+                match parse_type(text) {
+                    Ok(ty) => self.check_names_exist(&ty, *at),
+                    Err(e) => self.error(*at, format!("`{text}` is not a type: {}", e.message)),
+                }
+            }
+            return Type::Bool;
+        }
+
         // Operators come through here too, with a name like `+`.
         if call.op_token.is_some() || is_operator(name) {
             return match args.len() {
@@ -2954,6 +2990,26 @@ mod tests {
         let v = "let v: string | { n: int } = \"x\";\n";
         clean(&format!("{v}fn f(): int {{ if type_of(v) == \"map\" {{ v.n }} else {{ 0 }} }}"));
         one_error(&format!("{v}fn f() {{ v.n }}"), "no property `n`");
+    }
+
+    #[test]
+    fn is_narrows_both_ways() {
+        let raw = format!("{TASK}let raw: any = 1;\nlet held: Task[] = [];\n");
+        // Where it held, `raw` is a Task; `.titel` is then a finding.
+        clean(&format!("{raw}fn f() {{ if raw is Task {{ held.push(raw); raw.title }} }}"));
+        one_error(&format!("{raw}fn f() {{ if raw is Task {{ raw.titel }} }}"), "did you mean `title`?");
+        let v = "let v: string | { n: int } = \"x\";\n";
+        clean(&format!("{v}fn f(): int {{ if v is string {{ 0 }} else {{ v.n }} }}"));
+        clean(&format!("{v}fn f(): int {{ if !(v is {{ n: int }}) {{ v.len() }} else {{ v.n }} }}"));
+        let b: bool = errors(&format!("{v}let b: bool = v is string;")).is_empty();
+        assert!(b, "`is` answers a bool");
+    }
+
+    #[test]
+    fn is_names_a_type_that_exists() {
+        one_error("let x = 1; let b = x is Tsak;", "there is no type `Tsak`");
+        one_error(&format!("{TASK}let x = 1; let b = x is Tsak;"), "did you mean `Task`?");
+        one_error("let x = 1; let b = x is boolean;", "is not a type");
     }
 
     #[test]

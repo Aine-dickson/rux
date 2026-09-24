@@ -16,7 +16,7 @@ the row below says so.
 | Unions, narrowing, `switch` exhaustiveness, forced `?.` | **Built** 2026-09-24 in a file's `<script>`, with `?[` for a dictionary. `r-if` narrowing came with templates; `await` waits for async |
 | Functions: typed and untyped, the caller-local rule | **Built** 2026-09-24. Parameters, results and calls came with the checker; the caller-local rule is on, and the sweep before it found no existing function it breaks |
 | Templates: `r-for`, `r-if`, bindings, `r-model`, events, props at the tag | **Built** 2026-09-24 for the file being checked: a document's own template, or a component's when it is the file. A form's `event.values` is a record of its fields, not a dictionary; see below |
-| Boundaries: prop checks at run time, `x is T` | Pending |
+| Boundaries: prop checks at run time, `x is T` | **Built** 2026-09-24. A prop that does not fit is left out and reported; a route parameter becomes the type its prop takes. See [Script](./07-script.md#is-and-props-at-run-time) |
 | Editor: hover, completion, the parameter quick-fix | Pending |
 
 ## The shape of it
@@ -416,9 +416,25 @@ bound: `:price="3"`. Passing text to it is an error at the tag.
 in development.** A prop is a boundary: its value can come from a route
 parameter, from another file checked separately, or from a value the checker
 saw as `any`. A prop whose value does not fit its declared type is reported
-with the tag and the prop named, and the component is not built with it. The
-check is a comparison against the declared type, generated once per component
-and run when a tag's props change, not on every read.
+with the tag and the prop named, and the component is built without it: the
+prop takes its default if it has one, and is otherwise left out, as a
+required prop the tag forgot is. The check is a comparison against the
+declared type, parsed once per component and run when the tag is built, not on
+every read:
+
+```text
+app.rux:12: error: `<stat>` was given the text "lots" for `:value`, which is not the `number` `prop value` takes, so it is built without it, and it takes its default
+```
+
+**A route parameter is text, and becomes what its prop takes.** For
+`<route path="/task/:id" view="detail" />` and `prop id: int;`, the path
+`/task/42` passes the number `42`. The same holds for `number`, `bool` and a
+literal union; a segment that cannot be one (`/task/abc` for an `int`) is a
+prop that does not fit, left out and reported.
+
+A prop's value has no `null` of its own: a `null` passed to a prop arrives as
+the empty text. So the check lets the empty text through wherever `null` fits,
+which means a `""` passed to a `Task?` is not caught.
 
 ## Boundaries
 
@@ -438,8 +454,16 @@ if raw is Settings {
 ```
 
 `is` walks the value against the type: every required field present and of the
-right type, every array element, every union member tried in turn. It answers
-`true` or `false` and never raises. The compiler generates a validator only
+right type, every array element, every union member tried in turn. A field the
+type does not mention is allowed, and an optional field may be `null`. A
+number is an `int` when it is whole. It answers `true` or `false` and never
+raises. A name that is no type is an error from the checker, and at run time
+fits nothing.
+
+`is` binds as `<` does, so `a + b is int` tests the sum and `x is T && y` is
+`(x is T) && y`. Where it held, `x` is a `T`; in the `else`, a union loses the
+members that are all `T`, so `if v is string { … } else { v.n }` reads the
+record's field. The compiler generates a validator only
 for types that appear on the right of an `is` and for props, so a program pays
 for exactly the checks it asks for.
 

@@ -606,6 +606,31 @@ fn bind_locals(src: &str, locals: &[(String, Value)]) -> String {
     out
 }
 
+/// A value as an error about a prop shows it: short, and saying what kind of
+/// value it is, since `3` and `"3"` look alike otherwise.
+fn describe_value(value: &Value) -> String {
+    match value {
+        Value::Text(t) if t.is_empty() => "empty text".to_string(),
+        Value::Text(t) if t.chars().count() > 30 => {
+            format!("the text \"{}\u{2026}\"", t.chars().take(30).collect::<String>())
+        }
+        Value::Text(t) => format!("the text {t:?}"),
+        Value::Number(_) => format!("the number {}", value.to_display()),
+        Value::Bool(b) => format!("`{b}`"),
+        Value::List(items) => format!("a list of {}", items.len()),
+        Value::Map(_) => "a map".to_string(),
+    }
+}
+
+/// What a component built without `prop name` has in its place, to finish the
+/// sentence that says it was left out.
+fn instead(component: &Component, name: &str) -> &'static str {
+    match component.props.iter().find(|p| p.name == name) {
+        Some(p) if p.default.is_some() => ", and it takes its default",
+        _ => "; reading it inside fails",
+    }
+}
+
 /// A compiled component: its template root, its own CSS rules, and the
 /// top-level script that gives each instance its private state.
 struct Component {
@@ -626,6 +651,20 @@ struct Component {
     /// What it declared with `prop`: which attributes on its tag are props, and
     /// the default for any the caller leaves off.
     props: Vec<rux_parser::PropDecl>,
+    /// What each of `props` takes, parsed once here rather than per tag.
+    /// `None` for a prop declared without a type, or with one that does not
+    /// parse, which the checker has already reported.
+    prop_types: Vec<Option<rux_script::types::Type>>,
+    /// What a declared name in one of those stands for.
+    types: HashMap<String, rux_script::types::Type>,
+}
+
+impl Component {
+    /// What `prop name` takes, when it says.
+    fn prop_type(&self, name: &str) -> Option<&rux_script::types::Type> {
+        let at = self.props.iter().position(|p| p.name == name)?;
+        self.prop_types[at].as_ref()
+    }
 }
 
 /// One component instance's private world: the state its own script declared,
@@ -1947,6 +1986,16 @@ pub fn build_styled_tree_stateful(
                     rules: merged,
                     script: component_statements(&c.script),
                     props: c.props.clone(),
+                    prop_types: c
+                        .props
+                        .iter()
+                        .map(|p| p.ty.as_deref().and_then(|t| rux_script::types::parse_type(t).ok()))
+                        .collect(),
+                    types: c
+                        .types
+                        .iter()
+                        .filter_map(|(n, t)| Some((n.clone(), rux_script::types::parse_type(t).ok()?)))
+                        .collect(),
                 },
             )
         })
@@ -5230,13 +5279,66 @@ fn expand_component(
             props.push((name, Value::Text(expr.clone())));
         }
     }
+    // A prop is a boundary, so what it was given is held to what it declared,
+    // in release builds too: a value from a route, from a file checked on its
+    // own, or from an `any` never met the checker. One that does not fit is
+    // reported and left out, so the default below takes its place. See
+    // `docs/10-types.md`, "Props".
+    let named = |n: &str| component.types.get(n).cloned();
+    // The tag as the caller wrote it: `comp_tag` is the component's key, which
+    // is a path, and a route stands in for the view it names.
+    let written_tag = if el.tag == "route" { el.attr("view").unwrap_or("route") } else { el.tag.as_str() };
+    props.retain(|(name, value)| {
+        let Some(ty) = component.prop_type(name) else { return true };
+        if rux_script::validate::fits(value, ty, &named) {
+            return true;
+        }
+        let written = el.attrs.iter().find(|a| a.name.trim_start_matches(':').replace('-', "_") == *name);
+        let shown = written.map(|a| a.name.clone()).unwrap_or_else(|| name.clone());
+        located(Some(written.map_or(el.line, |a| a.line)), || {
+            error(format!(
+                "`<{written_tag}>` was given {} for `{shown}`, which is not the `{ty}` `prop {name}` \
+                 takes, so it is built without it{}",
+                describe_value(value),
+                instead(component, name),
+            ))
+        });
+        false
+    });
+    // A route parameter is always text, so it becomes what its prop takes:
+    // `"42"` is `42` for a `prop id: int`. One that cannot be is left out, as
+    // a prop that does not fit is.
+    let mut from_route: Locals = Vec::new();
+    for (name, value) in extra_props {
+        let (Some(ty), Value::Text(text)) = (component.prop_type(name), value) else {
+            from_route.push((name.clone(), value.clone()));
+            continue;
+        };
+        let converted = rux_script::validate::from_text(text, ty, &named).or_else(|| {
+            (text == ROUTE_CHECK_PARAM).then(|| rux_script::validate::sample(ty, &named)).flatten()
+        });
+        match converted {
+            Some(v) => from_route.push((name.clone(), v)),
+            // `rux check` visiting a pattern, with a type nothing stands in for:
+            // left out, and nothing said about a segment nobody wrote.
+            None if text == ROUTE_CHECK_PARAM => {}
+            None => located(Some(el.line), || {
+                error(format!(
+                    "the route gave `<{written_tag}>` {} for `{name}`, which cannot be the `{ty}` \
+                     `prop {name}` takes, so it is built without it{}",
+                    describe_value(value),
+                    instead(component, name),
+                ))
+            }),
+        }
+    }
     // A declared prop the caller left off takes its default. Evaluated with no
     // caller locals: it was written in the component, where a caller's `r-for`
     // variable means nothing, so only the document's names reach it. One the
     // caller owed and did not pass is left out: the checker has said so at
     // the tag, and reading it fails inside with the prop's name.
     for decl in &component.props {
-        if props.iter().any(|(n, _)| *n == decl.name) || extra_props.iter().any(|(n, _)| *n == decl.name) {
+        if props.iter().any(|(n, _)| *n == decl.name) || from_route.iter().any(|(n, _)| *n == decl.name) {
             continue;
         }
         if let Some(default) = &decl.default {
@@ -5251,7 +5353,7 @@ fn expand_component(
     // evaluated. Last, so on a name collision the captured segment wins: it is
     // what the path actually says, and a `:prop` of the same name is more likely
     // a leftover than an override.
-    props.extend(extra_props.iter().cloned());
+    props.extend(from_route);
     // Reconcile this component instance in place when a prop's signals change.
     if !prop_deps.is_empty() {
         reg.components.push(ComponentBinding {
@@ -5773,6 +5875,12 @@ fn collect_named(routes: &[&Element], prefix: &str, out: &mut Vec<(String, Strin
         collect_named(&child_routes(route), &full, out);
     }
 }
+
+/// What a route parameter is filled with when `rux check` visits a pattern.
+/// Here rather than beside the visit, because building has to recognise it:
+/// a `prop id: int` given it is the checker's stand-in, not a bad segment, and
+/// gets a stand-in number instead of an error.
+pub const ROUTE_CHECK_PARAM: &str = "rux-check";
 
 /// Every route the document declares, as the full path a navigation uses.
 ///

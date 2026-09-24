@@ -11,6 +11,7 @@
 
 pub mod check;
 pub mod types;
+pub mod validate;
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -410,6 +411,10 @@ impl Builder {
             NAVIGATIONS.with(|n| n.borrow_mut().push(Nav::Forward));
         });
         register_js_names(&mut engine);
+        // `x is T`, which the fork parses into this call. See `validate`.
+        engine.register_fn(rhai::IS_FUNCTION, |value: Dynamic, written: ImmutableString| {
+            validate::is(&value, &written)
+        });
         register_elements(&mut engine);
 
         // Record every variable read while dependency-tracking is active, then
@@ -483,6 +488,14 @@ impl Builder {
             .engine
             .compile(rewrite_intervals(script))
             .map_err(|e| ScriptError::at(explain(&e.to_string()), e.1))?;
+        // What `x is T` resolves a declared name against: this script's own
+        // `type`s, before the script's first statement can ask. The runtime adds what it imports (`validate::know_types`).
+        validate::reset_types(
+            ast.annotations()
+                .iter()
+                .filter(|a| a.kind == rhai::AnnotationKind::Type)
+                .map(|a| (a.name.to_string(), a.ty.clone())),
+        );
         let mut scope = Scope::new();
         self.engine
             .run_ast_with_scope(&mut scope, &ast)

@@ -599,6 +599,13 @@ fn take_type(input: &mut TokenStream, after: &str) -> ParseResult<(String, Posit
     Ok((text, pos))
 }
 
+/// RUX DIVERGENCE: the word that makes `x is T` a type test.
+const IS_OPERATOR: &str = "is";
+
+/// RUX DIVERGENCE: what `x is T` calls: `$is(x, "T")`. Not an identifier, so
+/// no script function can take the name; the host registers it.
+pub const IS_FUNCTION: &str = "$is";
+
 /// RUX DIVERGENCE: record an annotation on the list the finished `AST` gets.
 fn note_annotation(state: &ParseState, annotation: crate::ast::Annotation) {
     state.tokenizer_control.borrow_mut().annotations.push(annotation);
@@ -2571,6 +2578,10 @@ impl Engine {
                 Token::Reserved(c) if !is_valid_identifier(c) => {
                     return Err(PERR::UnknownOperator(c.to_string()).into_err(*current_pos))
                 }
+                // RUX DIVERGENCE: `x is T`, binding as `<` does, so
+                // `x is T && y` is `(x is T) && y`. `is` is reserved upstream,
+                // so no script had it as a name.
+                Token::Reserved(s) if s.as_str() == IS_OPERATOR => Token::LessThan.precedence(),
                 _ => current_op.precedence(),
             };
             let bind_right = current_op.is_bind_right();
@@ -2582,6 +2593,28 @@ impl Engine {
             }
 
             let (op_token, pos) = state.input.next().unwrap();
+
+            // RUX DIVERGENCE: the right of `is` is a type, not an expression.
+            // It becomes a call to the host's `$is` with the type's text, so the
+            // AST keeps upstream's shape; see item 10 in DIVERGENCE.md.
+            if matches!(&op_token, Token::Reserved(s) if s.as_str() == IS_OPERATOR) {
+                let (ty, ty_pos) = take_type(state.input, "`is`")?;
+                settings = settings.level_up()?;
+                root = Expr::FnCall(
+                    FnCallExpr {
+                        #[cfg(not(feature = "no_module"))]
+                        namespace: crate::ast::Namespace::NONE,
+                        name: self.get_interned_string(IS_FUNCTION),
+                        hashes: FnCallHashes::from_native_only(calc_fn_hash(None, IS_FUNCTION, 2)),
+                        args: IntoIterator::into_iter([root, Expr::StringConstant(ty.into(), ty_pos)]).collect(),
+                        op_token: None,
+                        capture_parent_scope: false,
+                    }
+                    .into(),
+                    pos,
+                );
+                continue;
+            }
 
             // Parse the RHS
             let rhs = match op_token {

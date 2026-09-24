@@ -286,6 +286,26 @@ now keeps its `NEGATED` flag. Worth reporting upstream.
 
 Test: `question_bracket_guards_a_missing_key` in `rux-script`.
 
+### 10. `x is T` tests a value against a type
+
+**Files:** `src/parser.rs` (`parse_binary_op`, `IS_OPERATOR`, `IS_FUNCTION`),
+`src/lib.rs` (re-exports `IS_FUNCTION`)
+
+The one place a type reaches a running program (`docs/10-types.md`,
+"Boundaries"). `is` is already a reserved word upstream, so no script had it
+as a name and no program changes meaning. It binds as `<` does: arithmetic is
+one operand (`a + b is int`), and `x is T && y` is `(x is T) && y`.
+
+The right-hand side is a type, not an expression, so it is read with the same
+recogniser item 8 uses (`take_type`) and becomes the call `$is(x, "T")`, with
+the type's text as a string. The AST keeps upstream's shape: the evaluator
+sees an ordinary call, and the host registers `$is`, a name no script
+function can take. `rux-script` does the walk (`validate.rs`) and the checker
+reads the same call to narrow `x`.
+
+Tests: `validate::tests` in `rux-script`, and `is_narrows_both_ways` in its
+checker.
+
 ## Keeping up with upstream
 
 A fork does not receive upstream's fixes, and RustSec files any advisory under

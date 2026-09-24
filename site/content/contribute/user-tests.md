@@ -2097,6 +2097,28 @@ and in the apps built so far.
 | A form's `event.errors.email` | `tests/forms.rs`'s signup form | an error: only failed fields are there | desktop: pass. **A real one**: that handler raised whenever `code` failed and `email` did not |
 | The overlay and the editor showing a template error | `rux run`, VS Code | the error, on its line | not driven |
 
+## Props at run time, and `is`, 2026-09-24
+
+Step 6 of `docs/10-types.md`. Under test in `rux-script` (`validate.rs`, the
+walk; `check.rs`, `is` narrowing) and `rux-runtime` (`tests/boundaries.rs`).
+Driven with `rux run --route` from the debug binary on a probe project: a
+`<stat>` given an `any` holding text for `prop value: number = 0`, a `<card>`
+given a map with a bad `tag` for `prop task: Task? = null` (`Task` from a
+types file), and `<route path="/task/:id">` into `prop id: int = 0`, shown as
+`{{ id + 1 }}`.
+
+| Case | Where | Expect | Result |
+|---|---|---|---|
+| A prop that does not fit | `:value` holding `"lots"` | overlay names `<stat>`, `:value`, the text, `number`; the default shows | desktop: pass, "does not fit = 0" |
+| A prop that fits, beside it | `:value` holding `5` | nothing said, `5` shown | desktop: pass |
+| A named type walked | `tag: "play"` against `"home" \| "work"` | an error naming `Task?` | desktop: pass |
+| A route segment converted | `/task/41` | `42`, not `411` | desktop: pass |
+| A route segment that cannot convert | `/task/abc` | overlay names the route and `int`; the default shows | desktop: pass, `1` |
+| `rux check` on a routed page | the same project | nothing about the placeholder segment | desktop: pass, **after a fix**: the first run reported `"rux-check"` as a bad `int`, so every typed route parameter failed the check |
+| `x is T` in a `mounted` body | an `any` against an imported `Task` | `true` | desktop: pass, under test |
+| A `null` prop | `prop task: Task? = null`, read `task?.title` | the fallback text | **fail, found here**: a prop's value has no null, `null` arrives as `""`, and `?.` on text raises. Older than this step; watchlist |
+| Release build | the same probe from `cargo build --release` | the same errors | not driven |
+
 ## Standing gaps
 
 Cases nothing here can currently exercise. They are the shape of what v0.8 has

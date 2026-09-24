@@ -362,6 +362,30 @@ type, and a prop against its declaration, at the tag:
 app.rux:21: error: `kind` on <btn>: "big" is not `"primary" | "quiet"`, which is one of "primary", "quiet"
 ```
 
+### `is`, and props at run time
+
+Annotations are erased, so a value from outside (an `any`, a `host::` call
+with no signature) is whatever it turns out to be. **`x is T`** asks, and
+answers `true` or `false` without raising. Inside the check `x` is a `T`:
+
+```rux
+let raw = host::read_settings();
+if raw is Settings {
+  settings = raw;
+}
+```
+
+Every required field must be there with its type, every element and every
+union member is tried, an extra field is allowed, and a whole number is an
+`int`. `is` binds as `<` does: `a + b is int`, `(x is T) && y`.
+
+**Props are checked as the component is built**, in release builds too,
+since a value from a route or an `any` never met the checker. One that does
+not fit is reported with the tag and prop named, and the component is built
+without it: the prop's default stands in, or it is left out. A route
+parameter is text and becomes what its prop takes, so `prop id: int` on
+`/task/:id` gets the number `42` from `/task/42`, and `/task/abc` is reported.
+
 [Types](./10-types.md) is the whole design, with a table saying which parts
 run.
 

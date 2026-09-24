@@ -1922,6 +1922,10 @@ impl Document {
         // types beside them that those may be built from.
         let mut imported_types: Vec<(String, String)> = Vec::new();
         let mut support_types: Vec<(String, String, String)> = Vec::new();
+        // What each component brings in with `use types::X`, for its props to
+        // be checked against when the program runs. Kept by the component's
+        // key, since its imports are walked after it has been stored.
+        let mut component_types: HashMap<String, Vec<(String, String)>> = HashMap::new();
         let mut queue: Vec<ImportJob> = vec![ImportJob {
             owner: DOCUMENT_NAMESPACE.to_string(),
             owner_path: path.to_path_buf(),
@@ -1994,6 +1998,9 @@ impl Document {
                     }
                     // The document's own imports are what its checker sees.
                     // A component's are for when that component is checked.
+                    if job.owner != DOCUMENT_NAMESPACE {
+                        component_types.entry(job.owner.clone()).or_default().extend(declared.iter().cloned());
+                    }
                     if job.owner == DOCUMENT_NAMESPACE {
                         for (name, text) in declared {
                             if name == *type_name {
@@ -2114,6 +2121,11 @@ impl Document {
                     component_hooks.insert(key.clone(), comp_hooks);
                 }
                 comp_sfc.script = comp_script.clone();
+                // Its own `type`s, which a prop may name and an `is` in its
+                // functions may test for. Compiled only when there can be one.
+                if comp_script.contains("type") {
+                    comp_sfc.types = rux_script::Engine::declared_types(&comp_script);
+                }
                 // Only its *functions* join the shared engine. Its `let`s do not:
                 // they are the state each instance gets a private copy of, so
                 // merging them here would put one shared variable behind every
@@ -2137,6 +2149,11 @@ impl Document {
             }
             namespaces.insert(job.owner, namespace);
         }
+        for (key, types) in component_types {
+            if let Some(component) = components.get_mut(&key) {
+                component.types.extend(types);
+            }
+        }
 
         // Whether an undeclared name here could have come from a caller.
         // Decided by whoever opened this file, not by its root tag: see
@@ -2151,6 +2168,14 @@ impl Document {
         // add, because it is the only place that knows both numbers.
         let mut engine = build_engine(&combined_script)
             .map_err(|e| LoadError::in_script(e, sfc.script_line, main_script_lines, Some(path)))?;
+        // What `x is T` resolves a name against, beyond the script's own
+        // `type`s: what the document imports, and what its components declare
+        // and import, since their functions run in this engine too.
+        rux_script::validate::know_types(imported_types.iter().cloned());
+        rux_script::validate::know_types(support_types.iter().map(|(n, t, _)| (n.clone(), t.clone())));
+        for component in components.values() {
+            rux_script::validate::know_types(component.types.iter().cloned());
+        }
         let mut instances = Instances::new();
         let mut swaps = Swaps::new();
         // What was found before the build (imports, props) is load-time, like
@@ -3335,7 +3360,7 @@ impl Document {
 
     /// What a route parameter is filled with while checking. Spelled so that a
     /// path in a message says where it came from.
-    pub const CHECK_PARAM: &'static str = "rux-check";
+    pub const CHECK_PARAM: &'static str = rux_style::ROUTE_CHECK_PARAM;
 
     /// Every route this document declares, views included.
     pub fn route_patterns(&self) -> Vec<RoutePattern> {

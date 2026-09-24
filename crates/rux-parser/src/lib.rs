@@ -276,6 +276,13 @@ pub struct Sfc {
     /// other files to `use`, and its template is an empty `<view>` standing in
     /// for the one it does not have.
     pub types_only: bool,
+    /// Every declared type a prop of this file may name, as name and text:
+    /// its own `type`s and what it brings in with `use types::X`, the types
+    /// beside those included. Parsing does no IO and cannot follow a `use`,
+    /// so this is empty until `rux-runtime` fills it in, the arrangement
+    /// [`Sfc::style_includes`] uses. A prop's type is checked when the
+    /// program runs, and a name in it needs these to mean anything.
+    pub types: Vec<(String, String)>,
 }
 
 /// One resolved external stylesheet: where it came from, and what it said.
@@ -426,6 +433,7 @@ pub fn parse_sfc(src: &str) -> Result<Sfc, ParseError> {
             style_includes: Vec::new(),
             props: Vec::new(),
             types_only: true,
+            types: Vec::new(),
         });
     }
     let (template_src, template_start, _) =
@@ -517,6 +525,7 @@ pub fn parse_sfc(src: &str) -> Result<Sfc, ParseError> {
         style_includes: Vec::new(),
         props: Vec::new(),
         types_only: false,
+        types: Vec::new(),
     })
 }
 
