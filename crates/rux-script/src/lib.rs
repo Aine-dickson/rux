@@ -243,6 +243,10 @@ impl From<ScriptError> for String {
     }
 }
 
+/// The most steps one evaluation may take before it is stopped. See the
+/// limits in [`Builder::new`].
+pub const MAX_OPERATIONS: u64 = 5_000_000;
+
 impl Builder {
     pub fn new() -> Self {
         let mut engine = RhaiEngine::new();
@@ -260,6 +264,21 @@ impl Builder {
         // that is legitimately absent, so nothing was reported and the author
         // went looking at their data instead of their spelling.
         engine.set_fail_on_invalid_map_property(true);
+
+        // Limits, so a script that never stops is stopped. Without them a
+        // `while true {}` in a handler held the UI thread for good, which on
+        // Android is an "app not responding" and on the web a frozen tab, and
+        // nothing was ever reported. Harmless while every document is its
+        // author's own; a denial of service once one is fetched or shared.
+        //
+        // Each evaluation counts separately (a binding, a handler, a body), so
+        // the ceilings are per piece of work and generous: far past anything
+        // an app does in one go, and still a fraction of a second in a release
+        // build before a runaway loop is ended.
+        engine.set_max_operations(MAX_OPERATIONS);
+        engine.set_max_string_size(64 * 1024 * 1024);
+        engine.set_max_array_size(10_000_000);
+        engine.set_max_map_size(10_000_000);
 
         // Do not let the optimizer delete calls made for their side effects.
         //
@@ -1535,6 +1554,12 @@ fn explain(message: &str) -> String {
 /// The advice matters as much as the wording. Each rewrite says what to do next,
 /// since these are all failures with exactly one sensible fix.
 fn rux_phrasing(message: &str) -> String {
+    if message.starts_with("Too many operations") {
+        return format!(
+            "stopped after {MAX_OPERATIONS} steps without finishing; a loop that \
+             never ends, or work too big for one handler"
+        );
+    }
     // `user.nmae` where the map has no `nmae`. The most common failure in the
     // language now that strict bindings raise instead of yielding `()`, so it
     // gets the fullest advice, including the escape hatch, which is not
@@ -3063,6 +3088,23 @@ mod tests {
             "a closure capturing a local compiles to `curry`, which is rhai's own"
         );
         assert_eq!(e.unknown_calls("out = nothing_here(1)").len(), 1, "a typo is still a typo");
+    }
+
+    /// A handler that never finishes is stopped and says so, instead of
+    /// holding the UI thread for good (watchlist #31).
+    #[test]
+    fn an_endless_loop_is_stopped_and_reported() {
+        let mut e = engine();
+        // A small ceiling, so the test is quick in a debug build; the real one
+        // is [`MAX_OPERATIONS`].
+        e.engine.set_max_operations(100_000);
+        let _ = take_warnings();
+        assert!(!e.run_handler("let n = 0; while true { n += 1; }"));
+        let said: Vec<String> = take_warnings().into_iter().map(|w| w.message).collect();
+        assert!(said.iter().any(|m| m.contains("without finishing")), "{said:?}");
+        // And the engine is still usable afterwards.
+        e.run_handler("level = 5");
+        assert_eq!(e.eval_display("level", &[]), "5");
     }
 
     /// The callback methods JavaScript has that rhai lacked or answered
