@@ -143,6 +143,9 @@ pub struct PropDecl {
     /// As a script reads it, which is snake: `id_of`, written on a tag as
     /// either `:id-of` or `:id_of`.
     pub name: String,
+    /// The type it was declared with, `prop label: string;`, as text. `None`
+    /// when it was declared by name alone.
+    pub ty: Option<String>,
     /// The expression used when the caller passes nothing. `None` means the
     /// caller must pass it.
     pub default: Option<String>,
@@ -269,6 +272,10 @@ pub struct Sfc {
     /// The props this file declares with `prop`, when it is a component. See
     /// [`PropDecl`].
     pub props: Vec<PropDecl>,
+    /// The file has a `<script>` and nothing else: it declares types for
+    /// other files to `use`, and its template is an empty `<view>` standing in
+    /// for the one it does not have.
+    pub types_only: bool,
 }
 
 /// One resolved external stylesheet: where it came from, and what it said.
@@ -402,6 +409,25 @@ impl std::error::Error for ParseError {}
 
 /// Parse a full `.rux` source into an [`Sfc`].
 pub fn parse_sfc(src: &str) -> Result<Sfc, ParseError> {
+    // A file holding only a `<script>` declares types for other files to
+    // `use`, and has nothing to show. The runtime holds its script to that.
+    let absent = |name| matches!(find_section(src, name), Err(SectionProblem::Absent));
+    if absent("template") && absent("style") && find_section(src, "script").is_ok() {
+        let (script, script_line) = trimmed_section(src, "script");
+        return Ok(Sfc {
+            file: None,
+            template: Element { tag: "view".to_string(), attrs: Vec::new(), children: Vec::new(), line: 1 },
+            style: String::new(),
+            style_line: 1,
+            script,
+            script_line,
+            style_src: Vec::new(),
+            style_scoped: false,
+            style_includes: Vec::new(),
+            props: Vec::new(),
+            types_only: true,
+        });
+    }
     let (template_src, template_start, _) =
         find_section(src, "template").map_err(|why| section_error(src, "template", why))?;
     // A `<style>` or `<script>` that is absent is fine and common. One that is
@@ -490,6 +516,7 @@ pub fn parse_sfc(src: &str) -> Result<Sfc, ParseError> {
         style_scoped,
         style_includes: Vec::new(),
         props: Vec::new(),
+        types_only: false,
     })
 }
 

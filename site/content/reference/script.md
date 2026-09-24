@@ -79,7 +79,11 @@ listener or a directive is an error.
 ```rux
 prop label;
 prop done = false;
+prop price: number = 1;
 ```
+
+A prop may carry a type, as any declaration may: see
+[Type annotations](#type-annotations).
 
 ## Lifecycle
 
@@ -294,6 +298,38 @@ limitation and it stands.
 
 **Anything heavy belongs behind `host::`.** Script describes what the UI does; it
 is not where work gets done.
+
+## Type annotations
+
+**Written, and not yet checked.** Rux script takes TypeScript's annotations,
+and a program with them runs exactly as it would with them deleted:
+
+```rux
+type Filter = "all" | "open" | "done";
+type Task = { id: int, title: string, done: bool, note?: string };
+
+let tasks: Task[] = signal([]);
+let filter: Filter = signal("all");
+computed left: int = tasks.filter(t => !t.done).length;
+
+fn label(t: Task, n: int): string { `${n}. ${t.title}` }
+let add = (a: number, b: number) => a + b;
+```
+
+In a component, `prop label: string;` and `prop price: number = 1;`. A type
+declared in one file is used in another with `use types::Task;`, which names
+the `type Task` in `types.rux`; a type's name starts with a capital letter,
+and that is how `use` tells it from a component. A file holding only a
+`<script>` of `type` declarations is a types file, and `rux` will not run it.
+
+`type` is a keyword only at the start of a statement followed by a name and
+`=`, so `let type = 1;` still works. An annotation that is not a type is a
+syntax error at the place it goes wrong.
+
+The checker that reads these is being built. Until it lands nothing compares a
+value with its annotation, so an annotation is documentation the parser
+insists is well formed. [Types](https://github.com/Aine-dickson/rux/blob/main/docs/10-types.md) is the whole design, with a
+table saying which parts run.
 
 ## Values
 
@@ -530,7 +566,7 @@ wrong with the document and must not fail a build.
 
 ## If you know rhai
 
-Six things behave differently under the fork. All six are in
+Eight things behave differently under the fork. All eight are in
 `crates/rux-rhai/DIVERGENCE.md` with the files they touch.
 
 1. `?.` guards a missing **property**, not only an absent base.
@@ -541,6 +577,9 @@ Six things behave differently under the fork. All six are in
    than raising.
 5. **JavaScript truthiness**, including empty array and empty map being truthy.
 6. A whole `f64` can index an array.
+7. `{ a: 1 }` is a map, as `#{ a: 1 }` is.
+8. **Type annotations**: `let n: int`, `fn f(x: T): R`, `(a: T) => …` and
+   `type Name = …;` parse, and are erased before anything runs.
 
 Outside the engine, and so not divergences: strict map properties, JS method
 names, `.length`, `null`, `print`/`debug`, `===`/`!==`, and float division for

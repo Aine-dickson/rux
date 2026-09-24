@@ -32,6 +32,9 @@ pub struct AST {
     /// [`AST`] documentation.
     #[cfg(feature = "metadata")]
     pub(crate) doc: crate::SmartString,
+    /// RUX DIVERGENCE: the type annotations the script was written with, which
+    /// evaluation never reads. See `annotation.rs`.
+    pub(crate) annotations: Vec<super::Annotation>,
 }
 
 impl Default for AST {
@@ -84,6 +87,7 @@ impl AST {
             lib: functions.into(),
             #[cfg(not(feature = "no_module"))]
             resolver: None,
+            annotations: Vec::new(),
         }
     }
     /// _(internals)_ Create a new [`AST`] with a source name.
@@ -131,7 +135,21 @@ impl AST {
             lib: crate::Module::new().into(),
             #[cfg(not(feature = "no_module"))]
             resolver: None,
+            annotations: Vec::new(),
         }
+    }
+    /// RUX DIVERGENCE: the type annotations the script was written with, in the
+    /// order they appear. Evaluation never reads them.
+    #[inline(always)]
+    #[must_use]
+    pub fn annotations(&self) -> &[super::Annotation] {
+        &self.annotations
+    }
+    /// RUX DIVERGENCE: replace the type annotations. The parser sets them once
+    /// the script is read.
+    #[inline(always)]
+    pub(crate) fn set_annotations(&mut self, annotations: Vec<super::Annotation>) {
+        self.annotations = annotations;
     }
     /// Get the source, if any.
     #[inline(always)]
@@ -260,6 +278,7 @@ impl AST {
             lib: lib.into(),
             #[cfg(not(feature = "no_module"))]
             resolver: self.resolver.clone(),
+            annotations: self.annotations.clone(),
         }
     }
     /// Clone the [`AST`]'s script statements into a new [`AST`].
@@ -276,6 +295,7 @@ impl AST {
             lib: crate::Module::new().into(),
             #[cfg(not(feature = "no_module"))]
             resolver: self.resolver.clone(),
+            annotations: self.annotations.clone(),
         }
     }
     /// Merge two [`AST`] into one.  Both [`AST`]'s are untouched and a new, merged,
@@ -486,6 +506,9 @@ impl AST {
             ),
         };
 
+        // RUX DIVERGENCE: annotations travel with the statements they belong to.
+        _ast.annotations = self.annotations.iter().chain(&other.annotations).cloned().collect();
+
         #[cfg(not(feature = "no_module"))]
         match (
             self.resolver.as_deref().map_or(true, |r| r.is_empty()),
@@ -601,6 +624,9 @@ impl AST {
             ([], _) => self.body = other.body,
             (_, _) => self.body.extend(other.body),
         }
+
+        // RUX DIVERGENCE: annotations travel with the statements they belong to.
+        self.annotations.extend(other.annotations);
 
         #[cfg(not(feature = "no_function"))]
         if !other.lib.is_empty() {

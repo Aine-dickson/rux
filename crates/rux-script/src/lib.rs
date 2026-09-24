@@ -9,6 +9,8 @@
 //! with a real scripting language: named `fn` handlers, full expressions, and
 //! the compiled-Rust boundary (`docs/04-architecture.md`, script/host tiers).
 
+pub mod types;
+
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -1159,6 +1161,24 @@ thread_local! {
     /// this file's mistake. Only consulted in a fragment.
     static DECLARED_PROPS: std::cell::RefCell<std::collections::HashSet<String>> =
         std::cell::RefCell::new(std::collections::HashSet::new());
+}
+
+/// What a file with no `<template>` declares besides types: the first thing in
+/// its script that is not a `type`, as a short description, or `None` when
+/// there is nothing else. Such a file exists for other files to `use` its
+/// types, so a function or a statement in it would never run.
+///
+/// A script that does not compile answers `None`: the load reports that error
+/// in its own words, and a second one here would only repeat it.
+pub fn declares_besides_types(script: &str) -> Option<&'static str> {
+    let ast = RhaiEngine::new().compile(script).ok()?;
+    if ast.iter_functions().next().is_some() {
+        Some("a function")
+    } else if !ast.statements().is_empty() {
+        Some("a statement")
+    } else {
+        None
+    }
 }
 
 /// Record the props this document declares. See [`DECLARED_PROPS`].
@@ -2859,6 +2879,123 @@ mod tests {
         assert_eq!(e.eval_display("let f = n => { let d = n * 2; d }; f.call(4)", &[]), "8");
         assert_eq!(e.eval_display("if true { 1 } else { 2 }", &[]), "1");
         assert!(take_warnings().is_empty(), "{:?}", take_warnings());
+    }
+
+    /// **Annotations are erased.** Every form the type system adds parses and
+    /// runs exactly as the same script would with its annotations deleted.
+    #[test]
+    fn annotations_are_erased() {
+        let mut e = engine();
+        let _ = take_warnings();
+        let nums = Value::List(vec![Value::Number(1.0), Value::Number(2.0)]);
+        let locals = [("nums".to_string(), nums)];
+
+        assert_eq!(e.eval_display("let n: int = 2; n + 1", &[]), "3");
+        assert_eq!(e.eval_display("const LIMIT: number = 4; LIMIT", &[]), "4");
+        assert_eq!(e.eval_display("let s: string? = null; s ?? \"none\"", &[]), "none");
+        assert_eq!(
+            e.eval_display("let t: { id: int, note?: string } = { id: 7 }; t.id", &[]),
+            "7"
+        );
+        assert_eq!(
+            e.eval_display("type Filter = \"all\" | \"open\"; let f: Filter = \"all\"; f", &[]),
+            "all"
+        );
+        assert_eq!(e.eval_display("nums.map((n: number) => n * 10)[1]", &locals), "20");
+        assert_eq!(e.eval_display("let add = (a: number, b: number) => a + b; add(2, 3)", &[]), "5");
+        assert_eq!(e.eval_display("nums.map(n => { id: n })[0].id", &locals), "1");
+        // `type` is a word only where a declaration can start.
+        assert_eq!(e.eval_display("let type = 1; type + 1", &[]), "2");
+        assert_eq!(e.eval_display("type_of(\"x\")", &[]), "string");
+        assert!(take_warnings().is_empty(), "{:?}", take_warnings());
+    }
+
+    /// Functions with annotated parameters and results, called both ways.
+    #[test]
+    fn annotated_functions_run() {
+        let mut e = Builder::new()
+            .build(
+                "fn dbl(x: number): number { x * 2 }\n\
+                 fn label(t: { title: string }, i: int): string { `${i}. ${t.title}` }\n\
+                 fn shape(): { a: number } { { a: 1 } }\n\
+                 fn none() { 5 }",
+            )
+            .expect("compiles");
+        assert_eq!(e.eval_display("dbl(4)", &[]), "8");
+        assert_eq!(e.eval_display("label({ title: \"x\" }, 2)", &[]), "2. x");
+        assert_eq!(e.eval_display("shape().a", &[]), "1");
+        assert_eq!(e.eval_display("none()", &[]), "5");
+    }
+
+    /// The side table: every annotation, with what it annotates and the text
+    /// of its type, and nothing in the AST itself.
+    #[test]
+    fn annotations_are_kept_beside_the_ast() {
+        use rhai::AnnotationKind as K;
+        let src = "type Task = { id: int, title: string, note?: string };\n\
+                   type Load =\n  | { state: \"idle\" }\n  | { state: \"done\", rows: Task[] };\n\
+                   type Flags = { [string]: bool };\n\
+                   type Pick = (Task, int) => bool;\n\
+                   type Later = () => null;\n\
+                   type Maybe = (Task | string)[];\n\
+                   type Holes = string?[];\n\
+                   let tasks: Task[] = [];\n\
+                   const LIMIT: int = 3;\n\
+                   fn label(t: Task, i: int): string { t.title }\n\
+                   fn shape(): { a: number } { { a: 1 } }\n\
+                   let f = (a: number, b) => a + b;";
+        let ast = rhai::Engine::new().compile(src).expect("compiles");
+        let got: Vec<(K, String, String)> = ast
+            .annotations()
+            .iter()
+            .map(|a| (a.kind.clone(), a.name.to_string(), a.ty.clone()))
+            .collect();
+        let find = |name: &str| {
+            got.iter()
+                .find(|(_, n, _)| n == name)
+                .unwrap_or_else(|| panic!("no annotation for {name}: {got:?}"))
+                .clone()
+        };
+
+        assert_eq!(find("Task").0, K::Type);
+        assert_eq!(find("Task").2, "{ id: int, title: string, note?: string }");
+        assert_eq!(find("Load").2, "| { state: \"idle\" } | { state: \"done\", rows: Task[] }");
+        assert_eq!(find("Flags").2, "{[string]: bool }");
+        assert_eq!(find("Pick").2, "( Task, int ) => bool");
+        assert_eq!(find("Later").2, "() => null");
+        assert_eq!(find("Maybe").2, "( Task | string )[]");
+        assert_eq!(find("Holes").2, "string?[]");
+        assert_eq!((find("tasks").0, find("tasks").2), (K::Var, "Task[]".to_string()));
+        assert_eq!((find("LIMIT").0, find("LIMIT").2), (K::Var, "int".to_string()));
+
+        let label = K::Param { function: "label".into(), arity: 2 };
+        assert!(got.contains(&(label.clone(), "t".into(), "Task".into())), "{got:?}");
+        assert!(got.contains(&(label, "i".into(), "int".into())), "{got:?}");
+        assert!(got.contains(&(K::Result { arity: 2 }, "label".into(), "string".into())), "{got:?}");
+        assert!(got.contains(&(K::Result { arity: 0 }, "shape".into(), "{ a: number }".into())));
+
+        // An arrow's parameter belongs to the generated function; `b` has no
+        // annotation, so only `a` is recorded.
+        let arrow: Vec<_> = got.iter().filter(|(k, ..)| matches!(k, K::Param { function, .. } if function.starts_with("anon$"))).collect();
+        assert_eq!(arrow.len(), 1, "{got:?}");
+        assert_eq!((arrow[0].1.as_str(), arrow[0].2.as_str()), ("a", "number"));
+
+        // The positions point at the names, which is what the checker keys on.
+        let tasks = ast.annotations().iter().find(|a| a.name == "tasks").unwrap();
+        assert_eq!((tasks.pos.line(), tasks.pos.position()), (Some(10), Some(5)));
+    }
+
+    /// A malformed annotation is a syntax error at the place it goes wrong,
+    /// not a silently different program.
+    #[test]
+    fn a_malformed_annotation_is_a_syntax_error() {
+        let fails = |src: &str| rhai::Engine::new().compile(src).err().map(|e| e.to_string());
+        assert!(fails("let x: = 1;").unwrap().contains("Expecting a type after ':'"));
+        assert!(fails("fn f(x: ) { x }").unwrap().contains("Expecting a type"));
+        assert!(fails("type T = ;").unwrap().contains("Expecting a type after '='"));
+        assert!(fails("let x: { a int } = 1;").is_some());
+        assert!(fails("fn f() { type T = int; 1 }").unwrap().contains("top level"));
+        assert_eq!(fails("let x: { a: int, } = 1;"), None, "a trailing comma is allowed");
     }
 
     /// `forEach` with the JS-shaped callback, which is the case that motivated

@@ -1278,6 +1278,8 @@ pub fn imports_of(path: impl AsRef<Path>) -> Option<Vec<(String, PathBuf)>> {
     Some(
         imports
             .iter()
+            // A type import names a file too, but not one used as a component.
+            .filter(|i| i.type_name.is_none())
             // An import that resolves to nothing is a load error, reported when
             // the file is actually checked. Here it simply names no file.
             .filter_map(|i| {
@@ -1536,6 +1538,20 @@ impl Document {
         let base = path.parent().unwrap_or_else(|| Path::new("."));
         resolve_style_includes(&mut sfc, base)?;
         let (main_script, imports) = extract_imports(&sfc.script);
+        // A file with only a `<script>` is there for its types. Anything else
+        // in it would never run, since nothing shows it.
+        if sfc.types_only {
+            if let Some(what) = rux_script::declares_besides_types(&main_script) {
+                return Err(LoadError::at_line(
+                    format!(
+                        "this file has no <template>, so it may only declare types for other \
+                         files to `use`, and its <script> has {what} in it"
+                    ),
+                    sfc.script_line,
+                    path,
+                ));
+            }
+        }
         let main_script = own_props(&mut sfc, &main_script, Some(path));
         let (main_script, computeds, effects, hooks) = extract_reactives(&main_script);
         let main_script = defer_computeds(&sfc, main_script, &computeds);
@@ -1588,6 +1604,36 @@ impl Document {
                         at,
                         &job.owner_path,
                     ));
+                }
+                // `use types::Task;` imports a type, not a component. The file has
+                // to exist; what it declares is checked with the rest of the
+                // types, and nothing about it is loaded here.
+                if let Some(type_name) = &import.type_name {
+                    if import.file == ".rux" {
+                        return Err(LoadError::at_line(
+                            format!(
+                                "`use {type_name};` names no file: a type is imported from the \
+                                 file that declares it, as `use types::{type_name};`"
+                            ),
+                            at,
+                            &job.owner_path,
+                        ));
+                    }
+                    if let Err((beside, from_root)) = resolve_import(&job.base, &import.file) {
+                        let mut looked = format!("`{}`", beside.display());
+                        if let Some(root) = from_root.filter(|r| *r != beside) {
+                            looked.push_str(&format!(" and `{}`", root.display()));
+                        }
+                        let written = import.file.trim_end_matches(".rux").replace('/', "::");
+                        return Err(LoadError::at_line(
+                            format!(
+                                "no file for `use {written}::{type_name};`: looked in {looked}"
+                            ),
+                            at,
+                            &job.owner_path,
+                        ));
+                    }
+                    continue;
                 }
                 // Reported, not refused: it resolves, and every file written this
                 // way goes on working. See `Import::hyphenated_path` for why it
@@ -1676,7 +1722,7 @@ impl Document {
                 let mut comp_script = comp_script;
                 for computed in &comp_computeds {
                     comp_script = comp_script.replace(
-                        &format!("let {} = {};", computed.name, computed.expr),
+                        &computed.declaration(),
                         &format!("let {} = 0;", computed.name),
                     );
                 }
@@ -4264,9 +4310,21 @@ fn warn_unresolvable_include(path: &str) {
 #[derive(Clone, Debug)]
 struct Computed {
     name: String,
+    /// The type it was declared with, `computed total: number = …`, as text.
+    ty: Option<String>,
     expr: String,
     /// Signals the expression read when it last ran.
     deps: HashSet<String>,
+}
+
+impl Computed {
+    /// The `let` that declares it in the script rhai sees, with its annotation.
+    fn declaration(&self) -> String {
+        match &self.ty {
+            Some(ty) => format!("let {}: {ty} = {};", self.name, self.expr),
+            None => format!("let {} = {};", self.name, self.expr),
+        }
+    }
 }
 
 /// An `effect { … }` block: statements to run when what they read changes.
@@ -4301,19 +4359,23 @@ fn extract_reactives(script: &str) -> (String, Vec<Computed>, Vec<Effect>, Hooks
         let trimmed = line.trim();
 
         if let Some(rest) = trimmed.strip_prefix("computed ") {
-            if let Some((name, expr)) = rest.split_once('=') {
-                let name = name.trim();
-                let expr = expr.trim().trim_end_matches(';').trim();
-                if is_identifier(name) && !expr.is_empty() {
-                    computeds.push(Computed {
+            if let (lhs, Some(expr)) = split_assignment(rest.trim().trim_end_matches(';')) {
+                let (name, ty) = split_annotation(lhs);
+                if is_identifier(name) && !expr.is_empty() && ty != Some("") {
+                    let computed = Computed {
                         name: name.to_string(),
+                        ty: ty.map(str::to_string),
                         expr: expr.to_string(),
                         deps: HashSet::new(),
-                    });
+                    };
                     // Declared, not stripped: the value has to exist before any
                     // binding reads it, and being a `let` is what makes it a
-                    // signal the rest of the pipeline already understands.
-                    cleaned.push_str(&format!("let {name} = {expr};\n"));
+                    // signal the rest of the pipeline already understands. Its
+                    // annotation goes with it, so the fork records it as it
+                    // records any `let`'s.
+                    cleaned.push_str(&computed.declaration());
+                    cleaned.push('\n');
+                    computeds.push(computed);
                     i += 1;
                     continue;
                 }
@@ -4387,18 +4449,13 @@ fn extract_props(
             continue;
         };
         let rest = rest.trim().trim_end_matches(';').trim();
-        // The first `=` that is not part of `==`, `!=`, `<=` or `>=`, since a
-        // default is an expression and may compare.
-        let split = rest.char_indices().find(|&(p, c)| {
-            c == '='
-                && !rest[p + 1..].starts_with('=')
-                && !rest[..p].ends_with(['=', '!', '<', '>'])
-        });
-        let (names, default) = match split {
-            Some((p, _)) => (rest[..p].trim(), Some(rest[p + 1..].trim().to_string())),
-            None => (rest, None),
-        };
-        let names: Vec<&str> = names.split(',').map(str::trim).collect();
+        // The `=` that assigns, since a default is an expression and may
+        // compare, and a type may be a function's, `(string) => bool`.
+        let (names, default) = split_assignment(rest);
+        let default = default.map(str::to_string);
+        // Split at the commas between declarations, not the ones inside a type
+        // such as `{ a: int, b: int }`.
+        let names: Vec<&str> = split_top_level_commas(names);
         let mut line_out = String::new();
         if default.as_deref().is_some_and(str::is_empty) {
             problems.push((at, format!("`prop {}` has an `=` and no default after it", names.join(", "))));
@@ -4412,16 +4469,15 @@ fn extract_props(
                 ),
             ));
         } else {
-            for name in names {
-                if let Some((bare, _)) = name.split_once(':') {
-                    problems.push((
-                        at,
-                        format!(
-                            "`prop {name}`: Rux has no types yet, so a prop is declared by name \
-                             alone. Write `prop {};`",
-                            bare.trim()
-                        ),
-                    ));
+            for written in names {
+                let (name, ty) = split_annotation(written);
+                let bad_type = ty.map(|ty| match rux_script::types::parse_type(ty) {
+                    Ok(_) => None,
+                    Err(_) if ty.is_empty() => Some(format!("`prop {name}:` has no type after the `:`")),
+                    Err(e) => Some(format!("`prop {written}`: {}", e.message)),
+                });
+                if let Some(Some(problem)) = bad_type {
+                    problems.push((at, problem));
                 } else if name.contains('-') && is_identifier(&name.replace('-', "_")) {
                     problems.push((
                         at,
@@ -4443,6 +4499,7 @@ fn extract_props(
                     }
                     props.push(rux_parser::PropDecl {
                         name: name.to_string(),
+                        ty: ty.map(str::to_string),
                         default: default.clone(),
                         line: at,
                     });
@@ -4487,10 +4544,7 @@ fn defer_computeds(sfc: &rux_parser::Sfc, script: String, computeds: &[Computed]
     }
     let mut script = script;
     for computed in computeds {
-        script = script.replace(
-            &format!("let {} = {};", computed.name, computed.expr),
-            &format!("let {} = ();", computed.name),
-        );
+        script = script.replace(&computed.declaration(), &format!("let {} = ();", computed.name));
     }
     script
 }
@@ -4591,6 +4645,75 @@ fn is_identifier(s: &str) -> bool {
     !s.is_empty()
         && !s.starts_with(|c: char| c.is_ascii_digit())
         && s.chars().all(|c| c.is_alphanumeric() || c == '_')
+}
+
+/// Byte offsets of the characters in `s` that sit outside any string and any
+/// bracket, brace or parenthesis, with each character. What the declaration
+/// splitters below walk, so a `,` or `=` inside a type such as
+/// `{ a: int, b: int }` or `(int) => bool` or `"a=b"` is not taken for one
+/// between declarations.
+fn top_level_chars(s: &str) -> Vec<(usize, char)> {
+    let mut out = Vec::new();
+    let mut depth = 0i32;
+    let mut in_string = false;
+    let mut escaped = false;
+    for (at, c) in s.char_indices() {
+        if in_string {
+            match c {
+                _ if escaped => escaped = false,
+                '\\' => escaped = true,
+                '"' => in_string = false,
+                _ => {}
+            }
+            continue;
+        }
+        match c {
+            '"' => in_string = true,
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => depth -= 1,
+            _ if depth == 0 => out.push((at, c)),
+            _ => {}
+        }
+    }
+    out
+}
+
+/// Split `lhs = rhs` at the `=` that assigns, which is not part of `==`, `!=`,
+/// `<=`, `>=` or `=>`, and is not inside a string or brackets.
+fn split_assignment(s: &str) -> (&str, Option<&str>) {
+    let bytes = s.as_bytes();
+    let split = top_level_chars(s).into_iter().find(|&(at, c)| {
+        c == '='
+            && !matches!(bytes.get(at + 1), Some(b'=' | b'>'))
+            && !matches!(at.checked_sub(1).map(|p| bytes[p]), Some(b'=' | b'!' | b'<' | b'>'))
+    });
+    match split {
+        Some((at, _)) => (s[..at].trim(), Some(s[at + 1..].trim())),
+        None => (s.trim(), None),
+    }
+}
+
+/// Split `name: T` into the name and the text of its type, if it has one.
+fn split_annotation(s: &str) -> (&str, Option<&str>) {
+    match s.split_once(':') {
+        Some((name, ty)) => (name.trim(), Some(ty.trim())),
+        None => (s.trim(), None),
+    }
+}
+
+/// Split at the commas that separate declarations, leaving the ones inside a
+/// type alone.
+fn split_top_level_commas(s: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut start = 0;
+    for (at, c) in top_level_chars(s) {
+        if c == ',' {
+            out.push(s[start..at].trim());
+            start = at + 1;
+        }
+    }
+    out.push(s[start..].trim());
+    out
 }
 
 /// A listener body with the emitted payload bound to `event`.
@@ -4791,6 +4914,11 @@ struct Import {
     /// same section is a spelling waiting to break, so it is reported and the
     /// snake form named, which finds the same file either way.
     hyphenated_path: bool,
+    /// `use types::Task;`: the last segment starts with a capital letter, so
+    /// it names a type declared in `file` rather than a component. A declared
+    /// type always starts with one and a component file never does, which is
+    /// the whole of how the two are told apart. See `docs/10-types.md`.
+    type_name: Option<String>,
 }
 
 /// Split `use a::b;` lines out of a script, returning the cleaned script (which
@@ -4807,9 +4935,16 @@ fn extract_imports(script: &str) -> (String, Vec<Import>) {
             if let Some(path) = rest.strip_suffix(';').map(str::trim).filter(|p| {
                 !p.is_empty() && !p.contains(char::is_whitespace) && !p.contains(';')
             }) {
-                let segments: Vec<&str> = path.split("::").collect();
+                let mut segments: Vec<&str> = path.split("::").collect();
                 let empty_segment = segments.iter().any(|s| s.is_empty());
                 let hyphenated_path = path.contains('-');
+                let type_name = segments
+                    .last()
+                    .filter(|s| s.starts_with(|c: char| c.is_uppercase()))
+                    .map(|s| s.to_string());
+                if type_name.is_some() {
+                    segments.pop();
+                }
                 let file = format!("{}.rux", segments.join("/"));
                 let tag = segments
                     .last()
@@ -4821,6 +4956,7 @@ fn extract_imports(script: &str) -> (String, Vec<Import>) {
                     line: index + 1,
                     empty_segment,
                     hyphenated_path,
+                    type_name,
                 });
                 // A blank line rather than no line. Dropping it shifted every
                 // line below by one, so rhai's positions no longer matched the

@@ -227,6 +227,8 @@ pub use api::custom_syntax::Expression;
 pub use api::files::{eval_file, run_file};
 pub use api::{eval::eval, run::run};
 pub use ast::{FnAccess, AST};
+// RUX DIVERGENCE: type annotations, kept beside the AST (DIVERGENCE.md, item 8).
+pub use ast::{Annotation, AnnotationKind};
 use defer::Deferred;
 pub use engine::{Engine, OP_CONTAINS, OP_EQUALS};
 pub use eval::{EvalContext, EvalContextFrameGuard};

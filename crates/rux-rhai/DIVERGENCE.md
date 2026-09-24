@@ -215,13 +215,18 @@ have to stay a block, and a rule with that hole in it is worse than no rule.
 
 ### 8. Type annotations are parsed, kept aside, and erased
 
-**Status: designed 2026-09-24, being built.** This entry is written ahead of
-the code, as the type system's first step; the file list is the plan and is
-corrected when the change lands.
+**Built 2026-09-24.** The checker that reads the annotations lives in
+`rux-script` and is outside this fork.
 
-**Files:** `src/parser.rs` (`parse_let`, `parse_fn`, the arrow parameter
-lookahead from item 3, and a `type` statement), `src/ast/ast.rs` (the side
-table on `AST`)
+**Files:** `src/parser.rs` (the recognizer `type_end` and its helpers,
+`take_type`, `note_annotation`; `parse_let`, `parse_fn`, `arrow_params_len`,
+`take_arrow_params`, `parse_anon_fn`, a `type` arm at the top of `parse_stmt`,
+and `parse`/`parse_global_expr` moving the list onto the `AST`),
+`src/ast/annotation.rs` (new: `Annotation`, `AnnotationKind`),
+`src/ast/ast.rs` (the `annotations` field, kept through `merge` and
+`combine`), `src/tokenizer.rs` (the list is collected on
+`TokenizerControlBlock`, which every nested parse state shares),
+`src/ast/mod.rs` and `src/lib.rs` (exports)
 
 Rux script takes TypeScript's annotations: `let n: int = 0;`,
 `fn f(x: Task): string { … }`, `(a: number) => a`, and
@@ -248,6 +253,15 @@ The shape of the change, chosen to keep the merge surface small:
   its annotations deleted produce the same AST.
 - **`type` is contextual.** It is a keyword only at the start of a statement,
   followed by a name and `=`. `let type = 1;` and `type_of(x)` are untouched.
+- **An arrow's parameters are recorded against the generated function.** Its
+  `anon$…` name hashes the parameter names and the body, never the
+  annotations, so the name is the same with and without them. Its arity counts
+  the captured variables the parser puts ahead of the declared parameters.
+
+Tests are in `rux-script` (`annotations_are_erased`,
+`annotations_are_kept_beside_the_ast`, `a_malformed_annotation_is_a_syntax_error`,
+and `types::the_fork_and_this_parser_agree`, which runs one list of types
+through this recognizer and through `rux-script`'s parser).
 
 ## Keeping up with upstream
 

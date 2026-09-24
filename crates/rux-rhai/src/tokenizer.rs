@@ -37,6 +37,10 @@ pub struct TokenizerControlBlock {
     ///
     /// Set to `Some` in order to collect a compressed script.
     pub compressed: Option<String>,
+    /// RUX DIVERGENCE: type annotations met so far. Kept here because every
+    /// nested parse state (a function, an arrow) shares this block, so one list
+    /// collects them all. The parser moves it onto the finished `AST`.
+    pub annotations: Vec<crate::ast::Annotation>,
 }
 
 impl TokenizerControlBlock {
@@ -51,6 +55,7 @@ impl TokenizerControlBlock {
             #[cfg(feature = "metadata")]
             global_comments: String::new(),
             compressed: None,
+            annotations: Vec::new(),
         }
     }
 }

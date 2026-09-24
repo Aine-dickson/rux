@@ -379,6 +379,10 @@ fn arrow_params_len(input: &mut TokenStream) -> Option<usize> {
             Some((Token::Identifier(..), ..)) => n += 1,
             _ => return None,
         }
+        // RUX DIVERGENCE: `(a: number) => …`, a parameter's type annotation.
+        if matches!(input.peek_nth(n), Some((Token::Colon, ..))) {
+            n = type_end(input, n + 1)?;
+        }
         match input.peek_nth(n) {
             Some((Token::Comma, ..)) => n += 1,
             Some((Token::RightParen, ..)) => {
@@ -413,6 +417,191 @@ fn brace_opens_map(input: &mut TokenStream, empty_is_map: bool) -> bool {
         }
         _ => false,
     }
+}
+
+/// RUX DIVERGENCE: an arrow's parameter names, and the annotations among them
+/// as (name, position, type, type position).
+type ArrowParams = (StaticVec<ImmutableString>, Vec<(ImmutableString, Position, String, Position)>);
+
+/// RUX DIVERGENCE: the token `n` places ahead, cloned, or `EOF` past the end.
+///
+/// Cloned so the type recognizer below can look at two tokens in one
+/// condition; a type is a handful of tokens, so the copies cost nothing.
+fn nth_token(input: &mut TokenStream, n: usize) -> Token {
+    input.peek_nth(n).map_or(Token::EOF, |(t, _)| t.clone())
+}
+
+/// RUX DIVERGENCE: whether `token` is the `?` of `string?` or `note?:`. rhai
+/// has no use for a lone `?`, so the tokenizer hands it over as reserved.
+fn is_question(token: &Token) -> bool {
+    matches!(token, Token::Reserved(s) if s.as_str() == "?")
+}
+
+/// RUX DIVERGENCE: where the type starting `at` tokens ahead ends, as the
+/// offset of the first token after it; `None` if no type starts there. Pure
+/// lookahead, like [`arrow_params_len`].
+///
+/// This recognises a type without understanding it, which is all the parser
+/// needs: to know where `fn f(): { a: number } { … }` stops being a type and
+/// starts being a body. `docs/10-types.md` has the grammar, and `rux-script`
+/// parses the text this lets through.
+///
+/// ```text
+/// type     = [ "|" ] postfix { "|" postfix }
+/// postfix  = primary { "[]" | "?" }
+/// primary  = name | "string literal" | null | record | "(" type ")"
+///          | "(" [ type { "," type } ] ")" "=>" type
+/// record   = "{" [ field { ("," | ";") field } [ "," | ";" ] ] "}"
+///          | "{" "[" name "]" ":" type [ "," | ";" ] "}"
+/// field    = (name | "string") [ "?" ] ":" type
+/// ```
+fn type_end(input: &mut TokenStream, at: usize) -> Option<usize> {
+    let mut i = at;
+    if nth_token(input, i) == Token::Pipe {
+        i += 1;
+    }
+    i = type_postfix_end(input, i)?;
+    while nth_token(input, i) == Token::Pipe {
+        i = type_postfix_end(input, i + 1)?;
+    }
+    Some(i)
+}
+
+/// RUX DIVERGENCE: a type followed by any number of `[]` and `?`. See
+/// [`type_end`].
+fn type_postfix_end(input: &mut TokenStream, at: usize) -> Option<usize> {
+    let mut i = type_primary_end(input, at)?;
+    loop {
+        match nth_token(input, i) {
+            // `T[]`, and `T?[]`, whose `?[` the tokenizer reads as one token.
+            Token::LeftBracket | Token::QuestionBracket
+                if nth_token(input, i + 1) == Token::RightBracket =>
+            {
+                i += 2
+            }
+            ref t if is_question(t) => i += 1,
+            _ => return Some(i),
+        }
+    }
+}
+
+/// RUX DIVERGENCE: one type with nothing after it. See [`type_end`].
+fn type_primary_end(input: &mut TokenStream, at: usize) -> Option<usize> {
+    match nth_token(input, at) {
+        Token::Identifier(..) | Token::StringConstant(..) => Some(at + 1),
+        // `null` is registered as custom syntax, so it arrives as that.
+        Token::Reserved(s) if s.as_str() == "null" => Some(at + 1),
+        #[cfg(not(feature = "no_custom_syntax"))]
+        Token::Custom(s) if s.as_str() == "null" => Some(at + 1),
+        Token::LeftBrace => type_record_end(input, at + 1),
+        // `() => T`. The tokenizer reads `()` as one token.
+        Token::Unit if nth_token(input, at + 1) == Token::DoubleArrow => type_end(input, at + 2),
+        // `(A, B) => T`, or `(A | B)` grouping a type so a postfix applies to
+        // all of it.
+        Token::LeftParen => {
+            let mut i = at + 1;
+            let mut count = 0;
+            loop {
+                i = type_end(input, i)?;
+                count += 1;
+                match nth_token(input, i) {
+                    Token::Comma => i += 1,
+                    Token::RightParen => break,
+                    _ => return None,
+                }
+            }
+            if nth_token(input, i + 1) == Token::DoubleArrow {
+                type_end(input, i + 2)
+            } else if count == 1 {
+                Some(i + 1)
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+/// RUX DIVERGENCE: the rest of a record or dictionary type, `at` being the
+/// first token after its `{`. See [`type_end`].
+fn type_record_end(input: &mut TokenStream, at: usize) -> Option<usize> {
+    let mut i = at;
+    match nth_token(input, i) {
+        Token::RightBrace => return Some(i + 1),
+        // `{ [string]: T }`, a dictionary.
+        Token::LeftBracket => {
+            if !matches!(nth_token(input, i + 1), Token::Identifier(..))
+                || nth_token(input, i + 2) != Token::RightBracket
+                || nth_token(input, i + 3) != Token::Colon
+            {
+                return None;
+            }
+            i = type_end(input, i + 4)?;
+            if matches!(nth_token(input, i), Token::Comma | Token::SemiColon) {
+                i += 1;
+            }
+            return (nth_token(input, i) == Token::RightBrace).then_some(i + 1);
+        }
+        _ => (),
+    }
+    loop {
+        match nth_token(input, i) {
+            Token::Identifier(..) | Token::StringConstant(..) => i += 1,
+            _ => return None,
+        }
+        if is_question(&nth_token(input, i)) {
+            i += 1;
+        }
+        if nth_token(input, i) != Token::Colon {
+            return None;
+        }
+        i = type_end(input, i + 1)?;
+        match nth_token(input, i) {
+            Token::Comma | Token::SemiColon => {
+                i += 1;
+                if nth_token(input, i) == Token::RightBrace {
+                    return Some(i + 1);
+                }
+            }
+            Token::RightBrace => return Some(i + 1),
+            _ => return None,
+        }
+    }
+}
+
+/// RUX DIVERGENCE: consume a type, returning its text and where it starts.
+/// `after` finishes the sentence "Expecting a type after …" when there is none.
+fn take_type(input: &mut TokenStream, after: &str) -> ParseResult<(String, Position)> {
+    let pos = input.peek().unwrap().1;
+    let Some(end) = type_end(input, 0) else {
+        return Err(PERR::MissingSymbol(format!("Expecting a type after {after}")).into_err(pos));
+    };
+    let mut text = String::new();
+    for _ in 0..end {
+        let (token, _) = input.next().unwrap();
+        let piece = match &token {
+            Token::Identifier(s) => s.to_string(),
+            Token::StringConstant(s) => format!("{:?}", s.as_str()),
+            Token::Reserved(s) => s.to_string(),
+            #[cfg(not(feature = "no_custom_syntax"))]
+            Token::Custom(s) => s.to_string(),
+            other => other.literal_syntax().to_string(),
+        };
+        // One space between tokens, except where it would read oddly: before
+        // `,` `:` `?` `]` `[` and after `[`.
+        let tight = matches!(piece.as_str(), "," | ":" | ";" | "?" | "]" | "[" | "?[")
+            || text.ends_with('[');
+        if !text.is_empty() && !tight {
+            text.push(' ');
+        }
+        text.push_str(&piece);
+    }
+    Ok((text, pos))
+}
+
+/// RUX DIVERGENCE: record an annotation on the list the finished `AST` gets.
+fn note_annotation(state: &ParseState, annotation: crate::ast::Annotation) {
+    state.tokenizer_control.borrow_mut().annotations.push(annotation);
 }
 
 fn ensure_not_assignment(input: &mut TokenStream) -> ParseResult<()> {
@@ -3080,6 +3269,21 @@ impl Engine {
 
         let name = self.get_interned_string(name);
 
+        // RUX DIVERGENCE: `let name: T`, recorded and erased.
+        if match_token(state.input, &Token::Colon).0 {
+            let (ty, ty_pos) = take_type(state.input, "':'")?;
+            note_annotation(
+                state,
+                crate::ast::Annotation {
+                    kind: crate::ast::AnnotationKind::Var,
+                    name: name.clone(),
+                    pos,
+                    ty,
+                    ty_pos,
+                },
+            );
+        }
+
         // let name = ...
         let expr = if match_token(state.input, &Token::Equals).0 {
             // let name = expr
@@ -3459,6 +3663,38 @@ impl Engine {
         #[cfg(feature = "no_object")]
         let is_brace_map = false;
 
+        // RUX DIVERGENCE: `type Name = T;` declares a type, which is recorded
+        // and runs as nothing. `type` means this only at the start of a
+        // statement followed by a name and `=`, where it could never have been
+        // anything else, so `let type = 1;` and `type_of(x)` are untouched.
+        if matches!(nth_token(state.input, 0), Token::Identifier(s) if s.as_str() == "type")
+            && matches!(nth_token(state.input, 1), Token::Identifier(..))
+            && nth_token(state.input, 2) == Token::Equals
+        {
+            let type_pos = state.input.next().unwrap().1;
+            if !settings.has_flag(ParseSettingFlags::GLOBAL_LEVEL) {
+                return Err(PERR::MissingSymbol(
+                    "A `type` is declared at the top level of the script, not inside a block"
+                        .into(),
+                )
+                .into_err(type_pos));
+            }
+            let (name, pos) = parse_var_name(state.input)?;
+            eat_token(state.input, &Token::Equals);
+            let (ty, ty_pos) = take_type(state.input, "'='")?;
+            note_annotation(
+                state,
+                crate::ast::Annotation {
+                    kind: crate::ast::AnnotationKind::Type,
+                    name: self.get_interned_string(name),
+                    pos,
+                    ty,
+                    ty_pos,
+                },
+            );
+            return Ok(Stmt::Noop(type_pos));
+        }
+
         let (token, token_pos) = match state.input.peek().unwrap() {
             (Token::EOF, pos) => return Ok(Stmt::Noop(*pos)),
             (x, pos) => (x, *pos),
@@ -3796,6 +4032,9 @@ impl Engine {
         };
 
         let mut params = StaticVec::<(ImmutableString, _)>::new_const();
+        // RUX DIVERGENCE: parameter annotations, as (name, position, type,
+        // type position).
+        let mut param_types = Vec::new();
 
         if !no_params {
             let sep_err = format!("to separate the parameters of function '{name}'");
@@ -3812,6 +4051,11 @@ impl Engine {
 
                         let s = self.get_interned_string(*s);
                         state.stack.push(s.clone(), ());
+                        // RUX DIVERGENCE: `x: T`, recorded once the arity is known.
+                        if match_token(state.input, &Token::Colon).0 {
+                            let (ty, ty_pos) = take_type(state.input, "':'")?;
+                            param_types.push((s.clone(), pos, ty, ty_pos));
+                        }
                         params.push((s, pos));
                     }
                     (Token::LexError(err), pos) => return Err(err.into_err(pos)),
@@ -3841,6 +4085,13 @@ impl Engine {
             }
         }
 
+        // RUX DIVERGENCE: `): T`, the result's annotation.
+        let result_type = if match_token(state.input, &Token::Colon).0 {
+            Some(take_type(state.input, "the parameter list")?)
+        } else {
+            None
+        };
+
         // Parse function body
         let body = match state.input.peek().unwrap() {
             (Token::LeftBrace, ..) => self.parse_block(state, settings, false)?,
@@ -3850,6 +4101,37 @@ impl Engine {
 
         let mut params: FnArgsVec<_> = params.into_iter().map(|(p, ..)| p).collect();
         params.shrink_to_fit();
+
+        // RUX DIVERGENCE: the annotations, now that the arity that identifies
+        // this function among its overloads is known.
+        let function = self.get_interned_string(name.clone());
+        for (param, param_pos, ty, ty_pos) in param_types {
+            note_annotation(
+                state,
+                crate::ast::Annotation {
+                    kind: crate::ast::AnnotationKind::Param {
+                        function: function.clone(),
+                        arity: params.len(),
+                    },
+                    name: param,
+                    pos: param_pos,
+                    ty,
+                    ty_pos,
+                },
+            );
+        }
+        if let Some((ty, ty_pos)) = result_type {
+            note_annotation(
+                state,
+                crate::ast::Annotation {
+                    kind: crate::ast::AnnotationKind::Result { arity: params.len() },
+                    name: function,
+                    pos,
+                    ty,
+                    ty_pos,
+                },
+            );
+        }
 
         Ok(ScriptFuncDef {
             name: self.get_interned_string(name),
@@ -3941,11 +4223,9 @@ impl Engine {
     /// Only called once [`arrow_params_len`] has confirmed the shape, so every
     /// token taken here is known to be part of the list.
     #[cfg(not(feature = "no_function"))]
-    fn take_arrow_params(
-        &self,
-        state: &mut ParseState,
-    ) -> ParseResult<StaticVec<ImmutableString>> {
+    fn take_arrow_params(&self, state: &mut ParseState) -> ParseResult<ArrowParams> {
         let mut params = StaticVec::<ImmutableString>::new_const();
+        let mut types = Vec::new();
 
         match state.input.next().unwrap() {
             // `x => …`
@@ -3962,6 +4242,10 @@ impl Engine {
                         if params.contains(&s) {
                             return Err(PERR::FnDuplicatedParam(String::new(), s.to_string())
                                 .into_err(pos));
+                        }
+                        if match_token(state.input, &Token::Colon).0 {
+                            let (ty, ty_pos) = take_type(state.input, "':'")?;
+                            types.push((s.clone(), pos, ty, ty_pos));
                         }
                         params.push(s);
                     }
@@ -3984,7 +4268,7 @@ impl Engine {
 
         eat_token(state.input, &Token::DoubleArrow);
 
-        Ok(params)
+        Ok((params, types))
     }
 
     fn parse_anon_fn(
@@ -3995,7 +4279,7 @@ impl Engine {
         // RUX DIVERGENCE: `Some` when the caller has already read the parameter
         // names, which is how arrow functions get here: their list cannot be
         // recognised until the `=>` behind it has been seen.
-        arrow_params: Option<StaticVec<ImmutableString>>,
+        arrow_params: Option<ArrowParams>,
     ) -> ParseResult<Expr> {
         // Build new parse state
 
@@ -4018,12 +4302,14 @@ impl Engine {
         }
 
         let mut params_list = StaticVec::<ImmutableString>::new_const();
+        let mut param_types = Vec::new();
 
         // RUX DIVERGENCE: an arrow function's parameters were read by the
         // caller, so there is nothing left in the stream to parse. They still
         // have to be pushed onto the new scope, which is what makes the body
         // resolve them as locals rather than as captured externals.
-        if let Some(params) = arrow_params {
+        if let Some((params, types)) = arrow_params {
+            param_types = types;
             for p in params {
                 new_state.stack.push(p.clone(), ());
                 params_list.push(p);
@@ -4176,6 +4462,24 @@ impl Engine {
             }
         }
 
+        // RUX DIVERGENCE: an arrow's parameter annotations belong to the
+        // generated function, whose arity includes the captured variables.
+        for (param, param_pos, ty, ty_pos) in param_types {
+            note_annotation(
+                state,
+                crate::ast::Annotation {
+                    kind: crate::ast::AnnotationKind::Param {
+                        function: fn_def.name.clone(),
+                        arity: fn_def.params.len(),
+                    },
+                    name: param,
+                    pos: param_pos,
+                    ty,
+                    ty_pos,
+                },
+            );
+        }
+
         let hash_script = calc_fn_hash(None, &fn_def.name, fn_def.params.len());
         state.lib.insert(hash_script, fn_def);
 
@@ -4217,20 +4521,24 @@ impl Engine {
         statements.push(Stmt::Expr(expr.into()));
 
         #[cfg(not(feature = "no_optimize"))]
-        return Ok(self.optimize_into_ast(
+        let mut ast = self.optimize_into_ast(
             state.external_constants,
             statements,
             #[cfg(not(feature = "no_function"))]
             state.lib.values().cloned().collect::<Vec<_>>(),
             optimization_level,
-        ));
+        );
 
         #[cfg(feature = "no_optimize")]
-        return Ok(AST::new(
+        let mut ast = AST::new(
             statements,
             #[cfg(not(feature = "no_function"))]
             crate::Module::from(state.lib.values().cloned()),
-        ));
+        );
+
+        // RUX DIVERGENCE: the annotations met on the way, onto the AST.
+        ast.set_annotations(std::mem::take(&mut state.tokenizer_control.borrow_mut().annotations));
+        Ok(ast)
     }
 
     /// Parse the global level statements.
@@ -4305,16 +4613,16 @@ impl Engine {
         let (statements, _lib) = self.parse_global_level(&mut state, |_| {})?;
 
         #[cfg(not(feature = "no_optimize"))]
-        return Ok(self.optimize_into_ast(
+        let mut ast = self.optimize_into_ast(
             state.external_constants,
             statements,
             #[cfg(not(feature = "no_function"))]
             _lib,
             optimization_level,
-        ));
+        );
 
         #[cfg(feature = "no_optimize")]
-        return Ok(AST::new(
+        let mut ast = AST::new(
             statements,
             #[cfg(not(feature = "no_function"))]
             {
@@ -4322,6 +4630,10 @@ impl Engine {
                 new_lib.extend(_lib);
                 new_lib
             },
-        ));
+        );
+
+        // RUX DIVERGENCE: the annotations met on the way, onto the AST.
+        ast.set_annotations(std::mem::take(&mut state.tokenizer_control.borrow_mut().annotations));
+        Ok(ast)
     }
 }

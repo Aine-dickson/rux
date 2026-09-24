@@ -11,7 +11,7 @@ the row below says so.
 
 | Part | State |
 |---|---|
-| Annotations parsed and erased (`: T`, `type`, `prop x: T`, `use types::X`) | Pending |
+| Annotations parsed and erased (`: T`, `type`, `prop x: T`, `use types::X`) | **Built** 2026-09-24. Accepted and ignored at run time; a malformed one is a syntax error. See [Script](./07-script.md#type-annotations) |
 | The checker: primitives, arrays, records, dictionaries, `T?`, inference | Pending |
 | Unions, narrowing, `switch` exhaustiveness, forced `?.` | Pending |
 | Functions: typed and untyped, the caller-local rule | Pending |
@@ -411,9 +411,15 @@ last segment's capital letter is what makes it a type: `use components::task`
 still imports the component in `components/task.rux`, and
 `use components::task::Row` imports the type `Row` declared in that file.
 
-A file used only for its types is an ordinary `.rux` file whose `<script>`
-holds `type` declarations. Only `type` declarations can be imported this way;
-a function or a signal cannot.
+A file used only for its types holds a `<script>` and nothing else: no
+`<template>` and no `<style>`. Its script may declare types and nothing
+besides, since nothing would ever run a function or a statement in it, and
+`rux` refuses to run the file, since it has nothing to show. `rux check`
+checks it like any other. Only `type` declarations can be imported this way; a
+function or a signal cannot.
+
+`use Task;`, with no file in front of the type, is an error that says where
+the type has to come from.
 
 ## What is an error and what is a warning
 

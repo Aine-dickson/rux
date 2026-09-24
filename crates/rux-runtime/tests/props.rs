@@ -172,11 +172,11 @@ fn a_route_passes_bound_attributes_to_its_view_as_props() {
 #[test]
 fn a_malformed_declaration_is_an_error() {
     let comp = "<template><view><text>x</text></view></template>\n\
-                <script>\n  prop id-of;\n  prop a: number;\n  prop b, c = 1;\n</script>";
+                <script>\n  prop id-of;\n  prop a: boolean;\n  prop b, c = 1;\n</script>";
     let doc = load("<stat />", comp);
     let found = errors(&doc);
     assert!(found.iter().any(|e| e.contains("prop id_of;")), "{found:?}");
-    assert!(found.iter().any(|e| e.contains("no types yet")), "{found:?}");
+    assert!(found.iter().any(|e| e.contains("Rux calls it `bool`")), "{found:?}");
     assert!(found.iter().any(|e| e.contains("one default to 2 props")), "{found:?}");
 }
 

@@ -1,5 +1,7 @@
 //! Module defining the AST (abstract syntax tree).
 
+// RUX DIVERGENCE: type annotations, see annotation.rs.
+pub mod annotation;
 #[allow(clippy::module_inception)]
 pub mod ast;
 pub mod expr;
@@ -9,6 +11,7 @@ pub mod namespace;
 pub mod script_fn;
 pub mod stmt;
 
+pub use annotation::{Annotation, AnnotationKind};
 pub use ast::{ASTNode, EncapsulatedEnviron, AST};
 #[cfg(not(feature = "no_custom_syntax"))]
 pub use expr::CustomExpr;

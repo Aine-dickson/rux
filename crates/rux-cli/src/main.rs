@@ -294,6 +294,20 @@ fn run(path: PathBuf, args: &[String]) -> ExitCode {
         );
         return ExitCode::from(2);
     }
+    // A file with only a `<script>` declares types and has nothing to show, so
+    // running it would open an empty window and say nothing.
+    let types_only = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|src| rux_parser::parse_sfc(&src).ok())
+        .is_some_and(|sfc| sfc.types_only);
+    if types_only {
+        eprintln!(
+            "rux: `{}` only declares types, so there is nothing to show\n\nRun the file that \
+             uses them. `rux check` checks this one.",
+            path.display()
+        );
+        return ExitCode::from(2);
+    }
 
     let mut route = None;
     let mut preview = None;
