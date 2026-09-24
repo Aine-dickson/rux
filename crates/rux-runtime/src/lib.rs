@@ -644,6 +644,7 @@ fn check_script_types(
     imported_types: Vec<(String, String)>,
     support_types: Vec<(String, String, String)>,
     computeds: &[Computed],
+    callers: &HashSet<String>,
 ) {
     use rux_script::types::{parse_type, Type};
     let typed = |ty: &Option<String>| ty.as_deref().and_then(|t| parse_type(t).ok());
@@ -651,8 +652,19 @@ fn check_script_types(
         imported_types,
         support_types,
         own_lines: Some(own_lines),
+        caller_names: callers.clone(),
         ..Default::default()
     };
+    // The router's names are in scope in every document. `params` and `query`
+    // are `any` rather than a dictionary: under the dictionary rule every
+    // `params.id` would need a `"id" in params` first.
+    cx.provided.extend([
+        (rux_script::ROUTE_SIGNAL.to_string(), Type::String),
+        (rux_script::PARAMS_SIGNAL.to_string(), Type::Any),
+        (rux_script::QUERY_SIGNAL.to_string(), Type::Any),
+        (rux_script::CAN_BACK_SIGNAL.to_string(), Type::Bool),
+        (rux_script::CAN_FORWARD_SIGNAL.to_string(), Type::Bool),
+    ]);
     // A prop with no default is not in the script at all: the caller passes
     // it. Its type is what it was declared with. One with a default is a typed
     // `let` of that default, so the checker sees it declared.
@@ -1924,7 +1936,15 @@ impl Document {
             callers.extend(names_callers_bring(&component.template, &engine));
         }
         check_script_functions(&engine, &callers, main_script_lines, sfc.script_line);
-        check_script_types(&engine, &sfc, main_script_lines, imported_types, support_types, &computeds);
+        check_script_types(
+            &engine,
+            &sfc,
+            main_script_lines,
+            imported_types,
+            support_types,
+            &computeds,
+            &callers,
+        );
         // Everything the load-time checks said, kept: a rebuild re-raises what
         // the build finds and nothing else, so without this a document whose
         // `mounted` or `computed` ran lost every check error before anyone saw it.
@@ -2034,14 +2054,10 @@ impl Document {
         // of what a caller can bring.
         // Nothing is appended here, so the whole compiled text is this
         // document's own.
-        check_script_functions(
-            &engine,
-            &names_callers_bring(&sfc.template, &engine),
-            usize::MAX,
-            sfc.script_line,
-        );
+        let callers = names_callers_bring(&sfc.template, &engine);
+        check_script_functions(&engine, &callers, usize::MAX, sfc.script_line);
         // With no filesystem there are no type imports either.
-        check_script_types(&engine, &sfc, usize::MAX, Vec::new(), Vec::new(), &computeds);
+        check_script_types(&engine, &sfc, usize::MAX, Vec::new(), Vec::new(), &computeds, &callers);
         // Everything the load-time checks said, kept: a rebuild re-raises what
         // the build finds and nothing else, so without this a document whose
         // `mounted` or `computed` ran lost every check error before anyone saw it.
