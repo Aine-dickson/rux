@@ -98,10 +98,10 @@ const APP: &str = r#"<!-- The entry point. `rux run` looks for this file here an
 
   .brand { color: #cdd6f4; font-size: 26px; font-weight: 700; }
   .tally { color: #6c7086; font-size: 13px; }
+
   /* The router's page sits here. `flex: 1` gives it the space between the
      header and the tabs, and `overflow-y: auto` is what makes a long list
      scroll: nothing scrolls in Rux unless it is told to. */
-
   .stage {
     flex: 1;
     display: flex;
@@ -149,8 +149,8 @@ const APP: &str = r#"<!-- The entry point. `rux run` looks for this file here an
      text, and Rux has no string-to-number conversion, so text on both sides is
      the only comparison that can work. */
   let tasks = signal([
-      #{ id: "1", label: "Read the Rux guide", note: "ruxlang.dev/learn", done: true },
-      #{ id: "2", label: "Add a task of your own", note: "The tab below, or the button on the list", done: false }
+    #{ id: "1", label: "Read the Rux guide", note: "ruxlang.dev/learn", done: true },
+    #{ id: "2", label: "Add a task of your own", note: "The tab below, or the button on the list", done: false }
   ]);
   let next_id = signal(3);
 
@@ -322,9 +322,9 @@ const NEW_TASK: &str = r#"<!-- The form. Every input needs an `r-model`: it is t
 
   .input:focus { border: 1px #89b4fa solid; }
   .hint { color: #6c7086; font-size: 12px; }
+
   /* Dim until there is something to save, and the handler checks the same
      thing: the look and the rule agree, and neither is load-bearing alone. */
-
   .save {
     display: flex;
     justify-content: center;
@@ -542,7 +542,6 @@ const TASK_ROW: &str = r#"<!-- One row of the list.
 
   /* The tick is drawn in the box's own colour and hidden until the row is
      done, so nothing has to swap one icon for another. */
-
   .tick {
     width: 20px;
     height: 20px;
