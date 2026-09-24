@@ -2758,6 +2758,23 @@ fn build(
                 let mut cp = path.to_vec();
                 cp.push(i);
                 let cid = build(tree, c, paint, handlers, models, focus_labels, hidden, opacities, scrolls, transforms, states, access, &cp, paths, vp, child_cap, caps, row, stickies, hoisted);
+                // Text in a block box takes no automatic `max-width: 100%`.
+                // Block layout already gives it exactly the box's width, so the
+                // cap adds nothing there, and it did harm: Taffy resolved the
+                // percentage against a parent size from an earlier pass while a
+                // row was still flexing, measured the text at that width, and
+                // kept the one-line height for a box whose text then wrapped
+                // onto two (watchlist #32; tests/stretch_text.rs).
+                if c.text.is_some()
+                    && c.style.width.is_none()
+                    && c.style.max_width.is_none()
+                    && matches!(node.style.display, Display::Block | Display::Inline)
+                {
+                    if let Ok(mut st) = tree.style(cid).cloned() {
+                        st.max_size.width = auto();
+                        let _ = tree.set_style(cid, st);
+                    }
+                }
                 match hoists(&c.style) {
                     Some(fixed) => {
                         hoisted.push((cid, fixed));

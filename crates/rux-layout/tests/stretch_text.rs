@@ -97,16 +97,12 @@ fn a_stretched_button_is_as_tall_as_its_wrapped_label() {
 /// The shape `examples/slots.rux` has: three panels sharing a row and
 /// shrinking to fit it, a block button stretched inside the first one.
 ///
-/// **Fails today, watchlist #32.** The button comes out 32 tall (one line and
-/// its padding) around a label drawn 40 tall (two lines). The label is
-/// measured once at 76, the button's whole width with its 24px of side padding
-/// not taken off, and that one-line height is the one the button keeps; the
-/// final pass wraps it at 52. It is block-specific: the same button as
-/// `display: flex` is 52 tall, correct. Taffy 0.7.7's block layout sizes a
-/// block of unknown width from its content (`determine_content_based_container_width`),
-/// which is where to look next.
+/// Watchlist #32. The button came out 32 tall (one line and its padding)
+/// around a label drawn 40 tall (two lines). The cause was Rux's own automatic
+/// `max-width: 100%` on the text, which Taffy resolved against a parent size
+/// from an earlier pass while the row was still flexing; pure Taffy gets this
+/// right. Text in a block box no longer takes that cap.
 #[test]
-#[ignore = "watchlist #32: a block's height taken from its label measured at the wrong width"]
 fn a_block_button_in_a_shrinking_panel_is_as_tall_as_its_label() {
     fn text_measure(tc: &TextContent, max: Option<f32>) -> (f32, f32) {
         let one_line = if tc.text == "one more" { 72.0 } else { 200.0 };
