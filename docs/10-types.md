@@ -13,7 +13,7 @@ the row below says so.
 |---|---|
 | Annotations parsed and erased (`: T`, `type`, `prop x: T`, `use types::X`) | **Built** 2026-09-24. Accepted and ignored at run time; a malformed one is a syntax error. See [Script](./07-script.md#type-annotations) |
 | The checker: primitives, arrays, records, dictionaries, `T?`, inference | **Built** 2026-09-24 for a file's `<script>`: its `let`s, functions (parameters, results, calls) and closures. Handlers, bindings and templates are not checked yet |
-| Unions, narrowing, `switch` exhaustiveness, forced `?.` | Pending |
+| Unions, narrowing, `switch` exhaustiveness, forced `?.` | **Built** 2026-09-24 in a file's `<script>`, with `?[` for a dictionary. `r-if` narrowing waits for templates, and `await` for async |
 | Functions: typed and untyped, the caller-local rule | Pending |
 | Templates: `r-for`, `r-if`, bindings, `r-model`, events, props at the tag | Pending |
 | Boundaries: prop checks at run time, `x is T` | Pending |
@@ -203,9 +203,10 @@ inside an `r-if` that tested it. Outside such a region, `?.` is still required.
 **A dictionary is read the same way.** Any key of a `{ [string]: T }` may be
 missing, and a missing key raises exactly as a missing field does, so
 `m[k]` is an error unless `k in m` has been established. `m?[k]` reads it as a
-`T?`. The fork's `?[` is extended to guard a missing key for this, as its `?.`
-already guards a missing property. The loop variable of `for k in keys(m)` is
-known to be in `m`.
+`T?`: the fork's `?[` guards a missing key, and an index past the end of a
+list, as its `?.` guards a missing property. `m.k` is held to the same rule,
+and read as `m?.k`. The loop variable of `for k in keys(m)` is known to be in
+`m`.
 
 A record indexed by a literal union needs none of this when every member is a
 field: with `labels: { all: string, open: string, done: string }` and

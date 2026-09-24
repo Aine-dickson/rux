@@ -258,10 +258,33 @@ The shape of the change, chosen to keep the merge surface small:
   annotations, so the name is the same with and without them. Its arity counts
   the captured variables the parser puts ahead of the declared parameters.
 
+`get_hasher` is exported under `internals` as part of this item: a `switch`
+keeps only the hash of each case value, so the checker hashes each member of a
+literal union the same way to see which ones a `switch` handles.
+
 Tests are in `rux-script` (`annotations_are_erased`,
 `annotations_are_kept_beside_the_ast`, `a_malformed_annotation_is_a_syntax_error`,
 and `types::the_fork_and_this_parser_agree`, which runs one list of types
 through this recognizer and through `rux-script`'s parser).
+
+### 9. `?[` guards a missing key, and keeps its guard in a longer chain
+
+**Files:** `src/eval/chaining.rs` (`absent_is_fine`, and the two index reads in
+`eval_dot_index_chain_raw`), `src/parser.rs` (`make_dot_expr`)
+
+Item 1 for `[ ]`. Upstream `?[` short-circuits only when the base is `()`, so
+on a map that exists a missing key raised under `?[` exactly as under `[`.
+The type system (`docs/10-types.md`) says any key of a dictionary may be
+missing and must be read with `?[` unless a check has ruled that out, which
+needs `?[` to mean what it says. A key not in a map and an index past the end
+of a list are both answered with `()`; nothing else is swallowed.
+
+**An upstream bug came with it.** When a chain went on past a `?[`, as in
+`a?[k].y`, `make_dot_expr` rebuilt the index node with no flags at all, so the
+`?` was silently dropped and `a?[0].x` raised on a `()` base. The rebuilt node
+now keeps its `NEGATED` flag. Worth reporting upstream.
+
+Test: `question_bracket_guards_a_missing_key` in `rux-script`.
 
 ## Keeping up with upstream
 

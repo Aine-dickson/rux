@@ -2947,6 +2947,25 @@ mod tests {
         assert!(take_warnings().is_empty(), "{:?}", take_warnings());
     }
 
+    /// **`?[` guards a missing key**, as `?.` guards a missing property
+    /// (DIVERGENCE.md, item 9), and a past-the-end index too. Plain `[` still
+    /// raises on both. Also the upstream bug item 9 fixed on the way: a `?[`
+    /// followed by more chain lost its guard.
+    #[test]
+    fn question_bracket_guards_a_missing_key() {
+        let mut e = engine();
+        let _ = take_warnings();
+        assert_eq!(e.eval_display("let m = { x: 1 }; let k = \"nope\"; m?[k] ?? \"safe\"", &[]), "safe");
+        assert_eq!(e.eval_display("let m = { x: 1 }; m?[\"x\"]", &[]), "1");
+        assert_eq!(e.eval_display("let xs = [1]; xs?[5] ?? \"past\"", &[]), "past");
+        assert_eq!(e.eval_display("let m = { x: 1 }; let k = \"no\"; m?[k].y ?? \"chain\"", &[]), "chain");
+        assert_eq!(e.eval_display("let a = null; a?[0].x ?? \"null base\"", &[]), "null base");
+        assert!(take_warnings().is_empty(), "{:?}", take_warnings());
+        // Plain `[` is as strict as ever.
+        let _ = e.eval_display("let m = { x: 1 }; m[\"nope\"]", &[]);
+        assert_eq!(take_warnings().len(), 1, "a missing key under `[` still raises");
+    }
+
     /// Functions with annotated parameters and results, called both ways.
     #[test]
     fn annotated_functions_run() {

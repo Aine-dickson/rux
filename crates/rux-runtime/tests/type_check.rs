@@ -113,7 +113,7 @@ fn a_component_on_its_own_knows_its_props() {
     assert!(f.iter().any(|(_, err, m)| *err && m.contains("where `int` is expected")), "the default: {f:?}");
     assert!(f.iter().any(|(_, err, m)| !*err && m.contains("`prop tone` has no type")), "{f:?}");
     assert!(
-        f.iter().any(|(_, err, m)| *err && m.contains("declared to return `int`, and it returns `string`")),
+        f.iter().any(|(_, err, m)| *err && m.contains("`shout` is declared to return `int`, and this is `string`")),
         "the prop's type reaches the body: {f:?}"
     );
 }

@@ -368,6 +368,12 @@ pub use eval::{Caches, FnResolutionCache, FnResolutionCacheEntry, GlobalRuntimeS
 #[allow(deprecated)]
 pub use func::{locked_read, locked_write, NativeCallContextStore, RhaiFunc};
 
+// RUX DIVERGENCE: the hasher a `switch` keys its cases by, so the type checker
+// can tell which members of a literal union a `switch` handles. The parser
+// keeps only each case value's hash. See DIVERGENCE.md, item 8.
+#[cfg(feature = "internals")]
+pub use func::get_hasher;
+
 #[cfg(feature = "internals")]
 #[cfg(feature = "metadata")]
 pub use api::definitions::Definitions;

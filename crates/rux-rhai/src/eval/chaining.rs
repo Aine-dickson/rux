@@ -33,6 +33,20 @@ fn hash_idx() -> (u64, u64) {
     })
 }
 
+/// RUX DIVERGENCE: whether a failed `[ ]` lookup under `parent` is one that
+/// `?[` answers with `()`. See crates/rux-rhai/DIVERGENCE.md, item 9.
+///
+/// Upstream `?[` short-circuits only when the base is `()`, the same shape `?.`
+/// had before item 1. With strict map properties on, a missing key raised
+/// under `?[` exactly as under `[`, so a dictionary read by a key that may not
+/// be there had no way to say "absent is fine". A key that is not in a map and
+/// an index past the end of a list are both answered with `()`. Nothing else
+/// is: a `?[` must not turn into a blanket catch hiding a real failure.
+fn absent_is_fine(parent: &Expr, err: &crate::EvalAltResult) -> bool {
+    parent.options().intersects(ASTFlags::NEGATED)
+        && matches!(err, ERR::ErrorPropertyNotFound(..) | ERR::ErrorArrayBounds(..))
+}
+
 /// Method of chaining.
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
 pub enum ChainType {
@@ -725,10 +739,18 @@ impl Engine {
 
                             let tp = this_ptr.as_deref_mut();
                             let new_scope = x!(s, b);
-                            let mut item = self.get_indexed_mut(
+                            // RUX DIVERGENCE: `?[` guards a missing key, as `?.`
+                            // guards a missing property. See `absent_is_fine`.
+                            let mut item = match self.get_indexed_mut(
                                 global, caches, new_scope, tp, obj, idx_val, idx_pos, op_pos,
                                 false, true,
-                            )?;
+                            ) {
+                                Ok(item) => item,
+                                Err(err) if absent_is_fine(parent, &err) => {
+                                    return Ok((Dynamic::UNIT, false))
+                                }
+                                Err(err) => return Err(err),
+                            };
                             let is_item_temp_val = item.is_temp_value();
                             let item_ptr = &mut item;
 
@@ -850,11 +872,17 @@ impl Engine {
                         let new_scope = x!(s, b);
                         let idx_val = &mut idx_values.pop().unwrap();
 
-                        self.get_indexed_mut(
+                        // RUX DIVERGENCE: `?[` guards a missing key. See
+                        // `absent_is_fine`.
+                        let read = match self.get_indexed_mut(
                             global, caches, new_scope, this_ptr, obj, idx_val, pos, op_pos, false,
                             true,
-                        )
-                        .map(|v| (v.take_or_clone(), false))
+                        ) {
+                            Ok(v) => Ok((v.take_or_clone(), false)),
+                            Err(err) if absent_is_fine(parent, &err) => Ok((Dynamic::UNIT, false)),
+                            Err(err) => Err(err),
+                        };
+                        read
                     }
                 }
             }

@@ -324,9 +324,14 @@ syntax error at the place it goes wrong.
 annotation or its starting value, every call against the function's
 parameters, every result against a declared `): T`, fields read and written
 against their record, and a closure handed to `filter` or `map` against the
-list's element type. A name nothing can type (`signal([])`, a parameter with no
-annotation) is a warning and is not checked further; a contradiction is an
-error:
+list's element type. An optional field (`note?: string`) must be read with
+`?.`, and a dictionary's keys with `?.` or `?[`, except where a check has
+already ruled out their absence: inside `if t?.note != null`, after
+`"note" in t`, after an early `return`, and in the arms of a `switch`. A
+`switch` on a literal union with no `_` arm must handle every member, and a
+comparison that can never be true is an error. A name nothing can type
+(`signal([])`, a parameter with no annotation) is a warning and is not checked
+further; a contradiction is an error:
 
 ```text
 app.rux:9: error: "al" is not `Filter`, which is one of "all", "open", "done"; did you mean "all"?
@@ -334,9 +339,9 @@ app.rux:14: error: `count` holds `int`, so it cannot be given `number` here. If 
 app.rux:16: warning: `x` has no type, so what `old` is given there is not checked. Annotate it: `fn old(x: T)`
 ```
 
-Handlers, `{{ }}` bindings and templates are not checked yet, nor is `?.` on
-an optional field. [Types](./10-types.md) is the whole design, with a table
-saying which parts run.
+Handlers, `{{ }}` bindings and templates are not checked yet.
+[Types](./10-types.md) is the whole design, with a table saying which parts
+run.
 
 ## Values
 
@@ -398,6 +403,7 @@ documents.
 | `===` / `!==` | Mean what `==` / `!=` mean. Both spellings are the strict comparison; there is no loose `==` to choose between |
 | `x++` / `x--` | Statement position only, desugared to `+= 1` / `-= 1` |
 | `?.` | Guards an absent base **and a missing property** |
+| `?[` | Guards an absent base, **a missing key and an index past the end** |
 | `??` | The value on the right when the left is absent |
 | `=>` | Arrow functions, in all four shapes: `x =>`, `() =>`, `(x) =>`, `(a, b) =>` |
 
@@ -405,9 +411,10 @@ An arrow kept in a variable is called like a function, as in JavaScript:
 `let add = (a, b) => a + b;` then `add(2, 3)`. It sees and writes what is
 around it, like any closure. A `fn` of the same name wins over the variable.
 
-`?.` and `??` are not conveniences. Rux turns on strict property access for every
-document, so a typo like `user.nmae` raises instead of quietly evaluating to
-nothing, and these two are the way to say "absent is a legitimate answer here":
+`?.`, `?[` and `??` are not conveniences. Rux turns on strict property access
+for every document, so a typo like `user.nmae` raises instead of quietly
+evaluating to nothing, and a missing key read with `[` raises the same way.
+These are the way to say "absent is a legitimate answer here":
 
 ```rux
 {{ user?.nickname ?? "none" }}
@@ -573,7 +580,7 @@ wrong with the document and must not fail a build.
 
 ## If you know rhai
 
-Eight things behave differently under the fork. All eight are in
+Nine things behave differently under the fork. All nine are in
 `crates/rux-rhai/DIVERGENCE.md` with the files they touch.
 
 1. `?.` guards a missing **property**, not only an absent base.
@@ -587,6 +594,8 @@ Eight things behave differently under the fork. All eight are in
 7. `{ a: 1 }` is a map, as `#{ a: 1 }` is.
 8. **Type annotations**: `let n: int`, `fn f(x: T): R`, `(a: T) => …` and
    `type Name = …;` parse, and are erased before anything runs.
+9. `?[` guards a missing key and an index past the end, not only an absent
+   base.
 
 Outside the engine, and so not divergences: strict map properties, JS method
 names, `.length`, `null`, `print`/`debug`, `===`/`!==`, and float division for

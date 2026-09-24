@@ -2379,12 +2379,15 @@ impl Engine {
     ) -> ParseResult<Expr> {
         match (lhs, rhs) {
             // lhs[...][...].rhs
-            (Expr::Index(mut x, options, pos), rhs)
+            (Expr::Index(mut x, own, pos), rhs)
                 if !parent_options.intersects(ASTFlags::BREAK) =>
             {
-                let options = options | parent_options;
+                let options = own | parent_options;
                 x.rhs = self.make_dot_expr(x.rhs, rhs, options, op_flags, op_pos)?;
-                Ok(Expr::Index(x, ASTFlags::empty(), pos))
+                // RUX DIVERGENCE: keep the `?[`. Upstream rebuilt this node with
+                // no flags, so `a?[k].y` lost its guard the moment a chain went on
+                // past it and raised on a `()` base. See DIVERGENCE.md, item 9.
+                Ok(Expr::Index(x, own & ASTFlags::NEGATED, pos))
             }
             // lhs.module::id - syntax error
             #[cfg(not(feature = "no_module"))]

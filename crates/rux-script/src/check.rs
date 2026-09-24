@@ -109,10 +109,17 @@ struct Checker<'a> {
     globals: HashMap<String, Type>,
     /// Local scopes, innermost last.
     scopes: Vec<HashMap<String, Type>>,
+    /// What conditions have established, frame by frame. See `fact`.
+    facts: Vec<HashMap<String, Type>>,
+    /// The names each function writes, itself or through what it calls.
+    writes: HashMap<(String, usize), std::collections::HashSet<String>>,
     /// A `let`'s declared type, by the position of its name.
     declared: HashMap<Position, Type>,
     /// What each `return` in the function being checked hands back.
     returns: Vec<Vec<Type>>,
+    /// The declared result of each function being checked, innermost last,
+    /// with the function's name; `None` for one whose result is inferred.
+    results: Vec<Option<(String, Type)>>,
     findings: Vec<Finding>,
     /// While positive, findings are counted rather than kept: used to try a
     /// value against each member of a union.
@@ -134,8 +141,11 @@ impl<'a> Checker<'a> {
             fns: HashMap::new(),
             globals: HashMap::new(),
             scopes: Vec::new(),
+            facts: vec![HashMap::new()],
+            writes: HashMap::new(),
             declared: HashMap::new(),
             returns: Vec::new(),
+            results: Vec::new(),
             findings: Vec::new(),
             quiet: 0,
             quiet_errors: 0,
@@ -388,6 +398,9 @@ impl<'a> Checker<'a> {
     }
 
     fn lookup(&self, name: &str) -> Option<Type> {
+        if let Some(t) = self.fact(name) {
+            return Some(t);
+        }
         for scope in self.scopes.iter().rev() {
             if let Some(t) = scope.get(name) {
                 return Some(t.clone());
@@ -398,9 +411,295 @@ impl<'a> Checker<'a> {
 
     fn with_scope<T>(&mut self, f: impl FnOnce(&mut Self) -> T) -> T {
         self.scopes.push(HashMap::new());
+        self.facts.push(HashMap::new());
         let out = f(self);
+        self.facts.pop();
         self.scopes.pop();
         out
+    }
+
+    // ----- Narrowing -------------------------------------------------------
+    //
+    // A fact is what a condition established about a path (`t`, `t.note`,
+    // `m[k]`) for the region it guards: its type there. Facts live in frames
+    // that open and close with blocks, so a fact never outlives its region.
+
+    /// What is known about `path` here, if anything.
+    fn fact(&self, path: &str) -> Option<Type> {
+        self.facts.iter().rev().find_map(|frame| frame.get(path).cloned())
+    }
+
+    /// Run `f` with `facts` known.
+    fn with_facts<T>(&mut self, facts: Vec<(String, Type)>, f: impl FnOnce(&mut Self) -> T) -> T {
+        self.facts.push(facts.into_iter().collect());
+        let out = f(self);
+        self.facts.pop();
+        out
+    }
+
+    /// Know `facts` for the rest of the current block: an early return has
+    /// ruled the other case out.
+    fn add_facts(&mut self, facts: Vec<(String, Type)>) {
+        if self.facts.is_empty() {
+            self.facts.push(HashMap::new());
+        }
+        let frame = self.facts.last_mut().unwrap();
+        frame.extend(facts);
+    }
+
+    /// Forget everything known about `root` and what hangs off it, because
+    /// something has written it.
+    fn forget(&mut self, root: &str) {
+        let dot = format!("{root}.");
+        let bracket = format!("{root}[");
+        for frame in &mut self.facts {
+            frame.retain(|path, _| path != root && !path.starts_with(&dot) && !path.starts_with(&bracket));
+        }
+    }
+
+    /// `t` without `null`, keeping a declared name where there was nothing to
+    /// take out.
+    fn non_null(&self, t: &Type) -> Type {
+        match self.resolve(t) {
+            Type::Union(_) | Type::Null => without_null(&self.resolve(t)),
+            _ => t.clone(),
+        }
+    }
+
+    /// What `cond` being `truth` establishes, as facts.
+    fn facts_of(&mut self, cond: &Expr, truth: bool) -> Vec<(String, Type)> {
+        match cond {
+            Expr::FnCall(call, _) if call.name == "!" && call.args.len() == 1 => {
+                self.facts_of(&call.args[0], !truth)
+            }
+            // All of an `&&` held, or none of an `||` did.
+            Expr::And(items, _) if truth => self.facts_of_all(items, true),
+            Expr::Or(items, _) if !truth => self.facts_of_all(items, false),
+            Expr::FnCall(call, _)
+                if matches!(call.name.as_str(), "==" | "!=" | "===" | "!==") && call.args.len() == 2 =>
+            {
+                let equal = matches!(call.name.as_str(), "==" | "===") == truth;
+                let (a, b) = (&call.args[0], &call.args[1]);
+                match self.facts_of_equality(a, b, equal) {
+                    Some(facts) => facts,
+                    None => self.facts_of_equality(b, a, equal).unwrap_or_default(),
+                }
+            }
+            // `"note" in t` and `k in m`, which rhai writes `t.contains("note")`.
+            Expr::FnCall(call, _) if call.name == "contains" && call.args.len() == 2 && truth => {
+                self.facts_of_in(&call.args[0], &call.args[1])
+            }
+            // Truthiness: a path that is truthy is not `null`.
+            _ => {
+                let Some(path) = path_of(cond) else { return Vec::new() };
+                let t = self.infer_quietly(cond);
+                if truth {
+                    vec![(path, self.non_null(&t))]
+                } else if falsy_only_when_null(&without_null(&self.resolve(&t))) && t != Type::Any {
+                    vec![(path, Type::Null)]
+                } else {
+                    Vec::new()
+                }
+            }
+        }
+    }
+
+    fn facts_of_all(&mut self, items: &[Expr], truth: bool) -> Vec<(String, Type)> {
+        let mut out: Vec<(String, Type)> = Vec::new();
+        for item in items {
+            let facts = self.with_facts(out.clone(), |c| c.facts_of(item, truth));
+            out.extend(facts);
+        }
+        out
+    }
+
+    /// `side == other` (or `!=`, as `equal` says) where `side` is a path and
+    /// `other` a literal or `null`. `None` when `side` is not something a fact
+    /// can be kept about.
+    fn facts_of_equality(&mut self, side: &Expr, other: &Expr, equal: bool) -> Option<Vec<(String, Type)>> {
+        // `type_of(x) == "string"`.
+        if let (Expr::FnCall(call, _), Expr::StringConstant(tag, _)) = (side, other) {
+            if call.name == "type_of" && call.args.len() == 1 {
+                let path = path_of(&call.args[0])?;
+                let t = self.infer_quietly(&call.args[0]);
+                let t = self.resolve(&t);
+                let members = match t {
+                    Type::Union(m) => m,
+                    other => vec![other],
+                };
+                let kept: Vec<Type> =
+                    members.into_iter().filter(|m| is_type_of(m, tag, &self.types) == equal).collect();
+                return Some(if kept.is_empty() { Vec::new() } else { vec![(path, Type::union(kept))] });
+            }
+        }
+        let path = path_of(side)?;
+        let t = self.infer_quietly(side);
+        let is_null = matches!(other, Expr::Unit(_))
+            || matches!(other, Expr::Custom(c, _) if c.tokens.first().is_some_and(|t| t.as_str() == "null"));
+        if is_null {
+            return Some(vec![(path, if equal { Type::Null } else { self.non_null(&t) })]);
+        }
+        let Expr::StringConstant(s, _) = other else { return Some(Vec::new()) };
+        let s = s.to_string();
+        let mut out = Vec::new();
+        let resolved = self.resolve(&t);
+        let members = match &resolved {
+            Type::Union(m) => m.clone(),
+            other => vec![other.clone()],
+        };
+        let narrowed: Vec<Type> = if equal {
+            members
+                .iter()
+                .filter_map(|m| match m {
+                    Type::Literal(x) if *x == s => Some(m.clone()),
+                    Type::String | Type::Any => Some(Type::Literal(s.clone())),
+                    _ => None,
+                })
+                .collect()
+        } else {
+            members.iter().filter(|m| **m != Type::Literal(s.clone())).cloned().collect()
+        };
+        if !narrowed.is_empty() && (equal || narrowed.len() < members.len()) {
+            out.push((path.clone(), Type::union(narrowed)));
+        }
+        // A discriminant: `load.state == "done"` narrows `load` too.
+        if let Some(cut) = path.rfind('.') {
+            let (parent, field) = (&path[..cut], &path[cut + 1..]);
+            if let Some(Type::Union(members)) = self.type_at(parent).map(|t| self.resolve(&t)) {
+                let lit = Type::Literal(s.clone());
+                let kept: Vec<Type> = members
+                    .iter()
+                    .filter(|m| match self.resolve(m) {
+                        Type::Record(fields) => match fields.iter().find(|f| f.name == field) {
+                            Some(f) if equal => self.assignable(&lit, &f.ty),
+                            Some(f) => self.resolve(&f.ty) != lit,
+                            None => !equal,
+                        },
+                        Type::Null => !equal,
+                        _ => true,
+                    })
+                    .cloned()
+                    .collect();
+                if !kept.is_empty() && kept.len() < members.len() {
+                    out.push((parent.to_string(), Type::union(kept)));
+                }
+            }
+        }
+        Some(out)
+    }
+
+    /// `key in map` held: the key is there.
+    fn facts_of_in(&mut self, map: &Expr, key: &Expr) -> Vec<(String, Type)> {
+        let Some(base) = path_of(map) else { return Vec::new() };
+        let t = self.infer_quietly(map);
+        let t = self.resolve(&t);
+        match key {
+            Expr::StringConstant(k, _) => {
+                let path = format!("{base}.{k}");
+                let mut out = Vec::new();
+                if let Some(field) = self.type_at(&path) {
+                    out.push((path, self.non_null(&field)));
+                }
+                // Only the members of a union that have the field.
+                if let Type::Union(members) = &t {
+                    let kept: Vec<Type> = members
+                        .iter()
+                        .filter(|m| match self.resolve(m) {
+                            Type::Record(fields) => fields.iter().any(|f| f.name == k.as_str()),
+                            Type::Dict(_) | Type::Any => true,
+                            _ => false,
+                        })
+                        .cloned()
+                        .collect();
+                    if !kept.is_empty() && kept.len() < members.len() {
+                        out.push((base, Type::union(kept)));
+                    }
+                }
+                out
+            }
+            Expr::Variable(v, ..) if v.2.is_empty() => match without_null(&t) {
+                Type::Dict(value) => vec![(format!("{base}[{}]", v.1), *value)],
+                _ => Vec::new(),
+            },
+            _ => Vec::new(),
+        }
+    }
+
+    /// The names a function writes that are not its own: assignments to
+    /// anything it did not declare, and whatever the functions it calls write.
+    fn writes_of(&mut self, name: &str, arity: usize) -> std::collections::HashSet<String> {
+        use std::collections::HashSet;
+        let key = (name.to_string(), arity);
+        if let Some(w) = self.writes.get(&key) {
+            return w.clone();
+        }
+        // Recursion ends here, with what is known so far.
+        self.writes.insert(key.clone(), HashSet::new());
+        let Some(info) = self.fns.get(&key).cloned() else { return HashSet::new() };
+        let mut assigned: HashSet<String> = HashSet::new();
+        let mut locals: HashSet<String> = info.params.iter().map(|(p, _)| p.clone()).collect();
+        let mut calls: Vec<(String, usize)> = Vec::new();
+        for stmt in info.def.body.statements() {
+            stmt.walk(&mut Vec::new(), &mut |path| {
+                match path.last() {
+                    Some(rhai::ASTNode::Stmt(Stmt::Assignment(x))) => {
+                        if let Some(root) = path_of(&x.1.lhs).map(|p| root_of(&p).to_string()) {
+                            assigned.insert(root);
+                        }
+                    }
+                    Some(rhai::ASTNode::Stmt(Stmt::Var(x, ..))) => {
+                        locals.insert(x.0.name.to_string());
+                    }
+                    Some(rhai::ASTNode::Stmt(Stmt::FnCall(call, _)))
+                    | Some(rhai::ASTNode::Expr(Expr::FnCall(call, _)))
+                        if call.namespace.is_empty() =>
+                    {
+                        calls.push((call.name.to_string(), call.args.len()));
+                    }
+                    _ => {}
+                }
+                true
+            });
+        }
+        let mut out: HashSet<String> = assigned.difference(&locals).cloned().collect();
+        for (callee, n) in calls {
+            if self.fns.contains_key(&(callee.clone(), n)) {
+                out.extend(self.writes_of(&callee, n));
+            }
+        }
+        self.writes.insert(key, out.clone());
+        out
+    }
+
+    /// The type at a path, from what is known and the records along it, with
+    /// nothing reported. `None` when some step of it cannot be followed.
+    fn type_at(&self, path: &str) -> Option<Type> {
+        if let Some(t) = self.fact(path) {
+            return Some(t);
+        }
+        let Some(cut) = path.rfind(['.', '[']) else { return self.lookup(path) };
+        let (parent, rest) = path.split_at(cut);
+        let parent = self.type_at(parent)?;
+        let parent = without_null(&self.resolve(&parent));
+        let field = rest.trim_start_matches(['.', '[']).trim_end_matches(']');
+        let field_type = |t: &Type| match self.resolve(t) {
+            Type::Record(fields) => fields.iter().find(|f| f.name == field).map(|f| {
+                if f.optional {
+                    f.ty.clone().optional()
+                } else {
+                    f.ty.clone()
+                }
+            }),
+            Type::Dict(v) => Some((*v).clone().optional()),
+            _ => None,
+        };
+        match parent {
+            Type::Union(members) => {
+                let found: Vec<Type> = members.iter().filter_map(field_type).collect();
+                (!found.is_empty()).then(|| Type::union(found))
+            }
+            other => field_type(&other),
+        }
     }
 
     // ----- Statements ------------------------------------------------------
@@ -414,8 +713,98 @@ impl<'a> Checker<'a> {
         let mut last = Type::Null;
         for stmt in statements {
             last = self.check_stmt(stmt);
+            self.after(stmt);
         }
         last
+    }
+
+    /// What a statement settles for the ones after it. An `if` that leaves
+    /// settles its condition: after `if t == null { return; }`, `t` is not
+    /// `null`.
+    fn after(&mut self, stmt: &Stmt) {
+        if let Stmt::If(x, _) = stmt {
+            let (body, branch) = (exits(x.body.statements()), exits(x.branch.statements()));
+            if body && !branch {
+                let facts = self.facts_of(&x.expr, false);
+                self.add_facts(facts);
+            } else if branch && !body {
+                let facts = self.facts_of(&x.expr, true);
+                self.add_facts(facts);
+            }
+        }
+    }
+
+    /// Statements whose last one is the value of a function declared to
+    /// return `want`: that value is checked against it, reaching into each
+    /// branch of an `if` and each arm of a `switch`.
+    fn check_statements_for(&mut self, statements: &[Stmt], name: &str, want: &Type) {
+        let Some((last, before)) = statements.split_last() else {
+            if !self.assignable(&Type::Null, want) {
+                let message =
+                    format!("`{name}` is declared to return {}, and it returns nothing", self.show(want));
+                self.error(Position::NONE, message);
+            }
+            return;
+        };
+        for stmt in before {
+            self.check_stmt(stmt);
+            self.after(stmt);
+        }
+        match last {
+            Stmt::Expr(e) => self.check_result(e, name, want),
+            Stmt::If(x, _) if !x.branch.statements().is_empty() => {
+                self.infer(&x.expr);
+                let yes = self.facts_of(&x.expr, true);
+                let no = self.facts_of(&x.expr, false);
+                self.with_facts(yes, |c| {
+                    c.with_scope(|c| c.check_statements_for(x.body.statements(), name, want))
+                });
+                self.with_facts(no, |c| {
+                    c.with_scope(|c| c.check_statements_for(x.branch.statements(), name, want))
+                });
+            }
+            Stmt::Block(b) => self.with_scope(|c| c.check_statements_for(b.statements(), name, want)),
+            Stmt::Switch(x, pos) => {
+                self.check_switch(&x.0, &x.1, *pos, Some((name, want)));
+            }
+            // A `return` checks itself.
+            Stmt::Return(..) | Stmt::BreakLoop(..) => {
+                self.check_stmt(last);
+            }
+            other => {
+                let got = self.check_stmt(other);
+                if !exits(std::slice::from_ref(other)) && !self.assignable(&got, want) {
+                    self.result_mismatch(other.position(), name, want, &got);
+                }
+            }
+        }
+    }
+
+    /// One value a function hands back, checked against its declared result.
+    fn check_result(&mut self, e: &Expr, name: &str, want: &Type) {
+        // A block used as the value, which is how a `switch` or an `if` in
+        // expression position arrives: its own last statement is the value.
+        if let Expr::Stmt(block) = e {
+            if self.closure_of(e).is_none() {
+                self.with_scope(|c| c.check_statements_for(block.statements(), name, want));
+                return;
+            }
+        }
+        let before = self.findings.len();
+        self.check_expr(e, want);
+        if self.findings.len() == before + 1 {
+            let got = self.infer_quietly(e);
+            let last = self.findings.last_mut().unwrap();
+            if last.is_error && last.message.starts_with("this is ") {
+                last.message = format!("`{name}` is declared to return `{want}`, and this is `{got}`");
+            }
+        }
+    }
+
+    fn result_mismatch(&mut self, pos: Position, name: &str, want: &Type, got: &Type) {
+        let message =
+            format!("`{name}` is declared to return {}, and this is {}", self.show(want), self.show(got));
+        self.error(pos, message);
     }
 
     /// Check a statement, returning the type of its value (`null` for one that
@@ -429,6 +818,11 @@ impl<'a> Checker<'a> {
             }
             Stmt::Assignment(x) => {
                 let (op, bin) = &**x;
+                // What was known about the target no longer holds once it is
+                // written; what it holds now is its declared type.
+                if let Some(path) = path_of(&bin.lhs) {
+                    self.forget(&path);
+                }
                 let target = self.infer(&bin.lhs);
                 match op.get_op_assignment_info() {
                     None => {
@@ -473,25 +867,20 @@ impl<'a> Checker<'a> {
             }
             Stmt::If(x, _) => {
                 self.infer(&x.expr);
-                let a = self.check_block(&x.body);
-                let b = self.check_block(&x.branch);
+                let yes = self.facts_of(&x.expr, true);
+                let no = self.facts_of(&x.expr, false);
+                let a = self.with_facts(yes, |c| c.check_block(&x.body));
+                let b = self.with_facts(no, |c| c.check_block(&x.branch));
                 Type::union([a, b])
             }
-            Stmt::Switch(x, _) => {
-                let (subject, cases) = &**x;
-                self.infer(subject);
-                let mut out = Vec::new();
-                for case in &cases.expressions {
-                    self.infer(&case.lhs);
-                    out.push(self.infer(&case.rhs));
-                }
-                if out.is_empty() {
-                    Type::Null
-                } else {
-                    Type::union(out)
-                }
+            Stmt::Switch(x, pos) => self.check_switch(&x.0, &x.1, *pos, None),
+            Stmt::While(x, _) => {
+                self.infer(&x.expr);
+                let yes = self.facts_of(&x.expr, true);
+                self.with_facts(yes, |c| c.check_block(&x.body));
+                Type::Null
             }
-            Stmt::While(x, _) | Stmt::Do(x, ..) => {
+            Stmt::Do(x, ..) => {
                 self.infer(&x.expr);
                 self.check_block(&x.body);
                 Type::Null
@@ -500,7 +889,22 @@ impl<'a> Checker<'a> {
                 let (var, counter, flow) = &**x;
                 let iterable = self.infer(&flow.expr);
                 let item = self.element_of(&flow.expr, &iterable);
+                // `for k in keys(m)`: every `k` is a key `m` has.
+                let keyed = match &flow.expr {
+                    Expr::FnCall(call, _) if call.name == "keys" && call.args.len() == 1 => {
+                        path_of(&call.args[0]).zip(Some(call.args[0].clone()))
+                    }
+                    _ => None,
+                };
+                let mut facts = Vec::new();
+                if let Some((base, map)) = keyed {
+                    let t = self.infer_quietly(&map);
+                    if let Type::Dict(value) = without_null(&self.resolve(&t)) {
+                        facts.push((format!("{base}[{}]", var.name), *value));
+                    }
+                }
                 self.with_scope(|c| {
+                    c.add_facts(facts);
                     c.bind(var.name.as_str(), item);
                     if let Some(counter) = counter {
                         c.bind(counter.name.as_str(), Type::Int);
@@ -522,7 +926,24 @@ impl<'a> Checker<'a> {
                 Type::Null
             }
             Stmt::Expr(e) => self.infer(e),
-            Stmt::Return(value, ..) => {
+            Stmt::Return(value, flags, pos) => {
+                // `throw` is a `return` with a flag, and what it throws is not
+                // a result.
+                let thrown = flags.contains(ASTFlags::BREAK);
+                if let (false, Some(Some((name, want)))) = (thrown, self.results.last().cloned()) {
+                    match value {
+                        Some(v) => self.check_result(v, &name, &want),
+                        None if !self.assignable(&Type::Null, &want) => {
+                            let message = format!(
+                                "`{name}` is declared to return {}, and this returns nothing",
+                                self.show(&want)
+                            );
+                            self.error(*pos, message);
+                        }
+                        None => {}
+                    }
+                    return Type::Null;
+                }
                 let ty = value.as_ref().map_or(Type::Null, |v| self.infer(v));
                 if let Some(returns) = self.returns.last_mut() {
                     returns.push(ty);
@@ -536,6 +957,98 @@ impl<'a> Checker<'a> {
                 Type::Null
             }
             _ => Type::Null,
+        }
+    }
+
+    /// A `switch`: each arm runs knowing which case matched, and one on a
+    /// literal union with no `_` arm must handle every member.
+    fn check_switch(
+        &mut self,
+        subject: &Expr,
+        cases: &rhai::SwitchCasesCollection,
+        pos: Position,
+        want: Option<(&str, &Type)>,
+    ) -> Type {
+        let subject_type = self.infer(subject);
+        let path = path_of(subject);
+        // The parser keeps only each case value's hash, so the members are
+        // hashed the same way to see which arm, if any, each one reaches.
+        let members = literal_members(&without_null(&self.resolve(&subject_type)))
+            .unwrap_or_default()
+            .into_iter()
+            .map(|quoted| quoted.trim_matches('"').to_string())
+            .collect::<Vec<_>>();
+        let mut arm_members: HashMap<usize, Vec<String>> = HashMap::new();
+        let mut unhandled = Vec::new();
+        for m in &members {
+            match cases.cases.get(&case_hash(m)) {
+                Some(arms) => {
+                    for arm in arms.iter() {
+                        arm_members.entry(*arm).or_default().push(m.clone());
+                    }
+                }
+                None => unhandled.push(m.clone()),
+            }
+        }
+        if cases.def_case.is_none() && !unhandled.is_empty() && !members.is_empty() {
+            let listed: Vec<String> = unhandled.iter().map(|m| format!("{m:?}")).collect();
+            self.error(
+                pos,
+                format!(
+                    "this `switch` does not handle {}, and has no `_` arm for {}",
+                    listed.join(", "),
+                    if unhandled.len() == 1 { "it" } else { "them" }
+                ),
+            );
+        }
+
+        let mut out = Vec::new();
+        for (i, case) in cases.expressions.iter().enumerate() {
+            let matched = if cases.def_case == Some(i) { Some(&unhandled) } else { arm_members.get(&i) };
+            let mut facts = Vec::new();
+            if let (Some(path), Some(lits)) = (&path, matched) {
+                if !lits.is_empty() {
+                    let narrowed = Type::union(lits.iter().map(|l| Type::Literal(l.clone())));
+                    facts.push((path.clone(), narrowed));
+                    // A discriminant narrows the value it belongs to.
+                    if let Some(cut) = path.rfind('.') {
+                        let (parent, field) = (&path[..cut], &path[cut + 1..]);
+                        if let Some(Type::Union(all)) = self.type_at(parent).map(|t| self.resolve(&t)) {
+                            let kept: Vec<Type> = all
+                                .iter()
+                                .filter(|m| match self.resolve(m) {
+                                    Type::Record(fields) => fields.iter().any(|f| {
+                                        f.name == field
+                                            && lits.iter().any(|l| self.assignable(&Type::Literal(l.clone()), &f.ty))
+                                    }),
+                                    _ => false,
+                                })
+                                .cloned()
+                                .collect();
+                            if !kept.is_empty() {
+                                facts.push((parent.to_string(), Type::union(kept)));
+                            }
+                        }
+                    }
+                }
+            }
+            let arm = self.with_facts(facts, |c| {
+                c.infer(&case.lhs);
+                match want {
+                    // Each arm is a value the function returns.
+                    Some((name, want)) => {
+                        c.check_result(&case.rhs, name, want);
+                        want.clone()
+                    }
+                    None => c.infer(&case.rhs),
+                }
+            });
+            out.push(arm);
+        }
+        if out.is_empty() {
+            Type::Null
+        } else {
+            Type::union(out)
         }
     }
 
@@ -819,16 +1332,23 @@ impl<'a> Checker<'a> {
             Expr::Dot(x, flags, _) | Expr::Index(x, flags, _) => {
                 let base = self.infer(&x.lhs);
                 let index = matches!(e, Expr::Index(..));
-                let (ty, short) = self.chain(base, index, *flags, &x.rhs);
+                let path = path_of(&x.lhs);
+                let (ty, short) = self.chain(base, index, *flags, &x.rhs, path);
                 if short {
                     ty.optional()
                 } else {
                     ty
                 }
             }
+            // Each operand runs knowing the ones before it held (`&&`) or
+            // failed (`||`): `t != null && t.done` reads `t` as not `null`.
             Expr::And(items, _) | Expr::Or(items, _) => {
+                let truth = matches!(e, Expr::And(..));
+                let mut known: Vec<(String, Type)> = Vec::new();
                 for i in items.iter() {
-                    self.infer(i);
+                    self.with_facts(known.clone(), |c| c.infer(i));
+                    let more = self.with_facts(known.clone(), |c| c.facts_of(i, truth));
+                    known.extend(more);
                 }
                 Type::Bool
             }
@@ -859,47 +1379,97 @@ impl<'a> Checker<'a> {
     /// the step is `[ ]` rather than `.`, and `flags` whether it was written
     /// `?.` or `?[`. The second half of the answer is whether any step was
     /// optional, which makes the whole chain possibly `null`.
-    fn chain(&mut self, base: Type, index: bool, flags: ASTFlags, rhs: &Expr) -> (Type, bool) {
+    fn chain(
+        &mut self,
+        base: Type,
+        index: bool,
+        flags: ASTFlags,
+        rhs: &Expr,
+        path: Option<String>,
+    ) -> (Type, bool) {
         let optional = flags.contains(ASTFlags::NEGATED);
         match rhs {
             Expr::Dot(x, inner, _) | Expr::Index(x, inner, _) => {
-                let step = self.step(&base, index, optional, &x.lhs);
-                let (ty, short) = self.chain(step, matches!(rhs, Expr::Index(..)), *inner, &x.rhs);
+                let (step, here) = self.step(&base, index, optional, &x.lhs, path);
+                let next_index = matches!(rhs, Expr::Index(..));
+                let (ty, short) = self.chain(step, next_index, *inner, &x.rhs, here);
                 (ty, short || optional)
             }
-            _ => (self.step(&base, index, optional, rhs), optional),
+            _ => (self.step(&base, index, optional, rhs, path).0, optional),
         }
     }
 
     /// One step of a chain: `.name`, `.method(…)` or `[index]` applied to a
-    /// `base`.
-    fn step(&mut self, base: &Type, index: bool, optional: bool, what: &Expr) -> Type {
+    /// `base` that sits at `path`. Returns the step's type and its own path.
+    fn step(
+        &mut self,
+        base: &Type,
+        index: bool,
+        optional: bool,
+        what: &Expr,
+        path: Option<String>,
+    ) -> (Type, Option<String>) {
+        let here = path.clone().and_then(|p| path_step(p, index, what));
+        // What a condition established about this step wins: `t.note` inside
+        // `if t?.note != null` is present, whatever the record says. A fact
+        // that it may be `null` says it may be absent, so the rules for
+        // reading an absent one still apply, and only the type is taken.
+        let known = here.as_deref().and_then(|p| self.fact(p));
+        if let Some(known) = &known {
+            if !may_be_null(&self.resolve(known)) {
+                if index {
+                    self.infer(what);
+                }
+                return (known.clone(), here);
+            }
+        }
         // Messages name the type as written (`Task`), not what it expands to.
         let shown = if optional { without_null(base) } else { base.clone() };
         let base = self.resolve(&shown);
-        if index {
+        let read = Read { optional, path: path.as_deref() };
+        let ty = if index {
             let key = self.infer(what);
-            return self.index(&base, &shown, &key, what);
-        }
-        match what {
-            Expr::Property(p, pos) => self.property(&base, &shown, p.2.as_str(), *pos),
-            Expr::MethodCall(call, pos) => self.method(&base, call, *pos),
-            // A chain whose first step is a variable used as a property, which
-            // rhai writes for `a.b` inside some shapes.
-            Expr::Variable(v, ..) => self.property(&base, &shown, v.1.as_str(), what.position()),
-            other => {
-                self.infer(other);
-                Type::Any
+            self.index(&base, &shown, &key, what, read)
+        } else {
+            match what {
+                Expr::Property(p, pos) => self.property(&base, &shown, p.2.as_str(), *pos, read),
+                Expr::MethodCall(call, pos) => self.method(&base, call, *pos),
+                // A chain whose first step is a variable used as a property,
+                // which rhai writes for `a.b` inside some shapes.
+                Expr::Variable(v, ..) => {
+                    self.property(&base, &shown, v.1.as_str(), what.position(), read)
+                }
+                other => {
+                    self.infer(other);
+                    Type::Any
+                }
             }
-        }
+        };
+        (known.unwrap_or(ty), here)
     }
 
-    fn property(&mut self, base: &Type, shown: &Type, name: &str, pos: Position) -> Type {
+    fn property(&mut self, base: &Type, shown: &Type, name: &str, pos: Position, read: Read) -> Type {
         match base {
             Type::Any => Type::Any,
             Type::Array(_) | Type::String | Type::Literal(_) if name == "length" => Type::Int,
             Type::Record(fields) => match fields.iter().find(|f| f.name == name) {
-                Some(f) if f.optional => f.ty.clone().optional(),
+                Some(f) if f.optional => {
+                    // The field may not be there, and strict map properties
+                    // make reading an absent one raise: `?.` is how a program
+                    // says it knows. Narrowing is the other way, handled above.
+                    if !read.optional {
+                        let whole = read.path.map_or_else(|| "…".to_string(), str::to_string);
+                        self.error(
+                            pos,
+                            format!(
+                                "`{name}` may be absent from {}, so read it as `{whole}?.{name}`, \
+                                 or check it first: `if {whole}?.{name} != null {{ … }}`",
+                                self.show(shown)
+                            ),
+                        );
+                    }
+                    f.ty.clone().optional()
+                }
                 Some(f) => f.ty.clone(),
                 None => {
                     let names: Vec<&str> = fields.iter().map(|f| f.name.as_str()).collect();
@@ -909,17 +1479,37 @@ impl<'a> Checker<'a> {
                     Type::Any
                 }
             },
-            Type::Dict(value) => (**value).clone(),
+            Type::Dict(value) => {
+                // Any key of a dictionary may be missing, as an optional field
+                // may, and reading a missing one raises the same way.
+                if !read.optional {
+                    let whole = read.path.map_or_else(|| "…".to_string(), str::to_string);
+                    self.error(
+                        pos,
+                        format!(
+                            "{} may have no `{name}`, so read it as `{whole}?.{name}`, or check \
+                             first: `if \"{name}\" in {whole} {{ … }}`",
+                            self.show(shown)
+                        ),
+                    );
+                }
+                (**value).clone()
+            }
             Type::Union(members) => {
                 let members = members.clone();
+                // Reported once for the union rather than once per member.
+                let before = self.findings.len();
                 let out: Vec<Type> = members
                     .iter()
                     .filter(|m| !matches!(m, Type::Null))
                     .map(|m| {
                         let m = self.resolve(m);
-                        self.property(&m, &m, name, pos)
+                        self.property(&m, &m, name, pos, read)
                     })
                     .collect();
+                if self.findings.len() > before + 1 {
+                    self.findings.truncate(before + 1);
+                }
                 Type::union(out)
             }
             // `.length` on a map, or a field on a number: rhai raises, and so
@@ -939,7 +1529,7 @@ impl<'a> Checker<'a> {
         }
     }
 
-    fn index(&mut self, base: &Type, shown: &Type, key: &Type, what: &Expr) -> Type {
+    fn index(&mut self, base: &Type, shown: &Type, key: &Type, what: &Expr, read: Read) -> Type {
         match base {
             Type::Array(item) => {
                 if !self.assignable(key, &Type::Number) {
@@ -948,7 +1538,27 @@ impl<'a> Checker<'a> {
                 }
                 (**item).clone()
             }
-            Type::Dict(value) => (**value).clone(),
+            Type::Dict(value) => {
+                // A key may be missing, and `[` raises on one that is: `?[`
+                // reads it as possibly `null`, and `k in m` rules it out.
+                if !read.optional {
+                    let whole = read.path.map_or_else(|| "…".to_string(), str::to_string);
+                    let k = match what {
+                        Expr::Variable(v, ..) => v.1.to_string(),
+                        Expr::StringConstant(s, _) => format!("{s:?}"),
+                        _ => "k".to_string(),
+                    };
+                    self.error(
+                        what.position(),
+                        format!(
+                            "{} may have no such key, so read it as `{whole}?[{k}]`, or check \
+                             first: `if {k} in {whole} {{ … }}`",
+                            self.show(shown)
+                        ),
+                    );
+                }
+                (**value).clone()
+            }
             Type::Record(fields) => match self.resolve(key) {
                 Type::Literal(k) => match fields.iter().find(|f| f.name == k) {
                     Some(f) if f.optional => f.ty.clone().optional(),
@@ -1083,6 +1693,9 @@ impl<'a> Checker<'a> {
                     // `count + 1` stays an `int` when `count` is one.
                     let a = self.int_beside(&a, &args[0], &b);
                     let b = self.int_beside(&b, &args[1], &a);
+                    if matches!(name, "==" | "!=" | "===" | "!==") {
+                        self.check_comparable(&args[0], &a, &args[1], &b, pos);
+                    }
                     self.binary(name, &a, &b, &args[1], pos)
                 }
                 _ => Type::Any,
@@ -1157,6 +1770,55 @@ impl<'a> Checker<'a> {
     /// Infer each argument of a call whose signature is not known. A closure
     /// among them gets `any` parameters without a word: whatever it is handed
     /// is already unchecked, and that was reported where it began.
+    /// A comparison that can never be true is almost always a typo: `filter ==
+    /// "al"` for `"all"`, or a number compared with text. `null` is always
+    /// allowed on either side, since checking for it is how a program is
+    /// careful.
+    fn check_comparable(&mut self, left: &Expr, a: &Type, right: &Expr, b: &Type, pos: Position) {
+        if self.overlaps(a, b) {
+            return;
+        }
+        for (side, other, t) in [(left, right, a), (right, left, b)] {
+            if let Expr::StringConstant(s, _) = other {
+                if let Some(members) = literal_members(&self.resolve(t)) {
+                    let bare: Vec<&str> = members.iter().map(|m| m.trim_matches('"')).collect();
+                    let hint =
+                        near_miss(s, &bare).map(|m| format!("; did you mean \"{m}\"?")).unwrap_or_default();
+                    let who = path_of(side).map_or_else(|| "this".to_string(), |p| format!("`{p}`"));
+                    let message = format!(
+                        "{who} is {}, which is one of {}, so it is never {s:?}{hint}",
+                        self.show(t),
+                        members.join(", ")
+                    );
+                    self.error(pos, message);
+                    return;
+                }
+            }
+        }
+        let message =
+            format!("this compares {} with {}, which are never equal", self.show(a), self.show(b));
+        self.error(pos, message);
+    }
+
+    /// Whether a value of type `a` can ever equal one of type `b`.
+    fn overlaps(&self, a: &Type, b: &Type) -> bool {
+        let a = self.resolve(a);
+        let b = self.resolve(b);
+        match (&a, &b) {
+            (Type::Any, _) | (_, Type::Any) | (Type::Null, _) | (_, Type::Null) => true,
+            (Type::Union(m), _) => m.iter().any(|x| self.overlaps(x, &b)),
+            (_, Type::Union(m)) => m.iter().any(|x| self.overlaps(&a, x)),
+            (Type::Literal(x), Type::Literal(y)) => x == y,
+            (Type::Literal(_) | Type::String, Type::Literal(_) | Type::String) => true,
+            (Type::Number | Type::Int, Type::Number | Type::Int) => true,
+            (Type::Bool, Type::Bool) => true,
+            (Type::Record(_) | Type::Dict(_), Type::Record(_) | Type::Dict(_)) => true,
+            (Type::Array(_), Type::Array(_)) | (Type::Function(..), Type::Function(..)) => true,
+            (Type::Named(_), _) | (_, Type::Named(_)) => true,
+            _ => false,
+        }
+    }
+
     fn infer_all(&mut self, args: &[Expr]) {
         for a in args {
             if self.closure_of(a).is_some() {
@@ -1201,7 +1863,13 @@ impl<'a> Checker<'a> {
             }
         }
         let _ = pos;
-        self.function_result(name, args.len())
+        let result = self.function_result(name, args.len());
+        // Whatever the function writes may no longer be what a condition
+        // established: a fact about a signal dies at a call that writes it.
+        for written in self.writes_of(name, args.len()) {
+            self.forget(&written);
+        }
+        result
     }
 
     /// What a named function returns, checking its body the first time it is
@@ -1266,26 +1934,30 @@ impl<'a> Checker<'a> {
         // The body runs with its parameters in scope and nothing of whoever
         // called it: a script's own locals are not visible here.
         let saved = std::mem::take(&mut self.scopes);
+        let saved_facts = std::mem::replace(&mut self.facts, vec![HashMap::new()]);
         self.scopes.push(
             info.params.iter().map(|(p, t)| (p.clone(), t.clone().unwrap_or(Type::Any))).collect(),
         );
-        self.returns.push(Vec::new());
-        let last = self.check_statements(info.def.body.statements());
-        let mut results = self.returns.pop().unwrap_or_default();
-        self.scopes = saved;
-        results.push(last);
-        let inferred = widen(&Type::union(results));
-
-        if let Some(declared) = &info.result {
-            if !self.assignable(&inferred, declared) {
-                let message = format!(
-                    "`{name}` is declared to return {}, and it returns {}",
-                    self.show(declared),
-                    self.show(&inferred)
-                );
-                self.error(at, message);
+        let inferred = match &info.result {
+            // Declared: every value it hands back is checked against it.
+            Some(declared) => {
+                self.results.push(Some((name.to_string(), declared.clone())));
+                self.check_statements_for(info.def.body.statements(), name, declared);
+                self.results.pop();
+                declared.clone()
             }
-        }
+            None => {
+                self.results.push(None);
+                self.returns.push(Vec::new());
+                let last = self.check_statements(info.def.body.statements());
+                let mut results = self.returns.pop().unwrap_or_default();
+                self.results.pop();
+                results.push(last);
+                widen(&Type::union(results))
+            }
+        };
+        self.scopes = saved;
+        self.facts = saved_facts;
         if let Some(f) = self.fns.get_mut(&key) {
             f.state = FnState::Done(inferred.clone());
         }
@@ -1492,6 +2164,115 @@ impl<'a> Checker<'a> {
                 _ => Type::Any,
             }
         }
+    }
+}
+
+/// The hash a `switch` keys a string case by, computed the way the parser
+/// computes it.
+fn case_hash(value: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let value = Dynamic::from(rhai::ImmutableString::from(value));
+    let mut hasher = rhai::get_hasher();
+    value.hash(&mut hasher);
+    hasher.finish()
+}
+
+/// Whether `null` is among what `t` may be.
+fn may_be_null(t: &Type) -> bool {
+    match t {
+        Type::Null | Type::Any => true,
+        Type::Union(m) => m.iter().any(may_be_null),
+        _ => false,
+    }
+}
+
+/// The name a path starts from: `t` for `t.note`, `m` for `m[k]`.
+fn root_of(path: &str) -> &str {
+    path.split(['.', '[']).next().unwrap_or(path)
+}
+
+/// Whether a value of type `t` (with `null` already taken out) can only be
+/// falsy by being `null`: records, lists, dictionaries and functions are
+/// always truthy, while `""`, `0` and `false` are falsy values of their own.
+fn falsy_only_when_null(t: &Type) -> bool {
+    match t {
+        Type::Record(_) | Type::Array(_) | Type::Dict(_) | Type::Function(..) => true,
+        Type::Union(m) => m.iter().all(falsy_only_when_null),
+        _ => false,
+    }
+}
+
+/// Whether `type_of` answers `tag` for a value of type `t`. The names are
+/// rhai's own: `"f64"` and `"i64"` for numbers, `"()"` for `null`.
+fn is_type_of(t: &Type, tag: &str, types: &HashMap<String, Type>) -> bool {
+    let t = match t {
+        Type::Named(n) => types.get(n).cloned().unwrap_or(Type::Any),
+        other => other.clone(),
+    };
+    match tag {
+        "string" => matches!(t, Type::String | Type::Literal(_)),
+        "bool" => t == Type::Bool,
+        "array" => matches!(t, Type::Array(_)),
+        "map" => matches!(t, Type::Record(_) | Type::Dict(_)),
+        "()" => t == Type::Null,
+        "f64" | "i64" => matches!(t, Type::Number | Type::Int),
+        _ => false,
+    }
+}
+
+/// Whether a block ends by leaving: a `return`, a `throw`, a `break` or a
+/// `continue`, or an `if` both of whose branches do.
+fn exits(statements: &[Stmt]) -> bool {
+    match statements.last() {
+        Some(Stmt::Return(..) | Stmt::BreakLoop(..)) => true,
+        Some(Stmt::If(x, _)) => exits(x.body.statements()) && exits(x.branch.statements()),
+        Some(Stmt::Block(b)) => exits(b.statements()),
+        _ => false,
+    }
+}
+
+/// How a chain step was written, for the rules that depend on it.
+#[derive(Clone, Copy)]
+struct Read<'p> {
+    /// Written `?.` or `?[`.
+    optional: bool,
+    /// The path of what is being read from, for a message to quote.
+    path: Option<&'p str>,
+}
+
+/// The path an expression reads, as `t`, `t.note` or `m[k]`, when it is one a
+/// fact can be remembered about: a name, then fields, string keys and keys
+/// held in names. A method call anywhere in it makes it no path at all.
+fn path_of(e: &Expr) -> Option<String> {
+    match e {
+        Expr::Variable(v, ..) if v.2.is_empty() => Some(v.1.to_string()),
+        Expr::Dot(x, ..) | Expr::Index(x, ..) => {
+            let root = path_of(&x.lhs)?;
+            path_rest(root, matches!(e, Expr::Index(..)), &x.rhs)
+        }
+        _ => None,
+    }
+}
+
+fn path_rest(prefix: String, index: bool, rhs: &Expr) -> Option<String> {
+    match rhs {
+        Expr::Dot(x, ..) | Expr::Index(x, ..) => {
+            let here = path_step(prefix, index, &x.lhs)?;
+            path_rest(here, matches!(rhs, Expr::Index(..)), &x.rhs)
+        }
+        other => path_step(prefix, index, other),
+    }
+}
+
+/// `prefix` extended by one step. A string key is the same path as the field
+/// of that name, so `m["a"]` and `m.a` share their facts.
+fn path_step(prefix: String, index: bool, what: &Expr) -> Option<String> {
+    match (index, what) {
+        (true, Expr::StringConstant(s, _)) => Some(format!("{prefix}.{s}")),
+        (true, Expr::Variable(v, ..)) if v.2.is_empty() => Some(format!("{prefix}[{}]", v.1)),
+        (false, Expr::Property(p, _)) => Some(format!("{prefix}.{}", p.2)),
+        (false, Expr::Variable(v, ..)) => Some(format!("{prefix}.{}", v.1)),
+        _ => None,
     }
 }
 
@@ -1730,7 +2511,7 @@ mod tests {
 
     #[test]
     fn a_result_is_checked_against_its_declaration() {
-        one_error("fn f(): int { \"x\" }", "declared to return `int`, and it returns `string`");
+        one_error("fn f(): int { \"x\" }", "`f` is declared to return `int`, and this is `\"x\"`");
         one_error("fn f(n: number) { if n > 0 { f(n - 1) } else { 0 } }", "`f` calls itself");
         assert!(errors("fn f(n: number): number { if n > 0 { f(n - 1) } else { 0 } }").is_empty());
     }
@@ -1812,6 +2593,89 @@ mod tests {
         };
         let f = findings_with("let t: Task = { id: 1, titel: \"x\" };", &cx);
         assert!(f.iter().any(|f| f.message.contains("did you mean `title`")), "{f:?}");
+    }
+
+    const NOTE: &str = "type T = { id: int, note?: string };\nlet t: T = { id: 1 };\n";
+
+    fn clean(src: &str) {
+        let e = errors(src);
+        assert!(e.is_empty(), "expected no errors in\n{src}\ngot {e:?}");
+    }
+
+    #[test]
+    fn an_optional_field_is_read_with_a_question_mark() {
+        one_error(&format!("{NOTE}fn f() {{ t.note }}"), "`note` may be absent from `T`, so read it as `t?.note`");
+        clean(&format!("{NOTE}fn f(): string? {{ t?.note }}"));
+        clean(&format!("{NOTE}fn f(): string {{ t?.note ?? \"none\" }}"));
+    }
+
+    #[test]
+    fn a_checked_field_is_read_plainly_inside_the_check() {
+        clean(&format!("{NOTE}fn f(): string {{ if t?.note != null {{ t.note }} else {{ \"\" }} }}"));
+        clean(&format!("{NOTE}fn f(): string {{ if \"note\" in t {{ t.note }} else {{ \"\" }} }}"));
+        clean(&format!("{NOTE}fn f(): string {{ if t?.note {{ t.note }} else {{ \"\" }} }}"));
+        clean(&format!("{NOTE}fn f(): bool {{ t?.note != null && t.note.length > 0 }}"));
+        clean(&format!("{NOTE}fn f(): string {{ if t?.note == null {{ return \"\"; }} t.note }}"));
+        // Outside the region, the rule is back.
+        one_error(&format!("{NOTE}fn f() {{ if t?.note != null {{ }} t.note }}"), "may be absent");
+        one_error(&format!("{NOTE}fn f() {{ if t?.note == null {{ t.note }} }}"), "may be absent");
+    }
+
+    const LOAD: &str = "type Load =\n  | { state: \"idle\" }\n  | { state: \"done\", rows: int[] };\n\
+                        let load: Load = { state: \"idle\" };\n";
+
+    #[test]
+    fn a_discriminant_narrows_its_union() {
+        clean(&format!("{LOAD}fn f(): int {{ if load.state == \"done\" {{ load.rows.length }} else {{ 0 }} }}"));
+        one_error(&format!("{LOAD}fn f() {{ load.rows }}"), "no field `rows`");
+        clean(&format!(
+            "{LOAD}fn f(): int {{ switch load.state {{ \"idle\" => 0, \"done\" => load.rows.length }} }}"
+        ));
+        clean(&format!("{LOAD}fn f(): int {{ if load.state != \"done\" {{ return 0; }} load.rows.length }}"));
+    }
+
+    #[test]
+    fn a_switch_on_a_literal_union_handles_every_member() {
+        let f = "type F = \"a\" | \"b\" | \"c\";\nlet f: F = \"a\";\n";
+        one_error(&format!("{f}fn g() {{ switch f {{ \"a\" => 1, \"b\" => 2 }} }}"), "does not handle \"c\"");
+        clean(&format!("{f}fn g() {{ switch f {{ \"a\" => 1, \"b\" => 2, \"c\" => 3 }} }}"));
+        clean(&format!("{f}fn g() {{ switch f {{ \"a\" => 1, _ => 0 }} }}"));
+    }
+
+    #[test]
+    fn a_fact_about_a_signal_dies_at_a_call_that_writes_it() {
+        let reset = "fn reset() { load = { state: \"idle\" }; }\nfn later() { reset(); }\n";
+        one_error(
+            &format!("{LOAD}{reset}fn f() {{ if load.state == \"done\" {{ later(); load.rows }} }}"),
+            "no field `rows`",
+        );
+        clean(&format!("{LOAD}{reset}fn f() {{ if load.state == \"done\" {{ print(1); load.rows }} }}"));
+    }
+
+    #[test]
+    fn a_comparison_that_can_never_be_true() {
+        let f = "type F = \"all\" | \"open\";\nlet f: F = \"all\";\n";
+        one_error(&format!("{f}fn g() {{ f == \"al\" }}"), "`f` is `F`, which is one of \"all\", \"open\", so it is never \"al\"; did you mean \"all\"?");
+        one_error("let n = 1;\nfn g() { n == \"1\" }", "compares `number` with `\"1\"`");
+        clean(&format!("{f}fn g() {{ f == \"open\" || f != null }}"));
+    }
+
+    #[test]
+    fn a_dictionary_key_may_be_missing() {
+        let m = "let m: { [string]: bool } = { a: true };\n";
+        one_error(&format!("{m}fn f(k: string) {{ m[k] }}"), "read it as `m?[k]`");
+        one_error(&format!("{m}fn f() {{ m.a }}"), "read it as `m?.a`");
+        clean(&format!("{m}fn f(k: string): bool? {{ m?[k] }}"));
+        clean(&format!("{m}fn f(k: string): bool {{ if k in m {{ m[k] }} else {{ false }} }}"));
+        clean(&format!("{m}fn f(): bool {{ if \"a\" in m {{ m.a }} else {{ false }} }}"));
+        clean(&format!("{m}fn f() {{ for k in keys(m) {{ print(m[k]); }} }}"));
+    }
+
+    #[test]
+    fn type_of_narrows() {
+        let v = "let v: string | { n: int } = \"x\";\n";
+        clean(&format!("{v}fn f(): int {{ if type_of(v) == \"map\" {{ v.n }} else {{ 0 }} }}"));
+        one_error(&format!("{v}fn f() {{ v.n }}"), "no property `n`");
     }
 
     #[test]
