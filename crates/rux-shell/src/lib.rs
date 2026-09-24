@@ -4785,6 +4785,7 @@ impl App {
                     && f.row == saved.row
                     && f.instance == saved.instance
             }) else {
+                self.adopt_restored_select(saved);
                 continue;
             };
             let (kind, field) = (region.kind, region.field.clone());
@@ -4807,6 +4808,32 @@ impl App {
             };
             self.queue_field_event_in(field.on_input.as_deref(), saved.instance.clone(), value);
         }
+    }
+
+    /// Put back a `<select>`'s choice, as a native spinner keeps its own:
+    /// only if it is still one of the options, and with `@change`, the one
+    /// event a select has, so what the app derives from it is rebuilt as a
+    /// text field's `@input` rebuilds it.
+    #[cfg(any(target_os = "android", target_arch = "wasm32"))]
+    fn adopt_restored_select(&mut self, saved: rux_runtime::SavedField) {
+        let Some(select) = self
+            .selects
+            .iter()
+            .find(|s| s.model == saved.model && s.row == saved.row && s.instance == saved.instance)
+            .cloned()
+        else {
+            return;
+        };
+        if select.field.readonly || !select.options.contains(&saved.text) {
+            return;
+        }
+        let (model, row, instance) = (saved.model.as_str(), saved.row.as_deref(), saved.instance.as_deref());
+        if self.document.value_in(model, row, instance) == saved.text {
+            return;
+        }
+        self.document.apply_edit_in(model, row, instance, &saved.text);
+        let value = rux_reactive::Value::Text(saved.text.clone());
+        self.queue_field_event_in(select.field.on_change.as_deref(), saved.instance.clone(), value);
     }
 
     /// Leave where the app is for `onSaveInstanceState`. See [`SAVED_STATE`].
@@ -4847,6 +4874,24 @@ impl App {
             .map(|f| (f.model.clone(), f.row.clone(), f.instance.clone()))
             .collect();
         for (model, row, instance) in others {
+            if state.fields.iter().any(|f| f.model == model && f.row == row && f.instance == instance) {
+                continue;
+            }
+            let text = self.document.value_in(&model, row.as_deref(), instance.as_deref());
+            if text.len() > budget {
+                continue;
+            }
+            budget -= text.len();
+            state.fields.push(rux_runtime::SavedField { model, row, instance, text });
+        }
+        // And every select's choice, as a native spinner keeps its own.
+        let selects: Vec<(String, Option<String>, Option<String>)> = self
+            .selects
+            .iter()
+            .filter(|s| !s.field.readonly && kept_across_a_kill(InputKind::Text, &s.field))
+            .map(|s| (s.model.clone(), s.row.clone(), s.instance.clone()))
+            .collect();
+        for (model, row, instance) in selects {
             if state.fields.iter().any(|f| f.model == model && f.row == row && f.instance == instance) {
                 continue;
             }

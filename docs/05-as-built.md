@@ -2271,7 +2271,8 @@ recorded against.
 wants the memory, and a phone of ordinary size wants it within seconds of Home.
 The activity keeps the whole history, each entry with its offsets, and the
 focused field with its text and caret, and puts them back before the first
-frame, so coming back looks like the app never left. The page on screen gets
+frame, so coming back looks like the app never left. Every other field keeps
+its text too, and a select its choice, if that is still one of its options. The page on screen gets
 its scroll back even with `restore-scroll="false"`: that flag is about Back and
 Forward, and here the person never left the page. The guards are asked again
 about that page, because the new process has only the first values of its
