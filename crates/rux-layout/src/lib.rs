@@ -870,6 +870,38 @@ pub fn unmasked_offset(value: &str, masked_byte: usize) -> usize {
     value.char_indices().nth(chars).map(|(i, _)| i).unwrap_or(value.len())
 }
 
+/// The most pixels one image may decode to: 48 megapixels, a 50 MP phone
+/// camera's photo with room to spare, and 192 MB once it is RGBA.
+///
+/// An image's header says how large it is before any pixel is decoded, and a
+/// small file can claim to be enormous: a PNG of one colour compresses a
+/// 30000 by 30000 image into a few hundred kilobytes, and decoding it takes
+/// 3.6 GB. Harmless while every image is the author's own file; a way to end
+/// the app once images come from the network. The `image` crate caps one
+/// allocation at 512 MiB, but the conversion to RGBA after it is unbounded.
+pub const MAX_IMAGE_PIXELS: u64 = 48_000_000;
+
+/// The longest side one image may have, whatever its area. A GPU texture has a
+/// ceiling too, 16384 on current desktops and often 8192 on phones.
+pub const MAX_IMAGE_SIDE: u32 = 16_384;
+
+/// Why an image of `width` by `height` will not be drawn, or `None` if it will.
+pub fn image_too_large(width: u32, height: u32) -> Option<String> {
+    if width > MAX_IMAGE_SIDE || height > MAX_IMAGE_SIDE {
+        return Some(format!(
+            "it is {width} by {height} pixels, and a side longer than {MAX_IMAGE_SIDE} is \
+             refused; scale it down"
+        ));
+    }
+    if u64::from(width) * u64::from(height) > MAX_IMAGE_PIXELS {
+        return Some(format!(
+            "it is {width} by {height} pixels, over the {} megapixel limit; scale it down",
+            MAX_IMAGE_PIXELS / 1_000_000
+        ));
+    }
+    None
+}
+
 /// Install the reader the painter asks for image bytes.
 pub fn set_image_reader(reader: ImageReader) {
     IMAGE_READER.with(|r| *r.borrow_mut() = Some(reader));

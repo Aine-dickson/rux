@@ -537,7 +537,12 @@ impl Engine {
                                 break;
                             }
                         }
-                    } else if !ranges.is_empty() {
+                    }
+                    // Then check ranges, also when an exact match's condition
+                    // failed. Backported from upstream 1.26.0 (#1117, #1123).
+                    if result.is_none() && !ranges.is_empty() {
+                        let value = value.flatten();
+
                         // Then check integer ranges
                         for r in ranges.iter().filter(|r| r.contains(&value)) {
                             let BinaryExpr { lhs, rhs } = &expressions[r.index()];

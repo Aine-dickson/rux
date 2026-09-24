@@ -106,15 +106,16 @@ fn decode(src: &str) -> Option<ImageBrush> {
     // lets an embedded build draw at all: inside an executable there is no file
     // to open. Without a reader this is the filesystem read it always was, so a
     // bare `rux-paint` test and `rux run` both keep working.
-    let decoded = match rux_layout::read_image_bytes(src) {
-        Some(bytes) => image::load_from_memory(&bytes)
-            .map_err(|e| eprintln!("rux: cannot decode image {src}: {e}"))
-            .ok()?,
-        None => image::open(src)
+    let bytes = match rux_layout::read_image_bytes(src) {
+        Some(bytes) => bytes,
+        None => std::fs::read(src)
             .map_err(|e| eprintln!("rux: cannot load image {src}: {e}"))
             .ok()?,
-    }
-    .into_rgba8();
+    };
+    let decoded = decode_bounded(&bytes)
+        .map_err(|e| eprintln!("rux: cannot decode image {src}: {e}"))
+        .ok()?
+        .into_rgba8();
     let (width, height) = decoded.dimensions();
     Some(ImageBrush::new(ImageData {
         data: Blob::new(std::sync::Arc::new(decoded.into_raw())),
@@ -123,6 +124,33 @@ fn decode(src: &str) -> Option<ImageBrush> {
         width,
         height,
     }))
+}
+
+/// Decode an image, refusing one whose header claims more than
+/// [`rux_layout::MAX_IMAGE_PIXELS`] before a single pixel is decoded.
+///
+/// The header is read on its own first because that is the only moment the
+/// size is known and nothing has been allocated for it. The decoder's own
+/// limits are set as well, for a format whose header and body disagree.
+fn decode_bounded(bytes: &[u8]) -> Result<image::DynamicImage, String> {
+    let reader = || {
+        image::ImageReader::new(std::io::Cursor::new(bytes))
+            .with_guessed_format()
+            .map_err(|e| e.to_string())
+    };
+    let (width, height) = reader()?.into_dimensions().map_err(|e| e.to_string())?;
+    if let Some(why) = rux_layout::image_too_large(width, height) {
+        return Err(why);
+    }
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(rux_layout::MAX_IMAGE_SIDE);
+    limits.max_image_height = Some(rux_layout::MAX_IMAGE_SIDE);
+    // The decoded pixels at the widest format a decoder produces here (16-bit
+    // RGBA, 8 bytes a pixel), which the RGBA8 copy afterwards stays inside.
+    limits.max_alloc = Some(rux_layout::MAX_IMAGE_PIXELS * 8);
+    let mut decoder = reader()?;
+    decoder.limits(limits);
+    decoder.decode().map_err(|e| e.to_string())
 }
 
 fn to_color(c: Rgba) -> Color {
@@ -551,4 +579,38 @@ pub fn build_scene(
         }
     }
     scene
+}
+
+#[cfg(test)]
+mod tests {
+    use super::decode_bounded;
+
+    fn png(width: u32, height: u32) -> Vec<u8> {
+        let img = image::GrayImage::new(width, height);
+        let mut out = std::io::Cursor::new(Vec::new());
+        img.write_to(&mut out, image::ImageFormat::Png).unwrap();
+        out.into_inner()
+    }
+
+    /// A decompression bomb: 49 megapixels of one colour is a few kilobytes of
+    /// PNG, and would be 196 MB decoded to RGBA. Refused from the header.
+    #[test]
+    fn an_image_over_the_pixel_limit_is_refused_before_decoding() {
+        let bomb = png(7000, 7000);
+        assert!(bomb.len() < 1_000_000, "the point is that the file is small: {}", bomb.len());
+        let why = decode_bounded(&bomb).expect_err("refused");
+        assert!(why.contains("megapixel"), "{why}");
+    }
+
+    #[test]
+    fn an_image_over_the_side_limit_is_refused() {
+        let why = decode_bounded(&png(20_000, 2)).expect_err("refused");
+        assert!(why.contains("16384"), "{why}");
+    }
+
+    #[test]
+    fn an_ordinary_image_decodes() {
+        let img = decode_bounded(&png(640, 480)).expect("decodes");
+        assert_eq!((img.width(), img.height()), (640, 480));
+    }
 }

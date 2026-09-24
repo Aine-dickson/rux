@@ -388,6 +388,14 @@ impl Hash for Dynamic {
     ///
     /// Panics if the [`Dynamic`] value contains an unrecognized trait object.
     fn hash<H: Hasher>(&self, state: &mut H) {
+        // A shared value hashes as what it holds, discriminant and all, or a
+        // variable a closure captured never matches its `switch` case.
+        // Backported from upstream 1.26.0 (#1123).
+        #[cfg(not(feature = "no_closure"))]
+        if let Union::Shared(ref cell, ..) = self.0 {
+            return (*crate::func::locked_read(cell).unwrap()).hash(state);
+        }
+
         mem::discriminant(&self.0).hash(state);
 
         match self.0 {
@@ -416,7 +424,7 @@ impl Hash for Dynamic {
             }
 
             #[cfg(not(feature = "no_closure"))]
-            Union::Shared(ref cell, ..) => (*crate::func::locked_read(cell).unwrap()).hash(state),
+            Union::Shared(..) => unreachable!("returned above"),
 
             Union::Variant(ref v, ..) => {
                 let _value_any = (***v).as_any();

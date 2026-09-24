@@ -174,6 +174,45 @@ answers `undefined` for `arr[1.5]`; that is the one place its behaviour is not
 worth copying, since silently reading a different element than the one asked for
 is exactly the class of failure this milestone exists to remove.
 
+## Keeping up with upstream
+
+A fork does not receive upstream's fixes, and RustSec files any advisory under
+`rhai`, a name this package does not carry, so no audit tool would ever match
+one to it. `scripts/rhai-upstream.sh` does it instead: it compares the newest
+rhai on crates.io with the line below, and lists any RustSec advisory for
+`rhai`. CI runs it weekly (`.github/workflows/advisories.yml`) and fails when
+upstream has a release nobody has read yet.
+
+**Upstream reviewed through: 1.26.1**
+
+To review a release: read its changelog, reproduce each bug fix against this
+fork, backport the ones that reproduce into the list below with a test in
+`rux-script`, and move the line above. A fix that does not reproduce is noted
+too, so the next reader does not try it again.
+
+### Backported, and reviewed and left
+
+Reviewed 2026-09-24, 1.26.0 and 1.26.1:
+
+- **#1123, `switch` on a shared value** (backported). A variable a closure had
+  captured is stored shared, and hashed differently from its inner value, so it
+  never matched its case and took the default branch, saying nothing. Rux
+  arrows capture constantly. `src/types/dynamic.rs` (`Hash`),
+  `src/eval/stmt.rs`.
+- **#1117, `switch` ranges after a failed guard** (backported). An exact case
+  whose `if` guard failed skipped the range cases. `src/eval/stmt.rs`.
+- **#1126, the optimizer deleting a block's `let`** (reproduced, not
+  backported). `let a = 1; { let b = 99; switch b { _ => b } }` answers 1. Rux
+  runs with `OptimizationLevel::None`, which avoids it; a `rux-script` test
+  fails first if the optimizer is ever turned back on.
+- **#1139, curried arguments in the wrong order** (not reproduced) in the shapes
+  Rux compiles: capturing arrows passed to `map`/`filter`, and `Fn(...).curry`.
+- **#1167, `_i` rejected by the tokenizer** (not reproduced): `let _i = 1;`
+  already works here.
+- The unreleased main branch (1.27) fixes operation counting inside a closure
+  that native code calls back. **Not a hole in Rux's step limit**: a `while
+  true` inside a `map` callback is still stopped (`rux-script` test).
+
 ## Deliberately *not* forked
 
 Recorded because each of these was believed to need a fork at some point, and

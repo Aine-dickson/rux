@@ -14,6 +14,9 @@ rux-parser.workspace = true
 rux-layout.workspace = true
 rux-reactive.workspace = true
 rux-script.workspace = true
-lightningcss = "1.0.0-alpha.71"
+# Parsing and printing only. The default features are a bundler's (rayon,
+# dashmap, source maps, node.js serde), none of which Rux uses, and the source
+# map support brought in `rkyv` 0.7, which carries RUSTSEC-2026-0235.
+lightningcss = { version = "1.0.0-alpha.71", default-features = false }
 regex-lite = "0.1.9"
 # lightningcss added via `cargo add` so the exact published version is pinned.

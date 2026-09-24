@@ -95,6 +95,13 @@ cargo run -p ruxlang -- examples/showcase.rux</code></pre>
      export the pinned build predates is a hard module-load error, which would
      take the whole playground down over a version badge. This way a missing
      export is a missing feature, not a blank page. #}
+  {# **This runs shared code on the ruxlang.dev origin.** A playground link
+     carries its source, so whoever wrote it runs here. Safe while the runtime
+     gives a document nothing of the page's: no network, and no storage (the
+     web build's session storage is only used with a `base`, which this page
+     never passes). The day either changes, move the canvas into an iframe with
+     `sandbox="allow-scripts"` and `allow="webgpu"`, fed its source by
+     postMessage, before shipping it. Watchlist #31. #}
   import * as rux
     from "{{ get_url(path='wasm/rux_web.js') }}?v={{ get_hash(path='wasm/rux_web.js', sha_type=256, base64=false) | truncate(length=12, end='') }}";
 
