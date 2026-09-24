@@ -53,6 +53,18 @@ pub struct Context {
     pub placeholders: Vec<(String, Option<Type>)>,
     /// `host::` functions with a signature, by name.
     pub host: Vec<(String, Type)>,
+    /// Names some caller has in scope when it calls a function: an `r-for`'s
+    /// variable, a handler's own `let`s. Under the fork a plain call runs in
+    /// its caller's scope, so a function can read these, and a typed one may
+    /// not (see [`Context::forbid_caller_locals`]).
+    pub caller_names: std::collections::HashSet<String>,
+    /// Whether a typed function reading one of [`Context::caller_names`] is an
+    /// error. Off until the sweep of existing code has been read; see
+    /// `docs/10-types.md`, "A typed function cannot read its caller's locals".
+    pub forbid_caller_locals: bool,
+    /// Report every function reading a caller's local, typed or not, as a
+    /// warning. For surveying code before the rule goes on.
+    pub survey_caller_locals: bool,
     /// Report nothing past this script line. The document's script has the
     /// components' functions appended to it, and a finding in one of those is
     /// the component's to report when it is checked.
@@ -117,6 +129,9 @@ struct Checker<'a> {
     declared: HashMap<Position, Type>,
     /// What each `return` in the function being checked hands back.
     returns: Vec<Vec<Type>>,
+    /// The named function whose body is being checked, whether it is typed,
+    /// and where it is: what a read of a caller's local is reported against.
+    in_fn: Vec<(String, bool)>,
     /// The declared result of each function being checked, innermost last,
     /// with the function's name; `None` for one whose result is inferred.
     results: Vec<Option<(String, Type)>>,
@@ -146,6 +161,7 @@ impl<'a> Checker<'a> {
             declared: HashMap::new(),
             returns: Vec::new(),
             results: Vec::new(),
+            in_fn: Vec::new(),
             findings: Vec::new(),
             quiet: 0,
             quiet_errors: 0,
@@ -1325,7 +1341,14 @@ impl<'a> Checker<'a> {
                 if !v.2.is_empty() {
                     return Type::Any;
                 }
-                self.lookup(v.1.as_str()).unwrap_or(Type::Any)
+                let name = v.1.as_str();
+                match self.lookup(name) {
+                    Some(t) => t,
+                    None => {
+                        self.caller_local(name, e.position());
+                        Type::Any
+                    }
+                }
             }
             Expr::Stmt(block) => self.check_block(block),
             Expr::FnCall(call, pos) => self.call(call, *pos, None),
@@ -1767,6 +1790,29 @@ impl<'a> Checker<'a> {
         Type::Any
     }
 
+    /// A name a function body read that is none of its own and no document
+    /// name: it can only come from whoever called it.
+    fn caller_local(&mut self, name: &str, pos: Position) {
+        let Some((function, typed)) = self.in_fn.last().cloned() else { return };
+        if !self.cx.caller_names.contains(name) {
+            // Declared nowhere at all: the undefined-name check says so.
+            return;
+        }
+        if self.cx.survey_caller_locals {
+            let kind = if typed { "typed" } else { "untyped" };
+            self.warn(pos, format!("survey: {kind} `{function}` reads its caller's `{name}`"));
+        } else if typed && self.cx.forbid_caller_locals {
+            self.error(
+                pos,
+                format!(
+                    "`{function}` reads `{name}`, which only whoever calls it has. A function whose \
+                     parameters all have types sees its own names and the document's, not its \
+                     caller's: pass `{name}` in as a parameter"
+                ),
+            );
+        }
+    }
+
     /// Infer each argument of a call whose signature is not known. A closure
     /// among them gets `any` parameters without a word: whatever it is handed
     /// is already unchecked, and that was reported where it began.
@@ -1935,6 +1981,9 @@ impl<'a> Checker<'a> {
         // called it: a script's own locals are not visible here.
         let saved = std::mem::take(&mut self.scopes);
         let saved_facts = std::mem::replace(&mut self.facts, vec![HashMap::new()]);
+        // Typed means every parameter annotated, which a function with none is.
+        let typed = info.params.iter().all(|(_, t)| t.is_some());
+        self.in_fn.push((name.to_string(), typed));
         self.scopes.push(
             info.params.iter().map(|(p, t)| (p.clone(), t.clone().unwrap_or(Type::Any))).collect(),
         );
@@ -1956,6 +2005,7 @@ impl<'a> Checker<'a> {
                 widen(&Type::union(results))
             }
         };
+        self.in_fn.pop();
         self.scopes = saved;
         self.facts = saved_facts;
         if let Some(f) = self.fns.get_mut(&key) {
