@@ -6797,7 +6797,19 @@ impl ApplicationHandler<RuxEvent> for App {
                         // A finger lifting off text has already had its effect,
                         // whichever gesture it turned out to be, and must not
                         // also reach the app as a tap.
-                        if self.touch_text.take().is_some() {
+                        if let Some(state) = self.touch_text.take() {
+                            // A plain tap on the field that has focus brings the
+                            // keyboard back if Back put it away, as a native field
+                            // does. Nothing else would: focus did not change, so
+                            // nothing asked for it.
+                            #[cfg(target_os = "android")]
+                            if matches!(state, TouchText::Pending { .. })
+                                && self.focused.is_some()
+                                && !self.live_field().readonly
+                            {
+                                android_show_keyboard();
+                            }
+                            let _ = state;
                             self.points.retain(|(id, _)| *id != lifted);
                             return;
                         }
@@ -9783,13 +9795,38 @@ fn android_set_text_input(field: Option<(String, Option<String>, Option<String>)
 /// Rebuild the input connection for the field that already has focus, because
 /// its text changed under it. See [`App::sync_android_ime`].
 ///
-/// The same Java call a change of field makes, without the guard in
-/// [`android_set_text_input`], which exists to stop exactly this call being
-/// repeated for a field that has not changed. Here the field has not changed
-/// and its text has, which the guard cannot see.
+/// Not the Java call a change of field makes, which also shows the keyboard,
+/// and without the guard in [`android_set_text_input`], which exists to stop
+/// that call being repeated for a field that has not changed. Here the field
+/// has not changed and its text has, which the guard cannot see.
+/// Ask for the keyboard for the field that already has focus. See the
+/// plain tap on text in the touch handler.
+#[cfg(target_os = "android")]
+fn android_show_keyboard() {
+    let Ok(activity) = ACTIVITY.lock() else { return };
+    let Some(activity) = activity.as_ref() else { return };
+    let ctx = ndk_context::android_context();
+    // Safety: as in `call_set_text_input`.
+    let vm = unsafe { jni::JavaVM::from_raw(ctx.vm().cast()) };
+    let _ = vm.attach_current_thread(|env| {
+        env.call_method(activity, jni::jni_str!("ruxShowKeyboard"), jni::jni_sig!("()V"), &[])?;
+        Ok::<(), jni::errors::Error>(())
+    });
+}
+
 #[cfg(target_os = "android")]
 fn android_restart_input() {
-    call_set_text_input(true);
+    // The connection only: the keyboard stays as the person left it.
+    // Watchlist #20: through `ruxSetTextInput` this also raised the keyboard.
+    let Ok(activity) = ACTIVITY.lock() else { return };
+    let Some(activity) = activity.as_ref() else { return };
+    let ctx = ndk_context::android_context();
+    // Safety: as in `call_set_text_input`.
+    let vm = unsafe { jni::JavaVM::from_raw(ctx.vm().cast()) };
+    let _ = vm.attach_current_thread(|env| {
+        env.call_method(activity, jni::jni_str!("ruxRestartInput"), jni::jni_sig!("()V"), &[])?;
+        Ok::<(), jni::errors::Error>(())
+    });
 }
 
 #[cfg(target_os = "android")]

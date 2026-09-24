@@ -1768,6 +1768,47 @@ public class RuxActivity extends NativeActivity {
     }
 
     /**
+     * Ask for the keyboard for the field that already has focus: a tap on it
+     * after Back put the keyboard away, as a native field answers one.
+     */
+    public void ruxShowKeyboard() {
+        runOnUiThread(
+                () -> {
+                    if (input == null) {
+                        return;
+                    }
+                    InputMethodManager imm =
+                            (InputMethodManager) getSystemService(Context.INPUT_METHOD_SERVICE);
+                    if (imm != null) {
+                        imm.showSoftInput(input, 0);
+                    }
+                });
+    }
+
+    /**
+     * Rebuild the input connection for text Rux changed by itself (Cut, Paste,
+     * a handler writing the field) without asking for the keyboard.
+     *
+     * <p>This used to go through {@link #ruxSetTextInput}, which also shows the
+     * keyboard, so Cut or Paste from the menu with the keyboard down brought
+     * it up. The field has not changed, only its text; whether the keyboard is
+     * up is the person's business.
+     */
+    public void ruxRestartInput() {
+        runOnUiThread(
+                () -> {
+                    if (input == null) {
+                        return;
+                    }
+                    InputMethodManager imm =
+                            (InputMethodManager) getSystemService(Context.INPUT_METHOD_SERVICE);
+                    if (imm != null) {
+                        imm.restartInput(input);
+                    }
+                });
+    }
+
+    /**
      * Move the selection in the connection's copy of the text, because Rux
      * moved it: a tap, a drag, a double tap, Select all.
      *
