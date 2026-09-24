@@ -333,6 +333,10 @@ documents.
 | `??` | The value on the right when the left is absent |
 | `=>` | Arrow functions, in all four shapes: `x =>`, `() =>`, `(x) =>`, `(a, b) =>` |
 
+An arrow kept in a variable is called like a function, as in JavaScript:
+`let add = (a, b) => a + b;` then `add(2, 3)`. It sees and writes what is
+around it, like any closure. A `fn` of the same name wins over the variable.
+
 `?.` and `??` are not conveniences. Rux turns on strict property access for every
 document, so a typo like `user.nmae` raises instead of quietly evaluating to
 nothing, and these two are the way to say "absent is a legitimate answer here":
@@ -352,7 +356,11 @@ do. That is worth saying because rhai's own string methods are in-place
 mutators: its `trim` empties the string it was given and returns nothing, so
 `{{ name.trim() }}` rendered blank. Rux's `trim` shadows it.
 
-`forEach` is called with `(item, index)` and falls back to `(item)`. rhai's own
+`forEach` is called with `(item, index)` and falls back to `(item)`. `every`
+and `findIndex` take a callback as JavaScript's do (`some` and `find` are
+rhai's own and already match), and `sort((a, b) => a - b)` sorts by the
+comparison and **returns** the sorted array, which rhai's in-place `sort` did
+not. rhai's own
 `for_each` is still there and is **not** the same thing: it hands the item over
 as `this` and the *index* as the argument, so `items.for_each(|x| total += x)`
 adds up the indexes. Write `forEach`.

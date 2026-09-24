@@ -400,6 +400,29 @@ impl Builder {
             });
             Ok(None)
         });
+
+        // `let add = (a, b) => a + b; add(2, 3)`: a variable holding an arrow,
+        // called the way JavaScript calls one. rhai only knew `add.call(2, 3)`,
+        // and `add(2, 3)` failed with "there is no function `add`", which is
+        // the first thing anyone writes after declaring one.
+        //
+        // Only when no function of that name exists, so a real `fn add` still
+        // wins, and only for a plain call: `x.add()` is a method. A closure's
+        // captured values are its curried arguments and go first, as rhai's
+        // own `call` passes them.
+        #[allow(deprecated)]
+        engine.on_missing_function(|name, args, is_method_call, mut context| {
+            if is_method_call {
+                return Ok(None);
+            }
+            let Some(fn_ptr) = context.scope().get_value::<rhai::FnPtr>(name) else {
+                return Ok(None);
+            };
+            let mut values: Vec<Dynamic> = fn_ptr.curry().to_vec();
+            values.extend(args.iter_mut().map(|a| std::mem::take(&mut **a)));
+            let mut refs: Vec<&mut Dynamic> = values.iter_mut().collect();
+            context.call_fn_raw(fn_ptr.fn_name(), false, false, &mut refs).map(Some)
+        });
         Self {
             engine,
             host: Module::new(),
@@ -650,6 +673,60 @@ fn register_js_names(engine: &mut RhaiEngine) {
                 }
             }
             Ok(())
+        },
+    );
+
+    // The other two callback methods JavaScript has and rhai names differently
+    // or not at all. `some` and `find` are rhai's own and already match.
+    // Truthiness is JavaScript's, as everywhere in Rux.
+    engine.register_fn(
+        "every",
+        |ctx: NativeCallContext, a: Array, f: FnPtr| -> Result<bool, Box<rhai::EvalAltResult>> {
+            for item in a {
+                if !f.call_within_context::<Dynamic>(&ctx, (item,))?.is_truthy() {
+                    return Ok(false);
+                }
+            }
+            Ok(true)
+        },
+    );
+    engine.register_fn(
+        "findIndex",
+        |ctx: NativeCallContext, a: Array, f: FnPtr| -> Result<f64, Box<rhai::EvalAltResult>> {
+            for (i, item) in a.into_iter().enumerate() {
+                if f.call_within_context::<Dynamic>(&ctx, (item,))?.is_truthy() {
+                    return Ok(i as f64);
+                }
+            }
+            Ok(-1.0)
+        },
+    );
+
+    // `sort` with a comparison, answering as JavaScript's does: the sorted
+    // array. rhai's sorts in place and returns nothing, so
+    // `[3, 1, 2].sort((a, b) => a - b)[0]` failed on indexing `()`, and it
+    // wanted its comparison to return an integer where `a - b` of two Rux
+    // numbers is a float. The receiver is sorted too, as JavaScript's is.
+    engine.register_fn(
+        "sort",
+        |ctx: NativeCallContext, a: &mut Array, f: FnPtr| -> Result<Array, Box<rhai::EvalAltResult>> {
+            let mut failed = None;
+            a.sort_by(|x, y| {
+                if failed.is_some() {
+                    return std::cmp::Ordering::Equal;
+                }
+                match f.call_within_context::<Dynamic>(&ctx, (x.clone(), y.clone())) {
+                    Ok(d) => num(&d).partial_cmp(&0.0).unwrap_or(std::cmp::Ordering::Equal),
+                    Err(e) => {
+                        failed = Some(e);
+                        std::cmp::Ordering::Equal
+                    }
+                }
+            });
+            match failed {
+                Some(e) => Err(e),
+                None => Ok(a.clone()),
+            }
         },
     );
 
@@ -1843,7 +1920,26 @@ impl Engine {
 
     /// The walk both of the above share.
     fn unresolvable_calls(&self, ast: &AST) -> Vec<CallProblem> {
-        let known = self.callable_names();
+        let mut known = self.callable_names();
+        // rhai's own keywords, which the interpreter answers without a
+        // registration to find. `curry` is the one that mattered: rhai writes
+        // it itself whenever a closure captures a local, so `items.filter(x =>
+        // x >= limit)` with a local `limit` was reported as calling a function
+        // that does not exist.
+        known.extend(
+            ["curry", "call", "Fn", "is_shared", "is_def_var", "is_def_fn", "type_of", "eval", "print", "debug"]
+                .map(str::to_string),
+        );
+        // A plain call to a name declared as a variable may be an arrow held in
+        // it (`let add = (a, b) => a + b; add(2, 3)`), which only running it
+        // can tell. Left to run time, where it is an error if it is not one.
+        let mut variables: HashSet<String> = self.scope.iter_raw().map(|(n, ..)| n.to_string()).collect();
+        ast.walk(&mut |path| {
+            if let Some(rhai::ASTNode::Stmt(rhai::Stmt::Var(decl, ..))) = path.last() {
+                variables.insert(decl.0.name.to_string());
+            }
+            true
+        });
         let own = self.own_fn_arities();
         let mut unknown: Vec<CallProblem> = Vec::new();
         ast.walk(&mut |path| {
@@ -1863,7 +1959,8 @@ impl Engine {
                         return true;
                     }
                     let name = call.name.as_str();
-                    if !known.contains(name) {
+                    let held = matches!(expr, rhai::Expr::FnCall(..)) && variables.contains(name);
+                    if !known.contains(name) && !held {
                         note(CallProblem::NoSuchFunction(name.to_string()));
                     } else if let Some(wanted) = own.get(name) {
                         // A method call carries its receiver as the first
@@ -2941,6 +3038,46 @@ mod tests {
         assert!(e.eval_bool("Number(\"2\") == 2", &[]));
     }
 
+    /// An arrow held in a variable is called like a function, as in
+    /// JavaScript, and `rux check` does not call that a typo. A real `fn` of
+    /// the same name still wins, and a real typo is still reported.
+    #[test]
+    fn an_arrow_in_a_variable_is_called_like_a_function() {
+        let mut e = Builder::new()
+            .build("let out = signal(0); let twice = x => x * 2; fn add(a, b) { a + b + 100 }")
+            .expect("build");
+        let run = |e: &mut Engine, src: &str| {
+            e.run_handler(src);
+            e.eval_display("out", &[])
+        };
+        assert_eq!(run(&mut e, "let sum = (a, b) => a + b; out = sum(2, 3)"), "5");
+        assert_eq!(run(&mut e, "let seven = () => 7; out = seven()"), "7");
+        assert_eq!(run(&mut e, "let k = 10; let plus = x => x + k; out = plus(1)"), "11", "captures");
+        assert_eq!(run(&mut e, "out = twice(21)"), "42", "declared in the script");
+        assert_eq!(run(&mut e, "let bump = () => out += 1; out = 0; bump(); bump()"), "2");
+        assert_eq!(run(&mut e, "let add = (a, b) => a * b; out = add(2, 3)"), "105", "a fn wins");
+
+        assert!(e.unknown_calls("let sum = (a, b) => a + b; out = sum(2, 3)").is_empty());
+        assert!(
+            e.unknown_calls("let t = 2; out = [1, 2, 3].filter(x => x >= t).length").is_empty(),
+            "a closure capturing a local compiles to `curry`, which is rhai's own"
+        );
+        assert_eq!(e.unknown_calls("out = nothing_here(1)").len(), 1, "a typo is still a typo");
+    }
+
+    /// The callback methods JavaScript has that rhai lacked or answered
+    /// differently.
+    #[test]
+    fn every_find_index_and_sort_answer_as_javascript_does() {
+        let mut e = engine();
+        assert!(e.eval_bool("[1, 2, 3].every(x => x > 0)", &[]));
+        assert!(!e.eval_bool("[1, 2, 3].every(x => x > 1)", &[]));
+        assert_eq!(e.eval_display("[5, 6, 7].findIndex(x => x == 7)", &[]), "2");
+        assert_eq!(e.eval_display("[5, 6, 7].findIndex(x => x == 9)", &[]), "-1");
+        assert_eq!(e.eval_display("[3, 1, 2].sort((a, b) => a - b)[0]", &[]), "1");
+        assert_eq!(e.eval_display("[3, 1, 2].sort((a, b) => b - a).join(\",\")", &[]), "3,2,1");
+    }
+
     /// `log` is the printf-debugging the script tier had no way to do at all.
     /// Its sink is separate from the warning sink on purpose: output that is
     /// working as intended must not show up in the overlay's list of problems.
@@ -3324,5 +3461,6 @@ mod tests {
         assert_eq!(take_warnings().len(), 1);
     }
 }
+
 
 
