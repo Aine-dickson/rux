@@ -26,7 +26,7 @@ const DOC = [
   '  <screen class="app">',
   '    <text id="total" class="value">{{ count }}</text>',
   '    <view class="row spread" r-if="open" r-transition>',
-  '      <task-card :label="name" @tap="count += 1" />',
+  '      <task-card :heading="name" @tap="count += 1" />',
   '    </view>',
   '    <router>',
   '      <route path="/account" view="account" guard="signed_in" />',
@@ -199,8 +199,10 @@ test('hover on a guard says what its answers mean', () => {
 });
 
 test('a bound attribute is answered as the attribute, and says what the colon does', () => {
-  const found = hoverAt(':label="name"', 3);
-  assert.equal(found, null, ':label is a component prop, and the vocabulary has no entry for it');
+  // Not `:label`: `label` is an attribute of every element (the accessible
+  // name), so the vocabulary does answer for it.
+  const found = hoverAt(':heading="name"', 3);
+  assert.equal(found, null, ':heading is a component prop, and the vocabulary has no entry for it');
 
   const bound = hoverAt(':d="', 2);
   assert.equal(bound, null, 'this document has no bound `d`; the case below covers it');
