@@ -189,6 +189,26 @@ pub fn run(args: &[String]) -> i32 {
 /// app, and changing one still means running this again.
 fn serve(toolchain: &Toolchain, serial: &str, manifest: &Manifest) -> Result<(), String> {
     let port = crate::build::dev_port(manifest);
+    // This run's secret, left where only the app can read it. See
+    // `rux_shell::dev_mac` for why there is one and why it is not in the APK.
+    let token = rux_shell::dev_nonce();
+    let place = format!(
+        "run-as {} sh -c \"mkdir -p files && echo {token} > files/{}\"",
+        manifest.id,
+        rux_shell::DEV_TOKEN_FILE
+    );
+    let output = Command::new(&toolchain.adb)
+        .args(["-s", serial, "shell", &place])
+        .output()
+        .map_err(|e| format!("could not run adb: {e}"))?;
+    let said = format!("{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+    if !output.status.success() || said.contains("not debuggable") || said.contains("run-as:") {
+        return Err(format!(
+            "could not give the app this run's hot reload token: {}\n\
+             A dev build is debuggable so that this works; rebuild it with this rux.",
+            said.trim()
+        ));
+    }
     let listener = TcpListener::bind(("127.0.0.1", port))
         .map_err(|e| format!("could not listen on port {port}: {e}"))?;
     let spec = format!("tcp:{port}");
@@ -218,8 +238,15 @@ fn serve(toolchain: &Toolchain, serial: &str, manifest: &Manifest) -> Result<(),
     let (connected_tx, connected) = mpsc::channel();
     std::thread::spawn(move || {
         for stream in listener.incoming().flatten() {
-            if connected_tx.send(stream).is_err() {
-                return;
+            // Only an app that knows this run's token is sent the project. A
+            // local process that happens to connect is told nothing.
+            match dev_handshake_host(&stream, &token) {
+                Ok(()) => {
+                    if connected_tx.send(stream).is_err() {
+                        return;
+                    }
+                }
+                Err(why) => eprintln!("rux: refused a connection on port {port}: {why}"),
             }
         }
     });
@@ -248,6 +275,31 @@ fn serve(toolchain: &Toolchain, serial: &str, manifest: &Manifest) -> Result<(),
             Err(mpsc::RecvTimeoutError::Disconnected) => return Err("the watcher stopped".into()),
         }
     }
+}
+
+/// `rux run`'s half of the hot reload handshake: challenge the app, check its
+/// answer, and answer its challenge in turn. See `rux_shell::dev_mac`.
+fn dev_handshake_host(stream: &TcpStream, token: &str) -> Result<(), String> {
+    use std::io::BufRead;
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .map_err(|e| e.to_string())?;
+    let ours = rux_shell::dev_nonce();
+    let mut writer = stream;
+    writeln!(writer, "rux-hello {ours}").map_err(|e| e.to_string())?;
+    let mut reader = std::io::BufReader::new(stream.try_clone().map_err(|e| e.to_string())?);
+    let mut line = String::new();
+    reader.read_line(&mut line).map_err(|e| e.to_string())?;
+    let mut words = line.trim().strip_prefix("rux-auth ").ok_or("it did not answer")?.split(' ');
+    let (answer, theirs) = (words.next().unwrap_or(""), words.next().unwrap_or(""));
+    if answer != rux_shell::dev_mac(token, &format!("app {ours}")) {
+        return Err("it does not know this run's token".into());
+    }
+    writeln!(writer, "rux-ok {}", rux_shell::dev_mac(token, &format!("host {theirs}")))
+        .and_then(|()| writer.flush())
+        .map_err(|e| e.to_string())?;
+    stream.set_read_timeout(None).map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 /// Send the app every file that differs from what it holds, then `reload`.

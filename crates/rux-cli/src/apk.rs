@@ -475,6 +475,10 @@ fn android_manifest(manifest: &Manifest, dev: bool) -> String {
     } else {
         ""
     };
+    // A dev build is debuggable, as Gradle's debug builds are. It is what lets
+    // `rux run --device` write hot reload's token into the app's own files with
+    // `adb shell run-as`, where no other app can read it.
+    let debuggable = if dev { "\n        android:debuggable=\"true\"" } else { "" };
     let links = link_filters(manifest);
     format!(
         r#"<?xml version="1.0" encoding="utf-8"?>
@@ -495,7 +499,7 @@ fn android_manifest(manifest: &Manifest, dev: bool) -> String {
     </queries>
     <application
         android:label="{label}"{icon}
-        android:hasCode="true"
+        android:hasCode="true"{debuggable}
         android:extractNativeLibs="true">
         <activity
             android:name="{activity}"{theme}
@@ -740,6 +744,15 @@ mod tests {
         let internet = "android.permission.INTERNET";
         assert!(android_manifest(&manifest("Task List"), true).contains(internet));
         assert!(!android_manifest(&manifest("Task List"), false).contains(internet));
+    }
+
+    /// A dev build is debuggable, so `rux run --device` can put hot reload's
+    /// token in the app's private files with `run-as`; a release build is not.
+    #[test]
+    fn only_a_dev_build_is_debuggable() {
+        let debuggable = r#"android:debuggable="true""#;
+        assert!(android_manifest(&manifest("Task List"), true).contains(debuggable));
+        assert!(!android_manifest(&manifest("Task List"), false).contains(debuggable));
     }
 
     /// XML forbids `--` inside a comment, and `aapt2` refuses the whole

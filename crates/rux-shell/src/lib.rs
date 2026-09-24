@@ -8197,6 +8197,66 @@ fn fit_length(old: &str, new: &str, caret: usize, max: usize) -> (String, usize)
 }
 
 #[cfg(test)]
+mod dev_auth_tests {
+    use super::{dev_handshake_app, dev_mac, dev_nonce, siphash24};
+    use std::io::{BufRead, Write};
+
+    /// The reference vector from the SipHash paper: key 00..0f, message 00..0e.
+    #[test]
+    fn siphash_matches_the_reference() {
+        let message: Vec<u8> = (0..15).collect();
+        assert_eq!(siphash24(0x0706050403020100, 0x0f0e0d0c0b0a0908, &message), 0xa129ca6149be45e5);
+    }
+
+    /// `rux run`'s side, as it is in `rux-cli`, over a real loopback socket.
+    fn host(token: String) -> (u16, std::thread::JoinHandle<bool>) {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let side = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let ours = dev_nonce();
+            let mut writer = &stream;
+            writeln!(writer, "rux-hello {ours}").unwrap();
+            let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            let mut words = line.trim().strip_prefix("rux-auth ").unwrap().split(' ');
+            let (answer, theirs) = (words.next().unwrap(), words.next().unwrap());
+            if answer != dev_mac(&token, &format!("app {ours}")) {
+                return false;
+            }
+            writeln!(writer, "rux-ok {}", dev_mac(&token, &format!("host {theirs}"))).unwrap();
+            writeln!(writer, "put 2 app.rux").unwrap();
+            true
+        });
+        (port, side)
+    }
+
+    #[test]
+    fn both_ends_prove_the_token_and_nothing_after_is_lost() {
+        let token = dev_nonce();
+        let (port, side) = host(token.clone());
+        let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+        assert_eq!(dev_handshake_app(&mut reader, &mut stream, &token), Ok(()));
+        assert!(side.join().unwrap(), "the host accepted the app");
+        let mut next = String::new();
+        reader.read_line(&mut next).unwrap();
+        assert_eq!(next.trim(), "put 2 app.rux", "what the host sent after its answer is still there");
+    }
+
+    #[test]
+    fn a_listener_without_the_token_is_refused() {
+        let (port, side) = host(dev_nonce());
+        let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+        let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(5)));
+        assert!(dev_handshake_app(&mut reader, &mut stream, &dev_nonce()).is_err());
+        assert!(!side.join().unwrap(), "and it refused the app in turn");
+    }
+}
+
+#[cfg(test)]
 mod saved_text_tests {
     use super::{kept_across_a_kill, Field, InputKind};
 
@@ -10222,6 +10282,121 @@ pub extern "system" fn Java_dev_ruxlang_shell_RuxActivity_nativeProcessedText<'f
 
 /// One batch of hot-reload changes, read off the connection to `rux run`.
 ///
+/// Where `rux run --device` leaves the token a dev build proves itself with,
+/// in the app's own files directory. See [`dev_mac`].
+pub const DEV_TOKEN_FILE: &str = "rux-dev-token";
+
+/// The keyed hash both ends of hot reload answer a challenge with.
+///
+/// **Why there is a handshake at all.** A dev build dials a port on the
+/// phone's own loopback, and when `rux run` is not there, any other app can
+/// listen on that port and push documents that would then run inside this
+/// one. On the computer, any local process could connect and be sent the
+/// project. So each side proves it knows a secret, and the secret never
+/// crosses the wire: `rux run --device` writes a fresh one into the app's
+/// private files directory with `adb shell run-as` (which only works on a
+/// debuggable build, and which no other app can read), and each side answers
+/// the other's random challenge with this hash of it. A secret baked into the
+/// APK would not do: any app can read another app's APK.
+///
+/// SipHash-2-4, the keyed hash designed for exactly this size of job, written
+/// out rather than taken from a crate: forty lines, no dependency, and both
+/// ends are this function.
+pub fn dev_mac(token: &str, message: &str) -> String {
+    let key = |at: usize| {
+        token
+            .get(at..at + 16)
+            .and_then(|hex| u64::from_str_radix(hex, 16).ok())
+            .unwrap_or(0)
+    };
+    format!("{:016x}", siphash24(key(0), key(16), message.as_bytes()))
+}
+
+fn siphash24(k0: u64, k1: u64, data: &[u8]) -> u64 {
+    let mut v = [
+        k0 ^ 0x736f_6d65_7073_6575,
+        k1 ^ 0x646f_7261_6e64_6f6d,
+        k0 ^ 0x6c79_6765_6e65_7261,
+        k1 ^ 0x7465_6462_7974_6573,
+    ];
+    fn round(v: &mut [u64; 4]) {
+        v[0] = v[0].wrapping_add(v[1]);
+        v[1] = v[1].rotate_left(13) ^ v[0];
+        v[0] = v[0].rotate_left(32);
+        v[2] = v[2].wrapping_add(v[3]);
+        v[3] = v[3].rotate_left(16) ^ v[2];
+        v[0] = v[0].wrapping_add(v[3]);
+        v[3] = v[3].rotate_left(21) ^ v[0];
+        v[2] = v[2].wrapping_add(v[1]);
+        v[1] = v[1].rotate_left(17) ^ v[2];
+        v[2] = v[2].rotate_left(32);
+    }
+    let mut chunks = data.chunks_exact(8);
+    for chunk in &mut chunks {
+        let m = u64::from_le_bytes(chunk.try_into().expect("eight bytes"));
+        v[3] ^= m;
+        round(&mut v);
+        round(&mut v);
+        v[0] ^= m;
+    }
+    let mut last = [0u8; 8];
+    last[..chunks.remainder().len()].copy_from_slice(chunks.remainder());
+    last[7] = data.len() as u8;
+    let m = u64::from_le_bytes(last);
+    v[3] ^= m;
+    round(&mut v);
+    round(&mut v);
+    v[0] ^= m;
+    v[2] ^= 0xff;
+    for _ in 0..4 {
+        round(&mut v);
+    }
+    v[0] ^ v[1] ^ v[2] ^ v[3]
+}
+
+/// A fresh random challenge, as 32 hex characters. The standard library's
+/// hasher keys come from the operating system's random source, which is
+/// what makes two of them unguessable; nothing here is secret, only fresh.
+pub fn dev_nonce() -> String {
+    use std::hash::{BuildHasher, Hasher};
+    let half = || {
+        let mut h = std::collections::hash_map::RandomState::new().build_hasher();
+        h.write_u128(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_nanos()),
+        );
+        h.finish()
+    };
+    format!("{:016x}{:016x}", half(), half())
+}
+
+/// The app's half of the handshake: answer `rux run`'s challenge, set one of
+/// its own, and check the answer. Reads through the same buffered reader the
+/// batches will be read from, so nothing the host sends after its answer is
+/// lost in a buffer thrown away.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+fn dev_handshake_app(
+    reader: &mut impl std::io::BufRead,
+    writer: &mut impl std::io::Write,
+    token: &str,
+) -> Result<(), String> {
+    let mut line = String::new();
+    reader.read_line(&mut line).map_err(|e| e.to_string())?;
+    let theirs = line.trim().strip_prefix("rux-hello ").ok_or("it did not say hello")?.to_string();
+    let ours = dev_nonce();
+    writeln!(writer, "rux-auth {} {ours}", dev_mac(token, &format!("app {theirs}")))
+        .and_then(|()| writer.flush())
+        .map_err(|e| e.to_string())?;
+    line.clear();
+    reader.read_line(&mut line).map_err(|e| e.to_string())?;
+    let answer = line.trim().strip_prefix("rux-ok ").ok_or("it did not answer")?;
+    if answer != dev_mac(token, &format!("host {ours}")) {
+        return Err("it does not know this run's token".into());
+    }
+    Ok(())
+}
+
 /// The protocol is lines, with file contents inline:
 ///
 /// ```text
@@ -10297,11 +10472,32 @@ fn apply_dev_changes(
 /// Nobody listening is the ordinary case (the app was opened without
 /// `rux run`), so a refused connection is retried quietly, once a second.
 #[cfg(target_os = "android")]
-fn dev_link(port: u16) {
+fn dev_link(port: u16, token_file: Option<PathBuf>) {
     loop {
-        if let Ok(stream) = std::net::TcpStream::connect(("127.0.0.1", port)) {
+        // Read afresh on every attempt: `rux run --device` writes a new one
+        // each run, possibly after this app started.
+        let token = token_file
+            .as_ref()
+            .and_then(|f| std::fs::read_to_string(f).ok())
+            .map(|t| t.trim().to_string())
+            .filter(|t| !t.is_empty());
+        let connected = token.as_deref().and_then(|token| {
+            let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).ok()?;
+            let mut reader = std::io::BufReader::new(stream.try_clone().ok()?);
+            // A listener that says nothing cannot hold the link.
+            let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(5)));
+            let checked = dev_handshake_app(&mut reader, &mut stream, token);
+            let _ = stream.set_read_timeout(None);
+            match checked {
+                Ok(()) => Some(reader),
+                Err(why) => {
+                    android_log(&format!("hot reload: refused whoever is on port {port}: {why}"));
+                    None
+                }
+            }
+        });
+        if let Some(mut reader) = connected {
             android_log(&format!("hot reload: connected to rux on port {port}"));
-            let mut reader = std::io::BufReader::new(stream);
             while let Ok(Some(batch)) = read_dev_batch(&mut reader) {
                 if let Ok(proxy) = PROXY.lock() {
                     if let Some(proxy) = proxy.as_ref() {
@@ -10399,6 +10595,8 @@ fn run_android_with(
 ) {
     use winit::platform::android::EventLoopBuilderExtAndroid;
 
+    // Where hot reload's token is, read before the app is handed on.
+    let token_file = app.internal_data_path().map(|dir| dir.join(DEV_TOKEN_FILE));
     let event_loop = EventLoop::<RuxEvent>::with_user_event()
         .with_android_app(app)
         .build()
@@ -10420,7 +10618,7 @@ fn run_android_with(
     // and every reload read the same copy.
     let dev = dev.map(|(files, port)| {
         rux_runtime::set_source(std::rc::Rc::new(files.clone()));
-        std::thread::spawn(move || dev_link(port));
+        std::thread::spawn(move || dev_link(port, token_file));
         files
     });
     let mut app = App::new(path);
