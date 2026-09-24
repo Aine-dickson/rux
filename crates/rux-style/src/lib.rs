@@ -2068,7 +2068,7 @@ fn interpolate_tracked(
     while let Some(start) = rest.find("{{") {
         out.push_str(&decode_entities(&rest[..start]));
         let after = &rest[start + 2..];
-        match after.find("}}") {
+        match interpolation_end(after) {
             Some(end) => {
                 let (value, d) = engine.eval_display_tracked(after[..end].trim(), locals);
                 out.push_str(&value);
@@ -2083,6 +2083,31 @@ fn interpolate_tracked(
     }
     out.push_str(&decode_entities(rest));
     (out, deps)
+}
+
+/// Where the `}}` closing an interpolation starts, given the text just after its
+/// `{{`. Braces are counted, and strings skipped, so a map inside it,
+/// `{{ {a: {b: 1}}.a.b }}`, does not end at the map's own `}}`.
+fn interpolation_end(after: &str) -> Option<usize> {
+    let b = after.as_bytes();
+    let mut depth = 0usize;
+    let mut i = 0;
+    while i < b.len() {
+        match b[i] {
+            q @ (b'"' | b'\'' | b'`') => {
+                i += 1;
+                while i < b.len() && b[i] != q {
+                    i += if b[i] == b'\\' { 2 } else { 1 };
+                }
+            }
+            b'{' => depth += 1,
+            b'}' if depth > 0 => depth -= 1,
+            b'}' if b.get(i + 1) == Some(&b'}') => return Some(i),
+            _ => (),
+        }
+        i += 1;
+    }
+    None
 }
 
 /// The raw concatenated text of an element's direct text children, `{{ }}` spans

@@ -189,7 +189,7 @@ fn a_closed_string_still_hides_what_is_inside_it() {
 /// crew_list.rux` came out of `rux fmt` with a `</view>` at the left margin.
 #[test]
 fn a_start_tag_over_two_lines_opens_a_level() {
-    let src = "<template>\n  <view class=\"rows\">\n    <view class=\"row\" r-for=\"m in crew\"\n          :to=\"path_for(&quot;x&quot;, #{ id: m.id })\">\n      <text>{{ m.name }}</text>\n    </view>\n  </view>\n</template>\n";
+    let src = "<template>\n  <view class=\"rows\">\n    <view class=\"row\" r-for=\"m in crew\"\n          :to=\"path_for(&quot;x&quot;, { id: m.id })\">\n      <text>{{ m.name }}</text>\n    </view>\n  </view>\n</template>\n";
     let out = reindent(src, UNIT);
     assert_eq!(out, src, "already formatted, so nothing moves");
 
@@ -223,7 +223,7 @@ fn a_wrapped_expression_keeps_its_continuation() {
 /// everywhere, and the level goes when both close.
 #[test]
 fn two_brackets_opened_on_one_line_are_one_level() {
-    let src = "<script>\n  let rows = signal([\n    #{ name: \"a\" },\n    #{ name: \"b\" },\n  ]);\n  let after = 1;\n</script>\n";
+    let src = "<script>\n  let rows = signal([\n    { name: \"a\" },\n    { name: \"b\" },\n  ]);\n  let after = 1;\n</script>\n";
     assert_eq!(reindent(src, UNIT), src);
     assert_eq!(indent_after("let rows = signal([", 1), 2, "Enter steps in once");
 }

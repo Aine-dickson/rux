@@ -16,7 +16,7 @@
              picture; and it is what keeps the rows above a new one from being
              rebuilt, so a message you are reading does not flicker when one
              arrives. -->
-        <view class="msg" :class="#{ mine: m.mine }" r-for="m in messages" r-key="m.id" r-transition>
+        <view class="msg" :class="{ mine: m.mine }" r-for="m in messages" r-key="m.id" r-transition>
           <text class="who">{{ m.who }}</text>
           <text class="body">{{ m.text }}</text>
         </view>
@@ -47,7 +47,7 @@
            found it. It had never once fired, and the button beside it working
            is what kept anyone from noticing. Input events are on the list. -->
       <input class="field" r-model="draft" placeholder="say something…" />
-      <view class="send" :class="#{ dead: draft.trim() == &quot;&quot; }" @tap="send()">
+      <view class="send" :class="{ dead: draft.trim() == &quot;&quot; }" @tap="send()">
         <text class="send-label">send</text>
       </view>
     </view>
@@ -161,8 +161,8 @@
   let draft = signal("");
   let nextId = signal(3);
   let messages = signal([
-    #{ id: 1, who: "ada", text: "The scroller is the box with the overflow, not the screen.", mine: false },
-    #{ id: 2, who: "you", text: "And the list keeps its own height.", mine: true },
+    { id: 1, who: "ada", text: "The scroller is the box with the overflow, not the screen.", mine: false },
+    { id: 2, who: "you", text: "And the list keeps its own height.", mine: true },
   ]);
 
   // Push, then scroll. The order matters less than it looks: `scrollIntoView`
@@ -171,14 +171,14 @@
   fn send() {
     let text = draft.trim();
     if text == "" { return; }
-    messages.push(#{ id: nextId, who: "you", text: text, mine: true });
+    messages.push({ id: nextId, who: "you", text: text, mine: true });
     nextId++;
     draft = "";
     toBottom();
   }
 
   fn reply() {
-    messages.push(#{ id: nextId, who: "ada", text: "Message number " + nextId + ", arriving while you read.", mine: false });
+    messages.push({ id: nextId, who: "ada", text: "Message number " + nextId + ", arriving while you read.", mine: false });
     nextId++;
     toBottom();
   }

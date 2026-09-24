@@ -4,7 +4,7 @@
     <text class="lead">Tap to walk the shape on. `transition: d` animates the geometry itself, and the rule is the one every other animatable value follows: two paths interpolate when their sequences of commands match, and anything else jumps.</text>
 
     <view class="stage">
-      <path class="shape" :d="shapes[at].d" :class="#{ warm: shapes[at].warm }" alt="a shape that morphs between a square, a circle and a blob" />
+      <path class="shape" :d="shapes[at].d" :class="{ warm: shapes[at].warm }" alt="a shape that morphs between a square, a circle and a blob" />
     </view>
 
     <view class="row">
@@ -101,17 +101,17 @@
      decoration: the correspondence between two shapes is command by command, so
      a shape that started at a corner would morph by turning inside out. */
   let shapes = signal([
-    #{
+    {
       name: "a square",
       warm: false,
       d: "M 50 0 L 100 0 L 100 100 L 0 100 L 0 0 Z",
     },
-    #{
+    {
       name: "a circle",
       warm: false,
       d: "M 50 0 A 50 50 0 0 1 100 50 A 50 50 0 0 1 50 100 A 50 50 0 0 1 0 50 A 50 50 0 0 1 50 0 Z",
     },
-    #{
+    {
       name: "a blob",
       warm: true,
       d: "M 50 0 C 96 4 108 44 88 64 C 74 78 74 108 44 96 C 18 86 -6 76 4 48 C 12 24 4 6 50 0 Z",

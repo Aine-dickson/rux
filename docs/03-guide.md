@@ -145,9 +145,9 @@ A list is not a `<list>` element. It's a `role="list"` container plus a **loop**
 
 <script>
   let devices = signal([
-    #{ id: 1, name: "Thermostat", battery: 82 },
-    #{ id: 2, name: "Door Lock",  battery: 47 },
-    #{ id: 3, name: "Camera",     battery: 12 },
+    { id: 1, name: "Thermostat", battery: 82 },
+    { id: 2, name: "Door Lock",  battery: 47 },
+    { id: 3, name: "Camera",     battery: 12 },
   ]);
 </script>
 ```
@@ -187,13 +187,13 @@ Every control is `<input type=…>`; there's no `<select>` or `<textarea>`. A fo
 
 <script>
   let kinds = signal(["Sensor", "Lock", "Camera"]);
-  let draft = signal(#{ name: "", kind: "Sensor" });
+  let draft = signal({ name: "", kind: "Sensor" });
 
   fn add() {
-    devices.update(|list| list.push(#{
+    devices.update(|list| list.push({
       id: next_id(), name: draft.get().name, battery: 100,
     }));
-    draft.set(#{ name: "", kind: "Sensor" });
+    draft.set({ name: "", kind: "Sensor" });
   }
 </script>
 ```
@@ -264,7 +264,7 @@ Putting it together, `app.rux`:
 
   let devices = signal(host::load_devices());
   let kinds   = signal(["Sensor", "Lock", "Camera"]);
-  let draft   = signal(#{ name: "", kind: "Sensor" });
+  let draft   = signal({ name: "", kind: "Sensor" });
   let query   = signal("");
 
   fn shown() {
@@ -272,10 +272,10 @@ Putting it together, `app.rux`:
   }
 
   fn add() {
-    devices.update(|list| list.push(#{
+    devices.update(|list| list.push({
       id: next_id(), name: draft.get().name, battery: 100,
     }));
-    draft.set(#{ name: "", kind: "Sensor" });
+    draft.set({ name: "", kind: "Sensor" });
   }
 
   fn open(d) { host::open(d.id); }

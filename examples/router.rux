@@ -7,10 +7,10 @@
          the case worth trying: the hit region follows the transform, so the tap
          lands where the control is drawn rather than where it started. -->
     <view class="controls">
-      <view class="step" :class="#{ dead: slow }" @tap="slow = true">
+      <view class="step" :class="{ dead: slow }" @tap="slow = true">
         <text class="step-label">slow motion</text>
       </view>
-      <view class="step" :class="#{ dead: !slow }" @tap="slow = false">
+      <view class="step" :class="{ dead: !slow }" @tap="slow = false">
         <text class="step-label">normal speed</text>
       </view>
     </view>
@@ -24,7 +24,7 @@
          <router> leaves no box to hit. An element carrying only `@drag` is not
          a tap target and does not swallow a tap meant for what is under it, so
          everything inside the page is still reachable. -->
-    <view class="stage" :class="#{ slow: slow }" @drag="onSwipe(event)">
+    <view class="stage" :class="{ slow: slow }" @drag="onSwipe(event)">
       <!-- One binding, both drivers. `swipe` is null except while a finger has
            hold of it, and a swap handed a non-number runs on the clock, so a
            tab tap animates and a drag follows the hand without the swap being
@@ -42,10 +42,10 @@
          `can_go_back` is for: disabling a control is a class, and a class reads
          signals. Alt+Left and the mouse's side buttons do the same thing. -->
     <view class="history">
-      <view class="step" :class="#{ dead: !can_go_back }" @tap="back()">
+      <view class="step" :class="{ dead: !can_go_back }" @tap="back()">
         <text class="step-label">go back</text>
       </view>
-      <view class="step" :class="#{ dead: !can_go_forward }" @tap="forward()">
+      <view class="step" :class="{ dead: !can_go_forward }" @tap="forward()">
         <text class="step-label">go forward</text>
       </view>
       <!-- `params` is readable out here, outside the matched view. The view
@@ -155,16 +155,16 @@
   // Long enough that the list scrolls, which is the only way to see that Back
   // returns you to where you were rather than to the top.
   let crew = signal([
-    #{ id: "ada",     name: "Ada",     job: "navigator" },
-    #{ id: "grace",   name: "Grace",   job: "engineer" },
-    #{ id: "hedy",    name: "Hedy",    job: "signals" },
-    #{ id: "katherine", name: "Katherine", job: "trajectories" },
-    #{ id: "margaret",  name: "Margaret",  job: "onboard software" },
-    #{ id: "annie",   name: "Annie",   job: "spectra" },
-    #{ id: "jean",    name: "Jean",    job: "compiler" },
-    #{ id: "evelyn",  name: "Evelyn",  job: "ballistics" },
-    #{ id: "mary",    name: "Mary",    job: "aeronautics" },
-    #{ id: "dorothy", name: "Dorothy", job: "supervisor" },
+    { id: "ada",     name: "Ada",     job: "navigator" },
+    { id: "grace",   name: "Grace",   job: "engineer" },
+    { id: "hedy",    name: "Hedy",    job: "signals" },
+    { id: "katherine", name: "Katherine", job: "trajectories" },
+    { id: "margaret",  name: "Margaret",  job: "onboard software" },
+    { id: "annie",   name: "Annie",   job: "spectra" },
+    { id: "jean",    name: "Jean",    job: "compiler" },
+    { id: "evelyn",  name: "Evelyn",  job: "ballistics" },
+    { id: "mary",    name: "Mary",    job: "aeronautics" },
+    { id: "dorothy", name: "Dorothy", job: "supervisor" },
   ]);
 
   // Slow motion, so a navigation can be looked at and interrupted.

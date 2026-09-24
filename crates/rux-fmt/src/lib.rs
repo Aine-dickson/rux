@@ -5,7 +5,8 @@
 //! - **`<template>` and `<script>` are only re-indented.** Leading whitespace is
 //!   corrected; nothing on a line is rewritten, wrapped or reordered. A `@tap`
 //!   handler is rhai, and rearranging someone's expressions is not this tool's
-//!   business.
+//!   business. The one exception is [`maps`]: `#{ a: 1 }` loses its `#`, so a
+//!   file has one spelling of a map.
 //! - **`<style>` is genuinely formatted**, by [`css`], one space before `{`,
 //!   long rules broken one declaration per line, short ones kept inline. CSS has
 //!   a conventional shape worth enforcing.
@@ -27,6 +28,7 @@
 //! rather than as a separate pass.
 
 pub mod css;
+pub mod maps;
 
 /// What a line does to the indent level.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -71,7 +73,8 @@ fn is_void(tag: &str) -> bool {
 /// Format `text`, using `unit` for one indent level (`"  "`, `"    "`, `"\t"`…).
 ///
 /// The `<template>` and `<script>` sections are only re-indented, nothing on a
-/// line is rewritten. The `<style>` section goes through the CSS pretty-printer
+/// line is rewritten except a `#{` map, which becomes `{` ([`maps`]). The
+/// `<style>` section goes through the CSS pretty-printer
 /// in [`css`], which does reflow declarations. That split is deliberate: CSS has
 /// a shape worth enforcing, while a `@tap` handler is rhai that only its author
 /// should be rearranging.
@@ -79,7 +82,7 @@ fn is_void(tag: &str) -> bool {
 /// Line endings are preserved: CRLF in, CRLF out.
 pub fn reindent(text: &str, unit: &str) -> String {
     let eol = if text.contains("\r\n") { "\r\n" } else { "\n" };
-    let normalised = text.replace("\r\n", "\n");
+    let normalised = maps::bare_maps(&text.replace("\r\n", "\n"));
     let formatted = match style_span(&normalised) {
         Some((open_end, close_start)) => {
             let head = reindent_lines(&normalised[..open_end], unit);

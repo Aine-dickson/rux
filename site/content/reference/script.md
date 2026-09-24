@@ -316,8 +316,20 @@ it:
 <button @tap="focus_note()">
 ```
 
-Object literals are **`#{ key: value }`**, not `{ … }`. Bare braces are a block
-everywhere in this language, and keeping one rule is worth the unfamiliar sigil.
+Object literals are **`{ key: value }`**, as in JavaScript. A key can be a name
+or a string (`{ "x-y": 1 }`), and `{}` is an empty map. A `{` whose first thing is
+not `key:` is a block, as it is after `if`:
+
+```rux
+let row = { id: 1, name: "ada" };      // a map
+let total = { let t = 0; t + 1 };      // a block, whose value is 1
+rows.map(r => { id: r.id });           // returns a map; JS needs ({ … }) here
+let noop = () => {};                   // an empty body, not a map
+```
+
+Two things JavaScript has that this does not: shorthand (`{ a, b }` for
+`{ a: a, b: b }`) and spread. `#{ key: value }`, rhai's own spelling, also works,
+and `rux fmt` rewrites it to `{`.
 
 `null` exists and is the empty value. It is a literal rather than a variable, so
 it cannot be shadowed and nothing can subscribe to it. `()` is the same value
@@ -398,7 +410,7 @@ rule rather than matching a known one. Use `keys(m)` and `values(m)` for maps.
 | `emit("name")`, `emit("name", payload)` | A component telling its caller something happened |
 | `navigate(path)`, `replace(path)` | Router. `replace` is the only way to redirect: `navigate` leaves the redirecting page in the history, so Back returns to it and redirects again |
 | `back()`, `forward()` | Walk the history |
-| `path_for("route")`, `path_for("route", #{ id: x })` | Build a path from a named route |
+| `path_for("route")`, `path_for("route", { id: x })` | Build a path from a named route |
 
 **`log` is rhai's logarithm**, not a logging function. `log(2)` returns `0.301`.
 Use `print`.
@@ -539,7 +551,7 @@ two integers.
 The things most likely to surprise, in the order they usually do:
 
 1. **`'x'` is a character**, not a string.
-2. **Object literals are `#{ }`**.
+2. **Object literals have no shorthand**: `{ a: a }`, never `{ a }`.
 3. **`.length` on arrays and strings only**, not on objects.
 4. `let` declares state only at the top level of `<script>`; `signal()` marks it.
 5. **A method call cannot see the surrounding scope.** Write `helper(thing)`

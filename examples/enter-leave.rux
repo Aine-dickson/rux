@@ -243,11 +243,11 @@
 
   /* Long enough that there is a middle to take a row out of. */
   let tasks = signal([
-    #{ id: "tanks",   text: "check the tanks" },
-    #{ id: "heading", text: "log the heading" },
-    #{ id: "watch",   text: "wake the second watch" },
-    #{ id: "aerial",  text: "stow the aerial" },
-    #{ id: "log",     text: "close the log" },
+    { id: "tanks",   text: "check the tanks" },
+    { id: "heading", text: "log the heading" },
+    { id: "watch",   text: "wake the second watch" },
+    { id: "aerial",  text: "stow the aerial" },
+    { id: "log",     text: "close the log" },
   ]);
 
   /* Rebuilt rather than filtered. `filter` would be a method call, and a method

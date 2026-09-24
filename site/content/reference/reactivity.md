@@ -15,6 +15,11 @@ weight = 5
 - `{{ expr }}` interpolation; `r-if` / `r-elif` / `r-else`, `r-for="x in list"`, `r-show`.
 - `@tap="…"` handlers.
 - `host::fn()` calls into compiled Rust (registered in `rux-runtime::build_engine`).
+- `{ key: value }` is a map, as in JavaScript, so `:class="{ active: on }"` and
+  `rows.map(r => { id: r.id })` mean what they say. **CHANGED in v0.8**: it used
+  to be written `#{ key: value }`, which still works and which `rux fmt` rewrites.
+  `{}` is an empty map as a value and an empty block at the start of a statement,
+  so `() => {}` is still a no-op. No shorthand: `{ a: a }`, never `{ a }`.
 
 > **CHANGED in v0.7: a function can now read and write the state around it.**
 > This used to be the single biggest trap in the language, and it is gone.

@@ -2821,6 +2821,46 @@ mod tests {
         assert!(take_warnings().is_empty(), "{:?}", take_warnings());
     }
 
+    /// `{ a: 1 }` is a map, as in JS, and `#{ a: 1 }` still is.
+    #[test]
+    fn bare_brace_maps() {
+        let mut e = engine();
+        let _ = take_warnings();
+        let nums = Value::List(vec![Value::Number(1.0), Value::Number(2.0)]);
+        let locals = [("nums".to_string(), nums)];
+
+        assert_eq!(e.eval_display("let m = { a: 1, b: \"two\" }; m.b", &[]), "two");
+        assert_eq!(e.eval_display("{ a: 1 }.a + 1", &[]), "2");
+        assert_eq!(e.eval_display("let m = { \"x-y\": 3 }; m[\"x-y\"]", &[]), "3");
+        assert_eq!(e.eval_display("let m = {}; m.len()", &[]), "0");
+        assert_eq!(e.eval_display("{ a: { b: 5 } }.a.b", &[]), "5");
+        assert_eq!(e.eval_display("[{ a: 1 }, { a: 2 }][1].a", &[]), "2");
+        assert_eq!(e.eval_display("#{ a: 7 }.a", &[]), "7");
+        // An arrow's body: JS needs `({ … })` here, this does not.
+        assert_eq!(
+            e.eval_display("nums.map(n => { id: n * 10 })[1].id", &locals),
+            "20"
+        );
+        // `() => {}` is still an empty body, the no-op handler.
+        assert_eq!(e.eval_display("let f = () => {}; f.call()", &[]), "");
+        assert!(take_warnings().is_empty(), "{:?}", take_warnings());
+    }
+
+    /// A `{` that does not start with `name:` or `"string":` is a block, as
+    /// before. `host::x` must not read as a key, since `::` is its own token.
+    #[test]
+    fn braces_that_are_not_maps_are_still_blocks() {
+        let mut e = engine();
+        let _ = take_warnings();
+
+        assert_eq!(e.eval_display("let x = { let y = 2; y * 3 }; x", &[]), "6");
+        assert_eq!(e.eval_display("let x = { level + 1 }; x", &[]), "83");
+        assert_eq!(e.eval_display("let f = n => { n + 1 }; f.call(1)", &[]), "2");
+        assert_eq!(e.eval_display("let f = n => { let d = n * 2; d }; f.call(4)", &[]), "8");
+        assert_eq!(e.eval_display("if true { 1 } else { 2 }", &[]), "1");
+        assert!(take_warnings().is_empty(), "{:?}", take_warnings());
+    }
+
     /// `forEach` with the JS-shaped callback, which is the case that motivated
     /// arrow functions in the first place.
     #[test]

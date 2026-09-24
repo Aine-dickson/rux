@@ -194,7 +194,7 @@ const ELEMENT_ATTRIBUTES: &[(&str, &[Entry])] = &[
         &[
             Entry { name: "path", detail: "the path to match", doc: "`/crew/:id` captures `id` and hands it to the view as a prop. A child route's path is relative to its parent, and `path=\"\"` is the index route that fills the parent's outlet at the parent's own path." },
             Entry { name: "view", detail: "the component to render", doc: "Names an imported component. Either spelling: `view=\"crew-detail\"` as the tag is written, or `view=\"crew_detail\"` as the `use` that imports it is written. They are the same component." },
-            Entry { name: "name", detail: "a name to build this route's path from", doc: "`path_for(\"crew-detail\", #{ id: \"ada\" })` builds the path from the name and the parameters, so a link survives the path being changed." },
+            Entry { name: "name", detail: "a name to build this route's path from", doc: "`path_for(\"crew-detail\", { id: \"ada\" })` builds the path from the name and the parameters, so a link survives the path being changed." },
             Entry { name: "fallback", detail: "match anything unmatched", doc: "Valueless. Renders when no other route matched, wherever it sits among them." },
             Entry { name: "guard", detail: "decide whether this route may be entered", doc: "`guard=\"expr\"`, run whenever this route is part of the match. `false` cancels the navigation, a string redirects to that path, and anything else allows it, `()` included, so a function that falls off the end has consented. Outer guards run first. In scope: `to`, `from`, the path's parameters, and `linked`, true when a deep link or a browser URL started the navigation rather than the app itself." },
         ],
@@ -283,7 +283,7 @@ const SCRIPT_GLOBALS: &[Entry] = &[
     Entry { name: "replace", detail: "replace(path)", doc: "Go to a path *without* a history entry. The only correct way to redirect." },
     Entry { name: "back", detail: "back()", doc: "Walk back through the history." },
     Entry { name: "forward", detail: "forward()", doc: "Walk forward through the history." },
-    Entry { name: "path_for", detail: "path_for(\"route\", #{ … })", doc: "Build a path from a named route and its parameters." },
+    Entry { name: "path_for", detail: "path_for(\"route\", { … })", doc: "Build a path from a named route and its parameters." },
     Entry { name: "emit", detail: "emit(\"name\", payload)", doc: "A component telling its caller something happened." },
     Entry { name: "blur", detail: "blur()", doc: "Drop focus. Free-standing rather than a method on an element, because there is only one focused element: blurring \"this one\" would either do nothing or take focus from something else." },
     Entry { name: "setInterval", detail: "setInterval(ms) { … }", doc: "Run a block on a period, handing back a handle. A **block, not a callback**: `setInterval(1000) { seconds++ }`. Stop it with `clearInterval(handle)`." },

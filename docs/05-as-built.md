@@ -1071,6 +1071,11 @@ plain `color: #ff0000` would fall back to the default.
 - `{{ expr }}` interpolation; `r-if` / `r-elif` / `r-else`, `r-for="x in list"`, `r-show`.
 - `@tap="…"` handlers.
 - `host::fn()` calls into compiled Rust (registered in `rux-runtime::build_engine`).
+- `{ key: value }` is a map, as in JavaScript, so `:class="{ active: on }"` and
+  `rows.map(r => { id: r.id })` mean what they say. **CHANGED in v0.8**: it used
+  to be written `#{ key: value }`, which still works and which `rux fmt` rewrites.
+  `{}` is an empty map as a value and an empty block at the start of a statement,
+  so `() => {}` is still a no-op. No shorthand: `{ a: a }`, never `{ a }`.
 
 > **CHANGED in v0.7: a function can now read and write the state around it.**
 > This used to be the single biggest trap in the language, and it is gone.
@@ -2181,7 +2186,7 @@ its state and its scroll position as you move between the things it lists.
 Parameters are **merged down the chain**: a child view sees what its parent
 captured, and the `params` signal outside the router sees what a child captured.
 A name resolves to its **full** path, built from its ancestors, so
-`path_for("crew-detail", #{ id: "grace" })` returns `/crew/grace` from a name
+`path_for("crew-detail", { id: "grace" })` returns `/crew/grace` from a name
 written on the child.
 
 A path that matches a parent but nothing under it is not a half match: the whole
@@ -2226,7 +2231,7 @@ userland can fix it.
 **`can_go_back` and `can_go_forward`** are signals, so a history button can grey
 itself out:
 ```xml
-<view class="step" :class="#{ dead: !can_go_back }" @tap="back()">
+<view class="step" :class="{ dead: !can_go_back }" @tap="back()">
 ```
 Signals rather than functions because what they are for is disabling a control,
 and disabling a control is a class, and a class reads signals.
@@ -2248,12 +2253,12 @@ route and build its path with `path_for`:
 ```xml
 <route name="crew-detail" path="/crew/:id" view="crew-detail" />
 ...
-<view :to="path_for(&quot;crew-detail&quot;, #{ id: member.id })">
+<view :to="path_for(&quot;crew-detail&quot;, { id: member.id })">
 ```
 It returns a **string**, so it composes with `to`, `:to`, `navigate` and
 `replace` rather than needing a second form of each. Values matching a `:name`
 segment fill it; whatever is left over becomes a query string, which is what
-makes `path_for("search", #{ q: "rust" })` work for a route with no parameters
+makes `path_for("search", { q: "rust" })` work for a route with no parameters
 at all. Values are escaped on the way in and unescaped on the way out, so an id
 containing a `/` survives the round trip. A missing parameter or an unknown name
 warns, and produces a path that visibly does not work: landing on the fallback

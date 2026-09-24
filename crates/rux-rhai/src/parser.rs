@@ -389,6 +389,32 @@ fn arrow_params_len(input: &mut TokenStream) -> Option<usize> {
     }
 }
 
+/// RUX DIVERGENCE: whether the `{` coming up opens a map literal rather than a
+/// block. `#{` is the rhai spelling and still works; this is the one every web
+/// author types first.
+///
+/// A map is `{}` (when `empty_is_map`) or a `{` followed by a name or a string
+/// and then `:`. Nothing else can start that way: rhai has no labels, so
+/// `name :` never begins a statement, and `::` is its own token, so
+/// `{ host::x }` stays a block. Everything else stays a block, exactly as
+/// before. Pure lookahead, like [`arrow_params_len`].
+///
+/// Shorthand (`{ a, b }`) is deliberately not recognised: a lone `{ a }` would
+/// have to stay a block, and a rule with that hole in it is worse than none.
+#[cfg(not(feature = "no_object"))]
+fn brace_opens_map(input: &mut TokenStream, empty_is_map: bool) -> bool {
+    if !matches!(input.peek(), Some((Token::LeftBrace, ..))) {
+        return false;
+    }
+    match input.peek_nth(1) {
+        Some((Token::RightBrace, ..)) => empty_is_map,
+        Some((Token::Identifier(..) | Token::StringConstant(..), ..)) => {
+            matches!(input.peek_nth(2), Some((Token::Colon, ..)))
+        }
+        _ => false,
+    }
+}
+
 fn ensure_not_assignment(input: &mut TokenStream) -> ParseResult<()> {
     match input.peek().unwrap() {
         (token @ Token::Equals, pos) => Err(LexError::ImproperSymbol(
@@ -1024,8 +1050,11 @@ impl Engine {
         state: &mut ParseState,
         mut settings: ParseSettings,
     ) -> ParseResult<Expr> {
-        // #{ ...
-        settings.pos = eat_token(state.input, &Token::MapStart);
+        // #{ ... or, RUX DIVERGENCE, { ... once `brace_opens_map` has said so.
+        settings.pos = match state.input.next().unwrap() {
+            (Token::MapStart | Token::LeftBrace, pos) => pos,
+            (t, pos) => unreachable!("map literal expected but gets {t:?} at {pos}"),
+        };
 
         let mut map = StaticVec::<(Ident, Expr)>::new();
         let mut template = std::collections::BTreeMap::<crate::Identifier, crate::Dynamic>::new();
@@ -1358,6 +1387,9 @@ impl Engine {
         #[cfg(not(feature = "no_function"))]
         let is_arrow_fn =
             settings.has_option(LangOptions::ANON_FN) && arrow_params_len(state.input).is_some();
+        // RUX DIVERGENCE: `{ a: 1 }` is a map. Settled here for the same reason.
+        #[cfg(not(feature = "no_object"))]
+        let is_brace_map = brace_opens_map(state.input, true);
 
         let (next_token, next_token_pos) = state.input.peek().unwrap();
 
@@ -1421,6 +1453,14 @@ impl Engine {
                 let x = x.0;
                 state.input.next();
                 Expr::DynamicConstant(Box::new(x.into()), settings.pos)
+            }
+
+            // RUX DIVERGENCE: `{ a: 1 }` and `{}` - map literal, the same as `#{`.
+            // See crates/rux-rhai/DIVERGENCE.md. Above the block arm, which
+            // would otherwise take every `{`.
+            #[cfg(not(feature = "no_object"))]
+            Token::LeftBrace if is_brace_map => {
+                self.parse_map_literal(state, settings.level_up()?)?
             }
 
             // { - block statement as expression
@@ -3409,6 +3449,16 @@ impl Engine {
             comments
         };
 
+        // RUX DIVERGENCE: a statement that starts `{ name:` is a map, not a
+        // block, so a binding written `{ active: on }` means what it says and an
+        // arrow's body `n => { id: n }` returns the map. No block can start that
+        // way (rhai has no labels). `{}` stays an empty block here, so
+        // `() => {}` is still the no-op handler; in an expression it is a map.
+        #[cfg(not(feature = "no_object"))]
+        let is_brace_map = brace_opens_map(state.input, false);
+        #[cfg(feature = "no_object")]
+        let is_brace_map = false;
+
         let (token, token_pos) = match state.input.peek().unwrap() {
             (Token::EOF, pos) => return Ok(Stmt::Noop(*pos)),
             (x, pos) => (x, *pos),
@@ -3424,7 +3474,7 @@ impl Engine {
             }
 
             // { - statements block
-            Token::LeftBrace => Ok(self.parse_block(state, settings.level_up()?, false)?),
+            Token::LeftBrace if !is_brace_map => Ok(self.parse_block(state, settings.level_up()?, false)?),
 
             // fn | private fn...
             #[cfg(not(feature = "no_function"))]

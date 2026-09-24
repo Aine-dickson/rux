@@ -72,9 +72,9 @@
 
 <script>
   let items = signal([
-    #{ id: "one", at: 0, note: "first" },
-    #{ id: "two", at: 1, note: "second" },
-    #{ id: "three", at: 2, note: "third" }
+    { id: "one", at: 0, note: "first" },
+    { id: "two", at: 1, note: "second" },
+    { id: "three", at: 2, note: "third" }
   ]);
 
   // Move the last row to the front, then renumber the slot each row's r-model

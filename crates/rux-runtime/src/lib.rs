@@ -8574,6 +8574,33 @@ let open = signal(true);
         assert_eq!(bg_rgb(&doc.root.children[0]), Some((0.0, 0.0, 1.0)), "!warm → .cool");
     }
 
+    /// The same, written `{ hot: cond }` the way a web author writes it.
+    #[test]
+    fn conditional_class_bare_brace_form() {
+        let mut doc = Document::from_source(
+            "<template><screen><view class=\"chip\" :class=\"{ hot: warm, cool: !warm }\" :style=\"{ opacity: 1 }\" /></screen></template>
+             <style>.hot { background: #ff0000; } .cool { background: #0000ff; }</style>
+             <script>let warm = signal(true);</script>",
+        )
+        .expect("load");
+        assert_eq!(bg_rgb(&doc.root.children[0]), Some((1.0, 0.0, 0.0)), "warm → .hot");
+
+        let changed = doc.engine_mut().run_handler_tracked("warm = false");
+        assert!(doc.patch(&changed), "conditional class change reconciles");
+        assert_eq!(bg_rgb(&doc.root.children[0]), Some((0.0, 0.0, 1.0)), "!warm → .cool");
+    }
+
+    /// A map inside `{{ }}` has `}}` of its own; the interpolation must not end
+    /// there.
+    #[test]
+    fn a_nested_map_does_not_end_an_interpolation() {
+        let doc = Document::from_source(
+            "<template><screen><text>{{ {a: {b: \"deep\"}}.a.b }} and {{ #{c: {d: 1}}.c.d + 1 }}</text></screen></template>",
+        )
+        .expect("load");
+        assert!(find_text(&doc.root, "deep and 2"), "both interpolations whole");
+    }
+
     /// The shipped `css-showcase.rux` (the `:class`/`:style` chip demo) loads and
     /// builds, a smoke test that the example stays valid.
     #[test]

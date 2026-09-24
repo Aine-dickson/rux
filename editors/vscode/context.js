@@ -228,7 +228,7 @@ function cssPositionAt(text, offset) {
  * Every class and id the template actually writes, so a selector can be
  * completed from the markup it will match rather than from nothing.
  *
- * Both the literal and the bound spellings are read. `:class="#{ mine: m.mine }"`
+ * Both the literal and the bound spellings are read. `:class="{ mine: m.mine }"`
  * applies `mine` conditionally, and a rule for it is exactly as real as one for
  * a name in a plain `class=`; leaving the bound form out would quietly miss the
  * conditional half of every component's styling.
@@ -260,7 +260,7 @@ function templateSelectors(text) {
     for (const name of m[1].split(/\s+/)) if (name) classes.add(name);
   }
 
-  // `:class="#{ a: x, b: y }"` and `:class="cond ? 'a' : 'b'"`: the keys of the
+  // `:class="{ a: x, b: y }"` and `:class="cond ? 'a' : 'b'"`: the keys of the
   // map, and any quoted literal.
   const bound = /:class\s*=\s*"([^"]*)"/g;
   while ((m = bound.exec(span)) !== null) {

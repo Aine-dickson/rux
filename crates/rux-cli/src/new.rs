@@ -62,10 +62,10 @@ const APP: &str = r#"<!-- The entry point. `rux run` looks for this file here an
     </view>
 
     <view class="tabs">
-      <view class="tab" to="/" :class='#{ here: route == "/" }'>
+      <view class="tab" to="/" :class='{ here: route == "/" }'>
         <text class="tab-label">List</text>
       </view>
-      <view class="tab" to="/new" :class='#{ here: route == "/new" }'>
+      <view class="tab" to="/new" :class='{ here: route == "/new" }'>
         <text class="tab-label">Add</text>
       </view>
     </view>
@@ -147,8 +147,8 @@ const APP: &str = r#"<!-- The entry point. `rux run` looks for this file here an
      text, and Rux has no string-to-number conversion, so text on both sides is
      the only comparison that can work. */
   let tasks = signal([
-    #{ id: "1", label: "Read the Rux guide", note: "ruxlang.dev/learn", done: true },
-    #{ id: "2", label: "Add a task of your own", note: "The tab below, or the button on the list", done: false }
+    { id: "1", label: "Read the Rux guide", note: "ruxlang.dev/learn", done: true },
+    { id: "2", label: "Add a task of your own", note: "The tab below, or the button on the list", done: false }
   ]);
   let next_id = signal(3);
 
@@ -161,7 +161,7 @@ const APP: &str = r#"<!-- The entry point. `rux run` looks for this file here an
   }
 
   fn add_task(label, note) {
-    tasks.push(#{ id: "" + next_id, label: label, note: note, done: false });
+    tasks.push({ id: "" + next_id, label: label, note: note, done: false });
     next_id += 1;
   }
 
@@ -280,7 +280,7 @@ const NEW_TASK: &str = r#"<!-- The form. Every input needs an `r-model`: it is t
 
     <text class="hint" r-if='label.trim() == ""'>A task needs a name before it can be added.</text>
 
-    <view class="save" :class='#{ ready: label.trim() != "" }' @tap="save()">
+    <view class="save" :class='{ ready: label.trim() != "" }' @tap="save()">
       <text class="save-label">Add task</text>
     </view>
   </view>
@@ -361,7 +361,7 @@ const DETAIL: &str = r#"<!-- One task, opened from the list.
     </view>
 
     <view class="card" r-if="task() != ()">
-      <text class="label" :class='#{ done: task().done }'>{{ task().label }}</text>
+      <text class="label" :class='{ done: task().done }'>{{ task().label }}</text>
       <text class="note" r-if='task().note != ""'>{{ task().note }}</text>
 
       <view class="actions">
@@ -490,7 +490,7 @@ const TASK_ROW: &str = r#"<!-- One row of the list.
      `id_of`) and reads nothing else of its caller's, so this file can be
      dropped into another app as it is. Its CSS styles this subtree only. -->
 <template>
-  <view class="row" :class='#{ done: done }' :to='path_for("task", #{ id: id_of })'>
+  <view class="row" :class='{ done: done }' :to='path_for("task", { id: id_of })'>
     <view class="box">
       <path class="tick" d="M 4 9 L 7 12 L 14 4" />
     </view>

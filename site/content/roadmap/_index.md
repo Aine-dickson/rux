@@ -1709,6 +1709,15 @@ accept which, and it is the highest-ambiguity change on the list for a purely
 cosmetic win. The consequence is that the docs teach `#{ }` early, prominently,
 and on its own, rather than letting it first appear in passing.
 
+**Reversed in v0.8 (2026-09-24): `{ a: 1 }` is a map.** The ambiguity turned out
+to be smaller than feared: rhai has no labels, so a `{` followed by `name:` or
+`"name":` can only be a map, and a two-token lookahead (the one arrow functions
+added) settles it with no rule about contexts. `#{ }` still parses and `rux fmt`
+rewrites it to `{`, so a file has one spelling. `{}` is a map as a value and an
+empty block at the start of a statement, which keeps `() => {}` the no-op it is
+in JS. Shorthand `{ a, b }` is left out. See `crates/rux-rhai/DIVERGENCE.md`,
+item 7.
+
 **Bucket 3, semantic divergence.** The permanent cost, and the reason the fork
 exists.
 

@@ -2055,6 +2055,27 @@ in any document whose `mounted`, `computed` or `effect` ran, because each
 rebuild replaced the overlay's list. `lifecycle.rux` with a bogus `@frob`
 checked clean.
 
+## `{ a: 1 }` as a map, 2026-09-24
+
+A `{` followed by `name:` or `"name":` is a map, as in JavaScript, and `#{`
+still is one. `rux fmt` rewrites `#{` to `{`, and the examples were migrated by
+running it. Under test in `rux-script` (`bare_brace_maps`,
+`braces_that_are_not_maps_are_still_blocks`), `rux-runtime`
+(`conditional_class_bare_brace_form`,
+`a_nested_map_does_not_end_an_interpolation`), `rux-fmt` (`maps.rs`) and
+`rux-highlight`. Driven by shooting every example in the phone preview twice with
+the same new binary: once from the migrated files and once from the `#{`
+originals at `f5aeb53`, then diffing the two sets.
+
+| Case | Where | Expect | Result |
+|---|---|---|---|
+| Migrated examples draw as the originals did | phone preview, every example, `{` against `#{` | identical but for timing and hover | window: pass. 68 shot each way; 55 identical in the client area, 12 differ by a caret or a hover fade in untouched files (same binary both times), and `nested-routes.rux` by the prose that was edited on purpose |
+| `:class="{ dead: slow }"` chips | `router.rux` | the dead step greyed as before | window: pass, pixel-identical |
+| A map in a list signal, a `push({ … })` | `recipes/message-list.rux` | the seeded messages, sides by `mine` | window: pass, pixel-identical |
+| `path_for` with a bare map inside `{{ }}` | `nested-routes.rux` footer | `/crew/ada` | window: pass |
+| `rux fmt` over the examples | `rux fmt` on the ten files that used `#{` | only the `#` removed, no re-indent | desktop: pass, 41 lines, each differing by `#` alone |
+| The scaffold | `rux new`, then `rux fmt --check .` | clean | desktop: pass (`rux-cli` test) |
+
 ## Standing gaps
 
 Cases nothing here can currently exercise. They are the shape of what v0.8 has

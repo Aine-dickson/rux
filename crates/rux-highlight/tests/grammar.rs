@@ -366,3 +366,19 @@ fn the_component_scope_is_not_under_the_element_scope() {
 fn trim_language(scope: &str) -> &str {
     scope.strip_suffix(".rux").unwrap_or(scope)
 }
+
+/// A map inside `{{ }}` brings its own `}}`. The interpolation must run to the
+/// `}}` that closes it, not the map's, or everything after the map is coloured
+/// as template text.
+#[test]
+fn a_nested_map_does_not_end_an_interpolation() {
+    let mut g = grammar();
+    let src = "<template>\n  <text>{{ {a: {b: 1}}.a.b }} done</text>\n</template>\n";
+    let spans = g.spans(src);
+    let class_at = |at: usize| spans.iter().find(|s| s.start <= at && at < s.end).and_then(|s| s.class);
+
+    let tail = src.find(".a.b").unwrap() + 1;
+    assert_eq!(class_at(tail), Some("hl-var"), "the chain after the map is still code");
+    let close = src.find("}} done").unwrap();
+    assert_eq!(class_at(close), class_at(src.find("{{").unwrap()), "the real `}}` closes it");
+}

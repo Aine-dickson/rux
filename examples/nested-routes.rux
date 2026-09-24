@@ -20,7 +20,7 @@
 
     <text class="foot">path: {{ route }}</text>
     <text class="foot">params from the whole chain: {{ params?.id ?? "none" }}</text>
-    <text class="foot">path_for("crew-member", #{ id: "ada" }) is {{ path_for("crew-member", #{ id: "ada" }) }}</text>
+    <text class="foot">path_for("crew-member", { id: "ada" }) is {{ path_for("crew-member", { id: "ada" }) }}</text>
   </screen>
 </template>
 

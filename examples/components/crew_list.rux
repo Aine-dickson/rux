@@ -8,7 +8,7 @@
            lives in one place instead of being spelled out in every link that
            leads there. It returns a string, so it works anywhere a path does. -->
       <view class="row" r-for="member in crew" r-key="member.id"
-            :to="path_for(&quot;crew-detail&quot;, #{ id: member.id })">
+            :to="path_for(&quot;crew-detail&quot;, { id: member.id })">
         <text class="name">{{ member.name }}</text>
         <text class="job">{{ member.job }}</text>
       </view>

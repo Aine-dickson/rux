@@ -78,6 +78,6 @@
         return m;
       }
     }
-    #{ name: "unknown", job: "no such crew member" }
+    { name: "unknown", job: "no such crew member" }
   }
 </script>

@@ -174,6 +174,45 @@ answers `undefined` for `arr[1.5]`; that is the one place its behaviour is not
 worth copying, since silently reading a different element than the one asked for
 is exactly the class of failure this milestone exists to remove.
 
+### 7. `{ a: 1 }` is a map
+
+**Files:** `src/parser.rs` (`parse_primary`, `parse_stmt`,
+`parse_map_literal`, and one new helper, `brace_opens_map`)
+
+A web author writes a map as `{ a: 1 }`. Upstream reads that `{` as a block
+and fails on the `:`, and only `#{ a: 1 }` is a map. Under this fork both are.
+`#{` stays, spelled either way the same AST comes out, and `rux fmt` rewrites
+`#{` to `{` so a file has one spelling. This reverses the 2026-08-11 call that
+`#{` would stay the only form.
+
+The rule is a lookahead on the tokens after a `{`, through the `peek_nth` that
+arrow functions added:
+
+- `{` then a name or a string then `:` is a map, everywhere: as a value, at the
+  start of a statement, and as an arrow's body. **rhai has no labels**, so no
+  block can begin `name :`, and `::` is its own token, so `{ host::x }` is still
+  a block. This is the whole reason the change is safe.
+- `{}` is an empty map where an expression is expected (`let m = {};`,
+  `f({})`), and an empty block at the start of a statement. So `() => {}` is
+  still the no-op function a JS author expects, and `if x {}` is unchanged.
+- Anything else stays a block, as before.
+
+Two places rather than one, because a script that *is* a map, which is what
+every `:class="{ active: on }"` binding is, and an arrow's body both reach
+`parse_stmt` rather than `parse_primary`. In each, the check is made before the
+`match` on the token, for the borrow reason the arrow lookahead gives.
+
+**Better than JS in one place, on purpose:** `rows.map(r => { id: r.id })`
+returns the map. JS reads that body as a block with a label, and needs
+`({ id: r.id })`. No Rux program can mean the JS reading, since there are no
+labels.
+
+**The one change in meaning:** an empty `{}` used as a value was an empty
+block, which is `()`. It is now an empty map. No example or test relied on it.
+
+Shorthand, `{ a, b }` for `{ a: a, b: b }`, is left out: a lone `{ a }` would
+have to stay a block, and a rule with that hole in it is worse than no rule.
+
 ## Keeping up with upstream
 
 A fork does not receive upstream's fixes, and RustSec files any advisory under

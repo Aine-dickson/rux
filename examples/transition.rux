@@ -19,13 +19,13 @@
     </view>
 
     <view class="row">
-      <view class="switch" :class="#{ on: on }" @tap="on = !on">
+      <view class="switch" :class="{ on: on }" @tap="on = !on">
         <view class="knob"></view>
       </view>
       <text class="label">tap: the knob slides and the track fills</text>
     </view>
 
-    <view class="panel" :class="#{ open: on }">
+    <view class="panel" :class="{ open: on }">
       <text class="card-body">Height, padding and opacity together, all from one signal.</text>
     </view>
   </screen>

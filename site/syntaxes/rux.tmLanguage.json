@@ -182,6 +182,22 @@
       "contentName": "meta.embedded.expression.rux",
       "patterns": [
         {
+          "include": "#interpolation-braces"
+        },
+        {
+          "include": "#script-expression"
+        }
+      ]
+    },
+    "interpolation-braces": {
+      "comment": "A map inside `{{ }}` has braces of its own. Consuming each `{ … }` pair here is what stops `{{ {a: {b: 1}}.a.b }}` ending at the map's `}}`, the same rule the runtime uses.",
+      "begin": "\\{",
+      "end": "\\}",
+      "patterns": [
+        {
+          "include": "#interpolation-braces"
+        },
+        {
           "include": "#script-expression"
         }
       ]
