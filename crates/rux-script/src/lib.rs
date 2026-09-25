@@ -518,6 +518,7 @@ impl Builder {
             signals,
             checked: ast,
             host_types: self.host_types,
+            compiled: HashMap::new(),
         })
     }
 }
@@ -1082,7 +1083,19 @@ pub struct Engine {
     checked: AST,
     /// The `host::` functions' types, as registered.
     host_types: Vec<(String, types::Type)>,
+    /// Every source this engine has run, compiled and merged with `funcs`,
+    /// keyed by the source text. A binding is evaluated on every build and a
+    /// handler on every tap, and compiling each of them again was most of the
+    /// script tier's cost in a long list. `funcs` never changes after the
+    /// engine is built (a reload builds a new engine), so an entry never goes
+    /// stale. Bounded by [`COMPILED_CAP`]: a source built from changing text
+    /// would otherwise grow it for as long as the app runs.
+    compiled: HashMap<String, Arc<AST>>,
 }
+
+/// How many compiled sources an engine keeps before starting over. A real
+/// document has a few hundred distinct bindings and handlers.
+const COMPILED_CAP: usize = 4096;
 
 // ── Warning collection ──────────────────────────────────────────────────────
 
@@ -1886,11 +1899,27 @@ impl Engine {
         }
     }
 
+    /// `src` compiled and merged with the document's functions, from the cache
+    /// when it has been seen before. A source that fails to compile is not
+    /// kept, so its error is reported every time it is run, as before.
+    fn prepared(&mut self, src: &str) -> Result<Arc<AST>, rhai::ParseError> {
+        if let Some(ast) = self.compiled.get(src) {
+            return Ok(Arc::clone(ast));
+        }
+        let ast = profile::time(profile::Phase::Compile, || self.engine.compile(rewrite_intervals(src)))?;
+        let merged = Arc::new(profile::time(profile::Phase::Merge, || self.funcs.merge(&ast)));
+        if self.compiled.len() >= COMPILED_CAP {
+            self.compiled.clear();
+        }
+        self.compiled.insert(src.to_string(), Arc::clone(&merged));
+        Ok(merged)
+    }
+
     /// Evaluate `src` (an expression or statements) with `locals` temporarily in
     /// scope. Script functions are available. Returns the resulting value.
     fn eval(&mut self, src: &str, locals: &[(String, Value)]) -> Option<Dynamic> {
-        let ast = match profile::time(profile::Phase::Compile, || self.engine.compile(rewrite_intervals(src))) {
-            Ok(ast) => ast,
+        let merged = match self.prepared(src) {
+            Ok(merged) => merged,
             Err(e) => {
                 // A `{{ }}` or `@tap` that doesn't compile used to evaluate to
                 // nothing, silently, the same failure mode as ignored CSS. Record
@@ -1903,8 +1932,6 @@ impl Engine {
                 return None;
             }
         };
-        let merged = profile::time(profile::Phase::Merge, || self.funcs.merge(&ast));
-
         let base = self.scope.len();
         for (name, value) in locals {
             self.scope.push(name.clone(), to_dynamic(value));
@@ -1952,6 +1979,12 @@ impl Engine {
     /// ran without error (assumed to have changed state).
     pub fn run_handler(&mut self, src: &str) -> bool {
         self.eval(src, &[]).is_some()
+    }
+
+    /// [`run_handler`](Self::run_handler) with `locals` in scope, such as the
+    /// `event` a gesture or an `emit` hands its handler.
+    pub fn run_handler_in(&mut self, src: &str, locals: &[(String, Value)]) -> bool {
+        self.eval(src, locals).is_some()
     }
 
     /// Evaluate an expression *and* report which signals it read, the binding's
@@ -2310,11 +2343,19 @@ impl Engine {
     }
 
     pub fn run_handler_tracked(&mut self, src: &str) -> HashSet<String> {
+        self.run_handler_tracked_in(src, &[])
+    }
+
+    /// [`run_handler_tracked`](Self::run_handler_tracked) with `locals` in
+    /// scope, such as the `event` a gesture hands its handler. Passed as a
+    /// local rather than written into the source, so the source stays the
+    /// same from one tap to the next and is compiled once.
+    pub fn run_handler_tracked_in(&mut self, src: &str, locals: &[(String, Value)]) -> HashSet<String> {
         let names: Vec<String> = self.signals.iter().cloned().collect();
         let before: HashMap<String, Option<Value>> = profile::time(profile::Phase::Diff, || {
             names.iter().map(|n| (n.clone(), self.read_signal(n))).collect()
         });
-        if !self.run_handler(src) {
+        if !self.run_handler_in(src, locals) {
             return HashSet::new();
         }
         profile::time(profile::Phase::Diff, || {
@@ -2391,8 +2432,8 @@ impl Engine {
     /// that could read the app's signals by name would be coupled to the app it
     /// was first written for, and could not be used twice.
     pub fn init_scope(&mut self, script: &str) -> Vec<(String, Value)> {
-        let ast = match profile::time(profile::Phase::Compile, || self.engine.compile(rewrite_intervals(script))) {
-            Ok(ast) => ast,
+        let merged = match self.prepared(script) {
+            Ok(merged) => merged,
             Err(e) => {
                 warn(format!(
                     "a component's script failed to compile: {}",
@@ -2402,8 +2443,7 @@ impl Engine {
             }
         };
         // Its own functions plus everything already registered, so a component
-        // can call helpers it declared beside its state.
-        let merged = profile::time(profile::Phase::Merge, || self.funcs.merge(&ast));
+        // can call helpers it declared beside its state: `prepared` merges them.
         let mut scope = Scope::new();
         if let Err(e) =
             profile::time(profile::Phase::Run, || self.engine.run_ast_with_scope(&mut scope, &merged))
@@ -2435,8 +2475,8 @@ impl Engine {
             names.iter().map(|n| (n.clone(), self.read_signal(n))).collect()
         });
 
-        let ast = match profile::time(profile::Phase::Compile, || self.engine.compile(rewrite_intervals(src))) {
-            Ok(ast) => ast,
+        let merged = match self.prepared(src) {
+            Ok(merged) => merged,
             Err(e) => {
                 warn(format!(
                     "handler `{}` failed to compile: {}",
@@ -2446,7 +2486,6 @@ impl Engine {
                 return (locals.to_vec(), HashSet::new());
             }
         };
-        let merged = profile::time(profile::Phase::Merge, || self.funcs.merge(&ast));
         let base = self.scope.len();
         for (name, value) in locals {
             self.scope.push(name.clone(), to_dynamic(value));

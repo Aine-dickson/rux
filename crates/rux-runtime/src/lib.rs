@@ -3178,10 +3178,19 @@ impl Document {
         instance: Option<&str>,
         event: &rux_reactive::Value,
     ) -> bool {
-        self.apply_handler_in(&with_event(src, Some(event)), instance)
+        self.apply_handler_event_in(src, instance, Some(event))
     }
 
     pub fn apply_handler_in(&mut self, src: &str, instance: Option<&str>) -> bool {
+        self.apply_handler_event_in(src, instance, None)
+    }
+
+    fn apply_handler_event_in(
+        &mut self,
+        src: &str,
+        instance: Option<&str>,
+        event: Option<&rux_reactive::Value>,
+    ) -> bool {
         // Anything emitted before this handler was not emitted *by* it: a build
         // evaluates every binding, and a stray `emit` in one of those would
         // otherwise be delivered to the first tap that happened afterwards. The
@@ -3192,7 +3201,7 @@ impl Document {
         // and although a binding cannot call `query()`, an action left over
         // from an earlier handler must not be delivered to this one.
         let _ = rux_script::take_element_actions();
-        let ran = self.dispatch_handler(src, instance, 0);
+        let ran = self.dispatch_handler(src, instance, 0, event);
         // Whatever the handler printed. Collected here as well as in `rebuild`
         // because a handler usually *patches* rather than rebuilds, so the
         // rebuild path is not on the way out of a tap, and printf-debugging that
@@ -3971,14 +3980,32 @@ impl Document {
         acted
     }
 
-    fn dispatch_handler(&mut self, src: &str, instance: Option<&str>, depth: usize) -> bool {
+    /// Run a handler, with `event` in scope when it was handed one: a
+    /// gesture's pointer record or an `emit`'s payload. A local, not text
+    /// spliced into the body, so the body is compiled once however many
+    /// different events reach it.
+    fn dispatch_handler(
+        &mut self,
+        src: &str,
+        instance: Option<&str>,
+        depth: usize,
+        event: Option<&rux_reactive::Value>,
+    ) -> bool {
         let resolver = self.element_resolver();
-        rux_script::with_elements(resolver, || self.dispatch_handler_inner(src, instance, depth))
+        rux_script::with_elements(resolver, || self.dispatch_handler_inner(src, instance, depth, event))
     }
 
     /// The body of [`Document::dispatch_handler`], split out so the element
     /// resolver wraps every path out of it, including the early returns.
-    fn dispatch_handler_inner(&mut self, src: &str, instance: Option<&str>, depth: usize) -> bool {
+    fn dispatch_handler_inner(
+        &mut self,
+        src: &str,
+        instance: Option<&str>,
+        depth: usize,
+        event: Option<&rux_reactive::Value>,
+    ) -> bool {
+        let event: Vec<(String, rux_reactive::Value)> =
+            event.map(|v| ("event".to_string(), v.clone())).into_iter().collect();
         const MAX_EVENT_DEPTH: usize = 8;
         if depth > MAX_EVENT_DEPTH {
             rux_script::warn_script(format!(
@@ -3989,7 +4016,7 @@ impl Document {
         }
 
         let Some(key) = instance.filter(|k| self.instances.contains_key(*k)) else {
-            let changed = self.engine.run_handler_tracked(src);
+            let changed = self.engine.run_handler_tracked_in(src, &event);
             // An `emit` outside a component has nobody to tell: the document is
             // the top of the tree. Say so rather than dropping it, since the
             // author plainly expected something to happen.
@@ -4008,6 +4035,7 @@ impl Document {
         let entry = &self.instances[key];
         let mut locals = entry.state.clone();
         locals.extend(entry.props.iter().cloned());
+        locals.extend(event);
         let (after, changed) = self.engine.run_scoped_handler(src, &locals);
 
         // Only the component's own names are written back. A prop belongs to the
@@ -4036,7 +4064,7 @@ impl Document {
             // component offers events and a caller takes the ones it wants.
             let Some(body) = listener else { continue };
             let caller = self.instances[key].caller.clone();
-            fired |= self.dispatch_handler(&with_event(&body, payload.as_ref()), caller.as_deref(), depth + 1);
+            fired |= self.dispatch_handler(&body, caller.as_deref(), depth + 1, payload.as_ref());
         }
 
         if !changed.is_empty() {
@@ -4491,7 +4519,7 @@ impl Document {
                     // run in its scope: state written back, emissions delivered
                     // to the caller, changes applied. A hook is only special in
                     // *when* it runs.
-                    self.dispatch_handler(&body, Some(&fresh.key), depth + 1);
+                    self.dispatch_handler(&body, Some(&fresh.key), depth + 1, None);
                     // `mounted` is where an interval is most naturally started,
                     // and it belongs to the instance that started it.
                     self.apply_timer_requests(Some(&fresh.key));
@@ -5173,20 +5201,6 @@ fn split_top_level_commas(s: &str) -> Vec<&str> {
     }
     out.push(s[start..].trim());
     out
-}
-
-/// A listener body with the emitted payload bound to `event`.
-///
-/// Baked in as a `let` prelude rather than passed as an argument, the same
-/// trick that carries an `r-for` row into an `@tap`: the body is statements the
-/// caller wrote inline, not a function, so there is no parameter list to put it
-/// in. `emit("change")` with no payload leaves `event` undeclared, so reading it
-/// is a lookup failure rather than a silent empty value.
-fn with_event(body: &str, payload: Option<&rux_reactive::Value>) -> String {
-    match payload {
-        Some(value) => format!("let event = {}; {body}", value.to_rhai_literal()),
-        None => body.to_string(),
-    }
 }
 
 /// Just the `fn` definitions from a component's script.
