@@ -134,8 +134,10 @@ The summary splits a frame into the script tier's own work (**compile**,
 **merge** of the document's functions, **run**, and **diff**, the copy and
 compare of every signal around a handler) and the pipeline after it
 (**rebuild** or **patch**, **animate**, **layout**, **scene**, **gpu**). A
-rebuild's figure includes the script it ran; the last line says how much of
-the measured frame was script. An idle window paints nothing and prints
+rebuild's figure includes the script it ran, and two lines say what else is
+inside it: **css**, stylesheets parsed into rules, and **match**, selectors
+matched against elements. The last line says how much of the measured frame
+was script. An idle window paints nothing and prints
 nothing.
 
 **gpu** includes waiting for the display: at 60 Hz an idle frame shows about

@@ -37,15 +37,19 @@ pub enum Phase {
     Scene,
     /// Vello's render, the blit, submit and present.
     Gpu,
+    /// Stylesheets parsed into rules, inside a rebuild or patch.
+    Css,
+    /// Selectors matched against elements, inside a rebuild or patch.
+    Match,
 }
 
-pub const PHASES: usize = 10;
+pub const PHASES: usize = 12;
 
 /// The phases that are the script tier's own; they lead the list.
 const SCRIPT: usize = 4;
 
 pub const NAMES: [&str; PHASES] =
-    ["compile", "merge", "run", "diff", "rebuild", "patch", "animate", "layout", "scene", "gpu"];
+    ["compile", "merge", "run", "diff", "rebuild", "patch", "animate", "layout", "scene", "gpu", "css", "match"];
 
 thread_local! {
     static SPENT: [Cell<u64>; PHASES] = Default::default();

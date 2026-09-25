@@ -101,7 +101,15 @@ pub fn in_file<T>(file: Option<std::path::PathBuf>, f: impl FnOnce() -> T) -> T 
     out
 }
 
+thread_local! {
+    /// How many times anything asked to warn or error, whether or not the sink
+    /// kept it. [`interpreted`] reads it to tell a declaration set that never
+    /// warns, which is safe to share, from one that does.
+    static WARN_CALLS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
 fn warn(message: String) {
+    WARN_CALLS.with(|c| c.set(c.get() + 1));
     let file = IN_FILE.with(|c| c.borrow().clone());
     let warning = Warning::maybe_at(message, AT_LINE.with(|l| l.get())).in_file(file);
     WARNINGS.with(|w| {
@@ -120,6 +128,7 @@ fn warn(message: String) {
 /// `rux check` exits non-zero for these, and the dev overlay reds them. The
 /// line is the same [`AT_LINE`] a warning uses, so `located` covers both.
 fn error(message: String) {
+    WARN_CALLS.with(|c| c.set(c.get() + 1));
     let file = IN_FILE.with(|c| c.borrow().clone());
     let raised = Warning::maybe_at(message, AT_LINE.with(|l| l.get())).in_file(file).as_error();
     WARNINGS.with(|w| {
@@ -1415,6 +1424,16 @@ thread_local! {
         const { std::cell::Cell::new(Environment::HEADLESS) };
 }
 
+thread_local! {
+    /// Whether this build keeps each ancestor's preceding siblings, because
+    /// some rule in it could read them. See [`Rule::reads_ancestor_siblings`].
+    /// Decided once per build over every rule, the components' included,
+    /// since a component's rules match through its caller's ancestors. True
+    /// until a build says otherwise, so a path that builds without deciding
+    /// behaves as it always did.
+    static KEEP_SIBLINGS: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
+}
+
 /// The environment `env()` resolves against for the rest of this build.
 fn set_build_env(env: Environment) {
     BUILD_ENV.with(|e| e.set(env));
@@ -1936,11 +1955,12 @@ pub fn build_styled_tree_stateful(
     // document being built, so a line from the component's coordinate space
     // would point confidently at the wrong place. Unplaced is the honest answer
     // until warnings carry a file as well as a line.
-    let rules = parse_document_rules(sfc, env);
+    let rules = rux_script::profile::time(rux_script::profile::Phase::Css, || parse_document_rules(sfc, env));
 
     // What `env()` reads, for the length of this build. Set here rather than
     // threaded, beside the two other build-scoped registers below.
     set_build_env(env);
+    forget_interpreted();
 
     // What a `to=` is checked against. Refreshed per build rather than per load
     // because hot reload rewrites the routes as readily as anything else, and a
@@ -1973,7 +1993,7 @@ pub fn build_styled_tree_stateful(
     let comps: Components = components
         .iter()
         .map(|(tag, c)| {
-            let own = parse_component_rules(c, env);
+            let own = rux_script::profile::time(rux_script::profile::Phase::Css, || parse_component_rules(c, env));
             let merged = if c.style_scoped {
                 own
             } else {
@@ -2001,6 +2021,12 @@ pub fn build_styled_tree_stateful(
             )
         })
         .collect();
+    KEEP_SIBLINGS.with(|k| {
+        k.set(
+            rules.iter().any(Rule::reads_ancestor_siblings)
+                || comps.values().any(|c| c.rules.iter().any(Rule::reads_ancestor_siblings)),
+        )
+    });
 
     // An instance lives as long as it is on screen, and until now nothing ever
     // said it had left: the only removal anywhere was the router's, so an
@@ -2448,6 +2474,23 @@ struct Rule {
     /// A `::selection` rule: its chain picks the element, and its
     /// declarations style that element's selected text, not the element.
     selection: bool,
+}
+
+impl Rule {
+    /// Whether matching this rule can look at an ancestor's preceding
+    /// siblings: a `+` or `~` to the left of a descendant or child step, as in
+    /// `.a ~ .b .c`. Only then does the build need to keep each ancestor's
+    /// siblings. `combs[i]` links `chain[i]` to `chain[i + 1]`, and matching
+    /// walks right to left, so a sibling step is reached from an ancestor
+    /// exactly when a descendant or child step sits to its right.
+    fn reads_ancestor_siblings(&self) -> bool {
+        let hop = |c: &Combinator| matches!(c, Combinator::Descendant | Combinator::Child);
+        let sibling = |c: &Combinator| matches!(c, Combinator::NextSibling | Combinator::SubsequentSibling);
+        self.combs
+            .iter()
+            .enumerate()
+            .any(|(i, c)| sibling(c) && self.combs[i + 1..].iter().any(hop))
+    }
 }
 
 /// One built node, as a selector can see it: what it is, and where it sits.
@@ -4346,7 +4389,8 @@ fn build_node_inner(
     // applied classes count too.
     let state_path = pointer_state_sensitive(&desc, rules).then(|| path.to_vec());
 
-    let mut props = matched_props(&desc, ancestors, prev, rules);
+    let mut props =
+        rux_script::profile::time(rux_script::profile::Phase::Match, || matched_props(&desc, ancestors, prev, rules));
     // Inline styles override the cascade: static `style=` first, then dynamic
     // `:style` (which may interpolate, rhai backtick strings evaluate here).
     if let Some(s) = el.attr("style") {
@@ -4424,7 +4468,7 @@ fn build_node_inner(
         props.insert("outline-style".to_string(), "auto".to_string());
     }
 
-    let mut style = screen_fills_the_display(interpret(&props), el, path, &props);
+    let mut style = screen_fills_the_display(interpreted(&props), el, path, &props);
     // A `@tap` handler runs later, in global scope, where the `r-for` loop
     // variable no longer exists, so `@tap="picked = item"` would see `item`
     // undefined and silently do nothing. Bake the current loop bindings into the
@@ -5094,7 +5138,11 @@ fn build_node_inner(
     // submission does is the `@submit` written on it.
     // (`@submit` anywhere else is refused by the runtime's attribute check.)
     let is_form = el.role().is_some_and(|r| r.eq_ignore_ascii_case("form"));
-    ancestors.push(AncNode { desc, prev: prev.to_vec(), form: is_form.then(|| path.to_vec()) });
+    // An ancestor's preceding siblings are copied only when a rule could read
+    // them. The copy was the build's largest cost: row `i` of a list copied
+    // the `i` rows before it, so a 300-row list copied 45,000 of them a build.
+    let siblings = if KEEP_SIBLINGS.with(std::cell::Cell::get) { prev.to_vec() } else { Vec::new() };
+    ancestors.push(AncNode { desc, prev: siblings, form: is_form.then(|| path.to_vec()) });
     let element_children = element_children(el);
     let (children, structural_deps) = build_children(
         &element_children,
@@ -6697,6 +6745,51 @@ fn screen_fills_the_display(
 }
 
 // ── Value interpretation (honored subset) ───────────────────────────────────
+
+thread_local! {
+    /// [`interpret`]'s answers for this build, by declaration set. The rows of
+    /// a list carry the same declarations, and interpreting them again for
+    /// each row was the largest single part of a build. Emptied when a build
+    /// starts, so nothing outlives the stylesheet it came from.
+    static INTERPRETED: std::cell::RefCell<HashMap<u64, Vec<(Vec<(String, String)>, Style)>>> =
+        std::cell::RefCell::new(HashMap::new());
+}
+
+/// Forget every shared interpretation. Called as a build starts.
+fn forget_interpreted() {
+    INTERPRETED.with(|m| m.borrow_mut().clear());
+}
+
+/// [`interpret`], shared between elements whose declarations are the same.
+///
+/// A result is kept only when interpreting it raised nothing: a warning names
+/// the line of the element being built, so an answer shared from another
+/// element would lose the warning this one owes. Those are interpreted every
+/// time, as before.
+fn interpreted(p: &HashMap<String, String>) -> Style {
+    use std::hash::{Hash, Hasher};
+    let mut pairs: Vec<(&String, &String)> = p.iter().collect();
+    pairs.sort_unstable();
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    pairs.hash(&mut hasher);
+    let key = hasher.finish();
+    let same = |kept: &[(String, String)]| {
+        kept.len() == pairs.len() && kept.iter().zip(&pairs).all(|((a, b), (c, d))| a == *c && b == *d)
+    };
+    let hit = INTERPRETED.with(|m| {
+        m.borrow().get(&key).and_then(|bucket| bucket.iter().find(|(kept, _)| same(kept)).map(|(_, st)| st.clone()))
+    });
+    if let Some(style) = hit {
+        return style;
+    }
+    let before = WARN_CALLS.with(std::cell::Cell::get);
+    let style = interpret(p);
+    if WARN_CALLS.with(std::cell::Cell::get) == before {
+        let owned = pairs.into_iter().map(|(a, b)| (a.clone(), b.clone())).collect();
+        INTERPRETED.with(|m| m.borrow_mut().entry(key).or_default().push((owned, style.clone())));
+    }
+    style
+}
 
 fn interpret(p: &HashMap<String, String>) -> Style {
     let mut st = Style::default();
@@ -10006,6 +10099,82 @@ mod tests {
         // …and fails when that ancestor has no preceding `.a`.
         let ancestors = [anc("view.b", &["view.x"])];
         assert!(!hits("*.a ~ *.b *.c", "view.c", &ancestors, &[]));
+    }
+
+    /// Elements with the same declarations share one interpretation, but a
+    /// declaration set that warns is never shared, so every build still
+    /// raises its warning: the overlay and `rux check` list what the latest
+    /// build said, and a warning answered from a cache would vanish from both.
+    #[test]
+    fn a_shared_interpretation_does_not_swallow_a_warning() {
+        let src = r#"<template><screen>
+            <view class="x"></view><view class="x"></view>
+          </screen></template>
+          <style>.x { transition: bogus 1s }</style>"#;
+        let sfc = rux_parser::parse_sfc(src).unwrap();
+        let mut engine = Builder::new().build("").unwrap();
+        let _ = take_warnings();
+        for build in 1..=2 {
+            build_styled_tree(&sfc, &HashMap::new(), &HashMap::new(), &mut engine).unwrap();
+            let warned = take_warnings().iter().any(|w| w.message.contains("bogus"));
+            assert!(warned, "build {build} still says `bogus` cannot be animated");
+        }
+    }
+
+    /// The build keeps an ancestor's siblings only for a rule that can read
+    /// them, so this is what decides whether `.a ~ .b .c` still works.
+    #[test]
+    fn only_a_sibling_step_left_of_a_hop_reads_ancestor_siblings() {
+        let reads = |css: &str| parse_rules(css, Environment::HEADLESS)[0].reads_ancestor_siblings();
+        assert!(reads(".a ~ .b .c { color: #080808 }"));
+        assert!(reads(".a + .b > .c { color: #080808 }"));
+        assert!(reads(".a + .b .c .d { color: #080808 }"));
+        assert!(!reads(".a .b ~ .c { color: #080808 }"));
+        assert!(!reads(".a > .b + .c { color: #080808 }"));
+        assert!(!reads(".a .b { color: #080808 }"));
+        assert!(!reads(".a { color: #080808 }"));
+    }
+
+    /// End to end, through a real build: the rule that needs an ancestor's
+    /// siblings still finds them, and one that does not is not changed by
+    /// the build no longer keeping them.
+    #[test]
+    fn sibling_above_descendant_styles_the_right_element_end_to_end() {
+        let src = r#"
+            <template>
+              <screen>
+                <view class="a"></view>
+                <view class="b"><text class="c">after a</text></view>
+                <view class="b"><text class="c">also after a</text></view>
+              </screen>
+            </template>
+            <style>
+              .a ~ .b .c { color: #080808 }
+            </style>
+        "#;
+        let sfc = rux_parser::parse_sfc(src).unwrap();
+        let mut engine = Builder::new().build("").unwrap();
+        let root = build_styled_tree(&sfc, &HashMap::new(), &HashMap::new(), &mut engine).unwrap();
+        for i in [1, 2] {
+            let text = root.children[i].children[0].text.as_ref().unwrap();
+            assert!(text.color.r < 0.1, "row {i} follows `.a`, so `.a ~ .b .c` colors it");
+        }
+
+        let src = r#"
+            <template>
+              <screen>
+                <view class="b"><text class="c">no a before it</text></view>
+                <view class="a"></view>
+              </screen>
+            </template>
+            <style>
+              .a ~ .b .c { color: #080808 }
+            </style>
+        "#;
+        let sfc = rux_parser::parse_sfc(src).unwrap();
+        let root = build_styled_tree(&sfc, &HashMap::new(), &HashMap::new(), &mut engine).unwrap();
+        let text = root.children[0].children[0].text.as_ref().unwrap();
+        assert!(text.color.r > 0.5, "nothing `.a` precedes this `.b`");
     }
 
     // ── The element index ───────────────────────────────────────────────────
