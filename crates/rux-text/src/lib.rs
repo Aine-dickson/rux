@@ -14,6 +14,7 @@
 //! layout brush is `()`.
 
 use std::borrow::Cow;
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use parley::{
@@ -119,6 +120,52 @@ impl<'a> TextStyle<'a> {
 pub struct TextEngine {
     font_cx: FontContext,
     layout_cx: LayoutContext<()>,
+    /// What [`measure`](Self::measure) has answered, keyed by everything that
+    /// decides the answer. Layout asks for each text box's size several times
+    /// (taffy probes min-content, max-content and the final width) and again
+    /// every frame, and each ask shaped the text from scratch: in a 300-row
+    /// list that was most of the frame. Cleared when a font is registered, and
+    /// started over past [`MEASURED_CAP`] entries.
+    measured: HashMap<MeasureKey, (f32, f32)>,
+}
+
+/// How many measurements the engine keeps before starting over. A key and its
+/// answer are small, so this is a bound on growth, not a memory budget.
+const MEASURED_CAP: usize = 16384;
+
+/// Everything [`TextEngine::build`] reads, as an owned, hashable value. Floats
+/// by their bits: two sizes are the same size when they are the same number.
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct MeasureKey {
+    text: String,
+    font_size: u32,
+    weight: u16,
+    wrap: u8,
+    family: Option<String>,
+    letter_spacing: Option<u32>,
+    word_spacing: Option<u32>,
+    line_height: Option<u32>,
+    italic: bool,
+    nowrap: bool,
+    max_width: Option<u32>,
+}
+
+impl MeasureKey {
+    fn new(text: &str, style: &TextStyle, max_width: Option<f32>) -> Self {
+        Self {
+            text: text.to_string(),
+            font_size: style.font_size.to_bits(),
+            weight: style.weight,
+            wrap: style.wrap as u8,
+            family: style.family.map(str::to_string),
+            letter_spacing: style.letter_spacing.map(f32::to_bits),
+            word_spacing: style.word_spacing.map(f32::to_bits),
+            line_height: style.line_height.map(f32::to_bits),
+            italic: style.italic,
+            nowrap: style.nowrap,
+            max_width: max_width.map(f32::to_bits),
+        }
+    }
 }
 
 impl Default for TextEngine {
@@ -132,6 +179,7 @@ impl TextEngine {
         Self {
             font_cx: FontContext::new(),
             layout_cx: LayoutContext::new(),
+            measured: HashMap::new(),
         }
     }
 
@@ -156,6 +204,9 @@ impl TextEngine {
         let Some((family, _)) = registered.first() else {
             return false;
         };
+        // Every size measured so far was measured in the fonts that were
+        // there before this one.
+        self.measured.clear();
 
         for generic in [
             GenericFamily::SansSerif,
@@ -206,6 +257,19 @@ impl TextEngine {
     /// layout gave it, so a box even a fraction of a pixel narrower than the
     /// text would break the last word onto a line the box has no height for.
     pub fn measure(&mut self, text: &str, style: &TextStyle, max_width: Option<f32>) -> (f32, f32) {
+        let key = MeasureKey::new(text, style, max_width);
+        if let Some(&size) = self.measured.get(&key) {
+            return size;
+        }
+        let size = self.measure_uncached(text, style, max_width);
+        if self.measured.len() >= MEASURED_CAP {
+            self.measured.clear();
+        }
+        self.measured.insert(key, size);
+        size
+    }
+
+    fn measure_uncached(&mut self, text: &str, style: &TextStyle, max_width: Option<f32>) -> (f32, f32) {
         let layout = self.build(text, style, max_width);
         // Each line is `line-height` tall when set, else its own leading-trimmed
         // height (ascent + descent) so text hugs its box by default.
