@@ -10,6 +10,7 @@
 //! the compiled-Rust boundary (`docs/04-architecture.md`, script/host tiers).
 
 pub mod check;
+pub mod profile;
 pub mod types;
 pub mod validate;
 
@@ -1888,7 +1889,7 @@ impl Engine {
     /// Evaluate `src` (an expression or statements) with `locals` temporarily in
     /// scope. Script functions are available. Returns the resulting value.
     fn eval(&mut self, src: &str, locals: &[(String, Value)]) -> Option<Dynamic> {
-        let ast = match self.engine.compile(rewrite_intervals(src)) {
+        let ast = match profile::time(profile::Phase::Compile, || self.engine.compile(rewrite_intervals(src))) {
             Ok(ast) => ast,
             Err(e) => {
                 // A `{{ }}` or `@tap` that doesn't compile used to evaluate to
@@ -1902,13 +1903,15 @@ impl Engine {
                 return None;
             }
         };
-        let merged = self.funcs.merge(&ast);
+        let merged = profile::time(profile::Phase::Merge, || self.funcs.merge(&ast));
 
         let base = self.scope.len();
         for (name, value) in locals {
             self.scope.push(name.clone(), to_dynamic(value));
         }
-        let result = self.engine.eval_ast_with_scope::<Dynamic>(&mut self.scope, &merged);
+        let result = profile::time(profile::Phase::Run, || {
+            self.engine.eval_ast_with_scope::<Dynamic>(&mut self.scope, &merged)
+        });
         self.scope.rewind(base); // drop the temporary locals
         match result {
             Ok(value) => Some(value),
@@ -2308,15 +2311,15 @@ impl Engine {
 
     pub fn run_handler_tracked(&mut self, src: &str) -> HashSet<String> {
         let names: Vec<String> = self.signals.iter().cloned().collect();
-        let before: HashMap<String, Option<Value>> =
-            names.iter().map(|n| (n.clone(), self.read_signal(n))).collect();
+        let before: HashMap<String, Option<Value>> = profile::time(profile::Phase::Diff, || {
+            names.iter().map(|n| (n.clone(), self.read_signal(n))).collect()
+        });
         if !self.run_handler(src) {
             return HashSet::new();
         }
-        names
-            .into_iter()
-            .filter(|n| self.read_signal(n) != before[n])
-            .collect()
+        profile::time(profile::Phase::Diff, || {
+            names.into_iter().filter(|n| self.read_signal(n) != before[n]).collect()
+        })
     }
 
     /// Put the current path in scope as the `route` signal.
@@ -2388,7 +2391,7 @@ impl Engine {
     /// that could read the app's signals by name would be coupled to the app it
     /// was first written for, and could not be used twice.
     pub fn init_scope(&mut self, script: &str) -> Vec<(String, Value)> {
-        let ast = match self.engine.compile(rewrite_intervals(script)) {
+        let ast = match profile::time(profile::Phase::Compile, || self.engine.compile(rewrite_intervals(script))) {
             Ok(ast) => ast,
             Err(e) => {
                 warn(format!(
@@ -2400,9 +2403,11 @@ impl Engine {
         };
         // Its own functions plus everything already registered, so a component
         // can call helpers it declared beside its state.
-        let merged = self.funcs.merge(&ast);
+        let merged = profile::time(profile::Phase::Merge, || self.funcs.merge(&ast));
         let mut scope = Scope::new();
-        if let Err(e) = self.engine.run_ast_with_scope(&mut scope, &merged) {
+        if let Err(e) =
+            profile::time(profile::Phase::Run, || self.engine.run_ast_with_scope(&mut scope, &merged))
+        {
             warn(format!(
                 "a component's script failed to run: {}",
                 explain(&e.to_string())
@@ -2426,10 +2431,11 @@ impl Engine {
         locals: &[(String, Value)],
     ) -> (Vec<(String, Value)>, HashSet<String>) {
         let names: Vec<String> = self.signals.iter().cloned().collect();
-        let before: HashMap<String, Option<Value>> =
-            names.iter().map(|n| (n.clone(), self.read_signal(n))).collect();
+        let before: HashMap<String, Option<Value>> = profile::time(profile::Phase::Diff, || {
+            names.iter().map(|n| (n.clone(), self.read_signal(n))).collect()
+        });
 
-        let ast = match self.engine.compile(rewrite_intervals(src)) {
+        let ast = match profile::time(profile::Phase::Compile, || self.engine.compile(rewrite_intervals(src))) {
             Ok(ast) => ast,
             Err(e) => {
                 warn(format!(
@@ -2440,12 +2446,14 @@ impl Engine {
                 return (locals.to_vec(), HashSet::new());
             }
         };
-        let merged = self.funcs.merge(&ast);
+        let merged = profile::time(profile::Phase::Merge, || self.funcs.merge(&ast));
         let base = self.scope.len();
         for (name, value) in locals {
             self.scope.push(name.clone(), to_dynamic(value));
         }
-        let result = self.engine.eval_ast_with_scope::<Dynamic>(&mut self.scope, &merged);
+        let result = profile::time(profile::Phase::Run, || {
+            self.engine.eval_ast_with_scope::<Dynamic>(&mut self.scope, &merged)
+        });
         // Read the instance's state back *before* rewinding, or the handler's
         // effect on it is dropped along with the temporary scope.
         let after: Vec<(String, Value)> = locals
@@ -2469,7 +2477,9 @@ impl Engine {
             ));
             return (after, HashSet::new());
         }
-        let changed = names.into_iter().filter(|n| self.read_signal(n) != before[n]).collect();
+        let changed = profile::time(profile::Phase::Diff, || {
+            names.into_iter().filter(|n| self.read_signal(n) != before[n]).collect()
+        });
         (after, changed)
     }
 
@@ -2522,8 +2532,9 @@ impl Engine {
     /// [`run_handler_tracked`](Self::run_handler_tracked).
     pub fn run_effect_tracked(&mut self, src: &str) -> (HashSet<String>, HashSet<String>) {
         let names: Vec<String> = self.signals.iter().cloned().collect();
-        let before: HashMap<String, Option<Value>> =
-            names.iter().map(|n| (n.clone(), self.read_signal(n))).collect();
+        let before: HashMap<String, Option<Value>> = profile::time(profile::Phase::Diff, || {
+            names.iter().map(|n| (n.clone(), self.read_signal(n))).collect()
+        });
 
         READS.with(|r| *r.borrow_mut() = Some(HashSet::new()));
         let ran = self.eval(src, &[]).is_some();
@@ -2534,7 +2545,9 @@ impl Engine {
             // signal re-runs it rather than leaving it dead until a reload.
             return (reads, HashSet::new());
         }
-        let writes = names.into_iter().filter(|n| self.read_signal(n) != before[n]).collect();
+        let writes = profile::time(profile::Phase::Diff, || {
+            names.into_iter().filter(|n| self.read_signal(n) != before[n]).collect()
+        });
         (reads, writes)
     }
 
@@ -2553,8 +2566,9 @@ impl Engine {
         locals: &[(String, Value)],
     ) -> HashSet<String> {
         let names: Vec<String> = self.signals.iter().cloned().collect();
-        let before: HashMap<String, Option<Value>> =
-            names.iter().map(|n| (n.clone(), self.read_signal(n))).collect();
+        let before: HashMap<String, Option<Value>> = profile::time(profile::Phase::Diff, || {
+            names.iter().map(|n| (n.clone(), self.read_signal(n))).collect()
+        });
         // The value is a person's typing, so it is quoted as a literal rather
         // than pasted in: a quote or a backslash in a text field would otherwise
         // be a syntax error at best.
@@ -2562,7 +2576,9 @@ impl Engine {
         if self.eval(&src, locals).is_none() {
             return HashSet::new();
         }
-        names.into_iter().filter(|n| self.read_signal(n) != before[n]).collect()
+        profile::time(profile::Phase::Diff, || {
+            names.into_iter().filter(|n| self.read_signal(n) != before[n]).collect()
+        })
     }
 
     /// [`assign_string`](Self::assign_string) for a value that is not text: a
@@ -2577,14 +2593,17 @@ impl Engine {
         locals: &[(String, Value)],
     ) -> HashSet<String> {
         let names: Vec<String> = self.signals.iter().cloned().collect();
-        let before: HashMap<String, Option<Value>> =
-            names.iter().map(|n| (n.clone(), self.read_signal(n))).collect();
+        let before: HashMap<String, Option<Value>> = profile::time(profile::Phase::Diff, || {
+            names.iter().map(|n| (n.clone(), self.read_signal(n))).collect()
+        });
         let mut locals = locals.to_vec();
         locals.push((ASSIGNED.to_string(), value.clone()));
         if self.eval(&format!("{target} = {ASSIGNED}"), &locals).is_none() {
             return HashSet::new();
         }
-        names.into_iter().filter(|n| self.read_signal(n) != before[n]).collect()
+        profile::time(profile::Phase::Diff, || {
+            names.into_iter().filter(|n| self.read_signal(n) != before[n]).collect()
+        })
     }
 }
 

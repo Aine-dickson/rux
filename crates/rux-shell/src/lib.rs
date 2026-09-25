@@ -51,6 +51,7 @@ use rux_layout::{
     TextAlign,
     TextContent, TextWrap,
 };
+use rux_runtime::profile::{self, Phase};
 use rux_runtime::{Document, Focus, Insets, InteractionState, Viewport};
 use vello::kurbo::Affine;
 use vello::peniko::Color;
@@ -5685,11 +5686,13 @@ impl App {
         // being built, and there is nothing to interpolate into a node that is
         // about to leave the tree. It rebuilds when one commits, which is also
         // where the departing element's `unmounted` fires.
-        let swap_next = self.document.advance_swaps(now);
-        let next = match (self.anim.apply(&mut self.document.root, now), swap_next) {
-            (Some(a), Some(b)) => Some(a.min(b)),
-            (a, b) => a.or(b),
-        };
+        let next = profile::time(Phase::Animate, || {
+            let swap_next = self.document.advance_swaps(now);
+            match (self.anim.apply(&mut self.document.root, now), swap_next) {
+                (Some(a), Some(b)) => Some(a.min(b)),
+                (a, b) => a.or(b),
+            }
+        });
         self.anim_deadline = next.map(|ms| {
             Instant::now() + Duration::from_secs_f64(ms.max(rux_runtime::FRAME_MS) / 1000.0)
         });
@@ -5770,7 +5773,7 @@ impl App {
 
         // Layout (text sized via the engine's measure), then paint. Cache the
         // hit regions for tap dispatch.
-        let mut layout = {
+        let mut layout = profile::time(Phase::Layout, || {
             let mut measure = |tc: &rux_layout::TextContent, mw: Option<f32>| {
                 text.measure(&tc.text, &rux_paint::text_style(tc), mw)
             };
@@ -5781,7 +5784,7 @@ impl App {
                 offsets,
                 &mut measure,
             )
-        };
+        });
         // Keep offsets in step with the scrollers the new layout actually has, and
         // re-clamp them (the content may have shrunk under us). `collect` clamps
         // the shift it applies the same way, so doing this before the scrollbars
@@ -5942,7 +5945,8 @@ impl App {
             Some([end(sel_start), end(sel_end)])
         });
 
-        let content = rux_paint::build_scene(&layout.paints, text, images, caret_visible);
+        let content =
+            profile::time(Phase::Scene, || rux_paint::build_scene(&layout.paints, text, images, caret_visible));
         state.scene.reset();
         state
             .scene
@@ -6100,6 +6104,7 @@ impl App {
         *states = layout.states;
 
         let device_handle = &context.devices[state.surface.dev_id];
+        let gpu_start = profile::active().then(Instant::now);
         // wgpu 29 reports acquisition as a status enum. A timeout/occluded frame
         // is normal (minimized window, compositor hiccup), skip it and repaint
         // on the next event rather than tearing the app down.
@@ -6145,6 +6150,10 @@ impl App {
         device_handle.queue.submit([encoder.finish()]);
 
         surface_texture.present();
+        if let Some(start) = gpu_start {
+            profile::add(Phase::Gpu, start.elapsed().as_nanos() as u64);
+            report_frame();
+        }
 
         // After the present and not before: the splash is covering an empty
         // surface, and telling Android to take it away while the frame is still
@@ -10595,6 +10604,29 @@ fn dev_link(port: u16, token_file: Option<PathBuf>) {
             android_log("hot reload: rux went away");
         }
         std::thread::sleep(std::time::Duration::from_secs(1));
+    }
+}
+
+/// Fold this frame's profile in and print when a summary is due. Printed
+/// every 60 frames that painted, or every frame under `RUX_PROFILE=each`.
+/// Frames only paint when something changed, so an idle window prints nothing.
+fn report_frame() {
+    thread_local! {
+        static REPORT: std::cell::RefCell<profile::Report> = Default::default();
+    }
+    let every = if profile::each_frame() { 1 } else { 60 };
+    let text = REPORT.with(|r| {
+        let mut r = r.borrow_mut();
+        r.frame(profile::take());
+        (r.frames() >= every).then(|| r.flush())
+    });
+    if let Some(text) = text {
+        #[cfg(target_os = "android")]
+        for line in text.lines() {
+            android_log(line);
+        }
+        #[cfg(not(target_os = "android"))]
+        eprint!("{text}");
     }
 }
 

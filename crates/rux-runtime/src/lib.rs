@@ -47,6 +47,8 @@ pub use rux_style::{Animator, FRAME_MS};
 /// Re-exported so the shell can report a script-facing problem it is the only
 /// one able to see, such as `tap()` naming an element with no box on screen.
 pub use rux_script::warn_script;
+/// Where a frame's time goes, when `RUX_PROFILE` is set.
+pub use rux_script::profile;
 
 /// A loaded `.rux` document: parsed source, imported components (by tag), the
 /// script engine, and the current tree.
@@ -2722,6 +2724,10 @@ impl Document {
 
     /// Rebuild the layout tree from the engine's current state.
     pub fn rebuild(&mut self) {
+        rux_script::profile::time(rux_script::profile::Phase::Rebuild, || self.rebuild_untimed());
+    }
+
+    fn rebuild_untimed(&mut self) {
         if let Ok((mut root, registry)) = rux_style::build_styled_tree_stateful(
             &self.sfc,
             &self.components,
@@ -2758,6 +2764,10 @@ impl Document {
     /// mutated on the `false` path.
     #[must_use]
     pub fn patch(&mut self, changed: &HashSet<String>) -> bool {
+        rux_script::profile::time(rux_script::profile::Phase::Patch, || self.patch_untimed(changed))
+    }
+
+    fn patch_untimed(&mut self, changed: &HashSet<String>) -> bool {
         if changed.is_empty() {
             return true; // nothing changed → nothing to do, and no rebuild needed
         }
