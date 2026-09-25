@@ -818,6 +818,15 @@ pub type OnVarCallback = dyn Fn(&str, usize, EvalContext) -> RhaiResultOf<Option
 pub type OnVarCallback =
     dyn Fn(&str, usize, EvalContext) -> RhaiResultOf<Option<Dynamic>> + Send + Sync;
 
+/// Callback function told that a variable is about to be written, or passed
+/// where it may be changed. Rux fork, see `DIVERGENCE.md` item 11.
+#[cfg(not(feature = "sync"))]
+pub type OnVarWriteCallback = dyn Fn(&str, &crate::Scope);
+/// Callback function told that a variable is about to be written, or passed
+/// where it may be changed. Rux fork, see `DIVERGENCE.md` item 11.
+#[cfg(feature = "sync")]
+pub type OnVarWriteCallback = dyn Fn(&str, &crate::Scope) + Send + Sync;
+
 /// Callback function for variable definition.
 #[cfg(not(feature = "sync"))]
 pub type OnDefVarCallback = dyn Fn(bool, VarDefInfo, EvalContext) -> RhaiResultOf<bool>;

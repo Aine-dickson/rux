@@ -66,6 +66,27 @@ impl Engine {
         self.resolve_var = Some(Box::new(callback));
         self
     }
+    /// Provide a callback told the name of every variable about to be written,
+    /// or passed where it may be changed, together with the scope it is
+    /// found in. Rux fork, see `DIVERGENCE.md` item 11.
+    ///
+    /// Called before the change, so the variable still holds its old value.
+    /// Four places reach a variable in a form that can change it: an
+    /// assignment (`x = …`, `x += …`, and so `x++`), a property or index chain
+    /// on it (`x.a = …`, `x[0] = …`, and every method called through it), and
+    /// a call that passes it by reference as its first argument. Each calls
+    /// this. It is conservative: a method that only reads (`x.len()`) is
+    /// reported too, because whether a native function mutates is not known
+    /// at that point. A variable reached through a closure's capture is
+    /// reported with the closure's scope, not the one it was declared in.
+    #[inline(always)]
+    pub fn on_var_write(
+        &mut self,
+        callback: impl Fn(&str, &crate::Scope) + SendSync + 'static,
+    ) -> &mut Self {
+        self.var_write = Some(Box::new(callback));
+        self
+    }
     /// Provide a callback that will be invoked before the definition of each variable .
     ///
     /// # WARNING - Unstable API

@@ -1444,6 +1444,7 @@ impl Engine {
                     arg_values.push(value.flatten());
                 }
 
+                self.note_var_write(scope, first);
                 let mut target = self.search_namespace(global, caches, scope, this_ptr, first)?;
 
                 if target.as_ref().is_read_only() {
@@ -1541,6 +1542,7 @@ impl Engine {
                     arg_values.push(value.flatten());
                 }
 
+                self.note_var_write(scope, first);
                 let target = self.search_namespace(global, caches, scope, this_ptr, first)?;
 
                 if target.is_shared() || target.is_temp_value() {

@@ -306,6 +306,41 @@ reads the same call to narrow `x`.
 Tests: `validate::tests` in `rux-script`, and `is_narrows_both_ways` in its
 checker.
 
+### 11. `on_var_write`: told before a variable may change
+
+**Files:** `src/func/native.rs` (`OnVarWriteCallback`), `src/engine.rs` (the
+`var_write` field), `src/api/events.rs` (`Engine::on_var_write`),
+`src/eval/expr.rs` (`note_var_write`), and one call each in `src/eval/stmt.rs`
+(assignment), `src/eval/chaining.rs` (a chain on a variable) and
+`src/func/call.rs` (twice, a variable passed by reference as a first argument).
+
+A new callback, beside upstream's `on_var`, told the name of a variable and the
+scope it is found in **before** anything reaches it in a form that could change
+it. Those are exactly four places: an assignment (`x = …`, `x += …`, and so
+`x++`, which divergence 2 desugars to `+=`), a property or index chain on it
+(`x.a = …`, `x[0] = …`, and every method called through it), and the two call
+paths that pass a variable by reference as the first argument. A plain read goes
+through none of them.
+
+Rux needs it to know which signals a handler changed. It used to copy every
+signal before the handler and compare every one after, which in a document
+holding a 10,000-row list cost 52 ms a tap, three times the handler itself. Now
+`rux-script` keeps a signal's value the first time the hook names it, and
+compares only those. Debug builds still do the whole comparison as well and
+panic if the hook missed a change, so the test suite checks the hook on every
+handler it runs.
+
+**Conservative on purpose.** A method that only reads (`x.len()`) is reported
+too, because whether a native function mutates its receiver is not known where
+the variable is looked up; the comparison then finds nothing changed. A write
+through a closure's capture is reported with the closure's scope, which Rux
+treats as "changed" without comparing, since the old value is not reachable
+from there.
+
+Upstream has nothing like it, and it touches the evaluator in four places, so a
+rebase must carry every `note_var_write` call across: a missing one would be a
+write Rux never repaints, silently in release builds.
+
 ## Keeping up with upstream
 
 A fork does not receive upstream's fixes, and RustSec files any advisory under

@@ -558,6 +558,7 @@ impl Engine {
                 #[cfg(feature = "debugging")]
                 self.dbg(global, caches, scope, this_ptr.as_deref_mut(), lhs)?;
 
+                self.note_var_write(scope, lhs);
                 let target = &mut self.search_namespace(global, caches, scope, this_ptr, lhs)?;
                 self.eval_dot_index_chain_raw(
                     global, caches, None, None, lhs, expr, target, rhs, idx_values, new_val,

@@ -431,6 +431,12 @@ impl Builder {
             Ok(None)
         });
 
+        // Told before any variable is written or passed where it may change
+        // (fork item 11). While a handler runs under `Engine::tracking`, the
+        // first time a signal is about to change, its value is kept, so what
+        // the handler changed is found by comparing only those.
+        engine.on_var_write(note_write);
+
         // `let add = (a, b) => a + b; add(2, 3)`: a variable holding an arrow,
         // called the way JavaScript calls one. rhai only knew `add.call(2, 3)`,
         // and `add(2, 3)` failed with "there is no function `add`", which is
@@ -1069,6 +1075,49 @@ impl CallProblem {
             }
         }
     }
+}
+
+/// What a tracked run has been about to write. See [`Engine::tracking`].
+struct WriteLog {
+    /// The scope the run evaluates in, by address: a write found in any other
+    /// scope went through a closure's capture.
+    scope: usize,
+    signals: HashSet<String>,
+    /// Each signal's value just before the run first reached it in a form
+    /// that could change it.
+    before: HashMap<String, Option<Value>>,
+    /// Signals written from somewhere with no old value to compare against:
+    /// a closure writing what it captured. Reported as changed.
+    unsnapped: HashSet<String>,
+}
+
+thread_local! {
+    static WRITES: RefCell<Option<WriteLog>> = const { RefCell::new(None) };
+}
+
+/// The fork's `on_var_write` hook: keep a signal's value the first time a
+/// tracked run is about to change it.
+fn note_write(name: &str, scope: &Scope) {
+    WRITES.with(|w| {
+        let mut w = w.borrow_mut();
+        let Some(log) = w.as_mut() else { return };
+        if !log.signals.contains(name) || log.before.contains_key(name) || log.unsnapped.contains(name) {
+            return;
+        }
+        if scope as *const Scope as *const () as usize != log.scope {
+            log.unsnapped.insert(name.to_string());
+            return;
+        }
+        // The signals are the scope's first entries, so a later entry of the
+        // same name is a local shadowing one: that write goes to the local
+        // and leaves the signal alone.
+        let mut named = scope.iter_raw().filter(|(n, ..)| *n == name);
+        let signal = named.next();
+        if named.next().is_some() {
+            return;
+        }
+        log.before.insert(name.to_string(), signal.map(|(_, _, d)| from_dynamic(d)));
+    });
 }
 
 pub struct Engine {
@@ -2346,21 +2395,66 @@ impl Engine {
         self.run_handler_tracked_in(src, &[])
     }
 
+    /// Run `f` and report which signals it changed.
+    ///
+    /// Only the signals it was about to change are compared, each against the
+    /// value it had just before: the fork tells [`note_write`] about every
+    /// assignment, property or index chain and by-reference call on a variable
+    /// before it happens. Copying and comparing every signal around every run
+    /// used to cost more than the run itself once a list was large.
+    ///
+    /// A tracked run inside another hands what it found to the outer one, as
+    /// signals changed, so nothing is lost by nesting.
+    fn tracking<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> (R, HashSet<String>) {
+        let log = WriteLog {
+            scope: &self.scope as *const Scope as *const () as usize,
+            signals: self.signals.clone(),
+            before: HashMap::new(),
+            unsnapped: HashSet::new(),
+        };
+        // Debug builds also take the old whole-state copy and check the
+        // tracked answer against it, so every test that runs a handler proves
+        // the fork's hook missed nothing. Release builds skip it.
+        #[cfg(debug_assertions)]
+        let every: Vec<(String, Option<Value>)> =
+            self.signals.iter().map(|n| (n.clone(), self.read_signal(n))).collect();
+        let outer = WRITES.with(|w| w.borrow_mut().replace(log));
+        let out = f(self);
+        let log = WRITES.with(|w| std::mem::replace(&mut *w.borrow_mut(), outer));
+        let Some(log) = log else { return (out, HashSet::new()) };
+        let changed: HashSet<String> = profile::time(profile::Phase::Diff, || {
+            let mut changed = log.unsnapped;
+            for (name, before) in log.before {
+                if self.read_signal(&name) != before {
+                    changed.insert(name);
+                }
+            }
+            changed
+        });
+        #[cfg(debug_assertions)]
+        for (name, before) in every {
+            if self.read_signal(&name) != before {
+                assert!(
+                    changed.contains(&name),
+                    "write tracking missed `{name}`: it changed, and no write to it was seen"
+                );
+            }
+        }
+        WRITES.with(|w| {
+            if let Some(outer) = w.borrow_mut().as_mut() {
+                outer.unsnapped.extend(changed.iter().cloned());
+            }
+        });
+        (out, changed)
+    }
+
     /// [`run_handler_tracked`](Self::run_handler_tracked) with `locals` in
     /// scope, such as the `event` a gesture hands its handler. Passed as a
     /// local rather than written into the source, so the source stays the
     /// same from one tap to the next and is compiled once.
     pub fn run_handler_tracked_in(&mut self, src: &str, locals: &[(String, Value)]) -> HashSet<String> {
-        let names: Vec<String> = self.signals.iter().cloned().collect();
-        let before: HashMap<String, Option<Value>> = profile::time(profile::Phase::Diff, || {
-            names.iter().map(|n| (n.clone(), self.read_signal(n))).collect()
-        });
-        if !self.run_handler_in(src, locals) {
-            return HashSet::new();
-        }
-        profile::time(profile::Phase::Diff, || {
-            names.into_iter().filter(|n| self.read_signal(n) != before[n]).collect()
-        })
+        let (ran, changed) = self.tracking(|e| e.run_handler_in(src, locals));
+        if ran { changed } else { HashSet::new() }
     }
 
     /// Put the current path in scope as the `route` signal.
@@ -2470,11 +2564,6 @@ impl Engine {
         src: &str,
         locals: &[(String, Value)],
     ) -> (Vec<(String, Value)>, HashSet<String>) {
-        let names: Vec<String> = self.signals.iter().cloned().collect();
-        let before: HashMap<String, Option<Value>> = profile::time(profile::Phase::Diff, || {
-            names.iter().map(|n| (n.clone(), self.read_signal(n))).collect()
-        });
-
         let merged = match self.prepared(src) {
             Ok(merged) => merged,
             Err(e) => {
@@ -2486,27 +2575,30 @@ impl Engine {
                 return (locals.to_vec(), HashSet::new());
             }
         };
-        let base = self.scope.len();
-        for (name, value) in locals {
-            self.scope.push(name.clone(), to_dynamic(value));
-        }
-        let result = profile::time(profile::Phase::Run, || {
-            self.engine.eval_ast_with_scope::<Dynamic>(&mut self.scope, &merged)
+        let ((after, result), changed) = self.tracking(|e| {
+            let base = e.scope.len();
+            for (name, value) in locals {
+                e.scope.push(name.clone(), to_dynamic(value));
+            }
+            let result = profile::time(profile::Phase::Run, || {
+                e.engine.eval_ast_with_scope::<Dynamic>(&mut e.scope, &merged)
+            });
+            // Read the instance's state back *before* rewinding, or the handler's
+            // effect on it is dropped along with the temporary scope.
+            let after: Vec<(String, Value)> = locals
+                .iter()
+                .map(|(name, previous)| {
+                    let value = e
+                        .scope
+                        .get_value::<Dynamic>(name)
+                        .map(|d| from_dynamic(&d))
+                        .unwrap_or_else(|| previous.clone());
+                    (name.clone(), value)
+                })
+                .collect();
+            e.scope.rewind(base);
+            (after, result)
         });
-        // Read the instance's state back *before* rewinding, or the handler's
-        // effect on it is dropped along with the temporary scope.
-        let after: Vec<(String, Value)> = locals
-            .iter()
-            .map(|(name, previous)| {
-                let value = self
-                    .scope
-                    .get_value::<Dynamic>(name)
-                    .map(|d| from_dynamic(&d))
-                    .unwrap_or_else(|| previous.clone());
-                (name.clone(), value)
-            })
-            .collect();
-        self.scope.rewind(base);
 
         if let Err(e) = result {
             warn(format!(
@@ -2516,9 +2608,6 @@ impl Engine {
             ));
             return (after, HashSet::new());
         }
-        let changed = profile::time(profile::Phase::Diff, || {
-            names.into_iter().filter(|n| self.read_signal(n) != before[n]).collect()
-        });
         (after, changed)
     }
 
@@ -2570,13 +2659,8 @@ impl Engine {
     /// invalidated. A handler only needs the writes, which is why this is not
     /// [`run_handler_tracked`](Self::run_handler_tracked).
     pub fn run_effect_tracked(&mut self, src: &str) -> (HashSet<String>, HashSet<String>) {
-        let names: Vec<String> = self.signals.iter().cloned().collect();
-        let before: HashMap<String, Option<Value>> = profile::time(profile::Phase::Diff, || {
-            names.iter().map(|n| (n.clone(), self.read_signal(n))).collect()
-        });
-
         READS.with(|r| *r.borrow_mut() = Some(HashSet::new()));
-        let ran = self.eval(src, &[]).is_some();
+        let (ran, writes) = self.tracking(|e| e.eval(src, &[]).is_some());
         let mut reads = READS.with(|r| r.borrow_mut().take()).unwrap_or_default();
         reads.retain(|n| self.signals.contains(n));
         if !ran {
@@ -2584,9 +2668,6 @@ impl Engine {
             // signal re-runs it rather than leaving it dead until a reload.
             return (reads, HashSet::new());
         }
-        let writes = profile::time(profile::Phase::Diff, || {
-            names.into_iter().filter(|n| self.read_signal(n) != before[n]).collect()
-        });
         (reads, writes)
     }
 
@@ -2604,20 +2685,12 @@ impl Engine {
         value: &str,
         locals: &[(String, Value)],
     ) -> HashSet<String> {
-        let names: Vec<String> = self.signals.iter().cloned().collect();
-        let before: HashMap<String, Option<Value>> = profile::time(profile::Phase::Diff, || {
-            names.iter().map(|n| (n.clone(), self.read_signal(n))).collect()
-        });
         // The value is a person's typing, so it is quoted as a literal rather
         // than pasted in: a quote or a backslash in a text field would otherwise
         // be a syntax error at best.
         let src = format!("{target} = {}", rux_reactive::json_string(value));
-        if self.eval(&src, locals).is_none() {
-            return HashSet::new();
-        }
-        profile::time(profile::Phase::Diff, || {
-            names.into_iter().filter(|n| self.read_signal(n) != before[n]).collect()
-        })
+        let (ran, changed) = self.tracking(|e| e.eval(&src, locals).is_some());
+        if ran { changed } else { HashSet::new() }
     }
 
     /// [`assign_string`](Self::assign_string) for a value that is not text: a
@@ -2631,18 +2704,11 @@ impl Engine {
         value: &Value,
         locals: &[(String, Value)],
     ) -> HashSet<String> {
-        let names: Vec<String> = self.signals.iter().cloned().collect();
-        let before: HashMap<String, Option<Value>> = profile::time(profile::Phase::Diff, || {
-            names.iter().map(|n| (n.clone(), self.read_signal(n))).collect()
-        });
         let mut locals = locals.to_vec();
         locals.push((ASSIGNED.to_string(), value.clone()));
-        if self.eval(&format!("{target} = {ASSIGNED}"), &locals).is_none() {
-            return HashSet::new();
-        }
-        profile::time(profile::Phase::Diff, || {
-            names.into_iter().filter(|n| self.read_signal(n) != before[n]).collect()
-        })
+        let src = format!("{target} = {ASSIGNED}");
+        let (ran, changed) = self.tracking(|e| e.eval(&src, &locals).is_some());
+        if ran { changed } else { HashSet::new() }
     }
 }
 
@@ -3748,6 +3814,41 @@ mod tests {
         // Touching one signal does not report the others.
         assert_eq!(changed(&mut e, "items = [9]"), ["items"]);
         assert_eq!(changed(&mut e, "level"), Vec::<String>::new()); // a bare read changes nothing
+    }
+
+    /// Every way a handler can change a signal is seen by the fork's write
+    /// hook, which is all the handler's changes are found from now. Each case
+    /// here is a path into the engine that reaches a variable differently.
+    #[test]
+    fn tracks_every_kind_of_write() {
+        let changed = |src: &str| {
+            let mut e = Builder::new()
+                .build(
+                    "let n = signal(1); let items = signal([1, 2]); \
+                     let user = signal(#{ name: \"a\" }); let total = signal(0); \
+                     fn bump() { n += 1; } fn push_one(list) { list.push(1); }",
+                )
+                .unwrap();
+            let mut v: Vec<String> = e.run_handler_tracked(src).into_iter().collect();
+            v.sort();
+            v
+        };
+        // A method that changes its receiver.
+        assert_eq!(changed("items.push(3)"), ["items"]);
+        // An index and a property, written through a chain.
+        assert_eq!(changed("items[0] = 9"), ["items"]);
+        assert_eq!(changed("user.name = \"b\""), ["user"]);
+        // A function writing a signal it reaches through the caller's scope.
+        assert_eq!(changed("bump()"), ["n"]);
+        // A closure writing what it captured.
+        assert_eq!(changed("[1, 2].forEach(x => total += x)"), ["total"]);
+        // A local that shadows a signal takes the write; the signal is untouched.
+        assert_eq!(changed("let n = 5; n = 6;"), Vec::<String>::new());
+        // A method that only reads is reported to the hook, and then compared
+        // equal, so nothing is claimed.
+        assert_eq!(changed("let k = items.len();"), Vec::<String>::new());
+        // A script function handed the list gets a copy; the signal stays put.
+        assert_eq!(changed("push_one(items)"), Vec::<String>::new());
     }
 
     // ── query() ─────────────────────────────────────────────────────────────

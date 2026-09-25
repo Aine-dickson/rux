@@ -325,6 +325,7 @@ impl Engine {
 
                     self.track_operation(global, lhs.position())?;
 
+                    self.note_var_write(scope, lhs);
                     let mut target = self.search_namespace(global, caches, scope, this_ptr, lhs)?;
 
                     let is_temp_result = !target.is_ref();

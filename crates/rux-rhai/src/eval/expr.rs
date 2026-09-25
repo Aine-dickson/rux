@@ -40,6 +40,16 @@ impl Engine {
             |offset| global.get_shared_import(offset),
         )
     }
+    /// Tell the `on_var_write` callback, if any, that the variable `expr`
+    /// names is about to be reached in a form that may change it. Rux fork.
+    #[inline]
+    pub(crate) fn note_var_write(&self, scope: &Scope, expr: &Expr) {
+        if let Some(ref var_write) = self.var_write {
+            if let Some(name) = expr.get_variable_name(true) {
+                var_write(name, scope);
+            }
+        }
+    }
     /// Search for a variable within the scope
     ///
     /// # Panics

@@ -4,7 +4,7 @@ use crate::api::default_limits::MAX_STRINGS_INTERNED;
 use crate::api::options::LangOptions;
 use crate::func::native::{
     locked_write, OnDebugCallback, OnDefVarCallback, OnParseTokenCallback, OnPrintCallback,
-    OnVarCallback,
+    OnVarCallback, OnVarWriteCallback,
 };
 use crate::packages::{Package, StandardPackage};
 use crate::tokenizer::Token;
@@ -113,6 +113,9 @@ pub struct Engine {
     pub(crate) def_var_filter: Option<Box<OnDefVarCallback>>,
     /// Callback closure for resolving variable access.
     pub(crate) resolve_var: Option<Box<OnVarCallback>>,
+    /// Callback closure told before a variable is written or passed where it
+    /// may be changed. Rux fork.
+    pub(crate) var_write: Option<Box<OnVarWriteCallback>>,
     /// Callback closure to remap tokens during parsing.
     pub(crate) token_mapper: Option<Box<OnParseTokenCallback>>,
 
@@ -183,6 +186,7 @@ impl fmt::Debug for Engine {
 
         f.field("def_var_filter", &self.def_var_filter.is_some())
             .field("resolve_var", &self.resolve_var.is_some())
+            .field("var_write", &self.var_write.is_some())
             .field("token_mapper", &self.token_mapper.is_some());
 
         #[cfg(not(feature = "unchecked"))]
@@ -253,6 +257,7 @@ impl Engine {
 
         def_var_filter: None,
         resolve_var: None,
+        var_write: None,
         token_mapper: None,
 
         #[cfg(not(feature = "no_index"))]
