@@ -99,6 +99,9 @@ pub struct Document {
     /// Enter/leave swaps in flight, and what the last build showed. Beside
     /// `instances` and for the same reason: a swap has to outlive the tree.
     swaps: Swaps,
+    /// The keyed list rows the last reconcile built, for the next to reuse.
+    /// See [`rux_style::RowCache`].
+    rows: rux_style::RowCache,
     /// `computed` declarations, in declaration order, so one may read another
     /// declared above it and a single pass refreshes them all.
     computeds: Vec<Computed>,
@@ -2311,6 +2314,7 @@ impl Document {
             instance_effects: HashMap::new(),
             timers: Vec::new(),
             swaps,
+            rows: rux_style::RowCache::new(),
             mounted_instances: HashSet::new(),
             settling: false,
             mounted_ran: false,
@@ -2424,6 +2428,7 @@ impl Document {
             instance_effects: HashMap::new(),
             timers: Vec::new(),
             swaps,
+            rows: rux_style::RowCache::new(),
             mounted_instances: HashSet::new(),
             settling: false,
             mounted_ran: false,
@@ -2443,6 +2448,12 @@ impl Document {
     /// The script engine, for running `@tap` handlers.
     pub fn engine_mut(&mut self) -> &mut Engine {
         &mut self.engine
+    }
+
+    /// How many keyed list rows the last reconcile reused, and how many it
+    /// built. See [`rux_style::RowCache`].
+    pub fn row_reuse(&self) -> (usize, usize) {
+        (self.rows.hits, self.rows.misses)
     }
 
     /// What is currently wrong with this document, for the dev overlay.
@@ -2635,7 +2646,7 @@ impl Document {
     /// Rebuild the given subtrees against the current interaction state and splice
     /// them into the live tree, re-applying focus scoped to each.
     fn restyle(&mut self, roots: &[Vec<usize>]) {
-        let Ok((mut fresh_root, fresh_reg)) = rux_style::build_styled_tree_stateful(
+        let Ok((mut fresh_root, fresh_reg)) = rux_style::build_styled_tree_cached(
             &self.sfc,
             &self.components,
             &self.namespaces,
@@ -2644,6 +2655,7 @@ impl Document {
             &mut self.swaps,
             &self.state,
             self.environment,
+            &mut self.rows,
         ) else {
             return;
         };
@@ -2728,6 +2740,9 @@ impl Document {
     }
 
     fn rebuild_untimed(&mut self) {
+        // A rebuild is asked for when something a row is built from may have
+        // changed without a signal saying so, so no kept row is trusted.
+        self.rows.clear();
         if let Ok((mut root, registry)) = rux_style::build_styled_tree_stateful(
             &self.sfc,
             &self.components,
@@ -2903,7 +2918,7 @@ impl Document {
             }
         }
 
-        let Ok((mut fresh_root, fresh_reg)) = rux_style::build_styled_tree_stateful(
+        let Ok((mut fresh_root, fresh_reg)) = rux_style::build_styled_tree_cached(
             &self.sfc,
             &self.components,
             &self.namespaces,
@@ -2912,15 +2927,24 @@ impl Document {
             &mut self.swaps,
             &self.state,
             self.environment,
+            &mut self.rows,
         ) else {
             return;
         };
         resolve_images(&mut fresh_root, &self.base);
         // Structural parents: replace the affected parent's children wholesale.
         for p in &roots {
-            let Some(fresh) = node_at(&fresh_root, p) else { continue };
-            let fresh_children = fresh.children.clone();
             let row = row_at(&fresh_root, p);
+            // Moved out rather than copied, since the fresh tree is dropped
+            // after this. Copied only when a node splice below will still read
+            // this subtree from the fresh tree, being an ancestor of it.
+            let read_later = toggles.iter().chain(&node_splices).any(|s| p.starts_with(s));
+            let Some(fresh) = node_at_mut(&mut fresh_root, p) else { continue };
+            let fresh_children = if read_later {
+                fresh.children.clone()
+            } else {
+                std::mem::take(&mut fresh.children)
+            };
             let real = self.focused_shown();
             if let Some(live) = node_at_mut(&mut self.root, p) {
                 live.children = fresh_children;

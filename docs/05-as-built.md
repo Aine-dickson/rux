@@ -148,6 +148,42 @@ Android has no environment to pass, so there the variable is read when the
 app is built: `RUX_PROFILE=1 rux build` bakes it in, and the summary goes to
 `adb logcat -s rux`. The web build has no profile.
 
+### List rows are reused
+
+A change to a list builds the whole document and splices in the list that
+changed, so every keyed row used to be styled again on every change: a list
+of 300 rows with one row moving a frame spent 12 ms a frame building rows
+that had not changed. A keyed `r-for` row is now kept from one build and
+reused by the next when nothing it was built from has changed: its item and
+the other loop variables, its ancestors, what it inherited, and the value of
+every signal it read. A row that has moved is reused at its new place, with
+its bindings rewritten to where it now is, including the place in its list
+that an `r-model` writes through.
+
+Some rows are always built, because reusing them would skip something:
+
+- a row that expands a component, fills a `<slot>` or a `<router-view>`, or
+  holds an `r-if` (its instances and swaps are touched by the build);
+- a row whose build raised a warning, printed, emitted or failed a binding;
+- a row the pointer is over or pressing, or that holds focus or a touched
+  field;
+- a row with a handler, once it has moved, since the handler carries the old
+  place inside it;
+- every row, when any rule has a `+` or `~` in it, or a form submission has
+  been tried.
+
+Unkeyed rows and rows under `r-transition` are never kept. Debug builds build
+again without reusing anything whenever a row was reused, and panic if the two
+differ, so the test suite checks every reuse it drives.
+
+Measured with the script-cost benchmark, release, desktop:
+
+| benchmark | before | after |
+|---|---|---|
+| 300 rows, one moves a frame: patch | 13.7 ms | 6.8 ms |
+| same, whole frame | 33.0 ms | 25.7 ms |
+| filter 2,000 records to 30 rows: whole frame | 20.4 ms | 20.0 ms |
+
 ## Formatting
 
 ```bash

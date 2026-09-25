@@ -603,6 +603,9 @@ fn bind_locals(src: &str, locals: &[(String, Value)]) -> String {
     if locals.is_empty() {
         return src.to_string();
     }
+    // The row's place is now written into a string no rewrite can reach. See
+    // `RowCache`.
+    BAKED.with(|b| b.set(b.get() + 1));
     let mut out = String::new();
     for (name, value) in locals {
         out.push_str("let ");
@@ -989,6 +992,8 @@ impl Swaps {
     /// `wanted` is what the condition (or the collection) says. The return is
     /// whether to emit it at all, and if so which side it is on.
     fn resolve(&mut self, key: &SwapKey, wanted: bool, animated: bool) -> Option<Option<SwapSide>> {
+        // A reused row would skip this bookkeeping. See `RowCache`.
+        UNREPLAYABLE.with(|u| u.set(u.get() + 1));
         if !animated {
             // No `r-transition`: the old behaviour exactly, and no bookkeeping
             // beyond recording what was shown, so an element that gains the
@@ -2027,6 +2032,15 @@ pub fn build_styled_tree_stateful(
                 || comps.values().any(|c| c.rules.iter().any(Rule::reads_ancestor_siblings)),
         )
     });
+    // A kept row is compared with everything but its siblings, so a build
+    // whose rules can read siblings reuses nothing. See `RowCache`.
+    if rules.iter().chain(comps.values().flat_map(|c| c.rules.iter())).any(Rule::has_sibling_step) {
+        ROWS.with(|r| {
+            if let Some(b) = r.borrow_mut().as_mut() {
+                b.off = true;
+            }
+        });
+    }
 
     // An instance lives as long as it is on screen, and until now nothing ever
     // said it had left: the only removal anywhere was the router's, so an
@@ -2491,6 +2505,14 @@ impl Rule {
             .enumerate()
             .any(|(i, c)| sibling(c) && self.combs[i + 1..].iter().any(hop))
     }
+
+    /// Whether matching this rule looks at siblings at all, `+` or `~`
+    /// anywhere in it.
+    fn has_sibling_step(&self) -> bool {
+        self.combs
+            .iter()
+            .any(|c| matches!(c, Combinator::NextSibling | Combinator::SubsequentSibling))
+    }
 }
 
 /// One built node, as a selector can see it: what it is, and where it sits.
@@ -2607,7 +2629,7 @@ impl ElementIndex {
 }
 
 /// The matchable identity of a template element.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 struct ElemDesc {
     tag: String,
     id: Option<String>,
@@ -2620,7 +2642,7 @@ struct ElemDesc {
 /// rendered siblings that precede it. The preceding siblings are needed so a
 /// sibling combinator (`+`/`~`) sitting above a descendant/child hop
 /// (e.g. `.a ~ .b .c`) can still be resolved correctly.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 struct AncNode {
     desc: ElemDesc,
     prev: Vec<ElemDesc>,
@@ -5289,6 +5311,9 @@ fn expand_component(
     // pseudo-classes land on the component's own root either way.
     swap: Option<SwapSide>,
 ) -> LayoutNode {
+    // An instance is touched, mounted and given state here, none of which a
+    // reused row would do. See `RowCache`.
+    UNREPLAYABLE.with(|u| u.set(u.get() + 1));
     let mut props: Locals = Vec::new();
     let mut prop_deps: HashSet<String> = HashSet::new();
     let mut listeners: Vec<(String, String)> = Vec::new();
@@ -6285,6 +6310,9 @@ fn build_children(
         // did not write.
         if el.tag == "slot" {
             in_chain = false;
+            // The caller's markup, read in the caller's scope, which a row in
+            // here does not compare. See `RowCache`.
+            UNREPLAYABLE.with(|u| u.set(u.get() + 1));
             let ctp = child_tpl(ti);
             let filled = slot.filter(|s| !s.children.is_empty());
             match filled {
@@ -6336,6 +6364,7 @@ fn build_children(
         // is, rather than from the caller's markup.
         if el.tag == "router-view" {
             in_chain = false;
+            UNREPLAYABLE.with(|u| u.set(u.get() + 1));
             match outlet {
                 Some(o) => {
                     if let Some(link) = o.rest.first() {
@@ -6611,13 +6640,25 @@ fn build_children(
                             swaps.remember_row(&skey, index, child_locals.clone());
                         }
                         let cp = child_path(&out);
-                        let mut node = build_node(
+                        // Only a keyed row can be found again, and an animated
+                        // one is a swap's. See `RowCache`.
+                        let reuse = key.as_ref().filter(|_| !animated).map(|k| {
+                            let id: RowId = (
+                                *el as *const Element as usize,
+                                instance.map(str::to_string),
+                                row.map(str::to_string),
+                                k.clone(),
+                            );
+                            (id, place.as_ref().map(|_| format!("{ROW_PLACE}{var}")))
+                        });
+                        let mut node = build_row(
                             el, rules, comps, ancestors, &prev, inherited, engine, &child_locals,
                             &cp, &ctp, reg, state, instances, swaps, instance, slot, outlet,
                             // An unkeyed row inherits whatever row it is nested
                             // in, which is normally nothing.
                             key.as_deref().or(row),
                             side,
+                            reuse,
                         );
                         if animated {
                             arm_swap(
@@ -6702,6 +6743,571 @@ fn build_children(
         prev.push(ElemDesc::of(el));
     }
     (out, structural_deps)
+}
+
+// ── Reusing list rows ───────────────────────────────────────────────────────
+
+thread_local! {
+    /// Bumped by everything a build does that a reused row would skip: an
+    /// instance expanded, a swap consulted, a slot or an outlet filled. A row
+    /// whose build moved it is never kept.
+    static UNREPLAYABLE: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    /// Bumped each time a handler is baked with the locals in scope. A row
+    /// that baked one carries its place in its list inside a string, so it
+    /// can only be reused where it was.
+    static BAKED: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    /// The rows the build now running may reuse and the ones it keeps. `None`
+    /// outside [`build_styled_tree_cached`], so every other build is untouched.
+    static ROWS: std::cell::RefCell<Option<BuildRows>> = const { std::cell::RefCell::new(None) };
+}
+
+/// The keyed rows of `r-for` lists, kept from one build for the next.
+///
+/// A reconcile builds the whole document to splice in the one list that
+/// changed, so a list of 300 rows restyled all 300 when one moved. A row is
+/// its template element, its loop variables, its ancestors, what it
+/// inherited and the signals it read, and when none of those changed it
+/// comes out the same, so it is taken from here instead of built.
+///
+/// **Everything a row depends on is compared, nothing is assumed.** Its loop
+/// variables and ancestors by value, the signals it read by their values now
+/// against their values then. What it cannot compare it refuses: a row that
+/// warned, printed, emitted or failed a binding, expanded a component,
+/// consulted a swap or filled a slot is never kept, since reusing it would
+/// skip that; so is a row the pointer or focus is in, and so is every row of
+/// a build with a sibling combinator in its rules, since a row's siblings are
+/// not part of what is compared.
+///
+/// **Debug builds prove it.** A build that reused anything is built again
+/// reusing nothing, and any difference panics, so every test that reconciles
+/// a keyed list checks it.
+///
+/// **A row may move.** Its registry entries and the paths it carries are
+/// rewritten to where it now is, and so is its place in its list, the hidden
+/// local an `r-model` writes through. Its handlers are the exception: they
+/// were baked with the place inside a string, so a row that has one is reused
+/// only where it was.
+///
+/// Owned by the runtime, like [`Instances`]. Cleared by anything that changes
+/// what a row is built from without a signal saying so: a stylesheet, a
+/// component, the environment. Measured on a 300-row list moving one row a
+/// frame: see `docs/05-as-built.md`.
+#[derive(Default)]
+pub struct RowCache {
+    rows: HashMap<RowId, CachedRow>,
+    env: Option<Environment>,
+    /// How many rows the last build reused.
+    pub hits: usize,
+    /// How many keyed rows the last build had to build.
+    pub misses: usize,
+}
+
+impl RowCache {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Forget every row, so the next build builds them all.
+    pub fn clear(&mut self) {
+        self.rows.clear();
+    }
+}
+
+/// A row's identity: its template element by address, the instance and the
+/// outer row it is in, and its `r-key`.
+type RowId = (usize, Option<String>, Option<String>, String);
+
+/// One row as it was built, and everything that built it.
+struct CachedRow {
+    node: LayoutNode,
+    path: Vec<usize>,
+    /// The registry entries the row's build recorded, at `path`.
+    frag: BindingRegistry,
+    /// The locals, without the place.
+    locals: Locals,
+    place: Option<Value>,
+    baked: bool,
+    ancestors: Vec<AncNode>,
+    inherited: Inherited,
+    /// Every signal the row read, with its value then.
+    reads: Vec<(String, Option<Value>)>,
+}
+
+struct BuildRows {
+    old: HashMap<RowId, CachedRow>,
+    kept: HashMap<RowId, CachedRow>,
+    /// Each signal's value, read once per build however many rows ask.
+    values: HashMap<String, Option<Value>>,
+    off: bool,
+    hits: usize,
+    misses: usize,
+}
+
+/// [`build_styled_tree_stateful`], reusing the rows `cache` kept from the
+/// last build and keeping this build's for the next. See [`RowCache`].
+#[allow(clippy::too_many_arguments)]
+pub fn build_styled_tree_cached(
+    sfc: &Sfc,
+    components: &HashMap<String, Sfc>,
+    namespaces: &HashMap<String, Namespace>,
+    engine: &mut Engine,
+    instances: &mut Instances,
+    swaps: &mut Swaps,
+    state: &InteractionState,
+    env: Environment,
+    cache: &mut RowCache,
+) -> Result<(LayoutNode, BindingRegistry), String> {
+    if cache.env != Some(env) {
+        cache.rows.clear();
+        cache.env = Some(env);
+    }
+    let old = std::mem::take(&mut cache.rows);
+    ROWS.with(|r| {
+        *r.borrow_mut() = Some(BuildRows {
+            old,
+            kept: HashMap::new(),
+            values: HashMap::new(),
+            // A tried submission marks fields by their form's path, which
+            // the rows do not compare. Rare, and short-lived.
+            off: !state.attempted.is_empty(),
+            hits: 0,
+            misses: 0,
+        })
+    });
+    let out = build_styled_tree_stateful(sfc, components, namespaces, engine, instances, swaps, state, env);
+    if let Some(built) = ROWS.with(|r| r.borrow_mut().take()) {
+        cache.rows = built.kept;
+        cache.hits = built.hits;
+        cache.misses = built.misses;
+    }
+    // Debug builds prove every reuse the way `Engine::tracking` proves its
+    // writes: the same build again, reusing nothing, must come out the same,
+    // and the test suite is what drives it. Skipped mid-swap, where a second
+    // build would advance the swap and differ for that reason alone.
+    #[cfg(debug_assertions)]
+    if cache.hits > 0 && swaps.is_empty() {
+        if let Ok((node, reg)) = &out {
+            let mut instances = instances.clone();
+            let mut swaps = swaps.clone();
+            let plain = rux_script::without_effects(|| {
+                build_styled_tree_stateful(sfc, components, namespaces, engine, &mut instances, &mut swaps, state, env)
+            });
+            if let Ok((plain, plain_reg)) = plain {
+                assert_eq!(
+                    format!("{node:#?}"),
+                    format!("{plain:#?}"),
+                    "a reused `r-for` row came out different from building it"
+                );
+                assert_eq!(
+                    registry_digest(reg),
+                    registry_digest(&plain_reg),
+                    "a reused `r-for` row recorded different bindings from building it"
+                );
+            }
+        }
+    }
+    out
+}
+
+/// A registry as text that does not depend on hash order, for comparing two.
+#[cfg(debug_assertions)]
+fn registry_digest(reg: &BindingRegistry) -> String {
+    let deps = |d: &HashSet<String>| {
+        let mut d: Vec<&String> = d.iter().collect();
+        d.sort();
+        format!("{d:?}")
+    };
+    let mut out = String::new();
+    for b in &reg.text {
+        out += &format!("text {:?} {:?} {:?} {}\n", b.path, b.template, b.locals, deps(&b.deps));
+    }
+    for b in &reg.value {
+        out += &format!(
+            "value {:?} {:?} {:?} {:?} {:?} {}\n",
+            b.path, b.model, b.row, b.instance, b.locals, deps(&b.deps)
+        );
+    }
+    for b in &reg.show {
+        out += &format!("show {:?} {:?} {:?} {}\n", b.path, b.cond, b.locals, deps(&b.deps));
+    }
+    for (kind, list) in [("src", &reg.src), ("options", &reg.options)] {
+        for b in list {
+            out += &format!("{kind} {:?} {:?} {:?} {}\n", b.path, b.expr, b.locals, deps(&b.deps));
+        }
+    }
+    for b in &reg.structural_parents {
+        out += &format!("parent {:?} {:?} {}\n", b.tree_path, b.tpl_path, deps(&b.deps));
+    }
+    for b in &reg.toggles {
+        out += &format!("toggle {:?} {}\n", b.path, deps(&b.deps));
+    }
+    for b in &reg.components {
+        out += &format!("component {:?} {}\n", b.path, deps(&b.deps));
+    }
+    for b in &reg.styled {
+        out += &format!("styled {:?} {}\n", b.path, deps(&b.deps));
+    }
+    for e in &reg.elements.entries {
+        out += &format!("element {:?} {:?}\n", e.path, e.desc);
+    }
+    out += &format!("structural {}\n", deps(&reg.structural));
+    out
+}
+
+/// Build one keyed row of an `r-for`, or reuse it. `reuse` is its identity and
+/// the name of its place local, `None` for a row that may not be reused.
+#[allow(clippy::too_many_arguments)]
+fn build_row(
+    el: &Element,
+    rules: &[Rule],
+    comps: &Components,
+    ancestors: &mut Vec<AncNode>,
+    prev: &[ElemDesc],
+    inherited: &Inherited,
+    engine: &mut Engine,
+    locals: &Locals,
+    path: &[usize],
+    tpl_path: &[usize],
+    reg: &mut BindingRegistry,
+    state: &InteractionState,
+    instances: &mut Instances,
+    swaps: &mut Swaps,
+    instance: Option<&str>,
+    slot: Option<Slot>,
+    outlet: Option<Outlet>,
+    row: Option<&str>,
+    side: Option<SwapSide>,
+    reuse: Option<(RowId, Option<String>)>,
+) -> LayoutNode {
+    let active = ROWS.with(|r| r.borrow().as_ref().is_some_and(|b| !b.off));
+    let Some((id, place_name)) = reuse.filter(|_| active) else {
+        return build_node(
+            el, rules, comps, ancestors, prev, inherited, engine, locals, path, tpl_path, reg, state,
+            instances, swaps, instance, slot, outlet, row, side,
+        );
+    };
+    let place_name = place_name.as_deref();
+    let (rest, place) = match locals.last() {
+        Some((name, value)) if Some(name.as_str()) == place_name => (&locals[..locals.len() - 1], Some(value)),
+        _ => (&locals[..], None),
+    };
+    let touched = state_touches(state, path, &id.3);
+    if !touched {
+        let entry = ROWS.with(|r| r.borrow_mut().as_mut().and_then(|b| b.old.remove(&id)));
+        if let Some(entry) = entry {
+            if row_unchanged(&entry, rest, place, place_name, ancestors, inherited, engine) {
+                let node = replay_row(&entry, path, place_name, place, reg);
+                // Whatever encloses this row read what it read, and baked
+                // what it baked, as surely as if it had just been built.
+                rux_script::note_reads(entry.reads.iter().map(|(n, _)| n.as_str()));
+                if entry.baked {
+                    BAKED.with(|b| b.set(b.get() + 1));
+                }
+                ROWS.with(|r| {
+                    if let Some(b) = r.borrow_mut().as_mut() {
+                        b.hits += 1;
+                        b.kept.insert(id, entry);
+                    }
+                });
+                return node;
+            }
+        }
+    }
+
+    let marks = Marks::of(reg);
+    let warned = WARN_CALLS.with(std::cell::Cell::get);
+    let unreplayable = UNREPLAYABLE.with(std::cell::Cell::get);
+    let baked = BAKED.with(std::cell::Cell::get);
+    let effects = rux_script::effects();
+    rux_script::begin_reads();
+    let node = build_node(
+        el, rules, comps, ancestors, prev, inherited, engine, locals, path, tpl_path, reg, state,
+        instances, swaps, instance, slot, outlet, row, side,
+    );
+    let names = rux_script::end_reads();
+    let keep = !touched
+        && WARN_CALLS.with(std::cell::Cell::get) == warned
+        && UNREPLAYABLE.with(std::cell::Cell::get) == unreplayable
+        // A binding that failed, printed or emitted would go quiet if reused.
+        && rux_script::effects() == effects
+        && reg.structural.len() == marks.structural;
+    ROWS.with(|r| {
+        if let Some(b) = r.borrow_mut().as_mut() {
+            b.misses += 1;
+        }
+    });
+    if keep {
+        let reads = names
+            .into_iter()
+            .filter(|n| engine.declares(n))
+            .map(|n| {
+                let value = signal_now(engine, &n);
+                (n, value)
+            })
+            .collect();
+        let entry = CachedRow {
+            node: node.clone(),
+            path: path.to_vec(),
+            frag: marks.fragment(reg),
+            locals: rest.to_vec(),
+            place: place.cloned(),
+            baked: BAKED.with(std::cell::Cell::get) != baked,
+            ancestors: ancestors.clone(),
+            inherited: inherited.clone(),
+            reads,
+        };
+        ROWS.with(|r| {
+            if let Some(b) = r.borrow_mut().as_mut() {
+                b.kept.insert(id, entry);
+            }
+        });
+    }
+    node
+}
+
+/// Whether the interaction state reaches into the row at `path` (keyed `key`):
+/// something in it hovered, pressed or focused, or a field in it left. The
+/// state is not compared, so a row it touches is built.
+fn state_touches(state: &InteractionState, path: &[usize], key: &str) -> bool {
+    let inside = |p: &Option<Vec<usize>>| p.as_ref().is_some_and(|p| p.starts_with(path));
+    inside(&state.hovered)
+        || inside(&state.active)
+        || inside(&state.focused_path)
+        || state.focused_row.as_deref() == Some(key)
+        || state.touched.iter().any(|(_, r, _)| r.as_deref() == Some(key))
+}
+
+/// A signal's value now, read once per build.
+fn signal_now(engine: &Engine, name: &str) -> Option<Value> {
+    if let Some(value) = ROWS.with(|r| r.borrow().as_ref().and_then(|b| b.values.get(name).cloned())) {
+        return value;
+    }
+    let value = engine.signal_value(name);
+    ROWS.with(|r| {
+        if let Some(b) = r.borrow_mut().as_mut() {
+            b.values.insert(name.to_string(), value.clone());
+        }
+    });
+    value
+}
+
+/// Whether a signal still holds `then`, compared where it is kept rather than
+/// copied out, since a row may read a long list.
+fn signal_still(engine: &Engine, name: &str, then: &Option<Value>) -> bool {
+    let known = ROWS.with(|r| r.borrow().as_ref().and_then(|b| b.values.get(name).map(|v| v == then)));
+    match known {
+        Some(same) => same,
+        None => signal_now(engine, name) == *then,
+    }
+}
+
+/// Whether a kept row would be built the same way now.
+fn row_unchanged(
+    entry: &CachedRow,
+    rest: &[(String, Value)],
+    place: Option<&Value>,
+    place_name: Option<&str>,
+    ancestors: &[AncNode],
+    inherited: &Inherited,
+    engine: &Engine,
+) -> bool {
+    let moved = entry.place.as_ref() != place;
+    entry.locals.as_slice() == rest
+        // A handler carries the place in a string.
+        && !(moved && entry.baked)
+        // A list nested in the row has its places built from this one.
+        && !(moved && frag_has_other_place(&entry.frag, place_name))
+        && entry.ancestors.as_slice() == ancestors
+        && same_inherited(&entry.inherited, inherited)
+        && entry.reads.iter().all(|(n, v)| signal_still(engine, n, v))
+}
+
+/// Whether any locals the row captured hold a place other than its own.
+fn frag_has_other_place(frag: &BindingRegistry, own: Option<&str>) -> bool {
+    let other = |locals: &[(String, Value)]| {
+        locals.iter().any(|(n, _)| n.starts_with(ROW_PLACE) && Some(n.as_str()) != own)
+    };
+    frag.text.iter().any(|b| other(&b.locals))
+        || frag.value.iter().any(|b| other(&b.locals))
+        || frag.show.iter().any(|b| other(&b.locals))
+        || frag.src.iter().any(|b| other(&b.locals))
+        || frag.options.iter().any(|b| other(&b.locals))
+}
+
+/// Destructured so that a field added to either struct fails to compile here
+/// rather than being silently left out of the comparison.
+fn same_inherited(a: &Inherited, b: &Inherited) -> bool {
+    let Inherited { color, selection, font_size, font_family, vars } = a;
+    let SelectionStyle { background, color: text, handle } = selection;
+    let rgba = |x: &Rgba, y: &Rgba| x.r == y.r && x.g == y.g && x.b == y.b && x.a == y.a;
+    let opt = |x: &Option<Rgba>, y: &Option<Rgba>| match (x, y) {
+        (Some(x), Some(y)) => rgba(x, y),
+        (None, None) => true,
+        _ => false,
+    };
+    rgba(color, &b.color)
+        && opt(background, &b.selection.background)
+        && opt(text, &b.selection.color)
+        && opt(handle, &b.selection.handle)
+        && *font_size == b.font_size
+        && *font_family == b.font_family
+        && (Rc::ptr_eq(vars, &b.vars) || **vars == *b.vars)
+}
+
+/// Put a kept row into this build at `path`: its node, and its registry
+/// entries rewritten to where it now is.
+fn replay_row(
+    entry: &CachedRow,
+    path: &[usize],
+    place_name: Option<&str>,
+    place: Option<&Value>,
+    reg: &mut BindingRegistry,
+) -> LayoutNode {
+    let from = entry.path.as_slice();
+    let moved = from != path;
+    let fix_path = |p: &mut Vec<usize>| {
+        if moved {
+            rebase(p, from, path);
+        }
+    };
+    let re_place = place_name.zip(place).filter(|_| entry.place.as_ref() != place);
+    let fix_locals = |locals: &mut Vec<(String, Value)>| {
+        if let Some((name, value)) = re_place {
+            for (n, v) in locals.iter_mut() {
+                if n == name {
+                    *v = value.clone();
+                }
+            }
+        }
+    };
+    let mut node = entry.node.clone();
+    if moved {
+        rebase_node(&mut node, from, path);
+    }
+    let f = &entry.frag;
+    for b in &f.text {
+        let mut b = b.clone();
+        fix_path(&mut b.path);
+        fix_locals(&mut b.locals);
+        reg.text.push(b);
+    }
+    for b in &f.value {
+        let mut b = b.clone();
+        fix_path(&mut b.path);
+        fix_locals(&mut b.locals);
+        reg.value.push(b);
+    }
+    for b in &f.show {
+        let mut b = b.clone();
+        fix_path(&mut b.path);
+        fix_locals(&mut b.locals);
+        reg.show.push(b);
+    }
+    for b in &f.src {
+        let mut b = b.clone();
+        fix_path(&mut b.path);
+        fix_locals(&mut b.locals);
+        reg.src.push(b);
+    }
+    for b in &f.options {
+        let mut b = b.clone();
+        fix_path(&mut b.path);
+        fix_locals(&mut b.locals);
+        reg.options.push(b);
+    }
+    for b in &f.structural_parents {
+        let mut b = b.clone();
+        fix_path(&mut b.tree_path);
+        reg.structural_parents.push(b);
+    }
+    for b in &f.toggles {
+        let mut b = b.clone();
+        fix_path(&mut b.path);
+        reg.toggles.push(b);
+    }
+    for b in &f.components {
+        let mut b = b.clone();
+        fix_path(&mut b.path);
+        reg.components.push(b);
+    }
+    for b in &f.styled {
+        let mut b = b.clone();
+        fix_path(&mut b.path);
+        reg.styled.push(b);
+    }
+    for e in &f.elements.entries {
+        let mut e = e.clone();
+        fix_path(&mut e.path);
+        reg.elements.entries.push(e);
+    }
+    node
+}
+
+/// Replace the prefix `from` of `p` with `to`, when `p` is under `from`.
+fn rebase(p: &mut Vec<usize>, from: &[usize], to: &[usize]) {
+    if p.starts_with(from) {
+        p.splice(..from.len(), to.iter().copied());
+    }
+}
+
+/// Every path a built node carries, rebased from `from` to `to`.
+fn rebase_node(node: &mut LayoutNode, from: &[usize], to: &[usize]) {
+    for p in [&mut node.state_path, &mut node.focus_path, &mut node.field.form].into_iter().flatten() {
+        rebase(p, from, to);
+    }
+    for child in &mut node.children {
+        rebase_node(child, from, to);
+    }
+}
+
+/// How long each part of a registry was before a row's build, so what the row
+/// added can be taken off the end.
+struct Marks {
+    text: usize,
+    value: usize,
+    show: usize,
+    src: usize,
+    options: usize,
+    parents: usize,
+    toggles: usize,
+    components: usize,
+    styled: usize,
+    elements: usize,
+    structural: usize,
+}
+
+impl Marks {
+    fn of(reg: &BindingRegistry) -> Self {
+        Self {
+            text: reg.text.len(),
+            value: reg.value.len(),
+            show: reg.show.len(),
+            src: reg.src.len(),
+            options: reg.options.len(),
+            parents: reg.structural_parents.len(),
+            toggles: reg.toggles.len(),
+            components: reg.components.len(),
+            styled: reg.styled.len(),
+            elements: reg.elements.entries.len(),
+            structural: reg.structural.len(),
+        }
+    }
+
+    fn fragment(&self, reg: &BindingRegistry) -> BindingRegistry {
+        BindingRegistry {
+            text: reg.text[self.text..].to_vec(),
+            value: reg.value[self.value..].to_vec(),
+            show: reg.show[self.show..].to_vec(),
+            src: reg.src[self.src..].to_vec(),
+            options: reg.options[self.options..].to_vec(),
+            structural_parents: reg.structural_parents[self.parents..].to_vec(),
+            toggles: reg.toggles[self.toggles..].to_vec(),
+            components: reg.components[self.components..].to_vec(),
+            styled: reg.styled[self.styled..].to_vec(),
+            structural: HashSet::new(),
+            elements: ElementIndex { entries: reg.elements.entries[self.elements..].to_vec() },
+        }
+    }
 }
 
 /// `<screen>` is the one element that means a *place* rather than a box: the

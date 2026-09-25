@@ -28,6 +28,43 @@ thread_local! {
     /// evaluate, then take the set. `None` means "not tracking", so ordinary
     /// evaluation (and the build-time script run) records nothing.
     static READS: RefCell<Option<HashSet<String>>> = const { RefCell::new(None) };
+    /// Open read spans, innermost last. Unlike [`READS`], which one binding
+    /// switches on around itself, a span collects every name read by
+    /// everything evaluated while it is open, tracked or not, and spans nest:
+    /// a read lands in every open one. See [`begin_reads`].
+    static SPANS: RefCell<Vec<HashSet<String>>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Start collecting every name any evaluation reads, until the matching
+/// [`end_reads`]. What a build uses to learn everything one part of the tree
+/// read, so that part can be reused while none of it has changed.
+pub fn begin_reads() {
+    SPANS.with(|s| s.borrow_mut().push(HashSet::new()));
+}
+
+/// Close the innermost span [`begin_reads`] opened and hand back what was read
+/// inside it. Names, not signals: filter with [`Engine::declares`].
+pub fn end_reads() -> HashSet<String> {
+    SPANS.with(|s| s.borrow_mut().pop()).unwrap_or_default()
+}
+
+/// Count `names` as read by every open span, for a caller that reused work
+/// instead of evaluating it again: the reads happened once, and whatever
+/// encloses the reuse depends on them all the same.
+pub fn note_reads<'a>(names: impl Iterator<Item = &'a str>) {
+    SPANS.with(|s| {
+        let mut s = s.borrow_mut();
+        if s.is_empty() {
+            return;
+        }
+        for name in names {
+            for set in s.iter_mut() {
+                if !set.contains(name) {
+                    set.insert(name.to_string());
+                }
+            }
+        }
+    })
 }
 
 /// What a query knows about one matched element.
@@ -426,6 +463,13 @@ impl Builder {
             READS.with(|r| {
                 if let Some(set) = r.borrow_mut().as_mut() {
                     set.insert(name.to_string());
+                }
+            });
+            SPANS.with(|s| {
+                for set in s.borrow_mut().iter_mut() {
+                    if !set.contains(name) {
+                        set.insert(name.to_string());
+                    }
                 }
             });
             Ok(None)
@@ -1313,7 +1357,50 @@ fn error(message: String) {
     raise(message, rux_reactive::Level::Error);
 }
 
+thread_local! {
+    /// How many times anything was raised, whether or not the sink kept it.
+    /// Part of [`effects`].
+    static RAISED: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// A number that moves whenever evaluation does anything besides produce a
+/// value: raises a warning, prints, emits, navigates, starts or stops a timer,
+/// or acts on an element. Equal before and after an evaluation means it had
+/// no effect beyond its result, so reusing that result instead of evaluating
+/// again loses nothing.
+pub fn effects() -> u64 {
+    let len = |n: usize| n as u64;
+    RAISED.with(std::cell::Cell::get)
+        + LOGS.with(|l| len(l.borrow().len()))
+        + EMISSIONS.with(|e| len(e.borrow().len()))
+        + NAVIGATIONS.with(|n| len(n.borrow().len()))
+        + TIMER_REQUESTS.with(|t| len(t.borrow().len()))
+        + ELEMENT_ACTIONS.with(|a| len(a.borrow().len()))
+}
+
+/// Run `f` and then drop whatever it added to the queues [`effects`] counts,
+/// for evaluating something a second time purely to check the first.
+pub fn without_effects<T>(f: impl FnOnce() -> T) -> T {
+    let lens = (
+        WARNINGS.with(|w| w.borrow().len()),
+        LOGS.with(|l| l.borrow().len()),
+        EMISSIONS.with(|e| e.borrow().len()),
+        NAVIGATIONS.with(|n| n.borrow().len()),
+        TIMER_REQUESTS.with(|t| t.borrow().len()),
+        ELEMENT_ACTIONS.with(|a| a.borrow().len()),
+    );
+    let out = f();
+    WARNINGS.with(|w| w.borrow_mut().truncate(lens.0));
+    LOGS.with(|l| l.borrow_mut().truncate(lens.1));
+    EMISSIONS.with(|e| e.borrow_mut().truncate(lens.2));
+    NAVIGATIONS.with(|n| n.borrow_mut().truncate(lens.3));
+    TIMER_REQUESTS.with(|t| t.borrow_mut().truncate(lens.4));
+    ELEMENT_ACTIONS.with(|a| a.borrow_mut().truncate(lens.5));
+    out
+}
+
 fn raise(message: String, level: rux_reactive::Level) {
+    RAISED.with(|r| r.set(r.get() + 1));
     let at = AT_LINE.with(|l| l.get());
     let file = IN_FILE.with(|c| c.borrow().clone());
     WARNINGS.with(|w| {
@@ -2493,6 +2580,15 @@ impl Engine {
     /// the setters, which would otherwise make the answer always yes.
     pub fn declares(&self, name: &str) -> bool {
         self.signals.contains(name)
+    }
+
+    /// A signal's current value, read straight from the scope (no evaluation).
+    /// `None` for a name that is not a signal.
+    pub fn signal_value(&self, name: &str) -> Option<Value> {
+        if !self.signals.contains(name) {
+            return None;
+        }
+        self.read_signal(name)
     }
 
     /// A signal's current value, read straight from the scope (no evaluation).
