@@ -160,7 +160,7 @@ fn expr<'a>(e: &'a Expr, f: &mut impl FnMut(Node<'a>) -> bool) {
             expr(base, f);
             expr(index, f);
         }
-        ExprKind::Unary { expr: inner, .. } => expr(inner, f),
+        ExprKind::Unary { expr: inner, .. } | ExprKind::Await(inner) => expr(inner, f),
         ExprKind::Binary { lhs, rhs, .. } => {
             expr(lhs, f);
             expr(rhs, f);

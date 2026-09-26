@@ -137,6 +137,8 @@ pub struct Arm {
 pub struct FnDecl {
     pub name: Ident,
     pub private: bool,
+    /// `async fn`: may `await`, and a call to it without `await` starts it.
+    pub is_async: bool,
     /// `fn Type.name()`, rhai's method on a type.
     pub this_type: Option<String>,
     /// `fn first<T>(…)`: the type parameters, and the span from `<` to `>`.
@@ -208,6 +210,8 @@ pub enum ExprKind {
     Method { recv: Box<Expr>, name: Ident, args: Vec<Expr>, optional: bool },
     Field { base: Box<Expr>, name: Ident, optional: bool },
     Index { base: Box<Expr>, index: Box<Expr>, optional: bool },
+    /// `await e`, inside an `async fn`.
+    Await(Box<Expr>),
     /// `-x`, `+x`, `!x`.
     Unary { op: &'static str, expr: Box<Expr> },
     /// Every binary operator, `&&`, `||`, `??`, `in`, `..` and the rest.

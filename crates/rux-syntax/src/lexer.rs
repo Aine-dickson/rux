@@ -88,6 +88,8 @@ impl Tok<'_> {
 fn keyword(word: &str) -> Option<&'static str> {
     Some(match word {
         "as" => "as",
+        "async" => "async",
+        "await" => "await",
         "break" => "break",
         "catch" => "catch",
         "const" => "const",
@@ -121,9 +123,9 @@ fn keyword(word: &str) -> Option<&'static str> {
 fn is_reserved_word(word: &str) -> bool {
     matches!(
         word,
-        "use" | "case" | "async" | "public" | "package" | "super" | "var" | "protected" | "spawn"
+        "use" | "case" | "public" | "package" | "super" | "var" | "protected" | "spawn"
             | "shared" | "is" | "sync" | "curry" | "static" | "default" | "print" | "this"
-            | "is_def_var" | "thread" | "yield" | "new" | "call" | "match" | "eval" | "await"
+            | "is_def_var" | "thread" | "yield" | "new" | "call" | "match" | "eval"
             | "null" | "debug" | "type_of" | "with" | "void" | "nil" | "module" | "Fn"
     )
 }

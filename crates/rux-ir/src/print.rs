@@ -70,7 +70,8 @@ impl<'u> Printer<'u> {
                 .enumerate()
                 .map(|(i, l)| format!("{}#{i}: {}", l.name, l.ty))
                 .collect();
-            let _ = writeln!(self.out, "fn {i} {}{tparams}({}): {}", f.name, params.join(", "), f.result);
+            let asy = if f.is_async { "async " } else { "" };
+            let _ = writeln!(self.out, "{asy}fn {i} {}{tparams}({}): {}", f.name, params.join(", "), f.result);
             self.body(&f.body, 1);
         }
         for (i, piece) in u.pieces.iter().enumerate() {
@@ -256,6 +257,12 @@ impl<'u> Printer<'u> {
                 };
                 let args: Vec<String> = args.iter().map(|a| self.expr(a)).collect();
                 typed(format!("(call {callee}{}{})", if args.is_empty() { "" } else { " " }, args.join(" ")))
+            }
+            ExprKind::Await(call) => typed(format!("(await {})", self.expr(call))),
+            ExprKind::Start { func, args } => {
+                let name = self.u.fns.get(func.0 as usize).map_or("?", |f| f.name.as_str()).to_string();
+                let args: Vec<String> = args.iter().map(|a| self.expr(a)).collect();
+                typed(format!("(start fn:{name}{}{})", if args.is_empty() { "" } else { " " }, args.join(" ")))
             }
             ExprKind::Method { recv, method, args, optional } => {
                 let r = self.expr(recv);

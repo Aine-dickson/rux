@@ -669,11 +669,11 @@
     },
     "script-keyword": {
       "comment": "`use` is Rux's import statement and was missing, so it rendered as plain text next to a coloured `let` on the following line. `import` is rhai's word for it; Rux does not use it, but it costs nothing to colour.",
-      "match": "\\b(use|if|else|for|in|while|loop|return|break|continue|switch|throw|try|catch|import|as|private)\\b",
+      "match": "\\b(use|if|else|for|in|while|loop|return|break|continue|switch|throw|try|catch|await|import|as|private)\\b",
       "name": "keyword.control.rux"
     },
     "script-storage": {
-      "match": "\\b(let|const|fn)\\b",
+      "match": "\\b(let|const|async|fn)\\b",
       "name": "storage.type.rux"
     },
     "script-lifecycle": {

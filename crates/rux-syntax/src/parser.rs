@@ -279,18 +279,27 @@ impl<'t> Parser<'t> {
                 StmtKind::Empty
             }
             Tok::Punct("{") if !is_brace_map => StmtKind::Block(self.block()?),
-            Tok::Kw("fn") | Tok::Kw("private") => {
+            Tok::Kw("fn") | Tok::Kw("private") | Tok::Kw("async") => {
                 let private = self.at_kw("private");
                 if private {
                     self.bump();
-                    if !self.at_kw("fn") {
-                        return self.error("expecting `fn` after `private`");
-                    }
+                }
+                let is_async = self.at_kw("async");
+                if is_async {
+                    self.bump();
+                }
+                if !self.at_kw("fn") {
+                    return self.error(match (private, is_async) {
+                        (true, false) => "expecting `fn` after `private`",
+                        _ => "expecting `fn` after `async`: only a function can be `async`",
+                    });
                 }
                 if !self.global {
                     return self.error("a `fn` is declared at the top level of the script, not inside a block");
                 }
-                StmtKind::Fn(self.fn_decl(private)?)
+                let mut decl = self.fn_decl(private)?;
+                decl.is_async = is_async;
+                StmtKind::Fn(decl)
             }
             Tok::Kw("if") => StmtKind::If(self.if_stmt()?),
             Tok::Kw("switch") => StmtKind::Switch(self.switch()?),
@@ -541,6 +550,10 @@ impl<'t> Parser<'t> {
             let v = self.var_name()?;
             self.expect_punct(")", "to close the name `catch` binds")?;
             Some(v)
+        } else if matches!(self.peek(), Tok::Ident(_)) {
+            // `catch e { … }`, the reference's spelling; `catch (e)` is the
+            // fork's, still read.
+            Some(self.var_name()?)
         } else {
             None
         };
@@ -596,7 +609,7 @@ impl<'t> Parser<'t> {
         }
         self.fns.push(key);
         let _ = fn_span;
-        Ok(FnDecl { name, private, this_type, type_params, type_params_span, params, result, body })
+        Ok(FnDecl { name, private, is_async: false, this_type, type_params, type_params_span, params, result, body })
     }
 
     fn fn_params(&mut self, fn_name: &str) -> PResult<Vec<Param>> {
@@ -886,6 +899,11 @@ impl<'t> Parser<'t> {
                     (op, kind) => ExprKind::Unary { op, expr: Box::new(Expr { id: self.next_id(), kind, span: operand.span }) },
                 };
                 Ok(Expr { id: self.next_id(), kind, span })
+            }
+            Tok::Kw("await") => {
+                self.bump();
+                let operand = self.unary()?;
+                Ok(Expr { id: self.next_id(), span: start.to(operand.span), kind: ExprKind::Await(Box::new(operand)) })
             }
             Tok::Punct("!") => {
                 self.bump();

@@ -15,6 +15,8 @@
 
 pub mod value;
 pub mod stdlib;
+pub mod flat;
+mod task;
 
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
@@ -73,6 +75,7 @@ fn fail<T>(message: impl Into<String>) -> R<T> {
 }
 
 /// One running body: its locals, and, in a closure, what it captured.
+#[derive(Default)]
 struct Frame {
     slots: Vec<V>,
     /// Whether each slot has been given a value yet.
@@ -118,6 +121,26 @@ pub struct Interp {
     ops: u64,
     /// The most steps one run may take: [`MAX_OPERATIONS`] unless lowered.
     max_ops: u64,
+    /// `host::` functions an `async fn` awaits. See [`crate::host`].
+    async_host: HashMap<String, crate::host::AsyncFn>,
+    /// Started `async fn`s that are waiting, by task id. See [`task`].
+    tasks: HashMap<u64, task::Task>,
+    /// Each `async fn`'s ops, compiled when first started, by function.
+    flats: HashMap<u32, Result<Rc<flat::Flat>, String>>,
+    /// Tasks started and waiting since the runtime last asked.
+    started: Vec<u64>,
+    /// Tasks that failed with nothing to catch it, since the runtime asked.
+    failed: Vec<(String, Fault)>,
+    /// What each host call being waited on is for: its ticket, and the task.
+    waiting: HashMap<u64, u64>,
+}
+
+impl Drop for Interp {
+    /// A document replaced (a reload, a new page) takes its tasks with it,
+    /// and nothing is left waiting for their answers.
+    fn drop(&mut self) {
+        crate::host::abandon(self.waiting.keys().copied());
+    }
 }
 
 /// How many pieces are kept before starting over, as the fork's cache did.
@@ -141,6 +164,12 @@ impl Interp {
             tracks: Vec::new(),
             ops: 0,
             max_ops: MAX_OPERATIONS,
+            async_host: crate::host::registered(),
+            tasks: HashMap::new(),
+            flats: HashMap::new(),
+            started: Vec::new(),
+            failed: Vec::new(),
+            waiting: HashMap::new(),
         }
     }
 
@@ -299,20 +328,38 @@ impl Interp {
 
     fn run_piece(&mut self, piece: Rc<Compiled>, given: Vec<V>) -> (Result<V, Fault>, Vec<V>, Vec<(String, V)>) {
         self.ops = 0;
+        let unsupported = piece.lowered.unsupported.first().map(|u| u.what.clone());
+        self.enter(&piece, given);
+        let out = match unsupported {
+            Some(what) => Err(Flow::Fault(Fault::new(format!("{what} is not part of Rux")))),
+            None => crate::profile::time(crate::profile::Phase::Run, || self.block(&piece.lowered.body.block)),
+        };
+        let (after, top) = self.leave(&piece);
+        let out = match out {
+            Ok(v) | Err(Flow::Return(v)) => Ok(v),
+            Err(Flow::Fault(f)) => Err(f),
+            Err(Flow::Break | Flow::Continue) => Err(Fault::new("`break` or `continue` outside a loop")),
+        };
+        (out, after, top)
+    }
+
+    /// Make `piece` the running root, with `given` handed in.
+    fn enter(&mut self, piece: &Rc<Compiled>, given: Vec<V>) {
         let n = piece.given.len();
         let body = &piece.lowered.body;
-        let unsupported = piece.lowered.unsupported.first().map(|u| u.what.clone());
         let mut frame = Frame { slots: vec![V::None; body.locals.len()], set: vec![false; body.locals.len()], captures: Vec::new() };
         for (i, v) in given.into_iter().enumerate().take(n) {
             frame.slots[i] = v;
             frame.set[i] = true;
         }
         self.stack.push(frame);
-        self.roots.push(Root { frame: self.stack.len() - 1, piece: Rc::clone(&piece) });
-        let out = match unsupported {
-            Some(what) => Err(Flow::Fault(Fault::new(format!("{what} is not part of Rux")))),
-            None => crate::profile::time(crate::profile::Phase::Run, || self.block(&body.block)),
-        };
+        self.roots.push(Root { frame: self.stack.len() - 1, piece: Rc::clone(piece) });
+    }
+
+    /// End the root [`Interp::enter`] began: what was handed in, as it stands
+    /// now, and what its top level declared.
+    fn leave(&mut self, piece: &Rc<Compiled>) -> (Vec<V>, Vec<(String, V)>) {
+        let n = piece.given.len();
         self.roots.pop();
         let frame = self.stack.pop().expect("the piece's frame");
         // A name handed in twice (an instance's state, then a row's local of
@@ -337,12 +384,7 @@ impl Interp {
             .filter(|(_, id)| frame.set[id.0 as usize])
             .map(|(name, id)| (name.clone(), frame.slots[id.0 as usize].clone()))
             .collect();
-        let out = match out {
-            Ok(v) | Err(Flow::Return(v)) => Ok(v),
-            Err(Flow::Fault(f)) => Err(f),
-            Err(Flow::Break | Flow::Continue) => Err(Fault::new("`break` or `continue` outside a loop")),
-        };
-        (out, after, top)
+        (after, top)
     }
 
     // ----- Tracking ----------------------------------------------------------
@@ -510,13 +552,7 @@ impl Interp {
             }
             StmtKind::ForEach { var, counter, iter, body, .. } => {
                 let over = self.expr(iter)?;
-                let items: Vec<V> = match over {
-                    V::Array(items) => items.as_ref().clone(),
-                    V::Str(s) => s.chars().map(|c| V::str(c.to_string())).collect(),
-                    V::Range(a, b) => (a..b).map(V::Int).collect(),
-                    V::Map(_) => return fail("a map cannot be walked with `for`; walk `keys(m)` or `values(m)`"),
-                    other => return fail(format!("`for` cannot walk a {}", other.type_name())),
-                };
+                let items = items_of(over)?;
                 for (i, item) in items.into_iter().enumerate() {
                     self.tick()?;
                     let f = self.frame();
@@ -742,6 +778,16 @@ impl Interp {
                 self.read_slot(slot)?
             }
             ExprKind::Call { callee, args } => self.call(callee, args)?,
+            ExprKind::Start { func, args } => {
+                let mut argv = Vec::with_capacity(args.len());
+                for a in args {
+                    argv.push(self.expr(a)?);
+                }
+                self.start_task(*func, argv)?;
+                V::None
+            }
+            // Only an `async fn`'s own ops wait; see `task`.
+            ExprKind::Await(_) => return fail("`await` is only allowed inside an `async fn`"),
             ExprKind::Method { .. } | ExprKind::Field { .. } | ExprKind::Index { .. } => {
                 match self.step(e)? {
                     Some(v) => v,
@@ -961,6 +1007,15 @@ impl Interp {
     fn call_fn(&mut self, id: FnId, argv: Vec<V>) -> R<V> {
         let unit = Rc::clone(&self.unit);
         let f = &unit.fns[id.0 as usize];
+        // Called by a name found where it runs: started, as the IR's
+        // `Start` would.
+        if f.is_async {
+            self.start_task(id, argv)?;
+            return Ok(V::None);
+        }
+        if flat::everything() {
+            return self.call_flat(id, argv);
+        }
         match self.run_body(&f.body, argv, Vec::new()) {
             Ok(v) | Err(Flow::Return(v)) => Ok(v),
             Err(Flow::Break | Flow::Continue) => fail("`break` or `continue` outside a loop"),
@@ -1062,6 +1117,17 @@ enum Slot {
 enum Key {
     Field(String),
     Index(V),
+}
+
+/// What `for` walks in `over`, item by item.
+fn items_of(over: V) -> R<Vec<V>> {
+    Ok(match over {
+        V::Array(items) => items.as_ref().clone(),
+        V::Str(s) => s.chars().map(|c| V::str(c.to_string())).collect(),
+        V::Range(a, b) => (a..b).map(V::Int).collect(),
+        V::Map(_) => return fail("a map cannot be walked with `for`; walk `keys(m)` or `values(m)`"),
+        other => return fail(format!("`for` cannot walk a {}", other.type_name())),
+    })
 }
 
 /// The value an error is to `catch e`: `{ message, kind }`.

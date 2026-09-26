@@ -23,6 +23,8 @@ struct Frame<'u> {
     /// What a `return` here must fit. `None` where a `return` says nothing
     /// checkable: a handler, an effect, a closure.
     result: Option<&'u Type>,
+    /// An `async fn`'s body, the one frame an `await` may be in.
+    is_async: bool,
 }
 
 struct Verifier<'u> {
@@ -62,7 +64,9 @@ impl<'u> Verifier<'u> {
             if f.params as usize > f.body.locals.len() {
                 self.problem(None, "more parameters than locals".into());
             }
-            self.body(&f.body, Some(&f.result));
+            self.frames.push(Frame { locals: &f.body.locals, captures: None, loops: 0, result: Some(&f.result), is_async: f.is_async });
+            self.block(&f.body.block);
+            self.frames.pop();
         }
         for p in &u.pieces {
             self.place = format!("piece line {} ({})", p.line, p.what);
@@ -74,7 +78,7 @@ impl<'u> Verifier<'u> {
     }
 
     fn body(&mut self, b: &'u Body, result: Option<&'u Type>) {
-        self.frames.push(Frame { locals: &b.locals, captures: None, loops: 0, result });
+        self.frames.push(Frame { locals: &b.locals, captures: None, loops: 0, result, is_async: false });
         self.block(&b.block);
         self.frames.pop();
     }
@@ -275,18 +279,30 @@ impl<'u> Verifier<'u> {
             ExprKind::Outer(n) => {
                 self.root_ty(Root::Outer(*n), Some(e));
             }
-            ExprKind::Call { callee, args } => {
-                match callee {
-                    Callee::Fn(f) => match self.u.fns.get(f.0 as usize) {
-                        Some(func) if func.params as usize != args.len() => {
-                            let n = func.params;
-                            self.problem(Some(e), format!("`{}` takes {n} arguments, and is given {}", func.name, args.len()));
-                        }
-                        Some(_) => {}
-                        None => self.problem(Some(e), format!("fn #{} of {}", f.0, self.u.fns.len())),
-                    },
-                    Callee::Value(v) => self.expr(v),
-                    Callee::Builtin(_) | Callee::Host(_) | Callee::Dyn(_) => {}
+            ExprKind::Call { callee, args } => self.call(e, callee, args, false),
+            ExprKind::Await(call) => {
+                if !self.frames.last().is_some_and(|f| f.is_async) {
+                    self.problem(Some(e), "an `await` outside an `async fn`'s own body".into());
+                }
+                match &call.kind {
+                    ExprKind::Call { callee: callee @ (Callee::Fn(_) | Callee::Host(_)), args } => {
+                        self.call(call, callee, args, true);
+                    }
+                    _ => {
+                        self.problem(Some(e), "an `await` of something that is not a call to an `async fn` or a host function".into());
+                        self.expr(call);
+                    }
+                }
+            }
+            ExprKind::Start { func, args } => {
+                match self.u.fns.get(func.0 as usize) {
+                    Some(f) if !f.is_async => self.problem(Some(e), format!("a start of `{}`, which is not `async`", f.name)),
+                    Some(f) if f.params as usize != args.len() => {
+                        let n = f.params;
+                        self.problem(Some(e), format!("`{}` takes {n} arguments, and is given {}", f.name, args.len()));
+                    }
+                    Some(_) => {}
+                    None => self.problem(Some(e), format!("fn #{} of {}", func.0, self.u.fns.len())),
                 }
                 for a in args {
                     self.expr(a);
@@ -365,7 +381,13 @@ impl<'u> Verifier<'u> {
                 if c.params as usize > c.body.locals.len() {
                     self.problem(Some(e), "a closure with more parameters than locals".into());
                 }
-                self.frames.push(Frame { locals: &c.body.locals, captures: Some(&c.captures), loops: 0, result: None });
+                self.frames.push(Frame {
+                    locals: &c.body.locals,
+                    captures: Some(&c.captures),
+                    loops: 0,
+                    result: None,
+                    is_async: false,
+                });
                 self.block(&c.body.block);
                 self.frames.pop();
             }
@@ -375,6 +397,29 @@ impl<'u> Verifier<'u> {
                 }
                 self.body(body, None);
             }
+        }
+    }
+
+    /// A call. A call to an `async fn` is awaited (`awaited`) or is a
+    /// [`ExprKind::Start`], never a plain call.
+    fn call(&mut self, e: &'u Expr, callee: &'u Callee, args: &'u [Expr], awaited: bool) {
+        match callee {
+            Callee::Fn(f) => match self.u.fns.get(f.0 as usize) {
+                Some(func) if func.is_async && !awaited => {
+                    self.problem(Some(e), format!("a plain call of `{}`, which is `async`", func.name));
+                }
+                Some(func) if func.params as usize != args.len() => {
+                    let n = func.params;
+                    self.problem(Some(e), format!("`{}` takes {n} arguments, and is given {}", func.name, args.len()));
+                }
+                Some(_) => {}
+                None => self.problem(Some(e), format!("fn #{} of {}", f.0, self.u.fns.len())),
+            },
+            Callee::Value(v) => self.expr(v),
+            Callee::Builtin(_) | Callee::Host(_) | Callee::Dyn(_) => {}
+        }
+        for a in args {
+            self.expr(a);
         }
     }
 
@@ -428,6 +473,7 @@ mod tests {
                 type_params: Vec::new(),
                 params: 0,
                 result,
+                is_async: false,
                 body: Body { locals, block: Block { stmts, ty: None } },
                 at: At::default(),
             }],

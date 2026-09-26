@@ -149,6 +149,9 @@ impl Printer<'_> {
                 if f.private {
                     self.w("private ");
                 }
+                if f.is_async {
+                    self.w("async ");
+                }
                 self.w("fn ");
                 if let Some(t) = &f.this_type {
                     self.w(t);
@@ -429,6 +432,11 @@ impl Printer<'_> {
                 self.w(if *optional { "?[" } else { "[" });
                 self.expr(index);
                 self.w("]");
+            }
+            ExprKind::Await(expr) => {
+                self.w("(await (");
+                self.expr(expr);
+                self.w("))");
             }
             ExprKind::Unary { op, expr } => {
                 self.w("(");

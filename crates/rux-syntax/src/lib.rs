@@ -166,6 +166,8 @@ mod tests {
         ok("loop { break 3; }");
         ok("do { x++ } while x < 3;");
         ok("try { throw \"no\"; } catch (e) { print(e) }");
+        ok("try { throw \"no\"; } catch e { print(e) }");
+        ok("try { f() } catch { g() }");
         ok("switch f { \"all\" => 1, \"open\" | \"done\" => 2, _ => { 3 } }");
         ok("fn f() { return; }");
         ok("let s = `a ${n + 1} b ${ {a: 1}.a }`;");
@@ -173,6 +175,22 @@ mod tests {
         ok("let v = user?.name ?? \"none\"; let w = m?[k];");
         ok("f!(1)");
         ok("setInterval(1000) { seconds++; if seconds >= 5 { clearInterval(timer); } }");
+    }
+
+    #[test]
+    fn async_and_await() {
+        let s = ok("async fn load(id: int): string { let u = await host::user(id); u.name }
+                    private async fn quiet() { await load(1); }");
+        let StmtKind::Fn(f) = &s.stmts[0].kind else { panic!("a fn") };
+        assert!(f.is_async && !f.private);
+        let StmtKind::Fn(g) = &s.stmts[1].kind else { panic!("a fn") };
+        assert!(g.is_async && g.private);
+        // `await` binds as `!` does: to the call, before the `+`.
+        let e = one_expr("await a() + 1");
+        assert!(matches!(&e.kind, ExprKind::Binary { lhs, .. } if matches!(lhs.kind, ExprKind::Await(_))));
+        assert!(fails("async let x = 1;").contains("only a function"));
+        fails("let async = 1;");
+        fails("fn await() {}");
     }
 
     #[test]

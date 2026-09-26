@@ -353,6 +353,14 @@ struct Checker<'a> {
     /// While positive, nothing is kept: a text is being read again for what
     /// it establishes, outside the piece it belongs to.
     rec_off: usize,
+    /// Whether each function body being checked, innermost last, may
+    /// `await`: an `async fn`'s may, a closure's and any other's may not.
+    asyncs: Vec<bool>,
+    /// Set by `await` for the call it is applied to, which that call takes.
+    awaited: bool,
+    /// While set, an `async fn` may not be started here, and this says what
+    /// "here" is: a binding or a `computed`, which run on every change.
+    no_start: Option<&'static str>,
 }
 
 /// The id of an expression the checker makes up itself, as `x++` is checked
@@ -395,6 +403,9 @@ impl<'a> Checker<'a> {
             cur: Types::default(),
             rec: Record::default(),
             rec_off: 0,
+            asyncs: Vec::new(),
+            awaited: false,
+            no_start: None,
         }
     }
 
@@ -792,7 +803,13 @@ impl<'a> Checker<'a> {
         given.extend(extra.iter().cloned());
         let saved = self.in_template.replace((line, what.to_string()));
         let outer = std::mem::take(&mut self.cur);
+        let no_start = match kind {
+            PieceKind::Handler => None,
+            _ => Some("a binding, which runs again on every change,"),
+        };
+        let saved_start = std::mem::replace(&mut self.no_start, no_start);
         let out = self.with_source(src, f);
+        self.no_start = saved_start;
         let types = std::mem::replace(&mut self.cur, outer);
         if let (true, Some(script)) = (self.typed, script) {
             self.rec.pieces.push(Piece {
@@ -1704,7 +1721,9 @@ impl<'a> Checker<'a> {
             // handed the whole file (`check_typed`). The runtime's script has
             // them taken out already.
             StmtKind::Computed { name, ty, value } => {
+                let saved = self.no_start.replace("a `computed`, which runs again on every change,");
                 self.check_let(name, ty.as_ref(), value);
+                self.no_start = saved;
                 Type::Null
             }
             StmtKind::Lifecycle { body, .. } => {
@@ -2217,6 +2236,7 @@ impl<'a> Checker<'a> {
                 }
             }
             ExprKind::Binary { op, lhs, rhs } => self.operator(e, op, lhs, rhs),
+            ExprKind::Await(inner) => self.await_expr(e, inner),
             ExprKind::Is { expr, ty } => {
                 self.infer(expr);
                 match self.annotation(ty) {
@@ -2624,6 +2644,8 @@ impl<'a> Checker<'a> {
 
     /// A call, by name: `f(args)` or `a::b(args)`.
     fn call(&mut self, callee: &[Ident], args: &[Expr]) -> Type {
+        // Only this call is awaited, not the calls in its arguments.
+        let awaited = std::mem::take(&mut self.awaited);
         let pos = callee.first().map_or(NOWHERE, |c| c.span);
         let Some(last) = callee.last() else { return Type::Any };
         let name = last.name.as_str();
@@ -2713,6 +2735,19 @@ impl<'a> Checker<'a> {
         // A function of the script's own.
         if self.fns.contains_key(&(name.to_string(), args.len())) {
             let result = self.call_script_fn(name, args);
+            if self.fns[&(name.to_string(), args.len())].def.is_async && !awaited {
+                if let Some(here) = self.no_start {
+                    self.error(
+                        pos,
+                        format!(
+                            "`{name}` is an `async fn`, and {here} cannot start one. Start it from a \
+                             handler, `mounted` or an `effect`"
+                        ),
+                    );
+                }
+                // Started, not waited for: there is no value to use.
+                return Type::Void;
+            }
             if let Some(sig) = self.signature(name, args.len()) {
                 if self.saw(pos, "fn", name, None, &Type::Any) {
                     self.seen.last_mut().unwrap().ty = sig;
@@ -3048,6 +3083,8 @@ impl<'a> Checker<'a> {
         // Typed means every parameter annotated, which a function with none is.
         let typed = info.params.iter().all(|(_, t)| t.is_some());
         self.in_fn.push((name.to_string(), typed));
+        self.asyncs.push(info.def.is_async);
+        let saved_start = self.no_start.take();
         for (p, (_, t)) in info.def.params.iter().zip(&info.params) {
             self.note_decl(p.name.span, t.as_ref().unwrap_or(&Type::Any));
         }
@@ -3081,6 +3118,8 @@ impl<'a> Checker<'a> {
             }
         };
         self.in_fn.pop();
+        self.asyncs.pop();
+        self.no_start = saved_start;
         self.scopes = saved;
         self.facts = saved_facts;
         self.tparams = saved_tparams;
@@ -3088,6 +3127,67 @@ impl<'a> Checker<'a> {
             f.state = FnState::Done(inferred.clone());
         }
         info.result.unwrap_or(inferred)
+    }
+
+    // ----- Async -----------------------------------------------------------
+
+    /// `await inner`: allowed in an `async fn`, of a call to another one or
+    /// to a `host::` function, and it is the value that call gives.
+    fn await_expr(&mut self, e: &Expr, inner: &Expr) -> Type {
+        match self.asyncs.last() {
+            Some(true) => {}
+            Some(false) if self.asyncs.contains(&true) => self.error(
+                e.span,
+                "`await` cannot be used inside a closure, which is not `async`: await in the \
+                 `async fn` itself"
+                    .into(),
+            ),
+            _ => self.error(
+                e.span,
+                "`await` is only allowed inside an `async fn`. Write one, `async fn load() { … await … }`, \
+                 and call it from here: calling it starts it"
+                    .into(),
+            ),
+        }
+        let not_awaitable = "only a call to an `async fn` or to a `host::` function can be awaited";
+        let ty = match &inner.kind {
+            ExprKind::Call { callee, args, .. } => {
+                let name = callee.last().map(|c| c.name.as_str()).unwrap_or("");
+                let host = callee.len() == 2 && callee[0].name == "host";
+                let script_fn =
+                    if callee.len() == 1 { self.fns.get(&(name.to_string(), args.len())).map(|f| f.def.is_async) } else { None };
+                match (host, script_fn) {
+                    (true, _) | (_, Some(true)) => {
+                        self.awaited = true;
+                        let t = self.infer(inner);
+                        self.awaited = false;
+                        t
+                    }
+                    (_, Some(false)) => {
+                        self.error(
+                            inner.span,
+                            format!("`{name}` is not an `async fn`, so there is nothing to await: call it without `await`"),
+                        );
+                        self.infer(inner)
+                    }
+                    _ => {
+                        self.error(inner.span, not_awaitable.into());
+                        self.infer(inner)
+                    }
+                }
+            }
+            _ => {
+                self.error(inner.span, not_awaitable.into());
+                self.infer(inner)
+            }
+        };
+        // Anything else may run while this waits, so what was known about a
+        // signal is not known after it. A local cannot change meanwhile.
+        let locals: HashSet<String> = self.scopes.iter().flat_map(|s| s.keys().cloned()).collect();
+        for frame in &mut self.facts {
+            frame.retain(|path, _| locals.contains(root_of(path)));
+        }
+        ty
     }
 
     // ----- Closures --------------------------------------------------------
@@ -3126,11 +3226,13 @@ impl<'a> Checker<'a> {
         // names come from, plus its own parameters.
         self.scopes.push(params.iter().cloned().collect());
         self.returns.push(Vec::new());
+        self.asyncs.push(false);
         let last = match &body.kind {
             StmtKind::Block(b) => self.check_statements(&b.stmts),
             _ => self.check_statements(std::slice::from_ref(&**body)),
         };
         let mut results = self.returns.pop().unwrap_or_default();
+        self.asyncs.pop();
         self.scopes.pop();
         results.push(last);
         let result = Type::union(results);
@@ -4251,6 +4353,47 @@ let b: int? = none;").is_empty());
         assert!(f.is_empty(), "a number field may write into an `int`, cut to a whole number: {f:?}");
         let f = template_findings("let n: string? = none;", vec![model("n", "float")]);
         assert!(f.iter().any(|f| f.message.contains("writes `float` into `n`")), "{f:?}");
+    }
+
+    /// `async fn` and `await`, step 6 of `docs/11-next.md`.
+    #[test]
+    fn await_is_for_an_async_fn_and_what_it_waits_for() {
+        let lib = "type User = { name: string };\n\
+                   async fn load(id: int): User { let u: User = await host::user(id); return u; }\n";
+        // The awaited value is the declared result, not a wrapper.
+        assert!(errors(&format!("{lib}async fn show() {{ let u = await load(1); let n: string = u.name; }}")).is_empty());
+        one_error(&format!("{lib}async fn show() {{ let u = await load(1); let n: int = u.name; }}"), "where `int` is expected");
+        one_error("fn f() { await host::x(); }", "only allowed inside an `async fn`");
+        one_error("let n = signal(0);\nasync fn f() { [1].map(x => await host::x()); }", "inside a closure");
+        one_error("fn g(): int { 1 }\nasync fn f() { await g(); }", "`g` is not an `async fn`");
+        one_error("async fn f() { await 3; }", "only a call to an `async fn`");
+        // Started, not waited for: there is no value.
+        one_error(&format!("{lib}fn f() {{ let u: User = load(1); }}"), "`void`");
+        assert!(errors(&format!("{lib}fn f() {{ load(1); }}")).is_empty());
+        // A `computed` runs again on every change and cannot start one.
+        one_error(&format!("{lib}let n = signal(1);\ncomputed c = load(n);"), "cannot start one");
+    }
+
+    #[test]
+    fn a_binding_cannot_start_an_async_fn_and_a_handler_can() {
+        let script = "async fn load() { await host::x(); }";
+        let value = Tpl::Expr { src: "load()".into(), want: None, line: 3, what: "`{{ }}`".into() };
+        let f = template_findings(script, vec![value]);
+        assert!(f.iter().any(|f| f.is_error && f.message.contains("a binding")), "{f:?}");
+        let tap = Tpl::Handler { src: "load()".into(), event: Type::Any, line: 3, what: "`@tap`".into() };
+        let f = template_findings(script, vec![tap]);
+        assert!(f.iter().all(|f| !f.is_error), "{f:?}");
+    }
+
+    #[test]
+    fn what_was_known_about_a_signal_is_not_known_after_an_await() {
+        let src = "let user: { name: string }? = signal(none);\n\
+                   async fn f(): string { if user != none { await host::x(); return user.name; } return \"\"; }";
+        let w = findings(src);
+        assert!(w.iter().any(|f| f.message.contains("none")), "{w:?}");
+        let src = "let user: { name: string }? = signal(none);\n\
+                   async fn f(): string { if user != none { return user.name; } return \"\"; }";
+        assert!(errors(src).is_empty());
     }
 
     #[test]

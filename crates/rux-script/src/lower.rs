@@ -9,7 +9,7 @@
 //! record. What it adds is resolution (each name to its slot), the choice of
 //! operator by operand type, and the conversions the types call for.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use rux_ir::ir::{self, *};
 use rux_ir::table::Table;
@@ -47,6 +47,8 @@ pub fn lower(script: &ast::Script, src: &str, record: &Record, provided: &[(Stri
         piece: None,
         frames: Vec::new(),
         tparams: Vec::new(),
+        asyncs: HashSet::new(),
+        awaiting: false,
     };
     l.declare(script, record, provided);
     l.top_level(script, record);
@@ -125,6 +127,8 @@ pub fn lower_piece(unit: &mut Unit, script: &ast::Script, src: &str, given: &[St
         piece: None,
         frames: vec![Frame { locals: Vec::new(), scopes: vec![HashMap::new()], captures: None }],
         tparams: Vec::new(),
+        asyncs: unit.fns.iter().enumerate().filter(|(_, f)| f.is_async).map(|(i, _)| FnId(i as u32)).collect(),
+        awaiting: false,
     };
     for name in given {
         l.local(name, Type::Any);
@@ -220,6 +224,10 @@ struct Lower<'a> {
     frames: Vec<Frame>,
     /// The type parameters of the function being lowered.
     tparams: Vec<String>,
+    /// The `async fn`s, which a call starts unless it is awaited.
+    asyncs: HashSet<FnId>,
+    /// Set by `await` for the call it is applied to, which that call takes.
+    awaiting: bool,
 }
 
 fn at(span: Span) -> At {
@@ -236,7 +244,10 @@ impl<'a> Lower<'a> {
                 S::Fn(def) => {
                     let key = (def.name.name.clone(), def.params.len());
                     let id = FnId(self.fns.len() as u32);
-                    self.fns.entry(key).or_insert(id);
+                    let id = *self.fns.entry(key).or_insert(id);
+                    if def.is_async {
+                        self.asyncs.insert(id);
+                    }
                 }
                 S::Let { name, value, .. } => {
                     let signal = matches!(&value, Some(ast::Expr { kind: E::Call { callee, .. }, .. })
@@ -296,6 +307,7 @@ impl<'a> Lower<'a> {
                 type_params: std::mem::take(&mut self.tparams),
                 params: def.params.len() as u32,
                 result,
+                is_async: def.is_async,
                 body,
                 at: at(def.name.span),
             });
@@ -806,6 +818,12 @@ impl<'a> Lower<'a> {
                 }
                 return x;
             }
+            E::Await(inner) => {
+                self.awaiting = true;
+                let x = self.expr(inner);
+                self.awaiting = false;
+                ExprKind::Await(Box::new(x))
+            }
             E::Unary { op, expr } => {
                 let x = self.expr(expr);
                 let t = self.resolved(&x.ty);
@@ -914,6 +932,7 @@ impl<'a> Lower<'a> {
 
     fn call(&mut self, e: &ast::Expr, callee: &[ast::Ident], args: &[ast::Expr], bang: bool, ty: Type) -> ir::Expr {
         let a = at(e.span);
+        let awaited = std::mem::take(&mut self.awaiting);
         if bang {
             self.unsupported("a `f!()` call", e.span);
         }
@@ -949,7 +968,12 @@ impl<'a> Lower<'a> {
             Callee::Dyn(name.to_string())
         };
         let args = args.iter().map(|x| self.expr(x)).collect();
-        ir::Expr::new(ExprKind::Call { callee, args }, ty, a)
+        match callee {
+            Callee::Fn(func) if !awaited && self.asyncs.contains(&func) => {
+                ir::Expr::new(ExprKind::Start { func, args }, Type::Void, a)
+            }
+            callee => ir::Expr::new(ExprKind::Call { callee, args }, ty, a),
+        }
     }
 
     fn binary(&mut self, e: &ast::Expr, op: &str, lhs: &ast::Expr, rhs: &ast::Expr, ty: Type) -> ir::Expr {
@@ -1114,6 +1138,18 @@ mod tests {
         let text = rux_ir::print::unit(&unit);
         assert!(problems.is_empty(), "{problems:#?}\n{text}");
         text
+    }
+
+    #[test]
+    fn a_call_to_an_async_fn_is_awaited_or_started() {
+        let text = ir("let n = signal(0);\n\
+                       async fn get(): int { await host::count() }\n\
+                       async fn add() { n += await get(); }\n\
+                       fn tap() { add(); }\n");
+        assert!(text.contains("async fn 0 get(): int"), "{text}");
+        assert!(text.contains("(await (call host::count"), "{text}");
+        assert!(text.contains("(await (call fn:get):int):int"), "{text}");
+        assert!(text.contains("(start fn:add):void"), "{text}");
     }
 
     #[test]

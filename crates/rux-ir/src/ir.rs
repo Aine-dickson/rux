@@ -128,7 +128,11 @@ pub struct Func {
     pub type_params: Vec<String>,
     /// How many of the body's first locals are parameters.
     pub params: u32,
+    /// What it gives: for an `async fn`, the value an `await` of it gives.
     pub result: Type,
+    /// `async fn`: its body may [`ExprKind::Await`], and a call to it that
+    /// does not await it is an [`ExprKind::Start`].
+    pub is_async: bool,
     pub body: Body,
     pub at: At,
 }
@@ -272,6 +276,14 @@ pub enum ExprKind {
     Outer(u32),
 
     Call { callee: Callee, args: Vec<Expr> },
+    /// `await call`, only in an `async fn`'s own body: the call is to another
+    /// `async fn` ([`Callee::Fn`]) or to a host function ([`Callee::Host`]),
+    /// and this is the value it gives once it has it. The function waits
+    /// here; everything else may run meanwhile.
+    Await(Box<Expr>),
+    /// A call to an `async fn` that does not await it: starts it, runs it to
+    /// its first `await`, and goes on. Its type is `void`.
+    Start { func: FnId, args: Vec<Expr> },
     /// `recv.name(args)`, a method of Rux's own on the receiver's type. With
     /// `optional` (`recv?.name()`), a `none` receiver ends the
     /// [`ExprKind::Chain`] around it with `none`.

@@ -13,6 +13,7 @@
 //! from.
 
 pub mod check;
+pub mod host;
 pub mod interp;
 pub mod lower;
 pub mod profile;
@@ -37,6 +38,17 @@ thread_local! {
     /// everything evaluated while it is open, tracked or not, and spans nest:
     /// a read lands in every open one. See [`begin_reads`].
     static SPANS: RefCell<Vec<HashSet<String>>> = const { RefCell::new(Vec::new()) };
+    /// While positive, nothing read is recorded: an `async fn` is running,
+    /// and what it reads is nobody's dependency.
+    static QUIET: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// Run `f` with nothing it reads recorded. See [`interp`]'s tasks.
+pub(crate) fn quiet_reads<T>(f: impl FnOnce() -> T) -> T {
+    QUIET.with(|q| q.set(q.get() + 1));
+    let out = f();
+    QUIET.with(|q| q.set(q.get() - 1));
+    out
 }
 
 /// Start collecting every name any evaluation reads, until the matching
@@ -55,6 +67,9 @@ pub fn end_reads() -> HashSet<String> {
 /// Record that `name` was read, for a binding's dependencies and every open
 /// span: what the fork's `on_var` hook did for each variable it resolved.
 pub(crate) fn note_read(name: &str) {
+    if QUIET.with(|q| q.get()) > 0 {
+        return;
+    }
     READS.with(|r| {
         if let Some(set) = r.borrow_mut().as_mut() {
             if !set.contains(name) {
@@ -1245,6 +1260,15 @@ fn strip_rhai_position(message: &str) -> String {
     }
 }
 
+/// An `async fn` that failed after its caller had gone on, with nothing to
+/// catch the error. See [`Engine::take_task_failures`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TaskFailure {
+    pub message: String,
+    /// Where, 1-based in the engine's script: the statement that failed.
+    pub line: Option<usize>,
+}
+
 /// How a failure is worded: what the thing that failed is called.
 #[derive(Clone, Copy)]
 enum Said {
@@ -1674,6 +1698,65 @@ impl Engine {
     /// the setters, which would otherwise make the answer always yes.
     pub fn declares(&self, name: &str) -> bool {
         self.ir.has_global(name)
+    }
+
+    // ----- Tasks: `async fn`s that are waiting ------------------------------
+
+    /// The tasks started since the last call and still waiting, for the
+    /// runtime to give to whoever ran the code that started them. See
+    /// [`interp`]'s `task` module.
+    pub fn take_started_tasks(&mut self) -> Vec<u64> {
+        self.ir.take_started()
+    }
+
+    /// Take the host answers that have come for this document's tasks, and
+    /// say which tasks can go on.
+    pub fn collect_answers(&mut self) -> Vec<u64> {
+        self.ir.collect_answers()
+    }
+
+    /// Whether task `id` is still waiting.
+    pub fn has_task(&self, id: u64) -> bool {
+        self.ir.has_task(id)
+    }
+
+    /// Go on with task `id` at document level, reporting which signals it
+    /// changed.
+    pub fn resume_task(&mut self, id: u64) -> HashSet<String> {
+        let (_, changed) = self.tracking(|e| e.ir.resume(id, &[], true));
+        changed
+    }
+
+    /// Go on with task `id` inside a component instance whose state is
+    /// `locals`, as [`Engine::run_scoped_handler`] runs a handler: the
+    /// instance's variables afterwards, and which document signals changed.
+    pub fn resume_scoped_task(&mut self, id: u64, locals: &[(String, Value)]) -> (Vec<(String, Value)>, HashSet<String>) {
+        let (after, changed) = self.tracking(|e| e.ir.resume(id, locals, true));
+        let after = match after {
+            Some(after) => locals.iter().map(|(n, _)| n.clone()).zip(after.iter().map(interp::V::to_value)).collect(),
+            None => locals.to_vec(),
+        };
+        (after, changed)
+    }
+
+    /// Stop tasks for good, their owner gone.
+    pub fn drop_tasks(&mut self, ids: &[u64]) {
+        self.ir.drop_tasks(ids);
+    }
+
+    /// The tasks that failed with nothing to catch the error since the last
+    /// call. `line` is 1-based in this engine's script, as
+    /// [`ScriptError`]'s is.
+    pub fn take_task_failures(&mut self) -> Vec<TaskFailure> {
+        let lines = rux_syntax::LineIndex::new(&self.source);
+        self.ir
+            .take_failed()
+            .into_iter()
+            .map(|(name, f)| TaskFailure {
+                message: format!("`async fn {name}` failed: {}", explain(&f.message)),
+                line: f.at.map(|at| lines.line_col(&self.source, at.start as usize).0),
+            })
+            .collect()
     }
 
     /// A signal's current value, read straight from the state (no evaluation).
