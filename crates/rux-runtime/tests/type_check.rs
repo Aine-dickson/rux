@@ -163,8 +163,8 @@ fn a_template_is_checked_against_its_script() {
     let f = found(&doc);
     let at = |line: usize, part: &str| f.iter().any(|(l, err, m)| *l == Some(line) && *err && m.contains(part));
     assert!(at(2, "`{{ }}`: `Task` has no field `titel`; did you mean `title`?"), "{f:?}");
-    assert!(at(3, "`:disabled` on <button>: this is `number`, where `bool` is expected"), "{f:?}");
-    assert!(at(4, "`r-model`: the field writes `number` into `name`, which holds `string`"), "{f:?}");
+    assert!(at(3, "`:disabled` on <button>: this is `int`, where `bool` is expected"), "{f:?}");
+    assert!(at(4, "`r-model`: the field writes `float` into `name`, which holds `string`"), "{f:?}");
     assert!(at(5, "`:class` on <text>"), "{f:?}");
 }
 
@@ -198,7 +198,7 @@ fn a_prop_is_checked_at_the_tag() {
     let doc = Document::load(dir.join("app.rux")).expect("loads");
     let f = found(&doc);
     assert!(f.iter().any(|(l, e, m)| *l == Some(2) && *e && m.contains("`kind` on <btn>: \"big\" is not")), "{f:?}");
-    assert!(f.iter().any(|(l, e, m)| *l == Some(2) && *e && m.contains("`:label` on <btn>: this is `number`")), "{f:?}");
+    assert!(f.iter().any(|(l, e, m)| *l == Some(2) && *e && m.contains("`:label` on <btn>: this is `int`")), "{f:?}");
     assert!(!f.iter().any(|(l, _, _)| *l == Some(3)), "the second tag is right: {f:?}");
 }
 

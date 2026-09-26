@@ -98,7 +98,7 @@ fn a_typed_prop_is_declared() {
     let stat = "<template><view><text>{{ label }}={{ value }}:{{ shape.b }}</text></view></template>\n\
         <script>\n\
           prop label: string;\n\
-          prop value: number = 0;\n\
+          prop value: float = 0;\n\
           prop shape: { a: int, b: int } = { a: 1, b: 2 };\n\
           prop pick: (string, int) => bool = null;\n\
           prop kind: \"primary\" | \"quiet\" = \"quiet\";\n\
@@ -133,7 +133,7 @@ fn a_prop_whose_type_is_not_a_type_is_an_error() {
 #[test]
 fn a_typed_computed_in_a_component() {
     let stat = "<template><view><text>{{ twice }}</text></view></template>\n\
-        <script>\n  prop value: number;\n  computed twice: number = value * 2;\n</script>";
+        <script>\n  prop value: float;\n  computed twice: float = value * 2;\n</script>";
     let app = "<template><screen><stat :value=\"4\" /></screen></template>\n\
         <script>\nuse components::stat;\n</script>";
     let dir = project(&[("app.rux", app), ("components/stat.rux", stat)]);

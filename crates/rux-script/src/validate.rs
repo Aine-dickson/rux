@@ -48,7 +48,7 @@ fn fits_at<V: Checkable>(value: &V, ty: &Type, named: &dyn Fn(&str) -> Option<Ty
     match ty {
         Type::Any => true,
         Type::Null => value.is_null(),
-        Type::Number => value.as_number().is_some(),
+        Type::Float => value.as_number().is_some(),
         // Whole, as `.length` and an index are. A script's numbers are floats
         // once they have been through a signal, so `3.0` is an `int` too.
         Type::Int => value.as_number().is_some_and(|n| n.is_finite() && n.fract() == 0.0),
@@ -96,7 +96,7 @@ fn from_text_at(text: &str, ty: &Type, named: &dyn Fn(&str) -> Option<Type>, dep
     }
     match ty {
         Type::Int => text.trim().parse::<i64>().ok().map(|n| Value::Number(n as f64)),
-        Type::Number => text.trim().parse::<f64>().ok().filter(|n| n.is_finite()).map(Value::Number),
+        Type::Float => text.trim().parse::<f64>().ok().filter(|n| n.is_finite()).map(Value::Number),
         Type::Bool => match text.trim() {
             "true" => Some(Value::Bool(true)),
             "false" => Some(Value::Bool(false)),
@@ -119,7 +119,7 @@ pub fn sample(ty: &Type, named: &dyn Fn(&str) -> Option<Type>) -> Option<Value> 
 
 fn sample_at(ty: &Type, named: &dyn Fn(&str) -> Option<Type>, depth: usize) -> Option<Value> {
     match ty {
-        Type::Int | Type::Number => Some(Value::Number(0.0)),
+        Type::Int | Type::Float => Some(Value::Number(0.0)),
         Type::Bool => Some(Value::Bool(false)),
         Type::String | Type::Any => Some(Value::Text(String::new())),
         Type::Literal(s) => Some(Value::Text(s.clone())),
@@ -294,7 +294,7 @@ mod tests {
     fn is_tries_every_member_of_a_union() {
         let script = r#"
             type Filter = "all" | "open" | "done";
-            type Shape = { kind: "circle", r: number } | { kind: "square", side: number };
+            type Shape = { kind: "circle", r: float } | { kind: "square", side: float };
         "#;
         for (expr, want) in [
             (r#""open" is Filter"#, true),
@@ -303,12 +303,13 @@ mod tests {
             (r#"{ kind: "square", r: 2 } is Shape"#, false),
             ("3 is int", true),
             ("3.5 is int", false),
-            ("3.5 is number", true),
-            (r#""3" is number"#, false),
-            ("[1, 2] is number[]", true),
-            (r#"{ a: 1, b: 2 } is { [string]: number }"#, true),
-            (r#"{ a: 1, b: "x" } is { [string]: number }"#, false),
-            ("((x) => x) is (number) => number", true),
+            ("3.5 is float", true),
+            ("3 is float", true),
+            (r#""3" is float"#, false),
+            ("[1, 2] is float[]", true),
+            (r#"{ a: 1, b: 2 } is { [string]: float }"#, true),
+            (r#"{ a: 1, b: "x" } is { [string]: float }"#, false),
+            ("((x) => x) is (float) => float", true),
             ("true is bool", true),
         ] {
             assert_eq!(answers(script, expr), Some(Value::Bool(want)), "{expr}");
@@ -318,10 +319,10 @@ mod tests {
     #[test]
     fn a_name_nobody_declared_fits_nothing() {
         assert_eq!(answers("", "1 is Nowhere"), Some(Value::Bool(false)));
-        know_types([("Nowhere".to_string(), "number".to_string())]);
+        know_types([("Nowhere".to_string(), "float".to_string())]);
         assert_eq!(answers("", "1 is Nowhere"), Some(Value::Bool(false)), "a new engine starts over");
         let mut engine = Builder::new().build("").unwrap();
-        know_types([("Nowhere".to_string(), "number".to_string())]);
+        know_types([("Nowhere".to_string(), "float".to_string())]);
         assert_eq!(engine.eval_value("1 is Nowhere", &[]), Some(Value::Bool(true)));
     }
 
@@ -338,8 +339,8 @@ mod tests {
         let parse = |t: &str| parse_type(t).unwrap();
         assert_eq!(from_text("42", &parse("int"), &none), Some(Value::Number(42.0)));
         assert_eq!(from_text("4.5", &parse("int"), &none), None);
-        assert_eq!(from_text("4.5", &parse("number"), &none), Some(Value::Number(4.5)));
-        assert_eq!(from_text("abc", &parse("number"), &none), None);
+        assert_eq!(from_text("4.5", &parse("float"), &none), Some(Value::Number(4.5)));
+        assert_eq!(from_text("abc", &parse("float"), &none), None);
         assert_eq!(from_text("true", &parse("bool"), &none), Some(Value::Bool(true)));
         assert_eq!(from_text("open", &parse(r#""open" | "done""#), &none), Some(Value::Text("open".into())));
         assert_eq!(from_text("nope", &parse(r#""open" | "done""#), &none), None);

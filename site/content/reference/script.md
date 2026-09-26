@@ -50,8 +50,8 @@ let items = signal(["a", "b"]);
 ```
 
 `signal()` is identity: it returns what it was given, and its job is to mark the
-declaration. Numbers are coerced to float on the way through, so arithmetic is
-consistent.
+declaration. `signal(82)` holds an `int` and `signal(82.0)` a `float`; see
+[Values](#values).
 
 **`computed name = expr;`** declares derived state, readable anywhere a signal
 is. Refreshing is one pass in declaration order, so a computed may read one
@@ -79,7 +79,7 @@ listener or a directive is an error.
 ```rux
 prop label;
 prop done = false;
-prop price: number = 1;
+prop price: float = 1;
 ```
 
 A prop may carry a type, as any declaration may: see
@@ -322,10 +322,10 @@ let filter: Filter = signal("all");
 computed left: int = tasks.filter(t => !t.done).length;
 
 fn label(t: Task, n: int): string { `${n}. ${t.title}` }
-let add = (a: number, b: number) => a + b;
+let add = (a: float, b: float) => a + b;
 ```
 
-In a component, `prop label: string;` and `prop price: number = 1;`. A type
+In a component, `prop label: string;` and `prop price: float = 1;`. A type
 declared in one file is used in another with `use types::Task;`, which names
 the `type Task` in `types.rux`; a type's name starts with a capital letter,
 and that is how `use` tells it from a component. A file holding only a
@@ -353,7 +353,7 @@ further; a contradiction is an error:
 
 ```text
 app.rux:9: error: "al" is not `Filter`, which is one of "all", "open", "done"; did you mean "all"?
-app.rux:14: error: `count` holds `int`, so it cannot be given `number` here. If it may hold either, say so: `let count: number = …`
+app.rux:14: error: `/` always makes a `float`, where `int` is expected; `intDiv(a, b)` divides to an `int`
 app.rux:16: warning: `x` has no type, so what `old` is given there is not checked. Annotate it: `fn old(x: T)`
 ```
 
@@ -398,10 +398,24 @@ run.
 
 ## Values
 
-Numbers are `f64` in every practical case: `signal()` coerces, and a value on its
-way into a binding is normalised. Two integer literals divide as floats, so
-`10 / 3` is `3.333…` and not `3`. Division by zero gives `Infinity` or `NaN` as
-in JavaScript, and those display under those names.
+**A number is an `int` or a `float`.** A literal without a point or an
+exponent is an `int` (`42`), and one with either is a `float` (`42.0`, `2e3`).
+An `int` goes wherever a `float` is wanted, and `1 + 0.5` is a `float`; a
+`float` becomes an `int` only by asking, with `x.trunc()`, `x.round()`,
+`x.floor()` or `x.ceil()`, and an `int` says `n.toFloat()` for the other way.
+`+`, `-`, `*` and `%` of two `int`s make an `int`. **`/` always makes a
+`float`**, so `10 / 3` is `3.333…`; `intDiv(10, 3)` is `3`, cutting toward
+zero. A list is indexed by an `int`. So `let n = signal(0)` holds an `int`, and
+`n = n / 2` is an error whose fix is to say which: `let n: float = signal(0)`,
+or `intDiv(n, 2)`. `number`, the one type both used to be, is gone; `rux fmt`
+rewrites it to `float`, which holds everything it held.
+
+The checker keeps the two apart; underneath, every number is still an `f64`
+until Rux's own interpreter replaces rhai (step 5 of [The Rux
+language](./11-next.md#build-order)). Until then a number field bound to an
+`int` can write a fraction into it, and `int` arithmetic does not yet stop at
+overflow. Division by zero of `float`s gives `Infinity` or `NaN` as in
+JavaScript, and those display under those names.
 
 Strings are double-quoted. **`'x'` is a single character, not a string**, which
 is inherited from rhai and is the single most common thing to trip over. A
@@ -497,9 +511,11 @@ adds up the indexes. Write `forEach`.
 **Text to a number**, under JavaScript's names and with its answers:
 `Number("2")` is 2, `Number("")` is 0, `Number("12px")` is `NaN`;
 `parseInt("42px")` is 42 and `parseFloat("12.5px")` is 12.5, reading only what
-leads; `isNaN(n)` asks. `String(x)` goes the other way. A route parameter is
-always text, so this is how `/task/:id` meets a list whose ids are numbers:
-`tasks.find(|t| t.id == Number(params.id))`.
+leads. Where JavaScript's parsers say `NaN`, these say `none`: `parseInt` gives
+an `int?` and `parseFloat` a `float?`, so `parseInt(s) ?? 0` is the usual way
+to read one. `isNaN(x)` asks of a `float`. `String(x)` goes the other way. A
+route parameter is always text, so this is how `/task/:id` meets a list whose
+ids are numbers: `tasks.find(t => t.id == parseInt(params.id))`.
 
 **`.length` is a property, not `len()`.** Arrays and strings only: JavaScript has
 no `length` on a plain object, and inventing one for maps would be making up a

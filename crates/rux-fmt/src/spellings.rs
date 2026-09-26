@@ -152,6 +152,7 @@ fn string_end(b: &[u8], start: usize, quote: u8) -> usize {
 
 /// Rewrite the retired spellings in a piece of script.
 fn code(src: &str) -> String {
+    let number_types = number_types(src);
     let b = src.as_bytes();
     let mut out = String::with_capacity(src.len());
     let mut i = 0;
@@ -182,6 +183,8 @@ fn code(src: &str) -> String {
                 // Not `x.null`, a field that happens to have the name.
                 if word == "null" && !out.trim_end().ends_with('.') {
                     out.push_str("none");
+                } else if word == "number" && number_types.contains(&i) {
+                    out.push_str("float");
                 } else {
                     out.push_str(word);
                 }
@@ -198,6 +201,65 @@ fn code(src: &str) -> String {
             }
         }
     }
+    out
+}
+
+/// Where `number` is written as a type in `src`, by byte offset. It became
+/// `float`, which holds every value it did, in step 3 of `docs/11-next.md`. A
+/// value named `number` (`{ n: number }` is a map, not a record type) is left
+/// alone, which is why this asks Rux's parser rather than looking at what
+/// comes before the word. Script that does not parse keeps its `number`s.
+fn number_types(src: &str) -> std::collections::HashSet<usize> {
+    use rux_syntax::ast::*;
+    use rux_syntax::visit::{walk_stmts, Node};
+
+    fn ty(t: &TypeExpr, out: &mut std::collections::HashSet<usize>) {
+        match &t.kind {
+            TypeKind::Name(n) if n == "number" => {
+                out.insert(t.span.start as usize);
+            }
+            TypeKind::Name(_) | TypeKind::Literal(_) | TypeKind::Null => {}
+            TypeKind::Array(inner) | TypeKind::Optional(inner) | TypeKind::Paren(inner) => ty(inner, out),
+            TypeKind::Dict { value, .. } => ty(value, out),
+            TypeKind::Union(members) => members.iter().for_each(|m| ty(m, out)),
+            TypeKind::Record(fields) => fields.iter().for_each(|f| ty(&f.ty, out)),
+            TypeKind::Function(params, result) => {
+                params.iter().for_each(|p| ty(p, out));
+                ty(result, out);
+            }
+        }
+    }
+    fn params(ps: &[Param], out: &mut std::collections::HashSet<usize>) {
+        ps.iter().filter_map(|p| p.ty.as_ref()).for_each(|t| ty(t, out));
+    }
+
+    let mut out = std::collections::HashSet::new();
+    if !src.contains("number") {
+        return out;
+    }
+    let opts = rux_syntax::Options { declarations: true };
+    let Ok(script) = rux_syntax::parse(src, opts) else { return out };
+    walk_stmts(&script.stmts, &mut |node| {
+        match node {
+            Node::Stmt(s) => match &s.kind {
+                StmtKind::Let { ty: Some(t), .. }
+                | StmtKind::Type { ty: t, .. }
+                | StmtKind::Computed { ty: Some(t), .. } => ty(t, &mut out),
+                StmtKind::Prop(decls) => decls.iter().filter_map(|d| d.ty.as_ref()).for_each(|t| ty(t, &mut out)),
+                StmtKind::Fn(def) => {
+                    params(&def.params, &mut out);
+                    def.result.iter().for_each(|t| ty(t, &mut out));
+                }
+                _ => {}
+            },
+            Node::Expr(e) => match &e.kind {
+                ExprKind::Closure { params: ps, .. } => params(ps, &mut out),
+                ExprKind::Is { ty: t, .. } => ty(t, &mut out),
+                _ => {}
+            },
+        }
+        true
+    });
     out
 }
 
@@ -265,6 +327,20 @@ mod tests {
         assert_eq!(
             bare_maps(src),
             "<script>\nlet a: string | none = none;\nlet b = signal(none);\nlet c = () => f();\nx.null = g(none, none);\nlet s = \"null\"; // null\n</script>\n<template><view :x=\"a ?? none\" y=\"null\" /></template>"
+        );
+        assert_eq!(bare_maps(&bare_maps(src)), bare_maps(src));
+    }
+
+    #[test]
+    fn number_as_a_type_becomes_float() {
+        let src = "<script>\ntype P = { at: number, f: (number) => number[] };\nprop w: number? = none;\n\
+                   computed c: number = 1;\nlet number = 2;\nlet m = { n: number };\nfn f(a: number): number | string { a }\n\
+                   let g = (x: number) => x is number;\nlet s = \"number\"; // number\n</script>";
+        assert_eq!(
+            bare_maps(src),
+            "<script>\ntype P = { at: float, f: (float) => float[] };\nprop w: float? = none;\n\
+             computed c: float = 1;\nlet number = 2;\nlet m = { n: number };\nfn f(a: float): float | string { a }\n\
+             let g = (x: float) => x is float;\nlet s = \"number\"; // number\n</script>"
         );
         assert_eq!(bare_maps(&bare_maps(src)), bare_maps(src));
     }

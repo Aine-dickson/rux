@@ -112,7 +112,7 @@ mod tests {
 
     #[test]
     fn arrows_and_their_annotations() {
-        ok("let add = (a: number, b: number) => a + b;");
+        ok("let add = (a: float, b: float) => a + b;");
         ok("items.filter(t => !t.done)");
         ok("let noop = () => {};");
         ok("|x| x + 1");
@@ -124,7 +124,7 @@ mod tests {
                     type Task = { id: int, title: string, note?: string };\n\
                     let tasks: Task[] = signal([]);\n\
                     fn label(t: Task, n: int): string { t.title }\n\
-                    fn shape(): { a: number } { { a: 1 } }\n\
+                    fn shape(): { a: float } { { a: 1 } }\n\
                     let m: { [string]: bool } = {};\n\
                     let f: (Task) => bool = t => t.done;\n\
                     let o: Task?[] = [];");
@@ -178,7 +178,7 @@ mod tests {
             "use types::Task;\n\
              prop label: string;\n\
              prop size = 16\n\
-             computed total: number = items.length * price\n\
+             computed total: float = items.length * price\n\
              effect { print(total) }\n\
              mounted { level = 1; }\n\
              let n = 1;",

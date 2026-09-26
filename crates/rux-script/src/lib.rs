@@ -521,7 +521,7 @@ impl Builder {
             Ok(f())
         });
         self.host_types
-            .push((name.to_string(), types::Type::Function(Vec::new(), Box::new(types::Type::Number))));
+            .push((name.to_string(), types::Type::Function(Vec::new(), Box::new(types::Type::Float))));
         self
     }
 
@@ -643,18 +643,42 @@ fn register_js_names(engine: &mut RhaiEngine) {
     engine.register_fn("Number", |b: bool| if b { 1.0 } else { 0.0 });
     engine.register_fn("Number", |n: f64| n);
     engine.register_fn("Number", |n: i64| n as f64);
-    engine.register_fn("parseInt", |s: ImmutableString| js_parse_int(&s, 10));
-    engine.register_fn("parseInt", |s: ImmutableString, radix: Dynamic| {
-        js_parse_int(&s, num(&radix) as u32)
+    //
+    // Step 3 of `docs/11-next.md`: `parseInt` gives an `int?` and `parseFloat`
+    // a `float?`, so text that is not a number is `none`, where JavaScript
+    // says `NaN`. `Number` keeps JavaScript's answer.
+    let or_none = |n: f64| if n.is_nan() { Dynamic::UNIT } else { Dynamic::from(n) };
+    engine.register_fn("parseInt", move |s: ImmutableString| or_none(js_parse_int(&s, 10)));
+    engine.register_fn("parseInt", move |s: ImmutableString, radix: Dynamic| {
+        or_none(js_parse_int(&s, num(&radix) as u32))
     });
     engine.register_fn("parseInt", |n: f64| n.trunc());
     engine.register_fn("parseInt", |n: i64| n as f64);
-    engine.register_fn("parseFloat", |s: ImmutableString| js_parse_float(&s));
+    engine.register_fn("parseFloat", move |s: ImmutableString| or_none(js_parse_float(&s)));
     engine.register_fn("parseFloat", |n: f64| n);
     engine.register_fn("parseFloat", |n: i64| n as f64);
     engine.register_fn("String", |v: Dynamic| from_dynamic(&v).to_display());
     engine.register_fn("isNaN", |n: f64| n.is_nan());
     engine.register_fn("isNaN", |_: i64| false);
+
+    // Between `int` and `float`. The checker keeps them apart; the numbers
+    // themselves are all f64 until Rux's own interpreter (step 5 of
+    // `docs/11-next.md`), so these answer with whole f64s where the type says
+    // `int`. rhai already has `floor` and `round`, and calls `ceil` `ceiling`.
+    engine.register_fn("toFloat", |n: f64| n);
+    engine.register_fn("toFloat", |n: i64| n as f64);
+    engine.register_fn("trunc", |n: f64| n.trunc());
+    engine.register_fn("ceil", |n: f64| n.ceil());
+    for name in ["trunc", "ceil", "floor", "round"] {
+        engine.register_fn(name, |n: i64| n as f64);
+    }
+    engine.register_fn("intDiv", |a: Dynamic, b: Dynamic| -> Result<f64, Box<EvalAltResult>> {
+        let (a, b) = (num(&a).trunc(), num(&b).trunc());
+        if b == 0.0 {
+            return Err("intDiv(a, 0): an `int` cannot be divided by zero".into());
+        }
+        Ok((a / b).trunc())
+    });
 
     // Membership and position. rhai spells these `contains` and `index_of`.
     //
@@ -3049,7 +3073,7 @@ mod tests {
         let locals = [("nums".to_string(), nums)];
 
         assert_eq!(e.eval_display("let n: int = 2; n + 1", &[]), "3");
-        assert_eq!(e.eval_display("const LIMIT: number = 4; LIMIT", &[]), "4");
+        assert_eq!(e.eval_display("const LIMIT: float = 4; LIMIT", &[]), "4");
         assert_eq!(e.eval_display("let s: string? = null; s ?? \"none\"", &[]), "none");
         assert_eq!(e.eval_display("let s: string? = none; s ?? \"empty\"", &[]), "empty");
         assert!(!e.eval_bool("none", &[]));
@@ -3062,8 +3086,8 @@ mod tests {
             e.eval_display("type Filter = \"all\" | \"open\"; let f: Filter = \"all\"; f", &[]),
             "all"
         );
-        assert_eq!(e.eval_display("nums.map((n: number) => n * 10)[1]", &locals), "20");
-        assert_eq!(e.eval_display("let add = (a: number, b: number) => a + b; add(2, 3)", &[]), "5");
+        assert_eq!(e.eval_display("nums.map((n: float) => n * 10)[1]", &locals), "20");
+        assert_eq!(e.eval_display("let add = (a: float, b: float) => a + b; add(2, 3)", &[]), "5");
         assert_eq!(e.eval_display("nums.map(n => { id: n })[0].id", &locals), "1");
         // `type` is a word only where a declaration can start.
         assert_eq!(e.eval_display("let type = 1; type + 1", &[]), "2");
@@ -3095,9 +3119,9 @@ mod tests {
     fn annotated_functions_run() {
         let mut e = Builder::new()
             .build(
-                "fn dbl(x: number): number { x * 2 }\n\
+                "fn dbl(x: float): float { x * 2 }\n\
                  fn label(t: { title: string }, i: int): string { `${i}. ${t.title}` }\n\
-                 fn shape(): { a: number } { { a: 1 } }\n\
+                 fn shape(): { a: float } { { a: 1 } }\n\
                  fn nothing() { 5 }",
             )
             .expect("compiles");
@@ -3398,11 +3422,16 @@ mod tests {
         assert_eq!(n(&mut e, "parseInt(\"42px\")"), 42.0);
         assert_eq!(n(&mut e, "parseInt(\"-7.9\")"), -7.0);
         assert_eq!(n(&mut e, "parseInt(\"ff\", 16)"), 255.0);
-        assert!(n(&mut e, "parseInt(\"px\")").is_nan());
+        // Not a number is `none`, where JavaScript says `NaN`.
+        assert_eq!(e.eval_value("parseInt(\"px\")", &[]), Some(Value::Null));
+        assert_eq!(e.eval_display("parseInt(\"px\") ?? 5", &[]), "5");
         assert_eq!(n(&mut e, "parseFloat(\"12.5px\")"), 12.5);
         assert_eq!(n(&mut e, "parseFloat(\"1e3\")"), 1000.0);
         assert_eq!(n(&mut e, "parseFloat(\".5\")"), 0.5);
-        assert!(n(&mut e, "parseFloat(\"abc\")").is_nan());
+        assert_eq!(e.eval_value("parseFloat(\"abc\")", &[]), Some(Value::Null));
+        assert_eq!(n(&mut e, "intDiv(7, 2)"), 3.0);
+        assert_eq!(n(&mut e, "intDiv(-7, 2)"), -3.0, "toward zero");
+        assert_eq!(n(&mut e, "2.7.trunc() + (-2.5).trunc() + 2.1.ceil() + 3.toFloat()"), 2.0 - 2.0 + 3.0 + 3.0);
         assert!(e.eval_bool("isNaN(Number(\"x\"))", &[]));
         assert_eq!(e.eval_display("String(2.5) + \"!\"", &[]), "2.5!");
         // The case that found it: an id from a route matched to a number.

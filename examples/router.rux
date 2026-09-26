@@ -173,7 +173,7 @@
   // Progress for the page swap, `null` unless a finger has hold of it. A swap
   // handed a non-number runs on the clock for its declared duration, so this
   // one binding covers both the tab tap and the drag.
-  let swipe: number? = signal(none);
+  let swipe: float? = signal(none);
 
   // Whether this drag turned out to be a back gesture. A drag is not one until
   // it has moved rightwards far enough to mean it.
@@ -185,7 +185,7 @@
   // opens the card's swap in `enter-leave.rux`: the page being left is held on
   // screen beside the page being entered, and progress decides where the pair
   // sits between them.
-  fn onSwipe(event: { phase: string, totalX: number }) {
+  fn onSwipe(event: { phase: string, totalX: float }) {
     if event.phase == "start" {
       backing = false;
     } else if event.phase == "move" {

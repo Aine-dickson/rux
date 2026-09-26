@@ -88,9 +88,9 @@
 
   fn drain() { if level > 0 { level-- } }
   fn charge() { if level < 100 { level++ } }
-  fn fill() { level = host::full() }
+  fn fill() { level = host::full().round() }
 
   // A helper used in a binding rather than a handler: it answers a question
   // instead of changing anything.
-  fn hours(n: number) { n / 10 }
+  fn hours(n: float) { n / 10 }
 </script>

@@ -742,10 +742,10 @@ fn runtime_type(text: &str) -> rux_script::types::Type {
 }
 
 /// Where a pointer is, as every gesture's `event` has it.
-const POINTER_FIELDS: &str = "x: number, y: number, pageX: number, pageY: number, \
-    width: number, height: number, touches: { id: number, x: number, y: number }[]";
+const POINTER_FIELDS: &str = "x: float, y: float, pageX: float, pageY: float, \
+    width: float, height: float, touches: { id: int, x: float, y: float }[]";
 /// How far a drag or a swipe has gone, from where it landed and from the last move.
-const TRAVEL_FIELDS: &str = "totalX: number, totalY: number, moveX: number, moveY: number";
+const TRAVEL_FIELDS: &str = "totalX: float, totalY: float, moveX: float, moveY: float";
 
 /// What `event` is in `@name` on `el`. `any` where nothing is known.
 fn event_type(el: &rux_parser::Element, name: &str, tags: &TagProps) -> rux_script::types::Type {
@@ -760,7 +760,7 @@ fn event_type(el: &rux_parser::Element, name: &str, tags: &TagProps) -> rux_scri
             // A number field bound to a signal hands over the number the signal
             // holds; everything else hands over text, or has not been measured.
             let value = match el.attr("type") {
-                Some("number") if el.attr("r-model").is_some() => "number",
+                Some("number") if el.attr("r-model").is_some() => "float",
                 Some("checkbox" | "switch" | "slider") => "any",
                 _ => "string",
             };
@@ -806,7 +806,7 @@ fn form_values_type(form: &rux_parser::Element, tags: &TagProps) -> rux_script::
                 let name = c.attr("name").unwrap_or(bind).trim().to_string();
                 let ty = match c.attr("type") {
                     _ if maybe => Type::Any,
-                    Some("number" | "slider") => Type::Number,
+                    Some("number" | "slider") => Type::Float,
                     Some("checkbox" | "switch") => Type::Bool,
                     _ => Type::String,
                 };
@@ -840,7 +840,7 @@ fn bound_type(tag: &str, name: &str) -> Option<rux_script::types::Type> {
         (_, "style") => "string | { [string]: any }",
         (_, "to") => "string",
         // Progress, 0 to 1, or nothing while no swap is being driven.
-        (_, "r-transition") => "number?",
+        (_, "r-transition") => "float?",
         ("image", "src") | ("path", "d") => "string",
         ("input", "options") => "string[]",
         ("input" | "button", "disabled") | ("input", "readonly" | "required") => "bool",
@@ -853,7 +853,7 @@ fn bound_type(tag: &str, name: &str) -> Option<rux_script::types::Type> {
 fn model_types(el: &rux_parser::Element) -> (rux_script::types::Type, rux_script::types::Type) {
     use rux_script::types::Type;
     match el.attr("type") {
-        Some("number" | "slider") => (Type::Number, Type::Number),
+        Some("number" | "slider") => (Type::Float, Type::Float),
         Some("checkbox" | "switch") => (Type::Bool, Type::Bool),
         // A radio writes its own `value`, and shows whether the target is it.
         Some("radio") => (el.attr("value").map_or(Type::String, |v| Type::Literal(v.to_string())), Type::Any),
@@ -4816,7 +4816,7 @@ fn warn_unresolvable_include(path: &str) {
 #[derive(Clone, Debug)]
 struct Computed {
     name: String,
-    /// The type it was declared with, `computed total: number = …`, as text.
+    /// The type it was declared with, `computed total: float = …`, as text.
     ty: Option<String>,
     expr: String,
     /// Signals the expression read when it last ran.

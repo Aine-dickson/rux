@@ -14,3 +14,5 @@ categories = ["gui", "development-tools"]
 # parser decides what never nests; two answers to that question is how `<image>`
 # came to be missing from one of them.
 rux-parser.workspace = true
+# To find where a retired type name stands in a type and not in a value.
+rux-syntax.workspace = true

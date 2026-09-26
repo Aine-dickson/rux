@@ -47,7 +47,7 @@ fn shown(doc: &Document) -> Vec<String> {
 }
 
 const STAT: &str = "<template><view><text>{{ label }}={{ value }}</text></view></template>\n\
-                    <script>\n  prop label: string;\n  prop value: number = 0;\n</script>";
+                    <script>\n  prop label: string;\n  prop value: float = 0;\n</script>";
 
 fn with_stat(tag: &str, script: &str) -> Document {
     let dir = project(&[
@@ -71,7 +71,7 @@ fn a_prop_that_does_not_fit_is_reported_and_left_out() {
     let found = errors(&doc);
     assert!(
         found.iter().any(|e| e.contains("`<stat>` was given the text \"lots\" for `:value`")
-            && e.contains("not the `number`")
+            && e.contains("not the `float`")
             && e.contains("takes its default")),
         "{found:?}"
     );

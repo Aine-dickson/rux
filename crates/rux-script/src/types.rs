@@ -11,9 +11,9 @@ use std::fmt;
 /// A type, as written.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Type {
-    /// Any number.
-    Number,
-    /// A whole number, a subtype of [`Type::Number`].
+    /// A 64-bit float. An [`Type::Int`] widens to one wherever one is wanted.
+    Float,
+    /// A 64-bit whole number.
     Int,
     /// Text.
     String,
@@ -68,13 +68,15 @@ impl fmt::Display for TypeSyntaxError {
 
 /// The built-in type names, which are all lower case. A declared type starts
 /// with a capital letter, so the two cannot collide.
-pub const BUILT_IN: &[&str] = &["number", "int", "string", "bool", "none", "any"];
+pub const BUILT_IN: &[&str] = &["int", "float", "string", "bool", "none", "any"];
 
 /// Names from other languages that mean a built-in here.
 const SPELLED_ELSEWHERE: &[(&str, &str)] = &[
     ("boolean", "bool"),
-    ("float", "number"),
-    ("f64", "number"),
+    ("double", "float"),
+    ("f64", "float"),
+    ("f32", "float"),
+    ("i32", "int"),
     ("i64", "int"),
     ("integer", "int"),
     ("str", "string"),
@@ -101,9 +103,9 @@ impl Type {
                 }
             }
         }
-        // A member a wider one already covers says nothing: `int | number` is
-        // `number`, and `"a" | string` is `string`.
-        if out.contains(&Type::Number) {
+        // A member a wider one already covers says nothing: `int | float` is
+        // `float`, and `"a" | string` is `string`.
+        if out.contains(&Type::Float) {
             out.retain(|t| *t != Type::Int);
         }
         if out.contains(&Type::String) {
@@ -125,7 +127,7 @@ impl Type {
 impl fmt::Display for Type {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Type::Number => f.write_str("number"),
+            Type::Float => f.write_str("float"),
             Type::Int => f.write_str("int"),
             Type::String => f.write_str("string"),
             Type::Bool => f.write_str("bool"),
@@ -447,8 +449,15 @@ impl Parser {
 /// checker to resolve.
 fn named(name: &str) -> Result<Type, String> {
     Ok(match name {
-        "number" => Type::Number,
+        "float" => Type::Float,
         "int" => Type::Int,
+        // Retired in step 3 of `docs/11-next.md`, when `int` stopped being a
+        // kind of it.
+        "number" => {
+            return Err("there is no type `number` now: a whole number is an `int`, and any \
+                        other a `float`. `rux fmt` rewrites `number` to `float`"
+                .into())
+        }
         "string" => Type::String,
         "bool" => Type::Bool,
         // `null` was its name until step 3 of `docs/11-next.md`.
@@ -488,7 +497,8 @@ mod tests {
     #[test]
     fn every_shape_parses() {
         let t = |s: &str| parse_type(s).unwrap_or_else(|e| panic!("{s}: {e}"));
-        assert_eq!(t("number"), Type::Number);
+        assert_eq!(t("float"), Type::Float);
+        assert_eq!(t("int | float"), Type::Float, "an int widens to a float");
         assert_eq!(t("int[]"), Type::Array(Box::new(Type::Int)));
         assert_eq!(t("string?"), Type::Union(vec![Type::String, Type::Null]));
         assert_eq!(t("string?[]"), Type::Array(Box::new(Type::String.optional())));
@@ -517,7 +527,7 @@ mod tests {
     #[test]
     fn display_reads_back_as_the_same_type() {
         for s in [
-            "number",
+            "float",
             "int[]",
             "string?",
             "\"all\" | \"open\"",
@@ -537,6 +547,8 @@ mod tests {
     fn a_name_from_another_language_is_named() {
         let e = |s: &str| parse_type(s).unwrap_err().message;
         assert!(e("boolean").contains("Rux calls it `bool`"), "{}", e("boolean"));
+        assert!(e("number").contains("`int`") && e("number").contains("rux fmt"), "{}", e("number"));
+        assert!(e("f64").contains("Rux calls it `float`"));
         assert!(e("Array<int>").contains("`T[]`"));
         assert!(e("task").contains("capital letter"));
         assert!(e("{ [int]: bool }").contains("keys are strings"));
@@ -553,7 +565,7 @@ mod tests {
     #[test]
     fn rux_syntax_and_this_parser_agree() {
         for s in [
-            "number",
+            "float",
             "Task[]",
             "string?",
             "string?[]",

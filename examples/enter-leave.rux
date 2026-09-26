@@ -236,7 +236,7 @@
   /* Progress for the card's swap. A number between 0 and 1 puts the swap
      exactly there; `null` hands it back to the clock, which is how a released
      finger settles instead of snapping. */
-  let dismiss: number? = signal(0);
+  let dismiss: float? = signal(0);
 
   /* Whether the card has actually left, as opposed to being mid-swap. */
   let gone = signal(false);
@@ -265,7 +265,7 @@
     tasks = left;
   }
 
-  fn onDrag(event: { phase: string, totalX: number }) {
+  fn onDrag(event: { phase: string, totalX: float }) {
     if event.phase == "start" {
       /* Turning the condition off is what opens the swap. The card does not
          disappear: the build keeps emitting it while the swap is pending, and

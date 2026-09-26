@@ -90,12 +90,12 @@
 </style>
 
 <script>
-  let readings = signal([12, 48, 30, 66, 40, 78, 52]);
+  let readings: float[] = signal([12, 48, 30, 66, 40, 78, 52]);
 
   computed peak = high(readings);
 
-  fn high(list: number[]) {
-    let top = 0;
+  fn high(list: float[]) {
+    let top = 0.0;
     for v in list {
       if v > top { top = v; }
     }
@@ -105,8 +105,8 @@
   /* Where a reading sits inside the 340 by 150 box, with x spread evenly and y
      measured from the bottom. Written once so the line and the band cannot
      disagree about it, which they would the moment one of them was edited. */
-  fn points(list: number[]) {
-    let out: number[][] = [];
+  fn points(list: float[]) {
+    let out: float[][] = [];
     let n = list.length;
     if n < 2 { return out; }
     for i in 0..n {
@@ -119,7 +119,7 @@
 
   /* `M` then one `L` per reading. Straight segments, because the parser turns
      every line into a cubic anyway and a smoothed line would hide the data. */
-  fn line(list: number[]) {
+  fn line(list: float[]) {
     let p = points(list);
     if p.length < 2 { return ""; }
     let d = "M " + p[0][0] + " " + p[0][1];
@@ -132,7 +132,7 @@
   /* The same line, taken down to the baseline and closed. Note that this has
      two more commands than the line does, which is fine: the two never
      interpolate against each other, only against their own previous selves. */
-  fn area(list: number[]) {
+  fn area(list: float[]) {
     let p = points(list);
     if p.length < 2 { return ""; }
     let d = "M " + p[0][0] + " 150 L " + p[0][0] + " " + p[0][1];
@@ -166,7 +166,7 @@
   /* Every reading moves and the point count does not, so the whole line walks
      to its new shape. This is the case `transition: d` exists for. */
   fn jolt() {
-    let next: number[] = [];
+    let next: float[] = [];
     for i in 0..readings.length {
       let v = readings[i] + ((i * 53 % 71) - 35);
       if v < 5 { v = 5; }

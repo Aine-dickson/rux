@@ -2928,6 +2928,7 @@ name = "rux-fmt"
 version = "0.8.0-dev"
 dependencies = [
  "rux-parser",
+ "rux-syntax",
 ]
 
 [[package]]

@@ -674,7 +674,10 @@ impl<'a> Checker<'a> {
                         return;
                     }
                     let name = src.trim();
-                    if !c.assignable(writes, &held) {
+                    // A number field bound to an `int` writes what was typed
+                    // cut to a whole number.
+                    let int_field = *writes == Type::Float && c.resolve(&held) == Type::Int;
+                    if !int_field && !c.assignable(writes, &held) {
                         let message = format!(
                             "the field writes {} into `{name}`, which holds {}",
                             c.show(writes),
@@ -830,7 +833,8 @@ impl<'a> Checker<'a> {
             // Every member of a union has to fit.
             (Type::Union(members), _) => members.iter().all(|m| self.assignable_at(m, &to, d)),
             (_, Type::Union(members)) => members.iter().any(|m| self.assignable_at(&from, m, d)),
-            (Type::Int, Type::Number) => true,
+            // An `int` widens to a `float`; never the other way.
+            (Type::Int, Type::Float) => true,
             (Type::Literal(_), Type::String) => true,
             (Type::Literal(a), Type::Literal(b)) => a == b,
             (Type::Array(a), Type::Array(b)) => self.assignable_at(a, b, d),
@@ -1449,16 +1453,22 @@ impl<'a> Checker<'a> {
             // Name the variable, and say how to let it hold both.
             if let ExprKind::Var(v) = &target.kind {
                 if self.findings.len() == before + 1 {
-                    let got = self.infer_quietly(value);
+                    let got = widen(&self.infer_quietly(value));
+                    // The narrowest type that holds both: an `int[]` given a
+                    // `float[]` wants `float[]`, not a union.
+                    let both = if self.assignable(&held, &got) {
+                        got.clone()
+                    } else {
+                        Type::union([held.clone(), got.clone()])
+                    };
                     let last = self.findings.last_mut().unwrap();
                     if last.is_error && last.message.starts_with("this is ") {
-                        let both = Type::union([held.clone(), widen(&got)]);
                         last.message = format!(
                             "`{0}` holds `{1}`, so it cannot be given `{2}` here. If it \
                              may hold either, say so: `let {0}: {3} = …`",
                             v,
                             held,
-                            widen(&got),
+                            got,
                             both
                         );
                     }
@@ -1467,8 +1477,6 @@ impl<'a> Checker<'a> {
             return;
         }
         let rhs = self.infer(value);
-        // `count += 1`, and `count++`, which is written that way.
-        let rhs = self.int_beside(&rhs, value, &held);
         let operator = op.trim_end_matches('=');
         let result = self.binary(operator, &held, &rhs, op_at);
         if !self.assignable(&result, &held) {
@@ -1668,9 +1676,23 @@ impl<'a> Checker<'a> {
             }
             _ => {
                 let got = self.infer(e);
-                if !self.assignable(&got, want) {
-                    self.mismatch_ty(self.at(e), &got, want);
+                if self.assignable(&got, want) {
+                    return;
                 }
+                // The one way two `int`s make a `float`, and the fix for it.
+                if matches!(e.kind, ExprKind::Binary { op: "/", .. })
+                    && self.resolve(&got) == Type::Float
+                    && self.accepts_int(&resolved)
+                {
+                    let message = format!(
+                        "`/` always makes a `float`, where {} is expected; `intDiv(a, b)` divides \
+                         to an `int`",
+                        self.show(want)
+                    );
+                    self.error(self.at(e), message);
+                    return;
+                }
+                self.mismatch_ty(self.at(e), &got, want);
             }
         }
     }
@@ -1698,20 +1720,10 @@ impl<'a> Checker<'a> {
         self.error(pos, message);
     }
 
-    /// A whole-number literal beside an `int` counts as one, so `count + 1`
-    /// and `count += 1` keep `count` an `int`. Anything else is left as it is.
-    fn int_beside(&self, ty: &Type, e: &Expr, other: &Type) -> Type {
-        if matches!(e.kind, ExprKind::Int(_)) && self.resolve(other) == Type::Int {
-            Type::Int
-        } else {
-            ty.clone()
-        }
-    }
-
     /// Whether a whole-number literal fits `ty`.
     fn accepts_int(&self, ty: &Type) -> bool {
         match self.resolve(ty) {
-            Type::Int | Type::Number | Type::Any => true,
+            Type::Int | Type::Float | Type::Any => true,
             Type::Union(members) => members.iter().any(|m| self.accepts_int(m)),
             _ => false,
         }
@@ -1818,7 +1830,8 @@ impl<'a> Checker<'a> {
         match &e.kind {
             ExprKind::Closure { .. } => self.closure(e, None),
             ExprKind::Bool(_) => Type::Bool,
-            ExprKind::Int(_) | ExprKind::Float(_) => Type::Number,
+            ExprKind::Int(_) => Type::Int,
+            ExprKind::Float(_) => Type::Float,
             ExprKind::Char(_) => Type::String,
             ExprKind::Str(s) => Type::Literal(s.clone()),
             ExprKind::Template(parts) => {
@@ -1869,7 +1882,8 @@ impl<'a> Checker<'a> {
                     "!" => Type::Bool,
                     "-" | "+" => match self.resolve(&t) {
                         Type::Int => Type::Int,
-                        _ => Type::Number,
+                        Type::Any => Type::Any,
+                        _ => Type::Float,
                     },
                     _ => Type::Any,
                 }
@@ -1889,7 +1903,7 @@ impl<'a> Checker<'a> {
             // The body runs later, as its own script.
             ExprKind::Interval { args, .. } => {
                 self.infer_all(args);
-                Type::Number
+                Type::Int
             }
         }
     }
@@ -1931,11 +1945,13 @@ impl<'a> Checker<'a> {
                 if matches!(op, ".." | "..=") {
                     return Type::Any;
                 }
-                // `count + 1` stays an `int` when `count` is one.
-                let a = self.int_beside(&a, lhs, &b);
-                let b = self.int_beside(&b, rhs, &a);
                 if matches!(op, "==" | "!=" | "===" | "!==") {
                     self.check_comparable(lhs, &a, rhs, &b, pos);
+                }
+                // `2 ** 3` is an `int`: a power of an `int` to a whole
+                // number written out, and not below zero, is one.
+                if op == "**" && matches!(rhs.kind, ExprKind::Int(n) if n >= 0) && self.resolve(&a) == Type::Int {
+                    return Type::Int;
                 }
                 self.binary(op, &a, &b, pos)
             }
@@ -2088,7 +2104,7 @@ impl<'a> Checker<'a> {
             }
             // `.length` on a map, or a field on a number: rhai raises, and so
             // does this.
-            Type::Number | Type::Int | Type::Bool | Type::String | Type::Literal(_) | Type::Array(_) => {
+            Type::Float | Type::Int | Type::Bool | Type::String | Type::Literal(_) | Type::Array(_) => {
                 self.error(pos, format!("{} has no property `{name}`", self.show(shown)));
                 Type::Any
             }
@@ -2106,8 +2122,11 @@ impl<'a> Checker<'a> {
     fn index(&mut self, base: &Type, shown: &Type, key: &Type, what: &Expr, read: Read) -> Type {
         match base {
             Type::Array(item) => {
-                if !self.assignable(key, &Type::Number) {
-                    let message = format!("a list is indexed by a number, and this is {}", self.show(key));
+                if self.resolve(key) == Type::Float {
+                    let message = "a list is indexed by an `int`, and this is a `float`; `.trunc()` makes one of it";
+                    self.error(self.at(what), message.to_string());
+                } else if !self.assignable(key, &Type::Int) {
+                    let message = format!("a list is indexed by an `int`, and this is {}", self.show(key));
                     self.error(self.at(what), message);
                 }
                 (**item).clone()
@@ -2189,7 +2208,7 @@ impl<'a> Checker<'a> {
                 _ => Type::Any,
             };
         }
-        let number = |t: &Type| matches!(t, Type::Number | Type::Int);
+        let number = |t: &Type| matches!(t, Type::Float | Type::Int);
         let text = |t: &Type| matches!(t, Type::String | Type::Literal(_));
         match op {
             "+" if text(&a) || text(&b) => Type::String,
@@ -2197,11 +2216,13 @@ impl<'a> Checker<'a> {
                 let (Type::Array(x), Type::Array(y)) = (&a, &b) else { unreachable!() };
                 Type::Array(Box::new(Type::union([(**x).clone(), (**y).clone()])))
             }
+            // Two `int`s make an `int`, except by `/`, which always makes a
+            // `float`: `7 / 2` is `3.5`, and `intDiv(7, 2)` is `3`.
             "+" | "-" | "*" | "%" if a == Type::Int && b == Type::Int => Type::Int,
-            "+" | "-" | "*" | "/" | "%" | "**" if number(&a) && number(&b) => Type::Number,
+            "+" | "-" | "*" | "/" | "%" | "**" if number(&a) && number(&b) => Type::Float,
             "==" | "!=" | "===" | "!==" => Type::Bool,
             "<" | ">" | "<=" | ">=" => Type::Bool,
-            "&" | "|" | "^" | "<<" | ">>" => Type::Number,
+            "&" | "|" | "^" | "<<" | ">>" => Type::Int,
             _ => {
                 let message = format!(
                     "`{op}` cannot be applied to {} and {}",
@@ -2235,20 +2256,30 @@ impl<'a> Checker<'a> {
         }
 
         match (name, args.len()) {
-            ("signal", 1) => {
-                let t = self.infer(&args[0]);
-                // Numbers are coerced to floats on the way through.
-                return match t {
-                    Type::Int => Type::Number,
-                    other => other,
-                };
-            }
-            ("Number" | "parseInt" | "parseFloat" | "parse_int" | "parse_float" | "to_float", _)
-            | ("max" | "min" | "abs" | "floor" | "ceil" | "round" | "sqrt", _) => {
+            ("signal", 1) => return self.infer(&args[0]),
+            // Text to a number gives `none` where JavaScript gives `NaN`.
+            ("parseInt", 1) => {
                 self.infer_all(args);
-                return Type::Number;
+                return Type::Int.optional();
             }
-            ("to_int", _) => {
+            ("parseFloat", 1) => {
+                self.infer_all(args);
+                return Type::Float.optional();
+            }
+            // `int` in and out, and a `float` as soon as one comes in.
+            ("max" | "min" | "abs", _) => {
+                let mut all_int = !args.is_empty();
+                for a in args {
+                    let t = self.infer(a);
+                    all_int &= self.resolve(&t) == Type::Int;
+                }
+                return if all_int { Type::Int } else { Type::Float };
+            }
+            ("Number" | "parse_float" | "to_float" | "toFloat" | "sqrt", _) => {
+                self.infer_all(args);
+                return Type::Float;
+            }
+            ("to_int" | "parse_int" | "trunc" | "floor" | "ceil" | "round" | "intDiv", _) => {
                 self.infer_all(args);
                 return Type::Int;
             }
@@ -2279,7 +2310,7 @@ impl<'a> Checker<'a> {
             }
             ("__interval", _) => {
                 self.infer_all(args);
-                return Type::Number;
+                return Type::Int;
             }
             _ => {}
         }
@@ -2368,7 +2399,7 @@ impl<'a> Checker<'a> {
             (_, Type::Union(m)) => m.iter().any(|x| self.overlaps(&a, x)),
             (Type::Literal(x), Type::Literal(y)) => x == y,
             (Type::Literal(_) | Type::String, Type::Literal(_) | Type::String) => true,
-            (Type::Number | Type::Int, Type::Number | Type::Int) => true,
+            (Type::Float | Type::Int, Type::Float | Type::Int) => true,
             (Type::Bool, Type::Bool) => true,
             (Type::Record(_) | Type::Dict(_), Type::Record(_) | Type::Dict(_)) => true,
             (Type::Array(_), Type::Array(_)) | (Type::Function(..), Type::Function(..)) => true,
@@ -2619,7 +2650,7 @@ impl<'a> Checker<'a> {
                         return Type::Null;
                     }
                     "sort" if args.len() == 1 => {
-                        self.callback(&args[0], Some((vec![item.clone(), item.clone()], Type::Number)));
+                        self.callback(&args[0], Some((vec![item.clone(), item.clone()], Type::Float)));
                         return Type::Array(Box::new(item));
                     }
                     "reduce" if args.len() == 2 => {
@@ -2671,9 +2702,10 @@ impl<'a> Checker<'a> {
                 }
                 _ => {}
             },
-            Type::Number | Type::Int => match name {
-                "to_int" => return Type::Int,
-                "to_float" | "floor" | "ceil" | "round" | "abs" | "sqrt" => return Type::Number,
+            Type::Float | Type::Int => match name {
+                "to_int" | "trunc" | "floor" | "ceil" | "round" => return Type::Int,
+                "to_float" | "toFloat" | "sqrt" => return Type::Float,
+                "abs" => return base.clone(),
                 "to_string" => return Type::String,
                 _ => {}
             },
@@ -2848,7 +2880,7 @@ fn is_type_of(t: &Type, tag: &str, types: &HashMap<String, Type>) -> bool {
         "array" => matches!(t, Type::Array(_)),
         "map" => matches!(t, Type::Record(_) | Type::Dict(_)),
         "()" => t == Type::Null,
-        "f64" | "i64" => matches!(t, Type::Number | Type::Int),
+        "f64" | "i64" => matches!(t, Type::Float | Type::Int),
         _ => false,
     }
 }
@@ -3049,7 +3081,7 @@ mod tests {
              let tasks: Task[] = signal([{{ id: 1, title: \"a\", done: false }}]);\n\
              let filter: Filter = signal(\"all\");\n\
              let count: int = 0;\n\
-             let n = signal(0);\n\
+             let n: float = signal(0);\n\
              fn visible(): Task[] {{ tasks.filter(t => !t.done) }}\n\
              fn label(t: Task, i: int): string {{ `${{i}}. ${{t.title}}` }}\n\
              fn add(title: string) {{ tasks = tasks + [{{ id: tasks.length, title: title, done: false }}]; }}\n\
@@ -3064,17 +3096,46 @@ mod tests {
     #[test]
     fn a_value_that_does_not_fit_its_annotation() {
         one_error("let n: int = \"x\";", "where `int` is expected");
-        one_error("let n: int = 1.5;", "`number`, where `int` is expected");
+        one_error("let n: int = 1.5;", "`float`, where `int` is expected");
         one_error(
-            "let n: int = 3; fn f() { n = n / 2; }",
-            "`n` holds `int`, so it cannot be given `number` here. If it may hold either, say so: `let n: number = …`",
+            "let n: int = 3; fn f() { n = n + 0.5; }",
+            "`n` holds `int`, so it cannot be given `float` here. If it may hold either, say so: `let n: float = …`",
         );
         one_error("let s: string = 1;", "where `string` is expected");
         one_error("let b: bool = \"yes\";", "where `bool` is expected");
         one_error("let xs: int[] = [1, \"a\"];", "where `int` is expected");
-        assert!(errors("let n: int = 3; let m: int = -2; let x: number = n;").is_empty());
-        // A plain number signal halves without complaint: literals are numbers.
-        assert!(errors("let n = signal(0); fn f() { n = n / 2; }").is_empty());
+        assert!(errors("let n: int = 3; let m: int = -2; let x: float = n;").is_empty());
+    }
+
+    /// `int` and `float`, step 3 of `docs/11-next.md`.
+    #[test]
+    fn an_int_is_whole_and_widens_to_a_float() {
+        // A whole-number literal is an `int`, and so is what it starts.
+        one_error("let n = signal(0); fn f() { n = n / 2; }", "`/` always makes a `float`, where `int` is expected; `intDiv(a, b)`");
+        one_error("let n = signal(0); fn f() { n /= 2; }", "`/=` makes `float`, which does not fit `int`");
+        one_error("let n = 1; fn f() { n = 0.5; }", "`n` holds `int`, so it cannot be given `float` here");
+        for quiet in [
+            "let n = signal(0); fn f() { n = intDiv(n, 2); n += 1; n = n * 3 % 4; n++; n = -n; }",
+            "let n: float = signal(0); fn f() { n = n / 2; n = n + 1; n += 0.5; }",
+            "let x = signal(0.5); fn f() { x = x * 2; x = 3; }",
+            "let n = 2 ** 3; let m: int = n;",
+            "let n: int = 7; let f: float = n; let g: float = n + 0.5;",
+            "let n: int = max(1, 2) + abs(-3) + 4.5.trunc() + 2.5.round() + 1.5.floor() + 0.5.ceil();",
+            "let xs = [1, 2]; let i = 1; let a = xs[i]; let b = xs[1];",
+            "let x: float = 1.5; let n: int = x.trunc(); let back: float = n.toFloat();",
+            "fn half(x: float): float { x / 2 }\nlet h = half(3);",
+        ] {
+            assert!(errors(quiet).is_empty(), "{quiet}\n{:?}", errors(quiet));
+        }
+        one_error("let m: int = max(1, 2.5);", "`float`, where `int` is expected");
+        one_error("fn f(): int { 2 ** -1 }", "this is `float`");
+        one_error("let xs = [1, 2]; fn f() { xs[1.5] }", "a list is indexed by an `int`, and this is a `float`; `.trunc()`");
+        one_error("let xs = [1, 2]; fn f() { xs[\"1\"] }", "a list is indexed by an `int`");
+        // Text to a number may not be one.
+        one_error("let n: int = parseInt(\"4\");", "`int?`, where `int` is expected");
+        assert!(errors("let n: int = parseInt(\"4\") ?? 0; let x: float = parseFloat(\"1.5\") ?? 0.0;").is_empty());
+        // `number` is retired, with the way out.
+        one_error("let n: number = 1;", "there is no type `number` now");
     }
 
     #[test]
@@ -3103,7 +3164,7 @@ mod tests {
     #[test]
     fn a_call_is_checked_against_its_parameters() {
         let src = format!("{TASK}fn label(t: Task): string {{ t.title }}\nfn f() {{ label(5) }}");
-        one_error(&src, "`label` takes `Task` as `t`, and this is `number`");
+        one_error(&src, "`label` takes `Task` as `t`, and this is `int`");
         let src = format!("{TASK}let tasks: Task[] = [];\nfn f() {{ tasks.push(5); }}");
         one_error(&src, "where `Task` is expected");
     }
@@ -3111,8 +3172,8 @@ mod tests {
     #[test]
     fn a_result_is_checked_against_its_declaration() {
         one_error("fn f(): int { \"x\" }", "`f` is declared to return `int`, and this is `\"x\"`");
-        one_error("fn f(n: number) { if n > 0 { f(n - 1) } else { 0 } }", "`f` calls itself");
-        assert!(errors("fn f(n: number): number { if n > 0 { f(n - 1) } else { 0 } }").is_empty());
+        one_error("fn f(n: int) { if n > 0 { f(n - 1) } else { 0 } }", "`f` calls itself");
+        assert!(errors("fn f(n: int): int { if n > 0 { f(n - 1) } else { 0 } }").is_empty());
     }
 
     #[test]
@@ -3158,7 +3219,7 @@ mod tests {
         // Annotated, each of them is quiet.
         let quiet = "type U = { name: string };\nlet tasks: string[] = signal([]);\n\
                      let user: U? = signal(none);\nfn f(x: int) { x }\n\
-                     let add = (a: number, b: number) => a + b;";
+                     let add = (a: float, b: float) => a + b;";
         assert!(findings(quiet).is_empty(), "{:#?}", findings(quiet));
     }
 
@@ -3187,7 +3248,7 @@ let b: int? = none;").is_empty());
         b.host_number("level", || 50.0);
         let engine = b.build("let a: string = host::level();").expect("builds");
         let f = engine.check_types(&Context::default());
-        assert!(f.iter().any(|f| f.message.contains("`number`, where `string` is expected")), "{f:?}");
+        assert!(f.iter().any(|f| f.message.contains("`float`, where `string` is expected")), "{f:?}");
     }
 
     #[test]
@@ -3280,7 +3341,7 @@ let b: int? = none;").is_empty());
     fn a_comparison_that_can_never_be_true() {
         let f = "type F = \"all\" | \"open\";\nlet f: F = \"all\";\n";
         one_error(&format!("{f}fn g() {{ f == \"al\" }}"), "`f` is `F`, which is one of \"all\", \"open\", so it is never \"al\"; did you mean \"all\"?");
-        one_error("let n = 1;\nfn g() { n == \"1\" }", "compares `number` with `\"1\"`");
+        one_error("let n = 1;\nfn g() { n == \"1\" }", "compares `int` with `\"1\"`");
         clean(&format!("{f}fn g() {{ f == \"open\" || f != none }}"));
     }
 
@@ -3422,8 +3483,10 @@ let b: int? = none;").is_empty());
         let script = "let n = signal(0);\nlet on = signal(false);\nlet name = signal(\"\");";
         let f = template_findings(script, vec![model("n", "string")]);
         assert!(f.iter().any(|f| f.message.contains("writes `string` into `n`")), "{f:?}");
-        let f = template_findings(script, vec![model("on", "bool"), model("name", "string"), model("n", "number")]);
-        assert!(f.is_empty(), "{f:?}");
+        let f = template_findings(script, vec![model("on", "bool"), model("name", "string"), model("n", "float")]);
+        assert!(f.is_empty(), "a number field may write into an `int`, cut to a whole number: {f:?}");
+        let f = template_findings("let n: string? = none;", vec![model("n", "float")]);
+        assert!(f.iter().any(|f| f.message.contains("writes `float` into `n`")), "{f:?}");
     }
 
     #[test]
@@ -3511,7 +3574,7 @@ fn g() {{ label(#{{ id: 1, title: \"a\", done: false }}, 0) }}"));
         let call = seen(&t, "fn", "label");
         assert!(call.iter().any(|s| s.line == 4 && s.column.is_some()), "{call:?}");
         assert!(call.iter().all(|s| s.ty == "fn label(t: Task, i: int): string"), "{call:?}");
-        assert_eq!(seen(&t, "fn", "count")[0].ty, "fn count(): number");
+        assert_eq!(seen(&t, "fn", "count")[0].ty, "fn count(): int");
         let param = seen(&t, "param", "t");
         assert_eq!((param[0].line, param[0].ty.as_str(), param[0].column), (2, "Task", None));
     }
@@ -3523,7 +3586,7 @@ fn a() { shout(\"hi\", 1) }
 fn b() { shout(\"yo\", 2) }");
         assert_eq!(t.guesses.len(), 2, "{:?}", t.guesses);
         assert_eq!((t.guesses[0].param.as_str(), t.guesses[0].ty.as_str(), t.guesses[0].line), ("s", "string", 1));
-        assert_eq!((t.guesses[1].param.as_str(), t.guesses[1].ty.as_str()), ("n", "number"));
+        assert_eq!((t.guesses[1].param.as_str(), t.guesses[1].ty.as_str()), ("n", "int"));
         // Handed something unknown, or never called: no guess.
         let t = table("let x = signal([]);
 fn shout(s) { s }

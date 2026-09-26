@@ -56,6 +56,6 @@
   let flick = signal("no swipe yet");
   let page = signal("");
   let fingers = signal(0);
-  let dx = signal(0);
-  let dy = signal(0);
+  let dx = signal(0.0);
+  let dy = signal(0.0);
 </script>

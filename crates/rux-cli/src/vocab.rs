@@ -291,10 +291,11 @@ const SCRIPT_GLOBALS: &[Entry] = &[
     Entry { name: "print", detail: "print(x)", doc: "Printf-debugging. Reaches the dev overlay, not just stderr." },
     Entry { name: "debug", detail: "debug(x)", doc: "Like `print`, with the value's structure shown." },
     Entry { name: "Number", detail: "Number(text)", doc: "The whole text as a number, as JavaScript reads it: `Number(\"2\")` is 2, `Number(\"\")` is 0, `Number(\"12px\")` is `NaN`. How a route parameter, which is always text, meets a numeric id." },
-    Entry { name: "parseInt", detail: "parseInt(text, radix)", doc: "The whole number that leads the text: `parseInt(\"42px\")` is 42. The radix is optional." },
-    Entry { name: "parseFloat", detail: "parseFloat(text)", doc: "The number that leads the text: `parseFloat(\"12.5px\")` is 12.5, `parseFloat(\"px\")` is `NaN`." },
+    Entry { name: "parseInt", detail: "parseInt(text, radix): int?", doc: "The whole number that leads the text: `parseInt(\"42px\")` is 42, and `parseInt(\"px\")` is `none`, so read it with `??`: `parseInt(s) ?? 0`. The radix is optional." },
+    Entry { name: "parseFloat", detail: "parseFloat(text): float?", doc: "The number that leads the text: `parseFloat(\"12.5px\")` is 12.5, and `parseFloat(\"px\")` is `none`, where JavaScript says `NaN`." },
+    Entry { name: "intDiv", detail: "intDiv(a, b): int", doc: "Division that keeps an `int`, cutting toward zero: `intDiv(7, 2)` is 3, where `7 / 2` is 3.5. Dividing by zero is an error." },
     Entry { name: "String", detail: "String(x)", doc: "Any value as the text a `{{ }}` binding would show." },
-    Entry { name: "isNaN", detail: "isNaN(n)", doc: "Whether a number is `NaN`, the answer `Number` and the parsers give for text that is not a number." },
+    Entry { name: "isNaN", detail: "isNaN(n)", doc: "Whether a `float` is `NaN`, the answer `Number` gives for text that is not a number, and `0.0 / 0` gives." },
 ];
 
 /// The pseudo-classes a selector may name, with the one line each needs.

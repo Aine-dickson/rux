@@ -71,7 +71,7 @@
 </style>
 
 <script>
-  type Row = { id: string, at: number, note: string };
+  type Row = { id: string, at: float, note: string };
 
   let items: Row[] = signal([
     { id: "one", at: 0, note: "first" },

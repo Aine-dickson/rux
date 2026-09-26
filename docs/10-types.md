@@ -58,7 +58,7 @@ Three things decide almost everything else:
    error. A name that starts with a value takes that value's type, though, so
    an unannotated program can still contradict itself: a signal that starts
    as `0` and is later set to `none` is an error, and the message gives the
-   fix, `let x: number? = signal(0)`.
+   fix, `let x: int? = signal(0)`.
 
 ## Where an annotation goes
 
@@ -66,11 +66,11 @@ Three things decide almost everything else:
 |---|---|
 | A `let` or `const` | `let count: int = 0;` |
 | A signal | `let filter: Filter = signal("all");` |
-| A computed | `computed total: number = items.length * price;` |
+| A computed | `computed total: float = items.length * price;` |
 | A function parameter | `fn add(title: string) { … }` |
 | A function's result | `fn label(t: Task): string { … }` |
-| An arrow's parameter | `let add = (a: number, b: number) => a + b;` |
-| A prop | `prop label: string;`, `prop price: number = 1;` |
+| An arrow's parameter | `let add = (a: float, b: float) => a + b;` |
+| A prop | `prop label: string;`, `prop price: float = 1;` |
 | A named type | `type Filter = "all" \| "open" \| "done";` |
 
 **On a signal, the annotation describes the value**, not a wrapper around it.
@@ -92,8 +92,8 @@ collide, and an import can tell a type from a component by its spelling (see
 
 | Type | Holds |
 |---|---|
-| `number` | Any number. Numbers are `f64` at run time, as [Values](./07-script.md#values) describes |
-| `int` | A whole number. A subtype of `number`: an `int` goes anywhere a `number` does, not the other way round |
+| `int` | A 64-bit whole number |
+| `float` | A 64-bit float. An `int` goes anywhere a `float` does, not the other way round |
 | `string` | Text |
 | `bool` | `true` or `false` |
 | `none` | The empty value. `null` and `()`, its older spellings, still read as it, with a warning |
@@ -108,16 +108,18 @@ collide, and an import can tell a type from a component by its spelling (see
 | `(Task, int) => bool` | A function, where one is a value |
 | `Task` | A name declared with `type`, or imported with `use` |
 
-**`int` exists for indexes, ranges and lengths.** `.length` is an `int`, a
-range variable (`for i in 0..n`) is an `int`, and `to_int()` returns one. An
-integer literal is a `number`, not an `int`, because otherwise
-`let n = signal(0); n = n / 2;` would be an error for no reason anyone could
-see. `int` comes only from an annotation, `.length`, `to_int()` or a range.
-Arithmetic keeps it where it can: `int + int`, `int - int`, `int * int` and
-`int % int` are `int`, and `/` is always `number`, because `3 / 2` is `1.5`.
-A whole-number literal goes wherever an `int` is expected, and beside an `int`
-it counts as one, so `count + 1`, `count += 1` and `count++` keep an `int` an
-`int`.
+**A whole-number literal is an `int`, and one with a point or an exponent a
+`float`** (changed in step 3 of [The Rux language](./11-next.md#numbers); until
+then there was one `number` with `int` a kind of it). `.length`, a range
+variable (`for i in 0..n`), `trunc()`, `round()`, `floor()`, `ceil()` and
+`intDiv(a, b)` are `int`s; `toFloat()` makes a `float`. `int + int`,
+`int - int`, `int * int` and `int % int` are `int`, `int ** 2` too, and with a
+`float` on either side any of them is a `float`. `/` is always a `float`,
+because `3 / 2` is `1.5`, so `let n = signal(0); n = n / 2;` is an error that
+names `intDiv`, and `let n: float = signal(0)` is the other way out. A list is
+indexed by an `int`. `number` is no type now; `rux fmt` rewrites it to `float`.
+The numbers underneath are all `f64` until step 5, so a checked `int` can still
+hold a fraction a number field wrote into it.
 
 **A record and a dictionary are both written with braces**, and so are map
 values since `{ a: 1 }` became a map. The difference is the square brackets:
@@ -137,12 +139,14 @@ Most names need no annotation, because what they start as says what they are.
 
 | Written | Inferred |
 |---|---|
-| `signal(0)`, `1.5` | `number` |
+| `signal(0)`, `42` | `int` |
+| `signal(0.0)`, `1.5` | `float` |
 | `signal("")`, `"all"` | `string`: a literal widens, as in TypeScript |
 | `true` | `bool` |
-| `[1, 2]` | `number[]` |
-| `{ id: 1, name: "ada" }` | `{ id: number, name: string }` |
-| `items.length`, `x.to_int()` | `int` |
+| `[1, 2]` | `int[]` |
+| `{ id: 1, name: "ada" }` | `{ id: int, name: string }` |
+| `items.length`, `x.trunc()` | `int` |
+| `parseInt(s)`, `parseFloat(s)` | `int?`, `float?`: text that is no number gives `none` |
 | `tasks.filter(t => t.done)` | `Task[]` when `tasks` is a `Task[]` |
 | a call to a function | what that function returns |
 
@@ -226,7 +230,7 @@ A union is written with `|`, and may begin with one so a long union lines up:
 ```rux
 type Load =
   | { state: "idle" }
-  | { state: "loading", since: number }
+  | { state: "loading", since: float }
   | { state: "failed", reason: string }
   | { state: "done", rows: Task[] };
 ```
@@ -241,9 +245,9 @@ of a name for the rest of the region they guard:
 |---|---|
 | `x == "open"` | `x` to `"open"`, and `x != "open"` removes it |
 | `x != none` | `x` to everything but `none` |
-| `if x` | `x` without `none` inside the block. The `else` learns nothing about a `string?` or `number?`, since `""` and `0` are falsy too |
+| `if x` | `x` without `none` inside the block. The `else` learns nothing about a `string?` or `int?`, since `""` and `0` are falsy too |
 | `load.state == "done"` | `load` to the member whose `state` is `"done"` |
-| `type_of(x) == "string"` | `x` to `string`. Also `"bool"`, `"array"`, `"map"`, `"()"`, and `"f64"` or `"i64"` for `number` |
+| `type_of(x) == "string"` | `x` to `string`. Also `"bool"`, `"array"`, `"map"`, `"()"`, and `"f64"` or `"i64"` for an `int` or a `float` |
 | `"note" in t` | `t` to the members where `note` is present, and `t.note` to present |
 | `x is Task` | `x` to `Task`, checked at run time (see [Boundaries](#boundaries)) |
 | an early `return` | the rest of the function, to whatever the guard excluded |
@@ -256,7 +260,7 @@ may read `load.rows`.
 **Comparing against a literal a union does not contain is an error.** With
 `filter: Filter`, `filter == "al"` can never be true, and it is almost always a
 typo for `"all"`. The same goes for any comparison between types with nothing
-in common, such as a `string` and a `number`.
+in common, such as a `string` and an `int`.
 
 **A fact about a signal does not outlive a call that writes it.** After
 `if load.state == "done" { refresh(); … }`, `load` is back to the whole union
@@ -358,13 +362,13 @@ A template is checked against the script it binds to.
   what that attribute takes: `:disabled`, `:readonly` and `:required` a
   `bool`, `:options` a `string[]`, `:src`, `:d` and `:to` a `string`,
   `:style` a `string` or a `{ [string]: any }`, and `:r-transition` a
-  `number?`, the progress of a swap or nothing.
+  `float?`, the progress of a swap or nothing.
 - **A `:class` map** is a `{ [string]: bool }`; a value that is not a `bool`
   is an error, which catches `{ active: item }` meant as `{ active: item.on }`.
   `:class` also takes a `string` or a `string[]`.
 - **`r-model` must name something of the input's value type**: `string` for
-  text, password, textarea, search and date; `number` for number and slider;
-  `bool` for checkbox and switch. A select shows its target as text and
+  text, password, textarea, search and date; `float` for number and slider,
+  which may also write into an `int`; `bool` for checkbox and switch. A select shows its target as text and
   writes one of its options, so a `Filter` may be bound to one. A radio
   writes its `value`, so its target must take that string.
 - **`event` in a handler has the type of that event.** Every gesture's has
@@ -372,7 +376,7 @@ A template is checked against the script it binds to.
   `phase`, `"start" | "move" | "end"`, and the four distances, `totalX`,
   `totalY`, `moveX` and `moveY`; `@swipe` adds those distances and
   `direction`, `"left" | "right" | "up" | "down"`. A field's `@input`,
-  `@change`, `@focus` and `@blur` hand over `event.value`: a `number` from a
+  `@change`, `@focus` and `@blur` hand over `event.value`: a `float` from a
   number field bound with `r-model`, and text from the others. A component's
   `@name` hands over whatever it emits, which is `any`.
 - **A form's `event.values` is a record of its fields**, under each field's
@@ -391,8 +395,8 @@ A template is checked against the script it binds to.
 A finding in a template is on the template's line and names where it is:
 
 ```text
-app.rux:9: error: `:disabled` on <button>: this is `number`, where `bool` is expected
-app.rux:10: error: `r-model`: the field writes `number` into `name`, which holds `string`
+app.rux:9: error: `:disabled` on <button>: this is `int`, where `bool` is expected
+app.rux:10: error: `r-model`: the field writes `float` into `name`, which holds `string`
 ```
 
 **What is checked is the file being checked.** A document's template is
@@ -403,7 +407,7 @@ component is the file, with its props typed as it declares them.
 
 ```rux
 prop label: string;
-prop price: number = 1;
+prop price: float = 1;
 prop kind: "primary" | "quiet" = "quiet";
 ```
 
@@ -411,7 +415,7 @@ A prop's annotation is its contract with every tag that uses the component.
 With a default and no annotation, the default's type is inferred, as for a
 `let`. With neither, the prop is `any` and warned.
 
-A plain attribute, `label="Save"`, passes a `string`, so a `number` prop must be
+A plain attribute, `label="Save"`, passes a `string`, so a `float` prop must be
 bound: `:price="3"`. Passing text to it is an error at the tag.
 
 **Props are also checked when the program runs, in release builds as well as
@@ -425,12 +429,12 @@ declared type, parsed once per component and run when the tag is built, not on
 every read:
 
 ```text
-app.rux:12: error: `<stat>` was given the text "lots" for `:value`, which is not the `number` `prop value` takes, so it is built without it, and it takes its default
+app.rux:12: error: `<stat>` was given the text "lots" for `:value`, which is not the `float` `prop value` takes, so it is built without it, and it takes its default
 ```
 
 **A route parameter is text, and becomes what its prop takes.** For
 `<route path="/task/:id" view="detail" />` and `prop id: int;`, the path
-`/task/42` passes the number `42`. The same holds for `number`, `bool` and a
+`/task/42` passes the number `42`. The same holds for `float`, `bool` and a
 literal union; a segment that cannot be one (`/task/abc` for an `int`) is a
 prop that does not fit, left out and reported.
 
