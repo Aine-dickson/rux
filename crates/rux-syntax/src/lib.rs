@@ -112,7 +112,10 @@ mod tests {
         assert_eq!(grouped("a ?? 0 == 1"), "((a ?? 0) == 1)");
         assert_eq!(grouped("a < b in c"), "((a < b) in c)");
         // `is` is printed as the call the fork runs it as.
-        assert_eq!(grouped("a == b is int"), "__is((a == b), \"int\")");
+        // and binds as `<` does on both sides, where the fork gave it none on
+        // its right and read this as `(a == b) is int`.
+        assert_eq!(grouped("a == b is int"), "(a == __is(b, \"int\"))");
+        assert_eq!(grouped("x is int == true"), "(__is(x, \"int\") == true)");
         assert_eq!(grouped("a + b is int"), "__is((a + b), \"int\")");
         assert_eq!(grouped("x is T && y"), "(__is(x, \"T\") && y)");
         assert_eq!(grouped("x is Page<Map<string, int[]>>"), "__is(x, \"Page<Map<string, int[]>>\")");

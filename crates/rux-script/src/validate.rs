@@ -52,7 +52,8 @@ pub fn fits<V: Checkable>(value: &V, ty: &Type, named: &dyn Fn(&str) -> Option<D
 fn fits_at<V: Checkable>(value: &V, ty: &Type, named: &dyn Fn(&str) -> Option<Decl>, depth: usize) -> bool {
     match ty {
         Type::Any => true,
-        Type::Null => value.is_null(),
+        Type::Null | Type::Void => value.is_null(),
+        Type::BoolLit(b) => value.as_bool() == Some(*b),
         Type::Float => value.as_number().is_some(),
         // Whole, as `.length` and an index are. A script's numbers are floats
         // once they have been through a signal, so `3.0` is an `int` too.
@@ -96,7 +97,7 @@ fn resolved(ty: &Type, named: &dyn Fn(&str) -> Option<Decl>) -> Option<Type> {
         Type::Generic(name, args) => (name, args),
         _ => return None,
     };
-    let (params, body) = named(name)?;
+    let (params, body) = named(name).or_else(|| (name == "Result").then(crate::types::result_decl))?;
     if params.is_empty() {
         return args.is_empty().then_some(body);
     }

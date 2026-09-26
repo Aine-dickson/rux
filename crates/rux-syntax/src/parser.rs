@@ -889,10 +889,12 @@ impl<'t> Parser<'t> {
     }
 
     /// An operator's precedence, the fork's table; `None` for a token that
-    /// ends the expression. `lookahead` is the fork's second reading, after a
-    /// right-hand side, where `is` has none: so `a == b is int` is
-    /// `(a == b) is int`.
-    fn precedence(&self, tok: &Tok, lookahead: bool) -> PResult<Option<u8>> {
+    /// ends the expression. `is` binds as `<` does on both sides, so
+    /// `a == b is int` is `a == (b is int)`; the fork gave it no precedence
+    /// after a right-hand side, and read that as `(a == b) is int` (step 3.5
+    /// of `docs/11-next.md`). The fork never parses `is` now: it is handed
+    /// `__is(x, "T")`.
+    fn precedence(&self, tok: &Tok) -> PResult<Option<u8>> {
         Ok(Some(match tok {
             Tok::Punct("|") if self.no_pipe => return Ok(None),
             Tok::Punct("||" | "^" | "|") => 30,
@@ -900,7 +902,7 @@ impl<'t> Parser<'t> {
             Tok::Punct("==" | "!=" | "===" | "!==") => 90,
             Tok::Kw("in") | Tok::Punct("!in") => 110,
             Tok::Punct("<" | "<=" | ">" | ">=") => 130,
-            Tok::Reserved(r) if *r == "is" && !lookahead => 130,
+            Tok::Reserved(r) if *r == "is" => 130,
             Tok::Punct("??") => 135,
             Tok::Punct(".." | "..=") => 140,
             Tok::Punct("+" | "-") => 150,
@@ -919,7 +921,7 @@ impl<'t> Parser<'t> {
         let mut root = lhs;
         loop {
             let op_tok = self.peek();
-            let Some(prec) = self.precedence(&op_tok, false)? else { return Ok(root) };
+            let Some(prec) = self.precedence(&op_tok)? else { return Ok(root) };
             let right = op_tok.is_punct("**");
             if prec < parent || (prec == parent && !right) {
                 return Ok(root);
@@ -942,7 +944,7 @@ impl<'t> Parser<'t> {
                 }
                 _ => self.unary()?,
             };
-            let next = self.precedence(&self.peek(), true)?;
+            let next = self.precedence(&self.peek())?;
             let rhs = match next {
                 Some(n) if n > prec || (n == prec && right) => self.binary(prec, rhs)?,
                 _ => rhs,
@@ -1508,7 +1510,7 @@ impl<'t> Parser<'t> {
                 }
             }
             Tok::Ident(_) | Tok::Str(_) => Some(at + 1),
-            Tok::Reserved(r) if *r == "null" => Some(at + 1),
+            Tok::Reserved(r) if *r == "null" || *r == "void" => Some(at + 1),
             Tok::Kw("none") => Some(at + 1),
             Tok::Punct("{") => self.type_record_end(at + 1),
             Tok::Punct("()") if self.peek_nth(at + 1).is_punct("=>") => self.type_end(at + 2),
@@ -1697,6 +1699,8 @@ impl<'t> Parser<'t> {
             }
             Tok::Ident(n) => TypeKind::Name(n.to_string()),
             Tok::Str(s) => TypeKind::Literal(s.to_string()),
+            // `void` is reserved as a name, and is a type.
+            Tok::Reserved(r) if *r == "void" => TypeKind::Name("void".to_string()),
             Tok::Reserved(_) | Tok::Kw("none") => TypeKind::Null,
             Tok::Punct("()") => {
                 self.bump(); // `=>`

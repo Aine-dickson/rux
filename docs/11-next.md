@@ -386,10 +386,11 @@ Two things differ from JavaScript and are kept: **`??` binds tighter than a
 comparison**, so `a ?? 0 == 1` is `(a ?? 0) == 1`, and **`in` binds looser
 than one**, so `a < b in c` is `(a < b) in c`.
 
-**One quirk is marked for step 3** (Changed, proposed). In the fork, `is`
-binds as `<` does on its left but has no precedence on its right, so
-`a == b is int` is `(a == b) is int`, where the table says
-`a == (b is int)`. Step 3 gives `is` its level on both sides.
+**One quirk of the fork's is gone** (Changed, done in step 3.5). In the fork,
+`is` bound as `<` does on its left but had no precedence on its right, so
+`a == b is int` was `(a == b) is int`, where the table says
+`a == (b is int)`. `is` now has its level on both sides; the fork is handed
+`__is(x, "T")` and never parses it.
 
 **Assignment is a statement**, not an operator (Kept): `a = b = c` is an error.
 `=`, `+=`, `-=`, `*=`, `/=`, `%=`, and `x++`/`x--` in statement position only.

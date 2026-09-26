@@ -266,8 +266,9 @@ impl<'a> Checker<'a> {
             cx,
             source: Source::new(src),
             in_template: None,
-            types: HashMap::new(),
-            type_params: HashMap::new(),
+            // `Result` is declared everywhere.
+            types: HashMap::from([("Result".to_string(), crate::types::result_decl().1)]),
+            type_params: HashMap::from([("Result".to_string(), crate::types::result_decl().0)]),
             tparams: Vec::new(),
             hidden: HashMap::new(),
             fns: HashMap::new(),
@@ -895,6 +896,9 @@ impl<'a> Checker<'a> {
             (_, Type::Union(members)) => members.iter().any(|m| self.assignable_at(&from, m, d)),
             // An `int` widens to a `float`; never the other way.
             (Type::Int, Type::Float) => true,
+            (Type::BoolLit(_), Type::Bool) => true,
+            // `return none;` and `return;` in a `void` function.
+            (Type::Null, Type::Void) => true,
             (Type::Literal(_), Type::String) => true,
             (Type::Literal(a), Type::Literal(b)) => a == b,
             (Type::Array(a), Type::Array(b)) => self.assignable_at(a, b, d),
@@ -913,7 +917,7 @@ impl<'a> Checker<'a> {
             (Type::Function(fp, fr), Type::Function(tp, tr)) => {
                 fp.len() <= tp.len()
                     && fp.iter().zip(tp).all(|(f, t)| self.assignable_at(t, f, d))
-                    && (matches!(**tr, Type::Null) || self.assignable_at(fr, tr, d))
+                    && (matches!(**tr, Type::Null | Type::Void) || self.assignable_at(fr, tr, d))
             }
             _ => false,
         }
@@ -1050,13 +1054,15 @@ impl<'a> Checker<'a> {
             _ => {
                 let Some(path) = path_of(cond) else { return Vec::new() };
                 let t = self.infer_quietly(cond);
-                if truth {
-                    vec![(path, self.non_null(&t))]
+                let mut out = if truth {
+                    vec![(path.clone(), self.non_null(&t))]
                 } else if falsy_only_when_null(&without_null(&self.resolve(&t))) && t != Type::Any {
-                    vec![(path, Type::Null)]
+                    vec![(path.clone(), Type::Null)]
                 } else {
                     Vec::new()
-                }
+                };
+                out.extend(self.facts_of_flag(&path, truth));
+                out
             }
         }
     }
@@ -1141,6 +1147,30 @@ impl<'a> Checker<'a> {
             }
         }
         Some(out)
+    }
+
+    /// `if r.ok`: a union whose members say `ok: true` or `ok: false` keeps
+    /// the ones that agree, which is how a `Result` is read.
+    fn facts_of_flag(&mut self, path: &str, truth: bool) -> Vec<(String, Type)> {
+        let Some(cut) = path.rfind('.') else { return Vec::new() };
+        let (parent, field) = (&path[..cut], &path[cut + 1..]);
+        let Some(Type::Union(members)) = self.type_at(parent).map(|t| self.resolve(&t)) else { return Vec::new() };
+        let kept: Vec<Type> = members
+            .iter()
+            .filter(|m| match self.resolve(m) {
+                Type::Record(fields) => {
+                    !matches!(fields.iter().find(|f| f.name == field).map(|f| self.resolve(&f.ty)), Some(Type::BoolLit(b)) if b != truth)
+                }
+                Type::Null => !truth,
+                _ => true,
+            })
+            .cloned()
+            .collect();
+        if !kept.is_empty() && kept.len() < members.len() {
+            vec![(parent.to_string(), Type::union(kept))]
+        } else {
+            Vec::new()
+        }
     }
 
     /// `key in map` held: the key is there.
@@ -2080,6 +2110,11 @@ impl<'a> Checker<'a> {
                 self.property(&base, &shown, &name.name, name.span, read).optional()
             }
             ExprKind::Field { name, .. } => self.property(&base, &shown, &name.name, name.span, read),
+            // A `Result`'s value, or the error thrown.
+            ExprKind::Method { name, args, .. } if name.name == "unwrap" && args.is_empty() => match &shown {
+                Type::Generic(n, a) if n == "Result" && a.len() == 2 => a[0].clone(),
+                _ => self.method(&base, &name.name, args),
+            },
             ExprKind::Method { name, args, .. } => self.method(&base, &name.name, args),
             _ => Type::Any,
         };
@@ -2173,7 +2208,14 @@ impl<'a> Checker<'a> {
             }
             // `.length` on a map, or a field on a number: rhai raises, and so
             // does this.
-            Type::Float | Type::Int | Type::Bool | Type::String | Type::Literal(_) | Type::Array(_) => {
+            Type::Float
+            | Type::Int
+            | Type::Bool
+            | Type::BoolLit(_)
+            | Type::Void
+            | Type::String
+            | Type::Literal(_)
+            | Type::Array(_) => {
                 self.error(pos, format!("{} has no property `{name}`", self.show(shown)));
                 Type::Any
             }
@@ -2326,6 +2368,16 @@ impl<'a> Checker<'a> {
 
         match (name, args.len()) {
             ("signal", 1) => return self.infer(&args[0]),
+            // The two halves of a `Result`; the other half is whatever the
+            // place it goes wants.
+            ("Ok", 1) => {
+                let t = widen(&self.infer(&args[0]));
+                return Type::Generic("Result".into(), vec![t, Type::Any]);
+            }
+            ("Err", 1) => {
+                let t = widen(&self.infer(&args[0]));
+                return Type::Generic("Result".into(), vec![Type::Any, t]);
+            }
             // Text to a number gives `none` where JavaScript gives `NaN`.
             ("parseInt", 1) => {
                 self.infer_all(args);
@@ -2470,7 +2522,8 @@ impl<'a> Checker<'a> {
             (Type::Literal(x), Type::Literal(y)) => x == y,
             (Type::Literal(_) | Type::String, Type::Literal(_) | Type::String) => true,
             (Type::Float | Type::Int, Type::Float | Type::Int) => true,
-            (Type::Bool, Type::Bool) => true,
+            (Type::Bool | Type::BoolLit(_), Type::Bool) | (Type::Bool, Type::BoolLit(_)) => true,
+            (Type::BoolLit(a), Type::BoolLit(b)) => a == b,
             (Type::Record(_) | Type::Dict(_), Type::Record(_) | Type::Dict(_)) => true,
             (Type::Array(_), Type::Array(_)) | (Type::Function(..), Type::Function(..)) => true,
             (Type::Named(_), _) | (_, Type::Named(_)) => true,
@@ -2725,6 +2778,14 @@ impl<'a> Checker<'a> {
             info.params.iter().map(|(p, t)| (p.clone(), t.clone().unwrap_or(Type::Any))).collect(),
         );
         let inferred = match &info.result {
+            // `: void`: what its last statement makes is not a result, and a
+            // `return` with a value is an error.
+            Some(Type::Void) => {
+                self.results.push(Some((name.to_string(), Type::Void)));
+                self.check_statements(&info.def.body.stmts);
+                self.results.pop();
+                Type::Void
+            }
             // Declared: every value it hands back is checked against it.
             Some(declared) => {
                 self.results.push(Some((name.to_string(), declared.clone())));
@@ -2797,7 +2858,7 @@ impl<'a> Checker<'a> {
         let result = Type::union(results);
 
         if let Some((_, want)) = &expected {
-            if !matches!(self.resolve(want), Type::Any | Type::Null) && !self.assignable(&result, want) {
+            if !matches!(self.resolve(want), Type::Any | Type::Null | Type::Void) && !self.assignable(&result, want) {
                 let message = format!(
                     "this function returns {}, where {} is expected",
                     self.show(&result),
@@ -3076,7 +3137,7 @@ fn is_type_of(t: &Type, tag: &str, types: &HashMap<String, Type>) -> bool {
     };
     match tag {
         "string" => matches!(t, Type::String | Type::Literal(_)),
-        "bool" => t == Type::Bool,
+        "bool" => matches!(t, Type::Bool | Type::BoolLit(_)),
         "array" => matches!(t, Type::Array(_)),
         "map" => matches!(t, Type::Record(_) | Type::Dict(_)),
         "()" => t == Type::Null,
@@ -3160,6 +3221,7 @@ fn uninformative(e: &Expr) -> Option<Blank> {
 fn widen(ty: &Type) -> Type {
     match ty {
         Type::Literal(_) => Type::String,
+        Type::BoolLit(_) => Type::Bool,
         Type::Array(item) => Type::Array(Box::new(widen(item))),
         Type::Record(fields) => Type::Record(
             fields.iter().map(|f| Field { name: f.name.clone(), optional: f.optional, ty: widen(&f.ty) }).collect(),
@@ -3400,6 +3462,46 @@ mod tests {
         };
         let f = findings_with("let p: Page<string> = { items: [1] };", &cx);
         assert!(f.iter().any(|f| f.message.contains("where `string` is expected")), "{f:?}");
+    }
+
+    /// `Result`, `void` and `is`, step 3.5 of `docs/11-next.md`.
+    #[test]
+    fn a_result_is_read_by_its_ok() {
+        let age = "fn parseAge(s: string): Result<int, string> {\n\
+                     let n = parseInt(s);\n\
+                     if n == none { return Err(\"not a number\"); }\n\
+                     if n < 0 { return Err(\"negative\"); }\n\
+                     Ok(n)\n}\n\
+                   let age: int = 0;\nlet problem: string = \"\";\n";
+        let src = format!("{age}fn read(s: string) {{ let r = parseAge(s); if r.ok {{ age = r.value; }} else {{ problem = r.error; }} }}");
+        assert!(findings(&src).is_empty(), "{:#?}", findings(&src));
+        // Unread, either field may be missing.
+        one_error(&format!("{age}fn read(s: string) {{ age = parseAge(s).value; }}"), "no field `value`");
+        one_error(&format!("{age}fn read(s: string) {{ let r = parseAge(s); if !r.ok {{ age = r.value; }} }}"), "no field `value`");
+        // The halves are held to what the function declared.
+        one_error("fn f(): Result<int, string> { Ok(\"x\") }", "`f` is declared to return `Result<int, string>`");
+        one_error("fn f(): Result<int, string> { Err(1) }", "`f` is declared to return `Result<int, string>`");
+        assert!(errors(&format!("{age}let n: int = parseAge(\"4\").unwrap();")).is_empty());
+        one_error(&format!("{age}let s: string = parseAge(\"4\").unwrap();"), "this is `int`, where `string` is expected");
+        // A generic function passes a `Result` through.
+        assert!(errors("fn keep<T>(r: Result<T, string>): Result<T, string> { r }\nlet r: Result<int, string> = keep(Ok(1));").is_empty());
+    }
+
+    #[test]
+    fn void_returns_nothing() {
+        assert!(errors("let n: int = 0;\nfn bump(): void { n += 1; }\nfn early(): void { if n > 3 { return; } n = 0; }").is_empty());
+        one_error("fn f(): void { return 1; }", "`f` is declared to return `void`, and this is `int`");
+        one_error("fn f(): void { }\nlet x: int = f();", "this is `void`, where `int` is expected");
+        // A callback that returns nothing takes any function.
+        assert!(errors("fn each(f: (int) => void) { f(1); }\nfn g() { each(n => n + 1); }").is_empty());
+        assert!(errors("let a: string? = none; let b: void? = none;").is_empty());
+    }
+
+    #[test]
+    fn is_binds_as_a_comparison_on_both_sides() {
+        // `a == b is int` is `a == (b is int)`: a `bool` compared with `a`.
+        one_error("let a = 1; let b = 2; fn f() { a == b is int }", "compares `int` with `bool`");
+        assert!(errors("let a = true; let b = 2; fn f(): bool { a == b is int }").is_empty());
     }
 
     #[test]

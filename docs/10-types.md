@@ -108,6 +108,8 @@ collide, and an import can tell a type from a component by its spelling (see
 | `(Task, int) => bool` | A function, where one is a value |
 | `Task` | A name declared with `type`, or imported with `use` |
 | `Page<int>` | A declared type that takes type parameters, given them |
+| `Result<T, E>` | `T`, or an error `E` kept as an answer. See below |
+| `void` | What a function returns when it returns nothing |
 
 **A whole-number literal is an `int`, and one with a point or an exponent a
 `float`** (changed in step 3 of [The Rux language](./11-next.md#numbers); until
@@ -141,8 +143,15 @@ nothing is known about: its value can be passed on, stored and compared, and
 reading a field of it, adding to it or testing it with `is` is an error. A
 generic type named without its arguments, or with the wrong number, is an
 error, and so is one given arguments it does not take. A `Map`'s keys are
-`string` for now, and `Set` and `Result` are not in yet; each is an error that
-says so.
+`string` for now, and `Set` is not in yet; each is an error that says so.
+
+**`Result<T, E>`** is `{ ok: true, value: T } | { ok: false, error: E }`,
+declared in every file. `Ok(v)` and `Err(e)` build one, `if r.ok` narrows it
+(so `r.value` reads plainly inside, and `r.error` in the `else`), and
+`r.unwrap()` gives the value or throws the error. **`void`** is what a function
+declared `: void` returns: its last statement is not a result, `return x;` in
+it is an error, and its call is nothing to use. A callback typed
+`(T) => void` takes a function that returns anything.
 
 Not in the first release, and so errors if written: number and boolean literal
 types, intersections (`A & B`), tuples, `extends` constraints, type arguments
@@ -481,8 +490,8 @@ number is an `int` when it is whole. It answers `true` or `false` and never
 raises. A name that is no type is an error from the checker, and at run time
 fits nothing.
 
-`is` binds as `<` does, so `a + b is int` tests the sum and `x is T && y` is
-`(x is T) && y`. Where it held, `x` is a `T`; in the `else`, a union loses the
+`is` binds as `<` does, on both sides, so `a + b is int` tests the sum,
+`x is T && y` is `(x is T) && y`, and `a == b is int` is `a == (b is int)`. Where it held, `x` is a `T`; in the `else`, a union loses the
 members that are all `T`, so `if v is string { … } else { v.n }` reads the
 record's field. The compiler generates a validator only
 for types that appear on the right of an `is` and for props, so a program pays

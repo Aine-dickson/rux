@@ -674,6 +674,32 @@ fn register_js_names(engine: &mut RhaiEngine) {
     engine.register_fn("isNaN", |n: f64| n.is_nan());
     engine.register_fn("isNaN", |_: i64| false);
 
+    // `Result<T, E>`: `{ ok: true, value }` or `{ ok: false, error }`, a plain
+    // map, so reading it is the narrowing that already exists. `unwrap` gives
+    // the value or throws the error. See `docs/11-next.md`, "Result".
+    engine.register_fn("Ok", |value: Dynamic| {
+        let mut m = rhai::Map::new();
+        m.insert("ok".into(), Dynamic::from(true));
+        m.insert("value".into(), value);
+        m
+    });
+    engine.register_fn("Err", |error: Dynamic| {
+        let mut m = rhai::Map::new();
+        m.insert("ok".into(), Dynamic::from(false));
+        m.insert("error".into(), error);
+        m
+    });
+    engine.register_fn("unwrap", |r: &mut rhai::Map| -> Result<Dynamic, Box<EvalAltResult>> {
+        match r.get("ok").and_then(|ok| ok.as_bool().ok()) {
+            Some(true) => Ok(r.get("value").cloned().unwrap_or(Dynamic::UNIT)),
+            Some(false) => {
+                let error = r.get("error").map(|e| from_dynamic(e).to_display()).unwrap_or_default();
+                Err(format!("unwrap() on an error: {error}").into())
+            }
+            None => Err("unwrap() is for a `Result`, made by `Ok(…)` or `Err(…)`".into()),
+        }
+    });
+
     // Between `int` and `float`. The checker keeps them apart; the numbers
     // themselves are all f64 until Rux's own interpreter (step 5 of
     // `docs/11-next.md`), so these answer with whole f64s where the type says
@@ -3449,6 +3475,21 @@ mod tests {
         assert_eq!(e.eval_display("String(2.5) + \"!\"", &[]), "2.5!");
         // The case that found it: an id from a route matched to a number.
         assert!(e.eval_bool("Number(\"2\") == 2", &[]));
+    }
+
+    /// `Ok`, `Err` and `unwrap` at run time.
+    #[test]
+    fn a_result_is_a_map_with_its_ok() {
+        let mut e = engine();
+        assert!(e.eval_bool("Ok(3).ok && Ok(3).value == 3", &[]));
+        assert!(e.eval_bool("!Err(\"bad\").ok && Err(\"bad\").error == \"bad\"", &[]));
+        assert_eq!(e.eval_display("Ok(4).unwrap() + 1", &[]), "5");
+        assert!(e.eval_value("Err(\"bad\").unwrap()", &[]).is_none(), "unwrap on an error throws");
+        assert!(e.eval_bool("Ok(1) is Result<int, string>", &[]));
+        assert!(!e.eval_bool("Ok(\"x\") is Result<int, string>", &[]));
+        assert!(e.eval_bool("Err(\"x\") is Result<int, string>", &[]));
+        // `is` binds as `<` does on both sides.
+        assert!(e.eval_bool("true == 2 is int", &[]));
     }
 
     /// An arrow held in a variable is called like a function, as in

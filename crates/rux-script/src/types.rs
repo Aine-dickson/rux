@@ -21,6 +21,12 @@ pub enum Type {
     Bool,
     /// The empty value.
     Null,
+    /// What a function declared `: void` returns: nothing to use.
+    Void,
+    /// Exactly `true` or exactly `false`. Not written by an author (boolean
+    /// literal types are not in the language); it is how [`result_decl`]'s
+    /// `ok` tells the two halves of a `Result` apart.
+    BoolLit(bool),
     /// Anything, unchecked.
     Any,
     /// Exactly this string, as in `"all"`.
@@ -73,7 +79,7 @@ impl fmt::Display for TypeSyntaxError {
 
 /// The built-in type names, which are all lower case. A declared type starts
 /// with a capital letter, so the two cannot collide.
-pub const BUILT_IN: &[&str] = &["int", "float", "string", "bool", "none", "any"];
+pub const BUILT_IN: &[&str] = &["int", "float", "string", "bool", "none", "void", "any"];
 
 /// Names from other languages that mean a built-in here.
 const SPELLED_ELSEWHERE: &[(&str, &str)] = &[
@@ -88,7 +94,6 @@ const SPELLED_ELSEWHERE: &[(&str, &str)] = &[
     ("String", "string"),
     ("undefined", "none"),
     ("unknown", "any"),
-    ("void", "none"),
     ("object", "a record type such as `{ id: int }`"),
 ];
 
@@ -116,6 +121,12 @@ impl Type {
         if out.contains(&Type::String) {
             out.retain(|t| !matches!(t, Type::Literal(_)));
         }
+        if out.contains(&Type::Bool) || (out.contains(&Type::BoolLit(true)) && out.contains(&Type::BoolLit(false))) {
+            out.retain(|t| !matches!(t, Type::BoolLit(_)));
+            if !out.contains(&Type::Bool) {
+                out.push(Type::Bool);
+            }
+        }
         if out.len() == 1 {
             out.pop().unwrap()
         } else {
@@ -137,6 +148,8 @@ impl fmt::Display for Type {
             Type::String => f.write_str("string"),
             Type::Bool => f.write_str("bool"),
             Type::Null => f.write_str("none"),
+            Type::Void => f.write_str("void"),
+            Type::BoolLit(b) => write!(f, "{b}"),
             Type::Any => f.write_str("any"),
             Type::Literal(s) => write!(f, "{s:?}"),
             Type::Array(inner) => match **inner {
@@ -255,6 +268,18 @@ impl Type {
             _ => false,
         }
     }
+}
+
+/// `Result<T, E>`, which every file knows: a value kept on purpose where an
+/// error is an answer, read with the narrowing that already exists
+/// (`if r.ok { r.value } else { r.error }`). See `docs/11-next.md`, "Result".
+pub fn result_decl() -> (Vec<String>, Type) {
+    let field = |name: &str, ty: Type| Field { name: name.into(), optional: false, ty };
+    let body = Type::Union(vec![
+        Type::Record(vec![field("ok", Type::BoolLit(true)), field("value", Type::Param("T".into()))]),
+        Type::Record(vec![field("ok", Type::BoolLit(false)), field("error", Type::Param("E".into()))]),
+    ]);
+    (vec!["T".into(), "E".into()], body)
 }
 
 /// A declared type as [`crate::Engine::declared_types`] writes it for another
@@ -581,7 +606,10 @@ fn applied(name: &str, mut args: Vec<Type>) -> Result<Type, String> {
             Ok(Type::Dict(Box::new(args.remove(1))))
         }
         "Set" => Err("`Set` is not in the language yet; it comes with Rux's own interpreter".into()),
-        "Result" => Err("`Result` is not in the language yet".into()),
+        "Result" => {
+            want(2)?;
+            Ok(Type::Generic("Result".into(), args))
+        }
         _ => match named(name)? {
             Type::Named(n) => Ok(Type::Generic(n, args)),
             _ => Err(format!("`{name}` takes no type arguments")),
@@ -604,6 +632,7 @@ fn named(name: &str) -> Result<Type, String> {
         }
         "string" => Type::String,
         "bool" => Type::Bool,
+        "void" => Type::Void,
         // `null` was its name until step 3 of `docs/11-next.md`.
         "none" | "null" => Type::Null,
         "any" => Type::Any,
@@ -707,6 +736,7 @@ mod tests {
         assert!(e("Array").contains("`Array<string>`"));
         assert!(e("Map<int, string>").contains("keys are `string` for now"));
         assert!(e("Set<int>").contains("not in the language yet"));
+        assert!(e("Result<int>").contains("takes two types"));
         assert!(e("int<string>").contains("takes no type arguments"));
         assert!(e("Array<int, int>").contains("takes one type"));
         assert!(e("task").contains("capital letter"));

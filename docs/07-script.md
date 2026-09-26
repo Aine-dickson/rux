@@ -326,6 +326,23 @@ do. A call never names them; they are what its arguments make them, so
 `first(tasks)` is a `Task?`. `Array<T>`, `Option<T>` and `Map<string, T>` are
 the long spellings of `T[]`, `T?` and `{ [string]: T }`.
 
+A function that returns nothing may say so with `: void`. For an error that is
+an answer rather than a failure, a function returns a `Result<T, E>`, built
+with `Ok(value)` or `Err(error)` and read by its `ok`:
+
+```rux
+fn parseAge(s: string): Result<int, string> {
+  let n = parseInt(s);
+  if n == none { return Err("not a number"); }
+  Ok(n)
+}
+
+let r = parseAge(text);
+if r.ok { age = r.value; } else { problem = r.error; }
+```
+
+`r.unwrap()` gives the value, or throws the error.
+
 In a component, `prop label: string;` and `prop price: float = 1;`. A type
 declared in one file is used in another with `use types::Task;`, which names
 the `type Task` in `types.rux`; a type's name starts with a capital letter,
@@ -385,7 +402,8 @@ if raw is Settings {
 
 Every required field must be there with its type, every element and every
 union member is tried, an extra field is allowed, and a whole number is an
-`int`. `is` binds as `<` does: `a + b is int`, `(x is T) && y`.
+`int`. `is` binds as `<` does, on both sides: `a + b is int`, `(x is T) && y`,
+and `a == b is int` is `a == (b is int)`.
 
 **Props are checked as the component is built**, in release builds too,
 since a value from a route or an `any` never met the checker. One that does
