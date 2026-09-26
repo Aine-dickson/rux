@@ -10,10 +10,14 @@
 //! the compiled-Rust boundary (`docs/04-architecture.md`, script/host tiers).
 
 pub mod check;
+#[cfg(debug_assertions)]
+mod fork;
+#[cfg(debug_assertions)]
 mod front;
 pub mod interp;
 pub mod lower;
 pub mod profile;
+#[cfg(debug_assertions)]
 mod shadow;
 pub use rux_ir::types;
 pub mod validate;
@@ -22,7 +26,6 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use rhai::{Dynamic, Engine as RhaiEngine, EvalAltResult, ImmutableString, Module, Position, Scope, AST};
 use rux_reactive::{Value, Warning};
 
 thread_local! {
@@ -165,102 +168,14 @@ impl ElementHandle {
     }
 }
 
-/// Register `query()` and the handle it returns.
-fn register_elements(engine: &mut RhaiEngine) {
-    engine
-        .register_type_with_name::<ElementHandle>("Element")
-        .register_get("tag", |e: &mut ElementHandle| e.facts.tag.clone())
-        // Absent rather than empty, so `el.id ?? "none"` reads the way it does
-        // everywhere else in the language.
-        .register_get("id", |e: &mut ElementHandle| match &e.facts.id {
-            Some(id) => Dynamic::from(id.clone()),
-            None => Dynamic::UNIT,
-        })
-        .register_get("classes", |e: &mut ElementHandle| {
-            e.facts.classes.iter().cloned().map(Dynamic::from).collect::<rhai::Array>()
-        });
-
-    // Geometry, from the frame that is currently on screen.
-    //
-    // **One frame stale, and that is the guarantee, not a defect.** A handler
-    // runs before the next layout, so it reads the numbers the last one
-    // produced, exactly as `getBoundingClientRect` does in a browser. Anything
-    // else would mean laying out mid-handler, from within a tap that is about
-    // to change the very state the layout depends on.
-    //
-    // Absent rather than zero when there is no frame to read, so "not laid out"
-    // stays distinguishable from "laid out, and genuinely zero wide".
-    fn dimension(
-        e: &ElementHandle,
-        pick: impl Fn(&ElementBox) -> f32,
-    ) -> Dynamic {
-        match &e.facts.bounds {
-            Some(b) => Dynamic::from(pick(b) as f64),
-            None => Dynamic::UNIT,
-        }
-    }
-    engine
-        .register_get("x", |e: &mut ElementHandle| dimension(e, |b| b.x))
-        .register_get("y", |e: &mut ElementHandle| dimension(e, |b| b.y))
-        .register_get("width", |e: &mut ElementHandle| dimension(e, |b| b.width))
-        .register_get("height", |e: &mut ElementHandle| dimension(e, |b| b.height));
-
-    // The actions. Each records an intent and returns nothing; the runtime
-    // applies them after the handler has finished, so a handler that focuses
-    // something and then changes state does not race its own tree.
-    engine
-        .register_fn("focus", |e: &mut ElementHandle| {
-            let path = e.facts.path.clone();
-            ELEMENT_ACTIONS.with(|a| a.borrow_mut().push(ElementAction::Focus(path)));
-        })
-        .register_fn("scrollIntoView", |e: &mut ElementHandle| {
-            let path = e.facts.path.clone();
-            ELEMENT_ACTIONS.with(|a| a.borrow_mut().push(ElementAction::ScrollIntoView(path)));
-        })
-        .register_fn("tap", |e: &mut ElementHandle| {
-            let path = e.facts.path.clone();
-            ELEMENT_ACTIONS.with(|a| a.borrow_mut().push(ElementAction::Tap(path)));
-        });
-    // `blur()` is free-standing rather than a method, because there is only one
-    // focused element and blurring "this one" would either do nothing or take
-    // focus from something else.
-    engine.register_fn("blur", || {
-        ELEMENT_ACTIONS.with(|a| a.borrow_mut().push(ElementAction::Blur));
-    });
-    engine.register_fn(SUBMIT_FN, |form: ImmutableString| {
-        let path = form.split('.').filter_map(|i| i.parse().ok()).collect();
-        ELEMENT_ACTIONS.with(|a| a.borrow_mut().push(ElementAction::Submit(path)));
-    });
-
-    engine.register_fn(
-        "query",
-        |selector: ImmutableString| -> Result<rhai::Array, Box<EvalAltResult>> {
-            let resolver = ELEMENTS.with(|e| e.borrow().clone());
-            let Some(resolver) = resolver else {
-                return Err("query() is only available inside a handler, because a \
-                            binding that reads the tree would rebuild the tree it read"
-                    .into());
-            };
-            // A selector that cannot be parsed is an error, not an empty list.
-            // Matching nothing in silence is the failure this language keeps
-            // closing off, and a typo in a selector is exactly that failure.
-            let Some(found) = resolver(&selector) else {
-                return Err(format!("`{selector}` is not a selector this can match").into());
-            };
-            Ok(found.into_iter().map(|facts| Dynamic::from(ElementHandle { facts })).collect())
-        },
-    );
-}
 
 /// Builds an [`Engine`]: register host functions, then `build` with the script.
 /// Host functions must be registered before the script runs, since the script
 /// may call them during initialization.
 pub struct Builder {
-    engine: RhaiEngine,
-    host: Module,
     /// The type of every `host::` function registered, for the checker.
     host_types: Vec<(String, types::Type)>,
-    /// The same functions, for Rux's interpreter.
+    /// The functions themselves.
     host_fns: HashMap<String, interp::Host>,
 }
 
@@ -286,8 +201,10 @@ pub struct ScriptError {
 }
 
 impl ScriptError {
-    fn at(message: String, position: Position) -> Self {
-        Self { message, line: position.line(), column: position.position() }
+    /// A failure at byte `at` of `src`.
+    fn at(message: String, src: &str, at: usize) -> Self {
+        let (line, column) = rux_syntax::LineIndex::new(src).line_col(src, at);
+        Self { message, line: Some(line), column: Some(column) }
     }
 
     /// A failure with nothing to point at.
@@ -318,309 +235,83 @@ pub const MAX_OPERATIONS: u64 = 5_000_000;
 
 impl Builder {
     pub fn new() -> Self {
-        let mut engine = RhaiEngine::new();
-
-        // Strict bindings: `user.nmae` raises instead of evaluating to `()`.
-        //
-        // This was recorded for two milestones as a reason the rhai fork had to
-        // exist, on the belief that silent map lookup was rhai's semantics and
-        // could not be closed from outside the engine. It can: the option landed
-        // upstream and nobody had looked. Turning it on here is the whole of what
-        // `docs/06-roadmap.md` calls v0.7 item 1, and it costs no divergence.
-        //
-        // The failure it kills is the one the dev overlay exists for. A typo in a
-        // `{{ }}` binding used to render empty, which looks exactly like a value
-        // that is legitimately absent, so nothing was reported and the author
-        // went looking at their data instead of their spelling.
-        engine.set_fail_on_invalid_map_property(true);
-
-        // Limits, so a script that never stops is stopped. Without them a
-        // `while true {}` in a handler held the UI thread for good, which on
-        // Android is an "app not responding" and on the web a frozen tab, and
-        // nothing was ever reported. Harmless while every document is its
-        // author's own; a denial of service once one is fetched or shared.
-        //
-        // Each evaluation counts separately (a binding, a handler, a body), so
-        // the ceilings are per piece of work and generous: far past anything
-        // an app does in one go, and still a fraction of a second in a release
-        // build before a runaway loop is ended.
-        engine.set_max_operations(MAX_OPERATIONS);
-        engine.set_max_string_size(64 * 1024 * 1024);
-        engine.set_max_array_size(10_000_000);
-        engine.set_max_map_size(10_000_000);
-
-        // Do not let the optimizer delete calls made for their side effects.
-        //
-        // rhai's default optimization pass removes a call whose result is
-        // unused when it believes the call is pure, and it cannot know that a
-        // function registered from the host is not. Nearly every Rux builtin is
-        // called for effect and discarded: `print(x)`, `emit("change")`,
-        // `navigate("/")`. Found by `print(1); print(1)` producing one line
-        // instead of two, which is a mild symptom of a rule that could just as
-        // easily have eaten a navigation.
-        //
-        // The expressions being compiled here are single bindings and handler
-        // bodies, so there is nothing for an optimizer to win.
-        engine.set_optimization_level(rhai::OptimizationLevel::None);
-
-        // `===` and `!==` mean what `==` and `!=` mean.
-        //
-        // Muscle memory only, for anyone arriving from JS. Deliberately *not*
-        // JS's loose `==`: both spellings are the strict comparison, so there is
-        // no coercion rule to learn and no pair of operators to choose between.
-        //
-        // Reserved but unimplemented upstream, and `register_custom_operator`
-        // accepts a reserved token, so this is a registration rather than a fork
-        // change. Precedence 90 is what rhai gives `==` and `!=`.
-        //
-        // Both compare through `Value` rather than rhai's per-type equality, so
-        // `===` answers the same question `{{ }}` and `r-if` would: Rux's value
-        // model is the one the language user can see.
-        let _ = engine.register_custom_operator("===", 90);
-        let _ = engine.register_custom_operator("!==", 90);
-        engine.register_fn("===", |a: Dynamic, b: Dynamic| from_dynamic(&a) == from_dynamic(&b));
-        engine.register_fn("!==", |a: Dynamic, b: Dynamic| from_dynamic(&a) != from_dynamic(&b));
-
-        // `signal(x)` is identity: `let level = signal(82)` just binds `level`.
-        // Numbers are coerced to float so arithmetic stays consistent.
-        engine.register_fn("signal", |x: Dynamic| -> Dynamic {
-            match x.as_int() {
-                Ok(i) => Dynamic::from(i as f64),
-                Err(_) => x,
-            }
-        });
-        // `10 / 3` is 3.333…, not 3.
-        //
-        // The last visible place where Rux's two numeric types disagreed. A
-        // signal is coerced to f64 by `signal()`, so almost every number a
-        // document handles is already a float and divides like one; two bare
-        // literals were the exception, and integer division is not a rule anyone
-        // arriving from JavaScript expects to meet.
-        //
-        // A registration rather than a fork change, and deliberately so: the
-        // engine's integer division lives in a macro covering every integer
-        // width, while this needs to change for exactly one pair of types.
-        // Registering the same signature shadows the built-in.
-        //
-        // Division by zero yields infinity rather than raising, as in JS. That
-        // follows from f64 division and is left alone rather than special-cased.
-        //
-        // Fast-operators mode has to be off for this to be reachable at all: it
-        // is on by default and dispatches the built-in arithmetic for known type
-        // pairs *without consulting the function registry*, so a registered `/`
-        // for two integers is simply never called. The symptom is a registration
-        // that compiles, runs, and does nothing.
-        engine.set_fast_operators(false);
-        engine.register_fn("/", |a: i64, b: i64| a as f64 / b as f64);
-
-        // Numbers become text the same way everywhere.
-        //
-        // Every number in Rux is an f64, so rhai renders a whole one as "32.0"
-        // while `{{ }}` renders it as "32": the same value spelled two ways in
-        // one window, depending on whether it went through string concatenation
-        // on the way. These overloads point rhai at the same rule `Value`
-        // displays with, so `"over by " + total` and `{{ total }}` agree.
-        engine.register_fn("to_string", |n: f64| Value::Number(n).to_display());
-        engine.register_fn("+", |a: ImmutableString, b: f64| {
-            format!("{a}{}", Value::Number(b).to_display())
-        });
-        engine.register_fn("+", |a: f64, b: ImmutableString| {
-            format!("{}{b}", Value::Number(a).to_display())
-        });
-        // `emit("change")` / `emit("change", payload)`: a component telling its
-        // caller that something happened. It only records the emission; who
-        // listens, and in whose scope their handler runs, is the runtime's
-        // business. A script function cannot mutate a signal, so it could not
-        // run the caller's body itself even if it knew it.
-        engine.register_fn("emit", |name: ImmutableString| {
-            EMISSIONS.with(|e| e.borrow_mut().push((name.to_string(), None)));
-        });
-        engine.register_fn("emit", |name: ImmutableString, payload: Dynamic| {
-            EMISSIONS.with(|e| e.borrow_mut().push((name.to_string(), Some(from_dynamic(&payload)))));
-        });
-        // `navigate("/path")`, `back()`, `forward()`: the router's verbs. Like
-        // `emit`, they record an intent rather than acting on it. Navigation
-        // moves the `route` signal and pushes history, and neither is something
-        // a script function can reach from in here.
-        engine.register_fn("navigate", |path: ImmutableString| {
-            NAVIGATIONS.with(|n| n.borrow_mut().push(Nav::To(path.to_string())));
-        });
-        // `replace` is not a convenience over `navigate`: it is the only way to
-        // redirect. A redirect done with `navigate` leaves the page that
-        // redirected sitting in the history, so Back returns to it and it
-        // redirects again, and the user cannot leave. Nothing in userland can
-        // work around that.
-        engine.register_fn("replace", |path: ImmutableString| {
-            NAVIGATIONS.with(|n| n.borrow_mut().push(Nav::Replace(path.to_string())));
-        });
-        // `path_for("crew-detail", #{ id: "grace" })` builds a path from a
-        // named route. A function returning a string rather than a second form
-        // of `navigate`, because a path is what `to=`, `:to=`, `navigate` and
-        // `replace` all already take: one new function reaches all four, and
-        // there is no second way to say the same thing.
-        engine.register_fn("path_for", |name: ImmutableString, values: rhai::Map| {
-            let values: Vec<(String, Value)> =
-                values.into_iter().map(|(k, v)| (k.to_string(), from_dynamic(&v))).collect();
-            build_named_path(&name, &values)
-        });
-        // A route with no parameters still has a name worth using.
-        engine.register_fn("path_for", |name: ImmutableString| {
-            build_named_path(&name, &[])
-        });
-        engine.register_fn("back", || {
-            NAVIGATIONS.with(|n| n.borrow_mut().push(Nav::Back));
-        });
-        engine.register_fn("forward", || {
-            NAVIGATIONS.with(|n| n.borrow_mut().push(Nav::Forward));
-        });
-        register_js_names(&mut engine);
-        // `x is T`, which the fork parses into this call. See `validate`.
-        engine.register_fn(rhai::IS_FUNCTION, |value: Dynamic, written: ImmutableString| {
-            validate::is(&value, &written)
-        });
-        // What `front::lower` makes of `x is T` now, so the fork never reads a
-        // type: the same test under a name the fork's own `is` does not use.
-        engine.register_fn("__is", |value: Dynamic, written: ImmutableString| validate::is(&value, &written));
-        register_elements(&mut engine);
-
-        // Record every variable read while dependency-tracking is active, then
-        // fall through (`Ok(None)`) to normal scope resolution. `on_var` is
-        // flagged volatile upstream, not deprecated, hence the allow.
-        #[allow(deprecated)]
-        engine.on_var(|name, _index, _context| {
-            READS.with(|r| {
-                if let Some(set) = r.borrow_mut().as_mut() {
-                    set.insert(name.to_string());
-                }
-            });
-            SPANS.with(|s| {
-                for set in s.borrow_mut().iter_mut() {
-                    if !set.contains(name) {
-                        set.insert(name.to_string());
-                    }
-                }
-            });
-            Ok(None)
-        });
-
-        // Told before any variable is written or passed where it may change
-        // (fork item 11). While a handler runs under `Engine::tracking`, the
-        // first time a signal is about to change, its value is kept, so what
-        // the handler changed is found by comparing only those.
-        engine.on_var_write(note_write);
-
-        // `let add = (a, b) => a + b; add(2, 3)`: a variable holding an arrow,
-        // called the way JavaScript calls one. rhai only knew `add.call(2, 3)`,
-        // and `add(2, 3)` failed with "there is no function `add`", which is
-        // the first thing anyone writes after declaring one.
-        //
-        // Only when no function of that name exists, so a real `fn add` still
-        // wins, and only for a plain call: `x.add()` is a method. A closure's
-        // captured values are its curried arguments and go first, as rhai's
-        // own `call` passes them.
-        #[allow(deprecated)]
-        engine.on_missing_function(|name, args, is_method_call, mut context| {
-            if is_method_call {
-                return Ok(None);
-            }
-            let Some(fn_ptr) = context.scope().get_value::<rhai::FnPtr>(name) else {
-                return Ok(None);
-            };
-            let mut values: Vec<Dynamic> = fn_ptr.curry().to_vec();
-            values.extend(args.iter_mut().map(|a| std::mem::take(&mut **a)));
-            let mut refs: Vec<&mut Dynamic> = values.iter_mut().collect();
-            context.call_fn_raw(fn_ptr.fn_name(), false, false, &mut refs).map(Some)
-        });
-        Self {
-            engine,
-            host: Module::new(),
-            host_types: Vec::new(),
-            host_fns: HashMap::new(),
-        }
+        Self { host_types: Vec::new(), host_fns: HashMap::new() }
     }
 
     /// Register a zero-argument `host::<name>()` returning a number.
-    pub fn host_number(
-        &mut self,
-        name: &str,
-        f: impl Fn() -> f64 + Send + Sync + 'static,
-    ) -> &mut Self {
-        let f = Arc::new(f);
-        let for_interp = Arc::clone(&f);
-        self.host_fns.insert(name.to_string(), std::rc::Rc::new(move || for_interp()));
-        self.host.set_native_fn(name, move || -> Result<f64, Box<rhai::EvalAltResult>> {
-            Ok(f())
-        });
+    pub fn host_number(&mut self, name: &str, f: impl Fn() -> f64 + Send + Sync + 'static) -> &mut Self {
+        self.host_fns.insert(name.to_string(), std::rc::Rc::new(f));
         self.host_types
             .push((name.to_string(), types::Type::Function(Vec::new(), Box::new(types::Type::Float))));
         self
     }
 
-    /// Compile and initialize the script, producing a ready [`Engine`].
+    /// Check, lower and run the script's top level, producing a ready
+    /// [`Engine`].
     ///
-    /// The error keeps the position rhai reported. It used to be flattened with
-    /// `e.to_string()` here, which left the line and column readable only as
-    /// prose inside the sentence, and every consumer downstream had `None` for
-    /// both: `rux check --format json` emitted `"line": null` and the editor
-    /// put the squiggle on line 1. See [`ScriptError`].
-    pub fn build(mut self, script: &str) -> Result<Engine, ScriptError> {
-        self.engine
-            .register_static_module("host", self.host.into());
-
-        let (ast, parsed) = front::compile_script_keeping(&self.engine, script)
-            .map_err(|e| ScriptError::at(explain(&e.message), e.position))?;
+    /// The error keeps its position, relative to `script`: the line and
+    /// column a syntax error names, or the start of the statement that
+    /// failed. See [`ScriptError`].
+    pub fn build(self, script: &str) -> Result<Engine, ScriptError> {
+        let parsed = profile::time(profile::Phase::Parse, || {
+            rux_syntax::parse(script, rux_syntax::Options { declarations: true })
+        })
+        .map_err(|e| ScriptError::at(explain(&e.message), script, e.span.start as usize))?;
         // What `x is T` resolves a declared name against: this script's own
         // `type`s, before the script's first statement can ask. The runtime adds what it imports (`validate::know_types`).
         validate::reset_types(types_declared_in(&parsed, script));
-        let mut scope = Scope::new();
+
+        #[cfg(debug_assertions)]
+        let fork = shadow::on().then(|| shadow::isolated(|| fork::Fork::build(script, &self.host_fns)));
+        #[cfg(debug_assertions)]
         let marks = shadow::marks();
-        self.engine
-            .run_ast_with_scope(&mut scope, &ast)
-            .map_err(|e| {
-                let at = e.position();
-                ScriptError::at(explain(&e.to_string()), at)
-            })?;
-        let funcs = ast.clone_functions_only();
 
-        // The top-level `let` bindings are the app's signals. The set is fixed
-        // after init (no runtime `let` at top level), so capture it once here;
-        // dependency tracking filters reads down to these names.
-        let signals = scope.iter().map(|(name, _, _)| name.to_string()).collect();
+        let mut ir = interpreter(&parsed, script, &self.host_types, self.host_fns);
+        let init = ir.init();
 
-        let ir = if shadow::on() {
-            let fork_effects = shadow::since(marks);
-            let mut ir = shadow_interp(&parsed, script, &self.host_types, self.host_fns);
-            let (init, effects, _) = shadow::isolated(|| ir.init());
-            if let Err(f) = init {
-                shadow::differ("whether the script's top level runs", script, "it ran", f.message);
+        // rhai's debug builds refuse deep nesting its release builds run; the
+        // interpreter has no such limit, so there is nothing to compare.
+        #[cfg(debug_assertions)]
+        let fork = fork.filter(|(built, ..)| !matches!(built, Err(e) if e.contains("maximum complexity")));
+        #[cfg(debug_assertions)]
+        if let Some((built, effects, _)) = fork {
+            match (&built, &init) {
+                (Ok(_), Err(f)) => shadow::differ("whether the top level runs", script, "it ran", &f.message),
+                (Err(e), Ok(())) => shadow::differ("whether the top level runs", script, e, "it ran"),
+                _ => {}
             }
-            if effects != fork_effects {
-                shadow::differ("what the top level asked for", script, fork_effects, effects);
+            if let Ok(fork) = built {
+                let ours = shadow::since(marks);
+                if effects != ours {
+                    shadow::differ("what the top level asked for", script, effects, ours);
+                }
+                shadow::same_state(script, &fork.state(), &ir);
+                if let Err(f) = init {
+                    return Err(fault_at(f, script));
+                }
+                return Ok(Engine::new(ir, Some(fork), parsed, script, self.host_types));
             }
-            let state: Vec<(String, Value)> = scope.iter().map(|(n, _, v)| (n.to_string(), from_dynamic(&v))).collect();
-            shadow::same_state(script, &state, &ir);
-            Some(ir)
-        } else {
-            None
-        };
+        }
+        if let Err(f) = init {
+            return Err(fault_at(f, script));
+        }
+        Ok(Engine::new(ir, Default::default(), parsed, script, self.host_types))
+    }
+}
 
-        Ok(Engine {
-            ir,
-            engine: self.engine,
-            scope,
-            funcs,
-            signals,
-            script: parsed,
-            source: script.to_string(),
-            host_types: self.host_types,
-            compiled: HashMap::new(),
-        })
+/// A failure while running a script's top level, as a [`ScriptError`] at
+/// the statement that failed.
+fn fault_at(f: interp::Fault, script: &str) -> ScriptError {
+    let message = explain(&f.message);
+    match f.at {
+        Some(at) => ScriptError::at(message, script, at.start as usize),
+        None => ScriptError::plain(message),
     }
 }
 
 /// Rux's interpreter for `script`, checked and lowered, its top level not
 /// yet run.
-fn shadow_interp(
+pub(crate) fn interpreter(
     parsed: &rux_syntax::ast::Script,
     script: &str,
     host_types: &[(String, types::Type)],
@@ -659,368 +350,6 @@ fn types_declared_in(script: &rux_syntax::ast::Script, src: &str) -> Vec<(String
         .collect()
 }
 
-/// Give rhai's collection and string library the names JS uses for the same
-/// operations.
-///
-/// None of this changes what the language *does*. It is the cheapest thing on
-/// the v0.7 list and the one that most decides whether Rux reads as "JS-ish" or
-/// as a foreign language wearing JS's syntax: someone who reaches for
-/// `items.length` and gets an error has learned that their instincts do not
-/// apply here, and they learn it in the first ten minutes.
-///
-/// rhai's own spellings keep working. These are additional names for the same
-/// behaviour, not replacements, so nothing written against the old surface
-/// breaks and the docs can simply teach the JS one.
-fn register_js_names(engine: &mut RhaiEngine) {
-    use rhai::{Array, FnPtr, NativeCallContext};
-
-    // `null`, the empty value under the name someone arriving from JS uses.
-    //
-    // Not a variable and not a constant: `null` is a *reserved keyword* in rhai,
-    // so it never reaches variable resolution and cannot be bound in a scope.
-    // Custom syntax is the one hook that sees it, which also gives the property
-    // that matters, that `null` cannot be shadowed by a `let` and never lands in
-    // the signal set. It is a literal, not a piece of state anything could
-    // subscribe to.
-    let _ = engine.register_custom_syntax(["null"], false, |_ctx, _inputs| Ok(Dynamic::UNIT));
-
-    // `.length`, not `.len()`. A property getter, as in JS.
-    //
-    // Arrays and strings only. JS has no `length` on a plain object, and adding
-    // one to maps would be inventing a rule rather than matching a known one,
-    // which is the thing this whole exercise is trying not to do. `keys(m)` and
-    // `values(m)` are already there for that.
-    // Returns an integer, not an f64, which is the opposite of the rule
-    // everywhere else in Rux and is deliberate until numbers are unified.
-    //
-    // `items[items.length - 1]` and `for i in 0..items.length` are the two most
-    // common things anyone does with a length, and both need an integer: rhai
-    // indexes and builds ranges with `INT`, and hands back "Data type incorrect:
-    // f64 (expecting i64)" for a float. A `length` that reads correctly in a
-    // binding and fails the moment it is used to index would be worse than not
-    // having it, so it matches `len()` exactly for now.
-    //
-    // The all-f64 change on `docs/06-roadmap.md` is what makes this an f64 like
-    // everything else, and it has to teach indexing and ranges to coerce at the
-    // same time. Found by an example: `keyed-list.rux` was rewritten to use
-    // `.length` and stopped rotating.
-    engine.register_get("length", |a: &mut Array| a.len() as i64);
-    engine.register_get("length", |s: &mut ImmutableString| s.chars().count() as i64);
-
-    // Text to a number, and back, under JavaScript's names and with its
-    // answers. A route parameter arrives as text (`/task/:id` gives `"2"`), and
-    // a list whose ids are numbers could not be matched against it: rhai's
-    // `parse_int` and `parse_float` exist, but nobody arriving from JS looks
-    // for them, and they raise on bad input where JS says `NaN`.
-    //
-    // `Number` reads the whole text or nothing (`Number("12px")` is `NaN`,
-    // `Number("")` is 0); `parseInt` and `parseFloat` read what leads and stop
-    // (`parseFloat("12.5px")` is 12.5). Every answer is an f64, like every
-    // other number in Rux.
-    engine.register_fn("Number", |s: ImmutableString| js_number(&s));
-    engine.register_fn("Number", |b: bool| if b { 1.0 } else { 0.0 });
-    engine.register_fn("Number", |n: f64| n);
-    engine.register_fn("Number", |n: i64| n as f64);
-    //
-    // Step 3 of `docs/11-next.md`: `parseInt` gives an `int?` and `parseFloat`
-    // a `float?`, so text that is not a number is `none`, where JavaScript
-    // says `NaN`. `Number` keeps JavaScript's answer.
-    let or_none = |n: f64| if n.is_nan() { Dynamic::UNIT } else { Dynamic::from(n) };
-    engine.register_fn("parseInt", move |s: ImmutableString| or_none(js_parse_int(&s, 10)));
-    engine.register_fn("parseInt", move |s: ImmutableString, radix: Dynamic| {
-        or_none(js_parse_int(&s, num(&radix) as u32))
-    });
-    engine.register_fn("parseInt", |n: f64| n.trunc());
-    engine.register_fn("parseInt", |n: i64| n as f64);
-    engine.register_fn("parseFloat", move |s: ImmutableString| or_none(js_parse_float(&s)));
-    engine.register_fn("parseFloat", |n: f64| n);
-    engine.register_fn("parseFloat", |n: i64| n as f64);
-    engine.register_fn("String", |v: Dynamic| from_dynamic(&v).to_display());
-    engine.register_fn("isNaN", |n: f64| n.is_nan());
-    engine.register_fn("isNaN", |_: i64| false);
-
-    // `Result<T, E>`: `{ ok: true, value }` or `{ ok: false, error }`, a plain
-    // map, so reading it is the narrowing that already exists. `unwrap` gives
-    // the value or throws the error. See `docs/11-next.md`, "Result".
-    engine.register_fn("Ok", |value: Dynamic| {
-        let mut m = rhai::Map::new();
-        m.insert("ok".into(), Dynamic::from(true));
-        m.insert("value".into(), value);
-        m
-    });
-    engine.register_fn("Err", |error: Dynamic| {
-        let mut m = rhai::Map::new();
-        m.insert("ok".into(), Dynamic::from(false));
-        m.insert("error".into(), error);
-        m
-    });
-    engine.register_fn("unwrap", |r: &mut rhai::Map| -> Result<Dynamic, Box<EvalAltResult>> {
-        match r.get("ok").and_then(|ok| ok.as_bool().ok()) {
-            Some(true) => Ok(r.get("value").cloned().unwrap_or(Dynamic::UNIT)),
-            Some(false) => {
-                let error = r.get("error").map(|e| from_dynamic(e).to_display()).unwrap_or_default();
-                Err(format!("unwrap() on an error: {error}").into())
-            }
-            None => Err("unwrap() is for a `Result`, made by `Ok(…)` or `Err(…)`".into()),
-        }
-    });
-
-    // Between `int` and `float`. The checker keeps them apart; the numbers
-    // themselves are all f64 until Rux's own interpreter (step 5 of
-    // `docs/11-next.md`), so these answer with whole f64s where the type says
-    // `int`. rhai already has `floor` and `round`, and calls `ceil` `ceiling`.
-    engine.register_fn("toFloat", |n: f64| n);
-    engine.register_fn("toFloat", |n: i64| n as f64);
-    engine.register_fn("trunc", |n: f64| n.trunc());
-    engine.register_fn("ceil", |n: f64| n.ceil());
-    for name in ["trunc", "ceil", "floor", "round"] {
-        engine.register_fn(name, |n: i64| n as f64);
-    }
-    engine.register_fn("intDiv", |a: Dynamic, b: Dynamic| -> Result<f64, Box<EvalAltResult>> {
-        let (a, b) = (num(&a).trunc(), num(&b).trunc());
-        if b == 0.0 {
-            return Err("intDiv(a, 0): an `int` cannot be divided by zero".into());
-        }
-        Ok((a / b).trunc())
-    });
-
-    // Membership and position. rhai spells these `contains` and `index_of`.
-    //
-    // Comparison goes through `Value`, so `includes` answers the same question
-    // `===` does and the two cannot disagree about what equality means.
-    engine.register_fn("includes", |a: Array, item: Dynamic| {
-        let needle = from_dynamic(&item);
-        a.iter().any(|v| from_dynamic(v) == needle)
-    });
-    engine.register_fn("indexOf", |a: Array, item: Dynamic| {
-        let needle = from_dynamic(&item);
-        a.iter().position(|v| from_dynamic(v) == needle).map_or(-1.0, |i| i as f64)
-    });
-    engine.register_fn("includes", |s: ImmutableString, part: ImmutableString| {
-        s.contains(part.as_str())
-    });
-    engine.register_fn("indexOf", |s: ImmutableString, part: ImmutableString| {
-        s.find(part.as_str()).map_or(-1.0, |i| s[..i].chars().count() as f64)
-    });
-
-    // `join`, which rhai does not have at all.
-    engine.register_fn("join", |a: Array, sep: ImmutableString| {
-        a.iter().map(|v| from_dynamic(v).to_display()).collect::<Vec<_>>().join(&sep)
-    });
-
-    // `slice`, with JS's forgiving bounds: out-of-range clamps and an inverted
-    // range yields nothing, rather than raising. That leniency is the whole
-    // reason people reach for `slice` instead of indexing, so a strict version
-    // wearing the name would be worse than not having it.
-    fn bounds(len: usize, start: f64, end: Option<f64>) -> (usize, usize) {
-        let resolve = |v: f64| -> usize {
-            if v < 0.0 {
-                (len as f64 + v).max(0.0) as usize
-            } else {
-                (v as usize).min(len)
-            }
-        };
-        let from = resolve(start);
-        let to = end.map_or(len, resolve);
-        (from, to.max(from))
-    }
-    // Every numeric argument arrives as `Dynamic` and is coerced, rather than
-    // being declared `f64`.
-    //
-    // A literal `1` in a script is still an rhai integer, while anything that
-    // came through `signal()` is a float, so `items.slice(1)` and
-    // `items.slice(start)` would otherwise resolve to different overloads and
-    // one of them would not exist. This is the numbers-are-two-types problem
-    // showing up in the first five minutes of use, and the reason
-    // `docs/06-roadmap.md` commits the fork to making every number an f64.
-    // Coercing at each boundary is the version of that available without a fork.
-    engine.register_fn("slice", |a: Array, start: Dynamic| {
-        let (from, to) = bounds(a.len(), num(&start), None);
-        a[from..to].to_vec()
-    });
-    engine.register_fn("slice", |a: Array, start: Dynamic, end: Dynamic| {
-        let (from, to) = bounds(a.len(), num(&start), Some(num(&end)));
-        a[from..to].to_vec()
-    });
-    engine.register_fn("slice", |s: ImmutableString, start: Dynamic| {
-        let chars: Vec<char> = s.chars().collect();
-        let (from, to) = bounds(chars.len(), num(&start), None);
-        chars[from..to].iter().collect::<String>()
-    });
-    engine.register_fn("slice", |s: ImmutableString, start: Dynamic, end: Dynamic| {
-        let chars: Vec<char> = s.chars().collect();
-        let (from, to) = bounds(chars.len(), num(&start), Some(num(&end)));
-        chars[from..to].iter().collect::<String>()
-    });
-
-    // The string methods whose only difference from rhai's is the name.
-    engine.register_fn("toUpperCase", |s: ImmutableString| s.to_uppercase());
-    engine.register_fn("toLowerCase", |s: ImmutableString| s.to_lowercase());
-    engine.register_fn("startsWith", |s: ImmutableString, p: ImmutableString| {
-        s.starts_with(p.as_str())
-    });
-    engine.register_fn("endsWith", |s: ImmutableString, p: ImmutableString| {
-        s.ends_with(p.as_str())
-    });
-    engine.register_fn("repeat", |s: ImmutableString, n: Dynamic| {
-        s.repeat(num(&n).max(0.0) as usize)
-    });
-    // `trim` returns the trimmed string instead of emptying the one it was given.
-    //
-    // rhai's `trim` takes its receiver by `&mut` and trims **in place**, returning
-    // `()`. Every other string method here returns a value, and so does JS's, so
-    // `{{ name.trim() }}` rendered *empty* rather than trimmed: the call returned
-    // nothing and the nothing was displayed. That is the silent-wrong failure this
-    // language keeps closing off, and it is worse than most, because the value it
-    // quietly replaces is the one the author was looking at.
-    //
-    // Registering the same name with a by-value receiver shadows the built-in, the
-    // same move `/` on two integers and `print` already make. Found while writing
-    // `docs/07-script.md`, by checking the method list rather than trusting it.
-    engine.register_fn("trim", |s: ImmutableString| s.trim().to_string());
-
-    engine.register_fn("charAt", |s: ImmutableString, i: Dynamic| {
-        s.chars().nth(num(&i).max(0.0) as usize).map(String::from).unwrap_or_default()
-    });
-
-    // `forEach`, which is the one array method with no rhai equivalent under any
-    // name: `map` and `filter` build a new array, and a loop is a statement, so
-    // there was no way to run a side effect per item as an expression.
-    engine.register_fn(
-        "forEach",
-        |ctx: NativeCallContext, a: Array, f: FnPtr| -> Result<(), Box<rhai::EvalAltResult>> {
-            for (i, item) in a.into_iter().enumerate() {
-                // Called with `(item, index)` like JS, falling back to `(item)`.
-                //
-                // rhai resolves a closure call by arity and does *not* tolerate
-                // being handed more arguments than the closure declares, so the
-                // two-argument call fails outright against `|x| …`, which is the
-                // form nearly everyone writes. Trying the JS shape first and
-                // falling back keeps both working; the alternative is supporting
-                // only one of them, and either choice would surprise someone.
-                if f.call_within_context::<Dynamic>(&ctx, (item.clone(), i as f64)).is_err() {
-                    let _ = f.call_within_context::<Dynamic>(&ctx, (item,))?;
-                }
-            }
-            Ok(())
-        },
-    );
-
-    // The other two callback methods JavaScript has and rhai names differently
-    // or not at all. `some` and `find` are rhai's own and already match.
-    // Truthiness is JavaScript's, as everywhere in Rux.
-    engine.register_fn(
-        "every",
-        |ctx: NativeCallContext, a: Array, f: FnPtr| -> Result<bool, Box<rhai::EvalAltResult>> {
-            for item in a {
-                if !f.call_within_context::<Dynamic>(&ctx, (item,))?.is_truthy() {
-                    return Ok(false);
-                }
-            }
-            Ok(true)
-        },
-    );
-    engine.register_fn(
-        "findIndex",
-        |ctx: NativeCallContext, a: Array, f: FnPtr| -> Result<f64, Box<rhai::EvalAltResult>> {
-            for (i, item) in a.into_iter().enumerate() {
-                if f.call_within_context::<Dynamic>(&ctx, (item,))?.is_truthy() {
-                    return Ok(i as f64);
-                }
-            }
-            Ok(-1.0)
-        },
-    );
-
-    // `sort` with a comparison, answering as JavaScript's does: the sorted
-    // array. rhai's sorts in place and returns nothing, so
-    // `[3, 1, 2].sort((a, b) => a - b)[0]` failed on indexing `()`, and it
-    // wanted its comparison to return an integer where `a - b` of two Rux
-    // numbers is a float. The receiver is sorted too, as JavaScript's is.
-    engine.register_fn(
-        "sort",
-        |ctx: NativeCallContext, a: &mut Array, f: FnPtr| -> Result<Array, Box<rhai::EvalAltResult>> {
-            let mut failed = None;
-            a.sort_by(|x, y| {
-                if failed.is_some() {
-                    return std::cmp::Ordering::Equal;
-                }
-                match f.call_within_context::<Dynamic>(&ctx, (x.clone(), y.clone())) {
-                    Ok(d) => num(&d).partial_cmp(&0.0).unwrap_or(std::cmp::Ordering::Equal),
-                    Err(e) => {
-                        failed = Some(e);
-                        std::cmp::Ordering::Equal
-                    }
-                }
-            });
-            match failed {
-                Some(e) => Err(e),
-                None => Ok(a.clone()),
-            }
-        },
-    );
-
-    // `setInterval(ms) { … }`, which reaches here already rewritten by
-    // [`front::lower`] into `__interval(ms, "body")`. The rewrite is what
-    // lets the body be a block in the source and text by the time it is stored;
-    // see [`TimerRequest`] for why it cannot be a callable.
-    //
-    // The id comes back immediately, so `let t = setInterval(…) { … }` binds a
-    // handle in the same statement that starts the timer. The runtime has not
-    // seen the request yet at that point, which is fine: nothing can fire until
-    // the handler this is running inside has finished.
-    // The period arrives as whatever the author wrote, and `1000` is an integer
-    // in rhai: Rux kept both numeric types rather than going all-f64, so a
-    // registration typed to `f64` alone would not be found at all.
-    engine.register_fn("__interval", |ms: Dynamic, body: ImmutableString| -> f64 {
-        start_interval(num(&ms), body.to_string())
-    });
-
-    engine.register_fn("clearInterval", |id: Dynamic| {
-        TIMER_REQUESTS.with(|t| t.borrow_mut().push(TimerRequest::Cancel(num(&id))));
-    });
-
-    // Printf-debugging, which the script tier had no way to do at all.
-    //
-    // Spelled `print(…)` and `debug(…)`, rhai's own names, wired to a Rux sink
-    // through `on_print`/`on_debug`. Deliberately **not** `log(…)`, even though
-    // that is what a JS developer would reach for first: rhai's arithmetic
-    // package already defines `log` as the logarithm, and a more specific `f64`
-    // overload beats a `Dynamic` one, so `log(2)` would quietly compute 0.301
-    // instead of printing. It resolves, returns a number and reports nothing,
-    // which is the worst available outcome and exactly the class of silent
-    // failure the rest of this milestone exists to remove.
-    //
-    // `console.log` is not offered either: there is no `console` object, and
-    // inventing one to hold a single function would misrepresent what else is
-    // there.
-    engine.on_print(|s| log_line(s.to_string()));
-    // Numbers and collections print the way `{{ }}` renders them.
-    //
-    // `on_print` receives text rhai has already formatted, so a whole number
-    // arrives as "1.0" while the same value in a binding reads "1". That is the
-    // same disagreement the `to_string` and `+` overloads above exist to settle,
-    // and printf-debugging is the worst place to have it: the whole purpose of
-    // the call is to show you what a value is, so it must not show you a
-    // spelling the rest of the language never uses. These overloads intercept
-    // before formatting; anything else still goes through `on_print` unchanged.
-    //
-    // A `print` overload returns the text to be printed rather than printing it:
-    // rhai calls the function and hands the result to `on_print`, so returning
-    // `()` here fails the call with "expecting string" and, because a handler
-    // body is one script, takes every statement after it down with it.
-    engine.register_fn("print", |n: f64| Value::Number(n).to_display());
-    engine.register_fn("print", |v: Dynamic| from_dynamic(&v).to_display());
-    // `debug` additionally carries the source position rhai knows about.
-    engine.on_debug(|s, src, pos| {
-        let where_ = match (src, pos.is_none()) {
-            (Some(src), _) => format!(" ({src})"),
-            (None, false) => format!(" (line {})", pos.line().unwrap_or(0)),
-            (None, true) => String::new(),
-        };
-        log_line(format!("{s}{where_}"))
-    });
-}
 
 /// Read a script number whichever of rhai's two numeric types it arrived as.
 ///
@@ -1109,16 +438,10 @@ fn js_parse_float(s: &str) -> f64 {
     best.map_or(f64::NAN, |n| sign * n)
 }
 
-fn num(d: &Dynamic) -> f64 {
-    if let Ok(i) = d.as_int() {
-        return i as f64;
-    }
-    d.as_float().unwrap_or(0.0)
-}
 
 fn log_line(text: String) {
     LOGS.with(|l| l.borrow_mut().push(text.clone()));
-    if ECHO.with(|e| e.get()) && !shadow::SHADOWING.with(|s| s.get()) {
+    if ECHO.with(|e| e.get()) && !shadowing() {
         eprintln!("rux print: {text}");
     }
 }
@@ -1137,6 +460,14 @@ thread_local! {
     /// but a `print` inside a loop writing the same line ten times *is* the
     /// information.
     static LOGS: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Whether the fork is running as the shadow, in a debug build.
+fn shadowing() -> bool {
+    #[cfg(debug_assertions)]
+    return shadow::SHADOWING.with(|s| s.get());
+    #[cfg(not(debug_assertions))]
+    false
 }
 
 /// Take what `print(…)` and `debug(…)` have said since the last call, emptying
@@ -1170,7 +501,6 @@ pub const CAN_FORWARD_SIGNAL: &str = "can_go_forward";
 pub const ROUTER_SIGNALS: [&str; 5] =
     [ROUTE_SIGNAL, PARAMS_SIGNAL, QUERY_SIGNAL, CAN_BACK_SIGNAL, CAN_FORWARD_SIGNAL];
 
-/// A live script engine: state in `scope`, script functions in `funcs`.
 /// Something a handler calls that cannot do what it was written to do.
 ///
 /// Two shapes, because they are two different mistakes and collapsing them into
@@ -1248,76 +578,26 @@ impl CallProblem {
     }
 }
 
-/// What a tracked run has been about to write. See [`Engine::tracking`].
-struct WriteLog {
-    /// The scope the run evaluates in, by address: a write found in any other
-    /// scope went through a closure's capture.
-    scope: usize,
-    signals: HashSet<String>,
-    /// Each signal's value just before the run first reached it in a form
-    /// that could change it.
-    before: HashMap<String, Option<Value>>,
-    /// Signals written from somewhere with no old value to compare against:
-    /// a closure writing what it captured. Reported as changed.
-    unsnapped: HashSet<String>,
-}
+/// Where a debug build keeps the fork it compares against.
+#[cfg(debug_assertions)]
+type ForkSlot = Option<fork::Fork>;
+#[cfg(not(debug_assertions))]
+type ForkSlot = ();
 
-thread_local! {
-    static WRITES: RefCell<Option<WriteLog>> = const { RefCell::new(None) };
-}
-
-/// The fork's `on_var_write` hook: keep a signal's value the first time a
-/// tracked run is about to change it.
-fn note_write(name: &str, scope: &Scope) {
-    WRITES.with(|w| {
-        let mut w = w.borrow_mut();
-        let Some(log) = w.as_mut() else { return };
-        if !log.signals.contains(name) || log.before.contains_key(name) || log.unsnapped.contains(name) {
-            return;
-        }
-        if scope as *const Scope as *const () as usize != log.scope {
-            log.unsnapped.insert(name.to_string());
-            return;
-        }
-        // The signals are the scope's first entries, so a later entry of the
-        // same name is a local shadowing one: that write goes to the local
-        // and leaves the signal alone.
-        let mut named = scope.iter_raw().filter(|(n, ..)| *n == name);
-        let signal = named.next();
-        if named.next().is_some() {
-            return;
-        }
-        log.before.insert(name.to_string(), signal.map(|(_, _, d)| from_dynamic(d)));
-    });
-}
-
+/// A live script engine: Rux's interpreter holding a document's state.
 pub struct Engine {
-    /// Rux's interpreter, run beside the fork and compared in debug builds.
-    ir: Option<interp::Interp>,
-    engine: RhaiEngine,
-    scope: Scope<'static>,
-    funcs: AST,
-    /// Names of the top-level signals, the universe of reactive dependencies.
-    signals: HashSet<String>,
+    ir: interp::Interp,
+    /// The rhai fork, run beside the interpreter and compared, in debug
+    /// builds. See `shadow`.
+    #[cfg_attr(not(debug_assertions), allow(dead_code))]
+    fork: ForkSlot,
     /// The whole script as Rux's parser read it, and its text, for the type
-    /// checker.
+    /// checker and the checks on names and calls.
     script: rux_syntax::ast::Script,
     source: String,
     /// The `host::` functions' types, as registered.
     host_types: Vec<(String, types::Type)>,
-    /// Every source this engine has run, compiled and merged with `funcs`,
-    /// keyed by the source text. A binding is evaluated on every build and a
-    /// handler on every tap, and compiling each of them again was most of the
-    /// script tier's cost in a long list. `funcs` never changes after the
-    /// engine is built (a reload builds a new engine), so an entry never goes
-    /// stale. Bounded by [`COMPILED_CAP`]: a source built from changing text
-    /// would otherwise grow it for as long as the app runs.
-    compiled: HashMap<String, Arc<AST>>,
 }
-
-/// How many compiled sources an engine keeps before starting over. A real
-/// document has a few hundred distinct bindings and handlers.
-const COMPILED_CAP: usize = 4096;
 
 // ── Warning collection ──────────────────────────────────────────────────────
 
@@ -1434,10 +714,12 @@ thread_local! {
 /// A script that does not compile answers `None`: the load reports that error
 /// in its own words, and a second one here would only repeat it.
 pub fn declares_besides_types(script: &str) -> Option<&'static str> {
-    let ast = front::compile(&RhaiEngine::new(), script).ok()?;
-    if ast.iter_functions().next().is_some() {
+    use rux_syntax::ast::StmtKind as S;
+    let parsed = rux_syntax::parse(script, rux_syntax::Options::default()).ok()?;
+    let stmts = || parsed.stmts.iter().filter(|s| !matches!(s.kind, S::Type { .. } | S::Use(_) | S::Empty));
+    if stmts().any(|s| matches!(s.kind, S::Fn(_))) {
         Some("a function")
-    } else if !ast.statements().is_empty() {
+    } else if stmts().next().is_some() {
         Some("a statement")
     } else {
         None
@@ -2018,7 +1300,35 @@ fn strip_rhai_position(message: &str) -> String {
     }
 }
 
+/// The fork's run of something, in a debug build, for comparing.
+#[cfg(debug_assertions)]
+struct ForkRun {
+    result: Result<Value, String>,
+    after: Vec<Value>,
+    effects: shadow::Effects,
+    reads: HashSet<String>,
+}
+
+/// How a failure is worded: what the thing that failed is called.
+#[derive(Clone, Copy)]
+enum Said {
+    /// A binding or anything run for its value: "expression `…` failed".
+    Expression,
+    /// A component's handler: "handler `…` failed", as a warning.
+    Handler,
+}
+
 impl Engine {
+    fn new(
+        ir: interp::Interp,
+        fork: ForkSlot,
+        script: rux_syntax::ast::Script,
+        source: &str,
+        host_types: Vec<(String, types::Type)>,
+    ) -> Engine {
+        Engine { ir, fork, script, source: source.to_string(), host_types }
+    }
+
     /// Check the script against its type annotations. See [`check`] and
     /// `docs/10-types.md`. `cx.host` is filled in from what was registered.
     pub fn check_types(&self, cx: &check::Context) -> Vec<check::Finding> {
@@ -2078,136 +1388,129 @@ impl Engine {
         }
     }
 
-    /// `src` compiled and merged with the document's functions, from the cache
-    /// when it has been seen before. A source that fails to compile is not
-    /// kept, so its error is reported every time it is run, as before.
-    fn prepared(&mut self, src: &str) -> Result<Arc<AST>, front::CompileError> {
-        if let Some(ast) = self.compiled.get(src) {
-            return Ok(Arc::clone(ast));
-        }
-        let ast = front::compile(&self.engine, src)?;
-        let merged = Arc::new(profile::time(profile::Phase::Merge, || self.funcs.merge(&ast)));
-        if self.compiled.len() >= COMPILED_CAP {
-            self.compiled.clear();
-        }
-        self.compiled.insert(src.to_string(), Arc::clone(&merged));
-        Ok(merged)
+    // ----- Running -----------------------------------------------------------
+
+    /// The fork's run of `src`, isolated, before the interpreter's.
+    #[cfg(debug_assertions)]
+    fn fork_run(&mut self, src: &str, locals: &[(String, Value)]) -> Option<ForkRun> {
+        let fork = self.fork.as_mut()?;
+        let ((result, after), effects, reads) = shadow::isolated(|| fork.run(src, locals));
+        Some(ForkRun { result, after, effects, reads })
     }
 
-    /// Evaluate `src` (an expression or statements) with `locals` temporarily in
-    /// scope. Script functions are available. Returns the resulting value.
-    fn eval(&mut self, src: &str, locals: &[(String, Value)]) -> Option<Dynamic> {
-        let shadow = self.ir.as_mut().map(|ir| shadow::isolated(|| ir.run(src, locals, true)));
-        let marks = shadow::marks();
-        let out = self.eval_fork(src, locals);
-        if let Some((ran, effects, reads)) = shadow {
-            let ours = match ran {
-                Ok((Ok(v), _, _)) => Ok(v.to_value()),
-                Ok((Err(f), _, _)) => Err(f.message),
-                Err(e) => Err(e.message),
-            };
-            let fork = out.as_ref().map(from_dynamic);
-            self.compare(src, fork.as_ref(), &ours, marks, effects, reads, locals);
-        }
-        out
-    }
-
-    /// The interpreter's run of `src` against the fork's, which has just
-    /// happened. See [`shadow`].
-    #[allow(clippy::too_many_arguments)]
+    /// The fork's run against the interpreter's, which has just happened:
+    /// its value or failure, the locals afterwards, what it asked for, the
+    /// state it left and what it read.
+    #[cfg(debug_assertions)]
     fn compare(
         &self,
         src: &str,
-        fork: Option<&Value>,
-        ours: &Result<Value, String>,
+        fork: ForkRun,
+        ours: Option<&Value>,
+        after: Option<&[Value]>,
         marks: shadow::Marks,
-        effects: shadow::Effects,
-        reads: HashSet<String>,
         locals: &[(String, Value)],
     ) {
-        let Some(ir) = self.ir.as_ref() else { return };
-        match (fork, ours) {
-            (Some(a), Ok(b)) if !shadow::same(a, b) && !shadow::allowed(a, b) => shadow::differ("its value", src, a, b),
-            (Some(a), Err(e)) => shadow::differ("whether it fails", src, a, e),
-            (None, Ok(b)) => shadow::differ("whether it fails", src, "it failed", b),
+        let Some(forked) = self.fork.as_ref() else { return };
+        match (&fork.result, ours) {
+            (Ok(a), Some(b)) if !shadow::same(a, b) && !shadow::allowed(a, b) => shadow::differ("its value", src, a, b),
+            (Ok(a), None) => shadow::differ("whether it fails", src, a, "it failed"),
+            (Err(e), Some(b)) => shadow::differ("whether it fails", src, e, b),
             _ => {}
         }
-        let fork_effects = shadow::since(marks);
-        if fork_effects != effects {
-            shadow::differ("what it asked the runtime for", src, fork_effects, effects);
+        if let (Ok(_), Some(after)) = (&fork.result, after) {
+            let same = fork.after.len() == after.len() && fork.after.iter().zip(after).all(|(a, b)| shadow::same(a, b));
+            if !same {
+                shadow::differ("the locals afterwards", src, &fork.after, after);
+            }
         }
-        let state: Vec<(String, Value)> =
-            self.signals.iter().filter_map(|n| Some((n.clone(), self.read_signal(n)?))).collect();
-        shadow::same_state(src, &state, ir);
+        let ours = shadow::since(marks);
+        if fork.effects != ours {
+            shadow::differ("what it asked the runtime for", src, &fork.effects, ours);
+        }
+        shadow::same_state(src, &forked.state(), &self.ir);
         // What it read, when a binding or an effect is being tracked. The
         // fork counts a local that shares a signal's name as a read of it.
-        if let Some(fork_reads) = READS.with(|r| r.borrow().clone()) {
-            let ours: HashSet<&String> = reads.iter().filter(|n| self.signals.contains(*n)).collect();
-            let theirs: HashSet<&String> = fork_reads.iter().filter(|n| self.signals.contains(*n)).collect();
+        if let Some(read) = READS.with(|r| r.borrow().clone()) {
+            let theirs: HashSet<&String> = fork.reads.iter().filter(|n| self.ir.has_global(n)).collect();
+            let ours: HashSet<&String> = read.iter().filter(|n| self.ir.has_global(n)).collect();
             let missing = theirs.difference(&ours).any(|n| !locals.iter().any(|(l, _)| l == *n));
-            let extra = ours.difference(&theirs).next().is_some();
-            if missing || extra {
+            if missing || ours.difference(&theirs).next().is_some() {
                 shadow::differ("what it read", src, &theirs, &ours);
             }
         }
     }
 
-    fn eval_fork(&mut self, src: &str, locals: &[(String, Value)]) -> Option<Dynamic> {
-        let merged = match self.prepared(src) {
-            Ok(merged) => merged,
+    /// Run `src` with `locals` handed in: its value, or `None` when it
+    /// failed, which has been reported. The locals as they stand afterwards
+    /// come back too, since a handler may write them.
+    fn run(&mut self, src: &str, locals: &[(String, Value)], said: Said) -> (Option<interp::V>, Vec<Value>) {
+        #[cfg(debug_assertions)]
+        let fork = self.fork_run(src, locals);
+        #[cfg(debug_assertions)]
+        let marks = shadow::marks();
+
+        let (out, after) = match self.ir.run(src, locals, true) {
             Err(e) => {
-                // A `{{ }}` or `@tap` that doesn't compile used to evaluate to
-                // nothing, silently, the same failure mode as ignored CSS. Record
-                // it so the dev overlay can say what's wrong.
-                error(format!(
-                    "expression `{}` failed to compile: {}",
-                    trim_expr(src),
-                    explain(&e.to_string())
-                ));
-                return None;
+                let message = format!("failed to compile: {}", explain(&e.message));
+                self.report(src, &message, &message, said);
+                (None, locals.iter().map(|(_, v)| v.clone()).collect())
+            }
+            Ok((result, after, _)) => {
+                let after: Vec<Value> = after.iter().map(interp::V::to_value).collect();
+                match result {
+                    Ok(v) => (Some(v), after),
+                    Err(f) => {
+                        if !is_owed_prop(&f.message) {
+                            self.report(src, &format!("failed: {}", explain(&f.message)), &f.message, said);
+                        }
+                        (None, after)
+                    }
+                }
             }
         };
-        let base = self.scope.len();
-        for (name, value) in locals {
-            self.scope.push(name.clone(), to_dynamic(value));
+
+        #[cfg(debug_assertions)]
+        if let Some(fork) = fork {
+            let value = out.as_ref().map(interp::V::to_value);
+            self.compare(src, fork, value.as_ref(), Some(&after), marks, locals);
         }
-        let result = profile::time(profile::Phase::Run, || {
-            self.engine.eval_ast_with_scope::<Dynamic>(&mut self.scope, &merged)
-        });
-        self.scope.rewind(base); // drop the temporary locals
-        match result {
-            Ok(value) => Some(value),
-            Err(e) => {
-                let raw = e.to_string();
-                if is_owed_prop(&raw) {
-                    return None;
+        (out, after)
+    }
+
+    /// Report a failure, worded for what failed. `raw` is what the level is
+    /// decided by.
+    fn report(&self, src: &str, what: &str, raw: &str, said: Said) {
+        match said {
+            Said::Expression => {
+                let message = format!("expression `{}` {what}", trim_expr(src));
+                if what.starts_with("failed to compile") {
+                    error(message);
+                } else {
+                    raise(message, level_for(raw));
                 }
-                raise(
-                    format!("expression `{}` failed: {}", trim_expr(src), explain(&raw)),
-                    level_for(&raw),
-                );
-                None
             }
+            Said::Handler => warn(format!("handler `{}` {what}", trim_expr(src))),
         }
+    }
+
+    fn eval(&mut self, src: &str, locals: &[(String, Value)]) -> Option<interp::V> {
+        self.run(src, locals, Said::Expression).0
     }
 
     /// Evaluate an expression to a [`Value`].
     pub fn eval_value(&mut self, src: &str, locals: &[(String, Value)]) -> Option<Value> {
-        self.eval(src, locals).map(|d| from_dynamic(&d))
+        self.eval(src, locals).map(|v| v.to_value())
     }
 
     /// Evaluate a `{{ }}` binding to its display string (empty on error).
     pub fn eval_display(&mut self, src: &str, locals: &[(String, Value)]) -> String {
-        self.eval_value(src, locals)
-            .map(|v| v.to_display())
-            .unwrap_or_default()
+        self.eval_value(src, locals).map(|v| v.to_display()).unwrap_or_default()
     }
 
     /// Evaluate a condition (`r-if` / `r-elif` / `r-show`).
     pub fn eval_bool(&mut self, src: &str, locals: &[(String, Value)]) -> bool {
-        self.eval_value(src, locals)
-            .map(|v| v.is_truthy())
-            .unwrap_or(false)
+        self.eval(src, locals).is_some_and(|v| v.truthy())
     }
 
     /// Run an `@tap` handler (statements or a function call). Returns whether it
@@ -2222,416 +1525,48 @@ impl Engine {
         self.eval(src, locals).is_some()
     }
 
+    /// Run `f` with the reads tracked, and hand back the state it read.
+    fn reading<T>(&mut self, f: impl FnOnce(&mut Self) -> T) -> (T, HashSet<String>) {
+        READS.with(|r| *r.borrow_mut() = Some(HashSet::new()));
+        let out = f(self);
+        let mut reads = READS.with(|r| r.borrow_mut().take()).unwrap_or_default();
+        reads.retain(|n| self.ir.has_global(n));
+        (out, reads)
+    }
+
+    /// Run `f` and report which of the state it changed.
+    fn tracking<T>(&mut self, f: impl FnOnce(&mut Self) -> T) -> (T, HashSet<String>) {
+        self.ir.begin_track();
+        let out = f(self);
+        (out, self.ir.end_track())
+    }
+
     /// Evaluate an expression *and* report which signals it read, the binding's
     /// dependency set. Only top-level signal names are returned; loop-locals and
     /// function parameters are filtered out. This is the read half of fine-grained
     /// reactivity: a binding subscribes to exactly the signals it touches.
-    pub fn eval_value_tracked(
-        &mut self,
-        src: &str,
-        locals: &[(String, Value)],
-    ) -> (Option<Value>, HashSet<String>) {
-        READS.with(|r| *r.borrow_mut() = Some(HashSet::new()));
-        let value = self.eval_value(src, locals);
-        let mut reads = READS.with(|r| r.borrow_mut().take()).unwrap_or_default();
-        reads.retain(|n| self.signals.contains(n));
-        (value, reads)
+    pub fn eval_value_tracked(&mut self, src: &str, locals: &[(String, Value)]) -> (Option<Value>, HashSet<String>) {
+        self.reading(|e| e.eval_value(src, locals))
     }
 
     /// Evaluate a `{{ }}` binding to its display string *and* report its signal
     /// deps (the tracked twin of `eval_display`).
-    pub fn eval_display_tracked(
-        &mut self,
-        src: &str,
-        locals: &[(String, Value)],
-    ) -> (String, HashSet<String>) {
+    pub fn eval_display_tracked(&mut self, src: &str, locals: &[(String, Value)]) -> (String, HashSet<String>) {
         let (value, deps) = self.eval_value_tracked(src, locals);
         (value.map(|v| v.to_display()).unwrap_or_default(), deps)
     }
 
     /// Evaluate a condition *and* report its signal deps (the tracked twin of
     /// `eval_bool`).
-    pub fn eval_bool_tracked(
-        &mut self,
-        src: &str,
-        locals: &[(String, Value)],
-    ) -> (bool, HashSet<String>) {
+    pub fn eval_bool_tracked(&mut self, src: &str, locals: &[(String, Value)]) -> (bool, HashSet<String>) {
         let (value, deps) = self.eval_value_tracked(src, locals);
-        (value.map(|v| v.is_truthy()).unwrap_or(false), deps)
+        (value.is_some_and(|v| v.is_truthy()), deps)
     }
 
     /// Run an `@tap` handler and report which signals it *changed*, the write
-    /// half. Detected by diffing the signal values across the run, so it needs no
-    /// cooperation from the handler source (which is arbitrary rhai). Returns an
-    /// empty set if the handler errored or changed nothing.
-    /// Whether `src` is syntactically a script at all, without running it.
-    ///
-    /// Syntax only, deliberately. A handler names things that do not exist
-    /// until it runs (an `r-for` local, a component's own state), and those are
-    /// runtime lookups rather than compile errors, so compiling cannot produce
-    /// a false alarm about them. What it does catch is a handler that could
-    /// never run under any state, which until now reached the window and did
-    /// nothing at all, silently, because nothing compiles a handler until the
-    /// moment it is tapped.
-    pub fn check_syntax(&self, src: &str) -> Result<(), String> {
-        front::compile(&self.engine, src).map(|_| ()).map_err(|e| rux_phrasing(&e.message))
-    }
-
-    /// The functions and methods `src` calls that nothing could ever resolve.
-    ///
-    /// **This is the other half of [`Self::check_syntax`], and the half that was
-    /// missing.** rhai resolves a function *name* when the call runs, not when
-    /// it compiles, so `@tap="alert(…)"` compiles perfectly and does nothing
-    /// when tapped. A `{{ }}` expression is evaluated during the build and
-    /// reports the same mistake immediately, so the two halves of the language
-    /// disagreed about whether a typo was worth mentioning: interpolations said
-    /// so, handlers did not. A handler that does nothing is indistinguishable
-    /// from a handler that never fired, which makes it the worse place to be
-    /// silent.
-    ///
-    /// **Names only, deliberately, and not arity.** A name that is registered
-    /// nowhere, defined by no `fn` and built into nothing can never resolve
-    /// under any state, so saying so cannot be a false alarm. Arity is a
-    /// different question with real traps in it (a method call carries its
-    /// receiver as an argument, operators arrive as calls, a closure is called
-    /// through `call`), and getting it wrong would flag working code. Noise
-    /// here would be worse than the silence being fixed, because the whole
-    /// value of a diagnostic is that it is worth reading.
-    ///
-    /// Variables are left alone for the reason [`Self::check_syntax`] gives: a
-    /// handler legitimately names an `r-for` local or a component's own state
-    /// that does not exist until it runs. Functions are not like that. Nothing
-    /// a row or an instance brings into scope can add a function name.
-    pub fn unknown_calls(&self, src: &str) -> Vec<CallProblem> {
-        let Ok(ast) = front::compile(&self.engine, src) else {
-            return Vec::new(); // a syntax error is `check_syntax`'s to report
-        };
-        self.unresolvable_calls(&ast)
-    }
-
-    /// The same check, over the `fn` bodies the document declared.
-    ///
-    /// A handler is not the only place a call hides. `fn refresh() { alert(…) }`
-    /// is never compiled against anything until something calls it, and a `fn`
-    /// nothing calls yet is exactly where a typo waits quietest. The bodies are
-    /// already held as [`Self::funcs`] for dispatch, so checking them costs one
-    /// more walk of an AST that is sitting there.
-    ///
-    /// Calls between the document's own functions resolve normally, because
-    /// [`Self::callable_names`] reads the same `AST` this walks: a `fn` may call
-    /// one declared below it, as it may at run time.
-    pub fn unknown_calls_in_functions(&self) -> Vec<CallProblem> {
-        self.unresolvable_calls(&self.funcs)
-    }
-
-    /// The walk both of the above share.
-    fn unresolvable_calls(&self, ast: &AST) -> Vec<CallProblem> {
-        let mut known = self.callable_names();
-        // rhai's own keywords, which the interpreter answers without a
-        // registration to find. `curry` is the one that mattered: rhai writes
-        // it itself whenever a closure captures a local, so `items.filter(x =>
-        // x >= limit)` with a local `limit` was reported as calling a function
-        // that does not exist.
-        known.extend(
-            ["curry", "call", "Fn", "is_shared", "is_def_var", "is_def_fn", "type_of", "eval", "print", "debug"]
-                .map(str::to_string),
-        );
-        // A plain call to a name declared as a variable may be an arrow held in
-        // it (`let add = (a, b) => a + b; add(2, 3)`), which only running it
-        // can tell. Left to run time, where it is an error if it is not one.
-        let mut variables: HashSet<String> = self.scope.iter_raw().map(|(n, ..)| n.to_string()).collect();
-        ast.walk(&mut |path| {
-            if let Some(rhai::ASTNode::Stmt(rhai::Stmt::Var(decl, ..))) = path.last() {
-                variables.insert(decl.0.name.to_string());
-            }
-            true
-        });
-        let own = self.own_fn_arities();
-        let mut unknown: Vec<CallProblem> = Vec::new();
-        ast.walk(&mut |path| {
-            let Some(rhai::ASTNode::Expr(expr)) = path.last() else { return true };
-            let mut note = |problem: CallProblem| {
-                if !unknown.contains(&problem) {
-                    unknown.push(problem);
-                }
-            };
-            match expr {
-                rhai::Expr::FnCall(call, ..) | rhai::Expr::MethodCall(call, ..) => {
-                    // An operator reaches the AST as a call (`a + b` is `+`),
-                    // and so does every comparison and index. They resolve
-                    // through the interpreter's own tables rather than by name,
-                    // so asking whether `+` is registered proves nothing.
-                    if call.op_token.is_some() {
-                        return true;
-                    }
-                    let name = call.name.as_str();
-                    let held = matches!(expr, rhai::Expr::FnCall(..)) && variables.contains(name);
-                    if !known.contains(name) && !held {
-                        note(CallProblem::NoSuchFunction(name.to_string()));
-                    } else if let Some(wanted) = own.get(name) {
-                        // A method call carries its receiver as the first
-                        // argument, which is how `x.f(y)` reaches `fn f(a, b)`.
-                        let given = call.args.len()
-                            + usize::from(matches!(expr, rhai::Expr::MethodCall(..)));
-                        if !wanted.contains(&given) {
-                            let mut wanted: Vec<usize> = wanted.iter().copied().collect();
-                            wanted.sort_unstable();
-                            note(CallProblem::WrongArgumentCount {
-                                name: name.to_string(),
-                                given,
-                                wanted,
-                            });
-                        }
-                    }
-                }
-                // A method call and its receiver are two nodes, and the
-                // receiver is what says whether `set` here is an array's or a
-                // signal's. Both arms are needed: the walk visits the `Dot` and
-                // the `MethodCall` separately, and only the `Dot` has the pair.
-                rhai::Expr::Dot(pair, ..) => {
-                    if let Some(problem) = self.stale_signal_api(&pair.lhs, &pair.rhs) {
-                        note(problem);
-                    }
-                }
-                _ => {}
-            }
-            true
-        });
-        unknown
-    }
-
-    /// Names read inside a `fn` body that **nothing anywhere could supply**.
-    ///
-    /// ## Why this is not the obvious check
-    ///
-    /// A `fn` body cannot be checked against its own parameters and locals, the
-    /// way it could in most languages, because of divergence 4 in the fork: in
-    /// Rux **a call runs in the scope it was written in**, so a function sees
-    /// its caller's locals. Driven and confirmed: `fn outer() { let x = 42;
-    /// inner(); }` with `fn inner() { n = x; }` sets `n` to 42. Checking a body
-    /// in isolation would therefore report the single most useful thing the
-    /// fork exists to allow.
-    ///
-    /// So the question asked here is weaker and answerable: **is this name
-    /// declared anywhere at all?** A name that is no signal, no parameter, no
-    /// `let` and no loop variable in this document cannot be in scope under any
-    /// caller, because scope is made of declarations and there is no
-    /// declaration of it to be in. `fn addUser() { Have }` is the shape this
-    /// catches, and it is the shape a typo takes.
-    ///
-    /// `also` is what the *runtime* knows and this crate does not: the names an
-    /// `r-for` row brings in, and the locals of every handler in the template,
-    /// since any of those can be the caller whose scope a body is running in.
-    ///
-    /// ## Reported as an error
-    ///
-    /// Decided by the user, 2026-09-17, looking at the squiggle: a name nothing
-    /// anywhere declares is a mistake, and a caution let `rux check` exit 0 on a
-    /// document that cannot work. What keeps that safe is how narrow the
-    /// question is. This never asks whether a name is in scope *here*, only
-    /// whether it is declared *at all*, and `also` carries the names the runtime
-    /// knows about that this crate cannot see. The measure is the corpus: all 47
-    /// examples and all 21 components alone produce no report.
-    /// `own_script_lines` is how much of the compiled text is **this document's
-    /// own** `<script>`. Every component's `fn`s are appended to it before
-    /// compiling, so the one AST holds functions from several files, and a
-    /// report about a line past that mark belongs to a file this is not
-    /// checking. Naming the wrong file is worse than saying nothing: unplaced is
-    /// vague, placed and wrong is a trap, which this project has already paid
-    /// for once. A component is reported when it is the file being checked.
-    /// Each report carries the **script-relative** line it was read on, which
-    /// the runtime turns into a line in the file. Without one it is drawn at
-    /// the top of the document, pointing at `<template>` for a mistake in
-    /// `<script>`.
-    pub fn unknown_names_in_functions(
-        &self,
-        also: &HashSet<String>,
-        own_script_lines: usize,
-    ) -> Vec<(String, Option<usize>)> {
-        let mut in_scope = declared_in(&self.funcs);
-        in_scope.extend(self.signals.iter().cloned());
-        in_scope.extend(also.iter().cloned());
-
-        let mut unknown: Vec<(String, Option<usize>)> = Vec::new();
-        self.funcs.walk(&mut |path| {
-            let Some(rhai::ASTNode::Expr(rhai::Expr::Variable(var, _, pos))) = path.last() else {
-                return true;
-            };
-            // Past the mark is a component's function, riding in the same AST.
-            if pos.line().is_some_and(|line| line > own_script_lines) {
-                return true;
-            }
-            // A qualified name (`mod::thing`) resolves through a module and not
-            // through any scope, so scope has nothing to say about it.
-            if !var.2.is_empty() {
-                return true;
-            }
-            let name = var.1.as_str();
-            if in_scope.contains(name) {
-                return true;
-            }
-            // A bare name that is really a function is a call the other check
-            // owns, and reporting it here would say the same thing twice in
-            // different words.
-            if self.callable_names().contains(name) {
-                return true;
-            }
-            // One report per name, at the first place it is read: a name
-            // misspelled the same way twice is one thing to fix.
-            if !unknown.iter().any(|(n, _)| n == name) {
-                unknown.push((name.to_string(), pos.line()));
-            }
-            true
-        });
-        unknown
-    }
-
-    /// Every name `src` declares, for handing back as part of `also` above.
-    ///
-    /// A handler is a caller, so its locals are in scope inside whatever it
-    /// calls. Compiling it here rather than in the runtime keeps every piece of
-    /// rhai knowledge on this side of the boundary.
-    pub fn declared_names(&self, src: &str) -> HashSet<String> {
-        match front::compile(&self.engine, src) {
-            Ok(ast) => declared_in(&ast),
-            // A syntax error is `check_syntax`'s to report, and an AST that does
-            // not exist declares nothing.
-            Err(_) => HashSet::new(),
-        }
-    }
-
-    /// `signal.set(x)` and `signal.get()`, which name real functions and still
-    /// cannot work.
-    ///
-    /// These two escape [`Self::unknown_calls`]'s name check because `set` and
-    /// `get` *are* registered: `set` on an array, a map, a blob and a string,
-    /// `get` on a map. So `searching.set(true)` compiles, resolves nothing at
-    /// run time for a bool, and does nothing, in silence. It is the single most
-    /// misleading thing an author can write, because it is what
-    /// `docs/02-spec.md` taught until 2026-08-25.
-    ///
-    /// The arity is what makes this safe to report. Every registered `set`
-    /// takes **two** arguments after the receiver (`tasks.set(0, "x")` on an
-    /// array signal is legitimate and stays silent), and the map's `get` takes
-    /// one. A one-argument `set` or a no-argument `get` on a name that is a
-    /// signal is the v0.3-superseded API and nothing else, so there is no state
-    /// in which it could have worked.
-    fn stale_signal_api(&self, receiver: &rhai::Expr, call: &rhai::Expr) -> Option<CallProblem> {
-        let rhai::Expr::Variable(var, ..) = receiver else { return None };
-        let signal = var.1.as_str();
-        if !self.signals.contains(signal) {
-            return None;
-        }
-        let (rhai::Expr::MethodCall(call, ..) | rhai::Expr::FnCall(call, ..)) = call else {
-            return None;
-        };
-        let stale = matches!((call.name.as_str(), call.args.len()), ("set", 1) | ("get", 0));
-        stale.then(|| CallProblem::StaleSignalApi {
-            signal: signal.to_string(),
-            method: call.name.to_string(),
-        })
-    }
-
-    /// The parameter counts of the `fn`s this document declared.
-    ///
-    /// A name may appear more than once: rhai dispatches a script function on
-    /// its argument count, so `fn f(a)` and `fn f(a, b)` are two functions and
-    /// both counts are legal.
-    ///
-    /// **A name the host or a package also registered is left out entirely.**
-    /// The native side can be overloaded on types nothing here can see, so a
-    /// count that no `fn` accepts might still be resolved by a native of the
-    /// same name. Dropping those is what keeps this from flagging working code,
-    /// which matters more than catching every case.
-    fn own_fn_arities(&self) -> HashMap<String, HashSet<usize>> {
-        let native: HashSet<String> = self
-            .engine
-            .collect_fn_metadata(None, |f| Some(f.metadata.name.to_string()), true)
-            .into_iter()
-            .collect();
-        let mut arities: HashMap<String, HashSet<usize>> = HashMap::new();
-        for f in self.funcs.iter_functions() {
-            if native.contains(f.name) {
-                continue;
-            }
-            arities.entry(f.name.to_string()).or_default().insert(f.params.len());
-        }
-        arities
-    }
-
-    /// Every function name this engine could resolve a call to.
-    ///
-    /// Three sources, because a call can land in any of them: what the host and
-    /// the script tier registered, what the standard packages bring, and the
-    /// `fn`s the document itself declared. The first two come from the engine,
-    /// which is the same place the interpreter looks, so this cannot drift from
-    /// what would actually happen at run time. The third is the document's own
-    /// `AST`, which is where `fn refresh()` lives.
-    fn callable_names(&self) -> HashSet<String> {
-        let mut names: HashSet<String> = self
-            .engine
-            .collect_fn_metadata(None, |f| Some(f.metadata.name.to_string()), true)
-            .into_iter()
-            .collect();
-        names.extend(self.funcs.iter_functions().map(|f| f.name.to_string()));
-        names
-    }
-
+    /// half. Empty if the handler failed or changed nothing.
     pub fn run_handler_tracked(&mut self, src: &str) -> HashSet<String> {
         self.run_handler_tracked_in(src, &[])
-    }
-
-    /// Run `f` and report which signals it changed.
-    ///
-    /// Only the signals it was about to change are compared, each against the
-    /// value it had just before: the fork tells [`note_write`] about every
-    /// assignment, property or index chain and by-reference call on a variable
-    /// before it happens. Copying and comparing every signal around every run
-    /// used to cost more than the run itself once a list was large.
-    ///
-    /// A tracked run inside another hands what it found to the outer one, as
-    /// signals changed, so nothing is lost by nesting.
-    fn tracking<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> (R, HashSet<String>) {
-        let log = WriteLog {
-            scope: &self.scope as *const Scope as *const () as usize,
-            signals: self.signals.clone(),
-            before: HashMap::new(),
-            unsnapped: HashSet::new(),
-        };
-        // Debug builds also take the old whole-state copy and check the
-        // tracked answer against it, so every test that runs a handler proves
-        // the fork's hook missed nothing. Release builds skip it.
-        #[cfg(debug_assertions)]
-        let every: Vec<(String, Option<Value>)> =
-            self.signals.iter().map(|n| (n.clone(), self.read_signal(n))).collect();
-        let outer = WRITES.with(|w| w.borrow_mut().replace(log));
-        let out = f(self);
-        let log = WRITES.with(|w| std::mem::replace(&mut *w.borrow_mut(), outer));
-        let Some(log) = log else { return (out, HashSet::new()) };
-        let changed: HashSet<String> = profile::time(profile::Phase::Diff, || {
-            let mut changed = log.unsnapped;
-            for (name, before) in log.before {
-                if self.read_signal(&name) != before {
-                    changed.insert(name);
-                }
-            }
-            changed
-        });
-        #[cfg(debug_assertions)]
-        for (name, before) in every {
-            if self.read_signal(&name) != before {
-                assert!(
-                    changed.contains(&name),
-                    "write tracking missed `{name}`: it changed, and no write to it was seen"
-                );
-            }
-        }
-        WRITES.with(|w| {
-            if let Some(outer) = w.borrow_mut().as_mut() {
-                outer.unsnapped.extend(changed.iter().cloned());
-            }
-        });
-        (out, changed)
     }
 
     /// [`run_handler_tracked`](Self::run_handler_tracked) with `locals` in
@@ -2643,40 +1578,234 @@ impl Engine {
         if ran { changed } else { HashSet::new() }
     }
 
+    // ----- Checking what a piece calls and names ---------------------------
+
+    /// Whether `src` is syntactically a script at all, without running it.
+    ///
+    /// Syntax only, deliberately. A handler names things that do not exist
+    /// until it runs (an `r-for` local, a component's own state), and those are
+    /// runtime lookups rather than compile errors, so compiling cannot produce
+    /// a false alarm about them. What it does catch is a handler that could
+    /// never run under any state, which until now reached the window and did
+    /// nothing at all, silently, because nothing compiles a handler until the
+    /// moment it is tapped. Syntax the language no longer has (a `do` loop,
+    /// a bitwise operator) is caught here too.
+    pub fn check_syntax(&self, src: &str) -> Result<(), String> {
+        let script = rux_syntax::parse(src, rux_syntax::Options::default()).map_err(|e| rux_phrasing(&e.message))?;
+        match lower::removed_syntax(&script) {
+            Some(what) => Err(format!("{what} is not part of Rux")),
+            None => Ok(()),
+        }
+    }
+
+    /// The functions and methods `src` calls that nothing could ever resolve.
+    ///
+    /// **This is the other half of [`Self::check_syntax`], and the half that was
+    /// missing.** A function *name* is resolved when the call runs, not when it
+    /// compiles, so `@tap="alert(…)"` compiles perfectly and does nothing when
+    /// tapped. A handler that does nothing is indistinguishable from a handler
+    /// that never fired, which makes it the worse place to be silent.
+    ///
+    /// **Names only, and the arity of the document's own functions.** A name
+    /// that no `fn` declares and the language does not have can never resolve
+    /// under any state, so saying so cannot be a false alarm. Variables are
+    /// left alone for the reason [`Self::check_syntax`] gives.
+    pub fn unknown_calls(&self, src: &str) -> Vec<CallProblem> {
+        let Ok(script) = rux_syntax::parse(src, rux_syntax::Options::default()) else {
+            return Vec::new(); // a syntax error is `check_syntax`'s to report
+        };
+        self.unresolvable_calls(&script.stmts)
+    }
+
+    /// The same check, over the `fn` bodies the document declared.
+    ///
+    /// A handler is not the only place a call hides. `fn refresh() { alert(…) }`
+    /// is never run until something calls it, and a `fn` nothing calls yet is
+    /// exactly where a typo waits quietest.
+    pub fn unknown_calls_in_functions(&self) -> Vec<CallProblem> {
+        let fns: Vec<rux_syntax::ast::Stmt> =
+            self.script.stmts.iter().filter(|s| matches!(s.kind, rux_syntax::ast::StmtKind::Fn(_))).cloned().collect();
+        self.unresolvable_calls(&fns)
+    }
+
+    /// The walk both of the above share.
+    fn unresolvable_calls(&self, stmts: &[rux_syntax::ast::Stmt]) -> Vec<CallProblem> {
+        use rux_syntax::ast::ExprKind as E;
+        use rux_syntax::visit::{walk_stmts, Node};
+        let known = self.callable_names();
+        // A plain call to a name declared as a variable may be an arrow held in
+        // it (`let add = (a, b) => a + b; add(2, 3)`), which only running it
+        // can tell. Left to run time, where it is an error if it is not one.
+        let mut variables: HashSet<String> = self.ir.global_names().map(str::to_string).collect();
+        variables.extend(declared_in(stmts));
+        let own = self.own_fn_arities();
+        let mut unknown: Vec<CallProblem> = Vec::new();
+        let mut note = |problem: CallProblem| {
+            if !unknown.contains(&problem) {
+                unknown.push(problem);
+            }
+        };
+        let check_arity = |name: &str, given: usize, note: &mut dyn FnMut(CallProblem)| {
+            if let Some(wanted) = own.get(name) {
+                if !wanted.contains(&given) {
+                    let mut wanted: Vec<usize> = wanted.iter().copied().collect();
+                    wanted.sort_unstable();
+                    note(CallProblem::WrongArgumentCount { name: name.to_string(), given, wanted });
+                }
+            }
+        };
+        walk_stmts(stmts, &mut |node| {
+            let Node::Expr(e) = node else { return true };
+            match &e.kind {
+                E::Call { callee, args, .. } if callee.len() == 1 => {
+                    let name = callee[0].name.as_str();
+                    if !known.contains(name) && !variables.contains(name) {
+                        note(CallProblem::NoSuchFunction(name.to_string()));
+                    } else {
+                        check_arity(name, args.len(), &mut note);
+                    }
+                }
+                E::Method { recv, name, args, .. } => {
+                    // `signal.set(x)` and `signal.get()`: the API before v0.3.
+                    if let E::Var(signal) = &recv.kind {
+                        let stale = matches!((name.name.as_str(), args.len()), ("set", 1) | ("get", 0));
+                        if stale && self.ir.has_global(signal) {
+                            note(CallProblem::StaleSignalApi { signal: signal.clone(), method: name.name.clone() });
+                            return true;
+                        }
+                    }
+                    if !known.contains(name.name.as_str()) {
+                        note(CallProblem::NoSuchFunction(name.name.clone()));
+                    } else {
+                        // A method call carries its receiver as the first
+                        // argument, which is how `x.f(y)` reaches `fn f(a, b)`.
+                        check_arity(&name.name, args.len() + 1, &mut note);
+                    }
+                }
+                _ => {}
+            }
+            true
+        });
+        unknown
+    }
+
+    /// Names read inside a `fn` body that **nothing anywhere could supply**.
+    ///
+    /// The question is deliberately weak: **is this name declared anywhere at
+    /// all?** A name that is no signal, no parameter, no `let` and no loop
+    /// variable in this document cannot be in scope under any caller, because
+    /// scope is made of declarations and there is no declaration of it to be
+    /// in. `fn addUser() { Have }` is the shape this catches, and it is the
+    /// shape a typo takes. `also` is what the runtime knows and this crate
+    /// does not: the names an `r-for` row brings in, and the locals of every
+    /// handler in the template.
+    ///
+    /// `own_script_lines` is how much of the script is **this document's own**
+    /// `<script>`: every component's `fn`s are appended to it, and a report
+    /// about a line past that mark belongs to another file. Each report
+    /// carries the **script-relative** line it was read on.
+    pub fn unknown_names_in_functions(
+        &self,
+        also: &HashSet<String>,
+        own_script_lines: usize,
+    ) -> Vec<(String, Option<usize>)> {
+        use rux_syntax::ast::{ExprKind as E, StmtKind as S};
+        use rux_syntax::visit::{walk_stmts, Node};
+        let fns: Vec<rux_syntax::ast::Stmt> =
+            self.script.stmts.iter().filter(|s| matches!(s.kind, S::Fn(_))).cloned().collect();
+        let mut in_scope = declared_in(&fns);
+        in_scope.extend(self.ir.global_names().map(str::to_string));
+        in_scope.extend(also.iter().cloned());
+        let callable = self.callable_names();
+        let lines = rux_syntax::LineIndex::new(&self.source);
+        let mut unknown: Vec<(String, Option<usize>)> = Vec::new();
+        walk_stmts(&fns, &mut |node| {
+            let Node::Expr(e) = node else { return true };
+            let E::Var(name) = &e.kind else { return true };
+            let line = lines.line_col(&self.source, e.span.start as usize).0;
+            // Past the mark is a component's function, riding in the same script.
+            if line > own_script_lines || in_scope.contains(name) || callable.contains(name.as_str()) {
+                return true;
+            }
+            // One report per name, at the first place it is read.
+            if !unknown.iter().any(|(n, _)| n == name) {
+                unknown.push((name.clone(), Some(line)));
+            }
+            true
+        });
+        unknown
+    }
+
+    /// Every name `src` declares, for handing back as part of `also` above.
+    pub fn declared_names(&self, src: &str) -> HashSet<String> {
+        match rux_syntax::parse(src, rux_syntax::Options::default()) {
+            Ok(script) => declared_in(&script.stmts),
+            // A syntax error is `check_syntax`'s to report, and a script that
+            // does not parse declares nothing.
+            Err(_) => HashSet::new(),
+        }
+    }
+
+    /// The parameter counts of the `fn`s this document declared, leaving out
+    /// a name the language also has, which a call may mean instead.
+    fn own_fn_arities(&self) -> HashMap<String, HashSet<usize>> {
+        use interp::stdlib::{FUNCTIONS, METHODS};
+        let mut arities: HashMap<String, HashSet<usize>> = HashMap::new();
+        for f in &self.ir.unit().fns {
+            if FUNCTIONS.contains(&f.name.as_str()) || METHODS.contains(&f.name.as_str()) {
+                continue;
+            }
+            arities.entry(f.name.clone()).or_default().insert(f.params as usize);
+        }
+        arities
+    }
+
+    /// Every function name a call could resolve to: the language's
+    /// functions and methods, and the document's own `fn`s.
+    fn callable_names(&self) -> HashSet<&str> {
+        use interp::stdlib::{FUNCTIONS, METHODS};
+        let mut names: HashSet<&str> = FUNCTIONS.iter().chain(METHODS).copied().collect();
+        names.extend(self.ir.unit().fns.iter().map(|f| f.name.as_str()));
+        names
+    }
+
+    // ----- State -------------------------------------------------------------
+
+    /// A lower ceiling on steps than [`MAX_OPERATIONS`], for a test that runs
+    /// a loop that never ends.
+    #[cfg(test)]
+    fn set_max_operations(&mut self, n: u64) {
+        self.ir.set_max_operations(n);
+        if let Some(fork) = self.fork.as_mut() {
+            fork.set_max_operations(n);
+        }
+    }
+
+    /// Mirror a write into the fork, in a debug build.
+    fn fork_set(&mut self, name: &str, value: &Value) {
+        #[cfg(debug_assertions)]
+        if let Some(fork) = self.fork.as_mut() {
+            fork.set(name, value);
+        }
+        let _ = (name, value);
+    }
+
     /// Put the current path in scope as the `route` signal.
     ///
     /// A signal rather than anything router-shaped, so `{{ route }}`, `r-if`,
     /// `:class` and the change diff all understand navigation with no knowledge
-    /// of the router at all. It is added to the signal set as well as the scope,
-    /// or dependency tracking would filter reads of it out as a stray local and
-    /// nothing would subscribe.
-    ///
-    /// Returns whether the value actually moved, which is what tells the runtime
-    /// there is anything to repaint.
+    /// of the router at all. Returns whether the value actually moved, which
+    /// is what tells the runtime there is anything to repaint.
     pub fn set_route(&mut self, path: &str) -> bool {
-        let changed = self.read_signal(ROUTE_SIGNAL).as_ref()
-            != Some(&Value::Text(path.to_string()));
-        self.scope.set_or_push(ROUTE_SIGNAL, path.to_string());
-        self.signals.insert(ROUTE_SIGNAL.to_string());
-        if let Some(ir) = self.ir.as_mut() {
-            ir.set_global(ROUTE_SIGNAL, interp::V::str(path));
-        }
-        changed
+        self.set_provided(ROUTE_SIGNAL, Value::Text(path.to_string()))
     }
 
     /// Put one of the router's other provided values in scope, the same way
-    /// [`Self::set_route`] does with the path.
-    ///
-    /// Returns whether it moved, so the runtime can skip a repaint nothing
-    /// asked for: `can_go_forward` in particular is false through most of a
-    /// session and would otherwise report a change on every navigation.
+    /// [`Self::set_route`] does with the path. Returns whether it moved.
     pub fn set_provided(&mut self, name: &str, value: Value) -> bool {
-        let changed = self.read_signal(name).as_ref() != Some(&value);
-        self.scope.set_or_push(name, to_dynamic(&value));
-        self.signals.insert(name.to_string());
-        if let Some(ir) = self.ir.as_mut() {
-            ir.set_global(name, interp::V::from_value(&value));
-        }
+        let changed = self.signal_value(name).as_ref() != Some(&value);
+        self.ir.set_global(name, interp::V::from_value(&value));
+        self.fork_set(name, &value);
         changed
     }
 
@@ -2684,21 +1813,13 @@ impl Engine {
     /// runtime can say so rather than silently overwriting it. Asked *before*
     /// the setters, which would otherwise make the answer always yes.
     pub fn declares(&self, name: &str) -> bool {
-        self.signals.contains(name)
+        self.ir.has_global(name)
     }
 
-    /// A signal's current value, read straight from the scope (no evaluation).
+    /// A signal's current value, read straight from the state (no evaluation).
     /// `None` for a name that is not a signal.
     pub fn signal_value(&self, name: &str) -> Option<Value> {
-        if !self.signals.contains(name) {
-            return None;
-        }
-        self.read_signal(name)
-    }
-
-    /// A signal's current value, read straight from the scope (no evaluation).
-    fn read_signal(&self, name: &str) -> Option<Value> {
-        self.scope.get_value::<Dynamic>(name).map(|d| from_dynamic(&d))
+        self.ir.global(name).map(interp::V::to_value)
     }
 
     /// Read a signal's current value as a display string (for input `r-model`).
@@ -2707,73 +1828,54 @@ impl Engine {
     }
 
     /// The same, with a row's loop variables in scope.
-    ///
-    /// An `r-model` is recorded as written, so one inside an `r-for` can mention
-    /// the loop variable (`items[item.at].note`). Read without it, that is not an
-    /// expression at all, and the field comes back empty.
     pub fn get_string_in(&mut self, expr: &str, locals: &[(String, Value)]) -> String {
         self.eval_value(expr, locals).map(|v| v.to_display()).unwrap_or_default()
     }
 
     /// Set a signal to a string value (from input editing).
     pub fn set_string(&mut self, name: &str, value: &str) {
-        if let Some(ir) = self.ir.as_mut() {
-            ir.set_global(name, interp::V::str(value));
-        }
-        self.scope.set_or_push(name, value.to_string());
+        self.ir.set_global(name, interp::V::str(value));
+        self.fork_set(name, &Value::Text(value.to_string()));
     }
 
     /// Run a component's own top-level script in a scope of its own, and hand
     /// back the variables it declared: one instance's private state.
     ///
-    /// The document's script is not visible, which is the point. A component
+    /// The document's state is not visible, which is the point. A component
     /// that could read the app's signals by name would be coupled to the app it
     /// was first written for, and could not be used twice.
     pub fn init_scope(&mut self, script: &str) -> Vec<(String, Value)> {
-        let shadow = self.ir.as_mut().map(|ir| shadow::isolated(|| ir.run(script, &[], false)));
+        #[cfg(debug_assertions)]
+        let fork = self.fork.as_mut().map(|f| shadow::isolated(|| f.init_scope(script)));
+        #[cfg(debug_assertions)]
         let marks = shadow::marks();
-        let out = self.init_scope_fork(script);
-        if let Some((ran, effects, _)) = shadow {
-            let ours: Vec<(String, Value)> = match ran {
-                Ok((_, _, top)) => top.into_iter().map(|(n, v)| (n, v.to_value())).collect(),
-                Err(_) => Vec::new(),
-            };
-            let agree = ours.len() == out.len()
-                && out.iter().all(|(n, v)| ours.iter().any(|(m, w)| m == n && shadow::same(v, w)));
-            if !agree {
-                shadow::differ("the state a component's script makes", script, &out, &ours);
+
+        let out: Vec<(String, Value)> = match self.ir.run(script, &[], false) {
+            Err(e) => {
+                warn(format!("a component's script failed to compile: {}", explain(&e.message)));
+                Vec::new()
             }
-            let fork_effects = shadow::since(marks);
-            if fork_effects != effects {
-                shadow::differ("what a component's script asked for", script, fork_effects, effects);
+            Ok((result, _, top)) => {
+                if let Err(f) = result {
+                    warn(format!("a component's script failed to run: {}", explain(&f.message)));
+                }
+                top.into_iter().map(|(n, v)| (n, v.to_value())).collect()
+            }
+        };
+
+        #[cfg(debug_assertions)]
+        if let Some((theirs, effects, _)) = fork {
+            let agree = theirs.len() == out.len()
+                && theirs.iter().all(|(n, v)| out.iter().any(|(m, w)| m == n && shadow::same(v, w)));
+            if !agree {
+                shadow::differ("the state a component's script makes", script, &theirs, &out);
+            }
+            let ours = shadow::since(marks);
+            if effects != ours {
+                shadow::differ("what a component's script asked for", script, effects, ours);
             }
         }
         out
-    }
-
-    fn init_scope_fork(&mut self, script: &str) -> Vec<(String, Value)> {
-        let merged = match self.prepared(script) {
-            Ok(merged) => merged,
-            Err(e) => {
-                warn(format!(
-                    "a component's script failed to compile: {}",
-                    explain(&e.to_string())
-                ));
-                return Vec::new();
-            }
-        };
-        // Its own functions plus everything already registered, so a component
-        // can call helpers it declared beside its state: `prepared` merges them.
-        let mut scope = Scope::new();
-        if let Err(e) =
-            profile::time(profile::Phase::Run, || self.engine.run_ast_with_scope(&mut scope, &merged))
-        {
-            warn(format!(
-                "a component's script failed to run: {}",
-                explain(&e.to_string())
-            ));
-        }
-        scope.iter().map(|(name, _, value)| (name.to_string(), from_dynamic(&value))).collect()
     }
 
     /// Run a handler inside a component instance, whose state is `locals`.
@@ -2781,107 +1883,27 @@ impl Engine {
     /// Returns the instance's variables as they stand afterwards, and which of
     /// the *document's* signals changed. Both matter: a handler in a component
     /// may touch its own state, a prop's underlying signal, or both.
-    ///
-    /// Reading the locals back before the scope is rewound is what makes a
-    /// component's state writable at all. Ordinary evaluation drops them, which
-    /// is right for a `{{ }}` binding and wrong for a `@tap`.
     pub fn run_scoped_handler(
         &mut self,
         src: &str,
         locals: &[(String, Value)],
     ) -> (Vec<(String, Value)>, HashSet<String>) {
-        let shadow = self.ir.as_mut().map(|ir| shadow::isolated(|| ir.run(src, locals, true)));
-        let marks = shadow::marks();
-        let (after, changed, failed) = self.run_scoped_handler_fork(src, locals);
-        if let Some((ran, effects, reads)) = shadow {
-            let (ours, our_after) = match ran {
-                Ok((Ok(v), after, _)) => (Ok(v.to_value()), after),
-                Ok((Err(f), after, _)) => (Err(f.message), after),
-                Err(e) => (Err(e.message), Vec::new()),
-            };
-            let ours_after: Vec<Value> = our_after.iter().map(interp::V::to_value).collect();
-            let same = after.len() == ours_after.len()
-                && after.iter().zip(&ours_after).all(|((_, a), b)| shadow::same(a, b));
-            if !failed && ours.is_ok() && !same {
-                shadow::differ("the instance's state after a handler", src, &after, &ours_after);
-            }
-            // The fork's value is not kept, only whether it failed.
-            let fork = if failed { None } else { Some(ours.clone().unwrap_or(Value::Null)) };
-            self.compare(src, fork.as_ref(), &ours, marks, effects, reads, locals);
+        let ((ran, after), changed) = self.tracking(|e| e.run(src, locals, Said::Handler));
+        let after: Vec<(String, Value)> = locals.iter().map(|(n, _)| n.clone()).zip(after).collect();
+        if ran.is_none() {
+            return (after, HashSet::new());
         }
         (after, changed)
     }
 
-    fn run_scoped_handler_fork(
-        &mut self,
-        src: &str,
-        locals: &[(String, Value)],
-    ) -> (Vec<(String, Value)>, HashSet<String>, bool) {
-        let merged = match self.prepared(src) {
-            Ok(merged) => merged,
-            Err(e) => {
-                warn(format!(
-                    "handler `{}` failed to compile: {}",
-                    trim_expr(src),
-                    explain(&e.to_string())
-                ));
-                return (locals.to_vec(), HashSet::new(), true);
-            }
-        };
-        let ((after, result), changed) = self.tracking(|e| {
-            let base = e.scope.len();
-            for (name, value) in locals {
-                e.scope.push(name.clone(), to_dynamic(value));
-            }
-            let result = profile::time(profile::Phase::Run, || {
-                e.engine.eval_ast_with_scope::<Dynamic>(&mut e.scope, &merged)
-            });
-            // Read the instance's state back *before* rewinding, or the handler's
-            // effect on it is dropped along with the temporary scope.
-            let after: Vec<(String, Value)> = locals
-                .iter()
-                .map(|(name, previous)| {
-                    let value = e
-                        .scope
-                        .get_value::<Dynamic>(name)
-                        .map(|d| from_dynamic(&d))
-                        .unwrap_or_else(|| previous.clone());
-                    (name.clone(), value)
-                })
-                .collect();
-            e.scope.rewind(base);
-            (after, result)
-        });
-
-        if let Err(e) = result {
-            warn(format!(
-                "handler `{}` failed: {}",
-                trim_expr(src),
-                explain(&e.to_string())
-            ));
-            return (after, HashSet::new(), true);
-        }
-        (after, changed, false)
-    }
-
     /// [`run_scoped_handler`](Self::run_scoped_handler), also reporting what the
-    /// body **read**.
-    ///
-    /// An effect inside a component needs all three answers: its own instance's
-    /// state afterwards, which document signals it moved, and what it read, since
-    /// what it read is what it is subscribed to. A handler needs only the first
-    /// two, which is why the plain form does not pay for the tracking.
+    /// body **read**: an effect inside a component is subscribed to it.
     pub fn run_scoped_effect(
         &mut self,
         src: &str,
         locals: &[(String, Value)],
     ) -> (Vec<(String, Value)>, HashSet<String>, HashSet<String>) {
-        READS.with(|r| *r.borrow_mut() = Some(HashSet::new()));
-        let (after, changed) = self.run_scoped_handler(src, locals);
-        let mut reads = READS.with(|r| r.borrow_mut().take()).unwrap_or_default();
-        // Only document signals are subscriptions. An instance's own names are
-        // not: they change through a handler, which rebuilds anyway.
-        reads.retain(|n| self.signals.contains(n));
+        let ((after, changed), reads) = self.reading(|e| e.run_scoped_handler(src, locals));
         (after, changed, reads)
     }
 
@@ -2891,34 +1913,21 @@ impl Engine {
     /// change is reported, so a computed that lands on the same answer does not
     /// invalidate the bindings that read it: recomputing is cheap, rebuilding a
     /// subtree is not.
-    ///
-    /// A computed is a signal like any other, because it is declared as a plain
-    /// `let` in the script handed to rhai. That is what makes `{{ total }}`
-    /// track it without anything else knowing computeds exist.
     pub fn recompute(&mut self, name: &str, expr: &str) -> (bool, HashSet<String>) {
-        let (value, deps) = self.eval_value_tracked(expr, &[]);
+        let (value, deps) = self.reading(|e| e.eval(expr, &[]));
         let Some(value) = value else { return (false, deps) };
-        let changed = self.read_signal(name).as_ref() != Some(&value);
+        let changed = self.ir.global(name) != Some(&value);
         if changed {
-            self.scope.set_or_push(name, to_dynamic(&value));
-            if let Some(ir) = self.ir.as_mut() {
-                ir.set_global(name, interp::V::from_value(&value));
-            }
+            let shown = value.to_value();
+            self.ir.set_global(name, value);
+            self.fork_set(name, &shown);
         }
         (changed, deps)
     }
 
     /// Run an effect body, reporting what it read and what it wrote.
-    ///
-    /// Both halves are needed and neither can be inferred from the other: the
-    /// reads say when to run it again, and the writes say what its running has
-    /// invalidated. A handler only needs the writes, which is why this is not
-    /// [`run_handler_tracked`](Self::run_handler_tracked).
     pub fn run_effect_tracked(&mut self, src: &str) -> (HashSet<String>, HashSet<String>) {
-        READS.with(|r| *r.borrow_mut() = Some(HashSet::new()));
-        let (ran, writes) = self.tracking(|e| e.eval(src, &[]).is_some());
-        let mut reads = READS.with(|r| r.borrow_mut().take()).unwrap_or_default();
-        reads.retain(|n| self.signals.contains(n));
+        let ((ran, writes), reads) = self.reading(|e| e.tracking(|e| e.eval(src, &[]).is_some()));
         if !ran {
             // It still subscribes to whatever it managed to read, so a fixed
             // signal re-runs it rather than leaving it dead until a reload.
@@ -2928,38 +1937,17 @@ impl Engine {
     }
 
     /// Write a string into whatever an `r-model` names, and report which signals
-    /// that changed.
-    ///
-    /// An assignment rather than [`set_string`](Self::set_string), which can only
-    /// set a scope variable *called* `name`: for anything but a bare signal
-    /// (`user.name`, `items[0].note`) that quietly created a variable with a
-    /// punctuation-filled name and left the real target untouched. Running it as
-    /// script is also what lets a row's loop variable be in scope.
-    pub fn assign_string(
-        &mut self,
-        target: &str,
-        value: &str,
-        locals: &[(String, Value)],
-    ) -> HashSet<String> {
-        // The value is a person's typing, so it is quoted as a literal rather
-        // than pasted in: a quote or a backslash in a text field would otherwise
-        // be a syntax error at best.
-        let src = format!("{target} = {}", rux_reactive::json_string(value));
-        let (ran, changed) = self.tracking(|e| e.eval(&src, locals).is_some());
-        if ran { changed } else { HashSet::new() }
+    /// that changed. An assignment, so `user.name` and `items[0].note` work,
+    /// with a row's loop variable in scope.
+    pub fn assign_string(&mut self, target: &str, value: &str, locals: &[(String, Value)]) -> HashSet<String> {
+        self.assign_value(target, &Value::Text(value.to_string()), locals)
     }
 
     /// [`assign_string`](Self::assign_string) for a value that is not text: a
-    /// `type="number"` writes a number, and a slider does too.
-    ///
-    /// Handed over as a local rather than spelled as a literal, so no value
-    /// has to survive a round trip through script syntax (`1e21`, `-0`).
-    pub fn assign_value(
-        &mut self,
-        target: &str,
-        value: &Value,
-        locals: &[(String, Value)],
-    ) -> HashSet<String> {
+    /// `type="number"` writes a number, and a slider does too. Handed over as
+    /// a local rather than spelled as a literal, so no value has to survive a
+    /// round trip through script syntax (`1e21`, `-0`, a quote in the text).
+    pub fn assign_value(&mut self, target: &str, value: &Value, locals: &[(String, Value)]) -> HashSet<String> {
         let mut locals = locals.to_vec();
         locals.push((ASSIGNED.to_string(), value.clone()));
         let src = format!("{target} = {ASSIGNED}");
@@ -2972,80 +1960,43 @@ impl Engine {
 /// author's name can shadow it.
 pub const ASSIGNED: &str = "__rux_assigned";
 
-/// Every name an AST declares: `fn` parameters, `let` bindings, and the
-/// variables a `for` loop brings in.
+/// Every name `stmts` declares: `fn` parameters, `let` bindings, the
+/// variables a `for` loop brings in, closures' parameters and a `catch`'s.
 ///
 /// Deliberately flat rather than per-scope. A `let` inside one block does not
 /// really reach a sibling block, but pretending it might is the safe direction
-/// of wrong: it can only make this quieter, never louder, and quiet is the side
-/// a name check has to fail towards.
-pub(crate) fn declared_in(ast: &AST) -> HashSet<String> {
+/// of wrong: it can only make a name check quieter, never louder.
+pub(crate) fn declared_in(stmts: &[rux_syntax::ast::Stmt]) -> HashSet<String> {
+    use rux_syntax::ast::{ExprKind as E, StmtKind as S};
+    use rux_syntax::visit::{walk_stmts, Node};
     let mut names: HashSet<String> = HashSet::new();
-    for f in ast.iter_functions() {
-        names.extend(f.params.iter().map(|p| p.to_string()));
-    }
-    ast.walk(&mut |path| {
-        match path.last() {
-            Some(rhai::ASTNode::Stmt(rhai::Stmt::Var(decl, ..))) => {
-                names.insert(decl.0.name.to_string());
-            }
-            Some(rhai::ASTNode::Stmt(rhai::Stmt::For(loop_, ..))) => {
-                names.insert(loop_.0.name.to_string());
-                if let Some(counter) = &loop_.1 {
-                    names.insert(counter.name.to_string());
+    walk_stmts(stmts, &mut |node| {
+        match node {
+            Node::Stmt(s) => match &s.kind {
+                S::Fn(def) => names.extend(def.params.iter().map(|p| p.name.name.clone())),
+                S::Let { name, .. } => {
+                    names.insert(name.name.clone());
+                }
+                S::For { var, counter, .. } => {
+                    names.insert(var.name.clone());
+                    if let Some(c) = counter {
+                        names.insert(c.name.clone());
+                    }
+                }
+                S::Try { var: Some(v), .. } => {
+                    names.insert(v.name.clone());
+                }
+                _ => {}
+            },
+            Node::Expr(e) => {
+                if let E::Closure { params, .. } = &e.kind {
+                    names.extend(params.iter().map(|p| p.name.name.clone()));
                 }
             }
-            _ => {}
         }
         true
     });
     names
-}
-
-fn to_dynamic(v: &Value) -> Dynamic {
-    match v {
-        Value::Number(n) => Dynamic::from(*n),
-        Value::Text(s) => Dynamic::from(s.clone()),
-        Value::Bool(b) => Dynamic::from(*b),
-        Value::Null => Dynamic::UNIT,
-        Value::List(items) => {
-            let arr: rhai::Array = items.iter().map(to_dynamic).collect();
-            Dynamic::from(arr)
-        }
-        Value::Map(entries) => {
-            let map: rhai::Map =
-                entries.iter().map(|(k, v)| (k.as_str().into(), to_dynamic(v))).collect();
-            Dynamic::from(map)
-        }
-    }
-}
-
-fn from_dynamic(d: &Dynamic) -> Value {
-    // Before the fallback below, which wrote `()` as the empty text.
-    if d.is_unit() {
-        return Value::Null;
-    }
-    if let Ok(i) = d.as_int() {
-        return Value::Number(i as f64);
-    }
-    if let Ok(f) = d.as_float() {
-        return Value::Number(f);
-    }
-    if let Ok(b) = d.as_bool() {
-        return Value::Bool(b);
-    }
-    if let Some(s) = d.clone().try_cast::<String>() {
-        return Value::Text(s);
-    }
-    if let Some(arr) = d.clone().try_cast::<rhai::Array>() {
-        return Value::List(arr.iter().map(from_dynamic).collect());
-    }
-    if let Some(map) = d.clone().try_cast::<rhai::Map>() {
-        return Value::Map(
-            map.iter().map(|(k, v)| (k.to_string(), from_dynamic(v))).collect(),
-        );
-    }
-    Value::Text(d.to_string())
 }
 
 #[cfg(test)]
@@ -3579,7 +2530,7 @@ mod tests {
         assert_eq!(e.eval_display("null ?? \"fallback\"", &[]), "fallback");
         // It is a literal, not state: it never reaches the signal set, so
         // nothing can subscribe to it.
-        assert!(!e.signals.contains("null"));
+        assert!(!e.declares("null"));
     }
 
     /// `null` leaves script as `Value::Null`, not the empty text, and comes
@@ -3747,7 +2698,7 @@ mod tests {
         let mut e = engine();
         // A small ceiling, so the test is quick in a debug build; the real one
         // is [`MAX_OPERATIONS`].
-        e.engine.set_max_operations(100_000);
+        e.set_max_operations(100_000);
         let _ = take_warnings();
         assert!(!e.run_handler("let n = 0; while true { n += 1; }"));
         let said: Vec<String> = take_warnings().into_iter().map(|w| w.message).collect();
@@ -3794,7 +2745,7 @@ mod tests {
     #[test]
     fn an_endless_loop_inside_a_callback_is_stopped_too() {
         let mut e = engine();
-        e.engine.set_max_operations(100_000);
+        e.set_max_operations(100_000);
         let _ = take_warnings();
         let started = std::time::Instant::now();
         assert!(!e.run_handler("[1, 2].map(|x| { let n = 0; while true { n += 1; } })"));

@@ -12,12 +12,33 @@ use super::value::V;
 use super::{dynamic, fail, Flow, Interp, R};
 use crate::{ElementAction, ElementHandle, Nav};
 
+/// Every function [`Interp::builtin`] answers, for a check that a call can
+/// resolve at all. A test holds the two together.
+pub const FUNCTIONS: &[&str] = &[
+    "print", "debug", "signal", "emit", "navigate", "replace", "back", "forward", "path_for", "pathFor", "blur",
+    crate::SUBMIT_FN, "query", "clearInterval", "setInterval", "__interval", "Ok", "Err", "Number", "parseInt",
+    "parseFloat", "parse_int", "to_int", "parse_float", "to_float", "String", "to_string", "isNaN", "type_of",
+    "intDiv", "toFloat", "trunc", "floor", "ceil", "round", "abs", "min", "max", "sqrt", "sin", "cos", "tan",
+    "atan2", "atan", "exp", "ln", "log", "log10", "keys", "values", "range", "is_def_fn", "is_def_var",
+];
+
+/// Every method [`Interp::method`] answers on some kind of value.
+pub const METHODS: &[&str] = &[
+    "len", "is_empty", "push", "append", "pop", "shift", "insert", "remove", "clear", "truncate", "reverse", "sort",
+    "map", "filter", "retain", "drain", "dedup", "find", "findIndex", "some", "every", "forEach", "reduce",
+    "includes", "contains", "indexOf", "index_of", "slice", "extract", "splice", "join", "get", "to_string", "trim",
+    "toUpperCase", "to_upper", "toLowerCase", "to_lower", "make_upper", "make_lower", "startsWith", "starts_with",
+    "endsWith", "ends_with", "repeat", "charAt", "substring", "sub_string", "split", "chars", "to_chars", "replace",
+    "pad", "to_int", "trunc", "floor", "ceil", "ceiling", "round", "to_float", "toFloat", "sqrt", "abs", "is_nan",
+    "min", "max", "keys", "values", "unwrap", "focus", "scrollIntoView", "tap", "call", "set",
+];
+
 /// Whether a method changes its receiver, so a call on a place writes the
 /// place: `items.push(x)`, `list.sort()`.
 pub(super) fn mutates(name: &str) -> bool {
     matches!(
         name,
-        "push" | "append" | "pop" | "shift" | "insert" | "remove" | "clear" | "truncate" | "reverse" | "sort"
+        "push" | "append" | "pop" | "shift" | "insert" | "remove" | "clear" | "truncate" | "reverse" | "sort" | "set"
             | "splice" | "retain" | "dedup" | "drain" | "pad" | "replace" | "make_upper" | "make_lower"
             | "unshift" | "fill"
     )
@@ -548,6 +569,17 @@ impl Interp {
                     };
                     V::str(items.iter().map(V::display).collect::<Vec<_>>().join(&sep))
                 }
+                ("set", 2) => {
+                    let list = Rc::make_mut(items);
+                    let len = list.len() as i64;
+                    if let Some(i) = argv[0].whole() {
+                        let at = if i < 0 { len + i } else { i };
+                        if (0..len).contains(&at) {
+                            list[at as usize] = argv[1].clone();
+                        }
+                    }
+                    V::None
+                }
                 ("get", 1) => match argv[0].whole() {
                     Some(i) => {
                         let len = items.len() as i64;
@@ -673,6 +705,11 @@ impl Interp {
                 ("contains", 1) => V::Bool(m.contains_key(text(&argv[0])?.as_ref())),
                 ("get", 1) => m.get(text(&argv[0])?.as_ref()).cloned().unwrap_or(V::None),
                 ("remove", 1) => Rc::make_mut(m).remove(text(&argv[0])?.as_ref()).unwrap_or(V::None),
+                ("set", 2) => {
+                    let key = text(&argv[0])?.to_string();
+                    Rc::make_mut(m).insert(key, argv[1].clone());
+                    V::None
+                }
                 ("clear", 0) => {
                     Rc::make_mut(m).clear();
                     V::None
@@ -686,6 +723,7 @@ impl Interp {
                             message: format!("unwrap() on an error: {error}"),
                             kind: "unwrap",
                             thrown: None,
+                            at: None,
                         }));
                     }
                     _ => return fail("unwrap() is for a `Result`, made by `Ok(…)` or `Err(…)`"),

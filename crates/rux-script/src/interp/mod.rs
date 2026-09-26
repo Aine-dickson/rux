@@ -14,7 +14,7 @@
 //! checker knew.
 
 pub mod value;
-mod stdlib;
+pub mod stdlib;
 
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
@@ -42,11 +42,14 @@ pub struct Fault {
     pub kind: &'static str,
     /// The value a `throw` threw, which `catch` gives back as it was.
     pub thrown: Option<V>,
+    /// The statement it happened in, as offsets into the text that
+    /// statement was lowered from.
+    pub at: Option<At>,
 }
 
 impl Fault {
     pub fn new(message: impl Into<String>) -> Self {
-        Fault { message: message.into(), kind: "error", thrown: None }
+        Fault { message: message.into(), kind: "error", thrown: None, at: None }
     }
 }
 
@@ -113,6 +116,8 @@ pub struct Interp {
     roots: Vec<Root>,
     tracks: Vec<Track>,
     ops: u64,
+    /// The most steps one run may take: [`MAX_OPERATIONS`] unless lowered.
+    max_ops: u64,
 }
 
 /// How many pieces are kept before starting over, as the fork's cache did.
@@ -135,6 +140,7 @@ impl Interp {
             roots: Vec::new(),
             tracks: Vec::new(),
             ops: 0,
+            max_ops: MAX_OPERATIONS,
         }
     }
 
@@ -142,9 +148,14 @@ impl Interp {
     /// level run: what [`crate::Builder::build`] makes beside the fork.
     pub fn from_script(script: &str) -> Result<Interp, String> {
         let parsed = rux_syntax::parse(script, rux_syntax::Options { declarations: true }).map_err(|e| e.message)?;
-        let mut ir = crate::shadow_interp(&parsed, script, &[], HashMap::new());
+        let mut ir = crate::interpreter(&parsed, script, &[], HashMap::new());
         ir.init().map_err(|f| f.message)?;
         Ok(ir)
+    }
+
+    /// Stop a run after `n` steps rather than [`MAX_OPERATIONS`].
+    pub fn set_max_operations(&mut self, n: u64) {
+        self.max_ops = n;
     }
 
     pub fn unit(&self) -> &Unit {
@@ -156,6 +167,12 @@ impl Interp {
         let unit = Rc::clone(&self.unit);
         self.ops = 0;
         let out = self.run_body(&unit.init, Vec::new(), Vec::new());
+        // A top-level `let x;` is state that holds `none`, as the fork had it.
+        for (i, g) in unit.globals.iter().enumerate() {
+            if matches!(g.kind, GlobalKind::Signal | GlobalKind::Let) && !self.set[i] && out.is_ok() {
+                self.set[i] = true;
+            }
+        }
         match out {
             Ok(_) | Err(Flow::Return(_)) => Ok(()),
             Err(Flow::Fault(f)) => Err(f),
@@ -269,9 +286,15 @@ impl Interp {
         // A name handed in twice (an instance's state, then a row's local of
         // the same name) is read back by name, as the fork did: each copy
         // gets the value of the last, which is the one a write reached.
+        // So does a top-level `let` of the handler's own that shadows one.
         let after: Vec<V> = (0..n)
             .map(|i| {
-                let last = (i..n).rev().find(|&j| piece.given[j] == piece.given[i]).unwrap_or(i);
+                let name = &piece.given[i];
+                let own = piece.lowered.top.iter().rev().find(|(t, id)| t == name && frame.set[id.0 as usize]);
+                let last = match own {
+                    Some((_, id)) => id.0 as usize,
+                    None => (i..n).rev().find(|&j| piece.given[j] == *name).unwrap_or(i),
+                };
                 frame.slots[last].clone()
             })
             .collect();
@@ -296,9 +319,20 @@ impl Interp {
     /// value differs from before. A tracked run inside another hands what it
     /// found outwards.
     pub fn tracked<T>(&mut self, f: impl FnOnce(&mut Self) -> T) -> (T, HashSet<String>) {
-        self.tracks.push(Track::default());
+        self.begin_track();
         let out = f(self);
-        let track = self.tracks.pop().expect("the track");
+        (out, self.end_track())
+    }
+
+    /// Start noting what is written, for [`Interp::end_track`].
+    pub fn begin_track(&mut self) {
+        self.tracks.push(Track::default());
+    }
+
+    /// Stop, and report which globals changed since the matching
+    /// [`Interp::begin_track`].
+    pub fn end_track(&mut self) -> HashSet<String> {
+        let track = self.tracks.pop().expect("a track begun");
         let mut changed: HashSet<u32> = track.changed;
         for (g, before) in track.before {
             if self.globals[g as usize] != before {
@@ -308,8 +342,7 @@ impl Interp {
         if let Some(outer) = self.tracks.last_mut() {
             outer.changed.extend(changed.iter().copied());
         }
-        let names = changed.into_iter().map(|g| self.unit.globals[g as usize].name.clone()).collect();
-        (out, names)
+        changed.into_iter().map(|g| self.unit.globals[g as usize].name.clone()).collect()
     }
 
     fn wrote(&mut self, g: GlobalId) {
@@ -353,8 +386,8 @@ impl Interp {
 
     fn tick(&mut self) -> R<()> {
         self.ops += 1;
-        if self.ops > MAX_OPERATIONS {
-            return fail(format!("Too many operations: more than {MAX_OPERATIONS}"));
+        if self.ops > self.max_ops {
+            return fail(format!("Too many operations: more than {}", self.max_ops));
         }
         Ok(())
     }
@@ -376,6 +409,16 @@ impl Interp {
     }
 
     fn stmt(&mut self, s: &Stmt) -> R<()> {
+        match self.stmt_here(s) {
+            Err(Flow::Fault(mut f)) if f.at.is_none() => {
+                f.at = Some(s.at);
+                Err(Flow::Fault(f))
+            }
+            other => other,
+        }
+    }
+
+    fn stmt_here(&mut self, s: &Stmt) -> R<()> {
         self.tick()?;
         match &s.kind {
             StmtKind::Expr(e) => {
@@ -473,7 +516,7 @@ impl Interp {
                     V::Map(m) => m.get("message").map(V::display).unwrap_or_else(|| v.display()),
                     other => other.display(),
                 };
-                return Err(Flow::Fault(Fault { message, kind: "error", thrown: Some(v) }));
+                return Err(Flow::Fault(Fault { message, kind: "error", thrown: Some(v), at: None }));
             }
             StmtKind::Try { body, var, catch } => match self.block(body) {
                 Err(Flow::Fault(f)) => {
@@ -998,7 +1041,12 @@ fn error_value(f: &Fault) -> V {
 }
 
 fn overflow() -> Flow {
-    Flow::Fault(Fault { message: "Arithmetic overflow: an `int` went past its limits".into(), kind: "overflow", thrown: None })
+    Flow::Fault(Fault {
+        message: "Arithmetic overflow: an `int` went past its limits".into(),
+        kind: "overflow",
+        thrown: None,
+        at: None,
+    })
 }
 
 /// One step into a value for writing, copying what is shared. `create`

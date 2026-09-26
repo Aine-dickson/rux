@@ -1,8 +1,17 @@
-//! What Rux's interpreter costs, against the fork, on the work a document's
-//! script does: a binding over a long list, a handler, a function that calls
-//! itself, a loop. Step 5 of `docs/11-next.md` benchmarks the interpreter
-//! from its first commit; the runtime-level numbers are the `RUX_PROFILE`
-//! runs in `rux-harness/script-cost/`.
+//! What Rux's interpreter costs on the work a document's script does: a
+//! binding over a long list, a handler, a function that calls itself, a
+//! loop. Step 5 of `docs/11-next.md` benchmarks the interpreter from its
+//! first commit; the runtime-level numbers are the `RUX_PROFILE` runs in
+//! `rux-harness/script-cost/`.
+//!
+//! Two columns: through [`Engine`], which is how the runtime runs script
+//! (text and locals handed in, values converted at the seam), and through
+//! [`Interp`] directly. The difference is what the seam costs.
+//!
+//! The fork's numbers, measured the same way when the interpreter first ran
+//! beside it (9a461b7, one release run, µs per pass): sum 37 209, filter
+//! 21 830, row binding 3 432, handler 1 523, fib(18) 10 462, loop 3 062. The
+//! interpreter took 0.22x to 0.69x of those.
 //!
 //! Ignored by default, since a timing is not a pass or a fail:
 //!
@@ -14,7 +23,7 @@ use std::time::Instant;
 
 use rux_reactive::Value;
 use rux_script::interp::Interp;
-use rux_script::Builder;
+use rux_script::{Builder, Engine};
 
 const SCRIPT: &str = r#"
 let items = signal([]);
@@ -48,25 +57,25 @@ fn cases() -> Vec<(&'static str, &'static str, Vec<(String, Value)>, u32)> {
 
 #[test]
 #[ignore]
-fn the_interpreter_against_the_fork() {
+fn the_interpreter_through_the_engine_and_directly() {
     const ROUNDS: u32 = 5;
-    let mut fork = Builder::new().build(SCRIPT).expect("the fork builds");
+    let mut engine: Engine = Builder::new().build(SCRIPT).expect("the engine builds");
     let mut ours = Interp::from_script(SCRIPT).expect("the interpreter builds");
-    println!("{:<20} {:>12} {:>12} {:>8}", "case", "fork µs", "interp µs", "ratio");
+    println!("{:<20} {:>12} {:>12} {:>8}", "case", "engine µs", "interp µs", "ratio");
     for (what, src, locals, times) in cases() {
         // Once each first, so both have compiled and cached the text.
-        fork.eval_value(src, &locals);
+        engine.eval_value(src, &locals);
         ours.run(src, &locals, true).unwrap().0.unwrap();
         let t = Instant::now();
         for _ in 0..ROUNDS * times {
-            std::hint::black_box(fork.eval_value(src, &locals));
+            std::hint::black_box(engine.eval_value(src, &locals));
         }
-        let theirs = t.elapsed().as_nanos() as f64 / ROUNDS as f64 / 1000.0;
+        let through = t.elapsed().as_nanos() as f64 / ROUNDS as f64 / 1000.0;
         let t = Instant::now();
         for _ in 0..ROUNDS * times {
-            std::hint::black_box(ours.run(src, &locals, true).unwrap());
+            let _ = std::hint::black_box(ours.run(src, &locals, true).unwrap());
         }
         let mine = t.elapsed().as_nanos() as f64 / ROUNDS as f64 / 1000.0;
-        println!("{what:<20} {theirs:>12.1} {mine:>12.1} {:>7.2}x", mine / theirs);
+        println!("{what:<20} {through:>12.1} {mine:>12.1} {:>7.2}x", mine / through);
     }
 }

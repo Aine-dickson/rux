@@ -162,6 +162,42 @@ pub fn lower_piece(unit: &mut Unit, script: &ast::Script, src: &str, given: &[St
     }
 }
 
+/// The first thing in `script` that the language no longer has and the IR
+/// has no node for, in a few words, as lowering would list it.
+pub fn removed_syntax(script: &ast::Script) -> Option<String> {
+    use rux_syntax::visit::{walk_stmts, Node};
+    let mut found = None;
+    let top: Vec<*const ast::Stmt> = script.stmts.iter().map(|s| s as *const ast::Stmt).collect();
+    walk_stmts(&script.stmts, &mut |node| {
+        if found.is_some() {
+            return false;
+        }
+        found = match node {
+            Node::Stmt(s) => match &s.kind {
+                S::While { cond: None, .. } => Some("a `loop`".to_string()),
+                S::Do { .. } => Some("a `do` loop".to_string()),
+                S::Break(Some(_)) => Some("a `break` with a value".to_string()),
+                S::Import { .. } => Some("an `import … as` of rhai's".to_string()),
+                S::Export(_) => Some("an `export`".to_string()),
+                S::Fn(_) if !top.contains(&(s as *const ast::Stmt)) => Some("a `fn` inside a block".to_string()),
+                _ => None,
+            },
+            Node::Expr(e) => match &e.kind {
+                E::Binary { op: op @ ("&" | "|" | "^" | "<<" | ">>"), .. } => Some(format!("the bitwise operator `{op}`")),
+                E::Call { bang: true, .. } => Some("a `f!()` call".to_string()),
+                E::Call { callee, .. } if callee.len() > 1 && callee[0].name != "host" => {
+                    Some("a call through a module path".to_string())
+                }
+                E::Path(_) => Some("a module path used as a value".to_string()),
+                E::This => Some("`this`".to_string()),
+                _ => None,
+            },
+        };
+        true
+    });
+    found
+}
+
 struct Frame {
     locals: Vec<Local>,
     scopes: Vec<HashMap<String, LocalId>>,

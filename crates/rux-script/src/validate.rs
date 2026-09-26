@@ -14,7 +14,7 @@ use std::collections::HashMap;
 use rhai::Dynamic;
 use rux_reactive::Value;
 
-use crate::types::{parse_decl, parse_type, Type};
+use crate::types::{parse_decl, Type};
 
 /// A declared type as the walk resolves it: its type parameters, none for
 /// one that is not generic, and its body, which reads them as
@@ -281,8 +281,11 @@ pub(crate) fn known(name: &str) -> Option<Decl> {
 }
 
 /// `value is written`, the function `x is T` compiles to.
+#[cfg(debug_assertions)]
 pub(crate) fn is(value: &Dynamic, written: &str) -> bool {
-    let ty = WRITTEN.with(|w| w.borrow_mut().entry(written.to_string()).or_insert_with(|| parse_type(written).ok()).clone());
+    let ty = WRITTEN.with(|w| {
+        w.borrow_mut().entry(written.to_string()).or_insert_with(|| crate::types::parse_type(written).ok()).clone()
+    });
     let value = value.flatten_clone();
     ty.is_some_and(|ty| fits(&value, &ty, &known))
 }
@@ -290,6 +293,7 @@ pub(crate) fn is(value: &Dynamic, written: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::parse_type;
     use crate::Builder;
 
     fn answers(script: &str, expr: &str) -> Option<Value> {

@@ -30,6 +30,7 @@ use crate::profile;
 #[derive(Clone, Debug)]
 pub(crate) struct CompileError {
     pub message: String,
+    #[allow(dead_code)]
     pub position: Position,
 }
 
