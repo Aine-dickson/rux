@@ -608,6 +608,12 @@ Handlers in branches that are not currently rendered are checked too, since a
 false `r-if` is where a broken handler hides longest. It is syntax only: naming
 an `r-for` local or a component's own state is a runtime lookup, not an error.
 
+**A syntax error is Rux's own.** Every script, binding and handler is read by
+Rux's parser before the fork sees it, so what is wrong is said in this
+language's words, at the line and column where it goes wrong:
+``expecting `;` to end this statement, found `let` ``, not rhai's phrasing. The
+fork only ever compiles text that parser has accepted.
+
 A failing expression is **reported, not swallowed**. It reaches the dev overlay
 and `rux check`, and rhai's wording is translated into Rux's: a missing property,
 an undefined variable, a missing function and a reserved word all say what they

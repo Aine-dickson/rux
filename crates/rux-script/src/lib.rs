@@ -536,7 +536,7 @@ impl Builder {
         self.engine
             .register_static_module("host", self.host.into());
 
-        let ast = front::compile(&self.engine, script)
+        let ast = front::compile_script(&self.engine, script)
             .map_err(|e| ScriptError::at(explain(&e.message), e.position))?;
         // What `x is T` resolves a declared name against: this script's own
         // `type`s, before the script's first statement can ask. The runtime adds what it imports (`validate::know_types`).

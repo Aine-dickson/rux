@@ -2059,23 +2059,22 @@ impl Document {
                     }
                     continue;
                 }
-                // Reported, not refused: it resolves, and every file written this
-                // way goes on working. See `Import::hyphenated_path` for why it
-                // is worth saying anything at all.
+                // Refused (2026-09-26, the project owner's rule): a name in
+                // script never has a `-` in it, because `-` is the minus
+                // operator, and a `use` path is no exception just because it
+                // is read before the script is. `new_task` finds the same file.
                 if import.hyphenated_path {
                     let written = import.file.trim_end_matches(".rux").replace('/', "::");
-                    let owner = job.owner_path.clone();
-                    rux_script::in_file(Some(owner), || {
-                        rux_script::located(Some(at), || {
-                            rux_script::warn_script(format!(
-                                "`use {written};` reads as subtraction in script: `-` is the \
-                                 minus operator, and a `use` path is the one place it happens \
-                                 not to be parsed. Write `use {};` - it finds the same file, \
-                                 hyphenated or not",
-                                written.replace('-', "_")
-                            ))
-                        })
-                    });
+                    return Err(LoadError::at_line(
+                        format!(
+                            "`use {written};` is not a path: `-` is the minus operator in \
+                             script, so a name never has one. Write `use {};`, which finds \
+                             the same file, whether it is named with `_` or `-`",
+                            written.replace('-', "_")
+                        ),
+                        at,
+                        &job.owner_path,
+                    ));
                 }
                 let comp_path =
                     resolve_import(&job.base, &import.file).map_err(|(beside, from_root)| {
@@ -4846,85 +4845,56 @@ struct Effect {
 /// Pull `computed`, `effect`, `mounted` and `unmounted` declarations out of a
 /// script.
 ///
-/// Returns the script rhai should see, with every consumed line replaced by a
-/// blank one so line numbers still match the file: a warning pointing at the
-/// wrong line is worse than one pointing nowhere.
+/// Returns the script the fork should see, with every declaration taken out
+/// and its lines left blank, so line numbers still match the file: a warning
+/// pointing at the wrong line is worse than one pointing nowhere. Rux's parser
+/// finds the declarations, so a `computed` may run over several lines and a
+/// block is closed by its own `}`, not by counting braces line by line.
 ///
 /// `computed x = expr;` becomes `let x = expr;`, which is what makes a computed
 /// an ordinary signal, initialised in declaration order alongside the rest.
 fn extract_reactives(script: &str) -> (String, Vec<Computed>, Vec<Effect>, Hooks) {
-    let mut cleaned = String::new();
+    use rux_syntax::ast::{Lifecycle, StmtKind};
+
     let mut computeds = Vec::new();
     let mut effects = Vec::new();
     let mut mounted: Vec<String> = Vec::new();
     let mut unmounted: Vec<String> = Vec::new();
-
-    let lines: Vec<&str> = script.lines().collect();
-    let mut i = 0;
-    while i < lines.len() {
-        let line = lines[i];
-        let trimmed = line.trim();
-
-        if let Some(rest) = trimmed.strip_prefix("computed ") {
-            if let (lhs, Some(expr)) = split_assignment(rest.trim().trim_end_matches(';')) {
-                let (name, ty) = split_annotation(lhs);
-                if is_identifier(name) && !expr.is_empty() && ty != Some("") {
-                    let computed = Computed {
-                        name: name.to_string(),
-                        ty: ty.map(str::to_string),
-                        expr: expr.to_string(),
-                        deps: HashSet::new(),
-                    };
-                    // Declared, not stripped: the value has to exist before any
-                    // binding reads it, and being a `let` is what makes it a
-                    // signal the rest of the pipeline already understands. Its
-                    // annotation goes with it, so the fork records it as it
-                    // records any `let`'s.
-                    cleaned.push_str(&computed.declaration());
-                    cleaned.push('\n');
-                    computeds.push(computed);
-                    i += 1;
-                    continue;
-                }
+    let Some(parsed) = declarations(script) else {
+        return (script.to_string(), computeds, effects, Hooks { mounted, unmounted });
+    };
+    let mut edits = Vec::new();
+    for stmt in &parsed.stmts {
+        match &stmt.kind {
+            StmtKind::Computed { name, ty, value } => {
+                let computed = Computed {
+                    name: name.name.clone(),
+                    ty: ty.as_ref().map(|t| t.span.text(script).to_string()),
+                    expr: value.span.text(script).to_string(),
+                    deps: HashSet::new(),
+                };
+                // Declared, not stripped: the value has to exist before any
+                // binding reads it, and being a `let` is what makes it a
+                // signal the rest of the pipeline already understands. Its
+                // annotation goes with it, so the fork records it as it
+                // records any `let`'s.
+                edits.push((stmt.span, computed.declaration()));
+                computeds.push(computed);
             }
-        }
-
-        // `effect { … }`, `mounted { … }`, `unmounted { … }`: three blocks that
-        // differ only in when the body runs, so they are taken the same way.
-        if let Some(keyword) = ["effect", "mounted", "unmounted"]
-            .into_iter()
-            .find(|k| trimmed == format!("{k} {{") || trimmed.starts_with(&format!("{k} {{")))
-        {
-            match take_block(&lines, i) {
-                Some((body, next)) => {
-                    // Keep the file's line numbering, so a warning still points
-                    // at the line it came from.
-                    for _ in i..next {
-                        cleaned.push('\n');
-                    }
-                    match keyword {
-                        "effect" => effects.push(Effect { body, deps: HashSet::new() }),
-                        "mounted" => mounted.push(body),
-                        _ => unmounted.push(body),
-                    }
-                    i = next;
-                    continue;
+            StmtKind::Lifecycle { kind, body } => {
+                let inner = &script[body.span.start as usize + 1..body.span.end as usize - 1];
+                let body = inner.trim_end().to_string();
+                match kind {
+                    Lifecycle::Effect => effects.push(Effect { body, deps: HashSet::new() }),
+                    Lifecycle::Mounted => mounted.push(body),
+                    Lifecycle::Unmounted => unmounted.push(body),
                 }
-                None => {
-                    // Unterminated: leave it to rhai to complain, with its lines.
-                    rux_style::warn_stylesheet(format!(
-                        "a `{keyword} {{` block is never closed; it was ignored"
-                    ));
-                    break;
-                }
+                edits.push((stmt.span, String::new()));
             }
+            _ => {}
         }
-
-        cleaned.push_str(line);
-        cleaned.push('\n');
-        i += 1;
     }
-    (cleaned, computeds, effects, Hooks { mounted, unmounted })
+    (splice(script, edits), computeds, effects, Hooks { mounted, unmounted })
 }
 
 /// Pull the `prop` declarations out of a script.
@@ -4940,87 +4910,97 @@ fn extract_props(
     script: &str,
     defaults_as_let: bool,
 ) -> (String, Vec<rux_parser::PropDecl>, Vec<(usize, String)>) {
-    let mut cleaned = String::new();
     let mut props: Vec<rux_parser::PropDecl> = Vec::new();
     let mut problems = Vec::new();
-    for (i, line) in script.lines().enumerate() {
-        let at = i + 1;
-        let trimmed = line.trim();
-        // `prop = 3;` assigns a variable that happens to be called `prop`.
-        let Some(rest) = trimmed
-            .strip_prefix("prop ")
-            .filter(|r| !r.trim_start().starts_with('=') && !r.trim_start().starts_with('('))
-        else {
-            cleaned.push_str(line);
-            cleaned.push('\n');
+    let Some(parsed) = declarations(script) else { return (script.to_string(), props, problems) };
+    let lines = rux_syntax::LineIndex::new(script);
+    let mut edits = Vec::new();
+    for stmt in &parsed.stmts {
+        if !matches!(stmt.kind, rux_syntax::ast::StmtKind::Prop(_)) {
             continue;
-        };
-        let rest = rest.trim().trim_end_matches(';').trim();
-        // The `=` that assigns, since a default is an expression and may
-        // compare, and a type may be a function's, `(string) => bool`.
-        let (names, default) = split_assignment(rest);
-        let default = default.map(str::to_string);
-        // Split at the commas between declarations, not the ones inside a type
-        // such as `{ a: int, b: int }`.
-        let names: Vec<&str> = split_top_level_commas(names);
-        let mut line_out = String::new();
-        if default.as_deref().is_some_and(str::is_empty) {
-            problems.push((at, format!("`prop {}` has an `=` and no default after it", names.join(", "))));
-        } else if default.is_some() && names.len() > 1 {
-            problems.push((
-                at,
-                format!(
-                    "`prop {} = …` gives one default to {} props; declare each on its own line",
-                    names.join(", "),
-                    names.len()
-                ),
-            ));
-        } else {
-            for written in names {
-                let (name, ty) = split_annotation(written);
-                let bad_type = ty.map(|ty| match rux_script::types::parse_type(ty) {
-                    Ok(_) => None,
-                    Err(_) if ty.is_empty() => Some(format!("`prop {name}:` has no type after the `:`")),
-                    Err(e) => Some(format!("`prop {written}`: {}", e.message)),
-                });
-                if let Some(Some(problem)) = bad_type {
-                    problems.push((at, problem));
-                } else if name.contains('-') && is_identifier(&name.replace('-', "_")) {
-                    problems.push((
-                        at,
-                        format!(
-                            "`prop {name}` cannot be read by script: `-` is minus there. Declare \
-                             `prop {};`, and a caller may still write `:{name}` on the tag",
-                            name.replace('-', "_")
-                        ),
-                    ));
-                } else if !is_identifier(name) {
-                    problems.push((at, format!("`{name}` is not a name a prop can have")));
-                } else if props.iter().any(|p| p.name == name) {
-                    problems.push((at, format!("`prop {name}` is declared twice")));
-                } else {
-                    if defaults_as_let {
-                        if let Some(d) = &default {
-                            // Typed, so the checker holds the default to it.
-                            line_out = match ty {
-                                Some(ty) => format!("let {name}: {ty} = {d};"),
-                                None => format!("let {name} = {d};"),
-                            };
-                        }
+        }
+        let at = lines.line_col(script, stmt.span.start as usize).0;
+        let out = read_prop(stmt.span.text(script), at, defaults_as_let, &mut props, &mut problems);
+        edits.push((stmt.span, out));
+    }
+    (splice(script, edits), props, problems)
+}
+
+/// One `prop` statement, read from its text: what it declares goes into
+/// `props`, what cannot be read into `problems`, and what the script should
+/// hold in its place is returned, a `let` of its default when
+/// `defaults_as_let` asks for one.
+fn read_prop(
+    text: &str,
+    at: usize,
+    defaults_as_let: bool,
+    props: &mut Vec<rux_parser::PropDecl>,
+    problems: &mut Vec<(usize, String)>,
+) -> String {
+    let rest = text.trim().strip_prefix("prop").unwrap_or(text).trim();
+    let rest = rest.trim_end_matches(';').trim();
+    // The `=` that assigns, since a default is an expression and may
+    // compare, and a type may be a function's, `(string) => bool`.
+    let (names, default) = split_assignment(rest);
+    let default = default.map(str::to_string);
+    // Split at the commas between declarations, not the ones inside a type
+    // such as `{ a: int, b: int }`.
+    let names: Vec<&str> = split_top_level_commas(names);
+    let mut line_out = String::new();
+    if default.as_deref().is_some_and(str::is_empty) {
+        problems.push((at, format!("`prop {}` has an `=` and no default after it", names.join(", "))));
+    } else if default.is_some() && names.len() > 1 {
+        problems.push((
+            at,
+            format!(
+                "`prop {} = …` gives one default to {} props; declare each on its own line",
+                names.join(", "),
+                names.len()
+            ),
+        ));
+    } else {
+        for written in names {
+            let (name, ty) = split_annotation(written);
+            let bad_type = ty.map(|ty| match rux_script::types::parse_type(ty) {
+                Ok(_) => None,
+                Err(_) if ty.is_empty() => Some(format!("`prop {name}:` has no type after the `:`")),
+                Err(e) => Some(format!("`prop {written}`: {}", e.message)),
+            });
+            if let Some(Some(problem)) = bad_type {
+                problems.push((at, problem));
+            } else if name.contains('-') && is_identifier(&name.replace('-', "_")) {
+                problems.push((
+                    at,
+                    format!(
+                        "`prop {name}` cannot be read by script: `-` is minus there. Declare \
+                         `prop {};`, and a caller may still write `:{name}` on the tag",
+                        name.replace('-', "_")
+                    ),
+                ));
+            } else if !is_identifier(name) {
+                problems.push((at, format!("`{name}` is not a name a prop can have")));
+            } else if props.iter().any(|p| p.name == name) {
+                problems.push((at, format!("`prop {name}` is declared twice")));
+            } else {
+                if defaults_as_let {
+                    if let Some(d) = &default {
+                        // Typed, so the checker holds the default to it.
+                        line_out = match ty {
+                            Some(ty) => format!("let {name}: {ty} = {d};"),
+                            None => format!("let {name} = {d};"),
+                        };
                     }
-                    props.push(rux_parser::PropDecl {
-                        name: name.to_string(),
-                        ty: ty.map(str::to_string),
-                        default: default.clone(),
-                        line: at,
-                    });
                 }
+                props.push(rux_parser::PropDecl {
+                    name: name.to_string(),
+                    ty: ty.map(str::to_string),
+                    default: default.clone(),
+                    line: at,
+                });
             }
         }
-        cleaned.push_str(&line_out);
-        cleaned.push('\n');
     }
-    (cleaned, props, problems)
+    line_out
 }
 
 /// Take the `prop` lines out of the script of the file being opened.
@@ -5115,39 +5095,6 @@ struct Timer {
     /// document has no clock of its own, so a timer cannot know its first
     /// deadline at the moment it is created.
     next: Option<f64>,
-}
-
-/// Take a `keyword { … }` block starting at line `i`, returning its body and
-/// the line after it.
-///
-/// Braces are counted rather than matched to the first `}`, so a block can hold
-/// an `if` or a loop. `None` means the block is never closed.
-fn take_block(lines: &[&str], i: usize) -> Option<(String, usize)> {
-    let mut depth = 0i32;
-    let mut body = String::new();
-    let mut j = i;
-    while j < lines.len() {
-        let line = lines[j];
-        for c in line.chars() {
-            match c {
-                '{' => depth += 1,
-                '}' => depth -= 1,
-                _ => {}
-            }
-        }
-        // The opening line contributes only what follows its `{`.
-        let start = if j == i { line.find('{').map(|p| p + 1).unwrap_or(0) } else { 0 };
-        body.push_str(&line[start..]);
-        body.push('\n');
-        j += 1;
-        if depth <= 0 {
-            // Drop the closing `}` the last line brought with it.
-            let body = body.trim_end();
-            let body = body.strip_suffix('}').unwrap_or(body).to_string();
-            return Some((body, j));
-        }
-    }
-    None
 }
 
 /// Whether `s` is a plain identifier, so `computed 2 + 2 = x;` is left for rhai
@@ -5404,12 +5351,10 @@ struct Import {
     empty_segment: bool,
     /// The path was written with a `-` in it, as `use new-task;`.
     ///
-    /// It resolves, and has since before anyone noticed: `use` lines are lifted
-    /// out of the script before rhai ever sees them, so the hyphen is never
-    /// parsed as anything. Put the same text one line further down and it is
-    /// `new` minus `task`. A path that would be arithmetic anywhere else in the
-    /// same section is a spelling waiting to break, so it is reported and the
-    /// snake form named, which finds the same file either way.
+    /// An error since 2026-09-26: `-` is the minus operator in script, so a
+    /// name never has one, and one line further down the same text is `new`
+    /// minus `task`. It used to warn and resolve anyway. The error names the
+    /// snake form, which finds the same file either way.
     hyphenated_path: bool,
     /// `use types::Task;`: the last segment starts with a capital letter, so
     /// it names a type declared in `file` rather than a component. A declared
@@ -5418,55 +5363,80 @@ struct Import {
     type_name: Option<String>,
 }
 
-/// Split `use a::b;` lines out of a script, returning the cleaned script (which
-/// `rhai` can parse) and the resolved imports.
+/// Split `use a::b;` statements out of a script, returning the cleaned script
+/// (which the fork can parse) and the resolved imports.
+///
+/// Rux's parser finds them (`docs/11-next.md`, step 2); each one is then read
+/// from its text, so a malformed path is still reported in the words it
+/// always was. A statement taken out leaves its lines behind as blank ones:
+/// dropping them shifted every line below, so a script error could no longer
+/// be placed in the file.
 fn extract_imports(script: &str) -> (String, Vec<Import>) {
-    let mut cleaned = String::new();
+    let Some(parsed) = declarations(script) else { return (script.to_string(), Vec::new()) };
+    let lines = rux_syntax::LineIndex::new(script);
+    let mut edits = Vec::new();
     let mut imports = Vec::new();
-
-    for (index, line) in script.lines().enumerate() {
-        let trimmed = line.trim();
-        if let Some(rest) = trimmed.strip_prefix("use ") {
-            // A `use` must be its own statement on its own line; a path with
-            // spaces or extra `;` is malformed, leave it for rhai to reject.
-            if let Some(path) = rest.strip_suffix(';').map(str::trim).filter(|p| {
-                !p.is_empty() && !p.contains(char::is_whitespace) && !p.contains(';')
-            }) {
-                let mut segments: Vec<&str> = path.split("::").collect();
-                let empty_segment = segments.iter().any(|s| s.is_empty());
-                let hyphenated_path = path.contains('-');
-                let type_name = segments
-                    .last()
-                    .filter(|s| s.starts_with(|c: char| c.is_uppercase()))
-                    .map(|s| s.to_string());
-                if type_name.is_some() {
-                    segments.pop();
-                }
-                let file = format!("{}.rux", segments.join("/"));
-                let tag = segments
-                    .last()
-                    .map(|s| s.replace('_', "-"))
-                    .unwrap_or_default();
-                imports.push(Import {
-                    tag,
-                    file,
-                    line: index + 1,
-                    empty_segment,
-                    hyphenated_path,
-                    type_name,
-                });
-                // A blank line rather than no line. Dropping it shifted every
-                // line below by one, so rhai's positions no longer matched the
-                // section and a script error could not be placed in the file.
-                // Blank lines are inert to the compiler and free here.
-                cleaned.push('\n');
-                continue;
-            }
+    for stmt in &parsed.stmts {
+        if !matches!(stmt.kind, rux_syntax::ast::StmtKind::Use(_)) {
+            continue;
         }
-        cleaned.push_str(line);
-        cleaned.push('\n');
+        let line = lines.line_col(script, stmt.span.start as usize).0;
+        if let Some(import) = import_of(stmt.span.text(script), line) {
+            imports.push(import);
+            edits.push((stmt.span, String::new()));
+        }
     }
-    (cleaned, imports)
+    (splice(script, edits), imports)
+}
+
+/// One `use a::b;` statement, read from its text. `None` for one that is not
+/// that shape, which is left in the script for the build to reject.
+fn import_of(text: &str, line: usize) -> Option<Import> {
+    let rest = text.trim().strip_prefix("use ")?;
+    // A path with spaces or extra `;` is malformed.
+    let path = rest
+        .strip_suffix(';')
+        .map(str::trim)
+        .filter(|p| !p.is_empty() && !p.contains(char::is_whitespace) && !p.contains(';'))?;
+    let mut segments: Vec<&str> = path.split("::").collect();
+    let empty_segment = segments.iter().any(|s| s.is_empty());
+    let hyphenated_path = path.contains('-');
+    let type_name = segments
+        .last()
+        .filter(|s| s.starts_with(|c: char| c.is_uppercase()))
+        .map(|s| s.to_string());
+    if type_name.is_some() {
+        segments.pop();
+    }
+    let file = format!("{}.rux", segments.join("/"));
+    let tag = segments.last().map(|s| s.replace('_', "-")).unwrap_or_default();
+    Some(Import { tag, file, line, empty_segment, hyphenated_path, type_name })
+}
+
+/// A document or component script read by Rux's parser, with the
+/// declarations only such a script holds: `use`, `prop`, `computed` and the
+/// lifecycle blocks. `None` when it does not parse. Then nothing is taken out,
+/// and the build that follows reports the syntax error where it really is.
+fn declarations(script: &str) -> Option<rux_syntax::ast::Script> {
+    rux_syntax::parse(script, rux_syntax::Options { declarations: true }).ok()
+}
+
+/// `script` with each span replaced, and padded with the newlines the span
+/// held, so every line after it keeps its number.
+fn splice(script: &str, mut edits: Vec<(rux_syntax::Span, String)>) -> String {
+    edits.sort_by_key(|(span, _)| span.start);
+    let mut out = String::with_capacity(script.len());
+    let mut at = 0;
+    for (span, text) in edits {
+        out.push_str(&script[at..span.start as usize]);
+        let held = span.text(script).matches('\n').count();
+        let missing = held.saturating_sub(text.matches('\n').count());
+        out.push_str(&text);
+        out.extend(std::iter::repeat('\n').take(missing));
+        at = span.end as usize;
+    }
+    out.push_str(&script[at..]);
+    out
 }
 
 /// Build the script engine and register host functions (the native-capability

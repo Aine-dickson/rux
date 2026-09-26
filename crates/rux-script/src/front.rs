@@ -38,7 +38,19 @@ impl std::fmt::Display for CompileError {
 
 /// Parse `src` as Rux, then compile what it says with the fork.
 pub(crate) fn compile(engine: &RhaiEngine, src: &str) -> Result<AST, CompileError> {
-    let script = match profile::time(profile::Phase::Parse, || rux_syntax::parse(src, Options::default())) {
+    compile_with(engine, src, Options::default())
+}
+
+/// [`compile`], for a whole document or component script, where `prop`,
+/// `computed` and the lifecycle blocks parse. The runtime has taken each one
+/// out by the time a script that parses gets here; this is so a script that
+/// does not is reported where it really goes wrong, not at its first `prop`.
+pub(crate) fn compile_script(engine: &RhaiEngine, src: &str) -> Result<AST, CompileError> {
+    compile_with(engine, src, Options { declarations: true })
+}
+
+fn compile_with(engine: &RhaiEngine, src: &str, opts: Options) -> Result<AST, CompileError> {
+    let script = match profile::time(profile::Phase::Parse, || rux_syntax::parse(src, opts)) {
         Ok(script) => script,
         Err(e) => {
             #[cfg(debug_assertions)]

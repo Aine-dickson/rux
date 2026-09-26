@@ -17,6 +17,9 @@ rux-style.workspace = true
 rux-reactive.workspace = true
 rux-layout.workspace = true
 rux-script.workspace = true
+# The declarations in a script (`use`, `prop`, `computed`, lifecycle blocks)
+# are found by Rux's own parser. See docs/11-next.md, step 2.
+rux-syntax.workspace = true
 
 # Not used directly. `ahash` (via lightningcss and rhai) needs `getrandom`, and
 # on wasm32 getrandom builds only when its `wasm_js` feature is on, and feature

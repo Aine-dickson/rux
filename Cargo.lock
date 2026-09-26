@@ -3001,6 +3001,7 @@ dependencies = [
  "rux-reactive",
  "rux-script",
  "rux-style",
+ "rux-syntax",
 ]
 
 [[package]]

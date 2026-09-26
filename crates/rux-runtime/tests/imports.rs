@@ -182,13 +182,13 @@ use a_b;
     assert!(!text.contains("HYPHENATED"), "and the other is not reached");
 }
 
-/// A hyphenated `use` path still works, and is reported.
+/// A hyphenated `use` path is an error, and names the spelling that works.
 ///
-/// It reads as subtraction, and is a path at all only because `use` lines never
-/// reach rhai. Reported rather than refused: every file written that way goes
-/// on working, and the message names the spelling that finds the same file.
+/// `-` is the minus operator in script, so no name has one; a `use` path is
+/// no exception (the project owner's rule, 2026-09-26). It used to be reported
+/// and then resolved anyway.
 #[test]
-fn a_hyphenated_use_path_is_reported_but_still_resolves() {
+fn a_hyphenated_use_path_is_an_error() {
     let dir = project(&[(
         "app.rux",
         "<template><screen><new-task /></screen></template>
@@ -196,15 +196,15 @@ fn a_hyphenated_use_path_is_reported_but_still_resolves() {
 use new-task;
 </script>",
     ), ("new-task.rux", "<template><view><text>NEW TASK</text></view></template>")]);
-    let doc = Document::load(dir.join("app.rux")).expect("loads");
-    // Unescaped: the Debug form doubles every backslash, and the message is
-    // about the backtick-quoted spellings inside it.
-    let said = format!("{:?}", doc.diagnostics()).replace('\\', "");
-    let text = format!("{:?}", doc.root);
+    let err = match Document::load_checked(dir.join("app.rux")) {
+        Ok(_) => panic!("a hyphenated path loaded"),
+        Err(e) => e,
+    };
     let _ = fs::remove_dir_all(&dir);
-    assert!(said.contains("reads as subtraction"), "reported: {said}");
+    let said = err.to_string();
+    assert!(said.contains("minus operator"), "{said}");
     assert!(said.contains("use new_task;"), "and names the spelling: {said}");
-    assert!(text.contains("NEW TASK"), "and it still renders");
+    assert_eq!(err.line, Some(3), "at the `use` line: {said}");
 }
 
 // -- whose imports, and whose tags ------------------------------------------

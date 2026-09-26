@@ -723,7 +723,11 @@ impl<'t> Parser<'t> {
                 let body = self.with_flags(false, false, false, |p| p.block())?;
                 Ok(Some(Stmt { kind: StmtKind::Lifecycle { kind, body }, span: start.to(self.prev_span()) }))
             }
-            (Tok::Ident(w), Tok::Ident(_)) if w == "prop" => {
+            // `prop` then a name, or something meant as one (`prop new-x`), on
+            // the same line; `prop = 3` and `prop(x)` stay ordinary code.
+            (Tok::Ident(w), Tok::Ident(_) | Tok::Reserved(_) | Tok::Kw(_))
+                if w == "prop" && !self.newline_after_this() =>
+            {
                 let (pos, vars) = (self.pos, self.vars.len());
                 self.bump();
                 if let Some(decls) = self.prop_decls() {
@@ -740,7 +744,7 @@ impl<'t> Parser<'t> {
                 self.vars.truncate(vars);
                 Ok(Some(self.raw_statement(start, StmtKind::Prop(Vec::new()))))
             }
-            (Tok::Reserved(w), Tok::Ident(_)) if w == "use" => {
+            (Tok::Reserved(w), _) if w == "use" && !self.newline_after_this() => {
                 let pos = self.pos;
                 self.bump();
                 if let Some(path) = self.use_path() {
@@ -805,6 +809,12 @@ impl<'t> Parser<'t> {
             return true;
         }
         self.at_eof() || self.newline_before()
+    }
+
+    /// Whether the token after this one starts a new line.
+    fn newline_after_this(&self) -> bool {
+        let (here, next) = (self.span(), self.toks[(self.pos + 1).min(self.toks.len() - 1)].span);
+        self.src.get(here.end as usize..next.start as usize).is_some_and(|gap| gap.contains('\n'))
     }
 
     fn newline_before(&self) -> bool {
@@ -981,7 +991,9 @@ impl<'t> Parser<'t> {
                 if !self.eat_punct(")") {
                     return self.error("expecting `)` to match the `(` of this expression");
                 }
-                inner
+                // The parentheses are part of what was written, so a span that
+                // ends on one ends after it.
+                Expr { span: start.to(self.prev_span()), ..inner }
             }
             Tok::Kw("if") => {
                 let s = self.if_stmt()?;

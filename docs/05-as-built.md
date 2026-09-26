@@ -2017,12 +2017,14 @@ whole of v0.7: a tag is the one name in a template that had no other way to fail
 whatever component the `<router-view />` sits in, which by the time a nested
 route renders is usually several files away from the one that named it.
 
-**A `use` path with a `-` in it is reported.** It resolves, and has since before
-anyone noticed — `use` lines are lifted out of the script before rhai sees them,
-so the hyphen is never parsed as anything. One line further down the same text
-is `new` minus `task`. A path that would be arithmetic anywhere else in the same
-section is a spelling waiting to break, so it warns and names the snake form,
-which finds the same file. Nothing written that way stops working.
+**A `use` path with a `-` in it is an error.** `-` is the minus operator in
+script, so no name in it has one, and a `use` path is no exception: `use
+new-task;` fails to load, at its line, and the message names `use new_task;`,
+which finds the same file whether it is named `new_task.rux` or
+`new-task.rux`. Until 2026-09-26 it warned and resolved anyway, because `use`
+lines were lifted out of the script before anything parsed them; the project
+owner ruled that a name that would be subtraction anywhere else in the section
+is not a name here either.
 
 Reported 2026-09-15 as *"why am I forced to write `new_task` as `new-task` in
 `view=`?"*, against a `view="new_task"` whose `use pages::new_task;` sat three
