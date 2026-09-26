@@ -74,6 +74,10 @@ use winit::window::{CursorIcon, Theme, Window, WindowId};
 /// Events delivered to the winit loop from outside it.
 #[derive(Debug)]
 enum RuxEvent {
+    /// A host function an `async fn` awaits has answered, from whatever
+    /// thread it ran on: the waiting tasks can go on. See
+    /// [`rux_script::host`].
+    Answered,
     /// The `.rux` file changed on disk.
     #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
     Reload,
@@ -6349,6 +6353,11 @@ impl ApplicationHandler<RuxEvent> for App {
 
     fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: RuxEvent) {
         match event {
+            RuxEvent::Answered => {
+                if self.document.settle_tasks() {
+                    self.request_redraw();
+                }
+            }
             #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
             RuxEvent::Reload => self.reload(),
 
@@ -8679,6 +8688,7 @@ pub fn start_web(
         .build()
         .expect("create event loop");
     event_loop.set_control_flow(ControlFlow::Wait);
+    wake_on_answers(&event_loop);
 
     // Prefer the laid-out CSS size; fall back to the element's width/height
     // attributes, then to a phone-ish default. See WEB_SIZE for why this cannot
@@ -8775,6 +8785,7 @@ pub fn start_web_app(
         .build()
         .expect("create event loop");
     event_loop.set_control_flow(ControlFlow::Wait);
+    wake_on_answers(&event_loop);
 
     let (mut lw, mut lh) = (canvas.client_width() as f64, canvas.client_height() as f64);
     if lw <= 0.0 || lh <= 0.0 {
@@ -8985,6 +8996,16 @@ impl DeviceProfile {
     }
 }
 
+/// Wake `event_loop` whenever a host function an `async fn` awaits
+/// answers. Every loop installs this, so a window asleep in `Wait` still
+/// hears the answer.
+fn wake_on_answers(event_loop: &EventLoop<RuxEvent>) {
+    let proxy = event_loop.create_proxy();
+    rux_runtime::host::set_waker(move || {
+        let _ = proxy.send_event(RuxEvent::Answered);
+    });
+}
+
 /// Open the Rux window for the given `.rux` file and run the frame loop until the
 /// window closes. Watches the file and repaints on change.
 ///
@@ -9019,6 +9040,7 @@ pub fn run_previewing(path: PathBuf, route: Option<String>, preview: Option<Devi
         .build()
         .expect("create event loop");
     event_loop.set_control_flow(ControlFlow::Wait);
+    wake_on_answers(&event_loop);
 
     // Watch the file's directory *recursively* so edits to imported components
     // (which live in subdirectories) also trigger a reload. Reload on any `.rux`
@@ -10723,6 +10745,7 @@ fn run_android_with(
     // Wait, not Poll, for the same reason as the desktop: an idle window should
     // cost nothing. It matters more here, where the cost is someone's battery.
     event_loop.set_control_flow(ControlFlow::Wait);
+    wake_on_answers(&event_loop);
 
     // Left where the JNI callbacks can find it. They run on Android's main
     // thread and have no other way to reach this loop.

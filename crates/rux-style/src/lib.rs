@@ -1137,7 +1137,9 @@ fn component_statements(script: &str) -> String {
             i += 1;
             continue;
         }
-        if trimmed.starts_with("fn ") {
+        let bare = trimmed.strip_prefix("private ").map(str::trim_start).unwrap_or(trimmed);
+        let bare = bare.strip_prefix("async ").map(str::trim_start).unwrap_or(bare);
+        if bare.starts_with("fn ") {
             // Skip the whole definition by counting braces, so a function with
             // an `if` inside does not end early.
             let mut depth = 0i32;

@@ -47,6 +47,8 @@ pub use rux_style::{Animator, FRAME_MS};
 /// Re-exported so the shell can report a script-facing problem it is the only
 /// one able to see, such as `tap()` naming an element with no box on screen.
 pub use rux_script::warn_script;
+/// Host functions an `async fn` awaits. See `docs/11-next.md`, "Async".
+pub use rux_script::host;
 /// Where a frame's time goes, when `RUX_PROFILE` is set.
 pub use rux_script::profile;
 
@@ -124,6 +126,14 @@ pub struct Document {
     instance_effects: HashMap<String, Vec<Effect>>,
     /// Live intervals, in the order they were started. See [`Timer`].
     timers: Vec<Timer>,
+    /// `async fn`s that are waiting, by task id, with the instance that
+    /// started each (`None` for the document). Owned the way an interval
+    /// is: an instance that goes takes its tasks with it.
+    tasks: Vec<(u64, Option<String>)>,
+    /// The file line the `<script>` starts on, and how many lines of the
+    /// engine's script are this document's own: what a task's failure line
+    /// is mapped through.
+    script_lines: (usize, usize),
     /// Instance keys whose mount has been drained.
     ///
     /// The pairing rule, and it is not bookkeeping for its own sake: a build can
@@ -2382,7 +2392,9 @@ impl Document {
         // `mounted` or `computed` ran lost every check error before anyone saw it.
         let mut load_checks = early;
         load_checks.extend(collect_warnings());
+        let script_lines = (sfc.script_line, main_script_lines);
         let mut doc = Self {
+            script_lines,
             sfc,
             components,
             namespaces,
@@ -2412,6 +2424,7 @@ impl Document {
             instance_computeds: HashMap::new(),
             instance_effects: HashMap::new(),
             timers: Vec::new(),
+            tasks: Vec::new(),
             swaps,
             rows: rux_style::RowCache::new(),
             mounted_instances: HashSet::new(),
@@ -2496,7 +2509,9 @@ impl Document {
         // `mounted` or `computed` ran lost every check error before anyone saw it.
         let mut load_checks = early;
         load_checks.extend(collect_warnings());
+        let script_lines = (sfc.script_line, usize::MAX);
         let mut doc = Self {
+            script_lines,
             sfc,
             components: HashMap::new(),
             namespaces: HashMap::new(),
@@ -2526,6 +2541,7 @@ impl Document {
             instance_computeds: HashMap::new(),
             instance_effects: HashMap::new(),
             timers: Vec::new(),
+            tasks: Vec::new(),
             swaps,
             rows: rux_style::RowCache::new(),
             mounted_instances: HashSet::new(),
@@ -4114,15 +4130,22 @@ impl Document {
         depth: usize,
         event: Option<&rux_reactive::Value>,
     ) -> bool {
+        self.dispatch(Run::Handler(src), instance, depth, event)
+    }
+
+    /// [`Document::dispatch_handler`] for a handler or for a waiting task
+    /// going on: both run in their instance's scope and have what they wrote,
+    /// emitted and asked for applied the same way.
+    fn dispatch(&mut self, run: Run<'_>, instance: Option<&str>, depth: usize, event: Option<&rux_reactive::Value>) -> bool {
         let resolver = self.element_resolver();
-        rux_script::with_elements(resolver, || self.dispatch_handler_inner(src, instance, depth, event))
+        rux_script::with_elements(resolver, || self.dispatch_handler_inner(run, instance, depth, event))
     }
 
     /// The body of [`Document::dispatch_handler`], split out so the element
     /// resolver wraps every path out of it, including the early returns.
     fn dispatch_handler_inner(
         &mut self,
-        src: &str,
+        run: Run<'_>,
         instance: Option<&str>,
         depth: usize,
         event: Option<&rux_reactive::Value>,
@@ -4139,7 +4162,10 @@ impl Document {
         }
 
         let Some(key) = instance.filter(|k| self.instances.contains_key(*k)) else {
-            let changed = self.engine.run_handler_tracked_in(src, &event);
+            let changed = match run {
+                Run::Handler(src) => self.engine.run_handler_tracked_in(src, &event),
+                Run::Task(id) => self.engine.resume_task(id),
+            };
             // An `emit` outside a component has nobody to tell: the document is
             // the top of the tree. Say so rather than dropping it, since the
             // author plainly expected something to happen.
@@ -4159,7 +4185,10 @@ impl Document {
         let mut locals = entry.state.clone();
         locals.extend(entry.props.iter().cloned());
         locals.extend(event);
-        let (after, changed) = self.engine.run_scoped_handler(src, &locals);
+        let (after, changed) = match run {
+            Run::Handler(src) => self.engine.run_scoped_handler(src, &locals),
+            Run::Task(id) => self.engine.resume_scoped_task(id, &locals),
+        };
 
         // Only the component's own names are written back. A prop belongs to the
         // caller: assigning to one inside a component would look like it worked
@@ -4421,6 +4450,12 @@ impl Document {
     /// against state nobody can see, which is the shape of every leak this kind
     /// of API has ever had.
     fn apply_timer_requests(&mut self, instance: Option<&str>) {
+        // Tasks an `async fn` call started go the same way: to whoever ran
+        // the code that started them. See `docs/11-next.md`, "Async".
+        for id in self.engine.take_started_tasks() {
+            self.tasks.push((id, instance.map(str::to_string)));
+        }
+        self.report_task_failures();
         for request in rux_script::take_timer_requests() {
             match request {
                 rux_script::TimerRequest::Start { id, ms, body } => {
@@ -4506,6 +4541,50 @@ impl Document {
         ran
     }
 
+    /// Go on with every waiting `async fn` whose answer has come, each in the
+    /// scope of whoever started it, as a tap there would run. Says whether
+    /// anything ran. The shell calls this when a host answer wakes it.
+    pub fn settle_tasks(&mut self) -> bool {
+        let ready = self.engine.collect_answers();
+        let mut ran = false;
+        for id in ready {
+            let Some(owner) = self.tasks.iter().find(|(t, _)| *t == id).map(|(_, o)| o.clone()) else {
+                continue;
+            };
+            let _ = rux_script::take_emissions();
+            let _ = rux_script::take_navigations();
+            let _ = rux_script::take_element_actions();
+            // A task that went on ran, whether or not it changed anything:
+            // one that failed has a report to show.
+            ran = true;
+            self.dispatch(Run::Task(id), owner.as_deref(), 0, None);
+            self.collect_prints();
+            let acted = self.apply_element_actions();
+            self.apply_timer_requests(owner.as_deref());
+            ran |= self.apply_navigations() || acted;
+        }
+        let engine = &self.engine;
+        self.tasks.retain(|(id, _)| engine.has_task(*id));
+        self.report_task_failures();
+        self.diagnostics.warnings.extend(collect_warnings());
+        ran
+    }
+
+    /// Whether any `async fn` is waiting for an answer.
+    pub fn has_waiting_tasks(&self) -> bool {
+        !self.tasks.is_empty()
+    }
+
+    /// Report the `async fn`s that failed with nothing to catch the error,
+    /// as a failing handler is reported, at the file line where one is known.
+    fn report_task_failures(&mut self) {
+        let (start, own) = self.script_lines;
+        for f in self.engine.take_task_failures() {
+            let line = f.line.filter(|l| *l <= own).map(|l| l + start - 1);
+            rux_script::located(line, || rux_script::warn_script(f.message.clone()));
+        }
+    }
+
     /// Run the `mounted` and `unmounted` bodies of every component instance the
     /// builds since the last drain created or dropped.
     ///
@@ -4552,6 +4631,19 @@ impl Document {
                 // that makes an interval inside a component safe to write at
                 // all: it cannot outlive the state it was written against.
                 self.timers.retain(|t| t.instance.as_deref() != Some(gone.key.as_str()));
+                // And every `async fn` it started: stopped at the `await` it
+                // waits at, so a late answer never writes into a component
+                // that is gone.
+                let owned: Vec<u64> = self
+                    .tasks
+                    .iter()
+                    .filter(|(_, o)| o.as_deref() == Some(gone.key.as_str()))
+                    .map(|(id, _)| *id)
+                    .collect();
+                if !owned.is_empty() {
+                    self.engine.drop_tasks(&owned);
+                    self.tasks.retain(|(id, _)| !owned.contains(id));
+                }
                 // Its computeds and effects go too. An effect left behind would
                 // still be woken by a document signal and would run against a
                 // scope that no longer exists.
@@ -4586,6 +4678,14 @@ impl Document {
                     // harmless. Starting one is neither: there is no instance
                     // left to own it, so it would tick forever against a scope
                     // that no longer exists.
+                    let orphans = self.engine.take_started_tasks();
+                    if !orphans.is_empty() {
+                        self.engine.drop_tasks(&orphans);
+                        rux_script::warn_script(
+                            "an `async fn` started in `unmounted` was stopped at its first `await`: the \
+                             instance it would belong to is already gone",
+                        );
+                    }
                     for request in rux_script::take_timer_requests() {
                         if let rux_script::TimerRequest::Start { ms, .. } = request {
                             rux_script::warn_script(format!(
@@ -4677,6 +4777,8 @@ impl Document {
         // Nothing may keep ticking against a document that is going away, and
         // the hook bodies below run last precisely so a save sees final state.
         self.timers.clear();
+        let ids: Vec<u64> = self.tasks.drain(..).map(|(id, _)| id).collect();
+        self.engine.drop_tasks(&ids);
         let bodies = std::mem::take(&mut self.hooks.unmounted);
         for body in bodies {
             let _ = self.engine.run_effect_tracked(&body);
@@ -5180,6 +5282,13 @@ impl Hooks {
     }
 }
 
+/// What a dispatch runs: a handler's text, or a waiting task going on.
+#[derive(Clone, Copy)]
+enum Run<'a> {
+    Handler(&'a str),
+    Task(u64),
+}
+
 /// One running interval.
 ///
 /// The body is text, dispatched like a handler when the timer comes due; see
@@ -5283,7 +5392,7 @@ fn component_functions(script: &str) -> String {
     let lines: Vec<&str> = script.lines().collect();
     let mut i = 0;
     while i < lines.len() {
-        if !lines[i].trim().starts_with("fn ") {
+        if !declares_fn(lines[i]) {
             i += 1;
             continue;
         }
@@ -5309,6 +5418,15 @@ fn component_functions(script: &str) -> String {
         }
     }
     out
+}
+
+/// Whether `line` starts a function: `fn`, `async fn`, and either after
+/// `private`.
+fn declares_fn(line: &str) -> bool {
+    let t = line.trim();
+    let t = t.strip_prefix("private ").map(str::trim_start).unwrap_or(t);
+    let t = t.strip_prefix("async ").map(str::trim_start).unwrap_or(t);
+    t.starts_with("fn ")
 }
 
 /// A resolved component import.
@@ -8661,6 +8779,120 @@ let open = signal(true);
         );
         assert!(doc.fire_timers(100.0), "and still ticks");
         assert_eq!(doc.engine_mut().get_string("beats"), "2");
+    }
+
+    /// `host::<name>(x)` answers `prefix + x` from another thread, a little
+    /// later. For the `async fn` tests below, each under a name of its own.
+    fn answer_later(name: &str, prefix: &'static str) {
+        rux_script::host::register_async(name, move |args, done| {
+            let arg = args.first().map(|v| v.to_display()).unwrap_or_default();
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+                done.ok(rux_reactive::Value::Text(format!("{prefix}{arg}")));
+            });
+        });
+    }
+
+    /// Settle `doc`'s tasks until one runs, as the shell does when an answer
+    /// wakes it.
+    fn settle_one(doc: &mut Document) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !doc.settle_tasks() {
+            assert!(std::time::Instant::now() < deadline, "no answer came");
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+    }
+
+    /// A tap starts an `async fn`: what it writes before the `await` renders
+    /// with the tap, and what it writes after renders when the answer comes.
+    #[test]
+    fn an_async_fn_renders_before_and_after_its_await() {
+        answer_later("rt1_user", "Grace ");
+        let mut doc = Document::from_source(
+            "<template><screen><text>{{ status }} {{ name }}</text></screen></template>
+             <script>
+               let status = signal(\"idle\");
+               let name = signal(\"\");
+               async fn load(id: int) {
+                 status = \"loading\";
+                 name = await host::rt1_user(id);
+                 status = \"done\";
+               }
+             </script>",
+        )
+        .expect("load");
+        assert!(doc.apply_handler("load(31)"));
+        assert_eq!(text_of(&doc.root).join(""), "loading ");
+        assert!(doc.has_waiting_tasks());
+        settle_one(&mut doc);
+        assert_eq!(text_of(&doc.root).join(""), "done Grace 31");
+        assert!(!doc.has_waiting_tasks(), "finished, and let go");
+    }
+
+    /// A task a component started goes on in that instance's scope: it
+    /// writes the instance's own state, which renders.
+    #[test]
+    fn an_async_fn_goes_on_in_the_instance_that_started_it() {
+        answer_later("rt2_note", "note ");
+        let mut doc = with_component(
+            "<template><view><text>[{{ own }}]</text></view></template>\n\
+             <script>\nlet own = signal(\"\");\n\
+             async fn fetch() { own = \"...\"; own = await host::rt2_note(1); }\n\
+             mounted { fetch(); }\n</script>",
+            "<template><screen><card /></screen></template>\n\
+             <script>\nuse components::card;\n</script>",
+        );
+        assert_eq!(text_of(&doc.root).join(""), "[...]");
+        settle_one(&mut doc);
+        assert_eq!(text_of(&doc.root).join(""), "[note 1]");
+    }
+
+    /// An instance that goes takes its waiting tasks with it: the answer
+    /// that comes later writes nothing and says nothing.
+    #[test]
+    fn an_async_fn_dies_with_its_instance() {
+        rux_script::host::register_async("rt3_slow", |_, done| {
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(30));
+                done.ok(rux_reactive::Value::Text("late".into()));
+            });
+        });
+        let mut doc = with_component(
+            "<template><view><text>card</text></view></template>\n\
+             <script>\nasync fn fetch() { let v = await host::rt3_slow(); beats = v; }\n\
+             mounted { fetch(); }\n</script>",
+            "<template><screen><text>{{ beats }}</text><card r-if=\"open\" /></screen></template>\n\
+             <script>\nuse components::card;\nlet open = signal(true);\nlet beats = signal(\"none yet\");\n</script>",
+        );
+        assert!(doc.has_waiting_tasks());
+        assert!(doc.apply_handler("open = false"), "close the r-if");
+        assert!(!doc.has_waiting_tasks(), "the task went with the instance");
+        std::thread::sleep(std::time::Duration::from_millis(60));
+        assert!(!doc.settle_tasks(), "and the late answer runs nothing");
+        assert_eq!(doc.engine_mut().get_string("beats"), "none yet");
+    }
+
+    /// An error nothing catches is reported as a failing handler is, at the
+    /// file line of the `await` that failed.
+    #[test]
+    fn an_async_fn_that_fails_is_reported_at_its_line() {
+        rux_script::host::register_async("rt4_bad", |_, done| done.fail("offline"));
+        let mut doc = Document::from_source(
+            "<template><screen><text>x</text></screen></template>
+<script>
+let n = signal(0);
+async fn go() {
+  n = 1;
+  await host::rt4_bad();
+}
+</script>",
+        )
+        .expect("load");
+        assert!(doc.apply_handler("go()"));
+        settle_one(&mut doc);
+        let found = &doc.diagnostics().warnings;
+        let hit = found.iter().find(|w| w.message.contains("async fn go") && w.message.contains("offline"));
+        assert_eq!(hit.map(|w| w.line), Some(Some(6)), "{found:#?}");
     }
 
     /// A period of zero would fire every frame forever, so it is refused out
