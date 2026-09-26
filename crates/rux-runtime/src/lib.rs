@@ -695,9 +695,27 @@ fn check_script_types(
         cx.placeholders = computeds.iter().map(|c| (c.name.clone(), typed(&c.ty))).collect();
     }
     let recording = TYPE_TABLE.with(|t| t.borrow().is_some());
-    let (findings, mut table) = engine.check_types_recording(&cx, recording);
-    if std::env::var_os("RUX_IR_COVERAGE").is_some() {
-        report_untyped(engine, &cx, sfc);
+    // What is checked is the file's own script, whole: its `computed`,
+    // `effect`, `prop` and lifecycle declarations are statements the checker
+    // reads, where the engine's script has them taken out (and, in a
+    // document, has its components' functions added). So its props come from
+    // their declarations, not from `cx`, and nothing is a placeholder. A
+    // script Rux cannot parse whole is checked as the engine has it.
+    let whole = rux_syntax::parse(&sfc.script, rux_syntax::Options { declarations: true }).ok();
+    let coverage = std::env::var_os("RUX_IR_COVERAGE").is_some();
+    let lowering = whole.is_some() && (cfg!(debug_assertions) || coverage);
+    let (findings, mut table, record) = match &whole {
+        Some(script) => {
+            cx.provided.retain(|(name, _)| !sfc.props.iter().any(|p| p.name == *name));
+            cx.placeholders.clear();
+            cx.own_lines = None;
+            engine.check_types_full(Some((script, &sfc.script)), &cx, recording, lowering)
+        }
+        None => engine.check_types_full(None, &cx, recording, false),
+    };
+    if let (true, Some(script)) = (lowering, &whole) {
+        let had_errors = findings.iter().any(|f| f.is_error);
+        lower_and_verify(script, &record, &cx, sfc, had_errors, coverage);
     }
     if recording {
         // The same arithmetic as the findings below.
@@ -729,44 +747,83 @@ fn check_script_types(
     }
 }
 
-/// With `RUX_IR_COVERAGE` set, every expression the checker gave no type, on
-/// stderr: what the typed IR could not be built from (step 4 of
-/// `docs/11-next.md`). One line each, `untyped: <line>: <text>`, so a survey
-/// over many files can count them.
+/// The file's script lowered to the typed IR and held to the IR's rules:
+/// step 4 of `docs/11-next.md`. Debug builds do this on every load, and a
+/// broken rule is a bug in the lowering, so it panics. A program with a type
+/// error is not held to them: the checker has already said what is wrong.
 ///
-/// What is checked is the file's own script, whole: its `computed`, `effect`,
-/// `prop` and lifecycle declarations are statements the checker reads, where
-/// the engine's script has them taken out. So its props come from their
-/// declarations rather than from `cx`, and nothing is a placeholder.
-fn report_untyped(engine: &rux_script::Engine, cx: &rux_script::check::Context, sfc: &rux_parser::Sfc) {
+/// With `RUX_IR_COVERAGE` set it also says, on stderr, one line each, what
+/// the IR could not be built from: `untyped: <line>: <text>` for an
+/// expression the checker gave no type, `unsupported: <what>: <text>` for
+/// syntax the IR has no node for, `ir problem: …` for a broken rule, and a
+/// total, so a survey over many files can count them. `RUX_IR_PRINT` prints
+/// the IR too.
+fn lower_and_verify(
+    script: &rux_syntax::ast::Script,
+    record: &rux_script::check::Record,
+    cx: &rux_script::check::Context,
+    sfc: &rux_parser::Sfc,
+    had_errors: bool,
+    coverage: bool,
+) {
     use rux_script::check::untyped;
-    let opts = rux_syntax::Options { declarations: true };
-    let Ok(script) = rux_syntax::parse(&sfc.script, opts) else {
-        eprintln!("untyped: the script does not parse");
-        return;
-    };
-    let mut cx = cx.clone();
-    cx.provided.retain(|(name, _)| !sfc.props.iter().any(|p| p.name == *name));
-    cx.placeholders.clear();
-    cx.own_lines = None;
-    let (_, record) = engine.check_types_typed(Some((&script, &sfc.script)), &cx);
-    let mut n = 0;
-    for (line, text) in untyped(&script, &sfc.script, &record.script) {
-        eprintln!("untyped: {}: {text}", line + sfc.script_line - 1);
-        n += 1;
-    }
-    for piece in &record.pieces {
-        for (_, text) in untyped(&piece.script, &piece.src, &piece.types) {
-            eprintln!("untyped: {} ({}): {text}", piece.line, piece.what);
+    use rux_script::profile::{time, Phase};
+    // Only for the report: `Instant` does not exist on the web, where a
+    // debug build lowers too.
+    let started = coverage.then(std::time::Instant::now);
+    let (unit, problems) = time(Phase::Lower, || {
+        let unit = rux_script::lower::lower(script, record, &cx.provided);
+        let problems = if had_errors { Vec::new() } else { rux_ir::verify::unit(&unit) };
+        (unit, problems)
+    });
+    let lowered = started.map_or(0, |s| s.elapsed().as_micros());
+    if coverage {
+        let mut n = 0;
+        for (line, text) in untyped(script, &sfc.script, &record.script) {
+            eprintln!("untyped: {}: {text}", line + sfc.script_line - 1);
             n += 1;
         }
+        for piece in &record.pieces {
+            for (_, text) in untyped(&piece.script, &piece.src, &piece.types) {
+                eprintln!("untyped: {} ({}): {text}", piece.line, piece.what);
+                n += 1;
+            }
+        }
+        for x in &unit.unsupported {
+            let text = match x.piece {
+                None => sfc.script.get(x.at.start as usize..x.at.end as usize).unwrap_or_default(),
+                Some(i) => record.pieces[i].src.get(x.at.start as usize..x.at.end as usize).unwrap_or_default(),
+            };
+            let text: String = text.chars().take(60).collect();
+            eprintln!("unsupported: {}: {text}", x.what);
+        }
+        for problem in &problems {
+            eprintln!("ir problem: {problem}");
+        }
+        if std::env::var_os("RUX_IR_PRINT").is_some() {
+            eprint!("{}", rux_ir::print::unit(&unit));
+        }
+        let pieces: usize = record.pieces.iter().map(|p| p.types.of.len()).sum();
+        eprintln!(
+            "untyped total: {n}, typed: {} in the script and {pieces} in {} template pieces,              lowered and verified in {} us{}",
+            record.script.of.len(),
+            record.pieces.len(),
+            lowered,
+            if had_errors { ", not verified: it has type errors" } else { "" }
+        );
+    } else if cfg!(debug_assertions) && !problems.is_empty() {
+        panic!(
+            "the typed IR broke its own rules:
+{}
+
+{}
+{}",
+            problems.join("
+"),
+            sfc.script,
+            rux_ir::print::unit(&unit)
+        );
     }
-    let pieces: usize = record.pieces.iter().map(|p| p.types.of.len()).sum();
-    eprintln!(
-        "untyped total: {n}, typed: {} in the script and {pieces} in {} template pieces",
-        record.script.of.len(),
-        record.pieces.len()
-    );
 }
 
 /// The template as the type checker reads it: what every expression in it has

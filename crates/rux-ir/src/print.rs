@@ -255,11 +255,12 @@ impl<'u> Printer<'u> {
                 let args: Vec<String> = args.iter().map(|a| self.expr(a)).collect();
                 typed(format!("(call {callee}{}{})", if args.is_empty() { "" } else { " " }, args.join(" ")))
             }
-            ExprKind::Method { recv, method, args } => {
+            ExprKind::Method { recv, method, args, optional } => {
                 let r = self.expr(recv);
                 let args: Vec<String> = args.iter().map(|a| self.expr(a)).collect();
                 let on = format!("{:?}", method.on).to_lowercase();
-                typed(format!("({on}.{} {r}{}{})", method.name, if args.is_empty() { "" } else { " " }, args.join(" ")))
+                let q = if *optional { "?" } else { "" };
+                typed(format!("({on}.{}{q} {r}{}{})", method.name, if args.is_empty() { "" } else { " " }, args.join(" ")))
             }
             ExprKind::Field { base, name, optional } => {
                 let b = self.expr(base);

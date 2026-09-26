@@ -45,15 +45,19 @@ pub enum Phase {
     Css,
     /// Selectors matched against elements, inside a rebuild or patch.
     Match,
+    /// A checked script lowered to the typed IR and verified, at load
+    /// (`docs/11-next.md`, step 4). Debug builds only, until the interpreter
+    /// runs the IR.
+    Lower,
 }
 
-pub const PHASES: usize = 13;
+pub const PHASES: usize = 14;
 
 /// The phases that are the script tier's own; they lead the list.
 const SCRIPT: usize = 5;
 
 pub const NAMES: [&str; PHASES] =
-    ["parse", "compile", "merge", "run", "diff", "rebuild", "patch", "animate", "layout", "scene", "gpu", "css", "match"];
+    ["parse", "compile", "merge", "run", "diff", "rebuild", "patch", "animate", "layout", "scene", "gpu", "css", "match", "lower"];
 
 thread_local! {
     static SPENT: [Cell<u64>; PHASES] = Default::default();

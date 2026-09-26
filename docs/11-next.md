@@ -938,7 +938,26 @@ Float indexing narrows to what the types allow: an index is an `int`, and a
    type annotations built on the fork move over with it.
 3. **The checker on the new AST**, extended to the decided types: `int`/`float`,
    `none`, `Option`/`Result`, generics, modules.
-4. **The typed IR.**
+4. **The typed IR.** Done 2026-09-26, in the `rux-ir` crate, which depends
+   on nothing else in the workspace and on no rhai. The checker keeps the
+   type of every expression it checks, and `rux-script`'s `lower` builds a
+   unit per file from the file's whole script: its signals, props,
+   computeds, effects, lifecycle blocks, functions and template pieces, every
+   name resolved to a slot and every conversion written. A verifier holds
+   each unit to the IR's rules; debug builds lower and verify every file
+   they load, and panic on a broken rule. Over the 359 `.rux` files on the
+   development machine, no expression is left untyped and no rule is broken.
+   What the IR has no node for is listed per file rather than refused, since
+   the fork still runs everything: the only such thing found is a component
+   reading or writing its caller's names (`examples/components/cart_row.rux`
+   reads `currency` and `sale`; `session.rux` writes `opens` and `saved`),
+   which the rule in [What a function can see](#what-a-function-can-see)
+   does not allow and step 5 has to settle. Two things moved on the way: the
+   checker now reads a file's whole script, so an `effect`, `mounted` or
+   `unmounted` body and a `setInterval` body are type-checked for the first
+   time (no finding changed across those files); and lowering costs about
+   3.6 µs per expression in a release build, more than parsing does, which
+   step 5 should look at before lowering runs on every load.
 5. **Rux's interpreter on the IR**, replacing rhai for everything, with the
    test suite as the proof that behaviour did not move. Rhai is deleted here.
 6. **`async fn` / `await`** in the interpreter.

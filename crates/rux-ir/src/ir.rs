@@ -261,8 +261,10 @@ pub enum ExprKind {
     Global(GlobalId),
 
     Call { callee: Callee, args: Vec<Expr> },
-    /// `recv.name(args)`, a method of Rux's own on the receiver's type.
-    Method { recv: Box<Expr>, method: Method, args: Vec<Expr> },
+    /// `recv.name(args)`, a method of Rux's own on the receiver's type. With
+    /// `optional` (`recv?.name()`), a `none` receiver ends the
+    /// [`ExprKind::Chain`] around it with `none`.
+    Method { recv: Box<Expr>, method: Method, args: Vec<Expr>, optional: bool },
     /// `base.name`. With `optional`, a `none` base ends the [`ExprKind::Chain`]
     /// around it with `none`.
     Field { base: Box<Expr>, name: String, optional: bool },

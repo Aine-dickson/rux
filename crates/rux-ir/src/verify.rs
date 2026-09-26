@@ -383,7 +383,9 @@ impl<'u> Verifier<'u> {
             BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
                 (matches!(a, Type::Int | Type::Float) && matches!(b, Type::Int | Type::Float)) || (text(&a) && text(&b))
             }
-            BinOp::Dyn(_) => may_be_any(&a) || may_be_any(&b),
+            // Decided when it runs: an `any`, or a comparison with a side
+            // that may be `none`.
+            BinOp::Dyn(_) => true,
             BinOp::Eq | BinOp::Ne | BinOp::In | BinOp::NotIn | BinOp::Range | BinOp::RangeInclusive => true,
         };
         if !ok {

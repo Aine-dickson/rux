@@ -22,6 +22,7 @@ use rux_syntax::visit::{walk_stmts, Node};
 use rux_syntax::{LineIndex, Options, Span};
 
 use crate::types::{parse_decl, parse_type, Field, Type};
+use rux_ir::ir::PieceKind;
 
 /// One thing the checker has to say.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -169,6 +170,11 @@ pub struct Piece {
     pub line: usize,
     /// What it is, as the checker names it in a finding: `:disabled on <button>`.
     pub what: String,
+    pub kind: rux_ir::ir::PieceKind,
+    /// The names the template binds around it, with their types: each
+    /// enclosing `r-for`'s variable, outermost first, then `event` in a
+    /// handler.
+    pub given: Vec<(String, Type)>,
     pub script: Script,
     pub types: Types,
 }
@@ -191,9 +197,19 @@ pub struct Record {
 /// [`check`], also keeping what it settled about every expression. What the
 /// typed IR is built from.
 pub fn check_typed(script: &Script, src: &str, cx: &Context) -> (Vec<Finding>, Record) {
+    let (findings, _, record) = check_full(script, src, cx, false, true);
+    (findings, record)
+}
+
+/// [`check`], keeping what an editor reads when `record` is set
+/// ([`check_recording`]) and what the typed IR is built from when `typed` is
+/// ([`check_typed`]).
+pub fn check_full(script: &Script, src: &str, cx: &Context, record: bool, typed: bool) -> (Vec<Finding>, Table, Record) {
     let mut checker = Checker::new(script, src, cx);
-    checker.typed = true;
+    checker.record = record;
+    checker.typed = typed;
     checker.run();
+    let table = if record { checker.table() } else { Table::default() };
     let mut record = std::mem::take(&mut checker.rec);
     record.script = std::mem::take(&mut checker.cur);
     for (key, info) in &checker.fns {
@@ -211,7 +227,7 @@ pub fn check_typed(script: &Script, src: &str, cx: &Context) -> (Vec<Finding>, R
     let mut findings = checker.findings;
     findings.sort_by_key(|f| f.line);
     findings.dedup();
-    (findings, record)
+    (findings, table, record)
 }
 
 /// Check `script`, whose text is `src`, against its own annotations and the
@@ -750,19 +766,26 @@ impl<'a> Checker<'a> {
 
     /// Run `f` as the template piece `what`, written on file line `line`.
     fn in_piece<T>(&mut self, src: &str, line: usize, what: &str, f: impl FnOnce(&mut Self) -> T) -> T {
-        self.in_piece_of(src, None, line, what, f)
+        self.in_piece_of(src, None, PieceKind::Value, &[], line, what, f)
     }
 
     /// [`Checker::in_piece`] for the piece `script` parsed from `src`, which is
     /// kept for the typed IR with what was settled about it.
+    #[allow(clippy::too_many_arguments)]
     fn in_piece_of<T>(
         &mut self,
         src: &str,
         script: Option<&Script>,
+        kind: PieceKind,
+        extra: &[(String, Type)],
         line: usize,
         what: &str,
         f: impl FnOnce(&mut Self) -> T,
     ) -> T {
+        // At the template's level the only scopes are the `r-for`s'.
+        let mut given: Vec<(String, Type)> =
+            self.scopes.iter().flat_map(|s| s.iter().map(|(n, t)| (n.clone(), t.clone()))).collect();
+        given.extend(extra.iter().cloned());
         let saved = self.in_template.replace((line, what.to_string()));
         let outer = std::mem::take(&mut self.cur);
         let out = self.with_source(src, f);
@@ -772,6 +795,8 @@ impl<'a> Checker<'a> {
                 src: src.to_string(),
                 line,
                 what: what.to_string(),
+                kind,
+                given,
                 script: script.clone(),
                 types,
             });
@@ -825,7 +850,7 @@ impl<'a> Checker<'a> {
         match item {
             Tpl::Expr { src, want, line, what } => {
                 let Some(piece) = Self::parse_piece(src) else { return };
-                self.in_piece_of(src, Some(&piece), *line, what, |c| match (Self::piece_expr(&piece), want) {
+                self.in_piece_of(src, Some(&piece), PieceKind::Value, &[], *line, what, |c| match (Self::piece_expr(&piece), want) {
                     (Some(e), Some(want)) => c.check_expr(e, want),
                     (Some(e), None) => {
                         c.infer(e);
@@ -837,7 +862,8 @@ impl<'a> Checker<'a> {
             }
             Tpl::Handler { src, event, line, what } => {
                 let Some(piece) = Self::parse_piece(src) else { return };
-                self.in_piece_of(src, Some(&piece), *line, what, |c| {
+                let extra = [("event".to_string(), event.clone())];
+                self.in_piece_of(src, Some(&piece), PieceKind::Handler, &extra, *line, what, |c| {
                     c.with_scope(|c| {
                         c.bind("event", event.clone());
                         c.check_statements(&piece.stmts);
@@ -847,7 +873,7 @@ impl<'a> Checker<'a> {
             Tpl::Model { src, writes, shows, line, what } => {
                 let Some(piece) = Self::parse_piece(src) else { return };
                 let Some(e) = Self::piece_expr(&piece) else { return };
-                self.in_piece_of(src, Some(&piece), *line, what, |c| {
+                self.in_piece_of(src, Some(&piece), PieceKind::Model, &[], *line, what, |c| {
                     let held = c.infer(e);
                     if c.resolve(&held) == Type::Any {
                         return;
@@ -883,7 +909,7 @@ impl<'a> Checker<'a> {
             Tpl::For { var, src, line, body } => {
                 let Some(piece) = Self::parse_piece(src) else { return };
                 let Some(e) = Self::piece_expr(&piece) else { return };
-                let element = self.in_piece_of(src, Some(&piece), *line, "`r-for`", |c| {
+                let element = self.in_piece_of(src, Some(&piece), PieceKind::Value, &[], *line, "`r-for`", |c| {
                     let ty = c.infer(e);
                     c.element_of(e, &ty)
                 });
@@ -903,7 +929,7 @@ impl<'a> Checker<'a> {
                     let facts = match cond {
                         Some((src, e)) => self.with_facts(earlier.clone(), |c| {
                             let script = piece.as_ref().map(|(_, p)| p);
-                            c.in_piece_of(src, script, *line, "the condition", |c| {
+                            c.in_piece_of(src, script, PieceKind::Value, &[], *line, "the condition", |c| {
                                 c.infer(e);
                             });
                             c.in_source(src, |c| c.facts_of(e, true))
@@ -3237,7 +3263,7 @@ impl Checker<'_> {
     }
 }
 
-fn type_of_expr(ty: &TypeExpr) -> Result<Type, String> {
+pub(crate) fn type_of_expr(ty: &TypeExpr) -> Result<Type, String> {
     parse_type(&print::ty(ty)).map_err(|e| e.message)
 }
 

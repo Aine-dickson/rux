@@ -11,6 +11,7 @@
 
 pub mod check;
 mod front;
+pub mod lower;
 pub mod profile;
 pub use rux_ir::types;
 pub mod validate;
@@ -1976,10 +1977,22 @@ impl Engine {
         script: Option<(&rux_syntax::ast::Script, &str)>,
         cx: &check::Context,
     ) -> (Vec<check::Finding>, check::Record) {
+        let (findings, _, record) = self.check_types_full(script, cx, false, true);
+        (findings, record)
+    }
+
+    /// Everything the checker can keep, in one run: see [`check::check_full`].
+    pub fn check_types_full(
+        &self,
+        script: Option<(&rux_syntax::ast::Script, &str)>,
+        cx: &check::Context,
+        record: bool,
+        typed: bool,
+    ) -> (Vec<check::Finding>, check::Table, check::Record) {
         let mut cx = cx.clone();
         cx.host.extend(self.host_types.iter().cloned());
         let (script, src) = script.unwrap_or((&self.script, &self.source));
-        check::check_typed(script, src, &cx)
+        check::check_full(script, src, &cx, record, typed)
     }
 
     /// The script as Rux's parser read it, and its text.
