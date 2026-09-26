@@ -1063,3 +1063,32 @@ Filled in on 2026-09-26 where the decisions left a gap. Each is marked
     outside its module.
 15. A number field's `r-model` writes a `float`.
 16. `is` binds at its level on both sides (the fork gives it none on its right).
+
+## Open for the owner (2026-09-26)
+
+Raised after step 6 and not yet decided. The next step's plan starts here.
+
+1. **`export let` keeps both meanings** (proposed). `export let items =
+   signal([])` shares state: importers read it and a binding that reads it
+   updates, and only the module's exported functions change it. `export let
+   RATE = 0.2` shares a constant, since a plain top-level `let` is already
+   read-only. This is JavaScript's rule too: an importer cannot assign to
+   what it imports. The weak spot is that `let` means state or constant by
+   whether `signal(…)` follows it, which was already true inside a file.
+   Rejected alternatives: `export const` (a second word for what `let`
+   covers), a keyword of its own for shared state (new syntax), and
+   exporting only functions (a binding would call `cart.items()` and lose
+   its subscription).
+2. **Loops were never decided one by one.** What runs today: `for x in c`,
+   `for (x, i) in c` (item and index, missing from
+   [Control flow](#control-flow-kept-one-addition)), `for i in 0..n` and
+   `0..=n`, `for c in "text"`, `while`, `break`, `continue`. Parsed and then
+   refused as "not part of Rux", a decision taken in bulk at step 4 ("the
+   fork's syntax gets no IR node"): `loop { }`, `do { } while c`,
+   `do { } until c`, and `break value`. There is no C-style `for`.
+   Proposed: bring `loop { }` back (clearer than `while true`), keep
+   `do`/`until` and `break value` out, and write the `(x, i)` form into the
+   reference.
+3. **`switch` stays the one matching form** (proposed). It is an
+   expression, takes `a | b` alternatives, ranges and an `if` guard per arm,
+   and must cover a union with no `_` arm. `match` is only a reserved word.
