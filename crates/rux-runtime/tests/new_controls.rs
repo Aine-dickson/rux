@@ -78,7 +78,8 @@ fn a_number_draft_shows_while_focused_and_ends_with_focus() {
 /// shell writes the draft and the number together.
 #[test]
 fn a_patch_does_not_paint_over_a_draft() {
-    let mut d = doc(r#"<input type="number" r-model="qty" />"#, "let qty = signal(1);");
+    // A `float`: a number field bound to an `int` writes a whole number.
+    let mut d = doc(r#"<input type="number" r-model="qty" />"#, "let qty = signal(1.0);");
     d.set_focus(Some(Focus::at("qty", 4)));
     d.apply_value_in("qty", None, None, &Value::Number(1.5));
     d.set_draft(Some("1.50".to_string()));

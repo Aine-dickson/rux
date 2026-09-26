@@ -328,6 +328,9 @@ struct Checker<'a> {
     /// Every name declared anywhere in the script: a `let`, a parameter or a
     /// loop variable. One a function cannot see itself is some caller's.
     script_names: HashSet<String>,
+    /// The script's top-level `let`s without `signal`: values, never written
+    /// (`docs/11-next.md`, "`signal`, `let`").
+    plain_lets: HashSet<String>,
     /// The declared result of each function being checked, innermost last,
     /// with the function's name; `None` for one whose result is inferred.
     results: Vec<Option<(String, Type)>>,
@@ -381,6 +384,7 @@ impl<'a> Checker<'a> {
             results: Vec::new(),
             in_fn: Vec::new(),
             script_names: declared_names(&script.stmts),
+            plain_lets: plain_lets(&script.stmts),
             findings: Vec::new(),
             quiet: 0,
             quiet_errors: 0,
@@ -955,12 +959,14 @@ impl<'a> Checker<'a> {
         }
     }
 
-    /// `null` and `()` where `none` is meant: both still read as `none`, and
-    /// `rux fmt` rewrites them. Anything else at `pos` says nothing.
+    /// `null` and `()` where `none` is meant: an error since step 5 of
+    /// `docs/11-next.md` (a warning from step 3.2 until then). Both still
+    /// run as `none`, and `rux fmt` rewrites them. Anything else at `pos`
+    /// says nothing.
     fn old_spelling(&mut self, pos: Pos) {
         let written = self.source.text.get(pos.range()).unwrap_or_default().to_string();
         if written == "null" || written == "()" {
-            self.warn(pos, format!("`{written}` is written `none` now; `rux fmt` rewrites it"));
+            self.error(pos, format!("`{written}` is written `none` now; `rux fmt` rewrites it"));
         }
     }
 
@@ -1734,6 +1740,14 @@ impl<'a> Checker<'a> {
         // written; what it holds now is its declared type.
         if let Some(path) = path_of(target) {
             self.forget(&path);
+            // A top-level `let` without `signal` is a value: nothing writes it.
+            let root = root_of(&path).to_string();
+            if self.plain_lets.contains(&root) && !self.scopes.iter().any(|s| s.contains_key(&root)) {
+                self.error(
+                    target.span,
+                    format!("`{root}` is a plain `let`, a value that is never written; to change it, make it state: `let {root} = signal(…)`"),
+                );
+            }
         }
         let held = self.infer(target);
         if op == "=" {
@@ -3289,6 +3303,21 @@ fn annotations_in<'s>(stmts: &'s [Stmt], out: &mut Vec<&'s TypeExpr>) {
 /// Every name `stmts` declare: parameters, closures' parameters, `let`s and
 /// loop variables, flat. See `declared_in` in the crate root, which says the
 /// same of the fork's AST.
+/// The top-level `let`s in `stmts` that are not `signal(…)`.
+fn plain_lets(stmts: &[Stmt]) -> HashSet<String> {
+    stmts
+        .iter()
+        .filter_map(|s| match &s.kind {
+            StmtKind::Let { name, value, .. } => {
+                let signal = matches!(value, Some(Expr { kind: ExprKind::Call { callee, .. }, .. })
+                    if callee.len() == 1 && callee[0].name == "signal");
+                (!signal).then(|| name.name.clone())
+            }
+            _ => None,
+        })
+        .collect()
+}
+
 fn declared_names(stmts: &[Stmt]) -> HashSet<String> {
     let mut names = HashSet::new();
     walk_stmts(stmts, &mut |node| {
@@ -3701,7 +3730,7 @@ mod tests {
              type Filter = \"all\" | \"open\" | \"done\";\n\
              let tasks: Task[] = signal([{{ id: 1, title: \"a\", done: false }}]);\n\
              let filter: Filter = signal(\"all\");\n\
-             let count: int = 0;\n\
+             let count: int = signal(0);\n\
              let n: float = signal(0);\n\
              fn visible(): Task[] {{ tasks.filter(t => !t.done) }}\n\
              fn label(t: Task, i: int): string {{ `${{i}}. ${{t.title}}` }}\n\
@@ -3826,7 +3855,7 @@ mod tests {
                      if n == none { return Err(\"not a number\"); }\n\
                      if n < 0 { return Err(\"negative\"); }\n\
                      Ok(n)\n}\n\
-                   let age: int = 0;\nlet problem: string = \"\";\n";
+                   let age: int = signal(0);\nlet problem: string = signal(\"\");\n";
         let src = format!("{age}fn read(s: string) {{ let r = parseAge(s); if r.ok {{ age = r.value; }} else {{ problem = r.error; }} }}");
         assert!(findings(&src).is_empty(), "{:#?}", findings(&src));
         // Unread, either field may be missing.
@@ -3843,7 +3872,7 @@ mod tests {
 
     #[test]
     fn void_returns_nothing() {
-        assert!(errors("let n: int = 0;\nfn bump(): void { n += 1; }\nfn early(): void { if n > 3 { return; } n = 0; }").is_empty());
+        assert!(errors("let n: int = signal(0);\nfn bump(): void { n += 1; }\nfn early(): void { if n > 3 { return; } n = 0; }").is_empty());
         one_error("fn f(): void { return 1; }", "`f` is declared to return `void`, and this is `int`");
         one_error("fn f(): void { }\nlet x: int = f();", "this is `void`, where `int` is expected");
         // A callback that returns nothing takes any function.
@@ -3902,10 +3931,10 @@ mod tests {
         one_error(&format!("{t}let f: F = \"c\";"), "\"c\" is not `F`");
         one_error(&format!("{t}let f: F = \"bb\";"), "did you mean \"b\"?");
         one_error(
-            &format!("{t}let f: F = \"a\"; fn g() {{ f = \"z\"; }}"),
+            &format!("{t}let f: F = signal(\"a\"); fn g() {{ f = \"z\"; }}"),
             "\"z\" is not `F`, which is one of \"a\", \"b\"",
         );
-        assert!(errors(&format!("{t}let f: F = \"a\"; fn g() {{ f = \"b\"; }}")).is_empty());
+        assert!(errors(&format!("{t}let f: F = signal(\"a\"); fn g() {{ f = \"b\"; }}")).is_empty());
         // An unannotated string is a string, and a string is not an `F`.
         one_error(&format!("{t}let s = \"a\";\nlet f: F = s;"), "`string`, where `F` is expected");
     }
@@ -3943,15 +3972,30 @@ mod tests {
         assert!(findings(quiet).is_empty(), "{:#?}", findings(quiet));
     }
 
-    /// `null` and `()` still mean `none`, with a word about the spelling.
+    /// A top-level `let` without `signal` is a value: a write to it is an
+    /// error that names the fix, and a local of the same name is not it.
+    #[test]
+    fn a_plain_top_level_let_is_never_written() {
+        let e = errors("let limit = 10;
+let n = signal(0);
+fn f() { limit = 3; n = limit; }");
+        assert_eq!(e.len(), 1, "{e:?}");
+        assert!(e[0].contains("`limit` is a plain `let`") && e[0].contains("let limit = signal(…)"), "{e:?}");
+        assert!(errors("let limit = 10;
+fn f() { let limit = 1; limit = 3; }").is_empty());
+        assert!(errors("let m = { a: 1 };
+fn f() { m.a = 2; }").len() == 1);
+    }
+
+    /// `null` and `()` are errors that name the spelling, and still mean
+    /// `none` to everything after them.
     #[test]
     fn the_old_spellings_of_none_are_read_and_named() {
-        let w = warnings("let a: string? = null;
+        let e = errors("let a: string? = null;
 let b: int | null = ();");
-        assert_eq!(w.iter().filter(|m| m.contains("`null` is written `none` now")).count(), 2, "{w:?}");
-        assert!(w.iter().any(|m| m.contains("`()` is written `none` now")), "{w:?}");
-        assert!(errors("let a: string? = null;
-let b: int | null = ();").is_empty());
+        assert_eq!(e.iter().filter(|m| m.contains("`null` is written `none` now")).count(), 2, "{e:?}");
+        assert!(e.iter().any(|m| m.contains("`()` is written `none` now")), "{e:?}");
+        assert_eq!(e.len(), 3, "nothing else is wrong: {e:?}");
         assert!(findings("let a: string? = none;
 let b: int? = none;").is_empty());
     }
@@ -4027,7 +4071,7 @@ let b: int? = none;").is_empty());
     }
 
     const LOAD: &str = "type Load =\n  | { state: \"idle\" }\n  | { state: \"done\", rows: int[] };\n\
-                        let load: Load = { state: \"idle\" };\n";
+                        let load: Load = signal({ state: \"idle\" });\n";
 
     #[test]
     fn a_discriminant_narrows_its_union() {

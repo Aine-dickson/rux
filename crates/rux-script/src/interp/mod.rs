@@ -153,6 +153,38 @@ impl Interp {
         Ok(ir)
     }
 
+    /// Whether what `target` names was declared an `int`: a signal, or a
+    /// field or element of one (`count`, `user.age`, `rows[0].qty`). `false`
+    /// for anything whose type is not known here, a row's variable included.
+    pub fn declared_int(&self, target: &str) -> bool {
+        use crate::types::Type;
+        use rux_syntax::ast::{ExprKind as E, StmtKind as S};
+        let Ok(script) = rux_syntax::parse(target, rux_syntax::Options::default()) else { return false };
+        let [stmt] = &script.stmts[..] else { return false };
+        let S::Expr(e) = &stmt.kind else { return false };
+        let table = rux_ir::table::Table::new(&self.unit.types);
+        fn walk(me: &Interp, table: &rux_ir::table::Table, e: &rux_syntax::ast::Expr) -> Option<Type> {
+            match &e.kind {
+                E::Var(n) => me.by_name.get(n).map(|g| me.unit.globals[g.0 as usize].ty.clone()),
+                E::Field { base, name, .. } => match table.resolve(&walk(me, table, base)?) {
+                    Type::Record(fields) => fields.into_iter().find(|f| f.name == name.name).map(|f| f.ty),
+                    Type::Dict(v) => Some(*v),
+                    _ => None,
+                },
+                E::Index { base, .. } => match table.resolve(&walk(me, table, base)?) {
+                    Type::Array(t) | Type::Dict(t) => Some(*t),
+                    _ => None,
+                },
+                _ => None,
+            }
+        }
+        match walk(self, &table, e).map(|t| table.resolve(&t)) {
+            Some(Type::Int) => true,
+            Some(Type::Union(members)) => members.contains(&Type::Int) && !members.contains(&Type::Float),
+            _ => false,
+        }
+    }
+
     /// Stop a run after `n` steps rather than [`MAX_OPERATIONS`].
     pub fn set_max_operations(&mut self, n: u64) {
         self.max_ops = n;

@@ -1785,9 +1785,17 @@ impl Engine {
     /// `type="number"` writes a number, and a slider does too. Handed over as
     /// a local rather than spelled as a literal, so no value has to survive a
     /// round trip through script syntax (`1e21`, `-0`, a quote in the text).
+    ///
+    /// A number written into something declared an `int` is cut toward zero
+    /// first: a number field bound to an `int` writes a whole number
+    /// (`docs/11-next.md`, "Templates").
     pub fn assign_value(&mut self, target: &str, value: &Value, locals: &[(String, Value)]) -> HashSet<String> {
+        let value = match value {
+            Value::Number(n) if n.is_finite() && self.ir.declared_int(target) => Value::Number(n.trunc()),
+            other => other.clone(),
+        };
         let mut locals = locals.to_vec();
-        locals.push((ASSIGNED.to_string(), value.clone()));
+        locals.push((ASSIGNED.to_string(), value));
         let src = format!("{target} = {ASSIGNED}");
         let (ran, changed) = self.tracking(|e| e.eval(&src, &locals).is_some());
         if ran { changed } else { HashSet::new() }
@@ -2887,6 +2895,26 @@ mod tests {
             "!" => None, // stands for a selector that does not parse
             _ => Some(Vec::new()),
         })
+    }
+
+    /// A number field bound to an `int` writes a whole number; into a
+    /// `float`, or anything whose type is not known, the number as it is.
+    #[test]
+    fn a_number_written_into_an_int_is_cut_toward_zero() {
+        let mut e = Builder::new()
+            .build("type Row = { qty: int, price: float };
+                    let count: int = signal(0);
+                    let total: float = signal(0.0);
+                    let rows: Row[] = signal([{ qty: 1, price: 1.0 }]);")
+            .unwrap();
+        e.assign_value("count", &Value::Number(2.7), &[]);
+        e.assign_value("total", &Value::Number(2.7), &[]);
+        e.assign_value("rows[0].qty", &Value::Number(-3.9), &[]);
+        e.assign_value("rows[0].price", &Value::Number(-3.9), &[]);
+        assert_eq!(e.eval_display("count", &[]), "2");
+        assert_eq!(e.eval_display("total", &[]), "2.7");
+        assert_eq!(e.eval_display("rows[0].qty", &[]), "-3");
+        assert_eq!(e.eval_display("rows[0].price", &[]), "-3.9");
     }
 
     #[test]

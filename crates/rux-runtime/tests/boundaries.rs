@@ -196,14 +196,14 @@ fn the_checkers_placeholder_segment_is_not_a_bad_prop() {
 #[test]
 fn a_null_prop_arrives_as_null() {
     let card = "<template><view><text>{{ task?.title ?? \"(none)\" }}</text></view></template>\n\
-                <script>\n  prop task: { title: string }? = null;\n</script>";
+                <script>\n  prop task: { title: string }? = none;\n</script>";
     for tag in ["<card :task=\"sel\" />", "<card />"] {
         let dir = project(&[
             (
                 "app.rux",
                 &format!(
                     "<template><screen>{tag}</screen></template>\n\
-                     <script>\nuse components::card;\nlet sel: {{ title: string }}? = signal(null);\n</script>"
+                     <script>\nuse components::card;\nlet sel: {{ title: string }}? = signal(none);\n</script>"
                 ),
             ),
             ("components/card.rux", card),

@@ -169,7 +169,7 @@ const APP: &str = r#"<!-- The entry point. `rux run` looks for this file here an
     for t in tasks {
       if t.id == id { return t; }
     }
-    ()
+    none
   }
 
   fn toggle_task(id) {

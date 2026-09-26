@@ -260,8 +260,9 @@ and Kotlin, so everything built on `null` keeps working with the new word:
 - A prop declared `T?` that the tag passed nothing to is `none` (Kept).
 
 There is no `undefined` and no `()`. `none` is a literal, not a variable: it
-cannot be shadowed, and nothing can subscribe to it (Kept). `rux fmt` rewrites
-`null` to `none`.
+cannot be shadowed, and nothing can subscribe to it (Kept). `null` and `()`
+are checker errors that name `none` (a warning from step 3 until step 5); they
+still run as `none`, and `rux fmt` rewrites them.
 
 ### Checked, not erased (Changed, decided)
 
@@ -543,12 +544,13 @@ let items: Item[] = signal([]);
 is a subscription to it (Kept). There is no `const` (decided).
 
 **A top-level `let` without `signal` is a value that is never written** (Changed,
-proposed). Today `signal()` is identity and a plain top-level `let` is state
-anyway, so the marker marks nothing. Making the unmarked form read-only gives
-`signal` a meaning without adding `const`: writing one is an error that
-suggests `signal(…)`. Before this is switched on, the repository's apps and
-examples are surveyed for a plain top-level `let` that is written, as the
-caller-scope rule was.
+proposed; on since 2026-09-26). Until then `signal()` was identity and a plain
+top-level `let` was state anyway, so the marker marked nothing. Making the
+unmarked form read-only gives `signal` a meaning without adding `const`: writing
+one, or a field or element of one, is a checker error that suggests
+`signal(…)`. Before it was switched on, every `.rux` file on the development
+machine (359) was checked for such a write, as the caller-scope rule was, and
+none had one.
 
 A `let` inside a function, handler or block is an ordinary local (Kept).
 
@@ -856,7 +858,7 @@ with `number` read as `int` or `float`:
 - `r-model` must name something of the input's value type: `string` for text
   fields, **`float` for number and slider** (Changed, proposed), `bool` for
   checkbox and switch. A number field bound to an `int` writes a truncated
-  value and is allowed (proposed).
+  value and is allowed (proposed; runs since step 5).
 - `event` has the type of its event. Gesture coordinates are `float`s.
 - Props are checked at the tag.
 
@@ -984,9 +986,12 @@ Float indexing narrows to what the types allow: an index is an `int`, and a
    the window: on the `rux-harness/script-cost` runs, a loop over 1000
    records went from 18.6 to 4.7 ms a frame, a filter from 17.0 to 1.6, and
    a list's bindings from 1.6 to 0.08 (`tests/interp_cost.rs` times the same
-   work outside the window). Not done yet: a closure captures a local by
-   value, not by reference; an `any` entering typed code is not checked when
-   it runs; a plain top-level `let` can still be written.
+   work outside the window). Three decided changes were switched on with it:
+   `null` and `()` are errors rather than warnings, a number field bound to
+   an `int` writes a whole number, and a plain top-level `let` is read-only
+   (surveyed first: no file wrote one). Not done yet: a closure captures a
+   local by value, not by reference, and an `any` entering typed code is not
+   checked when it runs.
 6. **`async fn` / `await`** in the interpreter.
 7. **Script modules and stores.**
 8. **`#[rux::export]`, the interface file, `native` modules.**

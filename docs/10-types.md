@@ -96,7 +96,7 @@ collide, and an import can tell a type from a component by its spelling (see
 | `float` | A 64-bit float. An `int` goes anywhere a `float` does, not the other way round |
 | `string` | Text |
 | `bool` | `true` or `false` |
-| `none` | The empty value. `null` and `()`, its older spellings, still read as it, with a warning |
+| `none` | The empty value. `null` and `()`, its older spellings, still read as it, and are errors that name it; `rux fmt` rewrites them |
 | `any` | Anything, unchecked. What a name becomes when nothing says otherwise |
 | `"all"` | Exactly that string. Useful in a union |
 | `T[]`, `Array<T>` | An array of `T`; two spellings of one type |
@@ -121,8 +121,8 @@ variable (`for i in 0..n`), `trunc()`, `round()`, `floor()`, `ceil()` and
 because `3 / 2` is `1.5`, so `let n = signal(0); n = n / 2;` is an error that
 names `intDiv`, and `let n: float = signal(0)` is the other way out. A list is
 indexed by an `int`. `number` is no type now; `rux fmt` rewrites it to `float`.
-The numbers underneath are all `f64` until step 5, so a checked `int` can still
-hold a fraction a number field wrote into it.
+An `int` is a whole number when the script runs too, and a number field bound
+to one writes the number cut toward zero.
 
 **A record and a dictionary are both written with braces**, and so are map
 values since `{ a: 1 }` became a map. The difference is the square brackets:
