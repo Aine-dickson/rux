@@ -549,13 +549,19 @@ again without it, keeps the diagnostics, and stops asking for the session.
 
 ## How it is built
 
-The fork parses annotations and discards them before evaluation, so an
-annotated program runs through the same evaluator as an unannotated one. Each
-annotation is kept in a side table beside the AST, keyed by the position of the
-name it annotates, which leaves the AST itself in upstream's shape. That change
-is recorded as item 8 in `crates/rux-rhai/DIVERGENCE.md`.
+Rux's own parser (`crates/rux-syntax`) reads a script into an AST that keeps
+every annotation on the node it belongs to. The checker, in `rux-script`,
+reads that AST. What the fork runs is the same text with every annotation
+blanked to spaces, so an annotated program runs through the same evaluator as
+an unannotated one, and every line and column stays where it was written. Only
+`x is T` reaches the fork with its type, since it is checked at run time.
 
-The checker lives outside the engine, in `rux-script`, and reads the AST and
-the side table. It runs where the other load-time checks run: `rux check`, the
-dev overlay, and the editor. The only parts that reach a running program are
-the prop checks and the `is` validators.
+Until 2026-09-26 the fork parsed annotations itself and kept them in a side
+table beside its AST, which the checker read (item 8 in
+`crates/rux-rhai/DIVERGENCE.md`). That code is still in the fork, and is no
+longer handed anything; it goes with the fork in step 5 of
+[Rux next](./11-next.md#build-order).
+
+The checker runs where the other load-time checks run: `rux check`, the dev
+overlay, and the editor. The only parts that reach a running program are the
+prop checks and the `is` validators.

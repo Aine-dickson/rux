@@ -1,11 +1,10 @@
 //! The types an annotation can name, and the parser that reads one from text.
 //!
-//! The fork recognises an annotation in a script far enough to know where it
-//! ends and keeps its text (`rhai::Annotation`); a `prop` line never reaches
-//! the fork at all. Both arrive here as text. The grammar is the one in
-//! `docs/10-types.md`, and the fork's recognizer (`type_end` in
-//! `crates/rux-rhai/src/parser.rs`) accepts the same shapes: a test below runs
-//! one list of types through both.
+//! Rux's parser reads an annotation in a script into its AST, and the checker
+//! turns it into a [`Type`] by printing it back and parsing that here. A
+//! `prop`'s type and an imported type arrive here as text. The grammar is the
+//! one in `docs/10-types.md`, and `rux-syntax` accepts the same shapes: a test
+//! below runs one list of types through both.
 
 use std::fmt;
 
@@ -547,11 +546,11 @@ mod tests {
         assert!(e("").contains("expecting a type"));
     }
 
-    /// The fork's recognizer and this parser must agree on where a type is.
-    /// Every text here is compiled as an annotation by the fork, and the text it
-    /// records is parsed back here to the same type.
+    /// Rux's parser and this one must read a type the same way. Every text
+    /// here is parsed as an annotation by `rux-syntax`, and what it read,
+    /// printed back, is parsed here to the same type.
     #[test]
-    fn the_fork_and_this_parser_agree() {
+    fn rux_syntax_and_this_parser_agree() {
         for s in [
             "number",
             "Task[]",
@@ -566,10 +565,10 @@ mod tests {
             "(Task | string)[]",
             "{ on: (string) => null }",
         ] {
-            let ast = rhai::Engine::new()
-                .compile(format!("let x: {s} = 1;"))
-                .unwrap_or_else(|e| panic!("the fork refused `{s}`: {e}"));
-            let recorded = &ast.annotations()[0].ty;
+            let script = rux_syntax::parse(&format!("let x: {s} = 1;"), Default::default())
+                .unwrap_or_else(|e| panic!("rux-syntax refused `{s}`: {e}"));
+            let rux_syntax::ast::StmtKind::Let { ty: Some(ty), .. } = &script.stmts[0].kind else { panic!("{s}") };
+            let recorded = &rux_syntax::print::ty(ty);
             assert_eq!(
                 parse_type(recorded).unwrap_or_else(|e| panic!("`{recorded}` from `{s}`: {e}")),
                 parse_type(s).unwrap(),

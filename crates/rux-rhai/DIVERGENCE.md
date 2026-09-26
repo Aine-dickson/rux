@@ -231,8 +231,13 @@ have to stay a block, and a rule with that hole in it is worse than no rule.
 
 ### 8. Type annotations are parsed, kept aside, and erased
 
-**Built 2026-09-24.** The checker that reads the annotations lives in
-`rux-script` and is outside this fork.
+**Built 2026-09-24. Unused since 2026-09-26.** Rux's own parser reads the
+annotations now, the checker reads them from its AST, and `rux-script` blanks
+every annotation out of the text it hands this fork. Nothing here is handed an
+annotation any more, though the code below still accepts one. It is deleted
+with the fork in step 5 of `docs/11-next.md`, not before, so this item is not
+reverted piecemeal. `x is T` (item 10) still reaches the fork, and still uses
+`type_end` to find where its type ends.
 
 **Files:** `src/parser.rs` (the recognizer `type_end` and its helpers,
 `take_type`, `note_annotation`; `parse_let`, `parse_fn`, `arrow_params_len`,
@@ -278,10 +283,9 @@ The shape of the change, chosen to keep the merge surface small:
 keeps only the hash of each case value, so the checker hashes each member of a
 literal union the same way to see which ones a `switch` handles.
 
-Tests are in `rux-script` (`annotations_are_erased`,
-`annotations_are_kept_beside_the_ast`, `a_malformed_annotation_is_a_syntax_error`,
-and `types::the_fork_and_this_parser_agree`, which runs one list of types
-through this recognizer and through `rux-script`'s parser).
+Its tests went with the checker's move: `annotations_are_kept_beside_the_ast`
+and `types::the_fork_and_this_parser_agree` were removed or pointed at Rux's
+parser on 2026-09-26.
 
 ### 9. `?[` guards a missing key, and keeps its guard in a longer chain
 

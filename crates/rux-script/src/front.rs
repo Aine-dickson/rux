@@ -5,8 +5,10 @@
 //! fork through [`compile`], which parses it with `rux-syntax` first. A syntax
 //! error is that parser's, in Rux's words, at the line and column it names.
 //! What passes is handed to the fork as text, rewritten only where Rux has
-//! syntax the fork does not (`setInterval(ms) { … }`), until Rux's own
-//! interpreter replaces the fork in step 5.
+//! syntax the fork does not (`setInterval(ms) { … }`), and with every type
+//! annotation blanked out, until Rux's own interpreter replaces the fork in
+//! step 5. The checker reads the annotations from Rux's AST; the fork never
+//! sees one, so the type language can grow without the fork learning it.
 //!
 //! **Debug builds check the two parsers agree on every compile.** The Rux AST
 //! is printed back with every group made explicit, the fork compiles that too,
@@ -18,7 +20,8 @@
 //! differential test, without a corpus file to keep current.
 
 use rhai::{Engine as RhaiEngine, Position, AST};
-use rux_syntax::ast::{Expr, ExprKind, Script};
+use rux_syntax::ast::{ExprKind, Script, Stmt, StmtKind};
+use rux_syntax::visit::{walk_stmts, Node};
 use rux_syntax::{Options, Span};
 
 use crate::profile;
@@ -76,12 +79,51 @@ fn position(line: usize, col: usize) -> Position {
 
 /// The text the fork compiles: `src` with each `setInterval(args) { body }`
 /// rewritten to `__interval(args, "body")`, the call it has always been for
-/// the fork (see [`crate::TimerRequest`]). A body keeps its newlines as
-/// escapes inside the string, and the lines it took are added back after
-/// the call, so everything after it is still on the line it was written on.
+/// the fork (see [`crate::TimerRequest`]), and every annotation blanked. A
+/// body keeps its newlines as escapes inside the string, and the lines it
+/// took are added back after the call, so everything after it is still on
+/// the line it was written on. A blank is a space for every character and
+/// keeps its line breaks, so nothing moves at all.
 pub(crate) fn lower(src: &str, script: &Script) -> String {
     let mut edits: Vec<(Span, String)> = Vec::new();
-    rux_syntax::visit::exprs(script, &mut |e: &Expr| {
+    let blank = |span: Span| -> (Span, String) {
+        let text = span.text(src).chars().map(|c| if c == '\n' || c == '\r' { c } else { ' ' }).collect();
+        (span, text)
+    };
+    // From the `:` before a type to the type's end.
+    let annotation = |ty: Span| -> Span {
+        let colon = src[..ty.start as usize].rfind(':').unwrap_or(ty.start as usize);
+        Span::new(colon, ty.end as usize)
+    };
+    walk_stmts(&script.stmts, &mut |node| {
+        let e = match node {
+            Node::Stmt(Stmt { kind: StmtKind::Let { ty: Some(t), .. }, .. }) => {
+                edits.push(blank(annotation(t.span)));
+                return true;
+            }
+            Node::Stmt(Stmt { kind: StmtKind::Fn(def), .. }) => {
+                for t in def.params.iter().filter_map(|p| p.ty.as_ref()).chain(def.result.iter()) {
+                    edits.push(blank(annotation(t.span)));
+                }
+                return true;
+            }
+            // A `type` declares nothing at run time. Its `;` goes with it.
+            Node::Stmt(s @ Stmt { kind: StmtKind::Type { .. }, .. }) => {
+                let rest = &src[s.span.end as usize..];
+                let gap = rest.len() - rest.trim_start().len();
+                let end = s.span.end as usize + if rest[gap..].starts_with(';') { gap + 1 } else { 0 };
+                edits.push(blank(Span::new(s.span.start as usize, end)));
+                return false;
+            }
+            Node::Stmt(_) => return true,
+            Node::Expr(e) => e,
+        };
+        if let ExprKind::Closure { params, .. } = &e.kind {
+            for t in params.iter().filter_map(|p| p.ty.as_ref()) {
+                edits.push(blank(annotation(t.span)));
+            }
+            return true;
+        }
         let ExprKind::Interval { args, body } = &e.kind else { return true };
         let mut out = String::from("__interval(");
         if let (Some(first), Some(last)) = (args.first(), args.last()) {
@@ -110,6 +152,7 @@ pub(crate) fn lower(src: &str, script: &Script) -> String {
     if edits.is_empty() {
         return src.to_string();
     }
+    edits.sort_by_key(|(span, _)| span.start);
     let mut out = String::with_capacity(src.len() + 32);
     let mut at = 0;
     for (span, text) in edits {
@@ -183,13 +226,6 @@ fn agree(src: &str, text: &str, script: &Script) {
             b.get(from..(at + 300).min(b.len())).unwrap_or(&b),
         );
     }
-    let (a, b) = (normal::annotations(&ast), normal::annotations(&theirs));
-    if a != b {
-        panic!(
-            "rux-syntax and the fork read a script's annotations differently; a parser bug.\n\
-             source:\n{src}\nread as:\n{canonical}\nfrom the source: {a:?}\nfrom the reading: {b:?}"
-        );
-    }
 }
 
 /// A fork AST as text with its positions taken out, for comparing two
@@ -223,28 +259,6 @@ mod normal {
             out.push('\n');
             out.push_str(&inline(&f, &anon, 0));
         }
-        out
-    }
-
-    /// Every annotation as kind, name and type, the type read into
-    /// `rux-script`'s own `Type` so spelling (`| A | B` against `A | B`)
-    /// does not count.
-    pub fn annotations(ast: &AST) -> Vec<String> {
-        let mut out: Vec<String> = ast
-            .annotations()
-            .iter()
-            .map(|a| {
-                let kind = match &a.kind {
-                    rhai::AnnotationKind::Param { function, arity } if function.starts_with("anon$") => {
-                        format!("param of a closure/{arity}")
-                    }
-                    other => format!("{other:?}"),
-                };
-                let ty = crate::types::parse_type(&a.ty).map(|t| t.to_string()).unwrap_or_else(|_| a.ty.clone());
-                format!("{kind} {} {ty}", a.name)
-            })
-            .collect();
-        out.sort();
         out
     }
 
@@ -346,6 +360,20 @@ mod tests {
         assert_eq!(tree("let f = |x| x + 1;"), tree("let f =\n  |x|   x + 1;"));
         assert_ne!(tree("let f = |x| x + 1;"), tree("let f = |x| x - 1;"));
         assert_eq!(tree("fn f() { if a { 1 } }"), tree("fn f() {\n if a {\n 1\n }\n}"));
+    }
+
+    /// The fork is never shown a type, and what it is shown is where it was.
+    #[test]
+    fn annotations_are_blanked_where_they_stand() {
+        let src = "type T = {\n  a: int };\nlet n: int = 1;\nfn f(x: T, y): T? { x }\nlet g = (a: int) => a;";
+        let script = rux_syntax::parse(src, Options::default()).unwrap();
+        let text = lower(src, &script);
+        assert_eq!(
+            text,
+            "          \n           \nlet n      = 1;\nfn f(x   , y)     { x }\nlet g = (a     ) => a;"
+        );
+        let lines = |s: &str| s.lines().map(|l| l.chars().count()).collect::<Vec<_>>();
+        assert_eq!(lines(&text), lines(src));
     }
 
     #[test]

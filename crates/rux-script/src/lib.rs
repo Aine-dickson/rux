@@ -10,8 +10,6 @@
 //! the compiled-Rust boundary (`docs/04-architecture.md`, script/host tiers).
 
 pub mod check;
-#[cfg(debug_assertions)]
-mod check_fork;
 mod front;
 pub mod profile;
 pub mod types;
@@ -542,12 +540,7 @@ impl Builder {
             .map_err(|e| ScriptError::at(explain(&e.message), e.position))?;
         // What `x is T` resolves a declared name against: this script's own
         // `type`s, before the script's first statement can ask. The runtime adds what it imports (`validate::know_types`).
-        validate::reset_types(
-            ast.annotations()
-                .iter()
-                .filter(|a| a.kind == rhai::AnnotationKind::Type)
-                .map(|a| (a.name.to_string(), a.ty.clone())),
-        );
+        validate::reset_types(types_declared_in(&parsed, script));
         let mut scope = Scope::new();
         self.engine
             .run_ast_with_scope(&mut scope, &ast)
@@ -567,13 +560,25 @@ impl Builder {
             scope,
             funcs,
             signals,
-            checked: ast,
             script: parsed,
             source: script.to_string(),
             host_types: self.host_types,
             compiled: HashMap::new(),
         })
     }
+}
+
+/// The `type` declarations of a script Rux parsed from `src`, as name and the
+/// text of the type.
+fn types_declared_in(script: &rux_syntax::ast::Script, src: &str) -> Vec<(String, String)> {
+    script
+        .stmts
+        .iter()
+        .filter_map(|s| match &s.kind {
+            rux_syntax::ast::StmtKind::Type { name, ty } => Some((name.name.clone(), ty.span.text(src).to_string())),
+            _ => None,
+        })
+        .collect()
 }
 
 /// Give rhai's collection and string library the names JS uses for the same
@@ -1173,11 +1178,6 @@ pub struct Engine {
     funcs: AST,
     /// Names of the top-level signals, the universe of reactive dependencies.
     signals: HashSet<String>,
-    /// The whole script as the fork compiled it. Debug builds hand it to the
-    /// checker as it was before step 3 of `docs/11-next.md`, to prove the
-    /// port says the same.
-    #[cfg_attr(not(debug_assertions), allow(dead_code))]
-    checked: AST,
     /// The whole script as Rux's parser read it, and its text, for the type
     /// checker.
     script: rux_syntax::ast::Script,
@@ -1898,26 +1898,15 @@ impl Engine {
     pub fn check_types_recording(&self, cx: &check::Context, record: bool) -> (Vec<check::Finding>, check::Table) {
         let mut cx = cx.clone();
         cx.host.extend(self.host_types.iter().cloned());
-        let out = check::check_recording(&self.script, &self.source, &cx, record);
-        #[cfg(debug_assertions)]
-        {
-            let old = check_fork::check_recording(&self.checked, &cx, &|src| front::compile(&self.engine, src).ok(), record);
-            check_fork::agree(&self.source, &cx, &old, &out);
-        }
-        out
+        check::check_recording(&self.script, &self.source, &cx, record)
     }
 
     /// The `type` declarations in `script`, as name and text, for another file
     /// that imports them with `use`. A script that does not compile declares
     /// nothing here; its own load says why.
     pub fn declared_types(script: &str) -> Vec<(String, String)> {
-        match front::compile(&RhaiEngine::new(), script) {
-            Ok(ast) => ast
-                .annotations()
-                .iter()
-                .filter(|a| a.kind == rhai::AnnotationKind::Type)
-                .map(|a| (a.name.to_string(), a.ty.clone()))
-                .collect(),
+        match rux_syntax::parse(script, rux_syntax::Options::default()) {
+            Ok(parsed) => types_declared_in(&parsed, script),
             Err(_) => Vec::new(),
         }
     }
@@ -3115,72 +3104,14 @@ mod tests {
         assert_eq!(e.eval_display("none()", &[]), "5");
     }
 
-    /// The side table: every annotation, with what it annotates and the text
-    /// of its type, and nothing in the AST itself.
-    #[test]
-    fn annotations_are_kept_beside_the_ast() {
-        use rhai::AnnotationKind as K;
-        let src = "type Task = { id: int, title: string, note?: string };\n\
-                   type Load =\n  | { state: \"idle\" }\n  | { state: \"done\", rows: Task[] };\n\
-                   type Flags = { [string]: bool };\n\
-                   type Pick = (Task, int) => bool;\n\
-                   type Later = () => null;\n\
-                   type Maybe = (Task | string)[];\n\
-                   type Holes = string?[];\n\
-                   let tasks: Task[] = [];\n\
-                   const LIMIT: int = 3;\n\
-                   fn label(t: Task, i: int): string { t.title }\n\
-                   fn shape(): { a: number } { { a: 1 } }\n\
-                   let f = (a: number, b) => a + b;";
-        let ast = rhai::Engine::new().compile(src).expect("compiles");
-        let got: Vec<(K, String, String)> = ast
-            .annotations()
-            .iter()
-            .map(|a| (a.kind.clone(), a.name.to_string(), a.ty.clone()))
-            .collect();
-        let find = |name: &str| {
-            got.iter()
-                .find(|(_, n, _)| n == name)
-                .unwrap_or_else(|| panic!("no annotation for {name}: {got:?}"))
-                .clone()
-        };
-
-        assert_eq!(find("Task").0, K::Type);
-        assert_eq!(find("Task").2, "{ id: int, title: string, note?: string }");
-        assert_eq!(find("Load").2, "| { state: \"idle\" } | { state: \"done\", rows: Task[] }");
-        assert_eq!(find("Flags").2, "{[string]: bool }");
-        assert_eq!(find("Pick").2, "( Task, int ) => bool");
-        assert_eq!(find("Later").2, "() => null");
-        assert_eq!(find("Maybe").2, "( Task | string )[]");
-        assert_eq!(find("Holes").2, "string?[]");
-        assert_eq!((find("tasks").0, find("tasks").2), (K::Var, "Task[]".to_string()));
-        assert_eq!((find("LIMIT").0, find("LIMIT").2), (K::Var, "int".to_string()));
-
-        let label = K::Param { function: "label".into(), arity: 2 };
-        assert!(got.contains(&(label.clone(), "t".into(), "Task".into())), "{got:?}");
-        assert!(got.contains(&(label, "i".into(), "int".into())), "{got:?}");
-        assert!(got.contains(&(K::Result { arity: 2 }, "label".into(), "string".into())), "{got:?}");
-        assert!(got.contains(&(K::Result { arity: 0 }, "shape".into(), "{ a: number }".into())));
-
-        // An arrow's parameter belongs to the generated function; `b` has no
-        // annotation, so only `a` is recorded.
-        let arrow: Vec<_> = got.iter().filter(|(k, ..)| matches!(k, K::Param { function, .. } if function.starts_with("anon$"))).collect();
-        assert_eq!(arrow.len(), 1, "{got:?}");
-        assert_eq!((arrow[0].1.as_str(), arrow[0].2.as_str()), ("a", "number"));
-
-        // The positions point at the names, which is what the checker keys on.
-        let tasks = ast.annotations().iter().find(|a| a.name == "tasks").unwrap();
-        assert_eq!((tasks.pos.line(), tasks.pos.position()), (Some(10), Some(5)));
-    }
-
     /// A malformed annotation is a syntax error at the place it goes wrong,
     /// not a silently different program.
     #[test]
     fn a_malformed_annotation_is_a_syntax_error() {
-        let fails = |src: &str| rhai::Engine::new().compile(src).err().map(|e| e.to_string());
-        assert!(fails("let x: = 1;").unwrap().contains("Expecting a type after ':'"));
-        assert!(fails("fn f(x: ) { x }").unwrap().contains("Expecting a type"));
-        assert!(fails("type T = ;").unwrap().contains("Expecting a type after '='"));
+        let fails = |src: &str| Builder::new().build(src).err().map(|e| e.message);
+        assert!(fails("let x: = 1;").unwrap().contains("expecting a type after `:`"));
+        assert!(fails("fn f(x: ) { x }").unwrap().contains("expecting a type"));
+        assert!(fails("type T = ;").unwrap().contains("expecting a type after `=`"));
         assert!(fails("let x: { a int } = 1;").is_some());
         assert!(fails("fn f() { type T = int; 1 }").unwrap().contains("top level"));
         assert_eq!(fails("let x: { a: int, } = 1;"), None, "a trailing comma is allowed");

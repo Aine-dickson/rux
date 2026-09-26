@@ -9,6 +9,11 @@
 //! It writes the fork's spelling where the fork has one it would read
 //! differently (`#{` for a map, `__interval(…)` for `setInterval(…) { }`), and
 //! is not a formatter: nothing here tries to look like what was written.
+//!
+//! Annotations are left out, as `rux-script` leaves them out of what it hands
+//! the fork to run: a type means nothing at run time, and the fork is never
+//! shown one it may not know how to read. `x is T` keeps its type, which is
+//! checked at run time. [`ty`] writes a type on its own.
 
 use crate::ast::*;
 
@@ -72,10 +77,7 @@ impl Printer<'_> {
             StmtKind::Let { name, ty, value, constant } => {
                 self.w(if *constant { "const " } else { "let " });
                 self.w(&name.name);
-                if let Some(t) = ty {
-                    self.w(": ");
-                    self.ty(t);
-                }
+                let _ = ty;
                 if let Some(v) = value {
                     self.w(" = ");
                     self.expr(v);
@@ -154,20 +156,10 @@ impl Printer<'_> {
                 }
                 self.w(&f.name.name);
                 self.params(&f.params);
-                if let Some(r) = &f.result {
-                    self.w(": ");
-                    self.ty(r);
-                }
                 self.w(" ");
                 self.block(&f.body);
             }
-            StmtKind::Type { name, ty } => {
-                self.w("type ");
-                self.w(&name.name);
-                self.w(" = ");
-                self.ty(ty);
-                self.w(";");
-            }
+            StmtKind::Type { .. } => {}
             StmtKind::Import { path, alias } => {
                 self.w("import ");
                 self.expr(path);
@@ -290,10 +282,6 @@ impl Printer<'_> {
                 self.w(", ");
             }
             self.w(&p.name.name);
-            if let Some(t) = &p.ty {
-                self.w(": ");
-                self.ty(t);
-            }
         }
         self.w(")");
     }
