@@ -3,6 +3,8 @@
 The type system for Rux script: what an annotation says, what the checker does
 with it, and what it costs at run time.
 
+**Superseded as a plan by [The Rux language](./11-next.md)** (2026-09-26), which keeps most of this and marks what changes (`int`/`float` for `number`, `none` for `null`, generics, checked types). This document still describes what runs today.
+
 **Status: designed, being built.** Every rule below was decided on 2026-09-24
 and none of it is open. The table says which parts run today; a part that does
 not run yet is a design, and [Script](./07-script.md) stays the reference for
