@@ -713,7 +713,7 @@ impl<'s> Lexer<'s> {
 mod tests {
     use super::*;
 
-    fn toks(src: &str) -> Vec<Tok> {
+    fn toks(src: &str) -> Vec<Tok<'_>> {
         lex(src).unwrap().into_iter().map(|t| t.tok).collect()
     }
 

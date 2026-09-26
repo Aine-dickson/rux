@@ -38,18 +38,19 @@ impl std::fmt::Display for CompileError {
 
 /// Parse `src` as Rux, then compile what it says with the fork.
 pub(crate) fn compile(engine: &RhaiEngine, src: &str) -> Result<AST, CompileError> {
-    compile_with(engine, src, Options::default())
+    compile_with(engine, src, Options::default()).map(|(ast, _)| ast)
 }
 
 /// [`compile`], for a whole document or component script, where `prop`,
 /// `computed` and the lifecycle blocks parse. The runtime has taken each one
 /// out by the time a script that parses gets here; this is so a script that
 /// does not is reported where it really goes wrong, not at its first `prop`.
-pub(crate) fn compile_script(engine: &RhaiEngine, src: &str) -> Result<AST, CompileError> {
+/// Rux's own reading of the script comes back too, for the type checker.
+pub(crate) fn compile_script_keeping(engine: &RhaiEngine, src: &str) -> Result<(AST, Script), CompileError> {
     compile_with(engine, src, Options { declarations: true })
 }
 
-fn compile_with(engine: &RhaiEngine, src: &str, opts: Options) -> Result<AST, CompileError> {
+fn compile_with(engine: &RhaiEngine, src: &str, opts: Options) -> Result<(AST, Script), CompileError> {
     let script = match profile::time(profile::Phase::Parse, || rux_syntax::parse(src, opts)) {
         Ok(script) => script,
         Err(e) => {
@@ -66,7 +67,7 @@ fn compile_with(engine: &RhaiEngine, src: &str, opts: Options) -> Result<AST, Co
     })?;
     #[cfg(debug_assertions)]
     agree(src, &text, &script);
-    Ok(ast)
+    Ok((ast, script))
 }
 
 fn position(line: usize, col: usize) -> Position {

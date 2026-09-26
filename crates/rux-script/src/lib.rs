@@ -10,6 +10,8 @@
 //! the compiled-Rust boundary (`docs/04-architecture.md`, script/host tiers).
 
 pub mod check;
+#[cfg(debug_assertions)]
+mod check_fork;
 mod front;
 pub mod profile;
 pub mod types;
@@ -536,7 +538,7 @@ impl Builder {
         self.engine
             .register_static_module("host", self.host.into());
 
-        let ast = front::compile_script(&self.engine, script)
+        let (ast, parsed) = front::compile_script_keeping(&self.engine, script)
             .map_err(|e| ScriptError::at(explain(&e.message), e.position))?;
         // What `x is T` resolves a declared name against: this script's own
         // `type`s, before the script's first statement can ask. The runtime adds what it imports (`validate::know_types`).
@@ -566,6 +568,8 @@ impl Builder {
             funcs,
             signals,
             checked: ast,
+            script: parsed,
+            source: script.to_string(),
             host_types: self.host_types,
             compiled: HashMap::new(),
         })
@@ -1169,10 +1173,15 @@ pub struct Engine {
     funcs: AST,
     /// Names of the top-level signals, the universe of reactive dependencies.
     signals: HashSet<String>,
-    /// The whole script as compiled, statements and annotations included, for
-    /// the type checker. `funcs` keeps only the functions, which is all
-    /// running needs.
+    /// The whole script as the fork compiled it. Debug builds hand it to the
+    /// checker as it was before step 3 of `docs/11-next.md`, to prove the
+    /// port says the same.
+    #[cfg_attr(not(debug_assertions), allow(dead_code))]
     checked: AST,
+    /// The whole script as Rux's parser read it, and its text, for the type
+    /// checker.
+    script: rux_syntax::ast::Script,
+    source: String,
     /// The `host::` functions' types, as registered.
     host_types: Vec<(String, types::Type)>,
     /// Every source this engine has run, compiled and merged with `funcs`,
@@ -1889,8 +1898,13 @@ impl Engine {
     pub fn check_types_recording(&self, cx: &check::Context, record: bool) -> (Vec<check::Finding>, check::Table) {
         let mut cx = cx.clone();
         cx.host.extend(self.host_types.iter().cloned());
-        // A template's pieces compile as the runtime compiles them to run.
-        check::check_recording(&self.checked, &cx, &|src| front::compile(&self.engine, src).ok(), record)
+        let out = check::check_recording(&self.script, &self.source, &cx, record);
+        #[cfg(debug_assertions)]
+        {
+            let old = check_fork::check_recording(&self.checked, &cx, &|src| front::compile(&self.engine, src).ok(), record);
+            check_fork::agree(&self.source, &cx, &old, &out);
+        }
+        out
     }
 
     /// The `type` declarations in `script`, as name and text, for another file

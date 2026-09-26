@@ -2,27 +2,52 @@
 
 use crate::ast::*;
 
+/// A statement or an expression, as [`walk`] hands them over.
+#[derive(Clone, Copy, Debug)]
+pub enum Node<'a> {
+    Stmt(&'a Stmt),
+    Expr(&'a Expr),
+}
+
 /// Call `f` on every expression in `script`, outermost first. When `f`
 /// returns `false`, what is inside that expression is skipped.
 pub fn exprs(script: &Script, f: &mut impl FnMut(&Expr) -> bool) {
-    for s in &script.stmts {
+    walk_stmts(&script.stmts, &mut |n| match n {
+        Node::Expr(e) => f(e),
+        Node::Stmt(_) => true,
+    });
+}
+
+/// Call `f` on every statement and expression in `stmts`, outermost first,
+/// function bodies and closures included. When `f` returns `false`, what is
+/// inside that node is skipped.
+pub fn walk_stmts<'a>(stmts: &'a [Stmt], f: &mut impl FnMut(Node<'a>) -> bool) {
+    for s in stmts {
         stmt(s, f);
     }
 }
 
-fn block(b: &Block, f: &mut impl FnMut(&Expr) -> bool) {
+/// [`walk_stmts`] from one expression.
+pub fn walk_expr<'a>(e: &'a Expr, f: &mut impl FnMut(Node<'a>) -> bool) {
+    expr(e, f);
+}
+
+fn block<'a>(b: &'a Block, f: &mut impl FnMut(Node<'a>) -> bool) {
     for s in &b.stmts {
         stmt(s, f);
     }
 }
 
-fn opt(e: &Option<Expr>, f: &mut impl FnMut(&Expr) -> bool) {
+fn opt<'a>(e: &'a Option<Expr>, f: &mut impl FnMut(Node<'a>) -> bool) {
     if let Some(e) = e {
         expr(e, f);
     }
 }
 
-fn stmt(s: &Stmt, f: &mut impl FnMut(&Expr) -> bool) {
+fn stmt<'a>(s: &'a Stmt, f: &mut impl FnMut(Node<'a>) -> bool) {
+    if !f(Node::Stmt(s)) {
+        return;
+    }
     match &s.kind {
         StmtKind::Empty | StmtKind::Continue | StmtKind::Type { .. } | StmtKind::Use(_) => {}
         StmtKind::Expr(e) => expr(e, f),
@@ -66,7 +91,7 @@ fn stmt(s: &Stmt, f: &mut impl FnMut(&Expr) -> bool) {
     }
 }
 
-fn if_stmt(i: &If, f: &mut impl FnMut(&Expr) -> bool) {
+fn if_stmt<'a>(i: &'a If, f: &mut impl FnMut(Node<'a>) -> bool) {
     expr(&i.cond, f);
     block(&i.then, f);
     if let Some(o) = &i.otherwise {
@@ -74,7 +99,7 @@ fn if_stmt(i: &If, f: &mut impl FnMut(&Expr) -> bool) {
     }
 }
 
-fn switch(sw: &Switch, f: &mut impl FnMut(&Expr) -> bool) {
+fn switch<'a>(sw: &'a Switch, f: &mut impl FnMut(Node<'a>) -> bool) {
     expr(&sw.value, f);
     for arm in &sw.arms {
         for p in &arm.patterns {
@@ -87,8 +112,8 @@ fn switch(sw: &Switch, f: &mut impl FnMut(&Expr) -> bool) {
     }
 }
 
-fn expr(e: &Expr, f: &mut impl FnMut(&Expr) -> bool) {
-    if !f(e) {
+fn expr<'a>(e: &'a Expr, f: &mut impl FnMut(Node<'a>) -> bool) {
+    if !f(Node::Expr(e)) {
         return;
     }
     match &e.kind {
