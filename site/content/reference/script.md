@@ -308,6 +308,68 @@ a caller's local as an error. Pass the name in instead: `@tap="pick(item)"` and
 **Anything heavy belongs behind `host::`.** Script describes what the UI does; it
 is not where work gets done.
 
+## Async
+
+Work that takes a while (a request, a file, a database) happens in Rust, and a
+page waits for it in an `async fn`:
+
+```rux
+<script>
+  type User = { name: string, age: int };
+  let status = signal("idle");
+
+  async fn load(id: int) {
+    status = "loading...";
+    let user: User = await host::lookup(id);
+    status = `${user.name}, ${user.age}`;
+  }
+</script>
+
+<button @tap="load(3)">Load</button>
+```
+
+- **A handler calls an `async fn`; it never awaits.** `@tap="load(3)"` starts
+  `load` and returns at once. What `load` writes before its `await` renders
+  with the tap; what it writes after renders when the answer comes, with no
+  input and without the window waking for anything else in between.
+- **`await` is only written inside an `async fn`**, and only in front of a
+  call to another `async fn` or to a `host::` function. It may sit anywhere an
+  expression can, `total += await price(id)` included, but not inside a
+  closure, which is not `async`.
+- **The result type is the value awaited**: `async fn price(id: int): float`
+  gives a `float` to `await price(1)`. A call without `await` has no value
+  (`void`), since nothing has come back yet.
+- **Everything between two `await`s runs without interruption.** There is one
+  thread of script. A signal can change under a function only at an `await`,
+  so whatever a condition established about a signal before one is not known
+  after it, and the checker says so.
+- **A failed `await` throws** where it is, and `try`/`catch` takes it. One
+  nothing catches is reported as a failing handler is, naming the function and
+  the line of the `await`.
+- **An `async fn` belongs to whoever started it**, as an interval does. Started
+  in a component, it stops at its `await` when the instance goes, and the
+  answer that comes later writes nothing. A document reloaded or left drops its
+  own the same way.
+- **A binding or a `computed` cannot start one**, since either runs again on
+  every change. A handler, `mounted` and an `effect` can. What the function
+  reads is never a dependency: an `effect` that starts one is subscribed to
+  what the effect itself read.
+
+The Rust side registers what a page awaits, before the page loads:
+
+```rust
+rux_runtime::host::register_async("lookup", |args, done| {
+    std::thread::spawn(move || {
+        let user = fetch_user(&args);
+        done.ok(user);  // or done.fail("why"), which the `await` throws
+    });
+});
+```
+
+Where the work runs is Rust's business: a thread, an executor the app already
+has, or at once. The answer can come from any thread. There is no `Future`,
+`Promise` or task value on the Rux side, and no `fetch` or `delay` built in.
+
 ## Type annotations
 
 Rux script takes TypeScript's annotations. They are checked by `rux check`,
@@ -555,7 +617,7 @@ rule rather than matching a known one. Use `keys(m)` and `values(m)` for maps.
 | Call | Does |
 |---|---|
 | `print(x)`, `debug(x)` | Printf-debugging. Reaches the **dev overlay**, not just stderr, because nobody running a GUI is watching stderr |
-| `host::name(…)` | Calls into compiled Rust |
+| `host::name(…)` | Calls into compiled Rust; `await host::name(…)` inside an `async fn` waits for one registered as asynchronous. See [Async](#async) |
 | `emit("name")`, `emit("name", payload)` | A component telling its caller something happened |
 | `navigate(path)`, `replace(path)` | Router. `replace` is the only way to redirect: `navigate` leaves the redirecting page in the history, so Back returns to it and redirects again |
 | `back()`, `forward()` | Walk the history |
@@ -718,3 +780,5 @@ The things most likely to surprise, in the order they usually do:
    rather than `thing.helper()` when it needs to.
 6. `x++` is a statement, so `let a = x++` is not a thing.
 7. There is no `undefined` distinct from `none`.
+8. **A handler cannot `await`.** It calls an `async fn`, which does, and
+   there is no `Promise` to `.then`.

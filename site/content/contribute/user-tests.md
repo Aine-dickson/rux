@@ -2139,6 +2139,26 @@ untyped `shout(s, n)` called as `shout("hi", 1)` and `shout("yo", 2)`, and
 | Completion after `t.` and `sel.` | VS Code | the four fields; choosing `note`, or any field of `sel`, writes `?.` | not driven |
 | The quick-fix | the lightbulb on `shout`'s warning | `: string` after `s`, `: number` after `n`, and one action for both | not driven |
 
+## `async fn` and `await`, 2026-09-26
+
+Step 6 of `docs/11-next.md`. Driven in a desktop window with
+`crates/rux-shell/examples/async_demo` (`cargo run -p rux-shell --example
+async_demo`): `host::lookup(id)` answers from another thread after a second,
+`host::store(x)` fails after half a second. The harness is
+`rux-harness/async-drive.ps1`. Under test in `rux-script` (`tests/async_fn.rs`)
+and `rux-runtime` (the `an_async_fn_*` tests).
+
+| Case | Where | Expect | Result |
+|---|---|---|---|
+| A tap starts one | "Load user 1" | `loading user 1...` at once, the window stays responsive | desktop: pass |
+| The answer arrives with no input | wait a second after the tap | `user 1: Grace, 31`, the window asleep until then | desktop: pass |
+| A failed `await` caught | "Save (fails)" | `saving...`, then `could not save: the disk is read-only` | desktop: pass |
+| A second call with new arguments | "Next id", then "Load user 2" | `user 2: Edsger, 32` | desktop: pass |
+| A task in a component instance | a component's `mounted { fetch(); }` | its own state renders the answer | under test only |
+| An instance closed while its task waits | `r-if` false before the answer | nothing written, nothing reported | under test only |
+| An error nothing catches | `await` of a host function that fails | a warning naming the `async fn`, at the `await`'s file line | under test only |
+| Web and Android | the same demo | the same | not driven: a host function is registered from Rust, and neither target has an app registering one yet |
+
 ## Standing gaps
 
 Cases nothing here can currently exercise. They are the shape of what v0.8 has

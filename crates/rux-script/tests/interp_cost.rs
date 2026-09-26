@@ -79,3 +79,42 @@ fn the_interpreter_through_the_engine_and_directly() {
         println!("{what:<20} {through:>12.1} {mine:>12.1} {:>7.2}x", mine / through);
     }
 }
+
+/// What an `async fn` costs to start, stop at an `await` and go on (step 6
+/// of `docs/11-next.md`): a thousand tasks, each answered at once by the
+/// host, then each resumed. Compared with the same body as an ordinary
+/// function, which is what the stopping and going on add.
+#[test]
+#[ignore]
+fn an_async_fn_started_stopped_and_resumed() {
+    const N: u32 = 1000;
+    rux_script::host::register_async("cost_now", |_, done| done.ok(Value::Number(1.0)));
+    let script = "let n = signal(0);\n\
+                  async fn step() { n += 1; let v = await host::cost_now(); n += v; }\n\
+                  fn plain() { n += 1; n += 1; }\n";
+    let mut engine: Engine = Builder::new().build(script).expect("the engine builds");
+    engine.run_handler("step()");
+    engine.run_handler("plain()");
+    let t = Instant::now();
+    for _ in 0..N {
+        engine.run_handler("plain()");
+    }
+    let plain = t.elapsed().as_nanos() as f64 / N as f64 / 1000.0;
+    let t = Instant::now();
+    for _ in 0..N {
+        engine.run_handler("step()");
+    }
+    let started = t.elapsed().as_nanos() as f64 / N as f64 / 1000.0;
+    let t = Instant::now();
+    let mut resumed = 0;
+    while resumed < N + 1 {
+        for id in engine.collect_answers() {
+            engine.resume_task(id);
+            resumed += 1;
+        }
+    }
+    let going_on = t.elapsed().as_nanos() as f64 / N as f64 / 1000.0;
+    println!("plain fn call     {plain:>8.2} µs");
+    println!("async fn start    {started:>8.2} µs (to its await)");
+    println!("async fn resume   {going_on:>8.2} µs (answer taken, rest run)");
+}

@@ -992,7 +992,34 @@ Float indexing narrows to what the types allow: an index is an `int`, and a
    (surveyed first: no file wrote one). Not done yet: a closure captures a
    local by value, not by reference, and an `any` entering typed code is not
    checked when it runs.
-6. **`async fn` / `await`** in the interpreter.
+6. **`async fn` / `await`** in the interpreter. Done 2026-09-26, as the
+   [Async](#async-new-decided) section says, with every (proposed) there
+   taken as written. The IR has `Await` and `Start` (a call that does not
+   await) and `Func.is_async`; Rust generation reads them as Rust's own
+   `async`. The interpreter runs an `async fn` from ops that can stop at an
+   `await`: the body is rewritten so each `await` is a statement of its own
+   (what an expression read before it is kept in a temporary first, and
+   `&&`, `??`, `if` and `switch` around one become statements), then the
+   control flow around an `await` becomes jumps. Statements with no `await`
+   run on the tree walker as before. The proof was a debug switch,
+   `RUX_FLAT=1`, that sends every ordinary function through the same ops
+   with all of its control flow compiled: the whole suite passes that way,
+   and doing so found one defect (a `return` inside an `if` that is a body's
+   value). A task belongs to whoever started it and is claimed where an
+   interval is; the answer comes through `rux_script::host` (a host function
+   registered with `register_async` gets a `Completer` usable from any
+   thread) and wakes the window, which goes on with the task in its owner's
+   scope. Driven in a desktop window with
+   `crates/rux-shell/examples/async_demo`. Costs, release: starting one to
+   its `await` about 1.5 µs, going on about 1.1 µs, against 0.7 µs for an
+   ordinary call; the ordinary cases of `tests/interp_cost.rs` did not move.
+   `catch e { }` is read as this reference spells it. Not done yet: an
+   `await` in a `switch` pattern or guard, or after a `?.` in the same chain,
+   is refused when the function starts; a mutating method whose argument
+   awaits (`items.push(await f())`) finds its receiver after the wait; a
+   failure inside a component's `async fn` is reported without a line; and
+   only Rust can register what is awaited, which step 8 turns into `native`
+   modules.
 7. **Script modules and stores.**
 8. **`#[rux::export]`, the interface file, `native` modules.**
 9. **Rust code generation** for release builds, native then wasm.

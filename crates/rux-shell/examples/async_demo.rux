@@ -1,0 +1,41 @@
+<template>
+  <screen class="page">
+    <text class="title">async fn</text>
+    <text class="status">{{ status }}</text>
+    <button class="btn" @tap="load(n)">Load user {{ n }}</button>
+    <button class="btn" @tap="n += 1">Next id</button>
+    <button class="btn" @tap="save()">Save (fails)</button>
+    <text class="small">host::lookup answers from another thread after a second</text>
+  </screen>
+</template>
+
+<script>
+type User = { name: string, age: int };
+
+let n = signal(1);
+let status = signal("idle");
+
+async fn load(id: int) {
+  status = `loading user ${id}...`;
+  let user: User = await host::lookup(id);
+  status = `user ${id}: ${user.name}, ${user.age}`;
+}
+
+async fn save() {
+  status = "saving...";
+  try {
+    await host::store(n);
+    status = "saved";
+  } catch e {
+    status = `could not save: ${e.message}`;
+  }
+}
+</script>
+
+<style>
+.page { padding: 24px; gap: 12px; background: #1e1e2e; color: #cdd6f4; }
+.title { font-size: 22px; font-weight: 700; }
+.status { font-size: 18px; color: #a6e3a1; }
+.btn { padding: 12px; background: #89b4fa; color: #11111b; border-radius: 8px; }
+.small { color: #9399b2; font-size: 13px; }
+</style>
