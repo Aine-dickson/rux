@@ -255,3 +255,17 @@ fn an_effect_is_not_subscribed_to_what_its_task_reads() {
     assert!(reads.contains("id"), "{reads:?}");
     assert!(!reads.contains("other"), "{reads:?}");
 }
+
+#[test]
+fn a_return_inside_an_if_that_is_the_body_s_value_returns() {
+    // Found by RUX_FLAT=1 on `examples/recipes/tab-bar.rux`'s `gate()`.
+    let mut e = engine(
+        "let open = signal(false);\n\
+         let out = signal(\"\");\n\
+         async fn pick(): string { if !open { return \"/locked\"; } }\n\
+         async fn go() { out = await pick() ?? \"none\"; }\n",
+    );
+    e.run_handler("go()");
+    assert_eq!(text(&e, "out"), "/locked");
+    assert!(e.take_task_failures().is_empty());
+}

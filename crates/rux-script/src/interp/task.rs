@@ -358,6 +358,17 @@ impl Interp {
                     }
                 }
             };
+            // A `return` inside an expression an op worked out (an `if` used
+            // as the body's value, a block) returns from the function.
+            let step = match step {
+                Err(Flow::Return(v)) => {
+                    if let Finished::Done(v) = self.finish(task, v, &mut input) {
+                        return Outcome::Done(v);
+                    }
+                    continue;
+                }
+                other => other,
+            };
             if let Err(e) = step {
                 let at = match op {
                     Op::Await { at, .. }
