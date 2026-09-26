@@ -1167,7 +1167,38 @@ Float indexing narrows to what the types allow: an index is an `int`, and a
    a handler is found by the record's fields, so two native record types with
    the same fields and method name are ambiguous there (typed script code is
    exact).
-9. **Rust code generation** for release builds, native then wasm.
+9. **Rust code generation** for release builds, native then wasm. Planned
+   2026-09-27 without the owner, after step 8; the choices are 23 to 30 of
+   [Decided without the owner](#decided-without-the-owner-2026-09-27). The
+   shape: a release build lowers each file as the interpreter does, and
+   writes Rust for its functions into the wrapper crate; the interpreter
+   still loads every file, and where a function has compiled code it calls
+   that instead of walking the tree. Nothing else changes: the runtime's
+   seam, reactivity (a compiled read or write is tracked by the same calls),
+   tasks and hot reload in development. In order:
+   - 9.0 **`rux-codegen`**: IR to Rust source, one `fn` per IR function,
+     against a small public API in `rux-script` (`rux_script::aot`) that
+     exposes what a body needs: reading and writing globals with tracking,
+     calling functions, built-ins, methods and native exports, operators,
+     fields and indexes, and the step budget. A function it cannot compile
+     yet is left to the interpreter, and says so in a coverage count, as the
+     step 4 survey did.
+   - 9.1 **The table**: generated code is keyed by a hash of the exact text
+     it was generated from (the file's script with its modules' and
+     components'). The interpreter uses it only when the hash matches what it
+     lowered, so a stale build falls back to interpreting instead of running
+     code for other source.
+   - 9.2 **Typed fast paths**: where the IR says a local is an `int` or a
+     `float`, arithmetic and comparisons are Rust's on `i64`/`f64` (with the
+     language's overflow check), not the dynamic operator.
+   - 9.3 **The proof**: every example and test script, generated, compiled
+     into a test crate, and every function run on both engines with the same
+     arguments; they must agree on value, state and failure. The benchmark
+     is `tests/interp_cost.rs`'s cases, compiled.
+   - 9.4 **`rux build --release`** generates and compiles it in, desktop and
+     Android; 9.5 **the web**, where the same Rust compiles to wasm.
+   - Later, and not in this plan: template pieces (bindings and handlers)
+     compiled too, and `async fn` bodies (their resumable form).
 
 Steps 2 to 5 change nothing an author sees except the decided syntax and
 types, which is what made them safe to take in order.
@@ -1359,3 +1390,35 @@ Taken while building it:
     name the linker already refused reports the linker's message
     ("`native/shop` does not export `catalog`: it exports …") rather than the
     interpreter's ("`shop` is not defined").
+
+Taken planning step 9 (2026-09-27):
+
+23. **Compiled code runs inside the interpreter, function by function.** The
+    alternative, generating a whole program with its own state and runtime
+    seam, would duplicate reactivity, tasks, components and hot reload, and
+    could not ship until it did everything. This way a file with one
+    function the generator cannot compile still gets the rest compiled, and
+    every step can be measured on real documents.
+24. **A new crate, `rux-codegen`**, reading `rux-ir` and writing Rust text.
+    It depends on nothing that runs; the generated code depends on
+    `rux-script`'s `aot` module, the one surface it may call, so the
+    interpreter's internals stay private.
+25. **Keyed by a hash of the source text, never trusted without it.** A
+    release build embeds its documents, so the text is the text the code was
+    generated from; anything else (a hot-reloaded file, a document the build
+    did not see) falls back to the interpreter. FNV-1a over the bytes, which
+    is fast and has no dependency; this is a cache key, not a security
+    boundary, since the compiled code is part of the same signed binary.
+26. **The step budget stays.** Compiled loops and calls count steps as the
+    interpreter's do, so a runaway loop in a release build is stopped with
+    the same error instead of freezing the window.
+27. **Values stay the interpreter's `V`** at every boundary: arguments,
+    results, globals. Only a local the IR types as `int`, `float` or `bool`
+    may be a plain Rust value inside one function (9.2).
+28. **Functions first; template pieces and `async fn` bodies later.** A
+    handler usually calls a function, where the work is; a piece's frame is
+    decided by the runtime at run time, and an `async fn` runs from its
+    resumable form. Both stay interpreted until the rest is proven.
+29. **Proven differentially**, as steps 2 to 5 were: both engines, same
+    inputs, same answers, over every script the project has.
+30. **The generated code carries no `unsafe`**, like the macros' (decision 15).
