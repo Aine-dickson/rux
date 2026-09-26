@@ -558,6 +558,7 @@ impl<'t> Parser<'t> {
         let name = match self.peek() {
             Tok::Ident(n) => Ident { name: n.to_string(), span: self.bump().span },
             Tok::Reserved(r) => return self.error(format!("`{r}` is a reserved word, so a function cannot take it as its name")),
+            Tok::Kw(k) => return self.error(format!("`{k}` is a keyword, so a function cannot take it as its name")),
             _ => return self.error("expecting the function's name after `fn`"),
         };
         let params = self.in_new_scope(|p| {
@@ -1048,6 +1049,12 @@ impl<'t> Parser<'t> {
             }
             Tok::Punct("[") => self.array_literal()?,
             Tok::Punct("#{") => self.map_literal(true)?,
+            // `none`, and `null`, its spelling until step 3 of
+            // `docs/11-next.md`, which still reads the same.
+            Tok::Kw("none") => {
+                self.bump();
+                Expr { kind: ExprKind::Null, span: start }
+            }
             Tok::Reserved(r) if *r == "null" => {
                 self.bump();
                 Expr { kind: ExprKind::Null, span: start }
@@ -1461,6 +1468,7 @@ impl<'t> Parser<'t> {
         match self.peek_nth(at) {
             Tok::Ident(_) | Tok::Str(_) => Some(at + 1),
             Tok::Reserved(r) if *r == "null" => Some(at + 1),
+            Tok::Kw("none") => Some(at + 1),
             Tok::Punct("{") => self.type_record_end(at + 1),
             Tok::Punct("()") if self.peek_nth(at + 1).is_punct("=>") => self.type_end(at + 2),
             Tok::Punct("(") => {
@@ -1581,7 +1589,7 @@ impl<'t> Parser<'t> {
         let kind = match &t.tok {
             Tok::Ident(n) => TypeKind::Name(n.to_string()),
             Tok::Str(s) => TypeKind::Literal(s.to_string()),
-            Tok::Reserved(_) => TypeKind::Null,
+            Tok::Reserved(_) | Tok::Kw("none") => TypeKind::Null,
             Tok::Punct("()") => {
                 self.bump(); // `=>`
                 TypeKind::Function(Vec::new(), Box::new(self.type_union()))

@@ -33,7 +33,7 @@
        it goes false the instant the drag starts and anything reading it would
        appear while the card is still on screen being dragged. What this button
        is about is the swap having *committed*. -->
-    <view class="restore" r-if="gone" @tap="card = true; gone = false; dismiss = null">
+    <view class="restore" r-if="gone" @tap="card = true; gone = false; dismiss = none">
       <text class="btn-text">bring the card back</text>
     </view>
 
@@ -286,7 +286,7 @@
            and handing progress back to the clock walks it home from wherever
            the finger let go. */
         card = true;
-        dismiss = null;
+        dismiss = none;
       }
     }
   }

@@ -529,6 +529,7 @@ impl<'a> Checker<'a> {
         }
         for stmt in &script.stmts {
             let StmtKind::Type { name, ty } = &stmt.kind else { continue };
+            self.old_spellings_in(ty);
             match type_of_expr(ty) {
                 Ok(t) => {
                     let n = name.name.as_str();
@@ -563,6 +564,7 @@ impl<'a> Checker<'a> {
         let mut written: Vec<&TypeExpr> = Vec::new();
         annotations_in(&script.stmts, &mut written);
         for ty in written {
+            self.old_spellings_in(ty);
             match type_of_expr(ty) {
                 Ok(t) => self.check_names_exist(&t, ty.span),
                 Err(e) => {
@@ -741,6 +743,31 @@ impl<'a> Checker<'a> {
                     }
                 }
             }
+        }
+    }
+
+    /// `null` and `()` where `none` is meant: both still read as `none`, and
+    /// `rux fmt` rewrites them. Anything else at `pos` says nothing.
+    fn old_spelling(&mut self, pos: Pos) {
+        let written = self.source.text.get(pos.range()).unwrap_or_default().to_string();
+        if written == "null" || written == "()" {
+            self.warn(pos, format!("`{written}` is written `none` now; `rux fmt` rewrites it"));
+        }
+    }
+
+    /// [`Self::old_spelling`] for each `null` in a type as written.
+    fn old_spellings_in(&mut self, ty: &TypeExpr) {
+        match &ty.kind {
+            TypeKind::Null => self.old_spelling(ty.span),
+            TypeKind::Array(t) | TypeKind::Optional(t) | TypeKind::Paren(t) => self.old_spellings_in(t),
+            TypeKind::Dict { value, .. } => self.old_spellings_in(value),
+            TypeKind::Union(members) => members.iter().for_each(|m| self.old_spellings_in(m)),
+            TypeKind::Record(fields) => fields.iter().for_each(|f| self.old_spellings_in(&f.ty)),
+            TypeKind::Function(params, result) => {
+                params.iter().for_each(|p| self.old_spellings_in(p));
+                self.old_spellings_in(result);
+            }
+            TypeKind::Name(_) | TypeKind::Literal(_) => {}
         }
     }
 
@@ -1580,7 +1607,7 @@ impl<'a> Checker<'a> {
                      `let {name}: {{ … }} = …`"
                 ),
                 Blank::Null => format!(
-                    "`{name}` starts as `null`, which says nothing about what it will hold, so \
+                    "`{name}` starts as `none`, which says nothing about what it will hold, so \
                      nothing done with it is checked. Say what it holds: `let {name}: T? = …`"
                 ),
                 Blank::Host(f) => format!(
@@ -1811,7 +1838,10 @@ impl<'a> Checker<'a> {
                 }
             }
             ExprKind::Map { entries, .. } => self.infer_map(entries),
-            ExprKind::Unit | ExprKind::Null => Type::Null,
+            ExprKind::Unit | ExprKind::Null => {
+                self.old_spelling(e.span);
+                Type::Null
+            }
             ExprKind::Var(name) => match self.lookup(name) {
                 Some(t) => {
                     self.saw(e.span, "value", name, Some(name), &t);
@@ -1994,7 +2024,7 @@ impl<'a> Checker<'a> {
                             pos,
                             format!(
                                 "`{name}` may be absent from {}, so read it as `{whole}?.{name}`, \
-                                 or check it first: `if {whole}?.{name} != null {{ … }}`",
+                                 or check it first: `if {whole}?.{name} != none {{ … }}`",
                                 self.show(shown)
                             ),
                         );
@@ -2036,7 +2066,8 @@ impl<'a> Checker<'a> {
                     self.error(
                         pos,
                         format!(
-                            "`{whole}` may be `null`, so read it as `{whole}?.{name}`, or check it                              first: `if {whole} != null {{ … }}`"
+                            "`{whole}` may be `none`, so read it as `{whole}?.{name}`, or check it \
+                             first: `if {whole} != none {{ … }}`"
                         ),
                     );
                 }
@@ -2064,7 +2095,7 @@ impl<'a> Checker<'a> {
             Type::Null => {
                 self.error(
                     pos,
-                    format!("this is `null` here, so it has no `{name}`; read it with `?.` if it may be absent"),
+                    format!("this is `none` here, so it has no `{name}`; read it with `?.` if it may be absent"),
                 );
                 Type::Any
             }
@@ -3114,21 +3145,34 @@ mod tests {
 
     #[test]
     fn what_cannot_be_inferred_is_warned_and_not_an_error() {
-        let src = "let tasks = signal([]);\nlet user = signal(());\nlet m = signal({});\n\
+        let src = "let tasks = signal([]);\nlet user = signal(none);\nlet m = signal({});\n\
                    fn f(x) { x }\nlet add = (a, b) => a + b;";
         let f = findings(src);
         assert!(f.iter().all(|f| !f.is_error), "{f:#?}");
         let w = warnings(src);
         assert!(w.iter().any(|m| m.contains("`tasks` starts as an empty list")), "{w:?}");
-        assert!(w.iter().any(|m| m.contains("`user` starts as `null`")), "{w:?}");
+        assert!(w.iter().any(|m| m.contains("`user` starts as `none`")), "{w:?}");
         assert!(w.iter().any(|m| m.contains("`m` starts as `{}`")), "{w:?}");
         assert!(w.iter().any(|m| m.contains("`x` has no type") && m.contains("fn f(x: T)")), "{w:?}");
         assert!(w.iter().any(|m| m.contains("`a` has no type")), "{w:?}");
         // Annotated, each of them is quiet.
         let quiet = "type U = { name: string };\nlet tasks: string[] = signal([]);\n\
-                     let user: U? = signal(());\nfn f(x: int) { x }\n\
+                     let user: U? = signal(none);\nfn f(x: int) { x }\n\
                      let add = (a: number, b: number) => a + b;";
         assert!(findings(quiet).is_empty(), "{:#?}", findings(quiet));
+    }
+
+    /// `null` and `()` still mean `none`, with a word about the spelling.
+    #[test]
+    fn the_old_spellings_of_none_are_read_and_named() {
+        let w = warnings("let a: string? = null;
+let b: int | null = ();");
+        assert_eq!(w.iter().filter(|m| m.contains("`null` is written `none` now")).count(), 2, "{w:?}");
+        assert!(w.iter().any(|m| m.contains("`()` is written `none` now")), "{w:?}");
+        assert!(errors("let a: string? = null;
+let b: int | null = ();").is_empty());
+        assert!(findings("let a: string? = none;
+let b: int? = none;").is_empty());
     }
 
     #[test]
@@ -3177,28 +3221,28 @@ mod tests {
         clean(&format!("{NOTE}fn f(): string {{ t?.note ?? \"none\" }}"));
     }
 
-    /// The user's call, 2026-09-24: a value that may be `null` is read the way
+    /// The user's call, 2026-09-24: a value that may be `none` is read the way
     /// an optional field is, with `?.` or after a check.
     #[test]
     fn a_value_that_may_be_null_is_read_with_a_question_mark() {
-        let sel = format!("{TASK}let sel: Task? = signal(null);\n");
-        one_error(&format!("{sel}fn f() {{ sel.title }}"), "`sel` may be `null`, so read it as `sel?.title`");
+        let sel = format!("{TASK}let sel: Task? = signal(none);\n");
+        one_error(&format!("{sel}fn f() {{ sel.title }}"), "`sel` may be `none`, so read it as `sel?.title`");
         clean(&format!("{sel}fn f(): string? {{ sel?.title }}"));
-        clean(&format!("{sel}fn f(): string {{ if sel != null {{ sel.title }} else {{ \"\" }} }}"));
-        clean(&format!("{sel}fn f(): string {{ if sel == null {{ return \"\"; }} sel.title }}"));
+        clean(&format!("{sel}fn f(): string {{ if sel != none {{ sel.title }} else {{ \"\" }} }}"));
+        clean(&format!("{sel}fn f(): string {{ if sel == none {{ return \"\"; }} sel.title }}"));
         one_error(&format!("{sel}fn f(): string {{ sel?.title }}"), "string");
     }
 
     #[test]
     fn a_checked_field_is_read_plainly_inside_the_check() {
-        clean(&format!("{NOTE}fn f(): string {{ if t?.note != null {{ t.note }} else {{ \"\" }} }}"));
+        clean(&format!("{NOTE}fn f(): string {{ if t?.note != none {{ t.note }} else {{ \"\" }} }}"));
         clean(&format!("{NOTE}fn f(): string {{ if \"note\" in t {{ t.note }} else {{ \"\" }} }}"));
         clean(&format!("{NOTE}fn f(): string {{ if t?.note {{ t.note }} else {{ \"\" }} }}"));
-        clean(&format!("{NOTE}fn f(): bool {{ t?.note != null && t.note.length > 0 }}"));
-        clean(&format!("{NOTE}fn f(): string {{ if t?.note == null {{ return \"\"; }} t.note }}"));
+        clean(&format!("{NOTE}fn f(): bool {{ t?.note != none && t.note.length > 0 }}"));
+        clean(&format!("{NOTE}fn f(): string {{ if t?.note == none {{ return \"\"; }} t.note }}"));
         // Outside the region, the rule is back.
-        one_error(&format!("{NOTE}fn f() {{ if t?.note != null {{ }} t.note }}"), "may be absent");
-        one_error(&format!("{NOTE}fn f() {{ if t?.note == null {{ t.note }} }}"), "may be absent");
+        one_error(&format!("{NOTE}fn f() {{ if t?.note != none {{ }} t.note }}"), "may be absent");
+        one_error(&format!("{NOTE}fn f() {{ if t?.note == none {{ t.note }} }}"), "may be absent");
     }
 
     const LOAD: &str = "type Load =\n  | { state: \"idle\" }\n  | { state: \"done\", rows: int[] };\n\
@@ -3237,7 +3281,7 @@ mod tests {
         let f = "type F = \"all\" | \"open\";\nlet f: F = \"all\";\n";
         one_error(&format!("{f}fn g() {{ f == \"al\" }}"), "`f` is `F`, which is one of \"all\", \"open\", so it is never \"al\"; did you mean \"all\"?");
         one_error("let n = 1;\nfn g() { n == \"1\" }", "compares `number` with `\"1\"`");
-        clean(&format!("{f}fn g() {{ f == \"open\" || f != null }}"));
+        clean(&format!("{f}fn g() {{ f == \"open\" || f != none }}"));
     }
 
     #[test]
@@ -3358,10 +3402,10 @@ mod tests {
         let chain = |first: &str| Tpl::If {
             branches: vec![(Some(first.to_string()), 3, vec![read(3)]), (None, 4, vec![read(4)])],
         };
-        let f = template_findings(&script, vec![chain("t?.note != null")]);
+        let f = template_findings(&script, vec![chain("t?.note != none")]);
         assert_eq!(f.len(), 1, "the r-if branch is clean, the r-else is not: {f:?}");
         assert_eq!(f[0].line, Some(4));
-        let f = template_findings(&script, vec![chain("t?.note == null")]);
+        let f = template_findings(&script, vec![chain("t?.note == none")]);
         assert_eq!(f.len(), 1, "and the other way round: {f:?}");
         assert_eq!(f[0].line, Some(3));
     }
@@ -3434,7 +3478,7 @@ mod tests {
 
     #[test]
     fn a_name_is_recorded_where_it_is_read_with_its_fields() {
-        let t = table(&format!("{TASK}let sel: Task? = signal(());
+        let t = table(&format!("{TASK}let sel: Task? = signal(none);
 fn f(): string {{ sel?.title ?? \"\" }}"));
         let read = seen(&t, "value", "sel");
         assert_eq!(read.len(), 1, "{:?}", t.seen);
@@ -3446,15 +3490,15 @@ fn f(): string {{ sel?.title ?? \"\" }}"));
         assert!(read.fields.iter().any(|f| f.0 == "note" && f.2), "note is optional");
         let title = seen(&t, "field", "title");
         assert_eq!(title[0].path.as_deref(), Some("sel.title"));
-        // Read through `?.` on a value that may be null, so it may be null too.
+        // Read through `?.` on a value that may be none, so it may be none too.
         assert_eq!(title[0].ty, "string?");
         assert_eq!(seen(&t, "let", "sel")[0].line, 2);
     }
 
     #[test]
     fn a_narrowed_name_is_recorded_as_narrowed() {
-        let t = table(&format!("{TASK}let sel: Task? = signal(());
-fn f(): string {{ if sel != null {{ sel.title }} else {{ \"\" }} }}"));
+        let t = table(&format!("{TASK}let sel: Task? = signal(none);
+fn f(): string {{ if sel != none {{ sel.title }} else {{ \"\" }} }}"));
         let tys: Vec<&str> = seen(&t, "value", "sel").iter().map(|s| s.ty.as_str()).collect();
         assert!(tys.contains(&"Task"), "{tys:?}");
     }

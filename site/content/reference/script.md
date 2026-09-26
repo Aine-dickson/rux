@@ -341,9 +341,9 @@ annotation or its starting value, every call against the function's
 parameters, every result against a declared `): T`, fields read and written
 against their record, and a closure handed to `filter` or `map` against the
 list's element type. An optional field (`note?: string`), and a field of a
-value that may be `null` (`sel: Task?`), must be read with `?.`, and a
+value that may be `none` (`sel: Task?`), must be read with `?.`, and a
 dictionary's keys with `?.` or `?[`, except where a check has
-already ruled out their absence: inside `if t?.note != null`, after
+already ruled out their absence: inside `if t?.note != none`, after
 `"note" in t`, after an early `return`, in the arms of a `switch`, and under
 an `r-if` that tested it. A
 `switch` on a literal union with no `_` arm must handle every member, and a
@@ -432,13 +432,14 @@ Two things JavaScript has that this does not: shorthand (`{ a, b }` for
 `{ a: a, b: b }`) and spread. `#{ key: value }`, rhai's own spelling, also works,
 and `rux fmt` rewrites it to `{`.
 
-`null` exists and is the empty value. It is a literal rather than a variable, so
-it cannot be shadowed and nothing can subscribe to it. `()` is the same value
-under rhai's own name.
+`none` is the empty value. It is a literal rather than a variable, so it cannot
+be shadowed and nothing can subscribe to it. `null` and `()`, its spellings
+until 2026-09-26, still read as `none`, with a warning, and `rux fmt` rewrites
+both. `none` is a keyword, so it cannot name anything.
 
 ### Truthiness
 
-**JavaScript's rules exactly.** Falsy: `0`, `NaN`, `""`, `null`, `()`. Everything
+**JavaScript's rules exactly.** Falsy: `0`, `NaN`, `""`, `none`. Everything
 else is truthy, **including an empty array and an empty map**.
 
 ```rux
@@ -657,7 +658,7 @@ Nine things behave differently under the fork. All nine are in
    base.
 
 Outside the engine, and so not divergences: strict map properties, JS method
-names, `.length`, `null`, `print`/`debug`, `===`/`!==`, and float division for
+names, `.length`, `none`, `print`/`debug`, `===`/`!==`, and float division for
 two integers.
 
 ## If you know JavaScript
@@ -671,4 +672,4 @@ The things most likely to surprise, in the order they usually do:
 5. **A method call cannot see the surrounding scope.** Write `helper(thing)`
    rather than `thing.helper()` when it needs to.
 6. `x++` is a statement, so `let a = x++` is not a thing.
-7. There is no `undefined` distinct from `null`.
+7. There is no `undefined` distinct from `none`.

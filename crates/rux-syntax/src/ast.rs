@@ -160,7 +160,8 @@ pub struct Expr {
 pub enum ExprKind {
     /// `()`.
     Unit,
-    /// `null`.
+    /// `none`, or `null`, which is read the same. The span's text says
+    /// which was written.
     Null,
     Int(i64),
     Float(f64),
@@ -226,7 +227,7 @@ pub enum TypeKind {
     Name(String),
     /// `"all"`.
     Literal(String),
-    /// `null`.
+    /// `none`, or `null`.
     Null,
     /// `T[]`.
     Array(Box<TypeExpr>),

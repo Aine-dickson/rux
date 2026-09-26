@@ -5647,11 +5647,11 @@ mod tests {
             "<template><screen>\
              <button @tap=\"two(1)\">a</button>\
              <button @tap=\"two(1, 2, 3)\">b</button>\
-             <button @tap=\"none(5)\">c</button>\
+             <button @tap=\"reset(5)\">c</button>\
              <button @tap=\"two(1, 2)\">right</button>\
-             <button @tap=\"none()\">right</button>\
+             <button @tap=\"reset()\">right</button>\
              </screen></template>\n\
-             <script>let n = signal(0); fn two(a, b) { n = a + b } fn none() { n = 0 }</script>",
+             <script>let n = signal(0); fn two(a, b) { n = a + b } fn reset() { n = 0 }</script>",
         )
         .expect("renders anyway");
         let counts: Vec<&str> = doc
@@ -5668,7 +5668,7 @@ mod tests {
         );
         assert!(counts.iter().any(|m| m.contains("with 3 arguments")), "{counts:?}");
         assert!(
-            counts.iter().any(|m| m.contains("`none` takes 0 arguments")),
+            counts.iter().any(|m| m.contains("`reset` takes 0 arguments")),
             "{counts:?}"
         );
     }

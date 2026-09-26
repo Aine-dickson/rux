@@ -118,6 +118,11 @@ pub(crate) fn lower(src: &str, script: &Script) -> String {
             Node::Stmt(_) => return true,
             Node::Expr(e) => e,
         };
+        // The fork's spelling of `none`, the same length, so nothing moves.
+        if matches!(e.kind, ExprKind::Null) && e.span.text(src) == "none" {
+            edits.push((e.span, "null".to_string()));
+            return true;
+        }
         if let ExprKind::Closure { params, .. } = &e.kind {
             for t in params.iter().filter_map(|p| p.ty.as_ref()) {
                 edits.push(blank(annotation(t.span)));
@@ -170,6 +175,11 @@ fn the_fork_refuses_too(engine: &RhaiEngine, src: &str, why: &str) {
     // `setInterval` blocks were never the fork's syntax; the old text rewrite
     // made them so, and there is nothing to compare against.
     if src.contains("setInterval") {
+        return;
+    }
+    // Where step 3 took a word the fork leaves free, Rux refuses it as a name
+    // on purpose.
+    if why.contains("`none`") {
         return;
     }
     if engine.compile(src).is_ok() {

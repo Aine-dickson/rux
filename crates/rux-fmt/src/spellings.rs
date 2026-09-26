@@ -1,4 +1,13 @@
-//! `#{ a: 1 }` becomes `{ a: 1 }`, so a file has one spelling of a map.
+//! Retired spellings become the ones the language has now, so a file has one
+//! spelling of each thing:
+//!
+//! - `#{ a: 1 }` becomes `{ a: 1 }`, below.
+//! - `null` becomes `none`, and so does `()` where it is a value (`signal(())`,
+//!   `x = ()`), not a call's empty parentheses or an arrow's: step 3 of
+//!   `docs/11-next.md`. Both old spellings still read as `none`, with a
+//!   warning, so nothing breaks if this pass never runs.
+//!
+//! On maps:
 //!
 //! `{` is what a web author writes, and the script engine reads a `{` as a map
 //! when it is followed by `name:` or `"name":` (see
@@ -17,8 +26,8 @@
 //!   plainly a value. At the start of a statement, or as an arrow's body, `{}`
 //!   is an empty block, so `#{}` stays there.
 
-/// Rewrite every `#{` map in a whole `.rux` file that can safely lose its `#`.
-pub fn bare_maps(text: &str) -> String {
+/// Rewrite every retired spelling in a whole `.rux` file.
+pub fn rewrite(text: &str) -> String {
     let b = text.as_bytes();
     let mut out = String::with_capacity(text.len());
     let mut i = 0;
@@ -141,7 +150,7 @@ fn string_end(b: &[u8], start: usize, quote: u8) -> usize {
     i.min(b.len())
 }
 
-/// Rewrite the `#{` maps in a piece of script.
+/// Rewrite the retired spellings in a piece of script.
 fn code(src: &str) -> String {
     let b = src.as_bytes();
     let mut out = String::with_capacity(src.len());
@@ -167,6 +176,21 @@ fn code(src: &str) -> String {
                 out.push('{');
                 i += 2;
             }
+            c if (c.is_ascii_alphabetic() || c == b'_') => {
+                let end = src[i..].find(|c: char| !(c.is_ascii_alphanumeric() || c == '_')).map_or(b.len(), |e| i + e);
+                let word = &src[i..end];
+                // Not `x.null`, a field that happens to have the name.
+                if word == "null" && !out.trim_end().ends_with('.') {
+                    out.push_str("none");
+                } else {
+                    out.push_str(word);
+                }
+                i = end;
+            }
+            b'(' if b.get(i + 1) == Some(&b')') && unit_is_a_value(&out, &src[i + 2..]) => {
+                out.push_str("none");
+                i += 2;
+            }
             _ => {
                 let c = src[i..].chars().next().unwrap();
                 out.push(c);
@@ -175,6 +199,19 @@ fn code(src: &str) -> String {
         }
     }
     out
+}
+
+/// Whether a `()` with `before` written ahead of it and `after` following is
+/// the empty value, rather than a call's parentheses (`f()`, after a name) or
+/// an arrow's (`() => x`).
+fn unit_is_a_value(before: &str, after: &str) -> bool {
+    if after.trim_start().starts_with("=>") {
+        return false;
+    }
+    let before = before.trim_end();
+    before.ends_with(['=', '(', '[', ',', ':', '>', '?', '{', ';'])
+        || before.is_empty()
+        || before.strip_suffix("return").is_some_and(|r| !r.ends_with(|c: char| c.is_ascii_alphanumeric() || c == '_'))
 }
 
 /// Whether the map whose contents start at `at` reads the same without its `#`.
@@ -220,7 +257,17 @@ fn colon_follows(b: &[u8], mut i: usize) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::bare_maps;
+    use super::rewrite as bare_maps;
+
+    #[test]
+    fn null_and_a_unit_value_become_none() {
+        let src = "<script>\nlet a: string | null = null;\nlet b = signal(());\nlet c = () => f();\nx.null = g(null, ());\nlet s = \"null\"; // null\n</script>\n<template><view :x=\"a ?? null\" y=\"null\" /></template>";
+        assert_eq!(
+            bare_maps(src),
+            "<script>\nlet a: string | none = none;\nlet b = signal(none);\nlet c = () => f();\nx.null = g(none, none);\nlet s = \"null\"; // null\n</script>\n<template><view :x=\"a ?? none\" y=\"null\" /></template>"
+        );
+        assert_eq!(bare_maps(&bare_maps(src)), bare_maps(src));
+    }
 
     #[test]
     fn keyed_maps_lose_their_hash() {

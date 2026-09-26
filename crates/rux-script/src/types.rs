@@ -31,7 +31,7 @@ pub enum Type {
     Record(Vec<Field>),
     /// `{ [string]: T }`.
     Dict(Box<Type>),
-    /// `A | B`, and `T?` as `T | null`. Never nested and never of one member:
+    /// `A | B`, and `T?` as `T | none`. Never nested and never of one member:
     /// [`Type::union`] flattens.
     Union(Vec<Type>),
     /// `(A, B) => R`.
@@ -68,7 +68,7 @@ impl fmt::Display for TypeSyntaxError {
 
 /// The built-in type names, which are all lower case. A declared type starts
 /// with a capital letter, so the two cannot collide.
-pub const BUILT_IN: &[&str] = &["number", "int", "string", "bool", "null", "any"];
+pub const BUILT_IN: &[&str] = &["number", "int", "string", "bool", "none", "any"];
 
 /// Names from other languages that mean a built-in here.
 const SPELLED_ELSEWHERE: &[(&str, &str)] = &[
@@ -79,9 +79,9 @@ const SPELLED_ELSEWHERE: &[(&str, &str)] = &[
     ("integer", "int"),
     ("str", "string"),
     ("String", "string"),
-    ("undefined", "null"),
+    ("undefined", "none"),
     ("unknown", "any"),
-    ("void", "null"),
+    ("void", "none"),
     ("object", "a record type such as `{ id: int }`"),
 ];
 
@@ -116,7 +116,7 @@ impl Type {
         }
     }
 
-    /// `T?`: this type or `null`.
+    /// `T?`: this type or `none`.
     pub fn optional(self) -> Type {
         Type::union([self, Type::Null])
     }
@@ -129,7 +129,7 @@ impl fmt::Display for Type {
             Type::Int => f.write_str("int"),
             Type::String => f.write_str("string"),
             Type::Bool => f.write_str("bool"),
-            Type::Null => f.write_str("null"),
+            Type::Null => f.write_str("none"),
             Type::Any => f.write_str("any"),
             Type::Literal(s) => write!(f, "{s:?}"),
             Type::Array(inner) => match **inner {
@@ -150,7 +150,7 @@ impl fmt::Display for Type {
             }
             Type::Dict(value) => write!(f, "{{ [string]: {value} }}"),
             Type::Union(members) => {
-                // `T | null` of one other member reads better as `T?`.
+                // `T | none` of one other member reads better as `T?`.
                 if let [one, Type::Null] | [Type::Null, one] = members.as_slice() {
                     return match one {
                         Type::Union(_) | Type::Function(..) => write!(f, "({one})?"),
@@ -451,7 +451,8 @@ fn named(name: &str) -> Result<Type, String> {
         "int" => Type::Int,
         "string" => Type::String,
         "bool" => Type::Bool,
-        "null" => Type::Null,
+        // `null` was its name until step 3 of `docs/11-next.md`.
+        "none" | "null" => Type::Null,
         "any" => Type::Any,
         "Array" => return Err("there are no generics: an array of `T` is written `T[]`".into()),
         _ => {

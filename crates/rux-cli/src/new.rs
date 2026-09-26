@@ -360,7 +360,7 @@ const DETAIL: &str = r#"<!-- One task, opened from the list.
       <text class="back-label">‹ All tasks</text>
     </view>
 
-    <view class="card" r-if="task() != ()">
+    <view class="card" r-if="task() != none">
       <text class="label" :class='{ done: task().done }'>{{ task().label }}</text>
       <text class="note" r-if='task().note != ""'>{{ task().note }}</text>
 

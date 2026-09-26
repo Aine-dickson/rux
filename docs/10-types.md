@@ -57,7 +57,7 @@ Three things decide almost everything else:
    checker cannot infer becomes `any` and is reported as a warning, never an
    error. A name that starts with a value takes that value's type, though, so
    an unannotated program can still contradict itself: a signal that starts
-   as `0` and is later set to `null` is an error, and the message gives the
+   as `0` and is later set to `none` is an error, and the message gives the
    fix, `let x: number? = signal(0)`.
 
 ## Where an annotation goes
@@ -96,14 +96,14 @@ collide, and an import can tell a type from a component by its spelling (see
 | `int` | A whole number. A subtype of `number`: an `int` goes anywhere a `number` does, not the other way round |
 | `string` | Text |
 | `bool` | `true` or `false` |
-| `null` | The empty value, `null` or `()` |
+| `none` | The empty value. `null` and `()`, its older spellings, still read as it, with a warning |
 | `any` | Anything, unchecked. What a name becomes when nothing says otherwise |
 | `"all"` | Exactly that string. Useful in a union |
 | `T[]` | An array of `T` |
 | `{ id: int, title: string }` | A record: a map with exactly these fields |
 | `{ note?: string }` | A record whose `note` may be absent |
 | `{ [string]: T }` | A dictionary: any string keys, every value a `T` |
-| `T?` | `T` or `null`; the same as `T \| null` |
+| `T?` | `T` or `none`; the same as `T \| none` |
 | `A \| B` | Either |
 | `(Task, int) => bool` | A function, where one is a value |
 | `Task` | A name declared with `type`, or imported with `use` |
@@ -157,7 +157,7 @@ suggesting the annotation. The common cases:
 - `signal([])`, which says nothing about what the array will hold. This is
   the one the whole design was started for: a `task` inside a later `filter`
   had no completions, because nothing knew what `tasks` held.
-- `signal(null)` or `signal({})`.
+- `signal(none)` or `signal({})`.
 - A parameter with no annotation.
 - A value from `host::` whose function was registered without a signature.
 
@@ -194,7 +194,7 @@ present, a plain read is allowed, because the region would not be running
 otherwise:
 
 ```rux
-if t?.note != null {
+if t?.note != none {
   summary = t.note;       // allowed: this block only runs when it is there
 }
 ```
@@ -202,9 +202,9 @@ if t?.note != null {
 The same holds after `"note" in t`, after an early return on its absence, and
 inside an `r-if` that tested it. Outside such a region, `?.` is still required.
 
-**So is a value that may be `null`.** `sel.title` on a `sel: Task?` raises
-when `sel` is `null`, so it is an error unless something has ruled `null` out:
-`if sel != null`, an early `return` when it is, an `r-if` that tested it, or
+**So is a value that may be `none`.** `sel.title` on a `sel: Task?` raises
+when `sel` is `none`, so it is an error unless something has ruled `none` out:
+`if sel != none`, an early `return` when it is, an `r-if` that tested it, or
 reading it as `sel?.title`, which is a `string?`.
 
 **A dictionary is read the same way.** Any key of a `{ [string]: T }` may be
@@ -240,8 +240,8 @@ of a name for the rest of the region they guard:
 | Form | Narrows |
 |---|---|
 | `x == "open"` | `x` to `"open"`, and `x != "open"` removes it |
-| `x != null` | `x` to everything but `null` |
-| `if x` | `x` without `null` inside the block. The `else` learns nothing about a `string?` or `number?`, since `""` and `0` are falsy too |
+| `x != none` | `x` to everything but `none` |
+| `if x` | `x` without `none` inside the block. The `else` learns nothing about a `string?` or `number?`, since `""` and `0` are falsy too |
 | `load.state == "done"` | `load` to the member whose `state` is `"done"` |
 | `type_of(x) == "string"` | `x` to `string`. Also `"bool"`, `"array"`, `"map"`, `"()"`, and `"f64"` or `"i64"` for `number` |
 | `"note" in t` | `t` to the members where `note` is present, and `t.note` to present |
@@ -434,8 +434,8 @@ app.rux:12: error: `<stat>` was given the text "lots" for `:value`, which is not
 literal union; a segment that cannot be one (`/task/abc` for an `int`) is a
 prop that does not fit, left out and reported.
 
-A `null` passed to a prop arrives as `null`, so `prop task: Task? = null`
-reads `task?.title` safely whether the tag passed nothing or passed `null`.
+A `none` passed to a prop arrives as `none`, so `prop task: Task? = none`
+reads `task?.title` safely whether the tag passed nothing or passed `none`.
 
 ## Boundaries
 
@@ -456,7 +456,7 @@ if raw is Settings {
 
 `is` walks the value against the type: every required field present and of the
 right type, every array element, every union member tried in turn. A field the
-type does not mention is allowed, and an optional field may be `null`. A
+type does not mention is allowed, and an optional field may be `none`. A
 number is an `int` when it is whole. It answers `true` or `false` and never
 raises. A name that is no type is an error from the checker, and at run time
 fits nothing.
@@ -520,7 +520,7 @@ the usual array, with the diagnostics beside two lists.
 
 - `types`: every name read, field read, `let`, parameter and function call the
   checker gave a type, with its file, line, column, the type as written
-  (`Task?`, or a function's signature), whether it may be `null`, and the
+  (`Task?`, or a function's signature), whether it may be `none`, and the
   fields a `.` after it may read.
 - `guesses`: for each unannotated parameter, the type its calls hand it, when
   every call hands it something known.
@@ -532,7 +532,7 @@ server and no second process.
 - **Hover** shows `name: Type` above what hover already said, and a function's
   signature on a call.
 - **Completion** after `x.` offers the fields of `x`'s record. Choosing an
-  optional field, or any field of a value that may be `null`, turns the `.` into
+  optional field, or any field of a value that may be `none`, turns the `.` into
   `?.`, so the line written is one the checker accepts.
 - **The quick-fix** on "`s` has no type" writes `: T` after the parameter, `T`
   being its guess. Checking never uses a guess (see [Functions](#functions));

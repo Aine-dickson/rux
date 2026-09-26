@@ -3051,6 +3051,9 @@ mod tests {
         assert_eq!(e.eval_display("let n: int = 2; n + 1", &[]), "3");
         assert_eq!(e.eval_display("const LIMIT: number = 4; LIMIT", &[]), "4");
         assert_eq!(e.eval_display("let s: string? = null; s ?? \"none\"", &[]), "none");
+        assert_eq!(e.eval_display("let s: string? = none; s ?? \"empty\"", &[]), "empty");
+        assert!(!e.eval_bool("none", &[]));
+        assert!(e.eval_bool("let u = { a: none }; u.a == none", &[]));
         assert_eq!(
             e.eval_display("let t: { id: int, note?: string } = { id: 7 }; t.id", &[]),
             "7"
@@ -3095,13 +3098,13 @@ mod tests {
                 "fn dbl(x: number): number { x * 2 }\n\
                  fn label(t: { title: string }, i: int): string { `${i}. ${t.title}` }\n\
                  fn shape(): { a: number } { { a: 1 } }\n\
-                 fn none() { 5 }",
+                 fn nothing() { 5 }",
             )
             .expect("compiles");
         assert_eq!(e.eval_display("dbl(4)", &[]), "8");
         assert_eq!(e.eval_display("label({ title: \"x\" }, 2)", &[]), "2. x");
         assert_eq!(e.eval_display("shape().a", &[]), "1");
-        assert_eq!(e.eval_display("none()", &[]), "5");
+        assert_eq!(e.eval_display("nothing()", &[]), "5");
     }
 
     /// A malformed annotation is a syntax error at the place it goes wrong,

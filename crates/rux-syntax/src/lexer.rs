@@ -103,6 +103,7 @@ fn keyword(word: &str) -> Option<&'static str> {
         "in" => "in",
         "let" => "let",
         "loop" => "loop",
+        "none" => "none",
         "private" => "private",
         "return" => "return",
         "switch" => "switch",

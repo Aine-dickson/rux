@@ -173,7 +173,7 @@
   // Progress for the page swap, `null` unless a finger has hold of it. A swap
   // handed a non-number runs on the clock for its declared duration, so this
   // one binding covers both the tab tap and the drag.
-  let swipe: number? = signal(null);
+  let swipe: number? = signal(none);
 
   // Whether this drag turned out to be a back gesture. A drag is not one until
   // it has moved rightwards far enough to mean it.
@@ -209,12 +209,12 @@
         // Far enough to mean it. Handing progress back to the clock lets the
         // rest of it run out rather than snapping to an end the finger never
         // reached.
-        swipe = null;
+        swipe = none;
       } else {
         // Changed its mind. Restoring the route is what reverses the swap, and
         // the clock walks it home from wherever the hand let go.
         forward();
-        swipe = null;
+        swipe = none;
       }
     }
   }

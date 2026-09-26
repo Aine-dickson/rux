@@ -162,9 +162,9 @@ swap that can change its mind cannot be a snapshot of a departed tree.
 if event.phase == "start" { card = false; dismiss = 0; }
 else if event.phase == "move" { dismiss = event.totalX / 240; }
 else if dismiss > 0.45 { dismiss = 1; }        // commit
-else { card = true; dismiss = null; }          // and settle back
+else { card = true; dismiss = none; }          // and settle back
 ```
-Yielding **`null` hands the swap back to the clock**, which runs the rest of
+Yielding **`none` hands the swap back to the clock**, which runs the rest of
 the declared duration from wherever the drag let go. That is how a released
 finger settles instead of snapping. Under a bound driver the declared duration
 does not set the pace; it still says which properties take part, and it takes
