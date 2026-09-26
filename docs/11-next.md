@@ -67,7 +67,7 @@ shipping apps without a Rust toolchain is no longer a goal.
 - **`T?` is the short spelling of `Option<T>`**, as in Swift and Kotlin, so the
   forced `?.` and narrowing already built keep working unchanged.
 
-### Errors (decided: `try`/`catch`; the mapping is proposed)
+### Errors (decided)
 
 - `try { … } catch e { … }` and `throw`.
 - `Result<T, E>` is a Rux type for values an author keeps on purpose.
@@ -272,15 +272,17 @@ module maps directly) so existing apps move with one command.
 Steps 2 to 5 change nothing an author sees except the decided syntax, which is
 what makes them safe to take in order.
 
-## Open questions
+## Settled 2026-09-26 (the former open questions)
 
-1. **What `catch e` binds.** A single Rux `Error` type (`message`, and a
-   `kind`), or the thrown value's own type?
-2. **The dictionary spelling.** Does `{ [string]: T }` stay as another way to
-   write `Map<string, T>`, or does it go under the one-spelling rule?
-3. **Two import forms.** Decided as both; `rux fmt` could still normalise a
-   project to one if that is ever wanted.
-4. **Performance of the interpreter.** Rhai was measured at about 2000 times
-   slower than native on a tight loop. The new interpreter runs typed IR, so it
-   should do better, but development speed is bounded by it and it needs its
-   own benchmarks from the start.
+1. **`catch e` binds a Rux `Error`** (decided): `type Error = { message:
+   string, kind: string }`. A native `Err` arrives as an `Error` whose `kind`
+   names the Rust error; `throw` in Rux throws an `Error` too.
+2. **`{ [string]: T }` stays** (decided) as a second spelling of
+   `Map<string, T>`: the same type, not a different one. A named exception to
+   the one-spelling rule, like `T[]` for `Array<T>`.
+3. **`rux fmt` can normalise imports** (decided). Which form it writes is a
+   project setting in `rux.toml` (proposed: `imports = "use"` or `"import"`),
+   and without the setting it leaves both alone.
+4. **The interpreter gets its own benchmarks from its first commit** (decided),
+   beside the `RUX_PROFILE` ones in `rux-harness/script-cost/`, so development
+   speed is measured, not assumed.
