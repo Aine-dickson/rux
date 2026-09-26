@@ -1,7 +1,7 @@
 <template>
   <screen class="app">
     <text class="title">computed and effect, inside a component</text>
-    <text class="lead">Each row derives its own line total and writes its own note. Both live in the component's script and run once per instance, in that instance's scope: the steppers move one row's numbers and leave the others alone. The sale switch is a document signal, and every row's effect is subscribed to it because every row read it.</text>
+    <text class="lead">Each row derives its own line total and writes its own note. Both live in the component's script and run once per instance, in that instance's scope: the steppers move one row's numbers and leave the others alone. The sale switch is the shop store's signal, and every row's effect is subscribed to it because every row read it.</text>
 
     <view class="rows">
       <cart-row :label="&quot;flat white&quot;" :price="4" />
@@ -9,7 +9,7 @@
       <cart-row :label="&quot;olive oil&quot;" :price="11" />
     </view>
 
-    <view class="btn" @tap="sale = !sale">
+    <view class="btn" @tap="shop.toggleSale()">
       <text class="btn-label">toggle the sale</text>
     </view>
   </screen>
@@ -43,7 +43,5 @@
 
 <script>
   use components::cart_row;
-
-  let currency = signal("$");
-  let sale = signal(false);
+  use stores::shop;
 </script>

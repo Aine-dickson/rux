@@ -1,0 +1,56 @@
+<template>
+  <screen class="app">
+    <view class="head">
+      <text class="title">A store</text>
+      <basket />
+    </view>
+    <text class="lead">The basket lives in stores/cart.rux, a file with no template. Every card adds to it and both badges show it, because a module is loaded once and every file that imports it reads the same state. Only the store's own functions change it.</text>
+    <view class="shelf">
+      <product r-for="p in catalog" r-key="p.name" :name="p.name" :price="p.price" />
+    </view>
+    <view class="foot">
+      <basket />
+      <view class="btn" @tap="cart.clear()"><text class="btn-label">empty the basket</text></view>
+    </view>
+  </screen>
+</template>
+
+<style>
+  .app {
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+    padding: 28px;
+    background: #1e1e2e;
+    font-family: sans-serif;
+    height: 100vh;
+  }
+
+  .head { display: flex; justify-content: space-between; align-items: center; }
+  .title { color: #cdd6f4; font-size: 26px; font-weight: 700; }
+  .lead { color: #9399b2; font-size: 13px; max-width: 620px; }
+  .shelf { display: flex; gap: 14px; flex-wrap: wrap; }
+  .foot { display: flex; gap: 14px; align-items: center; }
+
+  .btn {
+    padding: 8px 12px;
+    background: #45475a;
+    border-radius: 8px;
+    cursor: pointer;
+  }
+
+  .btn:hover { background: #585b70; }
+  .btn-label { color: #cdd6f4; font-size: 13px; font-weight: 700; }
+</style>
+
+<script>
+  use components::product;
+  use components::basket;
+  use stores::cart;
+
+  let catalog = [
+    { name: "flat white", price: 4.0 },
+    { name: "sourdough", price: 6.5 },
+    { name: "olive oil", price: 11.0 }
+  ];
+</script>

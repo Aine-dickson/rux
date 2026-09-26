@@ -163,7 +163,19 @@ pub struct Lowered {
 /// A top-level `fn` the unit already has is left out: the runtime puts a
 /// component's functions into the document's script, and hands in the
 /// component's script, functions and all, to make an instance's state.
-pub fn lower_piece(unit: &mut Unit, script: &ast::Script, src: &str, given: &[String], globals: bool) -> Lowered {
+///
+/// `own` is the linked-name prefix of the component the text belongs to, when
+/// it belongs to one: that component's functions are called by their own
+/// names (`inc()` for `components/badge::inc`). The names the runtime
+/// provides (the route and its companions) are every file's.
+pub fn lower_piece(
+    unit: &mut Unit,
+    script: &ast::Script,
+    src: &str,
+    given: &[String],
+    globals: bool,
+    own: Option<&str>,
+) -> Lowered {
     let empty = Types::default();
     let table = Table::new(&unit.types);
     let mut l = Lower {
@@ -179,14 +191,22 @@ pub fn lower_piece(unit: &mut Unit, script: &ast::Script, src: &str, given: &[St
             .globals
             .iter()
             .enumerate()
-            .filter(|(_, g)| globals || crate::link::split(&g.name).is_some())
+            .filter(|(_, g)| globals || g.kind == GlobalKind::Provided || crate::link::split(&g.name).is_some())
             .map(|(i, g)| (g.name.clone(), GlobalId(i as u32)))
             .collect(),
         fns: unit
             .fns
             .iter()
             .enumerate()
-            .map(|(i, f)| ((f.name.clone(), f.params as usize), FnId(i as u32)))
+            // In a component, the document's functions are not its own: only
+            // its own, by their names, and what linking names.
+            .filter(|(_, f)| own.is_none() || crate::link::split(&f.name).is_some())
+            .flat_map(|(i, f)| {
+                let mine = own.and_then(|p| f.name.strip_prefix(p)).and_then(|n| n.strip_prefix("::"));
+                std::iter::once((f.name.clone(), f.params as usize))
+                    .chain(mine.map(|n| (n.to_string(), f.params as usize)))
+                    .map(move |k| (k, FnId(i as u32)))
+            })
             .collect(),
         types: &empty,
         src,
@@ -200,7 +220,14 @@ pub fn lower_piece(unit: &mut Unit, script: &ast::Script, src: &str, given: &[St
     for name in given {
         l.local(name, Type::Any);
     }
-    let own = |def: &ast::FnDecl| unit.fns.iter().any(|f| f.name == def.name.name && f.params as usize == def.params.len());
+    let linked = |name: &str| match own {
+        Some(p) => crate::link::qualified(p, name),
+        None => name.to_string(),
+    };
+    let own = |def: &ast::FnDecl| {
+        let name = linked(&def.name.name);
+        unit.fns.iter().any(|f| (f.name == def.name.name || f.name == name) && f.params as usize == def.params.len())
+    };
     let mut stmts = Vec::new();
     let mut ty = None;
     let last = script.stmts.len();

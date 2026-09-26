@@ -1,0 +1,28 @@
+<template>
+  <view class="basket">
+    <text class="count">{{ cart.count() }} {{ word() }}</text>
+    <text class="total">{{ cart.total() }}</text>
+  </view>
+</template>
+
+<style>
+  .basket {
+    display: flex;
+    gap: 10px;
+    align-items: baseline;
+    padding: 8px 12px;
+    background: #181825;
+    border-radius: 8px;
+  }
+
+  .count { color: #cdd6f4; font-size: 14px; }
+  .total { color: #f9e2af; font-size: 16px; font-weight: 700; }
+</style>
+
+<script>
+  use stores::cart;
+
+  fn word(): string {
+    if cart.count() == 1 { "item" } else { "items" }
+  }
+</script>

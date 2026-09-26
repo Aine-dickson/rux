@@ -1,0 +1,54 @@
+<template>
+  <view class="card">
+    <text class="name">{{ name }}</text>
+    <text class="price">{{ money.format(price) }}</text>
+    <view class="add" @tap="cart.add(name, price)">
+      <text class="add-label">add, {{ inBasket() }} in the basket</text>
+    </view>
+  </view>
+</template>
+
+<style>
+  .card {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 14px 16px;
+    background: #313244;
+    border: 2px solid #45475a;
+    border-radius: 10px;
+    width: 180px;
+  }
+
+  .name { color: #cdd6f4; font-size: 15px; font-weight: 700; }
+  .price { color: #a6e3a1; font-size: 14px; }
+
+  .add {
+    margin-top: 6px;
+    padding: 8px 10px;
+    background: #45475a;
+    border-radius: 8px;
+    cursor: pointer;
+  }
+
+  .add:hover { background: #585b70; }
+  .add-label { color: #cdd6f4; font-size: 12px; font-weight: 700; }
+</style>
+
+<script>
+  use stores::cart;
+  use utils::money;
+
+  prop name: string;
+  prop price: float;
+
+  // Its own function, by a name the basket's may share: a component's names
+  // are its own.
+  fn inBasket(): int {
+    let n = 0;
+    for l in cart.lines {
+      if l.name == name { n = l.qty; }
+    }
+    n
+  }
+</script>

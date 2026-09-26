@@ -193,8 +193,31 @@ pub struct Builder {
     /// The script modules the document reaches, each after the ones it
     /// imports. See [`Builder::module`].
     modules: Vec<ModuleSource>,
-    /// What the document's script imports from them, and its components'.
+    /// What the document's script imports from them.
     aliases: Vec<link::Alias>,
+    /// Its components' functions, each in a scope of its own. See
+    /// [`Builder::component`].
+    components: Vec<ComponentSource>,
+}
+
+/// The name of the local an instance's state carries to say which component
+/// it belongs to. [`Engine::init_component`] adds it, the runtime hands the
+/// state back on every run in the instance, and the run is then in the
+/// component's scope: its own functions and imports, and none of the
+/// document's names (step 7.4 of `docs/11-next.md`).
+pub const SCOPE_LOCAL: &str = "__scope";
+
+/// A component's functions, for [`Builder::component`].
+#[derive(Clone, Debug)]
+pub struct ComponentSource {
+    /// What the runtime calls it: the key its instances are made with.
+    pub key: String,
+    /// `components/badge`: what its functions are linked under.
+    pub name: String,
+    /// Its `fn` declarations, as text.
+    pub functions: String,
+    /// What it imports from modules.
+    pub aliases: Vec<link::Alias>,
 }
 
 /// A script module, for [`Builder::module`]: a `.rux` file with no
@@ -276,7 +299,22 @@ pub const MAX_OPERATIONS: u64 = 5_000_000;
 
 impl Builder {
     pub fn new() -> Self {
-        Self { host_types: Vec::new(), host_fns: HashMap::new(), modules: Vec::new(), aliases: Vec::new() }
+        Self {
+            host_types: Vec::new(),
+            host_fns: HashMap::new(),
+            modules: Vec::new(),
+            aliases: Vec::new(),
+            components: Vec::new(),
+        }
+    }
+
+    /// A component's functions, in a scope of the component's own: they call
+    /// each other by name and see what the component imports, and the
+    /// document's names are not theirs. Its state is its instances', handed
+    /// in on each run.
+    pub fn component(&mut self, component: ComponentSource) -> &mut Self {
+        self.components.push(component);
+        self
     }
 
     /// Link a script module in. Modules are handed in after the ones they
@@ -287,8 +325,7 @@ impl Builder {
         self
     }
 
-    /// What the document imports from its modules: its own imports and, for
-    /// now, its components', since their functions join its script.
+    /// What the document imports from its modules.
     pub fn aliases(&mut self, aliases: Vec<link::Alias>) -> &mut Self {
         self.aliases = aliases;
         self
@@ -311,7 +348,7 @@ impl Builder {
     pub fn build(self, script: &str) -> Result<Engine, ScriptError> {
         // Each module on its own, in order: what it exports is what the next
         // one, and the document, are checked against.
-        let mut linking = link::Linking { aliases: self.aliases.clone(), exports: HashMap::new() };
+        let mut linking = link::Linking { aliases: self.aliases.clone(), ..Default::default() };
         let mut modules = Vec::new();
         let mut module_types = Vec::new();
         for m in &self.modules {
@@ -335,6 +372,31 @@ impl Builder {
             modules.push(ModuleChecked { name: m.name.clone(), script: ast, src: m.script.clone(), record, findings });
         }
 
+        // Each component's functions, linked as a module's are, after them.
+        // Their findings are the component's to report when it is checked.
+        let mut components = Vec::new();
+        for c in &self.components {
+            let Ok(mut ast) = rux_syntax::parse(&c.functions, rux_syntax::Options { declarations: true }) else {
+                continue; // its own load reports the syntax error
+            };
+            link::resolve(&mut ast, &c.aliases, &linking.exports);
+            let cx = check::Context {
+                host: self.host_types.clone(),
+                support_types: module_types.clone(),
+                linked: linking.linked(),
+                ..check::Context::default()
+            };
+            let (_, record) = check::check_typed(&ast, &c.functions, &cx);
+            linking.scopes.insert(c.key.clone(), link::Scope { name: c.name.clone(), aliases: c.aliases.clone() });
+            components.push(ModuleChecked {
+                name: c.name.clone(),
+                script: ast,
+                src: c.functions.clone(),
+                record,
+                findings: Vec::new(),
+            });
+        }
+
         let mut parsed = profile::time(profile::Phase::Parse, || {
             rux_syntax::parse(script, rux_syntax::Options { declarations: true })
         })
@@ -350,12 +412,13 @@ impl Builder {
         validate::reset_types(known);
 
         let linking = std::rc::Rc::new(linking);
+        let units: Vec<&ModuleChecked> = modules.iter().chain(&components).collect();
         let mut ir = interpreter_linked(
             &parsed,
             script,
             &self.host_types,
             self.host_fns,
-            &modules,
+            &units,
             &module_types,
             std::rc::Rc::clone(&linking),
         );
@@ -399,7 +462,7 @@ fn interpreter_linked(
     script: &str,
     host_types: &[(String, types::Type)],
     host_fns: HashMap<String, interp::Host>,
-    modules: &[ModuleChecked],
+    modules: &[&ModuleChecked],
     module_types: &[(String, String, String)],
     linking: std::rc::Rc<link::Linking>,
 ) -> interp::Interp {
@@ -675,6 +738,9 @@ pub struct Engine {
     module_types: Vec<(String, String, String)>,
     /// Its modules, as the build checked them.
     modules: Vec<ModuleChecked>,
+    /// The component whose text the load-time checks are reading, by key:
+    /// see [`Engine::in_scope`].
+    check_scope: std::cell::RefCell<Option<String>>,
 }
 
 // ── Warning collection ──────────────────────────────────────────────────────
@@ -1411,6 +1477,35 @@ impl Engine {
             linking: Default::default(),
             module_types: Vec::new(),
             modules: Vec::new(),
+            check_scope: std::cell::RefCell::new(None),
+        }
+    }
+
+    /// Run `f` with the load-time checks ([`Engine::check_syntax`],
+    /// [`Engine::unknown_calls`]) reading text as the component `key`'s: its
+    /// functions by their own names, its imports.
+    pub fn in_scope<T>(&self, key: Option<&str>, f: impl FnOnce() -> T) -> T {
+        let saved = self.check_scope.replace(key.map(str::to_string));
+        let out = f();
+        *self.check_scope.borrow_mut() = saved;
+        out
+    }
+
+    /// A component instance's first state: its script's top level run in the
+    /// component's scope, and [`SCOPE_LOCAL`], which keeps every later run
+    /// with this state in it.
+    pub fn init_component(&mut self, key: &str, script: &str) -> Vec<(String, Value)> {
+        match self.ir.run_instance_init(script, key) {
+            Err(e) => {
+                warn(format!("a component's script failed to compile: {}", explain(&e.message)));
+                vec![(SCOPE_LOCAL.to_string(), Value::Text(key.to_string()))]
+            }
+            Ok((result, top)) => {
+                if let Err(f) = result {
+                    warn(format!("a component's script failed to run: {}", explain(&f.message)));
+                }
+                top.into_iter().map(|(n, v)| (n, v.to_value())).collect()
+            }
         }
     }
 
@@ -1418,7 +1513,8 @@ impl Engine {
     /// what the document imports: see [`link::resolve`]. What cannot be
     /// linked comes back.
     pub fn link(&self, script: &mut rux_syntax::ast::Script) -> Vec<link::Problem> {
-        link::resolve(script, &self.linking.aliases, &self.linking.exports)
+        let scope = self.check_scope.borrow();
+        link::resolve(script, self.linking.aliases_in(scope.as_deref()), &self.linking.exports)
     }
 
     /// `cx` with what the document's modules add: their exports under their
@@ -1802,11 +1898,13 @@ impl Engine {
     fn own_fn_arities(&self) -> HashMap<String, HashSet<usize>> {
         use interp::stdlib::{FUNCTIONS, METHODS};
         let mut arities: HashMap<String, HashSet<usize>> = HashMap::new();
-        for f in &self.ir.unit().fns {
-            if FUNCTIONS.contains(&f.name.as_str()) || METHODS.contains(&f.name.as_str()) {
+        let in_component = self.check_scope.borrow().is_some();
+        for f in self.ir.unit().fns.iter().filter(|f| !in_component || link::split(&f.name).is_some()) {
+            let name = self.own_name(&f.name).unwrap_or(&f.name);
+            if FUNCTIONS.contains(&name) || METHODS.contains(&name) {
                 continue;
             }
-            arities.entry(f.name.clone()).or_default().insert(f.params as usize);
+            arities.entry(name.to_string()).or_default().insert(f.params as usize);
         }
         arities
     }
@@ -1816,8 +1914,26 @@ impl Engine {
     fn callable_names(&self) -> HashSet<&str> {
         use interp::stdlib::{FUNCTIONS, METHODS};
         let mut names: HashSet<&str> = FUNCTIONS.iter().chain(METHODS).copied().collect();
-        names.extend(self.ir.unit().fns.iter().map(|f| f.name.as_str()));
+        // In a component's text, only its own functions: the document's are
+        // not in its scope.
+        let in_component = self.check_scope.borrow().is_some();
+        names.extend(
+            self.ir
+                .unit()
+                .fns
+                .iter()
+                .filter(|f| !in_component || link::split(&f.name).is_some())
+                .map(|f| self.own_name(&f.name).unwrap_or(&f.name)),
+        );
         names
+    }
+
+    /// `inc` for `components/badge::inc`, while the checks read that
+    /// component's text.
+    fn own_name<'a>(&self, linked: &'a str) -> Option<&'a str> {
+        let scope = self.check_scope.borrow();
+        let prefix = self.linking.own_prefix(scope.as_deref())?;
+        linked.strip_prefix(prefix)?.strip_prefix("::")
     }
 
     // ----- State -------------------------------------------------------------
@@ -1868,7 +1984,9 @@ impl Engine {
     /// to the instance whose handler started it (`docs/11-next.md`,
     /// "Stores").
     pub fn task_is_a_modules(&self, id: u64) -> bool {
-        self.ir.task_name(id).is_some_and(|n| link::split(n).is_some())
+        // A component's functions have linked names too; only a module's
+        // count here.
+        self.ir.task_name(id).and_then(link::split).is_some_and(|(m, _)| self.linking.exports.contains_key(m))
     }
 
     /// Take the host answers that have come for this document's tasks, and

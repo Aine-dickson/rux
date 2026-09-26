@@ -1,0 +1,12 @@
+<!-- The shop's shared state, read by the page and by every row: a store. A
+     file with no template section is a module, loaded once, so every file
+     that imports it reads the same `sale`. -->
+<script>
+  export let currency = "$";
+  export let sale = signal(false);
+
+  // The one way to change it from outside: nothing but this file writes it.
+  export fn toggleSale() {
+    sale = !sale;
+  }
+</script>

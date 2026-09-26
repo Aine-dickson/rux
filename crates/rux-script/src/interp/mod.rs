@@ -290,9 +290,19 @@ impl Interp {
 
     /// `src` lowered for running with `given` handed in, from the cache when
     /// it has run before. A syntax error comes back as the parser gave it.
-    fn compiled(&mut self, src: &str, given: &[String], globals: bool) -> Result<Rc<Compiled>, rux_syntax::SyntaxError> {
+    fn compiled(
+        &mut self,
+        src: &str,
+        given: &[String],
+        globals: bool,
+        scope: Option<&str>,
+    ) -> Result<Rc<Compiled>, rux_syntax::SyntaxError> {
+        // A component's code sees its own names, not the document's.
+        let globals = globals && scope.is_none();
         let mut key = String::with_capacity(src.len() + 32);
         key.push(if globals { 'g' } else { 's' });
+        key.push_str(scope.unwrap_or(""));
+        key.push('\u{1d}');
         for g in given {
             key.push_str(g);
             key.push('\u{1f}');
@@ -307,10 +317,12 @@ impl Interp {
         })?;
         // What does not link is reported where the load checks the text; a
         // name left as it was is refused when it runs.
-        crate::link::resolve(&mut script, &self.linking.aliases, &self.linking.exports);
+        let linking = Rc::clone(&self.linking);
+        crate::link::resolve(&mut script, linking.aliases_in(scope), &linking.exports);
+        let own = linking.own_prefix(scope);
         let unit = Rc::make_mut(&mut self.unit);
         let lowered = crate::profile::time(crate::profile::Phase::Lower, || {
-            lower_piece(unit, &script, src, given, globals)
+            lower_piece(unit, &script, src, given, globals, own)
         });
         let c = Rc::new(Compiled { lowered, given: given.to_vec(), globals });
         if self.pieces.len() >= PIECES_CAP {
@@ -318,6 +330,20 @@ impl Interp {
         }
         self.pieces.insert(key, Rc::clone(&c));
         Ok(c)
+    }
+
+    /// A component's script run to make an instance's state: the locals
+    /// its top level declares, and the marker that puts every later run
+    /// with that state in the component's scope ([`crate::SCOPE_LOCAL`]).
+    pub fn run_instance_init(
+        &mut self,
+        src: &str,
+        scope: &str,
+    ) -> Result<(Result<V, Fault>, Vec<(String, V)>), rux_syntax::SyntaxError> {
+        let piece = self.compiled(src, &[], false, Some(scope))?;
+        let (out, _, mut top) = self.run_piece(piece, Vec::new());
+        top.push((crate::SCOPE_LOCAL.to_string(), V::Str(scope.into())));
+        Ok((out, top))
     }
 
     /// Whether `src` parses, without running it.
@@ -334,7 +360,8 @@ impl Interp {
         globals: bool,
     ) -> Result<(Result<V, Fault>, Vec<V>, Vec<(String, V)>), rux_syntax::SyntaxError> {
         let names: Vec<String> = locals.iter().map(|(n, _)| n.clone()).collect();
-        let piece = self.compiled(src, &names, globals)?;
+        let scope = scope_of(locals);
+        let piece = self.compiled(src, &names, globals, scope.as_deref())?;
         let given: Vec<V> = locals.iter().map(|(_, v)| V::from_value(v)).collect();
         Ok(self.run_piece(piece, given))
     }
@@ -676,8 +703,15 @@ impl Interp {
             if let Some(i) = (0..locals.len()).rev().find(|&i| frame.set[i] && locals[i].name == name) {
                 return Ok(Slot::Local(root.frame, i));
             }
+            // A component's code reaches no document state, only what the
+            // runtime provides every file.
             if !root.piece.globals {
-                return fail(format!("Variable not found: {name}"));
+                return match self.by_name.get(&name) {
+                    Some(g) if self.set[g.0 as usize] && self.unit.globals[g.0 as usize].kind == GlobalKind::Provided => {
+                        Ok(Slot::Global(*g))
+                    }
+                    _ => fail(format!("Variable not found: {name}")),
+                };
             }
         }
         match self.by_name.get(&name) {
@@ -1365,5 +1399,14 @@ fn dynamic(op: &str, a: V, b: V) -> R<V> {
         "==" => V::Bool(a == b),
         "!=" => V::Bool(a != b),
         _ => return no(&a, &b),
+    })
+}
+
+/// The component a run belongs to, from the marker its instance's state
+/// carries: see [`crate::SCOPE_LOCAL`].
+pub(super) fn scope_of(locals: &[(String, Value)]) -> Option<String> {
+    locals.iter().rev().find(|(n, _)| n == crate::SCOPE_LOCAL).and_then(|(_, v)| match v {
+        Value::Text(t) => Some(t.clone()),
+        _ => None,
     })
 }

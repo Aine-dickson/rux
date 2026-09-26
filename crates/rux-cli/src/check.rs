@@ -152,8 +152,13 @@ pub fn run(options: Options) -> i32 {
 
     // A page checked through the document that routes to it was looked at, and
     // calling it skipped is the exact misreport this release set out to end.
-    let skipped: Vec<PathBuf> =
-        skipped.into_iter().filter(|p| !reached.iter().any(|r| same_file(r, p))).collect();
+    // A module a document imports was checked through it too, on its own
+    // lines: it is not a component and was not skipped.
+    let skipped: Vec<PathBuf> = skipped
+        .into_iter()
+        .filter(|p| !reached.iter().any(|r| same_file(r, p)))
+        .filter(|p| !rux_runtime::is_module_file(p))
+        .collect();
 
     if !only_about.is_empty() {
         found.retain(|d| only_about.iter().any(|p| same_file(p, &d.file)));

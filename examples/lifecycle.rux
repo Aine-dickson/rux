@@ -14,8 +14,8 @@
       <text class="btn-label" r-if="!open">open the cards</text>
     </view>
 
-    <text class="foot">instances opened so far: {{ opens }}</text>
-    <text class="foot">last card to leave: {{ saved }}, holding {{ savedMarks }} marks</text>
+    <text class="foot">instances opened so far: {{ visits.opens }}</text>
+    <text class="foot">last card to leave: {{ visits.saved }}, holding {{ visits.savedMarks }} marks</text>
   </screen>
 </template>
 
@@ -49,13 +49,7 @@
 
 <script>
   use components::session;
+  use stores::visits;
 
   let open = signal(true);
-
-  // Written by the components, not by this file: a hook runs in its own
-  // instance's scope, and a document signal it does not shadow is how anything
-  // it learned gets out.
-  let opens = signal(0);
-  let saved = signal("nothing yet");
-  let savedMarks = signal(0);
 </script>

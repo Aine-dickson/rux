@@ -65,7 +65,7 @@ own writes.
 Both work inside a component too, and there they run **per instance**, in that
 instance's own scope. Two `<card>` tags are two instances, so each holds its own
 computed value and each runs its own effect. A component computed may read a
-document signal and re-reads it when that signal moves; an instance's computeds
+store's signal (see [Modules](#modules)) and re-reads it when that signal moves; an instance's computeds
 and effects are dropped when the instance is, so nothing left behind can be woken
 by a signal later. See [As Built](/reference/) for the detail on both.
 
@@ -124,10 +124,12 @@ own scope. Two `<card>` tags on a page are two instances, so each runs its own
 
 ```rux
 <script>
+  use stores::visits;
+
   let draft = signal("");
 
-  mounted   { opened = opened + 1; }
-  unmounted { saved = draft; }
+  mounted   { visits.open(); }
+  unmounted { visits.leave(draft); }
 </script>
 ```
 
@@ -135,12 +137,12 @@ An instance mounts the first time a build expands it, and unmounts when a build
 stops reaching it: an `r-if` closing over it, its `r-for` row going away, or a
 route being left. Leaving and coming back is a **new** instance, so the hooks run
 again and the state starts fresh. Anything meant to outlive a visit belongs in a
-document signal, which is the rule component state already follows.
+store, which the component changes through the store's functions: a
+component's names are its own, and the document's are not among them.
 
 `unmounted` is the last moment the instance's state can be read, which is what
 makes saving from it possible at all. What it writes to its own names goes
-nowhere, since the instance is gone; what it writes to a document signal is the
-point.
+nowhere, since the instance is gone; what it hands a store is the point.
 
 Two guarantees are worth stating, because both are cases the runtime has to go
 out of its way to get right:
@@ -297,16 +299,86 @@ cannot reach `level`; `helper(thing)` can. Method dispatch passes its receiver b
 reference, and the scope cannot be borrowed at the same time. This is upstream's
 limitation and it stands.
 
-**A call runs in its caller's scope**, so an untyped function can read a `let`
-of whoever called it, or the `r-for` variable of the row whose handler called
-it. **A typed function cannot**: one whose parameters all have types, or that
-has none, sees only its own names and the document's, and `rux check` reports
-a caller's local as an error. Pass the name in instead: `@tap="pick(item)"` and
-`fn pick(item: Task)`. See
+**A function sees its own file's names**: the file's signals, functions and
+props, what the file imports, and, in a component, the instance's state. Not
+a caller's local, and not another file's: a component's functions cannot see
+the document's, and the document's cannot see a component's. Pass a name in
+instead: `@tap="pick(item)"` and `fn pick(item: Task)`. State two files share
+lives in a store both import ([Modules](#modules)). See
 [Types](https://github.com/Aine-dickson/rux/blob/main/docs/10-types.md#a-typed-function-cannot-read-its-callers-locals).
 
 **Anything heavy belongs behind `host::`.** Script describes what the UI does; it
 is not where work gets done.
+
+## Modules
+
+A `.rux` file with no `<template>` is a **module**: functions, types and state
+for other files to import. It is written as a `<script>` alone, or as bare
+script with no tags at all.
+
+```rux
+// stores/cart.rux
+export type Item = { name: string, qty: int };
+
+export let items: Item[] = signal([]);
+
+export fn add(name: string) {
+  items.push({ name: name, qty: 1 });
+}
+
+export fn count(): int { items.length }
+```
+
+```rux
+<script>
+  use stores::cart;                     // the whole module, as `cart`
+  use stores::cart::{add as put};       // one name it exports
+  use type stores::cart::Item;          // a type, marked with `type`
+</script>
+```
+
+`import` is the same statement spelled the other way: `import cart from
+"./stores/cart";`, `import { add as put } from "./stores/cart";`, `import type {
+Item } from "./stores/cart";`. A module is found the way a component is, beside
+the importing file, then from the project root, and `rux fmt` writes every
+import one way when `rux.toml` asks, `[fmt] imports = "use"` or `"import"`.
+
+- **`export` is what another file sees.** `export fn`, `export async fn`,
+  `export type` and `export let`; the rest is the module's own. Importing a
+  name it does not export is an error that lists what it does.
+- **A module is loaded once per document**, however many files import it, and
+  its top level runs then, before the document's, each module after the ones
+  it imports. Two modules that import each other in a circle are refused.
+- **Its top-level signals are a store.** Every file that imports it reads the
+  same `cart.items`, and a binding that reads it follows it, whether in the
+  document or in any component instance.
+- **Only the module changes its state.** `cart.items = []` or
+  `cart.items.push(x)` in another file is an error: write the change as a
+  function the module exports, and call it, `cart.add("tea")`. A store's rules
+  live in one place that way.
+- **An imported name is the import everywhere in the file**, so declaring it
+  again is an error; `as` renames the import instead.
+- A module holds no `computed`, `effect`, lifecycle block or `prop`, which
+  belong to a component or a document; an exported function can work out what
+  a `computed` would.
+- An `async fn` a module exports belongs to the document when it runs: it
+  writes only the module's state, which outlives any component that called it.
+
+**A component's names are its own.** Its template, handlers, functions,
+`computed`s, `effect`s and lifecycle blocks see its state, its props, what it
+imports and what the runtime provides every file (`route`, `params`, `query`),
+and not the document's signals or functions. Two components may each declare a
+`fn` of one name. What a page and the app share is a store:
+
+```rux
+<!-- pages/home.rux -->
+<template>
+  <view r-for="t in todo.tasks"><text>{{ t.label }}</text></view>
+</template>
+<script>
+  use stores::todo;
+</script>
+```
 
 ## Async
 
@@ -752,10 +824,11 @@ the repository's history):
 1. `?.` guards a missing **property**, not only an absent base.
 2. `x++` and `x--` exist, in statement position.
 3. Arrow functions.
-4. **A name a function does not declare is looked up where it runs**, in
-   the handler or component that called it. This is what is left of the
+4. **A component's function reads its instance's state where it runs**: the
+   instance hands its state in with every call. This is what is left of the
    fork's rule that every plain call captured its caller's scope; `f!(…)` is
-   gone.
+   gone, and a caller's other names are not reachable (see
+   [Modules](#modules)).
 5. **JavaScript truthiness**, including empty array and empty map being truthy.
 6. A whole `f64` can index an array.
 7. `{ a: 1 }` is a map, as `#{ a: 1 }` is.

@@ -1,0 +1,9 @@
+// Money as text. A module written with no tags at all: the whole file is
+// script, and `export` is what another file can import from it.
+
+export fn format(amount: float): string {
+  let cents = (amount * 100.0).round();
+  let rest = cents % 100;
+  let pad = if rest < 10 { "0" } else { "" };
+  "$" + intDiv(cents, 100) + "." + pad + rest
+}

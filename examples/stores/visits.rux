@@ -1,0 +1,20 @@
+<!-- What the session cards learn as they come and go, kept where the page can
+     read it: a store. A card is a component, and a component's names are its
+     own, so what it wants to outlive it goes through a function here. -->
+<script>
+  export let opens = signal(0);
+  export let saved = signal("nothing yet");
+  export let savedMarks = signal(0);
+
+  // A card opening: counted, and told its number.
+  export fn open(): int {
+    opens++;
+    opens
+  }
+
+  // A card leaving, with what it was holding.
+  export fn leave(label: string, marks: int) {
+    saved = label;
+    savedMarks = marks;
+  }
+</script>

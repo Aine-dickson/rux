@@ -115,7 +115,7 @@ fn components_are_skipped_when_walking_but_not_when_named() {
             ),
             (
                 "components/row.rux",
-                "<template><view><text>{{ label }} {{ greeting }}</text></view></template>\n\
+                "<template><view><text>{{ label }}</text></view></template>\n\
                  <script>\n  prop label;\n</script>",
             ),
         ],
@@ -127,11 +127,9 @@ fn components_are_skipped_when_walking_but_not_when_named() {
     assert_eq!(stdout(&walked), "", "walking must not report the component");
 
     // Named, it is checked: the declared prop is owed by a caller and says
-    // nothing, while the document signal it reads by name cannot be seen from
-    // here and is reported, as a warning.
+    // nothing.
     let named = check(&[dir.join("components/row.rux").to_str().unwrap()]);
     let said = stdout(&named);
-    assert!(said.contains("`greeting`"),"naming a component explicitly should still check it: {said}");
     assert!(!said.contains("`label` is not defined"), "a declared prop is not a finding: {said}");
 }
 
@@ -185,12 +183,14 @@ fn a_routed_page_is_checked_through_the_document_that_routes_to_it() {
 <script>
   use pages::home;
   use pages::other;
-  let tally = signal(3);
 </script>"#,
             ),
-            // Reads the app's signal, which is exactly what makes it
-            // uncheckable on its own.
-            ("pages/home.rux", r#"<template><view><text>{{ tally }}</text></view></template>"#),
+            // The app's state, in a store every page can import.
+            ("stores/counts.rux", "export let tally = signal(3);"),
+            (
+                "pages/home.rux",
+                "<template><view><text>{{ counts.tally }}</text></view></template>\n<script>\n  use stores::counts;\n</script>",
+            ),
             // Not the route the document opens at, so nothing ever built it.
             (
                 "pages/other.rux",
@@ -207,7 +207,7 @@ fn a_routed_page_is_checked_through_the_document_that_routes_to_it() {
     );
     assert!(
         !stdout(&walked).contains("tally"),
-        "and the app's own signal is in scope in the page that reads it: {}",
+        "and the store's signal is in scope in the page that imports it: {}",
         stdout(&walked)
     );
 

@@ -2152,6 +2152,30 @@ and `rux-runtime` (the `an_async_fn_*` tests).
 | An error nothing catches | `await` of a host function that fails | a warning naming the `async fn`, at the `await`'s file line | under test only |
 | Web and Android | the same demo | the same | not driven: a host function is registered from Rust, and neither target has an app registering one yet |
 
+## Script modules and stores, 2026-09-26
+
+Step 7 of `docs/11-next.md`. Driven in a desktop window with `rux run` on
+`examples/store.rux` (a cart store in `examples/stores/cart.rux`, a bare
+`examples/utils/money.rux`, a `<product>` card and a `<basket>` badge shown
+twice), and on the two examples whose shared state moved into stores. The
+harness is `rux-harness/store-drive.ps1` (`RUX_DOC` picks the document). Under
+test in `rux-script` (`tests/modules.rs`) and `rux-runtime` (`tests/modules.rs`
+and the `with_store` tests).
+
+| Case | Where | Expect | Result |
+|---|---|---|---|
+| One store, read by the document and two components | `examples/store.rux` opened | both badges `0 items $0.00`, prices formatted by the money module | desktop: pass |
+| A component writes the store through its function | "add" twice on flat white, once on sourdough | both badges `3 items $14.50`, each card counting its own line | desktop: pass |
+| The document writes it too | "empty the basket" | both badges back to `0 items $0.00`, every card at 0 | desktop: pass |
+| A component's own function beside another's of the same kind | "add" on olive oil | `1 item $11.00`: the basket's own `word()` says "item" | desktop: pass |
+| Every row follows a store's signal | `examples/component-reactives.rux`, "toggle the sale" | every row's note says "on sale" | desktop: pass |
+| A row's effect after its own quantity moves | then `+` on the first row | its note says `2 in the basket` | **Found a bug older than step 7**: the note stays at `1`, the same with the 7.3 binary on the old example. On the watchlist |
+| A leaving instance hands its state to a store | `examples/lifecycle.rux`, two marks on the left card, "close the cards" | `last card to leave: left card, holding 2 marks` | desktop: pass |
+| Coming back is new instances | "open the cards" | instance numbers 3 and 4, `opened so far: 4`, marks empty | desktop: pass |
+| A component does not see the document's signals | a card reading a document signal by name | not shown, and reported as not defined | under test only |
+| What a module does not allow | a circle, a private name, a type picked without `type`, a pick from a component, a component used in a module, a `computed` in a module, a write from outside | each refused where it is written | under test only |
+| Web and Android | the same examples | the same | not driven: modules are files, and the playground loads one document from text |
+
 ## Standing gaps
 
 Cases nothing here can currently exercise. They are the shape of what v0.8 has

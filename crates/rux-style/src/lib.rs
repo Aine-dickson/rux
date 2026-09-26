@@ -5455,7 +5455,8 @@ fn expand_component(
     let fresh = !instances.contains_key(&key);
     let entry = instances.entry(key.clone()).or_insert_with(|| Instance {
         tag: comp_tag.to_string(),
-        state: engine.init_scope(&component.script),
+        // In the component's own scope, which its state carries from here on.
+        state: engine.init_component(comp_tag, &component.script),
         ..Instance::default()
     });
     entry.touched = true;

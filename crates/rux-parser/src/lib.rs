@@ -654,7 +654,14 @@ enum SectionProblem {
 /// Find one section, or say precisely what is wrong with it.
 fn find_section(src: &str, name: &str) -> Result<(String, usize, String), SectionProblem> {
     let open = format!("<{name}");
-    let start = src.find(&open).ok_or(SectionProblem::Absent)?;
+    // A comment that mentions a section is not one: "a file with no
+    // <template> is a module" in a file's opening comment opened a section
+    // that never closed.
+    let start = src
+        .match_indices(&open)
+        .map(|(i, _)| i)
+        .find(|&i| !in_html_comment(src, i))
+        .ok_or(SectionProblem::Absent)?;
     let open_end = start
         + src[start..]
             .find('>')
@@ -670,6 +677,14 @@ fn find_section(src: &str, name: &str) -> Result<(String, usize, String), Sectio
         after_open,
         src[start..open_end].to_string(),
     ))
+}
+
+/// Whether byte `at` of `src` is inside an `<!-- … -->` at the top level.
+fn in_html_comment(src: &str, at: usize) -> bool {
+    match src[..at].rfind("<!--") {
+        Some(open) => !src[open..at].contains("-->"),
+        None => false,
+    }
 }
 
 /// Turn a [`SectionProblem`] into the error an author reads.

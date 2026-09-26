@@ -36,6 +36,8 @@
 </style>
 
 <script>
+  use stores::visits;
+
   prop label;
 
   // This instance's own state. Nothing here survives the instance.
@@ -45,15 +47,13 @@
   // Runs once, the first time this instance is expanded onto the screen. Once
   // per instance, so two <session> tags run it twice and count two openings.
   mounted {
-    opens++;
-    opened = opens;
+    opened = visits.open();
   }
 
   // The last moment `draft` can be read: after this the instance is gone and
-  // its state with it. Saving it into a document signal is the whole point of
-  // the hook, and it is why the marks below outlive the card.
+  // its state with it. Handing it to the store is the whole point of the
+  // hook, and it is why the marks below outlive the card.
   unmounted {
-    saved = label;
-    savedMarks = draft.length;
+    visits.leave(label, draft.length);
   }
 </script>

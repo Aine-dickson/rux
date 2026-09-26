@@ -460,7 +460,9 @@ impl Interp {
             return None;
         };
         let names: Vec<String> = locals.iter().map(|(n, _)| n.clone()).collect();
-        let piece = self.compiled("", &names, globals).expect("nothing parses");
+        // A component's task goes on in the component's scope.
+        let scope = super::scope_of(locals);
+        let piece = self.compiled("", &names, globals, scope.as_deref()).expect("nothing parses");
         let given: Vec<V> = locals.iter().map(|(_, v)| V::from_value(v)).collect();
         self.enter(&piece, given);
         self.ops = 0;

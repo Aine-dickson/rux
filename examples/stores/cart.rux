@@ -1,0 +1,32 @@
+<!-- The basket: a store. It is loaded once, so the product cards that add to
+     it and both badges that show it read the same lines. Nothing outside this
+     file writes `lines`; every change is one of the functions below. -->
+<script>
+  use utils::money;
+
+  export type Line = { name: string, price: float, qty: int };
+
+  export let lines: Line[] = signal([]);
+
+  export fn add(name: string, price: float) {
+    for i in 0..lines.length {
+      if lines[i].name == name {
+        lines[i].qty += 1;
+        return;
+      }
+    }
+    lines.push({ name: name, price: price, qty: 1 });
+  }
+
+  export fn count(): int {
+    lines.reduce((n, l) => n + l.qty, 0)
+  }
+
+  export fn total(): string {
+    money.format(lines.reduce((sum, l) => sum + l.price * l.qty.toFloat(), 0.0))
+  }
+
+  export fn clear() {
+    lines = [];
+  }
+</script>

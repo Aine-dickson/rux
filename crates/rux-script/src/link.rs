@@ -86,9 +86,37 @@ pub enum ExportKind {
 pub struct Linking {
     pub aliases: Vec<Alias>,
     pub exports: HashMap<String, Vec<Export>>,
+    /// Each component's own names, by the component's key: what its code is
+    /// linked against instead of the document's.
+    pub scopes: HashMap<String, Scope>,
+}
+
+/// A component's own names: step 7.4 of `docs/11-next.md`. A component's
+/// functions are linked under `name` (`components/badge::inc`), and its code
+/// sees them, what it imports, and nothing of the document's.
+#[derive(Clone, Debug, Default)]
+pub struct Scope {
+    /// `components/badge`.
+    pub name: String,
+    pub aliases: Vec<Alias>,
 }
 
 impl Linking {
+    /// What code in `scope` (a component's key; `None` for the document)
+    /// imports.
+    pub fn aliases_in(&self, scope: Option<&str>) -> &[Alias] {
+        match scope.and_then(|k| self.scopes.get(k)) {
+            Some(s) => &s.aliases,
+            None if scope.is_some() => &[],
+            None => &self.aliases,
+        }
+    }
+
+    /// The linked-name prefix of a component's own functions.
+    pub fn own_prefix(&self, scope: Option<&str>) -> Option<&str> {
+        scope.and_then(|k| self.scopes.get(k)).map(|s| s.name.as_str())
+    }
+
     /// Every export, under its linked name, for [`crate::check::Context::linked`].
     pub fn linked(&self) -> Vec<Export> {
         let mut out: Vec<Export> = self

@@ -43,13 +43,14 @@ struct File {
 const APP: &str = r#"<!-- The entry point. `rux run` looks for this file here and in every parent
      directory, so it works from anywhere inside the project.
 
-     This file owns three things: the window's frame, the app's state, and the
-     routes. Each page lives in `pages/`, and reads the state from here. -->
+     This file owns two things: the window's frame and the routes. Each page
+     lives in `pages/`, and the app's state lives in `stores/todo.rux`, where
+     every file that imports it reads the same tasks. -->
 <template>
   <screen class="app">
     <view class="header">
       <text class="brand">Tasks</text>
-      <text class="tally">{{ done_count() }} of {{ tasks.len() }} done</text>
+      <text class="tally">{{ todo.done_count() }} of {{ todo.tasks.len() }} done</text>
     </view>
 
     <view class="stage">
@@ -139,54 +140,7 @@ const APP: &str = r#"<!-- The entry point. `rux run` looks for this file here an
   use pages::new_task;
   use pages::detail;
   use pages::missing;
-
-  /* The app's state. A page is a component and has its own state, but it can
-     read these by name, and it changes them by calling the functions below:
-     functions are shared with every file, and they run in this scope. */
-  /* An id is text, not a number. A route carries `:id` out of the path as
-     text, and Rux has no string-to-number conversion, so text on both sides is
-     the only comparison that can work. */
-  let tasks = signal([
-    { id: "1", label: "Read the Rux guide", note: "ruxlang.dev/learn", done: true },
-    { id: "2", label: "Add a task of your own", note: "The tab below, or the button on the list", done: false }
-  ]);
-  let next_id = signal(3);
-
-  fn done_count() {
-    let n = 0;
-    for t in tasks {
-      if t.done { n += 1; }
-    }
-    n
-  }
-
-  fn add_task(label, note) {
-    tasks.push({ id: "" + next_id, label: label, note: note, done: false });
-    next_id += 1;
-  }
-
-  fn task_by_id(id) {
-    for t in tasks {
-      if t.id == id { return t; }
-    }
-    none
-  }
-
-  fn toggle_task(id) {
-    for i in 0..tasks.len() {
-      if tasks[i].id == id {
-        tasks[i].done = !tasks[i].done;
-      }
-    }
-  }
-
-  fn remove_task(id) {
-    let kept = [];
-    for t in tasks {
-      if t.id != id { kept.push(t); }
-    }
-    tasks = kept;
-  }
+  use stores::todo;
 </script>
 "#;
 
@@ -196,9 +150,9 @@ const HOME: &str = r#"<!-- The list. A page is an ordinary component that a `<ro
      root is a `<view>` and not a second `<screen>`. -->
 <template>
   <view class="page">
-    <view class="rows" r-if="tasks.len() > 0">
+    <view class="rows" r-if="todo.tasks.len() > 0">
       <task-row
-      r-for="t in tasks"
+      r-for="t in todo.tasks"
       r-key="t.id"
       :label="t.label"
       :note="t.note"
@@ -256,6 +210,7 @@ const HOME: &str = r#"<!-- The list. A page is an ordinary component that a `<ro
 
 <script>
   use components::task_row;
+  use stores::todo;
 </script>
 "#;
 
@@ -329,6 +284,8 @@ const NEW_TASK: &str = r#"<!-- The form. Every input needs an `r-model`: it is t
 </style>
 
 <script>
+  use stores::todo;
+
   /* This page's own state. Two instances of a component would each get their
      own copy of these, which is why they live here and the task list does not. */
   let label = signal("");
@@ -338,9 +295,9 @@ const NEW_TASK: &str = r#"<!-- The form. Every input needs an `r-model`: it is t
     if label.trim() == "" {
       return;
     }
-    /* `add_task` is declared in app.rux. Functions are shared across every file
-       in the project, so a page changes the app's state by calling one. */
-    add_task(label.trim(), note.trim());
+    /* The list is the store's: a page changes it by calling one of the
+       functions `stores/todo.rux` exports, never by writing it. */
+    todo.add(label.trim(), note.trim());
     label = "";
     note = "";
     navigate("/");
@@ -365,7 +322,7 @@ const DETAIL: &str = r#"<!-- One task, opened from the list.
       <text class="note" r-if='task().note != ""'>{{ task().note }}</text>
 
       <view class="actions">
-        <view class="action done-action" @tap="toggle_task(id())">
+        <view class="action done-action" @tap="todo.toggle(id())">
           <text class="action-label" r-if="task().done">Mark as not done</text>
           <text class="action-label" r-else>Mark as done</text>
         </view>
@@ -437,16 +394,18 @@ const DETAIL: &str = r#"<!-- One task, opened from the list.
 </style>
 
 <script>
+  use stores::todo;
+
   fn id() {
     params?.id
   }
 
   fn task() {
-    task_by_id(id())
+    todo.find(id())
   }
 
   fn drop() {
-    remove_task(id());
+    todo.remove(id());
     navigate("/");
   }
 </script>
@@ -564,6 +523,61 @@ const TASK_ROW: &str = r#"<!-- One row of the list.
 </script>
 "#;
 
+/// The app's state: a store. A module (a file with no `<template>`) is
+/// loaded once, so every file that imports it reads the same tasks.
+const TODO: &str = r#"<!-- The app's state. A file with no <template> is a module: it is loaded
+     once, so every file that imports it with `use stores::todo;` reads the
+     same tasks. What it exports is all another file sees, and only its own
+     functions change its state: the list's rules live in one place. -->
+<script>
+  export type Task = { id: string, label: string, note: string, done: bool };
+
+  /* An id is text, not a number. A route carries `:id` out of the path as
+     text, so text on both sides is the comparison that needs no conversion. */
+  export let tasks: Task[] = signal([
+    { id: "1", label: "Read the Rux guide", note: "ruxlang.dev/learn", done: true },
+    { id: "2", label: "Add a task of your own", note: "The tab below, or the button on the list", done: false }
+  ]);
+  let next_id = signal(3);
+
+  export fn done_count(): int {
+    let n = 0;
+    for t in tasks {
+      if t.done { n += 1; }
+    }
+    n
+  }
+
+  export fn add(label: string, note: string) {
+    tasks.push({ id: "" + next_id, label: label, note: note, done: false });
+    next_id += 1;
+  }
+
+  export fn find(id: string): Task? {
+    for t in tasks {
+      if t.id == id { return t; }
+    }
+    none
+  }
+
+  export fn toggle(id: string) {
+    for i in 0..tasks.len() {
+      if tasks[i].id == id {
+        tasks[i].done = !tasks[i].done;
+      }
+    }
+  }
+
+  export fn remove(id: string) {
+    let kept: Task[] = [];
+    for t in tasks {
+      if t.id != id { kept.push(t); }
+    }
+    tasks = kept;
+  }
+</script>
+"#;
+
 const README: &str = r#"# {name}
 
 A [Rux](https://ruxlang.dev) app.
@@ -581,7 +595,9 @@ rebuilding.
 ## What is here
 
 ```
-app.rux              the frame, the state, and the routes
+app.rux              the frame and the routes
+stores/              the app's state
+  todo.rux           the tasks, and the functions that change them
 pages/               one file per route
   home.rux           the list
   new-task.rux       the form
@@ -599,10 +615,12 @@ from wherever you happened to run `rux`.
 
 ## How it fits together
 
-**`app.rux` owns the state.** A page is a component, and a component gets its
-own copy of anything it declares, so state that outlives one screen lives in
-`app.rux`. Pages read it by name and change it by calling the functions declared
-there: functions are shared with every file in the project.
+**`stores/todo.rux` owns the state.** A page is a component, and a component
+gets its own copy of anything it declares, so state that outlives one screen
+lives in a store: a file with no `<template>`, loaded once, so every file that
+imports it with `use stores::todo;` reads the same tasks. A page reads
+`todo.tasks` and changes the list by calling what the store exports,
+`todo.add(…)` or `todo.toggle(id)`; nothing outside the store writes it.
 
 **A name is written twice, deliberately.** `use pages::new_task;` names a file,
 so it is written the way files are; `<new-task>` is a custom element, so it is
@@ -659,6 +677,7 @@ version = "0.1.0"
 
 const FILES: &[File] = &[
     File { path: "app.rux", body: APP },
+    File { path: "stores/todo.rux", body: TODO },
     File { path: "pages/home.rux", body: HOME },
     File { path: "pages/new-task.rux", body: NEW_TASK },
     File { path: "pages/detail.rux", body: DETAIL },
@@ -814,7 +833,7 @@ mod tests {
     #[test]
     fn every_scaffolded_import_names_a_file_the_scaffold_writes() {
         let written: Vec<&str> = FILES.iter().map(|f| f.path).collect();
-        for body in [APP, HOME, NEW_TASK, DETAIL, MISSING, TASK_ROW] {
+        for body in [APP, HOME, NEW_TASK, DETAIL, MISSING, TASK_ROW, TODO] {
             for line in body.lines().map(str::trim) {
                 let Some(path) = line.strip_prefix("use ").and_then(|l| l.strip_suffix(';')) else {
                     continue;

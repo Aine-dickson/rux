@@ -1818,10 +1818,17 @@ pub fn imports_of(path: impl AsRef<Path>) -> Option<Vec<(String, PathBuf)>> {
             // An import that resolves to nothing is a load error, reported when
             // the file is actually checked. Here it simply names no file.
             .filter_map(|i| {
-                resolve_import(base, &i.file).ok().map(|p| (i.tag.clone(), source::canonical(&p)))
+                resolve_import(base, &i.file, base).ok().map(|p| (i.tag.clone(), source::canonical(&p)))
             })
             .collect(),
     )
+}
+
+/// Whether the file at `path` is a script module: a `.rux` file with no
+/// `<template>` (step 7 of `docs/11-next.md`). One that some other file
+/// imports is checked through that file, with its own lines.
+pub fn is_module_file(path: impl AsRef<Path>) -> bool {
+    source::read_text(path.as_ref()).ok().and_then(|s| rux_parser::parse_sfc(&s).ok()).is_some_and(|sfc| sfc.module)
 }
 
 /// Every file this document's `<route>`s render, resolved to paths.
@@ -2092,7 +2099,7 @@ impl Document {
         // to no line of this document at all, so the mapping has to know where
         // its own script stops.
         let main_script_lines = main_script.lines().count();
-        let mut combined_script = main_script;
+        let combined_script = main_script;
         // Every file's imports, not just the document's.
         //
         // This used to be one pass over `imports`, with a component's own `use`
@@ -2117,10 +2124,12 @@ impl Document {
         let mut component_types: HashMap<String, Vec<(String, String)>> = HashMap::new();
         // Script modules, keyed as components are, by file.
         let mut module_files: HashMap<String, modules::ModuleFile> = HashMap::new();
-        // What the document and its components import from modules, and the
-        // file that imports each. One table for all of them, since the
-        // components' functions join the document's script.
-        let mut aliases: Vec<(rux_script::link::Alias, PathBuf)> = Vec::new();
+        // What the document imports from modules, and what each component
+        // does, by the component's key: each file's names are its own.
+        let mut aliases: Vec<rux_script::link::Alias> = Vec::new();
+        let mut component_aliases: HashMap<String, Vec<rux_script::link::Alias>> = HashMap::new();
+        // Each component's functions, in a scope of its own.
+        let mut component_sources: Vec<rux_script::ComponentSource> = Vec::new();
         let project_root = workspace_root(base).unwrap_or_else(|| base.to_path_buf());
         let mut queue: Vec<ImportJob> = vec![ImportJob {
             owner: DOCUMENT_NAMESPACE.to_string(),
@@ -2167,7 +2176,7 @@ impl Document {
                         ));
                     }
                     let written = import.file.trim_end_matches(".rux").replace('/', "::");
-                    let types_path = match resolve_import(&job.base, &import.file) {
+                    let types_path = match resolve_import(&job.base, &import.file, &project_root) {
                         Ok(p) => p,
                         Err((beside, from_root)) => {
                             let mut looked = format!("`{}`", beside.display());
@@ -2251,7 +2260,7 @@ impl Document {
                 }
                 let written = import.file.trim_end_matches(".rux").replace('/', "::");
                 let comp_path =
-                    resolve_import(&job.base, &import.file).map_err(|(beside, from_root)| {
+                    resolve_import(&job.base, &import.file, &project_root).map_err(|(beside, from_root)| {
                         let mut looked = format!("`{}`", beside.display());
                         if let Some(root) = from_root.filter(|r| *r != beside) {
                             looked.push_str(&format!(" and `{}`", root.display()));
@@ -2316,28 +2325,10 @@ impl Document {
                         owner.aliases.push(alias);
                         continue;
                     }
-                    // One name, one module, across the document and its
-                    // components, since their functions share its script.
-                    if let Some((other, file)) = aliases.iter().find(|(a, _)| a.local == alias.local && a.target != alias.target) {
-                        let what = |t: &rux_script::link::Target| match t {
-                            rux_script::link::Target::Module(m) => m.clone(),
-                            rux_script::link::Target::Member(m, n) => format!("`{n}` of {m}"),
-                        };
-                        return Err(LoadError::at_line(
-                            format!(
-                                "`{}` already means {} in `{}`, and a component's functions share the \
-                                 document's names, so here it cannot mean {}: import it `as` another name",
-                                alias.local,
-                                what(&other.target),
-                                file.display(),
-                                what(&alias.target)
-                            ),
-                            at,
-                            &job.owner_path,
-                        ));
-                    }
-                    if !aliases.iter().any(|(a, _)| *a == alias) {
-                        aliases.push((alias, job.owner_path.clone()));
+                    if job.owner == DOCUMENT_NAMESPACE {
+                        aliases.push(alias);
+                    } else {
+                        component_aliases.entry(job.owner.clone()).or_default().push(alias);
                     }
                     continue;
                 }
@@ -2430,17 +2421,16 @@ impl Document {
                 if comp_script.contains("type") {
                     comp_sfc.types = rux_script::Engine::declared_types(&comp_script);
                 }
-                // Only its *functions* join the shared engine. Its `let`s do not:
-                // they are the state each instance gets a private copy of, so
-                // merging them here would put one shared variable behind every
-                // instance, which is exactly the bug that split was fixing.
-                //
-                // Functions stay shared across every file, unlike tags. That is
-                // deliberate and is the older rule: a component may call a `fn`
-                // its caller declared, which `set_is_fragment` exists to keep
-                // checkable.
-                combined_script.push('\n');
-                combined_script.push_str(&component_functions(&comp_script));
+                // Its functions go to the engine in a scope of the component's
+                // own (step 7.4 of `docs/11-next.md`): they call each other by
+                // name and see what the component imports, and a caller's
+                // names are not theirs. Its `let`s are each instance's state.
+                component_sources.push(rux_script::ComponentSource {
+                    key: key.clone(),
+                    name: modules::name_of(&comp_path, &project_root),
+                    functions: component_functions(&comp_script),
+                    aliases: Vec::new(),
+                });
                 let comp_script_line = comp_sfc.script_line;
                 components.insert(key.clone(), comp_sfc);
                 queue.push(ImportJob {
@@ -2474,8 +2464,10 @@ impl Document {
             let order = modules::order(&module_files)?;
             order.into_iter().filter_map(|k| module_files.remove(&k)).collect()
         };
-        let link_aliases: Vec<rux_script::link::Alias> = aliases.into_iter().map(|(a, _)| a).collect();
-        let mut engine = build_engine_linked(&combined_script, &ordered, link_aliases)
+        for c in &mut component_sources {
+            c.aliases = component_aliases.remove(&c.key).unwrap_or_default();
+        }
+        let mut engine = build_engine_linked(&combined_script, &ordered, aliases, component_sources)
             .map_err(|e| LoadError::in_script(e, sfc.script_line, main_script_lines, Some(path)))?;
         report_module_findings(&engine, &ordered);
         // What `x is T` resolves a name against, beyond the script's own
@@ -2523,7 +2515,7 @@ impl Document {
             // the *document's* name, which points a reader confidently at an
             // unrelated line of a file that is fine.
             rux_script::in_file(component.file.clone(), || {
-                check_handlers(&component.template, &engine, &tags_in(key));
+                engine.in_scope(Some(key), || check_handlers(&component.template, &engine, &tags_in(key)));
             });
         }
         let mut callers = names_callers_bring(&sfc.template, &engine);
@@ -5659,7 +5651,12 @@ fn component_key(path: &Path) -> String {
     resolved.to_string_lossy().replace('\\', "/")
 }
 
-fn resolve_import(base: &Path, file: &str) -> Result<PathBuf, (PathBuf, Option<PathBuf>)> {
+///
+/// `entry` is the directory of the document being opened, which stands in for
+/// the project root where no `app.rux` or `index.rux` marks one: a folder of
+/// examples is no project, and `use stores::shop;` in its
+/// `components/cart_row.rux` means the `stores/` beside the page that was run.
+fn resolve_import(base: &Path, file: &str, entry: &Path) -> Result<PathBuf, (PathBuf, Option<PathBuf>)> {
     // Joined a segment at a time rather than as one `a/b.rux` string, so the
     // result is spelled in the platform's own separator. Joining the whole
     // thing produced `...\pages\components/task.rux` in every message on
@@ -5667,7 +5664,7 @@ fn resolve_import(base: &Path, file: &str) -> Result<PathBuf, (PathBuf, Option<P
     let join = |dir: &Path, name: &str| {
         name.split('/').fold(dir.to_path_buf(), |acc, part| acc.join(part))
     };
-    let root = workspace_root(base);
+    let root = workspace_root(base).or_else(|| Some(entry.to_path_buf()));
     let beside = join(base, file);
     let from_root = root.as_ref().map(|r| join(r, file));
 
@@ -5858,7 +5855,7 @@ fn splice(script: &str, mut edits: Vec<(rux_syntax::Span, String)>) -> String {
 /// Build the script engine and register host functions (the native-capability
 /// boundary; a real app registers its own here).
 fn build_engine(script: &str) -> Result<Engine, rux_script::ScriptError> {
-    build_engine_linked(script, &[], Vec::new())
+    build_engine_linked(script, &[], Vec::new(), Vec::new())
 }
 
 /// [`build_engine`], with script modules linked in, in the order their top
@@ -5867,8 +5864,12 @@ fn build_engine_linked(
     script: &str,
     modules: &[modules::ModuleFile],
     aliases: Vec<rux_script::link::Alias>,
+    components: Vec<rux_script::ComponentSource>,
 ) -> Result<Engine, rux_script::ScriptError> {
     let mut builder = Builder::new();
+    for c in components {
+        builder.component(c);
+    }
     for m in modules {
         builder.module(rux_script::ModuleSource {
             name: m.name.clone(),
@@ -6803,6 +6804,35 @@ mod tests {
         ));
         fs::create_dir_all(dir.join("components")).unwrap();
         fs::write(dir.join("components/card.rux"), component).unwrap();
+        fs::write(dir.join("app.rux"), app).unwrap();
+        let doc = Document::load(dir.join("app.rux")).expect("load");
+        let _ = fs::remove_dir_all(&dir);
+        doc
+    }
+
+    /// What the probe store's signal `name` holds, as text.
+    fn probe_value(doc: &Document, name: &str) -> String {
+        doc.engine.signal_value(&format!("stores/probe::{name}")).map(|v| v.to_display()).unwrap_or_default()
+    }
+
+    /// [`with_component`], with a store beside them: `stores/probe.rux`,
+    /// which either may import (`use stores::probe;`). A component's names
+    /// are its own, so what it shares with the document goes through one
+    /// (step 7.4 of `docs/11-next.md`). Its state reads back from the
+    /// engine by its linked name, `stores/probe::name`.
+    fn with_store(component: &str, app: &str, store: &str) -> Document {
+        use std::fs;
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "rux_store_{}_{}",
+            std::process::id(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("components")).unwrap();
+        fs::create_dir_all(dir.join("stores")).unwrap();
+        fs::write(dir.join("components/card.rux"), component).unwrap();
+        fs::write(dir.join("stores/probe.rux"), store).unwrap();
         fs::write(dir.join("app.rux"), app).unwrap();
         let doc = Document::load(dir.join("app.rux")).expect("load");
         let _ = fs::remove_dir_all(&dir);
@@ -7832,32 +7862,43 @@ use components::detail;
         assert_eq!(doc.value_in("count", None, None), "", "{:?}", text_of(&doc.root));
     }
 
-    /// The isolation is one-directional, and the docs claimed otherwise. A
-    /// component's *script* runs in a fresh scope, so its `let`s are private.
-    /// Its template and handlers do not: they run against the document's scope
-    /// with the instance's names pushed on top, so an un-shadowed document
-    /// signal is both readable and writable from inside. The router depends on
-    /// it (`{{ route }}` inside a route view).
+    /// A component's names are its own, all of them (step 7.4 of
+    /// `docs/11-next.md`): its template, handlers and functions see its state,
+    /// its props, what it imports and what the runtime provides (`{{ route }}`
+    /// inside a route view), and not the document's signals. State the two
+    /// share lives in a store both import; the component reads it and changes
+    /// it through the store's functions.
     #[test]
-    fn a_component_reads_and_writes_an_unshadowed_document_signal() {
-        let mut doc = with_component(
+    fn a_component_reads_and_writes_a_store_and_not_the_document() {
+        let mut doc = with_store(
             "<template><view>\
-               <text>saw {{ theme }}</text>\
-               <view @tap=\"theme = &quot;dark&quot;\"><text>go</text></view>\
+               <text>saw {{ probe.theme }}</text>\
+               <view @tap=\"probe.set(`dark`)\"><text>go</text></view>\
              </view></template>\n\
-             <script>\nlet count = signal(0);\n</script>",
+             <script>\nuse stores::probe;\nlet count = signal(0);\n</script>",
+            "<template><screen><card /></screen></template>\n\
+             <script>\nuse components::card;\nlet theme = signal(\"light\");\n</script>",
+            "export let theme = signal(\"light\");\nexport fn set(t: string) { theme = t; }",
+        );
+        assert!(find_text(&doc.root, "saw light"), "the store is visible inside: {:?}", text_of(&doc.root));
+        let card = doc.root.children[0].clone();
+        assert!(tap(&mut doc, &card), "the handler changed the store");
+        assert_eq!(probe_value(&doc, "theme"), "dark");
+        assert_eq!(doc.engine_mut().get_string("theme"), "light", "the document's own signal of that name is not the store's");
+        assert!(find_text(&doc.root, "saw dark"), "{:?}", text_of(&doc.root));
+    }
+
+    /// And the document's own signal is not visible inside at all.
+    #[test]
+    fn a_component_does_not_see_the_documents_signals() {
+        let doc = with_component(
+            "<template><view><text>saw {{ theme }}</text></view></template>",
             "<template><screen><card /></screen></template>\n\
              <script>\nuse components::card;\nlet theme = signal(\"light\");\n</script>",
         );
-        assert!(
-            find_text(&doc.root, "saw light"),
-            "the document's signal is visible inside: {:?}",
-            text_of(&doc.root)
-        );
-        let card = doc.root.children[0].clone();
-        assert!(tap(&mut doc, &card), "the handler wrote a document signal");
-        assert_eq!(doc.value_in("theme", None, None), "dark");
-        assert!(find_text(&doc.root, "saw dark"), "{:?}", text_of(&doc.root));
+        assert!(!find_text(&doc.root, "saw light"), "{:?}", text_of(&doc.root));
+        let said: Vec<String> = doc.diagnostics().warnings.iter().map(|w| w.message.clone()).collect();
+        assert!(said.iter().any(|m| m.contains("`theme` is not defined")), "{said:?}");
     }
 
     /// A component that leaves the screen leaves the instance map with it.
@@ -8724,23 +8765,23 @@ use components::detail;
     /// readable is the only moment it can be saved.
     #[test]
     fn component_unmounted_fires_when_the_instance_leaves() {
-        let mut doc = with_component(
+        let mut doc = with_store(
             "<template><view><text>{{ note }}</text></view></template>\n\
-             <script>\nlet note = signal(\"draft\");\nunmounted { saved = note; }\n</script>",
+             <script>\nuse stores::probe;\nlet note = signal(\"draft\");\nunmounted { probe.save(note); }\n</script>",
             "<template><screen>\
-               <text>{{ saved }}</text>\
+               <text>{{ probe.saved }}</text>\
                <card r-if=\"open\" />\
              </screen></template>\n\
-             <script>\nuse components::card;\nlet open = signal(true);\n\
-             let saved = signal(\"nothing\");\n</script>",
+             <script>\nuse components::card;\nuse stores::probe;\nlet open = signal(true);\n</script>",
+            "export let saved = signal(\"nothing\");\nexport fn save(s: string) { saved = s; }",
         );
-        assert_eq!(doc.engine_mut().get_string("saved"), "nothing", "not while it is on screen");
+        assert_eq!(probe_value(&doc, "saved"), "nothing", "not while it is on screen");
         assert_eq!(doc.instances.len(), 1);
 
         assert!(doc.apply_handler("open = false"), "closing the r-if rebuilt");
         assert!(doc.instances.is_empty(), "the instance was pruned");
         assert_eq!(
-            doc.engine_mut().get_string("saved"),
+            probe_value(&doc, "saved"),
             "draft",
             "and its `unmounted` read the state it was holding as it went"
         );
@@ -8774,22 +8815,22 @@ use components::detail;
     /// document signal, which is the rule components already follow.
     #[test]
     fn coming_back_mounts_a_new_instance() {
-        let mut doc = with_component(
+        let mut doc = with_store(
             "<template><view><text>{{ runs }}</text></view></template>\n\
-             <script>\nlet runs = signal(0);\nmounted { runs++; total++; }\n</script>",
+             <script>\nuse stores::probe;\nlet runs = signal(0);\nmounted { runs++; probe.count(); }\n</script>",
             "<template><screen>\
-               <text>total {{ total }}</text>\
+               <text>total {{ probe.total }}</text>\
                <card r-if=\"open\" />\
              </screen></template>\n\
-             <script>\nuse components::card;\nlet open = signal(true);\n\
-             let total = signal(0);\n</script>",
+             <script>\nuse components::card;\nuse stores::probe;\nlet open = signal(true);\n</script>",
+            "export let total = signal(0);\nexport fn count() { total++; }",
         );
-        assert_eq!(doc.engine_mut().get_string("total"), "1");
+        assert_eq!(probe_value(&doc, "total"), "1");
 
         assert!(doc.apply_handler("open = false"));
         assert!(doc.apply_handler("open = true"));
         assert_eq!(
-            doc.engine_mut().get_string("total"),
+            probe_value(&doc, "total"),
             "2",
             "the second visit is a second mount"
         );
@@ -8804,14 +8845,15 @@ use components::detail;
     /// locally. It was never specific to hooks; an `@tap` did the same.
     #[test]
     fn a_handler_that_writes_both_shows_both() {
-        let mut doc = with_component(
+        let mut doc = with_store(
             "<template><view>\
                <text>{{ mine }}</text>\
-               <view @tap=\"mine = mine + 1; theirs = theirs + 1\"><text>go</text></view>\
+               <view @tap=\"mine = mine + 1; probe.bump()\"><text>go</text></view>\
              </view></template>\n\
-             <script>\nlet mine = signal(0);\n</script>",
-            "<template><screen><text>{{ theirs }}</text><card /></screen></template>\n\
-             <script>\nuse components::card;\nlet theirs = signal(0);\n</script>",
+             <script>\nuse stores::probe;\nlet mine = signal(0);\n</script>",
+            "<template><screen><text>{{ probe.theirs }}</text><card /></screen></template>\n\
+             <script>\nuse components::card;\nuse stores::probe;\n</script>",
+            "export let theirs = signal(0);\nexport fn bump() { theirs = theirs + 1; }",
         );
         let button = doc.root.children[1]
             .children
@@ -8939,25 +8981,25 @@ use components::detail;
     /// outliving its instance would run a body against state nobody can reach.
     #[test]
     fn an_interval_dies_with_its_instance() {
-        let mut doc = with_component(
+        let mut doc = with_store(
             "<template><view><text>{{ own }}</text></view></template>\n\
-             <script>\nlet own = signal(0);\n\
-             mounted { setInterval(50) { own++; beats++; } }\n</script>",
+             <script>\nuse stores::probe;\nlet own = signal(0);\n\
+             mounted { setInterval(50) { own++; probe.beat(); } }\n</script>",
             "<template><screen>\
-               <text>{{ beats }}</text>\
+               <text>{{ probe.beats }}</text>\
                <card r-if=\"open\" />\
              </screen></template>\n\
-             <script>\nuse components::card;\nlet open = signal(true);\n\
-             let beats = signal(0);\n</script>",
+             <script>\nuse components::card;\nuse stores::probe;\nlet open = signal(true);\n</script>",
+            "export let beats = signal(0);\nexport fn beat() { beats++; }",
         );
         assert_eq!(doc.timer_deadline(0.0), Some(50.0), "the instance started one");
         assert!(doc.fire_timers(50.0), "the instance's timer ticks");
-        assert_eq!(doc.engine_mut().get_string("beats"), "1");
+        assert_eq!(probe_value(&doc, "beats"), "1");
 
         assert!(doc.apply_handler("open = false"), "close the r-if");
         assert_eq!(doc.timer_deadline(50.0), None, "the timer went with the instance");
         assert!(!doc.fire_timers(10_000.0));
-        assert_eq!(doc.engine_mut().get_string("beats"), "1", "and never ticked again");
+        assert_eq!(probe_value(&doc, "beats"), "1", "and never ticked again");
     }
 
     /// The document's own interval belongs to the document, even when a
@@ -9074,19 +9116,20 @@ let open = signal(true);
                 done.ok(rux_reactive::Value::Text("late".into()));
             });
         });
-        let mut doc = with_component(
+        let mut doc = with_store(
             "<template><view><text>card</text></view></template>\n\
-             <script>\nasync fn fetch() { let v = await host::rt3_slow(); beats = v; }\n\
+             <script>\nuse stores::probe;\nasync fn fetch() { let v = await host::rt3_slow(); probe.set(v); }\n\
              mounted { fetch(); }\n</script>",
-            "<template><screen><text>{{ beats }}</text><card r-if=\"open\" /></screen></template>\n\
-             <script>\nuse components::card;\nlet open = signal(true);\nlet beats = signal(\"none yet\");\n</script>",
+            "<template><screen><text>{{ probe.beats }}</text><card r-if=\"open\" /></screen></template>\n\
+             <script>\nuse components::card;\nuse stores::probe;\nlet open = signal(true);\n</script>",
+            "export let beats = signal(\"none yet\");\nexport fn set(s: string) { beats = s; }",
         );
         assert!(doc.has_waiting_tasks());
         assert!(doc.apply_handler("open = false"), "close the r-if");
         assert!(!doc.has_waiting_tasks(), "the task went with the instance");
         std::thread::sleep(std::time::Duration::from_millis(60));
         assert!(!doc.settle_tasks(), "and the late answer runs nothing");
-        assert_eq!(doc.engine_mut().get_string("beats"), "none yet");
+        assert_eq!(probe_value(&doc, "beats"), "none yet");
     }
 
     /// An error nothing catches is reported as a failing handler is, at the
@@ -9166,30 +9209,32 @@ async fn go() {
     /// that signal moves.
     #[test]
     fn a_component_computed_follows_a_document_signal() {
-        let mut doc = with_component(
+        let mut doc = with_store(
             "<template><view><text>{{ shown }}</text></view></template>\n\
-             <script>\nlet factor = signal(2);\ncomputed shown = base * factor;\n</script>",
+             <script>\nuse stores::probe;\nlet factor = signal(2);\ncomputed shown = probe.base * factor;\n</script>",
             "<template><screen><card /></screen></template>\n\
-             <script>\nuse components::card;\nlet base = signal(5);\n</script>",
+             <script>\nuse components::card;\nuse stores::probe;\n</script>",
+            "export let base = signal(5);\nexport fn set(n: int) { base = n; }",
         );
         assert_eq!(text_of(&doc.root).join(""), "10");
-        assert!(doc.apply_handler("base = 7"));
-        assert_eq!(text_of(&doc.root).join(""), "14", "the document signal reached it");
+        assert!(doc.apply_handler("probe.set(7)"));
+        assert_eq!(text_of(&doc.root).join(""), "14", "the store's signal reached it");
     }
 
     /// A component's `effect` runs on load and again when what it read moves,
     /// in its own instance's scope.
     #[test]
     fn a_component_effect_runs_per_instance() {
-        let mut doc = with_component(
+        let mut doc = with_store(
             "<template><view><text>{{ seen }}</text></view></template>\n\
-             <script>\nlet seen = signal(\"\");\n\
-             effect { seen = \"saw \" + theme; }\n</script>",
+             <script>\nuse stores::probe;\nlet seen = signal(\"\");\n\
+             effect { seen = \"saw \" + probe.theme; }\n</script>",
             "<template><screen><card /></screen></template>\n\
-             <script>\nuse components::card;\nlet theme = signal(\"dark\");\n</script>",
+             <script>\nuse components::card;\nuse stores::probe;\n</script>",
+            "export let theme = signal(\"dark\");\nexport fn set(t: string) { theme = t; }",
         );
         assert_eq!(text_of(&doc.root).join(""), "saw dark", "established on mount");
-        assert!(doc.apply_handler("theme = \"light\""));
+        assert!(doc.apply_handler("probe.set(\"light\")"));
         assert_eq!(text_of(&doc.root).join(""), "saw light", "and re-ran on the change");
     }
 
@@ -9197,23 +9242,24 @@ async fn go() {
     /// a document signal and would run against a scope that is gone.
     #[test]
     fn instance_reactives_die_with_the_instance() {
-        let mut doc = with_component(
+        let mut doc = with_store(
             "<template><view><text>{{ seen }}</text></view></template>\n\
-             <script>\nlet seen = signal(0);\n\
-             effect { seen = theme; runs++; }\n</script>",
+             <script>\nuse stores::probe;\nlet seen = signal(0);\n\
+             effect { seen = probe.theme; probe.ran(); }\n</script>",
             "<template><screen>\
-               <text>{{ runs }}</text>\
+               <text>{{ probe.runs }}</text>\
                <card r-if=\"open\" />\
              </screen></template>\n\
-             <script>\nuse components::card;\nlet open = signal(true);\n\
-             let theme = signal(1);\nlet runs = signal(0);\n</script>",
+             <script>\nuse components::card;\nuse stores::probe;\nlet open = signal(true);\n</script>",
+            "export let theme = signal(1);\nexport let runs = signal(0);\n\
+             export fn ran() { runs++; }\nexport fn set(n: int) { theme = n; }",
         );
-        assert_eq!(doc.engine_mut().get_string("runs"), "1", "ran once on mount");
+        assert_eq!(probe_value(&doc, "runs"), "1", "ran once on mount");
 
         assert!(doc.apply_handler("open = false"));
-        assert!(doc.apply_handler("theme = 2"));
+        assert!(doc.apply_handler("probe.set(2)"));
         assert_eq!(
-            doc.engine_mut().get_string("runs"),
+            probe_value(&doc, "runs"),
             "1",
             "the effect went with the instance"
         );
@@ -10366,6 +10412,10 @@ mod swap_tests {
     }
 
     /// Two route views, so a navigation has something to swap between.
+    fn probe_value(doc: &Document, name: &str) -> String {
+        doc.engine.signal_value(&format!("stores/probe::{name}")).map(|v| v.to_display()).unwrap_or_default()
+    }
+
     fn routed(app: &str) -> Document {
         use std::fs;
         let dir = std::env::temp_dir().join(format!(
@@ -10567,10 +10617,16 @@ use components::about;
                 .as_nanos()
         ));
         fs::create_dir_all(dir.join("components")).unwrap();
+        fs::create_dir_all(dir.join("stores")).unwrap();
+        fs::write(
+            dir.join("stores/probe.rux"),
+            "export let left = signal(\"no\");\nexport fn leave() { left = \"yes\"; }",
+        )
+        .unwrap();
         fs::write(
             dir.join("components/home.rux"),
             "<template><view class=\"page\"><text>home</text></view></template>\n\
-             <script>\nunmounted { left = \"yes\"; }\n</script>",
+             <script>\nuse stores::probe;\nunmounted { probe.leave(); }\n</script>",
         )
         .unwrap();
         fs::write(
@@ -10589,7 +10645,7 @@ use components::about;
              <style>\n.page { opacity: 1; transition: opacity 200ms; }\n\
              .page:leave-to { opacity: 0; }\n</style>\n\
              <script>\nuse components::home;\nuse components::about;\n\
-             let left = signal(\"no\");\n</script>",
+             </script>",
         )
         .unwrap();
         let mut doc = Document::load(dir.join("app.rux")).expect("load");
@@ -10597,16 +10653,16 @@ use components::about;
 
         assert!(doc.apply_handler("navigate(\"/about\")"), "navigated");
         assert_eq!(
-            doc.engine_mut().get_string("left"),
+            probe_value(&doc, "left"),
             "no",
             "not yet: the page is still on screen animating out"
         );
 
         let _ = doc.advance_swaps(0.0);
-        assert_eq!(doc.engine_mut().get_string("left"), "no", "still not");
+        assert_eq!(probe_value(&doc, "left"), "no", "still not");
 
         assert_eq!(doc.advance_swaps(200.0), None, "the swap commits");
-        assert_eq!(doc.engine_mut().get_string("left"), "yes", "and now it fires");
+        assert_eq!(probe_value(&doc, "left"), "yes", "and now it fires");
     }
 
     /// A route view's `unmounted` fires when you navigate away, with no
@@ -10629,9 +10685,15 @@ use components::about;
                 .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
         ));
         fs::create_dir_all(dir.join("components")).unwrap();
+        fs::create_dir_all(dir.join("stores")).unwrap();
+        fs::write(
+            dir.join("stores/probe.rux"),
+            "export let left = signal(\"no\");\nexport fn leave() { left = \"yes\"; }",
+        )
+        .unwrap();
         fs::write(dir.join("components/home.rux"),
             "<template><view><text>home</text></view></template>\n\
-             <script>\nunmounted { left = \"yes\"; }\n</script>").unwrap();
+             <script>\nuse stores::probe;\nunmounted { probe.leave(); }\n</script>").unwrap();
         fs::write(dir.join("components/about.rux"),
             "<template><view><text>about</text></view></template>").unwrap();
         fs::write(dir.join("app.rux"),
@@ -10642,13 +10704,13 @@ use components::about;
                </router>\
              </screen></template>\n\
              <script>\nuse components::home;\nuse components::about;\n\
-             let left = signal(\"no\");\n</script>").unwrap();
+             </script>").unwrap();
         let mut doc = Document::load(dir.join("app.rux")).expect("load");
         let _ = fs::remove_dir_all(&dir);
         assert!(doc.apply_handler("navigate(\"/about\")"));
         assert_eq!(text_of(&doc.root), vec!["about"]);
         assert_eq!(
-            doc.engine_mut().get_string("left"),
+            probe_value(&doc, "left"),
             "yes",
             "the view's own hook ran, so it was filed under its own tag"
         );

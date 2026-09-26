@@ -52,6 +52,8 @@
 </style>
 
 <script>
+  use stores::shop;
+
   prop label;
   prop price;
 
@@ -59,13 +61,13 @@
   let note = signal("");
 
   // Per instance: each row multiplies its own quantity by the price it was
-  // handed, and `currency` is the document's, read straight through.
-  computed line = currency + (qty * price);
+  // handed, and `currency` is the shop store's.
+  computed line = shop.currency + (qty * price);
 
-  // Also per instance, and subscribed to what it read: the document's `sale`
+  // Also per instance, and subscribed to what it read: the store's `sale`
   // moves and every row re-runs this against its own state.
   effect {
-    if sale {
+    if shop.sale {
       note = "on sale, " + qty + " in the basket";
     } else {
       note = qty + " in the basket";

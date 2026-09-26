@@ -118,3 +118,43 @@ fn an_async_fn_started_stopped_and_resumed() {
     println!("async fn start    {started:>8.2} µs (to its await)");
     println!("async fn resume   {going_on:>8.2} µs (answer taken, rest run)");
 }
+
+/// A store against the document's own state (step 7 of `docs/11-next.md`):
+/// the same handler and binding, once on the document's signal and function,
+/// once through a module linked in. Linking happens when text is first
+/// compiled, so a run of either should cost the same.
+#[test]
+#[ignore]
+fn a_store_against_the_documents_own_state() {
+    use rux_script::link::{Alias, Target};
+    use rux_script::ModuleSource;
+    const ROUNDS: u32 = 5;
+    const TIMES: u32 = 1000;
+    let own = "let n = signal(0);\nfn bump() { n += 1; }";
+    let mut doc: Engine = Builder::new().build(own).expect("builds");
+    let mut b = Builder::new();
+    b.module(ModuleSource {
+        name: "stores/count".into(),
+        script: "export let n = signal(0);\nexport fn bump() { n += 1; }".into(),
+        aliases: Vec::new(),
+        types: Vec::new(),
+    });
+    b.aliases(vec![Alias { local: "count".into(), target: Target::Module("stores/count".into()), line: 1 }]);
+    let mut store: Engine = b.build("").expect("builds");
+    println!("{:<24} {:>12} {:>12} {:>8}", "case, x1000", "document µs", "store µs", "ratio");
+    for (what, mine, theirs) in [("call that writes", "bump()", "count.bump()"), ("read in a binding", "n + 1", "count.n + 1")] {
+        doc.eval_value(mine, &[]);
+        store.eval_value(theirs, &[]);
+        let t = Instant::now();
+        for _ in 0..ROUNDS * TIMES {
+            std::hint::black_box(doc.eval_value(mine, &[]));
+        }
+        let a = t.elapsed().as_nanos() as f64 / ROUNDS as f64 / 1000.0;
+        let t = Instant::now();
+        for _ in 0..ROUNDS * TIMES {
+            std::hint::black_box(store.eval_value(theirs, &[]));
+        }
+        let b = t.elapsed().as_nanos() as f64 / ROUNDS as f64 / 1000.0;
+        println!("{what:<24} {a:>12.1} {b:>12.1} {:>7.2}x", b / a);
+    }
+}

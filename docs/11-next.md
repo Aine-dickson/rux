@@ -679,18 +679,23 @@ top level of a file's script; a handler or a binding cannot hold one.
 
 A file with a `<script>` and no `<template>` is a module: functions, types and
 state, no view. It may be written as a bare `.rux` file with no `<script>` tag
-at all (proposed), since there is nothing else it could hold.
+at all (decided 2026-09-26), since there is nothing else it could hold.
 
-- **`export` makes a declaration visible to importers** (proposed):
+- **`export` makes a declaration visible to importers** (decided):
   `export fn`, `export async fn`, `export type`, `export let`. Anything not
   exported is private to the module.
 - A types file is a module that exports only types (Kept, as the `types.rux`
   files that exist today, which now need `export` on each type; `rux fmt`
-  adds it).
-- A module is loaded once, the first time anything imports it, and its
-  top-level statements run then.
+  adds it, and a type imported that a module does not export is a warning
+  until step 7's survey is clean, then an error).
+- A module is loaded once per document, however many files import it, and
+  its top-level statements run then, before the document's, each module
+  after the ones it imports. Modules importing each other in a circle are
+  refused (decided).
+- A module holds no `computed`, `effect`, lifecycle block or `prop`
+  (decided): those belong to a component or a document.
 
-### Stores (proposed reading of the owner's "Pinia-like" intent)
+### Stores (decided 2026-09-26, the shared half of the owner's "Pinia-like" intent)
 
 **A module's top-level signals are shared state.** Every importer sees the
 same instance. That is a store, with no new keyword:
@@ -708,11 +713,17 @@ export fn total(): float {
 ```
 
 - **An exported signal is readable by importers and writable only inside its
-  module** (proposed). A binding that reads `cart.items` subscribes to it like
+  module** (decided). A binding that reads `cart.items` subscribes to it like
   any signal. Changing it from outside goes through the module's exported
   functions, which is what makes a store's rules live in one place.
 - A component's own state is still changed only inside the component (Kept).
-- A factory that gives each caller its own copy can come later.
+- **A component's names are its own** (decided, step 7.4): what it shares
+  with the document or another component is a store, never the document's
+  signals or functions.
+- **An `async fn` a module exports belongs to the document** when it runs
+  (decided): it writes only the module's state, which outlives any caller.
+- A factory that gives each caller its own copy (the "scoped" half) can come
+  later; what "scoped" means is the owner's to say.
 
 ### Values move by copy (Kept, stated for the first time)
 
@@ -1042,7 +1053,38 @@ Float indexing narrows to what the types allow: an index is an `int`, and a
    failure inside a component's `async fn` is reported without a line; and
    only Rust can register what is awaited, which step 8 turns into `native`
    modules.
-7. **Script modules and stores.**
+7. **Script modules and stores.** Done 2026-09-26. Both spellings of an
+   import are one `Import` node in `rux-syntax`, and a type import is marked
+   with `type` (the owner's rule: never told by a capital letter). A `.rux`
+   file with no `<template>` is a module, loaded once per document, ordered
+   so each runs after what it imports. `rux_script::link` rewrites an
+   importing file before it is checked: `cart.items`, `cart.add(p)` and a
+   picked `add(p)` become linked names (`stores/cart::items`), and a write
+   from outside the module, a private name and a module used as a value are
+   refused there. Each module is checked on its own, and `lower_linked` puts
+   it into the document's one unit under its linked names, so the
+   interpreter and the runtime's reactivity, which tracks names, needed
+   nothing new: one store read by the document and every component instance
+   re-renders them all. Components got their own scope the same way (7.4):
+   a component's functions are linked under its name, an instance's state
+   carries which component it is, and its code sees its own names, its
+   imports and what the runtime provides, not the document's. That ended
+   the `Outer` fallback to document state that step 5 kept for
+   `cart_row.rux` and `session.rux`; both examples and the `rux new`
+   scaffold's pages moved their shared state into stores
+   (`examples/stores/`, the scaffold's `stores/todo.rux`). The findings
+   survey over the 359 `.rux` files found those three and their copies in
+   other clones, nothing else. `examples/store.rux` (a cart store, a bare
+   money module, two components) was driven in the window, as were the two
+   migrated examples. A store costs what the document's own state does: a
+   call that writes 0.96x, a read 1.03x (`tests/interp_cost.rs`). Also
+   fixed on the way: a comment that mentioned `<template>` opened a section.
+   Not done yet: a factory store (the "scoped" half); a generic function
+   exported from a module is checked no further than `any` at the call; the
+   debug-build IR verification lowers a file without its modules, so a
+   linked name is looked up where it runs there; `rux check` on a component
+   in a folder with no project root resolves its imports from the
+   component's own directory.
 8. **`#[rux::export]`, the interface file, `native` modules.**
 9. **Rust code generation** for release builds, native then wasm.
 
