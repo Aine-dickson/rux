@@ -119,6 +119,12 @@ impl<'u> Verifier<'u> {
                     None
                 }
             },
+            Root::Outer(n) => {
+                if n as usize >= self.u.outer.len() {
+                    self.problem(e, format!("outer name #{n} of {}", self.u.outer.len()));
+                }
+                Some(Type::Any)
+            }
         }
     }
 
@@ -266,6 +272,9 @@ impl<'u> Verifier<'u> {
                     self.fits("a read of a global", e, &ty);
                 }
             }
+            ExprKind::Outer(n) => {
+                self.root_ty(Root::Outer(*n), Some(e));
+            }
             ExprKind::Call { callee, args } => {
                 match callee {
                     Callee::Fn(f) => match self.u.fns.get(f.0 as usize) {
@@ -360,7 +369,7 @@ impl<'u> Verifier<'u> {
                 self.block(&c.body.block);
                 self.frames.pop();
             }
-            ExprKind::Interval { args, body } => {
+            ExprKind::Interval { args, body, .. } => {
                 for a in args {
                     self.expr(a);
                 }

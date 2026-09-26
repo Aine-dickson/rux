@@ -11,8 +11,10 @@
 
 pub mod check;
 mod front;
+pub mod interp;
 pub mod lower;
 pub mod profile;
+mod shadow;
 pub use rux_ir::types;
 pub mod validate;
 
@@ -48,6 +50,25 @@ pub fn begin_reads() {
 /// inside it. Names, not signals: filter with [`Engine::declares`].
 pub fn end_reads() -> HashSet<String> {
     SPANS.with(|s| s.borrow_mut().pop()).unwrap_or_default()
+}
+
+/// Record that `name` was read, for a binding's dependencies and every open
+/// span: what the fork's `on_var` hook did for each variable it resolved.
+pub(crate) fn note_read(name: &str) {
+    READS.with(|r| {
+        if let Some(set) = r.borrow_mut().as_mut() {
+            if !set.contains(name) {
+                set.insert(name.to_string());
+            }
+        }
+    });
+    SPANS.with(|s| {
+        for set in s.borrow_mut().iter_mut() {
+            if !set.contains(name) {
+                set.insert(name.to_string());
+            }
+        }
+    });
 }
 
 /// Count `names` as read by every open span, for a caller that reused work
@@ -239,6 +260,8 @@ pub struct Builder {
     host: Module,
     /// The type of every `host::` function registered, for the checker.
     host_types: Vec<(String, types::Type)>,
+    /// The same functions, for Rux's interpreter.
+    host_fns: HashMap<String, interp::Host>,
 }
 
 impl Default for Builder {
@@ -512,6 +535,7 @@ impl Builder {
             engine,
             host: Module::new(),
             host_types: Vec::new(),
+            host_fns: HashMap::new(),
         }
     }
 
@@ -521,6 +545,9 @@ impl Builder {
         name: &str,
         f: impl Fn() -> f64 + Send + Sync + 'static,
     ) -> &mut Self {
+        let f = Arc::new(f);
+        let for_interp = Arc::clone(&f);
+        self.host_fns.insert(name.to_string(), std::rc::Rc::new(move || for_interp()));
         self.host.set_native_fn(name, move || -> Result<f64, Box<rhai::EvalAltResult>> {
             Ok(f())
         });
@@ -546,6 +573,7 @@ impl Builder {
         // `type`s, before the script's first statement can ask. The runtime adds what it imports (`validate::know_types`).
         validate::reset_types(types_declared_in(&parsed, script));
         let mut scope = Scope::new();
+        let marks = shadow::marks();
         self.engine
             .run_ast_with_scope(&mut scope, &ast)
             .map_err(|e| {
@@ -559,7 +587,25 @@ impl Builder {
         // dependency tracking filters reads down to these names.
         let signals = scope.iter().map(|(name, _, _)| name.to_string()).collect();
 
+        let ir = if shadow::on() {
+            let fork_effects = shadow::since(marks);
+            let mut ir = shadow_interp(&parsed, script, &self.host_types, self.host_fns);
+            let (init, effects, _) = shadow::isolated(|| ir.init());
+            if let Err(f) = init {
+                shadow::differ("whether the script's top level runs", script, "it ran", f.message);
+            }
+            if effects != fork_effects {
+                shadow::differ("what the top level asked for", script, fork_effects, effects);
+            }
+            let state: Vec<(String, Value)> = scope.iter().map(|(n, _, v)| (n.to_string(), from_dynamic(&v))).collect();
+            shadow::same_state(script, &state, &ir);
+            Some(ir)
+        } else {
+            None
+        };
+
         Ok(Engine {
+            ir,
             engine: self.engine,
             scope,
             funcs,
@@ -570,6 +616,24 @@ impl Builder {
             compiled: HashMap::new(),
         })
     }
+}
+
+/// Rux's interpreter for `script`, checked and lowered, its top level not
+/// yet run.
+fn shadow_interp(
+    parsed: &rux_syntax::ast::Script,
+    script: &str,
+    host_types: &[(String, types::Type)],
+    host_fns: HashMap<String, interp::Host>,
+) -> interp::Interp {
+    let cx = check::Context {
+        host: host_types.to_vec(),
+        provided: ROUTER_SIGNALS.iter().map(|n| (n.to_string(), types::Type::Any)).collect(),
+        ..check::Context::default()
+    };
+    let (_, record) = check::check_typed(parsed, script, &cx);
+    let unit = lower::lower(parsed, script, &record, &cx.provided);
+    interp::Interp::new(unit, host_fns)
 }
 
 /// The `type` declarations of a script Rux parsed from `src`, as name and the
@@ -909,16 +973,7 @@ fn register_js_names(engine: &mut RhaiEngine) {
     // in rhai: Rux kept both numeric types rather than going all-f64, so a
     // registration typed to `f64` alone would not be found at all.
     engine.register_fn("__interval", |ms: Dynamic, body: ImmutableString| -> f64 {
-        let ms = num(&ms);
-        let id = NEXT_TIMER_ID.with(|n| {
-            let id = n.get();
-            n.set(id + 1.0);
-            id
-        });
-        TIMER_REQUESTS.with(|t| {
-            t.borrow_mut().push(TimerRequest::Start { id, ms, body: body.to_string() })
-        });
-        id
+        start_interval(num(&ms), body.to_string())
     });
 
     engine.register_fn("clearInterval", |id: Dynamic| {
@@ -1063,7 +1118,7 @@ fn num(d: &Dynamic) -> f64 {
 
 fn log_line(text: String) {
     LOGS.with(|l| l.borrow_mut().push(text.clone()));
-    if ECHO.with(|e| e.get()) {
+    if ECHO.with(|e| e.get()) && !shadow::SHADOWING.with(|s| s.get()) {
         eprintln!("rux print: {text}");
     }
 }
@@ -1237,6 +1292,8 @@ fn note_write(name: &str, scope: &Scope) {
 }
 
 pub struct Engine {
+    /// Rux's interpreter, run beside the fork and compared in debug builds.
+    ir: Option<interp::Interp>,
     engine: RhaiEngine,
     scope: Scope<'static>,
     funcs: AST,
@@ -1572,6 +1629,17 @@ thread_local! {
     /// Handed out in order. Never reused, so a stale handle held by a script
     /// cannot come to name somebody else's timer later.
     static NEXT_TIMER_ID: std::cell::Cell<f64> = const { std::cell::Cell::new(1.0) };
+}
+
+/// Ask for a timer running `body` every `ms`, and hand back its id at once.
+pub(crate) fn start_interval(ms: f64, body: String) -> f64 {
+    let id = NEXT_TIMER_ID.with(|n| {
+        let id = n.get();
+        n.set(id + 1.0);
+        id
+    });
+    TIMER_REQUESTS.with(|t| t.borrow_mut().push(TimerRequest::Start { id, ms, body }));
+    id
 }
 
 /// Take the timer starts and cancels asked for since the last call.
@@ -2029,6 +2097,62 @@ impl Engine {
     /// Evaluate `src` (an expression or statements) with `locals` temporarily in
     /// scope. Script functions are available. Returns the resulting value.
     fn eval(&mut self, src: &str, locals: &[(String, Value)]) -> Option<Dynamic> {
+        let shadow = self.ir.as_mut().map(|ir| shadow::isolated(|| ir.run(src, locals, true)));
+        let marks = shadow::marks();
+        let out = self.eval_fork(src, locals);
+        if let Some((ran, effects, reads)) = shadow {
+            let ours = match ran {
+                Ok((Ok(v), _, _)) => Ok(v.to_value()),
+                Ok((Err(f), _, _)) => Err(f.message),
+                Err(e) => Err(e.message),
+            };
+            let fork = out.as_ref().map(from_dynamic);
+            self.compare(src, fork.as_ref(), &ours, marks, effects, reads, locals);
+        }
+        out
+    }
+
+    /// The interpreter's run of `src` against the fork's, which has just
+    /// happened. See [`shadow`].
+    #[allow(clippy::too_many_arguments)]
+    fn compare(
+        &self,
+        src: &str,
+        fork: Option<&Value>,
+        ours: &Result<Value, String>,
+        marks: shadow::Marks,
+        effects: shadow::Effects,
+        reads: HashSet<String>,
+        locals: &[(String, Value)],
+    ) {
+        let Some(ir) = self.ir.as_ref() else { return };
+        match (fork, ours) {
+            (Some(a), Ok(b)) if !shadow::same(a, b) && !shadow::allowed(a, b) => shadow::differ("its value", src, a, b),
+            (Some(a), Err(e)) => shadow::differ("whether it fails", src, a, e),
+            (None, Ok(b)) => shadow::differ("whether it fails", src, "it failed", b),
+            _ => {}
+        }
+        let fork_effects = shadow::since(marks);
+        if fork_effects != effects {
+            shadow::differ("what it asked the runtime for", src, fork_effects, effects);
+        }
+        let state: Vec<(String, Value)> =
+            self.signals.iter().filter_map(|n| Some((n.clone(), self.read_signal(n)?))).collect();
+        shadow::same_state(src, &state, ir);
+        // What it read, when a binding or an effect is being tracked. The
+        // fork counts a local that shares a signal's name as a read of it.
+        if let Some(fork_reads) = READS.with(|r| r.borrow().clone()) {
+            let ours: HashSet<&String> = reads.iter().filter(|n| self.signals.contains(*n)).collect();
+            let theirs: HashSet<&String> = fork_reads.iter().filter(|n| self.signals.contains(*n)).collect();
+            let missing = theirs.difference(&ours).any(|n| !locals.iter().any(|(l, _)| l == *n));
+            let extra = ours.difference(&theirs).next().is_some();
+            if missing || extra {
+                shadow::differ("what it read", src, &theirs, &ours);
+            }
+        }
+    }
+
+    fn eval_fork(&mut self, src: &str, locals: &[(String, Value)]) -> Option<Dynamic> {
         let merged = match self.prepared(src) {
             Ok(merged) => merged,
             Err(e) => {
@@ -2534,6 +2658,9 @@ impl Engine {
             != Some(&Value::Text(path.to_string()));
         self.scope.set_or_push(ROUTE_SIGNAL, path.to_string());
         self.signals.insert(ROUTE_SIGNAL.to_string());
+        if let Some(ir) = self.ir.as_mut() {
+            ir.set_global(ROUTE_SIGNAL, interp::V::str(path));
+        }
         changed
     }
 
@@ -2547,6 +2674,9 @@ impl Engine {
         let changed = self.read_signal(name).as_ref() != Some(&value);
         self.scope.set_or_push(name, to_dynamic(&value));
         self.signals.insert(name.to_string());
+        if let Some(ir) = self.ir.as_mut() {
+            ir.set_global(name, interp::V::from_value(&value));
+        }
         changed
     }
 
@@ -2587,6 +2717,9 @@ impl Engine {
 
     /// Set a signal to a string value (from input editing).
     pub fn set_string(&mut self, name: &str, value: &str) {
+        if let Some(ir) = self.ir.as_mut() {
+            ir.set_global(name, interp::V::str(value));
+        }
         self.scope.set_or_push(name, value.to_string());
     }
 
@@ -2597,6 +2730,28 @@ impl Engine {
     /// that could read the app's signals by name would be coupled to the app it
     /// was first written for, and could not be used twice.
     pub fn init_scope(&mut self, script: &str) -> Vec<(String, Value)> {
+        let shadow = self.ir.as_mut().map(|ir| shadow::isolated(|| ir.run(script, &[], false)));
+        let marks = shadow::marks();
+        let out = self.init_scope_fork(script);
+        if let Some((ran, effects, _)) = shadow {
+            let ours: Vec<(String, Value)> = match ran {
+                Ok((_, _, top)) => top.into_iter().map(|(n, v)| (n, v.to_value())).collect(),
+                Err(_) => Vec::new(),
+            };
+            let agree = ours.len() == out.len()
+                && out.iter().all(|(n, v)| ours.iter().any(|(m, w)| m == n && shadow::same(v, w)));
+            if !agree {
+                shadow::differ("the state a component's script makes", script, &out, &ours);
+            }
+            let fork_effects = shadow::since(marks);
+            if fork_effects != effects {
+                shadow::differ("what a component's script asked for", script, fork_effects, effects);
+            }
+        }
+        out
+    }
+
+    fn init_scope_fork(&mut self, script: &str) -> Vec<(String, Value)> {
         let merged = match self.prepared(script) {
             Ok(merged) => merged,
             Err(e) => {
@@ -2635,6 +2790,33 @@ impl Engine {
         src: &str,
         locals: &[(String, Value)],
     ) -> (Vec<(String, Value)>, HashSet<String>) {
+        let shadow = self.ir.as_mut().map(|ir| shadow::isolated(|| ir.run(src, locals, true)));
+        let marks = shadow::marks();
+        let (after, changed, failed) = self.run_scoped_handler_fork(src, locals);
+        if let Some((ran, effects, reads)) = shadow {
+            let (ours, our_after) = match ran {
+                Ok((Ok(v), after, _)) => (Ok(v.to_value()), after),
+                Ok((Err(f), after, _)) => (Err(f.message), after),
+                Err(e) => (Err(e.message), Vec::new()),
+            };
+            let ours_after: Vec<Value> = our_after.iter().map(interp::V::to_value).collect();
+            let same = after.len() == ours_after.len()
+                && after.iter().zip(&ours_after).all(|((_, a), b)| shadow::same(a, b));
+            if !failed && ours.is_ok() && !same {
+                shadow::differ("the instance's state after a handler", src, &after, &ours_after);
+            }
+            // The fork's value is not kept, only whether it failed.
+            let fork = if failed { None } else { Some(ours.clone().unwrap_or(Value::Null)) };
+            self.compare(src, fork.as_ref(), &ours, marks, effects, reads, locals);
+        }
+        (after, changed)
+    }
+
+    fn run_scoped_handler_fork(
+        &mut self,
+        src: &str,
+        locals: &[(String, Value)],
+    ) -> (Vec<(String, Value)>, HashSet<String>, bool) {
         let merged = match self.prepared(src) {
             Ok(merged) => merged,
             Err(e) => {
@@ -2643,7 +2825,7 @@ impl Engine {
                     trim_expr(src),
                     explain(&e.to_string())
                 ));
-                return (locals.to_vec(), HashSet::new());
+                return (locals.to_vec(), HashSet::new(), true);
             }
         };
         let ((after, result), changed) = self.tracking(|e| {
@@ -2677,9 +2859,9 @@ impl Engine {
                 trim_expr(src),
                 explain(&e.to_string())
             ));
-            return (after, HashSet::new());
+            return (after, HashSet::new(), true);
         }
-        (after, changed)
+        (after, changed, false)
     }
 
     /// [`run_scoped_handler`](Self::run_scoped_handler), also reporting what the
@@ -2719,6 +2901,9 @@ impl Engine {
         let changed = self.read_signal(name).as_ref() != Some(&value);
         if changed {
             self.scope.set_or_push(name, to_dynamic(&value));
+            if let Some(ir) = self.ir.as_mut() {
+                ir.set_global(name, interp::V::from_value(&value));
+            }
         }
         (changed, deps)
     }

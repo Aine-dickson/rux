@@ -126,6 +126,7 @@ impl<'u> Printer<'u> {
             Root::Local(id) => self.local(id),
             Root::Capture(i) => format!("^{i}"),
             Root::Global(g) => format!("@{}", self.u.globals.get(g.0 as usize).map_or("?", |g| g.name.as_str())),
+            Root::Outer(n) => format!("outer:{}", self.u.outer.get(n as usize).map_or("?", |n| n.as_str())),
         }
     }
 
@@ -244,6 +245,7 @@ impl<'u> Printer<'u> {
             ExprKind::Local(id) => typed(self.local(*id)),
             ExprKind::Capture(i) => typed(format!("^{i}")),
             ExprKind::Global(g) => typed(self.root(Root::Global(*g))),
+            ExprKind::Outer(n) => typed(self.root(Root::Outer(*n))),
             ExprKind::Call { callee, args } => {
                 let callee = match callee {
                     Callee::Fn(f) => format!("fn:{}", self.u.fns.get(f.0 as usize).map_or("?", |f| f.name.as_str())),
@@ -348,7 +350,7 @@ impl<'u> Printer<'u> {
                 let caps = if caps.is_empty() { String::new() } else { format!(" [{}]", caps.join(" ")) };
                 typed(format!("(closure ({}){caps} {body})", params.join(", ")))
             }
-            ExprKind::Interval { args, body } => {
+            ExprKind::Interval { args, body, .. } => {
                 let args: Vec<String> = args.iter().map(|a| self.expr(a)).collect();
                 self.frames.push(&body.locals);
                 let b = self.inline_block(&body.block);

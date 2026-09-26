@@ -772,7 +772,7 @@ fn lower_and_verify(
     // debug build lowers too.
     let started = coverage.then(std::time::Instant::now);
     let (unit, problems) = time(Phase::Lower, || {
-        let unit = rux_script::lower::lower(script, record, &cx.provided);
+        let unit = rux_script::lower::lower(script, &sfc.script, record, &cx.provided);
         let problems = if had_errors { Vec::new() } else { rux_ir::verify::unit(&unit) };
         (unit, problems)
     });

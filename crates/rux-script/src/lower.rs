@@ -30,9 +30,9 @@ const BUILTINS: &[&str] = &[
     "to_float", "parse_int", "parse_float", "is_def_var", "is_def_fn",
 ];
 
-/// Lower `script` as the checker recorded it. `provided`
-/// are the names the runtime supplies, with their types.
-pub fn lower(script: &ast::Script, record: &Record, provided: &[(String, Type)]) -> Unit {
+/// Lower `script`, whose text is `src`, as the checker recorded it.
+/// `provided` are the names the runtime supplies, with their types.
+pub fn lower(script: &ast::Script, src: &str, record: &Record, provided: &[(String, Type)]) -> Unit {
     let mut types: Vec<(String, Vec<String>, Type)> =
         record.types.iter().map(|(n, (p, t))| (n.clone(), p.clone(), t.clone())).collect();
     types.sort_by(|a, b| a.0.cmp(&b.0));
@@ -43,6 +43,7 @@ pub fn lower(script: &ast::Script, record: &Record, provided: &[(String, Type)])
         globals: HashMap::new(),
         fns: HashMap::new(),
         types: &record.script,
+        src,
         piece: None,
         frames: Vec::new(),
         tparams: Vec::new(),
@@ -51,6 +52,7 @@ pub fn lower(script: &ast::Script, record: &Record, provided: &[(String, Type)])
     l.top_level(script, record);
     for (i, piece) in record.pieces.iter().enumerate() {
         l.types = &piece.types;
+        l.src = &piece.src;
         l.piece = Some(i);
         let body = l.isolated(|l| {
             for (name, ty) in &piece.given {
@@ -71,6 +73,95 @@ pub fn lower(script: &ast::Script, record: &Record, provided: &[(String, Type)])
     l.unit
 }
 
+/// Text the runtime hands in to run, lowered: see [`lower_piece`].
+#[derive(Clone, Debug)]
+pub struct Lowered {
+    pub body: Body,
+    /// The locals its top level declared, by name, in the order declared: a
+    /// component's script declares its instance's state this way.
+    pub top: Vec<(String, LocalId)>,
+    /// What it says that the IR has no node for.
+    pub unsupported: Vec<Unsupported>,
+}
+
+/// `script`, text the runtime runs in `unit`'s file (a binding, a handler, an
+/// effect's body, a component's script), lowered without a checker record:
+/// its own expressions are `any`, and every operation on one is decided when
+/// it runs. The unit's functions it calls are typed as they always were.
+///
+/// `given` are the names the runtime hands in with it, by value: an
+/// instance's state, an `r-for` row, `event`. They are the body's first
+/// locals, in that order. With `globals` false, the unit's state is not
+/// visible, which is how a component's script runs, apart from the document.
+/// A name nothing declares is added to `unit.outer` and looked up where it
+/// runs.
+///
+/// A top-level `fn` the unit already has is left out: the runtime puts a
+/// component's functions into the document's script, and hands in the
+/// component's script, functions and all, to make an instance's state.
+pub fn lower_piece(unit: &mut Unit, script: &ast::Script, src: &str, given: &[String], globals: bool) -> Lowered {
+    let empty = Types::default();
+    let table = Table::new(&unit.types);
+    let mut l = Lower {
+        table,
+        unit: Unit {
+            globals: unit.globals.clone(),
+            outer: std::mem::take(&mut unit.outer),
+            ..Unit::default()
+        },
+        globals: if globals {
+            unit.globals.iter().enumerate().map(|(i, g)| (g.name.clone(), GlobalId(i as u32))).collect()
+        } else {
+            HashMap::new()
+        },
+        fns: unit
+            .fns
+            .iter()
+            .enumerate()
+            .map(|(i, f)| ((f.name.clone(), f.params as usize), FnId(i as u32)))
+            .collect(),
+        types: &empty,
+        src,
+        piece: None,
+        frames: vec![Frame { locals: Vec::new(), scopes: vec![HashMap::new()], captures: None }],
+        tparams: Vec::new(),
+    };
+    for name in given {
+        l.local(name, Type::Any);
+    }
+    let own = |def: &ast::FnDecl| unit.fns.iter().any(|f| f.name == def.name.name && f.params as usize == def.params.len());
+    let mut stmts = Vec::new();
+    let mut ty = None;
+    let last = script.stmts.len();
+    for (i, s) in script.stmts.iter().enumerate() {
+        if let S::Fn(def) = &s.kind {
+            if own(def) {
+                continue;
+            }
+        }
+        let lowered = l.stmt(s, i + 1 == last);
+        if i + 1 == last {
+            if let [Stmt { kind: StmtKind::Expr(e), .. }] = &lowered[..] {
+                ty = Some(e.ty.clone());
+            }
+        }
+        stmts.extend(lowered);
+    }
+    let frame = l.frames.pop().expect("the piece's frame");
+    let mut top: Vec<(String, LocalId)> = frame.scopes[0]
+        .iter()
+        .filter(|(_, id)| id.0 as usize >= given.len())
+        .map(|(n, id)| (n.clone(), *id))
+        .collect();
+    top.sort_by_key(|(_, id)| *id);
+    unit.outer = std::mem::take(&mut l.unit.outer);
+    Lowered {
+        body: Body { locals: frame.locals, block: Block { stmts, ty } },
+        top,
+        unsupported: l.unit.unsupported,
+    }
+}
+
 struct Frame {
     locals: Vec<Local>,
     scopes: Vec<HashMap<String, LocalId>>,
@@ -86,6 +177,8 @@ struct Lower<'a> {
     fns: HashMap<(String, usize), FnId>,
     /// What the checker kept for the parse being lowered.
     types: &'a Types,
+    /// The text of the parse being lowered.
+    src: &'a str,
     /// The template piece being lowered, `None` for the script.
     piece: Option<usize>,
     frames: Vec<Frame>,
@@ -278,6 +371,7 @@ impl<'a> Lower<'a> {
         }
         match self.find(depth - 1, name)? {
             Root::Global(g) => Some(Root::Global(g)),
+            Root::Outer(n) => Some(Root::Outer(n)),
             outer => {
                 let captures = self.frames[depth].captures.as_mut().expect("a closure");
                 captures.push((name.to_string(), outer));
@@ -296,11 +390,23 @@ impl<'a> Lower<'a> {
         match r {
             Root::Local(id) => frame.locals.get(id.0 as usize).map_or(Type::Any, |l| l.ty.clone()),
             Root::Global(g) => self.unit.globals[g.0 as usize].ty.clone(),
+            Root::Outer(_) => Type::Any,
             // What it captured, in the frame around it.
             Root::Capture(i) => match frame.captures.as_ref().and_then(|c| c.get(i as usize)) {
                 Some((_, outer)) if depth > 0 => self.root_ty_at(depth - 1, *outer),
                 _ => Type::Any,
             },
+        }
+    }
+
+    /// The index of `name` in the unit's outer names, added if new.
+    fn outer(&mut self, name: &str) -> u32 {
+        match self.unit.outer.iter().position(|n| n == name) {
+            Some(i) => i as u32,
+            None => {
+                self.unit.outer.push(name.to_string());
+                self.unit.outer.len() as u32 - 1
+            }
         }
     }
 
@@ -565,9 +671,9 @@ impl<'a> Lower<'a> {
         loop {
             match &e.kind {
                 E::Var(name) => {
-                    let Some(root) = self.resolve(name) else {
-                        self.unsupported(format!("a write to `{name}`, which nothing here declares"), e.span);
-                        return None;
+                    let root = match self.resolve(name) {
+                        Some(root) => root,
+                        None => Root::Outer(self.outer(name)),
                     };
                     steps.reverse();
                     return Some(Place { root, steps, ty });
@@ -645,10 +751,8 @@ impl<'a> Lower<'a> {
                 Some(Root::Local(id)) => ExprKind::Local(id),
                 Some(Root::Capture(i)) => ExprKind::Capture(i),
                 Some(Root::Global(g)) => ExprKind::Global(g),
-                None => {
-                    self.unsupported(format!("a read of `{name}`, which nothing here declares"), e.span);
-                    ExprKind::None
-                }
+                Some(Root::Outer(n)) => ExprKind::Outer(n),
+                None => ExprKind::Outer(self.outer(name)),
             },
             E::Path(_) => {
                 self.unsupported("a module path used as a value", e.span);
@@ -682,7 +786,11 @@ impl<'a> Lower<'a> {
             E::Binary { op, lhs, rhs } => return self.binary(e, op, lhs, rhs, ty),
             E::Is { expr, ty: t } => {
                 let x = self.expr(expr);
-                let tested = type_of_expr(t).map(|t| t.with_params(&self.tparams)).unwrap_or(Type::Any);
+                // A type that cannot be read fits nothing, as the fork's `is`
+                // answered for one, rather than everything.
+                let tested = type_of_expr(t)
+                    .map(|t| t.with_params(&self.tparams))
+                    .unwrap_or_else(|_| Type::Named(rux_syntax::print::ty(t)));
                 ExprKind::Is { expr: Box::new(x), ty: tested }
             }
             E::Closure { params, body, .. } => {
@@ -698,12 +806,14 @@ impl<'a> Lower<'a> {
                 let frame = self.frames.pop().expect("the closure's frame");
                 let captures = frame.captures.unwrap_or_default().into_iter().map(|(_, r)| r).collect();
                 let body = Body { locals: frame.locals, block };
-                ExprKind::Closure(Box::new(Closure { params: params.len() as u32, body, captures }))
+                ExprKind::Closure(std::rc::Rc::new(Closure { params: params.len() as u32, body, captures }))
             }
             E::Interval { args, body } => {
                 let args = args.iter().map(|x| self.expr(x)).collect();
+                let inner = body.span.start as usize + 1..(body.span.end as usize).saturating_sub(1);
+                let text = self.src.get(inner).unwrap_or_default().replace('\r', "");
                 let body = self.isolated(|l| l.block(&body.stmts));
-                ExprKind::Interval { args, body: Box::new(body) }
+                ExprKind::Interval { args, body: Box::new(body), text }
             }
             E::Stmt(s) => {
                 return match &s.kind {
@@ -783,18 +893,23 @@ impl<'a> Lower<'a> {
             Callee::Dyn(path.join("::"))
         } else if let Some(id) = self.fns.get(&(name.to_string(), args.len())) {
             Callee::Fn(*id)
+        } else if BUILTINS.contains(&name) {
+            // A function's name is looked up before a variable's, so a
+            // built-in wins over state of the same name: `query(".card")`
+            // with the router's `query` signal in scope.
+            Callee::Builtin(name.to_string())
         } else if let Some(root) = self.resolve(name) {
             let t = self.root_ty(root);
             let kind = match root {
                 Root::Local(id) => ExprKind::Local(id),
                 Root::Capture(i) => ExprKind::Capture(i),
                 Root::Global(g) => ExprKind::Global(g),
+                Root::Outer(n) => ExprKind::Outer(n),
             };
             Callee::Value(Box::new(ir::Expr::new(kind, t, a)))
-        } else if BUILTINS.contains(&name) {
-            Callee::Builtin(name.to_string())
         } else {
-            self.unsupported(format!("a call to `{name}`, which this file does not declare"), e.span);
+            // Found where it runs: an arrow a caller holds, or a function
+            // no file this one can see declares.
             Callee::Dyn(name.to_string())
         };
         let args = args.iter().map(|x| self.expr(x)).collect();
@@ -958,7 +1073,7 @@ mod tests {
         let (findings, record) = check_typed(&script, src, &cx);
         let errors: Vec<&String> = findings.iter().filter(|f| f.is_error).map(|f| &f.message).collect();
         assert!(errors.is_empty(), "{errors:#?}");
-        let unit = lower(&script, &record, provided);
+        let unit = lower(&script, src, &record, provided);
         let problems = rux_ir::verify::unit(&unit);
         let text = rux_ir::print::unit(&unit);
         assert!(problems.is_empty(), "{problems:#?}\n{text}");
@@ -1028,11 +1143,11 @@ fn 0 bump(by#0: int): none
     }
 
     #[test]
-    fn a_name_no_file_declares_is_reported_not_guessed() {
+    fn a_name_no_file_declares_is_looked_up_where_it_runs() {
         let script = rux_syntax::parse("fn f() { caller + 1 }", rux_syntax::Options { declarations: true }).unwrap();
         let (_, record) = check_typed(&script, "fn f() { caller + 1 }", &Context::default());
-        let unit = lower(&script, &record, &[]);
-        assert_eq!(unit.unsupported.len(), 1);
-        assert!(unit.unsupported[0].what.contains("`caller`"));
+        let unit = lower(&script, "fn f() { caller + 1 }", &record, &[]);
+        assert!(unit.unsupported.is_empty(), "{:?}", unit.unsupported);
+        assert_eq!(unit.outer, ["caller"]);
     }
 }

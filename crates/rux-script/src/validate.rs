@@ -269,7 +269,7 @@ pub fn know_types(types: impl IntoIterator<Item = (String, String)>) {
 }
 
 /// What a declared type stands for, as `is` sees it.
-fn known(name: &str) -> Option<Decl> {
+pub(crate) fn known(name: &str) -> Option<Decl> {
     KNOWN.with(|k| {
         let mut k = k.borrow_mut();
         let (text, parsed) = k.get_mut(name)?;

@@ -62,6 +62,12 @@ pub struct Unit {
     /// that the language reference removes. A unit with any of these is not
     /// run from the IR.
     pub unsupported: Vec<Unsupported>,
+    /// The names read or written that nothing in the file declares, which
+    /// [`Root::Outer`] and [`ExprKind::Outer`] index. Found where they run,
+    /// in whoever called: a component's function reading its instance's
+    /// state, a component reading the document's. See `docs/11-next.md`,
+    /// "What a function can see"; step 7 settles these with stores.
+    pub outer: Vec<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -227,6 +233,9 @@ pub enum Root {
     Local(LocalId),
     Capture(u32),
     Global(GlobalId),
+    /// A name nothing in the file declares, [`Unit::outer`]'s `n`th, looked
+    /// up by name where it runs.
+    Outer(u32),
 }
 
 #[derive(Clone, Debug)]
@@ -259,6 +268,8 @@ pub enum ExprKind {
     /// The `n`th name a closure captured. See [`Closure::captures`].
     Capture(u32),
     Global(GlobalId),
+    /// A read of [`Unit::outer`]'s `n`th name, looked up where it runs.
+    Outer(u32),
 
     Call { callee: Callee, args: Vec<Expr> },
     /// `recv.name(args)`, a method of Rux's own on the receiver's type. With
@@ -291,10 +302,11 @@ pub enum ExprKind {
     If { cond: Box<Expr>, then: Block, otherwise: Option<Block> },
     Match { value: Box<Expr>, arms: Vec<Arm> },
     Block(Block),
-    Closure(Box<Closure>),
+    Closure(std::rc::Rc<Closure>),
     /// `setInterval(args) { body }`: starts the body running every so often,
-    /// and is the handle.
-    Interval { args: Vec<Expr>, body: Box<Body> },
+    /// and is the handle. `text` is the body as written, without its braces,
+    /// which is how the runtime keeps a timer (see `rux_script::TimerRequest`).
+    Interval { args: Vec<Expr>, body: Box<Body>, text: String },
 }
 
 #[derive(Clone, Debug)]
