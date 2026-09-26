@@ -18,6 +18,10 @@ members = [
     "crates/rux-syntax",
     # Rux's typed IR, between the checker and every backend: docs/11-next.md, step 4.
     "crates/rux-ir",
+    # Native modules: an app's Rust, called from script. docs/11-next.md, step 8.
+    "crates/rux-native",
+    "crates/rux-native-macros",
+    "crates/rux-bindgen",
 ]
 
 [workspace.package]
@@ -73,6 +77,9 @@ rux-fmt = { version = "0.8.0-dev", path = "crates/rux-fmt" }
 rux-script = { version = "0.8.0-dev", path = "crates/rux-script" }
 rux-syntax = { version = "0.8.0-dev", path = "crates/rux-syntax" }
 rux-ir = { version = "0.8.0-dev", path = "crates/rux-ir" }
+rux-native = { version = "0.8.0-dev", path = "crates/rux-native", default-features = false }
+rux-native-macros = { version = "0.8.0-dev", path = "crates/rux-native-macros" }
+rux-bindgen = { version = "0.8.0-dev", path = "crates/rux-bindgen" }
 rux-paint = { version = "0.8.0-dev", path = "crates/rux-paint" }
 rux-style = { version = "0.8.0-dev", path = "crates/rux-style" }
 rux-runtime = { version = "0.8.0-dev", path = "crates/rux-runtime" }

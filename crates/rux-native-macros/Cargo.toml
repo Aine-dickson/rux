@@ -1,0 +1,19 @@
+[package]
+name = "rux-native-macros"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "#[rux::export], #[rux::resource] and #[rux::init] for rux-native. Use them through rux-native."
+readme = "README.md"
+keywords = ["ui", "ffi", "language"]
+categories = ["gui"]
+
+[lib]
+proc-macro = true
+
+[dependencies]
+rux-bindgen.workspace = true
+syn = { version = "2", features = ["full"] }
+quote = "1"
+proc-macro2 = "1"

@@ -1,0 +1,19 @@
+[package]
+name = "rux-native"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Rust code a Rux app calls from script: #[rux::export], resources and native modules. Depend on it as `rux`."
+readme = "README.md"
+keywords = ["ui", "ffi", "language"]
+categories = ["gui"]
+
+[features]
+default = ["macros"]
+# The attributes. The runtime depends on this crate for the boundary types
+# only, and turns them off so it does not compile a proc-macro it never uses.
+macros = ["dep:rux-native-macros"]
+
+[dependencies]
+rux-native-macros = { workspace = true, optional = true }

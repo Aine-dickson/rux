@@ -2831,6 +2831,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
 
 [[package]]
+name = "rux-bindgen"
+version = "0.8.0-dev"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.118",
+]
+
+[[package]]
 name = "rux-fmt"
 version = "0.8.0-dev"
 dependencies = [
@@ -2856,6 +2865,23 @@ name = "rux-layout"
 version = "0.8.0-dev"
 dependencies = [
  "taffy",
+]
+
+[[package]]
+name = "rux-native"
+version = "0.8.0-dev"
+dependencies = [
+ "rux-native-macros",
+]
+
+[[package]]
+name = "rux-native-macros"
+version = "0.8.0-dev"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "rux-bindgen",
+ "syn 2.0.118",
 ]
 
 [[package]]

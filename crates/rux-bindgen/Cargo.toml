@@ -1,0 +1,16 @@
+[package]
+name = "rux-bindgen"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Reads a Rux app's native Rust crate for its #[rux::export]s and their Rux signatures. Internal to Rux; the supported entry point is the ruxlang crate."
+readme = "README.md"
+keywords = ["ui", "ffi", "language"]
+categories = ["gui"]
+
+[dependencies]
+syn = { version = "2", features = ["full", "extra-traits"] }
+# Lines for a message about a file read from disk, outside a macro.
+proc-macro2 = { version = "1", features = ["span-locations"] }
+quote = "1"

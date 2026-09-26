@@ -500,7 +500,12 @@ LAYERS=(
   # layer takes care of. So does rux-ir, the typed IR. (rux-rhai, the fork
   # of rhai the script tier ran on until step 5 of docs/11-next.md, sat here
   # too, and was published up to 0.7.x.)
-  "rux-parser rux-reactive rux-text rux-layout rux-syntax rux-ir"
+  "rux-parser rux-reactive rux-text rux-layout rux-syntax rux-ir rux-bindgen"
+  # Native modules (step 8 of docs/11-next.md): the macros read signatures
+  # with rux-bindgen, rux-native re-exports the macros, and rux-script calls
+  # through rux-native, so each needs the one before it on the index.
+  "rux-native-macros"
+  "rux-native"
   # rux-fmt depends on rux-parser for the void-tag list, so it cannot share a
   # layer with it: within a layer crates publish back to back and the index
   # wait happens only at the end. It sat in layer 0 until the coverage gate
