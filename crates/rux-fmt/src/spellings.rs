@@ -28,6 +28,12 @@
 
 /// Rewrite every retired spelling in a whole `.rux` file.
 pub fn rewrite(text: &str) -> String {
+    rewrite_with(text, crate::Imports::Keep)
+}
+
+/// [`rewrite`], writing every import in `imports`' spelling (see
+/// `crate::imports`).
+pub fn rewrite_with(text: &str, imports: crate::Imports) -> String {
     let b = text.as_bytes();
     let mut out = String::with_capacity(text.len());
     let mut i = 0;
@@ -48,7 +54,7 @@ pub fn rewrite(text: &str) -> String {
             };
             let close = text[open..].find("</script>").map_or(text.len(), |e| open + e);
             out.push_str(&text[i..open]);
-            out.push_str(&code(&text[open..close]));
+            out.push_str(&crate::imports::rewrite(&code(&text[open..close]), imports));
             i = close;
         } else if b[i] == b'<' && b.get(i + 1).is_some_and(|c| c.is_ascii_alphabetic()) {
             i = tag(text, i, &mut out);

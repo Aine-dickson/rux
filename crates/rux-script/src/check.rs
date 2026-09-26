@@ -1028,7 +1028,7 @@ impl<'a> Checker<'a> {
                 continue;
             }
             if let Some(path) = self.hidden.get(&name) {
-                let message = format!("`{name}` is not imported here; bring it in with `use {path};`");
+                let message = format!("`{name}` is not imported here; bring it in with `use type {path};`");
                 self.error(pos, message);
             } else if !self.types.contains_key(&name) {
                 let known: Vec<&str> = self.types.keys().map(String::as_str).collect();
@@ -1037,7 +1037,7 @@ impl<'a> Checker<'a> {
                     .unwrap_or_else(|| {
                         format!(
                             ". Declare it with `type {name} = …;`, or bring it in with \
-                             `use types::{name};`"
+                             `use type types::{name};`"
                         )
                     });
                 self.error(pos, format!("there is no type `{name}`{hint}"));
@@ -1716,7 +1716,6 @@ impl<'a> Checker<'a> {
                 }
                 Type::Null
             }
-            StmtKind::Export(Export::Let(inner)) => self.check_stmt(inner),
             // A file's own declarations, which reach the checker when it is
             // handed the whole file (`check_typed`). The runtime's script has
             // them taken out already.
@@ -1747,9 +1746,7 @@ impl<'a> Checker<'a> {
             | StmtKind::Continue
             | StmtKind::Fn(_)
             | StmtKind::Type { .. }
-            | StmtKind::Import { .. }
-            | StmtKind::Export(Export::Name { .. })
-            | StmtKind::Use(_) => Type::Null,
+            | StmtKind::Import(_) => Type::Null,
         }
     }
 

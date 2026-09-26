@@ -414,9 +414,9 @@ if r.ok { age = r.value; } else { problem = r.error; }
 `r.unwrap()` gives the value, or throws the error.
 
 In a component, `prop label: string;` and `prop price: float = 1;`. A type
-declared in one file is used in another with `use types::Task;`, which names
-the `type Task` in `types.rux`; a type's name starts with a capital letter,
-and that is how `use` tells it from a component. A file holding only a
+declared in one file is used in another with `use type types::Task;` (or
+`import type { Task } from "./types";`), which names the `type Task` in
+`types.rux`; the word `type` is what tells a type import from a component's. A file holding only a
 `<script>` of `type` declarations is a types file, and `rux` will not run it.
 
 `type` is a keyword only at the start of a statement followed by a name, its

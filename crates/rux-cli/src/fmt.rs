@@ -90,7 +90,15 @@ pub fn run(options: Options) -> i32 {
                 continue;
             }
         };
-        let formatted = rux_fmt::reindent(&source, options.indent.as_str());
+        let imports = match imports_for(file.parent().unwrap_or_else(|| std::path::Path::new("."))) {
+            Ok(i) => i,
+            Err(e) => {
+                eprintln!("rux: {e}");
+                failed = true;
+                continue;
+            }
+        };
+        let formatted = rux_fmt::reindent_with(&source, options.indent.as_str(), imports);
 
         if options.to_stdout {
             print!("{formatted}");
@@ -154,12 +162,38 @@ fn format_stdin(options: &Options) -> i32 {
         eprintln!("rux: reading stdin: {e}");
         return 2;
     }
-    let formatted = rux_fmt::reindent(&source, options.indent.as_str());
+    // An editor runs this in the project, so the working directory finds its
+    // `rux.toml`.
+    let imports = match std::env::current_dir().map_err(|e| e.to_string()).and_then(|d| imports_for(&d)) {
+        Ok(i) => i,
+        Err(e) => {
+            eprintln!("rux: {e}");
+            return 2;
+        }
+    };
+    let formatted = rux_fmt::reindent_with(&source, options.indent.as_str(), imports);
     if options.check && formatted != source {
         return 1;
     }
     print!("{formatted}");
     0
+}
+
+/// The import spelling the nearest `rux.toml` above `dir` asks for, in
+/// `[fmt] imports = "use"` or `"import"`. None asked for, or no manifest,
+/// leaves imports as written. Only this key is read, so a project whose
+/// manifest is half-written can still be formatted.
+fn imports_for(dir: &std::path::Path) -> Result<rux_fmt::Imports, String> {
+    let Some(path) = dir.ancestors().map(|d| d.join(crate::manifest::MANIFEST)).find(|p| p.is_file()) else {
+        return Ok(rux_fmt::Imports::Keep);
+    };
+    let text = std::fs::read_to_string(&path).map_err(|e| format!("reading {}: {e}", path.display()))?;
+    let table: toml::Table = text.parse().map_err(|e| format!("{}: {e}", path.display()))?;
+    match table.get("fmt").and_then(|f| f.get("imports")) {
+        None => Ok(rux_fmt::Imports::Keep),
+        Some(toml::Value::String(v)) => rux_fmt::Imports::parse(v).map_err(|e| format!("{}: [fmt] {e}", path.display())),
+        Some(_) => Err(format!("{}: [fmt] `imports` is a string, \"use\" or \"import\"", path.display())),
+    }
 }
 
 #[cfg(test)]

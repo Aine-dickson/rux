@@ -86,7 +86,7 @@ fn a_prop_that_does_not_fit_is_reported_and_left_out() {
 #[test]
 fn a_named_prop_type_is_walked() {
     let card = "<template><view><text>{{ task.title }}</text></view></template>\n\
-                <script>\n  use types::Task;\n  prop task: Task;\n</script>";
+                <script>\n  use type types::Task;\n  prop task: Task;\n</script>";
     let types = "<script>\ntype Tag = \"home\" | \"work\";\n\
                  type Task = { id: int, title: string, tag: Tag };\n</script>";
     let page = |value: &str| {
@@ -152,7 +152,7 @@ fn is_checks_an_imported_type_when_the_program_runs() {
         (
             "app.rux",
             "<template><screen><text>{{ verdict }}</text></screen></template>\n\
-             <script>\nuse types::Task;\n\
+             <script>\nuse type types::Task;\n\
              let raw: any = { id: 1, title: \"x\", tag: \"work\" };\n\
              let verdict = signal(\"\");\n\
              mounted {\n  verdict = if raw is Task { \"task\" } else { \"not\" };\n}\n</script>",

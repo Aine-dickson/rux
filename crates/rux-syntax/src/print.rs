@@ -163,29 +163,42 @@ impl Printer<'_> {
                 self.block(&f.body);
             }
             StmtKind::Type { .. } => {}
-            StmtKind::Import { path, alias } => {
-                self.w("import ");
-                self.expr(path);
-                if let Some(a) = alias {
-                    self.w(" as ");
-                    self.w(&a.name);
+            StmtKind::Import(i) => {
+                self.w(if i.is_use { "use " } else { "import " });
+                if i.is_type {
+                    self.w("type ");
                 }
-            }
-            StmtKind::Export(Export::Let(s)) => {
-                self.w("export ");
-                self.stmt(s);
-            }
-            StmtKind::Export(Export::Name { name, alias }) => {
-                self.w("export ");
-                self.w(&name.name);
-                if let Some(a) = alias {
-                    self.w(" as ");
-                    self.w(&a.name);
+                let path = i.path.iter().map(|p| p.name.as_str()).collect::<Vec<_>>();
+                let names = |names: &[ImportName]| {
+                    let list: Vec<String> = names
+                        .iter()
+                        .map(|n| match &n.alias {
+                            Some(a) => format!("{} as {}", n.name.name, a.name),
+                            None => n.name.name.clone(),
+                        })
+                        .collect();
+                    format!("{{ {} }}", list.join(", "))
+                };
+                match (&i.what, i.is_use) {
+                    (Imported::Whole(local), true) => {
+                        self.w(&path.join("::"));
+                        if path.last() != Some(&local.name.as_str()) {
+                            self.w(" as ");
+                            self.w(&local.name);
+                        }
+                    }
+                    (Imported::Names(n), true) => {
+                        self.w(&path.join("::"));
+                        self.w("::");
+                        self.w(&names(n));
+                    }
+                    (Imported::Whole(local), false) => {
+                        self.w(&format!("{} from \"./{}\"", local.name, path.join("/")));
+                    }
+                    (Imported::Names(n), false) => {
+                        self.w(&format!("{} from \"./{}\"", names(n), path.join("/")));
+                    }
                 }
-            }
-            StmtKind::Use(path) => {
-                self.w("use ");
-                self.w(&path.iter().map(|i| i.name.as_str()).collect::<Vec<_>>().join("::"));
                 self.w(";");
             }
             StmtKind::Computed { name, ty, value } => {

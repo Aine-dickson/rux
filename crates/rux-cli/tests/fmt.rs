@@ -159,3 +159,28 @@ fn line_endings_survive() {
     assert!(out.contains("\r\n"), "CRLF should be preserved");
     assert!(!out.contains("\n\n"), "and not doubled: {out:?}");
 }
+
+/// `[fmt] imports` in the nearest `rux.toml` picks the spelling every import
+/// is written in; without it, imports stay as written, except a type told by
+/// its capital letter, which gets its `type`.
+#[test]
+fn the_manifest_picks_the_import_spelling() {
+    let page = "<template>\n  <screen></screen>\n</template>\n<script>\n  use stores::cart;\n  use types::Task;\n</script>\n";
+    let dir = fixture(
+        "imports_setting",
+        &[("rux.toml", "[fmt]\nimports = \"import\"\n"), ("pages/app.rux", page)],
+    );
+    let out = fmt(&["--stdout", dir.join("pages/app.rux").to_str().unwrap()]);
+    let text = stdout(&out);
+    assert!(text.contains("import cart from \"./stores/cart\";"), "{text}");
+    assert!(text.contains("import type { Task } from \"./types\";"), "{text}");
+
+    let dir = fixture("imports_kept", &[("app.rux", page)]);
+    let text = stdout(&fmt(&["--stdout", dir.join("app.rux").to_str().unwrap()]));
+    assert!(text.contains("use stores::cart;") && text.contains("use type types::Task;"), "{text}");
+
+    let dir = fixture("imports_bad", &[("rux.toml", "[fmt]\nimports = \"both\"\n"), ("app.rux", page)]);
+    let out = fmt(&[dir.join("app.rux").to_str().unwrap()]);
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("the spellings are"));
+}

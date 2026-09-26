@@ -49,7 +49,7 @@ fn stmt<'a>(s: &'a Stmt, f: &mut impl FnMut(Node<'a>) -> bool) {
         return;
     }
     match &s.kind {
-        StmtKind::Empty | StmtKind::Continue | StmtKind::Type { .. } | StmtKind::Use(_) => {}
+        StmtKind::Empty | StmtKind::Continue | StmtKind::Type { .. } | StmtKind::Import(_) => {}
         StmtKind::Expr(e) => expr(e, f),
         StmtKind::Let { value, .. } => opt(value, f),
         StmtKind::Assign { target, value, .. } => {
@@ -78,9 +78,6 @@ fn stmt<'a>(s: &'a Stmt, f: &mut impl FnMut(Node<'a>) -> bool) {
         StmtKind::Switch(sw) => switch(sw, f),
         StmtKind::Block(b) => block(b, f),
         StmtKind::Fn(d) => block(&d.body, f),
-        StmtKind::Import { path, .. } => expr(path, f),
-        StmtKind::Export(Export::Let(s)) => stmt(s, f),
-        StmtKind::Export(Export::Name { .. }) => {}
         StmtKind::Computed { value, .. } => expr(value, f),
         StmtKind::Lifecycle { body, .. } => block(body, f),
         StmtKind::Prop(decls) => {

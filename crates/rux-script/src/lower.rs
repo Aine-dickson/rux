@@ -181,8 +181,6 @@ pub fn removed_syntax(script: &ast::Script) -> Option<String> {
                 S::While { cond: None, .. } => Some("a `loop`".to_string()),
                 S::Do { .. } => Some("a `do` loop".to_string()),
                 S::Break(Some(_)) => Some("a `break` with a value".to_string()),
-                S::Import { .. } => Some("an `import … as` of rhai's".to_string()),
-                S::Export(_) => Some("an `export`".to_string()),
                 S::Fn(_) if !top.contains(&(s as *const ast::Stmt)) => Some("a `fn` inside a block".to_string()),
                 _ => None,
             },
@@ -318,7 +316,7 @@ impl<'a> Lower<'a> {
         self.frames.push(Frame { locals: Vec::new(), scopes: vec![HashMap::new()], captures: None });
         for stmt in &script.stmts {
             match &stmt.kind {
-                S::Fn(_) | S::Type { .. } | S::Use(_) | S::Empty => {}
+                S::Fn(_) | S::Type { .. } | S::Import(_) | S::Empty => {}
                 S::Let { name, value, .. } => {
                     let Some(value) = value else { continue };
                     let global = self.globals[&name.name];
@@ -528,7 +526,7 @@ impl<'a> Lower<'a> {
     fn stmt(&mut self, s: &ast::Stmt, value: bool) -> Vec<Stmt> {
         let sp = s.span;
         match &s.kind {
-            S::Empty | S::Type { .. } | S::Use(_) => Vec::new(),
+            S::Empty | S::Type { .. } | S::Import(_) => Vec::new(),
             S::Expr(e) => Self::one(StmtKind::Expr(self.expr(e)), sp),
             S::Let { name, value: v, .. } => {
                 let ty = self.decl(name.span);
@@ -621,14 +619,6 @@ impl<'a> Lower<'a> {
             }
             S::Fn(def) => {
                 self.unsupported("a `fn` inside a block", def.name.span);
-                Vec::new()
-            }
-            S::Import { .. } => {
-                self.unsupported("an `import … as` of rhai's", sp);
-                Vec::new()
-            }
-            S::Export(_) => {
-                self.unsupported("an `export`", sp);
                 Vec::new()
             }
             S::Computed { .. } | S::Lifecycle { .. } | S::Prop(_) => {

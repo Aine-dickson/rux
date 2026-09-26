@@ -67,8 +67,7 @@ fn an_annotated_document_runs_as_if_unannotated() {
         <text r-for=\"t in visible()\">{{ label(t, 1) }}</text>\n\
         </screen></template>\n\
         <script>\n\
-        use types::Task;\n\
-        use types::Filter;\n\
+        use type types::{Task, Filter};\n\
         type Pair = { a: int, b: int };\n\
         let tasks: Task[] = signal([{ id: 1, title: \"a\", done: false }, { id: 2, title: \"b\", done: true }]);\n\
         let filter: Filter = signal(\"open\");\n\
@@ -141,29 +140,46 @@ fn a_typed_computed_in_a_component() {
     assert!(shown(&doc).contains(&"8".to_string()), "{:?} {:?}", shown(&doc), problems(&doc));
 }
 
-/// `use types::Task` names `types.rux`; a type import is never taken for a
-/// component, and one whose file is not there says where it looked.
+/// `use type types::Task` names `types.rux`; a type import is never taken
+/// for a component, and one whose file is not there says where it looked.
 #[test]
 fn a_type_import_names_a_file() {
     let app = |line: &str| {
         format!("<template><screen><text>x</text></screen></template>\n<script>\n{line}\n</script>")
     };
-    let dir = project(&[("app.rux", &app("use types::Task;")), ("types.rux", TYPES)]);
-    assert!(Document::load(dir.join("app.rux")).is_ok());
+    for line in ["use type types::Task;", "import type { Task } from \"./types\";", "import type Task from \"types\";"] {
+        let dir = project(&[("app.rux", &app(line)), ("types.rux", TYPES)]);
+        let doc = Document::load(dir.join("app.rux")).unwrap_or_else(|e| panic!("{line}: {e}"));
+        assert!(problems(&doc).is_empty(), "{line}: {:?}", problems(&doc));
+    }
 
-    let dir = project(&[("app.rux", &app("use shapes::Task;"))]);
+    let dir = project(&[("app.rux", &app("use type shapes::Task;"))]);
     let err = load_err(dir.join("app.rux"));
     assert!(err.contains("no file for `use shapes::Task;`"), "{err}");
 
-    let dir = project(&[("app.rux", &app("use Task;"))]);
-    let err = load_err(dir.join("app.rux"));
-    assert!(err.contains("names no file") && err.contains("use types::Task;"), "{err}");
+    for line in ["use type Task;", "use Task;"] {
+        let dir = project(&[("app.rux", &app(line))]);
+        let err = load_err(dir.join("app.rux"));
+        assert!(err.contains("names no file") && err.contains("use type types::Task;"), "{line}: {err}");
+    }
 
-    // A component file's own types: `use components::row::Row`.
+    // A component file's own types: `use type components::row::Row`.
     let row = "<template><view><text>r</text></view></template>\n\
         <script>\n  type Row = { id: int };\n</script>";
-    let dir = project(&[("app.rux", &app("use components::row::Row;")), ("components/row.rux", row)]);
+    let dir = project(&[("app.rux", &app("use type components::row::Row;")), ("components/row.rux", row)]);
     assert!(Document::load(dir.join("app.rux")).is_ok());
+}
+
+/// Before `type` marked a type import, a capital letter did. That spelling
+/// still loads, and says how it is written now.
+#[test]
+fn a_type_told_by_its_capital_letter_still_loads_and_warns() {
+    let app = "<template><screen><text>x</text></screen></template>\n<script>\nuse types::Task;\nlet t: Task[] = signal([]);\n</script>";
+    let dir = project(&[("app.rux", app), ("types.rux", TYPES)]);
+    let doc = Document::load(dir.join("app.rux")).expect("loads");
+    let p = problems(&doc);
+    assert_eq!(p.len(), 1, "{p:?}");
+    assert!(p[0].contains("write `use type types::Task;`"), "{p:?}");
 }
 
 /// A file with only a `<script>` is a types file: it loads when it declares

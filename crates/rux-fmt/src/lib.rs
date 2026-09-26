@@ -29,7 +29,10 @@
 //! rather than as a separate pass.
 
 pub mod css;
+mod imports;
 pub mod spellings;
+
+pub use imports::Imports;
 
 /// What a line does to the indent level.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -82,8 +85,13 @@ fn is_void(tag: &str) -> bool {
 ///
 /// Line endings are preserved: CRLF in, CRLF out.
 pub fn reindent(text: &str, unit: &str) -> String {
+    reindent_with(text, unit, Imports::Keep)
+}
+
+/// [`reindent`], writing every import in `imports`' spelling.
+pub fn reindent_with(text: &str, unit: &str, imports: Imports) -> String {
     let eol = if text.contains("\r\n") { "\r\n" } else { "\n" };
-    let normalised = spellings::rewrite(&text.replace("\r\n", "\n"));
+    let normalised = spellings::rewrite_with(&text.replace("\r\n", "\n"), imports);
     let formatted = match style_span(&normalised) {
         Some((open_end, close_start)) => {
             let head = reindent_lines(&normalised[..open_end], unit);

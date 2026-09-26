@@ -633,25 +633,47 @@ async fn loadUser(id: int): User {
 ### Two spellings, one meaning (decided)
 
 ```rux
-use types::Task;
-import type { Task } from "./types";
+use components::card;                    // a whole file, under its name
+import card from "./components/card";
 
-use components::card;
-import { card } from "./components/card";
+use stores::cart as basket;              // a whole file, renamed
+import basket from "./stores/cart";
 
-use stores::cart;
-import { cart } from "./stores/cart";
+use utils::money::{format, tax as t};    // names the file exports
+import { format, tax as t } from "./utils/money";
+
+use type types::Task;                    // a type
+use type types::{Task, Page};
+import type { Task, Page } from "./types";
 ```
 
-`use` and `import` are both accepted and mean the same. `import type` is the
-form for types; `use` tells a type by its capital letter (Kept). `as` renames
-in both: `use stores::cart as basket`, `import { cart as basket } from
-"./stores/cart"` (proposed).
+`use` and `import` are both accepted and mean the same (decided). A name
+alone imports the **whole file**: a component's tag, or a module's namespace
+(`cart.add(p)`), as Vue imports a component. **Braces pick what the file
+exports** (decided 2026-09-26, step 7), in both spellings. Without braces the
+last segment of a `use` is always the file; `use utils::money::format` looks
+for `utils/money/format.rux`.
 
-Resolution is Kept: beside the importing file first, then the project root. No
-`super::` and no `..`. `rux fmt` can rewrite every import to one form, chosen
-by `imports = "use"` or `imports = "import"` in `rux.toml`; without the setting
-it leaves both alone (decided).
+**A type is imported with `type`** (decided by the project owner, 2026-09-26),
+never told by its capital letter: `use type a::T`, `import type { T } from
+"./a"`, and `import type T from "./a"`, which is read as the braced form
+since a type import always picks. A type imported without `type`, or a
+`use type` of something that is not a type, is an error. The earlier
+spelling, `use types::Task;`, still loads with a warning until step 7 ends,
+and `rux fmt` rewrites it.
+
+The string after `from` is the `use` path with `/`: an optional `./`, names,
+an optional `.rux`. Resolution is Kept: beside the importing file first, then
+the project root. No `super::`, and no `..` or `.` in a path. `rux fmt` can
+rewrite every import to one form, chosen in `rux.toml` (decided):
+
+```toml
+[fmt]
+imports = "use"      # or "import"
+```
+
+Without the setting it leaves both alone. Imports and `export` belong at the
+top level of a file's script; a handler or a binding cannot hold one.
 
 ### Script-only modules (decided)
 

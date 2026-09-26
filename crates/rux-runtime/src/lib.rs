@@ -2096,17 +2096,22 @@ impl Document {
             let mut namespace = Namespace::new();
             for import in job.imports {
                 let at = job.owner_script_line + import.line - 1;
-                // A half-typed `use` names no file, and the filesystem error it
-                // used to produce talked about a path ending in `/.rux`, which is
-                // not something the author wrote.
-                if import.empty_segment {
-                    return Err(LoadError::at_line(
-                        "this `use` names no component: a path segment is empty. \
-                         Write `use components::name;`"
-                            .to_string(),
-                        at,
-                        &job.owner_path,
-                    ));
+                if let Some(problem) = import.problem {
+                    return Err(LoadError::at_line(problem, at, &job.owner_path));
+                }
+                // `use types::Task;` from before a type import was marked with
+                // `type`: still read as one, and told how it is written now.
+                if import.capital_type {
+                    let written = import.file.trim_end_matches(".rux").replace('/', "::");
+                    let name = import.type_name.clone().unwrap_or_default();
+                    rux_script::in_file(Some(job.owner_path.clone()), || {
+                        rux_script::located(Some(at), || {
+                            rux_script::warn_script(format!(
+                                "a type is imported with `type`: write `use type {written}::{name};` \
+                                 (`rux fmt` rewrites it)"
+                            ))
+                        })
+                    });
                 }
                 // `use types::Task;` imports a type, not a component. The file has
                 // to exist; what it declares is checked with the rest of the
@@ -5548,6 +5553,7 @@ struct ImportJob {
     imports: Vec<Import>,
 }
 
+#[derive(Clone)]
 struct Import {
     /// Custom-element tag (last path segment, `_` → `-`).
     tag: String,
@@ -5560,13 +5566,11 @@ struct Import {
     /// at all and drawn at the top of the file, pointing at `<template>` for a
     /// mistake on the last line of `<script>`.
     line: usize,
-    /// `use components::;` and friends: the path parses as segments but one of
-    /// them is empty, so it names no file.
-    ///
-    /// Kept as an import rather than dropped, because dropping it hands
-    /// `use components::;` to rhai, which reports it in its own vocabulary. It
-    /// is a half-typed import and deserves to be told so.
-    empty_segment: bool,
+    /// Why this import cannot be loaded, said where it was written.
+    problem: Option<String>,
+    /// `use types::Task;`, a type told by its capital letter rather than
+    /// marked with `type`: read as a type import, with a warning.
+    capital_type: bool,
     /// The path was written with a `-` in it, as `use new-task;`.
     ///
     /// An error since 2026-09-26: `-` is the minus operator in script, so a
@@ -5574,61 +5578,90 @@ struct Import {
     /// minus `task`. It used to warn and resolve anyway. The error names the
     /// snake form, which finds the same file either way.
     hyphenated_path: bool,
-    /// `use types::Task;`: the last segment starts with a capital letter, so
-    /// it names a type declared in `file` rather than a component. A declared
-    /// type always starts with one and a component file never does, which is
-    /// the whole of how the two are told apart. See `docs/10-types.md`.
+    /// `use type types::Task;`: a type declared in `file`, not a component.
+    /// See `docs/10-types.md`.
     type_name: Option<String>,
 }
 
-/// Split `use a::b;` statements out of a script, returning the cleaned script
-/// (which the fork can parse) and the resolved imports.
+/// Split the imports out of a script, returning the cleaned script and what
+/// it imports: one [`Import`] per component, and one per type named.
 ///
-/// Rux's parser finds them (`docs/11-next.md`, step 2); each one is then read
-/// from its text, so a malformed path is still reported in the words it
-/// always was. A statement taken out leaves its lines behind as blank ones:
-/// dropping them shifted every line below, so a script error could no longer
-/// be placed in the file.
+/// A statement taken out leaves its lines behind as blank ones: dropping them
+/// shifted every line below, so a script error could no longer be placed in
+/// the file.
 fn extract_imports(script: &str) -> (String, Vec<Import>) {
+    use rux_syntax::ast::{Imported, StmtKind};
     let Some(parsed) = declarations(script) else { return (script.to_string(), Vec::new()) };
     let lines = rux_syntax::LineIndex::new(script);
     let mut edits = Vec::new();
     let mut imports = Vec::new();
     for stmt in &parsed.stmts {
-        if !matches!(stmt.kind, rux_syntax::ast::StmtKind::Use(_)) {
-            continue;
-        }
+        let StmtKind::Import(i) = &stmt.kind else { continue };
         let line = lines.line_col(script, stmt.span.start as usize).0;
-        if let Some(import) = import_of(stmt.span.text(script), line) {
-            imports.push(import);
-            edits.push((stmt.span, String::new()));
+        edits.push((stmt.span, String::new()));
+        let mut segments: Vec<&str> = i.path.iter().map(|p| p.name.as_str()).collect();
+        let hyphenated_path = segments.iter().any(|s| s.contains('-'));
+        let base = Import {
+            tag: String::new(),
+            file: String::new(),
+            line,
+            problem: None,
+            capital_type: false,
+            hyphenated_path,
+            type_name: None,
+        };
+        match &i.what {
+            Imported::Names(names) if i.is_type => {
+                let file = format!("{}.rux", segments.join("/"));
+                for n in names {
+                    let mut import = Import { file: file.clone(), type_name: Some(n.name.name.clone()), ..base.clone() };
+                    if n.alias.is_some() {
+                        import.problem = Some(format!(
+                            "a type keeps its name: import `{}` without `as`",
+                            n.name.name
+                        ));
+                    }
+                    imports.push(import);
+                }
+            }
+            Imported::Names(_) => imports.push(Import {
+                problem: Some(
+                    "picking names out of a file is for script modules, which are not built yet".to_string(),
+                ),
+                ..base
+            }),
+            Imported::Whole(local) => {
+                // Before `type` marked a type import, a capital letter did.
+                let last = segments.last().copied().unwrap_or_default();
+                if i.is_use && segments.len() == 1 && last.starts_with(|c: char| c.is_uppercase()) {
+                    imports.push(Import {
+                        problem: Some(format!(
+                            "`use {last};` names no file: a type is imported from the file that \
+                             declares it, as `use type types::{last};`"
+                        )),
+                        ..base
+                    });
+                    continue;
+                }
+                if i.is_use && last.starts_with(|c: char| c.is_uppercase()) && local.name == last && segments.len() > 1 {
+                    segments.pop();
+                    imports.push(Import {
+                        file: format!("{}.rux", segments.join("/")),
+                        type_name: Some(last.to_string()),
+                        capital_type: true,
+                        ..base
+                    });
+                    continue;
+                }
+                imports.push(Import {
+                    tag: local.name.replace('_', "-"),
+                    file: format!("{}.rux", segments.join("/")),
+                    ..base
+                });
+            }
         }
     }
     (splice(script, edits), imports)
-}
-
-/// One `use a::b;` statement, read from its text. `None` for one that is not
-/// that shape, which is left in the script for the build to reject.
-fn import_of(text: &str, line: usize) -> Option<Import> {
-    let rest = text.trim().strip_prefix("use ")?;
-    // A path with spaces or extra `;` is malformed.
-    let path = rest
-        .strip_suffix(';')
-        .map(str::trim)
-        .filter(|p| !p.is_empty() && !p.contains(char::is_whitespace) && !p.contains(';'))?;
-    let mut segments: Vec<&str> = path.split("::").collect();
-    let empty_segment = segments.iter().any(|s| s.is_empty());
-    let hyphenated_path = path.contains('-');
-    let type_name = segments
-        .last()
-        .filter(|s| s.starts_with(|c: char| c.is_uppercase()))
-        .map(|s| s.to_string());
-    if type_name.is_some() {
-        segments.pop();
-    }
-    let file = format!("{}.rux", segments.join("/"));
-    let tag = segments.last().map(|s| s.replace('_', "-")).unwrap_or_default();
-    Some(Import { tag, file, line, empty_segment, hyphenated_path, type_name })
 }
 
 /// A document or component script read by Rux's parser, with the

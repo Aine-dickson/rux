@@ -229,10 +229,91 @@ mod tests {
         )
         .unwrap();
         assert_eq!(s.stmts.len(), 7);
-        assert!(matches!(s.stmts[0].kind, StmtKind::Use(_)));
+        assert!(matches!(s.stmts[0].kind, StmtKind::Import(_)));
         assert!(matches!(s.stmts[3].kind, StmtKind::Computed { .. }));
         assert!(parse("computed total = 1", Options::default()).is_err());
         // Still ordinary names elsewhere.
         ok("let prop = 3; prop = 4; effect(1);");
+    }
+
+    fn import(src: &str) -> Import {
+        let s = parse(src, Options { declarations: true }).unwrap_or_else(|e| panic!("{src:?}: {e}"));
+        match s.stmts.into_iter().next().map(|s| s.kind) {
+            Some(StmtKind::Import(i)) => i,
+            other => panic!("{src:?}: {other:?}"),
+        }
+    }
+
+    /// What an import says, flattened: its keyword, whether a type, the
+    /// file, and `local` or `{name as local, …}`.
+    fn shape(src: &str) -> String {
+        let i = import(src);
+        let path: Vec<&str> = i.path.iter().map(|p| p.name.as_str()).collect();
+        let what = match &i.what {
+            Imported::Whole(local) => local.name.clone(),
+            Imported::Names(names) => {
+                let n: Vec<String> = names.iter().map(|n| format!("{} as {}", n.name.name, n.local().name)).collect();
+                format!("{{{}}}", n.join(", "))
+            }
+        };
+        format!("{} {}{} {}", if i.is_use { "use" } else { "import" }, if i.is_type { "type " } else { "" }, path.join("/"), what)
+    }
+
+    #[test]
+    fn both_spellings_of_an_import_say_the_same() {
+        let pairs = [
+            ("use stores::cart;", "import cart from \"./stores/cart\";", "stores/cart cart"),
+            ("use stores::cart as basket;", "import basket from \"./stores/cart\";", "stores/cart basket"),
+            (
+                "use utils::money::{format, tax as t};",
+                "import { format, tax as t } from \"./utils/money\";",
+                "utils/money {format as format, tax as t}",
+            ),
+            ("use type types::Task;", "import type { Task } from \"./types\";", "type types {Task as Task}"),
+            ("use type types::{Task, Page};", "import type { Task, Page } from \"types.rux\";", "type types {Task as Task, Page as Page}"),
+        ];
+        for (u, i, want) in pairs {
+            assert_eq!(shape(u), format!("use {want}"), "{u}");
+            assert_eq!(shape(i), format!("import {want}"), "{i}");
+        }
+        // The project owner's spelling: a type import always picks.
+        assert_eq!(shape("import type Task from \"./types\";"), "import type types {Task as Task}");
+        // No `;` at the end of a line, as any declaration.
+        assert_eq!(shape("use counter\nlet a = 1;"), "use counter counter");
+        // A segment's span is where it is written, inside the string too.
+        let src = "import cart from \"./stores/cart\";";
+        let i = import(src);
+        assert_eq!(i.path[1].span.text(src), "cart");
+        // Not a type import: a whole file that happens to be called `type`.
+        assert_eq!(shape("import type from \"./type\";"), "import type type");
+    }
+
+    #[test]
+    fn a_bad_import_says_what_is_wrong() {
+        let fails = |src: &str| parse(src, Options { declarations: true }).unwrap_err().message;
+        assert!(fails("use components::;").contains("path segment is empty"));
+        assert!(fails("use type Task;").contains("names no file"));
+        assert!(fails("import \"x\" as y;").contains("rhai's import"));
+        assert!(fails("import x from \"../x\";").contains("no `..`"));
+        assert!(fails("import x from \"a//b\";").contains("segment is empty"));
+        assert!(fails("import {} from \"a\";").contains("import nothing"));
+        assert!(fails("import x \"a\";").contains("expecting `from`"));
+        // Only at a file script's top level.
+        assert!(parse("use a;", Options::default()).unwrap_err().message.contains("top level"));
+        assert!(fails("fn f() { import a from \"a\"; }").contains("top level"));
+    }
+
+    #[test]
+    fn export_marks_a_declaration() {
+        let src = "export fn add(x: int) { }\nexport async fn load() { }\nexport type T = int;\nexport let items = signal([]);\nfn private_one() { }";
+        let s = parse(src, Options { declarations: true }).unwrap();
+        let names: Vec<(&str, usize)> = s.exports.iter().map(|e| (e.name.name.as_str(), e.stmt)).collect();
+        assert_eq!(names, [("add", 0), ("load", 1), ("T", 2), ("items", 3)]);
+        assert_eq!(s.exports[0].keyword.text(src), "export");
+        assert!(matches!(s.stmts[3].kind, StmtKind::Let { .. }));
+        let fails = |src: &str| parse(src, Options { declarations: true }).unwrap_err().message;
+        assert!(fails("export computed x = 1").contains("goes before"));
+        assert!(fails("export 3;").contains("goes before"));
+        assert!(parse("export fn f() {}", Options::default()).is_err());
     }
 }

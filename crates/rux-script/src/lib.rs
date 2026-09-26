@@ -676,7 +676,7 @@ thread_local! {
 pub fn declares_besides_types(script: &str) -> Option<&'static str> {
     use rux_syntax::ast::StmtKind as S;
     let parsed = rux_syntax::parse(script, rux_syntax::Options::default()).ok()?;
-    let stmts = || parsed.stmts.iter().filter(|s| !matches!(s.kind, S::Type { .. } | S::Use(_) | S::Empty));
+    let stmts = || parsed.stmts.iter().filter(|s| !matches!(s.kind, S::Type { .. } | S::Import(_) | S::Empty));
     if stmts().any(|s| matches!(s.kind, S::Fn(_))) {
         Some("a function")
     } else if stmts().next().is_some() {

@@ -13,7 +13,7 @@ the row below says so.
 
 | Part | State |
 |---|---|
-| Annotations parsed and erased (`: T`, `type`, `prop x: T`, `use types::X`) | **Built** 2026-09-24. Accepted and ignored at run time; a malformed one is a syntax error. See [Script](./07-script.md#type-annotations) |
+| Annotations parsed and erased (`: T`, `type`, `prop x: T`, `use type types::X`) | **Built** 2026-09-24. Accepted and ignored at run time; a malformed one is a syntax error. See [Script](./07-script.md#type-annotations) |
 | The checker: primitives, arrays, records, dictionaries, `T?`, inference | **Built** 2026-09-24 for a file's `<script>`: its `let`s, functions (parameters, results, calls) and closures. Its template came with the templates row |
 | Unions, narrowing, `switch` exhaustiveness, forced `?.` | **Built** 2026-09-24 in a file's `<script>`, with `?[` for a dictionary. `r-if` narrowing came with templates; `await` waits for async |
 | Functions: typed and untyped, the caller-local rule | **Built** 2026-09-24. Parameters, results and calls came with the checker; the caller-local rule is on, and the sweep before it found no existing function it breaks |
@@ -507,18 +507,22 @@ says the check is worth paying for.
 
 ## Sharing types between files
 
-A type declared in one file is used in another with `use`:
+A type declared in one file is used in another with `use type`, or
+`import type`, which means the same:
 
 ```rux
-use types::Task;
-use types::Filter;
+use type types::{Task, Filter};
+import type { Task, Filter } from "./types";
 ```
 
-`use types::Task` names the `type Task` declared in `types.rux`, found the way
-a component import is: beside the file first, then at the project root. The
-last segment's capital letter is what makes it a type: `use components::task`
-still imports the component in `components/task.rux`, and
-`use components::task::Row` imports the type `Row` declared in that file.
+`use type types::Task` names the `type Task` declared in `types.rux`, found
+the way a component import is: beside the file first, then at the project
+root. The word `type` is what makes it a type import (the project owner's
+rule, 2026-09-26): `use components::task` imports the component in
+`components/task.rux`, and `use type components::task::Row` imports the
+type `Row` declared in that file. Before `type` marked one, a type import was
+told by its capital letter (`use types::Task;`); that spelling still loads,
+with a warning, and `rux fmt` rewrites it.
 
 A file used only for its types holds a `<script>` and nothing else: no
 `<template>` and no `<style>`. Its script may declare types and nothing

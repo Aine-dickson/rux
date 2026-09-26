@@ -113,6 +113,29 @@ fn the_use_statement_is_coloured() {
     assert_eq!(class_at("let n"), Some("hl-keyword"), "`let` stopped being a keyword");
 }
 
+/// Both spellings of an import, a type import's `type`, and `export`
+/// (`docs/11-next.md`, "Modules").
+#[test]
+fn imports_and_exports_are_coloured() {
+    let mut g = grammar();
+    let src = "<script>\n  use type types::Task;\n  import cart from \"./stores/cart\";\n  \
+               import type { Page } from \"./types\";\n  export fn add() { }\n  let from = 1;\n</script>\n";
+    let spans = g.spans(src);
+    let class_at = |needle: &str| {
+        let at = src.find(needle).unwrap_or_else(|| panic!("{needle:?} not in source"));
+        spans.iter().find(|s| s.start <= at && at < s.end).and_then(|s| s.class)
+    };
+    assert_eq!(class_at("use type"), Some("hl-keyword"));
+    assert_eq!(class_at("type types"), Some("hl-keyword"), "`type` in `use type`");
+    assert!(class_at("types::Task").is_some(), "the path");
+    assert_eq!(class_at("import cart"), Some("hl-keyword"));
+    assert_eq!(class_at("from \"./stores"), Some("hl-keyword"));
+    assert_eq!(class_at("type { Page"), Some("hl-keyword"), "`type` in `import type`");
+    assert_eq!(class_at("export fn"), Some("hl-keyword"));
+    // A variable that happens to be called `from` stays one.
+    assert_ne!(class_at("from = 1"), Some("hl-keyword"));
+}
+
 /// A `<style>` block must be coloured as CSS, not as template markup, the
 /// begin/end context switch is the part most likely to break.
 #[test]

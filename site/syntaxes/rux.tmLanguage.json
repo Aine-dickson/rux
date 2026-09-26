@@ -481,6 +481,9 @@
           "include": "#script-use-path"
         },
         {
+          "include": "#script-import"
+        },
+        {
           "include": "#script-keyword"
         },
         {
@@ -510,14 +513,32 @@
       ]
     },
     "script-use-path": {
-      "comment": "The path in `use components::header;`. Coloured apart from an ordinary identifier because it names a FILE (components/header.rux) and, from that, a tag (<header>). Listed before #script-keyword so it claims the `use` first and can colour the path with it.",
-      "match": "\\b(use)\\s+([A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)*)",
+      "comment": "The path in `use components::header;` and `use type types::Task;`. Coloured apart from an ordinary identifier because it names a FILE (components/header.rux) and, from that, a tag (<header>). Listed before #script-keyword so it claims the `use` first and can colour the path with it. `import … from \"…\"` is #script-import.",
+      "match": "\\b(use)\\s+(?:(type)\\s+)?([A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)*)",
       "captures": {
         "1": {
           "name": "keyword.control.import.rux"
         },
         "2": {
+          "name": "keyword.control.import.rux"
+        },
+        "3": {
           "name": "entity.name.namespace.rux"
+        }
+      }
+    },
+    "script-import": {
+      "comment": "`import cart from \"./stores/cart\";`, `import type { Task } from \"./types\";`: `import` and the `type` after it, and `from` before the file's string. `from` is only a keyword there, so it is matched with the quote ahead of it.",
+      "match": "\\b(import)\\b(?:\\s+(type)\\b(?!\\s+from\\b))?|\\b(from)\\b(?=\\s*[\"'])",
+      "captures": {
+        "1": {
+          "name": "keyword.control.import.rux"
+        },
+        "2": {
+          "name": "keyword.control.import.rux"
+        },
+        "3": {
+          "name": "keyword.control.import.rux"
         }
       }
     },
@@ -668,8 +689,8 @@
       "name": "constant.language.rux"
     },
     "script-keyword": {
-      "comment": "`use` is Rux's import statement and was missing, so it rendered as plain text next to a coloured `let` on the following line. `import` is rhai's word for it; Rux does not use it, but it costs nothing to colour.",
-      "match": "\\b(use|if|else|for|in|while|loop|return|break|continue|switch|throw|try|catch|await|import|as|private)\\b",
+      "comment": "`use` is Rux's import statement and was missing, so it rendered as plain text next to a coloured `let` on the following line. `import` is the other spelling of the same statement (#script-import colours its `type` and `from`), and `export` marks what a module shares.",
+      "match": "\\b(use|if|else|for|in|while|loop|return|break|continue|switch|throw|try|catch|await|import|export|as|private)\\b",
       "name": "keyword.control.rux"
     },
     "script-storage": {

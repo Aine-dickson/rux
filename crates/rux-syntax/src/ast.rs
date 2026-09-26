@@ -12,6 +12,8 @@ use crate::span::Span;
 #[derive(Clone, Debug, PartialEq)]
 pub struct Script {
     pub stmts: Vec<Stmt>,
+    /// What the top level marks `export`, in order.
+    pub exports: Vec<Export>,
 }
 
 /// A name and where it was written.
@@ -63,12 +65,9 @@ pub enum StmtKind {
     Fn(FnDecl),
     /// `type Name = T;`, or `type Name<T, U> = …;` with type parameters.
     Type { name: Ident, params: Vec<Ident>, ty: TypeExpr },
-    /// `import "path" as name;`, rhai's module import.
-    Import { path: Expr, alias: Option<Ident> },
-    /// `export let x = …`, `export const …`, or `export name as alias`.
-    Export(Export),
-    /// `use a::b::C;`. Handled by the runtime before a script runs.
-    Use(Vec<Ident>),
+    /// `use a::b;` or `import b from "a/b";`, and their other shapes. The
+    /// runtime reads these before a script runs. See [`Import`].
+    Import(Import),
     /// `computed name: T = expr;`
     Computed { name: Ident, ty: Option<TypeExpr>, value: Expr },
     /// `effect { }`, `mounted { }` and `unmounted { }`.
@@ -103,10 +102,65 @@ pub struct PropDecl {
     pub default: Option<Expr>,
 }
 
+/// `export` before a top-level `fn`, `async fn`, `type` or `let`. The
+/// declaration itself is an ordinary statement; this says which one.
 #[derive(Clone, Debug, PartialEq)]
-pub enum Export {
-    Let(Box<Stmt>),
-    Name { name: Ident, alias: Option<Ident> },
+pub struct Export {
+    /// The `export` keyword.
+    pub keyword: Span,
+    /// The name the declaration declares.
+    pub name: Ident,
+    /// Its index in [`Script::stmts`].
+    pub stmt: usize,
+}
+
+/// One import, in either spelling. `use` and `import` mean the same
+/// (`docs/11-next.md`, "Modules"):
+///
+/// | `use` | `import` | [`Imported`] |
+/// |---|---|---|
+/// | `use stores::cart;` | `import cart from "./stores/cart";` | `Whole(cart)` |
+/// | `use stores::cart as basket;` | `import basket from "./stores/cart";` | `Whole(basket)` |
+/// | `use utils::money::{format, tax as t};` | `import { format, tax as t } from "./utils/money";` | `Names` |
+/// | `use type types::Task;` | `import type { Task } from "./types";` | `Names`, `is_type` |
+///
+/// A type is imported with `type`, never told by its capital letter
+/// (the project owner's rule, 2026-09-26). `import type Task from "./types"`
+/// is read as `import type { Task } …`, since a type import always picks.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Import {
+    /// Written with `use`, not `import`.
+    pub is_use: bool,
+    pub is_type: bool,
+    /// The file, a segment per directory and the file's name last, without
+    /// `.rux`: `stores::cart` and `"./stores/cart"` both give `stores`,
+    /// `cart`. A segment may hold a `-` (`use new-task;`), for the runtime
+    /// to refuse in its own words.
+    pub path: Vec<Ident>,
+    pub what: Imported,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum Imported {
+    /// The whole file, under this name: a component's tag, a module's
+    /// namespace.
+    Whole(Ident),
+    /// Names the file exports.
+    Names(Vec<ImportName>),
+}
+
+/// `name` or `name as alias`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ImportName {
+    pub name: Ident,
+    pub alias: Option<Ident>,
+}
+
+impl ImportName {
+    /// The name the importing file uses.
+    pub fn local(&self) -> &Ident {
+        self.alias.as_ref().unwrap_or(&self.name)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -300,7 +354,7 @@ impl Stmt {
                 // Line-based until step 2, so neither ever needed its `;`.
                 | StmtKind::Computed { .. }
                 | StmtKind::Prop(_)
-                | StmtKind::Use(_)
+                | StmtKind::Import(_)
         )
     }
 }

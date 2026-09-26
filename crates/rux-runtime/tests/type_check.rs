@@ -58,10 +58,10 @@ fn a_type_error_is_on_its_file_line() {
     assert!(f.iter().any(|(line, err, m)| *line == Some(4) && *err && m.contains("where `int`")), "{f:?}");
 }
 
-/// `use types::Task` makes `Task` known, and checks against it.
+/// `use type types::Task` makes `Task` known, and checks against it.
 #[test]
 fn an_imported_type_is_checked_against() {
-    let script = "use types::Task;\nlet t: Task = { id: 1, titel: \"a\", done: false };";
+    let script = "use type types::Task;\nlet t: Task = { id: 1, titel: \"a\", done: false };";
     let dir = project(&[("app.rux", &page(script)), ("types.rux", TYPES)]);
     let doc = Document::load(dir.join("app.rux")).expect("loads");
     let f = found(&doc);
@@ -73,14 +73,14 @@ fn an_imported_type_is_checked_against() {
 #[test]
 fn an_imported_generic_type_keeps_its_parameters() {
     let types = "<script>\n  type Page<T> = { items: T[], next: string? };\n</script>\n";
-    let script = "use types::Page;\nlet p: Page<int> = { items: [\"a\"], next: none };";
+    let script = "use type types::Page;\nlet p: Page<int> = { items: [\"a\"], next: none };";
     let dir = project(&[("app.rux", &page(script)), ("types.rux", types)]);
     let doc = Document::load(dir.join("app.rux")).expect("loads");
     let f = found(&doc);
     assert!(f.iter().any(|(_, err, m)| *err && m.contains("where `int` is expected")), "{f:?}");
 
     let list = "<template><view><text>{{ page.items.length }}</text></view></template>\n\
-        <script>\n  use types::Page;\n  prop page: Page<int>;\n</script>\n";
+        <script>\n  use type types::Page;\n  prop page: Page<int>;\n</script>\n";
     let app = "<template><screen>\n<list :page=\"raw\" />\n</screen></template>\n\
         <script>\nuse components::list;\nlet raw: any = { items: [\"a\"], next: none };\n</script>\n";
     let dir = project(&[("app.rux", app), ("components/list.rux", list), ("types.rux", types)]);
@@ -93,7 +93,7 @@ fn an_imported_generic_type_keeps_its_parameters() {
 /// naming one without importing it is an error that says how to.
 #[test]
 fn a_type_beside_an_imported_one_resolves_and_is_not_nameable() {
-    let script = "use types::Board;\n\
+    let script = "use type types::Board;\n\
                   let b: Board = { tasks: [{ id: 1, title: \"a\", done: false }], filter: \"al\" };\n\
                   let f: Filter = \"all\";";
     let dir = project(&[("app.rux", &page(script)), ("types.rux", TYPES)]);
@@ -101,7 +101,7 @@ fn a_type_beside_an_imported_one_resolves_and_is_not_nameable() {
     let f = found(&doc);
     assert!(f.iter().any(|(_, err, m)| *err && m.contains("did you mean \"all\"")), "{f:?}");
     assert!(
-        f.iter().any(|(_, err, m)| *err && m.contains("`Filter` is not imported here; bring it in with `use types::Filter;`")),
+        f.iter().any(|(_, err, m)| *err && m.contains("`Filter` is not imported here; bring it in with `use type types::Filter;`")),
         "{f:?}"
     );
 }
@@ -110,7 +110,7 @@ fn a_type_beside_an_imported_one_resolves_and_is_not_nameable() {
 /// does declare.
 #[test]
 fn a_type_the_file_does_not_declare() {
-    let dir = project(&[("app.rux", &page("use types::Tasks;")), ("types.rux", TYPES)]);
+    let dir = project(&[("app.rux", &page("use type types::Tasks;")), ("types.rux", TYPES)]);
     let err = load_err(dir.join("app.rux"));
     assert!(err.contains("`types.rux` has no type `Tasks`"), "{err}");
     assert!(err.contains("`Task`, `Filter`, `Board`"), "{err}");
@@ -156,7 +156,7 @@ fn a_components_function_is_not_reported_against_the_document() {
 /// an ordinary page runs as it did.
 #[test]
 fn a_clean_typed_page_is_quiet() {
-    let script = "use types::Task;\nuse types::Filter;\n\
+    let script = "use type types::Task;\nuse type types::Filter;\n\
                   let tasks: Task[] = signal([]);\n\
                   let filter: Filter = signal(\"all\");\n\
                   fn visible(): Task[] { tasks.filter(t => filter == \"all\" || t.done == (filter == \"done\")) }\n\
@@ -177,7 +177,7 @@ fn a_template_is_checked_against_its_script() {
         <input type=\"number\" r-model=\"name\" />\n\
         <text :class=\"{ on: tasks }\">x</text>\n\
         </screen></template>\n\
-        <script>\nuse types::Task;\nlet tasks: Task[] = signal([]);\n\
+        <script>\nuse type types::Task;\nlet tasks: Task[] = signal([]);\n\
         let count = signal(0);\nlet name = signal(\"\");\n</script>\n";
     let dir = project(&[("app.rux", app), ("types.rux", TYPES)]);
     let doc = Document::load(dir.join("app.rux")).expect("loads");

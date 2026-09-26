@@ -48,6 +48,9 @@ pub(crate) struct Parser<'t> {
     half_gt: bool,
     /// The id the next expression gets. See [`ExprId`].
     next: std::cell::Cell<u32>,
+    /// The `export` keyword and name of the statement just read, for
+    /// [`Parser::script`] to record.
+    exported: Option<(Span, Ident)>,
 }
 
 impl<'t> Parser<'t> {
@@ -65,6 +68,7 @@ impl<'t> Parser<'t> {
             fns: Vec::new(),
             half_gt: false,
             next: std::cell::Cell::new(0),
+            exported: None,
         }
     }
 
@@ -172,10 +176,14 @@ impl<'t> Parser<'t> {
     /// The top level: statements until the end.
     pub(crate) fn script(&mut self) -> PResult<Script> {
         let mut stmts = Vec::new();
+        let mut exports = Vec::new();
         while !self.at_eof() {
             let stmt = self.stmt()?;
             if matches!(stmt.kind, StmtKind::Empty) {
                 continue;
+            }
+            if let Some((keyword, name)) = self.exported.take() {
+                exports.push(Export { keyword, name, stmt: stmts.len() });
             }
             let noop = matches!(stmt.kind, StmtKind::Fn(_) | StmtKind::Type { .. });
             let need_semicolon = !stmt.is_self_terminated();
@@ -197,7 +205,7 @@ impl<'t> Parser<'t> {
                 }
             }
         }
-        Ok(Script { stmts })
+        Ok(Script { stmts, exports })
     }
 
     fn block(&mut self) -> PResult<Block> {
@@ -328,37 +336,11 @@ impl<'t> Parser<'t> {
             Tok::Kw("try") => self.try_catch()?,
             Tok::Kw("let") => self.let_stmt(false)?,
             Tok::Kw("const") => self.let_stmt(true)?,
-            Tok::Kw("import") => {
-                self.bump();
-                let path = self.expr()?;
-                let alias = if self.at_kw("as") {
-                    self.bump();
-                    Some(self.var_name()?)
-                } else {
-                    None
-                };
-                StmtKind::Import { path, alias }
-            }
-            Tok::Kw("export") if !self.global => {
-                return self.error("`export` belongs at the top level of the script");
-            }
-            Tok::Kw("export") => {
-                self.bump();
-                if self.at_kw("let") || self.at_kw("const") {
-                    let constant = self.at_kw("const");
-                    let s = self.span();
-                    let kind = self.let_stmt(constant)?;
-                    StmtKind::Export(Export::Let(Box::new(Stmt { kind, span: s.to(self.prev_span()) })))
-                } else {
-                    let name = self.var_name()?;
-                    let alias = if self.at_kw("as") {
-                        self.bump();
-                        Some(self.var_name()?)
-                    } else {
-                        None
-                    };
-                    StmtKind::Export(Export::Name { name, alias })
-                }
+            Tok::Kw("import") | Tok::Kw("export") | Tok::Reserved("use") => {
+                return self.error(format!(
+                    "{} belongs at the top level of a file's script",
+                    self.peek().describe()
+                ));
             }
             _ => return self.expr_stmt(),
         };
@@ -784,14 +766,26 @@ impl<'t> Parser<'t> {
                 self.vars.truncate(vars);
                 Ok(Some(self.raw_statement(start, StmtKind::Prop(Vec::new()))))
             }
-            (Tok::Reserved(w), _) if *w == "use" && !self.newline_after_this() => {
-                let pos = self.pos;
-                self.bump();
-                if let Some(path) = self.use_path() {
-                    return Ok(Some(Stmt { kind: StmtKind::Use(path), span: start.to(self.prev_span()) }));
-                }
-                self.pos = pos;
-                Ok(Some(self.raw_statement(start, StmtKind::Use(Vec::new()))))
+            (Tok::Reserved("use"), _) | (Tok::Kw("import"), _) => {
+                let import = self.import()?;
+                Ok(Some(Stmt { kind: StmtKind::Import(import), span: start.to(self.prev_span()) }))
+            }
+            (Tok::Kw("export"), _) => {
+                let keyword = self.bump().span;
+                let stmt = self.stmt()?;
+                let name = match &stmt.kind {
+                    StmtKind::Fn(f) if !f.private && f.this_type.is_none() => f.name.clone(),
+                    StmtKind::Type { name, .. } => name.clone(),
+                    StmtKind::Let { name, constant: false, .. } => name.clone(),
+                    _ => {
+                        return Err(SyntaxError {
+                            message: "`export` goes before a `fn`, `async fn`, `type` or `let`".into(),
+                            span: keyword,
+                        })
+                    }
+                };
+                self.exported = Some((keyword, name));
+                Ok(Some(stmt))
             }
             _ => Ok(None),
         }
@@ -818,28 +812,150 @@ impl<'t> Parser<'t> {
         self.statement_end().then_some(decls)
     }
 
-    /// `a::b::c`, each segment a name, or several joined by `-` with nothing
-    /// between them (`task-row`, which the runtime then reports).
-    fn use_path(&mut self) -> Option<Vec<Ident>> {
+    /// One import, `use` or `import`, up to the end of its statement. See
+    /// [`Import`] for the shapes.
+    fn import(&mut self) -> PResult<Import> {
+        let is_use = self.bump().tok.is_reserved("use");
+        let is_type = self.peek().is_ident("type")
+            && (matches!(self.peek_nth(1), Tok::Ident(n) if is_use || *n != "from") || self.peek_nth(1).is_punct("{"));
+        if is_type {
+            self.bump();
+        }
+        let (path, what) = if is_use { self.use_import(is_type)? } else { self.import_from(is_type)? };
+        if !self.statement_end() {
+            return self.error(format!("expecting `;` to end this import, found {}", self.peek().describe()));
+        }
+        Ok(Import { is_use, is_type, path, what })
+    }
+
+    /// `use a::b;`, `use a::b as c;`, `use a::{x, y as z};`, and with
+    /// `type`, `use type a::T;`.
+    fn use_import(&mut self, is_type: bool) -> PResult<(Vec<Ident>, Imported)> {
         let mut path = Vec::new();
+        let mut names = None;
         loop {
-            let mut seg = self.ident().ok()?;
-            while self.at_punct("-")
-                && self.span().start == seg.span.end
-                && matches!(self.peek_nth(1), Tok::Ident(_))
-                && self.toks[self.pos + 1].span.start == self.span().end
-            {
-                self.bump();
-                let next = self.ident().ok()?;
-                seg.name = format!("{}-{}", seg.name, next.name);
-                seg.span = seg.span.to(next.span);
+            if !matches!(self.peek(), Tok::Ident(_) | Tok::Reserved(_)) && !(self.at_punct("{") && path.is_empty()) {
+                if self.at_punct(";") || self.at_eof() || self.at_punct("::") || self.at_punct("{") {
+                    return self.error(if path.is_empty() {
+                        "this `use` names no file: write `use components::name;`".to_string()
+                    } else {
+                        "this `use` names no file: a path segment is empty".to_string()
+                    });
+                }
             }
-            path.push(seg);
+            path.push(self.path_segment()?);
             if !self.eat_punct("::") {
                 break;
             }
+            if self.at_punct("{") {
+                names = Some(self.import_names()?);
+                break;
+            }
         }
-        self.statement_end().then_some(path)
+        let alias = if names.is_none() && self.at_kw("as") {
+            self.bump();
+            Some(self.var_name()?)
+        } else {
+            None
+        };
+        let what = match names {
+            Some(names) => Imported::Names(names),
+            // A type import always picks: the last segment is the type.
+            None if is_type => {
+                let name = path.pop().expect("a segment was read");
+                if path.is_empty() {
+                    return Err(SyntaxError {
+                        message: format!(
+                            "`use type {0};` names no file: a type is imported from the file that \
+                             declares it, as `use type types::{0};`",
+                            name.name
+                        ),
+                        span: name.span,
+                    });
+                }
+                Imported::Names(vec![ImportName { name, alias }])
+            }
+            None => Imported::Whole(alias.unwrap_or_else(|| path.last().expect("a segment was read").clone())),
+        };
+        Ok((path, what))
+    }
+
+    /// `import x from "a/b";`, `import { x, y as z } from "a/b";`, and with
+    /// `type`, `import type { T } from "a";` or `import type T from "a";`.
+    fn import_from(&mut self, is_type: bool) -> PResult<(Vec<Ident>, Imported)> {
+        if matches!(self.peek(), Tok::Str(_)) {
+            return self.error("`import \"path\" as name` is rhai's import: write `import name from \"./path\";`");
+        }
+        let what = if self.at_punct("{") {
+            Imported::Names(self.import_names()?)
+        } else {
+            let name = self.var_name()?;
+            if is_type {
+                Imported::Names(vec![ImportName { name, alias: None }])
+            } else {
+                Imported::Whole(name)
+            }
+        };
+        if !self.peek().is_ident("from") {
+            return self.error(format!(
+                "expecting `from` and the file to import from, found {}",
+                self.peek().describe()
+            ));
+        }
+        self.bump();
+        let (text, span) = match self.peek() {
+            Tok::Str(t) => (t.to_string(), self.bump().span),
+            other => {
+                return self.error(format!("expecting the file to import from, as a string, found {}", other.describe()))
+            }
+        };
+        Ok((import_path(&text, span)?, what))
+    }
+
+    /// `{ a, b as c }`, at least one name.
+    fn import_names(&mut self) -> PResult<Vec<ImportName>> {
+        self.bump(); // `{`
+        let mut names = Vec::new();
+        while !self.at_punct("}") {
+            let name = self.var_name()?;
+            let alias = if self.at_kw("as") {
+                self.bump();
+                Some(self.var_name()?)
+            } else {
+                None
+            };
+            names.push(ImportName { name, alias });
+            if !self.eat_punct(",") {
+                break;
+            }
+        }
+        self.expect_punct("}", "to close the names imported")?;
+        if names.is_empty() {
+            return self.error("these `{ }` import nothing: name what the file exports, or leave them out");
+        }
+        Ok(names)
+    }
+
+    /// A name in a `use` path, or several joined by `-` with nothing between
+    /// them (`task-row`, which the runtime then reports).
+    fn path_segment(&mut self) -> PResult<Ident> {
+        // A file may be named by a word the script reserves: `new.rux`.
+        let word = |p: &mut Self| match p.peek() {
+            Tok::Reserved(n) => Ok(Ident { name: n.to_string(), span: p.bump().span }),
+            _ => p.ident(),
+        };
+        let mut seg = word(self)?;
+        while self.at_punct("-")
+            && self.span().start == seg.span.end
+            && matches!(self.peek_nth(1), Tok::Ident(_) | Tok::Reserved(_))
+            && self.toks[self.pos + 1].span.start == self.span().end
+        {
+            self.bump();
+            let next = word(self)?;
+            seg.name = format!("{}-{}", seg.name, next.name);
+            seg.span = seg.span.to(next.span);
+        }
+        Ok(seg)
     }
 
     /// Whether a declaration ends here: a `;`, which is taken, the end, or a
@@ -1135,6 +1251,7 @@ impl<'t> Parser<'t> {
             half_gt: false,
             // The ids go on from the outer parse's, so none repeats.
             next: std::cell::Cell::new(self.next.get()),
+            exported: None,
         };
         let result = (|| {
             let mut stmts = Vec::new();
@@ -1820,4 +1937,41 @@ fn literal_kind(e: &Expr) -> Option<Literal> {
         }
         _ => None,
     }
+}
+
+/// The file an `import … from "…"` names, as the segments a `use` path has:
+/// an optional leading `./`, names separated by `/`, and an optional `.rux`.
+/// The spans point inside the string.
+fn import_path(text: &str, span: Span) -> PResult<Vec<Ident>> {
+    let fail = |message: String| Err(SyntaxError { message, span });
+    if text.contains('\\') {
+        return fail(format!("`\"{text}\"`: a path is written with `/`"));
+    }
+    let mut rest = text;
+    let mut at = span.start as usize + 1;
+    if let Some(r) = rest.strip_prefix("./") {
+        rest = r;
+        at += 2;
+    }
+    let rest = rest.strip_suffix(".rux").unwrap_or(rest);
+    let mut path = Vec::new();
+    for part in rest.split('/') {
+        if part == ".." || part == "." {
+            return fail(format!(
+                "`\"{text}\"`: no `..` or `.` in a path; a file is found beside the importing file, then from the project root"
+            ));
+        }
+        let valid = part.chars().next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+            && part.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
+        if !valid {
+            return fail(if part.is_empty() {
+                format!("`\"{text}\"` names no file: a path segment is empty")
+            } else {
+                format!("`\"{text}\"`: `{part}` is not a name a file can be imported by")
+            });
+        }
+        path.push(Ident { name: part.to_string(), span: Span::new(at, at + part.len()) });
+        at += part.len() + 1;
+    }
+    Ok(path)
 }

@@ -131,7 +131,7 @@ fn a_use_with_an_empty_segment_says_so() {
     };
     let _ = fs::remove_dir_all(&dir);
     assert_eq!(err.line, Some(3), "placed at the `use`");
-    assert!(err.message.contains("names no component"), "says what is wrong: {}", err.message);
+    assert!(err.message.contains("names no file"), "says what is wrong: {}", err.message);
     assert!(!err.message.contains(".rux:"), "and blames no file: {}", err.message);
 }
 
