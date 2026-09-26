@@ -10,6 +10,7 @@
 //! the compiled-Rust boundary (`docs/04-architecture.md`, script/host tiers).
 
 pub mod check;
+mod front;
 pub mod profile;
 pub mod types;
 pub mod validate;
@@ -535,10 +536,8 @@ impl Builder {
         self.engine
             .register_static_module("host", self.host.into());
 
-        let ast = self
-            .engine
-            .compile(rewrite_intervals(script))
-            .map_err(|e| ScriptError::at(explain(&e.to_string()), e.1))?;
+        let ast = front::compile(&self.engine, script)
+            .map_err(|e| ScriptError::at(explain(&e.message), e.position))?;
         // What `x is T` resolves a declared name against: this script's own
         // `type`s, before the script's first statement can ask. The runtime adds what it imports (`validate::know_types`).
         validate::reset_types(
@@ -825,7 +824,7 @@ fn register_js_names(engine: &mut RhaiEngine) {
     );
 
     // `setInterval(ms) { … }`, which reaches here already rewritten by
-    // [`rewrite_intervals`] into `__interval(ms, "body")`. The rewrite is what
+    // [`front::lower`] into `__interval(ms, "body")`. The rewrite is what
     // lets the body be a block in the source and text by the time it is stored;
     // see [`TimerRequest`] for why it cannot be a callable.
     //
@@ -1305,7 +1304,7 @@ thread_local! {
 /// A script that does not compile answers `None`: the load reports that error
 /// in its own words, and a second one here would only repeat it.
 pub fn declares_besides_types(script: &str) -> Option<&'static str> {
-    let ast = RhaiEngine::new().compile(script).ok()?;
+    let ast = front::compile(&RhaiEngine::new(), script).ok()?;
     if ast.iter_functions().next().is_some() {
         Some("a function")
     } else if !ast.statements().is_empty() {
@@ -1851,132 +1850,6 @@ fn rux_phrasing(message: &str) -> String {
 /// Nothing is lost by dropping it. The expression is already quoted in the
 /// message, and a position within a string the reader can see is not worth the
 /// cost of looking like a file position.
-/// Rewrite `setInterval(<args>) { <body> }` into `__interval(<args>, "<body>")`.
-///
-/// A call with a block after it is not rhai syntax and never will be, so the
-/// block is lifted into a string argument before anything tries to compile it.
-/// The alternative was `setInterval(fn, ms)` with a real callable, which reads
-/// better and does not work: see [`TimerRequest`].
-///
-/// Applied at every compile site, so the form works the same in a document
-/// script, a component script, a lifecycle hook and an `@tap` handler. A source
-/// with no `setInterval` in it is returned untouched.
-fn rewrite_intervals(src: &str) -> String {
-    if !src.contains("setInterval") {
-        return src.to_string();
-    }
-    let bytes: Vec<char> = src.chars().collect();
-    let mut out = String::with_capacity(src.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        if !starts_call(&bytes, i) {
-            out.push(bytes[i]);
-            i += 1;
-            continue;
-        }
-        // `setInterval(` … `)`, then optional whitespace, then `{` … `}`.
-        let open = i + "setInterval".len();
-        let Some(close) = matching(&bytes, open, '(', ')') else {
-            out.push(bytes[i]);
-            i += 1;
-            continue;
-        };
-        let mut j = close + 1;
-        while j < bytes.len() && bytes[j].is_whitespace() {
-            j += 1;
-        }
-        // No block after it: leave the text alone rather than guess. It will
-        // fail to compile as an unknown function, which says more than a
-        // rewrite of something that was not the form this handles.
-        if j >= bytes.len() || bytes[j] != '{' {
-            out.push(bytes[i]);
-            i += 1;
-            continue;
-        }
-        let Some(end) = matching(&bytes, j, '{', '}') else {
-            out.push(bytes[i]);
-            i += 1;
-            continue;
-        };
-        let args: String = bytes[open + 1..close].iter().collect();
-        let body: String = bytes[j + 1..end].iter().collect();
-        out.push_str("__interval(");
-        out.push_str(args.trim());
-        out.push_str(", \"");
-        out.push_str(&escape_for_rhai(&body));
-        out.push_str("\")");
-        i = end + 1;
-    }
-    out
-}
-
-/// Whether `setInterval(` starts here and is not the tail of a longer name.
-fn starts_call(chars: &[char], i: usize) -> bool {
-    const NAME: &str = "setInterval";
-    if i + NAME.len() >= chars.len() {
-        return false;
-    }
-    if !chars[i..i + NAME.len()].iter().eq(NAME.chars().collect::<Vec<_>>().iter()) {
-        return false;
-    }
-    if chars[i + NAME.len()] != '(' {
-        return false;
-    }
-    // `mySetInterval(…)` is somebody else's function.
-    i == 0 || !(chars[i - 1].is_alphanumeric() || chars[i - 1] == '_' || chars[i - 1] == '.')
-}
-
-/// The index of the delimiter closing the one at `from`, skipping over string
-/// literals so a brace inside `"{"` does not count.
-fn matching(chars: &[char], from: usize, open: char, close: char) -> Option<usize> {
-    let mut depth = 0usize;
-    let mut quote: Option<char> = None;
-    let mut i = from;
-    while i < chars.len() {
-        let c = chars[i];
-        match quote {
-            Some(q) => {
-                if c == '\\' {
-                    i += 2;
-                    continue;
-                }
-                if c == q {
-                    quote = None;
-                }
-            }
-            None => {
-                if c == '"' || c == '\'' {
-                    quote = Some(c);
-                } else if c == open {
-                    depth += 1;
-                } else if c == close {
-                    depth -= 1;
-                    if depth == 0 {
-                        return Some(i);
-                    }
-                }
-            }
-        }
-        i += 1;
-    }
-    None
-}
-
-/// Put a block body inside a rhai string literal without changing what it says.
-fn escape_for_rhai(body: &str) -> String {
-    let mut out = String::with_capacity(body.len() + 8);
-    for c in body.chars() {
-        match c {
-            '\\' => out.push_str("\\\\"),
-            '"' => out.push_str("\\\""),
-            '\n' => out.push_str("\\n"),
-            '\r' => {}
-            _ => out.push(c),
-        }
-    }
-    out
-}
-
 fn strip_rhai_position(message: &str) -> String {
     let trimmed = message.trim_end();
     // Only the exact trailing shape is removed, so a message that merely ends
@@ -2017,14 +1890,14 @@ impl Engine {
         let mut cx = cx.clone();
         cx.host.extend(self.host_types.iter().cloned());
         // A template's pieces compile as the runtime compiles them to run.
-        check::check_recording(&self.checked, &cx, &|src| self.engine.compile(rewrite_intervals(src)).ok(), record)
+        check::check_recording(&self.checked, &cx, &|src| front::compile(&self.engine, src).ok(), record)
     }
 
     /// The `type` declarations in `script`, as name and text, for another file
     /// that imports them with `use`. A script that does not compile declares
     /// nothing here; its own load says why.
     pub fn declared_types(script: &str) -> Vec<(String, String)> {
-        match RhaiEngine::new().compile(rewrite_intervals(script)) {
+        match front::compile(&RhaiEngine::new(), script) {
             Ok(ast) => ast
                 .annotations()
                 .iter()
@@ -2038,11 +1911,11 @@ impl Engine {
     /// `src` compiled and merged with the document's functions, from the cache
     /// when it has been seen before. A source that fails to compile is not
     /// kept, so its error is reported every time it is run, as before.
-    fn prepared(&mut self, src: &str) -> Result<Arc<AST>, rhai::ParseError> {
+    fn prepared(&mut self, src: &str) -> Result<Arc<AST>, front::CompileError> {
         if let Some(ast) = self.compiled.get(src) {
             return Ok(Arc::clone(ast));
         }
-        let ast = profile::time(profile::Phase::Compile, || self.engine.compile(rewrite_intervals(src)))?;
+        let ast = front::compile(&self.engine, src)?;
         let merged = Arc::new(profile::time(profile::Phase::Merge, || self.funcs.merge(&ast)));
         if self.compiled.len() >= COMPILED_CAP {
             self.compiled.clear();
@@ -2175,7 +2048,7 @@ impl Engine {
     /// nothing at all, silently, because nothing compiles a handler until the
     /// moment it is tapped.
     pub fn check_syntax(&self, src: &str) -> Result<(), String> {
-        self.engine.compile(rewrite_intervals(src)).map(|_| ()).map_err(|e| rux_phrasing(&e.to_string()))
+        front::compile(&self.engine, src).map(|_| ()).map_err(|e| rux_phrasing(&e.message))
     }
 
     /// The functions and methods `src` calls that nothing could ever resolve.
@@ -2204,7 +2077,7 @@ impl Engine {
     /// that does not exist until it runs. Functions are not like that. Nothing
     /// a row or an instance brings into scope can add a function name.
     pub fn unknown_calls(&self, src: &str) -> Vec<CallProblem> {
-        let Ok(ast) = self.engine.compile(rewrite_intervals(src)) else {
+        let Ok(ast) = front::compile(&self.engine, src) else {
             return Vec::new(); // a syntax error is `check_syntax`'s to report
         };
         self.unresolvable_calls(&ast)
@@ -2393,7 +2266,7 @@ impl Engine {
     /// calls. Compiling it here rather than in the runtime keeps every piece of
     /// rhai knowledge on this side of the boundary.
     pub fn declared_names(&self, src: &str) -> HashSet<String> {
-        match self.engine.compile(rewrite_intervals(src)) {
+        match front::compile(&self.engine, src) {
             Ok(ast) => declared_in(&ast),
             // A syntax error is `check_syntax`'s to report, and an AST that does
             // not exist declares nothing.

@@ -14,3 +14,6 @@ categories = ["gui"]
 # in here reads the same either way. See crates/rux-rhai/DIVERGENCE.md.
 rhai.workspace = true
 rux-reactive.workspace = true
+# Rux's own parser: the front door every script passes before the fork
+# compiles it. See src/front.rs and docs/11-next.md, step 2.
+rux-syntax.workspace = true

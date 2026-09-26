@@ -13,6 +13,22 @@ a change in here is a merge conflict at every upstream release, for as long as
 Rux exists. Several things that looked like they needed a fork turned out not
 to, and they are recorded at the bottom so nobody pays for them twice.
 
+## Status: on its way out (2026-09-26)
+
+Rux is replacing this fork with a language of its own (`docs/11-next.md`), one
+step at a time, and the fork is removed entirely at step 5. Until then, two
+things are true that were not before:
+
+- **Its parser is no longer the front door.** Since step 2, every script,
+  binding and handler is parsed first by `crates/rux-syntax`, Rux's own parser,
+  which decides what is valid and says what is wrong in Rux's words. Only text
+  it has accepted reaches this parser, which still builds the AST the
+  evaluator runs. Debug builds compare the two on every compile
+  (`crates/rux-script/src/front.rs`), so a parser change here that is not
+  matched there fails the test suite.
+- **Nothing new is added here.** A language change goes into `rux-syntax` and
+  the steps after it, not into this fork.
+
 ## Why this fork exists
 
 Rux is a UI language whose users are expected to arrive from JavaScript. rhai is

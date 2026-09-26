@@ -3009,6 +3009,7 @@ version = "0.8.0-dev"
 dependencies = [
  "rux-reactive",
  "rux-rhai",
+ "rux-syntax",
 ]
 
 [[package]]
@@ -3049,6 +3050,10 @@ dependencies = [
  "rux-reactive",
  "rux-script",
 ]
+
+[[package]]
+name = "rux-syntax"
+version = "0.8.0-dev"
 
 [[package]]
 name = "rux-text"

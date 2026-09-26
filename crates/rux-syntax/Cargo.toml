@@ -1,0 +1,12 @@
+[package]
+name = "rux-syntax"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Rux's own parser for its script language. Internal to Rux; the supported entry point is the ruxlang crate."
+readme = "README.md"
+keywords = ["ui", "parser", "language"]
+categories = ["gui", "parser-implementations"]
+
+[dependencies]

@@ -362,23 +362,34 @@ error as an `Error` (`kind` `"result"`, or the error itself when `E` is
 
 ### Precedence (Kept, written down for the first time)
 
-Tightest first. Rhai's table was never documented; this one is the grammar
-the new parser implements (proposed where it differs from rhai's).
+Tightest first. This is the fork's table, which was never documented; Rux's
+parser (step 2) implements it exactly, and a debug-build check compares the
+two on every script the test suite compiles.
 
 | Level | Operators | Associates |
 |---|---|---|
 | 1 | calls `f()`, `.x`, `?.x`, `[i]`, `?[i]` | left |
-| 2 | unary `!`, `-`, `await` | right |
+| 2 | unary `!`, `-`, `+`, and `await` (New) | right |
 | 3 | `**` | right |
 | 4 | `*`, `/`, `%` | left |
 | 5 | `+`, `-` | left |
-| 6 | `..`, `..=` | none |
-| 7 | `<`, `<=`, `>`, `>=`, `is`, `in` | none |
-| 8 | `==`, `!=` | none |
-| 9 | `&&` | left |
-| 10 | `\|\|` | left |
-| 11 | `??` | left; mixing with `&&` or `\|\|` needs parentheses, as in JavaScript |
-| 12 | `=>` | right |
+| 6 | `..`, `..=` | left |
+| 7 | `??` | left |
+| 8 | `<`, `<=`, `>`, `>=`, `is` | left |
+| 9 | `in` | left |
+| 10 | `==`, `!=` | left |
+| 11 | `&&` | left |
+| 12 | `\|\|` | left |
+| 13 | `=>` | right |
+
+Two things differ from JavaScript and are kept: **`??` binds tighter than a
+comparison**, so `a ?? 0 == 1` is `(a ?? 0) == 1`, and **`in` binds looser
+than one**, so `a < b in c` is `(a < b) in c`.
+
+**One quirk is marked for step 3** (Changed, proposed). In the fork, `is`
+binds as `<` does on its left but has no precedence on its right, so
+`a == b is int` is `(a == b) is int`, where the table says
+`a == (b is int)`. Step 3 gives `is` its level on both sides.
 
 **Assignment is a statement**, not an operator (Kept): `a = b = c` is an error.
 `=`, `+=`, `-=`, `*=`, `/=`, `%=`, and `x++`/`x--` in statement position only.
@@ -972,4 +983,4 @@ Filled in on 2026-09-26 where the decisions left a gap. Each is marked
 14. `export` marks what a module shares; an exported signal is read-only
     outside its module.
 15. A number field's `r-model` writes a `float`.
-16. The precedence table, including `??` needing parentheses beside `&&`/`||`.
+16. `is` binds at its level on both sides (the fork gives it none on its right).

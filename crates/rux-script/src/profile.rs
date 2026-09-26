@@ -16,7 +16,11 @@ use std::cell::Cell;
 /// A slice of work the profile charges time to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Phase {
-    /// Source to AST, every binding, handler and component script.
+    /// Source to Rux's AST: the front door every binding, handler and
+    /// component script passes before the fork sees it (`docs/11-next.md`,
+    /// step 2).
+    Parse,
+    /// The fork's own compile of what the parse passed.
     Compile,
     /// The document's functions merged into that AST so it can call them.
     Merge,
@@ -43,13 +47,13 @@ pub enum Phase {
     Match,
 }
 
-pub const PHASES: usize = 12;
+pub const PHASES: usize = 13;
 
 /// The phases that are the script tier's own; they lead the list.
-const SCRIPT: usize = 4;
+const SCRIPT: usize = 5;
 
 pub const NAMES: [&str; PHASES] =
-    ["compile", "merge", "run", "diff", "rebuild", "patch", "animate", "layout", "scene", "gpu", "css", "match"];
+    ["parse", "compile", "merge", "run", "diff", "rebuild", "patch", "animate", "layout", "scene", "gpu", "css", "match"];
 
 thread_local! {
     static SPENT: [Cell<u64>; PHASES] = Default::default();
