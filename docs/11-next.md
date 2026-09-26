@@ -435,8 +435,13 @@ let size = if wide { 24 } else { 16 };
 
 ### Control flow (Kept, one addition)
 
-`if … { } else if … { } else { }`, `while cond { }`, `for x in c { }`,
-`for i in 0..n { }`, `break`, `continue`, `return`, `return value`.
+`if … { } else if … { } else { }`, `while cond { }`, `loop { }`,
+`for x in c { }`, `for (x, i) in c { }` (item and index), `for i in 0..n { }`
+and `0..=n`, `break`, `continue`, `return`, `return value`.
+
+**`loop { }` runs until a `break`** (decided 2026-09-27): clearer than
+`while true`. `do { } while`, `do { } until` and `break value` stay out, and
+there is no C-style `for` (decided).
 
 `for x in c` iterates whatever the compiler knows how to iterate: an array, a
 range, a string's characters (as one-character strings), a `Set`, and a map's
@@ -1128,11 +1133,15 @@ Filled in on 2026-09-26 where the decisions left a gap. Each is marked
 15. A number field's `r-model` writes a `float`.
 16. `is` binds at its level on both sides (the fork gives it none on its right).
 
-## Open for the owner (2026-09-26)
+## Settled 2026-09-27 (was: Open for the owner)
 
-Raised after step 6 and not yet decided. The next step's plan starts here.
+Raised after step 6. The owner took all three recommendations on
+2026-09-27: `export let` keeps both meanings (built with step 7), `loop { }`
+comes back with `do`/`until` and `break value` kept out and the `(x, i)` form
+written into [Control flow](#control-flow-kept-one-addition), and `switch`
+stays the one matching form. As they were put:
 
-1. **`export let` keeps both meanings** (proposed). `export let items =
+1. **`export let` keeps both meanings** (decided). `export let items =
    signal([])` shares state: importers read it and a binding that reads it
    updates, and only the module's exported functions change it. `export let
    RATE = 0.2` shares a constant, since a plain top-level `let` is already
@@ -1143,7 +1152,7 @@ Raised after step 6 and not yet decided. The next step's plan starts here.
    covers), a keyword of its own for shared state (new syntax), and
    exporting only functions (a binding would call `cart.items()` and lose
    its subscription).
-2. **Loops were never decided one by one.** What runs today: `for x in c`,
+2. **Loops were never decided one by one** (decided: `loop` back, the rest as proposed). What runs today: `for x in c`,
    `for (x, i) in c` (item and index, missing from
    [Control flow](#control-flow-kept-one-addition)), `for i in 0..n` and
    `0..=n`, `for c in "text"`, `while`, `break`, `continue`. Parsed and then
@@ -1153,6 +1162,6 @@ Raised after step 6 and not yet decided. The next step's plan starts here.
    Proposed: bring `loop { }` back (clearer than `while true`), keep
    `do`/`until` and `break value` out, and write the `(x, i)` form into the
    reference.
-3. **`switch` stays the one matching form** (proposed). It is an
+3. **`switch` stays the one matching form** (decided). It is an
    expression, takes `a | b` alternatives, ranges and an `if` guard per arm,
    and must cover a union with no `_` arm. `match` is only a reserved word.

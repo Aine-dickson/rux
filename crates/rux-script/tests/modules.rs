@@ -119,3 +119,14 @@ fn a_problem_in_a_module_is_its_own() {
     assert_eq!(found[0].0, "stores/bad");
     assert!(found[0].1.iter().any(|f| f.is_error), "{found:?}");
 }
+
+/// `loop { }` runs until a `break` (decided 2026-09-27, `docs/11-next.md`,
+/// "Open for the owner"). Here because it was decided with the modules step.
+#[test]
+fn a_loop_runs_until_it_breaks() {
+    let mut e = engine(Vec::new(), Vec::new(), "let n = signal(0);\nfn count() { loop { n += 1; if n >= 5 { break; } } }");
+    e.run_handler("count()");
+    assert_eq!(shown(&mut e, "n"), "5");
+    assert!(e.check_syntax("loop { break; }").is_ok());
+    assert!(e.check_syntax("do { } while true").is_err(), "`do` stays out");
+}

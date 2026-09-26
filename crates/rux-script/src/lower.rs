@@ -272,7 +272,6 @@ pub fn removed_syntax(script: &ast::Script) -> Option<String> {
         }
         found = match node {
             Node::Stmt(s) => match &s.kind {
-                S::While { cond: None, .. } => Some("a `loop`".to_string()),
                 S::Do { .. } => Some("a `do` loop".to_string()),
                 S::Break(Some(_)) => Some("a `break` with a value".to_string()),
                 S::Fn(_) if !top.contains(&(s as *const ast::Stmt)) => Some("a `fn` inside a block".to_string()),
@@ -685,10 +684,11 @@ impl<'a> Lower<'a> {
                 let body = self.block(&body.stmts);
                 Self::one(StmtKind::While { cond, body }, sp)
             }
+            // `loop { }` is `while true { }` (decided 2026-09-27).
             S::While { cond: None, body } => {
-                self.unsupported("a `loop`", sp);
-                self.block(&body.stmts);
-                Vec::new()
+                let cond = ir::Expr::new(ExprKind::Bool(true), Type::Bool, at(sp));
+                let body = self.block(&body.stmts);
+                Self::one(StmtKind::While { cond, body }, sp)
             }
             S::Do { body, cond, .. } => {
                 self.unsupported("a `do` loop", sp);
