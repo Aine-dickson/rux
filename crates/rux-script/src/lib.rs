@@ -4,8 +4,8 @@
 //! and evaluates `{{ }}` bindings, `r-if`/`r-for` expressions and `@tap`
 //! handlers against it. A script is read by Rux's parser (`rux-syntax`),
 //! checked ([`check`]), lowered to the typed IR ([`lower`], `rux-ir`) and run
-//! by Rux's interpreter ([`interp`]). Native capabilities are exposed under
-//! the `host::` namespace via the builder.
+//! by Rux's interpreter ([`interp`]). An app's Rust is reached through
+//! `native` modules ([`native`], step 8 of `docs/11-next.md`).
 //!
 //! Until step 5 of `docs/11-next.md` (2026-09-26) the running was done by
 //! `rux-rhai`, a fork of rhai; the checks on names and calls, the error
@@ -17,6 +17,7 @@ pub mod host;
 pub mod interp;
 pub mod link;
 pub mod lower;
+pub mod native;
 pub mod profile;
 pub use rux_ir::types;
 pub mod validate;
@@ -182,14 +183,10 @@ impl ElementHandle {
 }
 
 
-/// Builds an [`Engine`]: register host functions, then `build` with the script.
-/// Host functions must be registered before the script runs, since the script
-/// may call them during initialization.
+/// Builds an [`Engine`]: hand in the modules and components the script
+/// reaches, then `build` with the script. Native modules are found in
+/// [`rux_native::registry`] by the names the script imports.
 pub struct Builder {
-    /// The type of every `host::` function registered, for the checker.
-    host_types: Vec<(String, types::Type)>,
-    /// The functions themselves.
-    host_fns: HashMap<String, interp::Host>,
     /// The script modules the document reaches, each after the ones it
     /// imports. See [`Builder::module`].
     modules: Vec<ModuleSource>,
@@ -300,8 +297,6 @@ pub const MAX_OPERATIONS: u64 = 5_000_000;
 impl Builder {
     pub fn new() -> Self {
         Self {
-            host_types: Vec::new(),
-            host_fns: HashMap::new(),
             modules: Vec::new(),
             aliases: Vec::new(),
             components: Vec::new(),
@@ -331,14 +326,6 @@ impl Builder {
         self
     }
 
-    /// Register a zero-argument `host::<name>()` returning a number.
-    pub fn host_number(&mut self, name: &str, f: impl Fn() -> f64 + Send + Sync + 'static) -> &mut Self {
-        self.host_fns.insert(name.to_string(), std::rc::Rc::new(f));
-        self.host_types
-            .push((name.to_string(), types::Type::Function(Vec::new(), Box::new(types::Type::Float))));
-        self
-    }
-
     /// Check, lower and run the script's top level, producing a ready
     /// [`Engine`].
     ///
@@ -351,12 +338,33 @@ impl Builder {
         let mut linking = link::Linking { aliases: self.aliases.clone(), ..Default::default() };
         let mut modules = Vec::new();
         let mut module_types = Vec::new();
+        // The native modules anything here imports: their exports and types
+        // come from the registry, before anything that imports them is
+        // checked.
+        let every_alias = self
+            .aliases
+            .iter()
+            .chain(self.modules.iter().flat_map(|m| &m.aliases))
+            .chain(self.components.iter().flat_map(|c| &c.aliases));
+        let mut natives: Vec<String> = every_alias
+            .filter_map(|a| match &a.target {
+                link::Target::Module(m) | link::Target::Member(m, _) if native::is_native(m) => Some(m.clone()),
+                _ => None,
+            })
+            .collect();
+        natives.sort();
+        natives.dedup();
+        for m in &natives {
+            if let Some(exports) = native::exports(m) {
+                linking.exports.insert(m.clone(), exports);
+                module_types.extend(native::types(m));
+            }
+        }
         for m in &self.modules {
             let mut ast = rux_syntax::parse(&m.script, rux_syntax::Options { declarations: true })
                 .map_err(|e| ScriptError::plain(format!("{}: {}", m.name, explain(&e.message))))?;
             let problems = link::resolve(&mut ast, &m.aliases, &linking.exports);
             let cx = check::Context {
-                host: self.host_types.clone(),
                 imported_types: m.types.clone(),
                 support_types: module_types.clone(),
                 linked: linking.linked(),
@@ -381,7 +389,6 @@ impl Builder {
             };
             link::resolve(&mut ast, &c.aliases, &linking.exports);
             let cx = check::Context {
-                host: self.host_types.clone(),
                 support_types: module_types.clone(),
                 linked: linking.linked(),
                 ..check::Context::default()
@@ -416,8 +423,6 @@ impl Builder {
         let mut ir = interpreter_linked(
             &parsed,
             script,
-            &self.host_types,
-            self.host_fns,
             &units,
             &module_types,
             std::rc::Rc::clone(&linking),
@@ -425,7 +430,7 @@ impl Builder {
         if let Err(f) = ir.init() {
             return Err(fault_at(f, script));
         }
-        let mut engine = Engine::new(ir, parsed, script, self.host_types);
+        let mut engine = Engine::new(ir, parsed, script);
         engine.linking = linking;
         engine.module_types = module_types;
         engine.modules = modules;
@@ -449,10 +454,8 @@ fn fault_at(f: interp::Fault, script: &str) -> ScriptError {
 pub(crate) fn interpreter(
     parsed: &rux_syntax::ast::Script,
     script: &str,
-    host_types: &[(String, types::Type)],
-    host_fns: HashMap<String, interp::Host>,
 ) -> interp::Interp {
-    interpreter_linked(parsed, script, host_types, host_fns, &[], &[], Default::default())
+    interpreter_linked(parsed, script, &[], &[], Default::default())
 }
 
 /// [`interpreter`], with script modules linked in: see
@@ -460,14 +463,11 @@ pub(crate) fn interpreter(
 fn interpreter_linked(
     parsed: &rux_syntax::ast::Script,
     script: &str,
-    host_types: &[(String, types::Type)],
-    host_fns: HashMap<String, interp::Host>,
     modules: &[&ModuleChecked],
     module_types: &[(String, String, String)],
     linking: std::rc::Rc<link::Linking>,
 ) -> interp::Interp {
     let cx = check::Context {
-        host: host_types.to_vec(),
         provided: ROUTER_SIGNALS.iter().map(|n| (n.to_string(), types::Type::Any)).collect(),
         support_types: module_types.to_vec(),
         linked: linking.linked(),
@@ -479,7 +479,7 @@ fn interpreter_linked(
         .map(|m| lower::Module { name: &m.name, script: &m.script, src: &m.src, record: &m.record })
         .collect();
     let unit = lower::lower_linked(&linked, parsed, script, &record, &cx.provided);
-    let mut ir = interp::Interp::new(unit, host_fns);
+    let mut ir = interp::Interp::new(unit);
     ir.set_linking(linking);
     ir
 }
@@ -730,8 +730,6 @@ pub struct Engine {
     /// already linked ([`link::resolve`]).
     script: rux_syntax::ast::Script,
     source: String,
-    /// The `host::` functions' types, as registered.
-    host_types: Vec<(String, types::Type)>,
     /// What the document imports, and what its modules export.
     linking: std::rc::Rc<link::Linking>,
     /// The types its modules declare, as a type import's support types.
@@ -1467,13 +1465,11 @@ impl Engine {
         ir: interp::Interp,
         script: rux_syntax::ast::Script,
         source: &str,
-        host_types: Vec<(String, types::Type)>,
     ) -> Engine {
         Engine {
             ir,
             script,
             source: source.to_string(),
-            host_types,
             linking: Default::default(),
             module_types: Vec::new(),
             modules: Vec::new(),
@@ -1534,7 +1530,7 @@ impl Engine {
     }
 
     /// Check the script against its type annotations. See [`check`] and
-    /// `docs/10-types.md`. `cx.host` is filled in from what was registered.
+    /// `docs/10-types.md`.
     pub fn check_types(&self, cx: &check::Context) -> Vec<check::Finding> {
         self.check_types_recording(cx, false).0
     }
@@ -1542,9 +1538,7 @@ impl Engine {
     /// [`Engine::check_types`], and with `record` set, the types it worked
     /// out, for an editor. See [`check::check_recording`].
     pub fn check_types_recording(&self, cx: &check::Context, record: bool) -> (Vec<check::Finding>, check::Table) {
-        let mut cx = cx.clone();
-        cx.host.extend(self.host_types.iter().cloned());
-        check::check_recording(&self.script, &self.source, &cx, record)
+        check::check_recording(&self.script, &self.source, cx, record)
     }
 
     /// [`Engine::check_types`], also keeping what the checker settled about
@@ -1571,10 +1565,8 @@ impl Engine {
         record: bool,
         typed: bool,
     ) -> (Vec<check::Finding>, check::Table, check::Record) {
-        let mut cx = cx.clone();
-        cx.host.extend(self.host_types.iter().cloned());
         let (script, src) = script.unwrap_or((&self.script, &self.source));
-        check::check_full(script, src, &cx, record, typed)
+        check::check_full(script, src, cx, record, typed)
     }
 
     /// The script as Rux's parser read it, and its text.
@@ -3079,9 +3071,7 @@ mod tests {
     }
 
     fn engine() -> Engine {
-        let mut b = Builder::new();
-        b.host_number("full", || 100.0);
-        b.build(
+        Builder::new().build(
             "let level = signal(82); \
              let items = signal([1, 2, 3]); \
              fn double(x) { x * 2 } \
@@ -3137,13 +3127,6 @@ mod tests {
         // The read is tracked, so a `:style` reading a signal reconciles on change.
         let (_, deps) = e.eval_value_tracked("`level: ${level}`", &[]);
         assert!(deps.contains("level"));
-    }
-
-    #[test]
-    fn calls_host_functions() {
-        let mut e = engine();
-        e.run_handler("level = host::full()");
-        assert_eq!(e.eval_display("level", &[]), "100");
     }
 
     #[test]

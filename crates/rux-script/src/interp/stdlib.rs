@@ -757,6 +757,8 @@ impl Interp {
                 ("to_string", 0) => V::str(recv.display()),
                 _ => return Ok(None),
             },
+            // A resource's methods are its Rust's, called as native calls.
+            V::Native(_) => return Ok(None),
         };
         Ok(Some(out))
     }

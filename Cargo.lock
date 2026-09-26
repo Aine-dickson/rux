@@ -2910,6 +2910,7 @@ dependencies = [
  "image",
  "rux-ir",
  "rux-layout",
+ "rux-native",
  "rux-parser",
  "rux-reactive",
  "rux-script",
@@ -2922,6 +2923,7 @@ name = "rux-script"
 version = "0.8.0-dev"
 dependencies = [
  "rux-ir",
+ "rux-native",
  "rux-reactive",
  "rux-syntax",
 ]

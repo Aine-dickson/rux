@@ -285,7 +285,7 @@ impl<'u> Verifier<'u> {
                     self.problem(Some(e), "an `await` outside an `async fn`'s own body".into());
                 }
                 match &call.kind {
-                    ExprKind::Call { callee: callee @ (Callee::Fn(_) | Callee::Host(_)), args } => {
+                    ExprKind::Call { callee: callee @ (Callee::Fn(_) | Callee::Native(_)), args } => {
                         self.call(call, callee, args, true);
                     }
                     _ => {
@@ -416,7 +416,7 @@ impl<'u> Verifier<'u> {
                 None => self.problem(Some(e), format!("fn #{} of {}", f.0, self.u.fns.len())),
             },
             Callee::Value(v) => self.expr(v),
-            Callee::Builtin(_) | Callee::Host(_) | Callee::Dyn(_) => {}
+            Callee::Builtin(_) | Callee::Native(_) | Callee::Dyn(_) => {}
         }
         for a in args {
             self.expr(a);

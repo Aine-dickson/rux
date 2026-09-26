@@ -48,8 +48,11 @@ pub use rux_style::{Animator, FRAME_MS};
 /// Re-exported so the shell can report a script-facing problem it is the only
 /// one able to see, such as `tap()` naming an element with no box on screen.
 pub use rux_script::warn_script;
-/// Host functions an `async fn` awaits. See `docs/11-next.md`, "Async".
+/// Where a waiting native call's answer comes back: `set_waker`.
 pub use rux_script::host;
+/// Native modules: what an app's Rust registers, and what the generated
+/// registration calls. Step 8 of docs/11-next.md.
+pub use rux_native as native;
 /// Where a frame's time goes, when `RUX_PROFILE` is set.
 pub use rux_script::profile;
 
@@ -2147,6 +2150,75 @@ impl Document {
                 if let Some(problem) = import.problem {
                     return Err(LoadError::at_line(problem, at, &job.owner_path));
                 }
+                // `use native::shop;`: the app's Rust, found in the registry
+                // by name, never on disk (step 8 of docs/11-next.md).
+                if let Some(module) = native_module_of(&import.file) {
+                    let written = module.replace('/', "::");
+                    let Some(iface) = rux_native::registry::interface(&module) else {
+                        return Err(LoadError::at_line(no_native_module(&written), at, &job.owner_path));
+                    };
+                    let exports = |types: bool| {
+                        let names: Vec<String> = iface
+                            .items
+                            .iter()
+                            .filter(|i| i.is_type() == types && !matches!(i.kind, rux_native::ItemKind::Method { .. }))
+                            .map(|i| format!("`{}`", i.name))
+                            .collect();
+                        if names.is_empty() {
+                            format!("it exports no {}", if types { "types" } else { "functions" })
+                        } else {
+                            format!("it exports {}", names.join(", "))
+                        }
+                    };
+                    if let Some(type_name) = &import.type_name {
+                        let Some(item) = iface.items.iter().find(|i| &i.name == type_name && i.is_type()) else {
+                            return Err(LoadError::at_line(
+                                format!("{written} has no type `{type_name}`: {}", exports(true)),
+                                at,
+                                &job.owner_path,
+                            ));
+                        };
+                        let text = rux_script::native::type_text(item);
+                        let declared = vec![(type_name.clone(), text)];
+                        if let Some(m) = module_files.get_mut(&job.owner) {
+                            m.types.extend(declared);
+                        } else if job.owner == DOCUMENT_NAMESPACE {
+                            imported_types.extend(declared);
+                        } else {
+                            component_types.entry(job.owner.clone()).or_default().extend(declared);
+                        }
+                        continue;
+                    }
+                    let (target, local) = match &import.picked {
+                        None => (rux_script::link::Target::Module(module.clone()), import.local.clone()),
+                        Some((picked, local)) => match iface.items.iter().find(|i| &i.name == picked) {
+                            Some(i) if i.is_type() => {
+                                return Err(LoadError::at_line(
+                                    format!("`{picked}` is a type: import it with `type`, as `use type {written}::{picked};`"),
+                                    at,
+                                    &job.owner_path,
+                                ))
+                            }
+                            Some(_) => (rux_script::link::Target::Member(module.clone(), picked.clone()), local.clone()),
+                            None => {
+                                return Err(LoadError::at_line(
+                                    format!("{written} does not export `{picked}`: {}", exports(false)),
+                                    at,
+                                    &job.owner_path,
+                                ))
+                            }
+                        },
+                    };
+                    let alias = rux_script::link::Alias { local, target, line: at };
+                    if let Some(owner) = module_files.get_mut(&job.owner) {
+                        owner.aliases.push(alias);
+                    } else if job.owner == DOCUMENT_NAMESPACE {
+                        aliases.push(alias);
+                    } else {
+                        component_aliases.entry(job.owner.clone()).or_default().push(alias);
+                    }
+                    continue;
+                }
                 // `use types::Task;` from before a type import was marked with
                 // `type`: still read as one, and told how it is written now.
                 if import.capital_type {
@@ -2609,7 +2681,25 @@ impl Document {
         for path in &sfc.style_src {
             warn_unresolvable_include(path);
         }
-        let (main_script, _imports) = extract_imports(&sfc.script);
+        let (main_script, imports) = extract_imports(&sfc.script);
+        // A native module is not a file, so it is reached from here too.
+        let mut native_aliases = Vec::new();
+        for import in &imports {
+            let Some(module) = native_module_of(&import.file) else { continue };
+            let at = sfc.script_line + import.line - 1;
+            let written = module.replace('/', "::");
+            if rux_native::registry::interface(&module).is_none() {
+                return Err(LoadError::at_line(no_native_module(&written), at, Path::new("")));
+            }
+            if import.type_name.is_some() {
+                continue;
+            }
+            let (target, local) = match &import.picked {
+                None => (rux_script::link::Target::Module(module), import.local.clone()),
+                Some((picked, local)) => (rux_script::link::Target::Member(module, picked.clone()), local.clone()),
+            };
+            native_aliases.push(rux_script::link::Alias { local, target, line: at });
+        }
         let mut sfc = sfc;
         let main_script = own_props(&mut sfc, &main_script, None);
         let (main_script, computeds, effects, hooks) = extract_reactives(&main_script);
@@ -2622,7 +2712,7 @@ impl Document {
         // most wants it: this is the only error surface it has. Nothing is
         // appended here, so the whole compiled text is the document's script.
         let main_script_lines = main_script.lines().count();
-        let mut engine = build_engine(&main_script)
+        let mut engine = build_engine_linked(&main_script, &[], native_aliases, Vec::new())
             .map_err(|e| LoadError::in_script(e, sfc.script_line, main_script_lines, None))?;
         let mut instances = Instances::new();
         let mut swaps = Swaps::new();
@@ -5656,6 +5746,28 @@ fn component_key(path: &Path) -> String {
 /// the project root where no `app.rux` or `index.rux` marks one: a folder of
 /// examples is no project, and `use stores::shop;` in its
 /// `components/cart_row.rux` means the `stores/` beside the page that was run.
+/// The native module an import's file names: `native/shop.rux` is
+/// `native/shop`, `native.rux` (`use native::{greet};`) is `native`.
+fn native_module_of(file: &str) -> Option<String> {
+    let module = file.strip_suffix(".rux").unwrap_or(file);
+    rux_script::native::is_native(module).then(|| module.to_string())
+}
+
+/// What an import of a native module nobody registered is told.
+fn no_native_module(written: &str) -> String {
+    let path = written.strip_prefix("native").unwrap_or("").trim_start_matches("::");
+    let file = if path.is_empty() {
+        "native/src/lib.rs".to_string()
+    } else {
+        format!("native/src/{}.rs", path.replace("::", "/"))
+    };
+    format!(
+        "there is no native module {written}: an app's Rust goes in a `native/` crate beside rux.toml \
+         ({file}, a `pub mod` all the way from lib.rs), with what Rux calls marked `#[rux::export]`. \
+         `rux run` builds it in, and `rux check` reads it"
+    )
+}
+
 fn resolve_import(base: &Path, file: &str, entry: &Path) -> Result<PathBuf, (PathBuf, Option<PathBuf>)> {
     // Joined a segment at a time rather than as one `a/b.rux` string, so the
     // result is spelled in the platform's own separator. Joining the whole
@@ -5879,7 +5991,7 @@ fn build_engine_linked(
         });
     }
     builder.aliases(aliases);
-    builder.host_number("full", || 100.0);
+
     let mut engine = builder.build(script)?;
     // The route has to be in scope before the first build, because a `<router>`
     // reads it during that build. A document that declared `route` itself is
@@ -9040,15 +9152,37 @@ let open = signal(true);
         assert_eq!(doc.engine_mut().get_string("beats"), "2");
     }
 
-    /// `host::<name>(x)` answers `prefix + x` from another thread, a little
-    /// later. For the `async fn` tests below, each under a name of its own.
+    /// Install `native::<name>`, whose `async` `call(x)` answers with `f(x)`
+    /// after `ms`, off the UI thread. For the `async fn` tests below, each
+    /// under a name of its own, since the registry is process-wide.
+    fn native_later(
+        name: &str,
+        ms: u64,
+        f: impl Fn(rux_native::Any) -> Result<rux_native::Any, rux_native::Error> + Send + Sync + 'static,
+    ) {
+        let f = std::sync::Arc::new(f);
+        let call = rux_native::Call::future(move |mut args: Vec<rux_native::Any>| {
+            let f = std::sync::Arc::clone(&f);
+            let arg = args.pop().unwrap_or_default();
+            async move {
+                std::thread::sleep(std::time::Duration::from_millis(ms));
+                f(arg)
+            }
+        });
+        rux_native::Module::new(name)
+            .export(rux_native::Export::function("call", &[("x", "any")], "any", call))
+            .install();
+    }
+
+    /// `native::<name>.call(x)` answers `prefix + x`, a little later.
     fn answer_later(name: &str, prefix: &'static str) {
-        rux_script::host::register_async(name, move |args, done| {
-            let arg = args.first().map(|v| v.to_display()).unwrap_or_default();
-            std::thread::spawn(move || {
-                std::thread::sleep(std::time::Duration::from_millis(5));
-                done.ok(rux_reactive::Value::Text(format!("{prefix}{arg}")));
-            });
+        native_later(name, 5, move |x| {
+            let shown = match x {
+                rux_native::Any::Int(i) => i.to_string(),
+                rux_native::Any::Str(s) => s,
+                other => format!("{other:?}"),
+            };
+            Ok(rux_native::Any::Str(format!("{prefix}{shown}")))
         });
     }
 
@@ -9070,11 +9204,12 @@ let open = signal(true);
         let mut doc = Document::from_source(
             "<template><screen><text>{{ status }} {{ name }}</text></screen></template>
              <script>
+               use native::rt1_user;
                let status = signal(\"idle\");
                let name = signal(\"\");
                async fn load(id: int) {
                  status = \"loading\";
-                 name = await host::rt1_user(id);
+                 name = await rt1_user.call(id);
                  status = \"done\";
                }
              </script>",
@@ -9095,8 +9230,8 @@ let open = signal(true);
         answer_later("rt2_note", "note ");
         let mut doc = with_component(
             "<template><view><text>[{{ own }}]</text></view></template>\n\
-             <script>\nlet own = signal(\"\");\n\
-             async fn fetch() { own = \"...\"; own = await host::rt2_note(1); }\n\
+             <script>\nuse native::rt2_note;\nlet own = signal(\"\");\n\
+             async fn fetch() { own = \"...\"; own = await rt2_note.call(1); }\n\
              mounted { fetch(); }\n</script>",
             "<template><screen><card /></screen></template>\n\
              <script>\nuse components::card;\n</script>",
@@ -9110,15 +9245,10 @@ let open = signal(true);
     /// that comes later writes nothing and says nothing.
     #[test]
     fn an_async_fn_dies_with_its_instance() {
-        rux_script::host::register_async("rt3_slow", |_, done| {
-            std::thread::spawn(move || {
-                std::thread::sleep(std::time::Duration::from_millis(30));
-                done.ok(rux_reactive::Value::Text("late".into()));
-            });
-        });
+        native_later("rt3_slow", 30, |_| Ok(rux_native::Any::Str("late".into())));
         let mut doc = with_store(
             "<template><view><text>card</text></view></template>\n\
-             <script>\nuse stores::probe;\nasync fn fetch() { let v = await host::rt3_slow(); probe.set(v); }\n\
+             <script>\nuse stores::probe;\nuse native::rt3_slow;\nasync fn fetch() { let v: string = await rt3_slow.call(none); probe.set(v); }\n\
              mounted { fetch(); }\n</script>",
             "<template><screen><text>{{ probe.beats }}</text><card r-if=\"open\" /></screen></template>\n\
              <script>\nuse components::card;\nuse stores::probe;\nlet open = signal(true);\n</script>",
@@ -9136,14 +9266,15 @@ let open = signal(true);
     /// file line of the `await` that failed.
     #[test]
     fn an_async_fn_that_fails_is_reported_at_its_line() {
-        rux_script::host::register_async("rt4_bad", |_, done| done.fail("offline"));
+        native_later("rt4_bad", 0, |_| Err(rux_native::Error::new("error", "offline")));
         let mut doc = Document::from_source(
             "<template><screen><text>x</text></screen></template>
 <script>
+use native::rt4_bad;
 let n = signal(0);
 async fn go() {
   n = 1;
-  await host::rt4_bad();
+  await rt4_bad.call(none);
 }
 </script>",
         )
@@ -9152,7 +9283,7 @@ async fn go() {
         settle_one(&mut doc);
         let found = &doc.diagnostics().warnings;
         let hit = found.iter().find(|w| w.message.contains("async fn go") && w.message.contains("offline"));
-        assert_eq!(hit.map(|w| w.line), Some(Some(6)), "{found:#?}");
+        assert_eq!(hit.map(|w| w.line), Some(Some(7)), "{found:#?}");
     }
 
     /// A period of zero would fire every frame forever, so it is refused out

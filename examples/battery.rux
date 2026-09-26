@@ -76,7 +76,7 @@
 </style>
 
 <script>
-  // Tap -/+ to change level; "Full" calls the native host::full() capability.
+  // Tap -/+ to change level, or "Full" to fill it.
   //
   // The handlers are named functions, not inline statements. A function reads
   // and writes the state around it, so `level--` in here moves the same signal
@@ -88,7 +88,7 @@
 
   fn drain() { if level > 0 { level-- } }
   fn charge() { if level < 100 { level++ } }
-  fn fill() { level = host::full().round() }
+  fn fill() { level = 100 }
 
   // A helper used in a binding rather than a handler: it answers a question
   // instead of changing anything.

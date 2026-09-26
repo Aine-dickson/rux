@@ -231,23 +231,33 @@ impl Interp {
                             }
                             continue;
                         }
-                        Callee::Host(name) => {
-                            if let Some(f) = self.host.get(name) {
-                                input = Some(Resume::Value(V::Float(f())));
-                                continue;
-                            }
-                            let Some(f) = self.async_host.get(name).cloned() else {
-                                let f = Fault::new(format!("Function not found: host::{name} ()"));
-                                input = Some(Resume::Fault(located(f, *at)));
-                                continue;
+                        Callee::Native(key) => {
+                            let call = match self.native(key) {
+                                Ok(c) => c,
+                                Err(e) => {
+                                    input = Some(Resume::Fault(located(fault_of(e), *at)));
+                                    continue;
+                                }
                             };
-                            let ticket = host::next_id();
-                            self.waiting.insert(ticket, tid);
-                            let values: Vec<Value> = argv.iter().map(V::to_value).collect();
-                            f(values, host::Completer::new(ticket, name));
-                            return Outcome::Waiting;
+                            let args: Vec<rux_native::Any> = argv.iter().map(crate::native::to_any).collect();
+                            match call {
+                                // Awaiting a synchronous one is having its value.
+                                rux_native::Call::Sync(f) => {
+                                    input = Some(match f(args) {
+                                        Ok(a) => Resume::Value(crate::native::from_any(a)),
+                                        Err(e) => Resume::Fault(located(super::native_fault(&e), *at)),
+                                    });
+                                    continue;
+                                }
+                                rux_native::Call::Async(f) => {
+                                    let ticket = host::next_id();
+                                    self.waiting.insert(ticket, tid);
+                                    host::start(ticket, key, f(args));
+                                    return Outcome::Waiting;
+                                }
+                            }
                         }
-                        _ => fail("only a call to an `async fn` or to a `host::` function can be awaited"),
+                        _ => fail("only a call to an `async fn` or to an `async` native function can be awaited"),
                     }
                 }
                 Op::Test { cond, otherwise, .. } => {
@@ -440,8 +450,8 @@ impl Interp {
             let Some(tid) = self.waiting.remove(&ticket) else { continue };
             if let Some(task) = self.tasks.get_mut(&tid) {
                 task.ready = Some(match answer {
-                    Ok(v) => Resume::Value(V::from_value(&v)),
-                    Err(message) => Resume::Fault(Fault::new(message)),
+                    Ok(v) => Resume::Value(crate::native::from_any(v)),
+                    Err(e) => Resume::Fault(super::native_fault(&e)),
                 });
                 ready.push(tid);
             }

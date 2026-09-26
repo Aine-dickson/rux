@@ -5,29 +5,30 @@
     <button class="btn" @tap="load(n)">Load user {{ n }}</button>
     <button class="btn" @tap="n += 1">Next id</button>
     <button class="btn" @tap="save()">Save (fails)</button>
-    <text class="small">host::lookup answers from another thread after a second</text>
+    <text class="small">demo.lookup answers from another thread after a second</text>
   </screen>
 </template>
 
 <script>
-type User = { name: string, age: int };
+use native::demo;
+use type native::demo::User;
 
 let n = signal(1);
 let status = signal("idle");
 
 async fn load(id: int) {
   status = `loading user ${id}...`;
-  let user: User = await host::lookup(id);
+  let user: User = await demo.lookup(id);
   status = `user ${id}: ${user.name}, ${user.age}`;
 }
 
 async fn save() {
   status = "saving...";
   try {
-    await host::store(n);
+    await demo.store(n);
     status = "saved";
   } catch e {
-    status = `could not save: ${e.message}`;
+    status = `could not save: ${e.message} (${e.kind})`;
   }
 }
 </script>

@@ -88,11 +88,28 @@ fn the_interpreter_through_the_engine_and_directly() {
 #[ignore]
 fn an_async_fn_started_stopped_and_resumed() {
     const N: u32 = 1000;
-    rux_script::host::register_async("cost_now", |_, done| done.ok(Value::Number(1.0)));
+    // Answered at once, on this thread: what is timed is the interpreter's
+    // stopping and going on, not a thread starting.
+    rux_native::set_spawner(|task| rux_native::block_on(task));
+    rux_native::Module::new("cost_now")
+        .export(rux_native::Export::function(
+            "now",
+            &[],
+            "float",
+            rux_native::Call::future(|_| async { Ok(rux_native::Any::Float(1.0)) }),
+        ))
+        .install();
     let script = "let n = signal(0);\n\
-                  async fn step() { n += 1; let v = await host::cost_now(); n += v; }\n\
+                  async fn step() { n += 1; let v = await cost.now(); n += v; }\n\
                   fn plain() { n += 1; n += 1; }\n";
-    let mut engine: Engine = Builder::new().build(script).expect("the engine builds");
+    let alias = rux_script::link::Alias {
+        local: "cost".into(),
+        target: rux_script::link::Target::Module("native/cost_now".into()),
+        line: 1,
+    };
+    let mut b = Builder::new();
+    b.aliases(vec![alias]);
+    let mut engine: Engine = b.build(script).expect("the engine builds");
     engine.run_handler("step()");
     engine.run_handler("plain()");
     let t = Instant::now();

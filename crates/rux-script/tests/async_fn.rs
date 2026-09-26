@@ -1,16 +1,143 @@
 //! `async fn` and `await`: step 6 of `docs/11-next.md`.
 //!
-//! Each test registers host functions under names of its own, since the
-//! registry is process-wide and tests run side by side.
+//! What a script awaits is an `async` native function (step 8). Each test
+//! registers its own under a name of its own, since the registry is
+//! process-wide and tests run side by side, through [`host`] below, which
+//! keeps the shape the tests were written in: a Rust closure handed the
+//! arguments and something to answer with. A script's `host::name(x)` is
+//! rewritten by [`engine`] to `name.call(x)`, a call to that module.
 
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use rux_reactive::Value;
-use rux_script::{host, Builder, Engine};
+use rux_script::{link, Builder, Engine};
 
+/// A test's native functions, each a module with one `async` export,
+/// `call`, answered through a [`host::Completer`].
+mod host {
+    use std::future::Future;
+    use std::pin::Pin;
+    use std::sync::{Arc, Mutex};
+    use std::task::{Context, Poll, Waker};
+
+    use rux_native::{Any, Call, Error, Export, Module};
+    use rux_reactive::Value;
+
+    #[derive(Default)]
+    struct Slot {
+        answer: Option<Result<Any, Error>>,
+        waker: Option<Waker>,
+    }
+
+    /// How a test's closure answers. Dropped without answering, it answers
+    /// with an error saying so.
+    pub struct Completer {
+        slot: Arc<Mutex<Slot>>,
+        done: bool,
+    }
+
+    impl Completer {
+        pub fn ok(mut self, v: Value) {
+            self.send(Ok(to_any(&v)));
+        }
+        pub fn fail(mut self, message: &str) {
+            self.send(Err(Error::new("error", message)));
+        }
+        fn send(&mut self, a: Result<Any, Error>) {
+            if self.done {
+                return;
+            }
+            self.done = true;
+            let mut s = self.slot.lock().unwrap();
+            s.answer = Some(a);
+            if let Some(w) = s.waker.take() {
+                w.wake();
+            }
+        }
+    }
+
+    impl Drop for Completer {
+        fn drop(&mut self) {
+            self.send(Err(Error::new("error", "the call finished without answering")));
+        }
+    }
+
+    struct Answer(Arc<Mutex<Slot>>);
+
+    impl Future for Answer {
+        type Output = Result<Any, Error>;
+        fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+            let mut s = self.0.lock().unwrap();
+            match s.answer.take() {
+                Some(a) => Poll::Ready(a),
+                None => {
+                    s.waker = Some(cx.waker().clone());
+                    Poll::Pending
+                }
+            }
+        }
+    }
+
+    fn to_any(v: &Value) -> Any {
+        match v {
+            Value::Null => Any::None,
+            Value::Bool(b) => Any::Bool(*b),
+            Value::Number(n) => Any::Float(*n),
+            Value::Text(t) => Any::Str(t.clone()),
+            Value::List(items) => Any::Array(items.iter().map(to_any).collect()),
+            Value::Map(m) => Any::Map(m.iter().map(|(k, v)| (k.clone(), to_any(v))).collect()),
+        }
+    }
+
+    fn to_value(a: &Any) -> Value {
+        match a {
+            Any::None | Any::Resource(_) => Value::Null,
+            Any::Bool(b) => Value::Bool(*b),
+            Any::Int(i) => Value::Number(*i as f64),
+            Any::Float(f) => Value::Number(*f),
+            Any::Str(s) => Value::Text(s.clone()),
+            Any::Array(items) => Value::List(items.iter().map(to_value).collect()),
+            Any::Map(m) => Value::Map(m.iter().map(|(k, v)| (k.clone(), to_value(v))).collect()),
+        }
+    }
+
+    /// Install `native::<name>`, whose `call(…)` is answered by `f`.
+    pub fn register_async(name: &str, f: impl Fn(Vec<Value>, Completer) + Send + Sync + 'static) {
+        let f = Arc::new(f);
+        let call = Call::future(move |args: Vec<Any>| {
+            let slot = Arc::new(Mutex::new(Slot::default()));
+            f(args.iter().map(to_value).collect(), Completer { slot: Arc::clone(&slot), done: false });
+            Answer(slot)
+        });
+        Module::new(name).export(Export::function("call", &[("x", "any")], "any", call)).install();
+    }
+}
+
+/// An engine for `src`, its `host::name(…)` calls made calls to the test's
+/// native module `name`.
 fn engine(src: &str) -> Engine {
-    Builder::new().build(src).unwrap_or_else(|e| panic!("{src}\n{e:?}"))
+    let mut names: Vec<String> = Vec::new();
+    let mut rest = src;
+    while let Some(i) = rest.find("host::") {
+        rest = &rest[i + 6..];
+        let end = rest.find('(').unwrap_or(rest.len());
+        names.push(rest[..end].to_string());
+    }
+    names.sort();
+    names.dedup();
+    let src = src.replace("host::", "");
+    let mut src = src;
+    for n in &names {
+        src = src.replace(&format!("{n}("), &format!("{n}.call("));
+    }
+    let aliases = names
+        .iter()
+        .map(|n| link::Alias { local: n.clone(), target: link::Target::Module(format!("native/{n}")), line: 1 })
+        .collect();
+    let mut b = Builder::new();
+    b.aliases(aliases);
+    b.build(&src).unwrap_or_else(|e| panic!("{src}\n{e:?}"))
 }
 
 fn text(e: &Engine, name: &str) -> String {

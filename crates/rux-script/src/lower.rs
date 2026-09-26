@@ -280,7 +280,7 @@ pub fn removed_syntax(script: &ast::Script) -> Option<String> {
             Node::Expr(e) => match &e.kind {
                 E::Binary { op: op @ ("&" | "|" | "^" | "<<" | ">>"), .. } => Some(format!("the bitwise operator `{op}`")),
                 E::Call { bang: true, .. } => Some("a `f!()` call".to_string()),
-                E::Call { callee, .. } if callee.len() > 1 && callee[0].name != "host" => {
+                E::Call { callee, .. } if callee.len() > 1 => {
                     Some("a call through a module path".to_string())
                 }
                 E::Path(_) => Some("a module path used as a value".to_string()),
@@ -1007,7 +1007,17 @@ impl<'a> Lower<'a> {
                 ExprKind::Index { base: Box::new(b), index: Box::new(i), optional: *optional }
             }
             E::Method { recv, name, args, optional } => {
+                let awaited = std::mem::take(&mut self.awaiting);
                 let r = base_of(self, recv);
+                // A method of a native type is its Rust's, called with the
+                // receiver first.
+                let found = crate::native::type_name(&r.ty).and_then(|t| crate::native::method(t, &name.name));
+                if let (Some(m), false) = (found, *optional) {
+                    let _ = awaited;
+                    let mut all = vec![r];
+                    all.extend(args.iter().map(|x| self.expr(x)));
+                    return ir::Expr::new(ExprKind::Call { callee: Callee::Native(m.key), args: all }, ty, a);
+                }
                 let base = if *optional { without_null(&self.resolved(&r.ty)) } else { self.resolved(&r.ty) };
                 let on = match &base {
                     Type::Array(_) => MethodOn::Array,
@@ -1039,8 +1049,9 @@ impl<'a> Lower<'a> {
         if callee.len() == 1 && name == "signal" && args.len() == 1 {
             return self.expr(&args[0]);
         }
-        let callee = if callee.len() == 2 && callee[0].name == "host" {
-            Callee::Host(name.to_string())
+        let native = callee.len() == 1 && crate::link::split(name).is_some_and(|(m, _)| crate::native::is_native(m));
+        let callee = if native {
+            Callee::Native(name.to_string())
         } else if callee.len() > 1 {
             let path: Vec<&str> = callee.iter().map(|c| c.name.as_str()).collect();
             self.unsupported("a call through a module path", e.span);
@@ -1242,11 +1253,12 @@ mod tests {
     #[test]
     fn a_call_to_an_async_fn_is_awaited_or_started() {
         let text = ir("let n = signal(0);\n\
-                       async fn get(): int { await host::count() }\n\
+                       async fn count(): int { 1 }\n\
+                       async fn get(): int { await count() }\n\
                        async fn add() { n += await get(); }\n\
                        fn tap() { add(); }\n");
-        assert!(text.contains("async fn 0 get(): int"), "{text}");
-        assert!(text.contains("(await (call host::count"), "{text}");
+        assert!(text.contains("async fn 1 get(): int"), "{text}");
+        assert!(text.contains("(await (call fn:count):int):int"), "{text}");
         assert!(text.contains("(await (call fn:get):int):int"), "{text}");
         assert!(text.contains("(start fn:add):void"), "{text}");
     }

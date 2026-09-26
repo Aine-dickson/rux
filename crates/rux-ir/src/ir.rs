@@ -277,7 +277,7 @@ pub enum ExprKind {
 
     Call { callee: Callee, args: Vec<Expr> },
     /// `await call`, only in an `async fn`'s own body: the call is to another
-    /// `async fn` ([`Callee::Fn`]) or to a host function ([`Callee::Host`]),
+    /// `async fn` ([`Callee::Fn`]) or to a native one ([`Callee::Native`]),
     /// and this is the value it gives once it has it. The function waits
     /// here; everything else may run meanwhile.
     Await(Box<Expr>),
@@ -345,8 +345,10 @@ pub enum Callee {
     Fn(FnId),
     /// A global function of the language's: `print`, `parseInt`, `navigate`.
     Builtin(String),
-    /// `host::name`, until step 8 makes these native modules.
-    Host(String),
+    /// A function of a native module, by its linked name:
+    /// `native/shop::cheapest`, or `native/shop::Product.discountedPrice`
+    /// for a method, whose receiver is the first argument.
+    Native(String),
     /// A function value: a closure kept in a name.
     Value(Box<Expr>),
     /// A call to something only known when it runs.

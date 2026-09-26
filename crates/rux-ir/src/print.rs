@@ -251,7 +251,7 @@ impl<'u> Printer<'u> {
                 let callee = match callee {
                     Callee::Fn(f) => format!("fn:{}", self.u.fns.get(f.0 as usize).map_or("?", |f| f.name.as_str())),
                     Callee::Builtin(n) => n.clone(),
-                    Callee::Host(n) => format!("host::{n}"),
+                    Callee::Native(n) => n.clone(),
                     Callee::Value(v) => self.expr(v),
                     Callee::Dyn(n) => format!("dyn:{n}"),
                 };

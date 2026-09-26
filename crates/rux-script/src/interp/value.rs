@@ -29,6 +29,8 @@ pub enum V {
     Range(i64, i64),
     Fn(Rc<Closure>),
     Element(Rc<ElementHandle>),
+    /// A native resource, held for Rust: step 8 of `docs/11-next.md`.
+    Native(rux_native::Handle),
 }
 
 /// A closure value: its code and what it captured, by value.
@@ -107,6 +109,7 @@ impl V {
             V::Range(..) => "range",
             V::Fn(_) => "Fn",
             V::Element(_) => "Element",
+            V::Native(h) => h.type_name(),
         }
     }
 
@@ -123,6 +126,9 @@ impl V {
             V::Range(a, b) => Value::List((*a..*b).map(|i| Value::Number(i as f64)).collect()),
             V::Fn(_) => Value::Text("Fn(<closure>)".to_string()),
             V::Element(e) => Value::Text(format!("Element({})", e.facts.tag)),
+            // The runtime's values are text and data: a resource kept in
+            // one (a component instance's state) is shown by its type.
+            V::Native(h) => Value::Text(format!("{}(..)", h.type_name())),
         }
     }
 
@@ -155,6 +161,7 @@ impl PartialEq for V {
             (V::Range(a, b), V::Range(c, d)) => a == c && b == d,
             (V::Fn(a), V::Fn(b)) => Rc::ptr_eq(a, b),
             (V::Element(a), V::Element(b)) => a.facts.path == b.facts.path,
+            (V::Native(a), V::Native(b)) => a.same(b),
             _ => false,
         }
     }
@@ -191,6 +198,12 @@ impl Checkable for V {
     fn all_entries(&self, f: &mut dyn FnMut(&str, &Self) -> bool) -> Option<bool> {
         match self {
             V::Map(m) => Some(m.iter().all(|(k, v)| f(k, v))),
+            _ => None,
+        }
+    }
+    fn resource_name(&self) -> Option<&str> {
+        match self {
+            V::Native(h) => Some(h.type_name()),
             _ => None,
         }
     }

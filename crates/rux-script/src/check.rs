@@ -80,8 +80,6 @@ pub struct Context {
     /// component's `computed`, run later). Bound to the type given, or `any`,
     /// and not checked.
     pub placeholders: Vec<(String, Option<Type>)>,
-    /// `host::` functions with a signature, by name.
-    pub host: Vec<(String, Type)>,
     /// Names some caller has in scope when it calls a function: an `r-for`'s
     /// variable, a handler's own `let`s. Under the fork a plain call runs in
     /// its caller's scope, so a function can read these, and a typed one may
@@ -365,6 +363,8 @@ struct Checker<'a> {
     asyncs: Vec<bool>,
     /// Set by `await` for the call it is applied to, which that call takes.
     awaited: bool,
+    /// The same, for a native method call (`await db.load(id)`).
+    awaited_method: bool,
     /// While set, an `async fn` may not be started here, and this says what
     /// "here" is: a binding or a `computed`, which run on every change.
     no_start: Option<&'static str>,
@@ -412,6 +412,7 @@ impl<'a> Checker<'a> {
             rec_off: 0,
             asyncs: Vec::new(),
             awaited: false,
+            awaited_method: false,
             no_start: None,
         }
     }
@@ -1938,11 +1939,7 @@ impl<'a> Checker<'a> {
             return;
         }
         let ty = widen(&self.infer(value));
-        let why = uninformative(value).filter(|why| match why {
-            // A `host::` function with a signature says what it returns.
-            Blank::Host(f) => !self.cx.host.iter().any(|(n, _)| n == f),
-            _ => true,
-        });
+        let why = uninformative(value);
         if let Some(why) = why {
             let hint = match why {
                 Blank::EmptyList => format!(
@@ -1958,10 +1955,6 @@ impl<'a> Checker<'a> {
                 Blank::Null => format!(
                     "`{name}` starts as `none`, which says nothing about what it will hold, so \
                      nothing done with it is checked. Say what it holds: `let {name}: T? = …`"
-                ),
-                Blank::Host(f) => format!(
-                    "`host::{f}` has no signature, so what `{name}` holds is not checked. Say \
-                     what it returns: `let {name}: T = …`"
                 ),
             };
             self.warn(pos, hint);
@@ -2422,7 +2415,24 @@ impl<'a> Checker<'a> {
                 Type::Generic(n, a) if n == "Result" && a.len() == 2 => a[0].clone(),
                 _ => self.method(&base, &name.name, args),
             },
-            ExprKind::Method { name, args, .. } => self.method(&base, &name.name, args),
+            ExprKind::Method { name, args, .. } => match crate::native::type_name(&shown) {
+                Some(t) => match crate::native::method(t, &name.name) {
+                    Some(m) => self.native_method(m, &name.name, args, name.span),
+                    None if matches!(base, Type::Opaque(_)) => {
+                        let has = crate::native::methods_of(t);
+                        let has = if has.is_empty() {
+                            "it exports no methods".to_string()
+                        } else {
+                            format!("its methods are {}", has.iter().map(|m| format!("`{m}`")).collect::<Vec<_>>().join(", "))
+                        };
+                        self.error(name.span, format!("the native type `{t}` has no method `{}`: {has}", name.name));
+                        self.infer_all(args);
+                        Type::Any
+                    }
+                    None => self.method(&base, &name.name, args),
+                },
+                None => self.method(&base, &name.name, args),
+            },
             _ => Type::Any,
         };
         let ty = known.unwrap_or(ty);
@@ -2677,15 +2687,17 @@ impl<'a> Checker<'a> {
                 self.infer(a);
             }
             if callee.len() == 2 && callee[0].name == "host" {
-                if let Some((_, Type::Function(_, result))) = self.cx.host.iter().find(|(n, _)| n == name) {
-                    return (**result).clone();
-                }
+                self.error(pos, retired_host(name));
             }
             return Type::Any;
         }
 
         // A module's function, linked in.
-        if let Some((params, result)) = self.linked_fn(name).map(|(p, r, _)| (p.clone(), r.clone())) {
+        if let Some((params, result, is_async)) = self.linked_fn(name).map(|(p, r, a)| (p.clone(), r.clone(), a)) {
+            let native = crate::link::split(name).is_some_and(|(m, _)| crate::native::is_native(m));
+            if native && is_async && !awaited {
+                self.error(pos, native_not_awaited(&crate::link::shown(name)));
+            }
             if params.len() != args.len() {
                 self.infer_all(args);
                 let s = if params.len() == 1 { "" } else { "s" };
@@ -3185,11 +3197,37 @@ impl<'a> Checker<'a> {
                     .into(),
             ),
         }
-        let not_awaitable = "only a call to an `async fn` or to a `host::` function can be awaited";
+        let not_awaitable = "only a call to an `async fn`, or to an `async` native function, can be awaited";
         let ty = match &inner.kind {
+            ExprKind::Method { recv, name, .. } => {
+                let rt = self.infer_quietly(recv);
+                let m = crate::native::type_name(&rt).and_then(|t| crate::native::method(t, &name.name));
+                match m {
+                    Some(m) if m.is_async => {
+                        self.awaited_method = true;
+                        let t = self.infer(inner);
+                        self.awaited_method = false;
+                        t
+                    }
+                    Some(_) => {
+                        self.error(
+                            inner.span,
+                            format!("`{}` is not `async` in Rust, so there is nothing to await: call it without `await`", name.name),
+                        );
+                        self.infer(inner)
+                    }
+                    None => {
+                        self.error(inner.span, not_awaitable.into());
+                        self.infer(inner)
+                    }
+                }
+            }
             ExprKind::Call { callee, args, .. } => {
                 let name = callee.last().map(|c| c.name.as_str()).unwrap_or("");
                 let host = callee.len() == 2 && callee[0].name == "host";
+                if host {
+                    self.error(inner.span, retired_host(name));
+                }
                 let script_fn = if callee.len() == 1 {
                     self.fns
                         .get(&(name.to_string(), args.len()))
@@ -3199,7 +3237,8 @@ impl<'a> Checker<'a> {
                     None
                 };
                 match (host, script_fn) {
-                    (true, _) | (_, Some(true)) => {
+                    (true, _) => self.infer(inner),
+                    (_, Some(true)) => {
                         self.awaited = true;
                         let t = self.infer(inner);
                         self.awaited = false;
@@ -3295,6 +3334,25 @@ impl<'a> Checker<'a> {
     }
 
     // ----- Methods ---------------------------------------------------------
+
+    /// A method of a native type: its arguments checked against its Rust
+    /// signature, and an `async` one only awaited.
+    fn native_method(&mut self, m: crate::native::NativeMethod, name: &str, args: &[Expr], pos: Pos) -> Type {
+        let awaited = std::mem::take(&mut self.awaited_method);
+        if m.is_async && !awaited {
+            self.error(pos, native_not_awaited(&format!("`{name}`")));
+        }
+        if m.params.len() != args.len() {
+            self.infer_all(args);
+            let s = if m.params.len() == 1 { "" } else { "s" };
+            self.error(pos, format!("`{name}` takes {} argument{s}, and is given {}", m.params.len(), args.len()));
+            return m.result;
+        }
+        for (a, p) in args.iter().zip(&m.params) {
+            self.check_expr(a, p);
+        }
+        m.result
+    }
 
     fn method(&mut self, base: &Type, name: &str, args: &[Expr]) -> Type {
         match base {
@@ -3640,12 +3698,28 @@ fn path_step(prefix: String, e: &Expr) -> Option<String> {
     }
 }
 
+/// What `host::name` is told: step 8 of `docs/11-next.md` retired it.
+fn retired_host(name: &str) -> String {
+    format!(
+        "`host::` is retired: Rust is reached through a native module. Export the function with \
+         `#[rux::export]` in the app's native/ crate and import it (`use native::…;`), then call \
+         it as `module.{name}(…)`"
+    )
+}
+
+/// What a call to an `async` native function without `await` is told.
+fn native_not_awaited(shown: &str) -> String {
+    format!(
+        "{shown} is `async` in Rust, so it is awaited: `await` it inside an `async fn`, and call \
+         that from here"
+    )
+}
+
 /// Why a starting value says nothing about a name's type.
 enum Blank {
     EmptyList,
     EmptyMap,
     Null,
-    Host(String),
 }
 
 /// A starting value that says nothing about what a name will hold, looking
@@ -3658,9 +3732,6 @@ fn uninformative(e: &Expr) -> Option<Blank> {
         ExprKind::Array(items) if items.is_empty() => Some(Blank::EmptyList),
         ExprKind::Map { entries, .. } if entries.is_empty() => Some(Blank::EmptyMap),
         ExprKind::Unit | ExprKind::Null => Some(Blank::Null),
-        ExprKind::Call { callee, .. } if callee.len() > 1 => {
-            Some(Blank::Host(callee.last().map(|c| c.name.clone()).unwrap_or_default()))
-        }
         _ => None,
     }
 }
@@ -4160,13 +4231,78 @@ let b: int? = none;").is_empty());
         assert!(errors(src).is_empty(), "{:?}", errors(src));
     }
 
-    #[test]
-    fn host_functions_with_a_signature_are_typed() {
+    /// A native module for the tests below, installed once: `native/check_t8`.
+    fn native_fixture() {
+        use rux_native::{Any, Call, Export, Module};
+        static ONCE: std::sync::Once = std::sync::Once::new();
+        ONCE.call_once(|| {
+            let mut m = Module::new("check_t8")
+                .export(Export::function("level", &[], "float", Call::sync(|_| Ok(Any::Float(50.0)))))
+                .export(Export::function("load", &[("id", "int")], "string", Call::future(|_| async { Ok(Any::Str("x".into())) })))
+                .export(Export { item: rux_native::Item { name: "Db".into(), kind: rux_native::ItemKind::Resource }, call: None });
+            let sig = |params: &[(&str, &str)], result: &str, is_async: bool| rux_native::Sig {
+                params: params.iter().map(|(n, t)| (n.to_string(), t.to_string())).collect(),
+                result: result.into(),
+                is_async,
+            };
+            for (name, s) in [("size", sig(&[], "int", false)), ("fetch", sig(&[("key", "string")], "string", true))] {
+                m.add(Export {
+                    item: rux_native::Item { name: name.into(), kind: rux_native::ItemKind::Method { on: "Db".into(), sig: s } },
+                    call: Some(Call::sync(|_| Ok(Any::Int(0)))),
+                });
+            }
+            m.install();
+        });
+    }
+
+    fn native_findings(script: &str) -> Vec<Finding> {
+        native_fixture();
+        let alias = crate::link::Alias {
+            local: "t".into(),
+            target: crate::link::Target::Module("native/check_t8".into()),
+            line: 1,
+        };
         let mut b = Builder::new();
-        b.host_number("level", || 50.0);
-        let engine = b.build("let a: string = host::level();").expect("builds");
-        let f = engine.check_types(&Context::default());
+        b.aliases(vec![alias]);
+        let engine = b.build(script).expect("builds");
+        engine.check_types(&engine.linked_context(&Context::default()))
+    }
+
+    #[test]
+    fn native_functions_are_typed_by_their_rust_signature() {
+        let f = native_findings("let a: string = t.level();");
         assert!(f.iter().any(|f| f.message.contains("`float`, where `string` is expected")), "{f:?}");
+        assert!(native_findings("let a: float = t.level();").iter().all(|f| !f.is_error));
+    }
+
+    #[test]
+    fn an_async_native_function_is_awaited() {
+        let f = native_findings("fn f() { t.load(1); }");
+        assert!(f.iter().any(|f| f.is_error && f.message.contains("`async` in Rust")), "{f:?}");
+        let f = native_findings("async fn f(): string { await t.load(1) }");
+        assert!(f.iter().all(|f| !f.is_error), "{f:?}");
+    }
+
+    #[test]
+    fn a_resource_is_opaque_and_has_its_methods() {
+        // Its type resolves once its module is imported, and naming it asks
+        // for the type import, as a script module's type does.
+        let f = native_findings("fn f(db: Db): int { db.size() }");
+        assert!(f.iter().any(|f| f.message.contains("use type native::check_t8::Db")), "{f:?}");
+        assert!(f.iter().filter(|f| f.is_error).count() == 1, "{f:?}");
+        let f = native_findings("async fn f(db: Db): string { let n: int = db.size(); await db.fetch(\"k\") }");
+        assert!(f.iter().filter(|f| f.is_error).all(|f| f.message.contains("use type")), "{f:?}");
+        let f = native_findings("fn f(db: Db): int { db.nope() }");
+        assert!(f.iter().any(|f| f.message.contains("has no method `nope`")), "{f:?}");
+        let f = native_findings("fn f(db: Db) { db.fetch(\"k\"); }");
+        assert!(f.iter().any(|f| f.message.contains("`async` in Rust")), "{f:?}");
+        let f = native_findings("fn f(db: Db): string { db.size() }");
+        assert!(f.iter().any(|f| f.message.contains("declared to return `string`, and this is `int`")), "{f:?}");
+    }
+
+    #[test]
+    fn host_is_retired_and_says_where_rust_went() {
+        one_error("fn f() { host::full(); }", "`host::` is retired");
     }
 
     #[test]
@@ -4411,12 +4547,13 @@ let b: int? = none;").is_empty());
     #[test]
     fn await_is_for_an_async_fn_and_what_it_waits_for() {
         let lib = "type User = { name: string };\n\
-                   async fn load(id: int): User { let u: User = await host::user(id); return u; }\n";
+                   async fn fetch(id: int): User { return { name: \"a\" }; }\n\
+                   async fn load(id: int): User { let u: User = await fetch(id); return u; }\n";
         // The awaited value is the declared result, not a wrapper.
         assert!(errors(&format!("{lib}async fn show() {{ let u = await load(1); let n: string = u.name; }}")).is_empty());
         one_error(&format!("{lib}async fn show() {{ let u = await load(1); let n: int = u.name; }}"), "where `int` is expected");
-        one_error("fn f() { await host::x(); }", "only allowed inside an `async fn`");
-        one_error("let n = signal(0);\nasync fn f() { [1].map(x => await host::x()); }", "inside a closure");
+        one_error("async fn x() {}\nfn f() { await x(); }", "only allowed inside an `async fn`");
+        one_error("let n = signal(0);\nasync fn x() {}\nasync fn f() { [1].map(y => await x()); }", "inside a closure");
         one_error("fn g(): int { 1 }\nasync fn f() { await g(); }", "`g` is not an `async fn`");
         one_error("async fn f() { await 3; }", "only a call to an `async fn`");
         // Started, not waited for: there is no value.
@@ -4428,7 +4565,7 @@ let b: int? = none;").is_empty());
 
     #[test]
     fn a_binding_cannot_start_an_async_fn_and_a_handler_can() {
-        let script = "async fn load() { await host::x(); }";
+        let script = "async fn x() {}\nasync fn load() { await x(); }";
         let value = Tpl::Expr { src: "load()".into(), want: None, line: 3, what: "`{{ }}`".into() };
         let f = template_findings(script, vec![value]);
         assert!(f.iter().any(|f| f.is_error && f.message.contains("a binding")), "{f:?}");
@@ -4440,7 +4577,8 @@ let b: int? = none;").is_empty());
     #[test]
     fn what_was_known_about_a_signal_is_not_known_after_an_await() {
         let src = "let user: { name: string }? = signal(none);\n\
-                   async fn f(): string { if user != none { await host::x(); return user.name; } return \"\"; }";
+                   async fn x() {}\n\
+                   async fn f(): string { if user != none { await x(); return user.name; } return \"\"; }";
         let w = findings(src);
         assert!(w.iter().any(|f| f.message.contains("none")), "{w:?}");
         let src = "let user: { name: string }? = signal(none);\n\

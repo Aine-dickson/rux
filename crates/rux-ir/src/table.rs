@@ -68,6 +68,7 @@ impl Table {
             (Type::Union(members), _) => members.iter().all(|m| self.assignable_at(m, &to, d)),
             (_, Type::Union(members)) => members.iter().any(|m| self.assignable_at(&from, m, d)),
             (Type::Int, Type::Float) => true,
+            (Type::Opaque(a), Type::Opaque(b)) => a == b,
             (Type::BoolLit(_), Type::Bool) => true,
             (Type::Null, Type::Void) => true,
             (Type::Literal(_), Type::String) => true,

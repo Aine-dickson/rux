@@ -1090,7 +1090,34 @@ Float indexing narrows to what the types allow: an index is an `int`, and a
    linked name is looked up where it runs there; `rux check` on a component
    in a folder with no project root resolves its imports from the
    component's own directory.
-8. **`#[rux::export]`, the interface file, `native` modules.**
+8. **`#[rux::export]`, the interface file, `native` modules.** Planned
+   2026-09-27 with nobody to approve it; every choice the plan makes is
+   listed, numbered, in
+   [Decided without the owner (2026-09-27)](#decided-without-the-owner-2026-09-27).
+   In order:
+   - 8.0 **`rux-native`**, the crate an app's Rust depends on (as `rux`):
+     the boundary value `rux::Any`, conversions both ways for the Rust types
+     that cross, resource handles, `rux::Error`, the registry of native
+     modules, and where an `async` export's future runs.
+   - 8.1 **`rux-bindgen`**, reading Rust source with `syn`: what each Rust
+     type is in Rux, and every export of a crate with its Rux signature.
+     Shared by the macros and the CLI, so the two cannot disagree.
+   - 8.2 **`rux-native-macros`**: `#[rux::export]` on a `fn`, a `struct`
+     and an `impl`, `#[rux::resource]`, `#[rux::init]`. Each export gets a
+     hidden descriptor function; nothing runs before `main`.
+   - 8.3 **The language side**: `use native::x` and `import … from
+     "native/x"` link like a script module; the checker reads each native
+     module's interface; a native call, awaited or not, lowers to its own
+     IR callee; the interpreter calls it, converts at the boundary, and
+     throws its errors as Rux `Error`s. Methods of native types
+     (`p.discountedPrice(0.1)`) are checked and called. `host::` is
+     retired.
+   - 8.4 **The tooling**: the loader and `rux check` read the app's
+     `native/` crate for signatures (no build needed); `rux run` and
+     `rux build` compile it into the app and register every export;
+     `rux native` prints what Rux sees.
+   - 8.5 **An example app with a `native/` crate**, driven in the window;
+     docs; the cost of a native call measured.
 9. **Rust code generation** for release builds, native then wasm.
 
 Steps 2 to 5 change nothing an author sees except the decided syntax and
@@ -1165,3 +1192,95 @@ stays the one matching form. As they were put:
 3. **`switch` stays the one matching form** (decided). It is an
    expression, takes `a | b` alternatives, ranges and an `if` guard per arm,
    and must cover a union with no `_` arm. `match` is only a reserved word.
+
+## Decided without the owner (2026-09-27)
+
+Step 8 was planned and built overnight on 2026-09-27 while the owner was
+away, on their instruction to go ahead. Each choice below was taken without
+them and is listed to be overruled. Each says what it is, what it was chosen
+over, and why.
+
+1. **Three crates.** `rux-native` is what an app's Rust depends on, renamed
+   `rux` in its `Cargo.toml` so the attribute reads `#[rux::export]`.
+   `rux-native-macros` holds the attributes. `rux-bindgen` reads Rust source
+   with `syn`, and both the macros and the CLI use it, so what the checker
+   is told and what the compiled code does come from one mapping. Chosen
+   over one crate, which would make every app compile `syn` for the
+   checker's sake, and over two, which would copy the mapping.
+2. **The Rust lives in `native/` beside `rux.toml`**, an ordinary library
+   crate. No `rux.toml` key: the manifest adds a key when something needs
+   another place, as it always has.
+3. **A native module is a Rust module.** `pub mod database` in the crate is
+   `native::database` in Rux (`native::db::users` for a nested one); items at
+   the crate root are the module `native` itself (`use native::{greet};`).
+   Every module on the way must be `pub`. Chosen over an attribute naming the
+   module, which says the same thing twice.
+4. **Registration is generated, not discovered.** The CLI reads the crate,
+   so it knows every export, and the wrapper crate it generates registers
+   each one by path before the first document loads. Chosen over
+   `inventory`/`linkme`-style link-time collection: no code runs before
+   `main`, nothing depends on the linker keeping a section, and it works the
+   same on Android and the web.
+5. **No interface file on disk.** The reference proposed one. Reading a
+   crate with `syn` takes milliseconds, so `rux check`, the loader and the
+   editor (through `rux check`) read the Rust source each time and can never
+   see a stale copy. `rux native` prints the interface in Rux syntax for a
+   person to read.
+6. **The boundary value is `rux::Any`**: `None`, `Bool`, `Int(i64)`,
+   `Float(f64)`, `Str`, `Array`, `Map`, `Resource`. It is also the Rux
+   `any` escape (the reference's third level), so a Rust function taking or
+   giving `rux::Any` is typed `any`. Integers keep their `int`-ness across
+   the boundary, which `rux_reactive::Value` (one `f64`) could not.
+7. **What crosses**: `bool`; every Rust integer type as `int`, a value that
+   does not fit throwing `kind` `"overflow"`; `f32`/`f64` as `float`;
+   `String`/`&str` as `string`; `Option<T>` as `T?`; `Vec<T>`/`&[T]` as
+   `T[]`; `HashMap`/`BTreeMap<String, T>` as `Map<string, T>`; `()` as
+   `void`; `Result<T, E>` as `T`, throwing; a `#[rux::export]` struct as a
+   record type of the same name; a `#[rux::resource]` as an opaque type.
+   Anything else is a compile error at the export saying why.
+8. **A value struct crosses whole**, so every field must be `pub`. A struct
+   with private fields is refused with a message pointing at
+   `#[rux::resource]`. Chosen over copying only the `pub` fields, which
+   would build a Rust value from a Rux record with fields missing.
+9. **A resource** is `Send + Sync + 'static`, held in an `Arc`. Rux sees an
+   opaque named type and its exported methods, may keep it in a signal and
+   pass it around, and cannot look inside it or make one. Two are equal
+   when they are the same resource. Its methods take `&self`; mutation is
+   Rust's business (a `Mutex` inside), because Rux may hold the same handle
+   in several places. It is dropped when the last Rux value holding it is.
+10. **Methods.** `#[rux::export] impl T` exports its `pub fn`s; a method
+    taking `&self` is a method in Rux (`p.discountedPrice(0.1)`). One
+    without `self` (`Database::open`) is a function of the module, under its
+    own name (`database.open(…)`), since Rux has no static methods; two
+    exports of one module with the same Rux name are an error at the export.
+    `#[rux(name = "…")]` overrides any name; `#[rux(skip)]` keeps a `pub fn`
+    out. The reference's `#[rux::hide]`/`#[rux::only]` are not built: `pub`
+    already decides.
+11. **Errors.** A returned `Err(e)` throws an `Error` whose `message` is
+    `e.to_string()` and whose `kind` is `E`'s type name. A panic inside a
+    native call is caught and thrown with `kind` `"panic"` (not on the web,
+    which aborts). A value of the wrong type handed to a native function from
+    `any` throws `kind` `"type"`.
+12. **`async` exports** are awaited from an `async fn`; calling one without
+    `await` is an error. Each call's future runs off the UI thread: by
+    default on a thread of its own, driven by a small `block_on` in
+    `rux-native` (no executor dependency); an app with its own runtime
+    (tokio) installs it once with `rux::set_spawner`. Futures must be
+    `Send`. Not built: async exports on the web, which has no threads.
+13. **`#[rux::init]`** marks one function run once before the first
+    document loads, for setting a spawner or opening a pool.
+14. **`host::` is retired.** `host::name()` is an error that says to import
+    a native module. `rux_runtime::host::register_async` and
+    `Builder::host_number` are replaced by registering a native module from
+    Rust (`rux_native::Module`), which is also what the macros generate.
+15. **Security.** Native code is reached only through an import; the
+    playground and `rux check` have no native code (the checker has the
+    signatures only). Handles are `Arc`s, never numbers, so Rux cannot
+    forge one. Generated code has no `unsafe`. Every integer conversion is
+    checked. Not built yet: a native module declaring the platform
+    permissions it needs, which waits for the first mobile API that needs
+    one.
+16. **`rux run` with a `native/` crate** builds a dev host (the `rux build`
+    dev wrapper, linked with the crate) and runs that; `.rux` files hot
+    reload as before, and a change under `native/src` rebuilds and restarts
+    the window.

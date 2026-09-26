@@ -49,6 +49,11 @@ pub enum Type {
     Named(String),
     /// A declared type given type arguments: `Page<int>`.
     Generic(String, Vec<Type>),
+    /// A native resource (`#[rux::resource]` in an app's Rust): Rux holds one
+    /// and calls its methods, and cannot see inside or make one. Only the
+    /// same resource type fits. Written `#opaque Name` in a type's text,
+    /// which no Rux source can spell.
+    Opaque(String),
     /// A type parameter, inside the declaration or function that has it: the
     /// `T` of `fn first<T>(items: T[]): T?`. Nothing is known about it.
     Param(String),
@@ -201,7 +206,7 @@ impl fmt::Display for Type {
                 }
                 write!(f, ") => {result}")
             }
-            Type::Named(name) | Type::Param(name) => f.write_str(name),
+            Type::Named(name) | Type::Param(name) | Type::Opaque(name) => f.write_str(name),
             Type::Generic(name, args) => {
                 write!(f, "{name}<")?;
                 for (i, a) in args.iter().enumerate() {
@@ -301,6 +306,9 @@ pub fn parse_decl(text: &str) -> Result<(Vec<String>, Type), TypeSyntaxError> {
 
 /// Read a type from its text.
 pub fn parse_type(text: &str) -> Result<Type, TypeSyntaxError> {
+    if let Some(name) = text.trim().strip_prefix("#opaque ") {
+        return Ok(Type::Opaque(name.trim().to_string()));
+    }
     let tokens = tokenize(text)?;
     let mut p = Parser { tokens, at: 0, len: text.len() };
     let ty = p.union()?;

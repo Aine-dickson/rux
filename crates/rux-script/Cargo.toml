@@ -16,3 +16,9 @@ rux-syntax.workspace = true
 # The typed IR and the type language the checker shares with it: step 4 of
 # docs/11-next.md. `types` is re-exported from here as it always was.
 rux-ir.workspace = true
+# Native modules: the boundary value and the registry. docs/11-next.md, step 8.
+rux-native.workspace = true
+
+[dev-dependencies]
+# The attributes, for tests written as an app writes its native/ crate.
+rux-native = { workspace = true, features = ["macros"] }

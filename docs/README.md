@@ -31,10 +31,11 @@ Rux exists because of one frustration: in widget-tree toolkits like Flutter, spa
 
 <script>
   // A function sees the state around it and can write it, so a handler has a
-  // name. Heavy work still lives behind `host::`. See 07, Script.
+  // name. Heavy work lives in the app's Rust, reached as a native module.
+  use native::device;
   let level = signal(82);
 
-  fn refresh() { level = host::read_battery() }
+  fn refresh() { level = device.batteryLevel() }
 </script>
 ```
 

@@ -39,6 +39,10 @@ pub trait Checkable {
     fn all_entries(&self, f: &mut dyn FnMut(&str, &Self) -> bool) -> Option<bool>;
     /// `f` on the entry `name`, absent being `None`, if it is a map.
     fn with_field(&self, name: &str, f: &mut dyn FnMut(Option<&Self>) -> bool) -> Option<bool>;
+    /// Its type's name, if it is a native resource.
+    fn resource_name(&self) -> Option<&str> {
+        None
+    }
 }
 
 /// Whether `value` fits `ty`. `named` says what a declared type stands for;
@@ -84,6 +88,7 @@ fn fits_at<V: Checkable>(value: &V, ty: &Type, named: &dyn Fn(&str) -> Option<De
         }
         // Only a checker error reaches here: at run time no `T` is known.
         Type::Param(_) => false,
+        Type::Opaque(name) => value.resource_name() == Some(name.as_str()),
     }
 }
 

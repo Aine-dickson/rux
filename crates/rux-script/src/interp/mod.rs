@@ -106,14 +106,14 @@ struct Root {
     piece: Rc<Compiled>,
 }
 
-pub type Host = Rc<dyn Fn() -> f64>;
-
 pub struct Interp {
     unit: Rc<Unit>,
     globals: Vec<V>,
     set: Vec<bool>,
     by_name: HashMap<String, GlobalId>,
-    host: HashMap<String, Host>,
+    /// Each native export called so far, by linked name, so the registry
+    /// is asked once.
+    natives: HashMap<String, rux_native::Call>,
     pieces: HashMap<String, Rc<Compiled>>,
     stack: Vec<Frame>,
     roots: Vec<Root>,
@@ -121,8 +121,6 @@ pub struct Interp {
     ops: u64,
     /// The most steps one run may take: [`MAX_OPERATIONS`] unless lowered.
     max_ops: u64,
-    /// `host::` functions an `async fn` awaits. See [`crate::host`].
-    async_host: HashMap<String, crate::host::AsyncFn>,
     /// Started `async fn`s that are waiting, by task id. See [`task`].
     tasks: HashMap<u64, task::Task>,
     /// Each `async fn`'s ops, compiled when first started, by function.
@@ -131,7 +129,7 @@ pub struct Interp {
     started: Vec<u64>,
     /// Tasks that failed with nothing to catch it, since the runtime asked.
     failed: Vec<(String, Fault)>,
-    /// What each host call being waited on is for: its ticket, and the task.
+    /// What each native call being waited on is for: its ticket, and the task.
     waiting: HashMap<u64, u64>,
     /// What text handed in is linked against before it is lowered: the
     /// document's imports. See [`crate::link`].
@@ -152,7 +150,7 @@ const PIECES_CAP: usize = 4096;
 impl Interp {
     /// An interpreter for `unit`, its state not yet given values: see
     /// [`Interp::init`].
-    pub fn new(unit: Unit, host: HashMap<String, Host>) -> Self {
+    pub fn new(unit: Unit) -> Self {
         let n = unit.globals.len();
         let by_name = unit.globals.iter().enumerate().map(|(i, g)| (g.name.clone(), GlobalId(i as u32))).collect();
         Interp {
@@ -160,14 +158,13 @@ impl Interp {
             globals: vec![V::None; n],
             set: vec![false; n],
             by_name,
-            host,
+            natives: HashMap::new(),
             pieces: HashMap::new(),
             stack: Vec::new(),
             roots: Vec::new(),
             tracks: Vec::new(),
             ops: 0,
             max_ops: MAX_OPERATIONS,
-            async_host: crate::host::registered(),
             tasks: HashMap::new(),
             flats: HashMap::new(),
             started: Vec::new(),
@@ -187,7 +184,7 @@ impl Interp {
     /// level run: what [`crate::Builder::build`] makes beside the fork.
     pub fn from_script(script: &str) -> Result<Interp, String> {
         let parsed = rux_syntax::parse(script, rux_syntax::Options { declarations: true }).map_err(|e| e.message)?;
-        let mut ir = crate::interpreter(&parsed, script, &[], HashMap::new());
+        let mut ir = crate::interpreter(&parsed, script);
         ir.init().map_err(|f| f.message)?;
         Ok(ir)
     }
@@ -1023,11 +1020,28 @@ impl Interp {
             Callee::Fn(id) => self.call_fn(*id, argv),
             Callee::Value(_) => self.call_value(func.unwrap_or(V::None), argv),
             Callee::Builtin(name) => self.builtin(name, argv),
-            Callee::Host(name) => match self.host.get(name) {
-                Some(f) => Ok(V::Float(f())),
-                None => fail(format!("Function not found: host::{name} ()")),
+            Callee::Native(key) => match self.native(key)? {
+                rux_native::Call::Sync(f) => call_native(&f, &argv),
+                rux_native::Call::Async(_) => {
+                    let name = key.replace('/', "::");
+                    fail(format!("{name} is `async` in Rust: await it inside an `async fn`"))
+                }
             },
             Callee::Dyn(name) => self.call_named(name, argv),
+        }
+    }
+
+    /// How to call native export `key`, asked of the registry once.
+    fn native(&mut self, key: &str) -> R<rux_native::Call> {
+        if let Some(c) = self.natives.get(key) {
+            return Ok(c.clone());
+        }
+        match crate::native::call_of(key) {
+            Ok(c) => {
+                self.natives.insert(key.to_string(), c.clone());
+                Ok(c)
+            }
+            Err(message) => fail(message),
         }
     }
 
@@ -1105,6 +1119,20 @@ impl Interp {
                     all.extend(argv);
                     return self.call_fn(FnId(i as u32), all);
                 }
+                // Where the receiver's type was not known when this was
+                // lowered (a handler's own expressions are `any`), a native
+                // method is found by the value itself.
+                if let Some(key) = crate::native::method_for_value(recv, name) {
+                    let mut all = Vec::with_capacity(n);
+                    all.push(recv.clone());
+                    all.extend(argv);
+                    return match self.native(&key)? {
+                        rux_native::Call::Sync(f) => call_native(&f, &all),
+                        rux_native::Call::Async(_) => {
+                            fail(format!("`{name}` is `async` in Rust: await it inside an `async fn`"))
+                        }
+                    };
+                }
                 let mut types = vec![recv.type_name()];
                 types.extend(argv.iter().map(V::type_name));
                 fail(format!("Function not found: {name} ({})", types.join(", ")))
@@ -1175,6 +1203,22 @@ fn items_of(over: V) -> R<Vec<V>> {
         V::Map(_) => return fail("a map cannot be walked with `for`; walk `keys(m)` or `values(m)`"),
         other => return fail(format!("`for` cannot walk a {}", other.type_name())),
     })
+}
+
+/// What a synchronous native export is.
+type SyncNative = std::sync::Arc<dyn Fn(Vec<rux_native::Any>) -> Result<rux_native::Any, rux_native::Error> + Send + Sync>;
+
+/// A synchronous native call: the arguments into Rust, and the answer, or
+/// the error it threw, back.
+fn call_native(f: &SyncNative, argv: &[V]) -> R<V> {
+    let args = argv.iter().map(crate::native::to_any).collect();
+    f(args).map(crate::native::from_any).map_err(|e| Flow::Fault(native_fault(&e)))
+}
+
+/// A native error as a fault, which `catch e` reads as `{ message, kind }`
+/// with the Rust error's kind.
+pub(crate) fn native_fault(e: &rux_native::Error) -> Fault {
+    Fault { message: e.message.clone(), kind: "error", thrown: Some(crate::native::error_value(e)), at: None }
 }
 
 /// The value an error is to `catch e`: `{ message, kind }`.
