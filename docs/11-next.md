@@ -3,12 +3,12 @@
 The reference for the script language Rux owns: what goes inside `<script>`,
 in a script-only module, and in a `{{ }}` binding or an `@tap` attribute.
 
-**Status: the reference for the language being built.** Steps 1 to 5 of the
-[build order](#build-order) are done (2026-09-26): Rux's own parser, checker,
-typed IR and interpreter run every script, and rhai is gone. What the later
-steps add (`async fn`, modules and stores, native code, Rust generation) does
-not run yet, and neither do some of the Changed rules below; the build order
-says which. [Script](./07-script.md) and [Types](./10-types.md) describe what
+**Status: the reference for the language being built.** Steps 1 to 8 of the
+[build order](#build-order) are done (2026-09-27): Rux's own parser, checker,
+typed IR and interpreter run every script, rhai is gone, and `async fn`,
+modules and stores, and native modules run. Rust generation (step 9) does not
+run yet, and neither do some of the Changed rules below; the build order says
+which. [Script](./07-script.md) and [Types](./10-types.md) describe what
 runs today. This document describes the language that replaces them: it keeps
 what those two built where it still holds, and marks every place that moves.
 When the build finishes, this becomes the only script reference and those two
@@ -827,7 +827,7 @@ JavaScript `Map` does.
 
 ## Native code
 
-### Reaching it (decided shape, proposed keyword)
+### Reaching it (decided shape, keyword built 2026-09-27)
 
 The keyword is **`native`**, the same in both module forms:
 
@@ -836,10 +836,13 @@ use native::database;
 import { database } from "native/database";
 ```
 
-`host::` is retired. "Native" says what the thing is: implemented in Rust, not
-in Rux.
+`host::` is retired (an error that points here). "Native" says what the thing
+is: implemented in Rust, not in Rux. A native module is a `pub mod` of the
+app's `native/` crate: `pub mod shop` is `native::shop`, and the crate root is
+`native` itself. The type import is `use type native::shop::Product;`, as for
+a script module.
 
-### Exporting from Rust (decided in principle)
+### Exporting from Rust (decided in principle, built 2026-09-27)
 
 ```rust
 #[rux::export]
@@ -871,18 +874,33 @@ Rules (proposed):
 - A function returning Rust's `Result<T, E>` appears in Rux as returning `T`,
   and its `Err` is thrown as an `Error` whose `kind` names the Rust error type
   (decided). An `async` Rust function is awaited from an `async fn`.
-- `#[rux::hide(…)]` and `#[rux::only(…)]` trim what Rux sees.
+- `pub` decides what an exported `impl` shows, and `#[rux(skip)]` keeps a
+  `pub fn` out. (`#[rux::hide(…)]` and `#[rux::only(…)]`, proposed here, were
+  not built: see decision 10 below.)
 - A type Rux cannot represent in an exported signature is a **compile error at
   the export** saying why, never dropped silently.
 - There is **no escape hatch for calling unexported Rust on a Rux value**. A
   missing capability is written as a small exported Rust function.
 
-### The interface file (proposed)
+### The interface (built 2026-09-27, without a file)
 
-Exports are read from the Rust **source** (with `syn`), not from a build, into
-a generated interface file per crate. The checker, `rux check` and the editor
-read that file, so completion, hover and errors on native calls work within
-seconds of saving the Rust, without waiting for `cargo`.
+Exports are read from the Rust **source** (with `syn`, in `rux-bindgen`), not
+from a build. The checker, `rux check` and the editor (through `rux check`)
+have them within a second of saving the Rust, without waiting for `cargo`.
+The proposal wrote them to an interface file; reading the source each time
+takes milliseconds and cannot go stale, so there is no file. `rux native`
+prints the interface in Rux syntax:
+
+```text
+// native::shop
+export type Product = { id: int, name: string, price: float, note?: string };
+export fn catalogue(): Product[];
+export type Till;  // a resource: opaque to Rux
+export fn openTill(): Till;
+//   Product.withTax(rate: float): float
+//   Till.ring(p: Product): int
+//   Till.settle(): string  (async)
+```
 
 ## Templates (Kept)
 
@@ -1118,6 +1136,29 @@ Float indexing narrows to what the types allow: an index is an `int`, and a
      `rux native` prints what Rux sees.
    - 8.5 **An example app with a `native/` crate**, driven in the window;
      docs; the cost of a native call measured.
+
+   Done 2026-09-27, as planned, in b194af7 (8.0 to 8.2), bd81e63 (8.3) and
+   the commit after it (8.4, 8.5). `examples/native-shop` (a catalogue of
+   `#[rux::export]` records with a method, a `#[rux::resource]` till with a
+   Rust `Result` and an `async` method) was driven in a desktop window: the
+   Rust catalogue and its method in a binding render; an empty till's
+   `settle` is refused with `TillError: nothing to settle` while the window
+   stays live; three items ring up to 5.90 in whole cents and settle. `rux
+   run` built the app with its crate in, and rebuilt and restarted it eight
+   seconds after `shop.rs` changed. `rux check` reports a misspelled native
+   function ("does not export `catalog`: it exports `catalogue`, `openTill`"),
+   a misspelled method, a wrong type and a Rust export that cannot cross
+   (at its `.rs` line), with nothing built. A synchronous native call costs
+   what a script `fn` call does (0.46 against 0.55 µs, loop included,
+   `tests/interp_cost.rs`). Not done yet: async exports on the web (no
+   threads; `rux::set_spawner` is the way in); permissions declared by a
+   native module; `--route` and `--preview` for `rux run` of an app with a
+   `native/` crate; a resource kept in a component instance's state (it
+   passes through the runtime's display value and comes back as text: keep
+   resources in a store or the document); a record's method in a binding or
+   a handler is found by the record's fields, so two native record types with
+   the same fields and method name are ambiguous there (typed script code is
+   exact).
 9. **Rust code generation** for release builds, native then wasm.
 
 Steps 2 to 5 change nothing an author sees except the decided syntax and
@@ -1284,3 +1325,29 @@ over, and why.
     dev wrapper, linked with the crate) and runs that; `.rux` files hot
     reload as before, and a change under `native/src` rebuilds and restarts
     the window.
+
+Taken while building it:
+
+17. **`rux check` never runs the app's Rust.** It still runs each document's
+    top level, so a declared (read, not compiled) native function answers the
+    empty value of its declared type: `0`, `""`, `none`, `[]`, a record of
+    those, a placeholder resource. Chosen over building the crate to check a
+    document (minutes, and running code a checker should not) and over
+    skipping the top level (the rest of the document would go unchecked).
+18. **The generated wrapper crate is named `rux-app-<name>`** and declares its
+    own `[workspace]`. The first because an app's `native/` crate is likely
+    to carry the app's name, and cargo cannot hold two packages of one name;
+    the second so an app inside another cargo workspace builds.
+19. **A native method whose receiver's type was not known where it was
+    lowered** (a handler's or a binding's own expressions are `any`) is found
+    at run time from the value: a resource by its type, a record by being the
+    one native record type with such a method whose fields it has.
+20. **`native/` is never embedded in a build.** A release carrying its own
+    source is a leak, not an asset.
+21. **A build honours `CARGO_TARGET_DIR`, and one against a checkout starts
+    from the checkout's `Cargo.lock`**, so an app can share a target that is
+    already compiled, and builds with the versions Rux was tested with.
+22. **The linker's words win at the top level.** A top level that fails on a
+    name the linker already refused reports the linker's message
+    ("`native/shop` does not export `catalog`: it exports …") rather than the
+    interpreter's ("`shop` is not defined").

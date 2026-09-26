@@ -2998,6 +2998,7 @@ version = "0.8.0-dev"
 dependencies = [
  "image",
  "notify",
+ "rux-bindgen",
  "rux-fmt",
  "rux-parser",
  "rux-runtime",

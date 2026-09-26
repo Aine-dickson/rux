@@ -367,7 +367,9 @@ which has `img` and not Rux's `<image>`, and over-indented everything after an
 |---|---|
 | `rux-parser` | SFC split + XML-ish template parser (ours) |
 | `rux-style` | lightningcss → our cascade → `Style`; directives; component expansion |
-| `rux-script` | rhai engine (state + handlers) + `host::` registry |
+| `rux-script` | Rux's checker and interpreter (state + handlers), and native modules in the language |
+| `rux-native` | What an app's Rust depends on (as `rux`): `#[rux::export]`, the boundary value, the registry |
+| `rux-bindgen` | Reads an app's `native/` crate for its exports, for the macros and the CLI |
 | `rux-layout` | `Style` → taffy (flex/grid/block) → paint items, hit + focus regions |
 | `rux-text` | parley 0.11 shaping/measure/wrapping + vello 0.9 glyph drawing |
 | `rux-paint` | paint items → vello scene (fills, borders, clips, text) |
@@ -1132,7 +1134,7 @@ plain `color: #ff0000` would fall back to the default.
 - `<script>` is **rhai**, forked as `rux-rhai`. `let x = signal(v)` declares state (numbers coerce to float).
 - `{{ expr }}` interpolation; `r-if` / `r-elif` / `r-else`, `r-for="x in list"`, `r-show`.
 - `@tap="…"` handlers.
-- `host::fn()` calls into compiled Rust (registered in `rux-runtime::build_engine`).
+- `use native::m;` then `m.fn()` calls the app's own compiled Rust, exported with `#[rux::export]` from its `native/` crate. See [Script, Native code](./07-script.md#native-code).
 - `{ key: value }` is a map, as in JavaScript, so `:class="{ active: on }"` and
   `rows.map(r => { id: r.id })` mean what they say. **CHANGED in v0.8**: it used
   to be written `#{ key: value }`, which still works and which `rux fmt` rewrites.
@@ -1156,7 +1158,7 @@ plain `color: #ff0000` would fall back to the default.
 > - **A method call does not see the surrounding scope.** `thing.helper()`
 >   cannot reach `level`; `helper(thing)` can. Method dispatch passes its
 >   receiver by reference and the scope cannot be borrowed at the same time.
-> - **Anything heavy still belongs in a `host::` function.** Script is for
+> - **Anything heavy still belongs in Rust**, as a native module. Script is for
 >   describing what the UI does, not for doing work.
 
 **`query(selector)` reads the tree from a handler.** It takes a CSS selector,

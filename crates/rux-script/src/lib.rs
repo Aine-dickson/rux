@@ -409,8 +409,11 @@ impl Builder {
         })
         .map_err(|e| ScriptError::at(explain(&e.message), script, e.span.start as usize))?;
         // What cannot be linked is the load-time check's to report
-        // (`Engine::link`); here it is left for the interpreter to refuse.
-        link::resolve(&mut parsed, &linking.aliases, &linking.exports);
+        // (`Engine::link`); here it is left for the interpreter to refuse,
+        // unless the top level fails on it first, when the linker's words
+        // are the error (`shop.catalog()` "does not export", not "`shop` is
+        // not defined").
+        let link_problems = link::resolve(&mut parsed, &linking.aliases, &linking.exports);
         // What `x is T` resolves a declared name against: this script's own
         // `type`s, and its modules', before the script's first statement can
         // ask. The runtime adds what it imports (`validate::know_types`).
@@ -428,7 +431,14 @@ impl Builder {
             std::rc::Rc::clone(&linking),
         );
         if let Err(f) = ir.init() {
-            return Err(fault_at(f, script));
+            let failed = fault_at(f, script);
+            if let Some(p) = link_problems.iter().find(|p| {
+                let (line, _) = rux_syntax::LineIndex::new(script).line_col(script, p.span.start as usize);
+                Some(line) == failed.line
+            }) {
+                return Err(ScriptError::at(p.message.clone(), script, p.span.start as usize));
+            }
+            return Err(failed);
         }
         let mut engine = Engine::new(ir, parsed, script);
         engine.linking = linking;
@@ -1813,7 +1823,9 @@ impl Engine {
                             return true;
                         }
                     }
-                    if !known.contains(name.name.as_str()) {
+                    // A native type's method is its Rust's, which the type
+                    // checker holds to its signature.
+                    if !known.contains(name.name.as_str()) && !native::has_method_named(&name.name) {
                         note(CallProblem::NoSuchFunction(name.name.clone()));
                     } else {
                         // A method call carries its receiver as the first

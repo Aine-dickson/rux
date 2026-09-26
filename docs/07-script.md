@@ -87,9 +87,10 @@ closing or a hot reload replacing it.
 
 ```rux
 <script>
+  use native::settings;
   let level = signal(0);
-  mounted   { level = host::last_saved(); }
-  unmounted { host::save(level); }
+  mounted   { level = settings.lastSaved(); }
+  unmounted { settings.save(level); }
 </script>
 ```
 
@@ -300,8 +301,9 @@ instead: `@tap="pick(item)"` and `fn pick(item: Task)`. State two files share
 lives in a store both import ([Modules](#modules)). See
 [Types](./10-types.md#a-typed-function-cannot-read-its-callers-locals).
 
-**Anything heavy belongs behind `host::`.** Script describes what the UI does; it
-is not where work gets done.
+**Anything heavy belongs in Rust**, reached as a native module
+([Native code](#native-code)). Script describes what the UI does; it is not
+where work gets done.
 
 ## Modules
 
@@ -380,12 +382,13 @@ page waits for it in an `async fn`:
 
 ```rux
 <script>
-  type User = { name: string, age: int };
+  use native::people;
+  use type native::people::User;
   let status = signal("idle");
 
   async fn load(id: int) {
     status = "loading...";
-    let user: User = await host::lookup(id);
+    let user: User = await people.lookup(id);
     status = `${user.name}, ${user.age}`;
   }
 </script>
@@ -398,7 +401,7 @@ page waits for it in an `async fn`:
   with the tap; what it writes after renders when the answer comes, with no
   input and without the window waking for anything else in between.
 - **`await` is only written inside an `async fn`**, and only in front of a
-  call to another `async fn` or to a `host::` function. It may sit anywhere an
+  call to another `async fn` or to an `async` native function. It may sit anywhere an
   expression can, `total += await price(id)` included, but not inside a
   closure, which is not `async`.
 - **The result type is the value awaited**: `async fn price(id: int): float`
@@ -420,20 +423,87 @@ page waits for it in an `async fn`:
   reads is never a dependency: an `effect` that starts one is subscribed to
   what the effect itself read.
 
-The Rust side registers what a page awaits, before the page loads:
+What a page awaits is an `async fn` in the app's Rust, exported to Rux
+([Native code](#native-code)):
 
 ```rust
-rux_runtime::host::register_async("lookup", |args, done| {
-    std::thread::spawn(move || {
-        let user = fetch_user(&args);
-        done.ok(user);  // or done.fail("why"), which the `await` throws
-    });
-});
+#[rux::export]
+pub async fn lookup(id: u32) -> Result<User, LookupError> {
+    // …; an Err is thrown at the `await`, with the error type's name as `kind`
+}
 ```
 
-Where the work runs is Rust's business: a thread, an executor the app already
-has, or at once. The answer can come from any thread. There is no `Future`,
-`Promise` or task value on the Rux side, and no `fetch` or `delay` built in.
+Its future runs off the UI thread: on a thread of its own by default, or on
+the app's own runtime once it hands one over with `rux::set_spawner`. There is
+no `Future`, `Promise` or task value on the Rux side, and no `fetch` or
+`delay` built in.
+
+## Native code
+
+An app's Rust lives in a `native/` crate beside `rux.toml`, an ordinary
+library depending on `rux-native` under the name `rux`. What Rux may call is
+marked `#[rux::export]`; each `pub mod` is a module Rux imports as
+`native::name` (the crate root is `native` itself):
+
+```rust
+// native/src/shop.rs, with `pub mod shop;` in native/src/lib.rs
+#[rux::export]
+pub struct Product { pub id: u32, pub name: String, pub price: f64 }
+
+#[rux::export]
+impl Product {
+    pub fn with_tax(&self, rate: f64) -> f64 { self.price * (1.0 + rate) }
+}
+
+#[rux::resource]
+pub struct Till { cents: Mutex<i64> }
+
+#[rux::export]
+impl Till {
+    pub fn ring(&self, p: Product) -> Result<u32, TillError> { … }
+    pub async fn settle(&self) -> Result<String, TillError> { … }
+}
+
+#[rux::export]
+pub fn open_till() -> Till { … }
+```
+
+```rux
+<script>
+  use native::shop;
+  use type native::shop::Product;
+
+  let till = shop.openTill();
+  fn add(p: Product) { count = till.ring(p); }
+</script>
+```
+
+- **Names become camelCase** (`open_till` is `openTill`); `#[rux(name = "…")]`
+  gives another, `#[rux(skip)]` keeps a `pub fn` out.
+- **A struct marked `#[rux::export]` is a value**: a record type of the same
+  name, every field `pub`, copied across whole. **A `#[rux::resource]` is
+  opaque**: Rux holds it, keeps it in state, passes it back and calls its
+  methods, and never sees inside. Its methods take `&self`, since Rux may hold
+  it in several places; a change goes through a lock inside it.
+- **Types cross as `docs/11-next.md` lists them**: every integer is an `int`,
+  and one that does not fit throws `kind` `"overflow"` rather than wrapping;
+  `Option<T>` is `T?`; `Vec<T>` is `T[]`; a `Result`'s `Err` is thrown. A type
+  with no Rux meaning is a compile error at the export, saying why.
+- **An `async` export is awaited**, from an `async fn`; calling one without
+  `await` is an error.
+- **A panic in a native call is thrown** as an `Error` of `kind` `"panic"`,
+  not a crash (except on the web, which aborts).
+- **`rux check` and the editor read the Rust source**, not a build, so a typo
+  in a native name or a wrong argument type is reported in seconds. A check
+  never runs the app's Rust: a native call made while a document is checked
+  answers the empty value of its type. **`rux run` compiles the crate in**, and
+  builds and restarts the window whenever something under `native/` changes;
+  `.rux` files still hot reload. `rux native` prints what Rux sees.
+
+`host::name()`, which reached a function a Rust program registered by hand, is
+retired and is an error that points here. A program that runs the shell itself
+registers a module with `rux_runtime::native::Module`, which is what the
+attribute generates.
 
 ## Type annotations
 
@@ -524,12 +594,12 @@ app.rux:21: error: `kind` on <btn>: "big" is not `"primary" | "quiet"`, which is
 
 ### `is`, and props at run time
 
-Annotations are erased, so a value from outside (an `any`, a `host::` call
-with no signature) is whatever it turns out to be. **`x is T`** asks, and
+Annotations are erased, so a value from outside (an `any`, a native function
+typed `rux::Any`) is whatever it turns out to be. **`x is T`** asks, and
 answers `true` or `false` without raising. Inside the check `x` is a `T`:
 
 ```rux
-let raw = host::read_settings();
+let raw = settings.read();   // a native function giving `any`
 if raw is Settings {
   settings = raw;
 }
@@ -682,7 +752,7 @@ rule rather than matching a known one. Use `keys(m)` and `values(m)` for maps.
 | Call | Does |
 |---|---|
 | `print(x)`, `debug(x)` | Printf-debugging. Reaches the **dev overlay**, not just stderr, because nobody running a GUI is watching stderr |
-| `host::name(…)` | Calls into compiled Rust; `await host::name(…)` inside an `async fn` waits for one registered as asynchronous. See [Async](#async) |
+| `module.name(…)` | A native function, from `use native::module;`. See [Native code](#native-code) |
 | `emit("name")`, `emit("name", payload)` | A component telling its caller something happened |
 | `navigate(path)`, `replace(path)` | Router. `replace` is the only way to redirect: `navigate` leaves the redirecting page in the history, so Back returns to it and redirects again |
 | `back()`, `forward()` | Walk the history |

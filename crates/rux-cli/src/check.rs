@@ -125,7 +125,9 @@ pub fn run(options: Options) -> i32 {
         return 2;
     }
 
-    let mut found = Vec::new();
+    // The app's Rust, read for its signatures before any document that
+    // imports it is loaded; what stops an export is an error where it is.
+    let mut found = crate::native::declare_for(&files);
     let mut tables: Vec<(PathBuf, rux_runtime::TypeTable)> = Vec::new();
     let mut reached: Vec<PathBuf> = Vec::new();
     for file in &files {

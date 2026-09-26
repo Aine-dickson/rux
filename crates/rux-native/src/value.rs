@@ -75,6 +75,13 @@ impl Handle {
         Handle { inner: value, name: T::NAME }
     }
 
+    /// A handle of type `name` over something that is not the resource: what
+    /// a declared, uncompiled export gives. No Rust method can take it, since
+    /// [`Handle::get`] finds no `T` in it.
+    pub(crate) fn placeholder(name: &'static str, value: Arc<dyn std::any::Any + Send + Sync>) -> Handle {
+        Handle { inner: value, name }
+    }
+
     /// Its Rux type's name.
     pub fn type_name(&self) -> &'static str {
         self.name

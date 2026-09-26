@@ -1,0 +1,87 @@
+<template>
+  <screen class="app">
+    <text class="title">A till in Rust</text>
+    <text class="lead">The catalogue, the tax sum and the till are Rust in native/src/shop.rs, exported with #[rux::export]. Settling takes a moment and runs off the UI thread; an empty till refuses, and the Rust error arrives in catch.</text>
+    <view class="shelf">
+      <view class="card" r-for="p in products" r-key="p.id" @tap="add(p)">
+        <text class="name">{{ p.name }}</text>
+        <text class="price">{{ p.price }} + tax = {{ p.withTax(0.2) }}</text>
+        <text class="note" r-if="p?.note">{{ p?.note }}</text>
+      </view>
+    </view>
+    <text class="total">{{ count }} items, {{ total }}</text>
+    <view class="btn" @tap="pay()"><text class="btn-label">settle</text></view>
+    <text class="status">{{ status }}</text>
+  </screen>
+</template>
+
+<style>
+  .app {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    padding: 28px;
+    background: #1e1e2e;
+    font-family: sans-serif;
+    height: 100vh;
+  }
+
+  .title { color: #cdd6f4; font-size: 26px; font-weight: 700; }
+  .lead { color: #9399b2; font-size: 13px; max-width: 620px; }
+  .shelf { display: flex; gap: 14px; flex-wrap: wrap; }
+
+  .card {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 14px;
+    width: 180px;
+    background: #313244;
+    border-radius: 10px;
+    cursor: pointer;
+  }
+
+  .card:hover { background: #45475a; }
+  .name { color: #cdd6f4; font-size: 16px; font-weight: 700; }
+  .price { color: #a6adc8; font-size: 13px; }
+  .note { color: #f9e2af; font-size: 12px; }
+  .total { color: #a6e3a1; font-size: 18px; }
+
+  .btn {
+    padding: 8px 12px;
+    background: #89b4fa;
+    border-radius: 8px;
+    cursor: pointer;
+    align-self: flex-start;
+  }
+
+  .btn-label { color: #11111b; font-size: 13px; font-weight: 700; }
+  .status { color: #f5c2e7; font-size: 14px; }
+</style>
+
+<script>
+  use native::shop;
+  use type native::shop::Product;
+
+  let products: Product[] = shop.catalogue();
+  let till = shop.openTill();
+  let count = signal(0);
+  let total = signal(0.0);
+  let status = signal("");
+
+  fn add(p: Product) {
+    count = till.ring(p);
+    total = till.total();
+  }
+
+  async fn pay() {
+    status = "settling...";
+    try {
+      status = await till.settle();
+      count = 0;
+      total = till.total();
+    } catch e {
+      status = `${e.kind}: ${e.message}`;
+    }
+  }
+</script>

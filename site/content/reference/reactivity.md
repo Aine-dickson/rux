@@ -14,7 +14,7 @@ weight = 5
 - `<script>` is **rhai**, forked as `rux-rhai`. `let x = signal(v)` declares state (numbers coerce to float).
 - `{{ expr }}` interpolation; `r-if` / `r-elif` / `r-else`, `r-for="x in list"`, `r-show`.
 - `@tap="…"` handlers.
-- `host::fn()` calls into compiled Rust (registered in `rux-runtime::build_engine`).
+- `use native::m;` then `m.fn()` calls the app's own compiled Rust, exported with `#[rux::export]` from its `native/` crate. See [Script, Native code](/reference/script/#native-code).
 - `{ key: value }` is a map, as in JavaScript, so `:class="{ active: on }"` and
   `rows.map(r => { id: r.id })` mean what they say. **CHANGED in v0.8**: it used
   to be written `#{ key: value }`, which still works and which `rux fmt` rewrites.
@@ -38,7 +38,7 @@ weight = 5
 > - **A method call does not see the surrounding scope.** `thing.helper()`
 >   cannot reach `level`; `helper(thing)` can. Method dispatch passes its
 >   receiver by reference and the scope cannot be borrowed at the same time.
-> - **Anything heavy still belongs in a `host::` function.** Script is for
+> - **Anything heavy still belongs in Rust**, as a native module. Script is for
 >   describing what the UI does, not for doing work.
 
 **`query(selector)` reads the tree from a handler.** It takes a CSS selector,

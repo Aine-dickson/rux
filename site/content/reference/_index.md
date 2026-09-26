@@ -38,7 +38,9 @@ under [Tooling](/tooling/), along with how to set up the VS Code extension.
 |---|---|
 | `rux-parser` | SFC split + XML-ish template parser (ours) |
 | `rux-style` | lightningcss → our cascade → `Style`; directives; component expansion |
-| `rux-script` | rhai engine (state + handlers) + `host::` registry |
+| `rux-script` | Rux's checker and interpreter (state + handlers), and native modules in the language |
+| `rux-native` | What an app's Rust depends on (as `rux`): `#[rux::export]`, the boundary value, the registry |
+| `rux-bindgen` | Reads an app's `native/` crate for its exports, for the macros and the CLI |
 | `rux-layout` | `Style` → taffy (flex/grid/block) → paint items, hit + focus regions |
 | `rux-text` | parley 0.11 shaping/measure/wrapping + vello 0.9 glyph drawing |
 | `rux-paint` | paint items → vello scene (fills, borders, clips, text) |

@@ -1,0 +1,4 @@
+# What `rux run` and `rux build` generate.
+.rux-build/
+dist/
+native/target/

@@ -175,3 +175,40 @@ fn a_store_against_the_documents_own_state() {
         println!("{what:<24} {a:>12.1} {b:>12.1} {:>7.2}x", b / a);
     }
 }
+
+/// What calling Rust costs (step 8 of `docs/11-next.md`): a synchronous
+/// native function, and a native record's method, against the same work
+/// written as a script `fn`. The difference is the boundary: arguments into
+/// `rux_native::Any`, the registry's code, and the answer back.
+#[test]
+#[ignore]
+fn a_native_call_against_a_script_call() {
+    const N: u32 = 10_000;
+    let add = rux_native::Call::sync(|args| match (&args[0], &args[1]) {
+        (rux_native::Any::Int(a), rux_native::Any::Int(b)) => Ok(rux_native::Any::Int(a + b)),
+        _ => Err(rux_native::Error::new("type", "ints")),
+    });
+    rux_native::Module::new("cost_add")
+        .export(rux_native::Export::function("add", &[("a", "int"), ("b", "int")], "int", add))
+        .install();
+    let script = "let n = signal(0);\nfn plain(a: int, b: int): int { a + b }\n\
+                  fn native_loop() { let i = 0; while i < 1000 { n = cost.add(n, 1); i += 1; } }\n\
+                  fn script_loop() { let i = 0; while i < 1000 { n = plain(n, 1); i += 1; } }\n";
+    let alias = rux_script::link::Alias {
+        local: "cost".into(),
+        target: rux_script::link::Target::Module("native/cost_add".into()),
+        line: 1,
+    };
+    let mut b = Builder::new();
+    b.aliases(vec![alias]);
+    let mut engine: Engine = b.build(script).expect("the engine builds");
+    for (what, handler) in [("script fn call", "script_loop()"), ("native fn call", "native_loop()")] {
+        engine.run_handler(handler);
+        let t = Instant::now();
+        for _ in 0..N / 1000 {
+            engine.run_handler(handler);
+        }
+        let per = t.elapsed().as_nanos() as f64 / N as f64 / 1000.0;
+        println!("{what:<16} {per:>8.3} µs per call (with the loop around it)");
+    }
+}

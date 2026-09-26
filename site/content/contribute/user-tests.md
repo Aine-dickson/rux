@@ -2183,6 +2183,31 @@ and the `with_store` tests).
 | What a module does not allow | a circle, a private name, a type picked without `type`, a pick from a component, a component used in a module, a `computed` in a module, a write from outside | each refused where it is written | under test only |
 | Web and Android | the same examples | the same | not driven: modules are files, and the playground loads one document from text |
 
+## Native modules, 2026-09-27
+
+Step 8 of `docs/11-next.md`. Driven in a desktop window on
+`examples/native-shop`, an app with a `native/` crate (`native/src/shop.rs`:
+a `Product` record with a method, a `Till` resource with a `Result` and an
+`async` method), built with `rux build` and with `rux run`. The harness is
+`rux-harness/native-drive.ps1` (`RUX_EXE` the built app, `RUX_PROC` its
+process name); shots in `rux-harness/step8-shots`. Driven overnight with
+nobody at the machine: the screenshots are what was looked at. Under test in
+`rux-native` (`tests/macros.rs`), `rux-bindgen`, `rux-script`
+(`tests/native.rs`, the checker's native tests) and `rux-runtime`.
+
+| Case | Where | Expect | Result |
+|---|---|---|---|
+| Rust records render, and a Rust method runs in a binding | the app opened | Tea, Bun, Jam with `price + tax = …` from `withTax`; Bun's optional note shown | desktop: pass |
+| An async Rust method runs off the UI thread | "settle" on an empty till | `settling...` at once, the window live, then `TillError: nothing to settle` from the Rust `Err` | desktop: pass |
+| A resource keeps its state across calls | Tea, Bun, Bun | `3 items, 5.9` (whole cents inside, never a float sum) | desktop: pass |
+| Its async method succeeds | "settle" | `settled 3 items for 5.90`, the till back at `0 items, 0` | desktop: pass |
+| `rux run` builds the crate in | `rux run examples/native-shop/app.rux` | the app opens | desktop: pass |
+| A change to the Rust rebuilds and restarts | a fourth product added to `shop.rs` while it runs | the window comes back with Oats, about eight seconds later | desktop: pass |
+| `rux check` knows the Rust without building it | a copy with `shop.catalog()`, `till.rng(p)`, a `float` into a `string`, and a Rust export returning a tuple | each reported where it is, the tuple at its `.rs` line, and nothing compiled | CLI: pass |
+| What cannot cross | `&mut self`, a private field on a value struct, a generic fn, `Rc`, a map keyed by `u32` | each refused at the export with the reason | under test only |
+| Overflow and panics | `u64::MAX` returned, `300` into a `u8`, a panicking export | thrown as `overflow` and `panic`, caught by `catch` | under test only |
+| Web and Android | the same app | the same | not driven: an async export on the web needs `rux::set_spawner`, and no phone this week |
+
 ## Standing gaps
 
 Cases nothing here can currently exercise. They are the shape of what v0.8 has

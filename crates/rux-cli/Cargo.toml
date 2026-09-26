@@ -50,3 +50,6 @@ image.workspace = true
 # this pulls the parser and not a proc-macro build: the manifest is one
 # four-key table, and compile time is something this milestone is judged on.
 toml = "0.9"
+# Reads an app's native/ crate for its exports, without building it: the same
+# reader the #[rux::export] macro uses. docs/11-next.md, step 8.
+rux-bindgen.workspace = true

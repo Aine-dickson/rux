@@ -1,0 +1,4 @@
+[app]
+name = "Native Shop"
+id = "dev.ruxlang.examples.nativeshop"
+version = "0.1.0"

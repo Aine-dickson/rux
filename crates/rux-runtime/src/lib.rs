@@ -5964,13 +5964,7 @@ fn splice(script: &str, mut edits: Vec<(rux_syntax::Span, String)>) -> String {
     out
 }
 
-/// Build the script engine and register host functions (the native-capability
-/// boundary; a real app registers its own here).
-fn build_engine(script: &str) -> Result<Engine, rux_script::ScriptError> {
-    build_engine_linked(script, &[], Vec::new(), Vec::new())
-}
-
-/// [`build_engine`], with script modules linked in, in the order their top
+/// Build the script engine, with script modules linked in, in the order their top
 /// levels run, and what the document imports from them.
 fn build_engine_linked(
     script: &str,

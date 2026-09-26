@@ -257,8 +257,14 @@ pub fn install(m: Module) -> Result<(), String> {
     Ok(())
 }
 
-/// Declare `i` with no code, as read from source, unless a module of its
-/// name is installed.
+/// Declare `i` as read from source, with no code of its own, unless a module
+/// of its name is installed.
+///
+/// What checks a document without building its Rust (`rux check`) still runs
+/// the document's top level, which may call it. Each export then answers the
+/// empty value of its declared type (`0`, `""`, `none`, `[]`, a record of
+/// those, a placeholder resource), and never runs the app's Rust: nothing
+/// that only reads a project executes code from it.
 pub fn declare(i: Interface) -> Result<(), String> {
     if let Some(e) = clash(&i) {
         return Err(e);
@@ -268,8 +274,62 @@ pub fn declare(i: Interface) -> Result<(), String> {
     if all.get(&name).is_some_and(|e| e.compiled) {
         return Ok(());
     }
-    all.insert(name, Entry { module: Module { interface: i, calls: HashMap::new() }, compiled: false });
+    let mut calls = HashMap::new();
+    for item in &i.items {
+        let (ItemKind::Fn(sig) | ItemKind::Method { sig, .. }) = &item.kind else { continue };
+        let empty = empty_of(&sig.result, &i);
+        let call = if sig.is_async {
+            Call::future(move |_| {
+                let v = empty.clone();
+                async move { Ok(v) }
+            })
+        } else {
+            Call::sync(move |_| Ok(empty.clone()))
+        };
+        calls.insert(item.key(), call);
+    }
+    all.insert(name, Entry { module: Module { interface: i, calls }, compiled: false });
     Ok(())
+}
+
+/// A resource that stands in for one a declared export would give.
+struct Placeholder;
+
+/// The empty value of type text `ty`, reading the module's own types.
+fn empty_of(ty: &str, i: &Interface) -> Any {
+    let ty = ty.trim();
+    if ty.ends_with('?') || matches!(ty, "void" | "any") {
+        return Any::None;
+    }
+    if ty.ends_with("[]") || ty.starts_with("Array<") {
+        return Any::Array(Vec::new());
+    }
+    if ty.starts_with("Map<") {
+        return Any::Map(BTreeMap::new());
+    }
+    match ty {
+        "int" => return Any::Int(0),
+        "float" => return Any::Float(0.0),
+        "string" => return Any::Str(String::new()),
+        "bool" => return Any::Bool(false),
+        _ => {}
+    }
+    match i.items.iter().find(|it| it.name == ty).map(|it| &it.kind) {
+        Some(ItemKind::Record(fields)) => Any::Map(
+            fields
+                .iter()
+                .filter(|f| !f.optional)
+                .map(|f| (f.name.clone(), if f.ty == ty { Any::None } else { empty_of(&f.ty, i) }))
+                .collect(),
+        ),
+        Some(ItemKind::Resource) => {
+            // The type's name is kept for as long as the process: a checker
+            // declares a module's few types once.
+            let name: &'static str = Box::leak(ty.to_string().into_boxed_str());
+            Any::Resource(crate::value::Handle::placeholder(name, Arc::new(Placeholder)))
+        }
+        _ => Any::None,
+    }
 }
 
 /// Forget every declared module (not the installed ones): a checker reading

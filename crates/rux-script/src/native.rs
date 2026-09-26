@@ -168,6 +168,11 @@ pub fn method_for_value(v: &V, name: &str) -> Option<String> {
     }
 }
 
+/// Whether any native type has a method called `name`.
+pub fn has_method_named(name: &str) -> bool {
+    registry::all().iter().any(|i| i.items.iter().any(|it| matches!(it.kind, ItemKind::Method { .. }) && it.name == name))
+}
+
 /// Whether native type `on` has any methods, for a message about one it
 /// does not have.
 pub fn methods_of(on: &str) -> Vec<String> {

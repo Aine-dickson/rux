@@ -33,6 +33,7 @@ mod files;
 mod fmt;
 mod icon;
 mod manifest;
+mod native;
 mod new;
 mod vocab;
 mod web;
@@ -122,6 +123,7 @@ fn main() -> ExitCode {
         Some("fmt") => ExitCode::from(format(&args[1..]) as u8),
         Some("new") => ExitCode::from(new::create(&args[1..]) as u8),
         Some("vocab") => ExitCode::from(vocab::emit() as u8),
+        Some("native") => ExitCode::from(native::print(&args[1..]) as u8),
         Some("doctor") => ExitCode::from(android::doctor() as u8),
         Some("build") => build_command(&args[1..]),
         // Checked before a path is resolved, because running on a device is not
@@ -364,6 +366,14 @@ fn run(path: PathBuf, args: &[String]) -> ExitCode {
             profile.safe_area.bottom,
             profile.safe_area.left,
         );
+    }
+    // An app with Rust of its own runs as a build of itself, since the Rust
+    // has to be compiled in; its documents still hot reload from disk.
+    if let Some(native) = native::find_above(&path) {
+        if route.is_some() || preview.is_some() {
+            eprintln!("rux: `--route` and `--preview` are not passed to an app with a native/ crate yet");
+        }
+        return native::run(&path, &native);
     }
     rux_shell::run_previewing(path, route, preview);
     ExitCode::SUCCESS

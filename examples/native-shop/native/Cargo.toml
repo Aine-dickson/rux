@@ -1,0 +1,10 @@
+[package]
+name = "native-shop"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+# What every app's native/ crate depends on, under the name `rux`. An app
+# outside this repository writes a version: rux = { package = "rux-native", version = "0.8" }
+rux = { package = "rux-native", path = "../../../crates/rux-native" }
