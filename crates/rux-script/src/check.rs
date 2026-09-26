@@ -142,6 +142,78 @@ pub struct Table {
     pub guesses: Vec<Guess>,
 }
 
+/// What the checker settled about each expression of one parse, for the
+/// typed IR (step 4 of `docs/11-next.md`). Keyed by [`ExprId`]'s number,
+/// except [`Types::decl`], which is keyed by where the name is written.
+#[derive(Clone, Debug, Default)]
+pub struct Types {
+    /// The type each expression has where it stands, narrowing applied: `t`
+    /// inside `if t != none` is not `none`. The first answer given outside a
+    /// trial is the one kept; a trial (a union member tried quietly) keeps
+    /// nothing.
+    pub of: HashMap<u32, Type>,
+    /// Where an expression was checked against a type it had to fit, that
+    /// type. Where the two differ, a conversion happens: an `int` widened to a
+    /// `float`, an `any` checked on its way into typed code.
+    pub want: HashMap<u32, Type>,
+    /// The type a declared name is bound to (a `let`, a parameter, a loop
+    /// variable, a closure's parameter), by the start of its name's span.
+    pub decl: HashMap<u32, Type>,
+}
+
+/// A template piece as the checker read it.
+#[derive(Clone, Debug)]
+pub struct Piece {
+    pub src: String,
+    /// The file line it is written on.
+    pub line: usize,
+    /// What it is, as the checker names it in a finding: `:disabled on <button>`.
+    pub what: String,
+    pub script: Script,
+    pub types: Types,
+}
+
+/// Everything the checker settled, for the typed IR: [`check_typed`].
+#[derive(Clone, Debug, Default)]
+pub struct Record {
+    /// The script's own expressions.
+    pub script: Types,
+    /// Every template piece, in the order the checker reached them.
+    pub pieces: Vec<Piece>,
+    /// Each function's parameters and result as checked, by name and arity.
+    /// A result that was not written is the one inferred from the body.
+    pub fns: HashMap<(String, usize), (Vec<Type>, Type)>,
+    /// Every type the script can name, declared, imported or built in, with
+    /// its type parameters.
+    pub types: HashMap<String, (Vec<String>, Type)>,
+}
+
+/// [`check`], also keeping what it settled about every expression. What the
+/// typed IR is built from.
+pub fn check_typed(script: &Script, src: &str, cx: &Context) -> (Vec<Finding>, Record) {
+    let mut checker = Checker::new(script, src, cx);
+    checker.typed = true;
+    checker.run();
+    let mut record = std::mem::take(&mut checker.rec);
+    record.script = std::mem::take(&mut checker.cur);
+    for (key, info) in &checker.fns {
+        let params = info.params.iter().map(|(_, t)| t.clone().unwrap_or(Type::Any)).collect();
+        let result = match (&info.result, &info.state) {
+            (Some(t), _) | (None, FnState::Done(t)) => t.clone(),
+            _ => Type::Any,
+        };
+        record.fns.insert(key.clone(), (params, result));
+    }
+    for (name, ty) in &checker.types {
+        let params = checker.type_params.get(name).cloned().unwrap_or_default();
+        record.types.insert(name.clone(), (params, ty.clone()));
+    }
+    let mut findings = checker.findings;
+    findings.sort_by_key(|f| f.line);
+    findings.dedup();
+    (findings, record)
+}
+
 /// Check `script`, whose text is `src`, against its own annotations and the
 /// [`Context`].
 pub fn check(script: &Script, src: &str, cx: &Context) -> Vec<Finding> {
@@ -253,7 +325,20 @@ struct Checker<'a> {
     seen: Vec<Seen>,
     /// What each unannotated parameter was handed, by function and position.
     given: HashMap<(String, usize), Vec<(usize, Type)>>,
+    /// Whether to keep what each expression is, for [`check_typed`].
+    typed: bool,
+    /// What is kept, for the parse being checked: the script's, or the
+    /// template piece's while one is.
+    cur: Types,
+    rec: Record,
+    /// While positive, nothing is kept: a text is being read again for what
+    /// it establishes, outside the piece it belongs to.
+    rec_off: usize,
 }
+
+/// The id of an expression the checker makes up itself, as `x++` is checked
+/// as `x += 1`: nothing is kept about one.
+const SYNTHETIC: u32 = u32::MAX;
 
 /// How deep a type is unfolded before giving up, so a recursive type such as
 /// `type Tree = { kids: Tree[] }` cannot send assignability round forever.
@@ -286,6 +371,10 @@ impl<'a> Checker<'a> {
             record: false,
             seen: Vec::new(),
             given: HashMap::new(),
+            typed: false,
+            cur: Types::default(),
+            rec: Record::default(),
+            rec_off: 0,
         }
     }
 
@@ -643,8 +732,16 @@ impl<'a> Checker<'a> {
 
     // ----- Templates -------------------------------------------------------
 
-    /// Run `f` with `src` as the text spans point into.
+    /// Run `f` with `src` as the text spans point into, keeping nothing of
+    /// what it finds: the text has been read as a piece already.
     fn in_source<T>(&mut self, src: &str, f: impl FnOnce(&mut Self) -> T) -> T {
+        self.rec_off += 1;
+        let out = self.with_source(src, f);
+        self.rec_off -= 1;
+        out
+    }
+
+    fn with_source<T>(&mut self, src: &str, f: impl FnOnce(&mut Self) -> T) -> T {
         let saved = std::mem::replace(&mut self.source, Source::new(src));
         let out = f(self);
         self.source = saved;
@@ -653,10 +750,61 @@ impl<'a> Checker<'a> {
 
     /// Run `f` as the template piece `what`, written on file line `line`.
     fn in_piece<T>(&mut self, src: &str, line: usize, what: &str, f: impl FnOnce(&mut Self) -> T) -> T {
+        self.in_piece_of(src, None, line, what, f)
+    }
+
+    /// [`Checker::in_piece`] for the piece `script` parsed from `src`, which is
+    /// kept for the typed IR with what was settled about it.
+    fn in_piece_of<T>(
+        &mut self,
+        src: &str,
+        script: Option<&Script>,
+        line: usize,
+        what: &str,
+        f: impl FnOnce(&mut Self) -> T,
+    ) -> T {
         let saved = self.in_template.replace((line, what.to_string()));
-        let out = self.in_source(src, f);
+        let outer = std::mem::take(&mut self.cur);
+        let out = self.with_source(src, f);
+        let types = std::mem::replace(&mut self.cur, outer);
+        if let (true, Some(script)) = (self.typed, script) {
+            self.rec.pieces.push(Piece {
+                src: src.to_string(),
+                line,
+                what: what.to_string(),
+                script: script.clone(),
+                types,
+            });
+        }
         self.in_template = saved;
         out
+    }
+
+    // ----- Keeping types, for the IR ---------------------------------------
+
+    fn keeping(&self) -> bool {
+        self.typed && self.quiet == 0 && self.rec_off == 0
+    }
+
+    /// Keep that `e` is `ty` where it stands, unless it was said already.
+    fn note(&mut self, e: &Expr, ty: &Type) {
+        if self.keeping() && e.id.0 != SYNTHETIC {
+            self.cur.of.entry(e.id.0).or_insert_with(|| ty.clone());
+        }
+    }
+
+    /// Keep that `e` had to fit `want`.
+    fn note_want(&mut self, e: &Expr, want: &Type) {
+        if self.keeping() && e.id.0 != SYNTHETIC {
+            self.cur.want.entry(e.id.0).or_insert_with(|| want.clone());
+        }
+    }
+
+    /// Keep that the name written at `at` is bound to `ty`.
+    fn note_decl(&mut self, at: Span, ty: &Type) {
+        if self.keeping() {
+            self.cur.decl.entry(at.start).or_insert_with(|| ty.clone());
+        }
     }
 
     /// A piece of the template, parsed. `None` when it does not parse, which
@@ -677,7 +825,7 @@ impl<'a> Checker<'a> {
         match item {
             Tpl::Expr { src, want, line, what } => {
                 let Some(piece) = Self::parse_piece(src) else { return };
-                self.in_piece(src, *line, what, |c| match (Self::piece_expr(&piece), want) {
+                self.in_piece_of(src, Some(&piece), *line, what, |c| match (Self::piece_expr(&piece), want) {
                     (Some(e), Some(want)) => c.check_expr(e, want),
                     (Some(e), None) => {
                         c.infer(e);
@@ -689,7 +837,7 @@ impl<'a> Checker<'a> {
             }
             Tpl::Handler { src, event, line, what } => {
                 let Some(piece) = Self::parse_piece(src) else { return };
-                self.in_piece(src, *line, what, |c| {
+                self.in_piece_of(src, Some(&piece), *line, what, |c| {
                     c.with_scope(|c| {
                         c.bind("event", event.clone());
                         c.check_statements(&piece.stmts);
@@ -699,7 +847,7 @@ impl<'a> Checker<'a> {
             Tpl::Model { src, writes, shows, line, what } => {
                 let Some(piece) = Self::parse_piece(src) else { return };
                 let Some(e) = Self::piece_expr(&piece) else { return };
-                self.in_piece(src, *line, what, |c| {
+                self.in_piece_of(src, Some(&piece), *line, what, |c| {
                     let held = c.infer(e);
                     if c.resolve(&held) == Type::Any {
                         return;
@@ -735,7 +883,7 @@ impl<'a> Checker<'a> {
             Tpl::For { var, src, line, body } => {
                 let Some(piece) = Self::parse_piece(src) else { return };
                 let Some(e) = Self::piece_expr(&piece) else { return };
-                let element = self.in_piece(src, *line, "`r-for`", |c| {
+                let element = self.in_piece_of(src, Some(&piece), *line, "`r-for`", |c| {
                     let ty = c.infer(e);
                     c.element_of(e, &ty)
                 });
@@ -754,7 +902,8 @@ impl<'a> Checker<'a> {
                     let cond = piece.as_ref().and_then(|(src, p)| Some((*src, Self::piece_expr(p)?)));
                     let facts = match cond {
                         Some((src, e)) => self.with_facts(earlier.clone(), |c| {
-                            c.in_piece(src, *line, "the condition", |c| {
+                            let script = piece.as_ref().map(|(_, p)| p);
+                            c.in_piece_of(src, script, *line, "the condition", |c| {
                                 c.infer(e);
                             });
                             c.in_source(src, |c| c.facts_of(e, true))
@@ -1396,7 +1545,7 @@ impl<'a> Checker<'a> {
                 let value = match value {
                     Some(v) => v,
                     None => {
-                        unit = Expr { kind: ExprKind::Unit, span: name.span };
+                        unit = Expr { id: ExprId(SYNTHETIC), kind: ExprKind::Unit, span: name.span };
                         &unit
                     }
                 };
@@ -1410,7 +1559,7 @@ impl<'a> Checker<'a> {
             }
             // `count++`, which is `count += 1`.
             StmtKind::Step { target, up } => {
-                let one = Expr { kind: ExprKind::Int(1), span: target.span };
+                let one = Expr { id: ExprId(SYNTHETIC), kind: ExprKind::Int(1), span: target.span };
                 let op_at = Span::at(target.span.end as usize);
                 self.assign(target, if *up { "+=" } else { "-=" }, &one, op_at);
                 Type::Null
@@ -1459,8 +1608,10 @@ impl<'a> Checker<'a> {
                 }
                 self.with_scope(|c| {
                     c.add_facts(facts);
+                    c.note_decl(var.span, &item);
                     c.bind(&var.name, item);
                     if let Some(counter) = counter {
+                        c.note_decl(counter.span, &Type::Int);
                         c.bind(&counter.name, Type::Int);
                     }
                     c.check_statements(&body.stmts);
@@ -1472,6 +1623,7 @@ impl<'a> Checker<'a> {
                 self.check_block(body);
                 self.with_scope(|c| {
                     if let Some(v) = var {
+                        c.note_decl(v.span, &Type::Any);
                         c.bind(&v.name, Type::Any);
                     }
                     c.check_statements(&catch.stmts);
@@ -1516,16 +1668,37 @@ impl<'a> Checker<'a> {
                 Type::Null
             }
             StmtKind::Export(Export::Let(inner)) => self.check_stmt(inner),
+            // A file's own declarations, which reach the checker when it is
+            // handed the whole file (`check_typed`). The runtime's script has
+            // them taken out already.
+            StmtKind::Computed { name, ty, value } => {
+                self.check_let(name, ty.as_ref(), value);
+                Type::Null
+            }
+            StmtKind::Lifecycle { body, .. } => {
+                self.check_block(body);
+                Type::Null
+            }
+            StmtKind::Prop(decls) => {
+                for d in decls {
+                    match &d.default {
+                        Some(default) => self.check_let(&d.name, d.ty.as_ref(), default),
+                        None => {
+                            let ty = d.ty.as_ref().and_then(|t| self.annotation(t).ok()).unwrap_or(Type::Any);
+                            self.note_decl(d.name.span, &ty);
+                            self.bind(&d.name.name, ty);
+                        }
+                    }
+                }
+                Type::Null
+            }
             StmtKind::Empty
             | StmtKind::Continue
             | StmtKind::Fn(_)
             | StmtKind::Type { .. }
             | StmtKind::Import { .. }
             | StmtKind::Export(Export::Name { .. })
-            | StmtKind::Use(_)
-            | StmtKind::Computed { .. }
-            | StmtKind::Lifecycle { .. }
-            | StmtKind::Prop(_) => Type::Null,
+            | StmtKind::Use(_) => Type::Null,
         }
     }
 
@@ -1615,6 +1788,10 @@ impl<'a> Checker<'a> {
             );
         }
 
+        // A case's values are constants, typed for the IR's sake.
+        for p in sw.arms.iter().flat_map(|a| &a.patterns) {
+            self.infer(p);
+        }
         let mut out = Vec::new();
         for (i, arm) in sw.arms.iter().enumerate() {
             let matched = if default == Some(i) { Some(&unhandled) } else { arm_members.get(&i) };
@@ -1677,12 +1854,14 @@ impl<'a> Checker<'a> {
         if let Some((_, ty)) = self.cx.placeholders.iter().find(|(n, _)| n == name) {
             let ty = ty.clone().unwrap_or(Type::Any);
             self.saw(pos, "let", name, Some(name), &ty);
+            self.note_decl(pos, &ty);
             self.bind(name, ty);
             return;
         }
         if let Some(ty) = ty.and_then(|t| self.annotation(t).ok()) {
             self.check_expr(value, &ty);
             self.saw(pos, "let", name, Some(name), &ty);
+            self.note_decl(pos, &ty);
             self.bind(name, ty);
             return;
         }
@@ -1715,10 +1894,12 @@ impl<'a> Checker<'a> {
             };
             self.warn(pos, hint);
             self.saw(pos, "let", name, Some(name), &Type::Any);
+            self.note_decl(pos, &Type::Any);
             self.bind(name, Type::Any);
             return;
         }
         self.saw(pos, "let", name, Some(name), &ty);
+        self.note_decl(pos, &ty);
         self.bind(name, ty);
     }
 
@@ -1726,33 +1907,43 @@ impl<'a> Checker<'a> {
 
     /// Check `e` where a `want` is expected, reporting it if it does not fit.
     fn check_expr(&mut self, e: &Expr, want: &Type) {
+        self.note_want(e, want);
         let resolved = self.resolve(want);
         if resolved == Type::Any {
             self.infer(e);
             return;
         }
         match &e.kind {
-            ExprKind::Int(_) if self.accepts_int(&resolved) => {}
+            ExprKind::Int(_) if self.accepts_int(&resolved) => self.note(e, &Type::Int),
             ExprKind::Call { callee, args, .. } if is_named(callee, "signal") && args.len() == 1 => {
                 self.check_expr(&args[0], want);
+                self.note(e, want);
             }
             // A negative whole number written as `-` applied to one.
-            ExprKind::Unary { op: "-", expr } if matches!(expr.kind, ExprKind::Int(_)) && self.accepts_int(&resolved) => {}
+            ExprKind::Unary { op: "-", expr } if matches!(expr.kind, ExprKind::Int(_)) && self.accepts_int(&resolved) => {
+                self.note(expr, &Type::Int);
+                self.note(e, &Type::Int);
+            }
             ExprKind::Array(items) => match self.array_member(&resolved) {
                 Some(item) => {
                     for i in items.iter() {
                         self.check_expr(i, &item);
                     }
+                    self.note(e, &Type::Array(Box::new(item)));
                 }
                 None => self.mismatch(e, e.span, want),
             },
-            ExprKind::Map { entries, .. } => self.check_map(entries, e.span, want, &resolved),
+            ExprKind::Map { entries, .. } => {
+                self.check_map(entries, e.span, want, &resolved);
+                self.note(e, want);
+            }
             ExprKind::Closure { .. } => {
                 let expected = match &resolved {
                     Type::Function(p, r) => Some((p.clone(), (**r).clone())),
                     _ => None,
                 };
                 let got = self.closure(e, expected);
+                self.note(e, &got);
                 if !self.assignable(&got, want) {
                     self.mismatch_ty(self.at(e), &got, want);
                 }
@@ -1760,6 +1951,7 @@ impl<'a> Checker<'a> {
             ExprKind::Stmt(s) => {
                 // A block used as a value: its last statement is the value.
                 let got = self.stmt_value(s);
+                self.note(e, &got);
                 if !self.assignable(&got, want) {
                     self.mismatch_ty(self.at(e), &got, want);
                 }
@@ -1917,6 +2109,12 @@ impl<'a> Checker<'a> {
 
     /// The type of `e`.
     fn infer(&mut self, e: &Expr) -> Type {
+        let ty = self.infer_here(e);
+        self.note(e, &ty);
+        ty
+    }
+
+    fn infer_here(&mut self, e: &Expr) -> Type {
         match &e.kind {
             ExprKind::Closure { .. } => self.closure(e, None),
             ExprKind::Bool(_) => Type::Bool,
@@ -1995,9 +2193,16 @@ impl<'a> Checker<'a> {
                 }
                 Type::Bool
             }
-            // The body runs later, as its own script.
-            ExprKind::Interval { args, .. } => {
+            // The body runs later, as its own script: checked as that script,
+            // with the file's names and none of the locals around it, and
+            // knowing nothing a condition here established.
+            ExprKind::Interval { args, body } => {
                 self.infer_all(args);
+                let scopes = std::mem::take(&mut self.scopes);
+                let facts = std::mem::replace(&mut self.facts, vec![HashMap::new()]);
+                self.check_block(body);
+                self.scopes = scopes;
+                self.facts = facts;
                 Type::Int
             }
         }
@@ -2017,15 +2222,42 @@ impl<'a> Checker<'a> {
                     let more = self.with_facts(known.clone(), |c| c.facts_of(i, truth));
                     known.extend(more);
                 }
+                // `a && b && c` is read as one list, so the `a && b` inside it
+                // is never inferred on its own.
+                let mut inner = vec![lhs, rhs];
+                while let Some(x) = inner.pop() {
+                    if let ExprKind::Binary { op: o, lhs, rhs } = &x.kind {
+                        if *o == op {
+                            self.note(x, &Type::Bool);
+                            inner.extend([&**lhs, &**rhs]);
+                        }
+                    }
+                }
                 Type::Bool
             }
             "??" => {
                 let items = operands(e, op);
                 let n = items.len();
                 let mut out = Vec::new();
+                let mut raw = Vec::new();
                 for (i, item) in items.into_iter().enumerate() {
                     let t = self.infer(item);
+                    raw.push(t.clone());
                     out.push(if i + 1 < n { without_null(&self.resolve(&t)) } else { t });
+                }
+                // The `a ?? b` inside `a ?? b ?? c`, which is read as one
+                // list: each is what its own operands make.
+                let ids: Vec<u32> = operands(e, op).iter().map(|o| o.id.0).collect();
+                let mut inner = vec![lhs, rhs];
+                while let Some(x) = inner.pop() {
+                    let ExprKind::Binary { op: "??", lhs: l, rhs: r } = &x.kind else { continue };
+                    let own = operands(x, op);
+                    let at = |o: &Expr| ids.iter().position(|i| *i == o.id.0).map(|i| raw[i].clone()).unwrap_or(Type::Any);
+                    let mut parts: Vec<Type> =
+                        own[..own.len() - 1].iter().map(|o| without_null(&self.resolve(&at(o)))).collect();
+                    parts.push(at(own[own.len() - 1]));
+                    self.note(x, &Type::union(parts));
+                    inner.extend([&**l, &**r]);
                 }
                 Type::union(out)
             }
@@ -2063,7 +2295,9 @@ impl<'a> Checker<'a> {
             _ => return (self.infer(e), path_of(e), false),
         };
         let (base_ty, path, short) = if is_step(base) {
-            self.chain(base)
+            let (ty, path, short) = self.chain(base);
+            self.note(base, &ty);
+            (ty, path, short)
         } else {
             (self.infer(base), path_of(base), false)
         };
@@ -2774,6 +3008,9 @@ impl<'a> Checker<'a> {
         // Typed means every parameter annotated, which a function with none is.
         let typed = info.params.iter().all(|(_, t)| t.is_some());
         self.in_fn.push((name.to_string(), typed));
+        for (p, (_, t)) in info.def.params.iter().zip(&info.params) {
+            self.note_decl(p.name.span, t.as_ref().unwrap_or(&Type::Any));
+        }
         self.scopes.push(
             info.params.iter().map(|(p, t)| (p.clone(), t.clone().unwrap_or(Type::Any))).collect(),
         );
@@ -2841,6 +3078,7 @@ impl<'a> Checker<'a> {
                     Type::Any
                 }
             };
+            self.note_decl(p.name.span, &ty);
             params.push((name.clone(), ty));
         }
 
@@ -2867,7 +3105,9 @@ impl<'a> Checker<'a> {
                 self.error(e.span, message);
             }
         }
-        Type::Function(params.into_iter().map(|(_, t)| t).collect(), Box::new(widen(&result)))
+        let ty = Type::Function(params.into_iter().map(|(_, t)| t).collect(), Box::new(widen(&result)));
+        self.note(e, &ty);
+        ty
     }
 
     // ----- Methods ---------------------------------------------------------
@@ -3311,6 +3551,23 @@ fn edit_distance(a: &str, b: &str) -> usize {
     d[a.len()][b.len()]
 }
 
+/// The expressions of `script` that [`Types::of`] says nothing about, as their
+/// line in `src` and their text. What the typed IR cannot be built from until
+/// it is empty: see step 4 of `docs/11-next.md`.
+pub fn untyped(script: &Script, src: &str, types: &Types) -> Vec<(usize, String)> {
+    let lines = LineIndex::new(src);
+    let mut out = Vec::new();
+    rux_syntax::visit::exprs(script, &mut |e| {
+        if !types.of.contains_key(&e.id.0) {
+            let line = lines.line_col(src, e.span.start as usize).0;
+            let text: String = e.span.text(src).chars().take(60).collect();
+            out.push((line, text));
+        }
+        true
+    });
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3338,6 +3595,42 @@ mod tests {
     fn one_error(src: &str, part: &str) {
         let e = errors(src);
         assert!(e.iter().any(|m| m.contains(part)), "wanted an error with {part:?} in\n{src}\ngot {e:?}");
+    }
+
+    /// What [`check_typed`] leaves without a type in `src`.
+    fn untyped_in(src: &str) -> Vec<(usize, String)> {
+        let engine = Builder::new().build(src).unwrap_or_else(|e| panic!("{src}\n{e:?}"));
+        let (_, record) = engine.check_types_typed(None, &Context::default());
+        let (script, text) = engine.parsed();
+        untyped(script, text, &record.script)
+    }
+
+    #[test]
+    fn every_expression_is_given_a_type() {
+        let src = format!(
+            "{TASK}\
+             let tasks: Task[] = signal([]);\n\
+             let n = signal(0);\n\
+             let total: float = 1;\n\
+             let label = `n is ${{n + 1}}`;\n\
+             fn first<T>(items: T[]): T? {{ items?[0] }}\n\
+             fn open(): Task[] {{ tasks.filter(t => !t.done) }}\n\
+             fn bump() {{\n\
+               n++;\n\
+               n += 2;\n\
+               let t = first(tasks);\n\
+               if t != none && t.note?.length > 0 {{ print(t.title); }}\n\
+               for i in 0..n {{ total = total + i.toFloat(); }}\n\
+               let s = switch n {{ 1 => \"one\", _ => \"many\" }};\n\
+               let m = {{ a: 1, b: [1, 2.5] }};\n\
+               let k = if n > 2 {{ -1 }} else {{ m.a }};\n\
+               let x = tasks.map(t => t.id).reduce((a, b) => a + b, 0);\n\
+               let y = n is int;\n\
+               let r = parseInt(\"3\") ?? 0;\n\
+             }}\n"
+        );
+        let missing = untyped_in(&src);
+        assert!(missing.is_empty(), "{missing:#?}");
     }
 
     #[test]

@@ -155,8 +155,29 @@ pub struct Param {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Expr {
+    /// Which expression of its parse this is. See [`ExprId`].
+    pub id: ExprId,
     pub kind: ExprKind,
     pub span: Span,
+}
+
+/// An expression's identity within one parse: a script, a handler or a
+/// binding each number their own from 0. What the type checker records its
+/// findings against, so the typed IR (step 4 of `docs/11-next.md`) can be
+/// built from the tree and the record without re-deriving either. A span is
+/// not enough: `(a)` and `a` share one, and so do an `if` and the statement
+/// it is the value of.
+///
+/// **Two ids always compare equal.** An id is identity, not structure, and
+/// two trees are equal when they say the same thing: `a` parsed alone and
+/// `a` parsed inside `(a)` are equal trees with different ids.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ExprId(pub u32);
+
+impl PartialEq for ExprId {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]

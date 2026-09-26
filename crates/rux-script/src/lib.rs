@@ -1964,6 +1964,29 @@ impl Engine {
         check::check_recording(&self.script, &self.source, &cx, record)
     }
 
+    /// [`Engine::check_types`], also keeping what the checker settled about
+    /// every expression, for the typed IR. See [`check::check_typed`].
+    ///
+    /// `script`, with its text, is what is checked: the engine's own when
+    /// `None`. The runtime hands in the file's whole script, with the
+    /// `computed`, `effect`, `prop` and lifecycle declarations it takes out of
+    /// the engine's.
+    pub fn check_types_typed(
+        &self,
+        script: Option<(&rux_syntax::ast::Script, &str)>,
+        cx: &check::Context,
+    ) -> (Vec<check::Finding>, check::Record) {
+        let mut cx = cx.clone();
+        cx.host.extend(self.host_types.iter().cloned());
+        let (script, src) = script.unwrap_or((&self.script, &self.source));
+        check::check_typed(script, src, &cx)
+    }
+
+    /// The script as Rux's parser read it, and its text.
+    pub fn parsed(&self) -> (&rux_syntax::ast::Script, &str) {
+        (&self.script, &self.source)
+    }
+
     /// The `type` declarations in `script`, as name and text, for another file
     /// that imports them with `use`. A script that does not compile declares
     /// nothing here; its own load says why.

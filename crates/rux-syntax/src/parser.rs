@@ -46,6 +46,8 @@ pub(crate) struct Parser<'t> {
     /// While a type is read: the `>>` here has had its first `>` taken, by
     /// the inner of two type argument lists it closes (`Map<string, Page<T>>`).
     half_gt: bool,
+    /// The id the next expression gets. See [`ExprId`].
+    next: std::cell::Cell<u32>,
 }
 
 impl<'t> Parser<'t> {
@@ -62,7 +64,14 @@ impl<'t> Parser<'t> {
             vars: Vec::new(),
             fns: Vec::new(),
             half_gt: false,
+            next: std::cell::Cell::new(0),
         }
+    }
+
+    fn next_id(&self) -> ExprId {
+        let id = self.next.get();
+        self.next.set(id + 1);
+        ExprId(id)
     }
 
     // ----- the token stream ---------------------------------------------
@@ -874,14 +883,14 @@ impl<'t> Parser<'t> {
                     },
                     ("-", ExprKind::Float(f)) => ExprKind::Float(-f),
                     ("+", k @ (ExprKind::Int(_) | ExprKind::Float(_))) => k,
-                    (op, kind) => ExprKind::Unary { op, expr: Box::new(Expr { kind, span: operand.span }) },
+                    (op, kind) => ExprKind::Unary { op, expr: Box::new(Expr { id: self.next_id(), kind, span: operand.span }) },
                 };
-                Ok(Expr { kind, span })
+                Ok(Expr { id: self.next_id(), kind, span })
             }
             Tok::Punct("!") => {
                 self.bump();
                 let operand = self.unary()?;
-                Ok(Expr { span: start.to(operand.span), kind: ExprKind::Unary { op: "!", expr: Box::new(operand) } })
+                Ok(Expr { id: self.next_id(), span: start.to(operand.span), kind: ExprKind::Unary { op: "!", expr: Box::new(operand) } })
             }
             Tok::Eof => self.error("the expression ends too soon"),
             _ => self.primary(),
@@ -930,17 +939,17 @@ impl<'t> Parser<'t> {
 
             if op_tok.is_reserved("is") {
                 let ty = self.take_type("`is`")?;
-                root = Expr { span: root.span.to(ty.span), kind: ExprKind::Is { expr: Box::new(root), ty } };
+                root = Expr { id: self.next_id(), span: root.span.to(ty.span), kind: ExprKind::Is { expr: Box::new(root), ty } };
                 continue;
             }
 
             let rhs = match (&op_tok, self.peek()) {
                 (Tok::Punct("??"), Tok::Kw("break" | "continue" | "return" | "throw")) => {
                     let s = self.stmt()?;
-                    Expr { span: s.span, kind: ExprKind::Stmt(Box::new(s)) }
+                    Expr { id: self.next_id(), span: s.span, kind: ExprKind::Stmt(Box::new(s)) }
                 }
                 (Tok::Punct(".." | "..="), Tok::Punct("]" | ")" | "}" | "," | ";" | "=>")) => {
-                    Expr { kind: ExprKind::Unit, span: Span::at(self.span().start as usize) }
+                    Expr { id: self.next_id(), kind: ExprKind::Unit, span: Span::at(self.span().start as usize) }
                 }
                 _ => self.unary()?,
             };
@@ -955,7 +964,7 @@ impl<'t> Parser<'t> {
                 _ => unreachable!("a binary operator is punctuation or `in`"),
             };
             let _ = op_span;
-            root = Expr { span: root.span.to(rhs.span), kind: ExprKind::Binary { op, lhs: Box::new(root), rhs: Box::new(rhs) } };
+            root = Expr { id: self.next_id(), span: root.span.to(rhs.span), kind: ExprKind::Binary { op, lhs: Box::new(root), rhs: Box::new(rhs) } };
         }
     }
 
@@ -972,34 +981,34 @@ impl<'t> Parser<'t> {
             Tok::Ident(_) | Tok::Punct("()") | Tok::Punct("(") if arrow => return self.arrow(),
             Tok::Punct("()") => {
                 self.bump();
-                Expr { kind: ExprKind::Unit, span: start }
+                Expr { id: self.next_id(), kind: ExprKind::Unit, span: start }
             }
             Tok::Int(n) => {
                 self.bump();
-                Expr { kind: ExprKind::Int(*n), span: start }
+                Expr { id: self.next_id(), kind: ExprKind::Int(*n), span: start }
             }
             Tok::Float(f) => {
                 self.bump();
-                Expr { kind: ExprKind::Float(*f), span: start }
+                Expr { id: self.next_id(), kind: ExprKind::Float(*f), span: start }
             }
             Tok::Char(c) => {
                 self.bump();
-                Expr { kind: ExprKind::Char(*c), span: start }
+                Expr { id: self.next_id(), kind: ExprKind::Char(*c), span: start }
             }
             Tok::Str(s) => {
                 self.bump();
-                Expr { kind: ExprKind::Str(s.to_string()), span: start }
+                Expr { id: self.next_id(), kind: ExprKind::Str(s.to_string()), span: start }
             }
             Tok::Kw(b @ ("true" | "false")) => {
                 self.bump();
-                Expr { kind: ExprKind::Bool(*b == "true"), span: start }
+                Expr { id: self.next_id(), kind: ExprKind::Bool(*b == "true"), span: start }
             }
             // `..5` reads as `0..5`, as it does in the fork.
-            Tok::Punct(".." | "..=") => Expr { kind: ExprKind::Int(0), span: Span::at(start.start as usize) },
+            Tok::Punct(".." | "..=") => Expr { id: self.next_id(), kind: ExprKind::Int(0), span: Span::at(start.start as usize) },
             Tok::Punct("{") if brace_map => self.map_literal(false)?,
             Tok::Punct("{") => {
                 let b = self.block()?;
-                Expr { span: b.span, kind: ExprKind::Stmt(Box::new(Stmt { span: b.span, kind: StmtKind::Block(b) })) }
+                Expr { id: self.next_id(), span: b.span, kind: ExprKind::Stmt(Box::new(Stmt { span: b.span, kind: StmtKind::Block(b) })) }
             }
             Tok::Punct("(") => {
                 self.bump();
@@ -1018,27 +1027,27 @@ impl<'t> Parser<'t> {
             Tok::Kw("if") => {
                 let s = self.if_stmt()?;
                 let span = start.to(self.prev_span());
-                Expr { span, kind: ExprKind::Stmt(Box::new(Stmt { kind: StmtKind::If(s), span })) }
+                Expr { id: self.next_id(), span, kind: ExprKind::Stmt(Box::new(Stmt { kind: StmtKind::If(s), span })) }
             }
             Tok::Kw("while" | "loop") => {
                 let s = self.while_loop()?;
                 let span = start.to(self.prev_span());
-                Expr { span, kind: ExprKind::Stmt(Box::new(Stmt { kind: s, span })) }
+                Expr { id: self.next_id(), span, kind: ExprKind::Stmt(Box::new(Stmt { kind: s, span })) }
             }
             Tok::Kw("do") => {
                 let s = self.do_loop()?;
                 let span = start.to(self.prev_span());
-                Expr { span, kind: ExprKind::Stmt(Box::new(Stmt { kind: s, span })) }
+                Expr { id: self.next_id(), span, kind: ExprKind::Stmt(Box::new(Stmt { kind: s, span })) }
             }
             Tok::Kw("for") => {
                 let s = self.for_loop()?;
                 let span = start.to(self.prev_span());
-                Expr { span, kind: ExprKind::Stmt(Box::new(Stmt { kind: s, span })) }
+                Expr { id: self.next_id(), span, kind: ExprKind::Stmt(Box::new(Stmt { kind: s, span })) }
             }
             Tok::Kw("switch") => {
                 let s = self.switch()?;
                 let span = start.to(self.prev_span());
-                Expr { span, kind: ExprKind::Stmt(Box::new(Stmt { kind: StmtKind::Switch(s), span })) }
+                Expr { id: self.next_id(), span, kind: ExprKind::Stmt(Box::new(Stmt { kind: StmtKind::Switch(s), span })) }
             }
             Tok::Punct("|" | "||") => self.pipe_closure()?,
             Tok::Template(parts) => {
@@ -1054,7 +1063,7 @@ impl<'t> Parser<'t> {
                         TplPart::Code(tokens, span) => out.push(TemplatePart::Code(self.template_code(tokens, *span)?)),
                     }
                 }
-                Expr { kind: ExprKind::Template(out), span: start }
+                Expr { id: self.next_id(), kind: ExprKind::Template(out), span: start }
             }
             Tok::Punct("[") => self.array_literal()?,
             Tok::Punct("#{") => self.map_literal(true)?,
@@ -1062,27 +1071,27 @@ impl<'t> Parser<'t> {
             // `docs/11-next.md`, which still reads the same.
             Tok::Kw("none") => {
                 self.bump();
-                Expr { kind: ExprKind::Null, span: start }
+                Expr { id: self.next_id(), kind: ExprKind::Null, span: start }
             }
             Tok::Reserved(r) if *r == "null" => {
                 self.bump();
-                Expr { kind: ExprKind::Null, span: start }
+                Expr { id: self.next_id(), kind: ExprKind::Null, span: start }
             }
             Tok::Ident(name) => {
                 self.bump();
-                Expr { kind: ExprKind::Var(name.to_string()), span: start }
+                Expr { id: self.next_id(), kind: ExprKind::Var(name.to_string()), span: start }
             }
             Tok::Reserved(r) => {
                 let callable = matches!(self.peek_nth(1), Tok::Punct("(" | "()" | "!"));
                 if callable && CALLABLE_RESERVED.contains(r) {
                     self.bump();
-                    Expr { kind: ExprKind::Var(r.to_string()), span: start }
+                    Expr { id: self.next_id(), kind: ExprKind::Var(r.to_string()), span: start }
                 } else if *r == "this" {
                     if !self.in_fn {
                         return self.error("`this` can only be used inside a function");
                     }
                     self.bump();
-                    Expr { kind: ExprKind::This, span: start }
+                    Expr { id: self.next_id(), kind: ExprKind::This, span: start }
                 } else {
                     return self.error(format!("`{r}` is a reserved word, so it cannot be used as a name here"));
                 }
@@ -1106,6 +1115,8 @@ impl<'t> Parser<'t> {
             vars: std::mem::take(&mut self.vars),
             fns: std::mem::take(&mut self.fns),
             half_gt: false,
+            // The ids go on from the outer parse's, so none repeats.
+            next: std::cell::Cell::new(self.next.get()),
         };
         let result = (|| {
             let mut stmts = Vec::new();
@@ -1134,6 +1145,7 @@ impl<'t> Parser<'t> {
         })();
         self.vars = std::mem::take(&mut inner.vars);
         self.fns = std::mem::take(&mut inner.fns);
+        self.next.set(inner.next.get());
         Ok(Block { stmts: result?, span })
     }
 
@@ -1148,10 +1160,10 @@ impl<'t> Parser<'t> {
                     // `setInterval(ms) { … }`: a block after the call is its body.
                     if matches!(&callee[..], [one] if one.name == "setInterval") && self.at_punct("{") {
                         let body = self.with_flags(false, false, false, |p| p.block())?;
-                        lhs = Expr { span: span.to(body.span), kind: ExprKind::Interval { args, body } };
+                        lhs = Expr { id: self.next_id(), span: span.to(body.span), kind: ExprKind::Interval { args, body } };
                         continue;
                     }
-                    lhs = Expr { span, kind: ExprKind::Call { callee, args, bang: false } };
+                    lhs = Expr { id: self.next_id(), span, kind: ExprKind::Call { callee, args, bang: false } };
                 }
                 Tok::Punct("!") if is_var => {
                     if matches!(lhs.kind, ExprKind::Path(_)) {
@@ -1163,14 +1175,14 @@ impl<'t> Parser<'t> {
                     }
                     let callee = callee_of(&lhs);
                     let args = self.call_args()?;
-                    lhs = Expr { span: lhs.span.to(self.prev_span()), kind: ExprKind::Call { callee, args, bang: true } };
+                    lhs = Expr { id: self.next_id(), span: lhs.span.to(self.prev_span()), kind: ExprKind::Call { callee, args, bang: true } };
                 }
                 Tok::Punct("::") if is_var => {
                     self.bump();
                     let next = self.var_name()?;
                     let mut path = callee_of(&lhs);
                     path.push(next);
-                    lhs = Expr { span: lhs.span.to(self.prev_span()), kind: ExprKind::Path(path) };
+                    lhs = Expr { id: self.next_id(), span: lhs.span.to(self.prev_span()), kind: ExprKind::Path(path) };
                 }
                 Tok::Punct(b @ ("[" | "?[")) => {
                     self.bump();
@@ -1183,6 +1195,7 @@ impl<'t> Parser<'t> {
                         return self.error("expecting `]` to match the `[` of this index");
                     }
                     lhs = Expr {
+                        id: self.next_id(),
                         span: lhs.span.to(self.prev_span()),
                         kind: ExprKind::Index { base: Box::new(lhs), index: Box::new(index), optional: *b == "?[" },
                     };
@@ -1203,6 +1216,7 @@ impl<'t> Parser<'t> {
                     if matches!(self.peek(), Tok::Punct("(" | "()")) {
                         let args = self.call_args()?;
                         lhs = Expr {
+                        id: self.next_id(),
                             span: lhs.span.to(self.prev_span()),
                             kind: ExprKind::Method { recv: Box::new(lhs), name, args, optional },
                         };
@@ -1213,11 +1227,12 @@ impl<'t> Parser<'t> {
                         self.bump();
                         let args = self.call_args()?;
                         lhs = Expr {
+                        id: self.next_id(),
                             span: lhs.span.to(self.prev_span()),
                             kind: ExprKind::Method { recv: Box::new(lhs), name, args, optional },
                         };
                     } else {
-                        lhs = Expr { span: lhs.span.to(name.span), kind: ExprKind::Field { base: Box::new(lhs), name, optional } };
+                        lhs = Expr { id: self.next_id(), span: lhs.span.to(name.span), kind: ExprKind::Field { base: Box::new(lhs), name, optional } };
                     }
                 }
                 _ => return Ok(lhs),
@@ -1279,7 +1294,7 @@ impl<'t> Parser<'t> {
         })();
         self.no_pipe = saved;
         result?;
-        Ok(Expr { kind: ExprKind::Array(items), span: start.to(self.prev_span()) })
+        Ok(Expr { id: self.next_id(), kind: ExprKind::Array(items), span: start.to(self.prev_span()) })
     }
 
     fn map_literal(&mut self, hash: bool) -> PResult<Expr> {
@@ -1322,7 +1337,7 @@ impl<'t> Parser<'t> {
         })();
         self.no_pipe = saved;
         result?;
-        Ok(Expr { kind: ExprKind::Map { entries, hash }, span: start.to(self.prev_span()) })
+        Ok(Expr { id: self.next_id(), kind: ExprKind::Map { entries, hash }, span: start.to(self.prev_span()) })
     }
 
     /// The fork's `arrow_params_len`: whether an arrow function starts here.
@@ -1414,7 +1429,7 @@ impl<'t> Parser<'t> {
             }
             p.with_flags(true, false, false, |p| p.stmt())
         })?;
-        Ok(Expr { span: start.to(body.span), kind: ExprKind::Closure { params, body: Box::new(body), arrow } })
+        Ok(Expr { id: self.next_id(), span: start.to(body.span), kind: ExprKind::Closure { params, body: Box::new(body), arrow } })
     }
 
     /// The fork's `brace_opens_map`: `{` then a name or string then `:`, or

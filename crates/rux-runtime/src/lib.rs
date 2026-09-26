@@ -696,6 +696,9 @@ fn check_script_types(
     }
     let recording = TYPE_TABLE.with(|t| t.borrow().is_some());
     let (findings, mut table) = engine.check_types_recording(&cx, recording);
+    if std::env::var_os("RUX_IR_COVERAGE").is_some() {
+        report_untyped(engine, &cx, sfc);
+    }
     if recording {
         // The same arithmetic as the findings below.
         for seen in &mut table.seen {
@@ -724,6 +727,46 @@ fn check_script_types(
             }
         });
     }
+}
+
+/// With `RUX_IR_COVERAGE` set, every expression the checker gave no type, on
+/// stderr: what the typed IR could not be built from (step 4 of
+/// `docs/11-next.md`). One line each, `untyped: <line>: <text>`, so a survey
+/// over many files can count them.
+///
+/// What is checked is the file's own script, whole: its `computed`, `effect`,
+/// `prop` and lifecycle declarations are statements the checker reads, where
+/// the engine's script has them taken out. So its props come from their
+/// declarations rather than from `cx`, and nothing is a placeholder.
+fn report_untyped(engine: &rux_script::Engine, cx: &rux_script::check::Context, sfc: &rux_parser::Sfc) {
+    use rux_script::check::untyped;
+    let opts = rux_syntax::Options { declarations: true };
+    let Ok(script) = rux_syntax::parse(&sfc.script, opts) else {
+        eprintln!("untyped: the script does not parse");
+        return;
+    };
+    let mut cx = cx.clone();
+    cx.provided.retain(|(name, _)| !sfc.props.iter().any(|p| p.name == *name));
+    cx.placeholders.clear();
+    cx.own_lines = None;
+    let (_, record) = engine.check_types_typed(Some((&script, &sfc.script)), &cx);
+    let mut n = 0;
+    for (line, text) in untyped(&script, &sfc.script, &record.script) {
+        eprintln!("untyped: {}: {text}", line + sfc.script_line - 1);
+        n += 1;
+    }
+    for piece in &record.pieces {
+        for (_, text) in untyped(&piece.script, &piece.src, &piece.types) {
+            eprintln!("untyped: {} ({}): {text}", piece.line, piece.what);
+            n += 1;
+        }
+    }
+    let pieces: usize = record.pieces.iter().map(|p| p.types.of.len()).sum();
+    eprintln!(
+        "untyped total: {n}, typed: {} in the script and {pieces} in {} template pieces",
+        record.script.of.len(),
+        record.pieces.len()
+    );
 }
 
 /// The template as the type checker reads it: what every expression in it has
