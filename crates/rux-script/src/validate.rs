@@ -14,7 +14,12 @@ use std::collections::HashMap;
 use rhai::Dynamic;
 use rux_reactive::Value;
 
-use crate::types::{parse_type, Type};
+use crate::types::{parse_decl, parse_type, Type};
+
+/// A declared type as the walk resolves it: its type parameters, none for
+/// one that is not generic, and its body, which reads them as
+/// [`Type::Param`]s. See [`crate::types::parse_decl`].
+pub type Decl = (Vec<String>, Type);
 
 /// How deep a named type may refer to another before the walk gives up and
 /// answers `false`. Only a type that names itself with nothing in between
@@ -40,11 +45,11 @@ pub trait Checkable {
 /// Whether `value` fits `ty`. `named` says what a declared type stands for;
 /// a name it does not know fits nothing, since a check that passes by not
 /// knowing is the silent failure this project keeps closing off.
-pub fn fits<V: Checkable>(value: &V, ty: &Type, named: &dyn Fn(&str) -> Option<Type>) -> bool {
+pub fn fits<V: Checkable>(value: &V, ty: &Type, named: &dyn Fn(&str) -> Option<Decl>) -> bool {
     fits_at(value, ty, named, 0)
 }
 
-fn fits_at<V: Checkable>(value: &V, ty: &Type, named: &dyn Fn(&str) -> Option<Type>, depth: usize) -> bool {
+fn fits_at<V: Checkable>(value: &V, ty: &Type, named: &dyn Fn(&str) -> Option<Decl>, depth: usize) -> bool {
     match ty {
         Type::Any => true,
         Type::Null => value.is_null(),
@@ -73,11 +78,37 @@ fn fits_at<V: Checkable>(value: &V, ty: &Type, named: &dyn Fn(&str) -> Option<Ty
         Type::Union(members) => members.iter().any(|m| fits_at(value, m, named, depth)),
         // The parameters are not checked: a function value carries no types.
         Type::Function(..) => value.is_function(),
-        Type::Named(name) => {
+        Type::Named(_) | Type::Generic(..) => {
             depth < MAX_NAMED_DEPTH
-                && named(name).is_some_and(|resolved| fits_at(value, &resolved, named, depth + 1))
+                && resolved(ty, named).is_some_and(|resolved| fits_at(value, &resolved, named, depth + 1))
         }
+        // Only a checker error reaches here: at run time no `T` is known.
+        Type::Param(_) => false,
     }
+}
+
+/// What a named type stands for, with a generic one's arguments in place. A
+/// generic type named without its arguments, which the checker reports,
+/// takes `any` for each.
+fn resolved(ty: &Type, named: &dyn Fn(&str) -> Option<Decl>) -> Option<Type> {
+    let (name, args): (&str, &[Type]) = match ty {
+        Type::Named(name) => (name, &[]),
+        Type::Generic(name, args) => (name, args),
+        _ => return None,
+    };
+    let (params, body) = named(name)?;
+    if params.is_empty() {
+        return args.is_empty().then_some(body);
+    }
+    if !args.is_empty() && args.len() != params.len() {
+        return None;
+    }
+    let given = params
+        .into_iter()
+        .enumerate()
+        .map(|(i, p)| (p, args.get(i).cloned().unwrap_or(Type::Any)))
+        .collect();
+    Some(body.substitute(&given))
 }
 
 /// `text` as a value of `ty`, for a route segment, which is always text: `"42"`
@@ -85,11 +116,11 @@ fn fits_at<V: Checkable>(value: &V, ty: &Type, named: &dyn Fn(&str) -> Option<Ty
 ///
 /// Text that already fits stays text, so `string` and a literal union keep it
 /// as it is; otherwise each member of a union is tried in the order written.
-pub fn from_text(text: &str, ty: &Type, named: &dyn Fn(&str) -> Option<Type>) -> Option<Value> {
+pub fn from_text(text: &str, ty: &Type, named: &dyn Fn(&str) -> Option<Decl>) -> Option<Value> {
     from_text_at(text, ty, named, 0)
 }
 
-fn from_text_at(text: &str, ty: &Type, named: &dyn Fn(&str) -> Option<Type>, depth: usize) -> Option<Value> {
+fn from_text_at(text: &str, ty: &Type, named: &dyn Fn(&str) -> Option<Decl>, depth: usize) -> Option<Value> {
     let as_text = Value::Text(text.to_string());
     if fits(&as_text, ty, named) {
         return Some(as_text);
@@ -103,8 +134,8 @@ fn from_text_at(text: &str, ty: &Type, named: &dyn Fn(&str) -> Option<Type>, dep
             _ => None,
         },
         Type::Union(members) => members.iter().find_map(|m| from_text_at(text, m, named, depth)),
-        Type::Named(name) if depth < MAX_NAMED_DEPTH => {
-            named(name).and_then(|resolved| from_text_at(text, &resolved, named, depth + 1))
+        Type::Named(_) | Type::Generic(..) if depth < MAX_NAMED_DEPTH => {
+            resolved(ty, named).and_then(|resolved| from_text_at(text, &resolved, named, depth + 1))
         }
         _ => None,
     }
@@ -113,19 +144,19 @@ fn from_text_at(text: &str, ty: &Type, named: &dyn Fn(&str) -> Option<Type>, dep
 /// Some value of `ty`, for `rux check`, which visits a route pattern with a
 /// placeholder segment and needs its view built with a prop that fits. `None`
 /// for a type with no simple member.
-pub fn sample(ty: &Type, named: &dyn Fn(&str) -> Option<Type>) -> Option<Value> {
+pub fn sample(ty: &Type, named: &dyn Fn(&str) -> Option<Decl>) -> Option<Value> {
     sample_at(ty, named, 0)
 }
 
-fn sample_at(ty: &Type, named: &dyn Fn(&str) -> Option<Type>, depth: usize) -> Option<Value> {
+fn sample_at(ty: &Type, named: &dyn Fn(&str) -> Option<Decl>, depth: usize) -> Option<Value> {
     match ty {
         Type::Int | Type::Float => Some(Value::Number(0.0)),
         Type::Bool => Some(Value::Bool(false)),
         Type::String | Type::Any => Some(Value::Text(String::new())),
         Type::Literal(s) => Some(Value::Text(s.clone())),
         Type::Union(members) => members.iter().find_map(|m| sample_at(m, named, depth)),
-        Type::Named(name) if depth < MAX_NAMED_DEPTH => {
-            named(name).and_then(|resolved| sample_at(&resolved, named, depth + 1))
+        Type::Named(_) | Type::Generic(..) if depth < MAX_NAMED_DEPTH => {
+            resolved(ty, named).and_then(|resolved| sample_at(&resolved, named, depth + 1))
         }
         _ => None,
     }
@@ -213,7 +244,7 @@ thread_local! {
     /// The declared types `x is T` resolves a name against, as text: the
     /// script's own `type`s, and whatever the runtime adds with
     /// [`know_types`]. Parsed on first use, then kept.
-    static KNOWN: RefCell<HashMap<String, (String, Option<Type>)>> = RefCell::new(HashMap::new());
+    static KNOWN: RefCell<HashMap<String, (String, Option<Decl>)>> = RefCell::new(HashMap::new());
     /// Each `is` right-hand side, parsed once.
     static WRITTEN: RefCell<HashMap<String, Option<Type>>> = RefCell::new(HashMap::new());
 }
@@ -237,12 +268,12 @@ pub fn know_types(types: impl IntoIterator<Item = (String, String)>) {
 }
 
 /// What a declared type stands for, as `is` sees it.
-fn known(name: &str) -> Option<Type> {
+fn known(name: &str) -> Option<Decl> {
     KNOWN.with(|k| {
         let mut k = k.borrow_mut();
         let (text, parsed) = k.get_mut(name)?;
         if parsed.is_none() {
-            *parsed = parse_type(text).ok();
+            *parsed = parse_decl(text).ok();
         }
         parsed.clone()
     })
@@ -311,6 +342,22 @@ mod tests {
             (r#"{ a: 1, b: "x" } is { [string]: float }"#, false),
             ("((x) => x) is (float) => float", true),
             ("true is bool", true),
+        ] {
+            assert_eq!(answers(script, expr), Some(Value::Bool(want)), "{expr}");
+        }
+    }
+
+    #[test]
+    fn is_fills_in_a_generic_type() {
+        let script = "type Page<T> = { items: T[], next: string? };";
+        for (expr, want) in [
+            ("{ items: [1, 2], next: none } is Page<int>", true),
+            ("{ items: [\"a\"], next: none } is Page<int>", false),
+            ("{ items: [\"a\"], next: \"p2\" } is Page<string>", true),
+            ("[1] is Array<int>", true),
+            ("none is Option<int>", true),
+            ("{ a: true } is Map<string, bool>", true),
+            ("(!({ items: [] } is Page<int>))", true),
         ] {
             assert_eq!(answers(script, expr), Some(Value::Bool(want)), "{expr}");
         }

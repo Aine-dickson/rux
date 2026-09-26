@@ -117,14 +117,14 @@ fn a_typed_prop_is_declared() {
 #[test]
 fn a_prop_whose_type_is_not_a_type_is_an_error() {
     let stat = "<template><view><text>x</text></view></template>\n\
-        <script>\n  prop a: Array<int>;\n  prop b: ;\n  prop c: { x: int\n</script>";
+        <script>\n  prop a: int<string>;\n  prop b: ;\n  prop c: { x: int\n</script>";
     let app = "<template><screen><stat /></screen></template>\n\
         <script>\nuse components::stat;\n</script>";
     let dir = project(&[("app.rux", app), ("components/stat.rux", stat)]);
     let doc = Document::load(dir.join("app.rux")).expect("loads");
     let errors: Vec<String> =
         doc.diagnostics().warnings.iter().filter(|w| w.is_error()).map(|w| w.message.clone()).collect();
-    assert!(errors.iter().any(|e| e.contains("prop a: Array<int>") && e.contains("`T[]`")), "{errors:?}");
+    assert!(errors.iter().any(|e| e.contains("prop a: int<string>") && e.contains("takes no type arguments")), "{errors:?}");
     assert!(errors.iter().any(|e| e.contains("`prop b:` has no type")), "{errors:?}");
     assert!(errors.iter().any(|e| e.contains("prop c")), "{errors:?}");
 }

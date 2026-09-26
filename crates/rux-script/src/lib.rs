@@ -454,6 +454,9 @@ impl Builder {
         engine.register_fn(rhai::IS_FUNCTION, |value: Dynamic, written: ImmutableString| {
             validate::is(&value, &written)
         });
+        // What `front::lower` makes of `x is T` now, so the fork never reads a
+        // type: the same test under a name the fork's own `is` does not use.
+        engine.register_fn("__is", |value: Dynamic, written: ImmutableString| validate::is(&value, &written));
         register_elements(&mut engine);
 
         // Record every variable read while dependency-tracking is active, then
@@ -569,13 +572,23 @@ impl Builder {
 }
 
 /// The `type` declarations of a script Rux parsed from `src`, as name and the
-/// text of the type.
+/// text of the type, which [`types::parse_decl`] reads: a generic one's text
+/// starts with its parameters, `<T> { items: T[] }`.
 fn types_declared_in(script: &rux_syntax::ast::Script, src: &str) -> Vec<(String, String)> {
     script
         .stmts
         .iter()
         .filter_map(|s| match &s.kind {
-            rux_syntax::ast::StmtKind::Type { name, ty } => Some((name.name.clone(), ty.span.text(src).to_string())),
+            rux_syntax::ast::StmtKind::Type { name, params, ty } => {
+                let body = ty.span.text(src);
+                let text = if params.is_empty() {
+                    body.to_string()
+                } else {
+                    let names: Vec<&str> = params.iter().map(|p| p.name.as_str()).collect();
+                    format!("<{}> {body}", names.join(", "))
+                };
+                Some((name.name.clone(), text))
+            }
             _ => None,
         })
         .collect()

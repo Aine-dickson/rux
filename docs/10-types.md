@@ -99,14 +99,15 @@ collide, and an import can tell a type from a component by its spelling (see
 | `none` | The empty value. `null` and `()`, its older spellings, still read as it, with a warning |
 | `any` | Anything, unchecked. What a name becomes when nothing says otherwise |
 | `"all"` | Exactly that string. Useful in a union |
-| `T[]` | An array of `T` |
+| `T[]`, `Array<T>` | An array of `T`; two spellings of one type |
 | `{ id: int, title: string }` | A record: a map with exactly these fields |
 | `{ note?: string }` | A record whose `note` may be absent |
-| `{ [string]: T }` | A dictionary: any string keys, every value a `T` |
-| `T?` | `T` or `none`; the same as `T \| none` |
+| `{ [string]: T }`, `Map<string, T>` | A dictionary: any string keys, every value a `T` |
+| `T?`, `Option<T>` | `T` or `none`; the same as `T \| none` |
 | `A \| B` | Either |
 | `(Task, int) => bool` | A function, where one is a value |
 | `Task` | A name declared with `type`, or imported with `use` |
+| `Page<int>` | A declared type that takes type parameters, given them |
 
 **A whole-number literal is an `int`, and one with a point or an exponent a
 `float`** (changed in step 3 of [The Rux language](./11-next.md#numbers); until
@@ -129,9 +130,23 @@ was built as. An object **literal** with a field its target type does not have
 is an error, because that field is almost always a misspelling of one it does
 have.
 
-Not in the first release, and so errors if written: generics of any kind
-(`Array<T>` included, where `T[]` is the spelling), number and boolean literal
-types, intersections (`A & B`), tuples, and anything class-shaped.
+**A type or a function may take type parameters** (step 3.4 of [The Rux
+language](./11-next.md#declaring-kept-with-generics)): `type Page<T> = {
+items: T[], next: string? };`, used as `Page<Task>`, and
+`fn first<T>(items: T[]): T? { items?[0] }`. A call never names them: they are
+what the arguments make them, so `first(tasks)` is a `Task?`, and a closure
+handed over after the list it works on gets that list's element type
+(`pluck(tasks, t => t.id)`). Inside the function a type parameter is a type
+nothing is known about: its value can be passed on, stored and compared, and
+reading a field of it, adding to it or testing it with `is` is an error. A
+generic type named without its arguments, or with the wrong number, is an
+error, and so is one given arguments it does not take. A `Map`'s keys are
+`string` for now, and `Set` and `Result` are not in yet; each is an error that
+says so.
+
+Not in the first release, and so errors if written: number and boolean literal
+types, intersections (`A & B`), tuples, `extends` constraints, type arguments
+written at a call, and anything class-shaped.
 
 ## Inference
 
@@ -314,9 +329,10 @@ a function that nobody touched. The editor offers the inference instead: on an
 unannotated parameter, a quick-fix writes in the type the calls agree on, and
 the author reads it before keeping it.
 
-There are no user generics. A function type, `(Task) => bool`, is written only
-where a function is a value: a parameter that takes a callback, a field that
-holds one, or a `let` that holds an arrow.
+A function type, `(Task) => bool`, is written only where a function is a
+value: a parameter that takes a callback, a field that holds one, or a `let`
+that holds an arrow. A generic function's type parameters are the one thing
+worked out at a call, and only for that call.
 
 ### A typed function cannot read its caller's locals
 

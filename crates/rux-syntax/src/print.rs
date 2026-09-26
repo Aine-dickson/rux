@@ -449,11 +449,12 @@ impl Printer<'_> {
                 }
                 self.w(")");
             }
+            // The call the fork runs it as, so the fork never reads a type.
             ExprKind::Is { expr, ty } => {
-                self.w("(");
+                self.w("__is(");
                 self.expr(expr);
-                self.w(" is ");
-                self.ty(ty);
+                self.w(", ");
+                self.string(&self::ty(ty));
                 self.w(")");
             }
             ExprKind::Closure { params, body, arrow } => {
@@ -519,6 +520,17 @@ impl Printer<'_> {
     fn ty(&mut self, t: &TypeExpr) {
         match &t.kind {
             TypeKind::Name(n) => self.w(n),
+            TypeKind::Generic { name, args } => {
+                self.w(name);
+                self.w("<");
+                for (i, a) in args.iter().enumerate() {
+                    if i > 0 {
+                        self.w(", ");
+                    }
+                    self.ty(a);
+                }
+                self.w(">");
+            }
             TypeKind::Literal(s) => self.string(s),
             TypeKind::Null => self.w("null"),
             TypeKind::Array(inner) => {

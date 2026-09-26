@@ -43,6 +43,9 @@ pub(crate) struct Parser<'t> {
     /// Functions declared so far, by name, arity and `this` type, since the
     /// fork refuses a second definition of the same one.
     fns: Vec<(String, usize, Option<String>)>,
+    /// While a type is read: the `>>` here has had its first `>` taken, by
+    /// the inner of two type argument lists it closes (`Map<string, Page<T>>`).
+    half_gt: bool,
 }
 
 impl<'t> Parser<'t> {
@@ -58,6 +61,7 @@ impl<'t> Parser<'t> {
             no_pipe: false,
             vars: Vec::new(),
             fns: Vec::new(),
+            half_gt: false,
         }
     }
 
@@ -239,16 +243,18 @@ impl<'t> Parser<'t> {
         let start = self.span();
         let is_brace_map = self.brace_opens_map(false);
 
-        // `type Name = T;`, where `type` could never have meant anything else.
-        if self.peek().is_ident("type") && matches!(self.peek_nth(1), Tok::Ident(_)) && self.peek_nth(2).is_punct("=") {
+        // `type Name = T;` or `type Name<T> = …;`, where `type` could never have
+        // meant anything else.
+        if self.peek().is_ident("type") && matches!(self.peek_nth(1), Tok::Ident(_)) && self.type_params_then_eq(2) {
             if !self.global {
                 return self.error("a `type` is declared at the top level of the script, not inside a block");
             }
             self.bump();
             let name = self.ident()?;
+            let (params, _) = self.type_params()?;
             self.bump(); // `=`
             let ty = self.take_type("`=`")?;
-            return Ok(Stmt { span: start.to(ty.span), kind: StmtKind::Type { name, ty } });
+            return Ok(Stmt { span: start.to(ty.span), kind: StmtKind::Type { name, params, ty } });
         }
 
         if self.opts.declarations && self.global {
@@ -561,6 +567,7 @@ impl<'t> Parser<'t> {
             Tok::Kw(k) => return self.error(format!("`{k}` is a keyword, so a function cannot take it as its name")),
             _ => return self.error("expecting the function's name after `fn`"),
         };
+        let (type_params, type_params_span) = self.type_params()?;
         let params = self.in_new_scope(|p| {
             let params = p.fn_params(&name.name)?;
             let result = if p.eat_punct(":") { Some(p.take_type("the parameter list")?) } else { None };
@@ -580,7 +587,7 @@ impl<'t> Parser<'t> {
         }
         self.fns.push(key);
         let _ = fn_span;
-        Ok(FnDecl { name, private, this_type, params, result, body })
+        Ok(FnDecl { name, private, this_type, type_params, type_params_span, params, result, body })
     }
 
     fn fn_params(&mut self, fn_name: &str) -> PResult<Vec<Param>> {
@@ -1096,6 +1103,7 @@ impl<'t> Parser<'t> {
             no_pipe: false,
             vars: std::mem::take(&mut self.vars),
             fns: std::mem::take(&mut self.fns),
+            half_gt: false,
         };
         let result = (|| {
             let mut stmts = Vec::new();
@@ -1442,19 +1450,31 @@ impl<'t> Parser<'t> {
     // `take_*` functions read what it accepted into a `TypeExpr`.
 
     fn type_end(&self, at: usize) -> Option<usize> {
+        let mut half = false;
+        let end = self.type_end_half(at, &mut half)?;
+        (!half).then_some(end)
+    }
+
+    /// [`Self::type_end`], inside a type argument list: `half` is set when the
+    /// type ends at a `>>` whose first `>` closed it, and the second is left for
+    /// the list around it.
+    fn type_end_half(&self, at: usize, half: &mut bool) -> Option<usize> {
         let mut i = at;
         if self.peek_nth(i).is_punct("|") {
             i += 1;
         }
-        i = self.type_postfix_end(i)?;
-        while self.peek_nth(i).is_punct("|") {
-            i = self.type_postfix_end(i + 1)?;
+        i = self.type_postfix_end(i, half)?;
+        while !*half && self.peek_nth(i).is_punct("|") {
+            i = self.type_postfix_end(i + 1, half)?;
         }
         Some(i)
     }
 
-    fn type_postfix_end(&self, at: usize) -> Option<usize> {
-        let mut i = self.type_primary_end(at)?;
+    fn type_postfix_end(&self, at: usize, half: &mut bool) -> Option<usize> {
+        let mut i = self.type_primary_end(at, half)?;
+        if *half {
+            return Some(i);
+        }
         loop {
             match self.peek_nth(i) {
                 Tok::Punct("[" | "?[") if self.peek_nth(i + 1).is_punct("]") => i += 2,
@@ -1464,8 +1484,29 @@ impl<'t> Parser<'t> {
         }
     }
 
-    fn type_primary_end(&self, at: usize) -> Option<usize> {
+    fn type_primary_end(&self, at: usize, half: &mut bool) -> Option<usize> {
         match self.peek_nth(at) {
+            Tok::Ident(_) if self.peek_nth(at + 1).is_punct("<") => {
+                let mut i = at + 2;
+                let mut inner = false;
+                loop {
+                    i = self.type_end_half(i, &mut inner)?;
+                    if inner || !self.peek_nth(i).is_punct(",") {
+                        break;
+                    }
+                    i += 1;
+                }
+                match self.peek_nth(i) {
+                    // The inner list took the first `>`; this one takes both.
+                    Tok::Punct(">>") if inner => Some(i + 1),
+                    Tok::Punct(">") if !inner => Some(i + 1),
+                    Tok::Punct(">>") => {
+                        *half = true;
+                        Some(i)
+                    }
+                    _ => None,
+                }
+            }
             Tok::Ident(_) | Tok::Str(_) => Some(at + 1),
             Tok::Reserved(r) if *r == "null" => Some(at + 1),
             Tok::Kw("none") => Some(at + 1),
@@ -1539,6 +1580,53 @@ impl<'t> Parser<'t> {
         }
     }
 
+    /// Whether a `type` declaration's name, at `at`, is followed by type
+    /// parameters, if any, and then `=`.
+    fn type_params_then_eq(&self, at: usize) -> bool {
+        let mut i = at;
+        if self.peek_nth(i).is_punct("<") {
+            i += 1;
+            loop {
+                if !matches!(self.peek_nth(i), Tok::Ident(_)) {
+                    return false;
+                }
+                i += 1;
+                match self.peek_nth(i) {
+                    Tok::Punct(",") => i += 1,
+                    Tok::Punct(">") => break,
+                    _ => return false,
+                }
+            }
+            i += 1;
+        }
+        self.peek_nth(i).is_punct("=")
+    }
+
+    /// `<T, U>` after a function's or a type's name, and the span it covers.
+    /// Nothing, when there is no `<`.
+    fn type_params(&mut self) -> PResult<(Vec<Ident>, Option<Span>)> {
+        if !self.at_punct("<") {
+            return Ok((Vec::new(), None));
+        }
+        let open = self.bump().span;
+        let mut params: Vec<Ident> = Vec::new();
+        loop {
+            let name = match self.peek() {
+                Tok::Ident(_) => self.ident()?,
+                other => return self.error(format!("expecting a type parameter's name, found {}", other.describe())),
+            };
+            if params.iter().any(|p| p.name == name.name) {
+                return Err(SyntaxError { message: format!("two type parameters are named `{}`", name.name), span: name.span });
+            }
+            params.push(name);
+            if self.eat_punct(",") {
+                continue;
+            }
+            let close = self.expect_punct(">", "to end the type parameters")?;
+            return Ok((params, Some(open.to(close))));
+        }
+    }
+
     /// Read a type, once the recognizer has said one is there.
     fn take_type(&mut self, after: &str) -> PResult<TypeExpr> {
         if self.type_end(0).is_none() {
@@ -1551,7 +1639,7 @@ impl<'t> Parser<'t> {
         let start = self.span();
         self.eat_punct("|");
         let mut members = vec![self.type_postfix()];
-        while self.eat_punct("|") {
+        while !self.half_gt && self.eat_punct("|") {
             members.push(self.type_postfix());
         }
         if members.len() == 1 {
@@ -1564,6 +1652,9 @@ impl<'t> Parser<'t> {
         let mut ty = self.type_primary();
         loop {
             let span = ty.span;
+            if self.half_gt {
+                return ty;
+            }
             if self.at_punct("[") && self.peek_nth(1).is_punct("]") {
                 self.bump();
                 self.bump();
@@ -1587,6 +1678,23 @@ impl<'t> Parser<'t> {
         let start = self.span();
         let t = self.bump();
         let kind = match &t.tok {
+            Tok::Ident(n) if self.at_punct("<") => {
+                self.bump();
+                let mut args = vec![self.type_union()];
+                while !self.half_gt && self.eat_punct(",") {
+                    args.push(self.type_union());
+                }
+                if self.half_gt {
+                    // The inner list took the first `>` of this `>>`.
+                    self.half_gt = false;
+                    self.bump();
+                } else if self.at_punct(">>") {
+                    self.half_gt = true;
+                } else {
+                    self.bump(); // `>`
+                }
+                TypeKind::Generic { name: n.to_string(), args }
+            }
             Tok::Ident(n) => TypeKind::Name(n.to_string()),
             Tok::Str(s) => TypeKind::Literal(s.to_string()),
             Tok::Reserved(_) | Tok::Kw("none") => TypeKind::Null,

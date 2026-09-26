@@ -221,7 +221,7 @@ fn number_types(src: &str) -> std::collections::HashSet<usize> {
             TypeKind::Name(_) | TypeKind::Literal(_) | TypeKind::Null => {}
             TypeKind::Array(inner) | TypeKind::Optional(inner) | TypeKind::Paren(inner) => ty(inner, out),
             TypeKind::Dict { value, .. } => ty(value, out),
-            TypeKind::Union(members) => members.iter().for_each(|m| ty(m, out)),
+            TypeKind::Union(members) | TypeKind::Generic { args: members, .. } => members.iter().for_each(|m| ty(m, out)),
             TypeKind::Record(fields) => fields.iter().for_each(|f| ty(&f.ty, out)),
             TypeKind::Function(params, result) => {
                 params.iter().for_each(|p| ty(p, out));

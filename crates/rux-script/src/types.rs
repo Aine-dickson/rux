@@ -38,6 +38,11 @@ pub enum Type {
     Function(Vec<Type>, Box<Type>),
     /// A declared type, by name. What it stands for is the checker's business.
     Named(String),
+    /// A declared type given type arguments: `Page<int>`.
+    Generic(String, Vec<Type>),
+    /// A type parameter, inside the declaration or function that has it: the
+    /// `T` of `fn first<T>(items: T[]): T?`. Nothing is known about it.
+    Param(String),
 }
 
 /// One field of a record type.
@@ -180,9 +185,90 @@ impl fmt::Display for Type {
                 }
                 write!(f, ") => {result}")
             }
-            Type::Named(name) => f.write_str(name),
+            Type::Named(name) | Type::Param(name) => f.write_str(name),
+            Type::Generic(name, args) => {
+                write!(f, "{name}<")?;
+                for (i, a) in args.iter().enumerate() {
+                    if i > 0 {
+                        f.write_str(", ")?;
+                    }
+                    write!(f, "{a}")?;
+                }
+                f.write_str(">")
+            }
         }
     }
+}
+
+impl Type {
+    /// This type with each [`Type::Param`] named in `args` replaced.
+    pub fn substitute(&self, args: &std::collections::HashMap<String, Type>) -> Type {
+        let sub = |t: &Type| t.substitute(args);
+        match self {
+            Type::Param(name) => args.get(name).cloned().unwrap_or_else(|| self.clone()),
+            Type::Array(item) => Type::Array(Box::new(sub(item))),
+            Type::Dict(item) => Type::Dict(Box::new(sub(item))),
+            Type::Record(fields) => Type::Record(
+                fields.iter().map(|f| Field { name: f.name.clone(), optional: f.optional, ty: sub(&f.ty) }).collect(),
+            ),
+            Type::Union(members) => Type::union(members.iter().map(sub)),
+            Type::Function(params, result) => Type::Function(params.iter().map(sub).collect(), Box::new(sub(result))),
+            Type::Generic(name, a) => Type::Generic(name.clone(), a.iter().map(sub).collect()),
+            _ => self.clone(),
+        }
+    }
+
+    /// This type with each name in `params` read as that type parameter: what
+    /// an annotation inside `fn f<T>` or `type Page<T>` means by `T`.
+    pub fn with_params(&self, params: &[String]) -> Type {
+        if params.is_empty() {
+            return self.clone();
+        }
+        let args = params.iter().map(|p| (p.clone(), Type::Param(p.clone()))).collect();
+        self.params_as(&args)
+    }
+
+    fn params_as(&self, args: &std::collections::HashMap<String, Type>) -> Type {
+        let sub = |t: &Type| t.params_as(args);
+        match self {
+            Type::Named(name) => args.get(name).cloned().unwrap_or_else(|| self.clone()),
+            Type::Array(item) => Type::Array(Box::new(sub(item))),
+            Type::Dict(item) => Type::Dict(Box::new(sub(item))),
+            Type::Record(fields) => Type::Record(
+                fields.iter().map(|f| Field { name: f.name.clone(), optional: f.optional, ty: sub(&f.ty) }).collect(),
+            ),
+            Type::Union(members) => Type::union(members.iter().map(sub)),
+            Type::Function(params, result) => Type::Function(params.iter().map(sub).collect(), Box::new(sub(result))),
+            Type::Generic(name, a) => Type::Generic(name.clone(), a.iter().map(sub).collect()),
+            _ => self.clone(),
+        }
+    }
+
+    /// Whether a type parameter appears anywhere in this type.
+    pub fn has_param(&self) -> bool {
+        match self {
+            Type::Param(_) => true,
+            Type::Array(t) | Type::Dict(t) => t.has_param(),
+            Type::Record(fields) => fields.iter().any(|f| f.ty.has_param()),
+            Type::Union(members) | Type::Generic(_, members) => members.iter().any(Type::has_param),
+            Type::Function(params, result) => params.iter().any(Type::has_param) || result.has_param(),
+            _ => false,
+        }
+    }
+}
+
+/// A declared type as [`crate::Engine::declared_types`] writes it for another
+/// file: its type parameters, if it has any, in `<>` before its body, as in
+/// `<T> { items: T[], next: string? }`. The body reads each parameter as a
+/// [`Type::Param`].
+pub fn parse_decl(text: &str) -> Result<(Vec<String>, Type), TypeSyntaxError> {
+    let trimmed = text.trim_start();
+    let Some(after) = trimmed.strip_prefix('<') else { return Ok((Vec::new(), parse_type(text)?)) };
+    let offset = text.len() - after.len();
+    let close = after.find('>').ok_or(TypeSyntaxError { message: "the type parameters are never closed".into(), at: 0 })?;
+    let params: Vec<String> = after[..close].split(',').map(|p| p.trim().to_string()).collect();
+    let body = parse_type(&after[close + 1..]).map_err(|e| TypeSyntaxError { at: e.at + offset + close + 1, ..e })?;
+    Ok((params.clone(), body.with_params(&params)))
 }
 
 /// Read a type from its text.
@@ -217,7 +303,7 @@ impl Tok {
 }
 
 fn tokenize(text: &str) -> Result<Vec<(Tok, usize)>, TypeSyntaxError> {
-    const PUNCT: &[&str] = &["=>", "{", "}", "[", "]", "(", ")", "|", "?", ":", ",", ";"];
+    const PUNCT: &[&str] = &["=>", "{", "}", "[", "]", "(", ")", "|", "?", ":", ",", ";", "<", ">"];
     let mut out = Vec::new();
     let mut chars = text.char_indices().peekable();
     while let Some(&(at, c)) = chars.peek() {
@@ -261,8 +347,6 @@ fn tokenize(text: &str) -> Result<Vec<(Tok, usize)>, TypeSyntaxError> {
         } else {
             let message = if c == '\'' {
                 "a literal type is a string in double quotes, `\"all\"`".to_string()
-            } else if c == '<' {
-                "there are no generics: an array of `T` is written `T[]`".to_string()
             } else if c == '&' {
                 "there are no intersection types".to_string()
             } else {
@@ -342,6 +426,16 @@ impl Parser {
             return Err(self.error("expecting a type".into()));
         };
         match tok {
+            Tok::Name(name) if self.peek_nth(1) == Some(Tok::Punct("<")) => {
+                self.at += 2;
+                let mut args = vec![self.union()?];
+                while self.is(",") {
+                    self.at += 1;
+                    args.push(self.union()?);
+                }
+                self.expect(">", "to close the type arguments")?;
+                applied(&name, args).map_err(|message| TypeSyntaxError { message, at })
+            }
             Tok::Name(name) => {
                 self.at += 1;
                 named(&name).map_err(|message| TypeSyntaxError { message, at })
@@ -445,6 +539,56 @@ impl Parser {
     }
 }
 
+fn generic_example(name: &str) -> &'static str {
+    match name {
+        "Array" => "Array<string>",
+        "Option" => "Option<string>",
+        "Map" => "Map<string, int>",
+        "Set" => "Set<string>",
+        _ => "Result<int, string>",
+    }
+}
+
+/// A name given type arguments: the built-in spellings (`Array<T>` is `T[]`,
+/// `Option<T>` is `T?`, `Map<string, T>` is `{ [string]: T }`), or a declared
+/// type's, left for the checker to resolve.
+fn applied(name: &str, mut args: Vec<Type>) -> Result<Type, String> {
+    let want = |n: usize| -> Result<(), String> {
+        if args.len() == n {
+            Ok(())
+        } else {
+            let each = if n == 1 { "one type" } else { "two types" };
+            Err(format!("`{name}` takes {each}, as in `{}`", generic_example(name)))
+        }
+    };
+    match name {
+        "Array" => {
+            want(1)?;
+            Ok(Type::Array(Box::new(args.remove(0))))
+        }
+        "Option" => {
+            want(1)?;
+            Ok(args.remove(0).optional())
+        }
+        "Map" => {
+            want(2)?;
+            if args[0] != Type::String {
+                return Err(format!(
+                    "a `Map`'s keys are `string` for now, not `{}`; other keys come with Rux's own interpreter",
+                    args[0]
+                ));
+            }
+            Ok(Type::Dict(Box::new(args.remove(1))))
+        }
+        "Set" => Err("`Set` is not in the language yet; it comes with Rux's own interpreter".into()),
+        "Result" => Err("`Result` is not in the language yet".into()),
+        _ => match named(name)? {
+            Type::Named(n) => Ok(Type::Generic(n, args)),
+            _ => Err(format!("`{name}` takes no type arguments")),
+        },
+    }
+}
+
 /// The type a name stands for: a built-in, or a declared type left for the
 /// checker to resolve.
 fn named(name: &str) -> Result<Type, String> {
@@ -463,7 +607,9 @@ fn named(name: &str) -> Result<Type, String> {
         // `null` was its name until step 3 of `docs/11-next.md`.
         "none" | "null" => Type::Null,
         "any" => Type::Any,
-        "Array" => return Err("there are no generics: an array of `T` is written `T[]`".into()),
+        "Array" | "Option" | "Map" | "Set" | "Result" => {
+            return Err(format!("`{name}` is written with what it holds, as in `{}`", generic_example(name)))
+        }
         _ => {
             if let Some((_, here)) = SPELLED_ELSEWHERE.iter().find(|(n, _)| *n == name) {
                 let here = if here.contains(' ') { here.to_string() } else { format!("`{here}`") };
@@ -522,6 +668,14 @@ mod tests {
             Type::Array(Box::new(Type::Union(vec![Type::Named("Task".into()), Type::String])))
         );
         assert_eq!(t("string | string"), Type::String, "a union flattens");
+        assert_eq!(t("Array<int>"), t("int[]"));
+        assert_eq!(t("Option<Task>"), t("Task?"));
+        assert_eq!(t("Map<string, Array<int>>"), t("{ [string]: int[] }"));
+        assert_eq!(t("Page<Task, int>[]"), Type::Array(Box::new(Type::Generic("Page".into(), vec![Type::Named("Task".into()), Type::Int]))));
+        let (params, body) = parse_decl("<T> { items: T[], next: string? }").unwrap();
+        assert_eq!(params, ["T"]);
+        assert_eq!(body, t("{ items: T[], next: string? }").with_params(&params));
+        assert_eq!(parse_decl("<T> T[]").unwrap().1, Type::Array(Box::new(Type::Param("T".into()))));
     }
 
     #[test]
@@ -537,6 +691,7 @@ mod tests {
             "(Task | string)[]",
             "((int) => bool)?",
             "{ load: { state: \"done\", rows: Task[] } | { state: \"idle\" } }",
+            "Page<Task, int[]>",
         ] {
             let ty = parse_type(s).unwrap();
             assert_eq!(parse_type(&ty.to_string()).unwrap(), ty, "{s} displayed as {ty}");
@@ -549,7 +704,11 @@ mod tests {
         assert!(e("boolean").contains("Rux calls it `bool`"), "{}", e("boolean"));
         assert!(e("number").contains("`int`") && e("number").contains("rux fmt"), "{}", e("number"));
         assert!(e("f64").contains("Rux calls it `float`"));
-        assert!(e("Array<int>").contains("`T[]`"));
+        assert!(e("Array").contains("`Array<string>`"));
+        assert!(e("Map<int, string>").contains("keys are `string` for now"));
+        assert!(e("Set<int>").contains("not in the language yet"));
+        assert!(e("int<string>").contains("takes no type arguments"));
+        assert!(e("Array<int, int>").contains("takes one type"));
         assert!(e("task").contains("capital letter"));
         assert!(e("{ [int]: bool }").contains("keys are strings"));
         assert!(e("{ a: int, a: int }").contains("twice"));
@@ -577,6 +736,9 @@ mod tests {
             "() => null",
             "(Task | string)[]",
             "{ on: (string) => null }",
+            "Array<int>",
+            "Map<string, Page<Array<Task>>>",
+            "Page<{ a: int }, string?>[]",
         ] {
             let script = rux_syntax::parse(&format!("let x: {s} = 1;"), Default::default())
                 .unwrap_or_else(|e| panic!("rux-syntax refused `{s}`: {e}"));

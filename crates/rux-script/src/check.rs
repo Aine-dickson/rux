@@ -21,7 +21,7 @@ use rux_syntax::print;
 use rux_syntax::visit::{walk_stmts, Node};
 use rux_syntax::{LineIndex, Options, Span};
 
-use crate::types::{parse_type, Field, Type};
+use crate::types::{parse_decl, parse_type, Field, Type};
 
 /// One thing the checker has to say.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -175,6 +175,9 @@ enum FnState {
 #[derive(Clone, Debug)]
 struct FnInfo<'a> {
     def: &'a FnDecl,
+    /// `fn first<T>`: its type parameters, which its annotations read as
+    /// [`Type::Param`]s.
+    tparams: Vec<String>,
     /// Each parameter's declared type, `None` where it has none.
     params: Vec<(String, Option<Type>)>,
     /// `): T`, when written.
@@ -212,6 +215,11 @@ struct Checker<'a> {
     in_template: Option<(usize, String)>,
     /// Declared and imported types, by name.
     types: HashMap<String, Type>,
+    /// The type parameters of each generic one of [`Checker::types`], whose
+    /// body reads them as [`Type::Param`]s.
+    type_params: HashMap<String, Vec<String>>,
+    /// The type parameters of the function whose body is being checked.
+    tparams: Vec<String>,
     /// Types that resolve here without being nameable here, with the `use`
     /// path that would make them so.
     hidden: HashMap<String, String>,
@@ -259,6 +267,8 @@ impl<'a> Checker<'a> {
             source: Source::new(src),
             in_template: None,
             types: HashMap::new(),
+            type_params: HashMap::new(),
+            tparams: Vec::new(),
             hidden: HashMap::new(),
             fns: HashMap::new(),
             globals: HashMap::new(),
@@ -423,7 +433,8 @@ impl<'a> Checker<'a> {
             (Some(t), _) | (None, FnState::Done(t)) => format!(": {t}"),
             _ => String::new(),
         };
-        Some(format!("fn {name}({}){result}", params.join(", ")))
+        let tparams = if info.tparams.is_empty() { String::new() } else { format!("<{}>", info.tparams.join(", ")) };
+        Some(format!("fn {name}{tparams}({}){result}", params.join(", ")))
     }
 
     /// What was kept, with every function and parameter placed at the line
@@ -516,21 +527,24 @@ impl<'a> Checker<'a> {
 
         // Types first, since everything else names them.
         for (name, text, path) in &self.cx.support_types {
-            if let Ok(ty) = parse_type(text) {
+            if let Ok((params, ty)) = parse_decl(text) {
                 self.types.insert(name.clone(), ty);
+                self.type_params.insert(name.clone(), params);
                 self.hidden.insert(name.clone(), path.clone());
             }
         }
         for (name, text) in &self.cx.imported_types {
             self.hidden.remove(name);
-            if let Ok(ty) = parse_type(text) {
+            if let Ok((params, ty)) = parse_decl(text) {
                 self.types.insert(name.clone(), ty);
+                self.type_params.insert(name.clone(), params);
             }
         }
         for stmt in &script.stmts {
-            let StmtKind::Type { name, ty } = &stmt.kind else { continue };
+            let StmtKind::Type { name, params, ty } = &stmt.kind else { continue };
             self.old_spellings_in(ty);
-            match type_of_expr(ty) {
+            let params: Vec<String> = params.iter().map(|p| p.name.clone()).collect();
+            match type_of_expr(ty).map(|t| t.with_params(&params)) {
                 Ok(t) => {
                     let n = name.name.as_str();
                     if self.types.contains_key(n)
@@ -551,6 +565,7 @@ impl<'a> Checker<'a> {
                     }
                     self.hidden.remove(n);
                     self.types.insert(n.to_string(), t);
+                    self.type_params.insert(n.to_string(), params);
                 }
                 Err(e) => {
                     let text = ty.span.text(&self.source.text).to_string();
@@ -559,17 +574,34 @@ impl<'a> Checker<'a> {
             }
         }
 
+        // A generic type's uses of other types, which only its body says.
+        for stmt in &script.stmts {
+            let StmtKind::Type { name, params, ty } = &stmt.kind else { continue };
+            if params.is_empty() {
+                continue;
+            }
+            if let Some(body) = self.types.get(&name.name).cloned() {
+                self.check_names_exist(&body, ty.span);
+            }
+        }
+
         // Every annotation, with its names checked against the types that
-        // exist.
-        let mut written: Vec<&TypeExpr> = Vec::new();
-        annotations_in(&script.stmts, &mut written);
-        for ty in written {
-            self.old_spellings_in(ty);
-            match type_of_expr(ty) {
-                Ok(t) => self.check_names_exist(&t, ty.span),
-                Err(e) => {
-                    let text = ty.span.text(&self.source.text).to_string();
-                    self.error(ty.span, format!("`{text}` is not a type: {e}"));
+        // exist. A generic function's own type parameters are types inside it.
+        for stmt in &script.stmts {
+            let mut written: Vec<&TypeExpr> = Vec::new();
+            annotations_in(std::slice::from_ref(stmt), &mut written);
+            let tparams = match &stmt.kind {
+                StmtKind::Fn(def) => def.type_params.iter().map(|p| p.name.clone()).collect(),
+                _ => Vec::new(),
+            };
+            for ty in written {
+                self.old_spellings_in(ty);
+                match type_of_expr(ty) {
+                    Ok(t) => self.check_names_exist(&t.with_params(&tparams), ty.span),
+                    Err(e) => {
+                        let text = ty.span.text(&self.source.text).to_string();
+                        self.error(ty.span, format!("`{text}` is not a type: {e}"));
+                    }
                 }
             }
         }
@@ -579,14 +611,12 @@ impl<'a> Checker<'a> {
 
         for stmt in &script.stmts {
             let StmtKind::Fn(def) = &stmt.kind else { continue };
-            let params = def
-                .params
-                .iter()
-                .map(|p| (p.name.name.clone(), p.ty.as_ref().and_then(|t| type_of_expr(t).ok())))
-                .collect();
-            let result = def.result.as_ref().and_then(|t| type_of_expr(t).ok());
+            let tparams: Vec<String> = def.type_params.iter().map(|p| p.name.clone()).collect();
+            let read = |t: &TypeExpr| type_of_expr(t).ok().map(|t| t.with_params(&tparams));
+            let params = def.params.iter().map(|p| (p.name.name.clone(), p.ty.as_ref().and_then(read))).collect();
+            let result = def.result.as_ref().and_then(read);
             let key = (def.name.name.clone(), def.params.len());
-            self.fns.insert(key, FnInfo { def, params, result, state: FnState::Unchecked });
+            self.fns.insert(key, FnInfo { def, tparams, params, result, state: FnState::Unchecked });
         }
 
         // The top level, in order: its `let`s are the signals every function
@@ -764,7 +794,9 @@ impl<'a> Checker<'a> {
             TypeKind::Null => self.old_spelling(ty.span),
             TypeKind::Array(t) | TypeKind::Optional(t) | TypeKind::Paren(t) => self.old_spellings_in(t),
             TypeKind::Dict { value, .. } => self.old_spellings_in(value),
-            TypeKind::Union(members) => members.iter().for_each(|m| self.old_spellings_in(m)),
+            TypeKind::Union(members) | TypeKind::Generic { args: members, .. } => {
+                members.iter().for_each(|m| self.old_spellings_in(m))
+            }
             TypeKind::Record(fields) => fields.iter().for_each(|f| self.old_spellings_in(&f.ty)),
             TypeKind::Function(params, result) => {
                 params.iter().for_each(|p| self.old_spellings_in(p));
@@ -778,7 +810,24 @@ impl<'a> Checker<'a> {
     fn check_names_exist(&mut self, ty: &Type, pos: Pos) {
         let mut names = Vec::new();
         named_in(ty, &mut names);
-        for name in names {
+        for (name, given) in names {
+            let params = self.type_params.get(&name).map_or(0, Vec::len);
+            if self.types.contains_key(&name) && !self.hidden.contains_key(&name) && given != params {
+                let message = match (params, given) {
+                    (0, _) => format!("`{name}` takes no type arguments"),
+                    (_, 0) => format!(
+                        "`{name}` is written with what it holds: `{name}<{}>`",
+                        self.type_params[&name].join(", ")
+                    ),
+                    _ => format!(
+                        "`{name}` takes {params} type argument{}: `{name}<{}>`",
+                        if params == 1 { "" } else { "s" },
+                        self.type_params[&name].join(", ")
+                    ),
+                };
+                self.error(pos, message);
+                continue;
+            }
             if let Some(path) = self.hidden.get(&name) {
                 let message = format!("`{name}` is not imported here; bring it in with `use {path};`");
                 self.error(pos, message);
@@ -806,9 +855,20 @@ impl<'a> Checker<'a> {
         let mut ty = ty.clone();
         for _ in 0..MAX_DEPTH {
             match ty {
+                // A generic one named without its arguments was reported.
+                Type::Named(ref name) if self.type_params.get(name).is_some_and(|p| !p.is_empty()) => {
+                    return Type::Any
+                }
                 Type::Named(ref name) => match self.types.get(name) {
                     Some(t) => ty = t.clone(),
                     None => return Type::Any,
+                },
+                Type::Generic(ref name, ref args) => match (self.types.get(name), self.type_params.get(name)) {
+                    (Some(body), Some(params)) if params.len() == args.len() => {
+                        let given = params.iter().cloned().zip(args.iter().cloned()).collect();
+                        ty = body.substitute(&given);
+                    }
+                    _ => return Type::Any,
                 },
                 _ => return ty,
             }
@@ -964,7 +1024,7 @@ impl<'a> Checker<'a> {
             // the members that are all `T`.
             ExprKind::Is { expr, ty } => {
                 let Some(path) = path_of(expr) else { return Vec::new() };
-                let Ok(ty) = type_of_expr(ty) else { return Vec::new() };
+                let Ok(ty) = self.annotation(ty) else { return Vec::new() };
                 if truth {
                     return vec![(path, ty)];
                 }
@@ -1590,7 +1650,7 @@ impl<'a> Checker<'a> {
             self.bind(name, ty);
             return;
         }
-        if let Some(ty) = ty.and_then(|t| type_of_expr(t).ok()) {
+        if let Some(ty) = ty.and_then(|t| self.annotation(t).ok()) {
             self.check_expr(value, &ty);
             self.saw(pos, "let", name, Some(name), &ty);
             self.bind(name, ty);
@@ -1891,7 +1951,12 @@ impl<'a> Checker<'a> {
             ExprKind::Binary { op, lhs, rhs } => self.operator(e, op, lhs, rhs),
             ExprKind::Is { expr, ty } => {
                 self.infer(expr);
-                match type_of_expr(ty) {
+                match self.annotation(ty) {
+                    // At run time there is no `T` to test against.
+                    Ok(t) if t.has_param() => self.error(
+                        ty.span,
+                        format!("`is` cannot test for `{t}`: a type parameter is not known when the program runs"),
+                    ),
                     Ok(t) => self.check_names_exist(&t, ty.span),
                     Err(err) => {
                         let text = print::ty(ty);
@@ -2028,6 +2093,10 @@ impl<'a> Checker<'a> {
     fn property(&mut self, base: &Type, shown: &Type, name: &str, pos: Pos, read: Read) -> Type {
         match base {
             Type::Any => Type::Any,
+            Type::Param(p) => {
+                self.error(pos, format!("`{p}` is a type parameter, so nothing is known of a `{name}` on it"));
+                Type::Any
+            }
             Type::Array(_) | Type::String | Type::Literal(_) if name == "length" => Type::Int,
             Type::Record(fields) => match fields.iter().find(|f| f.name == name) {
                 Some(f) if f.optional => {
@@ -2395,6 +2464,7 @@ impl<'a> Checker<'a> {
         let b = self.resolve(b);
         match (&a, &b) {
             (Type::Any, _) | (_, Type::Any) | (Type::Null, _) | (_, Type::Null) => true,
+            (Type::Param(_), _) | (_, Type::Param(_)) => true,
             (Type::Union(m), _) => m.iter().any(|x| self.overlaps(x, &b)),
             (_, Type::Union(m)) => m.iter().any(|x| self.overlaps(&a, x)),
             (Type::Literal(x), Type::Literal(y)) => x == y,
@@ -2433,7 +2503,19 @@ impl<'a> Checker<'a> {
 
     fn call_script_fn(&mut self, name: &str, args: &[Expr]) -> Type {
         let key = (name.to_string(), args.len());
-        let params: Vec<(String, Option<Type>)> = self.fns[&key].params.clone();
+        let mut params: Vec<(String, Option<Type>)> = self.fns[&key].params.clone();
+        // A generic function's type parameters are what its arguments make
+        // them, and the call is then checked as an ordinary one.
+        let given = if self.fns[&key].tparams.is_empty() {
+            None
+        } else {
+            let tparams = self.fns[&key].tparams.clone();
+            let given = self.type_arguments(&tparams, &params, args);
+            for (_, ty) in params.iter_mut() {
+                *ty = ty.as_ref().map(|t| t.substitute(&given));
+            }
+            Some(given)
+        };
         for (i, (arg, (param, ty))) in args.iter().zip(params.iter()).enumerate() {
             match ty {
                 Some(ty) => {
@@ -2456,13 +2538,121 @@ impl<'a> Checker<'a> {
                 }
             }
         }
-        let result = self.function_result(name, args.len());
+        let mut result = self.function_result(name, args.len());
+        if let Some(given) = given {
+            result = result.substitute(&given);
+        }
         // Whatever the function writes may no longer be what a condition
         // established: a fact about a signal dies at a call that writes it.
         for written in self.writes_of(name, args.len()) {
             self.forget(&written);
         }
         result
+    }
+
+    /// What each type parameter of a generic function is at a call, from its
+    /// arguments: the plain ones first, then the closures, which are handed
+    /// what the plain ones settled (`map(items, t => t.id)`). One nothing
+    /// settles is `any`.
+    fn type_arguments(&mut self, tparams: &[String], params: &[(String, Option<Type>)], args: &[Expr]) -> HashMap<String, Type> {
+        let mut given: HashMap<String, Type> = HashMap::new();
+        let is_closure = |a: &Expr| matches!(a.kind, ExprKind::Closure { .. });
+        for closures in [false, true] {
+            for (arg, (_, ty)) in args.iter().zip(params) {
+                let Some(ty) = ty.as_ref().filter(|t| t.has_param()) else { continue };
+                if is_closure(arg) != closures {
+                    continue;
+                }
+                let got = if closures {
+                    let shape = match ty.substitute(&given) {
+                        Type::Function(p, r) => Some((p, *r)),
+                        _ => None,
+                    };
+                    let errors = self.quiet_errors;
+                    self.quiet += 1;
+                    let t = self.closure(arg, shape.map(|(p, _)| (p, Type::Any)));
+                    self.quiet -= 1;
+                    self.quiet_errors = errors;
+                    t
+                } else {
+                    self.infer_quietly(arg)
+                };
+                self.unify(ty, &widen(&got), &mut given, 0);
+            }
+        }
+        for p in tparams {
+            given.entry(p.clone()).or_insert(Type::Any);
+        }
+        given
+    }
+
+    /// Match `pattern`, which has type parameters in it, against `actual`,
+    /// and note in `given` what each parameter must be. Where two arguments
+    /// say different things, the wider one stands and the check that follows
+    /// reports the other.
+    fn unify(&self, pattern: &Type, actual: &Type, given: &mut HashMap<String, Type>, depth: usize) {
+        if depth > MAX_DEPTH || !pattern.has_param() {
+            return;
+        }
+        let d = depth + 1;
+        // A parameter takes the type as written, `Task` and not its fields;
+        // the structure is compared unfolded.
+        let written = actual;
+        let actual = self.resolve(actual);
+        if actual == Type::Any {
+            return;
+        }
+        match (pattern, &actual) {
+            (Type::Param(p), _) => match given.get(p) {
+                None => {
+                    given.insert(p.clone(), written.clone());
+                }
+                Some(before) if self.assignable(before, written) && !self.assignable(written, before) => {
+                    given.insert(p.clone(), written.clone());
+                }
+                Some(_) => {}
+            },
+            (Type::Array(p), Type::Array(a)) | (Type::Dict(p), Type::Dict(a)) => self.unify(p, a, given, d),
+            (Type::Dict(p), Type::Record(fields)) => {
+                self.unify(p, &Type::union(fields.iter().map(|f| f.ty.clone())), given, d)
+            }
+            (Type::Record(want), Type::Record(have)) => {
+                for w in want {
+                    if let Some(h) = have.iter().find(|h| h.name == w.name) {
+                        self.unify(&w.ty, &h.ty, given, d);
+                    }
+                }
+            }
+            (Type::Function(pp, pr), Type::Function(ap, ar)) => {
+                for (p, a) in pp.iter().zip(ap) {
+                    self.unify(p, a, given, d);
+                }
+                self.unify(pr, ar, given, d);
+            }
+            // `T?` given a `string?` is a `string`: what the pattern names
+            // itself is taken out, and the one member with a parameter in it
+            // gets the rest.
+            (Type::Union(members), _) => {
+                let (generic, fixed): (Vec<&Type>, Vec<&Type>) = members.iter().partition(|m| m.has_param());
+                let [one] = generic[..] else { return };
+                let rest = match &actual {
+                    Type::Union(have) => Type::union(
+                        have.iter().filter(|h| !fixed.iter().any(|f| self.assignable(h, f))).cloned(),
+                    ),
+                    other if fixed.iter().any(|f| self.assignable(other, f)) => return,
+                    other => other.clone(),
+                };
+                self.unify(one, &rest, given, d);
+            }
+            // A declared generic resolves to its body, so compare bodies.
+            (Type::Generic(..), _) => {
+                let body = self.resolve(pattern);
+                if body != Type::Any {
+                    self.unify(&body, &actual, given, d);
+                }
+            }
+            _ => {}
+        }
     }
 
     /// What a named function returns, checking its body the first time it is
@@ -2527,6 +2717,7 @@ impl<'a> Checker<'a> {
         // called it: a script's own locals are not visible here.
         let saved = std::mem::take(&mut self.scopes);
         let saved_facts = std::mem::replace(&mut self.facts, vec![HashMap::new()]);
+        let saved_tparams = std::mem::replace(&mut self.tparams, info.tparams.clone());
         // Typed means every parameter annotated, which a function with none is.
         let typed = info.params.iter().all(|(_, t)| t.is_some());
         self.in_fn.push((name.to_string(), typed));
@@ -2554,6 +2745,7 @@ impl<'a> Checker<'a> {
         self.in_fn.pop();
         self.scopes = saved;
         self.facts = saved_facts;
+        self.tparams = saved_tparams;
         if let Some(f) = self.fns.get_mut(&key) {
             f.state = FnState::Done(inferred.clone());
         }
@@ -2570,7 +2762,7 @@ impl<'a> Checker<'a> {
         let mut params = Vec::new();
         for (i, p) in written.iter().enumerate() {
             let name = &p.name.name;
-            let declared = p.ty.as_ref().and_then(|t| type_of_expr(t).ok());
+            let declared = p.ty.as_ref().and_then(|t| self.annotation(t).ok());
             let from_context = expected.as_ref().and_then(|(p, _)| p.get(i).cloned());
             let ty = match (declared, from_context) {
                 (Some(t), _) => t,
@@ -2736,6 +2928,14 @@ impl<'a> Checker<'a> {
 }
 
 /// A type as written, as the checker's [`Type`].
+impl Checker<'_> {
+    /// An annotation inside the body being checked, which reads the
+    /// function's type parameters as [`Type::Param`]s.
+    fn annotation(&self, ty: &TypeExpr) -> Result<Type, String> {
+        type_of_expr(ty).map(|t| t.with_params(&self.tparams))
+    }
+}
+
 fn type_of_expr(ty: &TypeExpr) -> Result<Type, String> {
     parse_type(&print::ty(ty)).map_err(|e| e.message)
 }
@@ -2995,9 +3195,14 @@ fn without_null(ty: &Type) -> Type {
 }
 
 /// The declared names a type mentions.
-fn named_in(ty: &Type, out: &mut Vec<String>) {
+/// Every declared type `ty` names, with how many type arguments it was given.
+fn named_in(ty: &Type, out: &mut Vec<(String, usize)>) {
     match ty {
-        Type::Named(n) => out.push(n.clone()),
+        Type::Named(n) => out.push((n.clone(), 0)),
+        Type::Generic(n, args) => {
+            out.push((n.clone(), args.len()));
+            args.iter().for_each(|a| named_in(a, out));
+        }
         Type::Array(t) | Type::Dict(t) => named_in(t, out),
         Type::Record(fields) => fields.iter().for_each(|f| named_in(&f.ty, out)),
         Type::Union(members) => members.iter().for_each(|m| named_in(m, out)),
@@ -3136,6 +3341,65 @@ mod tests {
         assert!(errors("let n: int = parseInt(\"4\") ?? 0; let x: float = parseFloat(\"1.5\") ?? 0.0;").is_empty());
         // `number` is retired, with the way out.
         one_error("let n: number = 1;", "there is no type `number` now");
+    }
+
+    /// Generics, step 3.4 of `docs/11-next.md`.
+    #[test]
+    fn a_generic_function_takes_its_types_from_its_arguments() {
+        let src = format!(
+            "{TASK}fn first<T>(items: T[]): T? {{ items?[0] }}\n\
+             fn pluck<T, U>(items: T[], f: (T) => U): U[] {{ items.map(f) }}\n\
+             let tasks: Task[] = [];\n\
+             let t: Task? = first(tasks);\n\
+             let ids: int[] = pluck(tasks, t => t.id);\n\
+             let n: int? = first([1, 2]);\n"
+        );
+        assert!(findings(&src).is_empty(), "{:#?}", findings(&src));
+        one_error(&format!("{src}let s: string? = first(tasks);"), "this is `Task?`, where `string?` is expected");
+        one_error(&format!("{src}let u: string[] = pluck(tasks, t => t.id);"), "this is `int[]`, where `string[]` is expected");
+        // The closure's parameter is a `Task`, from the list before it.
+        one_error(&format!("{src}fn g() {{ pluck(tasks, t => t.titel) }}"), "`Task` has no field `titel`");
+        // Two arguments that disagree about `T`.
+        one_error(
+            &format!("{src}fn pair<T>(a: T, b: T): T[] {{ [a, b] }}\nlet p = pair(1, \"x\");"),
+            "`pair` takes `int` as `b`, and this is `\"x\"`",
+        );
+        let t = table(&src);
+        assert_eq!(seen(&t, "fn", "first")[0].ty, "fn first<T>(items: T[]): T?");
+    }
+
+    #[test]
+    fn a_type_parameter_is_opaque_inside_its_function() {
+        one_error("fn f<T>(x: T): int { x.length }", "`T` is a type parameter, so nothing is known of a `length` on it");
+        one_error("fn f<T>(x: T): int { x }", "`f` is declared to return `int`, and this is `T`");
+        one_error("fn f<T>(x: T): T { x + 1 }", "cannot be applied to `T` and `int`");
+        one_error("fn f<T>(x: any): bool { x is T }", "`is` cannot test for `T`");
+        assert!(errors("fn same<T>(a: T, b: T): bool { a == b }\nfn wrap<T>(x: T): { value: T } { { value: x } }").is_empty());
+        // A type parameter is a type only inside its own function.
+        one_error("fn f<T>(x: T) { x }\nfn g(y: T) { y }", "there is no type `T`");
+    }
+
+    #[test]
+    fn a_generic_type_takes_its_arguments() {
+        let page = "type Page<T> = { items: T[], next: string? };\n";
+        assert!(errors(&format!("{page}let p: Page<int> = {{ items: [1], next: none }};")).is_empty());
+        one_error(&format!("{page}let p: Page<int> = {{ items: [\"a\"], next: none }};"), "where `int` is expected");
+        one_error(&format!("{page}let p: Page = {{ items: [], next: none }};"), "`Page` is written with what it holds: `Page<T>`");
+        one_error(&format!("{page}let p: Page<int, int> = {{ items: [], next: none }};"), "`Page` takes 1 type argument: `Page<T>`");
+        one_error("type Two = { a: int };\nlet p: Two<int> = { a: 1 };", "`Two` takes no type arguments");
+        one_error(&format!("{page}fn f(p: Page<int>): string {{ p.items[0] }}"), "this is `int`");
+        // A recursive one, and the built-in spellings.
+        let clean = "type Tree<T> = { value: T, kids: Tree<T>[] };\n\
+                     let t: Tree<int> = { value: 1, kids: [{ value: 2, kids: [] }] };\n\
+                     let a: Array<int> = [1];\nlet m: Map<string, bool> = { a: true };\nlet o: Option<string> = none;";
+        assert!(errors(clean).is_empty(), "{:?}", errors(clean));
+        // Imported, as another file writes it.
+        let cx = Context {
+            imported_types: vec![("Page".into(), "<T> { items: T[] }".into())],
+            ..Context::default()
+        };
+        let f = findings_with("let p: Page<string> = { items: [1] };", &cx);
+        assert!(f.iter().any(|f| f.message.contains("where `string` is expected")), "{f:?}");
     }
 
     #[test]

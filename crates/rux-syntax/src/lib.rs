@@ -84,6 +84,26 @@ mod tests {
     }
 
     #[test]
+    fn type_parameters_and_arguments() {
+        let s = ok("type Page<T, U> = { items: T[], extra: U };\n\
+                    fn first<T>(items: Array<T>): Option<T> { items?[0] }\n\
+                    let m: Map<string, Page<int, Array<string>>> = {};\n\
+                    let n: Page<int, int>[] = [];");
+        let StmtKind::Type { params, .. } = &s.stmts[0].kind else { panic!() };
+        assert_eq!(params.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(), ["T", "U"]);
+        let StmtKind::Fn(f) = &s.stmts[1].kind else { panic!() };
+        assert_eq!(f.type_params.len(), 1);
+        let StmtKind::Let { ty: Some(ty), .. } = &s.stmts[2].kind else { panic!() };
+        assert_eq!(print::ty(ty), "Map<string, Page<int, Array<string>>>");
+        let StmtKind::Let { ty: Some(ty), .. } = &s.stmts[3].kind else { panic!() };
+        assert_eq!(print::ty(ty), "Page<int, int>[]");
+        assert!(fails("fn f<T, T>(x: T) { x }").contains("two type parameters are named `T`"));
+        assert!(fails("let x: Page<int = 1;").contains("expecting"));
+        // `type` is still a name where no declaration can follow it.
+        ok("let type = 1; let lt = type < 2;");
+    }
+
+    #[test]
     fn precedence_is_the_forks() {
         assert_eq!(grouped("a + b * c"), "(a + (b * c))");
         assert_eq!(grouped("a - b - c"), "((a - b) - c)");
@@ -91,9 +111,11 @@ mod tests {
         // `??` binds tighter than a comparison, and `in` looser.
         assert_eq!(grouped("a ?? 0 == 1"), "((a ?? 0) == 1)");
         assert_eq!(grouped("a < b in c"), "((a < b) in c)");
-        assert_eq!(grouped("a == b is int"), "((a == b) is int)");
-        assert_eq!(grouped("a + b is int"), "((a + b) is int)");
-        assert_eq!(grouped("x is T && y"), "((x is T) && y)");
+        // `is` is printed as the call the fork runs it as.
+        assert_eq!(grouped("a == b is int"), "__is((a == b), \"int\")");
+        assert_eq!(grouped("a + b is int"), "__is((a + b), \"int\")");
+        assert_eq!(grouped("x is T && y"), "(__is(x, \"T\") && y)");
+        assert_eq!(grouped("x is Page<Map<string, int[]>>"), "__is(x, \"Page<Map<string, int[]>>\")");
         assert_eq!(grouped("!a == b"), "((!(a)) == b)");
         assert_eq!(grouped("-a.b"), "(-(a.b))");
     }

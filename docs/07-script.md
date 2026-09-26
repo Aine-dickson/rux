@@ -316,7 +316,15 @@ computed left: int = tasks.filter(t => !t.done).length;
 
 fn label(t: Task, n: int): string { `${n}. ${t.title}` }
 let add = (a: float, b: float) => a + b;
+
+type Page<T> = { items: T[], next: string? };
+fn first<T>(items: T[]): T? { items?[0] }
 ```
+
+A type or a function may take type parameters, as `Page<T>` and `first<T>`
+do. A call never names them; they are what its arguments make them, so
+`first(tasks)` is a `Task?`. `Array<T>`, `Option<T>` and `Map<string, T>` are
+the long spellings of `T[]`, `T?` and `{ [string]: T }`.
 
 In a component, `prop label: string;` and `prop price: float = 1;`. A type
 declared in one file is used in another with `use types::Task;`, which names
@@ -324,8 +332,8 @@ the `type Task` in `types.rux`; a type's name starts with a capital letter,
 and that is how `use` tells it from a component. A file holding only a
 `<script>` of `type` declarations is a types file, and `rux` will not run it.
 
-`type` is a keyword only at the start of a statement followed by a name and
-`=`, so `let type = 1;` still works. An annotation that is not a type is a
+`type` is a keyword only at the start of a statement followed by a name, its
+type parameters if any, and `=`, so `let type = 1;` still works. An annotation that is not a type is a
 syntax error at the place it goes wrong.
 
 **What is checked so far** is a file's `<script>` and its template. In the

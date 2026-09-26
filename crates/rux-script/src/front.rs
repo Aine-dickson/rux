@@ -79,7 +79,8 @@ fn position(line: usize, col: usize) -> Position {
 
 /// The text the fork compiles: `src` with each `setInterval(args) { body }`
 /// rewritten to `__interval(args, "body")`, the call it has always been for
-/// the fork (see [`crate::TimerRequest`]), and every annotation blanked. A
+/// the fork (see [`crate::TimerRequest`]), each `x is T` to `__is(x, "T")`,
+/// and every annotation and type parameter list blanked. A
 /// body keeps its newlines as escapes inside the string, and the lines it
 /// took are added back after the call, so everything after it is still on
 /// the line it was written on. A blank is a space for every character and
@@ -105,6 +106,9 @@ pub(crate) fn lower(src: &str, script: &Script) -> String {
                 for t in def.params.iter().filter_map(|p| p.ty.as_ref()).chain(def.result.iter()) {
                     edits.push(blank(annotation(t.span)));
                 }
+                if let Some(span) = def.type_params_span {
+                    edits.push(blank(span));
+                }
                 return true;
             }
             // A `type` declares nothing at run time. Its `;` goes with it.
@@ -121,6 +125,18 @@ pub(crate) fn lower(src: &str, script: &Script) -> String {
         // The fork's spelling of `none`, the same length, so nothing moves.
         if matches!(e.kind, ExprKind::Null) && e.span.text(src) == "none" {
             edits.push((e.span, "null".to_string()));
+            return true;
+        }
+        // `x is T` becomes `__is(x, "T")`, the call the fork has always made
+        // of it, so the fork never reads the type. Two edits around `x`, so
+        // what is rewritten inside `x` still is.
+        if let ExprKind::Is { expr, ty } = &e.kind {
+            edits.push((Span::new(expr.span.start as usize, expr.span.start as usize), "__is(".to_string()));
+            let written = rux_syntax::print::ty(ty).replace('\\', "\\\\").replace('"', "\\\"");
+            let mut text = format!(", \"{written}\")");
+            let tail = Span::new(expr.span.end as usize, ty.span.end as usize);
+            text.push_str(&"\n".repeat(tail.text(src).matches('\n').count()));
+            edits.push((tail, text));
             return true;
         }
         if let ExprKind::Closure { params, .. } = &e.kind {
@@ -157,7 +173,8 @@ pub(crate) fn lower(src: &str, script: &Script) -> String {
     if edits.is_empty() {
         return src.to_string();
     }
-    edits.sort_by_key(|(span, _)| span.start);
+    // An insertion before an edit that starts at the same place.
+    edits.sort_by_key(|(span, _)| (span.start, span.end));
     let mut out = String::with_capacity(src.len() + 32);
     let mut at = 0;
     for (span, text) in edits {

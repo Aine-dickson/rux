@@ -68,6 +68,27 @@ fn an_imported_type_is_checked_against() {
     assert!(f.iter().any(|(_, err, m)| *err && m.contains("did you mean `title`")), "{f:?}");
 }
 
+/// A generic type crosses files with its parameters: checked in the file
+/// that imports it, and at a component's tag when a prop takes one.
+#[test]
+fn an_imported_generic_type_keeps_its_parameters() {
+    let types = "<script>\n  type Page<T> = { items: T[], next: string? };\n</script>\n";
+    let script = "use types::Page;\nlet p: Page<int> = { items: [\"a\"], next: none };";
+    let dir = project(&[("app.rux", &page(script)), ("types.rux", types)]);
+    let doc = Document::load(dir.join("app.rux")).expect("loads");
+    let f = found(&doc);
+    assert!(f.iter().any(|(_, err, m)| *err && m.contains("where `int` is expected")), "{f:?}");
+
+    let list = "<template><view><text>{{ page.items.length }}</text></view></template>\n\
+        <script>\n  use types::Page;\n  prop page: Page<int>;\n</script>\n";
+    let app = "<template><screen>\n<list :page=\"raw\" />\n</screen></template>\n\
+        <script>\nuse components::list;\nlet raw: any = { items: [\"a\"], next: none };\n</script>\n";
+    let dir = project(&[("app.rux", app), ("components/list.rux", list), ("types.rux", types)]);
+    let doc = Document::load(dir.join("app.rux")).expect("loads");
+    let f = found(&doc);
+    assert!(f.iter().any(|(_, err, m)| *err && m.contains("which is not the `Page<int>` `prop page` takes")), "{f:?}");
+}
+
 /// An imported type may be built from the types beside it, and those resolve;
 /// naming one without importing it is an error that says how to.
 #[test]

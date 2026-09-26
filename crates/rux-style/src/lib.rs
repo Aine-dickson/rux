@@ -669,7 +669,7 @@ struct Component {
     /// parse, which the checker has already reported.
     prop_types: Vec<Option<rux_script::types::Type>>,
     /// What a declared name in one of those stands for.
-    types: HashMap<String, rux_script::types::Type>,
+    types: HashMap<String, rux_script::validate::Decl>,
 }
 
 impl Component {
@@ -2020,7 +2020,7 @@ pub fn build_styled_tree_stateful(
                     types: c
                         .types
                         .iter()
-                        .filter_map(|(n, t)| Some((n.clone(), rux_script::types::parse_type(t).ok()?)))
+                        .filter_map(|(n, t)| Some((n.clone(), rux_script::types::parse_decl(t).ok()?)))
                         .collect(),
                 },
             )

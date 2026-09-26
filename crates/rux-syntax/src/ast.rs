@@ -61,8 +61,8 @@ pub enum StmtKind {
     Switch(Switch),
     Block(Block),
     Fn(FnDecl),
-    /// `type Name = T;`
-    Type { name: Ident, ty: TypeExpr },
+    /// `type Name = T;`, or `type Name<T, U> = …;` with type parameters.
+    Type { name: Ident, params: Vec<Ident>, ty: TypeExpr },
     /// `import "path" as name;`, rhai's module import.
     Import { path: Expr, alias: Option<Ident> },
     /// `export let x = …`, `export const …`, or `export name as alias`.
@@ -139,6 +139,9 @@ pub struct FnDecl {
     pub private: bool,
     /// `fn Type.name()`, rhai's method on a type.
     pub this_type: Option<String>,
+    /// `fn first<T>(…)`: the type parameters, and the span from `<` to `>`.
+    pub type_params: Vec<Ident>,
+    pub type_params_span: Option<Span>,
     pub params: Vec<Param>,
     pub result: Option<TypeExpr>,
     pub body: Block,
@@ -225,6 +228,8 @@ pub struct TypeExpr {
 pub enum TypeKind {
     /// `int`, `Task`.
     Name(String),
+    /// `Page<int>`, `Array<T>`, `Map<string, T>`: a name given type arguments.
+    Generic { name: String, args: Vec<TypeExpr> },
     /// `"all"`.
     Literal(String),
     /// `none`, or `null`.
