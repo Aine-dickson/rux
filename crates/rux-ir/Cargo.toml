@@ -1,0 +1,12 @@
+[package]
+name = "rux-ir"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Rux's typed IR and its type language. Internal to Rux; the supported entry point is the ruxlang crate."
+readme = "README.md"
+keywords = ["ui", "compiler", "language"]
+categories = ["gui", "compilers"]
+
+[dependencies]

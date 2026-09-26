@@ -12,7 +12,7 @@
 pub mod check;
 mod front;
 pub mod profile;
-pub mod types;
+pub use rux_ir::types;
 pub mod validate;
 
 use std::cell::RefCell;

@@ -4,7 +4,10 @@
 //! turns it into a [`Type`] by printing it back and parsing that here. A
 //! `prop`'s type and an imported type arrive here as text. The grammar is the
 //! one in `docs/10-types.md`, and `rux-syntax` accepts the same shapes: a test
-//! below runs one list of types through both.
+//! in `rux-script`, which has both, runs one list of types through the two.
+//!
+//! Here rather than in `rux-script` so the typed IR can use the same types
+//! without depending on rhai.
 
 use std::fmt;
 
@@ -282,7 +285,7 @@ pub fn result_decl() -> (Vec<String>, Type) {
     (vec!["T".into(), "E".into()], body)
 }
 
-/// A declared type as [`crate::Engine::declared_types`] writes it for another
+/// A declared type as `rux_script::Engine::declared_types` writes it for another
 /// file: its type parameters, if it has any, in `<>` before its body, as in
 /// `<T> { items: T[], next: string? }`. The body reads each parameter as a
 /// [`Type::Param`].
@@ -746,39 +749,5 @@ mod tests {
         assert!(e("(int, string)").contains("expecting `=>`"));
         assert!(e("int string").contains("does not continue"));
         assert!(e("").contains("expecting a type"));
-    }
-
-    /// Rux's parser and this one must read a type the same way. Every text
-    /// here is parsed as an annotation by `rux-syntax`, and what it read,
-    /// printed back, is parsed here to the same type.
-    #[test]
-    fn rux_syntax_and_this_parser_agree() {
-        for s in [
-            "float",
-            "Task[]",
-            "string?",
-            "string?[]",
-            "\"all\" | \"open\" | \"done\"",
-            "| { state: \"idle\" } | { state: \"done\", rows: Task[] }",
-            "{ id: int, title: string, note?: string, }",
-            "{ [string]: bool }",
-            "(Task, int) => bool",
-            "() => null",
-            "(Task | string)[]",
-            "{ on: (string) => null }",
-            "Array<int>",
-            "Map<string, Page<Array<Task>>>",
-            "Page<{ a: int }, string?>[]",
-        ] {
-            let script = rux_syntax::parse(&format!("let x: {s} = 1;"), Default::default())
-                .unwrap_or_else(|e| panic!("rux-syntax refused `{s}`: {e}"));
-            let rux_syntax::ast::StmtKind::Let { ty: Some(ty), .. } = &script.stmts[0].kind else { panic!("{s}") };
-            let recorded = &rux_syntax::print::ty(ty);
-            assert_eq!(
-                parse_type(recorded).unwrap_or_else(|e| panic!("`{recorded}` from `{s}`: {e}")),
-                parse_type(s).unwrap(),
-                "{s}"
-            );
-        }
     }
 }

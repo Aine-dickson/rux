@@ -2941,6 +2941,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "rux-ir"
+version = "0.8.0-dev"
+
+[[package]]
 name = "rux-layout"
 version = "0.8.0-dev"
 dependencies = [
@@ -3009,6 +3013,7 @@ dependencies = [
 name = "rux-script"
 version = "0.8.0-dev"
 dependencies = [
+ "rux-ir",
  "rux-reactive",
  "rux-rhai",
  "rux-syntax",

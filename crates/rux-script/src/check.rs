@@ -3633,6 +3633,41 @@ mod tests {
         assert!(missing.is_empty(), "{missing:#?}");
     }
 
+    /// Rux's parser and the type parser in `rux-ir` must read a type the same
+    /// way. Every text
+    /// here is parsed as an annotation by `rux-syntax`, and what it read,
+    /// printed back, is parsed here to the same type.
+    #[test]
+    fn rux_syntax_and_this_parser_agree() {
+        for s in [
+            "float",
+            "Task[]",
+            "string?",
+            "string?[]",
+            "\"all\" | \"open\" | \"done\"",
+            "| { state: \"idle\" } | { state: \"done\", rows: Task[] }",
+            "{ id: int, title: string, note?: string, }",
+            "{ [string]: bool }",
+            "(Task, int) => bool",
+            "() => null",
+            "(Task | string)[]",
+            "{ on: (string) => null }",
+            "Array<int>",
+            "Map<string, Page<Array<Task>>>",
+            "Page<{ a: int }, string?>[]",
+        ] {
+            let script = rux_syntax::parse(&format!("let x: {s} = 1;"), Default::default())
+                .unwrap_or_else(|e| panic!("rux-syntax refused `{s}`: {e}"));
+            let rux_syntax::ast::StmtKind::Let { ty: Some(ty), .. } = &script.stmts[0].kind else { panic!("{s}") };
+            let recorded = &rux_syntax::print::ty(ty);
+            assert_eq!(
+                parse_type(recorded).unwrap_or_else(|e| panic!("`{recorded}` from `{s}`: {e}")),
+                parse_type(s).unwrap(),
+                "{s}"
+            );
+        }
+    }
+
     #[test]
     fn a_program_that_agrees_with_itself_says_nothing() {
         let src = format!(

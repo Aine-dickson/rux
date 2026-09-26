@@ -16,6 +16,8 @@ members = [
     "crates/rux-script",
     # Rux's own parser, replacing the fork's one step at a time: docs/11-next.md.
     "crates/rux-syntax",
+    # Rux's typed IR, between the checker and every backend: docs/11-next.md, step 4.
+    "crates/rux-ir",
     # A fork of rhai, vendored rather than patched: see crates/rux-rhai/DIVERGENCE.md
     # for what is actually different and why.
     "crates/rux-rhai",
@@ -73,6 +75,7 @@ rux-layout = { version = "0.8.0-dev", path = "crates/rux-layout" }
 rux-fmt = { version = "0.8.0-dev", path = "crates/rux-fmt" }
 rux-script = { version = "0.8.0-dev", path = "crates/rux-script" }
 rux-syntax = { version = "0.8.0-dev", path = "crates/rux-syntax" }
+rux-ir = { version = "0.8.0-dev", path = "crates/rux-ir" }
 # Declared under the name `rhai`, so every `use rhai::…` in `rux-script` keeps
 # working and the fork is a one-line swap rather than a rename spread through the
 # script tier. What it is is not hidden: the package name is `rux-rhai` and it is

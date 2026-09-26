@@ -17,3 +17,6 @@ rux-reactive.workspace = true
 # Rux's own parser: the front door every script passes before the fork
 # compiles it. See src/front.rs and docs/11-next.md, step 2.
 rux-syntax.workspace = true
+# The typed IR and the type language the checker shares with it: step 4 of
+# docs/11-next.md. `types` is re-exported from here as it always was.
+rux-ir.workspace = true

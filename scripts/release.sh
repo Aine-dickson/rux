@@ -487,7 +487,7 @@ EOF
 # publish: crates.io, from the tag and nothing else
 # ---------------------------------------------------------------------------
 #
-# The thirteen published crates, in dependency order. `cargo publish --dry-run`
+# The fourteen published crates, in dependency order. `cargo publish --dry-run`
 # resolves against the *real* index, so a crate cannot be checked until
 # everything it depends on is genuinely up: publishing is a staircase, not a
 # batch, and each layer waits for the one below to appear.
@@ -499,8 +499,8 @@ LAYERS=(
   # depends on it, so it has to be on the index before the second layer runs,
   # which the wait at the end of each layer takes care of. rux-syntax, Rux's
   # own parser, is here for the same reason: it depends on nothing in the
-  # workspace, and rux-script does on it.
-  "rux-parser rux-reactive rux-text rux-layout rux-rhai rux-syntax"
+  # workspace, and rux-script does on it. So is rux-ir, the typed IR.
+  "rux-parser rux-reactive rux-text rux-layout rux-rhai rux-syntax rux-ir"
   # rux-fmt depends on rux-parser for the void-tag list, so it cannot share a
   # layer with it: within a layer crates publish back to back and the index
   # wait happens only at the end. It sat in layer 0 until the coverage gate
