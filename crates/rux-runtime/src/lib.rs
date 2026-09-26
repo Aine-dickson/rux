@@ -138,6 +138,10 @@ pub struct Document {
     /// engine's script are this document's own: what a task's failure line
     /// is mapped through.
     script_lines: (usize, usize),
+    /// Each component's and module's file and the file line its `<script>`
+    /// starts on, by linked name (`components/card`): where a failure in one
+    /// of its `async fn`s is reported.
+    unit_lines: HashMap<String, (PathBuf, usize)>,
     /// Instance keys whose mount has been drained.
     ///
     /// The pairing rule, and it is not bookkeeping for its own sake: a build can
@@ -2133,6 +2137,8 @@ impl Document {
         let mut component_aliases: HashMap<String, Vec<rux_script::link::Alias>> = HashMap::new();
         // Each component's functions, in a scope of its own.
         let mut component_sources: Vec<rux_script::ComponentSource> = Vec::new();
+        // Each component's file and the line its script starts on, by key.
+        let mut component_places: HashMap<String, (PathBuf, usize)> = HashMap::new();
         let project_root = workspace_root(base).unwrap_or_else(|| base.to_path_buf());
         let mut queue: Vec<ImportJob> = vec![ImportJob {
             owner: DOCUMENT_NAMESPACE.to_string(),
@@ -2504,6 +2510,7 @@ impl Document {
                     aliases: Vec::new(),
                 });
                 let comp_script_line = comp_sfc.script_line;
+                component_places.insert(key.clone(), (comp_path.clone(), comp_script_line));
                 components.insert(key.clone(), comp_sfc);
                 queue.push(ImportJob {
                     owner: key,
@@ -2532,6 +2539,17 @@ impl Document {
         // The position rhai reported is relative to the compiled script; the
         // file is `script_line` further down. That offset is this function's to
         // add, because it is the only place that knows both numbers.
+        // Where each component's and module's lines are, for a task failure
+        // in one of their functions.
+        let mut unit_lines: HashMap<String, (PathBuf, usize)> = module_files
+            .values()
+            .map(|m| (m.name.clone(), (m.path.clone(), m.script_line)))
+            .collect();
+        for c in &component_sources {
+            if let Some((path, line)) = component_places.get(&c.key) {
+                unit_lines.insert(c.name.clone(), (path.clone(), *line));
+            }
+        }
         let ordered: Vec<modules::ModuleFile> = {
             let order = modules::order(&module_files)?;
             order.into_iter().filter_map(|k| module_files.remove(&k)).collect()
@@ -2613,6 +2631,7 @@ impl Document {
         let script_lines = (sfc.script_line, main_script_lines);
         let mut doc = Self {
             script_lines,
+            unit_lines,
             sfc,
             components,
             namespaces,
@@ -2748,6 +2767,7 @@ impl Document {
         let script_lines = (sfc.script_line, usize::MAX);
         let mut doc = Self {
             script_lines,
+            unit_lines: HashMap::new(),
             sfc,
             components: HashMap::new(),
             namespaces: HashMap::new(),
@@ -4819,6 +4839,14 @@ impl Document {
     fn report_task_failures(&mut self) {
         let (start, own) = self.script_lines;
         for f in self.engine.take_task_failures() {
+            // A component's or a module's own function: its file, its line.
+            if let Some((path, first)) = f.unit.as_ref().and_then(|u| self.unit_lines.get(u)) {
+                let line = f.line.map(|l| l + first - 1);
+                rux_script::in_file(Some(path.clone()), || {
+                    rux_script::located(line, || rux_script::warn_script(f.message.clone()))
+                });
+                continue;
+            }
             let line = f.line.filter(|l| *l <= own).map(|l| l + start - 1);
             rux_script::located(line, || rux_script::warn_script(f.message.clone()));
         }
@@ -5631,7 +5659,11 @@ fn component_functions(script: &str) -> String {
     let lines: Vec<&str> = script.lines().collect();
     let mut i = 0;
     while i < lines.len() {
+        // Every other line kept as an empty one, so a line of this text is
+        // the same line of the component's script: what a failure in one of
+        // its functions is reported at.
         if !declares_fn(lines[i]) {
+            out.push('\n');
             i += 1;
             continue;
         }
@@ -9278,6 +9310,32 @@ async fn go() {
         let found = &doc.diagnostics().warnings;
         let hit = found.iter().find(|w| w.message.contains("async fn go") && w.message.contains("offline"));
         assert_eq!(hit.map(|w| w.line), Some(Some(7)), "{found:#?}");
+    }
+
+    /// A component's `async fn` that fails is reported in the component's
+    /// file, at the line of its `await` (step 6.x of docs/11-next.md; it
+    /// had no line before).
+    #[test]
+    fn a_components_async_fn_that_fails_is_reported_in_its_file() {
+        native_later("rt5_bad", 0, |_| Err(rux_native::Error::new("error", "offline")));
+        let mut doc = with_component(
+            "<template><view><text>x</text></view></template>\n\
+             <script>\n\
+             use native::rt5_bad;\n\
+             async fn go() {\n\
+               await rt5_bad.call(none);\n\
+             }\n\
+             mounted { go(); }\n\
+             </script>",
+            "<template><screen><card /></screen></template>\n\
+             <script>\nuse components::card;\n</script>",
+        );
+        settle_one(&mut doc);
+        let found = &doc.diagnostics().warnings;
+        let hit = found.iter().find(|w| w.message.contains("async fn go") && w.message.contains("offline"));
+        let hit = hit.unwrap_or_else(|| panic!("{found:#?}"));
+        assert_eq!(hit.line, Some(5), "{found:#?}");
+        assert!(format!("{:?}", hit).contains("card.rux"), "{hit:#?}");
     }
 
     /// A period of zero would fire every frame forever, so it is refused out

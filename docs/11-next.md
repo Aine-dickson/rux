@@ -1069,13 +1069,21 @@ Float indexing narrows to what the types allow: an index is an `int`, and a
    `crates/rux-shell/examples/async_demo`. Costs, release: starting one to
    its `await` about 1.5 µs, going on about 1.1 µs, against 0.7 µs for an
    ordinary call; the ordinary cases of `tests/interp_cost.rs` did not move.
-   `catch e { }` is read as this reference spells it. Not done yet: an
-   `await` in a `switch` pattern or guard, or after a `?.` in the same chain,
-   is refused when the function starts; a mutating method whose argument
-   awaits (`items.push(await f())`) finds its receiver after the wait; a
-   failure inside a component's `async fn` is reported without a line; and
-   only Rust can register what is awaited, which step 8 turns into `native`
-   modules.
+   `catch e { }` is read as this reference spells it. Left open then and
+   closed on 2026-09-27 (after step 8, without the owner): an `await` in a
+   `switch` guard runs, the `switch` compiled as `if`s tried in order, each
+   guard worked out only when no arm before was taken and its case matched
+   (a case is a literal, so a guard is the only place in a `switch` that can
+   wait); an `await` at or after a `?.` or `?[` runs only when the chain
+   gets that far (`m?[await k()]` with `m` `none` never calls `k`, which it
+   silently did before, since only an `await` above the optional step was
+   caught); a mutating method whose argument waits (`rows[i].push(await
+   f())`) works out its receiver's indexes before the wait, left to right as
+   JavaScript does, and still reads the name itself when it runs, since
+   arrays are values and a push made meanwhile must not be lost; and a
+   failure inside a component's or a module's `async fn` is reported in that
+   file at the line of the statement that failed. What is awaited comes from
+   Rust through `native` modules (step 8).
 7. **Script modules and stores.** Done 2026-09-26. Both spellings of an
    import are one `Import` node in `rux-syntax`, and a type import is marked
    with `type` (the owner's rule: never told by a capital letter). A `.rux`

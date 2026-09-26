@@ -443,6 +443,8 @@ impl Builder {
         let mut engine = Engine::new(ir, parsed, script);
         engine.linking = linking;
         engine.module_types = module_types;
+        engine.unit_sources =
+            modules.iter().chain(&components).map(|m| (m.name.clone(), m.src.clone())).collect();
         engine.modules = modules;
         Ok(engine)
     }
@@ -746,6 +748,9 @@ pub struct Engine {
     module_types: Vec<(String, String, String)>,
     /// Its modules, as the build checked them.
     modules: Vec<ModuleChecked>,
+    /// The text each module's and component's functions were lowered from,
+    /// by linked name (`components/card`): where a task failure in one is.
+    unit_sources: HashMap<String, String>,
     /// The component whose text the load-time checks are reading, by key:
     /// see [`Engine::in_scope`].
     check_scope: std::cell::RefCell<Option<String>>,
@@ -1457,8 +1462,13 @@ fn strip_rhai_position(message: &str) -> String {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TaskFailure {
     pub message: String,
-    /// Where, 1-based in the engine's script: the statement that failed.
+    /// Where, 1-based: the statement that failed, in the engine's script, or
+    /// in `unit`'s when it is set.
     pub line: Option<usize>,
+    /// The module or component (`components/card`) whose function failed,
+    /// when it was not the document's own. `line` is in its text, which the
+    /// runtime keeps line for line with its file.
+    pub unit: Option<String>,
 }
 
 /// How a failure is worded: what the thing that failed is called.
@@ -1483,6 +1493,7 @@ impl Engine {
             linking: Default::default(),
             module_types: Vec::new(),
             modules: Vec::new(),
+            unit_sources: HashMap::new(),
             check_scope: std::cell::RefCell::new(None),
         }
     }
@@ -2032,13 +2043,19 @@ impl Engine {
     /// call. `line` is 1-based in this engine's script, as
     /// [`ScriptError`]'s is.
     pub fn take_task_failures(&mut self) -> Vec<TaskFailure> {
-        let lines = rux_syntax::LineIndex::new(&self.source);
         self.ir
             .take_failed()
             .into_iter()
-            .map(|(name, f)| TaskFailure {
-                message: format!("`async fn {name}` failed: {}", explain(&f.message)),
-                line: f.at.map(|at| lines.line_col(&self.source, at.start as usize).0),
+            .map(|(name, f)| {
+                let unit = link::split(&name).map(|(u, _)| u.to_string()).filter(|u| self.unit_sources.contains_key(u));
+                let own = link::split(&name).map_or(name.as_str(), |(_, n)| n);
+                let src = unit.as_ref().and_then(|u| self.unit_sources.get(u)).unwrap_or(&self.source);
+                let lines = rux_syntax::LineIndex::new(src);
+                TaskFailure {
+                    message: format!("`async fn {own}` failed: {}", explain(&f.message)),
+                    line: f.at.map(|at| lines.line_col(src, at.start as usize).0),
+                    unit,
+                }
             })
             .collect()
     }

@@ -396,3 +396,84 @@ fn a_return_inside_an_if_that_is_the_body_s_value_returns() {
     assert_eq!(text(&e, "out"), "/locked");
     assert!(e.take_task_failures().is_empty());
 }
+
+/// A `switch` whose guards wait (step 6.x; a case is a literal, so a guard
+/// is the one place in a `switch` that can): each arm's guard is worked out
+/// only when no arm before it was taken and its case matched.
+#[test]
+fn a_switch_can_wait_in_a_guard() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static ASKED: AtomicUsize = AtomicUsize::new(0);
+    host::register_async("s1_one", |_, done| done.ok(Value::Number(1.0)));
+    host::register_async("s1_counted", |_, done| {
+        ASKED.fetch_add(1, Ordering::SeqCst);
+        done.ok(Value::Number(2.0))
+    });
+    host::register_async("s1_yes", |_, done| done.ok(Value::Bool(true)));
+    let mut e = engine(
+        "let out = signal(\"\");\n\
+         async fn go(n: int) {\n\
+           out = switch n {\n\
+             1 if await host::s1_one(0) == 1.0 => \"one\",\n\
+             2 if await host::s1_counted(0) == 2.0 && await host::s1_yes(0) => \"two\",\n\
+             _ => \"other\",\n\
+           };\n\
+         }\n",
+    );
+    e.run_handler("go(1)");
+    for _ in 0..1 {
+        settle(&mut e); // one per `await` this call reaches
+    }
+    assert_eq!(text(&e, "out"), "one");
+    assert_eq!(ASKED.load(Ordering::SeqCst), 0, "a later arm's guard is not worked out once one is taken");
+    e.run_handler("go(2)");
+    for _ in 0..2 {
+        settle(&mut e); // one per `await` this call reaches
+    }
+    assert_eq!(text(&e, "out"), "two");
+    e.run_handler("go(5)");
+    assert_eq!(text(&e, "out"), "other", "no case matched, so no guard waited");
+    assert_eq!(ASKED.load(Ordering::SeqCst), 1);
+}
+
+/// `m?[await k()]` (step 6.x): when `m` is `none` the whole chain is `none`
+/// and nothing after the `?[` runs, the waiting included.
+#[test]
+fn nothing_after_a_question_mark_waits_when_it_stops_the_chain() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static ASKED: AtomicUsize = AtomicUsize::new(0);
+    host::register_async("q1_key", |_, done| {
+        ASKED.fetch_add(1, Ordering::SeqCst);
+        done.ok(Value::Text("k".into()))
+    });
+    let mut e = engine(
+        "let m: { [string]: string }? = signal(none);\n\
+         let out = signal(\"\");\n\
+         async fn go() { out = m?[await host::q1_key(0)] ?? \"nothing\"; }\n",
+    );
+    e.run_handler("go()");
+    assert_eq!(text(&e, "out"), "nothing");
+    assert_eq!(ASKED.load(Ordering::SeqCst), 0);
+    e.run_handler("m = { k: \"found\" }");
+    e.run_handler("go()");
+    settle(&mut e);
+    assert_eq!(text(&e, "out"), "found");
+    assert_eq!(ASKED.load(Ordering::SeqCst), 1);
+}
+
+/// `rows[i].push(await f())` (step 6.x): the index is worked out before the
+/// wait, left to right, so the item lands in the row `i` named when the call
+/// began.
+#[test]
+fn a_mutating_method_keeps_its_receiver_s_index_from_before_the_wait() {
+    echo_later("r1_item", "item ");
+    let mut e = engine(
+        "let rows: string[][] = signal([[], []]);\n\
+         let i = signal(0);\n\
+         async fn add() { rows[i].push(await host::r1_item(1)); }\n",
+    );
+    e.run_handler("add()");
+    e.run_handler("i = 1");
+    settle(&mut e);
+    assert_eq!(e.eval_display("`${rows[0].length} ${rows[1].length}`", &[]), "1 0");
+}

@@ -244,6 +244,9 @@ impl Hoist {
                         self.stmt(s, out);
                     }
                 }
+                ExprKind::Match { value, arms } if arms_wait(&arms) => {
+                    self.match_as_ifs(*value, arms, None, out, at);
+                }
                 ExprKind::Match { value, arms } => {
                     let value = self.expr(*value, out);
                     let arms = self.arms(arms, None);
@@ -357,9 +360,6 @@ impl Hoist {
     fn arms(&mut self, arms: Vec<Arm>, into: Option<LocalId>) -> Vec<Arm> {
         arms.into_iter()
             .map(|a| {
-                if a.patterns.iter().any(has_await) || a.guard.as_ref().is_some_and(has_await) {
-                    self.not_yet("in a `switch` pattern or guard");
-                }
                 let body = match into {
                     Some(t) => self.valued(a.body, t),
                     None => self.block(Block { ty: None, ..a.body }),
@@ -367,6 +367,107 @@ impl Hoist {
                 Arm { patterns: a.patterns, guard: a.guard, body }
             })
             .collect()
+    }
+
+    /// A `switch` whose patterns or guards wait, as `if`s tried in order: each
+    /// arm's patterns worked out only when no arm before it was taken, its
+    /// guard only when a pattern matched, as the `switch` itself would. With
+    /// `into`, the taken arm's value goes there.
+    fn match_as_ifs(&mut self, value: Expr, arms: Vec<Arm>, into: Option<LocalId>, out: &mut Vec<Stmt>, at: At) {
+        let value = self.expr(value, out);
+        let vty = value.ty.clone();
+        let v = self.temp(vty.clone());
+        out.push(stmt(StmtKind::Let { local: v, value: Some(value) }, at));
+        let done = self.temp(Type::Bool);
+        let yes = |b: bool| Expr::new(ExprKind::Bool(b), Type::Bool, at);
+        out.push(stmt(StmtKind::Let { local: done, value: Some(yes(false)) }, at));
+        let block_of = |b: bool| Block { stmts: vec![stmt(StmtKind::Expr(yes(b)), at)], ty: Some(Type::Bool) };
+        for a in arms {
+            let mut inner = Vec::new();
+            let patterns: Vec<Expr> = a.patterns.into_iter().map(|p| self.expr(p, &mut inner)).collect();
+            let hit = if patterns.is_empty() {
+                yes(true)
+            } else {
+                let arms = vec![
+                    Arm { patterns, guard: None, body: block_of(true) },
+                    Arm { patterns: Vec::new(), guard: None, body: block_of(false) },
+                ];
+                let read = Expr::new(ExprKind::Local(v), vty.clone(), at);
+                Expr::new(ExprKind::Match { value: Box::new(read), arms }, Type::Bool, at)
+            };
+            let mut then = Vec::new();
+            let guard = match a.guard {
+                Some(g) => self.expr(g, &mut then),
+                None => yes(true),
+            };
+            let mut taken = vec![stmt(StmtKind::Let { local: done, value: Some(yes(true)) }, at)];
+            let body = match into {
+                Some(t) => self.valued(a.body, t),
+                None => self.block(Block { ty: None, ..a.body }),
+            };
+            taken.extend(body.stmts);
+            then.push(stmt(StmtKind::If { cond: guard, then: Block { stmts: taken, ty: None }, otherwise: None }, at));
+            inner.push(stmt(StmtKind::If { cond: hit, then: Block { stmts: then, ty: None }, otherwise: None }, at));
+            let not_done = Expr::new(
+                ExprKind::Unary { op: UnOp::Not, expr: Box::new(Expr::new(ExprKind::Local(done), Type::Bool, at)) },
+                Type::Bool,
+                at,
+            );
+            out.push(stmt(StmtKind::If { cond: not_done, then: Block { stmts: inner, ty: None }, otherwise: None }, at));
+        }
+    }
+
+    /// `chain`, a chain with a `?.` or `?[` in it and an `await` after one:
+    /// its lowest optional step's base worked out first, and the rest,
+    /// waiting included, only when that base is not `none`, as the `?.`
+    /// would have it.
+    fn optional_chain(&mut self, chain: Expr, ty: Type, out: &mut Vec<Stmt>, at: At) -> Expr {
+        let b = self.temp(Type::Any);
+        let (spine, base) = cut_optional(chain, b, at);
+        let Some(base) = base else {
+            self.not_yet("after a `?.` in the same chain");
+            return spine;
+        };
+        self.locals[b.0 as usize].ty = base.ty.clone();
+        let base = self.expr(base, out);
+        out.push(stmt(StmtKind::Let { local: b, value: Some(base) }, at));
+        let t = self.temp(ty.clone());
+        out.push(stmt(StmtKind::Let { local: t, value: Some(Expr::new(ExprKind::None, Type::Null, at)) }, at));
+        let mut then = Vec::new();
+        let rest = if chain_has_optional(&spine) {
+            Expr::new(ExprKind::Chain(Box::new(spine)), ty.clone(), at)
+        } else {
+            spine
+        };
+        let v = self.expr(rest, &mut then);
+        then.push(stmt(StmtKind::Let { local: t, value: Some(v) }, at));
+        let none = Expr::new(ExprKind::None, Type::Null, at);
+        let read = Expr::new(ExprKind::Local(b), Type::Any, at);
+        let is_none = Expr::new(ExprKind::Binary { op: BinOp::Eq, lhs: Box::new(read), rhs: Box::new(none) }, Type::Bool, at);
+        let present = Expr::new(ExprKind::Unary { op: UnOp::Not, expr: Box::new(is_none) }, Type::Bool, at);
+        out.push(stmt(StmtKind::If { cond: present, then: Block { stmts: then, ty: None }, otherwise: None }, at));
+        Expr::new(ExprKind::Local(t), ty, at)
+    }
+
+    /// A mutating method's receiver (`rows[i]` of `rows[i].push(await f())`)
+    /// with each index worked out and kept now, before an argument waits:
+    /// left to right, as JavaScript evaluates it. The name itself is still
+    /// read when the method runs, since arrays are values: a push after the
+    /// wait lands on what the name holds then.
+    fn pin_indexes(&mut self, recv: Expr, out: &mut Vec<Stmt>) -> Expr {
+        let Expr { ty, kind, at } = recv;
+        let kind = match kind {
+            ExprKind::Field { base, name, optional } => {
+                ExprKind::Field { base: Box::new(self.pin_indexes(*base, out)), name, optional }
+            }
+            ExprKind::Index { base, index, optional } => {
+                let base = self.pin_indexes(*base, out);
+                let index = self.spill(*index, out);
+                ExprKind::Index { base: Box::new(base), index: Box::new(index), optional }
+            }
+            other => other,
+        };
+        Expr { ty, kind, at }
     }
 
     /// `call`, an awaited call, with its arguments worked out in front of it.
@@ -448,7 +549,9 @@ impl Hoist {
                 }
                 if stdlib::mutates(&method.name) && !optional && !has_await(&recv) {
                     // The receiver is the place the method changes: it stays
-                    // a place, and only the arguments move.
+                    // a place, its indexes kept before anything waits, and
+                    // the arguments move.
+                    let recv = if args.iter().any(has_await) { Box::new(self.pin_indexes(*recv, out)) } else { recv };
                     ExprKind::Method { recv, method, args: self.operands(args, out), optional }
                 } else {
                     let mut all = vec![*recv];
@@ -468,6 +571,9 @@ impl Hoist {
                 let mut both = self.operands(vec![*base, *index], out).into_iter();
                 let (base, index) = (both.next().expect("base"), both.next().expect("index"));
                 ExprKind::Index { base: Box::new(base), index: Box::new(index), optional }
+            }
+            ExprKind::Chain(inner) if waits_after_optional(&inner) => {
+                return self.optional_chain(*inner, ty, out, at);
             }
             ExprKind::Chain(inner) => ExprKind::Chain(Box::new(self.expr(*inner, out))),
             ExprKind::Unary { op, expr } => ExprKind::Unary { op, expr: Box::new(self.expr(*expr, out)) },
@@ -526,6 +632,12 @@ impl Hoist {
                 out.push(stmt(StmtKind::If { cond, then, otherwise }, at));
                 return local(t, ty);
             }
+            ExprKind::Match { value, arms } if arms_wait(&arms) => {
+                let t = self.temp(ty.clone());
+                out.push(stmt(StmtKind::Let { local: t, value: None }, at));
+                self.match_as_ifs(*value, arms, Some(t), out, at);
+                return local(t, ty);
+            }
             ExprKind::Match { value, arms } => {
                 let value = self.expr(*value, out);
                 let t = self.temp(ty.clone());
@@ -545,6 +657,65 @@ impl Hoist {
         };
         Expr { ty, kind, at }
     }
+}
+
+/// Whether any arm of a `switch` waits in a pattern or its guard.
+fn arms_wait(arms: &[Arm]) -> bool {
+    arms.iter().any(|a| a.patterns.iter().any(has_await) || a.guard.as_ref().is_some_and(has_await))
+}
+
+/// Whether a chain waits at or above one of its `?.`/`?[` steps: in that
+/// step's own index or arguments (`m?[await k()]`), or in a step above it.
+/// Either would run only when the optional step's base is there.
+fn waits_after_optional(e: &Expr) -> bool {
+    match &e.kind {
+        ExprKind::Field { base, .. } => waits_after_optional(base),
+        ExprKind::Index { base, index, optional } => {
+            (has_await(index) && (*optional || chain_has_optional(base))) || waits_after_optional(base)
+        }
+        ExprKind::Method { recv, args, optional, .. } => {
+            (args.iter().any(has_await) && (*optional || chain_has_optional(recv))) || waits_after_optional(recv)
+        }
+        ExprKind::Chain(inner) => waits_after_optional(inner),
+        _ => false,
+    }
+}
+
+/// `e`, the spine of a chain, with the base of its lowest `?.`/`?[` step
+/// taken out and read from local `b` instead, that step made plain. The base
+/// is `None` when there is no optional step.
+fn cut_optional(e: Expr, b: LocalId, at: At) -> (Expr, Option<Expr>) {
+    let Expr { ty, kind, at: here } = e;
+    let read = |t: &Type| Expr::new(ExprKind::Local(b), t.clone(), at);
+    let (kind, base) = match kind {
+        ExprKind::Field { base, name, optional } if optional && !chain_has_optional(&base) => {
+            (ExprKind::Field { base: Box::new(read(&base.ty)), name, optional: false }, Some(*base))
+        }
+        ExprKind::Index { base, index, optional } if optional && !chain_has_optional(&base) => {
+            (ExprKind::Index { base: Box::new(read(&base.ty)), index, optional: false }, Some(*base))
+        }
+        ExprKind::Method { recv, method, args, optional } if optional && !chain_has_optional(&recv) => {
+            (ExprKind::Method { recv: Box::new(read(&recv.ty)), method, args, optional: false }, Some(*recv))
+        }
+        ExprKind::Field { base, name, optional } => {
+            let (base, found) = cut_optional(*base, b, at);
+            (ExprKind::Field { base: Box::new(base), name, optional }, found)
+        }
+        ExprKind::Index { base, index, optional } => {
+            let (base, found) = cut_optional(*base, b, at);
+            (ExprKind::Index { base: Box::new(base), index, optional }, found)
+        }
+        ExprKind::Method { recv, method, args, optional } => {
+            let (recv, found) = cut_optional(*recv, b, at);
+            (ExprKind::Method { recv: Box::new(recv), method, args, optional }, found)
+        }
+        ExprKind::Chain(inner) => {
+            let (inner, found) = cut_optional(*inner, b, at);
+            (ExprKind::Chain(Box::new(inner)), found)
+        }
+        other => (other, None),
+    };
+    (Expr { ty, kind, at: here }, base)
 }
 
 /// Whether a chain below `e` has a `?.` or `?[` in it.
