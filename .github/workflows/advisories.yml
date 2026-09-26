@@ -1,12 +1,13 @@
-# Security advisories, for every dependency and for the rhai fork.
+# Security advisories, for every dependency.
 #
 # Separate from ci.yml on purpose. An advisory arrives without anyone touching
 # the code, so this has to run on a clock, and a new advisory against a crate
 # should not fail every unrelated push until it is dealt with. It runs weekly,
 # on any push that changes what is depended on, and by hand.
 #
-# Watchlist #31: nothing watched the dependency graph, and the vendored rhai
-# fork receives no upstream fixes at all.
+# Watchlist #31: nothing watched the dependency graph. (A second job watched
+# the vendored rhai fork against upstream until Rux's own interpreter replaced
+# it, step 5 of docs/11-next.md.)
 name: Advisories
 
 on:
@@ -18,8 +19,6 @@ on:
     paths:
       - "Cargo.lock"
       - "deny.toml"
-      - "crates/rux-rhai/DIVERGENCE.md"
-      - "scripts/rhai-upstream.sh"
       - ".github/workflows/advisories.yml"
   workflow_dispatch:
 
@@ -34,10 +33,3 @@ jobs:
       - uses: EmbarkStudios/cargo-deny-action@v2
         with:
           command: check advisories sources
-
-  rhai-fork:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Has upstream rhai moved past what the fork reviewed?
-        run: bash ./scripts/rhai-upstream.sh

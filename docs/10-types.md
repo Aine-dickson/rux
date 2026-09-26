@@ -345,9 +345,8 @@ worked out at a call, and only for that call.
 
 ### A typed function cannot read its caller's locals
 
-Under the fork, a plain call runs in its **caller's** scope (divergence 4 in
-`crates/rux-rhai/DIVERGENCE.md`), so a function body can read a `let` of the
-function that called it. That cannot be typed: the same name would have a
+Under the fork, a plain call ran in its **caller's** scope (its divergence 4),
+so a function body could read a `let` of the function that called it. That cannot be typed: the same name would have a
 different type, or no type, depending on the caller, and nothing at the
 definition says which.
 
@@ -357,8 +356,13 @@ from a caller is an error in a typed function. Writing a signal is unaffected,
 because signals are not the caller's locals: `fn drain() { level-- }` works as
 it always did.
 
-An untyped function keeps today's behaviour exactly, caller locals included,
-and is where code that relies on it can stay. Because a function with no
+An untyped function can still read a name it does not declare from the handler
+or component that ran it (a row's `r-for` variable, the handler's own `let`, a
+component's state), which is looked up when it runs. Since Rux's interpreter
+replaced the fork (step 5 of [The Rux language](./11-next.md#build-order)), a
+`let` of a *function* in between is not reached; the fork reached that too, and
+the test suite and the repository's `.rux` files, run on both, showed nothing
+relying on it. Because a function with no
 parameters is typed, this rule reaches functions that were never touched by an
 annotation. Before it was switched on, every function in the repository's
 examples, recipes and `/learn` chapters, and in the apps built with Rux so far,
@@ -580,16 +584,14 @@ again without it, keeps the diagnostics, and stops asking for the session.
 
 Rux's own parser (`crates/rux-syntax`) reads a script into an AST that keeps
 every annotation on the node it belongs to. The checker, in `rux-script`,
-reads that AST. What the fork runs is the same text with every annotation
-blanked to spaces, so an annotated program runs through the same evaluator as
-an unannotated one, and every line and column stays where it was written. Only
-`x is T` reaches the fork with its type, since it is checked at run time.
+reads that AST and keeps the type of every expression, and the script is
+lowered from it to a typed IR (`crates/rux-ir`), which Rux's interpreter runs.
+`x is T` carries its type into the IR, since it is checked at run time.
 
-Until 2026-09-26 the fork parsed annotations itself and kept them in a side
-table beside its AST, which the checker read (item 8 in
-`crates/rux-rhai/DIVERGENCE.md`). That code is still in the fork, and is no
-longer handed anything; it goes with the fork in step 5 of
-[Rux next](./11-next.md#build-order).
+Until 2026-09-26 the script ran on a fork of rhai, which was handed the same
+text with every annotation blanked, and before that the fork parsed
+annotations itself and kept them in a side table the checker read. Both went
+with the fork in step 5 of [The Rux language](./11-next.md#build-order).
 
 The checker runs where the other load-time checks run: `rux check`, the dev
 overlay, and the editor. The only parts that reach a running program are the

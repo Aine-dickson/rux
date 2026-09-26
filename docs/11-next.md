@@ -3,12 +3,16 @@
 The reference for the script language Rux owns: what goes inside `<script>`,
 in a script-only module, and in a `{{ }}` binding or an `@tap` attribute.
 
-**Status: the reference for the language being built. None of the changes
-below run yet.** [Script](./07-script.md) and [Types](./10-types.md) describe
-what runs today, on the rhai fork. This document describes the language that
-replaces it: it keeps what those two built where it still holds, and marks
-every place that moves. When the build finishes, this becomes the only script
-reference and those two retire into history.
+**Status: the reference for the language being built.** Steps 1 to 5 of the
+[build order](#build-order) are done (2026-09-26): Rux's own parser, checker,
+typed IR and interpreter run every script, and rhai is gone. What the later
+steps add (`async fn`, modules and stores, native code, Rust generation) does
+not run yet, and neither do some of the Changed rules below; the build order
+says which. [Script](./07-script.md) and [Types](./10-types.md) describe what
+runs today. This document describes the language that replaces them: it keeps
+what those two built where it still holds, and marks every place that moves.
+When the build finishes, this becomes the only script reference and those two
+retire into history.
 
 The direction behind it (Rux's own parser, checker, typed IR and interpreter,
 Rust code generation for release, no rhai) is recorded in
@@ -20,7 +24,7 @@ Every section and most rules carry one of three marks:
 
 | Mark | Means |
 |---|---|
-| **Kept** | Runs today on the fork and stays as it is. The section in [Script](./07-script.md) or [Types](./10-types.md) it comes from still describes it |
+| **Kept** | Ran on the fork, runs today, and stays as it is. The section in [Script](./07-script.md) or [Types](./10-types.md) it comes from still describes it |
 | **Changed** | Runs today, differently. What it was is said beside what it becomes |
 | **New** | Does not exist today |
 
@@ -958,15 +962,38 @@ Float indexing narrows to what the types allow: an index is an `int`, and a
    time (no finding changed across those files); and lowering costs about
    3.6 µs per expression in a release build, more than parsing does, which
    step 5 should look at before lowering runs on every load.
-5. **Rux's interpreter on the IR**, replacing rhai for everything, with the
-   test suite as the proof that behaviour did not move. Rhai is deleted here.
+5. **Rux's interpreter on the IR**, replacing rhai for everything. Done
+   2026-09-26. `rux-script`'s `interp` runs the IR as a tree: values with
+   shared, copied-on-write arrays and maps, `int` and `float` kept apart with
+   `int` arithmetic that stops at overflow, and the standard library under
+   both of the fork's spellings. The runtime still hands in text (a binding,
+   a handler, a component's script), so each piece is lowered against its
+   file's unit the first time it runs and kept; its own expressions are
+   `any`, and the file's functions it calls are typed. A name nothing
+   declares is looked up where it runs, in the handler or component that ran
+   it, then in the document's state: that is how a component's functions
+   reach their instance's state and how `cart_row.rux` and `session.rux`
+   reach the document's, which step 7 settles with stores. The proof was the
+   step 2 kind: for a while every evaluation ran on both engines and debug
+   builds panicked where they disagreed (value, failure, state, a component
+   instance's state, what a binding read, what it asked the runtime for),
+   over the whole test suite and every `.rux` file on the development
+   machine. The one difference kept on purpose is that a whole-number signal
+   is an `int` (`type_of` said `"f64"`). Then rhai was deleted: `rux-rhai`,
+   the text rewriting that fed it, and its advisory job. Script is faster in
+   the window: on the `rux-harness/script-cost` runs, a loop over 1000
+   records went from 18.6 to 4.7 ms a frame, a filter from 17.0 to 1.6, and
+   a list's bindings from 1.6 to 0.08 (`tests/interp_cost.rs` times the same
+   work outside the window). Not done yet: a closure captures a local by
+   value, not by reference; an `any` entering typed code is not checked when
+   it runs; a plain top-level `let` can still be written.
 6. **`async fn` / `await`** in the interpreter.
 7. **Script modules and stores.**
 8. **`#[rux::export]`, the interface file, `native` modules.**
 9. **Rust code generation** for release builds, native then wasm.
 
-Steps 2 to 5 change nothing an author sees except the decided syntax, which is
-what makes them safe to take in order.
+Steps 2 to 5 change nothing an author sees except the decided syntax and
+types, which is what made them safe to take in order.
 
 ## Settled 2026-09-26
 

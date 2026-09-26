@@ -10,15 +10,16 @@ weight = 6
 What goes inside `<script>`, and what a `{{ }}` binding or an `@tap` attribute
 may contain.
 
-Rux's script tier is **`rux-rhai`**, a fork of [rhai](https://rhai.rs) 1.25.1.
-This document is the reference for it. Pointing at rhai's own documentation is no
-longer correct: the fork changes what several things *mean*, not only what is
-available, and every difference is listed here.
+Rux's script runs on **Rux's own interpreter**: a script is read by Rux's
+parser, checked, lowered to a typed IR and run (step 5 of [The Rux
+language](./11-next.md#build-order), 2026-09-26). Until then it ran on
+`rux-rhai`, a fork of [rhai](https://rhai.rs) 1.25.1, and the language still
+carries what the fork changed and what it kept from rhai; the section [If you
+know rhai](#if-you-know-rhai) lists both. This document is the reference for the
+language as it runs today; [The Rux language](./11-next.md) is where it is going.
 
 Where this document and [As Built](/reference/) overlap, they agree; As
 Built is the wider tour of the whole language, this is the script half in depth.
-`crates/rux-rhai/DIVERGENCE.md` is the engine-level record of what the fork
-changes and why, for anyone rebasing it.
 
 ## The three places script runs
 
@@ -436,21 +437,23 @@ zero. A list is indexed by an `int`. So `let n = signal(0)` holds an `int`, and
 or `intDiv(n, 2)`. `number`, the one type both used to be, is gone; `rux fmt`
 rewrites it to `float`, which holds everything it held.
 
-The checker keeps the two apart; underneath, every number is still an `f64`
-until Rux's own interpreter replaces rhai (step 5 of [The Rux
-language](./11-next.md#build-order)). Until then a number field bound to an
-`int` can write a fraction into it, and `int` arithmetic does not yet stop at
-overflow. Division by zero of `float`s gives `Infinity` or `NaN` as in
-JavaScript, and those display under those names.
+The checker keeps the two apart, and so does the interpreter: an `int` is a
+whole 64-bit number and `int` arithmetic that goes past its limits is an error,
+not a wrapped or rounded answer. The runtime still holds one kind of number, so
+a value that goes out to the tree and comes back (a component's state, an
+`r-for` row, `event`) comes back a `float` holding the same number. Division by
+zero of `float`s gives `Infinity` or `NaN` as in JavaScript, and those display
+under those names.
 
-Strings are double-quoted. **`'x'` is a single character, not a string**, which
-is inherited from rhai and is the single most common thing to trip over. A
+Strings are double-quoted. **Single quotes hold one character**, which is a
+string of one character (`'x' == "x"`), so `'#note'` is a syntax error. That
+rule is inherited from rhai and is the single most common thing to trip over. A
 selector or any other text needs `"…"`. Inside a `@tap="…"` attribute there is no
 room for double quotes, which is the practical reason to name a handler and call
 it:
 
 ```rux
-<!-- wrong: '#note' is a character literal -->
+<!-- wrong: '#note' is more than one character in single quotes -->
 <button @tap="query('#note')[0].focus()">
 
 <!-- right -->
@@ -652,15 +655,12 @@ false `r-if` is where a broken handler hides longest. It is syntax only: naming
 an `r-for` local or a component's own state is a runtime lookup, not an error.
 
 **A syntax error is Rux's own.** Every script, binding and handler is read by
-Rux's parser before the fork sees it, so what is wrong is said in this
-language's words, at the line and column where it goes wrong:
-``expecting `;` to end this statement, found `let` ``, not rhai's phrasing. The
-fork only ever compiles text that parser has accepted.
+Rux's parser, so what is wrong is said in this language's words, at the line and
+column where it goes wrong: ``expecting `;` to end this statement, found `let` ``.
 
 A failing expression is **reported, not swallowed**. It reaches the dev overlay
-and `rux check`, and rhai's wording is translated into Rux's: a missing property,
-an undefined variable, a missing function and a reserved word all say what they
-mean in this language's vocabulary.
+and `rux check`: a missing property, an undefined variable, a missing function
+and a reserved word all say what they mean in this language's vocabulary.
 
 `print` output is kept apart from warnings. A leftover `print` is not something
 wrong with the document and must not fail a build.
@@ -682,20 +682,23 @@ wrong with the document and must not fail a build.
 
 ## If you know rhai
 
-Nine things behave differently under the fork. All nine are in
-`crates/rux-rhai/DIVERGENCE.md` with the files they touch.
+Rux ran on a fork of rhai until 2026-09-26, and its script still reads like
+rhai in most places. Nine things the fork changed carry over as the language's
+own rules (the fork's record of them, `DIVERGENCE.md`, went with it and is in
+the repository's history):
 
 1. `?.` guards a missing **property**, not only an absent base.
 2. `x++` and `x--` exist, in statement position.
 3. Arrow functions.
-4. **Every plain call captures the caller's scope**, which is upstream's opt-in
-   `f!(…)` form made the default. Method calls do not, and clear the flag rather
-   than raising.
+4. **A name a function does not declare is looked up where it runs**, in
+   the handler or component that called it. This is what is left of the
+   fork's rule that every plain call captured its caller's scope; `f!(…)` is
+   gone.
 5. **JavaScript truthiness**, including empty array and empty map being truthy.
 6. A whole `f64` can index an array.
 7. `{ a: 1 }` is a map, as `#{ a: 1 }` is.
 8. **Type annotations**: `let n: int`, `fn f(x: T): R`, `(a: T) => …` and
-   `type Name = …;` parse, and are erased before anything runs.
+   `type Name = …;` parse, and are checked.
 9. `?[` guards a missing key and an index past the end, not only an absent
    base.
 
@@ -707,7 +710,7 @@ two integers.
 
 The things most likely to surprise, in the order they usually do:
 
-1. **`'x'` is a character**, not a string.
+1. **`'x'` holds one character**, and `'ab'` is a syntax error.
 2. **Object literals have no shorthand**: `{ a: a }`, never `{ a }`.
 3. **`.length` on arrays and strings only**, not on objects.
 4. `let` declares state only at the top level of `<script>`; `signal()` marks it.

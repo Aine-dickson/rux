@@ -5,13 +5,12 @@
 //! declared, and `x is T` in script. See `docs/10-types.md`, "Props" and
 //! "Boundaries". The walk never raises: a value that does not fit is `false`.
 //!
-//! A prop arrives as a [`Value`] and `is` sees a rhai [`Dynamic`], so the walk
-//! is written once over [`Checkable`] and both implement it.
+//! A prop arrives as a [`Value`] and `is` sees the interpreter's value, so
+//! the walk is written once over [`Checkable`] and both implement it.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
 
-use rhai::Dynamic;
 use rux_reactive::Value;
 
 use crate::types::{parse_decl, Type};
@@ -208,52 +207,16 @@ impl Checkable for Value {
     }
 }
 
-impl Checkable for Dynamic {
-    fn is_null(&self) -> bool {
-        self.is_unit()
-    }
-    fn as_number(&self) -> Option<f64> {
-        self.as_int().map(|i| i as f64).or_else(|_| self.as_float()).ok()
-    }
-    fn as_bool(&self) -> Option<bool> {
-        Dynamic::as_bool(self).ok()
-    }
-    fn is_function(&self) -> bool {
-        self.is_fnptr()
-    }
-    fn with_text(&self, f: &mut dyn FnMut(&str) -> bool) -> Option<bool> {
-        if let Ok(s) = self.as_immutable_string_ref() {
-            return Some(f(&s));
-        }
-        self.as_char().ok().map(|c| f(c.encode_utf8(&mut [0; 4])))
-    }
-    fn all_items(&self, f: &mut dyn FnMut(&Self) -> bool) -> Option<bool> {
-        let items = self.as_array_ref().ok()?;
-        Some(items.iter().all(f))
-    }
-    fn all_entries(&self, f: &mut dyn FnMut(&str, &Self) -> bool) -> Option<bool> {
-        let entries = self.as_map_ref().ok()?;
-        Some(entries.iter().all(|(k, v)| f(k, v)))
-    }
-    fn with_field(&self, name: &str, f: &mut dyn FnMut(Option<&Self>) -> bool) -> Option<bool> {
-        let entries = self.as_map_ref().ok()?;
-        Some(f(entries.get(name)))
-    }
-}
-
 thread_local! {
     /// The declared types `x is T` resolves a name against, as text: the
     /// script's own `type`s, and whatever the runtime adds with
     /// [`know_types`]. Parsed on first use, then kept.
     static KNOWN: RefCell<HashMap<String, (String, Option<Decl>)>> = RefCell::new(HashMap::new());
-    /// Each `is` right-hand side, parsed once.
-    static WRITTEN: RefCell<HashMap<String, Option<Type>>> = RefCell::new(HashMap::new());
 }
 
 /// Replace the declared types `is` resolves names against.
 pub(crate) fn reset_types(types: impl IntoIterator<Item = (String, String)>) {
     KNOWN.with(|k| *k.borrow_mut() = types.into_iter().map(|(n, t)| (n, (t, None))).collect());
-    WRITTEN.with(|w| w.borrow_mut().clear());
 }
 
 /// Add declared types for `is` to resolve names against: the types a file
@@ -278,16 +241,6 @@ pub(crate) fn known(name: &str) -> Option<Decl> {
         }
         parsed.clone()
     })
-}
-
-/// `value is written`, the function `x is T` compiles to.
-#[cfg(debug_assertions)]
-pub(crate) fn is(value: &Dynamic, written: &str) -> bool {
-    let ty = WRITTEN.with(|w| {
-        w.borrow_mut().entry(written.to_string()).or_insert_with(|| crate::types::parse_type(written).ok()).clone()
-    });
-    let value = value.flatten_clone();
-    ty.is_some_and(|ty| fits(&value, &ty, &known))
 }
 
 #[cfg(test)]

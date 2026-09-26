@@ -6,10 +6,6 @@
 # are cheap: everything comes from crates.io or this repository. Licenses and
 # bans are real questions with real answers to write down first, so they wait
 # rather than land as a wall of noise nobody reads.
-#
-# The vendored rhai fork is invisible to this, since RustSec files advisories
-# under `rhai` and the package is `rux-rhai`. `scripts/rhai-upstream.sh`
-# covers it.
 
 [graph]
 # Every platform Rux ships to, so an advisory in a dependency only one of them
@@ -30,13 +26,7 @@ all-features = false
 # its parent's to replace, and is not reported.
 unmaintained = "workspace"
 yanked = "warn"
-ignore = [
-  # Unmaintained, not vulnerable. It is rhai's dependency and comes with the
-  # fork; replacing it would be a divergence across 20 of the fork's files, to
-  # carry through every upstream release.
-  # Reviewed 2026-09-24. Revisit when upstream rhai drops or replaces it.
-  { id = "RUSTSEC-2026-0249", reason = "rhai's own dependency; unmaintained, no known vulnerability" },
-]
+ignore = []
 
 [sources]
 unknown-registry = "deny"

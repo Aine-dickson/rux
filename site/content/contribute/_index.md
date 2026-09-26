@@ -69,7 +69,7 @@ Law 4 in one table. The "build" column is the actual surface area of the project
 | Text shaping / layout | `parley` + `swash` (or `cosmic-text`) | glyph → paint integration |
 | CSS parsing | `lightningcss` | property → our style-struct mapping |
 | Flexbox/grid layout | `taffy` | style → taffy-node translation |
-| Script interpreter | `rhai` | host bindings, signal integration |
+| Script interpreter | Rux's own (`rux-syntax`, `rux-ir`, `rux-script`) | host bindings, signal integration |
 | File watching | `notify` | debounce + reload orchestration |
 | **Template parsing** | *(none, ours)* | XML+directive parser → node tree |
 | **Reactive graph** | *(ours; Leptos-inspired)* | signals, subscriptions, dirty tracking |
@@ -230,7 +230,7 @@ rux/
 ├─ rux-parser     # template XML+directive parser → TemplateNode tree   (ours)
 ├─ rux-style      # lightningcss integration, cascade, ComputedStyle    (ours+reuse)
 ├─ rux-reactive   # signals, subscriptions, dirty scheduling            (ours)
-├─ rux-script     # rhai engine, host registry, scope wiring            (ours+reuse)
+├─ rux-script     # checker, lowering, interpreter, host registry        (ours)
 ├─ rux-layout     # ComputedStyle → taffy, text measwith parley         (integration)
 ├─ rux-paint      # render tree → vello scene; tiny-skia fallback       (integration)
 ├─ rux-runtime    # the Document model; owns the pipeline + hot-reload  (ours)

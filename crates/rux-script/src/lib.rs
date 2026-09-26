@@ -1,24 +1,21 @@
-//! Rux script tier, milestone M8.
+//! Rux script tier.
 //!
-//! Wraps a `rhai` engine that holds the app's live state (the script's top-level
-//! `let` variables persist in a `Scope`) and evaluates `{{ }}` bindings,
-//! `r-if`/`r-for` expressions, and `@tap` handlers against it. Native
-//! capabilities are exposed under the `host::` namespace via the builder.
+//! An [`Engine`] holds a document's live state (the script's top-level `let`s)
+//! and evaluates `{{ }}` bindings, `r-if`/`r-for` expressions and `@tap`
+//! handlers against it. A script is read by Rux's parser (`rux-syntax`),
+//! checked ([`check`]), lowered to the typed IR ([`lower`], `rux-ir`) and run
+//! by Rux's interpreter ([`interp`]). Native capabilities are exposed under
+//! the `host::` namespace via the builder.
 //!
-//! This replaces the M5 signal reader and the M6 inline-expression evaluator
-//! with a real scripting language: named `fn` handlers, full expressions, and
-//! the compiled-Rust boundary (`docs/04-architecture.md`, script/host tiers).
+//! Until step 5 of `docs/11-next.md` (2026-09-26) the running was done by
+//! `rux-rhai`, a fork of rhai; the checks on names and calls, the error
+//! wording and several of the language's rules still say where they came
+//! from.
 
 pub mod check;
-#[cfg(debug_assertions)]
-mod fork;
-#[cfg(debug_assertions)]
-mod front;
 pub mod interp;
 pub mod lower;
 pub mod profile;
-#[cfg(debug_assertions)]
-mod shadow;
 pub use rux_ir::types;
 pub mod validate;
 
@@ -214,8 +211,8 @@ impl ScriptError {
 }
 
 impl std::fmt::Display for ScriptError {
-    /// The sentence rhai produced, unchanged, so anything that used to do
-    /// `.to_string()` on the old `String` error reads exactly as it did.
+    /// The sentence alone, so anything that used to do `.to_string()` on the
+    /// old `String` error reads exactly as it did.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.message)
     }
@@ -261,43 +258,14 @@ impl Builder {
         // `type`s, before the script's first statement can ask. The runtime adds what it imports (`validate::know_types`).
         validate::reset_types(types_declared_in(&parsed, script));
 
-        #[cfg(debug_assertions)]
-        let fork = shadow::on().then(|| shadow::isolated(|| fork::Fork::build(script, &self.host_fns)));
-        #[cfg(debug_assertions)]
-        let marks = shadow::marks();
-
         let mut ir = interpreter(&parsed, script, &self.host_types, self.host_fns);
-        let init = ir.init();
-
-        // rhai's debug builds refuse deep nesting its release builds run; the
-        // interpreter has no such limit, so there is nothing to compare.
-        #[cfg(debug_assertions)]
-        let fork = fork.filter(|(built, ..)| !matches!(built, Err(e) if e.contains("maximum complexity")));
-        #[cfg(debug_assertions)]
-        if let Some((built, effects, _)) = fork {
-            match (&built, &init) {
-                (Ok(_), Err(f)) => shadow::differ("whether the top level runs", script, "it ran", &f.message),
-                (Err(e), Ok(())) => shadow::differ("whether the top level runs", script, e, "it ran"),
-                _ => {}
-            }
-            if let Ok(fork) = built {
-                let ours = shadow::since(marks);
-                if effects != ours {
-                    shadow::differ("what the top level asked for", script, effects, ours);
-                }
-                shadow::same_state(script, &fork.state(), &ir);
-                if let Err(f) = init {
-                    return Err(fault_at(f, script));
-                }
-                return Ok(Engine::new(ir, Some(fork), parsed, script, self.host_types));
-            }
-        }
-        if let Err(f) = init {
+        if let Err(f) = ir.init() {
             return Err(fault_at(f, script));
         }
-        Ok(Engine::new(ir, Default::default(), parsed, script, self.host_types))
+        Ok(Engine::new(ir, parsed, script, self.host_types))
     }
 }
+
 
 /// A failure while running a script's top level, as a [`ScriptError`] at
 /// the statement that failed.
@@ -351,11 +319,6 @@ fn types_declared_in(script: &rux_syntax::ast::Script, src: &str) -> Vec<(String
 }
 
 
-/// Read a script number whichever of rhai's two numeric types it arrived as.
-///
-/// A literal is an integer and a signal is a float, so any argument a user might
-/// write either way has to accept both. The fork's all-f64 change is what
-/// removes the need for this.
 /// JavaScript's `Number(text)`: the whole text, trimmed, as a number, 0 for
 /// nothing, `NaN` for anything that is not one. `Infinity` is JS's word for
 /// it; Rust's `inf` and `nan` are not, so they are `NaN` here as there.
@@ -441,7 +404,7 @@ fn js_parse_float(s: &str) -> f64 {
 
 fn log_line(text: String) {
     LOGS.with(|l| l.borrow_mut().push(text.clone()));
-    if ECHO.with(|e| e.get()) && !shadowing() {
+    if ECHO.with(|e| e.get()) {
         eprintln!("rux print: {text}");
     }
 }
@@ -460,14 +423,6 @@ thread_local! {
     /// but a `print` inside a loop writing the same line ten times *is* the
     /// information.
     static LOGS: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
-}
-
-/// Whether the fork is running as the shadow, in a debug build.
-fn shadowing() -> bool {
-    #[cfg(debug_assertions)]
-    return shadow::SHADOWING.with(|s| s.get());
-    #[cfg(not(debug_assertions))]
-    false
 }
 
 /// Take what `print(…)` and `debug(…)` have said since the last call, emptying
@@ -578,19 +533,9 @@ impl CallProblem {
     }
 }
 
-/// Where a debug build keeps the fork it compares against.
-#[cfg(debug_assertions)]
-type ForkSlot = Option<fork::Fork>;
-#[cfg(not(debug_assertions))]
-type ForkSlot = ();
-
 /// A live script engine: Rux's interpreter holding a document's state.
 pub struct Engine {
     ir: interp::Interp,
-    /// The rhai fork, run beside the interpreter and compared, in debug
-    /// builds. See `shadow`.
-    #[cfg_attr(not(debug_assertions), allow(dead_code))]
-    fork: ForkSlot,
     /// The whole script as Rux's parser read it, and its text, for the type
     /// checker and the checks on names and calls.
     script: rux_syntax::ast::Script,
@@ -1300,15 +1245,6 @@ fn strip_rhai_position(message: &str) -> String {
     }
 }
 
-/// The fork's run of something, in a debug build, for comparing.
-#[cfg(debug_assertions)]
-struct ForkRun {
-    result: Result<Value, String>,
-    after: Vec<Value>,
-    effects: shadow::Effects,
-    reads: HashSet<String>,
-}
-
 /// How a failure is worded: what the thing that failed is called.
 #[derive(Clone, Copy)]
 enum Said {
@@ -1321,12 +1257,11 @@ enum Said {
 impl Engine {
     fn new(
         ir: interp::Interp,
-        fork: ForkSlot,
         script: rux_syntax::ast::Script,
         source: &str,
         host_types: Vec<(String, types::Type)>,
     ) -> Engine {
-        Engine { ir, fork, script, source: source.to_string(), host_types }
+        Engine { ir, script, source: source.to_string(), host_types }
     }
 
     /// Check the script against its type annotations. See [`check`] and
@@ -1390,66 +1325,10 @@ impl Engine {
 
     // ----- Running -----------------------------------------------------------
 
-    /// The fork's run of `src`, isolated, before the interpreter's.
-    #[cfg(debug_assertions)]
-    fn fork_run(&mut self, src: &str, locals: &[(String, Value)]) -> Option<ForkRun> {
-        let fork = self.fork.as_mut()?;
-        let ((result, after), effects, reads) = shadow::isolated(|| fork.run(src, locals));
-        Some(ForkRun { result, after, effects, reads })
-    }
-
-    /// The fork's run against the interpreter's, which has just happened:
-    /// its value or failure, the locals afterwards, what it asked for, the
-    /// state it left and what it read.
-    #[cfg(debug_assertions)]
-    fn compare(
-        &self,
-        src: &str,
-        fork: ForkRun,
-        ours: Option<&Value>,
-        after: Option<&[Value]>,
-        marks: shadow::Marks,
-        locals: &[(String, Value)],
-    ) {
-        let Some(forked) = self.fork.as_ref() else { return };
-        match (&fork.result, ours) {
-            (Ok(a), Some(b)) if !shadow::same(a, b) && !shadow::allowed(a, b) => shadow::differ("its value", src, a, b),
-            (Ok(a), None) => shadow::differ("whether it fails", src, a, "it failed"),
-            (Err(e), Some(b)) => shadow::differ("whether it fails", src, e, b),
-            _ => {}
-        }
-        if let (Ok(_), Some(after)) = (&fork.result, after) {
-            let same = fork.after.len() == after.len() && fork.after.iter().zip(after).all(|(a, b)| shadow::same(a, b));
-            if !same {
-                shadow::differ("the locals afterwards", src, &fork.after, after);
-            }
-        }
-        let ours = shadow::since(marks);
-        if fork.effects != ours {
-            shadow::differ("what it asked the runtime for", src, &fork.effects, ours);
-        }
-        shadow::same_state(src, &forked.state(), &self.ir);
-        // What it read, when a binding or an effect is being tracked. The
-        // fork counts a local that shares a signal's name as a read of it.
-        if let Some(read) = READS.with(|r| r.borrow().clone()) {
-            let theirs: HashSet<&String> = fork.reads.iter().filter(|n| self.ir.has_global(n)).collect();
-            let ours: HashSet<&String> = read.iter().filter(|n| self.ir.has_global(n)).collect();
-            let missing = theirs.difference(&ours).any(|n| !locals.iter().any(|(l, _)| l == *n));
-            if missing || ours.difference(&theirs).next().is_some() {
-                shadow::differ("what it read", src, &theirs, &ours);
-            }
-        }
-    }
-
     /// Run `src` with `locals` handed in: its value, or `None` when it
     /// failed, which has been reported. The locals as they stand afterwards
     /// come back too, since a handler may write them.
     fn run(&mut self, src: &str, locals: &[(String, Value)], said: Said) -> (Option<interp::V>, Vec<Value>) {
-        #[cfg(debug_assertions)]
-        let fork = self.fork_run(src, locals);
-        #[cfg(debug_assertions)]
-        let marks = shadow::marks();
-
         let (out, after) = match self.ir.run(src, locals, true) {
             Err(e) => {
                 let message = format!("failed to compile: {}", explain(&e.message));
@@ -1469,12 +1348,6 @@ impl Engine {
                 }
             }
         };
-
-        #[cfg(debug_assertions)]
-        if let Some(fork) = fork {
-            let value = out.as_ref().map(interp::V::to_value);
-            self.compare(src, fork, value.as_ref(), Some(&after), marks, locals);
-        }
         (out, after)
     }
 
@@ -1776,18 +1649,6 @@ impl Engine {
     #[cfg(test)]
     fn set_max_operations(&mut self, n: u64) {
         self.ir.set_max_operations(n);
-        if let Some(fork) = self.fork.as_mut() {
-            fork.set_max_operations(n);
-        }
-    }
-
-    /// Mirror a write into the fork, in a debug build.
-    fn fork_set(&mut self, name: &str, value: &Value) {
-        #[cfg(debug_assertions)]
-        if let Some(fork) = self.fork.as_mut() {
-            fork.set(name, value);
-        }
-        let _ = (name, value);
     }
 
     /// Put the current path in scope as the `route` signal.
@@ -1805,7 +1666,6 @@ impl Engine {
     pub fn set_provided(&mut self, name: &str, value: Value) -> bool {
         let changed = self.signal_value(name).as_ref() != Some(&value);
         self.ir.set_global(name, interp::V::from_value(&value));
-        self.fork_set(name, &value);
         changed
     }
 
@@ -1835,7 +1695,6 @@ impl Engine {
     /// Set a signal to a string value (from input editing).
     pub fn set_string(&mut self, name: &str, value: &str) {
         self.ir.set_global(name, interp::V::str(value));
-        self.fork_set(name, &Value::Text(value.to_string()));
     }
 
     /// Run a component's own top-level script in a scope of its own, and hand
@@ -1845,12 +1704,7 @@ impl Engine {
     /// that could read the app's signals by name would be coupled to the app it
     /// was first written for, and could not be used twice.
     pub fn init_scope(&mut self, script: &str) -> Vec<(String, Value)> {
-        #[cfg(debug_assertions)]
-        let fork = self.fork.as_mut().map(|f| shadow::isolated(|| f.init_scope(script)));
-        #[cfg(debug_assertions)]
-        let marks = shadow::marks();
-
-        let out: Vec<(String, Value)> = match self.ir.run(script, &[], false) {
+        match self.ir.run(script, &[], false) {
             Err(e) => {
                 warn(format!("a component's script failed to compile: {}", explain(&e.message)));
                 Vec::new()
@@ -1861,21 +1715,7 @@ impl Engine {
                 }
                 top.into_iter().map(|(n, v)| (n, v.to_value())).collect()
             }
-        };
-
-        #[cfg(debug_assertions)]
-        if let Some((theirs, effects, _)) = fork {
-            let agree = theirs.len() == out.len()
-                && theirs.iter().all(|(n, v)| out.iter().any(|(m, w)| m == n && shadow::same(v, w)));
-            if !agree {
-                shadow::differ("the state a component's script makes", script, &theirs, &out);
-            }
-            let ours = shadow::since(marks);
-            if effects != ours {
-                shadow::differ("what a component's script asked for", script, effects, ours);
-            }
         }
-        out
     }
 
     /// Run a handler inside a component instance, whose state is `locals`.
@@ -1918,9 +1758,7 @@ impl Engine {
         let Some(value) = value else { return (false, deps) };
         let changed = self.ir.global(name) != Some(&value);
         if changed {
-            let shown = value.to_value();
             self.ir.set_global(name, value);
-            self.fork_set(name, &shown);
         }
         (changed, deps)
     }

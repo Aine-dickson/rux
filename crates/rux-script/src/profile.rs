@@ -2,8 +2,7 @@
 //!
 //! The question it answers is whether script execution is a cost worth
 //! engineering against at all, so it splits what the script tier does into its
-//! parts: compiling source to an AST, merging the document's functions into
-//! it, running it, and diffing the signals a handler may have changed. The
+//! parts: parsing source, lowering it to the typed IR, and running it. The
 //! runtime and the shell add their own phases (rebuild, patch, layout, scene,
 //! GPU) to the same counters, and the shell drains them once a frame, so everything that happened between two frames is
 //! charged to the second.
@@ -16,19 +15,15 @@ use std::cell::Cell;
 /// A slice of work the profile charges time to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Phase {
-    /// Source to Rux's AST: the front door every binding, handler and
-    /// component script passes before the fork sees it (`docs/11-next.md`,
-    /// step 2).
+    /// Source to Rux's AST: every script, binding and handler, the first
+    /// time it is seen.
     Parse,
-    /// The fork's own compile of what the parse passed.
-    Compile,
-    /// The document's functions merged into that AST so it can call them.
-    Merge,
-    /// The AST evaluated.
+    /// Rux's AST lowered to the typed IR: a file when it loads, and each
+    /// binding or handler the first time it runs (`docs/11-next.md`, steps 4
+    /// and 5).
+    Lower,
+    /// The IR run by Rux's interpreter.
     Run,
-    /// Every signal copied before a handler and compared after it, to find
-    /// what the handler changed.
-    Diff,
     /// The styled tree rebuilt from state (script time inside it included).
     Rebuild,
     /// Changed bindings patched in place instead of a rebuild.
@@ -45,19 +40,15 @@ pub enum Phase {
     Css,
     /// Selectors matched against elements, inside a rebuild or patch.
     Match,
-    /// A checked script lowered to the typed IR and verified, at load
-    /// (`docs/11-next.md`, step 4). Debug builds only, until the interpreter
-    /// runs the IR.
-    Lower,
 }
 
-pub const PHASES: usize = 14;
+pub const PHASES: usize = 11;
 
 /// The phases that are the script tier's own; they lead the list.
-const SCRIPT: usize = 5;
+const SCRIPT: usize = 3;
 
 pub const NAMES: [&str; PHASES] =
-    ["parse", "compile", "merge", "run", "diff", "rebuild", "patch", "animate", "layout", "scene", "gpu", "css", "match", "lower"];
+    ["parse", "lower", "run", "rebuild", "patch", "animate", "layout", "scene", "gpu", "css", "match"];
 
 thread_local! {
     static SPENT: [Cell<u64>; PHASES] = Default::default();
