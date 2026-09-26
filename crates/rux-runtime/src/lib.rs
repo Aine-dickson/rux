@@ -24,6 +24,7 @@
 //! window can keep the last good tree on screen and show the overlay instead of
 //! dying on a half-typed edit.
 
+mod modules;
 mod source;
 pub use source::{reset_source, set_source, FsSource, MemorySource, Source};
 
@@ -646,6 +647,36 @@ fn declared_types_in(path: &Path) -> Vec<(String, String)> {
     rux_script::Engine::declared_types(&script)
 }
 
+/// What checking each module found, reported against the module's own file.
+fn report_module_findings(engine: &Engine, modules: &[modules::ModuleFile]) {
+    for (name, findings) in engine.module_findings() {
+        let Some(m) = modules.iter().find(|m| m.name == name) else { continue };
+        for finding in findings {
+            let line = finding.line.map(|l| l + m.script_line - 1);
+            rux_script::in_file(Some(m.path.clone()), || {
+                rux_script::located(line, || {
+                    if finding.is_error {
+                        rux_script::error_script(finding.message);
+                    } else {
+                        rux_script::warn_script(finding.message);
+                    }
+                })
+            });
+        }
+    }
+}
+
+/// What the file at `path` exports, by name and whether each is a type,
+/// when it is a module; `None` for a component or a file that does not read.
+fn exports_in(path: &Path) -> Option<Vec<(String, bool)>> {
+    let sfc = source::read_text(path).ok().and_then(|s| rux_parser::parse_sfc(&s).ok())?;
+    if !sfc.module {
+        return None;
+    }
+    let (script, _) = extract_imports(&sfc.script);
+    modules::load(String::new(), path.to_path_buf(), script, sfc.script_line).ok().map(|m| m.exports)
+}
+
 /// Run the type checker over the document's own script and report what it
 /// finds on the file's lines. See `docs/10-types.md`.
 ///
@@ -711,7 +742,16 @@ fn check_script_types(
     // document, has its components' functions added). So its props come from
     // their declarations, not from `cx`, and nothing is a placeholder. A
     // script Rux cannot parse whole is checked as the engine has it.
-    let whole = rux_syntax::parse(&sfc.script, rux_syntax::Options { declarations: true }).ok();
+    let mut whole = rux_syntax::parse(&sfc.script, rux_syntax::Options { declarations: true }).ok();
+    // Its imported names, linked as the engine's were, and what does not link
+    // said where it is written.
+    let mut cx = engine.linked_context(&cx);
+    if let Some(script) = &mut whole {
+        for problem in engine.link(script) {
+            let line = rux_syntax::LineIndex::new(&sfc.script).line_col(&sfc.script, problem.span.start as usize).0;
+            rux_script::located(Some(line + sfc.script_line - 1), || rux_script::error_script(problem.message));
+        }
+    }
     let coverage = std::env::var_os("RUX_IR_COVERAGE").is_some();
     let lowering = whole.is_some() && (cfg!(debug_assertions) || coverage);
     let (findings, mut table, record) = match &whole {
@@ -2033,19 +2073,11 @@ impl Document {
         let base = path.parent().unwrap_or_else(|| Path::new("."));
         resolve_style_includes(&mut sfc, base)?;
         let (main_script, imports) = extract_imports(&sfc.script);
-        // A file with only a `<script>` is there for its types. Anything else
-        // in it would never run, since nothing shows it.
-        if sfc.types_only {
-            if let Some(what) = rux_script::declares_besides_types(&main_script) {
-                return Err(LoadError::at_line(
-                    format!(
-                        "this file has no <template>, so it may only declare types for other \
-                         files to `use`, and its <script> has {what} in it"
-                    ),
-                    sfc.script_line,
-                    path,
-                ));
-            }
+        // A module opened on its own (by `rux check`) is checked as the
+        // script it is, held to what a module may say.
+        if sfc.module {
+            let root = workspace_root(base).unwrap_or_else(|| base.to_path_buf());
+            modules::load(modules::name_of(path, &root), path.to_path_buf(), main_script.clone(), sfc.script_line)?;
         }
         let main_script = own_props(&mut sfc, &main_script, Some(path));
         let (main_script, computeds, effects, hooks) = extract_reactives(&main_script);
@@ -2083,6 +2115,13 @@ impl Document {
         // be checked against when the program runs. Kept by the component's
         // key, since its imports are walked after it has been stored.
         let mut component_types: HashMap<String, Vec<(String, String)>> = HashMap::new();
+        // Script modules, keyed as components are, by file.
+        let mut module_files: HashMap<String, modules::ModuleFile> = HashMap::new();
+        // What the document and its components import from modules, and the
+        // file that imports each. One table for all of them, since the
+        // components' functions join the document's script.
+        let mut aliases: Vec<(rux_script::link::Alias, PathBuf)> = Vec::new();
+        let project_root = workspace_root(base).unwrap_or_else(|| base.to_path_buf());
         let mut queue: Vec<ImportJob> = vec![ImportJob {
             owner: DOCUMENT_NAMESPACE.to_string(),
             owner_path: path.to_path_buf(),
@@ -2158,6 +2197,25 @@ impl Document {
                             &job.owner_path,
                         ));
                     }
+                    // A type a module declares is imported only when it
+                    // exports it; until files say so, that is a warning.
+                    if let Some(exported) = exports_in(&types_path) {
+                        if !exported.iter().any(|(n, t)| n == type_name && *t) {
+                            rux_script::in_file(Some(job.owner_path.clone()), || {
+                                rux_script::located(Some(at), || {
+                                    rux_script::warn_script(format!(
+                                        "`{written}.rux` does not export `{type_name}`: write \
+                                         `export type {type_name} = …;` there (`rux fmt` adds the `export`)"
+                                    ))
+                                })
+                            });
+                        }
+                    }
+                    // A module's type imports are its own to check against.
+                    if let Some(m) = module_files.get_mut(&job.owner) {
+                        m.types.extend(declared.iter().filter(|(n, _)| n == type_name).cloned());
+                        continue;
+                    }
                     // The document's own imports are what its checker sees.
                     // A component's are for when that component is checked.
                     if job.owner != DOCUMENT_NAMESPACE {
@@ -2191,6 +2249,7 @@ impl Document {
                         &job.owner_path,
                     ));
                 }
+                let written = import.file.trim_end_matches(".rux").replace('/', "::");
                 let comp_path =
                     resolve_import(&job.base, &import.file).map_err(|(beside, from_root)| {
                         let mut looked = format!("`{}`", beside.display());
@@ -2198,15 +2257,107 @@ impl Document {
                             looked.push_str(&format!(" and `{}`", root.display()));
                         }
                         LoadError::at_line(
-                            format!(
-                                "no component file for `{}`: looked in {looked}",
-                                import.file.trim_end_matches(".rux").replace('/', "::")
-                            ),
+                            format!("no file for `{written}`: looked in {looked}"),
                             at,
                             &job.owner_path,
                         )
                     })?;
                 let key = component_key(&comp_path);
+
+                // A component or a module? A file seen before is what it was;
+                // one read now is a module when it has no <template>.
+                let mut fresh = None;
+                if !components.contains_key(&key) && !module_files.contains_key(&key) {
+                    let src = source::read_text(&comp_path).map_err(|e| {
+                        LoadError::at_line(format!("reading {}: {e}", comp_path.display()), at, &job.owner_path)
+                    })?;
+                    let sfc = rux_parser::parse_sfc(&src).map_err(|e| LoadError::parse(e, Some(&comp_path)))?;
+                    if sfc.module {
+                        let (script, nested) = extract_imports(&sfc.script);
+                        let name = modules::name_of(&comp_path, &project_root);
+                        let m = modules::load(name, comp_path.clone(), script, sfc.script_line)?;
+                        module_files.insert(key.clone(), m);
+                        queue.push(ImportJob {
+                            owner: key.clone(),
+                            owner_path: comp_path.clone(),
+                            owner_script_line: sfc.script_line,
+                            base: comp_path.parent().unwrap_or_else(|| Path::new(".")).to_path_buf(),
+                            imports: nested,
+                        });
+                    } else {
+                        fresh = Some(sfc);
+                    }
+                }
+                if let Some(module) = module_files.get(&key) {
+                    let name = module.name.clone();
+                    let (target, local) = match &import.picked {
+                        None => (rux_script::link::Target::Module(name.clone()), import.local.clone()),
+                        Some((picked, local)) => match module.export(picked) {
+                            Some(false) => (rux_script::link::Target::Member(name.clone(), picked.clone()), local.clone()),
+                            Some(true) => {
+                                return Err(LoadError::at_line(
+                                    format!("`{picked}` is a type: import it with `type`, as `use type {written}::{picked};`"),
+                                    at,
+                                    &job.owner_path,
+                                ))
+                            }
+                            None => {
+                                return Err(LoadError::at_line(
+                                    format!("{name} does not export `{picked}`: {}", module.listed(false)),
+                                    at,
+                                    &job.owner_path,
+                                ))
+                            }
+                        },
+                    };
+                    let alias = rux_script::link::Alias { local, target, line: at };
+                    if let Some(owner) = module_files.get_mut(&job.owner) {
+                        owner.deps.push((name, at));
+                        owner.aliases.push(alias);
+                        continue;
+                    }
+                    // One name, one module, across the document and its
+                    // components, since their functions share its script.
+                    if let Some((other, file)) = aliases.iter().find(|(a, _)| a.local == alias.local && a.target != alias.target) {
+                        let what = |t: &rux_script::link::Target| match t {
+                            rux_script::link::Target::Module(m) => m.clone(),
+                            rux_script::link::Target::Member(m, n) => format!("`{n}` of {m}"),
+                        };
+                        return Err(LoadError::at_line(
+                            format!(
+                                "`{}` already means {} in `{}`, and a component's functions share the \
+                                 document's names, so here it cannot mean {}: import it `as` another name",
+                                alias.local,
+                                what(&other.target),
+                                file.display(),
+                                what(&alias.target)
+                            ),
+                            at,
+                            &job.owner_path,
+                        ));
+                    }
+                    if !aliases.iter().any(|(a, _)| *a == alias) {
+                        aliases.push((alias, job.owner_path.clone()));
+                    }
+                    continue;
+                }
+                if module_files.contains_key(&job.owner) {
+                    return Err(LoadError::at_line(
+                        format!("`{written}` is a component, and a module has no <template> to use one in"),
+                        at,
+                        &job.owner_path,
+                    ));
+                }
+                if let Some((picked, _)) = &import.picked {
+                    return Err(LoadError::at_line(
+                        format!(
+                            "`{written}.rux` is a component, and a component exports nothing to pick \
+                             `{picked}` from: import it whole, `use {written};`"
+                        ),
+                        at,
+                        &job.owner_path,
+                    ));
+                }
                 // The tag this file may write, and what it resolves to. Recorded
                 // before the load is skipped below, so a second importer of the
                 // same file still gets the tag in its own namespace.
@@ -2217,15 +2368,7 @@ impl Document {
                     continue;
                 }
 
-                let comp_src = source::read_text(&comp_path).map_err(|e| {
-                    LoadError::at_line(
-                        format!("reading component {}: {e}", comp_path.display()),
-                        at,
-                        &job.owner_path,
-                    )
-                })?;
-                let mut comp_sfc = rux_parser::parse_sfc(&comp_src)
-                    .map_err(|e| LoadError::parse(e, Some(&comp_path)))?;
+                let mut comp_sfc = fresh.expect("a component not loaded before is read above");
                 // Parsing does no IO, so the parser cannot know this and leaves
                 // it `None`. Filling it in here is what lets a warning raised
                 // while building this component name its file, not the importer's.
@@ -2327,8 +2470,14 @@ impl Document {
         // The position rhai reported is relative to the compiled script; the
         // file is `script_line` further down. That offset is this function's to
         // add, because it is the only place that knows both numbers.
-        let mut engine = build_engine(&combined_script)
+        let ordered: Vec<modules::ModuleFile> = {
+            let order = modules::order(&module_files)?;
+            order.into_iter().filter_map(|k| module_files.remove(&k)).collect()
+        };
+        let link_aliases: Vec<rux_script::link::Alias> = aliases.into_iter().map(|(a, _)| a).collect();
+        let mut engine = build_engine_linked(&combined_script, &ordered, link_aliases)
             .map_err(|e| LoadError::in_script(e, sfc.script_line, main_script_lines, Some(path)))?;
+        report_module_findings(&engine, &ordered);
         // What `x is T` resolves a name against, beyond the script's own
         // `type`s: what the document imports, and what its components declare
         // and import, since their functions run in this engine too.
@@ -4458,7 +4607,10 @@ impl Document {
         // Tasks an `async fn` call started go the same way: to whoever ran
         // the code that started them. See `docs/11-next.md`, "Async".
         for id in self.engine.take_started_tasks() {
-            self.tasks.push((id, instance.map(str::to_string)));
+            // A module's function writes only the module's state, which lives
+            // as long as the document: so does the task.
+            let owner = if self.engine.task_is_a_modules(id) { None } else { instance.map(str::to_string) };
+            self.tasks.push((id, owner));
         }
         self.report_task_failures();
         for request in rux_script::take_timer_requests() {
@@ -5557,6 +5709,12 @@ struct ImportJob {
 struct Import {
     /// Custom-element tag (last path segment, `_` → `-`).
     tag: String,
+    /// The name the importing file gives the whole file: the tag's script
+    /// spelling, or a module's namespace (`use stores::cart;` gives `cart`).
+    local: String,
+    /// `use stores::cart::{add as put};`: a name picked out of the file, and
+    /// the name the importing file uses for it.
+    picked: Option<(String, String)>,
     /// File path relative to the importing document (`a::b` → `a/b.rux`).
     file: String,
     /// 1-based line **within the script section**, so a failure can be placed
@@ -5603,6 +5761,8 @@ fn extract_imports(script: &str) -> (String, Vec<Import>) {
         let hyphenated_path = segments.iter().any(|s| s.contains('-'));
         let base = Import {
             tag: String::new(),
+            local: String::new(),
+            picked: None,
             file: String::new(),
             line,
             problem: None,
@@ -5624,12 +5784,16 @@ fn extract_imports(script: &str) -> (String, Vec<Import>) {
                     imports.push(import);
                 }
             }
-            Imported::Names(_) => imports.push(Import {
-                problem: Some(
-                    "picking names out of a file is for script modules, which are not built yet".to_string(),
-                ),
-                ..base
-            }),
+            Imported::Names(names) => {
+                let file = format!("{}.rux", segments.join("/"));
+                for n in names {
+                    imports.push(Import {
+                        file: file.clone(),
+                        picked: Some((n.name.name.clone(), n.local().name.clone())),
+                        ..base.clone()
+                    });
+                }
+            }
             Imported::Whole(local) => {
                 // Before `type` marked a type import, a capital letter did.
                 let last = segments.last().copied().unwrap_or_default();
@@ -5655,6 +5819,7 @@ fn extract_imports(script: &str) -> (String, Vec<Import>) {
                 }
                 imports.push(Import {
                     tag: local.name.replace('_', "-"),
+                    local: local.name.clone(),
                     file: format!("{}.rux", segments.join("/")),
                     ..base
                 });
@@ -5693,7 +5858,26 @@ fn splice(script: &str, mut edits: Vec<(rux_syntax::Span, String)>) -> String {
 /// Build the script engine and register host functions (the native-capability
 /// boundary; a real app registers its own here).
 fn build_engine(script: &str) -> Result<Engine, rux_script::ScriptError> {
+    build_engine_linked(script, &[], Vec::new())
+}
+
+/// [`build_engine`], with script modules linked in, in the order their top
+/// levels run, and what the document imports from them.
+fn build_engine_linked(
+    script: &str,
+    modules: &[modules::ModuleFile],
+    aliases: Vec<rux_script::link::Alias>,
+) -> Result<Engine, rux_script::ScriptError> {
     let mut builder = Builder::new();
+    for m in modules {
+        builder.module(rux_script::ModuleSource {
+            name: m.name.clone(),
+            script: m.script.clone(),
+            aliases: m.aliases.clone(),
+            types: m.types.clone(),
+        });
+    }
+    builder.aliases(aliases);
     builder.host_number("full", || 100.0);
     let mut engine = builder.build(script)?;
     // The route has to be in scope before the first build, because a `<router>`

@@ -35,7 +35,7 @@ pub const METHODS: &[&str] = &[
 
 /// Whether a method changes its receiver, so a call on a place writes the
 /// place: `items.push(x)`, `list.sort()`.
-pub(super) fn mutates(name: &str) -> bool {
+pub(crate) fn mutates(name: &str) -> bool {
     matches!(
         name,
         "push" | "append" | "pop" | "shift" | "insert" | "remove" | "clear" | "truncate" | "reverse" | "sort" | "set"

@@ -272,10 +272,11 @@ pub struct Sfc {
     /// The props this file declares with `prop`, when it is a component. See
     /// [`PropDecl`].
     pub props: Vec<PropDecl>,
-    /// The file has a `<script>` and nothing else: it declares types for
-    /// other files to `use`, and its template is an empty `<view>` standing in
-    /// for the one it does not have.
-    pub types_only: bool,
+    /// The file is a script module: a `<script>` and nothing else, or bare
+    /// script with no tags at all. It holds functions, types and state for
+    /// other files to import, and its template is an empty `<view>` standing
+    /// in for the one it does not have. See `docs/11-next.md`, "Modules".
+    pub module: bool,
     /// Every declared type a prop of this file may name, as name and text:
     /// its own `type`s and what it brings in with `use types::X`, the types
     /// beside those included. Parsing does no IO and cannot follow a `use`,
@@ -416,11 +417,14 @@ impl std::error::Error for ParseError {}
 
 /// Parse a full `.rux` source into an [`Sfc`].
 pub fn parse_sfc(src: &str) -> Result<Sfc, ParseError> {
-    // A file holding only a `<script>` declares types for other files to
-    // `use`, and has nothing to show. The runtime holds its script to that.
+    // A file holding only a `<script>`, or only script with no tags at all,
+    // is a module: it has nothing to show, and other files import from it.
+    // Bare script is told by not starting with `<`, so a component with a
+    // misspelt `<templte>` is still told that its `<template>` is missing.
     let absent = |name| matches!(find_section(src, name), Err(SectionProblem::Absent));
-    if absent("template") && absent("style") && find_section(src, "script").is_ok() {
-        let (script, script_line) = trimmed_section(src, "script");
+    let bare = absent("template") && absent("style") && absent("script") && !starts_with_tag(src);
+    if bare || (absent("template") && absent("style") && find_section(src, "script").is_ok()) {
+        let (script, script_line) = if bare { bare_script(src) } else { trimmed_section(src, "script") };
         return Ok(Sfc {
             file: None,
             template: Element { tag: "view".to_string(), attrs: Vec::new(), children: Vec::new(), line: 1 },
@@ -432,7 +436,7 @@ pub fn parse_sfc(src: &str) -> Result<Sfc, ParseError> {
             style_scoped: false,
             style_includes: Vec::new(),
             props: Vec::new(),
-            types_only: true,
+            module: true,
             types: Vec::new(),
         });
     }
@@ -524,7 +528,7 @@ pub fn parse_sfc(src: &str) -> Result<Sfc, ParseError> {
         style_scoped,
         style_includes: Vec::new(),
         props: Vec::new(),
-        types_only: false,
+        module: false,
         types: Vec::new(),
     })
 }
@@ -581,6 +585,27 @@ fn offset_element_lines(el: &mut Element, by: usize) {
 /// The trim is what makes the line number necessary rather than obvious: a
 /// `<style>` tag on line 8 usually has its first rule on line 9, and counting
 /// the newlines that were trimmed away is the only way to say which.
+/// Whether the file's first thing, past whitespace and `<!-- -->` and `//`
+/// comments, is a tag.
+fn starts_with_tag(src: &str) -> bool {
+    let mut rest = src.trim_start();
+    loop {
+        if let Some(after) = rest.strip_prefix("<!--") {
+            rest = after.split_once("-->").map_or("", |(_, r)| r).trim_start();
+        } else if let Some(after) = rest.strip_prefix("//") {
+            rest = after.split_once('\n').map_or("", |(_, r)| r).trim_start();
+        } else {
+            return rest.starts_with('<');
+        }
+    }
+}
+
+/// A bare module's script, trimmed, and the line it starts on.
+fn bare_script(src: &str) -> (String, usize) {
+    let leading = src.len() - src.trim_start().len();
+    (src.trim().to_string(), src[..leading].matches('\n').count() + 1)
+}
+
 fn trimmed_section(src: &str, name: &str) -> (String, usize) {
     let Some((raw, start)) = section(src, name) else {
         return (String::new(), 1);

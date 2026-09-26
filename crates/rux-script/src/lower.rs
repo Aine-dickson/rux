@@ -33,8 +33,41 @@ const BUILTINS: &[&str] = &[
 /// Lower `script`, whose text is `src`, as the checker recorded it.
 /// `provided` are the names the runtime supplies, with their types.
 pub fn lower(script: &ast::Script, src: &str, record: &Record, provided: &[(String, Type)]) -> Unit {
-    let mut types: Vec<(String, Vec<String>, Type)> =
-        record.types.iter().map(|(n, (p, t))| (n.clone(), p.clone(), t.clone())).collect();
+    lower_linked(&[], script, src, record, provided)
+}
+
+/// A script module, checked, for [`lower_linked`]. Its script has been
+/// through [`crate::link::resolve`], as the file importing it has.
+pub struct Module<'a> {
+    /// Its name, `stores/cart`, which its names are linked under.
+    pub name: &'a str,
+    pub script: &'a ast::Script,
+    pub src: &'a str,
+    pub record: &'a Record,
+}
+
+/// [`lower`], with the script modules the file imports lowered into the
+/// same unit first, each module after the ones it imports. A module's names
+/// are its linked names in the unit (`stores/cart::items`), which is how the
+/// file, and any module after it, reaches them. Every module's top level
+/// runs once, before the file's, in `modules`' order.
+pub fn lower_linked(
+    modules: &[Module],
+    script: &ast::Script,
+    src: &str,
+    record: &Record,
+    provided: &[(String, Type)],
+) -> Unit {
+    // Every type any of the files can name. Two files declaring one name is
+    // the checker's to report; the first is kept.
+    let mut types: Vec<(String, Vec<String>, Type)> = Vec::new();
+    for r in modules.iter().map(|m| m.record).chain([record]) {
+        for (n, (p, t)) in &r.types {
+            if !types.iter().any(|(k, ..)| k == n) {
+                types.push((n.clone(), p.clone(), t.clone()));
+            }
+        }
+    }
     types.sort_by(|a, b| a.0.cmp(&b.0));
     let table = Table::new(&types);
     let mut l = Lower {
@@ -49,9 +82,38 @@ pub fn lower(script: &ast::Script, src: &str, record: &Record, provided: &[(Stri
         tparams: Vec::new(),
         asyncs: HashSet::new(),
         awaiting: false,
+        module: None,
     };
+    // One init frame for every file's top level, in order.
+    l.frames.push(Frame { locals: Vec::new(), scopes: vec![HashMap::new()], captures: None });
+    let mut init = Vec::new();
+    let mut linked_globals = HashMap::new();
+    let mut linked_fns = HashMap::new();
+    for m in modules {
+        l.types = &m.record.script;
+        l.src = m.src;
+        l.module = Some(m.name.to_string());
+        l.globals = linked_globals.clone();
+        l.fns = linked_fns.clone();
+        let (globals_before, fns_before) = (l.unit.globals.len(), l.unit.fns.len());
+        l.declare(m.script, m.record, &[]);
+        l.scoped(|l| l.top_level(m.script, m.record, &mut init));
+        for (i, g) in l.unit.globals.iter().enumerate().skip(globals_before) {
+            linked_globals.insert(g.name.clone(), GlobalId(i as u32));
+        }
+        for (i, f) in l.unit.fns.iter().enumerate().skip(fns_before) {
+            linked_fns.insert((f.name.clone(), f.params as usize), FnId(i as u32));
+        }
+    }
+    l.types = &record.script;
+    l.src = src;
+    l.module = None;
+    l.globals = linked_globals;
+    l.fns = linked_fns;
     l.declare(script, record, provided);
-    l.top_level(script, record);
+    l.scoped(|l| l.top_level(script, record, &mut init));
+    let frame = l.frames.pop().expect("the init frame");
+    l.unit.init = Body { locals: frame.locals, block: Block { stmts: init, ty: None } };
     for (i, piece) in record.pieces.iter().enumerate() {
         l.types = &piece.types;
         l.src = &piece.src;
@@ -111,11 +173,15 @@ pub fn lower_piece(unit: &mut Unit, script: &ast::Script, src: &str, given: &[St
             outer: std::mem::take(&mut unit.outer),
             ..Unit::default()
         },
-        globals: if globals {
-            unit.globals.iter().enumerate().map(|(i, g)| (g.name.clone(), GlobalId(i as u32))).collect()
-        } else {
-            HashMap::new()
-        },
+        // A module's names are no file's state, so a component's script,
+        // which does not see the document's, still sees them.
+        globals: unit
+            .globals
+            .iter()
+            .enumerate()
+            .filter(|(_, g)| globals || crate::link::split(&g.name).is_some())
+            .map(|(i, g)| (g.name.clone(), GlobalId(i as u32)))
+            .collect(),
         fns: unit
             .fns
             .iter()
@@ -129,6 +195,7 @@ pub fn lower_piece(unit: &mut Unit, script: &ast::Script, src: &str, given: &[St
         tparams: Vec::new(),
         asyncs: unit.fns.iter().enumerate().filter(|(_, f)| f.is_async).map(|(i, _)| FnId(i as u32)).collect(),
         awaiting: false,
+        module: None,
     };
     for name in given {
         l.local(name, Type::Any);
@@ -226,6 +293,9 @@ struct Lower<'a> {
     asyncs: HashSet<FnId>,
     /// Set by `await` for the call it is applied to, which that call takes.
     awaiting: bool,
+    /// The module whose names are being declared: they go into the unit
+    /// under their linked names. `None` for the file itself.
+    module: Option<String>,
 }
 
 fn at(span: Span) -> At {
@@ -237,12 +307,16 @@ impl<'a> Lower<'a> {
 
     fn declare(&mut self, script: &ast::Script, record: &Record, provided: &[(String, Type)]) {
         let decl = |span: Span| record.script.decl.get(&span.start).cloned().unwrap_or(Type::Any);
+        // Numbered after every function already in the unit, a module's.
+        let mut next = self.unit.fns.len() as u32;
         for stmt in &script.stmts {
             match &stmt.kind {
                 S::Fn(def) => {
                     let key = (def.name.name.clone(), def.params.len());
-                    let id = FnId(self.fns.len() as u32);
-                    let id = *self.fns.entry(key).or_insert(id);
+                    let id = *self.fns.entry(key).or_insert_with(|| {
+                        next += 1;
+                        FnId(next - 1)
+                    });
                     if def.is_async {
                         self.asyncs.insert(id);
                     }
@@ -272,10 +346,22 @@ impl<'a> Lower<'a> {
     fn global(&mut self, name: &str, ty: Type, kind: GlobalKind) {
         let id = GlobalId(self.unit.globals.len() as u32);
         self.globals.insert(name.to_string(), id);
-        self.unit.globals.push(Global { name: name.to_string(), ty, kind });
+        let name = self.linked_name(name);
+        self.unit.globals.push(Global { name, ty, kind });
     }
 
-    fn top_level(&mut self, script: &ast::Script, record: &Record) {
+    /// What `name`, declared in the file being lowered, is called in the
+    /// unit: itself, or its linked name in a module.
+    fn linked_name(&self, name: &str) -> String {
+        match &self.module {
+            Some(m) => crate::link::qualified(m, name),
+            None => name.to_string(),
+        }
+    }
+
+    /// The file's functions, then its top level into `init`, lowered in the
+    /// init frame, which is the innermost one.
+    fn top_level(&mut self, script: &ast::Script, record: &Record, init: &mut Vec<Stmt>) {
         // Functions first, in the order their ids were given.
         let mut defs: Vec<&ast::FnDecl> = script
             .stmts
@@ -301,7 +387,7 @@ impl<'a> Lower<'a> {
                 l.block(&def.body.stmts)
             });
             self.unit.fns.push(Func {
-                name: def.name.name.clone(),
+                name: self.linked_name(&def.name.name),
                 type_params: std::mem::take(&mut self.tparams),
                 params: def.params.len() as u32,
                 result,
@@ -312,8 +398,6 @@ impl<'a> Lower<'a> {
         }
 
         // Then everything else, in order: the init frame holds the top level.
-        let mut init = Vec::new();
-        self.frames.push(Frame { locals: Vec::new(), scopes: vec![HashMap::new()], captures: None });
         for stmt in &script.stmts {
             match &stmt.kind {
                 S::Fn(_) | S::Type { .. } | S::Import(_) | S::Empty => {}
@@ -352,8 +436,6 @@ impl<'a> Lower<'a> {
                 _ => init.extend(self.stmt(stmt, false)),
             }
         }
-        let frame = self.frames.pop().expect("the init frame");
-        self.unit.init = Body { locals: frame.locals, block: Block { stmts: init, ty: None } };
     }
 
     // ----- Frames and names --------------------------------------------------

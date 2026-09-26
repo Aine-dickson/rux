@@ -133,6 +133,9 @@ pub struct Interp {
     failed: Vec<(String, Fault)>,
     /// What each host call being waited on is for: its ticket, and the task.
     waiting: HashMap<u64, u64>,
+    /// What text handed in is linked against before it is lowered: the
+    /// document's imports. See [`crate::link`].
+    linking: Rc<crate::link::Linking>,
 }
 
 impl Drop for Interp {
@@ -170,7 +173,14 @@ impl Interp {
             started: Vec::new(),
             failed: Vec::new(),
             waiting: HashMap::new(),
+            linking: Rc::default(),
         }
+    }
+
+    /// Link every piece of text compiled from now on against `linking`.
+    pub fn set_linking(&mut self, linking: Rc<crate::link::Linking>) {
+        self.linking = linking;
+        self.pieces.clear();
     }
 
     /// An interpreter for a whole script, checked, lowered and with its top
@@ -292,9 +302,12 @@ impl Interp {
         if let Some(c) = self.pieces.get(&key) {
             return Ok(Rc::clone(c));
         }
-        let script = crate::profile::time(crate::profile::Phase::Parse, || {
+        let mut script = crate::profile::time(crate::profile::Phase::Parse, || {
             rux_syntax::parse(src, rux_syntax::Options::default())
         })?;
+        // What does not link is reported where the load checks the text; a
+        // name left as it was is refused when it runs.
+        crate::link::resolve(&mut script, &self.linking.aliases, &self.linking.exports);
         let unit = Rc::make_mut(&mut self.unit);
         let lowered = crate::profile::time(crate::profile::Phase::Lower, || {
             lower_piece(unit, &script, src, given, globals)

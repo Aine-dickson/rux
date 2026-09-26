@@ -34,6 +34,11 @@ pub fn rewrite(text: &str) -> String {
 /// [`rewrite`], writing every import in `imports`' spelling (see
 /// `crate::imports`).
 pub fn rewrite_with(text: &str, imports: crate::Imports) -> String {
+    // A module written as bare script, with no tags, is script throughout.
+    if is_bare_module(text) {
+        return export_types(&crate::imports::rewrite(&code(text), imports));
+    }
+    let module = !text.contains("<template");
     let b = text.as_bytes();
     let mut out = String::with_capacity(text.len());
     let mut i = 0;
@@ -54,7 +59,8 @@ pub fn rewrite_with(text: &str, imports: crate::Imports) -> String {
             };
             let close = text[open..].find("</script>").map_or(text.len(), |e| open + e);
             out.push_str(&text[i..open]);
-            out.push_str(&crate::imports::rewrite(&code(&text[open..close]), imports));
+            let script = crate::imports::rewrite(&code(&text[open..close]), imports);
+            out.push_str(&if module { export_types(&script) } else { script });
             i = close;
         } else if b[i] == b'<' && b.get(i + 1).is_some_and(|c| c.is_ascii_alphabetic()) {
             i = tag(text, i, &mut out);
@@ -68,6 +74,48 @@ pub fn rewrite_with(text: &str, imports: crate::Imports) -> String {
             let c = rest.chars().next().unwrap();
             out.push(c);
             i += c.len_utf8();
+        }
+    }
+    out
+}
+
+/// Whether `text` is a module written with no tags at all: its first thing,
+/// past whitespace and comments, is not a `<`. The rule `rux-parser` reads a
+/// file by.
+fn is_bare_module(text: &str) -> bool {
+    let mut rest = text.trim_start();
+    loop {
+        if let Some(after) = rest.strip_prefix("<!--") {
+            rest = after.split_once("-->").map_or("", |(_, r)| r).trim_start();
+        } else if let Some(after) = rest.strip_prefix("//") {
+            rest = after.split_once('\n').map_or("", |(_, r)| r).trim_start();
+        } else {
+            return !rest.starts_with('<') && !rest.is_empty();
+        }
+    }
+}
+
+/// A types file's script with `export` before each `type`: a module shares
+/// only what it exports (`docs/11-next.md`, step 7), and the types files
+/// written before that rule export nothing. Only a script that declares
+/// types and imports and nothing else is a types file; any other module
+/// may keep a type to itself, and is left alone.
+fn export_types(script: &str) -> String {
+    use rux_syntax::ast::StmtKind;
+    if !script.contains("type") {
+        return script.to_string();
+    }
+    let Ok(parsed) = rux_syntax::parse(script, rux_syntax::Options { declarations: true }) else {
+        return script.to_string();
+    };
+    let only_types = parsed.stmts.iter().all(|s| matches!(s.kind, StmtKind::Type { .. } | StmtKind::Import(_) | StmtKind::Empty));
+    if !only_types {
+        return script.to_string();
+    }
+    let mut out = script.to_string();
+    for (i, stmt) in parsed.stmts.iter().enumerate().rev() {
+        if matches!(stmt.kind, StmtKind::Type { .. }) && !parsed.exports.iter().any(|x| x.stmt == i) {
+            out.insert_str(stmt.span.start as usize, "export ");
         }
     }
     out

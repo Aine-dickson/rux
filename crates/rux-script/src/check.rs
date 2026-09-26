@@ -94,6 +94,13 @@ pub struct Context {
     /// components' functions appended to it, and a finding in one of those is
     /// the component's to report when it is checked.
     pub own_lines: Option<usize>,
+    /// What the file imports from script modules, under each linked name
+    /// (`stores/cart::items`), which [`crate::link::resolve`] has already
+    /// rewritten the file to use.
+    pub linked: Vec<crate::link::Export>,
+    /// What the file imports, for linking its template's pieces as its
+    /// script was.
+    pub link: crate::link::Linking,
 }
 
 /// What the checker worked out a name, a field or a function to be, for an
@@ -729,6 +736,11 @@ impl<'a> Checker<'a> {
         for (name, ty) in &self.cx.provided {
             self.globals.insert(name.clone(), ty.clone());
         }
+        for x in &self.cx.linked {
+            if let crate::link::ExportKind::Signal(ty) | crate::link::ExportKind::Value(ty) = &x.kind {
+                self.globals.insert(x.name.clone(), ty.clone());
+            }
+        }
 
         for stmt in &script.stmts {
             let StmtKind::Fn(def) = &stmt.kind else { continue };
@@ -855,8 +867,12 @@ impl<'a> Checker<'a> {
 
     /// A piece of the template, parsed. `None` when it does not parse, which
     /// the runtime reports in its own words.
-    fn parse_piece(src: &str) -> Option<Script> {
-        rux_syntax::parse(src, Options::default()).ok()
+    fn parse_piece(&self, src: &str) -> Option<Script> {
+        let mut script = rux_syntax::parse(src, Options::default()).ok()?;
+        // Linked as the file's script was; what does not link, the runtime
+        // reports when it checks the piece.
+        crate::link::resolve(&mut script, &self.cx.link.aliases, &self.cx.link.exports);
+        Some(script)
     }
 
     /// The one expression a piece is, when it is one.
@@ -870,7 +886,7 @@ impl<'a> Checker<'a> {
     fn template_item(&mut self, item: &Tpl) {
         match item {
             Tpl::Expr { src, want, line, what } => {
-                let Some(piece) = Self::parse_piece(src) else { return };
+                let Some(piece) = self.parse_piece(src) else { return };
                 self.in_piece_of(src, Some(&piece), PieceKind::Value, &[], *line, what, |c| match (Self::piece_expr(&piece), want) {
                     (Some(e), Some(want)) => c.check_expr(e, want),
                     (Some(e), None) => {
@@ -882,7 +898,7 @@ impl<'a> Checker<'a> {
                 });
             }
             Tpl::Handler { src, event, line, what } => {
-                let Some(piece) = Self::parse_piece(src) else { return };
+                let Some(piece) = self.parse_piece(src) else { return };
                 let extra = [("event".to_string(), event.clone())];
                 self.in_piece_of(src, Some(&piece), PieceKind::Handler, &extra, *line, what, |c| {
                     c.with_scope(|c| {
@@ -892,7 +908,7 @@ impl<'a> Checker<'a> {
                 });
             }
             Tpl::Model { src, writes, shows, line, what } => {
-                let Some(piece) = Self::parse_piece(src) else { return };
+                let Some(piece) = self.parse_piece(src) else { return };
                 let Some(e) = Self::piece_expr(&piece) else { return };
                 self.in_piece_of(src, Some(&piece), PieceKind::Model, &[], *line, what, |c| {
                     let held = c.infer(e);
@@ -928,7 +944,7 @@ impl<'a> Checker<'a> {
                 });
             }
             Tpl::For { var, src, line, body } => {
-                let Some(piece) = Self::parse_piece(src) else { return };
+                let Some(piece) = self.parse_piece(src) else { return };
                 let Some(e) = Self::piece_expr(&piece) else { return };
                 let element = self.in_piece_of(src, Some(&piece), PieceKind::Value, &[], *line, "`r-for`", |c| {
                     let ty = c.infer(e);
@@ -945,7 +961,7 @@ impl<'a> Checker<'a> {
                 // What every earlier branch not being taken established.
                 let mut earlier: Vec<(String, Type)> = Vec::new();
                 for (cond, line, body) in branches {
-                    let piece = cond.as_deref().and_then(|src| Some((src, Self::parse_piece(src)?)));
+                    let piece = cond.as_deref().and_then(|src| Some((src, self.parse_piece(src)?)));
                     let cond = piece.as_ref().and_then(|(src, p)| Some((*src, Self::piece_expr(p)?)));
                     let facts = match cond {
                         Some((src, e)) => self.with_facts(earlier.clone(), |c| {
@@ -2640,6 +2656,15 @@ impl<'a> Checker<'a> {
     // ----- Calls -----------------------------------------------------------
 
     /// A call, by name: `f(args)` or `a::b(args)`.
+    /// A linked module function's parameters, result and whether it is
+    /// `async`. See [`Context::linked`].
+    fn linked_fn(&self, name: &str) -> Option<(&Vec<Type>, &Type, bool)> {
+        self.cx.linked.iter().find(|x| x.name == name).and_then(|x| match &x.kind {
+            crate::link::ExportKind::Fn { params, result, is_async } => Some((params, result, *is_async)),
+            _ => None,
+        })
+    }
+
     fn call(&mut self, callee: &[Ident], args: &[Expr]) -> Type {
         // Only this call is awaited, not the calls in its arguments.
         let awaited = std::mem::take(&mut self.awaited);
@@ -2657,6 +2682,20 @@ impl<'a> Checker<'a> {
                 }
             }
             return Type::Any;
+        }
+
+        // A module's function, linked in.
+        if let Some((params, result)) = self.linked_fn(name).map(|(p, r, _)| (p.clone(), r.clone())) {
+            if params.len() != args.len() {
+                self.infer_all(args);
+                let s = if params.len() == 1 { "" } else { "s" };
+                self.error(pos, format!("{} takes {} argument{s}, and is given {}", crate::link::shown(name), params.len(), args.len()));
+                return loose(&result);
+            }
+            for (a, p) in args.iter().zip(&params) {
+                self.check_expr(a, &loose(p));
+            }
+            return loose(&result);
         }
 
         match (name, args.len()) {
@@ -3151,8 +3190,14 @@ impl<'a> Checker<'a> {
             ExprKind::Call { callee, args, .. } => {
                 let name = callee.last().map(|c| c.name.as_str()).unwrap_or("");
                 let host = callee.len() == 2 && callee[0].name == "host";
-                let script_fn =
-                    if callee.len() == 1 { self.fns.get(&(name.to_string(), args.len())).map(|f| f.def.is_async) } else { None };
+                let script_fn = if callee.len() == 1 {
+                    self.fns
+                        .get(&(name.to_string(), args.len()))
+                        .map(|f| f.def.is_async)
+                        .or_else(|| self.linked_fn(name).map(|(_, _, is_async)| is_async))
+                } else {
+                    None
+                };
                 match (host, script_fn) {
                     (true, _) | (_, Some(true)) => {
                         self.awaited = true;
@@ -3402,6 +3447,16 @@ fn annotations_in<'s>(stmts: &'s [Stmt], out: &mut Vec<&'s TypeExpr>) {
 /// Every name `stmts` declare: parameters, closures' parameters, `let`s and
 /// loop variables, flat. See `declared_in` in the crate root, which says the
 /// same of the fork's AST.
+/// `t`, or `any` when it has a type parameter in it: a generic function
+/// linked in from a module is checked no further than that.
+fn loose(t: &Type) -> Type {
+    if t.has_param() {
+        Type::Any
+    } else {
+        t.clone()
+    }
+}
+
 /// The top-level `let`s in `stmts` that are not `signal(…)`.
 fn plain_lets(stmts: &[Stmt]) -> HashSet<String> {
     stmts

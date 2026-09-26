@@ -407,6 +407,11 @@ impl Interp {
         std::mem::take(&mut self.started)
     }
 
+    /// The name of the function task `id` started, while it waits.
+    pub fn task_name(&self, id: u64) -> Option<&str> {
+        self.tasks.get(&id).map(|t| t.name.as_str())
+    }
+
     /// The tasks that failed with nothing to catch the error, by the name of
     /// the function started, since the last call.
     pub fn take_failed(&mut self) -> Vec<(String, Fault)> {

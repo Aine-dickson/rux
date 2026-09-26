@@ -19,6 +19,7 @@ mod parser;
 pub mod print;
 pub mod span;
 pub mod visit;
+pub mod visit_mut;
 
 pub use parser::Options;
 pub use span::{LineIndex, Span};

@@ -142,3 +142,29 @@ mod tests {
         assert_eq!(rewrite("use stores::cart;\nlet = ;", Imports::Import), "use stores::cart;\nlet = ;");
     }
 }
+
+#[cfg(test)]
+mod module_tests {
+    use crate::spellings::rewrite;
+
+    #[test]
+    fn a_types_file_exports_its_types() {
+        let before = "<script>\n  type Task = { id: int };\n  export type Page = int;\n  type Filter = \"a\" | \"b\";\n</script>\n";
+        let after = "<script>\n  export type Task = { id: int };\n  export type Page = int;\n  export type Filter = \"a\" | \"b\";\n</script>\n";
+        assert_eq!(rewrite(before), after);
+        assert_eq!(rewrite(after), after, "a second run changes nothing");
+        // A module with more than types keeps a type to itself if it likes.
+        let store = "<script>\n  type Row = int;\n  export fn f() { }\n</script>\n";
+        assert_eq!(rewrite(store), store);
+        // A component's types are its own.
+        let comp = "<template><view></view></template>\n<script>\n  type Row = int;\n</script>\n";
+        assert_eq!(rewrite(comp), comp);
+    }
+
+    #[test]
+    fn a_bare_module_is_script_throughout() {
+        let before = "// types\ntype Task = { id: number, note: string? };\nlet x = null;\n";
+        assert_eq!(rewrite(before), "// types\ntype Task = { id: float, note: string? };\nlet x = none;\n");
+        assert_eq!(rewrite("type A = int;\n"), "export type A = int;\n");
+    }
+}

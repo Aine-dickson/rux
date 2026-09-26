@@ -15,6 +15,7 @@
 pub mod check;
 pub mod host;
 pub mod interp;
+pub mod link;
 pub mod lower;
 pub mod profile;
 pub use rux_ir::types;
@@ -189,6 +190,34 @@ pub struct Builder {
     host_types: Vec<(String, types::Type)>,
     /// The functions themselves.
     host_fns: HashMap<String, interp::Host>,
+    /// The script modules the document reaches, each after the ones it
+    /// imports. See [`Builder::module`].
+    modules: Vec<ModuleSource>,
+    /// What the document's script imports from them, and its components'.
+    aliases: Vec<link::Alias>,
+}
+
+/// A script module, for [`Builder::module`]: a `.rux` file with no
+/// `<template>`. See `docs/11-next.md`, "Modules".
+#[derive(Clone, Debug)]
+pub struct ModuleSource {
+    /// `stores/cart`: what its names are linked under.
+    pub name: String,
+    /// Its script, imports taken out.
+    pub script: String,
+    /// What it imports from other modules.
+    pub aliases: Vec<link::Alias>,
+    /// The types it imports with `use type`, as name and text.
+    pub types: Vec<(String, String)>,
+}
+
+/// A module as the build checked it, kept for its findings.
+struct ModuleChecked {
+    name: String,
+    script: rux_syntax::ast::Script,
+    src: String,
+    record: check::Record,
+    findings: Vec<check::Finding>,
 }
 
 impl Default for Builder {
@@ -247,7 +276,22 @@ pub const MAX_OPERATIONS: u64 = 5_000_000;
 
 impl Builder {
     pub fn new() -> Self {
-        Self { host_types: Vec::new(), host_fns: HashMap::new() }
+        Self { host_types: Vec::new(), host_fns: HashMap::new(), modules: Vec::new(), aliases: Vec::new() }
+    }
+
+    /// Link a script module in. Modules are handed in after the ones they
+    /// import; each one's top level runs once, in that order, before the
+    /// document's.
+    pub fn module(&mut self, module: ModuleSource) -> &mut Self {
+        self.modules.push(module);
+        self
+    }
+
+    /// What the document imports from its modules: its own imports and, for
+    /// now, its components', since their functions join its script.
+    pub fn aliases(&mut self, aliases: Vec<link::Alias>) -> &mut Self {
+        self.aliases = aliases;
+        self
     }
 
     /// Register a zero-argument `host::<name>()` returning a number.
@@ -265,19 +309,64 @@ impl Builder {
     /// column a syntax error names, or the start of the statement that
     /// failed. See [`ScriptError`].
     pub fn build(self, script: &str) -> Result<Engine, ScriptError> {
-        let parsed = profile::time(profile::Phase::Parse, || {
+        // Each module on its own, in order: what it exports is what the next
+        // one, and the document, are checked against.
+        let mut linking = link::Linking { aliases: self.aliases.clone(), exports: HashMap::new() };
+        let mut modules = Vec::new();
+        let mut module_types = Vec::new();
+        for m in &self.modules {
+            let mut ast = rux_syntax::parse(&m.script, rux_syntax::Options { declarations: true })
+                .map_err(|e| ScriptError::plain(format!("{}: {}", m.name, explain(&e.message))))?;
+            let problems = link::resolve(&mut ast, &m.aliases, &linking.exports);
+            let cx = check::Context {
+                host: self.host_types.clone(),
+                imported_types: m.types.clone(),
+                support_types: module_types.clone(),
+                linked: linking.linked(),
+                ..check::Context::default()
+            };
+            let (mut findings, record) = check::check_typed(&ast, &m.script, &cx);
+            findings.extend(link::findings(&problems, &m.script));
+            linking.exports.insert(m.name.clone(), link::exports_of(&ast, &record));
+            let path = m.name.replace('/', "::");
+            for (name, text) in types_declared_in(&ast, &m.script) {
+                module_types.push((name.clone(), text, format!("{path}::{name}")));
+            }
+            modules.push(ModuleChecked { name: m.name.clone(), script: ast, src: m.script.clone(), record, findings });
+        }
+
+        let mut parsed = profile::time(profile::Phase::Parse, || {
             rux_syntax::parse(script, rux_syntax::Options { declarations: true })
         })
         .map_err(|e| ScriptError::at(explain(&e.message), script, e.span.start as usize))?;
+        // What cannot be linked is the load-time check's to report
+        // (`Engine::link`); here it is left for the interpreter to refuse.
+        link::resolve(&mut parsed, &linking.aliases, &linking.exports);
         // What `x is T` resolves a declared name against: this script's own
-        // `type`s, before the script's first statement can ask. The runtime adds what it imports (`validate::know_types`).
-        validate::reset_types(types_declared_in(&parsed, script));
+        // `type`s, and its modules', before the script's first statement can
+        // ask. The runtime adds what it imports (`validate::know_types`).
+        let mut known = types_declared_in(&parsed, script);
+        known.extend(module_types.iter().map(|(n, t, _)| (n.clone(), t.clone())));
+        validate::reset_types(known);
 
-        let mut ir = interpreter(&parsed, script, &self.host_types, self.host_fns);
+        let linking = std::rc::Rc::new(linking);
+        let mut ir = interpreter_linked(
+            &parsed,
+            script,
+            &self.host_types,
+            self.host_fns,
+            &modules,
+            &module_types,
+            std::rc::Rc::clone(&linking),
+        );
         if let Err(f) = ir.init() {
             return Err(fault_at(f, script));
         }
-        Ok(Engine::new(ir, parsed, script, self.host_types))
+        let mut engine = Engine::new(ir, parsed, script, self.host_types);
+        engine.linking = linking;
+        engine.module_types = module_types;
+        engine.modules = modules;
+        Ok(engine)
     }
 }
 
@@ -300,14 +389,36 @@ pub(crate) fn interpreter(
     host_types: &[(String, types::Type)],
     host_fns: HashMap<String, interp::Host>,
 ) -> interp::Interp {
+    interpreter_linked(parsed, script, host_types, host_fns, &[], &[], Default::default())
+}
+
+/// [`interpreter`], with script modules linked in: see
+/// [`lower::lower_linked`]. `parsed` has been through [`link::resolve`].
+fn interpreter_linked(
+    parsed: &rux_syntax::ast::Script,
+    script: &str,
+    host_types: &[(String, types::Type)],
+    host_fns: HashMap<String, interp::Host>,
+    modules: &[ModuleChecked],
+    module_types: &[(String, String, String)],
+    linking: std::rc::Rc<link::Linking>,
+) -> interp::Interp {
     let cx = check::Context {
         host: host_types.to_vec(),
         provided: ROUTER_SIGNALS.iter().map(|n| (n.to_string(), types::Type::Any)).collect(),
+        support_types: module_types.to_vec(),
+        linked: linking.linked(),
         ..check::Context::default()
     };
     let (_, record) = check::check_typed(parsed, script, &cx);
-    let unit = lower::lower(parsed, script, &record, &cx.provided);
-    interp::Interp::new(unit, host_fns)
+    let linked: Vec<lower::Module> = modules
+        .iter()
+        .map(|m| lower::Module { name: &m.name, script: &m.script, src: &m.src, record: &m.record })
+        .collect();
+    let unit = lower::lower_linked(&linked, parsed, script, &record, &cx.provided);
+    let mut ir = interp::Interp::new(unit, host_fns);
+    ir.set_linking(linking);
+    ir
 }
 
 /// The `type` declarations of a script Rux parsed from `src`, as name and the
@@ -552,11 +663,18 @@ impl CallProblem {
 pub struct Engine {
     ir: interp::Interp,
     /// The whole script as Rux's parser read it, and its text, for the type
-    /// checker and the checks on names and calls.
+    /// checker and the checks on names and calls. Its imported names are
+    /// already linked ([`link::resolve`]).
     script: rux_syntax::ast::Script,
     source: String,
     /// The `host::` functions' types, as registered.
     host_types: Vec<(String, types::Type)>,
+    /// What the document imports, and what its modules export.
+    linking: std::rc::Rc<link::Linking>,
+    /// The types its modules declare, as a type import's support types.
+    module_types: Vec<(String, String, String)>,
+    /// Its modules, as the build checked them.
+    modules: Vec<ModuleChecked>,
 }
 
 // ── Warning collection ──────────────────────────────────────────────────────
@@ -1285,7 +1403,38 @@ impl Engine {
         source: &str,
         host_types: Vec<(String, types::Type)>,
     ) -> Engine {
-        Engine { ir, script, source: source.to_string(), host_types }
+        Engine {
+            ir,
+            script,
+            source: source.to_string(),
+            host_types,
+            linking: Default::default(),
+            module_types: Vec::new(),
+            modules: Vec::new(),
+        }
+    }
+
+    /// Link `script`, text of the document or one of its pieces, against
+    /// what the document imports: see [`link::resolve`]. What cannot be
+    /// linked comes back.
+    pub fn link(&self, script: &mut rux_syntax::ast::Script) -> Vec<link::Problem> {
+        link::resolve(script, &self.linking.aliases, &self.linking.exports)
+    }
+
+    /// `cx` with what the document's modules add: their exports under their
+    /// linked names, and their types, which an export's signature may name.
+    pub fn linked_context(&self, cx: &check::Context) -> check::Context {
+        let mut cx = cx.clone();
+        cx.linked = self.linking.linked();
+        cx.link = (*self.linking).clone();
+        cx.support_types.extend(self.module_types.iter().cloned());
+        cx
+    }
+
+    /// What the check of each module found, by module name: its types, and
+    /// what it imports that cannot be linked. Lines are of its script.
+    pub fn module_findings(&self) -> Vec<(String, Vec<check::Finding>)> {
+        self.modules.iter().map(|m| (m.name.clone(), m.findings.clone())).collect()
     }
 
     /// Check the script against its type annotations. See [`check`] and
@@ -1341,7 +1490,7 @@ impl Engine {
     /// that imports them with `use`. A script that does not compile declares
     /// nothing here; its own load says why.
     pub fn declared_types(script: &str) -> Vec<(String, String)> {
-        match rux_syntax::parse(script, rux_syntax::Options::default()) {
+        match rux_syntax::parse(script, rux_syntax::Options { declarations: true }) {
             Ok(parsed) => types_declared_in(&parsed, script),
             Err(_) => Vec::new(),
         }
@@ -1488,7 +1637,10 @@ impl Engine {
     /// moment it is tapped. Syntax the language no longer has (a `do` loop,
     /// a bitwise operator) is caught here too.
     pub fn check_syntax(&self, src: &str) -> Result<(), String> {
-        let script = rux_syntax::parse(src, rux_syntax::Options::default()).map_err(|e| rux_phrasing(&e.message))?;
+        let mut script = rux_syntax::parse(src, rux_syntax::Options::default()).map_err(|e| rux_phrasing(&e.message))?;
+        if let Some(p) = self.link(&mut script).into_iter().next() {
+            return Err(p.message);
+        }
         match lower::removed_syntax(&script) {
             Some(what) => Err(format!("{what} is not part of Rux")),
             None => Ok(()),
@@ -1508,9 +1660,11 @@ impl Engine {
     /// under any state, so saying so cannot be a false alarm. Variables are
     /// left alone for the reason [`Self::check_syntax`] gives.
     pub fn unknown_calls(&self, src: &str) -> Vec<CallProblem> {
-        let Ok(script) = rux_syntax::parse(src, rux_syntax::Options::default()) else {
+        let Ok(mut script) = rux_syntax::parse(src, rux_syntax::Options::default()) else {
             return Vec::new(); // a syntax error is `check_syntax`'s to report
         };
+        // What does not link is `check_syntax`'s to report too.
+        self.link(&mut script);
         self.unresolvable_calls(&script.stmts)
     }
 
@@ -1707,6 +1861,14 @@ impl Engine {
     /// [`interp`]'s `task` module.
     pub fn take_started_tasks(&mut self) -> Vec<u64> {
         self.ir.take_started()
+    }
+
+    /// Whether task `id` runs a script module's function. A module's state
+    /// outlives any component, so such a task belongs to the document, not
+    /// to the instance whose handler started it (`docs/11-next.md`,
+    /// "Stores").
+    pub fn task_is_a_modules(&self, id: u64) -> bool {
+        self.ir.task_name(id).is_some_and(|n| link::split(n).is_some())
     }
 
     /// Take the host answers that have come for this document's tasks, and

@@ -54,8 +54,8 @@ fn shown(doc: &Document) -> Vec<String> {
 }
 
 const TYPES: &str = "<script>\n\
-    type Task = { id: int, title: string, done: bool, note?: string };\n\
-    type Filter =\n  | \"all\"\n  | \"open\"\n  | \"done\";\n\
+    export type Task = { id: int, title: string, done: bool, note?: string };\n\
+    export type Filter =\n  | \"all\"\n  | \"open\"\n  | \"done\";\n\
     </script>\n";
 
 /// A whole document written with annotations everywhere they can go runs, and
@@ -182,21 +182,21 @@ fn a_type_told_by_its_capital_letter_still_loads_and_warns() {
     assert!(p[0].contains("write `use type types::Task;`"), "{p:?}");
 }
 
-/// A file with only a `<script>` is a types file: it loads when it declares
-/// types and nothing else, and says so when it declares something that would
-/// never run.
+/// A file with only a `<script>` is a module, and a types file is a module
+/// that exports only types. It loads on its own (for `rux check`), functions
+/// and state included, and what only a component or a document may hold is
+/// refused.
 #[test]
-fn a_types_file_holds_types_and_nothing_else() {
+fn a_types_file_is_a_module() {
     let dir = project(&[("types.rux", TYPES)]);
     assert!(Document::load(dir.join("types.rux")).is_ok());
 
-    let dir = project(&[("types.rux", "<script>\n  type A = int;\n  fn f() { 1 }\n</script>")]);
-    let err = load_err(dir.join("types.rux"));
-    assert!(err.contains("no <template>") && err.contains("a function"), "{err}");
+    let dir = project(&[("types.rux", "<script>\n  export type A = int;\n  export fn f(): int { 1 }\n</script>")]);
+    assert!(Document::load(dir.join("types.rux")).is_ok());
 
-    let dir = project(&[("types.rux", "<script>\n  type A = int;\n  let n = 1;\n</script>")]);
+    let dir = project(&[("types.rux", "<script>\n  type A = int;\n  effect { print(1) }\n</script>")]);
     let err = load_err(dir.join("types.rux"));
-    assert!(err.contains("a statement"), "{err}");
+    assert!(err.contains("an `effect` belongs to a component or a document"), "{err}");
 }
 
 /// A malformed annotation in a script is a syntax error with a line, the same

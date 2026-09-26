@@ -38,9 +38,9 @@ fn load_err(path: PathBuf) -> String {
 }
 
 const TYPES: &str = "<script>\n\
-    type Task = { id: int, title: string, done: bool };\n\
-    type Filter = \"all\" | \"open\" | \"done\";\n\
-    type Board = { tasks: Task[], filter: Filter };\n\
+    export type Task = { id: int, title: string, done: bool };\n\
+    export type Filter = \"all\" | \"open\" | \"done\";\n\
+    export type Board = { tasks: Task[], filter: Filter };\n\
     </script>\n";
 
 fn page(script: &str) -> String {
