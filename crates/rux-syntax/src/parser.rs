@@ -23,7 +23,7 @@ pub struct Options {
 type PResult<T> = Result<T, SyntaxError>;
 
 pub(crate) struct Parser<'t> {
-    toks: &'t [Token],
+    toks: &'t [Token<'t>],
     /// The source the tokens came from, for the few decisions that turn on
     /// where a line ends.
     src: &'t str,
@@ -39,14 +39,14 @@ pub(crate) struct Parser<'t> {
     no_pipe: bool,
     /// Every `let` and `const` in scope, innermost last, with whether it is a
     /// constant. The fork refuses an assignment to a constant while parsing.
-    vars: Vec<(String, bool)>,
+    vars: Vec<(&'t str, bool)>,
     /// Functions declared so far, by name, arity and `this` type, since the
     /// fork refuses a second definition of the same one.
     fns: Vec<(String, usize, Option<String>)>,
 }
 
 impl<'t> Parser<'t> {
-    pub(crate) fn new(toks: &'t [Token], src: &'t str, opts: Options) -> Self {
+    pub(crate) fn new(toks: &'t [Token<'t>], src: &'t str, opts: Options) -> Self {
         Self {
             toks,
             src,
@@ -63,12 +63,16 @@ impl<'t> Parser<'t> {
 
     // ----- the token stream ---------------------------------------------
 
-    fn peek(&self) -> &Tok {
-        &self.toks[self.pos.min(self.toks.len() - 1)].tok
+    // Tokens are borrowed for the parser's whole life, not from `self`, so a
+    // `match self.peek()` can go on to move the parser.
+    fn peek(&self) -> &'t Tok<'t> {
+        let toks = self.toks;
+        &toks[self.pos.min(toks.len() - 1)].tok
     }
 
-    fn peek_nth(&self, n: usize) -> &Tok {
-        &self.toks[(self.pos + n).min(self.toks.len() - 1)].tok
+    fn peek_nth(&self, n: usize) -> &'t Tok<'t> {
+        let toks = self.toks;
+        &toks[(self.pos + n).min(toks.len() - 1)].tok
     }
 
     fn span(&self) -> Span {
@@ -82,8 +86,9 @@ impl<'t> Parser<'t> {
         self.toks[(self.pos - 1).min(self.toks.len() - 1)].span
     }
 
-    fn bump(&mut self) -> Token {
-        let t = self.toks[self.pos.min(self.toks.len() - 1)].clone();
+    fn bump(&mut self) -> &'t Token<'t> {
+        let toks = self.toks;
+        let t = &toks[self.pos.min(toks.len() - 1)];
         if self.pos < self.toks.len() - 1 {
             self.pos += 1;
         }
@@ -252,7 +257,7 @@ impl<'t> Parser<'t> {
             }
         }
 
-        let kind = match self.peek().clone() {
+        let kind = match self.peek() {
             Tok::Eof => return Ok(Stmt { kind: StmtKind::Empty, span: start }),
             Tok::Punct(";") => {
                 self.bump();
@@ -350,11 +355,11 @@ impl<'t> Parser<'t> {
     fn expr_stmt(&mut self) -> PResult<Stmt> {
         let start = self.span();
         let target = self.expr()?;
-        let kind = match self.peek().clone() {
+        let kind = match self.peek() {
             Tok::Punct(p @ ("++" | "--")) => {
                 self.bump();
                 self.check_assignable(&target, "=")?;
-                StmtKind::Step { target, up: p == "++" }
+                StmtKind::Step { target, up: *p == "++" }
             }
             Tok::Punct(
                 op @ ("=" | "+=" | "-=" | "*=" | "/=" | "%=" | "**=" | "<<=" | ">>=" | "&=" | "|=" | "^="),
@@ -491,9 +496,9 @@ impl<'t> Parser<'t> {
         let iter = self.expr()?;
         let frame = self.vars.len();
         if let Some(c) = &counter {
-            self.vars.push((c.name.clone(), false));
+            self.vars.push((c.span.text(self.src), false));
         }
-        self.vars.push((var.name.clone(), false));
+        self.vars.push((var.span.text(self.src), false));
         let (in_fn, global) = (self.in_fn, self.global);
         let body = self.with_flags(in_fn, true, global, |p| p.block());
         self.vars.truncate(frame);
@@ -506,7 +511,7 @@ impl<'t> Parser<'t> {
         let ty = if self.eat_punct(":") { Some(self.take_type("`:`")?) } else { None };
         let value = if self.eat_punct("=") { Some(self.expr()?) } else { None };
         // A `let` of a name already in this block replaces it there.
-        self.vars.push((name.name.clone(), constant));
+        self.vars.push((name.span.text(self.src), constant));
         Ok(StmtKind::Let { name, ty, value, constant })
     }
 
@@ -526,7 +531,7 @@ impl<'t> Parser<'t> {
         };
         let frame = self.vars.len();
         if let Some(v) = &var {
-            self.vars.push((v.name.clone(), false));
+            self.vars.push((v.span.text(self.src), false));
         }
         let catch = self.block();
         self.vars.truncate(frame);
@@ -536,17 +541,22 @@ impl<'t> Parser<'t> {
     fn fn_decl(&mut self, private: bool) -> PResult<FnDecl> {
         let fn_span = self.bump().span; // `fn`
         // `fn Type.name()`, rhai's method on a type.
-        let this_type = match (self.peek().clone(), self.peek_nth(1).is_punct(".")) {
-            (Tok::Ident(t) | Tok::Str(t), true) => {
+        let this_type = match (self.peek(), self.peek_nth(1).is_punct(".")) {
+            (Tok::Ident(t), true) => {
                 self.bump();
                 self.bump();
-                Some(t)
+                Some(t.to_string())
+            }
+            (Tok::Str(t), true) => {
+                self.bump();
+                self.bump();
+                Some(t.to_string())
             }
             (Tok::Str(_), false) => return self.error("expecting `.` after the type name of `this`"),
             _ => None,
         };
-        let name = match self.peek().clone() {
-            Tok::Ident(n) => Ident { name: n, span: self.bump().span },
+        let name = match self.peek() {
+            Tok::Ident(n) => Ident { name: n.to_string(), span: self.bump().span },
             Tok::Reserved(r) => return self.error(format!("`{r}` is a reserved word, so a function cannot take it as its name")),
             _ => return self.error("expecting the function's name after `fn`"),
         };
@@ -584,19 +594,19 @@ impl<'t> Parser<'t> {
             return Ok(params);
         }
         loop {
-            match self.peek().clone() {
+            match self.peek() {
                 Tok::Punct(")") => {
                     self.bump();
                     break;
                 }
                 Tok::Ident(n) => {
                     let span = self.bump().span;
-                    if params.iter().any(|p| p.name.name == n) {
+                    if params.iter().any(|p| p.name.name == *n) {
                         return Err(SyntaxError { message: format!("`{fn_name}` has two parameters named `{n}`"), span });
                     }
-                    self.vars.push((n.clone(), false));
+                    self.vars.push((*n, false));
                     let ty = if self.eat_punct(":") { Some(self.take_type("`:`")?) } else { None };
-                    params.push(Param { name: Ident { name: n, span }, ty });
+                    params.push(Param { name: Ident { name: n.to_string(), span }, ty });
                 }
                 Tok::Reserved(r) => return self.error(format!("`{r}` is a reserved word, so a parameter cannot take it as its name")),
                 Tok::Kw(k) => return self.error(format!("`{k}` is a keyword, so a parameter cannot take it as its name")),
@@ -703,19 +713,19 @@ impl<'t> Parser<'t> {
     /// The top-level declarations of a document or component script.
     fn declaration(&mut self) -> PResult<Option<Stmt>> {
         let start = self.span();
-        match (self.peek().clone(), self.peek_nth(1).clone()) {
-            (Tok::Ident(w), Tok::Ident(_)) if w == "computed" => {
+        match (self.peek(), self.peek_nth(1)) {
+            (Tok::Ident(w), Tok::Ident(_)) if *w == "computed" => {
                 self.bump();
                 let name = self.ident()?;
                 let ty = if self.eat_punct(":") { Some(self.take_type("`:`")?) } else { None };
                 self.expect_punct("=", "and the expression a `computed` is worked out from")?;
                 let value = self.expr()?;
-                self.vars.push((name.name.clone(), false));
+                self.vars.push((name.span.text(self.src), false));
                 Ok(Some(Stmt { kind: StmtKind::Computed { name, ty, value }, span: start.to(self.prev_span()) }))
             }
-            (Tok::Ident(w), Tok::Punct("{")) if matches!(w.as_str(), "effect" | "mounted" | "unmounted") => {
+            (Tok::Ident(w), Tok::Punct("{")) if matches!(*w, "effect" | "mounted" | "unmounted") => {
                 self.bump();
-                let kind = match w.as_str() {
+                let kind = match *w {
                     "effect" => Lifecycle::Effect,
                     "mounted" => Lifecycle::Mounted,
                     _ => Lifecycle::Unmounted,
@@ -726,13 +736,13 @@ impl<'t> Parser<'t> {
             // `prop` then a name, or something meant as one (`prop new-x`), on
             // the same line; `prop = 3` and `prop(x)` stay ordinary code.
             (Tok::Ident(w), Tok::Ident(_) | Tok::Reserved(_) | Tok::Kw(_))
-                if w == "prop" && !self.newline_after_this() =>
+                if *w == "prop" && !self.newline_after_this() =>
             {
                 let (pos, vars) = (self.pos, self.vars.len());
                 self.bump();
                 if let Some(decls) = self.prop_decls() {
                     for d in &decls {
-                        self.vars.push((d.name.name.clone(), false));
+                        self.vars.push((d.name.span.text(self.src), false));
                     }
                     return Ok(Some(Stmt { kind: StmtKind::Prop(decls), span: start.to(self.prev_span()) }));
                 }
@@ -744,7 +754,7 @@ impl<'t> Parser<'t> {
                 self.vars.truncate(vars);
                 Ok(Some(self.raw_statement(start, StmtKind::Prop(Vec::new()))))
             }
-            (Tok::Reserved(w), _) if w == "use" && !self.newline_after_this() => {
+            (Tok::Reserved(w), _) if *w == "use" && !self.newline_after_this() => {
                 let pos = self.pos;
                 self.bump();
                 if let Some(path) = self.use_path() {
@@ -843,13 +853,13 @@ impl<'t> Parser<'t> {
 
     fn unary(&mut self) -> PResult<Expr> {
         let start = self.span();
-        match self.peek().clone() {
+        match self.peek() {
             Tok::Punct("|") if self.no_pipe => self.error("`|` separates the values of a case here"),
             Tok::Punct(op @ ("-" | "+")) => {
                 self.bump();
                 let operand = self.unary()?;
                 let span = start.to(operand.span);
-                let kind = match (op, operand.kind) {
+                let kind = match (*op, operand.kind) {
                     ("-", ExprKind::Int(n)) => match n.checked_neg() {
                         Some(n) => ExprKind::Int(n),
                         None => ExprKind::Float(-(n as f64)),
@@ -882,7 +892,7 @@ impl<'t> Parser<'t> {
             Tok::Punct("==" | "!=" | "===" | "!==") => 90,
             Tok::Kw("in") | Tok::Punct("!in") => 110,
             Tok::Punct("<" | "<=" | ">" | ">=") => 130,
-            Tok::Reserved(r) if r == "is" && !lookahead => 130,
+            Tok::Reserved(r) if *r == "is" && !lookahead => 130,
             Tok::Punct("??") => 135,
             Tok::Punct(".." | "..=") => 140,
             Tok::Punct("+" | "-") => 150,
@@ -900,7 +910,7 @@ impl<'t> Parser<'t> {
     fn binary(&mut self, parent: u8, lhs: Expr) -> PResult<Expr> {
         let mut root = lhs;
         loop {
-            let op_tok = self.peek().clone();
+            let op_tok = self.peek();
             let Some(prec) = self.precedence(&op_tok, false)? else { return Ok(root) };
             let right = op_tok.is_punct("**");
             if prec < parent || (prec == parent && !right) {
@@ -924,7 +934,7 @@ impl<'t> Parser<'t> {
                 }
                 _ => self.unary()?,
             };
-            let next = self.precedence(&self.peek().clone(), true)?;
+            let next = self.precedence(&self.peek(), true)?;
             let rhs = match next {
                 Some(n) if n > prec || (n == prec && right) => self.binary(prec, rhs)?,
                 _ => rhs,
@@ -946,7 +956,7 @@ impl<'t> Parser<'t> {
         }
         let arrow = self.arrow_params_len().is_some();
         let brace_map = self.brace_opens_map(true);
-        let tok = self.peek().clone();
+        let tok = self.peek();
         let root = match tok {
             Tok::Eof => return self.error("the expression ends too soon"),
             Tok::Ident(_) | Tok::Punct("()") | Tok::Punct("(") if arrow => return self.arrow(),
@@ -956,23 +966,23 @@ impl<'t> Parser<'t> {
             }
             Tok::Int(n) => {
                 self.bump();
-                Expr { kind: ExprKind::Int(n), span: start }
+                Expr { kind: ExprKind::Int(*n), span: start }
             }
             Tok::Float(f) => {
                 self.bump();
-                Expr { kind: ExprKind::Float(f), span: start }
+                Expr { kind: ExprKind::Float(*f), span: start }
             }
             Tok::Char(c) => {
                 self.bump();
-                Expr { kind: ExprKind::Char(c), span: start }
+                Expr { kind: ExprKind::Char(*c), span: start }
             }
             Tok::Str(s) => {
                 self.bump();
-                Expr { kind: ExprKind::Str(s), span: start }
+                Expr { kind: ExprKind::Str(s.to_string()), span: start }
             }
             Tok::Kw(b @ ("true" | "false")) => {
                 self.bump();
-                Expr { kind: ExprKind::Bool(b == "true"), span: start }
+                Expr { kind: ExprKind::Bool(*b == "true"), span: start }
             }
             // `..5` reads as `0..5`, as it does in the fork.
             Tok::Punct(".." | "..=") => Expr { kind: ExprKind::Int(0), span: Span::at(start.start as usize) },
@@ -1028,30 +1038,30 @@ impl<'t> Parser<'t> {
                     match part {
                         TplPart::Text(t, _) => {
                             if !t.is_empty() {
-                                out.push(TemplatePart::Text(t));
+                                out.push(TemplatePart::Text(t.to_string()));
                             }
                         }
-                        TplPart::Code(tokens, span) => out.push(TemplatePart::Code(self.template_code(&tokens, span)?)),
+                        TplPart::Code(tokens, span) => out.push(TemplatePart::Code(self.template_code(tokens, *span)?)),
                     }
                 }
                 Expr { kind: ExprKind::Template(out), span: start }
             }
             Tok::Punct("[") => self.array_literal()?,
             Tok::Punct("#{") => self.map_literal(true)?,
-            Tok::Reserved(r) if r == "null" => {
+            Tok::Reserved(r) if *r == "null" => {
                 self.bump();
                 Expr { kind: ExprKind::Null, span: start }
             }
             Tok::Ident(name) => {
                 self.bump();
-                Expr { kind: ExprKind::Var(name), span: start }
+                Expr { kind: ExprKind::Var(name.to_string()), span: start }
             }
             Tok::Reserved(r) => {
                 let callable = matches!(self.peek_nth(1), Tok::Punct("(" | "()" | "!"));
-                if callable && CALLABLE_RESERVED.contains(&r.as_str()) {
+                if callable && CALLABLE_RESERVED.contains(r) {
                     self.bump();
-                    Expr { kind: ExprKind::Var(r), span: start }
-                } else if r == "this" {
+                    Expr { kind: ExprKind::Var(r.to_string()), span: start }
+                } else if *r == "this" {
                     if !self.in_fn {
                         return self.error("`this` can only be used inside a function");
                     }
@@ -1067,7 +1077,7 @@ impl<'t> Parser<'t> {
     }
 
     /// The statements inside `${ … }`, from the tokens the lexer kept.
-    fn template_code(&mut self, tokens: &[Token], span: Span) -> PResult<Block> {
+    fn template_code(&mut self, tokens: &'t [Token<'t>], span: Span) -> PResult<Block> {
         let mut inner = Parser {
             toks: tokens,
             src: self.src,
@@ -1113,7 +1123,7 @@ impl<'t> Parser<'t> {
     fn postfix(&mut self, mut lhs: Expr) -> PResult<Expr> {
         loop {
             let is_var = matches!(lhs.kind, ExprKind::Var(_) | ExprKind::Path(_));
-            match self.peek().clone() {
+            match self.peek() {
                 Tok::Punct("(" | "()") if is_var => {
                     let callee = callee_of(&lhs);
                     let args = self.call_args()?;
@@ -1157,16 +1167,16 @@ impl<'t> Parser<'t> {
                     }
                     lhs = Expr {
                         span: lhs.span.to(self.prev_span()),
-                        kind: ExprKind::Index { base: Box::new(lhs), index: Box::new(index), optional: b == "?[" },
+                        kind: ExprKind::Index { base: Box::new(lhs), index: Box::new(index), optional: *b == "?[" },
                     };
                 }
                 Tok::Punct(d @ ("." | "?.")) => {
                     self.bump();
-                    let optional = d == "?.";
-                    let name = match self.peek().clone() {
-                        Tok::Ident(n) => Ident { name: n, span: self.bump().span },
-                        Tok::Reserved(r) if METHOD_RESERVED.contains(&r.as_str()) && matches!(self.peek_nth(1), Tok::Punct("(" | "()")) => {
-                            Ident { name: r, span: self.bump().span }
+                    let optional = *d == "?.";
+                    let name = match self.peek() {
+                        Tok::Ident(n) => Ident { name: n.to_string(), span: self.bump().span },
+                        Tok::Reserved(r) if METHOD_RESERVED.contains(r) && matches!(self.peek_nth(1), Tok::Punct("(" | "()")) => {
+                            Ident { name: r.to_string(), span: self.bump().span }
                         }
                         Tok::Reserved(r) => {
                             return self.error(format!("`{r}` is a reserved word, so it cannot be used as a name here"))
@@ -1269,9 +1279,9 @@ impl<'t> Parser<'t> {
                 Tok::Eof => return self.error("this map is never closed with `}`"),
                 _ => {}
             }
-            let (key, quoted) = match self.peek().clone() {
-                Tok::Ident(k) => (Ident { name: k, span: self.bump().span }, false),
-                Tok::Str(k) => (Ident { name: k, span: self.bump().span }, true),
+            let (key, quoted) = match self.peek() {
+                Tok::Ident(k) => (Ident { name: k.to_string(), span: self.bump().span }, false),
+                Tok::Str(k) => (Ident { name: k.to_string(), span: self.bump().span }, true),
                 Tok::Reserved(r) => return self.error(format!("`{r}` is a reserved word; write it as a string key, \"{r}\"")),
                 _ if entries.is_empty() => return self.error("expecting `}` to close this map"),
                 _ => return self.error("expecting a key: a name or a string"),
@@ -1327,17 +1337,17 @@ impl<'t> Parser<'t> {
     fn arrow(&mut self) -> PResult<Expr> {
         let start = self.span();
         let mut params: Vec<Param> = Vec::new();
-        match self.bump().tok {
-            Tok::Ident(n) => params.push(Param { name: Ident { name: n, span: start }, ty: None }),
+        match &self.bump().tok {
+            Tok::Ident(n) => params.push(Param { name: Ident { name: n.to_string(), span: start }, ty: None }),
             Tok::Punct("()") => {}
             _ => loop {
                 let t = self.bump();
                 let Tok::Ident(n) = t.tok else { unreachable!("checked by the lookahead") };
-                if params.iter().any(|p| p.name.name == n) {
+                if params.iter().any(|p| p.name.name == *n) {
                     return Err(SyntaxError { message: format!("two parameters are named `{n}`"), span: t.span });
                 }
                 let ty = if self.eat_punct(":") { Some(self.take_type("`:`")?) } else { None };
-                params.push(Param { name: Ident { name: n, span: t.span }, ty });
+                params.push(Param { name: Ident { name: n.to_string(), span: t.span }, ty });
                 if self.bump().tok.is_punct(")") {
                     break;
                 }
@@ -1356,10 +1366,10 @@ impl<'t> Parser<'t> {
                 match t.tok {
                     Tok::Punct("|") => break,
                     Tok::Ident(n) => {
-                        if params.iter().any(|p| p.name.name == n) {
+                        if params.iter().any(|p| p.name.name == *n) {
                             return Err(SyntaxError { message: format!("two parameters are named `{n}`"), span: t.span });
                         }
-                        params.push(Param { name: Ident { name: n, span: t.span }, ty: None });
+                        params.push(Param { name: Ident { name: n.to_string(), span: t.span }, ty: None });
                     }
                     Tok::Reserved(r) => {
                         return Err(SyntaxError { message: format!("`{r}` is a reserved word, so a parameter cannot take it as its name"), span: t.span })
@@ -1383,7 +1393,7 @@ impl<'t> Parser<'t> {
     fn closure_body(&mut self, start: Span, params: Vec<Param>, arrow: bool) -> PResult<Expr> {
         let body = self.in_new_scope(|p| {
             for param in &params {
-                p.vars.push((param.name.name.clone(), false));
+                p.vars.push((param.name.span.text(p.src), false));
             }
             p.with_flags(true, false, false, |p| p.stmt())
         })?;
@@ -1404,16 +1414,16 @@ impl<'t> Parser<'t> {
     }
 
     fn ident(&mut self) -> PResult<Ident> {
-        match self.peek().clone() {
-            Tok::Ident(n) => Ok(Ident { name: n, span: self.bump().span }),
+        match self.peek() {
+            Tok::Ident(n) => Ok(Ident { name: n.to_string(), span: self.bump().span }),
             other => self.error(format!("expecting a name, found {}", other.describe())),
         }
     }
 
     /// The fork's `parse_var_name`.
     fn var_name(&mut self) -> PResult<Ident> {
-        match self.peek().clone() {
-            Tok::Ident(n) => Ok(Ident { name: n, span: self.bump().span }),
+        match self.peek() {
+            Tok::Ident(n) => Ok(Ident { name: n.to_string(), span: self.bump().span }),
             Tok::Reserved(r) => self.error(format!("`{r}` is a reserved word, so it cannot be used as a name here")),
             other => self.error(format!("expecting a name, found {}", other.describe())),
         }
@@ -1450,7 +1460,7 @@ impl<'t> Parser<'t> {
     fn type_primary_end(&self, at: usize) -> Option<usize> {
         match self.peek_nth(at) {
             Tok::Ident(_) | Tok::Str(_) => Some(at + 1),
-            Tok::Reserved(r) if r == "null" => Some(at + 1),
+            Tok::Reserved(r) if *r == "null" => Some(at + 1),
             Tok::Punct("{") => self.type_record_end(at + 1),
             Tok::Punct("()") if self.peek_nth(at + 1).is_punct("=>") => self.type_end(at + 2),
             Tok::Punct("(") => {
@@ -1568,9 +1578,9 @@ impl<'t> Parser<'t> {
     fn type_primary(&mut self) -> TypeExpr {
         let start = self.span();
         let t = self.bump();
-        let kind = match t.tok {
-            Tok::Ident(n) => TypeKind::Name(n),
-            Tok::Str(s) => TypeKind::Literal(s),
+        let kind = match &t.tok {
+            Tok::Ident(n) => TypeKind::Name(n.to_string()),
+            Tok::Str(s) => TypeKind::Literal(s.to_string()),
             Tok::Reserved(_) => TypeKind::Null,
             Tok::Punct("()") => {
                 self.bump(); // `=>`
@@ -1590,7 +1600,7 @@ impl<'t> Parser<'t> {
             }
             Tok::Punct("{") => {
                 if self.eat_punct("[") {
-                    let key = match self.bump().tok {
+                    let key = match &self.bump().tok {
                         Tok::Ident(k) => k,
                         _ => unreachable!("checked by the recognizer"),
                     };
@@ -1601,13 +1611,14 @@ impl<'t> Parser<'t> {
                         self.bump();
                     }
                     self.bump(); // `}`
-                    TypeKind::Dict { key, value: Box::new(value) }
+                    TypeKind::Dict { key: key.to_string(), value: Box::new(value) }
                 } else {
                     let mut fields = Vec::new();
                     while !self.eat_punct("}") {
                         let t = self.bump();
-                        let name = match t.tok {
-                            Tok::Ident(n) | Tok::Str(n) => Ident { name: n, span: t.span },
+                        let name = match &t.tok {
+                            Tok::Ident(n) => Ident { name: n.to_string(), span: t.span },
+                            Tok::Str(n) => Ident { name: n.to_string(), span: t.span },
                             _ => unreachable!("checked by the recognizer"),
                         };
                         let optional = self.eat_punct("?");

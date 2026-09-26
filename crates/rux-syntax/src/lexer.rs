@@ -7,34 +7,37 @@
 //! cannot be binary. Where a rule here looks odd, the fork is the reason, and
 //! changing it is a change to the language, which belongs to step 3.
 
+use std::borrow::Cow;
+
 use crate::span::Span;
 use crate::SyntaxError;
 
 /// One token and where it is.
 #[derive(Clone, Debug, PartialEq)]
-pub struct Token {
-    pub tok: Tok,
+pub struct Token<'s> {
+    pub tok: Tok<'s>,
     pub span: Span,
 }
 
-/// What a token is.
+/// What a token is. Names and text borrow from the source where they can;
+/// a string with an escape in it is the one that has to be built.
 #[derive(Clone, Debug, PartialEq)]
-pub enum Tok {
+pub enum Tok<'s> {
     Int(i64),
     Float(f64),
     /// `"…"`, or a backtick string with no `${` in it.
-    Str(String),
+    Str(Cow<'s, str>),
     /// `'x'`.
     Char(char),
     /// A backtick string with at least one `${ … }`.
-    Template(Vec<TplPart>),
+    Template(Vec<TplPart<'s>>),
     /// A name that is neither a keyword nor reserved.
-    Ident(String),
+    Ident(&'s str),
     /// A keyword: `let`, `if`, `fn`, … and `_`.
     Kw(&'static str),
     /// A word the fork reserves: `print`, `this`, `null`, `is`, `use`, …
     /// Some of them are callable (`print(x)`); the parser decides.
-    Reserved(String),
+    Reserved(&'s str),
     /// Punctuation and operators.
     Punct(&'static str),
     Eof,
@@ -42,15 +45,15 @@ pub enum Tok {
 
 /// A piece of a backtick string.
 #[derive(Clone, Debug, PartialEq)]
-pub enum TplPart {
+pub enum TplPart<'s> {
     /// Text, with its escapes already applied.
-    Text(String, Span),
+    Text(Cow<'s, str>, Span),
     /// The tokens between `${` and its `}`, ending in [`Tok::Eof`]. The span
     /// covers the braces.
-    Code(Vec<Token>, Span),
+    Code(Vec<Token<'s>>, Span),
 }
 
-impl Tok {
+impl Tok<'_> {
     pub fn is_punct(&self, p: &str) -> bool {
         matches!(self, Tok::Punct(q) if *q == p)
     }
@@ -60,11 +63,11 @@ impl Tok {
     }
 
     pub fn is_reserved(&self, r: &str) -> bool {
-        matches!(self, Tok::Reserved(q) if q == r)
+        matches!(self, Tok::Reserved(q) if *q == r)
     }
 
     pub fn is_ident(&self, name: &str) -> bool {
-        matches!(self, Tok::Ident(q) if q == name)
+        matches!(self, Tok::Ident(q) if *q == name)
     }
 
     /// How the token reads in a message.
@@ -81,19 +84,48 @@ impl Tok {
     }
 }
 
-const KEYWORDS: &[&str] = &[
-    "as", "break", "catch", "const", "continue", "do", "else", "export", "false", "fn", "for", "if",
-    "import", "in", "let", "loop", "private", "return", "switch", "throw", "true", "try", "until",
-    "while", "_",
-];
+/// The keyword `word` is, if it is one.
+fn keyword(word: &str) -> Option<&'static str> {
+    Some(match word {
+        "as" => "as",
+        "break" => "break",
+        "catch" => "catch",
+        "const" => "const",
+        "continue" => "continue",
+        "do" => "do",
+        "else" => "else",
+        "export" => "export",
+        "false" => "false",
+        "fn" => "fn",
+        "for" => "for",
+        "if" => "if",
+        "import" => "import",
+        "in" => "in",
+        "let" => "let",
+        "loop" => "loop",
+        "private" => "private",
+        "return" => "return",
+        "switch" => "switch",
+        "throw" => "throw",
+        "true" => "true",
+        "try" => "try",
+        "until" => "until",
+        "while" => "while",
+        "_" => "_",
+        _ => return None,
+    })
+}
 
 /// Words the fork reserves. `exit` is on its list but not reserved.
-const RESERVED_WORDS: &[&str] = &[
-    "use", "case", "async", "public", "package", "super", "var", "protected", "spawn", "shared",
-    "is", "sync", "curry", "static", "default", "print", "this", "is_def_var", "thread", "yield",
-    "new", "call", "match", "eval", "await", "null", "debug", "type_of", "with", "void", "nil",
-    "module", "Fn",
-];
+fn is_reserved_word(word: &str) -> bool {
+    matches!(
+        word,
+        "use" | "case" | "async" | "public" | "package" | "super" | "var" | "protected" | "spawn"
+            | "shared" | "is" | "sync" | "curry" | "static" | "default" | "print" | "this"
+            | "is_def_var" | "thread" | "yield" | "new" | "call" | "match" | "eval" | "await"
+            | "null" | "debug" | "type_of" | "with" | "void" | "nil" | "module" | "Fn"
+    )
+}
 
 /// Reserved words that may still be called as functions: `print(x)`.
 pub const CALLABLE_RESERVED: &[&str] = &["print", "debug", "type_of", "Fn", "call", "curry", "eval", "is_def_var"];
@@ -101,14 +133,100 @@ pub const CALLABLE_RESERVED: &[&str] = &["print", "debug", "type_of", "Fn", "cal
 /// Reserved words that may still be called as methods: `f.call(1)`.
 pub const METHOD_RESERVED: &[&str] = &["type_of", "call", "curry"];
 
-/// Operators and punctuation, longest first so the first match is the right one.
-const PUNCT: &[&str] = &[
-    "===", "!==", "**=", "<<=", ">>=", "...", "..=", "::<", "==", "!=", "<=", ">=", "&&", "||",
-    "??", "?.", "?[", "::", "=>", "..", "+=", "-=", "*=", "/=", "%=", "|=", "&=", "^=", "**", "<<",
-    ">>", "++", "--", "->", "<-", "|>", "<|", ":=", ":;", "(*", "*)", "!.", "#{", "#!", "()", "+",
-    "-", "*", "/", "%", "=", "<", ">", "!", "|", "&", "^", "~", "(", ")", "[", "]", "{", "}", ",",
-    ";", ":", ".", "?", "@", "$", "#",
-];
+/// The operator or punctuation `rest` starts with, the longest that fits.
+fn punct(rest: &[u8]) -> Option<&'static str> {
+    if rest.len() >= 3 {
+        let three = match &rest[..3] {
+            b"===" => Some("==="),
+            b"!==" => Some("!=="),
+            b"**=" => Some("**="),
+            b"<<=" => Some("<<="),
+            b">>=" => Some(">>="),
+            b"..." => Some("..."),
+            b"..=" => Some("..="),
+            b"::<" => Some("::<"),
+            _ => None,
+        };
+        if three.is_some() {
+            return three;
+        }
+    }
+    if rest.len() >= 2 {
+        let two = match &rest[..2] {
+            b"==" => Some("=="),
+            b"!=" => Some("!="),
+            b"<=" => Some("<="),
+            b">=" => Some(">="),
+            b"&&" => Some("&&"),
+            b"||" => Some("||"),
+            b"??" => Some("??"),
+            b"?." => Some("?."),
+            b"?[" => Some("?["),
+            b"::" => Some("::"),
+            b"=>" => Some("=>"),
+            b".." => Some(".."),
+            b"+=" => Some("+="),
+            b"-=" => Some("-="),
+            b"*=" => Some("*="),
+            b"/=" => Some("/="),
+            b"%=" => Some("%="),
+            b"|=" => Some("|="),
+            b"&=" => Some("&="),
+            b"^=" => Some("^="),
+            b"**" => Some("**"),
+            b"<<" => Some("<<"),
+            b">>" => Some(">>"),
+            b"++" => Some("++"),
+            b"--" => Some("--"),
+            b"->" => Some("->"),
+            b"<-" => Some("<-"),
+            b"|>" => Some("|>"),
+            b"<|" => Some("<|"),
+            b":=" => Some(":="),
+            b":;" => Some(":;"),
+            b"(*" => Some("(*"),
+            b"*)" => Some("*)"),
+            b"!." => Some("!."),
+            b"#{" => Some("#{"),
+            b"#!" => Some("#!"),
+            b"()" => Some("()"),
+            _ => None,
+        };
+        if two.is_some() {
+            return two;
+        }
+    }
+    Some(match *rest.first()? {
+        b'+' => "+",
+        b'-' => "-",
+        b'*' => "*",
+        b'/' => "/",
+        b'%' => "%",
+        b'=' => "=",
+        b'<' => "<",
+        b'>' => ">",
+        b'!' => "!",
+        b'|' => "|",
+        b'&' => "&",
+        b'^' => "^",
+        b'~' => "~",
+        b'(' => "(",
+        b')' => ")",
+        b'[' => "[",
+        b']' => "]",
+        b'{' => "{",
+        b'}' => "}",
+        b',' => ",",
+        b';' => ";",
+        b':' => ":",
+        b'.' => ".",
+        b'?' => "?",
+        b'@' => "@",
+        b'$' => "$",
+        b'#' => "#",
+        _ => return None,
+    })
+}
 
 /// Symbols the fork reserves and never gives a meaning. `?` is among them in
 /// an expression, and means something in a type, which the parser handles.
@@ -133,52 +251,58 @@ fn unary_follows(tok: &Tok) -> bool {
 }
 
 /// Tokenize a whole source, ending in [`Tok::Eof`].
-pub fn lex(src: &str) -> Result<Vec<Token>, SyntaxError> {
-    let mut lexer = Lexer { src, chars: src.char_indices().collect(), i: 0 };
-    let mut out = lexer.tokens(false)?;
+pub fn lex(src: &str) -> Result<Vec<Token<'_>>, SyntaxError> {
+    let mut lexer = Lexer { src, bytes: src.as_bytes(), i: 0 };
+    let mut out = lexer.tokens(false, src.len() / 4)?;
     out.push(Token { tok: Tok::Eof, span: Span::at(src.len()) });
     Ok(out)
 }
 
+/// A cursor over the source by byte offset. Everything outside a string or a
+/// comment is ASCII, so most steps are one byte; the ones that may not be go
+/// through [`Lexer::peek`] and [`Lexer::advance`], which step a whole
+/// character.
 struct Lexer<'s> {
     src: &'s str,
-    chars: Vec<(usize, char)>,
+    bytes: &'s [u8],
     i: usize,
 }
 
-impl Lexer<'_> {
+impl<'s> Lexer<'s> {
+    fn byte(&self, n: usize) -> Option<u8> {
+        self.bytes.get(self.i + n).copied()
+    }
+
     fn peek(&self) -> Option<char> {
-        self.chars.get(self.i).map(|&(_, c)| c)
-    }
-
-    fn peek_at(&self, n: usize) -> Option<char> {
-        self.chars.get(self.i + n).map(|&(_, c)| c)
-    }
-
-    /// The byte offset of the next character, or the end.
-    fn here(&self) -> usize {
-        self.chars.get(self.i).map_or(self.src.len(), |&(b, _)| b)
-    }
-
-    /// The 1-based column of the character at index `i`.
-    fn column_of(&self, i: usize) -> usize {
-        let mut col = 1;
-        let mut j = i;
-        while j > 0 && self.chars[j - 1].1 != '\n' {
-            j -= 1;
-            col += 1;
+        let b = *self.bytes.get(self.i)?;
+        if b < 0x80 {
+            Some(b as char)
+        } else {
+            self.src[self.i..].chars().next()
         }
-        col
+    }
+
+    /// Past the character at the cursor.
+    fn advance(&mut self) {
+        if let Some(c) = self.peek() {
+            self.i += c.len_utf8();
+        }
+    }
+
+    /// The 1-based column, in characters, of byte offset `at`.
+    fn column_of(&self, at: usize) -> usize {
+        let line_start = self.bytes[..at].iter().rposition(|&b| b == b'\n').map_or(0, |n| n + 1);
+        self.src[line_start..at].chars().count() + 1
     }
 
     fn error(&self, message: impl Into<String>, start: usize) -> SyntaxError {
-        SyntaxError { message: message.into(), span: Span::new(start, self.here().max(start)) }
+        SyntaxError { message: message.into(), span: Span::new(start, self.i.max(start)) }
     }
 
     /// Tokens until the end, or, with `until_brace`, until the `}` matching
     /// one already consumed, which is consumed too.
-    fn tokens(&mut self, until_brace: bool) -> Result<Vec<Token>, SyntaxError> {
-        let mut out: Vec<Token> = Vec::new();
+    fn tokens(&mut self, until_brace: bool, capacity: usize) -> Result<Vec<Token<'s>>, SyntaxError> {
+        let mut out: Vec<Token<'s>> = Vec::with_capacity(capacity);
         let mut depth = 0usize;
         // At the start of the input, and just inside a `{`, a minus is unary.
         let mut unary = true;
@@ -204,40 +328,35 @@ impl Lexer<'_> {
         }
     }
 
-    fn next_token(&mut self, unary: bool) -> Result<Option<Token>, SyntaxError> {
+    fn next_token(&mut self, unary: bool) -> Result<Option<Token<'s>>, SyntaxError> {
         loop {
-            let Some(c) = self.peek() else { return Ok(None) };
-            let start = self.here();
-            let next = self.peek_at(1);
+            let Some(b) = self.byte(0) else { return Ok(None) };
+            let start = self.i;
+            let next = self.byte(1);
 
             // Whitespace, ASCII only, as the fork has it.
-            if c.is_ascii_whitespace() {
+            if b.is_ascii_whitespace() {
                 self.i += 1;
                 continue;
             }
             // Comments.
-            if c == '/' && next == Some('/') {
-                while let Some(c) = self.peek() {
-                    self.i += 1;
-                    if c == '\n' {
-                        break;
-                    }
-                }
+            if b == b'/' && next == Some(b'/') {
+                self.i = self.bytes[self.i..].iter().position(|&b| b == b'\n').map_or(self.bytes.len(), |n| self.i + n + 1);
                 continue;
             }
-            if c == '/' && next == Some('*') {
+            if b == b'/' && next == Some(b'*') {
                 self.i += 2;
                 let mut level = 1;
                 // An unclosed block comment runs to the end and ends the input
                 // quietly, as it does in the fork.
                 while level > 0 {
-                    match (self.peek(), self.peek_at(1)) {
+                    match (self.byte(0), self.byte(1)) {
                         (None, _) => return Ok(None),
-                        (Some('/'), Some('*')) => {
+                        (Some(b'/'), Some(b'*')) => {
                             level += 1;
                             self.i += 2;
                         }
-                        (Some('*'), Some('/')) => {
+                        (Some(b'*'), Some(b'/')) => {
                             level -= 1;
                             self.i += 2;
                         }
@@ -247,21 +366,21 @@ impl Lexer<'_> {
                 continue;
             }
 
-            let tok = if c.is_ascii_digit() || (c == '-' && unary && next.is_some_and(|n| n.is_ascii_digit())) {
+            let tok = if b.is_ascii_digit() || (b == b'-' && unary && next.is_some_and(|n| n.is_ascii_digit())) {
                 self.number()?
-            } else if c == '"' {
+            } else if b == b'"' {
                 self.i += 1;
-                let (text, _) = self.quoted('"', start, false, true, false)?;
+                let (text, _) = self.quoted(b'"', start, false, true, false)?;
                 Tok::Str(text)
-            } else if c == '`' {
+            } else if b == b'`' {
                 self.template(start)?
-            } else if c == '\'' {
+            } else if b == b'\'' {
                 self.i += 1;
-                if self.peek() == Some('\'') {
+                if self.byte(0) == Some(b'\'') {
                     self.i += 1;
                     return Err(self.error("`''` holds no character", start));
                 }
-                let (text, _) = self.quoted('\'', start, false, false, false)?;
+                let (text, _) = self.quoted(b'\'', start, false, false, false)?;
                 let mut chars = text.chars();
                 match (chars.next(), chars.next()) {
                     (Some(c), None) => Tok::Char(c),
@@ -272,79 +391,73 @@ impl Lexer<'_> {
                         ))
                     }
                 }
-            } else if c.is_ascii_alphabetic() || c == '_' {
+            } else if b.is_ascii_alphabetic() || b == b'_' {
                 self.word(start)?
-            } else if c == '!' && next == Some('i') && self.peek_at(2) == Some('n') {
+            } else if b == b'!' && next == Some(b'i') && self.byte(2) == Some(b'n') {
                 // `!in`, unless it is `!` before a name that starts `in`.
-                if self.peek_at(3).is_some_and(|c| c.is_ascii_alphanumeric() || c == '_') {
+                if self.byte(3).is_some_and(|c| c.is_ascii_alphanumeric() || c == b'_') {
                     self.i += 1;
                     Tok::Punct("!")
                 } else {
                     self.i += 3;
                     Tok::Punct("!in")
                 }
-            } else if let Some(p) = self.punct() {
+            } else if let Some(p) = punct(&self.bytes[self.i..]) {
                 // `+` and `-` read the same whichever side of an operand they
                 // are on; only a following digit matters, handled above.
-                p
+                self.i += p.len();
+                Tok::Punct(p)
             } else {
-                self.i += 1;
+                let c = self.peek().expect("not at the end");
+                self.advance();
                 return Err(self.error(format!("`{c}` cannot appear here"), start));
             };
-            return Ok(Some(Token { tok, span: Span::new(start, self.here()) }));
+            return Ok(Some(Token { tok, span: Span::new(start, self.i) }));
         }
     }
 
-    fn punct(&mut self) -> Option<Tok> {
-        let rest = &self.src[self.here()..];
-        // `# ` and `# {` are reserved in the fork; `#` alone covers both here,
-        // since neither means anything.
-        let p = PUNCT.iter().find(|p| rest.starts_with(**p))?;
-        self.i += p.chars().count();
-        Some(Tok::Punct(p))
-    }
-
-    fn word(&mut self, start: usize) -> Result<Tok, SyntaxError> {
-        while self.peek().is_some_and(|c| c.is_ascii_alphanumeric() || c == '_') {
+    fn word(&mut self, start: usize) -> Result<Tok<'s>, SyntaxError> {
+        while self.byte(0).is_some_and(|c| c.is_ascii_alphanumeric() || c == b'_') {
             self.i += 1;
         }
-        let word = &self.src[start..self.here()];
-        if let Some(k) = KEYWORDS.iter().find(|k| **k == word) {
+        let word = &self.src[start..self.i];
+        if let Some(k) = keyword(word) {
             return Ok(Tok::Kw(k));
         }
-        if RESERVED_WORDS.contains(&word) {
-            return Ok(Tok::Reserved(word.to_string()));
+        if is_reserved_word(word) {
+            return Ok(Tok::Reserved(word));
         }
         // A name needs a letter before any digit: `_1` and `__` are not names.
         let mut seen_letter = false;
-        for c in word.chars() {
+        for c in word.bytes() {
             if c.is_ascii_alphabetic() {
                 seen_letter = true;
-            } else if c != '_' && !seen_letter {
+                break;
+            } else if c != b'_' {
                 return Err(self.error(format!("`{word}` is not a name: a name needs a letter before any digit"), start));
             }
         }
         if !seen_letter {
             return Err(self.error(format!("`{word}` is not a name: a name needs a letter"), start));
         }
-        Ok(Tok::Ident(word.to_string()))
+        Ok(Tok::Ident(word))
     }
 
-    fn number(&mut self) -> Result<Tok, SyntaxError> {
-        let start = self.here();
+    fn number(&mut self) -> Result<Tok<'s>, SyntaxError> {
+        let start = self.i;
         let mut text = String::new();
-        if self.peek() == Some('-') {
+        if self.byte(0) == Some(b'-') {
             text.push('-');
             self.i += 1;
         }
-        let first = self.peek().unwrap();
+        let first = self.byte(0).unwrap() as char;
         text.push(first);
         self.i += 1;
         let mut radix: Option<u32> = None;
         let mut has_period = false;
         let mut has_e = false;
         let digits_len = |t: &str| t.trim_start_matches('-').len();
-        while let Some(c) = self.peek() {
+        while let Some(c) = self.byte(0).map(|b| b as char) {
             let valid = match radix {
                 None => c.is_ascii_digit(),
                 Some(16) => c.is_ascii_hexdigit(),
@@ -357,7 +470,7 @@ impl Lexer<'_> {
                 text.push(c);
                 self.i += 1;
             } else if c == '.' && !has_period && radix.is_none() {
-                match self.peek_at(1) {
+                match self.byte(1).map(|b| b as char) {
                     Some(d) if d.is_ascii_digit() => {
                         text.push('.');
                         self.i += 1;
@@ -365,6 +478,8 @@ impl Lexer<'_> {
                     }
                     Some('_') | Some('.') | None => break,
                     // `1.)` and `1. ` are the float `1.0`; `1.foo` is a call.
+                    // A byte past 0x7F starts a character that is not a
+                    // letter either, as the fork reads it.
                     Some(d) if !d.is_ascii_alphabetic() => {
                         text.push_str(".0");
                         self.i += 1;
@@ -373,7 +488,7 @@ impl Lexer<'_> {
                     _ => break,
                 }
             } else if (c == 'e' || c == 'E') && !has_e && radix.is_none() {
-                match self.peek_at(1) {
+                match self.byte(1).map(|b| b as char) {
                     Some(d) if d.is_ascii_digit() => {
                         text.push('e');
                         self.i += 1;
@@ -422,7 +537,30 @@ impl Lexer<'_> {
     /// The body of a quoted string, the opening delimiter already consumed.
     /// Returns the text and whether it stopped at a `${`, in which case the
     /// `$` is consumed and the `{` is not.
+    ///
+    /// Most strings hold nothing to translate, and are borrowed from the
+    /// source as they stand; the rest are built by [`Lexer::quoted_slowly`].
     fn quoted(
+        &mut self,
+        term: u8,
+        start: usize,
+        verbatim: bool,
+        line_continuation: bool,
+        interpolation: bool,
+    ) -> Result<(Cow<'s, str>, bool), SyntaxError> {
+        let from = self.i;
+        let rest = &self.bytes[from..];
+        let special = rest.iter().position(|&b| b == term || b == b'\\' || b == b'\n' || b == b'\r' || (interpolation && b == b'$'));
+        if let Some(n) = special {
+            if rest[n] == term && rest.get(n + 1) != Some(&term) {
+                self.i = from + n + 1;
+                return Ok((Cow::Borrowed(&self.src[from..from + n]), false));
+            }
+        }
+        self.quoted_slowly(term as char, start, verbatim, line_continuation, interpolation).map(|(s, i)| (Cow::Owned(s), i))
+    }
+
+    fn quoted_slowly(
         &mut self,
         term: char,
         start: usize,
@@ -430,7 +568,7 @@ impl Lexer<'_> {
         line_continuation: bool,
         interpolation: bool,
     ) -> Result<(String, bool), SyntaxError> {
-        let start_col = if line_continuation { self.column_of(self.index_of(start)) } else { 0 };
+        let start_col = if line_continuation { self.column_of(start) } else { 0 };
         let mut out = String::new();
         let mut escape = false;
         let mut skip_space_until_col = 0usize;
@@ -447,15 +585,15 @@ impl Lexer<'_> {
             };
             // Only a line continuation cares which column this is.
             let col = if skip_space_until_col > 0 { self.column_of(self.i) } else { 0 };
-            self.i += 1;
+            self.advance();
 
             if interpolation && !escape {
-                if c == '$' && self.peek() == Some('{') {
+                if c == '$' && self.byte(0) == Some(b'{') {
                     return Ok((out, true));
                 }
-                if c == '\\' && self.peek() == Some('$') {
+                if c == '\\' && self.byte(0) == Some(b'$') {
                     self.i += 1;
-                    if self.peek() == Some('{') {
+                    if self.byte(0) == Some(b'{') {
                         c = '$';
                     } else {
                         self.i -= 1;
@@ -465,14 +603,14 @@ impl Lexer<'_> {
 
             if c == term && !escape {
                 if self.peek() == Some(term) {
-                    self.i += 1;
+                    self.advance();
                 } else {
                     return Ok((out, false));
                 }
             }
 
             match c {
-                '\r' if self.peek() == Some('\n') => {}
+                '\r' if self.byte(0) == Some(b'\n') => {}
                 'r' if escape => {
                     escape = false;
                     out.push('\r');
@@ -536,34 +674,30 @@ impl Lexer<'_> {
         }
     }
 
-    fn index_of(&self, byte: usize) -> usize {
-        self.chars.partition_point(|&(b, _)| b < byte)
-    }
-
     /// A backtick string, the backtick not yet consumed.
-    fn template(&mut self, start: usize) -> Result<Tok, SyntaxError> {
+    fn template(&mut self, start: usize) -> Result<Tok<'s>, SyntaxError> {
         self.i += 1;
         // A string that opens at the end of a line starts on the next one.
-        if self.peek() == Some('\r') {
+        if self.byte(0) == Some(b'\r') {
             self.i += 1;
-            if self.peek() == Some('\n') {
+            if self.byte(0) == Some(b'\n') {
                 self.i += 1;
             }
-        } else if self.peek() == Some('\n') {
+        } else if self.byte(0) == Some(b'\n') {
             self.i += 1;
         }
         let mut parts = Vec::new();
         loop {
-            let text_start = self.here();
-            let (text, interpolated) = self.quoted('`', start, true, false, true)?;
-            parts.push(TplPart::Text(text, Span::new(text_start, self.here())));
+            let text_start = self.i;
+            let (text, interpolated) = self.quoted(b'`', start, true, false, true)?;
+            parts.push(TplPart::Text(text, Span::new(text_start, self.i)));
             if !interpolated {
                 break;
             }
-            let brace = self.here();
+            let brace = self.i;
             self.i += 1; // the `{`
-            let mut tokens = self.tokens(true)?;
-            let end = self.here();
+            let mut tokens = self.tokens(true, 8)?;
+            let end = self.i;
             tokens.push(Token { tok: Tok::Eof, span: Span::at(end - 1) });
             parts.push(TplPart::Code(tokens, Span::new(brace, end)));
         }

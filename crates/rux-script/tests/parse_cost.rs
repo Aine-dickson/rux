@@ -40,7 +40,7 @@ fn rux_parse_against_the_forks_compile() {
     let engine = rhai::Engine::new();
     let opts = rux_syntax::Options { declarations: true };
     const ROUNDS: u32 = 200;
-    let (mut ours, mut theirs, mut bytes, mut both) = (0u128, 0u128, 0usize, 0usize);
+    let (mut ours, mut theirs, mut lexing, mut bytes, mut both) = (0u128, 0u128, 0u128, 0usize, 0usize);
     for (_, src) in &scripts {
         // Only scripts both can read are compared: a document script still
         // holds `prop`, `computed` and the lifecycle blocks, which only Rux's
@@ -57,15 +57,21 @@ fn rux_parse_against_the_forks_compile() {
         ours += t.elapsed().as_nanos();
         let t = Instant::now();
         for _ in 0..ROUNDS {
+            std::hint::black_box(rux_syntax::lexer::lex(src).unwrap());
+        }
+        lexing += t.elapsed().as_nanos();
+        let t = Instant::now();
+        for _ in 0..ROUNDS {
             std::hint::black_box(engine.compile(src).unwrap());
         }
         theirs += t.elapsed().as_nanos();
     }
     let per = |n: u128| n as f64 / ROUNDS as f64 / 1000.0;
     println!(
-        "{both} of {} scripts, {bytes} bytes: rux-syntax {:.1} µs, the fork {:.1} µs, per pass over all of them ({:.0}%)",
+        "{both} of {} scripts, {bytes} bytes: rux-syntax {:.1} µs (lexing {:.1} µs), the fork {:.1} µs, per pass over all of them ({:.0}%)",
         scripts.len(),
         per(ours),
+        per(lexing),
         per(theirs),
         100.0 * ours as f64 / theirs as f64
     );
