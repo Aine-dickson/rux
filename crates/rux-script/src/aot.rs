@@ -216,6 +216,13 @@ pub fn float_of(r: R<V>) -> R<f64> {
     }
 }
 
+/// What a run past its step budget of `max` is told: the interpreter's own
+/// words, for typed code counting steps itself.
+#[cold]
+pub fn too_many(max: u64) -> Flow {
+    crate::interp::too_many(max)
+}
+
 fn out_of_step() -> Flow {
     Flow::Fault(Fault::new("compiled code out of step with its source"))
 }
@@ -294,6 +301,20 @@ impl Cx<'_> {
     #[inline]
     pub fn leave(&mut self) {
         self.ip.leave_call()
+    }
+
+    /// The steps taken this run and the budget, for typed code, which counts
+    /// steps in a local (one it keeps in a register, where a count behind
+    /// the interpreter is a store and a load each step) and hands the count
+    /// back with [`Cx::put_ops`] before a call, a return or a failure.
+    #[inline]
+    pub fn ops(&self) -> (u64, u64) {
+        self.ip.ops()
+    }
+
+    #[inline]
+    pub fn put_ops(&mut self, n: u64) {
+        self.ip.set_ops(n)
     }
 
     /// A call to the unit's function `id`: compiled when it is, interpreted

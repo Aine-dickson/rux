@@ -93,13 +93,14 @@ fn coverage() {
 }
 
 /// Step 10: every function of the typed script has a typed body except
-/// `show`, which makes a string; and the untyped scripts none that could
+/// `show`, which makes a string, and `burn` and `burn_deep`, which return
+/// nothing; and the untyped scripts none that could
 /// not be one.
 #[test]
 fn typed_bodies_are_written() {
     let typed = |i: usize| COVERAGE.iter().find(|c| c.0 == i).map(|c| (c.1, c.4)).expect("script");
     let (functions, n) = typed(CORPUS.len() - 1);
-    assert_eq!(n, functions - 1, "the typed script: {n} of {functions} typed");
+    assert_eq!(n, functions - 3, "the typed script: {n} of {functions} typed");
     // `fib`, `big`, `forever`, `half`, `deep`: all numbers.
     assert_eq!(typed(0).1, 5);
     // State, records, strings: none.
@@ -138,6 +139,11 @@ fn cost() {
         (9, "looped()", 20000),
         // `setInterval` started by compiled code (9.7).
         (10, "twice()", 20000),
+        // `int ** int` with a name on the right: a float power before the
+        // owner's decision, an `int` and a typed body after.
+        (12, "powi(3, 34)", 200000),
+        (12, "powi(2, 10)", 200000),
+        (12, "powers(10000)", 20),
     ];
     // Times per call, and how many times faster compiled is: 3.6x faster
     // means compiled takes a 3.6th of the interpreter's time.

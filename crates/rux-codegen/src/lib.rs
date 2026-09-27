@@ -84,6 +84,23 @@ pub fn generate(unit: &Unit, hash: u64, aot: &str) -> Output {
          macro_rules! t {{\n    ($x:expr, $s:expr, $e:expr) => {{\n        match $x {{\n            Ok(v) => v,\n            // u32::MAX: a function's value, whose failure its caller places.
             Err(err) => return Err(if $s == u32::MAX {{ err }} else {{ aot::at(err, $s, $e) }}),\n        }}\n    }};\n}}\n"
     );
+    g.code.push_str(
+        r#"
+/// `t!` in a typed body, which counts steps in its own `__ops`: the count
+/// handed back before the failure leaves.
+macro_rules! u {
+    ($cx:ident, $ops:ident, $x:expr, $s:expr, $e:expr) => {
+        match $x {
+            Ok(v) => v,
+            Err(err) => {
+                $cx.put_ops($ops);
+                return Err(if $s == u32::MAX { err } else { aot::at(err, $s, $e) });
+            }
+        }
+    };
+}
+"#,
+    );
     let typed = typed::typed(unit);
     let mut table = Vec::new();
     let mut closures = Vec::new();

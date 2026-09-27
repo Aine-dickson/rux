@@ -45,6 +45,11 @@ const MAX_DEPTH: usize = 128;
 /// `crates/rux-aot-tests/tests/stack.rs` measures it.
 const STACK_BUDGET: usize = 768 * 1024;
 
+/// What a run past its step budget of `max` is told, wherever it counted.
+pub(crate) fn too_many(max: u64) -> Flow {
+    Flow::Fault(Fault::new(format!("Too many operations: more than {max}")))
+}
+
 /// What a run nested too deep is told, whichever limit it met.
 fn too_deep<T>() -> R<T> {
     fail(format!("Stack overflow: calls nested too deep (at most {MAX_DEPTH})"))
@@ -752,9 +757,22 @@ impl Interp {
     fn tick(&mut self) -> R<()> {
         self.ops += 1;
         if self.ops > self.max_ops {
-            return fail(format!("Too many operations: more than {}", self.max_ops));
+            return Err(too_many(self.max_ops));
         }
         Ok(())
+    }
+
+    /// The steps taken this run, and the budget: typed compiled code
+    /// counts in a local of its own and hands the count back
+    /// ([`Interp::set_ops`]) before anything else can read it.
+    #[inline]
+    pub(crate) fn ops(&self) -> (u64, u64) {
+        (self.ops, self.max_ops)
+    }
+
+    #[inline]
+    pub(crate) fn set_ops(&mut self, n: u64) {
+        self.ops = n;
     }
 
     // ----- Statements --------------------------------------------------------

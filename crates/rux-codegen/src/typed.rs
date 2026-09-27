@@ -139,6 +139,9 @@ impl<'u> T<'u> {
             let _ = write!(code, ", mut l{i}: {}", k.rust());
         }
         let _ = writeln!(code, ") -> R<{}> {{", sig.result.rust());
+        // The steps, counted here and handed back before a call, a return
+        // or a failure: nothing else reads them while this body runs.
+        code.push_str("let (mut __ops, __max) = cx.ops();\n");
         for (i, k) in self.locals.iter().enumerate().skip(sig.params.len()) {
             let _ = writeln!(code, "let mut l{i}: {} = {};", k.rust(), k.zero());
         }
@@ -161,10 +164,10 @@ impl<'u> T<'u> {
                     let (x, k) = self.expr(e, start, end)?;
                     match (value, at) {
                         (true, _) if k == self.result => {
-                            let _ = writeln!(s, "cx.tick()?;\nreturn Ok({x});");
+                            let _ = writeln!(s, "{}{}", tick(u32::MAX, u32::MAX), ret(&x));
                         }
                         (false, Some(_)) => {
-                            let _ = writeln!(s, "cx.tick()?;\nlet _ = {x};");
+                            let _ = writeln!(s, "{}let _ = {x};", tick(u32::MAX, u32::MAX));
                         }
                         _ => return None,
                     }
@@ -182,7 +185,7 @@ impl<'u> T<'u> {
 
     fn stmt(&mut self, st: &rux_ir::ir::Stmt, depth: usize, in_loop: bool) -> Option<String> {
         let (s, e) = (st.at.start, st.at.end);
-        let tick = format!("t!(cx.tick(), {s}, {e});\n");
+        let tick = tick(s, e);
         let body = match &st.kind {
             StmtKind::Expr(x) => format!("let _ = {};\n", self.expr(x, s, e)?.0),
             StmtKind::Let { local, value: Some(v) } => {
@@ -238,7 +241,8 @@ impl<'u> T<'u> {
                     "let __lo{d}: i64 = {a};\nlet __hi{d}: i64 = {b};\n\
                      let __end{d} = {end};\nlet mut __i{d} = __lo{d};\n\
                      while __i{d} < __end{d} {{\nlet __cur{d} = __i{d};\n__i{d} += 1;\n\
-                     t!(cx.tick(), {s}, {e});\nl{} = __cur{d};\n{inner}}}\n",
+                     {}l{} = __cur{d};\n{inner}}}\n",
+                    tick,
                     var.0
                 )
             }
@@ -249,7 +253,7 @@ impl<'u> T<'u> {
                 if k != self.result {
                     return None;
                 }
-                format!("return Ok({x});\n")
+                format!("{}\n", ret(&x))
             }
             _ => return None,
         };
@@ -272,7 +276,7 @@ impl<'u> T<'u> {
             if i + 1 == last && b.ty.is_some() {
                 if let StmtKind::Expr(e) = &st.kind {
                     let (x, k) = self.expr(e, s, end)?;
-                    let _ = write!(code, "t!(cx.tick(), {s}, {end});\n{x}\n}}");
+                    let _ = write!(code, "{}{x}\n}}", tick(s, end));
                     return Some((code, k));
                 }
             }
@@ -303,7 +307,7 @@ impl<'u> T<'u> {
                     (UnOp::NegInt, K::I) => (
                         format!(
                             "{{ let __u: i64 = {x}; match __u.checked_neg() {{ Some(v) => v, \
-                             None => t!(aot::int_of(cx.unary(UnOp::NegInt, V::Int(__u))), {s}, {end}) }} }}"
+                             None => u!(cx, __ops, aot::int_of(cx.unary(UnOp::NegInt, V::Int(__u))), {s}, {end}) }} }}"
                         ),
                         K::I,
                     ),
@@ -354,7 +358,8 @@ impl<'u> T<'u> {
                 }
                 let _ = write!(
                     code,
-                    "t!(cx.enter(), {s}, {end}); let __c = t{i}(cx{}{}); cx.leave(); t!(__c, {s}, {end}) }}",
+                    "u!(cx, __ops, cx.enter(), {s}, {end}); cx.put_ops(__ops); let __c = t{i}(cx{}{}); \
+                     __ops = cx.ops().0; cx.leave(); u!(cx, __ops, __c, {s}, {end}) }}",
                     if names.is_empty() { "" } else { ", " },
                     names.join(", ")
                 );
@@ -370,12 +375,30 @@ impl<'u> T<'u> {
     }
 }
 
+/// One step of the budget, as the interpreter's `tick` takes it, counted in
+/// the body's own `__ops`; past the budget, its failure placed at `s..e`
+/// (`u32::MAX`: left for the caller to place, as `t!` leaves it).
+fn tick(s: u32, e: u32) -> String {
+    let err = if s == u32::MAX {
+        "aot::too_many(__max)".to_string()
+    } else {
+        format!("aot::at(aot::too_many(__max), {s}, {e})")
+    };
+    format!("__ops += 1;\nif __ops > __max {{ cx.put_ops(__ops); return Err({err}); }}\n")
+}
+
+/// Leaving the body with `x`: worked out first (it may call, and so count),
+/// then the count handed back.
+fn ret(x: &str) -> String {
+    format!("{{ let __r = {x}; cx.put_ops(__ops); return Ok(__r); }}")
+}
+
 /// `a op b` on typed values held in `a.0` and `b.0`, as the interpreter's
 /// `binary` works it out for those kinds: Rust's own operation where it
 /// agrees, the interpreter's operator where Rust's stops.
 fn binary(op: BinOp, a: (&str, K), b: (&str, K), s: u32, end: u32) -> Option<(String, K)> {
     let ((x, ak), (y, bk)) = (a, b);
-    let slow = |op: BinOp| format!("t!(aot::int_of(cx.binary(BinOp::{op:?}, V::Int({x}), V::Int({y}))), {s}, {end})");
+    let slow = |op: BinOp| format!("u!(cx, __ops, aot::int_of(cx.binary(BinOp::{op:?}, V::Int({x}), V::Int({y}))), {s}, {end})");
     use BinOp::*;
     Some(match (op, ak, bk) {
         (AddInt, K::I, K::I) => (format!("match {x}.checked_add({y}) {{ Some(v) => v, None => {} }}", slow(op)), K::I),

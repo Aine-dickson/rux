@@ -1691,6 +1691,102 @@ Float indexing narrows to what the types allow: an index is an `int`, and a
    fixed layout of track (c) that is the slots' own order, so it costs
    nothing. With both of track (c)'s decisions taken, (c) is ready to plan.
 
+   The power's speed, measured the same way before and after (the old
+   commit in a worktree, the same bench case in both): `powers(10000)`, a
+   compiled loop calling `powi(3, i % 30)`, went from 2534 µs to 387 µs
+   (6.5x faster), because `powi` and the loop around it now have typed
+   bodies. One call of `powi` on its own shows nothing (about 0.4 µs
+   either way): that is the bench evaluating the call's text, not the
+   power.
+
+   **10.2 done 2026-09-28: track (e), the step count in a local.** An
+   experiment first: with the typed bodies' ticks taken out, `sum(10000)`
+   went from 42 µs to 3.5 µs, so the ticks were the whole of what was
+   left. Taking them out is not allowed (the budget is what stops a loop
+   that never ends from freezing the app), so a typed body now counts
+   steps in a local, `__ops`, which Rust keeps in a register, against the
+   budget read once when it starts, and hands the count back to the
+   interpreter before anything else can read it: before calling another
+   typed body (and reads it back after), before returning, and before any
+   failure leaves (`u!`, the typed `t!`). Past the budget it fails with
+   the interpreter's own words (`aot::too_many`, the same function the
+   interpreter's `tick` uses), placed where the tick it replaces placed
+   it. Proof: corpus script 12's `burn()` calls typed bodies and then
+   writes state until the budget stops it, so the count it ends with
+   shows any step counted differently; both engines agree on it. Release,
+   µs per call, best of 7, two runs agreeing:
+
+   | Call | Before (10.1) | After | Dart | JVM |
+   |---|---|---|---|---|
+   | `sum(10000)` | 42 | 5.7 (7.4x faster) | 7.4 | 3.9 |
+   | `fib(18)` | 40 | 42 (the same, within noise) | 23.9 | 19.8 |
+   | `powers(10000)` | 387 | 400 (the same) | | |
+
+   Integer loops now beat Dart AOT and sit within 1.5x of the JVM. `fib`
+   is calls: each is a depth check, a stack probe and a count handed back
+   and forth, about 3 ns, where Dart's is under 1 ns. Cheaper calls
+   between typed bodies (the depth counted in a local too, the stack
+   probe only every so many levels) are what would move it, and are
+   small; records are worth far more first.
+
+   **The plan for track (c), records as slots, written 2026-09-28 for the
+   next session.** Guidance, as the rest of step 10 is: check it against
+   the code and reorder where the code says otherwise. Both decisions it
+   needed are taken (fields in declaration order; a write to an
+   undeclared field is an error).
+
+   - (c.0) **Measure first, and take the cheap win.** `for item in list`
+     copies the whole array before walking it (`items_of` clones the
+     `Vec`, and compiled code's `aot::items` calls it), so walking 10 000
+     records is 10 000 reference counts taken and dropped before any
+     field is read. Walk the shared array by index instead. Then profile
+     the script-cost sum (3.64 ms a frame compiled) to see what is left:
+     field lookup by string, the clone of each value read, the dynamic
+     `V` arithmetic. That split says how much (c) can buy; without it the
+     200x is a guess about where the time goes.
+   - (c.1) **The value.** Recommended: one shared form for every record,
+     `V::Rec(Rc<Shape>, Rc<[V]>)`, where a `Shape` holds the field names
+     in declaration order and a name-to-slot index, made once per record
+     type and shared. Rust structs per record type were considered and
+     not recommended: the interpreter, the standard library, the native
+     bridge and templates all need one form they can read without the
+     generated code, so structs would be boxed and unboxed at every edge.
+     Maps (`{ [string]: T }`, `Map<K, V>`) stay as they are; a literal
+     becomes a record or a map by its type, as the IR's `ExprKind::Map`
+     already says.
+   - (c.2) **The interpreter by name, through the shape**, with nothing
+     compiled changed yet. Every place that meets `V::Map` today (about 30:
+     `interp/mod.rs`, `stdlib.rs` with `keys`/`values`, `value.rs` with
+     display, equality and the template `Value` conversion, `native.rs`)
+     learns `V::Rec`. Equality compares by field name, so two records
+     with the same fields written in different orders stay equal.
+     Display, `keys`, `values` and `for` go in slot order, which is the
+     one change an author sees (decided). The differential proof and the
+     gate hold everything else; expect snapshot and test text that shows
+     a record to change order, and check each is only that.
+   - (c.3) **Compiled reads by slot.** Where the checker knows the record
+     type, `item.price` compiles to a check that the value's shape is the
+     expected one (a pointer compare, as the typed bodies check their
+     arguments' kinds) and a read of slot `k`; any other shape falls back
+     to the lookup by name. Writes the same way; an undeclared field fails
+     with `kind` `"type"`.
+   - (c.4) **Typed record fields in typed bodies.** An `int` or `float`
+     read from a slot joins the typed arithmetic of 10.1, so `t +=
+     item.price * item.qty` becomes plain Rust inside the loop. That is
+     where the record sum should come close to Dart.
+
+   Questions to settle on the way, not decisions to take alone: an
+   optional field that is absent (`pet?: Pet` with no `pet`) is a slot
+   holding `none` in this plan, so reading `.pet` on it gives `none`
+   where today it fails "there is no `pet` on that value" (watchlist 36
+   is about that read); that is a change an author sees, so bring it to
+   the owner before (c.2) lands. A union of records with different fields
+   (a `Result`, a discriminated union) has a shape per member, so a read
+   through the union's type goes by name, not by slot. Proof for every
+   step: new corpus cases for records written and read in both engines,
+   compared field order, equality across orders, undeclared writes, and
+   the script-cost sum and filter re-measured after each step.
+
 Steps 2 to 5 change nothing an author sees except the decided syntax and
 types, which is what made them safe to take in order.
 

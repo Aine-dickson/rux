@@ -197,12 +197,17 @@ pub const CORPUS: &[(&str, &[&str])] = &[
          fn blocky(n: int): int { let k = { let a = n * 2; a + 1 }; k }\n\
          fn chain(n: int): int { if n <= 0 { return 0; } chain(n - 1) + twice(1) }\n\
          fn ranged(a: int, b: int): int { let s = 0; for i in a..=b { s -= i; } s }\n\
-         fn show(n: int): string { `${add(n, 1)}` }\n",
+         fn show(n: int): string { `${add(n, 1)}` }\n\
+         fn powers(n: int): int { let s = 0; for i in 0..n { s += powi(3, i % 30) % 1000; } s }\n\
+         let spent = signal(0);\n\
+         fn burn() { let k = chain(3) + powers(50) + loopy(100); while true { spent += 1; } }\n\
+         fn burn_deep() { let k = forever(); }\n\
+         fn forever(): int { let i = 0; while true { i += 1; } i }\n",
         &["add(2, 3)", "twice(4611686018427387904)", "placed(4611686018427387904)", "over(5)", "over(5000000000)",
           "neg(least())", "neg(4)", "rem(7, 3)", "rem(7, 0)", "rem(least(), -1)", "powi(2, 10)", "powi(2, -1)",
           "powi(2, 70)", "powi(3, 34)", "powi(7, 20)", "powi(2, 62)", "powi(2, 63)", "powi(-2, 63)", "powi(-3, 3)",
           "powi(0, 0)", "fdiv(1.0, 0.0)", "fdiv(0.0, 0.0)", "fmod(7.5, 2.0)", "idiv(7, 2)", "idiv(1, 0)", "nan_cmp()",
           "nan_ne()", "mix(3, 0.5)", "pick(true, 1, 2)", "pick(false, 1, 2)", "loopy(100)", "blocky(3)", "chain(5)",
-          "ranged(-2, 3)", "show(41)", "add(1.5, 2)", "add(\"a\", 1)", "pick(1, 2, 3)", "mix(3, 1)"],
+          "ranged(-2, 3)", "show(41)", "add(1.5, 2)", "add(\"a\", 1)", "pick(1, 2, 3)", "mix(3, 1)", "!burn()", "spent", "burn_deep()", "powers(100)"],
     ),
 ];
