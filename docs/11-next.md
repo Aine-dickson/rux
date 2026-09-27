@@ -1387,6 +1387,38 @@ Float indexing narrows to what the types allow: an index is an `int`, and a
    corpus script, and holds both to 100; it used to run a script outside
    the corpus, so its "compiled" case had been interpreted.
 
+   9.9 measured 2026-09-27, and the answer is to leave template pieces
+   interpreted. `examples/dashboard.rux` and `examples/list.rux` do
+   nothing between taps, so they were measured with the script-cost
+   harness instead (outside the repo, `rux-harness/script-cost`: the same
+   app changing state every frame from a `setInterval`, in four modes),
+   with `RUX_PROFILE=1`, a release `rux run` at e8dba1e, averaged over 60
+   frames. A timer's body there is `step();`, so the time charged to
+   handlers is the file's functions, which a release build compiles
+   already; a piece's own cost is the script time outside handlers:
+
+   | Mode | Frame | Script | In handlers (functions) | Pieces' own | Piece runs a frame |
+   |---|---|---|---|---|---|
+   | idle | 2.34 ms | 0.023 ms | 0.020 ms | 0.003 ms | 4 |
+   | sum, 10 000 records | 6.11 ms | 4.913 ms | 4.911 ms | 0.002 ms | 4 |
+   | filter, 2 000 records | 12.49 ms | 1.468 ms | 1.458 ms | 0.010 ms | 41.5 |
+   | list, 300 rows | 24.93 ms | 0.076 ms | 0.035 ms | 0.041 ms | 308 |
+
+   Pieces cost at most 0.2% of a frame, even at 308 bindings a frame;
+   where script matters (sum, 80% of the frame) it is a function's loop,
+   which is compiled. The list's frame goes to layout (10.6 ms) and
+   patching (6.9 ms). So the design questions below are written down for
+   the owner, not built, and nothing about pieces is recommended now:
+   (a) finding every piece's text at build time (walking each template as
+   the runtime does, or recording them the first time an app runs);
+   (b) naming what is only numbered at run time (by name, resolved once
+   when the piece is first lowered, then cached); (c) the key a piece is
+   found by (the runtime's own cache key, hashed with the unit's hash);
+   (d) `async fn` bodies, whose resumable form (`flat.rs`) is what would
+   be compiled. (d) is a separate question: no app measured spends time in
+   an `async fn`'s own code rather than in what it waits for, and it
+   should be measured on one that does before anything is built.
+
    What follows describes the state before 9.2.
    `rux-codegen` compiles control flow (`if`, `while`, ranges, `break`,
    `continue`, `return`), literals, locals, state reads and writes (`=` and
@@ -1459,7 +1491,8 @@ Float indexing narrows to what the types allow: an index is an `int`, and a
      `#[inline(never)]` functions so the common path's frame is small.
      Target: 100 nested calls in a debug build within the 768 KB budget,
      and no change to the release numbers above.
-   - 9.9 **Template pieces and `async fn` bodies: a design, not code,
+   - 9.9 (MEASURED 2026-09-27, see "9.9 measured" above: pieces stay
+     interpreted.) **Template pieces and `async fn` bodies: a design, not code,
      until the owner decides.** Pieces (handlers, bindings, effects, a
      component's script) are lowered from text when they first run, and
      lowering appends to `unit.outer` and to the provided globals in that
