@@ -25,6 +25,7 @@
 //! checkout of this repo, so it panicked for everyone else.
 
 mod android;
+mod aot;
 mod apk;
 mod build;
 mod check;

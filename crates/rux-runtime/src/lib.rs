@@ -53,6 +53,9 @@ pub use rux_script::host;
 /// Native modules: what an app's Rust registers, and what the generated
 /// registration calls. Step 8 of docs/11-next.md.
 pub use rux_native as native;
+/// Compiled script functions, for the code a release build generates: step 9
+/// of docs/11-next.md.
+pub use rux_script::aot;
 /// Where a frame's time goes, when `RUX_PROFILE` is set.
 pub use rux_script::profile;
 
@@ -2064,6 +2067,18 @@ impl std::error::Error for LoadError {}
 
 impl Document {
     /// Load a document, flattening any failure to a sentence.
+    /// The unit this document's script runs as, and the hash compiled code
+    /// for it is registered under: what `rux build --release` compiles (step
+    /// 9 of docs/11-next.md).
+    pub fn compiled_unit(&self) -> (u64, &rux_ir::ir::Unit) {
+        (self.engine.source_hash(), self.engine.ir_unit())
+    }
+
+    /// How many of its script's functions run compiled.
+    pub fn compiled_functions(&self) -> usize {
+        self.engine.compiled_functions()
+    }
+
     pub fn load(path: impl AsRef<Path>) -> Result<Self, String> {
         Self::load_checked(path).map_err(|e| e.to_string())
     }
@@ -5773,11 +5788,6 @@ fn component_key(path: &Path) -> String {
     resolved.to_string_lossy().replace('\\', "/")
 }
 
-///
-/// `entry` is the directory of the document being opened, which stands in for
-/// the project root where no `app.rux` or `index.rux` marks one: a folder of
-/// examples is no project, and `use stores::shop;` in its
-/// `components/cart_row.rux` means the `stores/` beside the page that was run.
 /// The native module an import's file names: `native/shop.rux` is
 /// `native/shop`, `native.rux` (`use native::{greet};`) is `native`.
 fn native_module_of(file: &str) -> Option<String> {
@@ -5800,6 +5810,11 @@ fn no_native_module(written: &str) -> String {
     )
 }
 
+///
+/// `entry` is the directory of the document being opened, which stands in for
+/// the project root where no `app.rux` or `index.rux` marks one: a folder of
+/// examples is no project, and `use stores::shop;` in its
+/// `components/cart_row.rux` means the `stores/` beside the page that was run.
 fn resolve_import(base: &Path, file: &str, entry: &Path) -> Result<PathBuf, (PathBuf, Option<PathBuf>)> {
     // Joined a segment at a time rather than as one `a/b.rux` string, so the
     // result is spelled in the platform's own separator. Joining the whole

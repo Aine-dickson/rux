@@ -3015,6 +3015,7 @@ dependencies = [
  "image",
  "notify",
  "rux-bindgen",
+ "rux-codegen",
  "rux-fmt",
  "rux-parser",
  "rux-runtime",

@@ -616,6 +616,17 @@ pub fn run(options: Options) -> Result<PathBuf, String> {
     if let Some(code) = &registration {
         main = with_registration(&main, code);
     }
+    // A release build's script, compiled (step 9 of docs/11-next.md).
+    let _ = std::fs::remove_file(work.join("src").join("rux_aot.rs"));
+    if options.release {
+        if let Some((code, line)) = crate::aot::generate(&manifest) {
+            std::fs::write(work.join("src").join("rux_aot.rs"), code)
+                .map_err(|e| format!("writing the compiled script: {e}"))?;
+            main = with_registration(&main, "    rux_aot::install();\n");
+            main = format!("mod rux_aot;\n{main}");
+            println!("rux: {line}");
+        }
+    }
     std::fs::write(work.join(entry_file), main)
         .map_err(|e| format!("writing the generated entry point: {e}"))?;
 

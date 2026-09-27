@@ -1200,6 +1200,33 @@ Float indexing narrows to what the types allow: an index is an `int`, and a
    - Later, and not in this plan: template pieces (bindings and handlers)
      compiled too, and `async fn` bodies (their resumable form).
 
+   Status 2026-09-27 (overnight, without the owner): 9.0, 9.1, 9.3 and 9.4
+   done in cd60009 and the commit after it; 9.5 compiles; 9.2 not started.
+   `rux-codegen` compiles control flow (`if`, `while`, ranges, `break`,
+   `continue`, `return`), literals, locals, state reads and writes (`=` and
+   `op=` on a name), operators, logic, `??`, templates and calls to the
+   file's own functions; the rest is handed back statement by statement.
+   The proof, `crates/rux-aot-tests`, generates Rust for a corpus of five
+   scripts in its `build.rs` (recursion, overflow, a type failure, state,
+   every loop form with `break` and `continue`, nested loops, text,
+   optional values, and a script of mostly handed-back statements: fields,
+   methods, closures, `try`, `throw`, `switch`) and runs every case on both
+   engines: value, what changed, what was read, and every warning agree. A
+   text that differs by one comment runs interpreted. Cost, release, per
+   call: `fib(18)` 0.63x of the interpreter's time, a `for` over 10 000
+   0.64x, a small loop 0.51x, a handler writing three signals 0.36x, a
+   function that is mostly handed back 0.95x. `rux build --release` loads
+   the entry document as the app will, compiles its unit, and the wrapper
+   installs it first; `examples/native-shop`'s release build reports (with
+   `RUX_AOT_REPORT=1`) that its compiled table was found under the hash the
+   build computed, which proves the text hashed on the build machine is
+   the text the embedded app lowers. `RUX_AOT=0` builds without it. The
+   generated code compiles for wasm32; no web build was driven. Not done
+   yet: typed fast paths (9.2, where the numbers above should move most);
+   fields, indexes and methods compiled; routed pages loaded as documents of
+   their own (only the entry document is compiled); template pieces and
+   `async fn` bodies.
+
 Steps 2 to 5 change nothing an author sees except the decided syntax and
 types, which is what made them safe to take in order.
 

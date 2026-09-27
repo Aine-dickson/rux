@@ -53,3 +53,5 @@ toml = "0.9"
 # Reads an app's native/ crate for its exports, without building it: the same
 # reader the #[rux::export] macro uses. docs/11-next.md, step 8.
 rux-bindgen.workspace = true
+# A release build's script compiled to Rust: docs/11-next.md, step 9.
+rux-codegen.workspace = true

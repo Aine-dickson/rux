@@ -447,9 +447,21 @@ impl Builder {
         let hash = aot::source_hash(
             std::iter::once(script)
                 .chain(self.modules.iter().flat_map(|m| [m.name.as_str(), m.script.as_str()]))
-                .chain(self.components.iter().flat_map(|c| [c.key.as_str(), c.functions.as_str()])),
+                // A component by its name from the project root, not its key,
+                // which is a path on the machine that loaded it: a release
+                // build hashes on one machine and runs on another.
+                .chain(self.components.iter().flat_map(|c| [c.name.as_str(), c.functions.as_str()])),
         );
-        if let Some(fns) = aot::lookup(hash).filter(|_| !self.interpreted) {
+        let table = aot::lookup(hash).filter(|_| !self.interpreted);
+        // `RUX_AOT_REPORT=1`: say whether this text runs compiled, which is
+        // otherwise invisible by design.
+        if std::env::var("RUX_AOT_REPORT").is_ok_and(|v| v == "1") {
+            match &table {
+                Some(fns) => eprintln!("rux: script {hash:#018x}: {} functions compiled", fns.len()),
+                None => eprintln!("rux: script {hash:#018x}: interpreted (no compiled code for this text)"),
+            }
+        }
+        if let Some(fns) = table {
             ir.set_aot(fns);
         }
         if let Err(f) = ir.init() {
