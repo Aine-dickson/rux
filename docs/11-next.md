@@ -1225,8 +1225,31 @@ Float indexing narrows to what the types allow: an index is an `int`, and a
    indexes. `if` and blocks used as values compile (second session of the
    night) when everything inside them does; a statement inside one has no
    path to be handed back by, so one that does not compile leaves the
-   whole enclosing statement to the interpreter. What follows describes the state
-   before 9.2.
+   whole enclosing statement to the interpreter.
+
+   Widened again 2026-09-27 (day session): `?.` and `?[` chains (a Rust
+   labelled block the chain breaks out of with `none`), `is` (the type
+   written out as its own text and read back once per thread, only when
+   that text reads back as the same type), `switch` with its ranges, `|`
+   and guards, `try` and `catch` (the body runs in a Rust closure, so a
+   failure anywhere in it is the closure's value; a `return`, `break` or
+   `continue` inside comes out as the interpreter's own `Flow` and is done
+   after it), writes through fields and indexes, with `op=`, and methods
+   that change their receiver when the receiver is a place. Each goes
+   through the interpreter's own helper, as before; a local the compiled
+   code holds as a Rust variable is changed in place, with the same walk
+   and the same failure. The proof's corpus grew by three scripts (54 cases
+   over 8 scripts), and every statement of all three compiles; of the whole
+   corpus, one statement is still handed back (it creates a closure). Release
+   cost after it: `fib(18)` 0.29x, a `for` over 10 000 0.29x, a handler
+   writing three signals 0.42x, and `open()` (fields, a `for` over state),
+   which was mostly handed back at 0.95x, now 0.59x. Still
+   handed back: closures created, `setInterval`, and the steps listed below.
+   Writing the corpus found three defects older than step 9, all in both
+   engines (watchlist 36 to 38): the checker lets `.` read an optional
+   field, `trunc` of an infinity gives `Infinity`, and a `switch` guard that
+   is a bare name parses as an arrow function. What follows describes the
+   state before 9.2.
    `rux-codegen` compiles control flow (`if`, `while`, ranges, `break`,
    `continue`, `return`), literals, locals, state reads and writes (`=` and
    `op=` on a name), operators, logic, `??`, templates and calls to the

@@ -628,6 +628,34 @@ impl Interp {
         Ok(index_of(b, i, false)?.unwrap_or(V::None))
     }
 
+    /// `b?.name`: `None` where the chain stops.
+    pub(crate) fn field_opt(&mut self, b: &V, name: &str) -> R<Option<V>> {
+        field(b, name, true)
+    }
+
+    /// `b?[i]`: `None` where the chain stops.
+    pub(crate) fn index_opt(&mut self, b: &V, i: &V) -> R<Option<V>> {
+        index_of(b, i, true)
+    }
+
+    /// What `catch e` binds `e` to for failure `f`.
+    pub(crate) fn caught_pub(f: &Fault) -> V {
+        f.thrown.clone().unwrap_or_else(|| error_value(f))
+    }
+
+    /// `v is ty`.
+    pub(crate) fn is_pub(v: &V, ty: &rux_ir::types::Type) -> bool {
+        crate::validate::fits(v, ty, &crate::validate::known)
+    }
+
+    /// Whether `switch` pattern `p` matches `v`.
+    pub(crate) fn matches_pub(p: &V, v: &V) -> bool {
+        match (p, v.whole()) {
+            (V::Range(a, b), Some(x)) => *a <= x && x < *b,
+            _ => p == v,
+        }
+    }
+
     /// `recv.name(args)` for a method that does not change its receiver.
     pub(crate) fn method_pub(&mut self, recv: V, name: &str, argv: Vec<V>) -> R<V> {
         let mut recv = recv;
@@ -852,26 +880,92 @@ impl Interp {
     /// The value `v` written at `root` and `keys`, applying `op` to what is
     /// there first.
     fn assign_value(&mut self, root: ir::Root, keys: &[Key], op: Option<BinOp>, v: V) -> R<()> {
-        let mut target = self.take(root, keys)?;
-        let result = match op {
-            None => Ok(v),
-            // `list += item` adds the item, as the fork's `+=` did.
-            Some(BinOp::Dyn("+") | BinOp::ConcatArray) if matches!(target, V::Array(_)) && !matches!(v, V::Array(_)) => {
-                let mut t = std::mem::replace(&mut target, V::None);
-                if let V::Array(items) = &mut t {
-                    Rc::make_mut(items).push(v);
-                }
-                Ok(t)
-            }
-            Some(op) => self.binary(op, target.clone(), v),
-        };
-        match result {
+        let target = self.take(root, keys)?;
+        match self.combine(op, target, v) {
             Ok(v) => self.put(root, keys, v),
-            Err(e) => {
+            Err((e, target)) => {
                 self.put(root, keys, target)?;
                 Err(e)
             }
         }
+    }
+
+    /// What `target op= v` (or `= v`) leaves, or the failure with `target`
+    /// to put back.
+    fn combine(&mut self, op: Option<BinOp>, mut target: V, v: V) -> Result<V, (Flow, V)> {
+        match op {
+            None => Ok(v),
+            // `list += item` adds the item, as the fork's `+=` did.
+            Some(BinOp::Dyn("+") | BinOp::ConcatArray) if matches!(target, V::Array(_)) && !matches!(v, V::Array(_)) => {
+                if let V::Array(items) = &mut target {
+                    Rc::make_mut(items).push(v);
+                }
+                Ok(target)
+            }
+            Some(op) => match self.binary(op, target.clone(), v) {
+                Ok(n) => Ok(n),
+                Err(e) => Err((e, target)),
+            },
+        }
+    }
+
+    /// `root.keys = v` (or `op=`), for compiled code: as [`Interp::assign`]
+    /// once its keys and value are worked out.
+    pub(crate) fn assign_at(&mut self, root: ir::Root, keys: &[Key], op: Option<BinOp>, v: V) -> R<()> {
+        self.assign_value(root, keys, op, v)
+    }
+
+    /// The same on a value compiled code holds in a Rust variable: a local
+    /// nothing tracks, so only the walk and the write are the interpreter's.
+    pub(crate) fn assign_in(&mut self, target: &mut V, keys: &[Key], op: Option<BinOp>, v: V) -> R<()> {
+        let mut here = target;
+        for k in keys {
+            here = step_mut(here, k, false)?;
+        }
+        let old = std::mem::replace(here, V::None);
+        match self.combine(op, old, v) {
+            Ok(n) => {
+                *here = n;
+                Ok(())
+            }
+            Err((e, old)) => {
+                *here = old;
+                Err(e)
+            }
+        }
+    }
+
+    /// `root.keys.name(args)` for a method that changes its receiver, for
+    /// compiled code: as [`Interp::step`] does it once the keys and
+    /// arguments are worked out.
+    pub(crate) fn method_at(&mut self, root: ir::Root, keys: &[Key], name: &str, argv: Vec<V>) -> R<V> {
+        let mut target = self.take(root, keys)?;
+        let out = self.method_mut(&mut target, name, argv);
+        self.put(root, keys, target)?;
+        out
+    }
+
+    /// The same on a value compiled code holds in a Rust variable.
+    pub(crate) fn method_in(&mut self, target: &mut V, keys: &[Key], name: &str, argv: Vec<V>) -> R<V> {
+        let mut here = target;
+        for k in keys {
+            here = step_mut(here, k, false)?;
+        }
+        let mut t = std::mem::replace(here, V::None);
+        let out = self.method_mut(&mut t, name, argv);
+        *here = t;
+        out
+    }
+
+    /// A name nothing declared, read where it runs, as [`Interp::expr`]
+    /// reads [`ExprKind::Outer`].
+    pub(crate) fn outer_pub(&mut self, n: u32) -> R<V> {
+        let slot = self.outer(n)?;
+        if let Slot::Local(..) = slot {
+            let name = &self.unit.outer[n as usize];
+            crate::note_read(name);
+        }
+        self.read_slot(slot)
     }
 
     /// Where a root is: a slot of a frame, or a global.
@@ -1385,8 +1479,9 @@ enum Slot {
     Global(GlobalId),
 }
 
+/// One step into a place: a field by name, or an index worked out.
 #[derive(Clone)]
-enum Key {
+pub enum Key {
     Field(String),
     Index(V),
 }

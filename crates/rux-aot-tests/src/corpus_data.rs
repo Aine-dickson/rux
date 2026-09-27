@@ -59,4 +59,49 @@ pub const CORPUS: &[(&str, &[&str])] = &[
          fn add(title: string) { tasks.push({ id: tasks.length + 1, title: title, done: false }); }\n",
         &["open()", "titles()", "pick(0)", "pick(1)", "safe(5)", "kind(0)", "kind(2)", "kind(9)", "boom()", "!add(\"c\")", "open()", "tasks.length"],
     ),
+    // `?.` chains, `is`, `switch` with ranges and guards.
+    (
+        "type Pet = { name: string, age: int };\n\
+         type User = { name: string, pet?: Pet };\n\
+         let users: User[] = signal([{ name: \"ada\", pet: { name: \"rex\", age: 3 } }, { name: \"bob\" }]);\n\
+         fn pet(i: int): string { users[i]?.pet?.name ?? \"none\" }\n\
+         fn loud(i: int): string { users[i]?.pet?.name.toUpperCase() ?? \"-\" }\n\
+         fn nth(xs: int[]?, i: int): int { xs?[i] ?? -1 }\n\
+         fn shout(s: string?): string { s?.toUpperCase() ?? \"quiet\" }\n\
+         fn what(x: any): string { if x is int { \"int\" } else if x is string { \"string\" } else if x is Pet { \"pet\" } else { \"other\" } }\n\
+         fn band(n: int): string { switch n { 0 => \"zero\", 42 if n > 40 => \"answer\", 1..10 => \"small\", _ => \"big\" } }\n\
+         fn word(s: string): int { switch s { \"a\" | \"b\" => { let k = 1; k + 1 } \"c\" => 3, _ => 0 } }\n\
+         fn guard(n: int, ok: bool): string { switch n { 1 if ok == true => \"one ok\", 1 => \"one\", _ => \"other\" } }\n",
+        &["pet(0)", "pet(1)", "pet(2)", "loud(0)", "loud(1)", "nth([4, 5], 1)", "nth(none, 1)", "nth([4], 3)",
+          "shout(\"hi\")", "shout(none)", "what(3)", "what(\"x\")", "what({ name: \"a\", age: 1 })", "what(2.5)",
+          "band(0)", "band(5)", "band(42)", "band(99)", "word(\"b\")", "word(\"c\")", "word(\"z\")",
+          "guard(1, true)", "guard(1, false)", "guard(2, true)"],
+    ),
+    // `try` with what leaves it: a value, a failure caught, `return`,
+    // `break` and `continue` out of it; a nested `try` rethrowing.
+    (
+        "fn safe_div(a: int, b: int): int { try { return trunc(a / b); } catch e { return -1; } }\n\
+         fn first_bad(xs: int[]): int { let n = 0; for x in xs { try { if x < 0 { break; } if x == 0 { continue; } n += trunc(10 / x); } catch { n = -100; } } n }\n\
+         fn kinds(): string { let out = \"\"; try { try { throw \"inner\"; } catch e { out = out + e; throw \"outer\"; } } catch e2 { out = out + \"+\" + e2; } out }\n\
+         fn missing(): string { let m = { a: 1 }; let r = \"found\"; try { m.b; } catch e { r = e.kind; } r }\n\
+         fn ok(): int { let k = 0; try { k = 5; } catch { k = 9; } k }\n",
+        &["safe_div(7, 2)", "safe_div(1, 0)", "first_bad([1, 0, 2, -1, 5])", "first_bad([])", "kinds()", "missing()", "ok()"],
+    ),
+    // Writes through fields and indexes, and methods that change their
+    // receiver, on locals and on state, nested, with `op=`, and failing.
+    (
+        "type Item = { name: string, qty: int, tags: string[] };\n\
+         let cart: Item[] = signal([{ name: \"pen\", qty: 1, tags: [] }]);\n\
+         let meta = signal({ count: 0, names: [\"x\"] });\n\
+         fn local(): string { let m = { a: 1, list: [1, 2] }; m.a = 5; m.a += 2; m.list[0] = 9; m.list.push(3); `${m.a} ${m.list.join(\",\")}` }\n\
+         fn grid(): int { let g = [[0, 0], [0, 0]]; for i in 0..2 { g[i][i] = i + 1; g[i].push(7); } g[1][1] + g[0].length }\n\
+         fn more(i: int) { cart[i].qty += 1; cart[i].tags.push(\"more\"); meta.count += 1; }\n\
+         fn add(n: string) { cart.push({ name: n, qty: 1, tags: [] }); meta.names.push(n); }\n\
+         fn drop_last(): string { let last = cart.pop(); meta.names.pop(); last?.name ?? \"none\" }\n\
+         fn bad(): int { let xs = [1]; xs[5] = 2; 0 }\n\
+         fn bad_key(): int { let m = { a: 1 }; m.b.c = 2; 0 }\n\
+         fn sorted(): string { let xs = [3, 1, 2]; xs.sort(); xs.reverse(); xs.join(\"\") }\n",
+        &["local()", "grid()", "!more(0)", "cart[0].qty", "cart[0].tags", "meta.count", "!add(\"ink\")", "cart.length",
+          "meta.names", "drop_last()", "drop_last()", "cart.length", "!more(4)", "bad()", "bad_key()", "sorted()"],
+    ),
 ];

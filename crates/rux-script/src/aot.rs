@@ -18,13 +18,14 @@
 use std::collections::HashMap;
 use std::sync::Mutex;
 
-use rux_ir::ir::{Block, FnId, GlobalId, LocalId, Root, Stmt, StmtKind};
+use rux_ir::ir::{Block, FnId, Stmt, StmtKind};
 
 use crate::interp::Interp;
 
 pub use crate::interp::value::V;
-pub use crate::interp::{Fault, Flow};
-pub use rux_ir::ir::{At, BinOp, UnOp};
+pub use crate::interp::{Fault, Flow, Key};
+pub use rux_ir::ir::{At, BinOp, GlobalId, LocalId, Root, UnOp};
+pub use rux_ir::types::Type;
 
 /// What a compiled step gives: a value, or the flow that leaves it.
 pub type R<T> = Result<T, Flow>;
@@ -124,6 +125,33 @@ pub fn thrown(v: V) -> Flow {
     Interp::thrown_pub(v)
 }
 
+/// What `catch e` binds `e` to for failure `f`.
+pub fn caught(f: &Fault) -> V {
+    Interp::caught_pub(f)
+}
+
+/// Whether `switch` pattern `p` matches `v`: equal, or a range holding it.
+pub fn matches(p: &V, v: &V) -> bool {
+    Interp::matches_pub(p, v)
+}
+
+/// `v is ty`.
+pub fn is(v: &V, ty: &Type) -> bool {
+    Interp::is_pub(v, ty)
+}
+
+/// The type written `text`, for an `is` the generator wrote out: its text
+/// is the type's own `Display`, which the generator checked reads back the
+/// same.
+pub fn type_of_text(text: &str) -> Type {
+    rux_ir::types::parse_type(text).unwrap_or(Type::Any)
+}
+
+/// A step into a place by field name.
+pub fn key(name: &str) -> Key {
+    Key::Field(name.to_string())
+}
+
 /// An array of `items`.
 pub fn array(items: Vec<V>) -> V {
     V::array(items)
@@ -194,6 +222,42 @@ impl Cx<'_> {
 
     pub fn index(&mut self, b: &V, i: &V) -> R<V> {
         self.ip.index_pub(b, i)
+    }
+
+    /// `b?.name`: `None` where a chain stops.
+    pub fn field_opt(&mut self, b: &V, name: &str) -> R<Option<V>> {
+        self.ip.field_opt(b, name)
+    }
+
+    /// `b?[i]`: `None` where a chain stops.
+    pub fn index_opt(&mut self, b: &V, i: &V) -> R<Option<V>> {
+        self.ip.index_opt(b, i)
+    }
+
+    /// A name nothing in the file declares, found where it runs.
+    pub fn outer(&mut self, n: u32) -> R<V> {
+        self.ip.outer_pub(n)
+    }
+
+    /// `root.keys = v` or `root.keys op= v`, the keys worked out.
+    pub fn assign_at(&mut self, root: Root, keys: &[Key], op: Option<BinOp>, v: V) -> R<()> {
+        self.ip.assign_at(root, keys, op, v)
+    }
+
+    /// The same, into a local the compiled code holds itself.
+    pub fn assign_in(&mut self, target: &mut V, keys: &[Key], op: Option<BinOp>, v: V) -> R<()> {
+        self.ip.assign_in(target, keys, op, v)
+    }
+
+    /// A method that changes its receiver, called on the place
+    /// `root.keys`, the keys and arguments worked out.
+    pub fn method_at(&mut self, root: Root, keys: &[Key], name: &str, args: Vec<V>) -> R<V> {
+        self.ip.method_at(root, keys, name, args)
+    }
+
+    /// The same, on a local the compiled code holds itself.
+    pub fn method_in(&mut self, target: &mut V, keys: &[Key], name: &str, args: Vec<V>) -> R<V> {
+        self.ip.method_in(target, keys, name, args)
     }
 
     /// A method that does not change its receiver.
