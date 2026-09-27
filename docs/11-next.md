@@ -1240,11 +1240,27 @@ Float indexing narrows to what the types allow: an index is an `int`, and a
    code holds as a Rust variable is changed in place, with the same walk
    and the same failure. The proof's corpus grew by three scripts (54 cases
    over 8 scripts), and every statement of all three compiles; of the whole
-   corpus, one statement is still handed back (it creates a closure). Release
+   corpus, one statement was still handed back (it created a closure). Release
    cost after it: `fib(18)` 0.29x, a `for` over 10 000 0.29x, a handler
    writing three signals 0.42x, and `open()` (fields, a `for` over state),
-   which was mostly handed back at 0.95x, now 0.59x. Still
-   handed back: closures created, `setInterval`, and the steps listed below.
+   which was mostly handed back at 0.95x, now 0.59x. Then creating a
+   closure compiled too: its code stays the interpreter's, found by its
+   number among the function's closures (`rux_ir::ir::closures` numbers
+   them, and both the generator and the interpreter use that walk), and
+   what it captures is read in compiled code, in the interpreter's order.
+   With a ninth script (closures over locals, parameters and state, in a
+   loop, kept in state and called later), every statement of the corpus
+   compiles. It also found a generator defect: `total += f(10)` on a local
+   of a function with no frame wrote `BinOp::Dyn("+"` without its closing
+   parenthesis, because the operator was cut out of its `Some(...)` text by
+   trimming; it is now written from the operator itself. Still handed
+   back: `setInterval`. Routed pages need nothing more, which corrects the
+   list of what was left below: a route's view is a component, and a
+   component's functions are linked into the entry document's unit and
+   hashed with it, so they compile with it (`examples/router.rux`'s unit
+   holds `components/crew_detail::member_of`). What is not compiled in any
+   file is its template pieces (handlers and bindings) and `async fn`
+   bodies.
    Writing the corpus found three defects older than step 9, all in both
    engines (watchlist 36 to 38): the checker lets `.` read an optional
    field, `trunc` of an infinity gives `Infinity`, and a `switch` guard that

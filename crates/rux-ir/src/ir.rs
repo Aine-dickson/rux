@@ -482,3 +482,122 @@ impl Expr {
         Expr { ty, kind, at }
     }
 }
+
+/// The closures `b` creates, not counting those inside them, in one fixed
+/// order: a closure's number in a function is its place in this list. The
+/// Rust a release build writes names a closure by that number, and the
+/// interpreter finds it by the same walk.
+pub fn closures(b: &Block) -> Vec<std::rc::Rc<Closure>> {
+    let mut out = Vec::new();
+    walk_block(b, &mut out);
+    out
+}
+
+fn walk_block(b: &Block, out: &mut Vec<std::rc::Rc<Closure>>) {
+    for s in &b.stmts {
+        match &s.kind {
+            StmtKind::Expr(e) | StmtKind::Init { value: e, .. } | StmtKind::Throw(e) => walk_expr(e, out),
+            StmtKind::Let { value, .. } | StmtKind::Return(value) => {
+                if let Some(e) = value {
+                    walk_expr(e, out);
+                }
+            }
+            StmtKind::Assign { place, value, .. } => {
+                for step in &place.steps {
+                    if let PlaceStep::Index(e) = step {
+                        walk_expr(e, out);
+                    }
+                }
+                walk_expr(value, out);
+            }
+            StmtKind::If { cond, then, otherwise } => {
+                walk_expr(cond, out);
+                walk_block(then, out);
+                if let Some(o) = otherwise {
+                    walk_block(o, out);
+                }
+            }
+            StmtKind::While { cond, body } => {
+                walk_expr(cond, out);
+                walk_block(body, out);
+            }
+            StmtKind::ForRange { from, to, body, .. } => {
+                walk_expr(from, out);
+                walk_expr(to, out);
+                walk_block(body, out);
+            }
+            StmtKind::ForEach { iter, body, .. } => {
+                walk_expr(iter, out);
+                walk_block(body, out);
+            }
+            StmtKind::Try { body, catch, .. } => {
+                walk_block(body, out);
+                walk_block(catch, out);
+            }
+            StmtKind::Break | StmtKind::Continue => {}
+        }
+    }
+}
+
+fn walk_expr(e: &Expr, out: &mut Vec<std::rc::Rc<Closure>>) {
+    match &e.kind {
+        ExprKind::None
+        | ExprKind::Bool(_)
+        | ExprKind::Int(_)
+        | ExprKind::Float(_)
+        | ExprKind::Str(_)
+        | ExprKind::Local(_)
+        | ExprKind::Capture(_)
+        | ExprKind::Global(_)
+        | ExprKind::Outer(_) => {}
+        ExprKind::Template(items) | ExprKind::Array(items) => items.iter().for_each(|x| walk_expr(x, out)),
+        ExprKind::Map(entries) => entries.iter().for_each(|(_, x)| walk_expr(x, out)),
+        ExprKind::Call { callee, args } => {
+            if let Callee::Value(f) = callee {
+                walk_expr(f, out);
+            }
+            args.iter().for_each(|x| walk_expr(x, out));
+        }
+        ExprKind::Start { args, .. } => args.iter().for_each(|x| walk_expr(x, out)),
+        ExprKind::Await(x)
+        | ExprKind::Chain(x)
+        | ExprKind::Widen(x)
+        | ExprKind::Check(x)
+        | ExprKind::Unary { expr: x, .. }
+        | ExprKind::Is { expr: x, .. }
+        | ExprKind::Field { base: x, .. } => walk_expr(x, out),
+        ExprKind::Method { recv, args, .. } => {
+            walk_expr(recv, out);
+            args.iter().for_each(|x| walk_expr(x, out));
+        }
+        ExprKind::Index { base, index, .. } => {
+            walk_expr(base, out);
+            walk_expr(index, out);
+        }
+        ExprKind::Binary { lhs, rhs, .. } | ExprKind::Logic { lhs, rhs, .. } | ExprKind::Coalesce { lhs, rhs } => {
+            walk_expr(lhs, out);
+            walk_expr(rhs, out);
+        }
+        ExprKind::If { cond, then, otherwise } => {
+            walk_expr(cond, out);
+            walk_block(then, out);
+            if let Some(o) = otherwise {
+                walk_block(o, out);
+            }
+        }
+        ExprKind::Match { value, arms } => {
+            walk_expr(value, out);
+            for arm in arms {
+                arm.patterns.iter().for_each(|x| walk_expr(x, out));
+                if let Some(g) = &arm.guard {
+                    walk_expr(g, out);
+                }
+                walk_block(&arm.body, out);
+            }
+        }
+        ExprKind::Block(b) => walk_block(b, out),
+        ExprKind::Closure(c) => out.push(std::rc::Rc::clone(c)),
+        // A timer's body runs on its own, from its text.
+        ExprKind::Interval { args, .. } => args.iter().for_each(|x| walk_expr(x, out)),
+    }
+}

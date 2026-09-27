@@ -260,6 +260,17 @@ impl Cx<'_> {
         self.ip.method_in(target, keys, name, args)
     }
 
+    /// What a closure being created captures from `root`.
+    pub fn captured(&mut self, root: Root) -> R<V> {
+        self.ip.captured_pub(root)
+    }
+
+    /// Closure `k` of function `id`, as `rux_ir::ir::closures` numbers them,
+    /// holding `captured`.
+    pub fn closure(&mut self, id: u32, k: u32, captured: Vec<V>) -> R<V> {
+        self.ip.closure_pub(id, k, captured)
+    }
+
     /// A method that does not change its receiver.
     pub fn method(&mut self, recv: V, name: &str, args: Vec<V>) -> R<V> {
         self.ip.method_pub(recv, name, args)

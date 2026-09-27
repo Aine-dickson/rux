@@ -128,6 +128,9 @@ pub struct Interp {
     /// Each native export called so far, by linked name, so the registry
     /// is asked once.
     natives: HashMap<String, rux_native::Call>,
+    /// Each function's closures, numbered by [`ir::closures`], for compiled
+    /// code that creates one.
+    closure_codes: HashMap<u32, Vec<Rc<ir::Closure>>>,
     /// The unit's compiled functions, when a build registered them for its
     /// exact text: step 9 of `docs/11-next.md`, and [`crate::aot`].
     aot: HashMap<u32, (u32, bool, crate::aot::Body)>,
@@ -182,6 +185,7 @@ impl Interp {
             set: vec![false; n],
             by_name,
             natives: HashMap::new(),
+            closure_codes: HashMap::new(),
             aot: HashMap::new(),
             frameless: 0,
             stack_base: 0,
@@ -955,6 +959,29 @@ impl Interp {
         let out = self.method_mut(&mut t, name, argv);
         *here = t;
         out
+    }
+
+    /// What a closure captures from `root`, read as [`Interp::expr`] reads
+    /// it when it creates one.
+    pub(crate) fn captured_pub(&mut self, root: ir::Root) -> R<V> {
+        let slot = self.locate(root)?;
+        self.read_slot(slot)
+    }
+
+    /// Closure `k` of function `id` (numbered by [`ir::closures`]), with
+    /// what it captured.
+    pub(crate) fn closure_pub(&mut self, id: u32, k: u32, captured: Vec<V>) -> R<V> {
+        if !self.closure_codes.contains_key(&id) {
+            let Some(f) = self.unit.fns.get(id as usize) else {
+                return fail("compiled code out of step with its source");
+            };
+            let list = ir::closures(&f.body.block);
+            self.closure_codes.insert(id, list);
+        }
+        match self.closure_codes.get(&id).and_then(|l| l.get(k as usize)) {
+            Some(code) => Ok(V::Fn(Rc::new(Closure { code: Rc::clone(code), captured }))),
+            None => fail("compiled code out of step with its source"),
+        }
     }
 
     /// A name nothing declared, read where it runs, as [`Interp::expr`]

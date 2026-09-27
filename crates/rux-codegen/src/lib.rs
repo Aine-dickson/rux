@@ -8,9 +8,10 @@
 //! handed back to the interpreter by its place in the function
 //! (`aot::find`), in the same frame, so what is compiled and what is not can
 //! sit side by side in one function. Control flow, `try`, `switch`, literals,
-//! locals, state, operators, calls, fields, indexes, `?.` chains, methods and
-//! writes through places are compiled; creating a closure and `setInterval`
-//! are interpreted for now, and [`Output`] counts both.
+//! locals, state, operators, calls, fields, indexes, `?.` chains, methods,
+//! writes through places and creating closures are compiled (a closure's
+//! own body stays the interpreter's); `setInterval` is interpreted for now,
+//! and [`Output`] counts both.
 //!
 //! The semantics are the interpreter's by construction: every operator,
 //! read and write goes through the same `aot` call the interpreter makes,
@@ -48,6 +49,8 @@ pub fn generate(unit: &Unit, hash: u64, aot: &str) -> Output {
         refused: false,
         labels: 0,
         in_try: 0,
+        func: 0,
+        closures: Vec::new(),
     };
     let _ = writeln!(
         g.code,
@@ -99,6 +102,11 @@ struct Gen<'u> {
     /// Inside the body of a `try`, which runs in a Rust closure: a `return`
     /// there leaves the closure as `Flow::Return` for the code after it.
     in_try: usize,
+    /// The function being written, and the closures its body creates, in
+    /// the order `rux_ir::ir::closures` numbers them (the interpreter finds
+    /// one by its number).
+    func: u32,
+    closures: Vec<std::rc::Rc<rux_ir::ir::Closure>>,
 }
 
 /// Where a statement is and what it may do, for the code around it.
@@ -123,6 +131,8 @@ impl Gen<'_> {
     fn func(&mut self, id: u32, f: &Func) -> bool {
         let _ = writeln!(self.code, "\n/// `{}`", f.name.replace('\n', " "));
         let place = Place { func: id, path: Vec::new(), in_loop: false, depth: 0, try_edge: false };
+        self.func = id;
+        self.closures = rux_ir::ir::closures(&f.body.block);
         let counted = (self.out.compiled, self.out.handed_back);
         self.frameless = false;
         let framed = self.block(&f.body.block, &place, None, true);
@@ -256,6 +266,7 @@ impl Gen<'_> {
             }
             StmtKind::Assign { place, op, value } if place.steps.is_empty() => {
                 let v = self.expr(value, s, e)?;
+                let raw = *op;
                 let op = match op {
                     Some(op) => format!("Some(BinOp::{op:?})"),
                     None => "None".to_string(),
@@ -266,14 +277,14 @@ impl Gen<'_> {
                     Root::Local(l) if self.frameless => {
                         return Some(format!(
                             "t!(cx.tick(), {s}, {e});\nlet __v = {v};\n{}",
-                            match op.as_str() {
-                                "None" => format!("l{} = __v;\n", l.0),
-                                _ => format!(
+                            match raw {
+                                None => format!("l{} = __v;\n", l.0),
+                                Some(raw) => format!(
                                     "let __t = std::mem::replace(&mut l{0}, V::None);\n\
                                      match cx.apply({1}, &__t, __v) {{ Ok(n) => l{0} = n, \
                                      Err(err) => {{ l{0} = __t; return Err(aot::at(err, {s}, {e})); }} }}\n",
                                     l.0,
-                                    op.trim_start_matches("Some(").trim_end_matches(')')
+                                    format!("BinOp::{raw:?}")
                                 ),
                             }
                         ));
@@ -689,6 +700,20 @@ impl Gen<'_> {
                 format!("('c{l}: {{ {} }})", self.base(inner, s, end, Some(l))?)
             }
             ExprKind::Outer(n) => format!("t!(cx.outer({n}), {s}, {end})"),
+            // Its code stays the interpreter's; what it captures is read
+            // here, in order, as the interpreter reads it.
+            ExprKind::Closure(c) => {
+                let k = self.closures.iter().position(|x| std::rc::Rc::ptr_eq(x, c))?;
+                let mut caps = Vec::with_capacity(c.captures.len());
+                for root in &c.captures {
+                    caps.push(match root {
+                        Root::Local(l) if self.frameless => format!("l{}.clone()", l.0),
+                        Root::Local(l) => format!("cx.get({})", l.0),
+                        root => format!("t!(cx.captured({}), {s}, {end})", root_code(*root)?),
+                    });
+                }
+                format!("t!(cx.closure({}, {k}, vec![{}]), {s}, {end})", self.func, caps.join(", "))
+            }
             ExprKind::Is { expr, ty } => {
                 // The type as its text, read back once per thread; only when
                 // that text reads back as the same type.

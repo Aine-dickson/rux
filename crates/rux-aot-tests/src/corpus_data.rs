@@ -104,4 +104,18 @@ pub const CORPUS: &[(&str, &[&str])] = &[
         &["local()", "grid()", "!more(0)", "cart[0].qty", "cart[0].tags", "meta.count", "!add(\"ink\")", "cart.length",
           "meta.names", "drop_last()", "drop_last()", "cart.length", "!more(4)", "bad()", "bad_key()", "sorted()"],
     ),
+    // Closures created in compiled code: capturing locals, parameters and
+    // state, several in one function, inside a loop, and kept for later.
+    (
+        "let scale = signal(3);\n\
+         let saved = signal([]);\n\
+         fn scaled(xs: int[]): int[] { xs.map(x => x * scale) }\n\
+         fn offset(xs: int[], by: int): int[] { let k = by * 2; xs.map(x => x + k).filter(x => x > k + 1) }\n\
+         fn adders(): int { let total = 0; for i in 0..3 { let f = (x: int) => x + i; total += f(10); } total }\n\
+         fn keep(n: int) { saved.push((x: int) => x * n); }\n\
+         fn run_saved(x: int): int { let s = 0; for f in saved { s += f(x); } s }\n\
+         fn nested(): int { let a = 2; let g = (x: int) => [x].map(y => y * a)[0]; g(5) }\n",
+        &["scaled([1, 2])", "!scale = 4", "scaled([1, 2])", "offset([1, 5, 9], 2)", "adders()", "!keep(2)", "!keep(5)",
+          "run_saved(3)", "nested()"],
+    ),
 ];
