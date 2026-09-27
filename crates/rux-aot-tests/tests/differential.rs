@@ -89,7 +89,9 @@ fn cost() {
         (7, "local()", 20000),
         (7, "grid()", 20000),
     ];
-    println!("{:<30} {:>14} {:>14} {:>7}", "call", "interpreted µs", "compiled µs", "ratio");
+    // Times per call, and how many times faster compiled is: 3.6x faster
+    // means compiled takes a 3.6th of the interpreter's time.
+    println!("{:<30} {:>14} {:>14} {:>14}", "call", "interpreted µs", "compiled µs", "speedup");
     for (i, what, times) in cases {
         let (script, _) = CORPUS[*i];
         let mut b = Builder::new();
@@ -111,6 +113,6 @@ fn cost() {
             }
             took[k] = t.elapsed().as_nanos() as f64 / *times as f64 / 1000.0;
         }
-        println!("{what:<30} {:>14.2} {:>14.2} {:>6.2}x", took[0], took[1], took[1] / took[0]);
+        println!("{what:<30} {:>14.2} {:>14.2} {:>7.1}x faster", took[0], took[1], took[0] / took[1]);
     }
 }

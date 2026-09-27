@@ -1238,60 +1238,75 @@ Float indexing narrows to what the types allow: an index is an `int`, and a
    that change their receiver when the receiver is a place. Each goes
    through the interpreter's own helper, as before; a local the compiled
    code holds as a Rust variable is changed in place, with the same walk
-   and the same failure. The proof's corpus grew by three scripts (54 cases
-   over 8 scripts), and every statement of all three compiles; of the whole
-   corpus, one statement was still handed back (it created a closure). Release
-   cost after it: `fib(18)` 0.29x, a `for` over 10 000 0.29x, a handler
-   writing three signals 0.42x, and `open()` (fields, a `for` over state),
-   which was mostly handed back at 0.95x, now 0.59x. Then creating a
-   closure compiled too: its code stays the interpreter's, found by its
-   number among the function's closures (`rux_ir::ir::closures` numbers
-   them, and both the generator and the interpreter use that walk), and
-   what it captures is read in compiled code, in the interpreter's order.
-   With a ninth script (closures over locals, parameters and state, in a
-   loop, kept in state and called later), every statement of the corpus
-   compiles. It also found a generator defect: `total += f(10)` on a local
-   of a function with no frame wrote `BinOp::Dyn("+"` without its closing
-   parenthesis, because the operator was cut out of its `Some(...)` text by
-   trimming; it is now written from the operator itself. Still handed
-   back: `setInterval`. Routed pages need nothing more, which corrects the
-   list of what was left below: a route's view is a component, and a
-   component's functions are linked into the entry document's unit and
-   hashed with it, so they compile with it (`examples/router.rux`'s unit
-   holds `components/crew_detail::member_of`). What is not compiled in any
-   file is its template pieces (handlers and bindings) and `async fn`
-   bodies.
+   and the same failure (b2d5a19). Writing the corpus for it found three
+   defects older than step 9, all in both engines (watchlist 36 to 38):
+   the checker lets `.` read an optional field, `trunc` of an infinity
+   gives `Infinity`, and a `switch` guard that is a bare name parses as an
+   arrow function.
 
-   Cost after closures, release, two runs agreeing within a few percent
-   (`crates/rux-aot-tests`, `cost`, now with a case for each construct
-   added that day): `switch` 0.67x to 0.69x of the interpreter's time, a
-   `?.` chain 0.69x to 0.75x, `try` in a loop 0.49x, nested `try` 0.77x,
-   nested index writes 0.67x to 0.69x, field and index writes with `push`
-   and a `join` 0.81x to 0.85x (most of it the library's work), a closure
-   made in a loop and called 0.78x, and `map` or `filter` with a closure
-   0.93x to 0.96x. The last is the one to read: creating the closure is
-   compiled, but its body is not, and a `map` calls the interpreted body
-   once per item. Compiling closure bodies is where the next gain is.
+   Then creating a closure compiled too (04bacc4): its code stays the
+   interpreter's, found by its number among the function's closures
+   (`rux_ir::ir::closures` numbers them, and both the generator and the
+   interpreter use that walk), and what it captures is read in compiled
+   code, in the interpreter's order. With it, every statement of the
+   corpus compiles (9 scripts). It also found a generator defect:
+   `total += f(10)` on a local of a function with no frame wrote
+   `BinOp::Dyn("+"` without its closing parenthesis, because the operator
+   was cut out of its `Some(...)` text by trimming; it is now written from
+   the operator itself. Still handed back: `setInterval`.
 
-   9.5 driven 2026-09-27: a two-file project (a document with a `<router>`
-   and a component page) built with `rux build --release --target web`
-   compiled 7 functions, none handed back, and was run in Brave over the
-   DevTools protocol. A built web app now says in the console, once, when
-   its script runs compiled: `rux: script 0x83142b371c27822c: 7 functions
-   run compiled`, the hash the build registered. A tap ran a handler whose
-   function navigates to a path made of compiled results (recursion, a
-   `switch` with a range, a caught failure, closures, `?.` chains), and the
-   address bar read `/r/610-small-caught-12-rex-none`, the expected
-   answer. Two things cost time and are about the harness, not Rux: a
-   server already on the chosen port answered instead of the test's
-   (Windows lets a second server bind it silently), and a browser
-   launcher's process is not the browser, so stopping it leaves the old
-   page for the next run to attach to.
-   Writing the corpus found three defects older than step 9, all in both
-   engines (watchlist 36 to 38): the checker lets `.` read an optional
-   field, `trunc` of an infinity gives `Infinity`, and a `switch` guard that
-   is a bare name parses as an arrow function. What follows describes the
-   state before 9.2.
+   Routed pages need nothing more, which corrects the list of what was left
+   below: a route's view is a component, and a component's functions are
+   linked into the entry document's unit and hashed with it, so they
+   compile with it (`examples/router.rux`'s unit holds
+   `components/crew_detail::member_of`). What is not compiled in any file
+   is its template pieces (handlers and bindings), closure bodies and
+   `async fn` bodies.
+
+   Cost at 79590d1, release, per call, two runs agreeing within a few
+   percent (`cargo test -p rux-aot-tests --release --test differential --
+   --ignored cost --nocapture`, which now prints the times and how many
+   times faster):
+
+   | Call | Interpreted | Compiled | Faster |
+   |---|---|---|---|
+   | `fib(18)`, recursion | 3465 µs | 968 µs | 3.6x |
+   | `sum(10000)`, a `for` over a range | 847 µs | 245 µs | 3.4x |
+   | `odd(20)`, `break` and `continue` | 3.08 µs | 0.95 µs | 3.2x |
+   | `!bump(1)`, a handler writing 3 signals | 10.76 µs | 4.47 µs | 2.4x |
+   | `first_bad(…)`, `try` in a loop | 2.23 µs | 1.08 µs | 2.1x |
+   | `open()`, fields, a `for` over state | 0.94 µs | 0.57 µs | 1.6x |
+   | `grid()`, nested index writes | 2.98 µs | 1.99 µs | 1.5x |
+   | `band(42)`, `switch` | 0.74 µs | 0.51 µs | 1.5x |
+   | `pet(1)`, a `?.` chain | 0.77 µs | 0.53 µs | 1.5x |
+   | `adders()`, a closure made in a loop | 2.22 µs | 1.73 µs | 1.3x |
+   | `kinds()`, nested `try` | 1.96 µs | 1.51 µs | 1.3x |
+   | `local()`, writes, `push`, `join` | 3.68 µs | 2.96 µs | 1.2x |
+   | `offset(…)`, `map` and `filter` | 3.53 µs | 3.27 µs | 1.08x |
+   | `titles()`, `map` with a closure | 1.80 µs | 1.71 µs | 1.05x |
+
+   Loops and arithmetic are three to four times faster. What is mostly
+   library work (`join`, copying maps) gains less, since the library was
+   Rust already. `map` and `filter` barely gain: creating the closure is
+   compiled, but its body is not, and they call the interpreted body once
+   per item. That is 9.6 below.
+
+   9.5 driven 2026-09-27 (c0448ea): a two-file project (a document with a
+   `<router>` and a component page) built with `rux build --release
+   --target web` compiled 7 functions, none handed back, and was run in
+   Brave over the DevTools protocol. A built web app now says in the
+   console, once, when its script runs compiled: `rux: script
+   0x83142b371c27822c: 7 functions run compiled`, the hash the build
+   registered. A tap ran a handler whose function navigates to a path made
+   of compiled results (recursion, a `switch` with a range, a caught
+   failure, closures, `?.` chains), and the address bar read
+   `/r/610-small-caught-12-rex-none`, the expected answer. Two things cost
+   time and are about the harness, not Rux: a server already on the chosen
+   port answered instead of the test's (Windows lets a second server bind
+   it silently), and a browser launcher's process is not the browser, so
+   stopping it leaves the old page for the next run to attach to.
+
+   What follows describes the state before 9.2.
    `rux-codegen` compiles control flow (`if`, `while`, ranges, `break`,
    `continue`, `return`), literals, locals, state reads and writes (`=` and
    `op=` on a name), operators, logic, `??`, templates and calls to the
@@ -1316,6 +1331,74 @@ Float indexing narrows to what the types allow: an index is an `int`, and a
    fields, indexes and methods compiled; routed pages loaded as documents of
    their own (only the entry document is compiled); template pieces and
    `async fn` bodies.
+
+   **Next, planned 2026-09-27 for the next session.** Step 9's plan
+   (9.0 to 9.5) is done. What is left, in order; each item ends with the
+   differential proof green, the gate green, and the cost bench run and
+   reported as times and how many times faster (the owner asked for that
+   form), then a local commit. Nothing is pushed without asking.
+
+   - 9.6 **Closure bodies compiled** (the biggest gain left: `map`,
+     `filter`, `reduce`, `sort` with a comparator, `find`, `forEach` and
+     every callback stored in state). A closure's code is an
+     `ir::Closure` with its own `Body` and `captures`. The generator
+     writes one Rust function per closure body, numbered as
+     `rux_ir::ir::closures` numbers them, extended to walk into closure
+     bodies so a closure inside a closure has a number too (a path of
+     numbers, or one pre-order count per function; decide and write it
+     down). The interpreter, when it finds its table, maps each
+     `Rc<ir::Closure>` pointer to its compiled body, so a closure runs
+     compiled however it was created, by compiled code or by the
+     interpreter. `call_closure` checks that map first. A compiled body
+     gets its captures by value (`ExprKind::Capture(i)` reads the `i`th;
+     an assignment to a capture changes only the closure's own copy, as
+     the interpreter's frame does) and its arguments as locals. Without a
+     frame when nothing is handed back, as functions are; with one
+     otherwise, which needs an `aot` call that pushes a frame holding
+     captures. A closure created by a template piece is not in the table
+     and stays interpreted. Proof: corpus cases for `map`, `filter`,
+     `reduce`, a `sort` comparator, a closure in a closure, a closure
+     writing its capture, and a callback kept in state and called from a
+     handler. Expected: `titles()` and `offset(…)` from about 1.05x to
+     2x or more faster.
+   - 9.7 **`setInterval`** in compiled code: `ExprKind::Interval` becomes
+     a call to an `aot` helper doing what the interpreter's arm does
+     (`start_interval(ms, text)`); its body stays the runtime's, which
+     keeps a timer as text. Small.
+   - 9.8 **Watchlist 35, the real fix**: a debug build still stops script
+     calls about 20 deep, because one interpreted call costs about 35 KB
+     of Rust stack. Measure the bytes per call first (the probe in
+     `crates/rux-aot-tests/tests/stack.rs`), then shrink `Interp::expr`
+     and `Interp::stmt` frames: move the large, rarely taken arms
+     (`Match`, `Closure`, `Interval`, method calls, `Try`) into their own
+     `#[inline(never)]` functions so the common path's frame is small.
+     Target: 100 nested calls in a debug build within the 768 KB budget,
+     and no change to the release numbers above.
+   - 9.9 **Template pieces and `async fn` bodies: a design, not code,
+     until the owner decides.** Pieces (handlers, bindings, effects, a
+     component's script) are lowered from text when they first run, and
+     lowering appends to `unit.outer` and to the provided globals in that
+     order, so a build that lowered them itself would number those names
+     differently from the running app. The design to write, with the
+     choices for the owner: (a) how the build finds every piece's text
+     and the names handed in with it (walking each template as the
+     runtime does, or recording them the first time an app runs); (b)
+     how compiled code names what is only numbered at run time (by name,
+     resolved to numbers once when the piece is first lowered, then
+     cached); (c) the key a piece is found by (the runtime's own cache
+     key, hashed, together with the unit's hash); (d) `async fn` bodies,
+     whose resumable form (`flat.rs`) is what would be compiled. Measure
+     first: how much of a real app's frame time is pieces, with
+     `RUX_PROFILE` on `examples/dashboard.rux` and `examples/list.rux`;
+     if it is small, say so and leave pieces interpreted.
+   - Not step 9, small, and found by it: watchlist 38 (a bare-name
+     `switch` guard read as an arrow; parse the guard with arrows off, as
+     `no_pipe` does for `|`), 37 (`trunc`, `round`, `floor`, `ceil` of
+     `NaN` or an infinity throw `overflow`, as Numbers says), 36 (the
+     checker refuses `.` on an optional field, and an array of records
+     that differ infers the fields not all have as optional). Each
+     changes what an author sees, so each is shown to the owner before it
+     is committed.
 
 Steps 2 to 5 change nothing an author sees except the decided syntax and
 types, which is what made them safe to take in order.
