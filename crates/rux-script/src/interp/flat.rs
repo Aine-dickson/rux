@@ -120,6 +120,7 @@ pub fn has_await(e: &Expr) -> bool {
         | ExprKind::Interval { .. } => false,
         ExprKind::Template(xs) | ExprKind::Array(xs) => xs.iter().any(has_await),
         ExprKind::Map(entries) => entries.iter().any(|(_, v)| has_await(v)),
+        ExprKind::Record(_, entries) => entries.iter().any(|(_, v)| has_await(v)),
         ExprKind::Call { callee, args } => {
             matches!(callee, Callee::Value(f) if has_await(f)) || args.iter().any(has_await)
         }
@@ -533,6 +534,10 @@ impl Hoist {
             ExprKind::Map(entries) => {
                 let (keys, values): (Vec<String>, Vec<Expr>) = entries.into_iter().unzip();
                 ExprKind::Map(keys.into_iter().zip(self.operands(values, out)).collect())
+            }
+            ExprKind::Record(shape, entries) => {
+                let (slots, values): (Vec<u32>, Vec<Expr>) = entries.into_iter().unzip();
+                ExprKind::Record(shape, slots.into_iter().zip(self.operands(values, out)).collect())
             }
             ExprKind::Call { callee: Callee::Value(f), args } => {
                 let mut all = vec![*f];

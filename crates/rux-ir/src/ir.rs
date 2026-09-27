@@ -265,8 +265,12 @@ pub enum ExprKind {
     /// A backtick string: each part shown as text and joined.
     Template(Vec<Expr>),
     Array(Vec<Expr>),
-    /// `{ a: 1 }`, a record or a map by its type.
+    /// `{ a: 1 }` whose type is a map (`{ [string]: T }`).
     Map(Vec<(String, Expr)>),
+    /// `{ a: 1 }` whose type is a record, or that no type says is a map:
+    /// each value worked out in the order written, into its slot of the
+    /// shape (step 10, track (c)). A slot no entry fills holds `none`.
+    Record(std::rc::Rc<crate::shape::Shape>, Vec<(u32, Expr)>),
 
     Local(LocalId),
     /// The `n`th name a closure captured. See [`Closure::captures`].
@@ -554,6 +558,7 @@ fn walk_expr(e: &Expr, out: &mut Vec<std::rc::Rc<Closure>>) {
         | ExprKind::Outer(_) => {}
         ExprKind::Template(items) | ExprKind::Array(items) => items.iter().for_each(|x| walk_expr(x, out)),
         ExprKind::Map(entries) => entries.iter().for_each(|(_, x)| walk_expr(x, out)),
+        ExprKind::Record(_, entries) => entries.iter().for_each(|(_, x)| walk_expr(x, out)),
         ExprKind::Call { callee, args } => {
             if let Callee::Value(f) = callee {
                 walk_expr(f, out);

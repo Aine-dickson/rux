@@ -23,7 +23,7 @@ use rux_ir::ir::{Block, FnId, Stmt, StmtKind};
 use crate::interp::Interp;
 
 pub use crate::interp::value::V;
-pub use crate::interp::{Fault, Flow, Key};
+pub use crate::interp::{Fault, Flow, Items, Key};
 pub use rux_ir::ir::{At, BinOp, GlobalId, LocalId, Root, UnOp};
 pub use rux_ir::types::Type;
 
@@ -168,7 +168,7 @@ pub fn text(s: &str) -> V {
 }
 
 /// What `for x in over` walks, item by item.
-pub fn items(over: V) -> R<Vec<V>> {
+pub fn items(over: V) -> R<Items> {
     Interp::items_pub(over)
 }
 

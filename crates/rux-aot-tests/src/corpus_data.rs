@@ -210,4 +210,43 @@ pub const CORPUS: &[(&str, &[&str])] = &[
           "nan_ne()", "mix(3, 0.5)", "pick(true, 1, 2)", "pick(false, 1, 2)", "loopy(100)", "blocky(3)", "chain(5)",
           "ranged(-2, 3)", "show(41)", "add(1.5, 2)", "add(\"a\", 1)", "pick(1, 2, 3)", "mix(3, 1)", "!burn()", "spent", "burn_deep()", "powers(100)"],
     ),
+    // Records (step 10, track (c)): the script-cost apps' sum over 10 000
+    // and filter of 2 000, which the cost bench times, and records built,
+    // read, written, compared and shown.
+    (
+        "type Item = { id: int, name: string, price: float, qty: int };\n\
+         type User = { name: string, pet?: string };\n\
+         let items: Item[] = signal([]);\n\
+         let few: Item[] = signal([]);\n\
+         fn make(n: int): Item[] { let out: Item[] = []; for i in 0..n { out.push({ id: i, name: `item ${i}`, price: (i % 97) + 0.5, qty: (i % 7) + 1 }); } out }\n\
+         fn fill() { items = make(10000); few = make(2000); }\n\
+         fn sum(list: Item[]): float { let t = 0.0; for item in list { t += item.price * item.qty; } t }\n\
+         fn over(list: Item[], q: int): int { list.filter(item => item.price > q).length }\n\
+         fn one(): Item { { qty: 2, name: \"pen\", id: 7, price: 1.5 } }\n\
+         fn bumped(): Item { let it = one(); it.qty += 3; it.price = it.price * 2.0; it }\n\
+         fn same(): bool { let a: Item = { id: 1, name: \"a\", price: 1.0, qty: 1 }; let b: Item = { qty: 1, price: 1.0, name: \"a\", id: 1 }; a == b }\n\
+         fn differ(): bool { let a = one(); let b = bumped(); a == b }\n\
+         fn bob(): User { { name: \"bob\" } }\n\
+         fn cat(): User { { pet: \"tom\", name: \"ann\" } }\n\
+         fn walk(): string { let s = \"\"; for k in keys(one()) { s += k + \",\"; } s }\n\
+         type Pt = { y: int, x: int, label?: string };\n\
+         fn pt(): Pt { { x: 1, y: 2 } }\n\
+         fn labelled(): string { let p = pt(); p.label = \"a\"; p.x += 10; `${p} | ${keys(p)} | ${values(p)}` }\n\
+         fn caught(): string { let r = \"\"; try { let n = [1][5]; } catch e { r = `${e} | ${keys(e)}`; } r }\n\
+         fn undeclared(): string { let p: any = pt(); let r = \"wrote\"; try { p.z = 1; } catch e { r = `${e.kind}: ${e.message}`; } r }\n\
+         fn open_set(): string { let m: any = { b: 1 }; m.set(\"a\", 2); `${m}` }\n\
+         fn closed_set(): string { let p: any = pt(); let r = \"\"; try { p.set(\"x\", 5); r = `${p}`; p.set(\"z\", 1); } catch e { r = `${r} ${e.kind}`; } r }\n\
+         fn open_order(): string { let m: any = { b: 1, a: 2 }; m.b = 3; `${m}` }\n\
+         fn eq_order(): bool { let a: Pt = { x: 1, y: 2 }; let b: Pt = { y: 2, x: 1 }; a == b }\n\
+         fn eq_open(): bool { let a: Pt = { x: 1, y: 2 }; let b: any = { x: 1, y: 2 }; a == b }\n\
+         fn has(): string { let p = pt(); `${\"x\" in p} ${\"label\" in p} ${\"z\" in p}` }\n\
+         fn dict(): string { let d: { [string]: int } = { b: 1, a: 2 }; d[\"c\"] = 3; `${d}` }\n\
+         fn results(): string { `${Ok(1)} | ${Err(\"no\")}` }\n\
+         fn takes(p: Pt): string { `${p}` }\n\
+         fn contexts(): string { let ps: Pt[] = []; ps.push({ x: 1, y: 2 }); let qs: Pt[] = [{ x: 3, y: 4 }]; let n: { p: Pt } = { p: { x: 5, y: 6 } }; `${ps[0]} | ${qs[0]} | ${n.p} | ${takes({ x: 7, y: 8 })}` }\n",
+        &["!fill()", "sum(items)", "over(few, 40)", "items.length", "one()", "`${one()}`", "bumped()", "same()", "differ()",
+          "one().name", "keys(one())", "values(one())", "walk()", "bob()", "cat()", "`${bob()}`", "keys(bob())", "keys(cat())",
+          "bob().name", "cat().pet", "bob().pet", "bob().pet ?? \"no pet\"", "bob() == { name: \"bob\" }", "pt()", "`${pt()}`", "keys(pt())", "pt().label", "labelled()", "caught()",
+          "undeclared()", "open_set()", "closed_set()", "open_order()", "eq_order()", "eq_open()", "has()", "dict()", "results()", "contexts()"],
+    ),
 ];

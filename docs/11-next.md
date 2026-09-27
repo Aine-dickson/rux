@@ -1863,6 +1863,78 @@ Float indexing narrows to what the types allow: an index is an `int`, and a
    compared field order, equality across orders, undeclared writes, and
    the script-cost sum and filter re-measured after each step.
 
+   **(c.0) to (c.2) done 2026-09-28.** The records are now measured in the
+   cost bench itself: corpus script 13 holds the script-cost apps' sum over
+   10 000 records and filter of 2 000 (`fill()` makes them), timed with
+   everything else. Before anything changed, release, µs per call: `sum`
+   4026 interpreted and 2609 compiled (Dart 17.7), the filter 835 and 463
+   (Dart 62, the JVM 17).
+
+   What (c.0) found, with probe functions timed one at a time on the
+   compiled engine: walking 10 000 records with nothing read took 385 µs,
+   a range loop of the same length 200, and reading one field added about
+   1700 µs, 170 ns a read. The lookup is not slow as code: a record was an
+   `Rc<BTreeMap<String, V>>`, so a read went from the value to the map, to
+   a tree node, to each key's own text on the heap, a chain of dependent
+   loads across several megabytes. Slots are the fix, because a record's
+   values then sit together behind one pointer. (c.0) itself, `for` walking
+   a shared array by index (`Items`) instead of copying it first: 385 to
+   335 µs for the walk, nothing measurable on `sum`. A write to the list
+   inside the loop copies it once, at the first write, as a copy-on-write
+   value does, so the loop still walks what it started with.
+
+   (c.1) and (c.2): `V::Rec(Rc<Record>)`, a `Record` being an
+   `Rc<Shape>` and the values in a `Box<[V]>`, and `rux_ir::shape::Shape`
+   the names in slot order, which of them are optional, and whether the
+   shape is closed. A `{ }` literal is lowered by its type
+   (`ExprKind::Record`, beside `ExprKind::Map`):
+   - its type a map (`{ [string]: T }`, `Map<string, T>`): a map, sorted,
+     as today;
+   - its type a declared record type (`type Item = …`, or one member of a
+     union such as a `Result` half): a record in the declared order, its
+     shape closed and shared (interned per thread), so a write of a field
+     the type does not declare fails with `kind` `"type"` even where
+     `any` let it past the checker;
+   - anything else (a record type written inline, a literal's own, `any`):
+     a record in that type's order or the order written, open, so a new
+     key makes it the map it always was.
+   The runtime's values are the one part not planned for: a record leaves
+   script as `rux_reactive::Value::Map` (ordered) for the template, and
+   comes back through `V::from_value` for a binding, a handler baked with
+   the row's literal, or a prop. It used to come back a sorted map, which
+   would have shown `{{ item }}` sorted. Now a runtime map comes back an
+   open record in the order it went out: a record keeps its type's order,
+   and a map, which went out sorted, stays sorted. Errors (`catch e`) are
+   records of `message` then `kind`, and `Ok`/`Err` of `ok` then `value`
+   or `error`, the order their types declare.
+
+   What an author sees change, checked by running corpus script 13 on the
+   commit before and diffing: a declared record shows in its type's order
+   (`type Pt = { y, x }` shows `y: 2, x: 1`, was `x: 1, y: 2`); an `Err`
+   shows `ok: false, error: no` (was `error: no, ok: false`); an optional
+   field never given can now be written (`p.label = "a"` failed with "no
+   `label`"); and **one change the decisions did not name: a `{ }` with no
+   declared type shows in the order written** (`{ b: 1, a: 2 }` shows `b:
+   1, a: 2`, was sorted). It follows from decision 2 (JavaScript shows a
+   literal as written) and is what keeps a record's order through a
+   baked handler, whose literal no type describes, but it is the owner's
+   to confirm. `crates/rux-script/tests/records.rs` holds each decided
+   behaviour; corpus script 13 holds them on both engines.
+
+   Release, µs per call, compiled code still reading fields by name:
+
+   | Call | Interpreted before | after | Compiled before | after |
+   |---|---|---|---|---|
+   | `sum(items)`, 10 000 records | 4026 | 2916 (1.4x faster) | 2609 | 1293 (2.0x faster) |
+   | `over(few, 40)`, filter of 2 000 | 835 | 817 | 463 | 398 (1.2x faster) |
+
+   Not done by these steps, and why: a native record coming back from
+   Rust arrives as a keyed map with no order (`rux_native::Any::Map`), so
+   it stays a sorted map until the bridge carries its declared order;
+   `dict()` in script 13 showed that `m["c"] = 3`, a new key written into
+   a map, fails with "there is no `c`" (before this change too: watchlist
+   40).
+
 Steps 2 to 5 change nothing an author sees except the decided syntax and
 types, which is what made them safe to take in order.
 

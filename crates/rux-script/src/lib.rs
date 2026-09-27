@@ -2833,7 +2833,8 @@ mod tests {
         let mut e = engine();
         assert_eq!(e.eval_value("null", &[]), Some(Value::Null));
         let row = e.eval_value("{ title: \"a\", note: null }", &[]).unwrap();
-        assert_eq!(row, Value::Map(vec![("note".into(), Value::Null), ("title".into(), Value::Text("a".into()))]));
+        // A record nothing declared keeps its fields in the order written.
+        assert_eq!(row, Value::Map(vec![("title".into(), Value::Text("a".into())), ("note".into(), Value::Null)]));
         let locals = [("row".to_string(), row.clone())];
         assert_eq!(e.eval_value("row?.note ?? \"none\"", &locals), Some(Value::Text("none".into())));
         let baked = format!("let row = {}; row.note == null", row.to_rhai_literal());

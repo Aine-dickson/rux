@@ -6,11 +6,18 @@
 //!
 //! A map keeps its keys sorted, which is the order the fork gave them and the
 //! order `keys(m)`, a `:style` map and a displayed map have always had.
+//!
+//! A record keeps its fields in slots, in the order its type declares them,
+//! with a [`Shape`] saying which name is in which slot (step 10, track (c)).
+//! That is the order it is shown and walked in. An optional field never
+//! given holds `none`, and is left out where the record is shown or walked,
+//! as JavaScript's `JSON.stringify` leaves out `undefined`.
 
 use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use rux_ir::ir;
+pub use rux_ir::shape::Shape;
 use rux_reactive::Value;
 
 use crate::validate::Checkable;
@@ -25,12 +32,53 @@ pub enum V {
     Str(Rc<str>),
     Array(Rc<Vec<V>>),
     Map(Rc<BTreeMap<String, V>>),
+    /// A record: its shape and its fields' values, in slots.
+    Rec(Rc<Record>),
     /// `a..b` or `a..=b` kept as a value, end exclusive.
     Range(i64, i64),
     Fn(Rc<Closure>),
     Element(Rc<ElementHandle>),
     /// A native resource, held for Rust: step 8 of `docs/11-next.md`.
     Native(rux_native::Handle),
+}
+
+/// A record's shape and the values in its slots, behind one `Rc`, so the
+/// shape's pointer sits beside the slots' own.
+#[derive(Clone, Debug)]
+pub struct Record {
+    pub shape: Rc<Shape>,
+    pub vals: Box<[V]>,
+}
+
+impl Record {
+    /// The value of field `name`: `None` when the shape has no such field.
+    #[inline]
+    pub fn get(&self, name: &str) -> Option<&V> {
+        self.shape.slot(name).map(|i| &self.vals[i])
+    }
+
+    /// Whether slot `i` is shown and walked: every field but an optional
+    /// one holding `none`.
+    #[inline]
+    pub fn shows(&self, i: usize) -> bool {
+        !(matches!(self.vals[i], V::None) && self.shape.optional(i))
+    }
+
+    /// The fields shown and walked, in slot order.
+    pub fn entries(&self) -> impl Iterator<Item = (&str, &V)> {
+        self.shape
+            .names()
+            .iter()
+            .zip(self.vals.iter())
+            .enumerate()
+            .filter(|(i, _)| self.shows(*i))
+            .map(|(_, (k, v))| (&**k, v))
+    }
+
+    /// Whether `name` is one of the fields shown: what `in` asks.
+    pub fn has(&self, name: &str) -> bool {
+        self.shape.slot(name).is_some_and(|i| self.shows(i))
+    }
 }
 
 /// A closure value: its code and what it captured, by value.
@@ -113,7 +161,8 @@ impl V {
             V::Float(_) => "f64",
             V::Str(_) => "string",
             V::Array(_) => "array",
-            V::Map(_) => "map",
+            // A record is named as a map was, so a failure's words stay.
+            V::Map(_) | V::Rec(_) => "map",
             V::Range(..) => "range",
             V::Fn(_) => "Fn",
             V::Element(_) => "Element",
@@ -131,6 +180,7 @@ impl V {
             V::Str(s) => Value::Text(s.to_string()),
             V::Array(items) => Value::List(items.iter().map(V::to_value).collect()),
             V::Map(m) => Value::Map(m.iter().map(|(k, v)| (k.clone(), v.to_value())).collect()),
+            V::Rec(r) => Value::Map(r.entries().map(|(k, v)| (k.to_string(), v.to_value())).collect()),
             V::Range(a, b) => Value::List((*a..*b).map(|i| Value::Number(i as f64)).collect()),
             V::Fn(_) => Value::Text("Fn(<closure>)".to_string()),
             V::Element(e) => Value::Text(format!("Element({})", e.facts.tag)),
@@ -141,7 +191,10 @@ impl V {
     }
 
     /// A value from the runtime. Its numbers are all `f64`, and come in as
-    /// `float`s, which is what the fork made of them too.
+    /// `float`s, which is what the fork made of them too. Its maps come in as
+    /// open records, keeping their order: a record the runtime was handed
+    /// comes back in its type's order, and a map in the sorted order it went
+    /// out in (a new key makes one a map again).
     pub fn from_value(v: &Value) -> V {
         match v {
             Value::Null => V::None,
@@ -149,7 +202,26 @@ impl V {
             Value::Number(n) => V::Float(*n),
             Value::Text(s) => V::str(s.as_str()),
             Value::List(items) => V::array(items.iter().map(V::from_value).collect()),
-            Value::Map(entries) => V::Map(Rc::new(entries.iter().map(|(k, v)| (k.clone(), V::from_value(v))).collect())),
+            Value::Map(entries) => {
+                let shape = Shape::open(entries.iter().map(|(k, _)| k.as_str()));
+                // A name twice: a map, the later entry replacing the earlier.
+                if entries.iter().enumerate().any(|(i, (k, _))| shape.slot(k) != Some(i)) {
+                    return V::Map(Rc::new(entries.iter().map(|(k, v)| (k.clone(), V::from_value(v))).collect()));
+                }
+                let vals = entries.iter().map(|(_, v)| V::from_value(v)).collect();
+                V::Rec(Rc::new(Record { shape, vals }))
+            }
+        }
+    }
+
+    /// Field `name` of a map or a record, as a read finds it: `None` where
+    /// there is none. An optional field never given is there, holding `none`.
+    #[inline]
+    pub fn field_of(&self, name: &str) -> Option<&V> {
+        match self {
+            V::Rec(r) => r.get(name),
+            V::Map(m) => m.get(name),
+            _ => None,
         }
     }
 }
@@ -166,6 +238,16 @@ impl PartialEq for V {
             (V::Str(a), V::Str(b)) => a == b,
             (V::Array(a), V::Array(b)) => Rc::ptr_eq(a, b) || a == b,
             (V::Map(a), V::Map(b)) => Rc::ptr_eq(a, b) || a == b,
+            // By field name, whatever the order: two records with the same
+            // fields written in different orders are equal, and a record is
+            // equal to a map of the same entries.
+            (V::Rec(a), V::Rec(b)) if Rc::ptr_eq(&a.shape, &b.shape) => Rc::ptr_eq(a, b) || a.vals == b.vals,
+            (V::Rec(a), V::Rec(b)) => {
+                a.entries().count() == b.entries().count() && a.entries().all(|(k, v)| b.has(k) && b.get(k) == Some(v))
+            }
+            (V::Rec(r), V::Map(m)) | (V::Map(m), V::Rec(r)) => {
+                r.entries().count() == m.len() && r.entries().all(|(k, v)| m.get(k) == Some(v))
+            }
             (V::Range(a, b), V::Range(c, d)) => a == c && b == d,
             (V::Fn(a), V::Fn(b)) => Rc::ptr_eq(a, b),
             (V::Element(a), V::Element(b)) => a.facts.path == b.facts.path,
@@ -206,6 +288,7 @@ impl Checkable for V {
     fn all_entries(&self, f: &mut dyn FnMut(&str, &Self) -> bool) -> Option<bool> {
         match self {
             V::Map(m) => Some(m.iter().all(|(k, v)| f(k, v))),
+            V::Rec(r) => Some(r.entries().all(|(k, v)| f(k, v))),
             _ => None,
         }
     }
@@ -218,6 +301,8 @@ impl Checkable for V {
     fn with_field(&self, name: &str, f: &mut dyn FnMut(Option<&Self>) -> bool) -> Option<bool> {
         match self {
             V::Map(m) => Some(f(m.get(name))),
+            // An optional field holding `none` is as good as absent.
+            V::Rec(r) => Some(f(r.shape.slot(name).filter(|i| r.shows(*i)).map(|i| &r.vals[i]))),
             _ => None,
         }
     }

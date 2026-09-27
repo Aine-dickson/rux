@@ -14,6 +14,7 @@
 
 pub mod ir;
 pub mod print;
+pub mod shape;
 pub mod table;
 pub mod types;
 pub mod verify;

@@ -243,6 +243,12 @@ impl<'u> Printer<'u> {
                 let entries: Vec<String> = entries.iter().map(|(k, v)| format!("{k}: {}", self.expr(v))).collect();
                 typed(format!("{{{}}}", entries.join(", ")))
             }
+            ExprKind::Record(shape, entries) => {
+                let entries: Vec<String> =
+                    entries.iter().map(|(k, v)| format!("{}: {}", shape.names()[*k as usize], self.expr(v))).collect();
+                let open = if shape.is_closed() { "" } else { "open " };
+                typed(format!("{open}record {{{}}}", entries.join(", ")))
+            }
             ExprKind::Local(id) => typed(self.local(*id)),
             ExprKind::Capture(i) => typed(format!("^{i}")),
             ExprKind::Global(g) => typed(self.root(Root::Global(*g))),

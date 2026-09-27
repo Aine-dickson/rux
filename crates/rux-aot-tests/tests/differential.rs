@@ -99,7 +99,7 @@ fn coverage() {
 #[test]
 fn typed_bodies_are_written() {
     let typed = |i: usize| COVERAGE.iter().find(|c| c.0 == i).map(|c| (c.1, c.4)).expect("script");
-    let (functions, n) = typed(CORPUS.len() - 1);
+    let (functions, n) = typed(12);
     assert_eq!(n, functions - 3, "the typed script: {n} of {functions} typed");
     // `fib`, `big`, `forever`, `half`, `deep`: all numbers.
     assert_eq!(typed(0).1, 5);
@@ -107,6 +107,9 @@ fn typed_bodies_are_written() {
     assert_eq!(typed(1).1, 0);
     assert_eq!(typed(4).1, 0);
 }
+
+/// The corpus script of records, whose `fill()` makes the lists it walks.
+const RECORDS: usize = 13;
 
 /// What compiling buys, release only (`--ignored`): the same calls on both
 /// engines, microseconds per call.
@@ -144,6 +147,11 @@ fn cost() {
         (12, "powi(3, 34)", 200000),
         (12, "powi(2, 10)", 200000),
         (12, "powers(10000)", 20),
+        // Records (track (c)): the script-cost apps' work, after `fill()`.
+        (RECORDS, "sum(items)", 20),
+        (RECORDS, "over(few, 40)", 200),
+        (RECORDS, "one().name", 20000),
+        (RECORDS, "bumped()", 20000),
     ];
     // Times per call, and how many times faster compiled is: 3.6x faster
     // means compiled takes a 3.6th of the interpreter's time.
@@ -157,6 +165,9 @@ fn cost() {
         // busy for a moment then slows one round, not one engine.
         let mut took = [f64::MAX; 2];
         for e in engines.iter_mut() {
+            if *i == RECORDS {
+                run(e, "!fill()");
+            }
             run(e, what);
         }
         for _round in 0..7 {

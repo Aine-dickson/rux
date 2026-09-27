@@ -5,7 +5,6 @@
 //! the fork kept them (`len`, `contains`, `index_of`). Both spellings stay
 //! until `docs/11-next.md`'s "Names that change" retires one.
 
-use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use super::value::V;
@@ -112,8 +111,34 @@ pub(super) fn element_field(el: &ElementHandle, name: &str) -> R<V> {
     })
 }
 
-fn map_of(entries: impl IntoIterator<Item = (&'static str, V)>) -> V {
-    V::Map(Rc::new(entries.into_iter().map(|(k, v)| (k.to_string(), v)).collect::<BTreeMap<_, _>>()))
+/// A `Result` half, `{ ok, value }` or `{ ok, error }`, as a record in the
+/// order its type declares.
+fn result_of(ok: bool, v: V) -> V {
+    thread_local! {
+        static SHAPES: [Rc<super::value::Shape>; 2] = {
+            let field = |name: &str| rux_ir::types::Field { name: name.into(), optional: false, ty: rux_ir::types::Type::Any };
+            [super::value::Shape::closed(&[field("ok"), field("error")]), super::value::Shape::closed(&[field("ok"), field("value")])]
+        };
+    }
+    let shape = SHAPES.with(|s| Rc::clone(&s[ok as usize]));
+    V::Rec(Rc::new(super::value::Record { shape, vals: vec![V::Bool(ok), v].into_boxed_slice() }))
+}
+
+/// `unwrap()` on a `Result`, a map or a record.
+fn unwrap_result(r: &V) -> R<V> {
+    match r.field_of("ok") {
+        Some(V::Bool(true)) => Ok(r.field_of("value").cloned().unwrap_or(V::None)),
+        Some(V::Bool(false)) => {
+            let error = r.field_of("error").map(V::display).unwrap_or_default();
+            Err(Flow::Fault(super::Fault {
+                message: format!("unwrap() on an error: {error}"),
+                kind: "unwrap",
+                thrown: None,
+                at: None,
+            }))
+        }
+        _ => fail("unwrap() is for a `Result`, made by `Ok(…)` or `Err(…)`"),
+    }
 }
 
 impl Interp {
@@ -161,6 +186,7 @@ impl Interp {
                 let name = text(&argv[0])?;
                 let values: Vec<(String, rux_reactive::Value)> = match argv.get(1) {
                     Some(V::Map(m)) => m.iter().map(|(k, v)| (k.clone(), v.to_value())).collect(),
+                    Some(V::Rec(r)) => r.entries().map(|(k, v)| (k.to_string(), v.to_value())).collect(),
                     Some(other) => return fail(format!("path_for takes a map of values, not a {}", other.type_name())),
                     None => Vec::new(),
                 };
@@ -195,8 +221,8 @@ impl Interp {
                 crate::TIMER_REQUESTS.with(|t| t.borrow_mut().push(crate::TimerRequest::Cancel(id)));
                 V::None
             }
-            ("Ok", 1) => map_of([("ok", V::Bool(true)), ("value", argv.into_iter().next().unwrap_or(V::None))]),
-            ("Err", 1) => map_of([("ok", V::Bool(false)), ("error", argv.into_iter().next().unwrap_or(V::None))]),
+            ("Ok", 1) => result_of(true, argv.into_iter().next().unwrap_or(V::None)),
+            ("Err", 1) => result_of(false, argv.into_iter().next().unwrap_or(V::None)),
             ("Number", 1) => match &argv[0] {
                 V::Str(s) => V::Float(crate::js_number(s)),
                 V::Bool(b) => V::Float(if *b { 1.0 } else { 0.0 }),
@@ -289,10 +315,12 @@ impl Interp {
             ("log", 2) => V::Float(number(&argv[0])?.log(number(&argv[1])?)),
             ("keys", 1) => match &argv[0] {
                 V::Map(m) => V::array(m.keys().map(|k| V::str(k.as_str())).collect()),
+                V::Rec(r) => V::array(r.entries().map(|(k, _)| V::str(k)).collect()),
                 other => return fail(format!("Function not found: keys ({})", other.type_name())),
             },
             ("values", 1) => match &argv[0] {
                 V::Map(m) => V::array(m.values().cloned().collect()),
+                V::Rec(r) => V::array(r.entries().map(|(_, v)| v.clone()).collect()),
                 other => return fail(format!("Function not found: values ({})", other.type_name())),
             },
             ("range", 2) => match (argv[0].whole(), argv[1].whole()) {
@@ -717,19 +745,44 @@ impl Interp {
                     V::None
                 }
                 ("to_string", 0) => V::str(recv.display()),
-                ("unwrap", 0) => match m.get("ok") {
-                    Some(V::Bool(true)) => m.get("value").cloned().unwrap_or(V::None),
-                    Some(V::Bool(false)) => {
-                        let error = m.get("error").map(V::display).unwrap_or_default();
-                        return Err(Flow::Fault(super::Fault {
-                            message: format!("unwrap() on an error: {error}"),
-                            kind: "unwrap",
-                            thrown: None,
-                            at: None,
-                        }));
+                ("unwrap", 0) => unwrap_result(recv)?,
+                _ => return Ok(None),
+            },
+            V::Rec(r) => match (name, n) {
+                ("keys", 0) => V::array(r.entries().map(|(k, _)| V::str(k)).collect()),
+                ("values", 0) => V::array(r.entries().map(|(_, v)| v.clone()).collect()),
+                ("len", 0) => V::Int(r.entries().count() as i64),
+                ("is_empty", 0) => V::Bool(r.entries().next().is_none()),
+                ("contains", 1) => V::Bool(r.has(text(&argv[0])?.as_ref())),
+                ("get", 1) => r.get(text(&argv[0])?.as_ref()).cloned().unwrap_or(V::None),
+                ("to_string", 0) => V::str(recv.display()),
+                ("unwrap", 0) => unwrap_result(recv)?,
+                ("set", 2) => {
+                    let key = text(&argv[0])?;
+                    match r.shape.slot(&key) {
+                        Some(i) => Rc::make_mut(r).vals[i] = argv[1].clone(),
+                        None if r.shape.is_closed() => return super::undeclared(&key),
+                        None => {
+                            *recv = V::Map(Rc::new(super::record_map(r)));
+                            return self.method(recv, name, argv);
+                        }
                     }
-                    _ => return fail("unwrap() is for a `Result`, made by `Ok(…)` or `Err(…)`"),
-                },
+                    V::None
+                }
+                // A declared type's record keeps its fields; one nothing
+                // declared becomes the map it was.
+                ("remove", 1) | ("clear", 0) if r.shape.is_closed() => {
+                    return Err(Flow::Fault(super::Fault {
+                        message: format!("cannot {name} a field of a record: its type fixes its fields"),
+                        kind: "type",
+                        thrown: None,
+                        at: None,
+                    }))
+                }
+                ("remove", 1) | ("clear", 0) => {
+                    *recv = V::Map(Rc::new(super::record_map(r)));
+                    return self.method(recv, name, argv);
+                }
                 _ => return Ok(None),
             },
             V::Range(a, b) => match (name, n) {

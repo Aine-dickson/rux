@@ -134,7 +134,12 @@ pub fn method(on: &str, name: &str) -> Option<NativeMethod> {
 pub fn method_for_value(v: &V, name: &str) -> Option<String> {
     match v {
         V::Native(h) => method(h.type_name(), name).map(|m| m.key),
-        V::Map(fields) => {
+        V::Map(_) | V::Rec(_) => {
+            let has = |name: &str| match v {
+                V::Map(m) => m.contains_key(name),
+                V::Rec(r) => r.has(name),
+                _ => false,
+            };
             let mut found = Vec::new();
             for i in registry::all() {
                 let records: Vec<(&str, &Vec<rux_native::FieldSig>)> = i
@@ -153,7 +158,7 @@ pub fn method_for_value(v: &V, name: &str) -> Option<String> {
                     let fits = records
                         .iter()
                         .find(|(n, _)| n == on)
-                        .is_some_and(|(_, fs)| fs.iter().all(|f| f.optional || fields.contains_key(&f.name)));
+                        .is_some_and(|(_, fs)| fs.iter().all(|f| f.optional || has(&f.name)));
                     if fits {
                         found.push(format!("{}::{on}.{name}", i.rux_name()));
                     }
@@ -214,6 +219,7 @@ pub fn to_any(v: &V) -> Any {
         V::Str(s) => Any::Str(s.to_string()),
         V::Array(items) => Any::Array(items.iter().map(to_any).collect()),
         V::Map(m) => Any::Map(m.iter().map(|(k, v)| (k.clone(), to_any(v))).collect()),
+        V::Rec(r) => Any::Map(r.entries().map(|(k, v)| (k.to_string(), to_any(v))).collect()),
         V::Range(a, b) => Any::Array((*a..*b).map(Any::Int).collect()),
         V::Native(h) => Any::Resource(h.clone()),
         // Nothing Rust could use: a closure runs only in the interpreter,
@@ -238,8 +244,5 @@ pub fn from_any(a: Any) -> V {
 
 /// A native error as the value `catch e` gives: `{ message, kind }`.
 pub fn error_value(e: &Error) -> V {
-    let mut m = BTreeMap::new();
-    m.insert("message".to_string(), V::str(e.message.as_str()));
-    m.insert("kind".to_string(), V::str(e.kind.as_str()));
-    V::Map(Rc::new(m))
+    crate::interp::error_record(V::str(e.message.as_str()), V::str(e.kind.as_str()))
 }

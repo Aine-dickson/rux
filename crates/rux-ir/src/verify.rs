@@ -263,6 +263,11 @@ impl<'u> Verifier<'u> {
                     self.expr(v);
                 }
             }
+            ExprKind::Record(_, entries) => {
+                for (_, v) in entries {
+                    self.expr(v);
+                }
+            }
             ExprKind::Local(id) => {
                 if let Some(ty) = self.local_ty(*id, Some(e)).cloned() {
                     self.fits("a read of a local", e, &ty);

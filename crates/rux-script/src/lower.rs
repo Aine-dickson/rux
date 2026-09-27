@@ -578,6 +578,54 @@ impl<'a> Lower<'a> {
         self.table.resolve(t)
     }
 
+    /// What a `{ }` literal of type `ty` with `keys` is (step 10, track
+    /// (c)): `None`, a map, when its type is one (`{ [string]: T }`,
+    /// `Map<string, T>`); a record of the type's shape when its type is a
+    /// record with those keys, or one member of a union is, closed when a
+    /// declaration names that type (`type Item = …`); any other literal (no
+    /// type says what it is) an open record of the keys as written.
+    fn record_shape(&self, ty: &Type, keys: &[&str]) -> Option<std::rc::Rc<rux_ir::shape::Shape>> {
+        use rux_ir::shape::Shape;
+        let fits = |fields: &[rux_ir::types::Field]| {
+            keys.iter().all(|k| fields.iter().any(|f| f.name == *k))
+                && fields.iter().all(|f| f.optional || keys.contains(&f.name.as_str()))
+        };
+        let open = || Shape::open(keys.iter().copied());
+        // A name written twice: the interpreter's map, the later replacing.
+        if keys.iter().enumerate().any(|(i, k)| keys[..i].contains(k)) {
+            return None;
+        }
+        let named = |t: &Type| matches!(t, Type::Named(_) | Type::Generic(..));
+        let shape = |fields: &[rux_ir::types::Field], declared: bool| {
+            if declared {
+                Shape::closed(fields)
+            } else {
+                Shape::open_typed(fields)
+            }
+        };
+        match self.resolved(ty) {
+            Type::Dict(_) => None,
+            Type::Record(fields) if fits(&fields) => Some(shape(&fields, named(ty))),
+            Type::Union(members) => {
+                let members: Vec<(bool, Type)> = members.iter().map(|m| (named(m), self.resolved(m))).collect();
+                let records: Vec<(bool, &Vec<rux_ir::types::Field>)> = members
+                    .iter()
+                    .filter_map(|(declared, m)| match m {
+                        Type::Record(fields) if fits(fields) => Some((*declared, fields)),
+                        _ => None,
+                    })
+                    .collect();
+                match records[..] {
+                    // A `Result` half is a record of a declared type.
+                    [(declared, fields)] => Some(shape(fields, declared || named(ty))),
+                    [] if members.iter().any(|(_, m)| matches!(m, Type::Dict(_))) => None,
+                    _ => Some(open()),
+                }
+            }
+            _ => Some(open()),
+        }
+    }
+
     /// `x` made to fit `want`: an `int` widened where only a `float` will do,
     /// an `any` checked where something known is wanted.
     fn convert(&self, x: ir::Expr, want: Option<&Type>) -> ir::Expr {
@@ -892,7 +940,17 @@ impl<'a> Lower<'a> {
             }
             E::Array(items) => ExprKind::Array(items.iter().map(|i| self.expr(i)).collect()),
             E::Map { entries, .. } => {
-                ExprKind::Map(entries.iter().map(|en| (en.key.name.clone(), self.expr(&en.value))).collect())
+                let keys: Vec<&str> = entries.iter().map(|en| en.key.name.as_str()).collect();
+                match self.record_shape(&ty, &keys) {
+                    Some(shape) => {
+                        let fields = entries
+                            .iter()
+                            .map(|en| (shape.slot(&en.key.name).expect("the shape has every key") as u32, self.expr(&en.value)))
+                            .collect();
+                        ExprKind::Record(shape, fields)
+                    }
+                    None => ExprKind::Map(entries.iter().map(|en| (en.key.name.clone(), self.expr(&en.value))).collect()),
+                }
             }
             E::Var(name) => match self.resolve(name) {
                 Some(Root::Local(id)) => ExprKind::Local(id),

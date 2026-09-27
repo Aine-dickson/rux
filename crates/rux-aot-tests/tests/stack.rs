@@ -31,7 +31,7 @@ fn reached_typed(interpreted: bool) -> i64 {
     if interpreted {
         b.interpreted();
     }
-    let mut e = b.build(CORPUS[CORPUS.len() - 1].0).expect("builds");
+    let mut e = b.build(CORPUS[12].0).expect("builds");
     let (mut lo, mut hi) = (1i64, 1 << 20);
     while lo + 1 < hi {
         let mid = (lo + hi) / 2;

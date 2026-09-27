@@ -747,6 +747,17 @@ ids are numbers: `tasks.find(t => t.id == parseInt(params.id))`.
 no `length` on a plain object, and inventing one for maps would be making up a
 rule rather than matching a known one. Use `keys(m)` and `values(m)` for maps.
 
+**A record keeps its fields in the order its type declares them.** `${item}`,
+`{{ item }}`, `keys(item)` and `values(item)` go in that order, as JavaScript,
+Dart and Kotlin show an object, and a `{ }` that no type describes keeps the
+order it was written in. A map (`{ [string]: T }`) keeps its keys sorted. An
+optional field never given reads as `none` (`bob.pet`, on a `User` made
+without a `pet`), and a field its type marks optional is left out where the
+record is shown or walked while it holds `none`, so `${bob}` is `name: bob`.
+Writing a field a declared record type does not have is an error the checker
+reports; reached anyway, through `any`, it throws with `kind` `"type"`. Two
+records are equal when their fields are, whatever order they were written in.
+
 ## Talking to the outside
 
 | Call | Does |

@@ -278,7 +278,7 @@ impl Interp {
                 Op::EachStart { iter, list, idx, .. } => match self.in_frame(&mut top.frame, |me| me.expr(iter)) {
                     Ok(over) => match super::items_of(over) {
                         Ok(items) => {
-                            top.set(*list, V::array(items));
+                            top.set(*list, items.into_array());
                             top.set(*idx, V::Int(0));
                             Ok(())
                         }

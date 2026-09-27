@@ -723,14 +723,14 @@ impl Interp {
     }
 
     /// What `for x in over` walks, item by item.
-    pub(crate) fn items_pub(over: V) -> R<Vec<V>> {
+    pub(crate) fn items_pub(over: V) -> R<Items> {
         items_of(over)
     }
 
     /// `throw v`, as the interpreter throws it.
     pub(crate) fn thrown_pub(v: V) -> Flow {
         let message = match &v {
-            V::Map(m) => m.get("message").map(V::display).unwrap_or_else(|| v.display()),
+            V::Map(_) | V::Rec(_) => v.field_of("message").map(V::display).unwrap_or_else(|| v.display()),
             other => other.display(),
         };
         Flow::Fault(Fault { message, kind: "error", thrown: Some(v), at: None })
@@ -927,7 +927,7 @@ impl Interp {
             StmtKind::Throw(v) => {
                 let v = self.expr(v)?;
                 let message = match &v {
-                    V::Map(m) => m.get("message").map(V::display).unwrap_or_else(|| v.display()),
+                    V::Map(_) | V::Rec(_) => v.field_of("message").map(V::display).unwrap_or_else(|| v.display()),
                     other => other.display(),
                 };
                 return Err(Flow::Fault(Fault { message, kind: "error", thrown: Some(v), at: None }));
@@ -974,7 +974,7 @@ impl Interp {
     /// The value `v` written at `root` and `keys`, applying `op` to what is
     /// there first.
     fn assign_value(&mut self, root: ir::Root, keys: &[Key], op: Option<BinOp>, v: V) -> R<()> {
-        let target = self.take(root, keys)?;
+        let target = self.take(root, keys, true)?;
         match self.combine(op, target, v) {
             Ok(v) => self.put(root, keys, v),
             Err((e, target)) => {
@@ -1013,7 +1013,10 @@ impl Interp {
     /// nothing tracks, so only the walk and the write are the interpreter's.
     pub(crate) fn assign_in(&mut self, target: &mut V, keys: &[Key], op: Option<BinOp>, v: V) -> R<()> {
         let mut here = target;
-        for k in keys {
+        for (i, k) in keys.iter().enumerate() {
+            if i + 1 == keys.len() {
+                undeclared_write(here, k)?;
+            }
             here = step_mut(here, k, false)?;
         }
         let old = std::mem::replace(here, V::None);
@@ -1033,7 +1036,7 @@ impl Interp {
     /// compiled code: as [`Interp::step`] does it once the keys and
     /// arguments are worked out.
     pub(crate) fn method_at(&mut self, root: ir::Root, keys: &[Key], name: &str, argv: Vec<V>) -> R<V> {
-        let mut target = self.take(root, keys)?;
+        let mut target = self.take(root, keys, false)?;
         let out = self.method_mut(&mut target, name, argv);
         self.put(root, keys, target)?;
         out
@@ -1152,7 +1155,7 @@ impl Interp {
 
     /// The value at a place, taken out of it: the place holds `none` until
     /// [`Interp::put`] gives it back.
-    fn take(&mut self, root: ir::Root, keys: &[Key]) -> R<V> {
+    fn take(&mut self, root: ir::Root, keys: &[Key], writing: bool) -> R<V> {
         let slot = self.locate(root)?;
         self.note_written(root, slot);
         if let Slot::Global(g) = slot {
@@ -1162,7 +1165,10 @@ impl Interp {
             self.wrote(g);
         }
         let mut here = self.slot_mut(slot);
-        for k in keys {
+        for (i, k) in keys.iter().enumerate() {
+            if writing && i + 1 == keys.len() {
+                undeclared_write(here, k)?;
+            }
             here = step_mut(here, k, false)?;
         }
         Ok(std::mem::replace(here, V::None))
@@ -1315,6 +1321,13 @@ impl Interp {
                 }
                 V::Map(Rc::new(m))
             }
+            ExprKind::Record(shape, entries) => {
+                let mut vals = vec![V::None; shape.len()];
+                for (slot, v) in entries {
+                    vals[*slot as usize] = self.expr(v)?;
+                }
+                V::Rec(Rc::new(value::Record { shape: Rc::clone(shape), vals: vals.into_boxed_slice() }))
+            }
             ExprKind::Outer(n) => {
                 let slot = self.outer(*n)?;
                 if let Slot::Local(..) = slot {
@@ -1425,7 +1438,7 @@ impl Interp {
                         for a in args {
                             argv.push(self.expr(a)?);
                         }
-                        let mut target = self.take(root, &keys)?;
+                        let mut target = self.take(root, &keys, false)?;
                         let out = self.method_mut(&mut target, &method.name, argv);
                         self.put(root, &keys, target)?;
                         return out.map(Some);
@@ -1672,13 +1685,57 @@ pub enum Key {
     Index(V),
 }
 
+/// What `for` walks, item by item. An array is walked where it is, by
+/// index, and kept alive by the walk: a write to it inside the loop copies
+/// it first (it is shared), so the loop still walks what it started with,
+/// as it did when the walk began with a copy of the whole array.
+pub enum Items {
+    Shared(Rc<Vec<V>>, usize),
+    Owned(std::vec::IntoIter<V>),
+    Range(i64, i64),
+}
+
+impl Iterator for Items {
+    type Item = V;
+
+    #[inline]
+    fn next(&mut self) -> Option<V> {
+        match self {
+            Items::Shared(items, i) => {
+                let v = items.get(*i)?.clone();
+                *i += 1;
+                Some(v)
+            }
+            Items::Owned(it) => it.next(),
+            Items::Range(a, b) => {
+                if a >= b {
+                    return None;
+                }
+                *a += 1;
+                Some(V::Int(*a - 1))
+            }
+        }
+    }
+}
+
+impl Items {
+    /// The items as one array, for a resumable `for`, which keeps it in a
+    /// slot of its frame.
+    fn into_array(self) -> V {
+        match self {
+            Items::Shared(items, 0) => V::Array(items),
+            other => V::array(other.collect()),
+        }
+    }
+}
+
 /// What `for` walks in `over`, item by item.
-fn items_of(over: V) -> R<Vec<V>> {
+fn items_of(over: V) -> R<Items> {
     Ok(match over {
-        V::Array(items) => items.as_ref().clone(),
-        V::Str(s) => s.chars().map(|c| V::str(c.to_string())).collect(),
-        V::Range(a, b) => (a..b).map(V::Int).collect(),
-        V::Map(_) => return fail("a map cannot be walked with `for`; walk `keys(m)` or `values(m)`"),
+        V::Array(items) => Items::Shared(items, 0),
+        V::Str(s) => Items::Owned(s.chars().map(|c| V::str(c.to_string())).collect::<Vec<_>>().into_iter()),
+        V::Range(a, b) => Items::Range(a, b),
+        V::Map(_) | V::Rec(_) => return fail("a map cannot be walked with `for`; walk `keys(m)` or `values(m)`"),
         other => return fail(format!("`for` cannot walk a {}", other.type_name())),
     })
 }
@@ -1701,10 +1758,49 @@ pub(crate) fn native_fault(e: &rux_native::Error) -> Fault {
 
 /// The value an error is to `catch e`: `{ message, kind }`.
 fn error_value(f: &Fault) -> V {
-    let mut m = std::collections::BTreeMap::new();
-    m.insert("message".to_string(), V::str(crate::explain(&f.message)));
-    m.insert("kind".to_string(), V::str(f.kind));
-    V::Map(Rc::new(m))
+    error_record(V::str(crate::explain(&f.message)), V::str(f.kind))
+}
+
+/// An `Error`, `{ message: string, kind: string }`, as a record in that order.
+pub(crate) fn error_record(message: V, kind: V) -> V {
+    thread_local! {
+        static SHAPE: Rc<value::Shape> = value::Shape::closed(&[
+            rux_ir::types::Field { name: "message".into(), optional: false, ty: rux_ir::types::Type::String },
+            rux_ir::types::Field { name: "kind".into(), optional: false, ty: rux_ir::types::Type::String },
+        ]);
+    }
+    let shape = SHAPE.with(Rc::clone);
+    V::Rec(Rc::new(value::Record { shape, vals: vec![message, kind].into_boxed_slice() }))
+}
+
+/// A write of a field a record's type does not declare, which the checker
+/// refuses: at run time it fails too, with `kind` `"type"`.
+pub(crate) fn undeclared<T>(name: &str) -> R<T> {
+    Err(Flow::Fault(Fault {
+        message: format!("cannot write `{name}`: the record's type has no such field"),
+        kind: "type",
+        thrown: None,
+        at: None,
+    }))
+}
+
+/// A write of `k` into `here` that its record's type does not declare.
+fn undeclared_write(here: &V, k: &Key) -> R<()> {
+    let name = match k {
+        Key::Field(n) => n.as_str(),
+        Key::Index(V::Str(n)) => n,
+        Key::Index(_) => return Ok(()),
+    };
+    match here {
+        V::Rec(r) if r.shape.is_closed() && r.shape.slot(name).is_none() => undeclared(name),
+        _ => Ok(()),
+    }
+}
+
+/// A record's shown fields as a map, for what only a map does: a new key
+/// written into a record nothing declared, and `+`.
+pub(crate) fn record_map(r: &value::Record) -> std::collections::BTreeMap<String, V> {
+    r.entries().map(|(k, v)| (k.to_string(), v.clone())).collect()
 }
 
 fn overflow() -> Flow {
@@ -1719,7 +1815,29 @@ fn overflow() -> Flow {
 /// One step into a value for writing, copying what is shared. `create`
 /// lets a write make a map's missing key.
 fn step_mut<'v>(here: &'v mut V, k: &Key, create: bool) -> R<&'v mut V> {
+    // A record's field: its slot, or, for a new name, an error (a declared
+    // type's record) or a map made of it (one nothing declared).
+    let name = match k {
+        Key::Field(n) => Some(n.as_str()),
+        Key::Index(V::Str(n)) => Some(&**n),
+        Key::Index(_) => None,
+    };
+    if let (V::Rec(r), Some(name)) = (&*here, name) {
+        match r.shape.slot(name) {
+            Some(_) => {}
+            None if !create => return fail(format!("Property not found: {name}")),
+            None if r.shape.is_closed() => return undeclared(name),
+            None => {
+                let m = record_map(r);
+                *here = V::Map(Rc::new(m));
+            }
+        }
+    }
     match (here, k) {
+        (V::Rec(r), Key::Field(_) | Key::Index(V::Str(_))) => {
+            let i = r.shape.slot(name.expect("a name")).expect("found above");
+            Ok(&mut Rc::make_mut(r).vals[i])
+        }
         (V::Map(m), Key::Field(name)) => {
             let m = Rc::make_mut(m);
             if !m.contains_key(name) {
@@ -1774,6 +1892,11 @@ fn field(b: &V, name: &str, optional: bool) -> R<Option<V>> {
             None if optional => Ok(None),
             None => fail(format!("Property not found: {name}")),
         },
+        V::Rec(r) => match r.get(name) {
+            Some(v) => Ok(Some(v.clone())),
+            None if optional => Ok(None),
+            None => fail(format!("Property not found: {name}")),
+        },
         V::None if optional => Ok(None),
         V::Array(items) if name == "length" => Ok(Some(V::Int(items.len() as i64))),
         V::Str(s) if name == "length" => Ok(Some(V::Int(s.chars().count() as i64))),
@@ -1802,6 +1925,11 @@ fn index_of(b: &V, i: &V, optional: bool) -> R<Option<V>> {
             None if optional => Ok(None),
             None => fail(format!("Property not found: {k}")),
         },
+        (V::Rec(r), V::Str(k)) => match r.get(k) {
+            Some(v) => Ok(Some(v.clone())),
+            None if optional => Ok(None),
+            None => fail(format!("Property not found: {k}")),
+        },
         (V::Str(s), _) => {
             let chars: Vec<char> = s.chars().collect();
             match array_index(chars.len(), i) {
@@ -1819,6 +1947,7 @@ fn contains(hay: &V, needle: &V) -> R<bool> {
     Ok(match (hay, needle) {
         (V::Array(items), _) => items.iter().any(|x| x == needle),
         (V::Map(m), V::Str(k)) => m.contains_key(k.as_ref()),
+        (V::Rec(r), V::Str(k)) => r.has(k),
         (V::Str(s), V::Str(n)) => s.contains(n.as_ref()),
         (V::Range(a, b), n) => n.whole().is_some_and(|x| *a <= x && x < *b),
         (other, _) => return fail(format!("`in` cannot look inside a {}", other.type_name())),
@@ -1859,11 +1988,14 @@ fn dynamic(op: &str, a: V, b: V) -> R<V> {
                 out.extend(y.iter().cloned());
                 V::array(out)
             }
-            (V::Map(x), V::Map(y)) => {
-                let mut out = x.as_ref().clone();
-                for (k, v) in y.iter() {
-                    out.insert(k.clone(), v.clone());
-                }
+            (V::Map(_) | V::Rec(_), V::Map(_) | V::Rec(_)) => {
+                let as_map = |v: &V| match v {
+                    V::Map(m) => m.as_ref().clone(),
+                    V::Rec(r) => record_map(r),
+                    _ => unreachable!(),
+                };
+                let mut out = as_map(&a);
+                out.extend(as_map(&b));
                 V::Map(Rc::new(out))
             }
             _ => return no(&a, &b),
