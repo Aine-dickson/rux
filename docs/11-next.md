@@ -1580,6 +1580,15 @@ Float indexing narrows to what the types allow: an index is an `int`, and a
    fallback, or the owner makes it an error). `any` keeps working and
    keeps its dynamic speed, as Dart's `dynamic` does.
 
+   The second is decided (owner, 2026-09-27): **writing a field the type
+   does not declare is an error, and the checker tells the author.** It
+   already does for a typed record (`items[0].color = "red"` on an `Item`
+   without `color`: "`Item` has no field `color`"); what works today is
+   only what gets past the checker, in the interpreter, which warns and
+   runs on. Under a fixed layout that write fails when it runs too, with
+   `kind` `"type"`, as a wrong use of an `any` does. The first, the order
+   fields are shown and walked in, is still open.
+
    **Tracks, roughly by what each buys for what it costs.**
    - (a) Typed values in generated code: an expression whose type is
      `int`, `float` or `bool` becomes Rust's `i64`, `f64`, `bool`, and
@@ -1657,11 +1666,21 @@ Float indexing narrows to what the types allow: an index is an `int`, and a
    living behind `&mut Interp`, two dependent load-add-store rounds an
    iteration; keeping the budget in a local of the typed body and writing
    it back at calls, returns and failures (track (e)) is the next thing to
-   try. Found on the way, watchlist 39: `a ** b` of two `int`s lowers to a
-   float power in a function declared `: int`; the typed body refuses the
-   mismatch, so it costs speed, not correctness. Records (track (c)) are
-   untouched: the script-cost sum over records does not change, and (c)
-   still waits on the owner's two decisions.
+   try. Records (track (c)) are untouched: the script-cost sum over
+   records does not change.
+
+   `**` of two `int`s, looked at on the way (watchlist 39): it is an `int`
+   only when its right side is a whole number written out and not below
+   zero (`a ** 2`); with a name on the right (`a ** b`) the checker cannot
+   know the sign before it runs, so it is a `float`. That is the rule in
+   `check.rs` and `lower.rs`, Rux's own, not Rust's. `rux check` refuses
+   `fn powi(a: int, b: int): int { a ** b }` ("declared to return `int`,
+   and this is `float`"); the interpreter, which warns where a release
+   build refuses, runs it and gives a `float`. Corpus script 12 keeps
+   `powi` as a case of code the checker refused, which the typed body
+   declines too. Whether `int ** int` with a name on the right should be
+   an `int` (failing when the right turns out negative, as Rust's `pow`
+   cannot take one) is a question for the owner.
 
 Steps 2 to 5 change nothing an author sees except the decided syntax and
 types, which is what made them safe to take in order.

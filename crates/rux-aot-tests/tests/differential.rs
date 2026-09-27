@@ -93,10 +93,10 @@ fn coverage() {
 }
 
 /// Step 10: every function of the typed script has a typed body except
-/// `show`, which makes a string, and `powi`, whose `a ** b` the checker
-/// makes a `float` in a function declared `: int` (watchlist 39: the typed
-/// body refuses a kind the checker did not promise); and the untyped
-/// scripts none that could not be one.
+/// `show`, which makes a string, and `powi`, whose `a ** b` is a `float`
+/// (a name on the right: its sign is not known before it runs) in a
+/// function declared `: int`, which `rux check` refuses and the typed body
+/// declines too; and the untyped scripts none that could not be one.
 #[test]
 fn typed_bodies_are_written() {
     let typed = |i: usize| COVERAGE.iter().find(|c| c.0 == i).map(|c| (c.1, c.4)).expect("script");
