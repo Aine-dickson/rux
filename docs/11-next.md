@@ -1201,7 +1201,22 @@ Float indexing narrows to what the types allow: an index is an `int`, and a
      compiled too, and `async fn` bodies (their resumable form).
 
    Status 2026-09-27 (overnight, without the owner): 9.0, 9.1, 9.3 and 9.4
-   done in cd60009 and the commit after it; 9.5 compiles; 9.2 not started.
+   done in cd60009 and the commit after it; 9.5 compiles; 9.2 done in the
+   commit after that, as two things. Operators whose values turn out to be
+   two `int`s or two `float`s are done in Rust inline (an `int` overflow
+   falls back to the interpreter's operator, so its failure reads the
+   same). And a function none of whose statements is handed back runs
+   without an interpreter frame: its locals are Rust variables, and only
+   state, calls and the step budget go through `aot`. Such a call still
+   counts toward the depth limit. With both, release: `fib(18)` 0.28x of
+   the interpreter's time, a `for` over 10 000 0.32x, a small loop with
+   `continue` and `break` 0.32x, a handler writing three signals 0.58x,
+   and a function of handed-back statements unchanged. Proving it found a
+   defect older than step 9: in a debug build one script call costs about
+   35 KB of Rust stack, so 128 nested calls crashed the process instead of
+   failing (watchlist 35); the interpreter now also stops at 768 KB of
+   stack used, with the same error. What follows describes the state before
+   9.2.
    `rux-codegen` compiles control flow (`if`, `while`, ranges, `break`,
    `continue`, `return`), literals, locals, state reads and writes (`=` and
    `op=` on a name), operators, logic, `??`, templates and calls to the

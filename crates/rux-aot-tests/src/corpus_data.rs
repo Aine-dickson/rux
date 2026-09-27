@@ -12,8 +12,9 @@ pub const CORPUS: &[(&str, &[&str])] = &[
         "fn fib(n: int): int { if n < 2 { return n; } fib(n - 1) + fib(n - 2) }\n\
          fn big(): int { 9223372036854775807 + 1 }\n\
          fn forever(): int { let i = 0; while true { i += 1; } i }\n\
-         fn half(n: int): float { n / 2 }\n",
-        &["fib(0)", "fib(1)", "fib(15)", "big()", "half(7)", "fib(\"x\")"],
+         fn half(n: int): float { n / 2 }\n\
+         fn deep(n: int): int { deep(n + 1) }\n",
+        &["fib(0)", "fib(1)", "fib(15)", "big()", "half(7)", "fib(\"x\")", "deep(0)"],
     ),
     // State: reads, writes, `op=`, and what a handler changes.
     (

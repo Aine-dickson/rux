@@ -213,7 +213,7 @@ impl Interp {
                     match callee {
                         Callee::Fn(id) if self.unit.fns[id.0 as usize].is_async => {
                             if task.frames.len() >= MAX_DEPTH {
-                                let f = Fault::new(format!("Stack overflow: calls nested more than {MAX_DEPTH} deep"));
+                                let f = Fault::new(format!("Stack overflow: calls nested too deep (at most {MAX_DEPTH})"));
                                 input = Some(Resume::Fault(located(f, *at)));
                                 continue;
                             }

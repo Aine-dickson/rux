@@ -34,6 +34,20 @@ use crate::MAX_OPERATIONS;
 /// calls itself forever is an error and not a crash.
 const MAX_DEPTH: usize = 128;
 
+/// How much of Rust's stack a run may use, measured from where it began.
+/// The depth above is not enough on its own: a debug build's frames are
+/// large, and 128 of them overflowed a 2 MB thread (found 2026-09-27, while
+/// proving step 9), which is a crash, not an error. Windows gives a
+/// program's main thread 1 MB, and the window runs script on it. A debug
+/// build spends about 35 KB of it per script call, so there it stops near 20
+/// deep; a release build meets `MAX_DEPTH` first.
+const STACK_BUDGET: usize = 768 * 1024;
+
+/// What a run nested too deep is told, whichever limit it met.
+fn too_deep<T>() -> R<T> {
+    fail(format!("Stack overflow: calls nested too deep (at most {MAX_DEPTH})"))
+}
+
 /// Something that went wrong, or was thrown, while running.
 #[derive(Clone, Debug)]
 pub struct Fault {
@@ -116,7 +130,13 @@ pub struct Interp {
     natives: HashMap<String, rux_native::Call>,
     /// The unit's compiled functions, when a build registered them for its
     /// exact text: step 9 of `docs/11-next.md`, and [`crate::aot`].
-    aot: HashMap<u32, (u32, crate::aot::Body)>,
+    aot: HashMap<u32, (u32, bool, crate::aot::Body)>,
+    /// Compiled calls running without a frame, which count toward
+    /// [`MAX_DEPTH`] as frames do.
+    frameless: usize,
+    /// Where on Rust's stack the outermost call of the current run began:
+    /// what [`STACK_BUDGET`] is measured from.
+    stack_base: usize,
     pieces: HashMap<String, Rc<Compiled>>,
     stack: Vec<Frame>,
     roots: Vec<Root>,
@@ -163,6 +183,8 @@ impl Interp {
             by_name,
             natives: HashMap::new(),
             aot: HashMap::new(),
+            frameless: 0,
+            stack_base: 0,
             pieces: HashMap::new(),
             stack: Vec::new(),
             roots: Vec::new(),
@@ -484,9 +506,7 @@ impl Interp {
     }
 
     fn run_body(&mut self, body: &Body, args: Vec<V>, captures: Vec<V>) -> R<V> {
-        if self.stack.len() >= MAX_DEPTH {
-            return fail(format!("Stack overflow: calls nested more than {MAX_DEPTH} deep"));
-        }
+        self.deeper()?;
         let n = body.locals.len();
         let mut frame = Frame { slots: vec![V::None; n], set: vec![false; n], captures };
         for (i, a) in args.into_iter().enumerate().take(n) {
@@ -502,7 +522,7 @@ impl Interp {
     // ----- What compiled code calls: see `crate::aot` ------------------------
 
     /// Use `fns`, compiled for this unit's exact text, for its functions.
-    pub(crate) fn set_aot(&mut self, fns: HashMap<u32, (u32, crate::aot::Body)>) {
+    pub(crate) fn set_aot(&mut self, fns: HashMap<u32, (u32, bool, crate::aot::Body)>) {
         self.aot = fns;
     }
 
@@ -511,10 +531,48 @@ impl Interp {
         self.aot.len()
     }
 
-    pub(crate) fn push_frame(&mut self, n: usize, args: Vec<V>) -> R<()> {
-        if self.stack.len() >= MAX_DEPTH {
-            return fail(format!("Stack overflow: calls nested more than {MAX_DEPTH} deep"));
+    pub(crate) fn enter_call(&mut self) -> R<()> {
+        self.deeper()?;
+        self.frameless += 1;
+        Ok(())
+    }
+
+    /// Whether one more call may nest: under [`MAX_DEPTH`], and within
+    /// [`STACK_BUDGET`] of where the run began.
+    fn deeper(&mut self) -> R<()> {
+        let probe = 0u8;
+        let here = std::ptr::addr_of!(probe) as usize;
+        let depth = self.stack.len() + self.frameless;
+        // The outermost call of a run: a handler's or a binding's own frame
+        // is pushed without coming here, so its first call is at depth 1.
+        if depth <= 1 {
+            self.stack_base = here;
+            return Ok(());
         }
+        if depth >= MAX_DEPTH || self.stack_base.abs_diff(here) > STACK_BUDGET {
+            return too_deep();
+        }
+        Ok(())
+    }
+
+    pub(crate) fn leave_call(&mut self) {
+        self.frameless -= 1;
+    }
+
+    /// `target op v`, as an assignment with an operator works it out.
+    pub(crate) fn apply_pub(&mut self, op: BinOp, target: &V, v: V) -> R<V> {
+        match (op, target) {
+            (BinOp::Dyn("+") | BinOp::ConcatArray, V::Array(items)) if !matches!(v, V::Array(_)) => {
+                let mut items = Rc::clone(items);
+                Rc::make_mut(&mut items).push(v);
+                Ok(V::Array(items))
+            }
+            _ => self.binary(op, target.clone(), v),
+        }
+    }
+
+    pub(crate) fn push_frame(&mut self, n: usize, args: Vec<V>) -> R<()> {
+        self.deeper()?;
         let mut frame = Frame { slots: vec![V::None; n], set: vec![false; n], captures: Vec::new() };
         for (i, a) in args.into_iter().enumerate().take(n) {
             frame.slots[i] = a;
@@ -1160,8 +1218,8 @@ impl Interp {
         if flat::everything() {
             return self.call_flat(id, argv);
         }
-        if let Some((locals, body)) = self.aot.get(&id.0).copied() {
-            return crate::aot::run(self, locals, body, argv);
+        if let Some((locals, framed, body)) = self.aot.get(&id.0).copied() {
+            return crate::aot::run(self, locals, framed, body, argv);
         }
         match self.run_body(&f.body, argv, Vec::new()) {
             Ok(v) | Err(Flow::Return(v)) => Ok(v),
