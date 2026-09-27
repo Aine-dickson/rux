@@ -1306,6 +1306,51 @@ Float indexing narrows to what the types allow: an index is an `int`, and a
    it silently), and a browser launcher's process is not the browser, so
    stopping it leaves the old page for the next run to attach to.
 
+   9.6 done 2026-09-27: closure bodies are compiled. `rux_ir::ir::closures`
+   now numbers every closure a function creates at any depth, pre-order (a
+   closure before those its own body creates), one count per function;
+   the generator writes closure `k` of function `f` as `c{f}_{k}` and
+   registers it beside the functions (`aot::register(hash, FNS,
+   CLOSURES)`). The interpreter maps each closure's code, by address, to
+   its compiled body, and a closure value carries that body from the
+   moment it is made, so a call looks nothing up; a closure made by the
+   interpreter from the same code (in a handed-back statement) runs
+   compiled too, and one made by a template piece, whose code is not the
+   unit's, stays interpreted. A body with nothing handed back holds its
+   captures as Rust variables, its own copies per call, as the
+   interpreter's frame does; one with a statement handed back runs in a
+   frame holding them (`aot::run_closure`, `Cx::cstmt`, `Cx::cvalue`).
+   The proof gained script 9 (`reduce`, `filter`, `map`, a `sort`
+   comparator, `find`, `forEach`, closures three deep reading captures of
+   captures, a closure writing its own copy of a capture, `return` from a
+   `try`, a loop with `continue`, callbacks kept in state and one made by a
+   handler, a failure inside a body, and a body in a frame calling an
+   `async fn`); all 18 of its closure bodies compile, 1 statement is handed
+   back, and both engines agree on every case.
+
+   The bench was noisy enough to swing a speedup from 1.5x to 1.1x between
+   two runs, because it timed one engine and then the other; the engines
+   now take turns over seven rounds and each keeps its best. Before is the
+   same bench run on 1c9e083; the interpreted times of the two runs agree
+   to within 5%, the column below is the later run's. Per call, release:
+
+   | Call | Interpreted | Compiled before | Compiled after | Faster than interpreted |
+   |---|---|---|---|---|
+   | `looped()`, a loop inside a closure | 1.73 µs | 1.64 µs | 0.75 µs | 1.1x, now 2.3x |
+   | `adders()`, a closure made in a loop | 2.15 µs | 1.63 µs | 1.33 µs | 1.3x, now 1.6x |
+   | `total()`, `reduce` | 1.48 µs | 1.41 µs | 0.91 µs | 1.0x, now 1.6x |
+   | `offset(…)`, `map` and `filter` | 3.44 µs | 3.20 µs | 2.25 µs | 1.1x, now 1.5x |
+   | `counter()`, a closure writing its capture | 1.35 µs | 1.01 µs | 0.89 µs | 1.3x, now 1.5x |
+   | `deep()`, closures three deep | 1.92 µs | 1.76 µs | 1.27 µs | 1.1x, now 1.5x |
+   | `by_n()`, `map` and a `sort` comparator | 4.94 µs | 4.58 µs | 3.45 µs | 1.1x, now 1.4x |
+   | `names()`, `filter` then `map` | 3.37 µs | 3.24 µs | 2.55 µs | 1.0x, now 1.3x |
+   | `titles()`, `map` reading one field | 1.72 µs | 1.67 µs | 1.44 µs | 1.1x, now 1.2x |
+
+   The 2x expected for `titles()` did not come: its closure body is one
+   field read, so what is left is the fixed cost around it (running the
+   binding, the call, reading `tasks`, `join`), which compiling a closure
+   body does not touch. Every row gained.
+
    What follows describes the state before 9.2.
    `rux-codegen` compiles control flow (`if`, `while`, ranges, `break`,
    `continue`, `return`), literals, locals, state reads and writes (`=` and
@@ -1338,7 +1383,9 @@ Float indexing narrows to what the types allow: an index is an `int`, and a
    reported as times and how many times faster (the owner asked for that
    form), then a local commit. Nothing is pushed without asking.
 
-   - 9.6 **Closure bodies compiled** (the biggest gain left: `map`,
+   - 9.6 **Closure bodies compiled** (DONE 2026-09-27, see "9.6 done"
+     above; the numbering chosen is one pre-order count per function).
+     The plan as written: (the biggest gain left: `map`,
      `filter`, `reduce`, `sort` with a comparator, `find`, `forEach` and
      every callback stored in state). A closure's code is an
      `ir::Closure` with its own `Body` and `captures`. The generator

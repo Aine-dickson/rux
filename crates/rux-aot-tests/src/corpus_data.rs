@@ -118,4 +118,34 @@ pub const CORPUS: &[(&str, &[&str])] = &[
         &["scaled([1, 2])", "!scale = 4", "scaled([1, 2])", "offset([1, 5, 9], 2)", "adders()", "!keep(2)", "!keep(5)",
           "run_saved(3)", "nested()"],
     ),
+    // Closure bodies compiled: every callback method, a comparator, closures
+    // three deep reading captures of captures, a closure writing its own
+    // copy of a capture, `return`, loops and `try` inside one, callbacks
+    // kept in state (one made by a handler, whose body stays interpreted),
+    // and a body with a statement handed back, which runs in a frame.
+    (
+        "type Row = { name: string, n: int };\n\
+         let rows: Row[] = signal([{ name: \"b\", n: 2 }, { name: \"a\", n: 5 }, { name: \"c\", n: 1 }]);\n\
+         let hooks = signal([]);\n\
+         let hits = signal(0);\n\
+         let log = signal(\"\");\n\
+         fn total(): int { rows.reduce((acc, r) => acc + r.n, 0) }\n\
+         fn names(): string { rows.filter(r => r.n > 1).map(r => r.name.toUpperCase()).join(\"\") }\n\
+         fn by_n(): string { let xs = rows.map(r => r); xs.sort((a, b) => a.n - b.n); xs.map(r => r.name).join(\"\") }\n\
+         fn finder(k: string): int { let found = rows.find(r => r.name == k); found?.n ?? -1 }\n\
+         fn each(): int { let s = 0; rows.forEach(r => { s += r.n; }); s }\n\
+         fn counter(): int { let c = 0; let inc = () => { c += 1; c }; inc(); inc(); inc() + c }\n\
+         fn deep(): int { let a = 1; let f = (x: int) => { let g = (y: int) => (z: int) => x + y + z + a; let h = g(10); h(100) }; f(1000) }\n\
+         fn looped(): int { let f = (n: int) => { let s = 0; for i in 0..n { if i == 3 { continue; } s += i; } s }; f(6) }\n\
+         fn guarded(): string { let f = (i: int) => { try { return rows[i].name; } catch e { return \"none\"; } }; f(0) + f(9) }\n\
+         fn early(): int { let f = (n: int) => { if n > 2 { return 1; } 0 }; f(3) + f(1) }\n\
+         fn arm(n: int) { hooks.push((x: int) => x * n + hits); }\n\
+         fn fire(x: int) { for h in hooks { hits = h(x); } }\n\
+         fn bad(): int { let f = (x: int) => x + \"a\".length * [1][4]; f(1) }\n\
+         async fn note(n: int) { log = log + `${n};`; }\n\
+         fn later(): int { let k = 7; let f = () => { note(k); k += 1; k }; f() + f() }\n",
+        &["total()", "names()", "by_n()", "finder(\"a\")", "finder(\"z\")", "each()", "counter()", "deep()", "looped()",
+          "guarded()", "early()", "!arm(2)", "!fire(3)", "hits", "!fire(3)", "hits",
+          "!hooks.push((x: int) => x + 100)", "!fire(1)", "hits", "bad()", "later()", "log"],
+    ),
 ];

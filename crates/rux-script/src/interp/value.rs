@@ -38,7 +38,15 @@ pub enum V {
 pub struct Closure {
     pub code: Rc<ir::Closure>,
     pub captured: Vec<V>,
+    /// Its body compiled, when a build compiled it (step 9 of
+    /// `docs/11-next.md`): found once, when the closure is made, so a call
+    /// looks nothing up.
+    pub compiled: Option<Compiled>,
 }
+
+/// A compiled closure body: how many locals its frame has, whether it runs
+/// in one, and the body.
+pub type Compiled = (u32, bool, crate::aot::ClosureBody);
 
 impl V {
     pub fn str(s: impl Into<Rc<str>>) -> V {

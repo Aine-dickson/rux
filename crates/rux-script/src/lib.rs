@@ -457,12 +457,16 @@ impl Builder {
         // otherwise invisible by design.
         if std::env::var("RUX_AOT_REPORT").is_ok_and(|v| v == "1") {
             match &table {
-                Some(fns) => eprintln!("rux: script {hash:#018x}: {} functions compiled", fns.len()),
+                Some(t) => eprintln!(
+                    "rux: script {hash:#018x}: {} functions and {} closure bodies compiled",
+                    t.fns.len(),
+                    t.closures.len()
+                ),
                 None => eprintln!("rux: script {hash:#018x}: interpreted (no compiled code for this text)"),
             }
         }
-        if let Some(fns) = table {
-            ir.set_aot(fns);
+        if let Some(t) = table {
+            ir.set_aot(t);
         }
         if let Err(f) = ir.init() {
             let failed = fault_at(f, script);
@@ -2094,6 +2098,11 @@ impl Engine {
     /// How many of its functions run compiled.
     pub fn compiled_functions(&self) -> usize {
         self.ir.compiled_functions()
+    }
+
+    /// How many of its closure bodies run compiled.
+    pub fn compiled_closures(&self) -> usize {
+        self.ir.compiled_closures()
     }
 
     pub fn take_task_failures(&mut self) -> Vec<TaskFailure> {

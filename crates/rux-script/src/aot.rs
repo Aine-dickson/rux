@@ -40,19 +40,42 @@ pub type Body = fn(&mut Cx, Vec<V>) -> R<V>;
 /// has, whether it runs in a frame of the interpreter's, and its body.
 pub type Entry = (u32, u32, bool, Body);
 
-static TABLES: Mutex<Option<HashMap<u64, &'static [Entry]>>> = Mutex::new(None);
+/// A compiled closure body. With a frame, it runs in the frame
+/// [`run_closure`] entered for it, arguments and captures already there;
+/// without one, it is handed its arguments and then its captures, its own
+/// copies, as each call of the interpreter's has.
+pub type ClosureBody = fn(&mut Cx, Vec<V>, Vec<V>) -> R<V>;
 
-/// Register compiled functions for the file whose text hashes to `hash`
-/// (see [`source_hash`]). What the generated `install()` calls.
-pub fn register(hash: u64, fns: &'static [Entry]) {
-    TABLES.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).insert(hash, fns);
+/// One compiled closure body: the function creating it, its number there
+/// (`rux_ir::ir::closures`), how many locals its frame has, whether it runs
+/// in a frame, and its body.
+pub type ClosureEntry = (u32, u32, u32, bool, ClosureBody);
+
+/// What one text registered: its functions and its closures' bodies.
+pub(crate) struct Table {
+    pub fns: HashMap<u32, (u32, bool, Body)>,
+    pub closures: Vec<ClosureEntry>,
+}
+
+type Registered = (&'static [Entry], &'static [ClosureEntry]);
+
+static TABLES: Mutex<Option<HashMap<u64, Registered>>> = Mutex::new(None);
+
+/// Register compiled functions and closure bodies for the file whose text
+/// hashes to `hash` (see [`source_hash`]). What the generated `install()`
+/// calls.
+pub fn register(hash: u64, fns: &'static [Entry], closures: &'static [ClosureEntry]) {
+    TABLES.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).insert(hash, (fns, closures));
 }
 
 /// What is registered for `hash`.
-pub(crate) fn lookup(hash: u64) -> Option<HashMap<u32, (u32, bool, Body)>> {
+pub(crate) fn lookup(hash: u64) -> Option<Table> {
     let tables = TABLES.lock().unwrap_or_else(|e| e.into_inner());
-    let fns = tables.as_ref()?.get(&hash)?;
-    Some(fns.iter().map(|(id, n, framed, f)| (*id, (*n, *framed, *f))).collect())
+    let (fns, closures) = tables.as_ref()?.get(&hash)?;
+    Some(Table {
+        fns: fns.iter().map(|(id, n, framed, f)| (*id, (*n, *framed, *f))).collect(),
+        closures: closures.to_vec(),
+    })
 }
 
 /// FNV-1a over `parts`, each followed by a separator byte, so `["ab", "c"]`
@@ -83,6 +106,27 @@ pub(crate) fn run(ip: &mut Interp, locals: u32, framed: bool, body: Body, args: 
         // crash.
         ip.enter_call()?;
         let out = body(&mut Cx { ip }, args);
+        ip.leave_call();
+        out
+    };
+    match out {
+        Ok(v) | Err(Flow::Return(v)) => Ok(v),
+        Err(Flow::Break | Flow::Continue) => Err(Flow::Fault(Fault::new("`break` or `continue` outside a loop"))),
+        Err(e) => Err(e),
+    }
+}
+
+/// Run compiled closure body `body` as a call, with `args` (already as many
+/// as it takes) and what the closure captured.
+pub(crate) fn run_closure(ip: &mut Interp, locals: u32, framed: bool, body: ClosureBody, args: Vec<V>, captured: Vec<V>) -> R<V> {
+    let out = if framed {
+        ip.push_frame_with(locals as usize, args, captured)?;
+        let out = body(&mut Cx { ip }, Vec::new(), Vec::new());
+        ip.pop_frame();
+        out
+    } else {
+        ip.enter_call()?;
+        let out = body(&mut Cx { ip }, args, captured);
         ip.leave_call();
         out
     };
@@ -176,6 +220,11 @@ impl Cx<'_> {
     /// Local `i` of this frame.
     pub fn get(&mut self, i: u32) -> V {
         self.ip.local(i as usize)
+    }
+
+    /// What this closure captured, its `i`th, in this frame.
+    pub fn capture(&mut self, i: u32) -> V {
+        self.ip.capture(i as usize)
     }
 
     /// Give local `i` a value, as `let` does.
@@ -318,7 +367,26 @@ impl Cx<'_> {
     /// body, as a block's value is worked out.
     pub fn value(&mut self, id: u32, path: &[u32]) -> R<V> {
         let unit = self.ip.unit_rc();
-        match find(&unit.fns[id as usize].body.block, path).map(|s| &s.kind) {
+        self.value_of(find(&unit.fns[id as usize].body.block, path))
+    }
+
+    /// [`Cx::stmt`] in the body of closure `k` of function `id`.
+    pub fn cstmt(&mut self, id: u32, k: u32, path: &[u32]) -> R<()> {
+        let code = self.ip.closure_code(id, k)?;
+        match find(&code.body.block, path) {
+            Some(s) => self.ip.stmt_pub(s),
+            None => Err(Flow::Fault(Fault::new("compiled code out of step with its source"))),
+        }
+    }
+
+    /// [`Cx::value`] in the body of closure `k` of function `id`.
+    pub fn cvalue(&mut self, id: u32, k: u32, path: &[u32]) -> R<V> {
+        let code = self.ip.closure_code(id, k)?;
+        self.value_of(find(&code.body.block, path))
+    }
+
+    fn value_of(&mut self, s: Option<&Stmt>) -> R<V> {
+        match s.map(|s| &s.kind) {
             Some(StmtKind::Expr(e)) => {
                 self.ip.tick_pub()?;
                 self.ip.expr_pub(e)

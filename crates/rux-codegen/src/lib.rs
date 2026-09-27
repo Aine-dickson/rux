@@ -9,9 +9,14 @@
 //! (`aot::find`), in the same frame, so what is compiled and what is not can
 //! sit side by side in one function. Control flow, `try`, `switch`, literals,
 //! locals, state, operators, calls, fields, indexes, `?.` chains, methods,
-//! writes through places and creating closures are compiled (a closure's
-//! own body stays the interpreter's); `setInterval` is interpreted for now,
-//! and [`Output`] counts both.
+//! writes through places and closures are compiled; `setInterval` is
+//! interpreted for now, and [`Output`] counts both.
+//!
+//! A closure's body is a Rust function of its own, `c{f}_{k}`: closure `k`
+//! of function `f`, numbered as `rux_ir::ir::closures` numbers them. The
+//! interpreter maps each closure's code to its compiled body, so a closure
+//! runs compiled however it was created. Its captures are its own copies,
+//! per call, as the interpreter's frame holds them.
 //!
 //! The semantics are the interpreter's by construction: every operator,
 //! read and write goes through the same `aot` call the interpreter makes,
@@ -31,6 +36,9 @@ pub struct Output {
     /// interpreter (`async fn`s, which run from their resumable form).
     pub functions: usize,
     pub skipped: usize,
+    /// How many closure bodies were compiled: every closure a compiled
+    /// function creates.
+    pub closures: usize,
     /// How many statements were compiled, and how many handed back.
     pub compiled: usize,
     pub handed_back: usize,
@@ -50,6 +58,7 @@ pub fn generate(unit: &Unit, hash: u64, aot: &str) -> Output {
         labels: 0,
         in_try: 0,
         func: 0,
+        closure: None,
         closures: Vec::new(),
     };
     let _ = writeln!(
@@ -65,21 +74,33 @@ pub fn generate(unit: &Unit, hash: u64, aot: &str) -> Output {
             Err(err) => return Err(if $s == u32::MAX {{ err }} else {{ aot::at(err, $s, $e) }}),\n        }}\n    }};\n}}\n"
     );
     let mut table = Vec::new();
+    let mut closures = Vec::new();
     for (id, f) in unit.fns.iter().enumerate() {
         if f.is_async {
             g.out.skipped += 1;
             continue;
         }
-        let framed = g.func(id as u32, f);
+        let id = id as u32;
+        let framed = g.func(id, f);
         table.push(format!("({id}, {}, {framed}, f{id})", f.body.locals.len()));
         g.out.functions += 1;
+        // Its closures' bodies, every one it creates at any depth, each by
+        // its number in the function.
+        for (k, c) in g.closures.clone().iter().enumerate() {
+            let k = k as u32;
+            let framed = g.closure(id, k, c);
+            closures.push(format!("({id}, {k}, {}, {framed}, c{id}_{k})", c.body.locals.len()));
+            g.out.closures += 1;
+        }
     }
     let _ = writeln!(
         g.code,
-        "\nstatic FNS: &[aot::Entry] = &[{}];\n\n\
+        "\nstatic FNS: &[aot::Entry] = &[{}];\n\
+         static CLOSURES: &[aot::ClosureEntry] = &[{}];\n\n\
          /// Register these functions for the text they were generated from.\n\
-         pub fn install() {{\n    aot::register({hash:#018x}, FNS);\n}}",
-        table.join(", ")
+         pub fn install() {{\n    aot::register({hash:#018x}, FNS, CLOSURES);\n}}",
+        table.join(", "),
+        closures.join(", ")
     );
     g.out.code = g.code;
     g.out
@@ -107,13 +128,16 @@ struct Gen<'u> {
     /// one by its number).
     func: u32,
     closures: Vec<std::rc::Rc<rux_ir::ir::Closure>>,
+    /// Writing the body of the function's closure of this number, not the
+    /// function's own: a statement handed back is found in that body, and a
+    /// capture is read from what the closure holds.
+    closure: Option<u32>,
 }
 
 /// Where a statement is and what it may do, for the code around it.
 #[derive(Clone)]
 struct Place {
-    func: u32,
-    /// Its path in the function's body, as `aot::find` reads one.
+    /// Its path in the body being written, as `aot::find` reads one.
     path: Vec<u32>,
     /// Whether a Rust loop of the generated code is around it.
     in_loop: bool,
@@ -130,28 +154,58 @@ impl Gen<'_> {
     /// interpreter's needs to see its locals.
     fn func(&mut self, id: u32, f: &Func) -> bool {
         let _ = writeln!(self.code, "\n/// `{}`", f.name.replace('\n', " "));
-        let place = Place { func: id, path: Vec::new(), in_loop: false, depth: 0, try_edge: false };
         self.func = id;
+        self.closure = None;
         self.closures = rux_ir::ir::closures(&f.body.block);
+        self.body(&format!("f{id}"), f.params, &f.body, None)
+    }
+
+    /// Write the body of closure `k` of function `id` (the closures of
+    /// [`Gen::func`]'s last function), and say whether it runs in a frame.
+    fn closure(&mut self, id: u32, k: u32, c: &rux_ir::ir::Closure) -> bool {
+        let _ = writeln!(self.code, "\n/// closure {k} of function {id}");
+        self.func = id;
+        self.closure = Some(k);
+        let framed = self.body(&format!("c{id}_{k}"), c.params, &c.body, Some(c.captures.len()));
+        self.closure = None;
+        framed
+    }
+
+    /// A body as Rust function `name`: a function's (`captures` `None`), or
+    /// a closure's, holding that many captures. It runs in a frame unless
+    /// every statement of it compiled, when nothing of the interpreter's
+    /// needs to see its locals; the answer is whether it does.
+    fn body(&mut self, name: &str, params: u32, b: &rux_ir::ir::Body, captures: Option<usize>) -> bool {
+        let place = Place { path: Vec::new(), in_loop: false, depth: 0, try_edge: false };
         let counted = (self.out.compiled, self.out.handed_back);
         self.frameless = false;
-        let framed = self.block(&f.body.block, &place, None, true);
+        let framed = self.block(&b.block, &place, None, true);
         let framed_needed = self.out.handed_back > counted.1;
+        let caps = if captures.is_some() { ", _caps: Vec<V>" } else { "" };
         let body = if framed_needed {
-            let _ = writeln!(self.code, "fn f{id}(cx: &mut Cx, _args: Vec<V>) -> R<V> {{");
+            let _ = writeln!(self.code, "fn {name}(cx: &mut Cx, _args: Vec<V>{caps}) -> R<V> {{");
             framed
         } else {
             (self.out.compiled, self.out.handed_back) = counted;
             self.frameless = true;
-            let body = self.block(&f.body.block, &place, None, true);
+            let body = self.block(&b.block, &place, None, true);
             self.frameless = false;
-            let _ = writeln!(self.code, "fn f{id}(cx: &mut Cx, args: Vec<V>) -> R<V> {{");
+            let caps = if captures.is_some() { ", caps: Vec<V>" } else { "" };
+            let _ = writeln!(self.code, "fn {name}(cx: &mut Cx, args: Vec<V>{caps}) -> R<V> {{");
             let mut prologue = String::from("let mut __args = args.into_iter();\n");
-            for i in 0..f.body.locals.len() {
-                if (i as u32) < f.params {
+            for i in 0..b.locals.len() {
+                if (i as u32) < params {
                     let _ = writeln!(prologue, "let mut l{i}: V = __args.next().unwrap_or(V::None);");
                 } else {
                     let _ = writeln!(prologue, "let mut l{i}: V = V::None;");
+                }
+            }
+            // A closure's own copies of what it captured, as each call of
+            // the interpreter's has: a write changes only this call's.
+            if let Some(n) = captures {
+                prologue.push_str("let mut __caps = caps.into_iter();\n");
+                for i in 0..n {
+                    let _ = writeln!(prologue, "let mut cap{i}: V = __caps.next().unwrap_or(V::None);");
                 }
             }
             format!("{prologue}{body}")
@@ -159,6 +213,25 @@ impl Gen<'_> {
         self.code.push_str(&body);
         self.code.push_str("}\n");
         framed_needed
+    }
+
+    /// The statement at `path` handed back, as the call that runs it: in
+    /// the function's body, or in the closure's being written.
+    fn find_call(&self, what: &str, path: &str) -> String {
+        match self.closure {
+            Some(k) => format!("cx.c{what}({}, {k}, &{path})", self.func),
+            None => format!("cx.{what}({}, &{path})", self.func),
+        }
+    }
+
+    /// The Rust variable holding `root` in a body without a frame: a local,
+    /// or a closure's capture.
+    fn own(&self, root: Root) -> Option<String> {
+        match root {
+            Root::Local(l) if self.frameless => Some(format!("l{}", l.0)),
+            Root::Capture(i) if self.frameless => Some(format!("cap{i}")),
+            _ => None,
+        }
     }
 
     /// `b`'s statements. With `value`, the block's value is the function's
@@ -189,13 +262,14 @@ impl Gen<'_> {
                         _ => {
                             self.out.handed_back += 1;
                             let path = path_of(&p.path);
+                            let call = self.find_call("value", &path);
                             if value {
-                                let _ = writeln!(s, "return cx.value({}, &{path});", p.func);
+                                let _ = writeln!(s, "return {call};");
                             } else {
                                 // Worked out as the interpreter works out a
                                 // block's value, and dropped; a failure is
                                 // placed at the enclosing statement.
-                                let _ = writeln!(s, "let _ = t!(cx.value({}, &{path}), {start}, {end});", p.func);
+                                let _ = writeln!(s, "let _ = t!({call}, {start}, {end});");
                             }
                         }
                     }
@@ -213,15 +287,14 @@ impl Gen<'_> {
     /// The statement handed back to the interpreter, in this frame, with
     /// what leaves it passed on.
     fn hand_back(&self, p: &Place) -> String {
-        let path = path_of(&p.path);
+        let call = self.find_call("stmt", &path_of(&p.path));
         if p.in_loop {
             format!(
-                "match cx.stmt({}, &{path}) {{ Ok(()) => {{}} Err(Flow::Break) => break, \
-                 Err(Flow::Continue) => continue, Err(e) => return Err(e) }}",
-                p.func
+                "match {call} {{ Ok(()) => {{}} Err(Flow::Break) => break, \
+                 Err(Flow::Continue) => continue, Err(e) => return Err(e) }}"
             )
         } else {
-            format!("cx.stmt({}, &{path})?;", p.func)
+            format!("{call}?;")
         }
     }
 
@@ -271,28 +344,25 @@ impl Gen<'_> {
                     Some(op) => format!("Some(BinOp::{op:?})"),
                     None => "None".to_string(),
                 };
+                // A local or capture of its own: nothing tracks it, so it is
+                // the interpreter's assignment without the tracking.
+                if let Some(var) = self.own(place.root) {
+                    return Some(format!(
+                        "t!(cx.tick(), {s}, {e});\nlet __v = {v};\n{}",
+                        match raw {
+                            None => format!("{var} = __v;\n"),
+                            Some(raw) => format!(
+                                "let __t = std::mem::replace(&mut {var}, V::None);\n\
+                                 match cx.apply(BinOp::{raw:?}, &__t, __v) {{ Ok(n) => {var} = n, \
+                                 Err(err) => {{ {var} = __t; return Err(aot::at(err, {s}, {e})); }} }}\n"
+                            ),
+                        }
+                    ));
+                }
                 let call = match place.root {
-                    // A local of its own: nothing tracks it, so it is the
-                    // interpreter's assignment without the tracking.
-                    Root::Local(l) if self.frameless => {
-                        return Some(format!(
-                            "t!(cx.tick(), {s}, {e});\nlet __v = {v};\n{}",
-                            match raw {
-                                None => format!("l{} = __v;\n", l.0),
-                                Some(raw) => format!(
-                                    "let __t = std::mem::replace(&mut l{0}, V::None);\n\
-                                     match cx.apply({1}, &__t, __v) {{ Ok(n) => l{0} = n, \
-                                     Err(err) => {{ l{0} = __t; return Err(aot::at(err, {s}, {e})); }} }}\n",
-                                    l.0,
-                                    format!("BinOp::{raw:?}")
-                                ),
-                            }
-                        ));
-                    }
                     Root::Local(l) => format!("cx.assign_local({}, {op}, __v)", l.0),
                     Root::Global(g) => format!("cx.assign_global({}, {op}, __v)", g.0),
-                    Root::Outer(_) => format!("cx.assign_at({}, &[], {op}, __v)", root_code(place.root)?),
-                    Root::Capture(_) => return None,
+                    Root::Outer(_) | Root::Capture(_) => format!("cx.assign_at({}, &[], {op}, __v)", root_code(place.root)),
                 };
                 format!("let __v = {v};\nt!({call}, {s}, {e});\n")
             }
@@ -311,9 +381,9 @@ impl Gen<'_> {
                     Some(op) => format!("Some(BinOp::{op:?})"),
                     None => "None".to_string(),
                 };
-                let call = match place.root {
-                    Root::Local(l) if self.frameless => format!("cx.assign_in(&mut l{}, &__k, {op}, __v)", l.0),
-                    root => format!("cx.assign_at({}, &__k, {op}, __v)", root_code(root)?),
+                let call = match self.own(place.root) {
+                    Some(var) => format!("cx.assign_in(&mut {var}, &__k, {op}, __v)"),
+                    None => format!("cx.assign_at({}, &__k, {op}, __v)", root_code(place.root)),
                 };
                 format!("let __k = vec![{}];\nlet __v = {v};\nt!({call}, {s}, {e});\n", keys.join(", "))
             }
@@ -512,11 +582,9 @@ impl Gen<'_> {
                         for a in args {
                             list.push(self.expr(a, s, end)?);
                         }
-                        let call = match root {
-                            Root::Local(l) if self.frameless => {
-                                format!("cx.method_in(&mut l{}, &__k, {name:?}, __args)", l.0)
-                            }
-                            root => format!("cx.method_at({}, &__k, {name:?}, __args)", root_code(root)?),
+                        let call = match self.own(root) {
+                            Some(var) => format!("cx.method_in(&mut {var}, &__k, {name:?}, __args)"),
+                            None => format!("cx.method_at({}, &__k, {name:?}, __args)", root_code(root)),
                         };
                         return Some(format!(
                             "{{ let __k = vec![{}]; let __args = vec![{}]; t!({call}, {s}, {end}) }}",
@@ -560,7 +628,7 @@ impl Gen<'_> {
         self.strict += 1;
         // No path: a hand-back is refused, and a `break` or `continue`
         // inside is left to the interpreter by not compiling the whole.
-        let p = Place { func: u32::MAX, path: Vec::new(), in_loop: false, depth: 64, try_edge: false };
+        let p = Place { path: Vec::new(), in_loop: false, depth: 64, try_edge: false };
         let mut code = String::from("{\n");
         let last = b.stmts.len();
         let mut tail = "V::None".to_string();
@@ -605,6 +673,8 @@ impl Gen<'_> {
             ExprKind::Str(t) => format!("aot::text({t:?})"),
             ExprKind::Local(l) if self.frameless => format!("l{}.clone()", l.0),
             ExprKind::Local(l) => format!("cx.get({})", l.0),
+            ExprKind::Capture(i) if self.frameless => format!("cap{i}.clone()"),
+            ExprKind::Capture(i) => format!("cx.capture({i})"),
             ExprKind::Global(g) => format!("t!(cx.global({}), {s}, {end})", g.0),
             ExprKind::Check(x) => self.expr(x, s, end)?,
             ExprKind::Widen(x) => {
@@ -700,16 +770,17 @@ impl Gen<'_> {
                 format!("('c{l}: {{ {} }})", self.base(inner, s, end, Some(l))?)
             }
             ExprKind::Outer(n) => format!("t!(cx.outer({n}), {s}, {end})"),
-            // Its code stays the interpreter's; what it captures is read
-            // here, in order, as the interpreter reads it.
+            // Its body is compiled on its own, by its number; what it
+            // captures is read here, in order, as the interpreter reads it.
             ExprKind::Closure(c) => {
                 let k = self.closures.iter().position(|x| std::rc::Rc::ptr_eq(x, c))?;
                 let mut caps = Vec::with_capacity(c.captures.len());
                 for root in &c.captures {
-                    caps.push(match root {
-                        Root::Local(l) if self.frameless => format!("l{}.clone()", l.0),
-                        Root::Local(l) => format!("cx.get({})", l.0),
-                        root => format!("t!(cx.captured({}), {s}, {end})", root_code(*root)?),
+                    caps.push(match (self.own(*root), root) {
+                        (Some(var), _) => format!("{var}.clone()"),
+                        (None, Root::Local(l)) => format!("cx.get({})", l.0),
+                        (None, Root::Capture(i)) => format!("cx.capture({i})"),
+                        (None, root) => format!("t!(cx.captured({}), {s}, {end})", root_code(*root)),
                     });
                 }
                 format!("t!(cx.closure({}, {k}, vec![{}]), {s}, {end})", self.func, caps.join(", "))
@@ -784,15 +855,14 @@ pub const MUTATING: &[&str] = &[
     "retain", "dedup", "drain", "pad", "replace", "make_upper", "make_lower", "unshift", "fill",
 ];
 
-/// `root` as the generated code names it; `None` for a closure's capture,
-/// which no compiled function has.
-fn root_code(root: Root) -> Option<String> {
-    Some(match root {
+/// `root` as the generated code names it.
+fn root_code(root: Root) -> String {
+    match root {
         Root::Local(l) => format!("aot::Root::Local(aot::LocalId({}))", l.0),
         Root::Global(g) => format!("aot::Root::Global(aot::GlobalId({}))", g.0),
         Root::Outer(n) => format!("aot::Root::Outer({n})"),
-        Root::Capture(_) => return None,
-    })
+        Root::Capture(i) => format!("aot::Root::Capture({i})"),
+    }
 }
 
 /// A receiver that is a place: a name, then fields and indexes with no `?`,

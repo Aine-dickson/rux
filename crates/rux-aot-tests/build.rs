@@ -16,8 +16,8 @@ fn main() {
         code.push_str(&format!("pub mod u{i} {{\n{}\n}}\n", g.code));
         install.push_str(&format!("    u{i}::install();\n"));
         coverage.push_str(&format!(
-            "({i}, {}, {}, {}, {}),\n",
-            g.functions, g.skipped, g.compiled, g.handed_back
+            "({i}, {}, {}, {}, {}, {}),\n",
+            g.functions, g.skipped, g.closures, g.compiled, g.handed_back
         ));
     }
     install.push_str("}\n");
@@ -28,8 +28,9 @@ fn main() {
     ));
     code.push_str(&install);
     code.push_str(&format!(
-        "/// Per script: functions compiled, skipped, statements compiled, handed back.\n\
-         pub const COVERAGE: &[(usize, usize, usize, usize, usize)] = &[\n{coverage}];\n"
+        "/// Per script: functions compiled, skipped, closure bodies compiled,\n\
+         /// statements compiled, handed back.\n\
+         pub const COVERAGE: &[(usize, usize, usize, usize, usize, usize)] = &[\n{coverage}];\n"
     ));
     std::fs::write(out.join("aot.rs"), code).expect("writing the generated code");
 }

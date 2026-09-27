@@ -51,6 +51,19 @@ fn rux_codegen_list() -> &'static [&'static str] {
 }
 
 #[test]
+fn closure_bodies_run_compiled() {
+    install_all();
+    for i in [8, 9] {
+        let (script, _) = CORPUS[i];
+        let e = Builder::new().build(script).expect("builds");
+        assert!(e.compiled_closures() > 0, "script {i}: no closure body compiled");
+    }
+    let mut b = Builder::new();
+    b.interpreted();
+    assert_eq!(b.build(CORPUS[9].0).expect("builds").compiled_closures(), 0);
+}
+
+#[test]
 fn a_changed_text_runs_interpreted() {
     install_all();
     let (script, _) = CORPUS[0];
@@ -61,8 +74,11 @@ fn a_changed_text_runs_interpreted() {
 
 #[test]
 fn coverage() {
-    for (i, functions, skipped, compiled, handed_back) in COVERAGE {
-        println!("script {i}: {functions} functions compiled, {skipped} skipped; {compiled} statements compiled, {handed_back} handed back");
+    for (i, functions, skipped, closures, compiled, handed_back) in COVERAGE {
+        println!(
+            "script {i}: {functions} functions compiled, {skipped} skipped, {closures} closure bodies; \
+             {compiled} statements compiled, {handed_back} handed back"
+        );
     }
 }
 
@@ -73,8 +89,8 @@ fn coverage() {
 fn cost() {
     install_all();
     let cases: &[(usize, &str, u32)] = &[
-        (0, "fib(18)", 20),
-        (2, "sum(10000)", 20),
+        (0, "fib(18)", 5),
+        (2, "sum(10000)", 5),
         (2, "odd(20)", 20000),
         (1, "!bump(1)", 20000),
         (4, "open()", 20000),
@@ -88,6 +104,13 @@ fn cost() {
         (6, "kinds()", 20000),
         (7, "local()", 20000),
         (7, "grid()", 20000),
+        // Closure bodies compiled (9.6).
+        (9, "total()", 20000),
+        (9, "names()", 20000),
+        (9, "by_n()", 20000),
+        (9, "counter()", 20000),
+        (9, "deep()", 20000),
+        (9, "looped()", 20000),
     ];
     // Times per call, and how many times faster compiled is: 3.6x faster
     // means compiled takes a 3.6th of the interpreter's time.
@@ -97,21 +120,27 @@ fn cost() {
         let mut b = Builder::new();
         b.interpreted();
         let mut engines = [b.build(script).expect("builds"), Builder::new().build(script).expect("builds")];
-        let mut took = [0.0f64; 2];
-        for (k, e) in engines.iter_mut().enumerate() {
+        // The engines take turns, and each keeps its best round: a machine
+        // busy for a moment then slows one round, not one engine.
+        let mut took = [f64::MAX; 2];
+        for e in engines.iter_mut() {
             run(e, what);
-            let t = std::time::Instant::now();
-            for _ in 0..*times {
-                match what.strip_prefix('!') {
-                    Some(h) => {
-                        e.run_handler(h);
-                    }
-                    None => {
-                        std::hint::black_box(e.eval_value(what, &[]));
+        }
+        for _round in 0..7 {
+            for (k, e) in engines.iter_mut().enumerate() {
+                let t = std::time::Instant::now();
+                for _ in 0..*times {
+                    match what.strip_prefix('!') {
+                        Some(h) => {
+                            e.run_handler(h);
+                        }
+                        None => {
+                            std::hint::black_box(e.eval_value(what, &[]));
+                        }
                     }
                 }
+                took[k] = took[k].min(t.elapsed().as_nanos() as f64 / *times as f64 / 1000.0);
             }
-            took[k] = t.elapsed().as_nanos() as f64 / *times as f64 / 1000.0;
         }
         println!("{what:<30} {:>14.2} {:>14.2} {:>7.1}x faster", took[0], took[1], took[0] / took[1]);
     }

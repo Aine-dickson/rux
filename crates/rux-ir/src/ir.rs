@@ -483,9 +483,11 @@ impl Expr {
     }
 }
 
-/// The closures `b` creates, not counting those inside them, in one fixed
-/// order: a closure's number in a function is its place in this list. The
-/// Rust a release build writes names a closure by that number, and the
+/// Every closure `b` creates, those inside other closures included, in one
+/// fixed order: pre-order, a closure before the closures its own body
+/// creates. A closure's number in a function is its place in this list, one
+/// count per function however deep it sits. The Rust a release build writes
+/// names a closure, and its compiled body, by that number, and the
 /// interpreter finds it by the same walk.
 pub fn closures(b: &Block) -> Vec<std::rc::Rc<Closure>> {
     let mut out = Vec::new();
@@ -596,7 +598,10 @@ fn walk_expr(e: &Expr, out: &mut Vec<std::rc::Rc<Closure>>) {
             }
         }
         ExprKind::Block(b) => walk_block(b, out),
-        ExprKind::Closure(c) => out.push(std::rc::Rc::clone(c)),
+        ExprKind::Closure(c) => {
+            out.push(std::rc::Rc::clone(c));
+            walk_block(&c.body.block, out);
+        }
         // A timer's body runs on its own, from its text.
         ExprKind::Interval { args, .. } => args.iter().for_each(|x| walk_expr(x, out)),
     }

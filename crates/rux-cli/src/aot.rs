@@ -38,9 +38,11 @@ pub fn generate(manifest: &Manifest) -> Option<(String, String)> {
     let (hash, unit) = doc.compiled_unit();
     let out = rux_codegen::generate(unit, hash, "rux_runtime::aot");
     let line = format!(
-        "compiled {} function{} to Rust ({} statement{} compiled, {} left to the interpreter)",
+        "compiled {} function{} and {} closure bod{} to Rust ({} statement{} compiled, {} left to the interpreter)",
         out.functions,
         if out.functions == 1 { "" } else { "s" },
+        out.closures,
+        if out.closures == 1 { "y" } else { "ies" },
         out.compiled,
         if out.compiled == 1 { "" } else { "s" },
         out.handed_back

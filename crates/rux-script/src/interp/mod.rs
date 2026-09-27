@@ -134,6 +134,11 @@ pub struct Interp {
     /// The unit's compiled functions, when a build registered them for its
     /// exact text: step 9 of `docs/11-next.md`, and [`crate::aot`].
     aot: HashMap<u32, (u32, bool, crate::aot::Body)>,
+    /// Compiled closure bodies, by the address of the code they were
+    /// compiled from: a closure runs compiled however it was created, by
+    /// compiled code or by the interpreter, when its code is in this unit.
+    /// Looked up when a closure is made ([`Interp::make_closure`]).
+    closure_aot: HashMap<usize, value::Compiled>,
     /// Compiled calls running without a frame, which count toward
     /// [`MAX_DEPTH`] as frames do.
     frameless: usize,
@@ -187,6 +192,7 @@ impl Interp {
             natives: HashMap::new(),
             closure_codes: HashMap::new(),
             aot: HashMap::new(),
+            closure_aot: HashMap::new(),
             frameless: 0,
             stack_base: 0,
             pieces: HashMap::new(),
@@ -525,9 +531,20 @@ impl Interp {
 
     // ----- What compiled code calls: see `crate::aot` ------------------------
 
-    /// Use `fns`, compiled for this unit's exact text, for its functions.
-    pub(crate) fn set_aot(&mut self, fns: HashMap<u32, (u32, bool, crate::aot::Body)>) {
-        self.aot = fns;
+    /// Use `table`, compiled for this unit's exact text, for its functions
+    /// and its closures' bodies.
+    pub(crate) fn set_aot(&mut self, table: crate::aot::Table) {
+        self.aot = table.fns;
+        for (id, k, locals, framed, body) in table.closures {
+            if let Ok(code) = self.closure_code(id, k) {
+                self.closure_aot.insert(Rc::as_ptr(&code) as usize, (locals, framed, body));
+            }
+        }
+    }
+
+    /// How many closure bodies run compiled.
+    pub fn compiled_closures(&self) -> usize {
+        self.closure_aot.len()
     }
 
     /// How many of the unit's functions run compiled.
@@ -576,8 +593,14 @@ impl Interp {
     }
 
     pub(crate) fn push_frame(&mut self, n: usize, args: Vec<V>) -> R<()> {
+        self.push_frame_with(n, args, Vec::new())
+    }
+
+    /// A frame for a closure's body: its locals, `args` first, and what it
+    /// captured.
+    pub(crate) fn push_frame_with(&mut self, n: usize, args: Vec<V>, captures: Vec<V>) -> R<()> {
         self.deeper()?;
-        let mut frame = Frame { slots: vec![V::None; n], set: vec![false; n], captures: Vec::new() };
+        let mut frame = Frame { slots: vec![V::None; n], set: vec![false; n], captures };
         for (i, a) in args.into_iter().enumerate().take(n) {
             frame.slots[i] = a;
             frame.set[i] = true;
@@ -588,6 +611,10 @@ impl Interp {
 
     pub(crate) fn pop_frame(&mut self) {
         self.stack.pop();
+    }
+
+    pub(crate) fn capture(&mut self, i: usize) -> V {
+        self.frame().captures[i].clone()
     }
 
     pub(crate) fn local(&mut self, i: usize) -> V {
@@ -971,6 +998,23 @@ impl Interp {
     /// Closure `k` of function `id` (numbered by [`ir::closures`]), with
     /// what it captured.
     pub(crate) fn closure_pub(&mut self, id: u32, k: u32, captured: Vec<V>) -> R<V> {
+        let code = self.closure_code(id, k)?;
+        Ok(self.make_closure(code, captured))
+    }
+
+    /// A closure value, with its compiled body when it has one.
+    fn make_closure(&self, code: Rc<ir::Closure>, captured: Vec<V>) -> V {
+        let compiled = if self.closure_aot.is_empty() {
+            None
+        } else {
+            self.closure_aot.get(&(Rc::as_ptr(&code) as usize)).copied()
+        };
+        V::Fn(Rc::new(Closure { code, captured, compiled }))
+    }
+
+    /// The code of closure `k` of function `id`, numbered by
+    /// [`ir::closures`].
+    pub(crate) fn closure_code(&mut self, id: u32, k: u32) -> R<Rc<ir::Closure>> {
         if !self.closure_codes.contains_key(&id) {
             let Some(f) = self.unit.fns.get(id as usize) else {
                 return fail("compiled code out of step with its source");
@@ -979,7 +1023,7 @@ impl Interp {
             self.closure_codes.insert(id, list);
         }
         match self.closure_codes.get(&id).and_then(|l| l.get(k as usize)) {
-            Some(code) => Ok(V::Fn(Rc::new(Closure { code: Rc::clone(code), captured }))),
+            Some(code) => Ok(Rc::clone(code)),
             None => fail("compiled code out of step with its source"),
         }
     }
@@ -1231,7 +1275,7 @@ impl Interp {
                     let slot = self.locate(*r)?;
                     captured.push(self.read_slot(slot)?);
                 }
-                V::Fn(Rc::new(Closure { code: Rc::clone(code), captured }))
+                self.make_closure(Rc::clone(code), captured)
             }
             ExprKind::Interval { args, text, .. } => {
                 let mut ms = 0.0;
@@ -1416,6 +1460,11 @@ impl Interp {
         argv.truncate(code.params as usize);
         while argv.len() < code.params as usize {
             argv.push(V::None);
+        }
+        if let Some((locals, framed, body)) = c.compiled {
+            if !flat::everything() {
+                return crate::aot::run_closure(self, locals, framed, body, argv, c.captured.clone());
+            }
         }
         match self.run_body(&code.body, argv, c.captured.clone()) {
             Ok(v) | Err(Flow::Return(v)) => Ok(v),
