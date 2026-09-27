@@ -1262,6 +1262,17 @@ Float indexing narrows to what the types allow: an index is an `int`, and a
    file is its template pieces (handlers and bindings) and `async fn`
    bodies.
 
+   Cost after closures, release, two runs agreeing within a few percent
+   (`crates/rux-aot-tests`, `cost`, now with a case for each construct
+   added that day): `switch` 0.67x to 0.69x of the interpreter's time, a
+   `?.` chain 0.69x to 0.75x, `try` in a loop 0.49x, nested `try` 0.77x,
+   nested index writes 0.67x to 0.69x, field and index writes with `push`
+   and a `join` 0.81x to 0.85x (most of it the library's work), a closure
+   made in a loop and called 0.78x, and `map` or `filter` with a closure
+   0.93x to 0.96x. The last is the one to read: creating the closure is
+   compiled, but its body is not, and a `map` calls the interpreted body
+   once per item. Compiling closure bodies is where the next gain is.
+
    9.5 driven 2026-09-27: a two-file project (a document with a `<router>`
    and a component page) built with `rux build --release --target web`
    compiled 7 functions, none handed back, and was run in Brave over the

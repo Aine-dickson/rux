@@ -72,9 +72,24 @@ fn coverage() {
 #[ignore]
 fn cost() {
     install_all();
-    let cases: &[(usize, &str, u32)] =
-        &[(0, "fib(18)", 20), (2, "sum(10000)", 20), (2, "odd(20)", 20000), (1, "!bump(1)", 20000), (4, "open()", 20000)];
-    println!("{:<14} {:>14} {:>14} {:>7}", "call", "interpreted µs", "compiled µs", "ratio");
+    let cases: &[(usize, &str, u32)] = &[
+        (0, "fib(18)", 20),
+        (2, "sum(10000)", 20),
+        (2, "odd(20)", 20000),
+        (1, "!bump(1)", 20000),
+        (4, "open()", 20000),
+        // Closures created, `switch`, `try`, `?.` chains, writes through places.
+        (4, "titles()", 20000),
+        (8, "offset([1, 5, 9], 2)", 20000),
+        (8, "adders()", 20000),
+        (5, "band(42)", 20000),
+        (5, "pet(1)", 20000),
+        (6, "first_bad([1, 0, 2, -1, 5])", 20000),
+        (6, "kinds()", 20000),
+        (7, "local()", 20000),
+        (7, "grid()", 20000),
+    ];
+    println!("{:<30} {:>14} {:>14} {:>7}", "call", "interpreted µs", "compiled µs", "ratio");
     for (i, what, times) in cases {
         let (script, _) = CORPUS[*i];
         let mut b = Builder::new();
@@ -96,6 +111,6 @@ fn cost() {
             }
             took[k] = t.elapsed().as_nanos() as f64 / *times as f64 / 1000.0;
         }
-        println!("{what:<14} {:>14.2} {:>14.2} {:>6.2}x", took[0], took[1], took[1] / took[0]);
+        println!("{what:<30} {:>14.2} {:>14.2} {:>6.2}x", took[0], took[1], took[1] / took[0]);
     }
 }
