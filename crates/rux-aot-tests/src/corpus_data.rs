@@ -38,8 +38,12 @@ pub const CORPUS: &[(&str, &[&str])] = &[
         "fn greet(name: string?): string { let n = name ?? \"you\"; `hi ${n}, ${n.length}` }\n\
          fn both(a: bool, b: bool): bool { a && b || !a }\n\
          fn widen(n: int): float { let f: float = n; f * 1.5 }\n\
-         fn cmp(a: string, b: string): bool { a < b }\n",
-        &["greet(none)", "greet(\"ada\")", "both(true, false)", "both(false, false)", "widen(3)", "cmp(\"a\", \"b\")"],
+         fn cmp(a: string, b: string): bool { a < b }\n\
+         fn sign(n: int): string { if n < 0 { \"neg\" } else if n == 0 { \"zero\" } else { let m = n * 2; `pos ${m}` } }\n\
+         fn mixed(n: int): int { let k = if n > 0 { let a = [n]; a.push(1); a.length } else { 0 }; k + 1 }\n\
+         fn nothing(n: int): int { let k = if n > 0 { 5 }; k ?? 7 }\n",
+        &["greet(none)", "greet(\"ada\")", "both(true, false)", "both(false, false)", "widen(3)", "cmp(\"a\", \"b\")",
+          "sign(-3)", "sign(0)", "sign(4)", "mixed(2)", "mixed(0)", "nothing(1)", "nothing(0)"],
     ),
     // What is handed back: fields, indexes, methods, closures, try/catch,
     // throw, a `switch`, an `if` as a value, in one frame with compiled code.

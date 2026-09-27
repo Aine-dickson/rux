@@ -1221,8 +1221,11 @@ Float indexing narrows to what the types allow: an index is an `int`, and a
    array and map literals, `for x in` a collection and `throw` compile
    too, each through the interpreter's own helper. Still handed back: a
    method that changes its receiver (its receiver is a place), `?.` chains,
-   `try`, `switch`, `if` and blocks used as values, closures created, `is`,
-   and writes through fields and indexes. What follows describes the state
+   `try`, `switch`, closures created, `is`, and writes through fields and
+   indexes. `if` and blocks used as values compile (second session of the
+   night) when everything inside them does; a statement inside one has no
+   path to be handed back by, so one that does not compile leaves the
+   whole enclosing statement to the interpreter. What follows describes the state
    before 9.2.
    `rux-codegen` compiles control flow (`if`, `while`, ranges, `break`,
    `continue`, `return`), literals, locals, state reads and writes (`=` and
