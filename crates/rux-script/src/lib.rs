@@ -12,6 +12,7 @@
 //! wording and several of the language's rules still say where they came
 //! from.
 
+pub mod aot;
 pub mod check;
 pub mod host;
 pub mod interp;
@@ -195,6 +196,9 @@ pub struct Builder {
     /// Its components' functions, each in a scope of its own. See
     /// [`Builder::component`].
     components: Vec<ComponentSource>,
+    /// Never use compiled functions, even where some are registered: the
+    /// other engine of the step 9 proof.
+    interpreted: bool,
 }
 
 /// The name of the local an instance's state carries to say which component
@@ -300,6 +304,7 @@ impl Builder {
             modules: Vec::new(),
             aliases: Vec::new(),
             components: Vec::new(),
+            interpreted: false,
         }
     }
 
@@ -317,6 +322,13 @@ impl Builder {
     /// document's.
     pub fn module(&mut self, module: ModuleSource) -> &mut Self {
         self.modules.push(module);
+        self
+    }
+
+    /// Interpret every function, even where compiled code is registered for
+    /// this text (see [`aot`]).
+    pub fn interpreted(&mut self) -> &mut Self {
+        self.interpreted = true;
         self
     }
 
@@ -430,6 +442,16 @@ impl Builder {
             &module_types,
             std::rc::Rc::clone(&linking),
         );
+        // Compiled functions, when a build registered some for this exact
+        // text: step 9 of docs/11-next.md.
+        let hash = aot::source_hash(
+            std::iter::once(script)
+                .chain(self.modules.iter().flat_map(|m| [m.name.as_str(), m.script.as_str()]))
+                .chain(self.components.iter().flat_map(|c| [c.key.as_str(), c.functions.as_str()])),
+        );
+        if let Some(fns) = aot::lookup(hash).filter(|_| !self.interpreted) {
+            ir.set_aot(fns);
+        }
         if let Err(f) = ir.init() {
             let failed = fault_at(f, script);
             if let Some(p) = link_problems.iter().find(|p| {
@@ -441,6 +463,7 @@ impl Builder {
             return Err(failed);
         }
         let mut engine = Engine::new(ir, parsed, script);
+        engine.source_hash = hash;
         engine.linking = linking;
         engine.module_types = module_types;
         engine.unit_sources =
@@ -748,6 +771,9 @@ pub struct Engine {
     module_types: Vec<(String, String, String)>,
     /// Its modules, as the build checked them.
     modules: Vec<ModuleChecked>,
+    /// What compiled code for this engine is registered under: see
+    /// [`aot::source_hash`].
+    source_hash: u64,
     /// The text each module's and component's functions were lowered from,
     /// by linked name (`components/card`): where a task failure in one is.
     unit_sources: HashMap<String, String>,
@@ -1494,6 +1520,7 @@ impl Engine {
             module_types: Vec::new(),
             modules: Vec::new(),
             unit_sources: HashMap::new(),
+            source_hash: 0,
             check_scope: std::cell::RefCell::new(None),
         }
     }
@@ -2042,6 +2069,21 @@ impl Engine {
     /// The tasks that failed with nothing to catch the error since the last
     /// call. `line` is 1-based in this engine's script, as
     /// [`ScriptError`]'s is.
+    /// The unit this engine runs, as lowered: what `rux-codegen` compiles.
+    pub fn ir_unit(&self) -> &rux_ir::ir::Unit {
+        self.ir.unit()
+    }
+
+    /// The hash compiled code for this engine is registered under.
+    pub fn source_hash(&self) -> u64 {
+        self.source_hash
+    }
+
+    /// How many of its functions run compiled.
+    pub fn compiled_functions(&self) -> usize {
+        self.ir.compiled_functions()
+    }
+
     pub fn take_task_failures(&mut self) -> Vec<TaskFailure> {
         self.ir
             .take_failed()

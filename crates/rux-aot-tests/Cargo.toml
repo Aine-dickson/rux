@@ -1,0 +1,15 @@
+[package]
+name = "rux-aot-tests"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish = false
+description = "The step 9 proof: Rux scripts compiled to Rust by rux-codegen, run beside the interpreter."
+
+[dependencies]
+rux-script.workspace = true
+rux-reactive.workspace = true
+
+[build-dependencies]
+rux-script.workspace = true
+rux-codegen.workspace = true

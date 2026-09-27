@@ -55,7 +55,7 @@ impl Fault {
     }
 }
 
-enum Flow {
+pub enum Flow {
     Break,
     Continue,
     Return(V),
@@ -114,6 +114,9 @@ pub struct Interp {
     /// Each native export called so far, by linked name, so the registry
     /// is asked once.
     natives: HashMap<String, rux_native::Call>,
+    /// The unit's compiled functions, when a build registered them for its
+    /// exact text: step 9 of `docs/11-next.md`, and [`crate::aot`].
+    aot: HashMap<u32, (u32, crate::aot::Body)>,
     pieces: HashMap<String, Rc<Compiled>>,
     stack: Vec<Frame>,
     roots: Vec<Root>,
@@ -159,6 +162,7 @@ impl Interp {
             set: vec![false; n],
             by_name,
             natives: HashMap::new(),
+            aot: HashMap::new(),
             pieces: HashMap::new(),
             stack: Vec::new(),
             roots: Vec::new(),
@@ -495,6 +499,79 @@ impl Interp {
         out
     }
 
+    // ----- What compiled code calls: see `crate::aot` ------------------------
+
+    /// Use `fns`, compiled for this unit's exact text, for its functions.
+    pub(crate) fn set_aot(&mut self, fns: HashMap<u32, (u32, crate::aot::Body)>) {
+        self.aot = fns;
+    }
+
+    /// How many of the unit's functions run compiled.
+    pub fn compiled_functions(&self) -> usize {
+        self.aot.len()
+    }
+
+    pub(crate) fn push_frame(&mut self, n: usize, args: Vec<V>) -> R<()> {
+        if self.stack.len() >= MAX_DEPTH {
+            return fail(format!("Stack overflow: calls nested more than {MAX_DEPTH} deep"));
+        }
+        let mut frame = Frame { slots: vec![V::None; n], set: vec![false; n], captures: Vec::new() };
+        for (i, a) in args.into_iter().enumerate().take(n) {
+            frame.slots[i] = a;
+            frame.set[i] = true;
+        }
+        self.stack.push(frame);
+        Ok(())
+    }
+
+    pub(crate) fn pop_frame(&mut self) {
+        self.stack.pop();
+    }
+
+    pub(crate) fn local(&mut self, i: usize) -> V {
+        self.frame().slots[i].clone()
+    }
+
+    pub(crate) fn set_local(&mut self, i: usize, v: V) {
+        let f = self.frame();
+        f.slots[i] = v;
+        f.set[i] = true;
+    }
+
+    pub(crate) fn read_global_pub(&mut self, g: GlobalId) -> R<V> {
+        self.read_global(g)
+    }
+
+    /// `root = v` or `root op= v`, as [`Interp::assign`] does it for a place
+    /// with no steps.
+    pub(crate) fn assign_root(&mut self, root: ir::Root, op: Option<BinOp>, v: V) -> R<()> {
+        self.assign_value(root, &[], op, v)
+    }
+
+    pub(crate) fn tick_pub(&mut self) -> R<()> {
+        self.tick()
+    }
+
+    pub(crate) fn call_fn_pub(&mut self, id: FnId, argv: Vec<V>) -> R<V> {
+        self.call_fn(id, argv)
+    }
+
+    pub(crate) fn binary_pub(&mut self, op: BinOp, a: V, b: V) -> R<V> {
+        self.binary(op, a, b)
+    }
+
+    pub(crate) fn unit_rc(&self) -> Rc<Unit> {
+        Rc::clone(&self.unit)
+    }
+
+    pub(crate) fn stmt_pub(&mut self, s: &Stmt) -> R<()> {
+        self.stmt(s)
+    }
+
+    pub(crate) fn expr_pub(&mut self, e: &Expr) -> R<V> {
+        self.expr(e)
+    }
+
     fn tick(&mut self) -> R<()> {
         self.ops += 1;
         if self.ops > self.max_ops {
@@ -658,7 +735,13 @@ impl Interp {
     fn assign(&mut self, place: &Place, op: Option<BinOp>, value: &Expr) -> R<()> {
         let keys = self.keys(&place.steps)?;
         let v = self.expr(value)?;
-        let mut target = self.take(place.root, &keys)?;
+        self.assign_value(place.root, &keys, op, v)
+    }
+
+    /// The value `v` written at `root` and `keys`, applying `op` to what is
+    /// there first.
+    fn assign_value(&mut self, root: ir::Root, keys: &[Key], op: Option<BinOp>, v: V) -> R<()> {
+        let mut target = self.take(root, keys)?;
         let result = match op {
             None => Ok(v),
             // `list += item` adds the item, as the fork's `+=` did.
@@ -672,9 +755,9 @@ impl Interp {
             Some(op) => self.binary(op, target.clone(), v),
         };
         match result {
-            Ok(v) => self.put(place.root, &keys, v),
+            Ok(v) => self.put(root, keys, v),
             Err(e) => {
-                self.put(place.root, &keys, target)?;
+                self.put(root, keys, target)?;
                 Err(e)
             }
         }
@@ -1077,6 +1160,9 @@ impl Interp {
         if flat::everything() {
             return self.call_flat(id, argv);
         }
+        if let Some((locals, body)) = self.aot.get(&id.0).copied() {
+            return crate::aot::run(self, locals, body, argv);
+        }
         match self.run_body(&f.body, argv, Vec::new()) {
             Ok(v) | Err(Flow::Return(v)) => Ok(v),
             Err(Flow::Break | Flow::Continue) => fail("`break` or `continue` outside a loop"),
@@ -1345,6 +1431,11 @@ fn contains(hay: &V, needle: &V) -> R<bool> {
         (V::Range(a, b), n) => n.whole().is_some_and(|x| *a <= x && x < *b),
         (other, _) => return fail(format!("`in` cannot look inside a {}", other.type_name())),
     })
+}
+
+/// `unary`, for compiled code.
+pub(crate) fn unary_pub(op: UnOp, v: V) -> R<V> {
+    unary(op, v)
 }
 
 fn unary(op: UnOp, v: V) -> R<V> {

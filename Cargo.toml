@@ -22,6 +22,9 @@ members = [
     "crates/rux-native",
     "crates/rux-native-macros",
     "crates/rux-bindgen",
+    # Rust generated from the typed IR for release builds: docs/11-next.md, step 9.
+    "crates/rux-codegen",
+    "crates/rux-aot-tests",
 ]
 
 [workspace.package]
@@ -80,6 +83,7 @@ rux-ir = { version = "0.8.0-dev", path = "crates/rux-ir" }
 rux-native = { version = "0.8.0-dev", path = "crates/rux-native", default-features = false }
 rux-native-macros = { version = "0.8.0-dev", path = "crates/rux-native-macros" }
 rux-bindgen = { version = "0.8.0-dev", path = "crates/rux-bindgen" }
+rux-codegen = { version = "0.8.0-dev", path = "crates/rux-codegen" }
 rux-paint = { version = "0.8.0-dev", path = "crates/rux-paint" }
 rux-style = { version = "0.8.0-dev", path = "crates/rux-style" }
 rux-runtime = { version = "0.8.0-dev", path = "crates/rux-runtime" }

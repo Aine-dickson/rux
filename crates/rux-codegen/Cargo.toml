@@ -1,0 +1,13 @@
+[package]
+name = "rux-codegen"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Rust generated from Rux's typed IR, for release builds. Internal to Rux; the supported entry point is the ruxlang crate."
+readme = "README.md"
+keywords = ["ui", "compiler", "language"]
+categories = ["gui", "compilers"]
+
+[dependencies]
+rux-ir.workspace = true

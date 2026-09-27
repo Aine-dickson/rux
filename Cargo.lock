@@ -2831,12 +2831,28 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
 
 [[package]]
+name = "rux-aot-tests"
+version = "0.8.0-dev"
+dependencies = [
+ "rux-codegen",
+ "rux-reactive",
+ "rux-script",
+]
+
+[[package]]
 name = "rux-bindgen"
 version = "0.8.0-dev"
 dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.118",
+]
+
+[[package]]
+name = "rux-codegen"
+version = "0.8.0-dev"
+dependencies = [
+ "rux-ir",
 ]
 
 [[package]]

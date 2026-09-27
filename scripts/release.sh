@@ -504,7 +504,8 @@ LAYERS=(
   # Native modules (step 8 of docs/11-next.md): the macros read signatures
   # with rux-bindgen, rux-native re-exports the macros, and rux-script calls
   # through rux-native, so each needs the one before it on the index.
-  "rux-native-macros"
+  # rux-codegen (step 9) needs only rux-ir, so it rides in the macros' layer.
+  "rux-native-macros rux-codegen"
   "rux-native"
   # rux-fmt depends on rux-parser for the void-tag list, so it cannot share a
   # layer with it: within a layer crates publish back to back and the index

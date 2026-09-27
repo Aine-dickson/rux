@@ -1,0 +1,198 @@
+//! Compiled functions: step 9 of `docs/11-next.md`.
+//!
+//! A release build writes Rust for a file's functions (`rux-codegen`) and
+//! registers it here under a hash of the exact text it was generated from.
+//! When the interpreter lowers a file whose text has that hash, a call to one
+//! of those functions runs the compiled code instead of walking the tree.
+//! Anything else (a hot-reloaded file, a document the build did not see) is
+//! interpreted as before: compiled code never runs for text it was not made
+//! from.
+//!
+//! The compiled code runs inside the interpreter, in a frame of the
+//! interpreter's own, through [`Cx`]: the one surface it may call. Reading
+//! and writing state is tracked by the same calls as the interpreter's, the
+//! step budget is the same, and a statement the generator could not compile
+//! is handed to the interpreter by its place in the function, in the same
+//! frame.
+
+use std::collections::HashMap;
+use std::sync::Mutex;
+
+use rux_ir::ir::{Block, FnId, GlobalId, LocalId, Root, Stmt, StmtKind};
+
+use crate::interp::Interp;
+
+pub use crate::interp::value::V;
+pub use crate::interp::{Fault, Flow};
+pub use rux_ir::ir::{At, BinOp, UnOp};
+
+/// What a compiled step gives: a value, or the flow that leaves it.
+pub type R<T> = Result<T, Flow>;
+
+/// A compiled function's body: runs in the frame [`Cx`] entered for it.
+pub type Body = fn(&mut Cx) -> R<V>;
+
+/// One compiled function: its id in the unit, how many locals its frame
+/// has, and its body.
+pub type Entry = (u32, u32, Body);
+
+static TABLES: Mutex<Option<HashMap<u64, &'static [Entry]>>> = Mutex::new(None);
+
+/// Register compiled functions for the file whose text hashes to `hash`
+/// (see [`source_hash`]). What the generated `install()` calls.
+pub fn register(hash: u64, fns: &'static [Entry]) {
+    TABLES.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).insert(hash, fns);
+}
+
+/// What is registered for `hash`.
+pub(crate) fn lookup(hash: u64) -> Option<HashMap<u32, (u32, Body)>> {
+    let tables = TABLES.lock().unwrap_or_else(|e| e.into_inner());
+    let fns = tables.as_ref()?.get(&hash)?;
+    Some(fns.iter().map(|(id, n, f)| (*id, (*n, *f))).collect())
+}
+
+/// FNV-1a over `parts`, each followed by a separator byte, so `["ab", "c"]`
+/// and `["a", "bc"]` differ. A cache key: the compiled code is part of the
+/// same binary as the text it was made from.
+pub fn source_hash<'a>(parts: impl IntoIterator<Item = &'a str>) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for p in parts {
+        for b in p.bytes().chain(std::iter::once(0xff)) {
+            h ^= u64::from(b);
+            h = h.wrapping_mul(0x0100_0000_01b3);
+        }
+    }
+    h
+}
+
+/// Run compiled `body` as a call: a frame of `locals` slots with `args`
+/// first, and what leaves it mapped as the interpreter maps a call's.
+pub(crate) fn run(ip: &mut Interp, locals: u32, body: Body, args: Vec<V>) -> R<V> {
+    ip.push_frame(locals as usize, args)?;
+    let out = body(&mut Cx { ip });
+    ip.pop_frame();
+    match out {
+        Ok(v) | Err(Flow::Return(v)) => Ok(v),
+        Err(Flow::Break | Flow::Continue) => Err(Flow::Fault(Fault::new("`break` or `continue` outside a loop"))),
+        Err(e) => Err(e),
+    }
+}
+
+/// `e`, a failure in the statement at `start..end`, placed there unless it
+/// already has a place, as the interpreter places one.
+pub fn at(e: Flow, start: u32, end: u32) -> Flow {
+    match e {
+        Flow::Fault(mut f) if f.at.is_none() => {
+            f.at = Some(At { start, end });
+            Flow::Fault(f)
+        }
+        other => other,
+    }
+}
+
+/// Whether `v` counts as true: JavaScript's rule, as the language's.
+pub fn truthy(v: &V) -> bool {
+    v.truthy()
+}
+
+/// A plain string value.
+pub fn text(s: &str) -> V {
+    V::str(s)
+}
+
+/// The interpreter, as compiled code sees it.
+pub struct Cx<'a> {
+    pub(crate) ip: &'a mut Interp,
+}
+
+impl Cx<'_> {
+    /// Local `i` of this frame.
+    pub fn get(&mut self, i: u32) -> V {
+        self.ip.local(i as usize)
+    }
+
+    /// Give local `i` a value, as `let` does.
+    pub fn set(&mut self, i: u32, v: V) {
+        self.ip.set_local(i as usize, v);
+    }
+
+    /// Global `g`, read as the interpreter reads one: tracked, and a failure
+    /// when it has no value yet.
+    pub fn global(&mut self, g: u32) -> R<V> {
+        self.ip.read_global_pub(GlobalId(g))
+    }
+
+    /// `place = v` or `place op= v` on a local or a global with no fields or
+    /// indexes, as the interpreter assigns.
+    pub fn assign_local(&mut self, i: u32, op: Option<BinOp>, v: V) -> R<()> {
+        self.ip.assign_root(Root::Local(LocalId(i)), op, v)
+    }
+
+    pub fn assign_global(&mut self, g: u32, op: Option<BinOp>, v: V) -> R<()> {
+        self.ip.assign_root(Root::Global(GlobalId(g)), op, v)
+    }
+
+    /// One step of the budget a run may take.
+    pub fn tick(&mut self) -> R<()> {
+        self.ip.tick_pub()
+    }
+
+    /// A call to the unit's function `id`: compiled when it is, interpreted
+    /// when not.
+    pub fn call(&mut self, id: u32, args: Vec<V>) -> R<V> {
+        self.ip.call_fn_pub(FnId(id), args)
+    }
+
+    pub fn binary(&mut self, op: BinOp, a: V, b: V) -> R<V> {
+        self.ip.binary_pub(op, a, b)
+    }
+
+    pub fn unary(&mut self, op: UnOp, v: V) -> R<V> {
+        crate::interp::unary_pub(op, v)
+    }
+
+    /// Run, in this frame, the statement at `path` of function `id`'s body
+    /// (see [`find`]): what the generator could not compile.
+    pub fn stmt(&mut self, id: u32, path: &[u32]) -> R<()> {
+        let unit = self.ip.unit_rc();
+        match find(&unit.fns[id as usize].body.block, path) {
+            Some(s) => self.ip.stmt_pub(s),
+            None => Err(Flow::Fault(Fault::new("compiled code out of step with its source"))),
+        }
+    }
+
+    /// The value of the expression statement at `path` of function `id`'s
+    /// body, as a block's value is worked out.
+    pub fn value(&mut self, id: u32, path: &[u32]) -> R<V> {
+        let unit = self.ip.unit_rc();
+        match find(&unit.fns[id as usize].body.block, path).map(|s| &s.kind) {
+            Some(StmtKind::Expr(e)) => {
+                self.ip.tick_pub()?;
+                self.ip.expr_pub(e)
+            }
+            _ => Err(Flow::Fault(Fault::new("compiled code out of step with its source"))),
+        }
+    }
+}
+
+/// The statement at `path` in `b`: the first number is its place in `b`,
+/// then, for each level down, which of its blocks (an `if`'s `then` 0 and
+/// `else` 1, a loop's body 0, a `try`'s body 0 and `catch` 1) and the place
+/// in that block. The generator numbers them the same way.
+pub fn find<'b>(b: &'b Block, path: &[u32]) -> Option<&'b Stmt> {
+    let (first, rest) = path.split_first()?;
+    let s = b.stmts.get(*first as usize)?;
+    if rest.is_empty() {
+        return Some(s);
+    }
+    let (which, rest) = rest.split_first()?;
+    let inner = match (&s.kind, which) {
+        (StmtKind::If { then, .. }, 0) => then,
+        (StmtKind::If { otherwise: Some(o), .. }, 1) => o,
+        (StmtKind::While { body, .. } | StmtKind::ForRange { body, .. } | StmtKind::ForEach { body, .. }, 0) => body,
+        (StmtKind::Try { body, .. }, 0) => body,
+        (StmtKind::Try { catch, .. }, 1) => catch,
+        _ => return None,
+    };
+    find(inner, rest)
+}
