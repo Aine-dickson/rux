@@ -1261,6 +1261,21 @@ Float indexing narrows to what the types allow: an index is an `int`, and a
    holds `components/crew_detail::member_of`). What is not compiled in any
    file is its template pieces (handlers and bindings) and `async fn`
    bodies.
+
+   9.5 driven 2026-09-27: a two-file project (a document with a `<router>`
+   and a component page) built with `rux build --release --target web`
+   compiled 7 functions, none handed back, and was run in Brave over the
+   DevTools protocol. A built web app now says in the console, once, when
+   its script runs compiled: `rux: script 0x83142b371c27822c: 7 functions
+   run compiled`, the hash the build registered. A tap ran a handler whose
+   function navigates to a path made of compiled results (recursion, a
+   `switch` with a range, a caught failure, closures, `?.` chains), and the
+   address bar read `/r/610-small-caught-12-rex-none`, the expected
+   answer. Two things cost time and are about the harness, not Rux: a
+   server already on the chosen port answered instead of the test's
+   (Windows lets a second server bind it silently), and a browser
+   launcher's process is not the browser, so stopping it leaves the old
+   page for the next run to attach to.
    Writing the corpus found three defects older than step 9, all in both
    engines (watchlist 36 to 38): the checker lets `.` read an optional
    field, `trunc` of an infinity gives `Infinity`, and a `switch` guard that

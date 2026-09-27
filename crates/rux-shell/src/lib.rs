@@ -8769,6 +8769,14 @@ pub fn start_web_app(
             Document::from_source("<template><screen></screen></template>").expect("empty document")
         }
     };
+    // A release build's compiled script (step 9 of docs/11-next.md) is
+    // otherwise invisible by design; a browser has no `RUX_AOT_REPORT`, so
+    // the page says it once, beside the canvas line.
+    let compiled = document.compiled_functions();
+    if compiled > 0 {
+        let hash = document.compiled_unit().0;
+        web_sys::console::log_1(&format!("rux: script {hash:#018x}: {compiled} functions run compiled").into());
+    }
 
     // A built app owns its address bar, unlike the playground, which is why
     // `base` is threaded through at all: a `<router>` in an app someone
