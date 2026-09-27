@@ -1039,7 +1039,7 @@ Float indexing narrows to what the types allow: an index is an `int`, and a
    machine. The one difference kept on purpose is that a whole-number signal
    is an `int` (`type_of` said `"f64"`). Then rhai was deleted: `rux-rhai`,
    the text rewriting that fed it, and its advisory job. Script is faster in
-   the window: on the `rux-harness/script-cost` runs, a loop over 1000
+   the window: on the `rux-harness/script-cost` runs, a loop over 10 000
    records went from 18.6 to 4.7 ms a frame, a filter from 17.0 to 1.6, and
    a list's bindings from 1.6 to 0.08 (`tests/interp_cost.rs` times the same
    work outside the window). Three decided changes were switched on with it:
@@ -1517,6 +1517,111 @@ Float indexing narrows to what the types allow: an index is an `int`, and a
      that differ infers the fields not all have as optional). Each
      changes what an author sees, so each is shown to the owner before it
      is committed.
+10. **Closing the speed gap with Dart and the JVM.** Guidance, written
+   2026-09-27 at the end of step 9, not a fixed plan: the next session
+   reads it, checks it against the code, and proposes its own order where
+   it sees better. What is measured is fact; what is suggested is a
+   starting point.
+
+   **Where things stand.** Script time per frame on the
+   `rux-harness/script-cost` apps (release, desktop), from the rhai fork
+   to today:
+
+   | Stage | Sum, 10 000 records | Filter, 2 000 | List, 300 rows |
+   |---|---|---|---|
+   | rhai fork, after the 2026-09-25 fixes | 18.6 ms | 17.0 ms | 1.6 ms |
+   | Rux's interpreter, rhai deleted (step 5) | 4.7 ms | 1.6 ms | 0.08 ms |
+   | Today, interpreted (`rux run`) | 4.91 ms | 1.47 ms | 0.076 ms |
+   | Today, compiled (`rux build --release`) | 3.64 ms | 1.19 ms | not measured |
+
+   Before any of that work the whole frames were 88 ms (sum) and 78 ms
+   (list). The list's frame is now about 25 ms, and its script is 0.08 ms
+   of it: layout (10.6 ms, a fresh Taffy tree every frame) and patching
+   (6.9 ms) are the rest. Compare script time, not whole frames: the `gpu`
+   phase runs 1 to 9 ms depending on the window, whatever the app does.
+
+   The same work in Dart compiled ahead of time (what a Flutter release
+   runs) and Java 17 on the desktop JVM (standing in for Kotlin; ART on a
+   phone is another VM), microseconds per call, best of seven rounds, the
+   sources in `rux-harness/compare` outside the repo:
+
+   | Work | Rux interpreted | Rux compiled | Dart | JVM |
+   |---|---|---|---|---|
+   | `fib(18)` | ~3200 | ~920 | 23.9 | 19.8 |
+   | sum of ints to 10 000 | ~850 | ~245 | 7.4 | 3.9 |
+   | 10 000 records, `price * qty` | 4910* | 3640* | 17.7 | 19.1 |
+   | filter 2 000 records | 1470* | 1190* | 62 | 17 |
+   | recursion before it is stopped | 128 | 128 | 57 090 | 21 712 |
+
+   \* Per frame in the window, so a little work around the loop is in it.
+   Compiled Rux is 30 to 40 times behind on calls and integer loops and
+   about 200 times behind on records. Plain Rust does the record sum in
+   about 8 µs, faster than both, so the gap is how the generated Rust
+   holds values, not the language it is written in.
+
+   **Why, as the code stands at e2b283a.** Every value is a dynamic `V`
+   (a tagged enum, reference counted), even where the checker has proven
+   an `int`. A record is a `BTreeMap<String, V>`, so `item.price` is a
+   string search and a clone. A call between compiled functions goes
+   `Cx::call`, `call_fn`, `aot::run`, with its arguments in a new `Vec`
+   and a stack probe. `map` and `filter` call their closure through that
+   machinery once per item. Every statement ticks the step budget through
+   a call, and every state read is tracked by name.
+
+   **What must not change.** The owner wants the syntax authors write
+   today kept, and none of the tracks below needs a new spelling: the
+   checker already puts a type on every expression of the IR. Behaviour
+   must not change either, and the differential proof in
+   `crates/rux-aot-tests` is what holds that; every track adds its cases
+   there. Two behaviours are at risk and need a decision, not a default:
+   a record shows and walks its fields sorted by name today (a layout in
+   declaration order must keep showing them sorted), and a write to a
+   field its type does not declare works today (a fixed layout needs a
+   fallback, or the owner makes it an error). `any` keeps working and
+   keeps its dynamic speed, as Dart's `dynamic` does.
+
+   **Tracks, roughly by what each buys for what it costs.**
+   - (a) Typed values in generated code: an expression whose type is
+     `int`, `float` or `bool` becomes Rust's `i64`, `f64`, `bool`, and
+     becomes a `V` only where it leaves (state, `any`, a call into the
+     interpreter, a hand-back). Does not touch the value model. Should
+     move `fib` and integer loops most. Watch: an `int` overflow must
+     still fail with the interpreter's words, as `fast_path` does now.
+   - (b) Direct calls: a compiled function calling another compiled one
+     with typed arguments calls it as a Rust function, with the depth
+     count kept as a plain counter. Pairs with (a).
+   - (c) A record layout: fields at indexes the checker knows, the
+     interpreter reading by name through the layout, compiled code by
+     index. The largest lever (records, 200x) and the largest change: the
+     interpreter, the standard library, bindings, equality and display all
+     meet it. Needs the owner's two decisions above first.
+   - (d) Callbacks written inline (`xs.filter(x => x.n > 1)`) compiled
+     into a Rust loop, with no closure value and no call per item.
+   - (e) Cheaper bookkeeping: the step tick as a counter decrement, a
+     state read tracked once per function rather than per use.
+   - (f) The recursion cap: measure a release call's stack (the probe in
+     `tests/stack.rs` in a release build), then raise `MAX_DEPTH` for
+     release builds to what the 1 MB main thread allows with room.
+   - (g) Not script: incremental layout (keep the Taffy tree across
+     frames) and a cheaper patch, which is where the list's frame goes.
+     Matching Flutter on what a user sees needs this more than any of the
+     above. Its own track, with its own measurements.
+
+   **A suggested first move**, open to a better one: prototype (a) and (b)
+   on `fib` and `sum`, and put the numbers beside Dart's and the JVM's
+   before committing to anything larger. That shows whether generated
+   typed Rust closes the gap as expected (the estimate: within a few
+   times of Dart on those two), cheaply, and without touching the value
+   model. Then bring (c) to the owner with its two decisions and the
+   prototype's numbers.
+
+   **Questions the next session should answer for itself** rather than
+   take from here: whether (c) is better done as Rust structs per record
+   type or as one shared layout-and-slots value; whether (d) is worth it
+   once (a) to (c) exist, or falls out of them; whether any of this
+   should wait behind (g), given that script is under 1% of the list's
+   frame; and what a fair whole-frame comparison would be (the same app
+   built in Flutter and Compose, on one device).
 
 Steps 2 to 5 change nothing an author sees except the decided syntax and
 types, which is what made them safe to take in order.
