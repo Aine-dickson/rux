@@ -2341,9 +2341,17 @@ impl<'a> Checker<'a> {
                 if matches!(op, "==" | "!=" | "===" | "!==") {
                     self.check_comparable(lhs, &a, rhs, &b, pos);
                 }
-                // `2 ** 3` is an `int`: a power of an `int` to a whole
-                // number written out, and not below zero, is one.
-                if op == "**" && matches!(rhs.kind, ExprKind::Int(n) if n >= 0) && self.resolve(&a) == Type::Int {
+                // `a ** b` of two `int`s is an `int` (decided 2026-09-27):
+                // exact, or an overflow, never a rounded float. A power
+                // below zero fails when it runs; one written out is refused
+                // here.
+                if op == "**" && self.resolve(&a) == Type::Int && self.resolve(&b) == Type::Int && negative(rhs) {
+                    self.error(
+                        pos,
+                        "an `int` raised to a negative power is not a whole number; make the base a `float`: `2.0 ** -1`"
+                            .to_string(),
+                    );
+                    // Its type as it was meant, so this is the one error.
                     return Type::Int;
                 }
                 self.binary(op, &a, &b, pos)
@@ -2646,7 +2654,7 @@ impl<'a> Checker<'a> {
             }
             // Two `int`s make an `int`, except by `/`, which always makes a
             // `float`: `7 / 2` is `3.5`, and `intDiv(7, 2)` is `3`.
-            "+" | "-" | "*" | "%" if a == Type::Int && b == Type::Int => Type::Int,
+            "+" | "-" | "*" | "%" | "**" if a == Type::Int && b == Type::Int => Type::Int,
             "+" | "-" | "*" | "/" | "%" | "**" if number(&a) && number(&b) => Type::Float,
             "==" | "!=" | "===" | "!==" => Type::Bool,
             "<" | ">" | "<=" | ">=" => Type::Bool,
@@ -3577,6 +3585,15 @@ fn operands<'e>(e: &'e Expr, op: &str) -> Vec<&'e Expr> {
     out
 }
 
+/// Whether `e` is a whole number written out below zero: `-1`.
+fn negative(e: &Expr) -> bool {
+    match &e.kind {
+        ExprKind::Int(n) => *n < 0,
+        ExprKind::Unary { op: "-", expr } => matches!(expr.kind, ExprKind::Int(n) if n > 0),
+        _ => false,
+    }
+}
+
 /// Whether `e` is a step of a chain.
 fn is_step(e: &Expr) -> bool {
     matches!(e.kind, ExprKind::Field { .. } | ExprKind::Method { .. } | ExprKind::Index { .. })
@@ -4003,7 +4020,10 @@ mod tests {
             assert!(errors(quiet).is_empty(), "{quiet}\n{:?}", errors(quiet));
         }
         one_error("let m: int = max(1, 2.5);", "`float`, where `int` is expected");
-        one_error("fn f(): int { 2 ** -1 }", "this is `float`");
+        one_error("fn f(): int { 2 ** -1 }", "an `int` raised to a negative power");
+        // A name on the right is an `int` too: exact, or it fails running.
+        assert!(errors("fn f(a: int, b: int): int { a ** b }").is_empty());
+        one_error("fn f(a: int, b: int): float { let x: float = 2.0 ** b; let y: int = a ** 0.5; x }", "`float`");
         one_error("let xs = [1, 2]; fn f() { xs[1.5] }", "a list is indexed by an `int`, and this is a `float`; `.trunc()`");
         one_error("let xs = [1, 2]; fn f() { xs[\"1\"] }", "a list is indexed by an `int`");
         // Text to a number may not be one.

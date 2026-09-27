@@ -1863,7 +1863,7 @@ fn dynamic(op: &str, a: V, b: V) -> R<V> {
         "**" => match (&a, &b) {
             (V::Int(x), V::Int(y)) => {
                 if *y < 0 {
-                    return fail("Integer raised to a negative power: write it as a float");
+                    return fail("Integer raised to a negative power: make the base a float (`2.0 ** n`)");
                 }
                 V::Int(u32::try_from(*y).ok().and_then(|y| x.checked_pow(y)).ok_or_else(overflow)?)
             }

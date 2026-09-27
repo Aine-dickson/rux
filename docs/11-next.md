@@ -224,8 +224,11 @@ A union may begin with `|` so a long one lines up (Kept).
   behaviour, now said by the type. `intDiv(7, 2)` is `3`, truncating toward
   zero (proposed).
 - `+`, `-`, `*` and `%` of two `int`s are an `int`; with a `float` on either
-  side they are a `float`. `**` is power, and is a `float` unless both sides are
-  `int` and the right is not negative (proposed).
+  side they are a `float`. `**` is power, and of two `int`s is an `int`
+  (decided 2026-09-27): exact, or an `overflow` throw, never a rounded
+  `float`. A negative power of an `int` throws when it runs; one written out
+  (`2 ** -1`) is a checker error that says to make the base a `float`
+  (`2.0 ** -1`). A `float` on either side makes a `float`.
 - **`int` arithmetic that overflows throws** an `Error` with `kind`
   `"overflow"`, in the interpreter and in a compiled build alike (New,
   proposed). Rust's release default is to wrap silently, and a UI showing a
@@ -1586,8 +1589,9 @@ Float indexing narrows to what the types allow: an index is an `int`, and a
    without `color`: "`Item` has no field `color`"); what works today is
    only what gets past the checker, in the interpreter, which warns and
    runs on. Under a fixed layout that write fails when it runs too, with
-   `kind` `"type"`, as a wrong use of an `any` does. The first, the order
-   fields are shown and walked in, is still open.
+   `kind` `"type"`, as a wrong use of an `any` does. The first is decided
+   too (owner, 2026-09-27): **fields are shown and walked in the order the
+   type declares them**, not sorted by name.
 
    **Tracks, roughly by what each buys for what it costs.**
    - (a) Typed values in generated code: an expression whose type is
@@ -1669,18 +1673,23 @@ Float indexing narrows to what the types allow: an index is an `int`, and a
    try. Records (track (c)) are untouched: the script-cost sum over
    records does not change.
 
-   `**` of two `int`s, looked at on the way (watchlist 39): it is an `int`
-   only when its right side is a whole number written out and not below
-   zero (`a ** 2`); with a name on the right (`a ** b`) the checker cannot
-   know the sign before it runs, so it is a `float`. That is the rule in
-   `check.rs` and `lower.rs`, Rux's own, not Rust's. `rux check` refuses
-   `fn powi(a: int, b: int): int { a ** b }` ("declared to return `int`,
-   and this is `float`"); the interpreter, which warns where a release
-   build refuses, runs it and gives a `float`. Corpus script 12 keeps
-   `powi` as a case of code the checker refused, which the typed body
-   declines too. Whether `int ** int` with a name on the right should be
-   an `int` (failing when the right turns out negative, as Rust's `pow`
-   cannot take one) is a question for the owner.
+   `**` of two `int`s, looked at on the way (watchlist 39): it was an
+   `int` only when its right side was a whole number written out and not
+   below zero (`a ** 2`); with a name on the right (`a ** b`) it was a
+   `float`, because the sign is not known before it runs. That was Rux's
+   own rule, not Rust's, and it cost exactness: a `float` holds 53 bits, so
+   `3 ** 34` came out as 16677181699666568, one less than the answer, with
+   no error. The owner decided (2026-09-27) that `int ** int` is an `int`,
+   as "Numbers" now says: exact, or an `overflow` throw, and a negative
+   power throws (written out, the checker refuses it). Corpus script 12
+   holds `3 ** 34`, `7 ** 20`, `2 ** 63` (overflow) and a negative power,
+   and `powi` now has a typed body.
+
+   **Field order decided too** (owner, 2026-09-27): a record shows and
+   walks its fields **in the order its type declares them**, as
+   JavaScript, Dart and Kotlin do, not sorted by name as today. Under the
+   fixed layout of track (c) that is the slots' own order, so it costs
+   nothing. With both of track (c)'s decisions taken, (c) is ready to plan.
 
 Steps 2 to 5 change nothing an author sees except the decided syntax and
 types, which is what made them safe to take in order.

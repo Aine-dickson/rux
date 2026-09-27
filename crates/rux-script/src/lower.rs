@@ -1133,7 +1133,7 @@ impl<'a> Lower<'a> {
             "-" if int(&a) && int(&b) => Some(BinOp::SubInt),
             "*" if int(&a) && int(&b) => Some(BinOp::MulInt),
             "%" if int(&a) && int(&b) => Some(BinOp::RemInt),
-            "**" if int(&a) && int(&b) && matches!(r.kind, ExprKind::Int(n) if n >= 0) => Some(BinOp::PowInt),
+            "**" if int(&a) && int(&b) => Some(BinOp::PowInt),
             "+" if number(&a) && number(&b) => Some(BinOp::AddFloat),
             "-" if number(&a) && number(&b) => Some(BinOp::SubFloat),
             "*" if number(&a) && number(&b) => Some(BinOp::MulFloat),

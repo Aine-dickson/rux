@@ -93,15 +93,13 @@ fn coverage() {
 }
 
 /// Step 10: every function of the typed script has a typed body except
-/// `show`, which makes a string, and `powi`, whose `a ** b` is a `float`
-/// (a name on the right: its sign is not known before it runs) in a
-/// function declared `: int`, which `rux check` refuses and the typed body
-/// declines too; and the untyped scripts none that could not be one.
+/// `show`, which makes a string; and the untyped scripts none that could
+/// not be one.
 #[test]
 fn typed_bodies_are_written() {
     let typed = |i: usize| COVERAGE.iter().find(|c| c.0 == i).map(|c| (c.1, c.4)).expect("script");
     let (functions, n) = typed(CORPUS.len() - 1);
-    assert_eq!(n, functions - 2, "the typed script: {n} of {functions} typed");
+    assert_eq!(n, functions - 1, "the typed script: {n} of {functions} typed");
     // `fib`, `big`, `forever`, `half`, `deep`: all numbers.
     assert_eq!(typed(0).1, 5);
     // State, records, strings: none.
