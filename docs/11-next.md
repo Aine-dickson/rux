@@ -1729,6 +1729,33 @@ Float indexing narrows to what the types allow: an index is an `int`, and a
    probe only every so many levels) are what would move it, and are
    small; records are worth far more first.
 
+   **10.3, next, before track (c): cheaper calls between typed bodies,
+   and the recursion limit (track (f)).** Small, and first on purpose:
+   left behind a bigger step, a small thing is the kind that is found
+   again later as a surprise. `fib(18)` is 42 µs compiled against Dart's
+   23.9 and the JVM's 19.8, and the difference is calls: each typed call
+   today does `cx.enter()` (reads the frame stack's length and a
+   counter, takes the stack pointer, compares it with the budget, adds
+   one), hands the step count back to the interpreter and reads it again
+   after, and `cx.leave()`. What to try, measuring each on its own:
+   - pass the step count to a typed callee as `&mut u64` (or return it
+     with the value) instead of storing it into the interpreter and
+     reading it back;
+   - keep the depth as a local passed down the typed calls, with the
+     interpreter's counter written once when typed code is entered from
+     outside, not per call;
+   - take the stack probe only every 8 or 16 levels: a release typed
+     frame is small, and the probe is there for debug frames;
+   - then track (f): measure a release call's stack (`tests/stack.rs`
+     run with `--release`) and raise `MAX_DEPTH` in release builds to
+     what the 1 MB Windows main thread allows with room to spare. Today
+     recursion stops at 128 deep in every build; Dart stops at about
+     57 000 and the JVM at about 21 700.
+   Proof: the corpus (`deep(0)`, `chain`, `burn()` hold depth, failure
+   place and step count), the gate, and `fib(18)` benched before and
+   after each change. The error words for too deep stay the same; the
+   number in them changes with the limit, which the owner should see.
+
    **The plan for track (c), records as slots, written 2026-09-28 for the
    next session.** Guidance, as the rest of step 10 is: check it against
    the code and reorder where the code says otherwise. Both decisions it
