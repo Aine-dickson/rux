@@ -618,6 +618,59 @@ impl Interp {
         self.binary(op, a, b)
     }
 
+    /// `b.name`, as a chain with no `?.` reads it.
+    pub(crate) fn field_pub(&mut self, b: &V, name: &str) -> R<V> {
+        Ok(field(b, name, false)?.unwrap_or(V::None))
+    }
+
+    /// `b[i]`, as a chain with no `?[` reads it.
+    pub(crate) fn index_pub(&mut self, b: &V, i: &V) -> R<V> {
+        Ok(index_of(b, i, false)?.unwrap_or(V::None))
+    }
+
+    /// `recv.name(args)` for a method that does not change its receiver.
+    pub(crate) fn method_pub(&mut self, recv: V, name: &str, argv: Vec<V>) -> R<V> {
+        let mut recv = recv;
+        self.method_mut(&mut recv, name, argv)
+    }
+
+    /// What `for x in over` walks, item by item.
+    pub(crate) fn items_pub(over: V) -> R<Vec<V>> {
+        items_of(over)
+    }
+
+    /// `throw v`, as the interpreter throws it.
+    pub(crate) fn thrown_pub(v: V) -> Flow {
+        let message = match &v {
+            V::Map(m) => m.get("message").map(V::display).unwrap_or_else(|| v.display()),
+            other => other.display(),
+        };
+        Flow::Fault(Fault { message, kind: "error", thrown: Some(v), at: None })
+    }
+
+    pub(crate) fn builtin_pub(&mut self, name: &str, argv: Vec<V>) -> R<V> {
+        self.builtin(name, argv)
+    }
+
+    /// A native export called without `await`, as [`Interp::call`] calls one.
+    pub(crate) fn native_pub(&mut self, key: &str, argv: Vec<V>) -> R<V> {
+        match self.native(key)? {
+            rux_native::Call::Sync(f) => call_native(&f, &argv),
+            rux_native::Call::Async(_) => {
+                let name = key.replace('/', "::");
+                fail(format!("{name} is `async` in Rust: await it inside an `async fn`"))
+            }
+        }
+    }
+
+    pub(crate) fn call_value_pub(&mut self, f: V, argv: Vec<V>) -> R<V> {
+        self.call_value(f, argv)
+    }
+
+    pub(crate) fn call_named_pub(&mut self, name: &str, argv: Vec<V>) -> R<V> {
+        self.call_named(name, argv)
+    }
+
     pub(crate) fn unit_rc(&self) -> Rc<Unit> {
         Rc::clone(&self.unit)
     }

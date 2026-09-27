@@ -35,13 +35,15 @@ pub const METHODS: &[&str] = &[
 
 /// Whether a method changes its receiver, so a call on a place writes the
 /// place: `items.push(x)`, `list.sort()`.
+/// The methods that change the value they are called on, so the receiver
+/// is a place to write back to.
+pub const MUTATING: &[&str] = &[
+    "push", "append", "pop", "shift", "insert", "remove", "clear", "truncate", "reverse", "sort", "set", "splice",
+    "retain", "dedup", "drain", "pad", "replace", "make_upper", "make_lower", "unshift", "fill",
+];
+
 pub(crate) fn mutates(name: &str) -> bool {
-    matches!(
-        name,
-        "push" | "append" | "pop" | "shift" | "insert" | "remove" | "clear" | "truncate" | "reverse" | "sort" | "set"
-            | "splice" | "retain" | "dedup" | "drain" | "pad" | "replace" | "make_upper" | "make_lower"
-            | "unshift" | "fill"
-    )
+    MUTATING.contains(&name)
 }
 
 fn args_of<const N: usize>(name: &str, argv: &[V]) -> R<[V; N]> {

@@ -301,6 +301,32 @@ impl Gen<'_> {
                     }
                 )
             }
+            StmtKind::ForEach { var, counter, iter, body, .. } => {
+                let over = self.expr(iter, s, e)?;
+                let d = p.depth;
+                let mut bp = p.clone();
+                bp.path.extend([0]);
+                bp.in_loop = true;
+                bp.depth += 1;
+                let inner = self.nested(body, &bp, (s, e));
+                let set = |slot: u32, v: &str| {
+                    if self.frameless {
+                        format!("l{slot} = {v};\n")
+                    } else {
+                        format!("cx.set({slot}, {v});\n")
+                    }
+                };
+                let mut each = set(var.0, &format!("__it{d}"));
+                if let Some(c) = counter {
+                    each.push_str(&set(c.0, &format!("V::Int(__n{d} as i64)")));
+                }
+                format!(
+                    "let __over{d} = {over};\nlet __items{d} = t!(aot::items(__over{d}), {s}, {e});\n\
+                     for (__n{d}, __it{d}) in __items{d}.into_iter().enumerate() {{\n\
+                     t!(cx.tick(), {s}, {e});\n{each}{inner}}}\n"
+                )
+            }
+            StmtKind::Throw(v) => format!("let __t = {};\nreturn Err(aot::at(aot::thrown(__t), {s}, {e}));\n", self.expr(v, s, e)?),
             StmtKind::Break if p.in_loop => "break;\n".to_string(),
             StmtKind::Continue if p.in_loop => "continue;\n".to_string(),
             StmtKind::Return(v) => match v {
@@ -371,12 +397,63 @@ impl Gen<'_> {
                 code.push_str("aot::text(&__s) }");
                 code
             }
-            ExprKind::Call { callee: Callee::Fn(id), args } if !self.unit.fns.get(id.0 as usize)?.is_async => {
+            ExprKind::Call { callee, args } => {
+                // The callee's value first, then the arguments in order, as
+                // the interpreter works them out.
+                let func = match callee {
+                    Callee::Value(f) => Some(self.expr(f, s, end)?),
+                    _ => None,
+                };
                 let mut list = Vec::with_capacity(args.len());
                 for a in args {
                     list.push(self.expr(a, s, end)?);
                 }
-                format!("{{ let __args = vec![{}]; t!(cx.call({}, __args), {s}, {end}) }}", list.join(", "), id.0)
+                let call = match callee {
+                    Callee::Fn(id) if !self.unit.fns.get(id.0 as usize)?.is_async => format!("cx.call({}, __args)", id.0),
+                    Callee::Fn(_) => return None,
+                    Callee::Builtin(name) => format!("cx.builtin({name:?}, __args)"),
+                    Callee::Native(key) => format!("cx.native({key:?}, __args)"),
+                    Callee::Value(_) => "cx.call_value(__f, __args)".to_string(),
+                    Callee::Dyn(name) => format!("cx.call_named({name:?}, __args)"),
+                };
+                let f = func.map(|f| format!("let __f = {f}; ")).unwrap_or_default();
+                format!("{{ {f}let __args = vec![{}]; t!({call}, {s}, {end}) }}", list.join(", "))
+            }
+            ExprKind::Array(items) => {
+                let mut list = Vec::with_capacity(items.len());
+                for i in items {
+                    list.push(self.expr(i, s, end)?);
+                }
+                format!("aot::array(vec![{}])", list.join(", "))
+            }
+            ExprKind::Map(entries) => {
+                let mut list = Vec::with_capacity(entries.len());
+                for (k, v) in entries {
+                    list.push(format!("({k:?}, {})", self.expr(v, s, end)?));
+                }
+                format!("aot::map(vec![{}])", list.join(", "))
+            }
+            ExprKind::Field { base, name, optional: false } => {
+                let b = self.expr(base, s, end)?;
+                format!("{{ let __b = {b}; t!(cx.field(&__b, {name:?}), {s}, {end}) }}")
+            }
+            ExprKind::Index { base, index, optional: false } => {
+                let (b, i) = (self.expr(base, s, end)?, self.expr(index, s, end)?);
+                format!("{{ let __b = {b}; let __i = {i}; t!(cx.index(&__b, &__i), {s}, {end}) }}")
+            }
+            // A method that changes its receiver writes back to a place,
+            // which is the interpreter's to do.
+            ExprKind::Method { recv, method, args, optional: false } if !MUTATING.contains(&method.name.as_str()) => {
+                let r = self.expr(recv, s, end)?;
+                let mut list = Vec::with_capacity(args.len());
+                for a in args {
+                    list.push(self.expr(a, s, end)?);
+                }
+                format!(
+                    "{{ let __m = {r}; let __args = vec![{}]; t!(cx.method(__m, {:?}, __args), {s}, {end}) }}",
+                    list.join(", "),
+                    method.name
+                )
             }
             _ => return None,
         })
@@ -404,6 +481,13 @@ fn fast_path(op: BinOp) -> Option<&'static str> {
         _ => return None,
     })
 }
+
+/// The methods that change their receiver: a copy of the interpreter's list
+/// (`rux_script::aot::MUTATING`), which `rux-aot-tests` holds this to.
+pub const MUTATING: &[&str] = &[
+    "push", "append", "pop", "shift", "insert", "remove", "clear", "truncate", "reverse", "sort", "set", "splice",
+    "retain", "dedup", "drain", "pad", "replace", "make_upper", "make_lower", "unshift", "fill",
+];
 
 fn path_of(path: &[u32]) -> String {
     format!("[{}]", path.iter().map(|n| n.to_string()).collect::<Vec<_>>().join(", "))

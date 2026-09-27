@@ -21,6 +21,11 @@ fn main() {
         ));
     }
     install.push_str("}\n");
+    install.push_str(&format!(
+        "pub const MUTATING_IN_CODEGEN: [&str; {}] = {:?};\n",
+        rux_codegen::MUTATING.len(),
+        rux_codegen::MUTATING
+    ));
     code.push_str(&install);
     code.push_str(&format!(
         "/// Per script: functions compiled, skipped, statements compiled, handed back.\n\

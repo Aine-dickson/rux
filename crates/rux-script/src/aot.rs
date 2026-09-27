@@ -114,6 +114,31 @@ pub fn text(s: &str) -> V {
     V::str(s)
 }
 
+/// What `for x in over` walks, item by item.
+pub fn items(over: V) -> R<Vec<V>> {
+    Interp::items_pub(over)
+}
+
+/// `throw v`: what leaves the statement.
+pub fn thrown(v: V) -> Flow {
+    Interp::thrown_pub(v)
+}
+
+/// An array of `items`.
+pub fn array(items: Vec<V>) -> V {
+    V::array(items)
+}
+
+/// A map or record of `entries`, a later key replacing an earlier one.
+pub fn map(entries: Vec<(&str, V)>) -> V {
+    V::Map(std::rc::Rc::new(entries.into_iter().map(|(k, v)| (k.to_string(), v)).collect()))
+}
+
+/// The methods that change their receiver: `rux-codegen` hands a call to one
+/// back, since its receiver is a place. Its own copy of this list is held to
+/// this one by `rux-aot-tests`.
+pub use crate::interp::stdlib::MUTATING;
+
 /// The interpreter, as compiled code sees it.
 pub struct Cx<'a> {
     pub(crate) ip: &'a mut Interp,
@@ -161,6 +186,39 @@ impl Cx<'_> {
     /// out (`list += item` appends).
     pub fn apply(&mut self, op: BinOp, target: &V, v: V) -> R<V> {
         self.ip.apply_pub(op, target, v)
+    }
+
+    pub fn field(&mut self, b: &V, name: &str) -> R<V> {
+        self.ip.field_pub(b, name)
+    }
+
+    pub fn index(&mut self, b: &V, i: &V) -> R<V> {
+        self.ip.index_pub(b, i)
+    }
+
+    /// A method that does not change its receiver.
+    pub fn method(&mut self, recv: V, name: &str, args: Vec<V>) -> R<V> {
+        self.ip.method_pub(recv, name, args)
+    }
+
+    /// A function of the language's: `print`, `parseInt`, `navigate`.
+    pub fn builtin(&mut self, name: &str, args: Vec<V>) -> R<V> {
+        self.ip.builtin_pub(name, args)
+    }
+
+    /// A native export, by linked name.
+    pub fn native(&mut self, key: &str, args: Vec<V>) -> R<V> {
+        self.ip.native_pub(key, args)
+    }
+
+    /// A function value: a closure kept in a name.
+    pub fn call_value(&mut self, f: V, args: Vec<V>) -> R<V> {
+        self.ip.call_value_pub(f, args)
+    }
+
+    /// A call to a name only known where it runs.
+    pub fn call_named(&mut self, name: &str, args: Vec<V>) -> R<V> {
+        self.ip.call_named_pub(name, args)
     }
 
     pub fn binary(&mut self, op: BinOp, a: V, b: V) -> R<V> {

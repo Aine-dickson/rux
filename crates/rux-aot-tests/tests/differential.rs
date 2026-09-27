@@ -38,6 +38,19 @@ fn both_engines_agree_on_the_whole_corpus() {
 }
 
 #[test]
+fn the_generator_knows_every_method_that_changes_its_receiver() {
+    let mut ours: Vec<&str> = rux_codegen_list().to_vec();
+    let mut theirs: Vec<&str> = rux_script::aot::MUTATING.to_vec();
+    ours.sort_unstable();
+    theirs.sort_unstable();
+    assert_eq!(ours, theirs, "rux-codegen's MUTATING has drifted from the interpreter's");
+}
+
+fn rux_codegen_list() -> &'static [&'static str] {
+    rux_aot_tests::MUTATING_IN_CODEGEN
+}
+
+#[test]
 fn a_changed_text_runs_interpreted() {
     install_all();
     let (script, _) = CORPUS[0];
