@@ -1215,8 +1215,15 @@ Float indexing narrows to what the types allow: an index is an `int`, and a
    defect older than step 9: in a debug build one script call costs about
    35 KB of Rust stack, so 128 nested calls crashed the process instead of
    failing (watchlist 35); the interpreter now also stops at 768 KB of
-   stack used, with the same error. What follows describes the state before
-   9.2.
+   stack used, with the same error. Then widened (4605b4f): field and
+   index reads with no `?.`, methods that do not change their receiver,
+   built-ins, native calls, closure values, names found where they run,
+   array and map literals, `for x in` a collection and `throw` compile
+   too, each through the interpreter's own helper. Still handed back: a
+   method that changes its receiver (its receiver is a place), `?.` chains,
+   `try`, `switch`, `if` and blocks used as values, closures created, `is`,
+   and writes through fields and indexes. What follows describes the state
+   before 9.2.
    `rux-codegen` compiles control flow (`if`, `while`, ranges, `break`,
    `continue`, `return`), literals, locals, state reads and writes (`=` and
    `op=` on a name), operators, logic, `??`, templates and calls to the
