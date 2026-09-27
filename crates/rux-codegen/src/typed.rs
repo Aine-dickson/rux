@@ -134,14 +134,18 @@ impl<'u> T<'u> {
         self.locals = f.body.locals.iter().map(|l| K::of(&l.ty)).collect::<Option<_>>()?;
         self.result = sig.result;
         let body = self.block(&f.body.block, 0, false, None, true)?;
-        let mut code = format!("\n/// `{}`, typed\nfn t{id}(cx: &mut Cx", f.name.replace('\n', " "));
+        // The steps come in as `__ops` and go back out with the value, so a
+        // call between typed bodies hands the count over in registers; only
+        // a failure hands it to the interpreter (`u!`, `tick`), since
+        // nothing else reads it while typed code runs. `__d` is how deep
+        // calls are nested while this body runs, counted here and not in
+        // the interpreter, which nothing typed calls can see.
+        let mut code =
+            format!("\n/// `{}`, typed\nfn t{id}(cx: &mut Cx, mut __ops: u64, __max: u64, __d: usize", f.name.replace('\n', " "));
         for (i, k) in sig.params.iter().enumerate() {
             let _ = write!(code, ", mut l{i}: {}", k.rust());
         }
-        let _ = writeln!(code, ") -> R<{}> {{", sig.result.rust());
-        // The steps, counted here and handed back before a call, a return
-        // or a failure: nothing else reads them while this body runs.
-        code.push_str("let (mut __ops, __max) = cx.ops();\n");
+        let _ = writeln!(code, ") -> R<({}, u64)> {{", sig.result.rust());
         for (i, k) in self.locals.iter().enumerate().skip(sig.params.len()) {
             let _ = writeln!(code, "let mut l{i}: {} = {};", k.rust(), k.zero());
         }
@@ -358,8 +362,9 @@ impl<'u> T<'u> {
                 }
                 let _ = write!(
                     code,
-                    "u!(cx, __ops, cx.enter(), {s}, {end}); cx.put_ops(__ops); let __c = t{i}(cx{}{}); \
-                     __ops = cx.ops().0; cx.leave(); u!(cx, __ops, __c, {s}, {end}) }}",
+                    "if __d >= aot::MAX_DEPTH || __d <= 1 || __d % aot::PROBE_EVERY == 0 {{ u!(cx, __ops, cx.deeper_at(__d), {s}, {end}); }} \
+                     let __c = t{i}(cx, __ops, __max, __d + 1{}{}); \
+                     match __c {{ Ok((v, n)) => {{ __ops = n; v }} Err(err) => return Err(if {s} == u32::MAX {{ err }} else {{ aot::at(err, {s}, {end}) }}) }} }}",
                     if names.is_empty() { "" } else { ", " },
                     names.join(", ")
                 );
@@ -388,9 +393,9 @@ fn tick(s: u32, e: u32) -> String {
 }
 
 /// Leaving the body with `x`: worked out first (it may call, and so count),
-/// then the count handed back.
+/// then handed back with the count.
 fn ret(x: &str) -> String {
-    format!("{{ let __r = {x}; cx.put_ops(__ops); return Ok(__r); }}")
+    format!("{{ let __r = {x}; return Ok((__r, __ops)); }}")
 }
 
 /// `a op b` on typed values held in `a.0` and `b.0`, as the interpreter's

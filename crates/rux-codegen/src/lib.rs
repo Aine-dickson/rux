@@ -878,7 +878,11 @@ fn guard(id: u32, sig: &typed::Sig) -> String {
     let pats: Vec<String> = sig.params.iter().enumerate().map(|(i, k)| format!("V::{}(a{i})", k.variant())).collect();
     let vals: Vec<String> = (0..n).map(|i| format!("&args[{i}]")).collect();
     let pass: String = (0..n).map(|i| format!(", *a{i}")).collect();
-    let call = format!("return t{id}(cx{pass}).map(V::{});", sig.result.variant());
+    let call = format!(
+        "let (__ops, __max) = cx.ops(); let __d = cx.depth(); \
+         return match t{id}(cx, __ops, __max, __d{pass}) {{ Ok((v, n)) => {{ cx.put_ops(n); Ok(V::{}(v)) }} Err(e) => Err(e) }};",
+        sig.result.variant()
+    );
     if n == 0 {
         return format!("{call}\n");
     }

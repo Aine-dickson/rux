@@ -1756,6 +1756,50 @@ Float indexing narrows to what the types allow: an index is an `int`, and a
    after each change. The error words for too deep stay the same; the
    number in them changes with the limit, which the owner should see.
 
+   **10.3 done 2026-09-28.** Each change measured on its own, release,
+   `fib(18)` in µs per call, best of 7:
+
+   | Change | `fib(18)` | Kept |
+   |---|---|---|
+   | Before (10.2) | 40.1 | |
+   | Step count passed to the callee and returned with its value | 40.3 | yes, it is what the next row needs |
+   | Depth as a local `__d` passed down; the full check (`cx.deeper_at`) only at the top of a run, at the limit and every 16 levels (`aot::PROBE_EVERY`) | 33.0 (1.2x faster) | yes |
+   | The failure boxed, so the result fits two registers | 36.4 | no, slower |
+   | The same, the count through a pointer | 39.4 | no, slower |
+
+   So `fib(18)` is 33 µs, three runs agreeing (Dart 23.9, the JVM 19.8),
+   and `sum(10000)` 5.5 µs, `powers(10000)` 380 µs, unchanged. Typed calls
+   no longer touch the interpreter's depth counter at all; `cx.enter()` and
+   `cx.leave()` remain for calls made from untyped code.
+
+   Track (f), measured with the depth limit lifted (`tests/stack.rs`,
+   release, the 768 KB stack budget): an interpreted call takes 1.7 KB of
+   Rust's stack (451 deep), a compiled untyped one 2.1 KB (376 deep), a
+   typed one 0.4 KB (1885 deep). So the stack, not `MAX_DEPTH`, is what
+   stops a release build short of Dart's 57 000. `MAX_DEPTH` is now 256
+   in a release build, 128 in a debug one: 256 leaves room under the 376
+   of the heaviest call measured, for calls made from deep inside an
+   expression, which take more. The words are the same, "Stack overflow:
+   calls nested too deep (at most 256)", only the number changed. A new
+   test, `typed_calls_stop_where_the_interpreter_does`, shows typed code
+   counting depth as the interpreter does: both stop `chain` at 253 in a
+   release build. The gate is green (1116 tests).
+
+   **10.4, waiting on the owner: recursion as deep as Dart's.** Not a
+   larger number: the stack runs out first. Two ways, which can be
+   combined, and the choice is the owner's because the first adds a
+   dependency and behaves differently on the web:
+   - a stack that grows: `stacker::maybe_grow` (what rustc uses) at each
+     call, which moves onto a new heap segment when the stack is nearly
+     used. Native only: on wasm it does nothing, so the web keeps today's
+     limit. The check is the same compare the stack probe makes now.
+   - smaller frames: an interpreted call is 1.7 KB and a compiled untyped
+     one 2.1 KB of Rust's stack; `Interp::expr` split again, and the large
+     `Flow` kept out of the frames that recurse, would buy maybe 2 to 4
+     times, not 150.
+   Proof either way: `tests/stack.rs` at the new depth, in both profiles,
+   and the cost bench unchanged.
+
    **The plan for track (c), records as slots, written 2026-09-28 for the
    next session.** Guidance, as the rest of step 10 is: check it against
    the code and reorder where the code says otherwise. Both decisions it

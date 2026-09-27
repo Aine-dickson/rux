@@ -31,8 +31,14 @@ use crate::lower::{lower_piece, Lowered};
 use crate::MAX_OPERATIONS;
 
 /// How deep calls may nest before the run is stopped, so a function that
-/// calls itself forever is an error and not a crash.
-const MAX_DEPTH: usize = 128;
+/// calls itself forever is an error and not a crash. A release build's
+/// calls take 1.7 KB of Rust's stack interpreted, 2.1 KB compiled and 0.4 KB
+/// typed (measured 2026-09-28 by `tests/stack.rs`), so [`STACK_BUDGET`]
+/// holds about 376 of the largest; 256 leaves room for a call made from
+/// deep inside an expression, which takes more. Going far past that (Dart
+/// nests about 57 000) needs smaller frames or a stack that grows, not a
+/// larger number here: step 10.4 of `docs/11-next.md`.
+pub(crate) const MAX_DEPTH: usize = if cfg!(debug_assertions) { 128 } else { 256 };
 
 /// How much of Rust's stack a run may use, measured from where it began.
 /// The depth above is not enough on its own: a debug build's frames are
@@ -570,9 +576,21 @@ impl Interp {
     /// [`STACK_BUDGET`] of where the run began.
     #[inline]
     fn deeper(&mut self) -> R<()> {
+        self.deeper_at(self.depth())
+    }
+
+    /// How deep calls are nested now: frames and frameless calls.
+    #[inline]
+    pub(crate) fn depth(&self) -> usize {
+        self.stack.len() + self.frameless
+    }
+
+    /// [`Interp::deeper`] for a call made at `depth`, which typed code
+    /// counts itself rather than in [`Interp::frameless`].
+    #[inline]
+    pub(crate) fn deeper_at(&mut self, depth: usize) -> R<()> {
         let probe = 0u8;
         let here = std::ptr::addr_of!(probe) as usize;
-        let depth = self.stack.len() + self.frameless;
         // The outermost call of a run: a handler's or a binding's own frame
         // is pushed without coming here, so its first call is at depth 1.
         if depth <= 1 {

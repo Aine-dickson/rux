@@ -30,6 +30,14 @@ pub use rux_ir::types::Type;
 /// What a compiled step gives: a value, or the flow that leaves it.
 pub type R<T> = Result<T, Flow>;
 
+/// How deep calls may nest, as the interpreter counts them.
+pub const MAX_DEPTH: usize = crate::interp::MAX_DEPTH;
+
+/// How many levels of typed calls go between two looks at Rust's stack.
+/// A typed frame is small (a few locals and a call), so 15 of them fit
+/// many times over in what the stack budget leaves spare.
+pub const PROBE_EVERY: usize = 16;
+
 /// A compiled function's body. With a frame, it runs in the frame [`run`]
 /// entered for it, its arguments already there, and is handed none; without
 /// one (every statement of it compiled), its locals are its own Rust
@@ -301,6 +309,23 @@ impl Cx<'_> {
     #[inline]
     pub fn leave(&mut self) {
         self.ip.leave_call()
+    }
+
+    /// How deep calls are nested as typed code is entered: typed calls
+    /// count their depth from it themselves, in a local passed down, and
+    /// leave the interpreter's count as it was.
+    #[inline]
+    pub fn depth(&self) -> usize {
+        self.ip.depth()
+    }
+
+    /// Whether a typed call made at `depth` may nest, as [`Cx::enter`]
+    /// asks: typed code asks only every [`PROBE_EVERY`] levels (and at the
+    /// top of a run, and at the limit), since its frames are small.
+    #[cold]
+    #[inline(never)]
+    pub fn deeper_at(&mut self, depth: usize) -> R<()> {
+        self.ip.deeper_at(depth)
     }
 
     /// The steps taken this run and the budget, for typed code, which counts
