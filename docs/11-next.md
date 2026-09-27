@@ -1935,6 +1935,78 @@ Float indexing narrows to what the types allow: an index is an `int`, and a
    a map, fails with "there is no `c`" (before this change too: watchlist
    40).
 
+   **(c.3) and (c.4) done 2026-09-28.** (c.3): where the checker knows a
+   value is a record, compiled `item.price` reads slot `k` when the
+   record's slot `k` holds `price` (`aot::slot_is`), and by name when not;
+   a record literal is built into its slots by compiled code rather than
+   handed back. The guard asks the slot's name, not the shape's pointer,
+   so a record back from the runtime with its fields in the same order
+   takes the fast path too. (c.4): a typed body may now hold records and
+   arrays (`K::V`, the interpreter's own value) and do three things with
+   them: walk an array with `for` (the item borrowed where it is when the
+   loop never writes its variable), read an `int`, `float` or `bool` field
+   by its slot, and ask `.length`. There the guard is one pointer compare
+   against the shape a record of that type has when made in script,
+   fetched once as the body starts, with the slot's name as the fallback.
+   Where a value is not what the checker said, the body bails
+   (`aot::bail`): it has done nothing anything else can see, so `f{id}`
+   puts the step count back and runs the untyped body from the start. A
+   record from the runtime holds every number as a `float` (the runtime has
+   one number), so `sum` over rows handed in from a template runs untyped;
+   `records_from_the_runtime_run_the_untyped_body` holds both engines to
+   the same answer, fields in order and reversed. That test found the one
+   defect on the way: the bail was told apart by comparing the address of
+   a `const` string, which Rust does not promise is one address, so a bail
+   escaped as the failure "a typed body gave up". It compares the text now.
+
+   Release, µs per call, each change measured on its own:
+
+   | Change | `sum(items)`, 10 000 records | Filter of 2 000 |
+   |---|---|---|
+   | Before track (c) | 2609 | 463 |
+   | (c.0) to (c.2), slots, compiled reads by name | 1293 | 398 |
+   | (c.3) compiled reads by slot, the guard by name | 525 | 342 |
+   | (c.4) a typed body, the guard by name | 100 | 350 |
+   | the guard by the shape's pointer | 80 | |
+   | the loop's record borrowed, not copied out | 45 (58x faster than before track (c)) | 347 (1.3x faster) |
+   | Dart AOT / the JVM | 17.7 / 19.1 | 62 / 17 |
+
+   The record sum is now 2.5 times Dart's and the JVM's, from 150 times.
+   The filter barely moved: its time is a closure called per item, which
+   is track (d). Everything else in the bench that touches records got
+   faster with it (`looped()` 1.02 to 0.67 µs, `local()` 3.19 to 2.38),
+   and nothing got slower (`!bump(1)`, 3.9 µs in the first run of the day,
+   is 4.2 to 4.3 both on the commit before track (c) and after it). Driven
+   in the window too: docs/08-user-tests.md,
+   "Records in their declared order".
+
+   **10.5, small follow-ups from track (c), each its own step, before
+   track (d):**
+   - (10.5.1) Compiled writes by slot. `item.qty += 1` in compiled code
+     still goes through the interpreter's walk by name (correct, and
+     through the shape, so no longer slow in the old way); (c.3) did
+     reads only. Prove with a bench case of a write in a loop.
+   - (10.5.2) `make(1000)` takes 750 µs, 750 ns a record, linear. Three
+     costs in it, none of them the record: a backtick string displays each
+     text part into a new `String` and then allocates the result again; `%`
+     of two `int`s has no compiled fast path (it calls `cx.binary`); and
+     a method call builds its argument vector. Each is small; measure
+     each alone.
+   - (10.5.3) A record in one allocation. Today it is an `Rc<Record>`
+     holding the shape and a `Box<[V]>`, two allocations, so reading a
+     field is two cache lines. One allocation (the shape and the slots
+     behind one `Rc`) is what is left between 45 µs and Dart's 17.7 on the
+     record sum. It needs either an unsized struct built by hand (unsafe) or
+     a small inline array, so it is a choice to make, not a certainty.
+   - (10.5.4) A native record keeps its declared order. `rux_native`
+     hands a Rust struct back as `Any::Map`, keyed, so it arrives a sorted
+     map. The bridge knows the struct's field order (`ItemKind::Record`);
+     carrying it makes a native record a record like any other.
+
+   **For the owner:** confirm that a `{ }` with no declared type shows in
+   the order written (above); watchlist 40 (a map cannot gain a key by
+   `=`); and 10.4 (deeper recursion).
+
 Steps 2 to 5 change nothing an author sees except the decided syntax and
 types, which is what made them safe to take in order.
 

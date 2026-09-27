@@ -2208,6 +2208,26 @@ nobody at the machine: the screenshots are what was looked at. Under test in
 | Overflow and panics | `u64::MAX` returned, `300` into a `u8`, a panicking export | thrown as `overflow` and `panic`, caught by `catch` | under test only |
 | Web and Android | the same app | the same | not driven: an async export on the web needs `rux::set_spawner`, and no phone this week |
 
+## Records in their declared order, 2026-09-28
+
+Step 10, track (c) of `docs/11-next.md`: a record keeps its fields in slots,
+in the order its type declares them. Driven with `rux run` in a desktop
+window on `rux-harness/track-c/records-probe.rux` (`type Pt = { y: int, x:
+int, label?: string }`, declared in an order that is not alphabetical, so a
+sorted display would show). The harness is `rux-harness/track-c/shoot.ps1`,
+the shot beside it. Under test in `crates/rux-script/tests/records.rs` and on
+both engines in `rux-aot-tests` (corpus script 13).
+
+| Case | Where | Expect | Result |
+|---|---|---|---|
+| A record shows in its type's order | `{{ pt }}` | `y: 2, x: 1` | desktop: pass |
+| An optional field never given is left out | `{{ bob }}`, `{{ cat }}` | `name: bob`; `name: ann, pet: tom` | desktop: pass |
+| `keys` goes in the same order | `{{ keys(pt) }}` | `y, x` | desktop: pass |
+| A row keeps its order through the runtime | `{{ p }}` in an `r-for`, and `show(p)`, a function handed the row back | the two alike, `y: 4, x: 3` and `y: 6, x: 5, label: five` | desktop: pass |
+| A typed loop over records | `{{ total(pts) }}` | `90` | desktop: pass |
+| A row handed to a tap handler | a `@tap="pick(p)"` that stores `p` and shows it | the stored record in its type's order | not driven: injected clicks never reach the window here |
+| Compiled | the same app, `rux build --release` | the same | not driven in the window; both engines agree in `rux-aot-tests` |
+
 ## Standing gaps
 
 Cases nothing here can currently exercise. They are the shape of what v0.8 has

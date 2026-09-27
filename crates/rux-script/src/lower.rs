@@ -590,7 +590,7 @@ impl<'a> Lower<'a> {
             keys.iter().all(|k| fields.iter().any(|f| f.name == *k))
                 && fields.iter().all(|f| f.optional || keys.contains(&f.name.as_str()))
         };
-        let open = || Shape::open(keys.iter().copied());
+        let open = || Shape::interned(keys, &vec![false; keys.len()], false);
         // A name written twice: the interpreter's map, the later replacing.
         if keys.iter().enumerate().any(|(i, k)| keys[..i].contains(k)) {
             return None;

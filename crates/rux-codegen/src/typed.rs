@@ -16,10 +16,20 @@
 //! places them, and where Rust's own operation stops (an `int` overflow, `%`
 //! by 0) the interpreter's operator runs on the same values, so the failure
 //! is its own, word for word.
+//!
+//! Records and arrays (track (c.4)) come in as the interpreter's own values,
+//! of kind [`K::V`], and a typed body may do three things with one: walk an
+//! array with `for`, read an `int`, `float` or `bool` field of a record by
+//! its slot, and ask an array's `.length`. Where a value is not what the
+//! checker said (a record back from the runtime holds a `float` where its
+//! type says `int`), the body bails: nothing a typed body does can be seen
+//! outside it but its step count, so its `f{id}` puts the count back as it
+//! was and runs the untyped body from the start instead.
 
 use std::fmt::Write as _;
 
 use rux_ir::ir::{BinOp, Block, Callee, Expr, ExprKind, Func, Root, StmtKind, UnOp, Unit};
+use rux_ir::table::Table;
 use rux_ir::types::Type;
 
 /// What a typed value is in Rust.
@@ -28,6 +38,8 @@ pub(crate) enum K {
     I,
     F,
     B,
+    /// A record or an array, as the interpreter holds it: a `V`.
+    V,
 }
 
 impl K {
@@ -40,11 +52,21 @@ impl K {
         }
     }
 
+    /// The kind a value of type `t` is in a typed body: a number or a
+    /// `bool`, or a record or an array held as a `V`.
+    fn of_resolved(t: &Type, table: &Table) -> Option<K> {
+        K::of(t).or(match table.resolve(t) {
+            Type::Array(_) | Type::Record(_) => Some(K::V),
+            _ => None,
+        })
+    }
+
     pub(crate) fn rust(self) -> &'static str {
         match self {
             K::I => "i64",
             K::F => "f64",
             K::B => "bool",
+            K::V => "V",
         }
     }
 
@@ -54,6 +76,7 @@ impl K {
             K::I => "Int",
             K::F => "Float",
             K::B => "Bool",
+            K::V => unreachable!("a typed body's result is a number or a `bool`"),
         }
     }
 
@@ -62,6 +85,15 @@ impl K {
             K::I => "0i64",
             K::F => "0.0f64",
             K::B => "false",
+            K::V => "V::None",
+        }
+    }
+
+    /// A `V` held in `x` as this kind, or a bail where it is not one.
+    fn unbox(self, x: &str) -> String {
+        match self {
+            K::V => format!("{x}.clone()"),
+            k => format!("match {x} {{ V::{}(__x) => *__x, _ => return Err(aot::bail()) }}", k.variant()),
         }
     }
 }
@@ -75,14 +107,15 @@ pub(crate) struct Sig {
 
 /// Which of `unit`'s functions have a typed body, and the Rust of each.
 pub(crate) fn typed(unit: &Unit) -> Vec<Option<(Sig, String)>> {
-    let sigs: Vec<Option<Sig>> = unit.fns.iter().map(sig).collect();
+    let table = Table::new(&unit.types);
+    let sigs: Vec<Option<Sig>> = unit.fns.iter().map(|f| sig(f, &table)).collect();
     // Assume every candidate qualifies, then drop each whose body does not
     // (a call to one dropped included) until nothing changes.
     let mut ok: Vec<bool> = sigs.iter().map(Option::is_some).collect();
     loop {
         let mut changed = false;
         for (id, f) in unit.fns.iter().enumerate() {
-            if ok[id] && T::new(&ok, &sigs).func(id as u32, f).is_none() {
+            if ok[id] && T::new(&ok, &sigs, &table).func(id as u32, f).is_none() {
                 ok[id] = false;
                 changed = true;
             }
@@ -98,19 +131,20 @@ pub(crate) fn typed(unit: &Unit) -> Vec<Option<(Sig, String)>> {
             if !ok[id] {
                 return None;
             }
-            let code = T::new(&ok, &sigs).func(id as u32, f)?;
+            let code = T::new(&ok, &sigs, &table).func(id as u32, f)?;
             Some((sigs[id].clone()?, code))
         })
         .collect()
 }
 
-/// The signature a function would have typed: `None` when a parameter,
-/// local or its result is not one of the three kinds.
-fn sig(f: &Func) -> Option<Sig> {
+/// The signature a function would have typed: `None` when a parameter or a
+/// local is not a number, a `bool`, a record or an array, or its result is
+/// not one of the first three.
+fn sig(f: &Func, table: &Table) -> Option<Sig> {
     if f.is_async || !f.type_params.is_empty() {
         return None;
     }
-    let kinds: Option<Vec<K>> = f.body.locals.iter().map(|l| K::of(&l.ty)).collect();
+    let kinds: Option<Vec<K>> = f.body.locals.iter().map(|l| K::of_resolved(&l.ty, table)).collect();
     let kinds = kinds?;
     Some(Sig { params: kinds[..f.params as usize].to_vec(), result: K::of(&f.result)? })
 }
@@ -118,21 +152,46 @@ fn sig(f: &Func) -> Option<Sig> {
 struct T<'u> {
     ok: &'u [bool],
     sigs: &'u [Option<Sig>],
-    /// The kinds of the function's locals, by slot.
+    table: &'u Table,
+    /// The kinds of the function's locals, by slot, and their types.
     locals: Vec<K>,
+    types: Vec<Type>,
     result: K,
+    /// The shapes its field reads expect, fetched once as it starts:
+    /// names, which are optional, and whether a declaration names it.
+    shapes: Vec<(Vec<String>, Vec<bool>, bool)>,
 }
 
 impl<'u> T<'u> {
-    fn new(ok: &'u [bool], sigs: &'u [Option<Sig>]) -> Self {
-        T { ok, sigs, locals: Vec::new(), result: K::I }
+    fn new(ok: &'u [bool], sigs: &'u [Option<Sig>], table: &'u Table) -> Self {
+        T { ok, sigs, table, locals: Vec::new(), types: Vec::new(), result: K::I, shapes: Vec::new() }
+    }
+
+    /// The number of the shape records of these fields have, made in
+    /// script: closed when `declared`.
+    fn shape(&mut self, fields: &[rux_ir::types::Field], declared: bool) -> usize {
+        let key = (fields.iter().map(|f| f.name.clone()).collect(), fields.iter().map(|f| f.optional).collect(), declared);
+        match self.shapes.iter().position(|s| *s == key) {
+            Some(i) => i,
+            None => {
+                self.shapes.push(key);
+                self.shapes.len() - 1
+            }
+        }
+    }
+
+    /// The kind a value of type `t` is here.
+    fn kind(&self, t: &Type) -> Option<K> {
+        K::of_resolved(t, self.table)
     }
 
     /// `t{id}`, or `None` when anything in it is not typed.
     fn func(&mut self, id: u32, f: &Func) -> Option<String> {
         let sig = self.sigs.get(id as usize)?.clone()?;
-        self.locals = f.body.locals.iter().map(|l| K::of(&l.ty)).collect::<Option<_>>()?;
+        self.locals = f.body.locals.iter().map(|l| K::of_resolved(&l.ty, self.table)).collect::<Option<_>>()?;
+        self.types = f.body.locals.iter().map(|l| l.ty.clone()).collect();
         self.result = sig.result;
+        self.shapes.clear();
         let body = self.block(&f.body.block, 0, false, None, true)?;
         // The steps come in as `__ops` and go back out with the value, so a
         // call between typed bodies hands the count over in registers; only
@@ -148,6 +207,14 @@ impl<'u> T<'u> {
         let _ = writeln!(code, ") -> R<({}, u64)> {{", sig.result.rust());
         for (i, k) in self.locals.iter().enumerate().skip(sig.params.len()) {
             let _ = writeln!(code, "let mut l{i}: {} = {};", k.rust(), k.zero());
+        }
+        for (i, (names, optional, closed)) in self.shapes.iter().enumerate() {
+            let _ = writeln!(
+                code,
+                "let __sh{i}: *const aot::Shape = {{ thread_local! {{ static S: std::rc::Rc<aot::Shape> = aot::shape(&[{}], &[{}], {closed}); }}                  S.with(|s| std::rc::Rc::as_ptr(s)) }};",
+                names.iter().map(|n| format!("{n:?}")).collect::<Vec<_>>().join(", "),
+                optional.iter().map(bool::to_string).collect::<Vec<_>>().join(", ")
+            );
         }
         code.push_str(&body);
         code.push_str("}\n");
@@ -250,6 +317,40 @@ impl<'u> T<'u> {
                     var.0
                 )
             }
+            // Walking an array a local holds, where it is: each item the
+            // kind the loop's variable is, or a bail.
+            StmtKind::ForEach { var, counter, iter, body, .. } => {
+                let ExprKind::Local(list) = iter.kind else { return None };
+                if *self.locals.get(list.0 as usize)? != K::V {
+                    return None;
+                }
+                let vk = *self.locals.get(var.0 as usize)?;
+                if let Some(c) = counter {
+                    if *self.locals.get(c.0 as usize)? != K::I {
+                        return None;
+                    }
+                }
+                let d = depth;
+                let inner = self.block(body, depth + 1, true, Some((s, e)), false)?;
+                let count = counter.map(|c| format!("l{} = __n{d} as i64;\n", c.0)).unwrap_or_default();
+                // A record the loop only reads is read where it is in the
+                // array, not copied out of it for each turn.
+                if vk == K::V && !writes(body, *var) {
+                    return Some(format!(
+                        "{tick}let __arr{d} = match &l{} {{ V::Array(__a) => std::rc::Rc::clone(__a), _ => return Err(aot::bail()) }};\n\
+                         for (__n{d}, __it{d}) in __arr{d}.iter().enumerate() {{\n{tick}let l{}: &V = __it{d};\n{count}{inner}}}\n",
+                        list.0, var.0,
+                    ));
+                }
+                format!(
+                    "let __arr{d} = match &l{} {{ V::Array(__a) => std::rc::Rc::clone(__a), _ => return Err(aot::bail()) }};\n\
+                     for (__n{d}, __it{d}) in __arr{d}.iter().enumerate() {{\n{}l{} = {};\n{count}{inner}}}\n",
+                    list.0,
+                    tick,
+                    var.0,
+                    vk.unbox(&format!("__it{d}"))
+                )
+            }
             StmtKind::Break if in_loop => "break;\n".to_string(),
             StmtKind::Continue if in_loop => "continue;\n".to_string(),
             StmtKind::Return(Some(v)) => {
@@ -297,7 +398,43 @@ impl<'u> T<'u> {
             ExprKind::Bool(b) => (format!("{b}"), K::B),
             ExprKind::Int(i) => (format!("{i}i64"), K::I),
             ExprKind::Float(f) => (format!("f64::from_bits({:#x})", f.to_bits()), K::F),
-            ExprKind::Local(l) => (format!("l{}", l.0), *self.locals.get(l.0 as usize)?),
+            ExprKind::Local(l) => match *self.locals.get(l.0 as usize)? {
+                K::V => (format!("l{}.clone()", l.0), K::V),
+                k => (format!("l{}", l.0), k),
+            },
+            // A field of a record a local holds, by its slot; `.length` of an
+            // array a local holds.
+            ExprKind::Field { base, name, optional: false } => {
+                let ExprKind::Local(l) = base.kind else { return None };
+                if *self.locals.get(l.0 as usize)? != K::V {
+                    return None;
+                }
+                match self.table.resolve(self.types.get(l.0 as usize)?) {
+                    Type::Array(_) if name == "length" => (
+                        format!("match &l{} {{ V::Array(__a) => __a.len() as i64, _ => return Err(aot::bail()) }}", l.0),
+                        K::I,
+                    ),
+                    Type::Record(fields) => {
+                        let k = fields.iter().position(|f| f.name == *name)?;
+                        let fk = K::of(&fields[k].ty)?;
+                        // The shape a record of this type has when it was
+                        // made in script: one pointer compared, the slot's
+                        // name only for a record laid out some other way.
+                        let declared = matches!(self.types[l.0 as usize], Type::Named(_) | Type::Generic(..));
+                        let sh = self.shape(&fields, declared);
+                        (
+                            format!(
+                                "match &l{} {{ V::Rec(__r) if std::ptr::eq(std::rc::Rc::as_ptr(&__r.shape), __sh{sh}) \
+                                 || aot::slot_is(__r, {k}, {name:?}) => {}, _ => return Err(aot::bail()) }}",
+                                l.0,
+                                fk.unbox(&format!("&__r.vals[{k}]"))
+                            ),
+                            fk,
+                        )
+                    }
+                    _ => return None,
+                }
+            }
             ExprKind::Widen(x) => match self.expr(x, s, end)? {
                 (x, K::I) => (format!("({x} as f64)"), K::F),
                 _ => return None,
@@ -373,11 +510,39 @@ impl<'u> T<'u> {
             _ => return None,
         };
         // What the checker said it is, or it is not trusted.
-        if K::of(&e.ty) != Some(k) {
+        if self.kind(&e.ty) != Some(k) {
             return None;
         }
         Some((code, k))
     }
+}
+
+/// Whether anything in `b` writes local `l`: what a typed body could hold
+/// in it, statements and the blocks inside `if` and blocks used as values.
+fn writes(b: &Block, l: rux_ir::ir::LocalId) -> bool {
+    fn expr(e: &Expr, l: rux_ir::ir::LocalId) -> bool {
+        match &e.kind {
+            ExprKind::Block(b) => writes(b, l),
+            ExprKind::If { cond, then, otherwise } => expr(cond, l) || writes(then, l) || otherwise.as_ref().is_some_and(|o| writes(o, l)),
+            ExprKind::Unary { expr: x, .. } | ExprKind::Widen(x) | ExprKind::Check(x) => expr(x, l),
+            ExprKind::Binary { lhs, rhs, .. } | ExprKind::Logic { lhs, rhs, .. } => expr(lhs, l) || expr(rhs, l),
+            ExprKind::Call { args, .. } => args.iter().any(|a| expr(a, l)),
+            ExprKind::Field { base, .. } => expr(base, l),
+            _ => false,
+        }
+    }
+    b.stmts.iter().any(|st| match &st.kind {
+        StmtKind::Let { local, value } => *local == l || value.as_ref().is_some_and(|v| expr(v, l)),
+        StmtKind::Assign { place, value, .. } => place.root == Root::Local(l) || expr(value, l),
+        StmtKind::Expr(x) | StmtKind::Return(Some(x)) => expr(x, l),
+        StmtKind::If { cond, then, otherwise } => expr(cond, l) || writes(then, l) || otherwise.as_ref().is_some_and(|o| writes(o, l)),
+        StmtKind::While { cond, body } => expr(cond, l) || writes(body, l),
+        StmtKind::ForRange { var, from, to, body, .. } => *var == l || expr(from, l) || expr(to, l) || writes(body, l),
+        StmtKind::ForEach { var, counter, iter, body, .. } => *var == l || *counter == Some(l) || expr(iter, l) || writes(body, l),
+        // Anything else is not in a typed body, so it cannot be here; say
+        // it writes, to be safe.
+        _ => !matches!(st.kind, StmtKind::Break | StmtKind::Continue | StmtKind::Return(None)),
+    })
 }
 
 /// One step of the budget, as the interpreter's `tick` takes it, counted in
@@ -429,7 +594,7 @@ fn binary(op: BinOp, a: (&str, K), b: (&str, K), s: u32, end: u32) -> Option<(St
             };
             (format!("({x} {sym} {y})"), K::B)
         }
-        (Eq | Ne, _, _) if ak == bk => (format!("({x} {} {y})", if op == Eq { "==" } else { "!=" }), K::B),
+        (Eq | Ne, _, _) if ak == bk && ak != K::V => (format!("({x} {} {y})", if op == Eq { "==" } else { "!=" }), K::B),
         _ => return None,
     })
 }

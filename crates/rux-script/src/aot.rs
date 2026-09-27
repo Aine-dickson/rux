@@ -22,9 +22,10 @@ use rux_ir::ir::{Block, FnId, Stmt, StmtKind};
 
 use crate::interp::Interp;
 
-pub use crate::interp::value::V;
+pub use crate::interp::value::{Record, V};
 pub use crate::interp::{Fault, Flow, Items, Key};
 pub use rux_ir::ir::{At, BinOp, GlobalId, LocalId, Root, UnOp};
+pub use rux_ir::shape::Shape;
 pub use rux_ir::types::Type;
 
 /// What a compiled step gives: a value, or the flow that leaves it.
@@ -166,6 +167,45 @@ pub fn truthy(v: &V) -> bool {
 pub fn text(s: &str) -> V {
     V::str(s)
 }
+
+/// Whether record `r` holds field `name` in slot `k`: compiled code reads a
+/// field by its slot where the checker knows the record's type, and by name
+/// where this says the record is laid out otherwise.
+#[inline]
+pub fn slot_is(r: &Record, k: usize, name: &str) -> bool {
+    r.shape.names().get(k).is_some_and(|n| &**n == name)
+}
+
+/// The shape of names `names`, which of them are `optional`, and whether it
+/// is `closed`: the one the interpreter has for the same, on this thread.
+pub fn shape(names: &[&str], optional: &[bool], closed: bool) -> std::rc::Rc<Shape> {
+    Shape::interned(names, optional, closed)
+}
+
+/// A record of `shape`, `given` its values by slot: a slot not given holds
+/// `none`.
+pub fn record(shape: &std::rc::Rc<Shape>, given: Vec<(usize, V)>) -> V {
+    let mut vals = vec![V::None; shape.len()];
+    for (k, v) in given {
+        vals[k] = v;
+    }
+    V::Rec(std::rc::Rc::new(Record { shape: std::rc::Rc::clone(shape), vals: vals.into_boxed_slice() }))
+}
+
+/// What a typed body gives up with where a value is not what the checker
+/// said: its `f{id}` runs the untyped body instead, so this never leaves.
+#[cold]
+pub fn bail() -> Flow {
+    Flow::Fault(Fault { message: "a typed body gave up".into(), kind: BAIL, thrown: None, at: None })
+}
+
+/// Whether `e` is [`bail`]'s.
+#[inline]
+pub fn is_bail(e: &Flow) -> bool {
+    matches!(e, Flow::Fault(f) if f.kind == BAIL)
+}
+
+const BAIL: &str = "bail";
 
 /// What `for x in over` walks, item by item.
 pub fn items(over: V) -> R<Items> {

@@ -152,6 +152,7 @@ fn cost() {
         (RECORDS, "over(few, 40)", 200),
         (RECORDS, "one().name", 20000),
         (RECORDS, "bumped()", 20000),
+        (RECORDS, "make(1000).length", 200),
     ];
     // Times per call, and how many times faster compiled is: 3.6x faster
     // means compiled takes a 3.6th of the interpreter's time.
@@ -187,5 +188,43 @@ fn cost() {
             }
         }
         println!("{what:<30} {:>14.2} {:>14.2} {:>7.1}x faster", took[0], took[1], took[0] / took[1]);
+    }
+}
+
+/// Track (c.4): records back from the runtime hold every number as a
+/// `float` (the runtime has one number), and may hold their fields in
+/// another order. A typed body meeting one gives up and the untyped body
+/// runs, so both engines agree, and the answer is the one records made in
+/// script give.
+#[test]
+fn records_from_the_runtime_run_the_untyped_body() {
+    use rux_reactive::Value;
+    install_all();
+    let (script, _) = CORPUS[RECORDS];
+    let row = |id: f64, price: f64, qty: f64, swapped: bool| {
+        let mut fields = vec![
+            ("id".to_string(), Value::Number(id)),
+            ("name".to_string(), Value::Text(format!("item {id}"))),
+            ("price".to_string(), Value::Number(price)),
+            ("qty".to_string(), Value::Number(qty)),
+        ];
+        if swapped {
+            fields.reverse();
+        }
+        Value::Map(fields)
+    };
+    for swapped in [false, true] {
+        let list = Value::List((0..50).map(|i| row(i as f64, (i % 97) as f64 + 0.5, (i % 7 + 1) as f64, swapped)).collect());
+        let locals = [("list".to_string(), list)];
+        let mut b = Builder::new();
+        b.interpreted();
+        let mut interpreted = b.build(script).expect("builds");
+        let mut compiled = Builder::new().build(script).expect("builds");
+        let a = interpreted.eval_display("sum(list)", &locals);
+        let c = compiled.eval_display("sum(list)", &locals);
+        assert_eq!(a, c, "swapped: {swapped}");
+        // The same fifty made in script.
+        compiled.run_handler("fill()");
+        assert_eq!(c, compiled.eval_display("sum(items.slice(0, 50))", &[]), "swapped: {swapped}");
     }
 }

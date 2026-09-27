@@ -61,9 +61,17 @@ impl Shape {
     }
 
     fn typed(fields: &[Field], closed: bool) -> Rc<Shape> {
-        let names: Vec<Rc<str>> = fields.iter().map(|f| Rc::from(f.name.as_str())).collect();
+        let names: Vec<&str> = fields.iter().map(|f| f.name.as_str()).collect();
         let optional: Vec<bool> = fields.iter().map(|f| f.optional).collect();
-        let key = (names, optional, closed);
+        Shape::interned(&names, &optional, closed)
+    }
+
+    /// The shape of `names`, which of them are `optional`, and whether it is
+    /// `closed`: the same `Rc` for the same three, on this thread. What a
+    /// literal's shape is made by, in the interpreter and in compiled code.
+    pub fn interned(names: &[&str], optional: &[bool], closed: bool) -> Rc<Shape> {
+        let names: Vec<Rc<str>> = names.iter().map(|n| Rc::from(*n)).collect();
+        let key = (names, optional.to_vec(), closed);
         TYPED.with(|c| {
             let mut c = c.borrow_mut();
             if let Some(s) = c.get(&key) {
