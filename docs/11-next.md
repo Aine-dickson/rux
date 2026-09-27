@@ -1366,6 +1366,27 @@ Float indexing narrows to what the types allow: an index is an `int`, and a
    interpreted 1.19 µs; compiled 1.00 µs at 4ae5a93 (1.2x faster, the
    statement handed back) and 0.61 µs now (1.9x faster).
 
+   9.8 done 2026-09-27 (watchlist 35): a debug build nests script calls
+   to the depth limit again. Measured first, with the stack address at the
+   start of each interpreter function: one call cost about 22 KB in a
+   debug build (35 KB was noted earlier; this is today's), stopping recursion 35
+   deep. `Interp::expr` alone had a 17 KB frame and `stmt_here` 12 KB,
+   because a debug build gives every temporary of every `match` arm (each
+   `?` makes several) its own slot. `expr` now works out only the cheap
+   kinds itself (literals, names, calls, blocks) and hands each other kind
+   to a function of its own (`expr_binary`, `expr_if`, `expr_step`,
+   `expr_match`, `expr_rest`); `stmt_here` hands loops and `throw`/`try`
+   to `stmt_loop` and `stmt_rest`. Those are kept from being inlined back
+   in a debug build only: marked `#[inline(never)]` in a release build too,
+   `kinds()` ran 20% slower compiled, so a release build keeps its own
+   inlining and its numbers (`fib(18)` interpreted went from 3581 µs to
+   3197 µs, the rest within noise). Now, in a debug build: interpreted,
+   126 calls deep (the depth limit, about 6.2 KB a call); compiled, 105
+   deep (about 7.5 KB, most of it the generated function's own frame,
+   which only a release build ships). `tests/stack.rs` measures both on a
+   corpus script, and holds both to 100; it used to run a script outside
+   the corpus, so its "compiled" case had been interpreted.
+
    What follows describes the state before 9.2.
    `rux-codegen` compiles control flow (`if`, `while`, ranges, `break`,
    `continue`, `return`), literals, locals, state reads and writes (`=` and
@@ -1428,7 +1449,8 @@ Float indexing narrows to what the types allow: an index is an `int`, and a
      a call to an `aot` helper doing what the interpreter's arm does
      (`start_interval(ms, text)`); its body stays the runtime's, which
      keeps a timer as text. Small.
-   - 9.8 **Watchlist 35, the real fix**: a debug build still stops script
+   - 9.8 **Watchlist 35, the real fix** (DONE 2026-09-27, see "9.8 done"
+     above). The plan as written: a debug build still stops script
      calls about 20 deep, because one interpreted call costs about 35 KB
      of Rust stack. Measure the bytes per call first (the probe in
      `crates/rux-aot-tests/tests/stack.rs`), then shrink `Interp::expr`

@@ -162,4 +162,13 @@ pub const CORPUS: &[(&str, &[&str])] = &[
          fn odd(): bool { let h = setInterval(\"soon\") { n = 1; }; h > 0 }\n",
         &["start(3)", "twice()", "stop()", "inner()", "!keep()", "timer > 0", "odd()", "n"],
     ),
+    // Recursion recording its depth: `tests/stack.rs` runs it until it is
+    // stopped, to measure what one call costs of Rust's stack. The engines
+    // stop at different depths in a debug build, so only a call that
+    // returns at once is compared here.
+    (
+        "let d = signal(0);\n\
+         fn deep(n: int): int { d = n; if n < 0 { return 0; } deep(n + 1) }\n",
+        &["deep(-1)", "d"],
+    ),
 ];

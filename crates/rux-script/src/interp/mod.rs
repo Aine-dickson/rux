@@ -39,8 +39,10 @@ const MAX_DEPTH: usize = 128;
 /// large, and 128 of them overflowed a 2 MB thread (found 2026-09-27, while
 /// proving step 9), which is a crash, not an error. Windows gives a
 /// program's main thread 1 MB, and the window runs script on it. A debug
-/// build spends about 35 KB of it per script call, so there it stops near 20
-/// deep; a release build meets `MAX_DEPTH` first.
+/// build spent about 22 KB of it per script call, which stopped it near 35
+/// deep, until [`Interp::expr`] was split (watchlist 35): now about 6 KB, so
+/// it meets `MAX_DEPTH` first too, as a release build does.
+/// `crates/rux-aot-tests/tests/stack.rs` measures it.
 const STACK_BUDGET: usize = 768 * 1024;
 
 /// What a run nested too deep is told, whichever limit it met.
@@ -804,6 +806,25 @@ impl Interp {
                     self.block(o)?;
                 }
             }
+            StmtKind::While { .. } | StmtKind::ForRange { .. } | StmtKind::ForEach { .. } => self.stmt_loop(s)?,
+            StmtKind::Break => return Err(Flow::Break),
+            StmtKind::Continue => return Err(Flow::Continue),
+            StmtKind::Return(v) => {
+                let v = match v {
+                    Some(v) => self.expr(v)?,
+                    None => V::None,
+                };
+                return Err(Flow::Return(v));
+            }
+            StmtKind::Throw(_) | StmtKind::Try { .. } => return self.stmt_rest(s),
+        }
+        Ok(())
+    }
+
+    /// A loop, in a frame of its own: see [`Interp::expr`].
+    #[cfg_attr(debug_assertions, inline(never))]
+    fn stmt_loop(&mut self, s: &Stmt) -> R<()> {
+        match &s.kind {
             StmtKind::While { cond, body } => {
                 while self.expr(cond)?.truthy() {
                     match self.block(body) {
@@ -853,15 +874,15 @@ impl Interp {
                     }
                 }
             }
-            StmtKind::Break => return Err(Flow::Break),
-            StmtKind::Continue => return Err(Flow::Continue),
-            StmtKind::Return(v) => {
-                let v = match v {
-                    Some(v) => self.expr(v)?,
-                    None => V::None,
-                };
-                return Err(Flow::Return(v));
-            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// `throw` and `try`, in a frame of their own.
+    #[cfg_attr(debug_assertions, inline(never))]
+    fn stmt_rest(&mut self, s: &Stmt) -> R<()> {
+        match &s.kind {
             StmtKind::Throw(v) => {
                 let v = self.expr(v)?;
                 let message = match &v {
@@ -884,6 +905,7 @@ impl Interp {
                     other?;
                 }
             },
+            _ => {}
         }
         Ok(())
     }
@@ -1140,12 +1162,95 @@ impl Interp {
 
     // ----- Expressions -------------------------------------------------------
 
+    /// An expression's value. Only the cheap kinds are worked out here, and
+    /// every other kind in a function of its own: in a debug build a
+    /// function's frame holds every temporary of every arm, so one `match`
+    /// over every kind cost 17 KB of stack per nested call (watchlist 35).
+    /// The kinds a call nests through (a call, a block, an `if`, an
+    /// operator) keep their own frames small. Only a debug build is kept
+    /// from inlining the parts back: a release build's frames are small
+    /// anyway, and its speed is the compiler's to decide.
     fn expr(&mut self, e: &Expr) -> R<V> {
+        match &e.kind {
+            ExprKind::None => Ok(V::None),
+            ExprKind::Bool(b) => Ok(V::Bool(*b)),
+            ExprKind::Int(i) => Ok(V::Int(*i)),
+            ExprKind::Float(f) => Ok(V::Float(*f)),
+            ExprKind::Local(id) => Ok(self.frame().slots[id.0 as usize].clone()),
+            ExprKind::Capture(i) => Ok(self.frame().captures[*i as usize].clone()),
+            ExprKind::Global(g) => self.read_global(*g),
+            ExprKind::Call { callee, args } => self.call(callee, args),
+            ExprKind::Check(x) => self.expr(x),
+            ExprKind::Block(b) => self.block(b),
+            ExprKind::Binary { op, lhs, rhs } => self.expr_binary(*op, lhs, rhs),
+            ExprKind::If { cond, then, otherwise } => self.expr_if(cond, then, otherwise.as_ref()),
+            ExprKind::Method { .. } | ExprKind::Field { .. } | ExprKind::Index { .. } | ExprKind::Chain(_) => {
+                self.expr_step(e)
+            }
+            ExprKind::Match { value, arms } => self.expr_match(value, arms),
+            _ => self.expr_rest(e),
+        }
+    }
+
+    #[cfg_attr(debug_assertions, inline(never))]
+    fn expr_binary(&mut self, op: BinOp, lhs: &Expr, rhs: &Expr) -> R<V> {
+        let a = self.expr(lhs)?;
+        let b = self.expr(rhs)?;
+        self.binary(op, a, b)
+    }
+
+    #[cfg_attr(debug_assertions, inline(never))]
+    fn expr_if(&mut self, cond: &Expr, then: &Block, otherwise: Option<&Block>) -> R<V> {
+        if self.expr(cond)?.truthy() {
+            self.block(then)
+        } else if let Some(o) = otherwise {
+            self.block(o)
+        } else {
+            Ok(V::None)
+        }
+    }
+
+    #[cfg_attr(debug_assertions, inline(never))]
+    fn expr_step(&mut self, e: &Expr) -> R<V> {
+        let inner = match &e.kind {
+            ExprKind::Chain(inner) => inner,
+            _ => e,
+        };
+        Ok(self.step(inner)?.unwrap_or(V::None))
+    }
+
+    #[cfg_attr(debug_assertions, inline(never))]
+    fn expr_match(&mut self, value: &Expr, arms: &[ir::Arm]) -> R<V> {
+        let v = self.expr(value)?;
+        for arm in arms {
+            let mut hit = arm.patterns.is_empty();
+            for p in &arm.patterns {
+                let p = self.expr(p)?;
+                let matched = match (&p, v.whole()) {
+                    (V::Range(a, b), Some(x)) => *a <= x && x < *b,
+                    _ => p == v,
+                };
+                if matched {
+                    hit = true;
+                    break;
+                }
+            }
+            if hit {
+                if let Some(g) = &arm.guard {
+                    if !self.expr(g)?.truthy() {
+                        continue;
+                    }
+                }
+                return self.block(&arm.body);
+            }
+        }
+        Ok(V::None)
+    }
+
+    /// Every other kind of expression: what a call seldom nests through.
+    #[cfg_attr(debug_assertions, inline(never))]
+    fn expr_rest(&mut self, e: &Expr) -> R<V> {
         Ok(match &e.kind {
-            ExprKind::None => V::None,
-            ExprKind::Bool(b) => V::Bool(*b),
-            ExprKind::Int(i) => V::Int(*i),
-            ExprKind::Float(f) => V::Float(*f),
             ExprKind::Str(s) => V::str(s.as_str()),
             ExprKind::Template(parts) => {
                 let mut out = String::new();
@@ -1169,9 +1274,6 @@ impl Interp {
                 }
                 V::Map(Rc::new(m))
             }
-            ExprKind::Local(id) => self.frame().slots[id.0 as usize].clone(),
-            ExprKind::Capture(i) => self.frame().captures[*i as usize].clone(),
-            ExprKind::Global(g) => self.read_global(*g)?,
             ExprKind::Outer(n) => {
                 let slot = self.outer(*n)?;
                 if let Slot::Local(..) = slot {
@@ -1180,7 +1282,6 @@ impl Interp {
                 }
                 self.read_slot(slot)?
             }
-            ExprKind::Call { callee, args } => self.call(callee, args)?,
             ExprKind::Start { func, args } => {
                 let mut argv = Vec::with_capacity(args.len());
                 for a in args {
@@ -1191,21 +1292,9 @@ impl Interp {
             }
             // Only an `async fn`'s own ops wait; see `task`.
             ExprKind::Await(_) => return fail("`await` is only allowed inside an `async fn`"),
-            ExprKind::Method { .. } | ExprKind::Field { .. } | ExprKind::Index { .. } => {
-                match self.step(e)? {
-                    Some(v) => v,
-                    None => V::None,
-                }
-            }
-            ExprKind::Chain(inner) => self.step(inner)?.unwrap_or(V::None),
             ExprKind::Unary { op, expr } => {
                 let v = self.expr(expr)?;
                 unary(*op, v)?
-            }
-            ExprKind::Binary { op, lhs, rhs } => {
-                let a = self.expr(lhs)?;
-                let b = self.expr(rhs)?;
-                self.binary(*op, a, b)?
             }
             ExprKind::Logic { and, lhs, rhs } => {
                 let a = self.expr(lhs)?;
@@ -1232,43 +1321,6 @@ impl Interp {
                 V::Int(i) => V::Float(i as f64),
                 other => other,
             },
-            ExprKind::Check(x) => self.expr(x)?,
-            ExprKind::If { cond, then, otherwise } => {
-                if self.expr(cond)?.truthy() {
-                    self.block(then)?
-                } else if let Some(o) = otherwise {
-                    self.block(o)?
-                } else {
-                    V::None
-                }
-            }
-            ExprKind::Match { value, arms } => {
-                let v = self.expr(value)?;
-                for arm in arms {
-                    let mut hit = arm.patterns.is_empty();
-                    for p in &arm.patterns {
-                        let p = self.expr(p)?;
-                        let matched = match (&p, v.whole()) {
-                            (V::Range(a, b), Some(x)) => *a <= x && x < *b,
-                            _ => p == v,
-                        };
-                        if matched {
-                            hit = true;
-                            break;
-                        }
-                    }
-                    if hit {
-                        if let Some(g) = &arm.guard {
-                            if !self.expr(g)?.truthy() {
-                                continue;
-                            }
-                        }
-                        return self.block(&arm.body);
-                    }
-                }
-                V::None
-            }
-            ExprKind::Block(b) => self.block(b)?,
             ExprKind::Closure(code) => {
                 let mut captured = Vec::with_capacity(code.captures.len());
                 for r in &code.captures {
@@ -1284,6 +1336,23 @@ impl Interp {
                 }
                 V::Float(crate::start_interval(ms, text.clone()))
             }
+            ExprKind::None
+            | ExprKind::Bool(_)
+            | ExprKind::Int(_)
+            | ExprKind::Float(_)
+            | ExprKind::Local(_)
+            | ExprKind::Capture(_)
+            | ExprKind::Global(_)
+            | ExprKind::Call { .. }
+            | ExprKind::Check(_)
+            | ExprKind::Block(_)
+            | ExprKind::Binary { .. }
+            | ExprKind::If { .. }
+            | ExprKind::Method { .. }
+            | ExprKind::Field { .. }
+            | ExprKind::Index { .. }
+            | ExprKind::Chain(_)
+            | ExprKind::Match { .. } => return self.expr(e),
         })
     }
 
