@@ -1802,12 +1802,17 @@ Float indexing narrows to what the types allow: an index is an `int`, and a
      item.price * item.qty` becomes plain Rust inside the loop. That is
      where the record sum should come close to Dart.
 
-   Questions to settle on the way, not decisions to take alone: an
-   optional field that is absent (`pet?: Pet` with no `pet`) is a slot
-   holding `none` in this plan, so reading `.pet` on it gives `none`
-   where today it fails "there is no `pet` on that value" (watchlist 36
-   is about that read); that is a change an author sees, so bring it to
-   the owner before (c.2) lands. A union of records with different fields
+   Decided for (c.2) (owner, 2026-09-28): **an optional field that was
+   never given reads as `none`** (`bob.pet` on a `User` built without
+   `pet` is `none`, where today it fails "there is no `pet` on that
+   value"), as TypeScript, Kotlin and Swift read one; it is a slot
+   holding `none`, with no hidden "never set" marker. **A field holding
+   `none` that the type marks optional is left out when a record is
+   shown, and by `keys`, `values` and `for`**, so what an author sees
+   stays as today (`${bob}` is `{ name: "bob" }`, `keys(bob)` is
+   `["name"]`), as JavaScript's `JSON.stringify` leaves out `undefined`.
+   `bob.pet.name` still fails, at `.name` on `none`, and the checker
+   should refuse it first once watchlist 36 is fixed. A union of records with different fields
    (a `Result`, a discriminated union) has a shape per member, so a read
    through the union's type goes by name, not by slot. Proof for every
    step: new corpus cases for records written and read in both engines,
