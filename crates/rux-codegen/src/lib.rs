@@ -9,8 +9,10 @@
 //! (`aot::find`), in the same frame, so what is compiled and what is not can
 //! sit side by side in one function. Control flow, `try`, `switch`, literals,
 //! locals, state, operators, calls, fields, indexes, `?.` chains, methods,
-//! writes through places and closures are compiled; `setInterval` is
-//! interpreted for now, and [`Output`] counts both.
+//! writes through places, closures and starting a `setInterval` are
+//! compiled (a timer's body runs from its text, as the runtime keeps one);
+//! what is not is `await` and starting an `async fn`, and [`Output`] counts
+//! both.
 //!
 //! A closure's body is a Rust function of its own, `c{f}_{k}`: closure `k`
 //! of function `f`, numbered as `rux_ir::ir::closures` numbers them. The
@@ -784,6 +786,15 @@ impl Gen<'_> {
                     });
                 }
                 format!("t!(cx.closure({}, {k}, vec![{}]), {s}, {end})", self.func, caps.join(", "))
+            }
+            // The timer keeps its body as text and runs it on its own, as
+            // the interpreter's does; only the first argument is worked out.
+            ExprKind::Interval { args, text, .. } => {
+                let ms = match args.first() {
+                    Some(a) => self.expr(a, s, end)?,
+                    None => "V::None".to_string(),
+                };
+                format!("{{ let __ms = {ms}; aot::interval(&__ms, {text:?}) }}")
             }
             ExprKind::Is { expr, ty } => {
                 // The type as its text, read back once per thread; only when

@@ -148,4 +148,18 @@ pub const CORPUS: &[(&str, &[&str])] = &[
           "guarded()", "early()", "!arm(2)", "!fire(3)", "hits", "!fire(3)", "hits",
           "!hooks.push((x: int) => x + 100)", "!fire(1)", "hits", "bad()", "later()", "log"],
     ),
+    // `setInterval` started by compiled code (9.7): the body kept as text,
+    // the delay worked out first, in a loop, inside a closure body, cleared,
+    // kept in state, and with a delay that is not a number.
+    (
+        "let n = signal(0);\n\
+         let timer = signal(0);\n\
+         fn start(ms: int): bool { let h = setInterval(ms * 2) { n += 1; }; h > 0 }\n\
+         fn twice(): int { let c = 0; for i in 0..2 { let h = setInterval(100 + i) { n += 10; }; if h > 0 { c += 1; } } c }\n\
+         fn stop(): bool { let h = setInterval(50) { n = 0; }; clearInterval(h); true }\n\
+         fn inner(): bool { let f = () => setInterval(5) { n += 2; }; f() > 0 }\n\
+         fn keep() { timer = setInterval(1000) { n += 1; if n >= 5 { clearInterval(timer); } }; }\n\
+         fn odd(): bool { let h = setInterval(\"soon\") { n = 1; }; h > 0 }\n",
+        &["start(3)", "twice()", "stop()", "inner()", "!keep()", "timer > 0", "odd()", "n"],
+    ),
 ];

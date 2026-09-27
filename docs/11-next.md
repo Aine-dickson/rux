@@ -1351,6 +1351,21 @@ Float indexing narrows to what the types allow: an index is an `int`, and a
    binding, the call, reading `tasks`, `join`), which compiling a closure
    body does not touch. Every row gained.
 
+   9.7 done 2026-09-27: starting a `setInterval` is compiled. The
+   generated code works out the first argument and calls
+   `aot::interval(ms, text)`, which starts the timer as the interpreter's
+   arm does (`start_interval`), from the body's text, since the runtime
+   keeps a timer as text; the timer's body still runs interpreted when it
+   fires. As in the interpreter, only the first argument is worked out,
+   and one that is not a number is a delay of 0. The proof now compares
+   the timers each case asks for too (delay and body, without the handle,
+   which both engines draw from one count), and script 10 starts them in a
+   function, in a loop, inside a closure body, cleared at once, kept in
+   state and clearing itself, and with a text delay; none of its 16
+   statements is handed back. `twice()`, two timers started in a loop:
+   interpreted 1.19 µs; compiled 1.00 µs at 4ae5a93 (1.2x faster, the
+   statement handed back) and 0.61 µs now (1.9x faster).
+
    What follows describes the state before 9.2.
    `rux-codegen` compiles control flow (`if`, `while`, ranges, `break`,
    `continue`, `return`), literals, locals, state reads and writes (`=` and
@@ -1408,7 +1423,8 @@ Float indexing narrows to what the types allow: an index is an `int`, and a
      writing its capture, and a callback kept in state and called from a
      handler. Expected: `titles()` and `offset(…)` from about 1.05x to
      2x or more faster.
-   - 9.7 **`setInterval`** in compiled code: `ExprKind::Interval` becomes
+   - 9.7 **`setInterval`** in compiled code (DONE 2026-09-27, see "9.7
+     done" above). The plan as written: `ExprKind::Interval` becomes
      a call to an `aot` helper doing what the interpreter's arm does
      (`start_interval(ms, text)`); its body stays the runtime's, which
      keeps a timer as text. Small.

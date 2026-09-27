@@ -191,6 +191,13 @@ pub fn type_of_text(text: &str) -> Type {
     rux_ir::types::parse_type(text).unwrap_or(Type::Any)
 }
 
+/// `setInterval(ms) { body }`: the timer started, as the interpreter starts
+/// one, from the body's text, and its handle. Only the first argument is
+/// worked out, as there.
+pub fn interval(ms: &V, text: &str) -> V {
+    V::Float(crate::start_interval(ms.number().unwrap_or(0.0), text.to_string()))
+}
+
 /// A step into a place by field name.
 pub fn key(name: &str) -> Key {
     Key::Field(name.to_string())

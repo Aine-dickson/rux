@@ -4,11 +4,12 @@
 
 use rux_aot_tests::corpus::CORPUS;
 use rux_aot_tests::generated::{install_all, COVERAGE};
-use rux_script::{take_warnings, Builder, Engine};
+use rux_script::{take_timer_requests, take_warnings, Builder, Engine, TimerRequest};
 
 /// What running `what` against `e` produced, as text to compare.
 fn run(e: &mut Engine, what: &str) -> String {
     let _ = take_warnings();
+    let _ = take_timer_requests();
     let (shown, touched) = match what.strip_prefix('!') {
         Some(handler) => ("(handler)".to_string(), e.run_handler_tracked(handler)),
         None => e.eval_display_tracked(what, &[]),
@@ -16,7 +17,16 @@ fn run(e: &mut Engine, what: &str) -> String {
     let mut touched: Vec<String> = touched.into_iter().collect();
     touched.sort();
     let warned: Vec<String> = take_warnings().into_iter().map(|w| format!("{w:?}")).collect();
-    format!("{shown} | {touched:?} | {warned:?}")
+    // Timers asked for, without their handles: both engines run on one
+    // thread and share its handle count, so the numbers always differ.
+    let timers: Vec<String> = take_timer_requests()
+        .into_iter()
+        .map(|t| match t {
+            TimerRequest::Start { ms, body, .. } => format!("start {ms} {body:?}"),
+            TimerRequest::Cancel(_) => "cancel".to_string(),
+        })
+        .collect();
+    format!("{shown} | {touched:?} | {warned:?} | {timers:?}")
 }
 
 #[test]
@@ -111,6 +121,8 @@ fn cost() {
         (9, "counter()", 20000),
         (9, "deep()", 20000),
         (9, "looped()", 20000),
+        // `setInterval` started by compiled code (9.7).
+        (10, "twice()", 20000),
     ];
     // Times per call, and how many times faster compiled is: 3.6x faster
     // means compiled takes a 3.6th of the interpreter's time.
