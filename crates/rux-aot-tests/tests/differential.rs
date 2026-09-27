@@ -84,12 +84,29 @@ fn a_changed_text_runs_interpreted() {
 
 #[test]
 fn coverage() {
-    for (i, functions, skipped, closures, compiled, handed_back) in COVERAGE {
+    for (i, functions, skipped, closures, typed, compiled, handed_back) in COVERAGE {
         println!(
-            "script {i}: {functions} functions compiled, {skipped} skipped, {closures} closure bodies; \
-             {compiled} statements compiled, {handed_back} handed back"
+            "script {i}: {functions} functions compiled, {skipped} skipped, {closures} closure bodies, \
+             {typed} typed; {compiled} statements compiled, {handed_back} handed back"
         );
     }
+}
+
+/// Step 10: every function of the typed script has a typed body except
+/// `show`, which makes a string, and `powi`, whose `a ** b` the checker
+/// makes a `float` in a function declared `: int` (watchlist 39: the typed
+/// body refuses a kind the checker did not promise); and the untyped
+/// scripts none that could not be one.
+#[test]
+fn typed_bodies_are_written() {
+    let typed = |i: usize| COVERAGE.iter().find(|c| c.0 == i).map(|c| (c.1, c.4)).expect("script");
+    let (functions, n) = typed(CORPUS.len() - 1);
+    assert_eq!(n, functions - 2, "the typed script: {n} of {functions} typed");
+    // `fib`, `big`, `forever`, `half`, `deep`: all numbers.
+    assert_eq!(typed(0).1, 5);
+    // State, records, strings: none.
+    assert_eq!(typed(1).1, 0);
+    assert_eq!(typed(4).1, 0);
 }
 
 /// What compiling buys, release only (`--ignored`): the same calls on both

@@ -554,6 +554,7 @@ impl Interp {
         self.aot.len()
     }
 
+    #[inline]
     pub(crate) fn enter_call(&mut self) -> R<()> {
         self.deeper()?;
         self.frameless += 1;
@@ -562,6 +563,7 @@ impl Interp {
 
     /// Whether one more call may nest: under [`MAX_DEPTH`], and within
     /// [`STACK_BUDGET`] of where the run began.
+    #[inline]
     fn deeper(&mut self) -> R<()> {
         let probe = 0u8;
         let here = std::ptr::addr_of!(probe) as usize;
@@ -578,6 +580,7 @@ impl Interp {
         Ok(())
     }
 
+    #[inline]
     pub(crate) fn leave_call(&mut self) {
         self.frameless -= 1;
     }
@@ -639,6 +642,7 @@ impl Interp {
         self.assign_value(root, &[], op, v)
     }
 
+    #[inline]
     pub(crate) fn tick_pub(&mut self) -> R<()> {
         self.tick()
     }
@@ -744,6 +748,7 @@ impl Interp {
         self.expr(e)
     }
 
+    #[inline]
     fn tick(&mut self) -> R<()> {
         self.ops += 1;
         if self.ops > self.max_ops {

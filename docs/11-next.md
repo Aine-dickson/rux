@@ -1623,6 +1623,46 @@ Float indexing narrows to what the types allow: an index is an `int`, and a
    frame; and what a fair whole-frame comparison would be (the same app
    built in Flutter and Compose, on one device).
 
+   **10.1 done 2026-09-27: tracks (a) and (b), for numbers only.** A
+   function whose parameters, locals and result are all `int`, `float` or
+   `bool`, and whose body does only arithmetic, comparison, logic, `if`,
+   `while`, a `for` over a range, blocks and `if` as values, and calls to
+   other such functions, gets a second body over Rust's `i64`, `f64` and
+   `bool` (`rux-codegen/src/typed.rs`, found by a fixpoint, so a call to a
+   function that does not qualify disqualifies the caller). Its `f{id}`
+   calls it when the arguments it is handed are those kinds and runs as
+   before when they are not, so nothing the checker did not vouch for
+   meets typed code; the arguments are the only way in. A typed call to a
+   typed function is a Rust call, counted toward the depth limit as any
+   call is. Ticks and failure places are where the untyped body has them,
+   and where Rust's operation stops (overflow, `% 0`, `**`) the
+   interpreter's own operator runs on the same values, so its words are
+   the failure's. Nothing an author writes or sees changes. Proof: corpus
+   script 12, 32 cases (overflow at a statement and at a caller, `% 0`,
+   the least `int` negated and divided by -1, NaN compared, `while` with
+   `break` and `continue`, arguments of other kinds, untyped calling
+   typed), both engines agree; the gate green (1115 tests). Release, µs
+   per call, best of 7:
+
+   | Call | Interpreted | Compiled before | Compiled, typed | Dart | JVM |
+   |---|---|---|---|---|---|
+   | `fib(18)` | 2975 | 922 | 40 (23x faster than before) | 23.9 | 19.8 |
+   | `sum(10000)` | 826 | 234 | 42 (5.5x faster than before) | 7.4 | 3.9 |
+   | `odd(20)` | 2.56 | 0.88 | 0.41 (2.1x faster) | | |
+
+   `fib` is now within 2x of Dart and the JVM; `sum` 6x of Dart and 11x of
+   the JVM. What is left in `sum` is not the arithmetic: the generated
+   loop is plain Rust, and moving `tick`'s failure out of line changed
+   nothing, so it inlines already. The likely cost is the step counter
+   living behind `&mut Interp`, two dependent load-add-store rounds an
+   iteration; keeping the budget in a local of the typed body and writing
+   it back at calls, returns and failures (track (e)) is the next thing to
+   try. Found on the way, watchlist 39: `a ** b` of two `int`s lowers to a
+   float power in a function declared `: int`; the typed body refuses the
+   mismatch, so it costs speed, not correctness. Records (track (c)) are
+   untouched: the script-cost sum over records does not change, and (c)
+   still waits on the owner's two decisions.
+
 Steps 2 to 5 change nothing an author sees except the decided syntax and
 types, which is what made them safe to take in order.
 

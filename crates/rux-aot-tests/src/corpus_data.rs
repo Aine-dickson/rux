@@ -171,4 +171,37 @@ pub const CORPUS: &[(&str, &[&str])] = &[
          fn deep(n: int): int { d = n; if n < 0 { return 0; } deep(n + 1) }\n",
         &["deep(-1)", "d"],
     ),
+    // Typed bodies (step 10): `int`, `float` and `bool` as Rust's own.
+    // Failures where Rust's operation stops (overflow, `% 0`, a negative
+    // power), placed at a statement and at a caller; typed calling typed,
+    // and untyped calling typed; NaN compared; `while` with `break` and
+    // `continue`; blocks and `if` as values; and arguments of other kinds,
+    // which run the untyped body.
+    (
+        "fn add(a: int, b: int): int { a + b }\n\
+         fn twice(n: int): int { add(n, n) }\n\
+         fn placed(n: int): int { let x = add(n, n); x }\n\
+         fn over(n: int): int { let x = n; x *= 1000000000; x * 1000000000 }\n\
+         fn least(): int { -9223372036854775807 - 1 }\n\
+         fn neg(n: int): int { -n }\n\
+         fn rem(a: int, b: int): int { a % b }\n\
+         fn powi(a: int, b: int): int { a ** b }\n\
+         fn fdiv(a: float, b: float): float { a / b }\n\
+         fn fmod(a: float, b: float): float { a % b }\n\
+         fn idiv(a: int, b: int): float { a / b }\n\
+         fn nan_cmp(): bool { let n = 0.0 / 0.0; n < 1.0 || n >= 1.0 || n == n }\n\
+         fn nan_ne(): bool { let n = 0.0 / 0.0; n != n && !(n > 0.0) }\n\
+         fn mix(a: int, b: float): float { a * 2 + b }\n\
+         fn pick(c: bool, a: int, b: int): int { if c { a } else { b } }\n\
+         fn loopy(n: int): int { let s = 0; let i = 0; while i < n { i += 1; if i % 3 == 0 { continue; } if i > 50 { break; } s += i; } s }\n\
+         fn blocky(n: int): int { let k = { let a = n * 2; a + 1 }; k }\n\
+         fn chain(n: int): int { if n <= 0 { return 0; } chain(n - 1) + twice(1) }\n\
+         fn ranged(a: int, b: int): int { let s = 0; for i in a..=b { s -= i; } s }\n\
+         fn show(n: int): string { `${add(n, 1)}` }\n",
+        &["add(2, 3)", "twice(4611686018427387904)", "placed(4611686018427387904)", "over(5)", "over(5000000000)",
+          "neg(least())", "neg(4)", "rem(7, 3)", "rem(7, 0)", "rem(least(), -1)", "powi(2, 10)", "powi(2, -1)",
+          "powi(2, 70)", "fdiv(1.0, 0.0)", "fdiv(0.0, 0.0)", "fmod(7.5, 2.0)", "idiv(7, 2)", "idiv(1, 0)", "nan_cmp()",
+          "nan_ne()", "mix(3, 0.5)", "pick(true, 1, 2)", "pick(false, 1, 2)", "loopy(100)", "blocky(3)", "chain(5)",
+          "ranged(-2, 3)", "show(41)", "add(1.5, 2)", "add(\"a\", 1)", "pick(1, 2, 3)", "mix(3, 1)"],
+    ),
 ];

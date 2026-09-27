@@ -20,12 +20,18 @@
 //! runs compiled however it was created. Its captures are its own copies,
 //! per call, as the interpreter's frame holds them.
 //!
+//! A function of only `int`s, `float`s and `bool`s also gets a typed body
+//! over Rust's own `i64`, `f64` and `bool`, which its `f{id}` runs when its
+//! arguments are those kinds (see `typed.rs`, step 10).
+//!
 //! The semantics are the interpreter's by construction: every operator,
 //! read and write goes through the same `aot` call the interpreter makes,
 //! steps are counted where it counts them, and a failure is placed at the
 //! statement the interpreter would place it at.
 
 use std::fmt::Write as _;
+
+mod typed;
 
 use rux_ir::ir::{BinOp, Block, Callee, Expr, ExprKind, Func, PlaceStep, Root, Stmt, StmtKind, Unit};
 
@@ -41,6 +47,9 @@ pub struct Output {
     /// How many closure bodies were compiled: every closure a compiled
     /// function creates.
     pub closures: usize,
+    /// How many functions also have a typed body (`int`, `float` and `bool`
+    /// as Rust's own), which runs when their arguments are those kinds.
+    pub typed: usize,
     /// How many statements were compiled, and how many handed back.
     pub compiled: usize,
     pub handed_back: usize,
@@ -75,6 +84,7 @@ pub fn generate(unit: &Unit, hash: u64, aot: &str) -> Output {
          macro_rules! t {{\n    ($x:expr, $s:expr, $e:expr) => {{\n        match $x {{\n            Ok(v) => v,\n            // u32::MAX: a function's value, whose failure its caller places.
             Err(err) => return Err(if $s == u32::MAX {{ err }} else {{ aot::at(err, $s, $e) }}),\n        }}\n    }};\n}}\n"
     );
+    let typed = typed::typed(unit);
     let mut table = Vec::new();
     let mut closures = Vec::new();
     for (id, f) in unit.fns.iter().enumerate() {
@@ -83,7 +93,12 @@ pub fn generate(unit: &Unit, hash: u64, aot: &str) -> Output {
             continue;
         }
         let id = id as u32;
-        let framed = g.func(id, f);
+        let guard = typed[id as usize].as_ref().map(|(sig, _)| guard(id, sig));
+        let framed = g.func(id, f, guard.as_deref());
+        if let (Some((_, code)), false) = (&typed[id as usize], framed) {
+            g.code.push_str(code);
+            g.out.typed += 1;
+        }
         table.push(format!("({id}, {}, {framed}, f{id})", f.body.locals.len()));
         g.out.functions += 1;
         // Its closures' bodies, every one it creates at any depth, each by
@@ -154,12 +169,12 @@ impl Gen<'_> {
     /// Write function `id`, and say whether it runs in a frame: it does
     /// unless every statement of it compiled, when nothing of the
     /// interpreter's needs to see its locals.
-    fn func(&mut self, id: u32, f: &Func) -> bool {
+    fn func(&mut self, id: u32, f: &Func, guard: Option<&str>) -> bool {
         let _ = writeln!(self.code, "\n/// `{}`", f.name.replace('\n', " "));
         self.func = id;
         self.closure = None;
         self.closures = rux_ir::ir::closures(&f.body.block);
-        self.body(&format!("f{id}"), f.params, &f.body, None)
+        self.body(&format!("f{id}"), f.params, &f.body, None, guard)
     }
 
     /// Write the body of closure `k` of function `id` (the closures of
@@ -168,7 +183,7 @@ impl Gen<'_> {
         let _ = writeln!(self.code, "\n/// closure {k} of function {id}");
         self.func = id;
         self.closure = Some(k);
-        let framed = self.body(&format!("c{id}_{k}"), c.params, &c.body, Some(c.captures.len()));
+        let framed = self.body(&format!("c{id}_{k}"), c.params, &c.body, Some(c.captures.len()), None);
         self.closure = None;
         framed
     }
@@ -176,8 +191,9 @@ impl Gen<'_> {
     /// A body as Rust function `name`: a function's (`captures` `None`), or
     /// a closure's, holding that many captures. It runs in a frame unless
     /// every statement of it compiled, when nothing of the interpreter's
-    /// needs to see its locals; the answer is whether it does.
-    fn body(&mut self, name: &str, params: u32, b: &rux_ir::ir::Body, captures: Option<usize>) -> bool {
+    /// needs to see its locals; the answer is whether it does. `guard`, for
+    /// a body without a frame, goes first: the call of its typed body.
+    fn body(&mut self, name: &str, params: u32, b: &rux_ir::ir::Body, captures: Option<usize>, guard: Option<&str>) -> bool {
         let place = Place { path: Vec::new(), in_loop: false, depth: 0, try_edge: false };
         let counted = (self.out.compiled, self.out.handed_back);
         self.frameless = false;
@@ -194,7 +210,8 @@ impl Gen<'_> {
             self.frameless = false;
             let caps = if captures.is_some() { ", caps: Vec<V>" } else { "" };
             let _ = writeln!(self.code, "fn {name}(cx: &mut Cx, args: Vec<V>{caps}) -> R<V> {{");
-            let mut prologue = String::from("let mut __args = args.into_iter();\n");
+            let mut prologue = guard.unwrap_or_default().to_string();
+            prologue.push_str("let mut __args = args.into_iter();\n");
             for i in 0..b.locals.len() {
                 if (i as u32) < params {
                     let _ = writeln!(prologue, "let mut l{i}: V = __args.next().unwrap_or(V::None);");
@@ -835,6 +852,20 @@ impl Gen<'_> {
             _ => return None,
         })
     }
+}
+
+/// The start of `f{id}` when it has a typed body: that body, called when the
+/// arguments are the kinds it takes, its value handed back as a `V`.
+fn guard(id: u32, sig: &typed::Sig) -> String {
+    let n = sig.params.len();
+    let pats: Vec<String> = sig.params.iter().enumerate().map(|(i, k)| format!("V::{}(a{i})", k.variant())).collect();
+    let vals: Vec<String> = (0..n).map(|i| format!("&args[{i}]")).collect();
+    let pass: String = (0..n).map(|i| format!(", *a{i}")).collect();
+    let call = format!("return t{id}(cx{pass}).map(V::{});", sig.result.variant());
+    if n == 0 {
+        return format!("{call}\n");
+    }
+    format!("if args.len() >= {n} {{ if let ({},) = ({},) {{ {call} }} }}\n", pats.join(", "), vals.join(", "))
 }
 
 /// The match arms that do `op` in Rust when both values are the kind it is

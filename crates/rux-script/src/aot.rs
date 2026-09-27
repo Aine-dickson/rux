@@ -198,6 +198,28 @@ pub fn interval(ms: &V, text: &str) -> V {
     V::Float(crate::start_interval(ms.number().unwrap_or(0.0), text.to_string()))
 }
 
+/// What typed code does where Rust's own operation stops (an `int` overflow,
+/// `% 0`): the interpreter's operator on the same values, so the failure is
+/// its, word for word. Its answer, when it has one, as the kind the checker
+/// said it is.
+pub fn int_of(r: R<V>) -> R<i64> {
+    match r? {
+        V::Int(i) => Ok(i),
+        _ => Err(out_of_step()),
+    }
+}
+
+pub fn float_of(r: R<V>) -> R<f64> {
+    match r? {
+        V::Float(f) => Ok(f),
+        _ => Err(out_of_step()),
+    }
+}
+
+fn out_of_step() -> Flow {
+    Flow::Fault(Fault::new("compiled code out of step with its source"))
+}
+
 /// A step into a place by field name.
 pub fn key(name: &str) -> Key {
     Key::Field(name.to_string())
@@ -256,8 +278,22 @@ impl Cx<'_> {
     }
 
     /// One step of the budget a run may take.
+    #[inline]
     pub fn tick(&mut self) -> R<()> {
         self.ip.tick_pub()
+    }
+
+    /// A call from typed code straight into another typed function: counted
+    /// toward the depth a run may nest to, as [`Cx::call`] counts one.
+    /// [`Cx::leave`] after it, whatever it gave.
+    #[inline]
+    pub fn enter(&mut self) -> R<()> {
+        self.ip.enter_call()
+    }
+
+    #[inline]
+    pub fn leave(&mut self) {
+        self.ip.leave_call()
     }
 
     /// A call to the unit's function `id`: compiled when it is, interpreted
