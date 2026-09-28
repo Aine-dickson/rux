@@ -1832,6 +1832,28 @@ Float indexing narrows to what the types allow: an index is an `int`, and a
    multiply every figure here by eight without any growing stack, and is
    the owner's to decide if 400 is not enough.
 
+   **10.6, parked by the owner (2026-09-28): a bigger main-thread stack.**
+   Not needed now ("stack changes don't matter anymore"), recorded so it
+   is never lost. What it would give, from today's per-call costs, with an
+   8 MB main thread and about 7 MB of it the budget (1 MB spare): typed
+   calls about 28 000 deep, interpreted about 7 300, compiled about 6 200,
+   an interpreted call from inside an expression about 4 600, so
+   `MAX_DEPTH` could be about 4 000 for every engine (the JVM nests 21 700,
+   Dart 57 000). Benefits: recursion over real data (a tree or list of a
+   few thousand) runs instead of stopping at 400; layout and style, which
+   recurse on the same thread, get the headroom too; memory is unchanged
+   in ordinary use, since Windows only commits the pages a deep call
+   touches. What it takes: the linker flag (`/STACK:8388608`) on the app
+   `rux build` makes and on `rux.exe`; `STACK_BUDGET` read from the real
+   thread's stack when a run starts rather than assumed (a test thread or
+   an embedding may be smaller, and guessing too high is a crash, not an
+   error); Linux and macOS main threads are already 8 MB, so there only
+   the measuring is needed; Android depends on which thread runs script
+   (unmeasured, no phone); the web's wasm stack is its own linker setting,
+   1 MB by default, and memory it reserves is used up front. Proof when
+   taken: `tests/stack.rs` at the new depth on every platform it can run
+   on, the cost bench unchanged.
+
    **The plan for track (c), records as slots, written 2026-09-28 for the
    next session.** Guidance, as the rest of step 10 is: check it against
    the code and reorder where the code says otherwise. Both decisions it
