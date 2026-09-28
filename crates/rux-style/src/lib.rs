@@ -6084,6 +6084,26 @@ pub const ROW_PLACE: &str = "_rux_at_";
 /// A collection that starts with an outer row's loop variable is placed
 /// through that row, so a list nested in a list writes into the real inner
 /// list and not a copy of it.
+/// An `r-key` that names a field of the loop variable (`item.id`), read off
+/// the row's record rather than evaluated: the same value, shown the way
+/// `eval_display` shows it. A script evaluation per row was most of what
+/// planning a 300-row list cost (docs/11-next.md, track (g)). `None` for any
+/// other key, and for a field the record does not have, which the engine
+/// then reports as it always has.
+fn field_key(expr: &str, var: &str, locals: &Locals) -> Option<String> {
+    let (head, field) = expr.trim().split_once('.')?;
+    let ident = |s: &str| {
+        s.chars().next().is_some_and(|c| c.is_alphabetic() || c == '_')
+            && s.chars().all(|c| c.is_alphanumeric() || c == '_')
+    };
+    if head != var || !ident(field) {
+        return None;
+    }
+    let (_, item) = locals.iter().rev().find(|(name, _)| name == var)?;
+    let Value::Map(fields) = item else { return None };
+    fields.iter().find(|(name, _)| name == field).map(|(_, value)| value.to_display())
+}
+
 fn row_place(coll: &str, locals: &Locals) -> Option<String> {
     let coll = coll.trim();
     let path = coll.chars().next().is_some_and(|c| c.is_alphabetic() || c == '_')
@@ -6647,7 +6667,8 @@ fn build_children(
                                 .push((format!("{ROW_PLACE}{var}"), Value::Text(format!("{place}[{index}]"))));
                         }
                         let key = key_expr.map(|expr| {
-                            let key = engine.eval_display(expr, &child_locals);
+                            let key = field_key(expr, var, &child_locals)
+                                .unwrap_or_else(|| engine.eval_display(expr, &child_locals));
                             if key.is_empty() {
                                 warn(format!(
                                     "`r-key=\"{expr}\"` evaluated to nothing on one row, so that \
@@ -6894,7 +6915,13 @@ type RowId = (usize, Option<String>, Option<String>, String);
 /// One row as it was built, and everything that built it.
 struct CachedRow {
     node: LayoutNode,
+    /// Where `node` and `frag` were built, which their paths are relative to.
     path: Vec<usize>,
+    /// Where the row is now, in the tree the last build made: where a build
+    /// of one list finds it to adopt it. See [`LiveRow`].
+    at: Vec<usize>,
+    /// The row itself, taken from the live tree, during a build of one list.
+    live: Option<LiveRow>,
     /// The registry entries the row's build recorded, at `path`.
     frag: BindingRegistry,
     /// The locals, without the place.
@@ -6915,6 +6942,19 @@ struct BuildRows {
     off: bool,
     hits: usize,
     misses: usize,
+}
+
+/// A row of the live tree, taken out of it to be put back where the build
+/// now wants it: its node and its registry entries, which are at the
+/// [`CachedRow::at`] of the row it belongs to.
+///
+/// A reused row used to be copied out of the cache, node and registry
+/// entries, 1.9 of a 300-row list's 5 ms (docs/11-next.md, track (g)).
+/// A build of one list has the rows it is replacing in hand, and a row that
+/// is reused is the same row, so it is moved instead.
+struct LiveRow {
+    node: LayoutNode,
+    frag: BindingRegistry,
 }
 
 /// [`build_styled_tree_stateful`], reusing the rows `cache` kept from the
@@ -7026,6 +7066,11 @@ pub fn rebuild_children(
     env: Environment,
     cache: &mut RowCache,
     parent: &StructuralParent,
+    // The parent's children as they are, and their registry entries
+    // ([`BindingRegistry::take_under`]): a row that is reused is taken from
+    // here rather than copied out of the cache. See [`LiveRow`].
+    live_children: Vec<LayoutNode>,
+    live_reg: BindingRegistry,
 ) -> Option<Rebuilt> {
     let el = rebuild_target(sfc, namespaces, swaps, env, cache, parent)?;
     let ctx = parent.ctx.as_ref()?;
@@ -7040,6 +7085,24 @@ pub fn rebuild_children(
     CURRENT_FILE.with(|c| *c.borrow_mut() = DOCUMENT_NAMESPACE.to_string());
     KEEP_SIBLINGS.with(|k| k.set(keep_siblings));
     SIBLING_STEP.with(|s| s.set(sibling_step));
+
+    // Each child the cache knows as a row it kept, where the cache last saw
+    // it, with the key to prove it is that row.
+    let depth = parent.tree_path.len();
+    let mut kids: Vec<Option<LayoutNode>> = live_children.into_iter().map(Some).collect();
+    let mut frags: Vec<BindingRegistry> = kids.iter().map(|_| BindingRegistry::default()).collect();
+    live_reg.deal(depth, &mut frags);
+    for (id, row) in cache.rows.iter_mut() {
+        if row.at.len() != depth + 1 || !row.at.starts_with(&parent.tree_path) {
+            continue;
+        }
+        let i = row.at[depth];
+        let Some(slot) = kids.get_mut(i) else { continue };
+        if slot.as_ref().is_some_and(|n| n.key.as_deref() == Some(id.3.as_str())) {
+            let node = slot.take().expect("checked just above");
+            row.live = Some(LiveRow { node, frag: std::mem::take(&mut frags[i]) });
+        }
+    }
 
     let old = std::mem::take(&mut cache.rows);
     ROWS.with(|r| {
@@ -7150,38 +7213,71 @@ fn plain_subtree(el: &Element, document: Option<&Namespace>) -> bool {
         && element_children(el).into_iter().all(|c| plain_subtree(c, document))
 }
 
+/// The entries of everything under one parent, taken out of a registry by
+/// [`BindingRegistry::take_under`], and where each list had them.
+pub struct Taken {
+    pub reg: BindingRegistry,
+    pub place: Place,
+}
+
+/// Where each list of a registry had the entries [`Taken`] from it.
+pub struct Place([usize; 10]);
+
 impl BindingRegistry {
-    /// Put `fresh`, the entries of everything under the parent at `parent`,
-    /// in place of the ones there now, where they stand in each list, and
-    /// give the parent's own entry `deps` (or drop it, when nothing under it
-    /// is structural any more). What a whole build would have recorded, in
-    /// the order it would have recorded it: a build walks the tree depth
-    /// first, so everything under one parent is together in each list.
-    pub fn splice_under(&mut self, parent: &[usize], fresh: BindingRegistry, deps: HashSet<String>) {
+    /// Take out the entries of everything under the parent at `parent`,
+    /// remembering where they stood so [`put_under`](Self::put_under) can put
+    /// a fresh build's in the same place. A build walks the tree depth first,
+    /// so everything under one parent is together in each list.
+    ///
+    /// Where a list had none, the place is where a whole build would have
+    /// put them: before the first entry that comes later in the tree (an
+    /// ancestor is a prefix and sorts before), and for the parents' list,
+    /// which records a parent after everything under it, before this
+    /// parent's own entry.
+    pub fn take_under(&mut self, parent: &[usize]) -> Taken {
         fn under(p: &[usize], parent: &[usize]) -> bool {
             p.len() > parent.len() && p.starts_with(parent)
         }
-        // Where a path stands against the parent's subtree: inside it, or
-        // after it in the tree (a later sibling or its descendants; an
-        // ancestor is a prefix and so sorts before).
         fn after(p: &[usize], parent: &[usize]) -> bool {
             p > parent && !p.starts_with(parent)
         }
-        fn splice<T>(list: &mut Vec<T>, fresh: Vec<T>, inside: impl Fn(&T) -> bool, later: impl Fn(&T) -> bool) {
-            let start = list.iter().position(&inside);
-            let at = match start {
+        fn take<T>(list: &mut Vec<T>, inside: impl Fn(&T) -> bool, later: impl Fn(&T) -> bool) -> (Vec<T>, usize) {
+            match list.iter().position(&inside) {
                 Some(s) => {
                     let end = s + list[s..].iter().take_while(|b| inside(b)).count();
                     debug_assert!(!list[end..].iter().any(&inside), "entries under one parent are together");
-                    list.drain(s..end);
-                    s
+                    (list.drain(s..end).collect(), s)
                 }
-                // Nothing was there: the fresh entries go before the first
-                // entry that comes later in the tree.
-                None => list.iter().position(later).unwrap_or(list.len()),
-            };
-            list.splice(at..at, fresh);
+                None => (Vec::new(), list.iter().position(later).unwrap_or(list.len())),
+            }
         }
+        let mut reg = BindingRegistry::default();
+        let mut at = [0; 10];
+        (reg.text, at[0]) = take(&mut self.text, |b| under(&b.path, parent), |b| after(&b.path, parent));
+        (reg.value, at[1]) = take(&mut self.value, |b| under(&b.path, parent), |b| after(&b.path, parent));
+        (reg.show, at[2]) = take(&mut self.show, |b| under(&b.path, parent), |b| after(&b.path, parent));
+        (reg.src, at[3]) = take(&mut self.src, |b| under(&b.path, parent), |b| after(&b.path, parent));
+        (reg.options, at[4]) = take(&mut self.options, |b| under(&b.path, parent), |b| after(&b.path, parent));
+        (reg.structural_parents, at[5]) = take(
+            &mut self.structural_parents,
+            |b| under(&b.tree_path, parent),
+            |b| b.tree_path == parent || after(&b.tree_path, parent),
+        );
+        (reg.toggles, at[6]) = take(&mut self.toggles, |b| under(&b.path, parent), |b| after(&b.path, parent));
+        (reg.components, at[7]) = take(&mut self.components, |b| under(&b.path, parent), |b| after(&b.path, parent));
+        (reg.styled, at[8]) = take(&mut self.styled, |b| under(&b.path, parent), |b| after(&b.path, parent));
+        (reg.elements.entries, at[9]) =
+            take(&mut self.elements.entries, |e| under(&e.path, parent), |e| after(&e.path, parent));
+        Taken { reg, place: Place(at) }
+    }
+
+    /// Put `fresh`, a build of the parent at `parent`'s children, where
+    /// [`take_under`](Self::take_under) took the old entries from, and give
+    /// the parent's own entry `deps` (or drop it, when nothing under it is
+    /// structural any more): what a whole build would have recorded, in the
+    /// order it would have recorded it.
+    pub fn put_under(&mut self, parent: &[usize], place: &Place, fresh: BindingRegistry, deps: HashSet<String>) {
+        let at = place.0;
         let BindingRegistry {
             text,
             value,
@@ -7195,20 +7291,16 @@ impl BindingRegistry {
             structural,
             elements,
         } = fresh;
-        splice(&mut self.text, text, |b| under(&b.path, parent), |b| after(&b.path, parent));
-        splice(&mut self.value, value, |b| under(&b.path, parent), |b| after(&b.path, parent));
-        splice(&mut self.show, show, |b| under(&b.path, parent), |b| after(&b.path, parent));
-        splice(&mut self.src, src, |b| under(&b.path, parent), |b| after(&b.path, parent));
-        splice(&mut self.options, options, |b| under(&b.path, parent), |b| after(&b.path, parent));
-        // A parent is recorded after everything under it, so what goes under
-        // this one goes just before its own entry.
-        splice(&mut self.structural_parents, structural_parents, |b| under(&b.tree_path, parent), |b| {
-            b.tree_path == parent || after(&b.tree_path, parent)
-        });
-        splice(&mut self.toggles, toggles, |b| under(&b.path, parent), |b| after(&b.path, parent));
-        splice(&mut self.components, components, |b| under(&b.path, parent), |b| after(&b.path, parent));
-        splice(&mut self.styled, styled, |b| under(&b.path, parent), |b| after(&b.path, parent));
-        splice(&mut self.elements.entries, elements.entries, |e| under(&e.path, parent), |e| after(&e.path, parent));
+        self.text.splice(at[0]..at[0], text);
+        self.value.splice(at[1]..at[1], value);
+        self.show.splice(at[2]..at[2], show);
+        self.src.splice(at[3]..at[3], src);
+        self.options.splice(at[4]..at[4], options);
+        self.structural_parents.splice(at[5]..at[5], structural_parents);
+        self.toggles.splice(at[6]..at[6], toggles);
+        self.components.splice(at[7]..at[7], components);
+        self.styled.splice(at[8]..at[8], styled);
+        self.elements.entries.splice(at[9]..at[9], elements.entries);
         self.structural.extend(structural);
         if let Some(i) = self.structural_parents.iter().position(|b| b.tree_path == parent) {
             if deps.is_empty() {
@@ -7217,6 +7309,28 @@ impl BindingRegistry {
                 self.structural_parents[i].deps = deps;
             }
         }
+    }
+
+    /// Hand each entry to the row it is in: `rows[i]` gets those under the
+    /// parent's `i`-th child, the parent being `depth` deep.
+    fn deal(self, depth: usize, rows: &mut [BindingRegistry]) {
+        fn deal<T>(list: Vec<T>, depth: usize, rows: &mut [BindingRegistry], path: impl Fn(&T) -> &[usize], to: impl Fn(&mut BindingRegistry) -> &mut Vec<T>) {
+            for b in list {
+                if let Some(row) = path(&b).get(depth).copied().and_then(|i| rows.get_mut(i)) {
+                    to(row).push(b);
+                }
+            }
+        }
+        deal(self.text, depth, rows, |b| &b.path, |r| &mut r.text);
+        deal(self.value, depth, rows, |b| &b.path, |r| &mut r.value);
+        deal(self.show, depth, rows, |b| &b.path, |r| &mut r.show);
+        deal(self.src, depth, rows, |b| &b.path, |r| &mut r.src);
+        deal(self.options, depth, rows, |b| &b.path, |r| &mut r.options);
+        deal(self.structural_parents, depth, rows, |b| &b.tree_path, |r| &mut r.structural_parents);
+        deal(self.toggles, depth, rows, |b| &b.path, |r| &mut r.toggles);
+        deal(self.components, depth, rows, |b| &b.path, |r| &mut r.components);
+        deal(self.styled, depth, rows, |b| &b.path, |r| &mut r.styled);
+        deal(self.elements.entries, depth, rows, |e| &e.path, |r| &mut r.elements.entries);
     }
 }
 
@@ -7305,9 +7419,13 @@ fn build_row(
     let touched = state_touches(state, path, &id.3);
     if !touched {
         let entry = ROWS.with(|r| r.borrow_mut().as_mut().and_then(|b| b.old.remove(&id)));
-        if let Some(entry) = entry {
+        if let Some(mut entry) = entry {
             if row_unchanged(&entry, rest, place, place_name, ancestors, inherited, engine) {
-                let node = replay_row(&entry, path, place_name, place, reg);
+                let node = match entry.live.take() {
+                    Some(live) => adopt_row(live, &entry.at, path, place_name, place, reg),
+                    None => replay_row(&entry, path, place_name, place, reg),
+                };
+                entry.at = path.to_vec();
                 // Whatever encloses this row read what it read, and baked
                 // what it baked, as surely as if it had just been built.
                 rux_script::note_reads(entry.reads.iter().map(|(n, _)| n.as_str()));
@@ -7359,6 +7477,8 @@ fn build_row(
         let entry = CachedRow {
             node: node.clone(),
             path: path.to_vec(),
+            at: path.to_vec(),
+            live: None,
             frag: marks.fragment(reg),
             locals: rest.to_vec(),
             place: place.cloned(),
@@ -7548,6 +7668,97 @@ fn replay_row(
     }
     for e in &f.elements.entries {
         let mut e = e.clone();
+        fix_path(&mut e.path);
+        reg.elements.entries.push(e);
+    }
+    node
+}
+
+/// [`replay_row`] for a row taken from the live tree: moved into place
+/// rather than copied, its paths rebased from where it was and its place in
+/// its list written where it now is.
+fn adopt_row(
+    live: LiveRow,
+    from: &[usize],
+    path: &[usize],
+    place_name: Option<&str>,
+    place: Option<&Value>,
+    reg: &mut BindingRegistry,
+) -> LayoutNode {
+    let LiveRow { mut node, frag } = live;
+    let moved = from != path;
+    if moved {
+        rebase_node(&mut node, from, path);
+    }
+    let fix_path = |p: &mut Vec<usize>| {
+        if moved {
+            rebase(p, from, path);
+        }
+    };
+    let fix_locals = |locals: &mut Vec<(String, Value)>| {
+        if let Some((name, value)) = place_name.zip(place) {
+            for (n, v) in locals.iter_mut() {
+                if n == name && v != value {
+                    *v = value.clone();
+                }
+            }
+        }
+    };
+    let BindingRegistry {
+        text,
+        value,
+        show,
+        src,
+        options,
+        structural_parents,
+        toggles,
+        components,
+        styled,
+        structural: _,
+        elements,
+    } = frag;
+    for mut b in text {
+        fix_path(&mut b.path);
+        fix_locals(&mut b.locals);
+        reg.text.push(b);
+    }
+    for mut b in value {
+        fix_path(&mut b.path);
+        fix_locals(&mut b.locals);
+        reg.value.push(b);
+    }
+    for mut b in show {
+        fix_path(&mut b.path);
+        fix_locals(&mut b.locals);
+        reg.show.push(b);
+    }
+    for mut b in src {
+        fix_path(&mut b.path);
+        fix_locals(&mut b.locals);
+        reg.src.push(b);
+    }
+    for mut b in options {
+        fix_path(&mut b.path);
+        fix_locals(&mut b.locals);
+        reg.options.push(b);
+    }
+    for mut b in structural_parents {
+        fix_path(&mut b.tree_path);
+        reg.structural_parents.push(b);
+    }
+    for mut b in toggles {
+        fix_path(&mut b.path);
+        reg.toggles.push(b);
+    }
+    for mut b in components {
+        fix_path(&mut b.path);
+        reg.components.push(b);
+    }
+    for mut b in styled {
+        fix_path(&mut b.path);
+        reg.styled.push(b);
+    }
+    for mut e in elements.entries {
         fix_path(&mut e.path);
         reg.elements.entries.push(e);
     }

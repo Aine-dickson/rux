@@ -2152,7 +2152,7 @@ Float indexing narrows to what the types allow: an index is an `int`, and a
      | whole frame, window | 26.5 ms | 20.7 ms (1.3x faster) |
 
    What is left, largest first, each its own step:
-   - (g).2 **Patch, 7 ms. Measured 2026-09-28, not yet chosen.** The
+   - (g).2 **Patch, 7 ms. Measured 2026-09-28; (A) done the same day.** The
      styled tree rebuilt for a keyed reorder. Split with probes (release,
      bench): reconcile 6.2 ms, of which building the whole fresh styled
      tree is 5.0 ms and splicing it in 1.2 ms; patching values 0.03 ms.
@@ -2173,6 +2173,58 @@ Float indexing narrows to what the types allow: an index is an `int`, and a
      registry, the debug proof). (B) trim the hit path: share binding
      templates and locals instead of cloning them, a direct read for a
      key that is a field (`item.id`); smaller, safer, perhaps 7 ms to 4.
+     **The owner chose (A), 2026-09-28. Done in three parts:**
+     - A1 (e8cf622): a structural parent in the document's own markup,
+       outside any keyed row, keeps what its children were built from
+       (`rux_style::ListCtx`: its ancestors for matching, inherited style,
+       locals), and a reconcile that touches only such parents builds just
+       their children (`rux_style::rebuild_children`) and puts the
+       registry entries under each where the old ones stood
+       (`take_under`, `put_under`). Anything a whole build does more for
+       builds the whole document as before: a component, slot, router,
+       route view, `r-transition` or `for=` label under the parent, a
+       pending swap, warnings outstanding, a `for=` label anywhere. Only
+       outside keyed rows, since a keyed row can be replayed at another
+       place and would carry a stale context. Debug builds check every one
+       against a whole build, tree and registry;
+       `crates/rux-runtime/tests/list_alone.rs` drives it on shapes chosen
+       to break it (entries after the list, an empty list filling, two
+       lists under one parent, rows with their own lists and conditions,
+       inputs in rows). Found on the way: the root's template element
+       moves with its `Sfc` after the load, so the root is not compared
+       by address; and the row cache now learns the stylesheet's flags
+       from any whole build, so the first reconcile after a load can use
+       this too. It does not move the bench much, since that page is all
+       list; it is for a page larger than its lists.
+     - A2: a reused row is moved from the live tree, node and registry
+       entries, instead of copied out of the cache. The cache now knows
+       where each row is (`CachedRow::at`), the live children and their
+       entries are handed to the build, and each is attached to its cache
+       entry after its key is checked.
+     - A key that names a field of the loop variable (`item.id`) is read
+       off the row's record, shown by the same `to_display` the engine
+       uses; any other key, or a missing field, is evaluated as before.
+       `a_field_key_shows_as_its_evaluation_would` holds it (numbers,
+       fractions, `-0`, `1e21`, text, booleans), and was seen to fail
+       with the shortcut broken.
+
+     | List of 300, release | Before | After |
+     |---|---|---|
+     | timer and patch, bench | 7.1 ms | 5.4 ms (1.3x faster) |
+     | patch, window | 7.0 ms | 5.1 ms (1.4x faster) |
+     | script calls a frame, window | 308 | 5 |
+     | whole frame, window | 17.1 ms | 15.2 ms |
+     | filter of 2 000, patch, window | 0.83 ms | 0.53 ms |
+
+     Not "well under a millisecond", as (A) was hoped to be: what is left
+     is per row and needed for correctness as the build stands. Of the
+     list's 4.2 ms build: comparing each row with its cached one 0.24 ms,
+     moving it into place 0.57 ms, the rest of each row's bookkeeping
+     (the row id, reads noted, kept) about 1.5 ms, planning the rows 0.3
+     ms, and 0.4 ms of setup (the stylesheet parsed, 0.1, and the live
+     rows handed over, 0.3). Going under a millisecond would mean not
+     visiting unchanged rows at all, which needs knowing a row is
+     unchanged without comparing it: a question for later, not a trim.
    - (g).3 **Done 2026-09-28. Scene, 4.8 ms: every text was shaped again
      to be drawn**, 900 parley layouts a frame. `TextEngine::draw` now
      keeps what it shaped and aligned, keyed as the measure cache is

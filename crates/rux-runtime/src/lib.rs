@@ -3436,6 +3436,11 @@ impl Document {
         #[cfg(debug_assertions)]
         let before = self.root.clone();
         for parent in &parents {
+            let p = &parent.tree_path;
+            // The rows being replaced go to the build, which moves the ones
+            // it reuses back into place instead of copying them.
+            let live_children = node_at_mut(&mut self.root, p).map(|n| std::mem::take(&mut n.children)).unwrap_or_default();
+            let taken = self.registry.take_under(p);
             let Some(rebuilt) = rux_style::rebuild_children(
                 &self.sfc,
                 &self.namespaces,
@@ -3446,6 +3451,8 @@ impl Document {
                 self.environment,
                 &mut self.rows,
                 parent,
+                live_children,
+                taken.reg,
             ) else {
                 // Checked above; nothing between can change the answer.
                 unreachable!("a list that could be rebuilt alone was refused");
@@ -3454,14 +3461,13 @@ impl Document {
             for child in &mut children {
                 resolve_images(child, &self.base);
             }
-            let p = &parent.tree_path;
             let row = row_at(&self.root, p);
             let real = self.focused_shown();
             if let Some(live) = node_at_mut(&mut self.root, p) {
                 live.children = children;
                 apply_focus_in(live, self.focus.as_ref(), row.as_deref(), real.as_ref());
             }
-            self.registry.splice_under(p, rebuilt.reg, rebuilt.deps);
+            self.registry.put_under(p, &taken.place, rebuilt.reg, rebuilt.deps);
         }
         self.diagnostics.warnings = self.fresh_warnings();
         #[cfg(debug_assertions)]

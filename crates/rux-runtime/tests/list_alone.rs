@@ -217,3 +217,29 @@ fn a_label_anywhere_builds_the_whole_document() {
     assert_eq!(d.lists_built_alone(), 0, "a `for=` label anywhere builds the whole document");
     assert_eq!(all_text(&d)[..3], ["b", "c", "a"]);
 }
+
+/// A key naming a field of the row (`item.id`) is read off the record rather
+/// than evaluated; it must show exactly as the evaluation would, whatever the
+/// field holds.
+#[test]
+fn a_field_key_shows_as_its_evaluation_would() {
+    let mut d = doc(
+        r#"<view><text r-for="item in items" r-key="item.id">x</text></view>"#,
+        r#"let items = signal([
+             #{ id: 1 }, #{ id: 2.5 }, #{ id: -0.0 }, #{ id: 1e21 }, #{ id: "a b" }, #{ id: true }, #{ id: 3.0 }
+           ]);"#,
+    );
+    fn keys(node: &Node, out: &mut Vec<String>) {
+        if let Some(k) = &node.key {
+            out.push(k.clone());
+        }
+        for c in &node.children {
+            keys(c, out);
+        }
+    }
+    let mut shown = Vec::new();
+    keys(&d.root, &mut shown);
+    let evaluated: Vec<String> =
+        (0..7).map(|i| d.engine_mut().eval_display(&format!("items[{i}].id"), &[])).collect();
+    assert_eq!(shown, evaluated);
+}
