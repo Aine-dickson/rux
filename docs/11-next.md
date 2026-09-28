@@ -1983,7 +1983,14 @@ Float indexing narrows to what the types allow: an index is an `int`, and a
 
    **10.5, small follow-ups from track (c), each its own step, before
    track (d):**
-   - (10.5.1) Compiled writes by slot. `item.qty += 1` in compiled code
+   - (10.5.1) **Done 2026-09-28.** A write to a field of a record a local
+     of the compiled body holds, its type known, goes straight into slot
+     `k` (copied first when shared, as any write), by name where the
+     record is laid out otherwise. `restock(1000)` (two field writes a
+     turn): 334 to 35 µs (9.5x faster); `bumped()` 1.34 to 1.04 µs.
+     Writes through state or through more than one step still go through
+     the interpreter's walk. What was planned:
+     Compiled writes by slot. `item.qty += 1` in compiled code
      still goes through the interpreter's walk by name (correct, and
      through the shape, so no longer slow in the old way); (c.3) did
      reads only. Prove with a bench case of a write in a loop.

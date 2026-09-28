@@ -153,6 +153,7 @@ fn cost() {
         (RECORDS, "one().name", 20000),
         (RECORDS, "bumped()", 20000),
         (RECORDS, "make(1000).length", 200),
+        (RECORDS, "restock(1000)", 200),
     ];
     // Times per call, and how many times faster compiled is: 3.6x faster
     // means compiled takes a 3.6th of the interpreter's time.

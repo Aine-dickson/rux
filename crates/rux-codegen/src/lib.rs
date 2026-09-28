@@ -72,6 +72,7 @@ pub fn generate(unit: &Unit, hash: u64, aot: &str) -> Output {
         func: 0,
         closure: None,
         closures: Vec::new(),
+        local_types: Vec::new(),
     };
     let _ = writeln!(
         g.code,
@@ -145,6 +146,8 @@ struct Gen<'u> {
     unit: &'u Unit,
     /// What the unit's type names stand for.
     table: rux_ir::table::Table,
+    /// The types of the locals of the body being written.
+    local_types: Vec<rux_ir::types::Type>,
     out: Output,
     code: String,
     /// Generating a function none of whose statements is handed back: its
@@ -217,6 +220,7 @@ impl Gen<'_> {
         let place = Place { path: Vec::new(), in_loop: false, depth: 0, try_edge: false };
         let counted = (self.out.compiled, self.out.handed_back);
         self.frameless = false;
+        self.local_types = b.locals.iter().map(|l| l.ty.clone()).collect();
         let framed = self.block(&b.block, &place, None, true);
         let framed_needed = self.out.handed_back > counted.1;
         let caps = if captures.is_some() { ", _caps: Vec<V>" } else { "" };
@@ -408,6 +412,7 @@ impl Gen<'_> {
             // Through fields and indexes: the keys worked out in order, then
             // the value, then the write, as the interpreter assigns.
             StmtKind::Assign { place, op, value } => {
+                let raw = *op;
                 let mut keys = Vec::with_capacity(place.steps.len());
                 for step in &place.steps {
                     keys.push(match step {
@@ -424,7 +429,26 @@ impl Gen<'_> {
                     Some(var) => format!("cx.assign_in(&mut {var}, &__k, {op}, __v)"),
                     None => format!("cx.assign_at({}, &__k, {op}, __v)", root_code(place.root)),
                 };
-                format!("let __k = vec![{}];\nlet __v = {v};\nt!({call}, {s}, {e});\n", keys.join(", "))
+                let slow = format!("let __k = vec![{}];\nt!({call}, {s}, {e});\n", keys.join(", "));
+                // A field of a record a local of its own holds, the checker
+                // knowing its type: written in its slot (step 10.5.1), and
+                // by name where the record is laid out otherwise.
+                if let (Some(var), Root::Local(l), [PlaceStep::Field(name)]) = (self.own(place.root), place.root, &place.steps[..]) {
+                    if let Some(k) = self.local_types.get(l.0 as usize).and_then(|t| self.slot_of(t, name)) {
+                        let write = match raw {
+                            None => "*__s = __v;".to_string(),
+                            Some(raw) => format!(
+                                "let __t = std::mem::replace(__s, V::None); match cx.apply(BinOp::{raw:?}, &__t, __v) {{ Ok(n) => *__s = n, \
+                                 Err(err) => {{ *__s = __t; return Err(aot::at(err, {s}, {e})); }} }}"
+                            ),
+                        };
+                        return Some(format!(
+                            "let __v = {v};\nmatch &mut {var} {{ V::Rec(__r) if aot::slot_is(__r, {k}, {name:?}) => {{ \
+                             let __s = &mut std::rc::Rc::make_mut(__r).vals[{k}]; {write} }}\n_ => {{ {slow}}} }}\n"
+                        ));
+                    }
+                }
+                format!("let __v = {v};\n{slow}")
             }
             StmtKind::If { cond, then, otherwise } => {
                 let c = self.expr(cond, s, e)?;

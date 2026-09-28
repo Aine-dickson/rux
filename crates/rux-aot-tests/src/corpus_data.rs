@@ -242,11 +242,14 @@ pub const CORPUS: &[(&str, &[&str])] = &[
          fn has(): string { let p = pt(); `${\"x\" in p} ${\"label\" in p} ${\"z\" in p}` }\n\
          fn dict(): string { let d: { [string]: int } = { b: 1, a: 2 }; d[\"c\"] = 3; `${d}` }\n\
          fn results(): string { `${Ok(1)} | ${Err(\"no\")}` }\n\
+         fn restock(n: int): int { let it = one(); for i in 0..n { it.qty += 1; it.price = it.price + 0.5; } it.qty }\n\
+         fn relabel(): string { let p = pt(); p.label = \"b\"; p.label += \"c\"; let r = \"\"; try { p.x += \"no\"; } catch e { r = e.kind; } `${p} ${r}` }\n\
          fn takes(p: Pt): string { `${p}` }\n\
          fn contexts(): string { let ps: Pt[] = []; ps.push({ x: 1, y: 2 }); let qs: Pt[] = [{ x: 3, y: 4 }]; let n: { p: Pt } = { p: { x: 5, y: 6 } }; `${ps[0]} | ${qs[0]} | ${n.p} | ${takes({ x: 7, y: 8 })}` }\n",
         &["!fill()", "sum(items)", "over(few, 40)", "items.length", "one()", "`${one()}`", "bumped()", "same()", "differ()",
           "one().name", "keys(one())", "values(one())", "walk()", "bob()", "cat()", "`${bob()}`", "keys(bob())", "keys(cat())",
           "bob().name", "cat().pet", "bob().pet", "bob().pet ?? \"no pet\"", "bob() == { name: \"bob\" }", "pt()", "`${pt()}`", "keys(pt())", "pt().label", "labelled()", "caught()",
-          "undeclared()", "open_set()", "closed_set()", "open_order()", "eq_order()", "eq_open()", "has()", "dict()", "results()", "contexts()"],
+          "undeclared()", "open_set()", "closed_set()", "open_order()", "eq_order()", "eq_open()", "has()", "dict()", "results()", "contexts()",
+          "restock(1000)", "relabel()"],
     ),
 ];
