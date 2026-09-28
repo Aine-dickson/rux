@@ -1793,8 +1793,16 @@ fn undeclared_write(here: &V, k: &Key) -> R<()> {
     };
     match here {
         V::Rec(r) if r.shape.is_closed() && r.shape.slot(name).is_none() => undeclared(name),
+        // `=` writes a key that is there; `set` adds one (owner, 2026-09-28).
+        V::Rec(r) if r.shape.slot(name).is_none() => new_key(name),
+        V::Map(m) if !m.contains_key(name) => new_key(name),
         _ => Ok(()),
     }
+}
+
+/// `m.k = v` or `m["k"] = v` where `m` has no `k`: a key is added by `set`.
+fn new_key<T>(name: &str) -> R<T> {
+    fail(format!("`{name}` is not a key of this map yet: `=` writes a key that is there, and `.set(\"{name}\", value)` adds one"))
 }
 
 /// A record's shown fields as a map, for what only a map does: a new key

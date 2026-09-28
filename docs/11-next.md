@@ -1785,7 +1785,8 @@ Float indexing narrows to what the types allow: an index is an `int`, and a
    counting depth as the interpreter does: both stop `chain` at 253 in a
    release build. The gate is green (1116 tests).
 
-   **10.4, waiting on the owner: recursion as deep as Dart's.** Not a
+   **10.4, recursion as deep as Dart's (owner, 2026-09-28: smaller
+   frames).** Not a
    larger number: the stack runs out first. Two ways, which can be
    combined, and the choice is the owner's because the first adds a
    dependency and behaves differently on the web:
@@ -2003,9 +2004,12 @@ Float indexing narrows to what the types allow: an index is an `int`, and a
      map. The bridge knows the struct's field order (`ItemKind::Record`);
      carrying it makes a native record a record like any other.
 
-   **For the owner:** confirm that a `{ }` with no declared type shows in
-   the order written (above); watchlist 40 (a map cannot gain a key by
-   `=`); and 10.4 (deeper recursion).
+   **Decided by the owner, 2026-09-28:** a `{ }` with no declared type
+   shows in the order written (confirmed); a map gains a key with
+   `m.set(k, v)`, and `=` only writes a key that is there (watchlist 40
+   closed as the rule, not a defect: the failure's words now say to use
+   `set`); and 10.4 is done by smaller frames, not a stack that grows.
+   Order from here: 10.5.1 to 10.5.4, then 10.4, then track (d).
 
 Steps 2 to 5 change nothing an author sees except the decided syntax and
 types, which is what made them safe to take in order.

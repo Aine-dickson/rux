@@ -83,3 +83,21 @@ fn an_error_is_a_record_of_message_then_kind() {
     assert_eq!(shown(&mut e, "caught()"), "message, kind");
     assert_eq!(shown(&mut e, "`${Err(\"no\")}`"), "ok: false, error: no");
 }
+
+/// A map gains a key with `set`; `=` writes a key that is there, and for a
+/// missing one says to use `set` (owner, 2026-09-28; watchlist 40).
+#[test]
+fn a_map_gains_a_key_with_set() {
+    let mut b = Builder::new();
+    b.interpreted();
+    let mut e = b
+        .build(
+            r#"
+fn added(): string { let d: { [string]: int } = { b: 1 }; d.set("a", 2); d["b"] = 5; `${d}` }
+fn assigned(): string { let d: { [string]: int } = { b: 1 }; let r = ""; try { d["c"] = 3; } catch e { r = e.message; } r }
+"#,
+        )
+        .expect("builds");
+    assert_eq!(e.eval_display("added()", &[]), "a: 2, b: 5");
+    assert!(e.eval_display("assigned()", &[]).contains(".set(\"c\", value)"), "{}", e.eval_display("assigned()", &[]));
+}

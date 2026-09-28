@@ -757,7 +757,9 @@ rule rather than matching a known one. Use `keys(m)` and `values(m)` for maps.
 **A record keeps its fields in the order its type declares them.** `${item}`,
 `{{ item }}`, `keys(item)` and `values(item)` go in that order, as JavaScript,
 Dart and Kotlin show an object, and a `{ }` that no type describes keeps the
-order it was written in. A map (`{ [string]: T }`) keeps its keys sorted. An
+order it was written in. A map (`{ [string]: T }`) keeps its keys sorted, and
+gains a key with `m.set("k", v)`: `m["k"] = v` writes a key that is already
+there, and says so when it is not. An
 optional field never given reads as `none` (`bob.pet`, on a `User` made
 without a `pet`), and a field its type marks optional is left out where the
 record is shown or walked while it holds `none`, so `${bob}` is `name: bob`.
