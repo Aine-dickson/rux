@@ -2062,6 +2062,32 @@ Float indexing narrows to what the types allow: an index is an `int`, and a
      map. The bridge knows the struct's field order (`ItemKind::Record`);
      carrying it makes a native record a record like any other.
 
+   **Track (d) done 2026-09-28: callbacks written in line.**
+   `list.filter(it => it.price > q)` in compiled code, where the callback is
+   a closure literal of one expression (no statements, no locals of its
+   own, no closure inside it), is a Rust loop over the array: no closure
+   value, no call and no argument vector per item. It keeps the
+   interpreter's method exactly: what the closure captures is read once,
+   where the closure would be made; the item and its index are the
+   parameters, only as many as the closure takes; each item is one step,
+   and the depth check a call would make is made once before the first
+   item (the same for every item); failures are placed at the statement.
+   `filter`, `map`, `find`, `findIndex`, `some`, `every` and `forEach`, on
+   an array; anything else (a string, a record with a native method of
+   that name) runs the method as before, with the closure made. Corpus
+   script 13 holds each method, two parameters and none, an overflow
+   inside the callback, a string receiver, and `churn()`, which runs
+   callbacks until the step budget stops it, so both engines are held to
+   the same count. Release, µs per call, compiled:
+
+   | Call | Before | After | Dart | JVM |
+   |---|---|---|---|---|
+   | `over(few, 40)`, filter of 2 000 | 329 | 41 (8.0x faster) | 62 | 17 |
+   | `offset([1, 5, 9], 2)` | 2.18 | 0.85 (2.6x) | | |
+   | `names()` | 2.22 | 1.38 (1.6x) | | |
+   | `titles()` | 1.37 | 0.97 (1.4x) | | |
+   | `by_n()` | 3.05 | 2.19 (1.4x) | | |
+
    **Decided by the owner, 2026-09-28:** a `{ }` with no declared type
    shows in the order written (confirmed); a map gains a key with
    `m.set(k, v)`, and `=` only writes a key that is there (watchlist 40

@@ -245,11 +245,16 @@ pub const CORPUS: &[(&str, &[&str])] = &[
          fn restock(n: int): int { let it = one(); for i in 0..n { it.qty += 1; it.price = it.price + 0.5; } it.qty }\n\
          fn relabel(): string { let p = pt(); p.label = \"b\"; p.label += \"c\"; let r = \"\"; try { p.x += \"no\"; } catch e { r = e.kind; } `${p} ${r}` }\n\
          fn takes(p: Pt): string { `${p}` }\n\
+         fn picks(list: Item[], q: int): string { let a = list.filter(it => it.qty > q).length; let b = list.map((it, i) => it.id + i); let c = list.find(it => it.qty == 3)?.name ?? \"-\"; let d = list.findIndex(it => it.qty == 3); let e = list.some(it => it.price > 90.0); let f = list.every(it => it.qty > 0); let g = list.map(() => 1).length; `${a} ${b.length} ${b[2]} ${c} ${d} ${e} ${f} ${g}` }\n\
+         fn blowup(list: Item[]): int { list.map(it => it.qty * 9223372036854775807).length }\n\
+         fn onstr(): bool { let s = \"abc\"; s.some(c => c == \"b\") }\n\
+         let spun = signal(0);\n\
+         fn churn() { let small = few.slice(0, 50); while true { spun += 1; let k = small.filter(it => it.qty > 2).length + small.map((it, i) => i).length; } }\n\
          fn contexts(): string { let ps: Pt[] = []; ps.push({ x: 1, y: 2 }); let qs: Pt[] = [{ x: 3, y: 4 }]; let n: { p: Pt } = { p: { x: 5, y: 6 } }; `${ps[0]} | ${qs[0]} | ${n.p} | ${takes({ x: 7, y: 8 })}` }\n",
         &["!fill()", "sum(items)", "over(few, 40)", "items.length", "one()", "`${one()}`", "bumped()", "same()", "differ()",
           "one().name", "keys(one())", "values(one())", "walk()", "bob()", "cat()", "`${bob()}`", "keys(bob())", "keys(cat())",
           "bob().name", "cat().pet", "bob().pet", "bob().pet ?? \"no pet\"", "bob() == { name: \"bob\" }", "pt()", "`${pt()}`", "keys(pt())", "pt().label", "labelled()", "caught()",
           "undeclared()", "open_set()", "closed_set()", "open_order()", "eq_order()", "eq_open()", "has()", "dict()", "results()", "contexts()",
-          "restock(1000)", "relabel()"],
+          "restock(1000)", "relabel()", "picks(few, 3)", "picks([], 3)", "blowup(few)", "onstr()", "over(few, 40)", "!churn()", "spun"],
     ),
 ];

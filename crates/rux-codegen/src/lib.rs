@@ -73,6 +73,7 @@ pub fn generate(unit: &Unit, hash: u64, aot: &str) -> Output {
         closure: None,
         closures: Vec::new(),
         local_types: Vec::new(),
+        inline: None,
     };
     let _ = writeln!(
         g.code,
@@ -148,6 +149,9 @@ struct Gen<'u> {
     table: rux_ir::table::Table,
     /// The types of the locals of the body being written.
     local_types: Vec<rux_ir::types::Type>,
+    /// Writing a callback's body in line (track (d)): the number its
+    /// parameters and captures are named by, `__p{n}_{i}` and `__c{n}_{k}`.
+    inline: Option<usize>,
     out: Output,
     code: String,
     /// Generating a function none of whose statements is handed back: its
@@ -624,6 +628,7 @@ impl Gen<'_> {
                     // when the slot is the field's (a record back from the
                     // runtime may hold its fields elsewhere); by name if not.
                     let b = match &base.kind {
+                        ExprKind::Local(l) if self.inline.is_some() => format!("&__p{}_{}", self.inline.unwrap_or_default(), l.0),
                         ExprKind::Local(l) if self.frameless => format!("&l{}", l.0),
                         _ => format!("&{b}"),
                     };
@@ -652,6 +657,11 @@ impl Gen<'_> {
                 // A method that changes its receiver, on a place: the place
                 // is what changes, as the interpreter does it.
                 if MUTATING.contains(&name.as_str()) && !*optional {
+                    // A place inside a callback written in line is the
+                    // callback's own: not written in line.
+                    if self.inline.is_some() && place_of(recv).is_some() {
+                        return None;
+                    }
                     if let Some((root, steps)) = place_of(recv) {
                         let mut keys = Vec::with_capacity(steps.len());
                         for st in steps {
@@ -691,13 +701,77 @@ impl Gen<'_> {
                     list.push(self.expr(a, s, end)?);
                 }
                 let check = if *optional { format!("if matches!(__m, V::None) {{ {stop} }} ") } else { String::new() };
-                format!(
-                    "{{ let __m = {r}; {check}let __args = vec![{}]; t!(cx.method(__m, {name:?}, __args), {s}, {end}) }}",
-                    list.join(", ")
-                )
+                let generic = format!("{{ let __args = vec![{}]; t!(cx.method(__m, {name:?}, __args), {s}, {end}) }}", list.join(", "));
+                // `list.filter(x => …)` and the like on an array: the
+                // callback's body written in line in a loop (track (d)).
+                if let (false, [arg]) = (*optional, &args[..]) {
+                    if let ExprKind::Closure(c) = &arg.kind {
+                        if let Some(inline) = self.callback(name, c, s, end) {
+                            return Some(format!(
+                                "{{ let __m = {r}; match &__m {{ V::Array(__a) => {{ let __a = std::rc::Rc::clone(__a); {inline} }} _ => {generic} }} }}"
+                            ));
+                        }
+                    }
+                }
+                format!("{{ let __m = {r}; {check}{generic} }}")
             }
             _ => self.expr(e, s, end)?,
         })
+    }
+
+    /// The loop a callback method of an array runs, the callback `c` written
+    /// in line, for an array held in `__a`, as the interpreter's method does
+    /// it: each item one step and one call deeper, the item and its index
+    /// the callback's parameters (only as many as it takes), what it captured
+    /// read once, where the closure would be made. `None` for a method not
+    /// one of these, or a callback that is more than one expression.
+    fn callback(&mut self, name: &str, c: &rux_ir::ir::Closure, s: u32, end: u32) -> Option<String> {
+        if !matches!(name, "filter" | "map" | "find" | "findIndex" | "some" | "every" | "forEach") || self.inline.is_some() {
+            return None;
+        }
+        let [st] = &c.body.block.stmts[..] else { return None };
+        let StmtKind::Expr(body) = &st.kind else { return None };
+        if c.body.block.ty.is_none() || c.body.locals.len() != c.params as usize {
+            return None;
+        }
+        let d = self.label();
+        let mut caps = String::new();
+        for (k, root) in c.captures.iter().enumerate() {
+            let code = match (self.own(*root), root) {
+                (Some(var), _) => format!("{var}.clone()"),
+                (None, Root::Local(l)) => format!("cx.get({})", l.0),
+                (None, Root::Capture(i)) => format!("cx.capture({i})"),
+                (None, root) => format!("t!(cx.captured({}), {s}, {end})", root_code(*root)),
+            };
+            let _ = write!(caps, "let __c{d}_{k} = {code}; ");
+        }
+        let mut params = String::new();
+        for p in 0..c.params {
+            let v = match p {
+                0 => "__x.clone()".to_string(),
+                1 => format!("V::Int(__i{d} as i64)"),
+                _ => "V::None".to_string(),
+            };
+            let _ = write!(params, "let __p{d}_{p}: V = {v}; ");
+        }
+        self.inline = Some(d);
+        let value = self.expr(body, s, end);
+        self.inline = None;
+        let value = value?;
+        let (start, each, done) = match name {
+            "filter" => ("let mut __out = Vec::new();", "if aot::truthy(&__r) { __out.push(__x.clone()); }", "aot::array(__out)"),
+            "map" => ("let mut __out = Vec::with_capacity(__a.len());", "__out.push(__r);", "aot::array(__out)"),
+            "find" => ("let mut __out = V::None;", "if aot::truthy(&__r) { __out = __x.clone(); break; }", "__out"),
+            "findIndex" => ("let mut __out = -1i64;", "if aot::truthy(&__r) { __out = __i{d} as i64; break; }", "V::Int(__out)"),
+            "some" => ("let mut __out = false;", "if aot::truthy(&__r) { __out = true; break; }", "V::Bool(__out)"),
+            "every" => ("let mut __out = true;", "if !aot::truthy(&__r) { __out = false; break; }", "V::Bool(__out)"),
+            _ => ("", "let _ = __r;", "V::None"),
+        };
+        let each = each.replace("{d}", &d.to_string());
+        Some(format!(
+            "{caps}if !__a.is_empty() {{ t!(cx.enter(), {s}, {end}); cx.leave(); }} {start} \
+             for (__i{d}, __x) in __a.iter().enumerate() {{ t!(cx.tick(), {s}, {end}); {params}let __r: V = {value}; {each} }} {done}"
+        ))
     }
 
     /// The base of a step: the rest of its chain, or any other expression.
@@ -762,6 +836,11 @@ impl Gen<'_> {
             ExprKind::Int(i) => format!("V::Int({i}i64)"),
             ExprKind::Float(f) => format!("V::Float(f64::from_bits({:#x}))", f.to_bits()),
             ExprKind::Str(t) => format!("aot::text({t:?})"),
+            // Inside a callback written in line (track (d)): its parameters
+            // and what it captured, held in the loop around it.
+            ExprKind::Local(l) if self.inline.is_some() => format!("__p{}_{}.clone()", self.inline.unwrap_or_default(), l.0),
+            ExprKind::Capture(i) if self.inline.is_some() => format!("__c{}_{i}.clone()", self.inline.unwrap_or_default()),
+            ExprKind::Closure(_) if self.inline.is_some() => return None,
             ExprKind::Local(l) if self.frameless => format!("l{}.clone()", l.0),
             ExprKind::Local(l) => format!("cx.get({})", l.0),
             ExprKind::Capture(i) if self.frameless => format!("cap{i}.clone()"),
