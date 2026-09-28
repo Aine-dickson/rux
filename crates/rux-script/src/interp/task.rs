@@ -80,13 +80,13 @@ impl Interp {
     /// `id`'s ops, compiled the first time.
     fn flat(&mut self, id: FnId) -> R<Rc<Flat>> {
         if let Some(code) = self.flats.get(&id.0) {
-            return code.clone().map_err(|m| Flow::Fault(Fault::new(m)));
+            return code.clone().map_err(|m| Flow::from(Fault::new(m)));
         }
         let unit = Rc::clone(&self.unit);
         let f = &unit.fns[id.0 as usize];
         let code = flat::build(f, flat::everything()).map(Rc::new).map_err(|m| format!("`{}`: {m}", f.name));
         self.flats.insert(id.0, code.clone());
-        code.map_err(|m| Flow::Fault(Fault::new(m)))
+        code.map_err(|m| Flow::from(Fault::new(m)))
     }
 
     /// Start `id`, an `async fn`, with `args`: run it to its first stop. A
@@ -121,7 +121,7 @@ impl Interp {
         let mut task = Task { frames: vec![TaskFrame::new(code, args)], ready: None, name };
         match self.drive(0, &mut task, None) {
             Outcome::Done(v) => Ok(v),
-            Outcome::Failed(f) => Err(Flow::Fault(f)),
+            Outcome::Failed(f) => Err(Flow::from(f)),
             Outcome::Waiting => fail("an ordinary function waited"),
         }
     }
@@ -543,7 +543,7 @@ fn unwind(task: &mut Task, f: Fault) -> Option<Fault> {
 
 fn fault_of(flow: Flow) -> Fault {
     match flow {
-        Flow::Fault(f) => f,
+        Flow::Fault(f) => *f,
         Flow::Break | Flow::Continue => Fault::new("`break` or `continue` outside a loop"),
         Flow::Return(_) => Fault::new("a `return` where none can be"),
     }

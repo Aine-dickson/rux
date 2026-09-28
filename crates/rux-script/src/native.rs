@@ -221,7 +221,7 @@ pub fn to_any(v: &V) -> Any {
         V::Map(m) => Any::Map(m.iter().map(|(k, v)| (k.clone(), to_any(v))).collect()),
         V::Rec(r) => Any::Map(r.entries().map(|(k, v)| (k.to_string(), to_any(v))).collect()),
         V::Range(a, b) => Any::Array((*a..*b).map(Any::Int).collect()),
-        V::Native(h) => Any::Resource(h.clone()),
+        V::Native(h) => Any::Resource(h.as_ref().clone()),
         // Nothing Rust could use: a closure runs only in the interpreter,
         // and an element is the runtime's.
         V::Fn(_) | V::Element(_) => Any::None,
@@ -276,7 +276,7 @@ pub fn from_any(a: Any) -> V {
             }
             None => V::Map(Rc::new(m.into_iter().map(|(k, v)| (k, from_any(v))).collect::<BTreeMap<_, _>>())),
         },
-        Any::Resource(h) => V::Native(h),
+        Any::Resource(h) => V::Native(Rc::new(h)),
     }
 }
 

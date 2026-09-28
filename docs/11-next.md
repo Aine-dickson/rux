@@ -1801,6 +1801,37 @@ Float indexing narrows to what the types allow: an index is an `int`, and a
    Proof either way: `tests/stack.rs` at the new depth, in both profiles,
    and the cost bench unchanged.
 
+   **10.4 done 2026-09-28, by smaller frames (the owner's choice).** A
+   probe of the stack pointer at each interpreter function's entry, on
+   one recursion, showed where a call's stack went: `stmt` 1120 bytes,
+   `expr` 672, `block`, `run_body` and `call_fn` 336 to 504 each. Three
+   changes, measured with the depth cap lifted (release, the 768 KB
+   budget):
+
+   | Change | Interpreted | Compiled | Typed | Interpreted, call inside an expression |
+   |---|---|---|---|---|
+   | Before | 451 | 376 | 1885 | 324 |
+   | A native `Handle` behind an `Rc`, so a `V` is 24 bytes, not 40; `Flow::Fault` boxed, so an `R<V>` is 32 bytes, not 96 | 665 | 623 | 3069 | 454 |
+   | The pieces `expr` and `stmt` hand off to (`expr_binary`, `expr_if`, `expr_rest`, the loops, `throw`/`try`) kept out of line in a release build too, as a debug build keeps them | 781 | 623 | 3069 | 495 |
+   | `call_fn` taking a compiled function first, the other ways out of line; `push_frame_with` out of line | 781 | 665 | 3069 | 495 |
+
+   `MAX_DEPTH` in a release build is 400 (was 256), below the 495 of the
+   heaviest call measured; a debug build keeps 128, and now reaches it on
+   every engine (it stopped at 96 to 126 on the stack budget before). The
+   interpreter got faster with it (`fib(18)` interpreted 3170 to 2830 µs,
+   `!bump(1)` 8.8 to 6.5), and compiled code is unchanged. Records got
+   smaller too: a slot is 24 bytes, not 40 (`sum(items)` 45 to 41 µs).
+
+   What is left, and why it stops here: a compiled call is still 1.2 KB,
+   most of it the generated body's own frame (about 590 bytes for a
+   three-statement function), which is the code generator's temporaries
+   as the Rust compiler lays them out; finding where needs the assembly,
+   not a probe. Dart's 57 000 would be 13 bytes a call in this budget, so
+   no layout of this interpreter reaches it: a bigger main-thread stack
+   (a linker flag on the app, 8 MB instead of 1 MB on Windows) would
+   multiply every figure here by eight without any growing stack, and is
+   the owner's to decide if 400 is not enough.
+
    **The plan for track (c), records as slots, written 2026-09-28 for the
    next session.** Guidance, as the rest of step 10 is: check it against
    the code and reorder where the code says otherwise. Both decisions it

@@ -39,7 +39,7 @@ pub enum V {
     Fn(Rc<Closure>),
     Element(Rc<ElementHandle>),
     /// A native resource, held for Rust: step 8 of `docs/11-next.md`.
-    Native(rux_native::Handle),
+    Native(Rc<rux_native::Handle>),
 }
 
 /// A record's shape and the values in its slots, behind one `Rc`, so the

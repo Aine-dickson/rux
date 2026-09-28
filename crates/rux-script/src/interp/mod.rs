@@ -31,14 +31,14 @@ use crate::lower::{lower_piece, Lowered};
 use crate::MAX_OPERATIONS;
 
 /// How deep calls may nest before the run is stopped, so a function that
-/// calls itself forever is an error and not a crash. A release build's
-/// calls take 1.7 KB of Rust's stack interpreted, 2.1 KB compiled and 0.4 KB
-/// typed (measured 2026-09-28 by `tests/stack.rs`), so [`STACK_BUDGET`]
-/// holds about 376 of the largest; 256 leaves room for a call made from
-/// deep inside an expression, which takes more. Going far past that (Dart
-/// nests about 57 000) needs smaller frames or a stack that grows, not a
-/// larger number here: step 10.4 of `docs/11-next.md`.
-pub(crate) const MAX_DEPTH: usize = if cfg!(debug_assertions) { 128 } else { 256 };
+/// calls itself forever is an error and not a crash. Since step 10.4 of
+/// `docs/11-next.md` (smaller frames, 2026-09-28) a release build's calls
+/// take about 1.0 KB of Rust's stack interpreted, 1.2 KB compiled and 0.26
+/// KB typed, and 1.6 KB for an interpreted call from inside an expression
+/// (`tests/stack.rs`), so [`STACK_BUDGET`] holds about 495 of the largest;
+/// 400 leaves room. The stack, not this number, is what stops a release
+/// build short of Dart's 57 000.
+pub(crate) const MAX_DEPTH: usize = if cfg!(debug_assertions) { 128 } else { 400 };
 
 /// How much of Rust's stack a run may use, measured from where it began.
 /// The depth above is not enough on its own: a debug build's frames are
@@ -53,7 +53,7 @@ const STACK_BUDGET: usize = 768 * 1024;
 
 /// What a run past its step budget of `max` is told, wherever it counted.
 pub(crate) fn too_many(max: u64) -> Flow {
-    Flow::Fault(Fault::new(format!("Too many operations: more than {max}")))
+    Flow::from(Fault::new(format!("Too many operations: more than {max}")))
 }
 
 /// What a run nested too deep is told, whichever limit it met.
@@ -86,19 +86,21 @@ pub enum Flow {
     Break,
     Continue,
     Return(V),
-    Fault(Fault),
+    /// Boxed: a failure is rare and a `Fault` is large, and every `R<V>` a
+    /// call makes holds room for a `Flow` (step 10.4: smaller frames).
+    Fault(Box<Fault>),
 }
 
 impl From<Fault> for Flow {
     fn from(f: Fault) -> Self {
-        Flow::Fault(f)
+        Flow::Fault(Box::new(f))
     }
 }
 
 type R<T> = Result<T, Flow>;
 
 fn fail<T>(message: impl Into<String>) -> R<T> {
-    Err(Flow::Fault(Fault::new(message)))
+    Err(Flow::from(Fault::new(message)))
 }
 
 /// One running body: its locals, and, in a closure, what it captured.
@@ -292,7 +294,7 @@ impl Interp {
         }
         match out {
             Ok(_) | Err(Flow::Return(_)) => Ok(()),
-            Err(Flow::Fault(f)) => Err(f),
+            Err(Flow::Fault(f)) => Err(*f),
             Err(Flow::Break | Flow::Continue) => Err(Fault::new("`break` or `continue` outside a loop")),
         }
     }
@@ -417,13 +419,13 @@ impl Interp {
         let unsupported = piece.lowered.unsupported.first().map(|u| u.what.clone());
         self.enter(&piece, given);
         let out = match unsupported {
-            Some(what) => Err(Flow::Fault(Fault::new(format!("{what} is not part of Rux")))),
+            Some(what) => Err(Flow::from(Fault::new(format!("{what} is not part of Rux")))),
             None => crate::profile::time(crate::profile::Phase::Run, || self.block(&piece.lowered.body.block)),
         };
         let (after, top) = self.leave(&piece);
         let out = match out {
             Ok(v) | Err(Flow::Return(v)) => Ok(v),
-            Err(Flow::Fault(f)) => Err(f),
+            Err(Flow::Fault(f)) => Err(*f),
             Err(Flow::Break | Flow::Continue) => Err(Fault::new("`break` or `continue` outside a loop")),
         };
         (out, after, top)
@@ -626,6 +628,7 @@ impl Interp {
 
     /// A frame for a closure's body: its locals, `args` first, and what it
     /// captured.
+    #[inline(never)]
     pub(crate) fn push_frame_with(&mut self, n: usize, args: Vec<V>, captures: Vec<V>) -> R<()> {
         self.deeper()?;
         let mut frame = Frame { slots: vec![V::None; n], set: vec![false; n], captures };
@@ -733,7 +736,7 @@ impl Interp {
             V::Map(_) | V::Rec(_) => v.field_of("message").map(V::display).unwrap_or_else(|| v.display()),
             other => other.display(),
         };
-        Flow::Fault(Fault { message, kind: "error", thrown: Some(v), at: None })
+        Flow::from(Fault { message, kind: "error", thrown: Some(v), at: None })
     }
 
     pub(crate) fn builtin_pub(&mut self, name: &str, argv: Vec<V>) -> R<V> {
@@ -863,7 +866,7 @@ impl Interp {
     }
 
     /// A loop, in a frame of its own: see [`Interp::expr`].
-    #[cfg_attr(debug_assertions, inline(never))]
+    #[inline(never)]
     fn stmt_loop(&mut self, s: &Stmt) -> R<()> {
         match &s.kind {
             StmtKind::While { cond, body } => {
@@ -921,7 +924,7 @@ impl Interp {
     }
 
     /// `throw` and `try`, in a frame of their own.
-    #[cfg_attr(debug_assertions, inline(never))]
+    #[inline(never)]
     fn stmt_rest(&mut self, s: &Stmt) -> R<()> {
         match &s.kind {
             StmtKind::Throw(v) => {
@@ -930,7 +933,7 @@ impl Interp {
                     V::Map(_) | V::Rec(_) => v.field_of("message").map(V::display).unwrap_or_else(|| v.display()),
                     other => other.display(),
                 };
-                return Err(Flow::Fault(Fault { message, kind: "error", thrown: Some(v), at: None }));
+                return Err(Flow::from(Fault { message, kind: "error", thrown: Some(v), at: None }));
             }
             StmtKind::Try { body, var, catch } => match self.block(body) {
                 Err(Flow::Fault(f)) => {
@@ -1239,14 +1242,14 @@ impl Interp {
         }
     }
 
-    #[cfg_attr(debug_assertions, inline(never))]
+    #[inline(never)]
     fn expr_binary(&mut self, op: BinOp, lhs: &Expr, rhs: &Expr) -> R<V> {
         let a = self.expr(lhs)?;
         let b = self.expr(rhs)?;
         self.binary(op, a, b)
     }
 
-    #[cfg_attr(debug_assertions, inline(never))]
+    #[inline(never)]
     fn expr_if(&mut self, cond: &Expr, then: &Block, otherwise: Option<&Block>) -> R<V> {
         if self.expr(cond)?.truthy() {
             self.block(then)
@@ -1257,7 +1260,7 @@ impl Interp {
         }
     }
 
-    #[cfg_attr(debug_assertions, inline(never))]
+    #[inline(never)]
     fn expr_step(&mut self, e: &Expr) -> R<V> {
         let inner = match &e.kind {
             ExprKind::Chain(inner) => inner,
@@ -1266,7 +1269,7 @@ impl Interp {
         Ok(self.step(inner)?.unwrap_or(V::None))
     }
 
-    #[cfg_attr(debug_assertions, inline(never))]
+    #[inline(never)]
     fn expr_match(&mut self, value: &Expr, arms: &[ir::Arm]) -> R<V> {
         let v = self.expr(value)?;
         for arm in arms {
@@ -1295,7 +1298,7 @@ impl Interp {
     }
 
     /// Every other kind of expression: what a call seldom nests through.
-    #[cfg_attr(debug_assertions, inline(never))]
+    #[inline(never)]
     fn expr_rest(&mut self, e: &Expr) -> R<V> {
         Ok(match &e.kind {
             ExprKind::Str(s) => V::str(s.as_str()),
@@ -1551,6 +1554,19 @@ impl Interp {
     }
 
     fn call_fn(&mut self, id: FnId, argv: Vec<V>) -> R<V> {
+        // A compiled function (never an `async fn`) first, with nothing of
+        // the other ways a call goes in this frame: it is on the stack once
+        // for every call that nests (step 10.4, smaller frames).
+        if !flat::everything() {
+            if let Some((locals, framed, body)) = self.aot.get(&id.0).copied() {
+                return crate::aot::run(self, locals, framed, body, argv);
+            }
+        }
+        self.call_fn_rest(id, argv)
+    }
+
+    #[inline(never)]
+    fn call_fn_rest(&mut self, id: FnId, argv: Vec<V>) -> R<V> {
         let unit = Rc::clone(&self.unit);
         let f = &unit.fns[id.0 as usize];
         // Called by a name found where it runs: started, as the IR's
@@ -1750,7 +1766,7 @@ type SyncNative = std::sync::Arc<dyn Fn(Vec<rux_native::Any>) -> Result<rux_nati
 /// the error it threw, back.
 fn call_native(f: &SyncNative, argv: &[V]) -> R<V> {
     let args = argv.iter().map(crate::native::to_any).collect();
-    f(args).map(crate::native::from_any).map_err(|e| Flow::Fault(native_fault(&e)))
+    f(args).map(crate::native::from_any).map_err(|e| Flow::from(native_fault(&e)))
 }
 
 /// A native error as a fault, which `catch e` reads as `{ message, kind }`
@@ -1779,7 +1795,7 @@ pub(crate) fn error_record(message: V, kind: V) -> V {
 /// A write of a field a record's type does not declare, which the checker
 /// refuses: at run time it fails too, with `kind` `"type"`.
 pub(crate) fn undeclared<T>(name: &str) -> R<T> {
-    Err(Flow::Fault(Fault {
+    Err(Flow::from(Fault {
         message: format!("cannot write `{name}`: the record's type has no such field"),
         kind: "type",
         thrown: None,
@@ -1815,7 +1831,7 @@ pub(crate) fn record_map(r: &value::Record) -> std::collections::BTreeMap<String
 }
 
 fn overflow() -> Flow {
-    Flow::Fault(Fault {
+    Flow::from(Fault {
         message: "Arithmetic overflow: an `int` went past its limits".into(),
         kind: "overflow",
         thrown: None,

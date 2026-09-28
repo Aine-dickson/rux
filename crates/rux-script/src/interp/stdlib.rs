@@ -130,7 +130,7 @@ fn unwrap_result(r: &V) -> R<V> {
         Some(V::Bool(true)) => Ok(r.field_of("value").cloned().unwrap_or(V::None)),
         Some(V::Bool(false)) => {
             let error = r.field_of("error").map(V::display).unwrap_or_default();
-            Err(Flow::Fault(super::Fault {
+            Err(Flow::from(super::Fault {
                 message: format!("unwrap() on an error: {error}"),
                 kind: "unwrap",
                 thrown: None,
@@ -772,7 +772,7 @@ impl Interp {
                 // A declared type's record keeps its fields; one nothing
                 // declared becomes the map it was.
                 ("remove", 1) | ("clear", 0) if r.shape.is_closed() => {
-                    return Err(Flow::Fault(super::Fault {
+                    return Err(Flow::from(super::Fault {
                         message: format!("cannot {name} a field of a record: its type fixes its fields"),
                         kind: "type",
                         thrown: None,

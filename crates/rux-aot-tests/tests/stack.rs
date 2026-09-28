@@ -47,7 +47,7 @@ fn reached_typed(interpreted: bool) -> i64 {
 /// Watchlist 35: a debug build's interpreter frames were so large that the
 /// stack budget stopped script calls about 20 deep. Both engines now nest
 /// at least 100 calls in a debug build, and a release build meets the depth
-/// limit (256) first.
+/// limit (400) first.
 #[test]
 fn both_engines_nest_a_hundred_calls() {
     for (name, interpreted) in [("interpreted", true), ("compiled", false)] {

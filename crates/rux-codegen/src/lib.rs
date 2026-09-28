@@ -489,7 +489,7 @@ impl Gen<'_> {
                 format!(
                     "let __from{d} = {a};\nlet __to{d} = {b};\n\
                      let (Some(__lo{d}), Some(__hi{d})) = (__from{d}.whole(), __to{d}.whole()) else {{\n\
-                     return Err(aot::at(Flow::Fault(aot::Fault::new(\"a range needs two whole numbers\")), {s}, {e}));\n}};\n\
+                     return Err(aot::at(Flow::from(aot::Fault::new(\"a range needs two whole numbers\")), {s}, {e}));\n}};\n\
                      let __end{d} = {end};\nlet mut __i{d} = __lo{d};\n\
                      while __i{d} < __end{d} {{\nlet __cur{d} = __i{d};\n__i{d} += 1;\n\
                      t!(cx.tick(), {s}, {e});\n{}\n{inner}}}\n",

@@ -120,7 +120,7 @@ pub(crate) fn run(ip: &mut Interp, locals: u32, framed: bool, body: Body, args: 
     };
     match out {
         Ok(v) | Err(Flow::Return(v)) => Ok(v),
-        Err(Flow::Break | Flow::Continue) => Err(Flow::Fault(Fault::new("`break` or `continue` outside a loop"))),
+        Err(Flow::Break | Flow::Continue) => Err(Flow::from(Fault::new("`break` or `continue` outside a loop"))),
         Err(e) => Err(e),
     }
 }
@@ -141,7 +141,7 @@ pub(crate) fn run_closure(ip: &mut Interp, locals: u32, framed: bool, body: Clos
     };
     match out {
         Ok(v) | Err(Flow::Return(v)) => Ok(v),
-        Err(Flow::Break | Flow::Continue) => Err(Flow::Fault(Fault::new("`break` or `continue` outside a loop"))),
+        Err(Flow::Break | Flow::Continue) => Err(Flow::from(Fault::new("`break` or `continue` outside a loop"))),
         Err(e) => Err(e),
     }
 }
@@ -196,7 +196,7 @@ pub fn record(shape: &std::rc::Rc<Shape>, given: Vec<(usize, V)>) -> V {
 /// said: its `f{id}` runs the untyped body instead, so this never leaves.
 #[cold]
 pub fn bail() -> Flow {
-    Flow::Fault(Fault { message: "a typed body gave up".into(), kind: BAIL, thrown: None, at: None })
+    Flow::from(Fault { message: "a typed body gave up".into(), kind: BAIL, thrown: None, at: None })
 }
 
 /// Whether `e` is [`bail`]'s.
@@ -272,7 +272,7 @@ pub fn too_many(max: u64) -> Flow {
 }
 
 fn out_of_step() -> Flow {
-    Flow::Fault(Fault::new("compiled code out of step with its source"))
+    Flow::from(Fault::new("compiled code out of step with its source"))
 }
 
 /// A step into a place by field name.
@@ -488,7 +488,7 @@ impl Cx<'_> {
         let unit = self.ip.unit_rc();
         match find(&unit.fns[id as usize].body.block, path) {
             Some(s) => self.ip.stmt_pub(s),
-            None => Err(Flow::Fault(Fault::new("compiled code out of step with its source"))),
+            None => Err(Flow::from(Fault::new("compiled code out of step with its source"))),
         }
     }
 
@@ -504,7 +504,7 @@ impl Cx<'_> {
         let code = self.ip.closure_code(id, k)?;
         match find(&code.body.block, path) {
             Some(s) => self.ip.stmt_pub(s),
-            None => Err(Flow::Fault(Fault::new("compiled code out of step with its source"))),
+            None => Err(Flow::from(Fault::new("compiled code out of step with its source"))),
         }
     }
 
@@ -520,7 +520,7 @@ impl Cx<'_> {
                 self.ip.tick_pub()?;
                 self.ip.expr_pub(e)
             }
-            _ => Err(Flow::Fault(Fault::new("compiled code out of step with its source"))),
+            _ => Err(Flow::from(Fault::new("compiled code out of step with its source"))),
         }
     }
 }
