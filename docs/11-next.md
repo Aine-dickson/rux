@@ -2156,11 +2156,25 @@ Float indexing narrows to what the types allow: an index is an `int`, and a
      Row reuse (b6ceb24) left about 12 µs a reused row: the registry
      replay clones each text binding's locals, and each row's node is
      cloned. Measure it split into its parts first, as layout was.
-   - (g).3 **Scene, 4.8 ms: every text is shaped again to be drawn**,
-     900 parley layouts a frame, though measure shaped the same text at
-     the same width a moment before. A cache of shaped, aligned layouts,
-     keyed as the measure cache is (text, style, width) plus the
-     alignment, shared by measure and draw, should take most of it.
+   - (g).3 **Done 2026-09-28. Scene, 4.8 ms: every text was shaped again
+     to be drawn**, 900 parley layouts a frame. `TextEngine::draw` now
+     keeps what it shaped and aligned, keyed as the measure cache is
+     (text, style, width) plus the alignment, cleared when a font is
+     registered and started over past 2 048 layouts (a layout holds its
+     glyphs, so the cap is about a few screens of text, not the measure
+     cache's 16 384). Not shared with measure after all: measure asks at
+     Taffy's probe widths, draw at the final box width, so they seldom
+     meet. Gate green (1128); eight text-heavy examples paint the same,
+     pixel for pixel, and the rotating list was looked at. Release:
+
+     | List of 300 | Before | After |
+     |---|---|---|
+     | scene, bench | 4.9 ms | 1.6 ms (3.0x faster) |
+     | scene, window | 4.9 ms | 1.5 ms (3.2x faster) |
+     | whole frame, window | 20.7 ms | 17.1 ms (1.2x faster) |
+
+     What is left of the scene is Vello encoding 900 texts, most of them
+     below the window's edge: see (g).6.
    - (g).4 **Keep the Taffy tree across frames** (the track's first idea),
      for the 2.1 ms build and the 3.5 ms compute. A node whose style and
      text did not change keeps its Taffy node and Taffy's cache; a keyed
@@ -2171,7 +2185,14 @@ Float indexing narrows to what the types allow: an index is an `int`, and a
      on it.
    - (g).5 **The measure key allocates**: every one of the 5 700 calls
      copies the text into a new `String` only to look it up. Look up by
-     a borrowed key. Small; may fall out of (g).3.
+     a borrowed key. Small; did not fall out of (g).3, which has the same
+     copy on each draw.
+   - (g).6 **Nothing is left out for being off screen.** The list is 300
+     rows, about 6 600 px, in a 1 000 px window, and every row is
+     collected, encoded and handed to the GPU. A paint wholly outside the
+     window, and outside every clip it is in, can be skipped, taking its
+     transform into account. Measure the scene and GPU with the window
+     showing a tenth of the rows first.
 
 Steps 2 to 5 change nothing an author sees except the decided syntax and
 types, which is what made them safe to take in order.

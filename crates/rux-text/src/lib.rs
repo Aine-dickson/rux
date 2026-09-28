@@ -127,11 +127,21 @@ pub struct TextEngine {
     /// list that was most of the frame. Cleared when a font is registered, and
     /// started over past [`MEASURED_CAP`] entries.
     measured: HashMap<MeasureKey, (f32, f32)>,
+    /// What [`draw`](Self::draw) has shaped, aligned, by the same key plus
+    /// the alignment. Every text was shaped again each frame to be drawn,
+    /// 900 of them in a 300-row list, which was most of the scene's time
+    /// (docs/11-next.md, track (g)). Cleared as `measured` is, and started
+    /// over past [`SHAPED_CAP`].
+    shaped: HashMap<(MeasureKey, u8), Layout<()>>,
 }
 
 /// How many measurements the engine keeps before starting over. A key and its
 /// answer are small, so this is a bound on growth, not a memory budget.
 const MEASURED_CAP: usize = 16384;
+
+/// How many shaped layouts the engine keeps. A layout holds its glyphs, so
+/// this is kept to about what one screen draws, several times over.
+const SHAPED_CAP: usize = 2048;
 
 /// Everything [`TextEngine::build`] reads, as an owned, hashable value. Floats
 /// by their bits: two sizes are the same size when they are the same number.
@@ -180,6 +190,7 @@ impl TextEngine {
             font_cx: FontContext::new(),
             layout_cx: LayoutContext::new(),
             measured: HashMap::new(),
+            shaped: HashMap::new(),
         }
     }
 
@@ -205,8 +216,9 @@ impl TextEngine {
             return false;
         };
         // Every size measured so far was measured in the fonts that were
-        // there before this one.
+        // there before this one, and so was every layout kept for drawing.
         self.measured.clear();
+        self.shaped.clear();
 
         for generic in [
             GenericFamily::SansSerif,
@@ -396,8 +408,16 @@ impl TextEngine {
         max_width: Option<f32>,
         transform: Affine,
     ) {
-        let mut layout = self.build(text, style, max_width);
-        layout.align(align.to_parley(), AlignmentOptions::default());
+        let key = (MeasureKey::new(text, style, max_width), align as u8);
+        if !self.shaped.contains_key(&key) {
+            let mut layout = self.build(text, style, max_width);
+            layout.align(align.to_parley(), AlignmentOptions::default());
+            if self.shaped.len() >= SHAPED_CAP {
+                self.shaped.clear();
+            }
+            self.shaped.insert(key.clone(), layout);
+        }
+        let layout = &self.shaped[&key];
 
         let mut line_top = y;
         for line in layout.lines() {
