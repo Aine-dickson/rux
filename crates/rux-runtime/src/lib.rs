@@ -111,6 +111,8 @@ pub struct Document {
     /// The keyed list rows the last reconcile built, for the next to reuse.
     /// See [`rux_style::RowCache`].
     rows: rux_style::RowCache,
+    /// How many reconciles built only their lists. See [`Document::reconcile_lists`].
+    lists_alone: usize,
     /// `computed` declarations, in declaration order, so one may read another
     /// declared above it and a single pass refreshes them all.
     computeds: Vec<Computed>,
@@ -2590,6 +2592,10 @@ impl Document {
         let early = collect_warnings();
         let (mut root, registry) = rux_style::build_styled_tree_tracked(&sfc, &components, &namespaces, &mut engine, &mut instances, &mut swaps)
             .map_err(LoadError::plain)?;
+        // What that build found about its rules, so the first reconcile can
+        // already build a list alone. See `Document::reconcile_lists`.
+        let mut rows = rux_style::RowCache::new();
+        rows.after_whole_build(Environment::sane());
         resolve_images(&mut root, base);
         let built = collect_warnings();
         // Before the warnings are drained below, so a handler that cannot
@@ -2678,7 +2684,8 @@ impl Document {
             timers: Vec::new(),
             tasks: Vec::new(),
             swaps,
-            rows: rux_style::RowCache::new(),
+            rows,
+            lists_alone: 0,
             mounted_instances: HashSet::new(),
             settling: false,
             mounted_ran: false,
@@ -2761,6 +2768,10 @@ impl Document {
                 &mut swaps,
             )
                 .map_err(LoadError::plain)?;
+        // What that build found about its rules, so the first reconcile can
+        // already build a list alone. See `Document::reconcile_lists`.
+        let mut rows = rux_style::RowCache::new();
+        rows.after_whole_build(Environment::sane());
         let base = PathBuf::from(".");
         resolve_images(&mut root, &base);
         let built = collect_warnings();
@@ -2814,7 +2825,8 @@ impl Document {
             timers: Vec::new(),
             tasks: Vec::new(),
             swaps,
-            rows: rux_style::RowCache::new(),
+            rows,
+            lists_alone: 0,
             mounted_instances: HashSet::new(),
             settling: false,
             mounted_ran: false,
@@ -2840,6 +2852,12 @@ impl Document {
     /// built. See [`rux_style::RowCache`].
     pub fn row_reuse(&self) -> (usize, usize) {
         (self.rows.hits, self.rows.misses)
+    }
+
+    /// How many reconciles so far built only the lists that changed rather
+    /// than the whole document.
+    pub fn lists_built_alone(&self) -> usize {
+        self.lists_alone
     }
 
     /// What is currently wrong with this document, for the dev overlay.
@@ -3139,6 +3157,7 @@ impl Document {
             &self.state,
             self.environment,
         ) {
+            self.rows.after_whole_build(self.environment);
             resolve_images(&mut root, &self.base);
             let real = self.focused_shown();
             apply_focus(&mut root, self.focus.as_ref(), real.as_ref());
@@ -3303,6 +3322,9 @@ impl Document {
                 roots.push(p);
             }
         }
+        if toggles.is_empty() && node_splices.is_empty() && self.reconcile_lists(&roots) {
+            return;
+        }
 
         let Ok((mut fresh_root, fresh_reg)) = rux_style::build_styled_tree_cached(
             &self.sfc,
@@ -3378,6 +3400,123 @@ impl Document {
         // The reconcile path is where an `r-if` actually opens and closes, so it
         // is where most mounts and unmounts are found.
         self.settle_lifecycle(0);
+    }
+
+    /// [`reconcile`](Self::reconcile) for structural parents alone, building
+    /// only their children rather than the whole document
+    /// ([`rux_style::rebuild_children`]). Returns `false`, having done
+    /// nothing, when any of them cannot be built that way, and the caller
+    /// builds the whole document as before.
+    ///
+    /// Besides what `rebuild_children` refuses, refused here: a document with
+    /// a `for=` label anywhere (a whole build links labels across the whole
+    /// tree), and one whose last build left warnings (they are gathered per
+    /// build, so a build of one list would lose the rest of them).
+    fn reconcile_lists(&mut self, roots: &[Vec<usize>]) -> bool {
+        if self.diagnostics.warnings.len() != self.load_checks.len() || has_label(&self.root) {
+            return false;
+        }
+        let mut parents = Vec::with_capacity(roots.len());
+        for p in roots {
+            let Some(parent) = self.registry.structural_parents.iter().find(|b| &b.tree_path == p) else {
+                return false;
+            };
+            if !rux_style::can_rebuild_children(
+                &self.sfc,
+                &self.namespaces,
+                &self.swaps,
+                self.environment,
+                &self.rows,
+                parent,
+            ) {
+                return false;
+            }
+            parents.push(parent.clone());
+        }
+        #[cfg(debug_assertions)]
+        let before = self.root.clone();
+        for parent in &parents {
+            let Some(rebuilt) = rux_style::rebuild_children(
+                &self.sfc,
+                &self.namespaces,
+                &mut self.engine,
+                &mut self.instances,
+                &mut self.swaps,
+                &self.state,
+                self.environment,
+                &mut self.rows,
+                parent,
+            ) else {
+                // Checked above; nothing between can change the answer.
+                unreachable!("a list that could be rebuilt alone was refused");
+            };
+            let mut children = rebuilt.children;
+            for child in &mut children {
+                resolve_images(child, &self.base);
+            }
+            let p = &parent.tree_path;
+            let row = row_at(&self.root, p);
+            let real = self.focused_shown();
+            if let Some(live) = node_at_mut(&mut self.root, p) {
+                live.children = children;
+                apply_focus_in(live, self.focus.as_ref(), row.as_deref(), real.as_ref());
+            }
+            self.registry.splice_under(p, rebuilt.reg, rebuilt.deps);
+        }
+        self.diagnostics.warnings = self.fresh_warnings();
+        #[cfg(debug_assertions)]
+        self.prove_lists(before, roots);
+        self.lists_alone += 1;
+        self.settle_lifecycle(0);
+        true
+    }
+
+    /// Debug builds check every [`reconcile_lists`](Self::reconcile_lists)
+    /// against what the whole-document reconcile makes of the same change:
+    /// the tree and the registry must come out the same, and every test that
+    /// reconciles a list drives it.
+    #[cfg(debug_assertions)]
+    fn prove_lists(&mut self, before: LayoutNode, roots: &[Vec<usize>]) {
+        let mut instances = self.instances.clone();
+        let mut swaps = self.swaps.clone();
+        let whole = rux_script::without_effects(|| {
+            rux_style::build_styled_tree_stateful(
+                &self.sfc,
+                &self.components,
+                &self.namespaces,
+                &mut self.engine,
+                &mut instances,
+                &mut swaps,
+                &self.state,
+                self.environment,
+            )
+        });
+        // What the whole build said has been said already, by the build of
+        // the list.
+        let _ = collect_warnings();
+        let Ok((mut fresh_root, fresh_reg)) = whole else { return };
+        resolve_images(&mut fresh_root, &self.base);
+        let mut expected = before;
+        for p in roots {
+            let row = row_at(&fresh_root, p);
+            let Some(fresh) = node_at_mut(&mut fresh_root, p) else { continue };
+            let children = std::mem::take(&mut fresh.children);
+            let real = self.focused_shown();
+            if let Some(live) = node_at_mut(&mut expected, p) {
+                live.children = children;
+                apply_focus_in(live, self.focus.as_ref(), row.as_deref(), real.as_ref());
+            }
+        }
+        assert_eq!(
+            format!("{:#?}", self.root),
+            format!("{expected:#?}"),
+            "a list built alone came out different from building the whole document"
+        );
+        assert_eq!(
+            rux_style::registry_digest(&self.registry),
+            rux_style::registry_digest(&fresh_reg),
+            "a list built alone recorded different bindings from building the whole document"
+        );
     }
 
     /// Apply an input edit (a keystroke's new value for `model`) and reflect it the
@@ -5246,6 +5385,12 @@ fn row_at(root: &LayoutNode, path: &[usize]) -> Option<String> {
         }
     }
     row
+}
+
+/// Whether anything in the tree is a `for=` label, which a whole build links
+/// to its field across the whole tree. See `Document::reconcile_lists`.
+fn has_label(node: &LayoutNode) -> bool {
+    node.label_for.is_some() || node.children.iter().any(has_label)
 }
 
 /// Follow a child-index path from the root to a node, mutably.

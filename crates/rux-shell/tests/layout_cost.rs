@@ -94,6 +94,7 @@ fn list_layout_cost() {
         s.sort_by(|a, b| a.partial_cmp(b).unwrap());
         (s[s.len() / 2], s[0])
     };
+    eprintln!("reconciles that built only the list: {} of {frames}", doc.lists_built_alone());
     let (lm, lb) = steady(&mut layout_us);
     let (pm, pb) = steady(&mut patch_us);
     let (sm, sb) = steady(&mut scene_us);

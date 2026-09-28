@@ -271,6 +271,28 @@ pub struct StructuralParent {
     pub tpl_path: Vec<usize>,
     /// Signals read by the structural directives directly under this parent.
     pub deps: HashSet<String>,
+    /// What its children were built from, when they may be built again on
+    /// their own. See [`rebuild_children`].
+    pub ctx: Option<Rc<ListCtx>>,
+}
+
+/// Everything a parent's children are built from besides the template and
+/// the state: the ancestors selectors match against (the parent last), what
+/// they inherit, and the loop locals in scope. Kept so a reconcile can build
+/// one list without building the whole document. See [`rebuild_children`].
+pub struct ListCtx {
+    /// The parent's template element, by address, to be sure the template
+    /// path still finds the same one.
+    el: usize,
+    ancestors: Vec<AncNode>,
+    inherited: Inherited,
+    locals: Locals,
+}
+
+impl std::fmt::Debug for ListCtx {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ListCtx")
+    }
 }
 
 /// A checkbox/radio `<input>` node, reconcilable in place: toggling its bound
@@ -871,6 +893,20 @@ impl Swaps {
     pub fn end(&mut self) {
         self.shown = std::mem::take(&mut self.building);
         self.pending.retain(|_, s| s.touched);
+    }
+
+    /// [`begin`](Self::begin) for a build of one parent's children, which
+    /// happens only when no swap is pending, so there is nothing to mark.
+    fn begin_part(&mut self) {
+        self.building.clear();
+    }
+
+    /// [`end`](Self::end) for a build of the children of the parent at
+    /// template path `tpl`: what it emitted replaces what was shown under it,
+    /// and everything else stays shown.
+    fn end_part(&mut self, tpl: &[usize]) {
+        self.shown.retain(|(path, _)| !(path.len() > tpl.len() && path.starts_with(tpl)));
+        self.shown.extend(self.building.drain());
     }
 
     /// Remember what a row of an animated `r-for` was built with, so it can
@@ -2036,7 +2072,9 @@ pub fn build_styled_tree_stateful(
     });
     // A kept row is compared with everything but its siblings, so a build
     // whose rules can read siblings reuses nothing. See `RowCache`.
-    if rules.iter().chain(comps.values().flat_map(|c| c.rules.iter())).any(Rule::has_sibling_step) {
+    let sibling_step = rules.iter().chain(comps.values().flat_map(|c| c.rules.iter())).any(Rule::has_sibling_step);
+    SIBLING_STEP.with(|s| s.set(sibling_step));
+    if sibling_step {
         ROWS.with(|r| {
             if let Some(b) = r.borrow_mut().as_mut() {
                 b.off = true;
@@ -5168,12 +5206,14 @@ fn build_node_inner(
     let siblings = if KEEP_SIBLINGS.with(std::cell::Cell::get) { prev.to_vec() } else { Vec::new() };
     ancestors.push(AncNode { desc, prev: siblings, form: is_form.then(|| path.to_vec()) });
     let element_children = element_children(el);
+    let child_inherited = Inherited { color, selection, font_size, font_family, vars: Rc::clone(&vars) };
+    let plain = instance.is_none() && slot.is_none() && outlet.is_none() && row.is_none();
     let (children, structural_deps) = build_children(
         &element_children,
         rules,
         comps,
         ancestors,
-        &Inherited { color, selection, font_size, font_family, vars: Rc::clone(&vars) },
+        &child_inherited,
         engine,
         locals,
         path,
@@ -5191,6 +5231,18 @@ fn build_node_inner(
         outlet,
         row,
     );
+    // What its children were built from, so they can be built again alone.
+    // Only in the document's own markup, and never inside a keyed row: a
+    // row can be replayed from the cache at another place, which would leave
+    // this stale. See [`rebuild_children`].
+    let ctx = (plain && !structural_deps.is_empty()).then(|| {
+        Rc::new(ListCtx {
+            el: el as *const Element as usize,
+            ancestors: ancestors.clone(),
+            inherited: child_inherited.clone(),
+            locals: locals.clone(),
+        })
+    });
     ancestors.pop();
     // If any child carried a structural directive, this parent can be reconciled
     // in place (rebuild just its children) on a change to those signals.
@@ -5199,6 +5251,7 @@ fn build_node_inner(
             tree_path: path.to_vec(),
             tpl_path: tpl_path.to_vec(),
             deps: structural_deps,
+            ctx,
         });
     }
 
@@ -6762,6 +6815,8 @@ thread_local! {
     /// The rows the build now running may reuse and the ones it keeps. `None`
     /// outside [`build_styled_tree_cached`], so every other build is untouched.
     static ROWS: std::cell::RefCell<Option<BuildRows>> = const { std::cell::RefCell::new(None) };
+    /// Whether the last whole build's rules had a sibling combinator.
+    static SIBLING_STEP: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// The keyed rows of `r-for` lists, kept from one build for the next.
@@ -6799,6 +6854,10 @@ thread_local! {
 pub struct RowCache {
     rows: HashMap<RowId, CachedRow>,
     env: Option<Environment>,
+    /// What the last whole build found about its rules, which a build of
+    /// one list must repeat: `KEEP_SIBLINGS`, and whether any rule has a
+    /// sibling combinator. `None` until a whole build has run.
+    shape: Option<(bool, bool)>,
     /// How many rows the last build reused.
     pub hits: usize,
     /// How many keyed rows the last build had to build.
@@ -6813,6 +6872,18 @@ impl RowCache {
     /// Forget every row, so the next build builds them all.
     pub fn clear(&mut self) {
         self.rows.clear();
+        self.shape = None;
+    }
+
+    /// Take what the whole build just finished, with no rows kept, found
+    /// about its rules, so the next reconcile can build one list alone
+    /// ([`rebuild_children`]) without waiting for a cached build first.
+    pub fn after_whole_build(&mut self, env: Environment) {
+        if self.env != Some(env) {
+            self.rows.clear();
+            self.env = Some(env);
+        }
+        self.shape = Some((KEEP_SIBLINGS.with(std::cell::Cell::get), SIBLING_STEP.with(std::cell::Cell::get)));
     }
 }
 
@@ -6878,6 +6949,9 @@ pub fn build_styled_tree_cached(
         })
     });
     let out = build_styled_tree_stateful(sfc, components, namespaces, engine, instances, swaps, state, env);
+    cache.shape = out.is_ok().then(|| {
+        (KEEP_SIBLINGS.with(std::cell::Cell::get), SIBLING_STEP.with(std::cell::Cell::get))
+    });
     if let Some(built) = ROWS.with(|r| r.borrow_mut().take()) {
         cache.rows = built.kept;
         cache.hits = built.hits;
@@ -6912,9 +6986,243 @@ pub fn build_styled_tree_cached(
     out
 }
 
+/// One parent's children built again on their own, and what that build
+/// recorded. See [`rebuild_children`].
+pub struct Rebuilt {
+    pub children: Vec<LayoutNode>,
+    /// The registry entries of everything under the parent, at their paths.
+    pub reg: BindingRegistry,
+    /// What the parent's structural directives read now.
+    pub deps: HashSet<String>,
+}
+
+/// Build the children of the reconcilable `parent` again, without building
+/// the rest of the document, reusing rows from `cache` as a whole build does.
+///
+/// A reconcile used to build the whole document to splice in the one list
+/// that changed: 5 of a 300-row list's 7 ms (docs/11-next.md, track (g)).
+/// This is the same build started at the parent, from what the parent's
+/// children were built from last time ([`ListCtx`]).
+///
+/// `None`, with nothing done, when that would not come out as a whole build
+/// does, and the caller builds the whole document as before: no context kept
+/// (the parent is in a component, a slot, a route view or a keyed row), no
+/// whole build yet since the cache was cleared, a swap pending, the template
+/// path no longer finding the same element, or anything under the parent
+/// that a whole build does more for: a component, a `<slot>`, a router or
+/// a route, a `<router-view>`, an `r-transition`, or a `for=` label. The caller answers
+/// for what it knows better: the rest of the tree has no `for=` label, and
+/// nothing else is to be reconciled with it.
+///
+/// Debug builds of the runtime check every one against a whole build.
+#[allow(clippy::too_many_arguments)]
+pub fn rebuild_children(
+    sfc: &Sfc,
+    namespaces: &HashMap<String, Namespace>,
+    engine: &mut Engine,
+    instances: &mut Instances,
+    swaps: &mut Swaps,
+    state: &InteractionState,
+    env: Environment,
+    cache: &mut RowCache,
+    parent: &StructuralParent,
+) -> Option<Rebuilt> {
+    let el = rebuild_target(sfc, namespaces, swaps, env, cache, parent)?;
+    let ctx = parent.ctx.as_ref()?;
+    let (keep_siblings, sibling_step) = cache.shape?;
+
+    // The registers a whole build sets up, as it sets them, except the
+    // shared interpretations, which depend only on declarations and are kept.
+    let rules = rux_script::profile::time(rux_script::profile::Phase::Css, || parse_document_rules(sfc, env));
+    set_build_env(env);
+    ROUTER.with(|r| *r.borrow_mut() = find_router(&sfc.template).cloned());
+    NAMESPACES.with(|n| *n.borrow_mut() = namespaces.clone());
+    CURRENT_FILE.with(|c| *c.borrow_mut() = DOCUMENT_NAMESPACE.to_string());
+    KEEP_SIBLINGS.with(|k| k.set(keep_siblings));
+    SIBLING_STEP.with(|s| s.set(sibling_step));
+
+    let old = std::mem::take(&mut cache.rows);
+    ROWS.with(|r| {
+        *r.borrow_mut() = Some(BuildRows {
+            old,
+            kept: HashMap::new(),
+            values: HashMap::new(),
+            off: sibling_step || !state.attempted.is_empty(),
+            hits: 0,
+            misses: 0,
+        })
+    });
+    swaps.begin_part();
+    let comps = Components::new();
+    let mut ancestors = ctx.ancestors.clone();
+    let mut reg = BindingRegistry::default();
+    let (mut children, deps) = build_children(
+        &element_children(el),
+        &rules,
+        &comps,
+        &mut ancestors,
+        &ctx.inherited,
+        engine,
+        &ctx.locals,
+        &parent.tree_path,
+        &parent.tpl_path,
+        &mut reg,
+        state,
+        instances,
+        swaps,
+        None,
+        None,
+        None,
+        None,
+    );
+    swaps.end_part(&parent.tpl_path);
+    if let Some(built) = ROWS.with(|r| r.borrow_mut().take()) {
+        // The rows under the parent that this build did not keep have left;
+        // every other list's rows stay for the next build.
+        let under = |p: &[usize]| p.len() > parent.tree_path.len() && p.starts_with(&parent.tree_path);
+        let mut rows = built.kept;
+        rows.extend(built.old.into_iter().filter(|(_, row)| !under(&row.path)));
+        cache.rows = rows;
+        cache.hits = built.hits;
+        cache.misses = built.misses;
+    }
+    if env.reduced_motion {
+        for child in &mut children {
+            still_the_motion(child);
+        }
+    }
+    Some(Rebuilt { children, reg, deps })
+}
+
+/// Whether [`rebuild_children`] would build `parent`'s children, without
+/// building anything: so a caller with several to reconcile can find out
+/// for all of them before it starts on one.
+pub fn can_rebuild_children(
+    sfc: &Sfc,
+    namespaces: &HashMap<String, Namespace>,
+    swaps: &Swaps,
+    env: Environment,
+    cache: &RowCache,
+    parent: &StructuralParent,
+) -> bool {
+    rebuild_target(sfc, namespaces, swaps, env, cache, parent).is_some()
+}
+
+/// The template element of `parent`, when its children can be built alone.
+fn rebuild_target<'a>(
+    sfc: &'a Sfc,
+    namespaces: &HashMap<String, Namespace>,
+    swaps: &Swaps,
+    env: Environment,
+    cache: &RowCache,
+    parent: &StructuralParent,
+) -> Option<&'a Element> {
+    let ctx = parent.ctx.as_ref()?;
+    cache.shape?;
+    if cache.env != Some(env) || !swaps.is_empty() {
+        return None;
+    }
+    let mut el = &sfc.template;
+    for &i in &parent.tpl_path {
+        el = *element_children(el).get(i)?;
+    }
+    // The root is always the template itself, and is held inside the `Sfc`,
+    // which moves (into its document, after the load's build), so its
+    // address is not compared. Everything below it is on the heap.
+    if !parent.tpl_path.is_empty() && el as *const Element as usize != ctx.el {
+        return None;
+    }
+    let document = namespaces.get(DOCUMENT_NAMESPACE);
+    element_children(el).into_iter().all(|c| plain_subtree(c, document)).then_some(el)
+}
+
+/// Whether a whole build does nothing for `el` or anything under it that a
+/// build of one parent's children would not. See [`rebuild_children`].
+fn plain_subtree(el: &Element, document: Option<&Namespace>) -> bool {
+    let tag = el.tag.as_str();
+    let component = document.is_some_and(|n| n.contains_key(tag) || n.contains_key(&tag.replace('_', "-")));
+    !component
+        // Each of these expands something a whole build keeps track of: a
+        // slot's content, a route's view (a component), the outlet.
+        && !matches!(tag, "slot" | "router" | "route" | "router-view")
+        && el.attr("r-transition").is_none()
+        && el.attr("for").is_none()
+        && element_children(el).into_iter().all(|c| plain_subtree(c, document))
+}
+
+impl BindingRegistry {
+    /// Put `fresh`, the entries of everything under the parent at `parent`,
+    /// in place of the ones there now, where they stand in each list, and
+    /// give the parent's own entry `deps` (or drop it, when nothing under it
+    /// is structural any more). What a whole build would have recorded, in
+    /// the order it would have recorded it: a build walks the tree depth
+    /// first, so everything under one parent is together in each list.
+    pub fn splice_under(&mut self, parent: &[usize], fresh: BindingRegistry, deps: HashSet<String>) {
+        fn under(p: &[usize], parent: &[usize]) -> bool {
+            p.len() > parent.len() && p.starts_with(parent)
+        }
+        // Where a path stands against the parent's subtree: inside it, or
+        // after it in the tree (a later sibling or its descendants; an
+        // ancestor is a prefix and so sorts before).
+        fn after(p: &[usize], parent: &[usize]) -> bool {
+            p > parent && !p.starts_with(parent)
+        }
+        fn splice<T>(list: &mut Vec<T>, fresh: Vec<T>, inside: impl Fn(&T) -> bool, later: impl Fn(&T) -> bool) {
+            let start = list.iter().position(&inside);
+            let at = match start {
+                Some(s) => {
+                    let end = s + list[s..].iter().take_while(|b| inside(b)).count();
+                    debug_assert!(!list[end..].iter().any(&inside), "entries under one parent are together");
+                    list.drain(s..end);
+                    s
+                }
+                // Nothing was there: the fresh entries go before the first
+                // entry that comes later in the tree.
+                None => list.iter().position(later).unwrap_or(list.len()),
+            };
+            list.splice(at..at, fresh);
+        }
+        let BindingRegistry {
+            text,
+            value,
+            show,
+            src,
+            options,
+            structural_parents,
+            toggles,
+            components,
+            styled,
+            structural,
+            elements,
+        } = fresh;
+        splice(&mut self.text, text, |b| under(&b.path, parent), |b| after(&b.path, parent));
+        splice(&mut self.value, value, |b| under(&b.path, parent), |b| after(&b.path, parent));
+        splice(&mut self.show, show, |b| under(&b.path, parent), |b| after(&b.path, parent));
+        splice(&mut self.src, src, |b| under(&b.path, parent), |b| after(&b.path, parent));
+        splice(&mut self.options, options, |b| under(&b.path, parent), |b| after(&b.path, parent));
+        // A parent is recorded after everything under it, so what goes under
+        // this one goes just before its own entry.
+        splice(&mut self.structural_parents, structural_parents, |b| under(&b.tree_path, parent), |b| {
+            b.tree_path == parent || after(&b.tree_path, parent)
+        });
+        splice(&mut self.toggles, toggles, |b| under(&b.path, parent), |b| after(&b.path, parent));
+        splice(&mut self.components, components, |b| under(&b.path, parent), |b| after(&b.path, parent));
+        splice(&mut self.styled, styled, |b| under(&b.path, parent), |b| after(&b.path, parent));
+        splice(&mut self.elements.entries, elements.entries, |e| under(&e.path, parent), |e| after(&e.path, parent));
+        self.structural.extend(structural);
+        if let Some(i) = self.structural_parents.iter().position(|b| b.tree_path == parent) {
+            if deps.is_empty() {
+                self.structural_parents.remove(i);
+            } else {
+                self.structural_parents[i].deps = deps;
+            }
+        }
+    }
+}
+
 /// A registry as text that does not depend on hash order, for comparing two.
 #[cfg(debug_assertions)]
-fn registry_digest(reg: &BindingRegistry) -> String {
+pub fn registry_digest(reg: &BindingRegistry) -> String {
     let deps = |d: &HashSet<String>| {
         let mut d: Vec<&String> = d.iter().collect();
         d.sort();
