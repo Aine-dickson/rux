@@ -1994,7 +1994,14 @@ Float indexing narrows to what the types allow: an index is an `int`, and a
      still goes through the interpreter's walk by name (correct, and
      through the shape, so no longer slow in the old way); (c.3) did
      reads only. Prove with a bench case of a write in a loop.
-   - (10.5.2) `make(1000)` takes 750 µs, 750 ns a record, linear. Three
+   - (10.5.2) **Done 2026-09-28**, each part measured alone, compiled
+     `make(1000)`: `%` of two `int`s given a compiled fast path (by 0 and
+     the least `int` by -1 still the interpreter's), 737 to 692 µs; a
+     backtick string's literal text pushed as it is and each value written
+     into the one string (`V::display_into`, the interpreter too), 692 to
+     537; `list.push(x)` on an array a local of the compiled body holds
+     pushed there directly, 537 to 374. In all, 737 to 374 µs (2.0x
+     faster); interpreted 939 to 784. What was planned: `make(1000)` takes 750 µs, 750 ns a record, linear. Three
      costs in it, none of them the record: a backtick string displays each
      text part into a new `String` and then allocates the result again; `%`
      of two `int`s has no compiled fast path (it calls `cx.binary`); and

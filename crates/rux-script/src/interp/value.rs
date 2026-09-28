@@ -152,6 +152,21 @@ impl V {
         }
     }
 
+    /// [`V::display`] written onto the end of `out`, for a backtick string,
+    /// which then makes no text of its own for each part.
+    pub fn display_into(&self, out: &mut String) {
+        use std::fmt::Write as _;
+        match self {
+            V::Str(s) => out.push_str(s),
+            V::Int(i) => {
+                let _ = write!(out, "{i}");
+            }
+            V::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
+            V::None => {}
+            other => out.push_str(&other.display()),
+        }
+    }
+
     /// The name `type_of` gives, the fork's spelling.
     pub fn type_name(&self) -> &'static str {
         match self {

@@ -665,6 +665,14 @@ impl Gen<'_> {
                         for a in args {
                             list.push(self.expr(a, s, end)?);
                         }
+                        // `list.push(x)` on an array a local of its own
+                        // holds: pushed there, as the interpreter's `push` does.
+                        if let (Some(var), true, "push", [x]) = (self.own(root), keys.is_empty(), name.as_str(), &list[..]) {
+                            return Some(format!(
+                                "{{ let __x = {x}; match &mut {var} {{ V::Array(__a) => {{ std::rc::Rc::make_mut(__a).push(__x); V::None }} \
+                                 _ => {{ let __k = vec![]; t!(cx.method_in(&mut {var}, &__k, \"push\", vec![__x]), {s}, {end}) }} }} }}"
+                            ));
+                        }
                         let call = match self.own(root) {
                             Some(var) => format!("cx.method_in(&mut {var}, &__k, {name:?}, __args)"),
                             None => format!("cx.method_at({}, &__k, {name:?}, __args)", root_code(root)),
@@ -796,7 +804,14 @@ impl Gen<'_> {
             ExprKind::Template(parts) => {
                 let mut code = String::from("{ let mut __s = String::new(); ");
                 for part in parts {
-                    let _ = write!(code, "__s.push_str(&({}).display()); ", self.expr(part, s, end)?);
+                    match &part.kind {
+                        ExprKind::Str(t) => {
+                            let _ = write!(code, "__s.push_str({t:?}); ");
+                        }
+                        _ => {
+                            let _ = write!(code, "({}).display_into(&mut __s); ", self.expr(part, s, end)?);
+                        }
+                    }
                 }
                 code.push_str("aot::text(&__s) }");
                 code
@@ -982,6 +997,8 @@ fn fast_path(op: BinOp) -> Option<&'static str> {
         BinOp::AddInt => "(V::Int(x), V::Int(y)) => match x.checked_add(*y) { Some(v) => V::Int(v), None => SLOW },",
         BinOp::SubInt => "(V::Int(x), V::Int(y)) => match x.checked_sub(*y) { Some(v) => V::Int(v), None => SLOW },",
         BinOp::MulInt => "(V::Int(x), V::Int(y)) => match x.checked_mul(*y) { Some(v) => V::Int(v), None => SLOW },",
+        // By 0, and the least `int` by -1, are the interpreter's to fail.
+        BinOp::RemInt => "(V::Int(x), V::Int(y)) => match if *y != 0 { x.checked_rem(*y) } else { None } { Some(v) => V::Int(v), None => SLOW },",
         BinOp::AddFloat => "(V::Float(x), V::Float(y)) => V::Float(x + y),",
         BinOp::SubFloat => "(V::Float(x), V::Float(y)) => V::Float(x - y),",
         BinOp::MulFloat => "(V::Float(x), V::Float(y)) => V::Float(x * y),",

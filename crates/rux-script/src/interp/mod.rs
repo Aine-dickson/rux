@@ -1302,7 +1302,10 @@ impl Interp {
             ExprKind::Template(parts) => {
                 let mut out = String::new();
                 for p in parts {
-                    out.push_str(&self.expr(p)?.display());
+                    match &p.kind {
+                        ExprKind::Str(t) => out.push_str(t),
+                        _ => self.expr(p)?.display_into(&mut out),
+                    }
                 }
                 V::str(out)
             }
