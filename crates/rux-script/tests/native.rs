@@ -57,6 +57,18 @@ pub mod shop {
         items.into_iter().min_by(|a, b| a.price.total_cmp(&b.price))
     }
 
+    /// Fields not in alphabetical order, so a sorted display would show.
+    #[rux::export]
+    pub struct Spot {
+        pub y: i64,
+        pub x: i64,
+    }
+
+    #[rux::export]
+    pub fn spot() -> Spot {
+        Spot { y: 2, x: 1 }
+    }
+
     #[rux::export]
     pub fn big() -> u64 {
         u64::MAX
@@ -85,6 +97,8 @@ fn install() {
             shop::Cart::__rux_methods(),
             shop::__rux_export_open_cart(),
             shop::__rux_export_cheapest(),
+            shop::Spot::__rux_type(),
+            shop::__rux_export_spot(),
             shop::__rux_export_big(),
             shop::__rux_export_byte(),
             shop::__rux_export_lookup(),
@@ -196,4 +210,13 @@ fn an_async_method_s_rust_error_is_caught_with_its_kind() {
     e.run_handler("pay()");
     settle(&mut e);
     assert_eq!(show(&mut e, "out"), "1 items");
+}
+
+/// A Rust struct comes back a record in the order its fields are declared
+/// (step 10.5.4 of `docs/11-next.md`), as a Rux record type's does.
+#[test]
+fn a_rust_struct_keeps_its_declared_order() {
+    let mut e = engine("fn here(): string { let s = shop.spot(); `${s} ${keys(s)} ${s.x}` }
+");
+    assert_eq!(show(&mut e, "here()"), "y: 2, x: 1 y, x 1");
 }

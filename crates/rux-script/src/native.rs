@@ -228,6 +228,37 @@ pub fn to_any(v: &V) -> Any {
     }
 }
 
+/// The shape of the one native record type a map from Rust with these keys
+/// is (step 10.5.4), found once per set of keys while the modules stay as
+/// they are: Rust hands a struct over keyed, without its fields' order.
+fn record_shape(m: &BTreeMap<String, Any>) -> Option<Rc<crate::interp::value::Shape>> {
+    thread_local! {
+        static FOUND: std::cell::RefCell<(u64, std::collections::HashMap<Vec<String>, Option<Rc<crate::interp::value::Shape>>>)> =
+            std::cell::RefCell::new((u64::MAX, std::collections::HashMap::new()));
+    }
+    let keys: Vec<String> = m.keys().cloned().collect();
+    FOUND.with(|f| {
+        let mut f = f.borrow_mut();
+        let now = registry::generation();
+        if f.0 != now {
+            *f = (now, std::collections::HashMap::new());
+        }
+        if let Some(s) = f.1.get(&keys) {
+            return s.clone();
+        }
+        let names: Vec<&str> = keys.iter().map(String::as_str).collect();
+        let shape = registry::record_with(&names).map(|fields| {
+            let fields: Vec<rux_ir::types::Field> = fields
+                .iter()
+                .map(|f| rux_ir::types::Field { name: f.name.clone(), optional: f.optional, ty: rux_ir::types::Type::Any })
+                .collect();
+            crate::interp::value::Shape::closed(&fields)
+        });
+        f.1.insert(keys, shape.clone());
+        shape
+    })
+}
+
 /// A value on its way back from Rust.
 pub fn from_any(a: Any) -> V {
     match a {
@@ -237,7 +268,14 @@ pub fn from_any(a: Any) -> V {
         Any::Float(f) => V::Float(f),
         Any::Str(s) => V::str(s),
         Any::Array(items) => V::array(items.into_iter().map(from_any).collect()),
-        Any::Map(m) => V::Map(Rc::new(m.into_iter().map(|(k, v)| (k, from_any(v))).collect::<BTreeMap<_, _>>())),
+        Any::Map(mut m) => match record_shape(&m) {
+            // A Rust struct a module exports: a record in its declared order.
+            Some(shape) => {
+                let vals = shape.names().iter().map(|n| m.remove(&**n).map(from_any).unwrap_or(V::None)).collect();
+                V::Rec(Rc::new(crate::interp::value::Record { shape, vals }))
+            }
+            None => V::Map(Rc::new(m.into_iter().map(|(k, v)| (k, from_any(v))).collect::<BTreeMap<_, _>>())),
+        },
         Any::Resource(h) => V::Native(h),
     }
 }

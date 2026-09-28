@@ -232,8 +232,43 @@ struct Entry {
 
 static MODULES: Mutex<BTreeMap<String, Entry>> = Mutex::new(BTreeMap::new());
 
+/// Counted up whenever a module is installed, declared or forgotten, so what
+/// was worked out from the modules can tell when to work it out again.
+static GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 fn modules() -> std::sync::MutexGuard<'static, BTreeMap<String, Entry>> {
     MODULES.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+fn changed() {
+    GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Which change of the modules this is: see [`GENERATION`].
+pub fn generation() -> u64 {
+    GENERATION.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// The fields, in their declared order, of the one record type of any
+/// module that a map of `keys` is: every key one of its fields, and every
+/// field it must have among the keys. `None` when no type or more than one is.
+pub fn record_with(keys: &[&str]) -> Option<Vec<FieldSig>> {
+    let all = modules();
+    let mut found: Option<&Vec<FieldSig>> = None;
+    for e in all.values() {
+        for item in &e.module.interface.items {
+            let ItemKind::Record(fields) = &item.kind else { continue };
+            let fits = keys.iter().all(|k| fields.iter().any(|f| f.name == *k))
+                && fields.iter().all(|f| f.optional || keys.contains(&f.name.as_str()));
+            if fits {
+                if found.is_some_and(|f| f != fields) {
+                    return None;
+                }
+                found = Some(fields);
+            }
+        }
+    }
+    found.cloned()
 }
 
 /// Two exports of one module under one Rux name, which Rux could not tell
@@ -254,6 +289,7 @@ pub fn install(m: Module) -> Result<(), String> {
         return Err(e);
     }
     modules().insert(m.interface.rux_name(), Entry { module: m, compiled: true });
+    changed();
     Ok(())
 }
 
@@ -289,6 +325,7 @@ pub fn declare(i: Interface) -> Result<(), String> {
         calls.insert(item.key(), call);
     }
     all.insert(name, Entry { module: Module { interface: i, calls }, compiled: false });
+    changed();
     Ok(())
 }
 
@@ -336,6 +373,7 @@ fn empty_of(ty: &str, i: &Interface) -> Any {
 /// the source again.
 pub fn forget_declared() {
     modules().retain(|_, e| e.compiled);
+    changed();
 }
 
 /// The module Rux calls `name` (`native/shop`), when there is one.

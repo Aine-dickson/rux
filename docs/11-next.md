@@ -2007,13 +2007,26 @@ Float indexing narrows to what the types allow: an index is an `int`, and a
      of two `int`s has no compiled fast path (it calls `cx.binary`); and
      a method call builds its argument vector. Each is small; measure
      each alone.
-   - (10.5.3) A record in one allocation. Today it is an `Rc<Record>`
+   - (10.5.3) **Measured 2026-09-28, not taken.** The safe form, the slots
+     inline behind the one `Rc` for a record of up to four fields (a
+     `Slots` enum, the heap past four), made things slower: `sum(items)`
+     45 to 59 µs, `make(1000)` 374 to 428, because every slot read now asks
+     which form it is. The other form, an unsized struct allocated by hand,
+     would be the first `unsafe` code in `rux-script`, for a gain the
+     experiment gives no reason to expect; left unless a profile says the
+     second cache line is what is left. What was planned: A record in one allocation. Today it is an `Rc<Record>`
      holding the shape and a `Box<[V]>`, two allocations, so reading a
      field is two cache lines. One allocation (the shape and the slots
      behind one `Rc`) is what is left between 45 µs and Dart's 17.7 on the
      record sum. It needs either an unsized struct built by hand (unsafe) or
      a small inline array, so it is a choice to make, not a certainty.
-   - (10.5.4) A native record keeps its declared order. `rux_native`
+   - (10.5.4) **Done 2026-09-28.** A map coming back from Rust is a
+     record, in its struct's declared order, when exactly one record type
+     a module exports fits its keys (the same test `method_for_value` uses);
+     found once per set of keys (`rux_native::registry::record_with`,
+     cached until the modules change, `registry::generation`). Otherwise it
+     is a map, as before. `a_rust_struct_keeps_its_declared_order` in
+     `rux-script`'s `tests/native.rs`. What was planned: A native record keeps its declared order. `rux_native`
      hands a Rust struct back as `Any::Map`, keyed, so it arrives a sorted
      map. The bridge knows the struct's field order (`ItemKind::Record`);
      carrying it makes a native record a record like any other.
