@@ -2152,10 +2152,27 @@ Float indexing narrows to what the types allow: an index is an `int`, and a
      | whole frame, window | 26.5 ms | 20.7 ms (1.3x faster) |
 
    What is left, largest first, each its own step:
-   - (g).2 **Patch, 7 ms.** The styled tree rebuilt for a keyed reorder.
-     Row reuse (b6ceb24) left about 12 µs a reused row: the registry
-     replay clones each text binding's locals, and each row's node is
-     cloned. Measure it split into its parts first, as layout was.
+   - (g).2 **Patch, 7 ms. Measured 2026-09-28, not yet chosen.** The
+     styled tree rebuilt for a keyed reorder. Split with probes (release,
+     bench): reconcile 6.2 ms, of which building the whole fresh styled
+     tree is 5.0 ms and splicing it in 1.2 ms; patching values 0.03 ms.
+     Inside the build: the `r-for` plan (a script eval per row for its
+     key, its locals cloned) 0.8 ms; the rows 3.3 to 3.8 ms, of which the
+     row cache compares rows in 0.2 ms and replays them in 1.9 ms (the
+     node cloned, the registry fragment cloned, every path rebased, since
+     a rotation moves all 300), and 1.3 ms is per-row bookkeeping (the
+     row id's strings hashed, `ElemDesc`, reads noted, kept rows
+     inserted); the rest of the document 0.5 ms. No single hot spot: the
+     cost is about 17 µs a row spread over many small things. Tried and
+     not taken: `seen_keys` as a set rather than a list scanned twice a
+     row, which measured no different. Two ways forward, for the owner:
+     (A) reconcile a keyed list in place, moving the live rows by key and
+     building only new or changed ones, with the registry held per row
+     rather than rebuilt flat; the most it can buy (patch well under a
+     millisecond for a reorder) and the largest change (runtime, rux-style
+     registry, the debug proof). (B) trim the hit path: share binding
+     templates and locals instead of cloning them, a direct read for a
+     key that is a field (`item.id`); smaller, safer, perhaps 7 ms to 4.
    - (g).3 **Done 2026-09-28. Scene, 4.8 ms: every text was shaped again
      to be drawn**, 900 parley layouts a frame. `TextEngine::draw` now
      keeps what it shaped and aligned, keyed as the measure cache is
