@@ -2598,6 +2598,127 @@ struct Bound {
     focus_path: Option<Vec<usize>>,
 }
 
+/// Hashes a taffy `NodeId`, which is a `u64` whose low half is a dense slot
+/// index, by one multiply. The default hasher cost more than the lookups it
+/// served: `collect` and the measure hook ask once per node every frame.
+#[derive(Default)]
+struct IdHasher(u64);
+
+impl std::hash::Hasher for IdHasher {
+    fn write(&mut self, bytes: &[u8]) {
+        for &b in bytes {
+            self.0 = (self.0.rotate_left(8) ^ b as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+        }
+    }
+    fn write_u64(&mut self, n: u64) {
+        self.0 = n.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    }
+    fn finish(&self) -> u64 {
+        self.0
+    }
+}
+
+type IdMap<V> = HashMap<NodeId, V, std::hash::BuildHasherDefault<IdHasher>>;
+
+/// Where one node's entries sit in the lists `build` fills.
+///
+/// `collect` used to find them by walking each list from the start for every
+/// node, so a layout cost the square of its size: 5 ms of a 300-row list's
+/// 12 ms went there (docs/11-next.md, track (g)). Found once per layout here.
+#[derive(Default, Clone, Copy)]
+struct At {
+    /// A node's paints are pushed one after another, so they are a range.
+    paint: (u32, u32),
+    handler: Option<u32>,
+    model: Option<u32>,
+    focus_label: Option<u32>,
+    access: Option<u32>,
+    path: Option<u32>,
+    state: Option<u32>,
+    sticky: Option<u32>,
+    opacity: Option<u32>,
+    transform: Option<u32>,
+    hidden: bool,
+    scroll: bool,
+}
+
+/// The lists `build` fills and the index into them, which is everything
+/// `collect` reads about a node besides its box.
+struct Built<'a> {
+    paint: &'a [(NodeId, PaintKind)],
+    handlers: &'a [Handler],
+    models: &'a [Bound],
+    focus_labels: &'a [(NodeId, String, Option<String>)],
+    transforms: &'a [(NodeId, Transform)],
+    opacities: &'a [(NodeId, f32)],
+    states: &'a [(NodeId, Vec<usize>)],
+    access: &'a [(NodeId, Access, Option<String>)],
+    paths: &'a [(NodeId, Vec<usize>)],
+    stickies: &'a [(NodeId, [Option<f32>; 4])],
+    at: IdMap<At>,
+}
+
+impl Built<'_> {
+    fn at(&self, id: NodeId) -> At {
+        self.at.get(&id).copied().unwrap_or_default()
+    }
+
+    fn paints(&self, id: NodeId) -> &[(NodeId, PaintKind)] {
+        let (start, len) = self.at(id).paint;
+        &self.paint[start as usize..(start + len) as usize]
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn index(
+    paint: &[(NodeId, PaintKind)],
+    handlers: &[Handler],
+    models: &[Bound],
+    focus_labels: &[(NodeId, String, Option<String>)],
+    hidden: &[NodeId],
+    opacities: &[(NodeId, f32)],
+    scrolls: &[NodeId],
+    transforms: &[(NodeId, Transform)],
+    states: &[(NodeId, Vec<usize>)],
+    access: &[(NodeId, Access, Option<String>)],
+    paths: &[(NodeId, Vec<usize>)],
+    stickies: &[(NodeId, [Option<f32>; 4])],
+) -> IdMap<At> {
+    let mut at: IdMap<At> = IdMap::default();
+    at.reserve(paths.len());
+    for (i, (id, _)) in paint.iter().enumerate() {
+        let e = at.entry(*id).or_default();
+        if e.paint.1 == 0 {
+            e.paint.0 = i as u32;
+        }
+        debug_assert_eq!(e.paint.0 + e.paint.1, i as u32, "a node's paints are pushed together");
+        e.paint.1 += 1;
+    }
+    // Each list is indexed by its *first* entry for a node, which is what the
+    // `find` it replaces returned.
+    fn first(at: &mut IdMap<At>, ids: impl Iterator<Item = NodeId>, slot: fn(&mut At) -> &mut Option<u32>) {
+        for (i, id) in ids.enumerate() {
+            slot(at.entry(id).or_default()).get_or_insert(i as u32);
+        }
+    }
+    first(&mut at, handlers.iter().map(|h| h.0), |a| &mut a.handler);
+    first(&mut at, models.iter().map(|b| b.id), |a| &mut a.model);
+    first(&mut at, focus_labels.iter().map(|f| f.0), |a| &mut a.focus_label);
+    first(&mut at, access.iter().map(|a| a.0), |a| &mut a.access);
+    first(&mut at, paths.iter().map(|p| p.0), |a| &mut a.path);
+    first(&mut at, states.iter().map(|s| s.0), |a| &mut a.state);
+    first(&mut at, stickies.iter().map(|s| s.0), |a| &mut a.sticky);
+    first(&mut at, opacities.iter().map(|o| o.0), |a| &mut a.opacity);
+    first(&mut at, transforms.iter().map(|t| t.0), |a| &mut a.transform);
+    for id in hidden {
+        at.entry(*id).or_default().hidden = true;
+    }
+    for id in scrolls {
+        at.entry(*id).or_default().scroll = true;
+    }
+    at
+}
+
 /// The widest a box can ever be, given its own CSS and everything above it.
 ///
 /// `parent` is the parent's *inner* width bound, `None` when nothing above has
@@ -2657,7 +2778,7 @@ fn build(
     // `cap` is the widest this node can end up, from the constraint chain above
     // it; `caps` is where each text leaf's own cap is left for the measure hook.
     cap: Option<f32>,
-    caps: &mut HashMap<NodeId, f32>,
+    caps: &mut IdMap<f32>,
     // The `r-key` of the row this node is inside, inherited by everything under
     // it. A keyed node starts a new row; nothing else changes it.
     row: Option<&str>,
@@ -2951,20 +3072,9 @@ fn collect(
     id: NodeId,
     origin_x: f32,
     origin_y: f32,
-    paint: &[(NodeId, PaintKind)],
-    handlers: &[Handler],
-    models: &[Bound],
-    focus_labels: &[(NodeId, String, Option<String>)],
-    hidden: &[NodeId],
-    opacities: &[(NodeId, f32)],
-    scrolls: &[NodeId],
-    transforms: &[(NodeId, Transform)],
-    states: &[(NodeId, Vec<usize>)],
-    access: &[(NodeId, Access, Option<String>)],
-    paths: &[(NodeId, Vec<usize>)],
+    b: &Built,
     offsets: &[Offset],
     vp: (f32, f32),
-    stickies: &[(NodeId, [Option<f32>; 4])],
     // The box this node sits in, as `(x, y, width, height)` in window
     // coordinates. Only `sticky` reads it, to stop travelling when its parent
     // runs out from under it.
@@ -2979,6 +3089,7 @@ fn collect(
     out: &mut Layout,
 ) {
     let layout = tree.layout(id).expect("layout");
+    let at = b.at(id);
     let mut x = origin_x + layout.location.x;
     let mut y = origin_y + layout.location.y;
 
@@ -2987,7 +3098,7 @@ fn collect(
     // before anything is recorded, so the box's paint, its hit region, its
     // metrics and its children all move together: a sticky header you can see
     // but cannot tap would be worse than one that does not stick.
-    if let Some((_, inset)) = stickies.iter().find(|(nid, _)| *nid == id) {
+    if let Some((_, inset)) = at.sticky.map(|i| &b.stickies[i as usize]) {
         // Against the scroller it is inside; with none, against the window,
         // which is what a sticky box in an unscrolled document sits in.
         let view = match inside_scroll.and_then(|sid| out.scrolls.get(sid)) {
@@ -3008,17 +3119,13 @@ fn collect(
 
     // r-show=false: the node kept its layout slot but paints nothing (nor its
     // subtree, nor its hit regions).
-    if hidden.contains(&id) {
+    if at.hidden {
         return;
     }
 
     // opacity fades this node and everything under it, so the layer opens
     // before the node paints its own background.
-    let alpha = opacities
-        .iter()
-        .find(|(nid, _)| *nid == id)
-        .map(|(_, a)| *a)
-        .unwrap_or(1.0);
+    let alpha = at.opacity.map_or(1.0, |i| b.opacities[i as usize].1);
     if alpha < 1.0 {
         out.paints.push(Paint::PushOpacity {
             alpha,
@@ -3030,7 +3137,7 @@ fn collect(
     // `transform` wraps the box and its subtree. The parsed matrix is in local
     // coords; bake in the origin (CSS default: the box centre) so it applies to
     // absolute coordinates directly.
-    let transform = transforms.iter().find(|(nid, _)| *nid == id).map(|(_, m)| *m);
+    let transform = at.transform.map(|i| b.transforms[i as usize].1);
     // What the subtree, and anything drawn on its behalf outside the paint
     // list, is seen through.
     let mut child_xform = xform;
@@ -3049,7 +3156,7 @@ fn collect(
     let mut clip_radius = [0.0; 4];
     // A node can emit more than one paint (a text node paints its box, then its
     // glyphs), so walk every entry it owns, in order.
-    for (_, kind) in paint.iter().filter(|(nid, _)| *nid == id) {
+    for (_, kind) in b.paints(id) {
         match kind {
             PaintKind::Box {
                 bg,
@@ -3163,18 +3270,18 @@ fn collect(
 
     // A `for=` label targeting a text input: a focus region at the label's box,
     // carrying the *target's* model, so tapping the label focuses that input.
-    if let Some((_, model, row)) = focus_labels.iter().find(|(nid, ..)| *nid == id) {
+    if let Some((_, model, row)) = at.focus_label.map(|i| &b.focus_labels[i as usize]) {
         // The scope comes from the input the label points at, not from the
         // label: `for=` names a model, and a model only means anything where it
         // was written. A label that finds no such input carries no instance,
         // which is the same answer as before this field existed.
-        let target = models.iter().find(|b| b.model == *model && b.row == *row);
+        let target = b.models.iter().find(|m| m.model == *model && m.row == *row);
         let instance = target.and_then(|b| b.instance.clone());
         // The target's attributes too, because the shell reads them off
         // whichever region shares the field's identity, and a label's region
         // can come first. A `readonly` field focused from its label must still
         // refuse the keyboard.
-        let field = target.map(|b| b.field.clone()).unwrap_or_default();
+        let field = target.map(|t| t.field.clone()).unwrap_or_default();
         out.focuses.push(FocusRegion {
             x,
             y,
@@ -3193,7 +3300,7 @@ fn collect(
     // Assistive technology needs the same geometry the pointer uses, so this rides
     // the same walk. `hidden` nodes returned above, so an `r-show="false"` element
     // is absent from the a11y tree too, not merely invisible.
-    if let Some((_, node_access, model)) = access.iter().find(|(nid, ..)| *nid == id) {
+    if let Some((_, node_access, model)) = at.access.map(|i| &b.access[i as usize]) {
         out.access.push(AccessNode {
             x,
             y,
@@ -3206,7 +3313,7 @@ fn collect(
 
     // Emitted after the `hidden` check above, so an `r-show="false"` subtree has
     // no metrics at all rather than metrics nobody can see.
-    if let Some((_, path)) = paths.iter().find(|(nid, _)| *nid == id) {
+    if let Some((_, path)) = at.path.map(|i| &b.paths[i as usize]) {
         out.metrics.push(NodeMetrics {
             path: path.clone(),
             x,
@@ -3218,7 +3325,7 @@ fn collect(
 
     // Emitted for any box a `:hover`/`:active` rule could style, tappable or not,
     // unlike `cursor`, pointer-state styling is not limited to `@tap` boxes.
-    if let Some((_, path)) = states.iter().find(|(nid, _)| *nid == id) {
+    if let Some((_, path)) = at.state.map(|i| &b.states[i as usize]) {
         out.states.push(StateRegion {
             x,
             y,
@@ -3229,7 +3336,7 @@ fn collect(
     }
 
     if let Some((_, handler, gestures, cursor, touch_action, instance, _)) =
-        handlers.iter().find(|(nid, ..)| *nid == id)
+        at.handler.map(|i| &b.handlers[i as usize])
     {
         out.hits.push(HitRegion {
             transform: child_xform,
@@ -3246,7 +3353,7 @@ fn collect(
     }
 
     let (fw, fh) = (layout.size.width, layout.size.height);
-    if let Some(bound) = models.iter().find(|b| b.id == id) {
+    if let Some(bound) = at.model.map(|i| &b.models[i as usize]) {
         if let Some(options) = &bound.options {
             // A select: no caret, just a tappable box that opens a dropdown.
             out.selects.push(SelectRegion {
@@ -3283,8 +3390,8 @@ fn collect(
                 .and_then(|kids| kids.first().copied())
                 .and_then(|kid| {
                     let child = tree.layout(kid).ok()?;
-                    let content = paint.iter().find_map(|(nid, k)| match k {
-                        PaintKind::Text(tc) if *nid == kid => Some(tc.clone()),
+                    let content = b.paints(kid).iter().find_map(|(_, k)| match k {
+                        PaintKind::Text(tc) => Some(tc.clone()),
                         _ => None,
                     })?;
                     // The same content box the glyphs are painted in, or the
@@ -3312,7 +3419,7 @@ fn collect(
                 field: bound.field.clone(),
                 // The scroll block below assigns ids as `out.scrolls.len()`, so if
                 // this node scrolls it will get the current length as its id.
-                scroll_id: scrolls.contains(&id).then(|| out.scrolls.len()),
+                scroll_id: at.scroll.then(|| out.scrolls.len()),
             });
             out.focusables.push(FocusItem {
                 x,
@@ -3331,7 +3438,7 @@ fn collect(
             });
         }
     } else if let Some((_, Some(handler), _, _, _, instance, focus_path)) =
-        handlers.iter().find(|(nid, ..)| *nid == id)
+        at.handler.map(|i| &b.handlers[i as usize])
     {
         // A button / checkbox / radio (anything with a `@tap` handler) is
         // keyboard-reachable: Space or Enter runs the same handler as a tap.
@@ -3367,7 +3474,7 @@ fn collect(
     // What the children are clipped by: this box if it scrolls, otherwise
     // whatever was clipping us.
     let mut child_scroll = inside_scroll;
-    if scrolls.contains(&id) {
+    if at.scroll {
         let sid = out.scrolls.len();
         child_scroll = Some(sid);
         // **The end padding is part of what scrolls.** Taffy's content size
@@ -3424,27 +3531,16 @@ fn collect(
     // topmost hit region wins and later means topmost.
     let kids = tree.children(id).expect("children");
     let (stuck, flowing): (Vec<NodeId>, Vec<NodeId>) =
-        kids.iter().partition(|c| stickies.iter().any(|(nid, _)| nid == *c));
+        kids.iter().partition(|c| b.at(**c).sticky.is_some());
     for child in flowing.into_iter().chain(stuck) {
         collect(
             tree,
             child,
             x - shift.x,
             y - shift.y,
-            paint,
-            handlers,
-            models,
-            focus_labels,
-            hidden,
-            opacities,
-            scrolls,
-            transforms,
-            states,
-            access,
-            paths,
+            b,
             offsets,
             vp,
-            stickies,
             // The box this node's children are held by, measured where the
             // scroll has put it.
             //
@@ -3475,7 +3571,7 @@ fn collect(
     // clip, so it slides, fades and scrolls out of view with the element: the
     // focus ring used to be drawn by the shell as a separate layer and had to
     // be taught each of those one at a time.
-    for (_, kind) in paint.iter().filter(|(nid, _)| *nid == id) {
+    for (_, kind) in b.paints(id) {
         if let PaintKind::Outline(o) = kind {
             out.paints.push(outline_paint(o, x, y, layout.size.width, layout.size.height, clip_radius));
         }
@@ -3563,7 +3659,7 @@ pub fn layout_scrolled(
     let mut access = Vec::new();
     let mut paths = Vec::new();
     let vp = (avail_w, avail_h);
-    let mut caps: HashMap<NodeId, f32> = HashMap::new();
+    let mut caps: IdMap<f32> = IdMap::default();
     let mut stickies: Vec<(NodeId, [Option<f32>; 4])> = Vec::new();
     let mut hoisted: Vec<(NodeId, bool)> = Vec::new();
     let root_id = build(
@@ -3738,9 +3834,25 @@ pub fn layout_scrolled(
     }
 
     let mut out = Layout::default();
+    let at = index(
+        &paint, &handlers, &models, &focus_labels, &hidden, &opacities, &scrolls, &transforms,
+        &states, &access, &paths, &stickies,
+    );
+    let built = Built {
+        paint: &paint,
+        handlers: &handlers,
+        models: &models,
+        focus_labels: &focus_labels,
+        transforms: &transforms,
+        opacities: &opacities,
+        states: &states,
+        access: &access,
+        paths: &paths,
+        stickies: &stickies,
+        at,
+    };
     collect(
-        &tree, root_id, 0.0, 0.0, &paint, &handlers, &models, &focus_labels, &hidden, &opacities,
-        &scrolls, &transforms, &states, &access, &paths, offsets, vp, &stickies,
+        &tree, root_id, 0.0, 0.0, &built, offsets, vp,
         // The root is held by the window.
         (0.0, 0.0, vp.0, vp.1),
         None, None, 1.0, &mut out,

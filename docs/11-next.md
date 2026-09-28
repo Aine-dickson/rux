@@ -2117,6 +2117,62 @@ Float indexing narrows to what the types allow: an index is an `int`, and a
    `set`); and 10.4 is done by smaller frames, not a stack that grows.
    Order from here: 10.5.1 to 10.5.4, then 10.4, then track (d).
 
+   **Track (g), the frame outside script, measured first (2026-09-28).**
+   The script-cost list (300 keyed rows, three texts each, one row
+   rotated a frame) spent, per frame in the window: patch 7.6 ms, layout
+   11.3 ms, scene 4.8 ms, GPU 2.6 ms, script 0.08 ms; 26.5 ms in all. A
+   bench outside the window reproduces the layout and patch numbers
+   (`crates/rux-shell/tests/layout_cost.rs`, ignored; run it in release
+   with `--ignored --nocapture`). Layout split into its three parts, on
+   1 204 nodes: building the Taffy tree 2.1 ms, Taffy's compute 3.5 ms
+   (about 1 ms of it the text-measure hook, called 5 700 times a frame,
+   six times for each text, since Taffy's own cache dies with the tree),
+   and **collecting the boxes into paints 5.0 ms**. The last was not
+   Taffy at all: `collect` found each node's paints, handler, path and
+   the rest by walking each list from the start, for every node, so it
+   cost the square of the tree's size.
+
+   - (g).1 **Done 2026-09-28.** Each node's entries in those lists are
+     found once per layout (`index`, one hash map keyed by Taffy's id with
+     a one-multiply hasher; a node's paints are a range, since `build`
+     pushes them together, which a debug assertion holds), and `collect`
+     reads the index. The measure hook's width caps use the same hasher.
+     Nothing painted changes: the gate is green (1128), and ten examples
+     (position, transform, form-controls, scroll, shadows, css-showcase,
+     grid, keyed-list, selection, dashboard) were screenshotted with the
+     build before and after and compared pixel by pixel: the window's
+     content is identical but for one or two single pixels, which differ
+     just as much between two runs of the old build. Release:
+
+     | Frame part, list of 300 | Before | After |
+     |---|---|---|
+     | `collect`, bench | 5 000 µs | 580 µs (8.6x faster) |
+     | layout, bench | 12.4 ms | 6.8 ms (1.8x faster) |
+     | layout, window | 11.3 ms | 6.2 ms (1.8x faster) |
+     | whole frame, window | 26.5 ms | 20.7 ms (1.3x faster) |
+
+   What is left, largest first, each its own step:
+   - (g).2 **Patch, 7 ms.** The styled tree rebuilt for a keyed reorder.
+     Row reuse (b6ceb24) left about 12 µs a reused row: the registry
+     replay clones each text binding's locals, and each row's node is
+     cloned. Measure it split into its parts first, as layout was.
+   - (g).3 **Scene, 4.8 ms: every text is shaped again to be drawn**,
+     900 parley layouts a frame, though measure shaped the same text at
+     the same width a moment before. A cache of shaped, aligned layouts,
+     keyed as the measure cache is (text, style, width) plus the
+     alignment, shared by measure and draw, should take most of it.
+   - (g).4 **Keep the Taffy tree across frames** (the track's first idea),
+     for the 2.1 ms build and the 3.5 ms compute. A node whose style and
+     text did not change keeps its Taffy node and Taffy's cache; a keyed
+     row is matched by its key, others by position. Rotating the list
+     then dirties only the rows' parent. Needs the node identity the
+     runtime does not give today, so it is found by walking the old and
+     new trees together; measure what that walk costs before building
+     on it.
+   - (g).5 **The measure key allocates**: every one of the 5 700 calls
+     copies the text into a new `String` only to look it up. Look up by
+     a borrowed key. Small; may fall out of (g).3.
+
 Steps 2 to 5 change nothing an author sees except the decided syntax and
 types, which is what made them safe to take in order.
 
