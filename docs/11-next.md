@@ -2183,10 +2183,15 @@ Float indexing narrows to what the types allow: an index is an `int`, and a
      runtime does not give today, so it is found by walking the old and
      new trees together; measure what that walk costs before building
      on it.
-   - (g).5 **The measure key allocates**: every one of the 5 700 calls
-     copies the text into a new `String` only to look it up. Look up by
-     a borrowed key. Small; did not fall out of (g).3, which has the same
-     copy on each draw.
+   - (g).5 **Done 2026-09-28. The measure key allocated**: every one of
+     the 5 700 measure calls, and each of the 900 draws, copied the text
+     into a new `String` only to look it up. The key is now generic over
+     its strings (`Key<S>`), held as `Key<String>` and asked with a
+     `Key<&str>` through a `Borrow<dyn AsKey>`; it copies only on a miss.
+     Small, and said so: over three bench runs each, layout 6.69 to 6.46
+     ms and scene 1.62 to 1.57 ms, about 0.25 ms a frame. Kept because it
+     is consistent, changes nothing an author sees, and an allocation
+     costs more on a phone. Gate green (1128).
    - (g).6 **Nothing is left out for being off screen.** The list is 300
      rows, about 6 600 px, in a 1 000 px window, and every row is
      collected, encoded and handed to the GPU. A paint wholly outside the

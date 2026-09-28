@@ -132,7 +132,7 @@ pub struct TextEngine {
     /// 900 of them in a 300-row list, which was most of the scene's time
     /// (docs/11-next.md, track (g)). Cleared as `measured` is, and started
     /// over past [`SHAPED_CAP`].
-    shaped: HashMap<(MeasureKey, u8), Layout<()>>,
+    shaped: HashMap<MeasureKey, Layout<()>>,
 }
 
 /// How many measurements the engine keeps before starting over. A key and its
@@ -143,38 +143,117 @@ const MEASURED_CAP: usize = 16384;
 /// this is kept to about what one screen draws, several times over.
 const SHAPED_CAP: usize = 2048;
 
-/// Everything [`TextEngine::build`] reads, as an owned, hashable value. Floats
-/// by their bits: two sizes are the same size when they are the same number.
-#[derive(Clone, PartialEq, Eq, Hash)]
-struct MeasureKey {
-    text: String,
+/// Everything [`TextEngine::build`] reads, plus the alignment for a drawn
+/// layout (0 for a measurement), as a hashable value. Floats by their bits:
+/// two sizes are the same size when they are the same number.
+///
+/// Generic over its strings so a lookup borrows them: the caches hold
+/// `Key<String>` and are asked with a `Key<&str>`, through [`AsKey`]. A
+/// lookup used to copy the text into a new `String` first, 6 600 times a
+/// frame in a 300-row list (docs/11-next.md, track (g)).
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+struct Key<S> {
+    text: S,
     font_size: u32,
     weight: u16,
     wrap: u8,
-    family: Option<String>,
+    family: Option<S>,
     letter_spacing: Option<u32>,
     word_spacing: Option<u32>,
     line_height: Option<u32>,
     italic: bool,
     nowrap: bool,
     max_width: Option<u32>,
+    align: u8,
 }
 
-impl MeasureKey {
-    fn new(text: &str, style: &TextStyle, max_width: Option<f32>) -> Self {
+type MeasureKey = Key<String>;
+
+impl<'a> Key<&'a str> {
+    fn new(text: &'a str, style: &TextStyle<'a>, max_width: Option<f32>, align: u8) -> Self {
         Self {
-            text: text.to_string(),
+            text,
             font_size: style.font_size.to_bits(),
             weight: style.weight,
             wrap: style.wrap as u8,
-            family: style.family.map(str::to_string),
+            family: style.family,
             letter_spacing: style.letter_spacing.map(f32::to_bits),
             word_spacing: style.word_spacing.map(f32::to_bits),
             line_height: style.line_height.map(f32::to_bits),
             italic: style.italic,
             nowrap: style.nowrap,
             max_width: max_width.map(f32::to_bits),
+            align,
         }
+    }
+
+    fn owned(self) -> MeasureKey {
+        Key {
+            text: self.text.to_string(),
+            family: self.family.map(str::to_string),
+            font_size: self.font_size,
+            weight: self.weight,
+            wrap: self.wrap,
+            letter_spacing: self.letter_spacing,
+            word_spacing: self.word_spacing,
+            line_height: self.line_height,
+            italic: self.italic,
+            nowrap: self.nowrap,
+            max_width: self.max_width,
+            align: self.align,
+        }
+    }
+}
+
+/// A key seen with borrowed strings, which is what lets a `HashMap` keyed by
+/// `Key<String>` be asked with a `Key<&str>`. The two hash alike, since a
+/// `String` hashes as the `str` it holds.
+trait AsKey {
+    fn key(&self) -> Key<&str>;
+}
+
+impl AsKey for Key<String> {
+    fn key(&self) -> Key<&str> {
+        Key {
+            text: &self.text,
+            family: self.family.as_deref(),
+            font_size: self.font_size,
+            weight: self.weight,
+            wrap: self.wrap,
+            letter_spacing: self.letter_spacing,
+            word_spacing: self.word_spacing,
+            line_height: self.line_height,
+            italic: self.italic,
+            nowrap: self.nowrap,
+            max_width: self.max_width,
+            align: self.align,
+        }
+    }
+}
+
+impl AsKey for Key<&str> {
+    fn key(&self) -> Key<&str> {
+        *self
+    }
+}
+
+impl std::hash::Hash for dyn AsKey + '_ {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.key().hash(state)
+    }
+}
+
+impl PartialEq for dyn AsKey + '_ {
+    fn eq(&self, other: &Self) -> bool {
+        self.key() == other.key()
+    }
+}
+
+impl Eq for dyn AsKey + '_ {}
+
+impl<'a> std::borrow::Borrow<dyn AsKey + 'a> for Key<String> {
+    fn borrow(&self) -> &(dyn AsKey + 'a) {
+        self
     }
 }
 
@@ -269,15 +348,15 @@ impl TextEngine {
     /// layout gave it, so a box even a fraction of a pixel narrower than the
     /// text would break the last word onto a line the box has no height for.
     pub fn measure(&mut self, text: &str, style: &TextStyle, max_width: Option<f32>) -> (f32, f32) {
-        let key = MeasureKey::new(text, style, max_width);
-        if let Some(&size) = self.measured.get(&key) {
+        let key = Key::new(text, style, max_width, 0);
+        if let Some(&size) = self.measured.get(&key as &dyn AsKey) {
             return size;
         }
         let size = self.measure_uncached(text, style, max_width);
         if self.measured.len() >= MEASURED_CAP {
             self.measured.clear();
         }
-        self.measured.insert(key, size);
+        self.measured.insert(key.owned(), size);
         size
     }
 
@@ -408,16 +487,16 @@ impl TextEngine {
         max_width: Option<f32>,
         transform: Affine,
     ) {
-        let key = (MeasureKey::new(text, style, max_width), align as u8);
-        if !self.shaped.contains_key(&key) {
+        let key = Key::new(text, style, max_width, align as u8);
+        if !self.shaped.contains_key(&key as &dyn AsKey) {
             let mut layout = self.build(text, style, max_width);
             layout.align(align.to_parley(), AlignmentOptions::default());
             if self.shaped.len() >= SHAPED_CAP {
                 self.shaped.clear();
             }
-            self.shaped.insert(key.clone(), layout);
+            self.shaped.insert(key.owned(), layout);
         }
-        let layout = &self.shaped[&key];
+        let layout = &self.shaped[&key as &dyn AsKey];
 
         let mut line_top = y;
         for line in layout.lines() {
