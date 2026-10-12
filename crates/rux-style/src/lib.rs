@@ -6645,7 +6645,11 @@ fn build_children(
                 let (value, deps) =
                     rux_script::located(at, || engine.eval_value_tracked(coll, locals));
                 structural_deps.extend(deps);
-                let items = value.and_then(|v| v.as_list().map(<[Value]>::to_vec));
+                // Taken, not copied: the value is this build's own.
+                let items = value.and_then(|v| match v {
+                    Value::List(items) => Some(items),
+                    _ => None,
+                });
                 if let Some(items) = items {
                     // `r-key` names what a row *is*, so the runtime can follow it
                     // when the list reorders instead of tracking slots.
@@ -6665,6 +6669,9 @@ fn build_children(
                     }
                     let animated = anim.is_some() && key_expr.is_some();
                     let mut seen_keys: Vec<String> = Vec::new();
+                    // The same keys as a set, asked once a row: `seen_keys`
+                    // scanned was the square of the list's length.
+                    let mut seen: HashSet<String> = HashSet::new();
                     // The key is evaluated *before* the row is built, because
                     // everything inside the row is identified by it: an input's
                     // focus, its `:focus` styling and the binding that reads its
@@ -6687,7 +6694,7 @@ fn build_children(
                                     "`r-key=\"{expr}\"` evaluated to nothing on one row, so that \
                                      row has no identity and will be treated as a new one"
                                 ));
-                            } else if seen_keys.contains(&key) {
+                            } else if seen.contains(&key) {
                                 // Two rows claiming one identity is worse than
                                 // none: whatever follows a key follows the wrong
                                 // row, silently.
@@ -6696,6 +6703,7 @@ fn build_children(
                                      must be unique within a list, or rows cannot be told apart"
                                 ));
                             } else {
+                                seen.insert(key.clone());
                                 seen_keys.push(key.clone());
                             }
                             key
@@ -6711,14 +6719,18 @@ fn build_children(
                             plan.insert(at, (Some(key), row_locals));
                         }
                     }
+                    out.reserve(plan.len());
+                    prev.reserve(plan.len());
+                    // Every row is this element, so it is described once.
+                    let desc = ElemDesc::of(el);
                     for (index, (key, child_locals)) in plan.into_iter().enumerate() {
-                        let skey: SwapKey = (ctp.clone(), key.clone());
+                        let skey: Option<SwapKey> = animated.then(|| (ctp.clone(), key.clone()));
                         // In the collection iff its key survived the diff; a row
                         // that is only in the plan because it was spliced back in
                         // is the one that is leaving.
-                        let wanted = key.as_ref().is_some_and(|k| seen_keys.contains(k));
-                        let side = if animated {
-                            match swaps.resolve(&skey, wanted, true) {
+                        let wanted = key.as_ref().is_some_and(|k| seen.contains(k));
+                        let side = if let Some(skey) = &skey {
+                            match swaps.resolve(skey, wanted, true) {
                                 Some(side) => side,
                                 // Its leaving swap has committed; the row goes.
                                 None => continue,
@@ -6726,8 +6738,8 @@ fn build_children(
                         } else {
                             None
                         };
-                        if animated && wanted {
-                            swaps.remember_row(&skey, index, child_locals.clone());
+                        if let Some(skey) = skey.as_ref().filter(|_| wanted) {
+                            swaps.remember_row(skey, index, child_locals.clone());
                         }
                         let cp = child_path(&out);
                         // Only a keyed row can be found again, and an animated
@@ -6750,15 +6762,15 @@ fn build_children(
                             side,
                             reuse,
                         );
-                        if animated {
+                        if let Some(skey) = &skey {
                             arm_swap(
-                                swaps, &skey, &mut node, anim, engine, &child_locals,
+                                swaps, skey, &mut node, anim, engine, &child_locals,
                                 &mut structural_deps,
                             );
                         }
                         node.key = key;
                         out.push(node);
-                        prev.push(ElemDesc::of(el));
+                        prev.push(desc.clone());
                     }
                 }
             }
@@ -7119,6 +7131,7 @@ pub fn rebuild_children(
     let depth = parent.tree_path.len();
     let mut kids: Vec<Option<LayoutNode>> = live_children.into_iter().map(Some).collect();
     let mut frags: Vec<BindingRegistry> = kids.iter().map(|_| BindingRegistry::default()).collect();
+    let sizes = (live_reg.text.len(), live_reg.elements.entries.len());
     live_reg.deal(depth, &mut frags);
     for (id, row) in cache.rows.iter_mut() {
         if row.at.len() != depth + 1 || !row.at.starts_with(&parent.tree_path) {
@@ -7147,6 +7160,10 @@ pub fn rebuild_children(
     let comps = Components::new();
     let mut ancestors = ctx.ancestors.clone();
     let mut reg = BindingRegistry::default();
+    // What the parent's children recorded last time, which is most often what
+    // they record now: the registry grows to it once instead of doubling.
+    reg.text.reserve(sizes.0);
+    reg.elements.entries.reserve(sizes.1);
     let (mut children, deps) = build_children(
         &element_children(el),
         &rules,
@@ -7797,7 +7814,12 @@ fn adopt_row(
 /// Replace the prefix `from` of `p` with `to`, when `p` is under `from`.
 fn rebase(p: &mut Vec<usize>, from: &[usize], to: &[usize]) {
     if p.starts_with(from) {
-        p.splice(..from.len(), to.iter().copied());
+        if from.len() == to.len() {
+            // A row moved within its list: the usual case, done in place.
+            p[..to.len()].copy_from_slice(to);
+        } else {
+            p.splice(..from.len(), to.iter().copied());
+        }
     }
 }
 
