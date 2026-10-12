@@ -2468,15 +2468,96 @@ Float indexing narrows to what the types allow: an index is an `int`, and a
    **Where track (g) leaves the list of 300**, whole frame in the window:
    26.5 ms when it began, 9.0 ms now (2.9x faster). Of the 9.0: patch 4.9,
    layout 2.7, GPU 1.05, scene 0.2. The patch is now more than half of it.
-   - (g).7 **For the owner: the patch, 4.9 ms.** What (g).2 left: each row
-     is still visited on every reconcile (its key planned, compared with
-     its cached build, moved), about 15 us a row. Going well under a
-     millisecond means not visiting a row whose inputs did not change,
-     which needs knowing that without comparing it: the row's reads (the
-     signals and the item it was built from) recorded per row, and a
-     reorder handled as a move of the rows' places rather than a rebuild
-     of the list. That reaches into the runtime's reactivity, so it is a
-     design to put to the owner before building, not a trim.
+   - (g).7 **Proposal for the owner (2026-10-12): the patch, 4.9 ms of the
+     list's 9.0 ms frame.** Nothing here changes what an author writes or
+     sees; it is all runtime. Measured first, release bench, the list of
+     300 rotating one row a frame, probes in the reconcile (medians):
+
+     | Part of one reconcile | us |
+     |---|---|
+     | `rebuild_children`, the list's rows built again | 4 600 |
+     | of it: putting each row back in the row cache | 1 410 |
+     | of it: moving each reused row into place, its paths rewritten | 530 |
+     | of it: planning the rows (locals cloned, place, key) | 330 |
+     | of it: evaluating the collection and copying it | 270 |
+     | of it: comparing each row with what built it | 245 |
+     | of it: taking each row out of the cache | 195 |
+     | of it: the row's id (three strings cloned) | 90 |
+     | of it: setup (stylesheet parsed, live rows handed over) and the rest | about 1 500 |
+     | registry entries taken out and put back | 125 |
+     | the rest of the reconcile (labels scan, images, focus) | 115 |
+     | **whole reconcile** | **4 920** |
+
+     Two findings decide the shape of this.
+
+     **One cost is a plain mistake, not design.** Putting a row back in the
+     cache costs 4.7 us a row because a cached row holds its whole node and
+     registry fragment inline, several kilobytes, and the map it goes into
+     starts empty every build: it grows by doubling, moving every entry
+     each time, and each insert moves one more. Tried as a prototype (not
+     committed): giving the map its size up front took that part from
+     1 410 to 600 us; boxing the rows as well took it to 40 us, taking them
+     out of the cache from 195 to 45 us, and the **whole reconcile from
+     4.9 to 3.3 ms** (bench timer and patch 5.5 to 4.0 ms).
+
+     **The rest is per row, and is the cost of building rows at all.** Each
+     reused row is still visited: its locals cloned, its key read, its id
+     made, compared field by field with what built it, and every path in
+     it rewritten because a rotation moves every row by one. Items are
+     compared by value: the style layer reads lists as `rux_reactive::Value`,
+     a deep copy of the interpreter's shared values, so all 300 records are
+     copied each reconcile and identity is lost on the way.
+
+     The steps, each its own, smallest first:
+
+     - (g).7a **Box the cached rows and size the cache** (the prototype
+       above). No design question; recommended first whatever is decided
+       below. With it, probably also: the stylesheet parsed once per
+       document rather than once per list build (about 0.1 to 0.17 ms), and
+       the live-row handover scanning only the list's own rows. Expected:
+       patch 4.9 to about 3.3 ms. The debug proofs that exist (every reused
+       row against a build that reuses nothing, every list build against a
+       whole one) stand as they are.
+
+     - (g).7b **Diff the list before building any row.** Keep, per list,
+       what its rows were built from that is the same for every row (its
+       ancestors, inherited style, environment, the signals its rows read
+       other than the collection) and the sequence of (key, item) it had.
+       When the shared part is unchanged, a row whose key and item are
+       unchanged is not visited at all: its live node and registry entries
+       stay, and only its place moves. Rows that are new or whose item
+       changed are built as now. Still paid per row: the key, a value
+       compare of the item, and rewriting the moved row's paths. Estimated
+       (not measured): patch about 1.5 to 2 ms. Moderate: it is the row
+       cache's own comparison done once per list instead of once per row,
+       inside `rux-style` and the runtime's reconcile, with the same debug
+       proof against a whole build.
+
+     - (g).7c **Address rows by identity, not by path.** Today every binding
+       and every node knows its place as a path of child indices, so a row
+       that moves has every path in it rewritten (the 530 us, and most of
+       the registry work). If a row's entries were held relative to the row,
+       with the row found by its key, a move would be one entry changing
+       place. With (b), estimated patch under 1 ms. The largest change of
+       the three: the registry, focus and hover state, `query()`'s metrics
+       and the shell's hit testing all speak in paths today.
+
+     Not proposed: keeping the interpreter's shared values through to the
+     style layer so items compare by pointer. It would make (b)'s compare
+     free, but `Value` is the boundary every crate below the interpreter
+     uses; worth it only if (b) measures the value compare as a real cost.
+
+     **Recommendation:** (a) now, as its own step. Then (b), measured as it
+     is built. (c) only if a measured frame still needs it, most likely on
+     a phone: this list is an artificial worst case (300 rows all moving
+     every frame), and with (a) the desktop frame is about 7.4 ms, under
+     half of a 60 Hz frame. A phone is perhaps three to five times slower,
+     which is where (b) would matter and (c) might.
+
+     **For the owner:**
+     1. (a) as the next step: yes or no?
+     2. After it: (b), (b) then (c), or stop at (a) until a phone measures
+        the frame?
 
 Steps 2 to 5 change nothing an author sees except the decided syntax and
 types, which is what made them safe to take in order.
