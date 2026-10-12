@@ -461,8 +461,9 @@ fn wrapper_main(manifest: &Manifest, files: &[PathBuf], options: &Options) -> St
         out.push_str("fn main() {\n");
         embed(manifest, files, &mut out);
         out.push_str(&format!(
-            "    rux_shell::run(std::path::PathBuf::from({}));\n",
-            literal(&entry)
+            "    rux_shell::run_windowed(std::path::PathBuf::from({}), None, None, {});\n",
+            literal(&entry),
+            window_settings(manifest)
         ));
         out.push_str("}\n");
     } else {
@@ -477,10 +478,30 @@ fn wrapper_main(manifest: &Manifest, files: &[PathBuf], options: &Options) -> St
             "    let root = std::path::PathBuf::from({});\n",
             literal(&root.display().to_string())
         ));
-        out.push_str(&format!("    rux_shell::run(root.join({}));\n", literal(&entry)));
+        out.push_str(&format!(
+            "    rux_shell::run_windowed(root.join({}), None, None, {});\n",
+            literal(&entry),
+            window_settings(manifest)
+        ));
         out.push_str("}\n");
     }
     out
+}
+
+/// The manifest's window, written out as the expression the wrapper hands
+/// the shell: the app's name as its title, and `[window]`.
+fn window_settings(manifest: &Manifest) -> String {
+    let w = manifest.window_settings();
+    format!(
+        "rux_shell::WindowSettings {{ title: Some({}.into()), width: {:?}, height: {:?}, \
+         min_width: {:?}, min_height: {:?}, maximized: {} }}",
+        literal(&manifest.name),
+        w.width,
+        w.height,
+        w.min_width,
+        w.min_height,
+        w.maximized,
+    )
 }
 
 /// Where cargo puts what it builds for the wrapper at `work`: its own
@@ -756,6 +777,7 @@ mod tests {
             icon: None,
             scheme: None,
             link_hosts: Vec::new(),
+            window: Default::default(),
         }
     }
 
@@ -779,6 +801,21 @@ mod tests {
         assert!(!main.contains("include_bytes!"), "a dev build must not embed: {main}");
         assert!(!main.contains("MemorySource"), "a dev build reads the disk: {main}");
         assert!(main.contains("rux_shell::run"), "{main}");
+    }
+
+    #[test]
+    fn a_desktop_wrapper_opens_the_window_the_manifest_asks_for() {
+        let mut m = manifest();
+        m.window.width = Some(1280.0);
+        m.window.maximized = true;
+        for release in [false, true] {
+            let options = Options { release, target: Target::Desktop, rux_source: None, abis: None };
+            let main = wrapper_main(&m, &[PathBuf::from("app.rux")], &options);
+            assert!(main.contains("rux_shell::run_windowed("), "{main}");
+            assert!(main.contains(&format!("title: Some({}.into())", literal(&m.name))), "{main}");
+            assert!(main.contains("width: Some(1280.0), height: None"), "{main}");
+            assert!(main.contains("maximized: true"), "{main}");
+        }
     }
 
     #[test]

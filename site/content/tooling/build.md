@@ -232,7 +232,28 @@ nothing.
 `icon` and `icon-background` are the launcher icon, and `splash-background`
 colours the splash screen that comes with it; all three are below. `[signing]`
 names the key a release is signed with, below as well. `scheme` and
-`link-hosts` let a link open the app, also below.
+`link-hosts` let a link open the app, also below. `[window]` sizes the desktop
+window, below too.
+
+## The desktop window
+
+The window is titled with `name`. Its size comes from an optional `[window]`
+table, in logical pixels:
+
+```toml
+[window]
+width = 1280        # opening size; 420 by 640 without it
+height = 800
+min-width = 960     # the smallest it can be dragged to
+min-height = 600
+maximized = true    # open maximized; false without it
+```
+
+Every key is optional. `rux run` reads the same table, so the window you work
+in is the one a build opens; `--preview` still sizes it as the device it
+names. A key that is not one of these, or `min_width` spelled with an
+underscore, is refused rather than ignored. Android and the web ignore the
+table: an app there gets the screen or the element it is given.
 
 ## The icon is two layers, not one image
 

@@ -663,6 +663,7 @@ mod tests {
             icon: None,
             scheme: None,
             link_hosts: Vec::new(),
+            window: Default::default(),
         }
     }
 

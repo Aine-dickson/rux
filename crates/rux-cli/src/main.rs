@@ -378,7 +378,18 @@ fn run(path: PathBuf, args: &[String]) -> ExitCode {
         }
         return native::run(&path, &native);
     }
-    rux_shell::run_previewing(path, route, preview);
+    // The window a build of this project opens, so `rux run` and `rux build`
+    // agree on it. A bare file with no rux.toml above it keeps today's window.
+    let dir = path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
+    let window = match manifest::Manifest::find(dir) {
+        Ok(m) => m.window_settings(),
+        Err(e) if dir.ancestors().any(|d| d.join(manifest::MANIFEST).is_file()) => {
+            eprintln!("rux: {e}");
+            return ExitCode::from(2);
+        }
+        Err(_) => rux_shell::WindowSettings::default(),
+    };
+    rux_shell::run_windowed(path, route, preview, window);
     ExitCode::SUCCESS
 }
 

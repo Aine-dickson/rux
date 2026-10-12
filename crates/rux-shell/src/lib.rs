@@ -1495,6 +1495,9 @@ struct App {
     /// that stays the window's own logical size, so `@media (max-width: …)`
     /// keeps telling the truth and dragging the window edge still works.
     preview: Option<DeviceProfile>,
+    /// What the app asked of its window in `rux.toml`. Desktop only.
+    #[cfg(not(target_arch = "wasm32"))]
+    window_settings: WindowSettings,
     document: Document,
     text: rux_text::TextEngine,
     images: rux_paint::ImageCache,
@@ -1780,6 +1783,8 @@ impl App {
             #[cfg(not(target_arch = "wasm32"))]
             path,
             preview: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            window_settings: WindowSettings::default(),
             document,
             text: rux_text::TextEngine::new(),
             images: rux_paint::ImageCache::new(),
@@ -6196,25 +6201,40 @@ impl ApplicationHandler<RuxEvent> for App {
             return;
         }
 
-        let title = format!(
-            "Rux · {}",
-            self.path
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_else(|| "M2".into())
-        );
+        // The app's own name when its `rux.toml` gives one; a bare file run
+        // with no manifest is still named after the file.
+        let title = self.window_settings.title.clone().unwrap_or_else(|| {
+            format!(
+                "Rux · {}",
+                self.path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| "M2".into())
+            )
+        });
         // Created hidden: the accessibility adapter must exist before the window
         // is first shown, or it panics. Revealed again once the adapter is up.
-        // A preview opens at the device's own logical size; everything else at
-        // the size this shell has always used.
+        // A preview opens at the device's own logical size, and outranks the
+        // manifest, since it was asked for on this run; everything else at the
+        // manifest's size, or the size this shell has always used.
+        let settings = &self.window_settings;
         let (open_w, open_h) = match self.preview {
             Some(profile) => Self::preview_size(event_loop, profile),
-            None => (420.0, 640.0),
+            None => (settings.width.unwrap_or(420.0), settings.height.unwrap_or(640.0)),
         };
-        let attributes = Window::default_attributes()
+        let mut attributes = Window::default_attributes()
             .with_title(title)
             .with_visible(false)
             .with_inner_size(winit::dpi::LogicalSize::new(open_w, open_h));
+        if self.preview.is_none() {
+            if settings.min_width.is_some() || settings.min_height.is_some() {
+                attributes = attributes.with_min_inner_size(winit::dpi::LogicalSize::new(
+                    settings.min_width.unwrap_or(0.0),
+                    settings.min_height.unwrap_or(0.0),
+                ));
+            }
+            attributes = attributes.with_maximized(settings.maximized);
+        }
         // Android ignores the title, the size and the visibility above: an
         // activity gets the display it is given. They are set anyway rather than
         // branched around, because winit accepts them everywhere and a second
@@ -8917,6 +8937,23 @@ pub fn diagnose_web_source(source: String) -> String {
 /// home indicator that takes one off the bottom, a display narrower than any
 /// desktop window anyone would drag. A real device reports its own values and
 /// they arrive by the same road, through [`Environment`].
+/// What an app asks of its desktop window, from the `[app] name` and the
+/// `[window]` table of its `rux.toml`.
+///
+/// Every field is optional and `Default` is the window a bare `rux run` has
+/// always opened: titled after the file, 420 by 640, no minimum, not
+/// maximized. Sizes are logical pixels. Android and the web ignore all of it:
+/// an activity gets the display it is given and a page gets its element.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct WindowSettings {
+    pub title: Option<String>,
+    pub width: Option<f64>,
+    pub height: Option<f64>,
+    pub min_width: Option<f64>,
+    pub min_height: Option<f64>,
+    pub maximized: bool,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct DeviceProfile {
     /// What `--preview` is given.
@@ -9044,6 +9081,20 @@ pub fn run_at(path: PathBuf, route: Option<String>) {
 /// the mistakes it catches, which is most of them.
 #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
 pub fn run_previewing(path: PathBuf, route: Option<String>, preview: Option<DeviceProfile>) {
+    run_windowed(path, route, preview, WindowSettings::default())
+}
+
+/// The same, with the window the app asked for in its `rux.toml`.
+///
+/// `--preview` outranks the size in `window`, since it was asked for on this
+/// run; the title holds either way.
+#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+pub fn run_windowed(
+    path: PathBuf,
+    route: Option<String>,
+    preview: Option<DeviceProfile>,
+    window: WindowSettings,
+) {
     let event_loop = EventLoop::<RuxEvent>::with_user_event()
         .build()
         .expect("create event loop");
@@ -9084,8 +9135,9 @@ pub fn run_previewing(path: PathBuf, route: Option<String>, preview: Option<Devi
         .expect("watch directory");
 
     let mut app = App::new(path, event_loop.create_proxy());
-    // Before `resumed`, which is where the window is sized from it.
+    // Before `resumed`, which is where the window is sized from them.
     app.preview = preview;
+    app.window_settings = window;
     // Before the first frame, and before the watcher can reload: `start_at`
     // replaces the history, so it has to be the first thing that touches it.
     // `--route` stands in for a link, so the guards are told it is one: it is

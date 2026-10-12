@@ -2228,6 +2228,25 @@ both engines in `rux-aot-tests` (corpus script 13).
 | A row handed to a tap handler | a `@tap="pick(p)"` that stores `p` and shows it | the stored record in its type's order | not driven: injected clicks never reach the window here |
 | Compiled | the same app, `rux build --release` | the same | not driven in the window; both engines agree in `rux-aot-tests` |
 
+## The app's window, 2026-10-12
+
+MS-002 in `docs/field-reports/mava-studio-2.md`: the title from `[app] name`,
+the size from `[window]` in `rux.toml`. Driven on a scratch project outside the
+repository (`name = "Window Check"`, `width = 1100`, `height = 700`, `min-width
+= 900`, `min-height = 600`), reading the window's title, client size and
+maximized state through user32 at 1.5x scale. The `rux build` row is also
+MS-001: no `--rux-source`, from outside the checkout. Under test in
+`manifest.rs` and `build.rs` of `rux-cli`.
+
+| Case | Where | Expect | Result |
+|---|---|---|---|
+| `rux run` takes the manifest's title and size | `rux run app.rux` | `Window Check`, 1100 by 700 | desktop: pass |
+| A file with no manifest keeps the old window | the same file in a bare directory | `Rux · app.rux`, 420 by 640 | desktop: pass |
+| `maximized = true` | added to `[window]` | opens maximized | desktop: pass |
+| A misspelled key is refused | `min_width = 3` | `rux run` stops, naming `min-width` | desktop: pass |
+| A dev-version `rux build` outside the checkout | `rux build` with no `--rux-source` | builds against the checkout, and the exe opens `Window Check` at 1100 by 700 | desktop: pass |
+| The minimum holds | drag the window edge inward | stops at 900 by 600 | not driven: injected drags never reach the window here |
+
 ## Standing gaps
 
 Cases nothing here can currently exercise. They are the shape of what v0.8 has

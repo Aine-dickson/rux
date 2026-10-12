@@ -42,6 +42,11 @@
 //! because a scheme invented from the id is one nobody would think to type and
 //! a claim on a domain nobody named is not a claim.
 //!
+//! A `[window]` table does as of the first desktop app built on Rux (Mava
+//! Studio 2, MS-002 in `docs/field-reports/`): `width`, `height`,
+//! `min-width`, `min-height` and `maximized`, every one optional. The title
+//! needs no key, it is `name`. Android and the web ignore the table.
+//!
 //! **Deliberately absent, and each for the same reason.** `splash` names an
 //! asset nothing yet draws. `permissions` would be a list the runtime cannot
 //! request, since no Rux API needs one. Both are scheduled, and each lands in
@@ -86,6 +91,19 @@ pub struct Manifest {
     pub scheme: Option<String>,
     /// The https domains whose links open the app, lowercase. Empty means none.
     pub link_hosts: Vec<String>,
+    /// The desktop window, from `[window]`. Default when there is none.
+    pub window: Window,
+}
+
+/// `[window]`: the desktop window's opening size, its smallest, and whether
+/// it opens maximized. Logical pixels. `None` is the shell's own default.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Window {
+    pub width: Option<f64>,
+    pub height: Option<f64>,
+    pub min_width: Option<f64>,
+    pub min_height: Option<f64>,
+    pub maximized: bool,
 }
 
 /// The launcher icon, as two layers.
@@ -351,7 +369,26 @@ impl Manifest {
             Some(_) => return Err("[app] `link-hosts` must be a list of strings".into()),
         };
 
-        Ok(Manifest { root, name, id, version, entry, signing, icon, scheme, link_hosts })
+        let window = match value.get("window") {
+            None => Window::default(),
+            Some(toml::Value::Table(table)) => read_window(table)?,
+            Some(_) => return Err("[window] must be a table".into()),
+        };
+
+        Ok(Manifest { root, name, id, version, entry, signing, icon, scheme, link_hosts, window })
+    }
+
+    /// What the shell is handed to open the window: the app's name as its
+    /// title, and `[window]`.
+    pub fn window_settings(&self) -> rux_shell::WindowSettings {
+        rux_shell::WindowSettings {
+            title: Some(self.name.clone()),
+            width: self.window.width,
+            height: self.window.height,
+            min_width: self.window.min_width,
+            min_height: self.window.min_height,
+            maximized: self.window.maximized,
+        }
     }
 
     /// The icon's foreground file, checked to be there.
@@ -450,6 +487,67 @@ const TAKEN_SCHEMES: [&str; 10] =
 /// intent-filter's scheme case-sensitively. An app declaring `MyApp` would
 /// match nothing a browser sent it, so the one spelling that works is the only
 /// one written into the filter.
+fn read_window(table: &toml::Table) -> Result<Window, String> {
+    const KEYS: [&str; 5] = ["width", "height", "min-width", "min-height", "maximized"];
+    for key in table.keys() {
+        if KEYS.contains(&key.as_str()) {
+            continue;
+        }
+        // Refused by name, like `icon_background`: a key silently ignored is
+        // a window that opens wrong with nothing to read about why.
+        let dashed = key.replace('_', "-");
+        if KEYS.contains(&dashed.as_str()) {
+            return Err(format!("[window] `{key}` is spelled `{dashed}`, with a dash"));
+        }
+        if key == "title" {
+            return Err("[window] has no `title`: the window is titled with [app] `name`".into());
+        }
+        return Err(format!(
+            "[window] has no `{key}`. It takes {}",
+            KEYS.iter().map(|k| format!("`{k}`")).collect::<Vec<_>>().join(", ")
+        ));
+    }
+    let size = |key: &str| -> Result<Option<f64>, String> {
+        let n = match table.get(key) {
+            None => return Ok(None),
+            Some(toml::Value::Integer(n)) => *n as f64,
+            Some(toml::Value::Float(n)) => *n,
+            Some(_) => return Err(format!("[window] `{key}` must be a number of logical pixels")),
+        };
+        if !(n.is_finite() && n > 0.0) {
+            return Err(format!("[window] `{key}` must be more than 0"));
+        }
+        Ok(Some(n))
+    };
+    let window = Window {
+        width: size("width")?,
+        height: size("height")?,
+        min_width: size("min-width")?,
+        min_height: size("min-height")?,
+        maximized: match table.get("maximized") {
+            None => false,
+            Some(toml::Value::Boolean(b)) => *b,
+            Some(_) => return Err("[window] `maximized` must be true or false".into()),
+        },
+    };
+    // A window asked to open smaller than it may ever be is two numbers that
+    // disagree, and the platform would quietly pick one.
+    for (open, min, axis) in [
+        (window.width, window.min_width, "width"),
+        (window.height, window.min_height, "height"),
+    ] {
+        if let (Some(open), Some(min)) = (open, min) {
+            if open < min {
+                return Err(format!(
+                    "[window] `{axis}` is {open} and `min-{axis}` is {min}: it would open \
+                     smaller than it is allowed to be"
+                ));
+            }
+        }
+    }
+    Ok(window)
+}
+
 fn check_scheme(text: &str) -> Result<String, String> {
     let bare = text.trim_end_matches("://").trim_end_matches(':');
     if bare != text {
@@ -580,6 +678,39 @@ id = "dev.example.tasks"
 version = "0.1.0"
 entry = "Cargo.toml"
 "#;
+
+    #[test]
+    fn a_window_table_reads_and_is_optional() {
+        assert_eq!(parse(MINIMAL).unwrap().window, Window::default());
+        let text = format!(
+            "{MINIMAL}\n[window]\nwidth = 1280\nheight = 800.5\nmin-width = 960\nmaximized = true\n"
+        );
+        let window = parse(&text).unwrap().window;
+        assert_eq!(window.width, Some(1280.0));
+        assert_eq!(window.height, Some(800.5));
+        assert_eq!(window.min_width, Some(960.0));
+        assert_eq!(window.min_height, None);
+        assert!(window.maximized);
+        let settings = parse(&text).unwrap().window_settings();
+        assert_eq!(settings.title.as_deref(), Some("Task List"));
+    }
+
+    #[test]
+    fn a_window_key_that_is_not_one_is_refused_by_name() {
+        for (key, says) in [
+            ("min_width = 10", "min-width"),
+            ("title = \"x\"", "[app] `name`"),
+            ("resizable = true", "`resizable`"),
+            ("width = 0", "more than 0"),
+            ("width = \"wide\"", "number"),
+            ("maximized = 1", "true or false"),
+            ("width = 800\nmin-width = 900", "smaller than"),
+        ] {
+            let text = format!("{MINIMAL}\n[window]\n{key}\n");
+            let error = parse(&text).expect_err(key);
+            assert!(error.contains(says), "{key}: {error}");
+        }
+    }
 
     #[test]
     fn a_signing_block_reads_and_is_optional() {
