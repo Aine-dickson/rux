@@ -4694,6 +4694,11 @@ fn build_node_inner(
             },
         );
         node.on_tap = on_tap;
+        // Inside a component a tap here runs against that instance's state,
+        // as the general element branch below has always said; this branch
+        // never did, so `<text @tap="n++">` in a component ran in the
+        // document's scope, where `n` is not.
+        node.instance = instance.map(str::to_string);
         node.hidden = hidden;
         node.id = el.attr("id").map(str::to_string);
         node.label_for = el.attr("for").map(str::to_string);
@@ -4746,6 +4751,8 @@ fn build_node_inner(
         );
         node.on_tap = on_tap;
         node.gestures = gestures;
+        // As for text above: a tap or gesture here belongs to the instance.
+        node.instance = instance.map(str::to_string);
         node.hidden = hidden;
         node.id = el.attr("id").map(str::to_string);
         node.label_for = el.attr("for").map(str::to_string);

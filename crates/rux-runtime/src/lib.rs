@@ -59,6 +59,17 @@ pub use rux_script::aot;
 /// Where a frame's time goes, when `RUX_PROFILE` is set.
 pub use rux_script::profile;
 
+/// Which component effects a change wakes. See `Document::run_instance_effects`.
+#[derive(Clone, Copy)]
+enum Wake<'a> {
+    /// Those that read one of these document signals.
+    Signals(&'a HashSet<String>),
+    /// Every effect of one instance, just mounted.
+    Mounted(&'a str),
+    /// Those of one instance that read one of these names of its own state.
+    Own(&'a str, &'a HashSet<String>),
+}
+
 /// A loaded `.rux` document: parsed source, imported components (by tag), the
 /// script engine, and the current tree.
 pub struct Document {
@@ -3590,17 +3601,20 @@ impl Document {
         let target = rux_style::model_target(model, &locals);
         locals.push((rux_script::ASSIGNED.to_string(), value.clone()));
         let src = format!("{target} = {}", rux_script::ASSIGNED);
-        let (after, changed) = self.engine.run_scoped_handler(&src, &locals);
+        let (after, mut changed) = self.engine.run_scoped_handler(&src, &locals);
         let moved = self.write_back_instance(&key, after);
+        if !moved.is_empty() {
+            self.refresh_instance_computeds(None);
+            changed.extend(self.run_own_effects(&key, moved.clone()));
+        }
 
         if !changed.is_empty() {
             self.apply_change(&changed);
         }
-        if moved {
+        if !moved.is_empty() {
             // Instance state is not a signal, so no patch can find it: the
             // rebuild is the only thing that reads it again. A component is a
             // subtree, so this is bounded.
-            self.refresh_instance_computeds(None);
             self.rebuild();
         }
     }
@@ -3653,10 +3667,12 @@ impl Document {
     /// would look like it worked and be forgotten on the next build. That is the
     /// same rule handlers follow, and an `r-model` bound to a prop is the case
     /// it catches.
-    fn write_back_instance(&mut self, key: &str, after: Vec<(String, rux_reactive::Value)>) -> bool {
-        let Some(entry) = self.instances.get(key) else { return false };
+    /// The names of its state that moved come back, for the effects that read
+    /// them ([`run_own_effects`](Self::run_own_effects)).
+    fn write_back_instance(&mut self, key: &str, after: Vec<(String, rux_reactive::Value)>) -> HashSet<String> {
+        let mut moved = HashSet::new();
+        let Some(entry) = self.instances.get(key) else { return moved };
         let state_names: Vec<String> = entry.state.iter().map(|(n, _)| n.clone()).collect();
-        let mut moved = false;
         for (name, value) in after {
             if !state_names.contains(&name) {
                 continue;
@@ -3668,7 +3684,7 @@ impl Document {
             if let Some(slot) = slot {
                 if slot.1 != value {
                     slot.1 = value;
-                    moved = true;
+                    moved.insert(name);
                 }
             }
         }
@@ -4601,7 +4617,7 @@ impl Document {
         let mut locals = entry.state.clone();
         locals.extend(entry.props.iter().cloned());
         locals.extend(event);
-        let (after, changed) = match run {
+        let (after, mut changed) = match run {
             Run::Handler(src) => self.engine.run_scoped_handler(src, &locals),
             Run::Task(id) => self.engine.resume_scoped_task(id, &locals),
         };
@@ -4609,13 +4625,17 @@ impl Document {
         // Only the component's own names are written back. A prop belongs to the
         // caller: assigning to one inside a component would look like it worked
         // and be forgotten on the next build, which is worse than not allowing it.
-        let mut moved = self.write_back_instance(key, after);
+        let own = self.write_back_instance(key, after);
+        let mut moved = !own.is_empty();
 
         // A handler that moved this instance's state has moved whatever its
         // computeds derive from, and those are read by the build that is about
-        // to happen.
+        // to happen. Its effects that read that state run again too, and what
+        // they write of the document's goes out with the handler's own.
         if moved {
             moved |= self.refresh_instance_computeds(None);
+            let key = key.to_string();
+            changed.extend(self.run_own_effects(&key, own));
         }
 
         // Deliver whatever the handler emitted. After the state write-back
@@ -4804,41 +4824,47 @@ impl Document {
     ///
     /// Instance state the effect wrote is written straight back, the same way a
     /// handler's is; only the document's signals have to travel back out, since
-    /// those are what the change pipeline reasons about.
-    fn run_instance_effects(
-        &mut self,
-        changed: Option<&HashSet<String>>,
-    ) -> (HashSet<String>, bool) {
-        let keys: Vec<String> = self.instance_effects.keys().cloned().collect();
+    /// those are what the change pipeline reasons about. The instance state that
+    /// moved comes back too, as `(instance, name)`, for [`Wake::Own`].
+    ///
+    /// An effect's dependencies are the document signals it read and its own
+    /// instance's state it read (watchlist #34: they were the signals alone, so
+    /// a handler moving a row's own `qty` never re-ran the row's effect).
+    fn run_instance_effects(&mut self, wake: Wake<'_>) -> (HashSet<String>, Vec<(String, String)>) {
+        let keys: Vec<String> = match wake {
+            Wake::Own(key, _) | Wake::Mounted(key) => vec![key.to_string()],
+            Wake::Signals(_) => self.instance_effects.keys().cloned().collect(),
+        };
         let mut writes = HashSet::new();
-        let mut moved = false;
+        let mut moved = Vec::new();
         for key in keys {
             let Some(list) = self.instance_effects.get(&key).cloned() else { continue };
             for (i, effect) in list.iter().enumerate() {
-                let stale = match changed {
-                    Some(changed) => !effect.deps.is_disjoint(changed),
-                    None => true,
+                let Some(instance) = self.instances.get(&key) else { continue };
+                let state_names: Vec<String> =
+                    instance.state.iter().map(|(n, _)| n.clone()).collect();
+                let stale = match wake {
+                    Wake::Mounted(_) => true,
+                    // A document signal, not a state name that happens to be
+                    // spelled the same: the effect read its own, not the
+                    // document's.
+                    Wake::Signals(changed) => {
+                        effect.deps.iter().any(|d| changed.contains(d) && !state_names.contains(d))
+                    }
+                    Wake::Own(_, names) => effect.deps.iter().any(|d| names.contains(d)),
                 };
                 if !stale {
                     continue;
                 }
-                let Some(instance) = self.instances.get(&key) else { continue };
                 let mut locals = instance.state.clone();
                 locals.extend(instance.props.iter().cloned());
-                let state_names: Vec<String> =
-                    instance.state.iter().map(|(n, _)| n.clone()).collect();
                 let (after, wrote, mut reads) =
                     self.engine.run_scoped_effect(&effect.body, &locals);
-                // An effect is never woken by its own writes, exactly as at
-                // document level: assigning resolves the name, so the tracker
-                // sees a write as a read too and the effect would re-trigger
-                // itself every time.
-                reads.retain(|n| !wrote.contains(n));
-                if let Some(list) = self.instance_effects.get_mut(&key) {
-                    if let Some(slot) = list.get_mut(i) {
-                        slot.deps = reads;
-                    }
-                }
+                // Of the names in scope, only the instance's own state is
+                // something that can move under it; a prop moves with the
+                // caller's signals, which the effect read as well.
+                reads.retain(|n| self.engine.declares(n) || state_names.contains(n));
+                let mut own_writes = HashSet::new();
                 if let Some(instance) = self.instances.get_mut(&key) {
                     for (name, value) in after {
                         if !state_names.contains(&name) {
@@ -4847,15 +4873,58 @@ impl Document {
                         if let Some(slot) = instance.state.iter_mut().find(|(n, _)| *n == name) {
                             if slot.1 != value {
                                 slot.1 = value;
-                                moved = true;
+                                moved.push((key.clone(), name.clone()));
+                                own_writes.insert(name);
                             }
                         }
+                    }
+                }
+                // An effect is never woken by its own writes, exactly as at
+                // document level: assigning resolves the name, so the tracker
+                // sees a write as a read too and the effect would re-trigger
+                // itself every time. Its own state's writes count as well.
+                reads.retain(|n| !wrote.contains(n) && !own_writes.contains(n));
+                if let Some(list) = self.instance_effects.get_mut(&key) {
+                    if let Some(slot) = list.get_mut(i) {
+                        slot.deps = reads;
                     }
                 }
                 writes.extend(wrote);
             }
         }
         (writes, moved)
+    }
+
+    /// Re-run the effects of one instance that read state of its own which
+    /// just moved, and any of its effects that read what those then wrote,
+    /// as far as the same eight rounds a document effect gets. Returns the
+    /// document signals they wrote.
+    fn run_own_effects(&mut self, key: &str, moved: HashSet<String>) -> HashSet<String> {
+        const MAX_EFFECT_ROUNDS: u32 = 8;
+        let mut writes = HashSet::new();
+        let mut moved = moved;
+        for _ in 0..MAX_EFFECT_ROUNDS {
+            if moved.is_empty() {
+                return writes;
+            }
+            let (wrote, again) = self.run_instance_effects(Wake::Own(key, &moved));
+            writes.extend(wrote);
+            moved = again.into_iter().map(|(_, n)| n).collect();
+            if !moved.is_empty() {
+                self.refresh_instance_computeds(None);
+            }
+        }
+        if !moved.is_empty() {
+            let mut names: Vec<&str> = moved.iter().map(String::as_str).collect();
+            names.sort_unstable();
+            rux_style::warn_stylesheet(format!(
+                "a component's `effect` keeps re-triggering itself (still writing {names:?} after \
+                 {MAX_EFFECT_ROUNDS} rounds); it was stopped. An effect must not write state it \
+                 also reads."
+            ));
+            self.diagnostics.warnings.extend(collect_warnings());
+        }
+        writes
     }
 
     /// Take the timer starts and cancels a script just asked for, attributing
@@ -5145,7 +5214,15 @@ impl Document {
                 // Establish both, which is also how each finds out what it
                 // reads: a subscription comes from having read something.
                 self.refresh_instance_computeds(None);
-                let (effect_writes, _) = self.run_instance_effects(None);
+                // This instance's alone: the others established theirs when
+                // they mounted, and running them again for every later mount
+                // ran a side effect once per sibling.
+                let (mut effect_writes, own) = self.run_instance_effects(Wake::Mounted(&fresh.key));
+                let own: HashSet<String> = own.into_iter().map(|(_, n)| n).collect();
+                if !own.is_empty() {
+                    self.refresh_instance_computeds(None);
+                    effect_writes.extend(self.run_own_effects(&fresh.key, own));
+                }
                 if !effect_writes.is_empty() {
                     self.apply_change_depth(&effect_writes, depth as u32 + 1);
                 }
@@ -5284,8 +5361,19 @@ impl Document {
             self.rebuild();
         }
         let mut writes = self.run_effects(&changed);
-        let (instance_writes, instance_state_moved) = self.run_instance_effects(Some(&changed));
+        let (instance_writes, own) = self.run_instance_effects(Wake::Signals(&changed));
         writes.extend(instance_writes);
+        let instance_state_moved = !own.is_empty();
+        // What those effects wrote of their own instance's state wakes that
+        // instance's effects that read it.
+        let mut by_instance: HashMap<String, HashSet<String>> = HashMap::new();
+        for (key, name) in own {
+            by_instance.entry(key).or_default().insert(name);
+        }
+        for (key, names) in by_instance {
+            self.refresh_instance_computeds(None);
+            writes.extend(self.run_own_effects(&key, names));
+        }
         // An instance effect that wrote only its own state moved nothing the
         // change pipeline reasons about, so nothing below would put it on the
         // screen. Its computeds may derive from what it just wrote, too.
@@ -9585,6 +9673,38 @@ async fn go() {
         assert_eq!(text_of(&doc.root).join(""), "saw dark", "established on mount");
         assert!(doc.apply_handler("probe.set(\"light\")"));
         assert_eq!(text_of(&doc.root).join(""), "saw light", "and re-ran on the change");
+    }
+
+    /// A component's `effect` re-runs when its own state moves, not only a
+    /// document signal: what it read of its instance is a dependency too.
+    /// Only that instance's effects wake, and an effect that reads nothing
+    /// that moved stays put. Watchlist #34: the `+` on one row of
+    /// examples/component-reactives.rux moved its line total and left its
+    /// note saying the old quantity.
+    #[test]
+    fn a_component_effect_follows_its_own_state() {
+        let mut doc = with_store(
+            "<template><view><text>{{ note }}|{{ runs }}|</text><text @tap=\"qty++\">+</text></view></template>\n\
+             <script>\nuse stores::probe;\nlet qty = signal(1);\nlet note = signal(\"\");\nlet runs = signal(0);\n\
+             effect { note = qty + \" in\"; }\n\
+             effect { let t = probe.theme; runs++; }\n</script>",
+            "<template><screen><card /><card /></screen></template>\n\
+             <script>\nuse components::card;\nuse stores::probe;\n</script>",
+            "export let theme = signal(\"dark\");",
+        );
+        assert_eq!(text_of(&doc.root).join(""), "1 in|1|+1 in|1|+");
+
+        // The first card's `+`, found the way the shell finds it: by the
+        // instance recorded on the node it was tapped on.
+        let first = doc.root.children[0].clone();
+        let button = first.children.iter().find(|c| c.on_tap.is_some()).expect("a tappable box");
+        let (src, instance) = (button.on_tap.clone().unwrap(), button.instance.clone());
+        assert!(doc.apply_handler_in(&src, instance.as_deref()));
+        assert_eq!(
+            text_of(&doc.root).join(""),
+            "2 in|1|+1 in|1|+",
+            "the first row's note followed, the second row stayed, and the effect that read no `qty` did not run"
+        );
     }
 
     /// Both go with the instance. An effect left behind would still be woken by

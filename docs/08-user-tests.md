@@ -2169,7 +2169,7 @@ and the `with_store` tests).
 | The document writes it too | "empty the basket" | both badges back to `0 items $0.00`, every card at 0 | desktop: pass |
 | A component's own function beside another's of the same kind | "add" on olive oil | `1 item $11.00`: the basket's own `word()` says "item" | desktop: pass |
 | Every row follows a store's signal | `examples/component-reactives.rux`, "toggle the sale" | every row's note says "on sale" | desktop: pass |
-| A row's effect after its own quantity moves | then `+` on the first row | its note says `2 in the basket` | **Found a bug older than step 7**: the note stays at `1`, the same with the 7.3 binary on the old example. On the watchlist |
+| A row's effect after its own quantity moves | then `+` on the first row | its note says `2 in the basket` | **Found a bug older than step 7**: the note stays at `1`, the same with the 7.3 binary on the old example. On the watchlist (#34). **Fixed 2026-10-13**: desktop, `+` on the first row, note `2 in the basket`, the other rows unchanged; the build before still says `1` |
 | A leaving instance hands its state to a store | `examples/lifecycle.rux`, two marks on the left card, "close the cards" | `last card to leave: left card, holding 2 marks` | desktop: pass |
 | Coming back is new instances | "open the cards" | instance numbers 3 and 4, `opened so far: 4`, marks empty | desktop: pass |
 | A component does not see the document's signals | a card reading a document signal by name | not shown, and reported as not defined | under test only |

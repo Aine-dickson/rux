@@ -180,6 +180,11 @@ pub struct Interp {
     /// What text handed in is linked against before it is lowered: the
     /// document's imports. See [`crate::link`].
     linking: Rc<crate::link::Linking>,
+    /// Whether reads of the names a piece was handed are noted as reads, as
+    /// a global's are. Only a component's effect asks: the names it is handed
+    /// are its instance's state, which it re-runs on (watchlist #34). Off,
+    /// a local read costs this one test.
+    pub(crate) noting_given: bool,
 }
 
 impl Drop for Interp {
@@ -222,6 +227,7 @@ impl Interp {
             failed: Vec::new(),
             waiting: HashMap::new(),
             linking: Rc::default(),
+            noting_given: false,
         }
     }
 
@@ -528,6 +534,17 @@ impl Interp {
 
     fn frame(&mut self) -> &mut Frame {
         self.stack.last_mut().expect("a frame")
+    }
+
+    /// A read of local `id`, noted by name when it is one the running piece
+    /// was handed, read in the piece's own frame. See `noting_given`.
+    fn note_given(&self, id: ir::LocalId) {
+        let Some(root) = self.roots.last() else { return };
+        if self.stack.len() == root.frame + 1 {
+            if let Some(name) = root.piece.given.get(id.0 as usize) {
+                crate::note_read(name);
+            }
+        }
     }
 
     fn run_body(&mut self, body: &Body, args: Vec<V>, captures: Vec<V>) -> R<V> {
@@ -1226,7 +1243,12 @@ impl Interp {
             ExprKind::Bool(b) => Ok(V::Bool(*b)),
             ExprKind::Int(i) => Ok(V::Int(*i)),
             ExprKind::Float(f) => Ok(V::Float(*f)),
-            ExprKind::Local(id) => Ok(self.frame().slots[id.0 as usize].clone()),
+            ExprKind::Local(id) => {
+                if self.noting_given {
+                    self.note_given(*id);
+                }
+                Ok(self.frame().slots[id.0 as usize].clone())
+            }
             ExprKind::Capture(i) => Ok(self.frame().captures[*i as usize].clone()),
             ExprKind::Global(g) => self.read_global(*g),
             ExprKind::Call { callee, args } => self.call(callee, args),
@@ -1471,7 +1493,12 @@ impl Interp {
         let mut at = e;
         let root = loop {
             match &at.kind {
-                ExprKind::Local(id) => break ir::Root::Local(*id),
+                ExprKind::Local(id) => {
+                    if self.noting_given {
+                        self.note_given(*id);
+                    }
+                    break ir::Root::Local(*id);
+                }
                 ExprKind::Capture(i) => break ir::Root::Capture(*i),
                 ExprKind::Global(g) => break ir::Root::Global(*g),
                 ExprKind::Outer(n) => break ir::Root::Outer(*n),

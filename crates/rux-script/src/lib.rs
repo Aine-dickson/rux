@@ -2190,7 +2190,16 @@ impl Engine {
         src: &str,
         locals: &[(String, Value)],
     ) -> (Vec<(String, Value)>, HashSet<String>, HashSet<String>) {
-        let ((after, changed), reads) = self.reading(|e| e.run_scoped_handler(src, locals));
+        // What it read of the names it was handed counts too: an instance's
+        // own state is handed in this way, and an effect that reads it has to
+        // re-run when it moves (watchlist #34). The caller knows which of them
+        // can move.
+        READS.with(|r| *r.borrow_mut() = Some(HashSet::new()));
+        self.ir.noting_given = true;
+        let (after, changed) = self.run_scoped_handler(src, locals);
+        self.ir.noting_given = false;
+        let mut reads = READS.with(|r| r.borrow_mut().take()).unwrap_or_default();
+        reads.retain(|n| self.ir.has_global(n) || locals.iter().any(|(l, _)| l == n));
         (after, changed, reads)
     }
 
