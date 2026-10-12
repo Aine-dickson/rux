@@ -617,6 +617,12 @@ pub struct Style {
     pub text_wrap: TextWrap,
     pub padding: Sides,
     pub margin: Sides,
+    /// `padding` and `margin` sides written as a **percentage**, in `Sides`
+    /// order (top, right, bottom, left). `Some(10.0)` is `10%` of the
+    /// containing block's width, as CSS has it for all four sides, resolved
+    /// by the layout; it overrides that side's px. Watchlist #6.
+    pub padding_pct: [Option<f32>; 4],
+    pub margin_pct: [Option<f32>; 4],
     pub border: Sides,
     pub border_color: Option<Rgba>,
     pub gap: f32,
@@ -624,6 +630,9 @@ pub struct Style {
     /// the shorthand (`gap`) value on that axis.
     pub row_gap: Option<f32>,
     pub column_gap: Option<f32>,
+    /// The gap per axis, `(column, row)`, when written as a percentage of the
+    /// box's own content size on that axis; overrides the px gap there.
+    pub gap_pct: [Option<f32>; 2],
     pub axis: Axis,
     pub justify: Option<Justify>,
     pub align: Option<Align>,
@@ -752,11 +761,14 @@ impl Default for Style {
             text_wrap: TextWrap::Normal,
             padding: Sides::default(),
             margin: Sides::default(),
+            padding_pct: [None; 4],
+            margin_pct: [None; 4],
             border: Sides::default(),
             border_color: None,
             gap: 0.0,
             row_gap: None,
             column_gap: None,
+            gap_pct: [None; 2],
             axis: Axis::Row,
             justify: None,
             align: None,
@@ -2363,16 +2375,16 @@ fn to_taffy(style: &Style, vp: (f32, f32)) -> taffy::Style {
             height: style.max_height.map(|l| to_dim(l, vp)).unwrap_or(auto()),
         },
         padding: Rect {
-            left: length(style.padding.left),
-            right: length(style.padding.right),
-            top: length(style.padding.top),
-            bottom: length(style.padding.bottom),
+            left: or_pct(style.padding.left, style.padding_pct[3]),
+            right: or_pct(style.padding.right, style.padding_pct[1]),
+            top: or_pct(style.padding.top, style.padding_pct[0]),
+            bottom: or_pct(style.padding.bottom, style.padding_pct[2]),
         },
         margin: Rect {
-            left: length(style.margin.left),
-            right: length(style.margin.right),
-            top: length(style.margin.top),
-            bottom: length(style.margin.bottom),
+            left: or_pct(style.margin.left, style.margin_pct[3]),
+            right: or_pct(style.margin.right, style.margin_pct[1]),
+            top: or_pct(style.margin.top, style.margin_pct[0]),
+            bottom: or_pct(style.margin.bottom, style.margin_pct[2]),
         },
         border: Rect {
             left: length(style.border.left),
@@ -2383,10 +2395,20 @@ fn to_taffy(style: &Style, vp: (f32, f32)) -> taffy::Style {
         // taffy's gap is (column, row): width is the inline gap, height the block
         // gap. `column-gap`/`row-gap` override the `gap` shorthand per axis.
         gap: Size {
-            width: length(style.column_gap.unwrap_or(style.gap)),
-            height: length(style.row_gap.unwrap_or(style.gap)),
+            width: or_pct(style.column_gap.unwrap_or(style.gap), style.gap_pct[0]),
+            height: or_pct(style.row_gap.unwrap_or(style.gap), style.gap_pct[1]),
         },
         ..Default::default()
+    }
+}
+
+/// A length, or a percentage for Taffy to resolve when one was written: what
+/// CSS resolves `padding`, `margin` and `gap` percentages against is a box
+/// that exists only once Taffy is laying it out.
+fn or_pct<T: taffy::style_helpers::FromLength + taffy::style_helpers::FromPercent>(px: f32, pct: Option<f32>) -> T {
+    match pct {
+        Some(p) => percent(p / 100.0),
+        None => length(px),
     }
 }
 
@@ -2725,10 +2747,18 @@ fn width_cap(style: &Style, parent: Option<f32>, vp: (f32, f32)) -> Option<f32> 
 }
 
 /// The cap to hand this box's children: its own, less what its padding and
-/// border take out of it.
-fn inner_cap(style: &Style, own: Option<f32>) -> Option<f32> {
+/// border take out of it. A percentage padding is of the containing block's
+/// width, which `parent` stands for; with none known it takes nothing out.
+fn inner_cap(style: &Style, own: Option<f32>, parent: Option<f32>) -> Option<f32> {
+    let side = |px: f32, pct: Option<f32>| match pct {
+        Some(p) => parent.map_or(0.0, |b| b * p / 100.0),
+        None => px,
+    };
     own.map(|w| {
-        let horizontal = style.padding.left + style.padding.right + style.border.left + style.border.right;
+        let horizontal = side(style.padding.left, style.padding_pct[3])
+            + side(style.padding.right, style.padding_pct[1])
+            + style.border.left
+            + style.border.right;
         (w - horizontal).max(0.0)
     })
 }
@@ -2885,7 +2915,7 @@ fn build(
     garbage: &mut Vec<NodeId>,
 ) -> (NodeId, Kept) {
     let own_cap = width_cap(&node.style, cap, vp);
-    let child_cap = inner_cap(&node.style, own_cap);
+    let child_cap = inner_cap(&node.style, own_cap, cap);
     let row = node.key.as_deref().or(row);
     let (old_id, old_cap, mut old_children) = match old {
         Some(k) => (Some(k.id), k.cap, k.children),

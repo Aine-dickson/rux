@@ -87,19 +87,79 @@ fn a_pixel_radius_is_untouched() {
     assert!(found.contains(&[8.0; 4]), "8px stays 8px: {found:?}");
 }
 
-/// The other three still have nothing to resolve against, and still say so.
+/// Every coloured box a document painted, by its red channel, as
+/// `(x, y, width, height)`.
+fn boxes(src: &str, width: f32, height: f32) -> (Document, Vec<(f32, [f32; 4])>) {
+    let d = Document::from_source(src).expect("loads");
+    let mut measure = |_: &rux_layout::TextContent, _: Option<f32>| (0.0, 0.0);
+    let out = layout(&d.root, width, height, &mut measure);
+    let found = out
+        .paints
+        .iter()
+        .filter_map(|p| match p {
+            Paint::Rect(r) => match &r.background {
+                Some(rux_layout::Background::Color(c)) => Some((c.r, [r.x, r.y, r.width, r.height])),
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect();
+    (d, found)
+}
+
+fn at(found: &[(f32, [f32; 4])], red: f32) -> [f32; 4] {
+    found.iter().find(|(r, _)| (*r - red).abs() < 0.01).map(|(_, b)| *b).expect("painted")
+}
+
+/// `padding`, `margin` and `gap` take a percentage now, resolved by the
+/// layout as CSS resolves it: a side against the containing block's
+/// **width** (the top and bottom too), a gap against the box's own content
+/// size on its axis. Watchlist #6: they were reported and dropped.
 #[test]
-fn padding_margin_and_gap_still_report_a_percentage() {
-    let d = doc("padding: 10%; margin: 5%; gap: 2%;");
-    let said = format!("{:?}", d.diagnostics());
-    for name in ["padding", "margin", "gap"] {
-        assert!(
-            said.contains(&format!("does not honor a percentage on `{name}` yet")),
-            "`{name}` still reported: {said}"
-        );
-    }
-    assert!(
-        !said.contains("border-radius"),
-        "and the radius is not dragged back in: {said}"
+fn padding_margin_and_gap_resolve_a_percentage() {
+    let (d, found) = boxes(
+        "<template><screen class=\"s\"><view class=\"a\"><view class=\"b\"></view><view class=\"c\"></view></view></screen></template>
+         <style>
+           .s { padding: 0; }
+           .a { display: flex; flex-direction: column; width: 200px; height: 200px;
+                margin: 5%; padding: 10% 0 0 10%; gap: 10%; background: rgb(255, 0, 0); }
+           .b { width: 20px; height: 20px; background: rgb(0, 0, 255); }
+           .c { width: 20px; height: 20px; background: rgb(0, 255, 0); }
+         </style>",
+        400.0,
+        400.0,
     );
+    let said = format!("{:?}", d.diagnostics());
+    assert!(!said.contains("percentage"), "nothing is reported: {said}");
+    let a = at(&found, 1.0);
+    let b = at(&found, 0.0);
+    // 5% of the screen's 400 is 20, on the left and on the top alike.
+    assert_eq!((a[0], a[1]), (20.0, 20.0), "the margin is 5% of the width, on every side");
+    // 10% of the containing block's width (the screen's 400) is 40, top and left.
+    assert_eq!((b[0] - a[0], b[1] - a[1]), (40.0, 40.0), "so is the padding");
+    // The gap is 10% of the box's content height: 200 less the 40 padding on
+    // top, 160, so 16 between the two children.
+    // The two children, blue then green, both with no red in them.
+    let kids = found.iter().filter(|(r, _)| *r == 0.0).map(|(_, x)| *x).collect::<Vec<_>>();
+    let (first, second) = (kids[0], kids[1]);
+    assert_eq!(second[1] - (first[1] + first[3]), 16.0, "and the gap is of the content height: {found:?}");
+}
+
+/// A percentage keeps its place in the shorthand. It used to be dropped,
+/// which moved the values after it: `padding: 10px 5%` was 10px all round.
+#[test]
+fn a_percentage_keeps_its_place_in_the_shorthand() {
+    let (_, found) = boxes(
+        "<template><screen class=\"s\"><view class=\"a\"><view class=\"b\"></view></view></screen></template>
+         <style>
+           .s { padding: 0; align-items: flex-start; }
+           .a { padding: 10px 5%; background: rgb(255, 0, 0); }
+           .b { width: 20px; height: 20px; background: rgb(0, 0, 255); }
+         </style>",
+        400.0,
+        400.0,
+    );
+    let a = at(&found, 1.0);
+    let b = at(&found, 0.0);
+    assert_eq!((b[0] - a[0], b[1] - a[1]), (20.0, 10.0), "left 5% of 400, top 10px: {found:?}");
 }

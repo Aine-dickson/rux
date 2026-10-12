@@ -50,14 +50,17 @@ fill, fill-rule, stroke, stroke-width, stroke-linecap, stroke-linejoin
 ```
 **Percentages need a box, and most of these are resolved before there is one.**
 `width`, `height`, `min`/`max-*` and the insets become a length that layout
-resolves, so `width: 50%` works. `padding`, `margin`, `gap`/`row-gap`/
-`column-gap`, the border widths, `font-size`, `letter-spacing` and
-`word-spacing` are resolved to plain pixels during the cascade, where there is
-no box yet, so a percentage on one of those is **ignored and says so**. Until
-v0.7.1 it was ignored in silence, because the interpreter read them with a
-px-only parser while the length check validated with a percentage-capable one:
-the value was dropped and then pronounced fine. Real percentage support for them
-is scheduled.
+resolves, so `width: 50%` works. So do `padding`, `margin` and `gap`/
+`row-gap`/`column-gap` (since 2026-10-13): their percentage is carried to the
+layout, a side resolving against the containing block's **width** (the top and
+bottom too, as in CSS) and a gap against the box's own content size on its
+axis. The border widths, `font-size`, `letter-spacing` and `word-spacing` are
+still resolved to plain pixels during the cascade, where there is no box yet,
+so a percentage on one of those is **ignored and says so**. Until v0.7.1 it was
+ignored in silence, because the interpreter read them with a px-only parser
+while the length check validated with a percentage-capable one: the value was
+dropped and then pronounced fine. An animated `padding`, `margin` or `gap`
+walks the pixel value, so a side written as a percentage does not animate.
 
 **A border may differ per side.** `border-bottom: 2px solid #89b4fa` draws under
 the box and nowhere else, which is the underlined-field shape most forms want.

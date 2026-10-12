@@ -3528,7 +3528,8 @@ const LENGTH_ONLY_PROPERTIES: &[&str] = &[
 ///
 /// Supporting percentages here means carrying a `Len` through to paint for the
 /// radius and to layout for the rest. That is a feature, and it is scheduled.
-/// Saying so is the patch.
+/// Saying so is the patch. The radius was done first; `padding`, `margin` and
+/// the gaps followed on 2026-10-13 ([`PCT_IN_LAYOUT`]).
 const PX_ONLY_PROPERTIES: &[&str] = &[
     "padding", "padding-top", "padding-right", "padding-bottom", "padding-left",
     "margin", "margin-top", "margin-right", "margin-bottom", "margin-left",
@@ -3536,6 +3537,16 @@ const PX_ONLY_PROPERTIES: &[&str] = &[
     "border-width", "border-top-width", "border-right-width",
     "border-bottom-width", "border-left-width",
     "letter-spacing", "word-spacing", "font-size",
+];
+
+/// Of [`PX_ONLY_PROPERTIES`], those whose percentage is carried to the
+/// layout as a percentage (`Style::padding_pct`, `margin_pct`, `gap_pct`)
+/// and resolved there: of the containing block's width for a side, of the
+/// box's own content size for a gap, as CSS has it.
+const PCT_IN_LAYOUT: &[&str] = &[
+    "padding", "padding-top", "padding-right", "padding-bottom", "padding-left",
+    "margin", "margin-top", "margin-right", "margin-bottom", "margin-left",
+    "gap", "row-gap", "column-gap",
 ];
 
 /// Warn, once per property and value, that a length was written and not
@@ -3562,6 +3573,11 @@ fn warn_unparseable_lengths(props: &HashMap<String, String>) {
             // Checked with the same parser the property is actually read by, or
             // the check blesses values the interpreter then throws away.
             if (px_only && parse_px(token).is_some()) || (!px_only && parse_len(token).is_some()) {
+                continue;
+            }
+            // These carry a percentage through to the layout, which resolves it
+            // (watchlist #6, 2026-10-13); the rest of the list still cannot.
+            if PCT_IN_LAYOUT.contains(&property.as_str()) && side_length(token).is_some() {
                 continue;
             }
             if px_only && token.ends_with('%') {
@@ -7994,14 +8010,13 @@ fn interpret(p: &HashMap<String, String>) -> Style {
     if let Some(v) = p.get("height") {
         st.height = parse_len(first(v));
     }
-    st.padding = box_sides(p, "padding");
-    st.margin = box_sides(p, "margin");
+    (st.padding, st.padding_pct) = box_sides(p, "padding");
+    (st.margin, st.margin_pct) = box_sides(p, "margin");
     interpret_border(p, &mut st);
     interpret_path_paint(p, &mut st);
-    if let Some(v) = p.get("gap") {
-        if let Some(px) = parse_px(first(v)) {
-            st.gap = px;
-        }
+    if let Some((px, pct)) = p.get("gap").and_then(|v| gap_length(v)) {
+        st.gap = px;
+        st.gap_pct = [pct; 2];
     }
     if let Some(v) = p.get("min-width") {
         st.min_width = parse_len(first(v));
@@ -8122,11 +8137,13 @@ fn interpret(p: &HashMap<String, String>) -> Style {
         st.align_content = parse_justify(v);
     }
     // `row-gap` / `column-gap` override the `gap` shorthand per axis.
-    if let Some(px) = p.get("row-gap").and_then(|v| parse_px(first(v))) {
+    if let Some((px, pct)) = p.get("row-gap").and_then(|v| gap_length(v)) {
         st.row_gap = Some(px);
+        st.gap_pct[1] = pct;
     }
-    if let Some(px) = p.get("column-gap").and_then(|v| parse_px(first(v))) {
+    if let Some((px, pct)) = p.get("column-gap").and_then(|v| gap_length(v)) {
         st.column_gap = Some(px);
+        st.gap_pct[0] = pct;
     }
     if let Some(v) = p.get("position") {
         st.position = match v.trim() {
@@ -9062,20 +9079,50 @@ fn parse_border_radius(value: &str) -> [f32; 4] {
 }
 
 /// Resolve `padding`/`margin` from the shorthand plus any `-top/-right/-bottom/
-/// -left` longhand overrides.
-fn box_sides(p: &HashMap<String, String>, prop: &str) -> Sides {
-    let mut sides = p
-        .get(prop)
-        .map(|v| parse_shorthand_sides(v))
-        .unwrap_or_default();
-    for side in ["top", "right", "bottom", "left"] {
-        if let Some(v) = p.get(&format!("{prop}-{side}")) {
-            if let Some(px) = parse_px(first(v)) {
-                set_side(&mut sides, side, px);
-            }
+/// -left` longhand overrides: the px sides, and the sides written as a
+/// percentage (top, right, bottom, left), which the layout resolves against
+/// the containing block's width (watchlist #6). A side is one or the other.
+///
+/// A percentage keeps its place in the shorthand. It used to be dropped, which
+/// moved the values after it: `padding: 10px 5%` came out as 10px all round.
+fn box_sides(p: &HashMap<String, String>, prop: &str) -> (Sides, [Option<f32>; 4]) {
+    let mut sides = Sides::default();
+    let mut pct = [None; 4];
+    if let Some(v) = p.get(prop) {
+        let v: Vec<(f32, Option<f32>)> = v.split_whitespace().filter_map(side_length).collect();
+        let at = |i: usize| v[i];
+        let four = match v.len() {
+            1 => [at(0); 4],
+            2 => [at(0), at(1), at(0), at(1)],
+            3 => [at(0), at(1), at(2), at(1)],
+            n if n >= 4 => [at(0), at(1), at(2), at(3)],
+            _ => [(0.0, None); 4],
+        };
+        sides = Sides { top: four[0].0, right: four[1].0, bottom: four[2].0, left: four[3].0 };
+        pct = [four[0].1, four[1].1, four[2].1, four[3].1];
+    }
+    for (i, side) in ["top", "right", "bottom", "left"].into_iter().enumerate() {
+        if let Some((px, p)) = p.get(&format!("{prop}-{side}")).and_then(|v| side_length(first(v))) {
+            set_side(&mut sides, side, px);
+            pct[i] = p;
         }
     }
-    sides
+    (sides, pct)
+}
+
+/// One side of a box shorthand: px, or a percentage (0 px, then the
+/// percentage). `None` for anything else, which the shorthand skips.
+fn side_length(token: &str) -> Option<(f32, Option<f32>)> {
+    match token.strip_suffix('%') {
+        Some(n) => n.trim().parse::<f32>().ok().map(|p| (0.0, Some(p))),
+        None => parse_px(token).map(|px| (px, None)),
+    }
+}
+
+/// `gap`, `row-gap` or `column-gap` as px, or as a percentage (0 px, then
+/// the percentage).
+fn gap_length(value: &str) -> Option<(f32, Option<f32>)> {
+    side_length(first(value))
 }
 
 /// Parse the `<path>` paint properties.
