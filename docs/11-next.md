@@ -2285,13 +2285,78 @@ Float indexing narrows to what the types allow: an index is an `int`, and a
      signature, 0.15 `Position::Static` default and out-of-flow hoisting
      done by Taffy (which could replace our own). Layout results may move
      too, so it goes to the owner.
-   - (g).4a **For the owner: upgrade Taffy before g.4 lands.** (A) to 0.12,
-     the smallest version with the cache fix; (B) to 0.15, the newest,
-     and perhaps drop our own hoisting for Taffy's; (C) stay on 0.7 and
-     key a cache ourselves through Taffy's low-level tree traits. Either
-     upgrade is its own step: gate green, the ten examples of (g).1
-     compared pixel by pixel before and after, every difference explained;
-     then g.4 is rebased on it and the random test must pass all seeds.
+   - (g).4a **Done 2026-10-12: Taffy 0.7.7 to 0.15.0.** The owner chose
+     the newest ("for a long time wanted to hint on that version
+     backlog") over 0.12, the smallest with the cache fix, or keeping 0.7
+     with a cache of our own.
+     - The API: alignment constants (`AlignItems::CENTER`), an unset
+       alignment now `NORMAL` rather than `None`, grid tracks as
+       `GridTemplateComponent`, min/max sizes as `LengthPercentageAuto`,
+       and the measure hook handed a whole `LayoutInput`, answered through
+       `compute_leaf_layout` around our text size as before.
+     - **Positioning kept ours.** 0.15 hoists absolute and fixed boxes to
+       their containing block itself and makes `static` the default. We
+       already hoist (`build`), and `to_taffy` already maps every in-flow
+       box to `relative` and fixed to absolute, so each box is a containing
+       block to Taffy and it lays every box out under the parent we give
+       it, as 0.7 did. Handing hoisting to Taffy is not possible as things
+       stand: its own `Style` cannot say a `transform` makes a containing
+       block (only a custom tree can, through `CoreStyle`), and our
+       `fixed`-inside-a-transform rule depends on it.
+     - **Scroll extent.** Taffy's scrollable overflow now starts at the
+       padding box and includes the end padding in every layout mode, as
+       CSS does; ours added the padding for block layout alone.
+       `scroll_extent` now adds only the borders. Without it, a padded
+       scroller could scroll its padding too far (selection, form-controls).
+     - **A text-engine defect it exposed.** A text ending in a space
+       measured two lines tall at its own width: parley hangs the
+       overflowing space, then starts a new line the next space lands on.
+       Taffy 0.7 reused an earlier answer and hid it; 0.15 asks at the
+       final width. Seen as css-showcase's "Tap to add" button at twice its
+       height with the label at the top. `line_heights` now drops a last
+       line of only spaces after a soft wrap; a newline's line still
+       counts. `trailing_spaces_never_wrap_the_text_in_its_own_box`
+       (rux-text/tests/wrap.rs) fails without the fix.
+     - **Two of our workarounds for Taffy 0.7 removed**, each proven both
+       ways (its test fails on 0.7 without it, passes on 0.15 without it,
+       and all 82 example layouts are identical with it or without): text
+       in a block box taking no automatic `max-width: 100%` (watchlist #32,
+       tests/stretch_text.rs), and a percentage width dropped to `auto`
+       under `flex-wrap` with a `max-width` (tests/wrap.rs).
+
+     How it was checked. `crates/rux-runtime/tests/layout_dump.rs`
+     (ignored) writes every example's whole `Layout` at 1000x800 and
+     360x640 with a stub measurer that wraps by word; 0.7 against 0.15,
+     82 layouts: 77 identical, and the 5 that differ (grid, transform,
+     slots, component-reactives, transition, all at 360) are each a text
+     0.7 measured at a narrower width than it was drawn at and 0.15
+     measures at its own: its height is now what it wraps to in its box
+     (a check over all 972 texts, run on both dumps), and the boxes around
+     it shrink to fit. In the window, release builds of both shot by
+     `rux-harness/compare-builds.ps1`: the ten examples of (g).1 at
+     desktop size identical in the content area (0 to 2 single pixels,
+     the run-to-run noise); in the phone preview six identical, and
+     component-reactives and transition differ as the dump predicted
+     (looked at: cards now fit their content instead of carrying empty
+     space at the bottom). Gate green, 1143 tests.
+
+     **The cost, said plainly:** a whole layout of the 300-row list is
+     slower, 6.4 ms to 9.0 ms (1.4x slower, release bench, three runs).
+     Compute 3.3 to 5.2 ms, build 2.1 to 2.4 ms; text measures a frame
+     5 700 to 7 200. Taffy's own note on the cache key is "a performance
+     hit (~10% in common cases, ~60% in pathological ones)". Turning off
+     our automatic `max-width: 100%` changed nothing (5.1 ms), so it is
+     inside Taffy. g.4 is what answers it for frames after the first.
+   - (g).4b **Next: rebase g.4 on Taffy 0.15** (`wip/g4-kept-tree`,
+     5371fba). Drop its `unclamp` parameter (the #32 workaround is gone),
+     keep its proof, and the random test must pass every seed, with the
+     seed count raised. Measure the list again: the bench's whole layout
+     is now 9.0 ms, so the kept tree's share is larger than it was.
+   - (g).4c **The whole-layout cost on Taffy 0.15**, 3.3 to 5.2 ms of
+     compute. Matters for the first frame, a resize, a page swap. Find
+     where Taffy's misses come from on this list (axis or parent size in
+     the key, measured by counting cache misses per node) before deciding
+     anything; it may be Taffy's to fix, upstream.
    - (g).5 **Done 2026-09-28. The measure key allocated**: every one of
      the 5 700 measure calls, and each of the 900 draws, copied the text
      into a new `String` only to look it up. The key is now generic over

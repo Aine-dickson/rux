@@ -2118,6 +2118,16 @@ pub struct NodeMetrics {
 /// these are already absolute pixels: percentage padding and `em` borders are
 /// handled by the time this is asked. Clamped at zero, because padding wider
 /// than the box itself is arithmetic, not a crash.
+/// How far a box's content reaches, from its border box's top-left corner and
+/// out through its far border: what a scroller scrolls across.
+///
+/// Taffy's scrollable overflow rectangle is measured from the padding box and
+/// takes in the end padding (css-overflow-3), so only the borders are added.
+fn scroll_extent(layout: &taffy::Layout) -> (f32, f32) {
+    let (rect, border) = (layout.scrollable_overflow_rect, layout.border);
+    (border.left + rect.right + border.right, border.top + rect.bottom + border.bottom)
+}
+
 fn content_box(layout: &taffy::Layout) -> (f32, f32, f32, f32) {
     let (p, b) = (layout.padding, layout.border);
     (
@@ -2199,7 +2209,7 @@ pub struct PathPaint {
     pub join: LineJoin,
 }
 
-fn to_dim(l: Len, vp: (f32, f32)) -> Dimension {
+fn to_dim<T: FromLength + FromPercent>(l: Len, vp: (f32, f32)) -> T {
     match l {
         Len::Px(v) => length(v),
         Len::Pct(p) => percent(p),
@@ -2238,26 +2248,6 @@ fn to_track(t: Track) -> TrackSizingFunction {
 
 /// Like [`to_track`] but for `grid-auto-rows`/`-columns`, whose tracks can't hold
 /// a `repeat(…)` and so use taffy's non-repeated track type.
-fn to_auto_track(t: Track) -> taffy::NonRepeatedTrackSizingFunction {
-    match t {
-        Track::Px(v) => length(v),
-        Track::Fr(f) => fr(f),
-        Track::Auto => auto(),
-        Track::MinMax(lo, hi) => minmax(
-            match lo {
-                TrackSide::Px(v) => length(v),
-                TrackSide::Fr(_) | TrackSide::Auto => auto(),
-            },
-            match hi {
-                TrackSide::Px(v) => length(v),
-                TrackSide::Fr(f) => fr(f),
-                TrackSide::Auto => auto(),
-            },
-        ),
-    }
-}
-
-/// `vp` is the viewport `(width, height)` in physical pixels, for `vw`/`vh`.
 fn to_taffy(style: &Style, vp: (f32, f32)) -> taffy::Style {
     taffy::Style {
         display: match style.display {
@@ -2268,8 +2258,8 @@ fn to_taffy(style: &Style, vp: (f32, f32)) -> taffy::Style {
             Display::Grid => taffy::Display::Grid,
             Display::None => taffy::Display::None,
         },
-        grid_template_columns: style.grid_columns.iter().copied().map(to_track).collect(),
-        grid_template_rows: style.grid_rows.iter().copied().map(to_track).collect(),
+        grid_template_columns: style.grid_columns.iter().copied().map(|t| to_track(t).into()).collect(),
+        grid_template_rows: style.grid_rows.iter().copied().map(|t| to_track(t).into()).collect(),
         grid_column: Line {
             start: to_placement(style.grid_column.0),
             end: to_placement(style.grid_column.1),
@@ -2284,24 +2274,19 @@ fn to_taffy(style: &Style, vp: (f32, f32)) -> taffy::Style {
             GridFlow::RowDense => taffy::GridAutoFlow::RowDense,
             GridFlow::ColumnDense => taffy::GridAutoFlow::ColumnDense,
         },
-        grid_auto_rows: style.grid_auto_rows.iter().copied().map(to_auto_track).collect(),
-        grid_auto_columns: style.grid_auto_columns.iter().copied().map(to_auto_track).collect(),
+        grid_auto_rows: style.grid_auto_rows.iter().copied().map(to_track).collect(),
+        grid_auto_columns: style.grid_auto_columns.iter().copied().map(to_track).collect(),
         flex_direction: match style.axis {
             Axis::Column => FlexDirection::Column,
             Axis::Row => FlexDirection::Row,
         },
-        justify_content: style.justify.map(|j| match j {
-            Justify::Start => JustifyContent::FlexStart,
-            Justify::Center => JustifyContent::Center,
-            Justify::End => JustifyContent::FlexEnd,
-            Justify::SpaceBetween => JustifyContent::SpaceBetween,
-            Justify::SpaceAround => JustifyContent::SpaceAround,
-        }),
-        align_items: style.align.map(to_align_items),
+        // Unset is `normal`, which taffy 0.15 names rather than spelling `None`.
+        justify_content: style.justify.map(to_align_content).unwrap_or(JustifyContent::NORMAL),
+        align_items: style.align.map(to_align_items).unwrap_or(AlignItems::NORMAL),
         align_self: style.align_self.map(to_align_items),
         justify_self: style.justify_self.map(to_align_items),
-        justify_items: style.justify_items.map(to_align_items),
-        align_content: style.align_content.map(to_align_content),
+        justify_items: style.justify_items.map(to_align_items).unwrap_or(AlignItems::NORMAL),
+        align_content: style.align_content.map(to_align_content).unwrap_or(AlignContent::NORMAL),
         position: match style.position {
             Position::Static | Position::Relative | Position::Sticky => taffy::Position::Relative,
             Position::Absolute | Position::Fixed => taffy::Position::Absolute,
@@ -2323,8 +2308,8 @@ fn to_taffy(style: &Style, vp: (f32, f32)) -> taffy::Style {
         },
         aspect_ratio: style.aspect_ratio,
         // taffy needs to know the box scrolls: it then sizes the box from its own
-        // width/height (not its content) and reports `content_size`, which is how
-        // far we can scroll.
+        // width/height (not its content) and reports its scrollable overflow,
+        // which is how far we can scroll (`scroll_extent`).
         overflow: match style.overflow {
             Overflow::Scroll => Point {
                 x: taffy::Overflow::Scroll,
@@ -2344,21 +2329,13 @@ fn to_taffy(style: &Style, vp: (f32, f32)) -> taffy::Style {
             FlexWrap::NoWrap
         },
         size: Size {
-            // `flex-wrap` + a *percentage* width + a `max-width` trips a taffy
-            // bug (still present in 0.12): it measures the container's content
-            // at the full percentage width, ignoring the cap, so it sees one
-            // row and sizes the cross-axis for one row, then clamps the width
-            // to `max-width`, wraps to two rows, and never revisits the height.
-            // The wrapped rows then paint *under* the following sibling. Both a
-            // definite width and `auto` measure correctly, so for this exact
-            // combination we drop the percentage to `auto` (fit-content, capped
-            // by the same `max-width`), which fills available width up to the
-            // cap for any content that overflows it, i.e. the wrap case.
-            width: match style.width {
-                Some(Len::Pct(_)) if style.wrap && style.max_width.is_some() => auto(),
-                Some(l) => to_dim(l, vp),
-                None => auto(),
-            },
+            // `flex-wrap` + a percentage width + a `max-width` once had its
+            // percentage dropped to `auto` here: Taffy 0.7 measured the rows
+            // at the uncapped width and sized the box for one row while two
+            // were drawn. Fixed in Taffy by 0.15: tests/wrap.rs
+            // (`wrapped_grid_reserves_height_for_every_row`) fails on 0.7
+            // without the exception and passes on 0.15 without it.
+            width: style.width.map(|l| to_dim(l, vp)).unwrap_or(auto()),
             height: style.height.map(|l| to_dim(l, vp)).unwrap_or(auto()),
         },
         min_size: Size {
@@ -2415,20 +2392,20 @@ fn to_taffy(style: &Style, vp: (f32, f32)) -> taffy::Style {
 
 fn to_align_items(a: Align) -> AlignItems {
     match a {
-        Align::Start => AlignItems::FlexStart,
-        Align::Center => AlignItems::Center,
-        Align::End => AlignItems::FlexEnd,
-        Align::Stretch => AlignItems::Stretch,
+        Align::Start => AlignItems::FLEX_START,
+        Align::Center => AlignItems::CENTER,
+        Align::End => AlignItems::FLEX_END,
+        Align::Stretch => AlignItems::STRETCH,
     }
 }
 
 fn to_align_content(j: Justify) -> AlignContent {
     match j {
-        Justify::Start => AlignContent::FlexStart,
-        Justify::Center => AlignContent::Center,
-        Justify::End => AlignContent::FlexEnd,
-        Justify::SpaceBetween => AlignContent::SpaceBetween,
-        Justify::SpaceAround => AlignContent::SpaceAround,
+        Justify::Start => AlignContent::FLEX_START,
+        Justify::Center => AlignContent::CENTER,
+        Justify::End => AlignContent::FLEX_END,
+        Justify::SpaceBetween => AlignContent::SPACE_BETWEEN,
+        Justify::SpaceAround => AlignContent::SPACE_AROUND,
     }
 }
 
@@ -2911,23 +2888,13 @@ fn build(
                 let mut cp = path.to_vec();
                 cp.push(i);
                 let cid = build(tree, c, paint, handlers, models, focus_labels, hidden, opacities, scrolls, transforms, states, access, &cp, paths, vp, child_cap, caps, row, stickies, hoisted);
-                // Text in a block box takes no automatic `max-width: 100%`.
-                // Block layout already gives it exactly the box's width, so the
-                // cap adds nothing there, and it did harm: Taffy resolved the
-                // percentage against a parent size from an earlier pass while a
-                // row was still flexing, measured the text at that width, and
-                // kept the one-line height for a box whose text then wrapped
-                // onto two (watchlist #32; tests/stretch_text.rs).
-                if c.text.is_some()
-                    && c.style.width.is_none()
-                    && c.style.max_width.is_none()
-                    && matches!(node.style.display, Display::Block | Display::Inline)
-                {
-                    if let Ok(mut st) = tree.style(cid).cloned() {
-                        st.max_size.width = auto();
-                        let _ = tree.set_style(cid, st);
-                    }
-                }
+                // Text in a block box once took no automatic `max-width: 100%`
+                // here: Taffy 0.7 resolved the percentage against a parent size
+                // from an earlier pass and kept a one-line height for text that
+                // then wrapped onto two (watchlist #32). Taffy 0.12 keys its
+                // cache on the parent size, and tests/stretch_text.rs, which
+                // fails on 0.7 without that exception, passes on 0.15 without
+                // it, so the exception is gone.
                 match hoists(&c.style) {
                     Some(fixed) => {
                         hoisted.push((cid, fixed));
@@ -3486,21 +3453,15 @@ fn collect(
         // does every current browser. The border is added because the clip is
         // the border box.
         //
-        // **Only where Taffy has not already.** A flex or grid container's
-        // content size already ends with its end padding, and a leaf's counts
-        // all of it; only block layout stops at the last child. Adding it to
-        // all of them let every flex scroller travel its padding too far, and
-        // a row whose cards stretched to exactly fill it grew a vertical bar
-        // for nothing (examples/scroll.rux, found reverting `align-items`).
-        let taffy_padded = tree.child_count(id) == 0
-            || matches!(tree.style(id).map(|s| s.display), Ok(taffy::style::Display::Flex | taffy::style::Display::Grid));
-        let (pad_right, pad_bottom) =
-            if taffy_padded { (0.0, 0.0) } else { (layout.padding.right, layout.padding.bottom) };
+        //
+        // Taffy 0.14 on counts it in every layout mode, as CSS does (before,
+        // block layout stopped at the last child and this added the padding
+        // for block alone). Its rectangle starts at the padding box, so the
+        // border goes on both ends here: see `scroll_extent`.
+        let (content_width, content_height) = scroll_extent(layout);
         let max = Offset {
-            x: (layout.content_size.width + pad_right + layout.border.right - layout.size.width)
-                .max(0.0),
-            y: (layout.content_size.height + pad_bottom + layout.border.bottom - layout.size.height)
-                .max(0.0),
+            x: (content_width - layout.size.width).max(0.0),
+            y: (content_height - layout.size.height).max(0.0),
         };
         shift = offsets.get(sid).copied().unwrap_or_default().clamp_to(max);
         out.scrolls.push(ScrollRegion {
@@ -3513,8 +3474,8 @@ fn collect(
             height: layout.size.height,
             // The same extent `max` was measured against, end padding in, so
             // the scrollbar's thumb and its travel agree.
-            content_width: layout.content_size.width + pad_right + layout.border.right,
-            content_height: layout.content_size.height + pad_bottom + layout.border.bottom,
+            content_width,
+            content_height,
             max,
             within: inside_scroll,
         });
@@ -3552,8 +3513,8 @@ fn collect(
             (
                 x - shift.x,
                 y - shift.y,
-                layout.content_size.width.max(layout.size.width),
-                layout.content_size.height.max(layout.size.height),
+                scroll_extent(layout).0.max(layout.size.width),
+                scroll_extent(layout).1.max(layout.size.height),
             ),
             child_scroll,
             child_xform,
@@ -3743,11 +3704,13 @@ pub fn layout_scrolled(
     }
     let passes = rounds.iter().copied().max().map_or(0, |m| m + 1);
 
-    let mut measure_fn = |known: Size<Option<f32>>,
-                          available: Size<AvailableSpace>,
+    // Taffy 0.14 on hands a leaf its whole layout input; `compute_leaf_layout`
+    // is the leaf sizing it did before, around the text's own size below.
+    let mut measure_fn = |inputs: taffy::LayoutInput,
                           id: NodeId,
                           ctx: Option<&mut TextContent>,
-                          _style: &taffy::Style| {
+                          style: &taffy::Style| {
+        taffy::compute_leaf_layout(inputs, style, |_, _| 0.0, |known: Size<Option<f32>>, available: Size<AvailableSpace>| {
             if let (Some(w), Some(h)) = (known.width, known.height) {
                 return Size { width: w, height: h };
             }
@@ -3789,7 +3752,8 @@ pub fn layout_scrolled(
                     height: 0.0,
                 },
             }
-        };
+        })
+    };
 
     let space = Size {
         width: AvailableSpace::Definite(avail_w),

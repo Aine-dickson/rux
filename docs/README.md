@@ -75,7 +75,7 @@ rather than two that agree for a while.
 > input caret, checkbox/radio, opacity, and the full flex model. For **what's
 > next**, read **[Roadmap](./06-roadmap.md)**.
 >
-> Renderer: **vello 0.9** / **parley 0.11** / **taffy 0.7** / **rhai** /
+> Renderer: **vello 0.9** / **parley 0.11** / **taffy 0.15** / **rhai** /
 > **lightningcss**.
 
 The intended pipeline (this is what got built):
