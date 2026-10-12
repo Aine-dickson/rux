@@ -2604,6 +2604,53 @@ Float indexing narrows to what the types allow: an index is an `int`, and a
      (c). The recommendation stands with a smaller (b): leave both until a
      phone measures the frame.
 
+   **Overnight 2026-10-13, for the owner to review.** Run on the owner's
+   instruction (carry on through track (g), then the watchlist; #36 to #39
+   left alone). Everything is committed on `build/v0.8`, **none of it
+   pushed**: 94fc927 (the g.7 proposal, from the evening) and these.
+
+   | Step | Commit | What | Measured / checked |
+   |---|---|---|---|
+   | g.7a | `1b1764c` | rows boxed in the row cache, map sized; parsed rules kept per document | bench timer+patch 5.5 to 3.65 ms; window patch 4.8 to 2.9 ms |
+   | g.7a | `3bf8e58` | six trims found by probes (see (g).7a above) | bench 3.65 to 2.9 ms; window patch 2.9 to 2.3 ms |
+   | g.7a | `8650fca` | this write-up of (g).7a, and where (b) and (c) stand | |
+   | #42 (new) | `f61670b` | an absolute box with no inset paints over the in-flow siblings after it | enter-leave.rux's leaving row vanished in every build back to 0.7.0; now slides out. 17 window shots identical |
+   | #34 | `4bee47d` | a component's effect re-runs when its own state moves | component-reactives.rux: `+` now updates the note in the window |
+   | #3 | `8178929` | a call typo in a `fn` says its line; the rest of #3 was already gone | `card.rux:12: warning: ...` |
+   | #6 | `fb03d1b` | `padding`, `margin`, `gap` take a percentage | tests through the cascade; a probe looked at |
+
+   The whole track: the list of 300 began at a 26.5 ms frame; patch is now
+   2.3 ms of it, layout 2.7, scene 0.2. Gate green throughout, 1161 to 1165
+   tests. The interpreter benchmark is unchanged by #34's extra check (fib(18)
+   3.0 to 3.1 ms either way).
+
+   **Decided without the owner, to overrule from:**
+   1. (g).7a done in full; (g).7b and (g).7c **not** started, on the
+      measurements above: (b) would now buy about 0.6 ms of 2.4.
+   2. #42 fixed by paint order alone: an absolute or fixed box paints after
+      its in-flow siblings, as CSS. **Not** done, because it would move
+      existing layouts: an author's `position: relative` box still paints in
+      tree order, where CSS paints it over later static siblings too.
+   3. #34: an instance effect's dependencies now include the instance's own
+      state it read, found by noting reads of handed-in names while it runs
+      (a flag in the interpreter). Two defects found beside it and fixed with
+      it: every mount re-ran every instance's effects (a side effect ran once
+      per later sibling), and `<text @tap>`/`<image @tap>` in a component ran
+      in the document's scope.
+   4. #6: a percentage side resolves against the containing block's width,
+      a gap against the box's own content size, as CSS. An animated
+      `padding`/`margin`/`gap` walks the px value, so a side written as a
+      percentage does not animate; border widths, `font-size` and the
+      spacings still report a percentage.
+   5. The comment in examples/enter-leave.rux saying a closure in `filter`
+      cannot see `id` was false and is corrected; its code is unchanged.
+
+   Harness added outside the repo: `rux-harness/taffy-upgrade/tap-drive.ps1`
+   (open, tap one point, shoot before, 90 ms after and 2 s after), with the
+   probes `rows-probe*.rux`, `enter-leave-probe*.rux` and `pct-probe.rux`.
+   The window's GPU phase read 5 to 9.7 ms most of the night on every build,
+   g.6's included, so no whole-frame number was taken.
+
 Steps 2 to 5 change nothing an author sees except the decided syntax and
 types, which is what made them safe to take in order.
 
