@@ -2252,6 +2252,46 @@ Float indexing narrows to what the types allow: an index is an `int`, and a
      runtime does not give today, so it is found by walking the old and
      new trees together; measure what that walk costs before building
      on it.
+     **Built 2026-10-12, parked on the local branch `wip/g4-kept-tree`
+     (5371fba), not merged: not exact on taffy 0.7.** `LayoutState` keeps
+     the Taffy tree; each node is matched to last frame's by key, else by
+     index, and a setter runs only where style, text (what measure reads),
+     text cap or children differ. Which node is matched only decides how
+     much is reused, never what is laid out. Debug builds lay each frame
+     out whole as well and panic on any difference. Release, list of 300:
+
+     | Layout, bench | Before | Kept tree |
+     |---|---|---|
+     | whole layout | 6.4 ms | 2.9 ms (2.2x faster) |
+     | Taffy compute | 3.3 ms | 0.41 ms (8x faster) |
+     | build walk | 2.1 ms | 1.84 ms, of it 0.48 ms comparing |
+     | collect | 0.6 ms | 0.7 ms |
+
+     A rotation measures no text again (`tests/kept.rs`). The random
+     test in the same file (40 seeds, 25 frames, one to three random
+     changes a frame) fails on one seed: a box with a percentage
+     `max-width` whose parent changed size while it did not. **Taffy 0.7's
+     cache is keyed on the known size and available space only, not the
+     parent size a percentage resolves against**, so a kept entry can be
+     stale. Within one compute Taffy accepts the same thing; it is the
+     watchlist #32 failure. Percentages are everywhere here: every box
+     with no width gets `max-width: 100%` (`to_taffy`), so "always redo a
+     node with a percentage" would undo the gain.
+     Taffy 0.12 fixed it upstream: "The cache key now includes the axis,
+     parent size, and available space". We are on 0.7.7; 0.15.0 is out.
+     Breaking in between: 0.8 tagged-pointer sizes (`calc()`), 0.9 grid
+     renames and `Style` generic over strings, 0.11 alignment enums to
+     constants, 0.14 min/max size types and `compute_layout_with_measure`'s
+     signature, 0.15 `Position::Static` default and out-of-flow hoisting
+     done by Taffy (which could replace our own). Layout results may move
+     too, so it goes to the owner.
+   - (g).4a **For the owner: upgrade Taffy before g.4 lands.** (A) to 0.12,
+     the smallest version with the cache fix; (B) to 0.15, the newest,
+     and perhaps drop our own hoisting for Taffy's; (C) stay on 0.7 and
+     key a cache ourselves through Taffy's low-level tree traits. Either
+     upgrade is its own step: gate green, the ten examples of (g).1
+     compared pixel by pixel before and after, every difference explained;
+     then g.4 is rebased on it and the random test must pass all seeds.
    - (g).5 **Done 2026-09-28. The measure key allocated**: every one of
      the 5 700 measure calls, and each of the 900 draws, copied the text
      into a new `String` only to look it up. The key is now generic over
