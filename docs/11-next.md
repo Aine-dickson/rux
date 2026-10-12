@@ -2347,6 +2347,10 @@ Float indexing narrows to what the types allow: an index is an `int`, and a
      hit (~10% in common cases, ~60% in pathological ones)". Turning off
      our automatic `max-width: 100%` changed nothing (5.1 ms), so it is
      inside Taffy. g.4 is what answers it for frames after the first.
+     In the window (script-cost list, both release builds run back to
+     back, twice each): layout 6.9 ms on 0.7 against 9.8 ms on 0.15, the
+     whole measured frame 17.2 ms against 20.3 ms; patch, scene and GPU
+     unchanged. A first run read layout 11.3 ms on its own: machine state.
    - (g).4b **Next: rebase g.4 on Taffy 0.15** (`wip/g4-kept-tree`,
      5371fba). Drop its `unclamp` parameter (the #32 workaround is gone),
      keep its proof, and the random test must pass every seed, with the
