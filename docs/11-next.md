@@ -2386,11 +2386,30 @@ Float indexing narrows to what the types allow: an index is an `int`, and a
      walk itself (each node's style built and compared, paints, paths),
      not Taffy, whose compute is now a fraction of a millisecond; the
      frame's largest part is the patch, 4.9 ms.
-   - (g).4c **The whole-layout cost on Taffy 0.15**, 3.3 to 5.2 ms of
-     compute. Matters for the first frame, a resize, a page swap. Find
-     where Taffy's misses come from on this list (axis or parent size in
-     the key, measured by counting cache misses per node) before deciding
-     anything; it may be Taffy's to fix, upstream.
+   - (g).4c **Measured 2026-10-12, closed: the whole-layout cost on Taffy
+     0.15 is Taffy's, the same on every shape tried.** The bench's list
+     built by hand in rux-layout with a stub measurer (nearly free, so
+     text measuring is out of it), whole layout, on 0.7 and 0.15, four
+     row shapes in rotation, best of 300:
+
+     | 300 rows | Taffy 0.7 | Taffy 0.15 |
+     |---|---|---|
+     | flex row, gap and padding, 3 texts | 4.2 ms | 6.1 ms |
+     | flex row, bare, 3 texts | 4.0 ms | 6.1 ms |
+     | block row, 3 texts | 3.2 ms | 4.7 ms |
+     | flex row, 1 text | 1.9 ms | 3.0 ms |
+
+     1.45x to 1.6x slower whatever the row is, so nothing in how our tree
+     is shaped is doing it; our automatic `max-width: 100%` was already
+     ruled out. Text measures rise 5 408 to 7 208 (each text is asked for
+     its min-content width three times rather than two, the cache now
+     keeping an axis apart), but with measuring nearly free that is not
+     the cost: it is Taffy's own work per container. Medians on this
+     machine swing by up to 1.6x between runs of one build, so only the
+     best-of figures are worth comparing. Since g.4 a frame lays out only
+     what changed, so this is paid on the first frame, a resize and a page
+     swap. Left as it is; a report to Taffy with this reproducer is the
+     owner's call (`rux-harness/taffy-upgrade/probe_misses.rs`).
    - (g).5 **Done 2026-09-28. The measure key allocated**: every one of
      the 5 700 measure calls, and each of the 900 draws, copied the text
      into a new `String` only to look it up. The key is now generic over
