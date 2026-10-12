@@ -91,7 +91,7 @@ fn list_layout_cost() {
             assert_eq!(format!("{out:?}"), format!("{whole:?}"), "kept and whole layouts differ");
         }
         let t = Instant::now();
-        let scene = rux_paint::build_scene(&out.paints, &mut text, &mut images, false);
+        let scene = rux_paint::build_scene_within(&out.paints, &mut text, &mut images, false, (800.0, 600.0));
         scene_us.push(t.elapsed().as_secs_f64() * 1e6);
         std::hint::black_box(scene);
     }

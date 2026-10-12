@@ -239,6 +239,192 @@ fn to_align(a: TextAlign) -> Align {
     }
 }
 
+/// What part of the window can still be drawn on, as a box in the window's
+/// coordinates and the same box in the coordinates of the current transform.
+/// `None` is nowhere: a clip that misses the window, or a transform that
+/// collapses everything under it to a line.
+#[derive(Clone, Copy)]
+struct Reach {
+    window: Option<Rect>,
+    local: Option<Rect>,
+    cur: Affine,
+}
+
+/// The overlap of two boxes, `None` when they do not overlap.
+fn overlap(a: Rect, b: Rect) -> Option<Rect> {
+    let r = Rect::new(a.x0.max(b.x0), a.y0.max(b.y0), a.x1.min(b.x1), a.y1.min(b.y1));
+    (r.x0 < r.x1 && r.y0 < r.y1).then_some(r)
+}
+
+/// Whether anything inside `bounds` can land in `reach`.
+///
+/// Within [`EDGE`] counts: an edge is anti-aliased, a clip's edge too, so a
+/// box that ends exactly where a clip begins still shades the pixel the two
+/// share whenever that edge is not on a pixel boundary. Seen at 1.5x scale as
+/// a one-pixel line along the top of a scroller when the card scrolled just
+/// out of it was left out (examples/scroll.rux).
+fn reaches(reach: Option<Rect>, bounds: Rect) -> bool {
+    reach.is_some_and(|v| {
+        bounds.x0 < v.x1 + EDGE && v.x0 - EDGE < bounds.x1 && bounds.y0 < v.y1 + EDGE && v.y0 - EDGE < bounds.y1
+    })
+}
+
+/// How far outside what can be seen a paint still counts as seen, in logical
+/// pixels: more than one physical pixel at any scale at or above 1x.
+const EDGE: f64 = 2.0;
+
+fn rect_of(x: f32, y: f32, width: f32, height: f32) -> Rect {
+    Rect::new(x as f64, y as f64, (x + width) as f64, (y + height) as f64)
+}
+
+/// The window box seen from inside a transform: the smallest box in its own
+/// coordinates that covers everything it can show.
+fn local_reach(window: Option<Rect>, cur: Affine) -> Option<Rect> {
+    let det = cur.determinant();
+    if !det.is_finite() || det.abs() < 1e-12 {
+        return None;
+    }
+    window.map(|w| cur.inverse().transform_rect_bbox(w))
+}
+
+/// Whether a text's glyphs can land in `reach`.
+///
+/// Glyphs are not held by their box: a long word or `nowrap` runs past its
+/// right edge, centred or end-aligned text past its left, and a box given a
+/// height shorter than its lines lets them fall out of the bottom. They never
+/// rise above the box's top or, aligned to the start, begin left of it, so a
+/// box wholly below the window (the usual case, a long list) or wholly right
+/// of it is answered without measuring. Only a box that misses the window in
+/// another direction is measured, at the width it is drawn at.
+fn text_reaches(
+    reach: Option<Rect>,
+    t: &rux_layout::PaintText,
+    measure: &mut impl FnMut(&TextContent, f32) -> (f32, f32),
+) -> bool {
+    let Some(v) = reach else {
+        return false;
+    };
+    // Room for a glyph's overhang: italics, accents, a line taller than its
+    // font. A whole line of it, which is generous.
+    let slack = t.content.font_size.max(t.content.line_height.unwrap_or(0.0)) as f64;
+    let (x, y, w, h) = (t.x as f64, t.y as f64, t.width as f64, t.height as f64);
+    if y - slack >= v.y1 + EDGE {
+        return false;
+    }
+    let from_start = matches!(t.content.align, TextAlign::Start | TextAlign::Justify);
+    if from_start && x - slack >= v.x1 + EDGE {
+        return false;
+    }
+    if reaches(reach, Rect::new(x - slack, y - slack, x + w + slack, y + h + slack)) {
+        return true;
+    }
+    let (mw, mh) = measure(&t.content, t.width);
+    let (mw, mh) = (mw as f64, mh as f64);
+    reaches(
+        reach,
+        Rect::new(x + (w - mw).min(0.0) - slack, y - slack, x + w.max(mw) + slack, y + h.max(mh) + slack),
+    )
+}
+
+/// Which of `items` can show any of themselves in a window `view` wide and
+/// high, one flag per item (track (g).6 of `docs/11-next.md`).
+///
+/// A long list paints every row, and all but the few on screen were encoded
+/// and handed to the GPU for nothing. Each item's bounds are tested against
+/// what the clips and transforms above it leave of the window; the bounds are
+/// generous (a shadow's blur, a stroke's miter, a text's overflow, see
+/// [`text_reaches`]) and a rounded clip counts as its whole box, so an item is
+/// dropped only when none of it can be seen. Clip, transform and opacity
+/// markers are always kept, so the layers still pair up.
+///
+/// `measure` sizes a text at a given width, as it will be drawn.
+pub fn visible_paints(
+    items: &[Paint],
+    view: (f32, f32),
+    mut measure: impl FnMut(&TextContent, f32) -> (f32, f32),
+) -> Vec<bool> {
+    let full = Rect::new(0.0, 0.0, view.0 as f64, view.1 as f64);
+    let mut reach = Reach { window: Some(full), local: Some(full), cur: Affine::IDENTITY };
+    let mut saved: Vec<Reach> = Vec::new();
+    let mut shown = Vec::with_capacity(items.len());
+    for item in items {
+        let keep = match item {
+            Paint::PushClip { x, y, width, height, .. } => {
+                saved.push(reach);
+                let clip = rect_of(*x, *y, *width, *height);
+                reach.window = reach.window.and_then(|w| overlap(w, reach.cur.transform_rect_bbox(clip)));
+                reach.local = reach.local.and_then(|l| overlap(l, clip));
+                true
+            }
+            Paint::PushTransform(m) => {
+                saved.push(reach);
+                let mat = Affine::new([m[0] as f64, m[1] as f64, m[2] as f64, m[3] as f64, m[4] as f64, m[5] as f64]);
+                reach.cur = reach.cur * mat;
+                reach.local = local_reach(reach.window, reach.cur);
+                true
+            }
+            Paint::PushOpacity { .. } => {
+                saved.push(reach);
+                true
+            }
+            Paint::PopClip | Paint::PopTransform | Paint::PopOpacity => {
+                if let Some(back) = saved.pop() {
+                    reach = back;
+                }
+                true
+            }
+            Paint::Rect(r) => reaches(reach.local, rect_of(r.x, r.y, r.width, r.height)),
+            Paint::Image(i) => reaches(reach.local, rect_of(i.x, i.y, i.width, i.height)),
+            // vello's blur reaches about three standard deviations, and the
+            // standard deviation is half the CSS blur.
+            Paint::Shadow { x, y, width, height, blur, .. } => {
+                reaches(reach.local, rect_of(*x, *y, *width, *height).inflate(2.0 * *blur as f64 + 1.0, 2.0 * *blur as f64 + 1.0))
+            }
+            Paint::Tick(t) => {
+                let pad = (t.height * 0.16).max(1.5) as f64 + 1.0;
+                reaches(reach.local, rect_of(t.x, t.y, t.width, t.height).inflate(pad, pad))
+            }
+            Paint::Path(p) => {
+                let (mut x0, mut y0, mut x1, mut y1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
+                let mut take = |x: f32, y: f32| {
+                    x0 = x0.min(x);
+                    y0 = y0.min(y);
+                    x1 = x1.max(x);
+                    y1 = y1.max(y);
+                };
+                // A curve stays inside its control points, so they bound it.
+                for c in &p.content.commands {
+                    match *c {
+                        PathCmd::Move { x, y } => take(x, y),
+                        PathCmd::Curve { x1, y1, x2, y2, x, y } => {
+                            take(x1, y1);
+                            take(x2, y2);
+                            take(x, y);
+                        }
+                        PathCmd::Close => {}
+                    }
+                }
+                if x0 > x1 {
+                    false
+                } else {
+                    // A miter can reach several stroke widths past a corner.
+                    let pad = if p.paint.stroke.is_some() { p.paint.stroke_width as f64 * 4.0 + 1.0 } else { 1.0 };
+                    let bounds = Rect::new(
+                        (p.x + x0) as f64,
+                        (p.y + y0) as f64,
+                        (p.x + x1) as f64,
+                        (p.y + y1) as f64,
+                    );
+                    reaches(reach.local, bounds.inflate(pad, pad))
+                }
+            }
+            Paint::Text(t) => text_reaches(reach.local, t, &mut measure),
+        };
+        shown.push(keep);
+    }
+    shown
+}
+
 /// Build a fresh scene from paint items, in list order (parents first).
 /// `caret_visible` gates the focused input's caret: the shell toggles it on a
 /// timer so the caret blinks, without rebuilding or re-laying-out the tree.
@@ -248,12 +434,38 @@ pub fn build_scene(
     images: &mut ImageCache,
     caret_visible: bool,
 ) -> Scene {
+    build(items, text, images, caret_visible, None)
+}
+
+/// [`build_scene`] for a window `view` wide and high, leaving out what cannot
+/// be seen in it (see [`visible_paints`]).
+pub fn build_scene_within(
+    items: &[Paint],
+    text: &mut TextEngine,
+    images: &mut ImageCache,
+    caret_visible: bool,
+    view: (f32, f32),
+) -> Scene {
+    let shown = visible_paints(items, view, |tc, width| text.measure(&tc.text, &text_style(tc), Some(width)));
+    build(items, text, images, caret_visible, Some(&shown))
+}
+
+fn build(
+    items: &[Paint],
+    text: &mut TextEngine,
+    images: &mut ImageCache,
+    caret_visible: bool,
+    shown: Option<&[bool]>,
+) -> Scene {
     let mut scene = Scene::new();
     // Active `transform` stack. Every draw uses the accumulated transform so a
     // transformed element carries its subtree with it. (Hit regions are computed
     // untransformed, so they don't follow, a documented limitation.)
     let mut tstack: Vec<Affine> = Vec::new();
-    for item in items {
+    for (i, item) in items.iter().enumerate() {
+        if shown.is_some_and(|s| !s[i]) {
+            continue;
+        }
         let cur = tstack.last().copied().unwrap_or(Affine::IDENTITY);
         match item {
             Paint::Rect(r) => {

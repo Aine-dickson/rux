@@ -5959,8 +5959,12 @@ impl App {
             Some([end(sel_start), end(sel_end)])
         });
 
-        let content =
-            profile::time(Phase::Scene, || rux_paint::build_scene(&layout.paints, text, images, caret_visible));
+        // Only what can be seen is drawn: the whole surface, in logical pixels,
+        // the part under a soft keyboard included, since a paint may reach it.
+        let surface = ((width as f64 / scale) as f32, (height as f64 / scale) as f32);
+        let content = profile::time(Phase::Scene, || {
+            rux_paint::build_scene_within(&layout.paints, text, images, caret_visible, surface)
+        });
         state.scene.reset();
         state
             .scene

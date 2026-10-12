@@ -2419,12 +2419,64 @@ Float indexing narrows to what the types allow: an index is an `int`, and a
      ms and scene 1.62 to 1.57 ms, about 0.25 ms a frame. Kept because it
      is consistent, changes nothing an author sees, and an allocation
      costs more on a phone. Gate green (1128).
-   - (g).6 **Nothing is left out for being off screen.** The list is 300
-     rows, about 6 600 px, in a 1 000 px window, and every row is
-     collected, encoded and handed to the GPU. A paint wholly outside the
-     window, and outside every clip it is in, can be skipped, taking its
-     transform into account. Measure the scene and GPU with the window
-     showing a tenth of the rows first.
+   - (g).6 **Done 2026-10-12: what cannot be seen is not drawn.** The list
+     is 300 rows, about 6 600 px, in a 1 000 px window, and every row was
+     encoded and handed to the GPU. `rux_paint::visible_paints` decides,
+     item by item, whether any of it can land in the window: it follows
+     the clips and transforms above each item, holding what is left of the
+     window both in window terms and in the item's own (so a rotated or
+     scaled subtree is tested where it is drawn; a transform that flattens
+     everything leaves nothing). Bounds are generous: a shadow's blur, a
+     stroke's miter, a rounded clip as its whole box, and 2 px all round
+     for anti-aliasing. **Text is the careful one**, since glyphs are not
+     held by their box: a long word or `nowrap` runs out of the right,
+     centred text out of both sides, a short box lets lines fall out of
+     its bottom. Glyphs never rise above the box's top or begin left of a
+     start-aligned box, so text below or right of the window (a long list)
+     is dropped without measuring; any other miss is measured at the width
+     it is drawn at first. Markers (clip, transform, opacity) are always
+     kept. The shell draws its page through `build_scene_within` at the
+     whole surface's size, the part under a soft keyboard included;
+     `build_scene` is unchanged for the shell's own overlays.
+
+     Found by the window, not the tests: at 1.5x scale a card scrolled
+     just out of a scroller still shaded one row of pixels along its top,
+     because a clip's edge is anti-aliased too and a box ending exactly at
+     it shares that pixel. Hence the 2 px; `a_box_flush_with_a_clip_edge_is_kept`
+     fails without it.
+
+     Checked: `crates/rux-paint/tests/visible.rs`, seven cases, each a way
+     for a paint to be partly visible while its box is not (the two text
+     cases fail with the measuring removed). In the window, release
+     builds with and without, shot by `rux-harness/compare-builds.ps1`
+     (which now takes `-Wheel N` to scroll first): 16 examples at desktop
+     size, 10 in the phone preview and 7 scrolled six notches, each
+     identical in the content area (0 to 4 single pixels of noise; the
+     scrolled shots confirmed scrolled, against the unscrolled one). Gate
+     green, 1161 tests.
+
+     | List of 300, release | Before | After |
+     |---|---|---|
+     | scene, bench | 1.55 ms | 0.21 ms (7.4x faster) |
+     | scene, window | 1.36 ms | 0.20 ms (6.8x faster) |
+     | GPU, window (5 of 6 rounds) | 2.5 ms | 1.05 ms (2.4x faster) |
+     | whole frame, window | 11.5 ms | 9.0 ms (1.3x faster) |
+
+     One round read the GPU at 7.1 ms on its own: the phase's machine-state
+     noise, which is why it was run six times.
+
+   **Where track (g) leaves the list of 300**, whole frame in the window:
+   26.5 ms when it began, 9.0 ms now (2.9x faster). Of the 9.0: patch 4.9,
+   layout 2.7, GPU 1.05, scene 0.2. The patch is now more than half of it.
+   - (g).7 **For the owner: the patch, 4.9 ms.** What (g).2 left: each row
+     is still visited on every reconcile (its key planned, compared with
+     its cached build, moved), about 15 us a row. Going well under a
+     millisecond means not visiting a row whose inputs did not change,
+     which needs knowing that without comparing it: the row's reads (the
+     signals and the item it was built from) recorded per row, and a
+     reorder handled as a move of the rows' places rather than a rebuild
+     of the list. That reaches into the runtime's reactivity, so it is a
+     design to put to the owner before building, not a trim.
 
 Steps 2 to 5 change nothing an author sees except the decided syntax and
 types, which is what made them safe to take in order.
