@@ -2351,11 +2351,41 @@ Float indexing narrows to what the types allow: an index is an `int`, and a
      back, twice each): layout 6.9 ms on 0.7 against 9.8 ms on 0.15, the
      whole measured frame 17.2 ms against 20.3 ms; patch, scene and GPU
      unchanged. A first run read layout 11.3 ms on its own: machine state.
-   - (g).4b **Next: rebase g.4 on Taffy 0.15** (`wip/g4-kept-tree`,
-     5371fba). Drop its `unclamp` parameter (the #32 workaround is gone),
-     keep its proof, and the random test must pass every seed, with the
-     seed count raised. Measure the list again: the bench's whole layout
-     is now 9.0 ms, so the kept tree's share is larger than it was.
+   - (g).4b **Done 2026-10-12: g.4 landed on Taffy 0.15.** The parked
+     commit was applied and the upgrade's edits made again on top of it;
+     its `unclamp` parameter went with the #32 workaround, and its own
+     dirty-marking of a removed node's parent too, since Taffy's `remove`
+     does that from 0.14 on (and drops the node's text context, which 0.7
+     left behind). Exact now, checked four ways:
+     - `tests/kept.rs` (rux-layout): the random test runs 200 seeds of 25
+       frames by default (`KEPT_SEEDS` for more); 5 000 seeds, 125 000
+       random frames, all equal to a whole layout. The seed that failed on
+       0.7 passes.
+     - `tests/kept_layout.rs` (rux-runtime): every example through one
+       kept state at six window sizes, each frame against a whole layout.
+     - Shown to catch a fault: with a changed text cap not marked dirty,
+       `kept.rs` fails. (With the removed node's parent not marked, nothing
+       fails, which is how Taffy doing it itself was found.)
+     - In the window, real fonts: a debug build (which lays every frame out
+       whole as well and panics on a difference) ran 15 examples and the
+       list, each resized to four sizes, with no difference; the same drive
+       with style updates broken on purpose panics at once
+       (`rux-harness/taffy-upgrade/kept-drive.ps1`; its first version
+       resized the wrong window and proved nothing, found by this check).
+     The ten examples of (g).1 paint the same with and without it (0 to 3
+     single pixels, run-to-run noise). Gate green, 1154 tests.
+
+     | List of 300, release | Whole layout (0.15) | Kept tree |
+     |---|---|---|
+     | layout, bench | 9.3 ms | 3.1 ms (2.9x faster) |
+     | layout, window | 9.1 ms | 2.7 ms (3.3x faster) |
+     | whole frame, window | 18.8 ms | 11.6 ms (1.6x faster) |
+
+     Against Taffy 0.7 before any of this (6.4 ms bench, frame 17.2 ms in
+     the window), layout is 2.0x faster. What is left of the 2.7 ms is the
+     walk itself (each node's style built and compared, paints, paths),
+     not Taffy, whose compute is now a fraction of a millisecond; the
+     frame's largest part is the patch, 4.9 ms.
    - (g).4c **The whole-layout cost on Taffy 0.15**, 3.3 to 5.2 ms of
      compute. Matters for the first frame, a resize, a page swap. Find
      where Taffy's misses come from on this list (axis or parent size in

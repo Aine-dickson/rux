@@ -72,6 +72,7 @@ fn list_layout_cost() {
     let mut patch_us = Vec::with_capacity(frames);
     let mut scene_us = Vec::with_capacity(frames);
     let mut images = rux_paint::ImageCache::new();
+    let mut kept = rux_layout::LayoutState::new();
     for _ in 0..frames {
         now += 16.0;
         let t = Instant::now();
@@ -81,8 +82,14 @@ fn list_layout_cost() {
         let mut measure = |tc: &rux_layout::TextContent, mw: Option<f32>| {
             text.measure(&tc.text, &rux_paint::text_style(tc), mw)
         };
-        let out = rux_layout::layout(&doc.root, 800.0, 600.0, &mut measure);
+        let out = kept.layout_scrolled(&doc.root, 800.0, 600.0, &[], &mut measure);
         layout_us.push(t.elapsed().as_secs_f64() * 1e6);
+        // A kept layout is the whole one, checked outside the timing. Debug
+        // builds check every frame inside `layout_scrolled` itself.
+        if layout_us.len() % 10 == 0 {
+            let whole = rux_layout::layout(&doc.root, 800.0, 600.0, &mut measure);
+            assert_eq!(format!("{out:?}"), format!("{whole:?}"), "kept and whole layouts differ");
+        }
         let t = Instant::now();
         let scene = rux_paint::build_scene(&out.paints, &mut text, &mut images, false);
         scene_us.push(t.elapsed().as_secs_f64() * 1e6);

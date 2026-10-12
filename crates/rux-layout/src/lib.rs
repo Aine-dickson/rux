@@ -2729,6 +2729,103 @@ fn inner_cap(style: &Style, own: Option<f32>) -> Option<f32> {
     })
 }
 
+/// A node as the last frame laid it out: its Taffy node, and what it takes to
+/// match it to the node that stands in its place this frame.
+///
+/// Kept so Taffy keeps its cache (track (g).4): a node handed the same style,
+/// text and children as before is left alone, and Taffy answers for it, and
+/// everything under it, from what it worked out last time.
+///
+/// **Which old node a new one is given only decides how much is reused, never
+/// what is laid out.** Whatever a node is matched to, [`node_for`] makes its
+/// style, text and children what this frame says they are, and marks it dirty
+/// when any of them differ. So a key that collides, or a row that swaps places
+/// with an unkeyed sibling, costs a layout of that part and nothing worse.
+struct Kept {
+    id: NodeId,
+    /// The `r-key`, hashed. A hash is enough for the reason above.
+    key: Option<u64>,
+    /// The width cap the measure hook wrapped this text at. Taffy cannot see it,
+    /// so a change to it has to mark the node dirty by hand.
+    cap: Option<f32>,
+    children: Vec<Kept>,
+}
+
+fn key_hash(key: &str) -> u64 {
+    use std::hash::Hasher;
+    let mut h = IdHasher::default();
+    h.write(key.as_bytes());
+    h.finish()
+}
+
+/// A node no longer in the document: it and everything under it are removed
+/// once the frame's tree is built. See [`LayoutState`].
+fn bury(kept: Kept, garbage: &mut Vec<NodeId>) {
+    garbage.push(kept.id);
+    for child in kept.children {
+        bury(child, garbage);
+    }
+}
+
+/// Whether two texts measure the same: everything `measure` is handed that can
+/// change a size. Colour, alignment, caret and selection cannot.
+fn measures_alike(a: &TextContent, b: &TextContent) -> bool {
+    a.text == b.text
+        && a.font_size == b.font_size
+        && a.weight == b.weight
+        && a.wrap == b.wrap
+        && a.font_family == b.font_family
+        && a.letter_spacing == b.letter_spacing
+        && a.word_spacing == b.word_spacing
+        && a.line_height == b.line_height
+        && a.italic == b.italic
+        && a.underline == b.underline
+        && a.strikethrough == b.strikethrough
+        && a.nowrap == b.nowrap
+}
+
+/// The Taffy node for one of this frame's nodes: `old` brought up to date, or a
+/// new one when there is nothing to reuse.
+///
+/// Each setter marks the node and its ancestors dirty, so each is called only
+/// when something differs; an unchanged node keeps its cache.
+fn node_for(
+    tree: &mut TaffyTree<TextContent>,
+    old: Option<NodeId>,
+    style: taffy::Style,
+    text: Option<&TextContent>,
+    children: &[NodeId],
+) -> NodeId {
+    let Some(id) = old else {
+        let id = match text {
+            Some(tc) => tree.new_leaf_with_context(style, tc.clone()),
+            None if children.is_empty() => tree.new_leaf(style),
+            None => tree.new_with_children(style, children),
+        }
+        .expect("taffy node");
+        return id;
+    };
+    if *tree.style(id).expect("taffy style") != style {
+        tree.set_style(id, style).expect("taffy style");
+    }
+    match (tree.get_node_context_mut(id), text) {
+        (Some(have), Some(tc)) => {
+            // What measure is never asked about is left as it was: the
+            // context is read by the measure hook alone.
+            if !measures_alike(have, tc) {
+                *have = tc.clone();
+                tree.mark_dirty(id).expect("taffy dirty");
+            }
+        }
+        (None, None) => {}
+        (_, tc) => tree.set_node_context(id, tc.cloned()).expect("taffy context"),
+    }
+    if !TraversePartialTree::child_ids(tree, id).eq(children.iter().copied()) {
+        tree.set_children(id, children).expect("taffy children");
+    }
+    id
+}
+
 #[allow(clippy::too_many_arguments)]
 fn build(
     tree: &mut TaffyTree<TextContent>,
@@ -2774,16 +2871,160 @@ fn build(
     // what makes the *size* right too: `left: 0; right: 0` means "as wide as the
     // containing block", which is a question only the layout can answer.
     hoisted: &mut Vec<(NodeId, bool)>,
-) -> NodeId {
+    // What this node was last frame, when one was matched to it. See `Kept`.
+    old: Option<Kept>,
+    // The viewport, for the root alone: it is forced to fill it, so a `screen`
+    // always covers the window, and it takes every out-of-flow box still
+    // looking for a containing block.
+    root: Option<(f32, f32)>,
+    // Taffy nodes nothing matched this frame, removed once the tree is built.
+    garbage: &mut Vec<NodeId>,
+) -> (NodeId, Kept) {
     let own_cap = width_cap(&node.style, cap, vp);
     let child_cap = inner_cap(&node.style, own_cap);
     let row = node.key.as_deref().or(row);
-    let id = if let Some(tc) = &node.text {
-        // Text leaves carry their content as taffy context so the measure hook
-        // can shape them.
-        let id = tree
-            .new_leaf_with_context(to_taffy(&node.style, vp), tc.clone())
-            .expect("taffy text leaf");
+    let (old_id, old_cap, mut old_children) = match old {
+        Some(k) => (Some(k.id), k.cap, k.children),
+        None => (None, None, Vec::new()),
+    };
+    let mut ts = to_taffy(&node.style, vp);
+    let mut child_ids: Vec<NodeId> = Vec::new();
+    let mut kept_children: Vec<Kept> = Vec::new();
+    // The text's own cap: it wraps inside this box, so its own padding and
+    // border come out of the width available to the glyphs.
+    let mut text_cap = None;
+    if node.text.is_some() {
+        text_cap = child_cap;
+    } else if node.tick.is_some() {
+    } else if let Some(ic) = &node.image {
+        // An image with no CSS size falls back to its intrinsic pixel size, the
+        // way a browser sizes an <img>.
+        if node.style.width.is_none() {
+            ts.size.width = length(ic.intrinsic.0);
+        }
+        if node.style.height.is_none() {
+            ts.size.height = length(ic.intrinsic.1);
+        }
+    } else if let Some(pc) = &node.path {
+        // A path given no CSS size takes the size of its own geometry, the way
+        // an <image> takes its intrinsic pixels. That makes the common case
+        // (paste some path data, see it) work with no box to write, and the
+        // geometry is in the element's own coordinates either way: naming a
+        // width does not rescale the drawing, it changes the box the drawing
+        // sits in. Scaling is `transform`, which every other element already
+        // uses for the same thing.
+        let bounds = pc.bounds();
+        if node.style.width.is_none() {
+            ts.size.width = length(bounds.map_or(0.0, |b| b.2.max(0.0)));
+        }
+        if node.style.height.is_none() {
+            ts.size.height = length(bounds.map_or(0.0, |b| b.3.max(0.0)));
+        }
+    } else {
+        let mark = hoisted.len();
+        // Each child is matched to last frame's child with the same key, or,
+        // unkeyed, to the unkeyed one at the same index. Rotating a list then
+        // reuses every row and changes only the order under its parent.
+        let mut olds: Vec<Option<Kept>> = std::mem::take(&mut old_children).into_iter().map(Some).collect();
+        let mut by_key: Option<HashMap<u64, usize, std::hash::BuildHasherDefault<IdHasher>>> = None;
+        kept_children.reserve(node.children.len());
+        for (i, c) in node.children.iter().enumerate() {
+            let want = c.key.as_deref().map(key_hash);
+            let here = olds.get(i).and_then(Option::as_ref).is_some_and(|o| o.key == want);
+            let at = if here {
+                Some(i)
+            } else if let Some(h) = want {
+                let by_key = by_key.get_or_insert_with(|| {
+                    olds.iter()
+                        .enumerate()
+                        .filter_map(|(j, o)| Some((o.as_ref()?.key?, j)))
+                        .collect()
+                });
+                by_key.get(&h).copied()
+            } else {
+                None
+            };
+            let prev = at.and_then(|j| olds[j].take());
+            let mut cp = path.to_vec();
+            cp.push(i);
+            // Text in a block box once took no automatic `max-width: 100%`
+            // here: Taffy 0.7 resolved the percentage against a parent size
+            // from an earlier pass and kept a one-line height for text that
+            // then wrapped onto two (watchlist #32). Taffy 0.12 keys its
+            // cache on the parent size, and tests/stretch_text.rs, which
+            // fails on 0.7 without that exception, passes on 0.15 without
+            // it, so the exception is gone.
+            let (cid, kept) = build(tree, c, paint, handlers, models, focus_labels, hidden, opacities, scrolls, transforms, states, access, &cp, paths, vp, child_cap, caps, row, stickies, hoisted, prev, None, garbage);
+            kept_children.push(kept);
+            match hoists(&c.style) {
+                Some(fixed) => hoisted.push((cid, fixed)),
+                None => child_ids.push(cid),
+            }
+        }
+        for gone in olds.into_iter().flatten() {
+            bury(gone, garbage);
+        }
+        // This box is a containing block, so the out-of-flow descendants that
+        // came up from its subtree stop here.
+        //
+        // **A `transform` makes a containing block for both kinds**, whatever
+        // the box's own `position` says, which is CSS's rule and the reason
+        // `position: fixed` famously stops being fixed inside a transformed
+        // parent. It is not an oddity to work around: a transform moves the
+        // whole subtree, so there is no way to hold a descendant still against
+        // the window while its ancestor slides, and pretending otherwise would
+        // mean drawing it somewhere the transform says it is not.
+        //
+        // Without a transform, only a non-static box claims anything, and only
+        // the absolute ones: `fixed` carries on to the root.
+        //
+        // They go on the end, which is also where CSS paints them: a positioned
+        // descendant is drawn over its containing block's in-flow content.
+        let transformed = node.style.transform.is_some();
+        if transformed || node.style.position.is_containing_block() {
+            let mut i = mark;
+            while i < hoisted.len() {
+                let carries_on = hoisted[i].1 && !transformed;
+                if carries_on {
+                    i += 1;
+                } else {
+                    child_ids.push(hoisted.remove(i).0);
+                }
+            }
+        }
+        // The root is the initial containing block, so it takes whatever is
+        // still looking for one: every `fixed` box, and any absolute box with
+        // no non-static ancestor. It is also the window, which is what makes
+        // `fixed` mean fixed, since a box parented to the root is outside every
+        // scroller and so is never shifted by one.
+        if root.is_some() {
+            child_ids.extend(hoisted.drain(..).map(|(id, _)| id));
+        }
+    }
+    // A node that was a box last frame and is a leaf now leaves its children.
+    for gone in old_children {
+        bury(gone, garbage);
+    }
+    if let Some((w, h)) = root {
+        ts.size = Size {
+            width: length(w),
+            height: length(h),
+        };
+    }
+    let id = node_for(tree, old_id, ts, node.text.as_ref(), &child_ids);
+    if old_id.is_some() && text_cap != old_cap {
+        tree.mark_dirty(id).expect("taffy dirty");
+    }
+    if let Some(c) = text_cap {
+        caps.insert(id, c);
+    }
+    let kept = Kept {
+        id,
+        key: node.key.as_deref().map(key_hash),
+        cap: text_cap,
+        children: kept_children,
+    };
+    if let Some(tc) = &node.text {
         // A text node is a box too: its background and border paint under the
         // glyphs. (collect() walks every paint entry for a node, in order.)
         paint.push((
@@ -2799,27 +3040,9 @@ fn build(
             },
         ));
         paint.push((id, PaintKind::Text(tc.clone())));
-        // The text wraps inside this box, so its own padding and border come
-        // out of the width available to the glyphs.
-        if let Some(c) = child_cap {
-            caps.insert(id, c);
-        }
-        id
     } else if let Some(color) = node.tick {
-        let id = tree.new_leaf(to_taffy(&node.style, vp)).expect("taffy tick");
         paint.push((id, PaintKind::Tick(color)));
-        id
     } else if let Some(ic) = &node.image {
-        // An image with no CSS size falls back to its intrinsic pixel size, the
-        // way a browser sizes an <img>.
-        let mut ts = to_taffy(&node.style, vp);
-        if node.style.width.is_none() {
-            ts.size.width = length(ic.intrinsic.0);
-        }
-        if node.style.height.is_none() {
-            ts.size.height = length(ic.intrinsic.1);
-        }
-        let id = tree.new_leaf(ts).expect("taffy image leaf");
         paint.push((
             id,
             PaintKind::Box {
@@ -2833,24 +3056,7 @@ fn build(
             },
         ));
         paint.push((id, PaintKind::Image(ic.clone())));
-        id
     } else if let Some(pc) = &node.path {
-        // A path given no CSS size takes the size of its own geometry, the way
-        // an <image> takes its intrinsic pixels. That makes the common case
-        // (paste some path data, see it) work with no box to write, and the
-        // geometry is in the element's own coordinates either way: naming a
-        // width does not rescale the drawing, it changes the box the drawing
-        // sits in. Scaling is `transform`, which every other element already
-        // uses for the same thing.
-        let mut ts = to_taffy(&node.style, vp);
-        let bounds = pc.bounds();
-        if node.style.width.is_none() {
-            ts.size.width = length(bounds.map_or(0.0, |b| b.2.max(0.0)));
-        }
-        if node.style.height.is_none() {
-            ts.size.height = length(bounds.map_or(0.0, |b| b.3.max(0.0)));
-        }
-        let id = tree.new_leaf(ts).expect("taffy path leaf");
         paint.push((
             id,
             PaintKind::Box {
@@ -2877,67 +3083,7 @@ fn build(
                 },
             ),
         ));
-        id
     } else {
-        let mark = hoisted.len();
-        let mut children: Vec<NodeId> = node
-            .children
-            .iter()
-            .enumerate()
-            .filter_map(|(i, c)| {
-                let mut cp = path.to_vec();
-                cp.push(i);
-                let cid = build(tree, c, paint, handlers, models, focus_labels, hidden, opacities, scrolls, transforms, states, access, &cp, paths, vp, child_cap, caps, row, stickies, hoisted);
-                // Text in a block box once took no automatic `max-width: 100%`
-                // here: Taffy 0.7 resolved the percentage against a parent size
-                // from an earlier pass and kept a one-line height for text that
-                // then wrapped onto two (watchlist #32). Taffy 0.12 keys its
-                // cache on the parent size, and tests/stretch_text.rs, which
-                // fails on 0.7 without that exception, passes on 0.15 without
-                // it, so the exception is gone.
-                match hoists(&c.style) {
-                    Some(fixed) => {
-                        hoisted.push((cid, fixed));
-                        None
-                    }
-                    None => Some(cid),
-                }
-            })
-            .collect();
-        // This box is a containing block, so the out-of-flow descendants that
-        // came up from its subtree stop here.
-        //
-        // **A `transform` makes a containing block for both kinds**, whatever
-        // the box's own `position` says, which is CSS's rule and the reason
-        // `position: fixed` famously stops being fixed inside a transformed
-        // parent. It is not an oddity to work around: a transform moves the
-        // whole subtree, so there is no way to hold a descendant still against
-        // the window while its ancestor slides, and pretending otherwise would
-        // mean drawing it somewhere the transform says it is not.
-        //
-        // Without a transform, only a non-static box claims anything, and only
-        // the absolute ones: `fixed` carries on to the root.
-        //
-        // They go on the end, which is also where CSS paints them: a positioned
-        // descendant is drawn over its containing block's in-flow content.
-        let transformed = node.style.transform.is_some();
-        if transformed || node.style.position.is_containing_block() {
-            let mut i = mark;
-            while i < hoisted.len() {
-                let carries_on = hoisted[i].1 && !transformed;
-                if carries_on {
-                    i += 1;
-                } else {
-                    children.push(hoisted.remove(i).0);
-                }
-            }
-        }
-        let id = if children.is_empty() {
-            tree.new_leaf(to_taffy(&node.style, vp)).expect("taffy leaf")
-        } else {
-            tree.new_with_children(to_taffy(&node.style, vp), &children)
-                .expect("taffy node")
-        };
         paint.push((
             id,
             PaintKind::Box {
@@ -2951,8 +3097,7 @@ fn build(
                 shadow: node.style.box_shadow,
             },
         ));
-        id
-    };
+    }
     // Last of the node's own paint, and read after its children: see
     // `PaintKind::Outline` in `collect`.
     if let Some(outline) = node.style.outline {
@@ -3030,7 +3175,7 @@ fn build(
     if node.access.role.is_meaningful() {
         access.push((id, node.access.clone(), node.model.clone()));
     }
-    id
+    (id, kept)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -3596,6 +3741,9 @@ pub fn layout(root: &Node, avail_w: f32, avail_h: f32, measure: &mut Measure) ->
 
 /// Lay out with the shell's current scroll offsets (one per scrollable box, in
 /// tree order). A missing entry is 0.
+///
+/// Builds the whole Taffy tree and lays it all out. A caller laying out frame
+/// after frame keeps a [`LayoutState`] instead.
 pub fn layout_scrolled(
     root: &Node,
     avail_w: f32,
@@ -3603,225 +3751,302 @@ pub fn layout_scrolled(
     offsets: &[Offset],
     measure: &mut Measure,
 ) -> Layout {
-    let mut tree: TaffyTree<TextContent> = TaffyTree::new();
-    // Taffy rounds boxes to whole pixels by default, which can shave a fraction
-    // off a text box and make paint re-wrap the last word into a line the box
-    // has no height for. Keep the exact sizes measure asked for.
-    tree.disable_rounding();
-    let mut paint = Vec::new();
-    let mut handlers = Vec::new();
-    let mut models = Vec::new();
-    let mut focus_labels = Vec::new();
-    let mut hidden = Vec::new();
-    let mut opacities = Vec::new();
-    let mut scrolls = Vec::new();
-    let mut transforms = Vec::new();
-    let mut states = Vec::new();
-    let mut access = Vec::new();
-    let mut paths = Vec::new();
-    let vp = (avail_w, avail_h);
-    let mut caps: IdMap<f32> = IdMap::default();
-    let mut stickies: Vec<(NodeId, [Option<f32>; 4])> = Vec::new();
-    let mut hoisted: Vec<(NodeId, bool)> = Vec::new();
-    let root_id = build(
-        &mut tree,
-        root,
-        &mut paint,
-        &mut handlers,
-        &mut models,
-        &mut focus_labels,
-        &mut hidden,
-        &mut opacities,
-        &mut scrolls,
-        &mut transforms,
-        &mut states,
-        &mut access,
-        &[], // the root's own path is empty
-        &mut paths,
-        vp,
-        // The root is forced to the viewport below, so that is the widest
-        // anything can be.
-        Some(avail_w),
-        &mut caps,
-        None, // the root is not inside any row
-        &mut stickies,
-        &mut hoisted,
-    );
+    LayoutState::new().lay_out(root, avail_w, avail_h, offsets, measure)
+}
 
-    // The root is the initial containing block, so it takes whatever is still
-    // looking for one: every `fixed` box, and any absolute box with no
-    // non-static ancestor. It is also the window, which is what makes `fixed`
-    // mean fixed, since a box parented to the root is outside every scroller and
-    // so is never shifted by one.
-    for (id, _) in hoisted.drain(..) {
-        tree.add_child(root_id, id).expect("the root takes what is left");
+/// The Taffy tree kept from one frame to the next, so a frame lays out only
+/// what changed (track (g).4 of `docs/11-next.md`).
+///
+/// Each frame's nodes are matched to the last frame's (see `Kept`), and a node
+/// whose style, text, text cap and children are all as they were keeps its
+/// Taffy node and Taffy's cache. Rotating a list of 300 rows then dirties the
+/// list and its ancestors, and Taffy answers for every row from its cache.
+///
+/// Debug builds lay every frame out again from scratch and panic if the two
+/// differ in anything, paints, regions or metrics.
+pub struct LayoutState {
+    tree: TaffyTree<TextContent>,
+    kept: Option<Kept>,
+    /// Taffy nodes found unmatched while building, removed after.
+    garbage: Vec<NodeId>,
+}
+
+impl Default for LayoutState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl LayoutState {
+    pub fn new() -> Self {
+        let mut tree: TaffyTree<TextContent> = TaffyTree::new();
+        // Taffy rounds boxes to whole pixels by default, which can shave a
+        // fraction off a text box and make paint re-wrap the last word into a
+        // line the box has no height for. Keep the exact sizes measure asked for.
+        tree.disable_rounding();
+        Self { tree, kept: None, garbage: Vec::new() }
     }
 
-    // Force the root to fill the viewport so a `screen` always covers the window.
-    let mut root_style = to_taffy(&root.style, vp);
-    root_style.size = Size {
-        width: length(avail_w),
-        height: length(avail_h),
-    };
-    tree.set_style(root_id, root_style).expect("set root style");
-
-    // An absolutely positioned box with no insets sits at its **static**
-    // position in CSS: where it would have been in normal flow. taffy has no
-    // such concept and puts it at the parent's content-box origin instead, so
-    // such a box jumped to the top-left of its parent. That is what made a
-    // departing page fly up over the nav bar, and it is why a route transition
-    // needed a wrapper box to look right at all.
-    //
-    // So it is laid out twice. The first pass leaves it in the flow, which is
-    // what discovers where it would have been; the second pins it there and
-    // takes it out. The cost is one extra layout, and only when such a box
-    // exists at all, which is normally never and during a swap is brief.
-    //
-    // **Only one out-of-flow sibling goes back in the flow at a time**, which
-    // is the whole reason for the `rounds` below. Putting them all back at once
-    // measures each one against the others, and a box that holds no space
-    // cannot push its sibling down: two of them landed a whole box apart
-    // instead of on top of one another. Seen in `examples/chart.rux`, where a
-    // filled band and the line over it are two absolutely positioned paths over
-    // the same points, and the line was drawn a band's height below the band,
-    // outside the frame entirely.
-    //
-    // Siblings are the only ones that interfere, so the number of passes is the
-    // most no-inset absolute children any single parent has: one in almost
-    // every document, two for a chart, and never the total.
-    let mut statics: Vec<(NodeId, NodeId)> = Vec::new();
-    collect_statics(&tree, root_id, &mut statics);
-    // Each one's index among its own parent's statics, which is the pass it
-    // gets to be in the flow for.
-    let mut rounds: Vec<usize> = Vec::with_capacity(statics.len());
-    {
-        let mut seen: HashMap<NodeId, usize> = HashMap::new();
-        for (parent, _) in &statics {
-            let n = seen.entry(*parent).or_insert(0);
-            rounds.push(*n);
-            *n += 1;
-        }
+    /// Drop everything kept, so the next frame is laid out whole.
+    ///
+    /// For when `measure` would now answer differently for the same text, as
+    /// it does once a font is registered: Taffy's cache holds the old answers
+    /// and has no way to know.
+    pub fn forget(&mut self) {
+        *self = Self::new();
     }
-    let passes = rounds.iter().copied().max().map_or(0, |m| m + 1);
 
-    // Taffy 0.14 on hands a leaf its whole layout input; `compute_leaf_layout`
-    // is the leaf sizing it did before, around the text's own size below.
-    let mut measure_fn = |inputs: taffy::LayoutInput,
-                          id: NodeId,
-                          ctx: Option<&mut TextContent>,
-                          style: &taffy::Style| {
-        taffy::compute_leaf_layout(inputs, style, |_, _| 0.0, |known: Size<Option<f32>>, available: Size<AvailableSpace>| {
-            if let (Some(w), Some(h)) = (known.width, known.height) {
-                return Size { width: w, height: h };
+    /// [`layout_scrolled`], reusing what the last call laid out.
+    ///
+    /// `measure` must answer the same for the same text, font and width from
+    /// one call to the next (see [`LayoutState::forget`]); it is asked again
+    /// only about a text that changed in something a size can depend on.
+    pub fn layout_scrolled(
+        &mut self,
+        root: &Node,
+        avail_w: f32,
+        avail_h: f32,
+        offsets: &[Offset],
+        measure: &mut Measure,
+    ) -> Layout {
+        let out = self.lay_out(root, avail_w, avail_h, offsets, measure);
+        #[cfg(debug_assertions)]
+        {
+            let whole = LayoutState::new().lay_out(root, avail_w, avail_h, offsets, measure);
+            let (kept, whole) = (format!("{out:#?}"), format!("{whole:#?}"));
+            if kept != whole {
+                let at = kept.lines().zip(whole.lines()).position(|(a, b)| a != b);
+                let line = |s: &str| at.and_then(|n| s.lines().nth(n)).unwrap_or("").to_string();
+                panic!(
+                    "a kept layout differs from a whole one at line {at:?}: kept `{}`, whole `{}`",
+                    line(&kept),
+                    line(&whole)
+                );
             }
-            match ctx {
-                Some(tc) => {
-                    // Wrap to a definite width; otherwise (content sizing) let
-                    // the text take its natural single-line width.
-                    let max = known.width.or(match available.width {
-                        AvailableSpace::Definite(w) => Some(w),
-                        // Min-content is the narrowest the box can be without
-                        // its content spilling, which for text is the longest
-                        // unbreakable word. Wrapping at zero asks exactly that.
-                        // Answering it with the single-line width (which is
-                        // what "no constraint" means here) told taffy the box
-                        // could never be narrower than one long line.
-                        AvailableSpace::MinContent => Some(0.0),
-                        AvailableSpace::MaxContent => None,
-                    });
-                    // Never measure at a width this box can never have. Taffy
-                    // sizes a capped box from its *un*capped content, clamps
-                    // the width afterwards, and does not revisit the height, so
-                    // a `max-width` card was measured as one long line and
-                    // drawn as three. Wrapping at the cap up front is what
-                    // makes the measured height the height that gets drawn.
-                    let cap = caps.get(&id).copied();
-                    let max = match (max, cap) {
-                        (Some(m), Some(c)) => Some(m.min(c)),
-                        (None, Some(c)) => Some(c),
-                        (m, None) => m,
+        }
+        out
+    }
+
+    fn lay_out(
+        &mut self,
+        root: &Node,
+        avail_w: f32,
+        avail_h: f32,
+        offsets: &[Offset],
+        measure: &mut Measure,
+    ) -> Layout {
+        let tree = &mut self.tree;
+        let mut paint = Vec::new();
+        let mut handlers = Vec::new();
+        let mut models = Vec::new();
+        let mut focus_labels = Vec::new();
+        let mut hidden = Vec::new();
+        let mut opacities = Vec::new();
+        let mut scrolls = Vec::new();
+        let mut transforms = Vec::new();
+        let mut states = Vec::new();
+        let mut access = Vec::new();
+        let mut paths = Vec::new();
+        let vp = (avail_w, avail_h);
+        let mut caps: IdMap<f32> = IdMap::default();
+        let mut stickies: Vec<(NodeId, [Option<f32>; 4])> = Vec::new();
+        let mut hoisted: Vec<(NodeId, bool)> = Vec::new();
+        let (root_id, kept) = build(
+            tree,
+            root,
+            &mut paint,
+            &mut handlers,
+            &mut models,
+            &mut focus_labels,
+            &mut hidden,
+            &mut opacities,
+            &mut scrolls,
+            &mut transforms,
+            &mut states,
+            &mut access,
+            &[], // the root's own path is empty
+            &mut paths,
+            vp,
+            // The root is forced to the viewport, so that is the widest anything
+            // can be.
+            Some(avail_w),
+            &mut caps,
+            None, // the root is not inside any row
+            &mut stickies,
+            &mut hoisted,
+            self.kept.take(),
+            Some(vp),
+            &mut self.garbage,
+        );
+        debug_assert!(hoisted.is_empty(), "the root takes every out-of-flow box");
+        self.kept = Some(kept);
+        // What nothing matched. `bury` lists a subtree from its top down, and
+        // removing a node unhooks its children, so a node's parent here is always
+        // still in the tree: one this frame kept, whose layout has to be redone
+        // without it. Taffy's `remove` marks that parent dirty itself (0.14 on;
+        // 0.7 did not, and this loop did it by hand).
+        for id in self.garbage.drain(..) {
+            tree.remove(id).expect("taffy remove");
+        }
+
+        // An absolutely positioned box with no insets sits at its **static**
+        // position in CSS: where it would have been in normal flow. taffy has no
+        // such concept and puts it at the parent's content-box origin instead, so
+        // such a box jumped to the top-left of its parent. That is what made a
+        // departing page fly up over the nav bar, and it is why a route transition
+        // needed a wrapper box to look right at all.
+        //
+        // So it is laid out twice. The first pass leaves it in the flow, which is
+        // what discovers where it would have been; the second pins it there and
+        // takes it out. The cost is one extra layout, and only when such a box
+        // exists at all, which is normally never and during a swap is brief.
+        //
+        // **Only one out-of-flow sibling goes back in the flow at a time**, which
+        // is the whole reason for the `rounds` below. Putting them all back at once
+        // measures each one against the others, and a box that holds no space
+        // cannot push its sibling down: two of them landed a whole box apart
+        // instead of on top of one another. Seen in `examples/chart.rux`, where a
+        // filled band and the line over it are two absolutely positioned paths over
+        // the same points, and the line was drawn a band's height below the band,
+        // outside the frame entirely.
+        //
+        // Siblings are the only ones that interfere, so the number of passes is the
+        // most no-inset absolute children any single parent has: one in almost
+        // every document, two for a chart, and never the total.
+        let mut statics: Vec<(NodeId, NodeId)> = Vec::new();
+        collect_statics(&tree, root_id, &mut statics);
+        // Each one's index among its own parent's statics, which is the pass it
+        // gets to be in the flow for.
+        let mut rounds: Vec<usize> = Vec::with_capacity(statics.len());
+        {
+            let mut seen: HashMap<NodeId, usize> = HashMap::new();
+            for (parent, _) in &statics {
+                let n = seen.entry(*parent).or_insert(0);
+                rounds.push(*n);
+                *n += 1;
+            }
+        }
+        let passes = rounds.iter().copied().max().map_or(0, |m| m + 1);
+
+        // Taffy 0.14 on hands a leaf its whole layout input; `compute_leaf_layout`
+        // is the leaf sizing it did before, around the text's own size below.
+        let mut measure_fn = |inputs: taffy::LayoutInput,
+                              id: NodeId,
+                              ctx: Option<&mut TextContent>,
+                              style: &taffy::Style| {
+            taffy::compute_leaf_layout(inputs, style, |_, _| 0.0, |known: Size<Option<f32>>, available: Size<AvailableSpace>| {
+                if let (Some(w), Some(h)) = (known.width, known.height) {
+                    return Size { width: w, height: h };
+                }
+                match ctx {
+                    Some(tc) => {
+                        // Wrap to a definite width; otherwise (content sizing) let
+                        // the text take its natural single-line width.
+                        let max = known.width.or(match available.width {
+                            AvailableSpace::Definite(w) => Some(w),
+                            // Min-content is the narrowest the box can be without
+                            // its content spilling, which for text is the longest
+                            // unbreakable word. Wrapping at zero asks exactly that.
+                            // Answering it with the single-line width (which is
+                            // what "no constraint" means here) told taffy the box
+                            // could never be narrower than one long line.
+                            AvailableSpace::MinContent => Some(0.0),
+                            AvailableSpace::MaxContent => None,
+                        });
+                        // Never measure at a width this box can never have. Taffy
+                        // sizes a capped box from its *un*capped content, clamps
+                        // the width afterwards, and does not revisit the height, so
+                        // a `max-width` card was measured as one long line and
+                        // drawn as three. Wrapping at the cap up front is what
+                        // makes the measured height the height that gets drawn.
+                        let cap = caps.get(&id).copied();
+                        let max = match (max, cap) {
+                            (Some(m), Some(c)) => Some(m.min(c)),
+                            (None, Some(c)) => Some(c),
+                            (m, None) => m,
+                        };
+                        let (w, h) = measure(tc, max);
+                        Size {
+                            width: known.width.unwrap_or(w),
+                            height: known.height.unwrap_or(h),
+                        }
+                    }
+                    None => Size {
+                        width: 0.0,
+                        height: 0.0,
+                    },
+                }
+            })
+        };
+
+        let space = Size {
+            width: AvailableSpace::Definite(avail_w),
+            height: AvailableSpace::Definite(avail_h),
+        };
+        tree.compute_layout_with_measure(root_id, space, &mut measure_fn)
+            .expect("compute layout");
+
+        if !statics.is_empty() {
+            // One pass per round. In round `k` the k-th static child of every
+            // parent is in the flow and all the others are out of it, which is
+            // exactly the arrangement its static position is defined against.
+            let mut found: Vec<(f32, f32)> = vec![(0.0, 0.0); statics.len()];
+            for round in 0..passes {
+                for (i, (_, id)) in statics.iter().enumerate() {
+                    let mut st = tree.style(*id).expect("style").clone();
+                    st.position = if rounds[i] == round {
+                        taffy::Position::Relative
+                    } else {
+                        taffy::Position::Absolute
                     };
-                    let (w, h) = measure(tc, max);
-                    Size {
-                        width: known.width.unwrap_or(w),
-                        height: known.height.unwrap_or(h),
+                    tree.set_style(*id, st).expect("one of them back in the flow");
+                }
+                tree.compute_layout_with_measure(root_id, space, &mut measure_fn)
+                    .expect("discover the static positions");
+                for (i, (_, id)) in statics.iter().enumerate() {
+                    if rounds[i] == round {
+                        let here = tree.layout(*id).expect("layout").location;
+                        found[i] = (here.x, here.y);
                     }
                 }
-                None => Size {
-                    width: 0.0,
-                    height: 0.0,
-                },
             }
-        })
-    };
-
-    let space = Size {
-        width: AvailableSpace::Definite(avail_w),
-        height: AvailableSpace::Definite(avail_h),
-    };
-    tree.compute_layout_with_measure(root_id, space, &mut measure_fn)
-        .expect("compute layout");
-
-    if !statics.is_empty() {
-        // One pass per round. In round `k` the k-th static child of every
-        // parent is in the flow and all the others are out of it, which is
-        // exactly the arrangement its static position is defined against.
-        let mut found: Vec<(f32, f32)> = vec![(0.0, 0.0); statics.len()];
-        for round in 0..passes {
             for (i, (_, id)) in statics.iter().enumerate() {
                 let mut st = tree.style(*id).expect("style").clone();
-                st.position = if rounds[i] == round {
-                    taffy::Position::Relative
-                } else {
-                    taffy::Position::Absolute
-                };
-                tree.set_style(*id, st).expect("one of them back in the flow");
+                st.position = taffy::Position::Absolute;
+                st.inset.left = length(found[i].0);
+                st.inset.top = length(found[i].1);
+                tree.set_style(*id, st).expect("pinned where it stood");
             }
             tree.compute_layout_with_measure(root_id, space, &mut measure_fn)
-                .expect("discover the static positions");
-            for (i, (_, id)) in statics.iter().enumerate() {
-                if rounds[i] == round {
-                    let here = tree.layout(*id).expect("layout").location;
-                    found[i] = (here.x, here.y);
-                }
-            }
+                .expect("compute layout again");
         }
-        for (i, (_, id)) in statics.iter().enumerate() {
-            let mut st = tree.style(*id).expect("style").clone();
-            st.position = taffy::Position::Absolute;
-            st.inset.left = length(found[i].0);
-            st.inset.top = length(found[i].1);
-            tree.set_style(*id, st).expect("pinned where it stood");
-        }
-        tree.compute_layout_with_measure(root_id, space, &mut measure_fn)
-            .expect("compute layout again");
-    }
 
-    let mut out = Layout::default();
-    let at = index(
-        &paint, &handlers, &models, &focus_labels, &hidden, &opacities, &scrolls, &transforms,
-        &states, &access, &paths, &stickies,
-    );
-    let built = Built {
-        paint: &paint,
-        handlers: &handlers,
-        models: &models,
-        focus_labels: &focus_labels,
-        transforms: &transforms,
-        opacities: &opacities,
-        states: &states,
-        access: &access,
-        paths: &paths,
-        stickies: &stickies,
-        at,
-    };
-    collect(
-        &tree, root_id, 0.0, 0.0, &built, offsets, vp,
-        // The root is held by the window.
-        (0.0, 0.0, vp.0, vp.1),
-        None, None, 1.0, &mut out,
-    );
-    out
+        let mut out = Layout::default();
+        let at = index(
+            &paint, &handlers, &models, &focus_labels, &hidden, &opacities, &scrolls, &transforms,
+            &states, &access, &paths, &stickies,
+        );
+        let built = Built {
+            paint: &paint,
+            handlers: &handlers,
+            models: &models,
+            focus_labels: &focus_labels,
+            transforms: &transforms,
+            opacities: &opacities,
+            states: &states,
+            access: &access,
+            paths: &paths,
+            stickies: &stickies,
+            at,
+        };
+        collect(
+            &tree, root_id, 0.0, 0.0, &built, offsets, vp,
+            // The root is held by the window.
+            (0.0, 0.0, vp.0, vp.1),
+            None, None, 1.0, &mut out,
+        );
+        out
+    }
 }
 
 #[cfg(test)]

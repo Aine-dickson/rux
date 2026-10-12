@@ -1535,6 +1535,9 @@ struct App {
     /// that follows every state change, so a list doesn't jump back to the top
     /// when you tap something in it.
     offsets: Vec<Offset>,
+    /// The Taffy tree from the last frame, so a frame lays out only what
+    /// changed. Forgotten when a font is registered. See `LayoutState`.
+    layout_state: rux_layout::LayoutState,
     /// The scrollbar thumb being dragged, if any.
     bar_drag: Option<BarDrag>,
     /// Where the finger last was during a touch drag, in logical px.
@@ -1799,6 +1802,7 @@ impl App {
             alt_held: false,
             scrolls: Vec::new(),
             offsets: Vec::new(),
+            layout_state: rux_layout::LayoutState::new(),
             bar_drag: None,
             gesture: None,
             gesture_deadline: None,
@@ -5740,6 +5744,7 @@ impl App {
             open_select,
             scrolls,
             offsets,
+            layout_state,
             states,
             metrics,
             overlay_dismissed,
@@ -5786,7 +5791,7 @@ impl App {
             let mut measure = |tc: &rux_layout::TextContent, mw: Option<f32>| {
                 text.measure(&tc.text, &rux_paint::text_style(tc), mw)
             };
-            rux_layout::layout_scrolled(
+            layout_state.layout_scrolled(
                 &document.root,
                 logical.0 as f32,
                 logical.1 as f32,
@@ -8735,6 +8740,8 @@ pub fn start_web(
     if !app.text.register_font(font) {
         web_sys::console::error_1(&"rux: the supplied font had no usable faces, so text will not render".into());
     }
+    // Taffy's cache would hold sizes measured in the fonts there were.
+    app.layout_state.forget();
     event_loop.spawn_app(app);
 }
 
@@ -8839,6 +8846,8 @@ pub fn start_web_app(
             &"rux: the supplied font had no usable faces, so text will not render".into(),
         );
     }
+    // Taffy's cache would hold sizes measured in the fonts there were.
+    app.layout_state.forget();
     event_loop.spawn_app(app);
 }
 
