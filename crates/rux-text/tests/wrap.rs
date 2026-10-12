@@ -28,6 +28,28 @@ fn measured_width_never_re_wraps_the_text() {
     }
 }
 
+/// The same, for a text ending in spaces, which an interpolation leaves
+/// behind (`Tap to add {{ x }}` with `x` empty). Spaces at the end of a line
+/// hang in CSS; parley hung the first and put the rest on a line of their own,
+/// so the text measured two lines tall in its own box (examples/css-showcase:
+/// a button twice its height, label at the top, found by the taffy 0.15
+/// upgrade). A newline at the end is a real line and still counts.
+#[test]
+fn trailing_spaces_never_wrap_the_text_in_its_own_box() {
+    let mut te = TextEngine::new();
+    let style = TextStyle::new(16.0, 400, Wrap::Normal);
+    let (_, one_line) = te.measure("Tap to add", &style, None);
+    for text in ["Tap to add ", "Tap to add   ", "a b ", "x\u{a0}"] {
+        let (w, h) = te.measure(text, &style, None);
+        assert_eq!(h, one_line, "{text:?}: {h}px measured free");
+        let (_, h_in_box) = te.measure(text, &style, Some(w));
+        assert_eq!(h_in_box, one_line, "{text:?}: {h_in_box}px tall inside its own {w}px box");
+    }
+    let (w, h) = te.measure("abc\n", &style, None);
+    assert!(h > one_line, "a trailing newline is a second line");
+    assert_eq!(te.measure("abc\n", &style, Some(w)).1, h, "and stays one in its own box");
+}
+
 /// The reason we moved to parley 0.11: it can break *inside* a word. A word
 /// wider than its box used to overflow with no way to stop it (parley 0.2 had
 /// no overflow-wrap at all).

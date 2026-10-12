@@ -18,7 +18,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use parley::{
-    Affinity, Alignment, AlignmentOptions, Cursor, FontContext, FontWeight, Layout, LayoutContext,
+    Affinity, Alignment, BreakReason, AlignmentOptions, Cursor, FontContext, FontWeight, Layout, LayoutContext,
     LineHeight, OverflowWrap, PositionedLayoutItem, Selection, StyleProperty, TextWrapMode,
 };
 use parley::style::{FontFamily, FontStyle};
@@ -364,7 +364,7 @@ impl TextEngine {
         let layout = self.build(text, style, max_width);
         // Each line is `line-height` tall when set, else its own leading-trimmed
         // height (ascent + descent) so text hugs its box by default.
-        let height: f32 = Self::line_heights(&layout, style).iter().sum();
+        let height: f32 = Self::line_heights(&layout, text, style).iter().sum();
         (layout.width().ceil(), height.ceil())
     }
 
@@ -387,9 +387,30 @@ impl TextEngine {
     /// `line-height` when set, else the line's own `ascent + descent`. `draw` and
     /// `measure` step by exactly this, so anything positioning itself against the
     /// drawn glyphs must too.
-    fn line_heights(layout: &Layout<()>, style: &TextStyle) -> Vec<f32> {
-        layout
-            .lines()
+    ///
+    /// **A last line of nothing but spaces, left by a soft wrap, is not a
+    /// line.** parley hangs a space that overflows the width, as CSS does,
+    /// then starts a new line anyway, which the next space lands on; so a text
+    /// ending in a space (`Tap to add {{ x }}` with `x` empty) measured two
+    /// lines tall at exactly its own width: a button twice its height with its
+    /// label at the top. In CSS trailing spaces hang and never wrap. Taffy
+    /// 0.15 asks at that width where 0.7 reused an earlier answer, which is
+    /// what showed it. A last line after a newline (`abc\n` in a textarea) is
+    /// real and stays.
+    fn line_heights(layout: &Layout<()>, text: &str, style: &TextStyle) -> Vec<f32> {
+        let lines: Vec<_> = layout.lines().collect();
+        let hung = lines.len() > 1
+            && text
+                .get(lines[lines.len() - 1].text_range())
+                .is_some_and(|rest| rest.chars().all(|c| c == ' ' || c == '\u{a0}' || c == '\t'))
+            && matches!(
+                lines[lines.len() - 2].break_reason(),
+                BreakReason::Regular | BreakReason::Emergency
+            );
+        let counted = lines.len() - usize::from(hung);
+        lines
+            .into_iter()
+            .take(counted)
             .map(|l| {
                 let m = l.metrics();
                 style.line_height.unwrap_or(m.ascent + m.descent)
@@ -423,7 +444,7 @@ impl TextEngine {
             Cursor::from_byte_index(&layout, to.min(text.len()), Affinity::Downstream),
         );
 
-        let heights = Self::line_heights(&layout, style);
+        let heights = Self::line_heights(&layout, text, style);
         // The top of each line under our stepping: the sum of the ones above it.
         let mut tops = Vec::with_capacity(heights.len());
         let mut acc = 0.0;
