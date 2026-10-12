@@ -2468,6 +2468,7 @@ Float indexing narrows to what the types allow: an index is an `int`, and a
    **Where track (g) leaves the list of 300**, whole frame in the window:
    26.5 ms when it began, 9.0 ms now (2.9x faster). Of the 9.0: patch 4.9,
    layout 2.7, GPU 1.05, scene 0.2. The patch is now more than half of it.
+   (After (g).7a, 2026-10-13: patch 2.3, so about 6.4 ms by the same sum.)
    - (g).7 **Proposal for the owner (2026-10-12): the patch, 4.9 ms of the
      list's 9.0 ms frame.** Nothing here changes what an author writes or
      sees; it is all runtime. Measured first, release bench, the list of
@@ -2558,6 +2559,50 @@ Float indexing narrows to what the types allow: an index is an `int`, and a
      1. (a) as the next step: yes or no?
      2. After it: (b), (b) then (c), or stop at (a) until a phone measures
         the frame?
+
+   - (g).7a **Done 2026-10-13, overnight, without the owner** (their
+     instruction: carry on through track (g)). Two commits.
+     - `1b1764c`: the row cache holds its rows boxed and its map is sized
+       from the last build's, as the prototype did; a build of one list
+       keeps the document's parsed rules, checked against a hash of the
+       style text, its line and its includes (`rules_print`).
+     - `3bf8e58`: probes put back in the reconcile (then taken out) showed
+       what was left was spread thin, so each piece was trimmed on its own
+       and measured: the collection taken from its evaluation instead of
+       copied (280 to 138 us); duplicate and leaving keys looked up in a
+       set instead of scanning the keys so far, which was the square of the
+       list's length, and a swap key made only for an animated list (174 to
+       25 us); the repeated element described once and the rows reserved
+       (340 to 165 us); a row moved within its list rewritten in place, and
+       the registry sized from the rows it replaces (moving rows 620 to
+       500 us). The live-row handover was looked at and left: 380 us, of it
+       150 us dealing the registry out per row and 180 us matching each
+       cached row to its live node.
+
+     | List of 300, release | Before (a) | After |
+     |---|---|---|
+     | timer and patch, bench | 5.5 ms | 2.9 ms (1.9x faster) |
+     | patch, window | 4.8 ms | 2.3 ms (2.1x faster) |
+
+     The window's GPU phase read 5 to 9.7 ms in most rounds this night,
+     on every build including g.6's (1.05 ms when measured for g.6), so no
+     whole-frame figure is given; it is the machine, not a build. Checked:
+     gate green (1161), every reuse proved against a whole build in debug
+     as before, ten examples identical in the window, and a keyed
+     `r-transition` list driven by a tap leaves as it did before (which
+     found watchlist #42, older than track (g): a row whose `:leave-to`
+     takes it out of the flow vanishes at once).
+
+     **Where (b) and (c) stand after it.** What a reconcile of the list
+     still costs, from the probes, in us: handover 380, collection 138,
+     planning 320, row id 85, comparing rows 270, moving rows 500, the
+     loop's own tail 165, registry out and in 280. (b) would skip, for an
+     unchanged row, the planning, the id, most of the compare and the cache
+     traffic: perhaps 0.6 ms of 2.4, not the 1.5 to 2 ms estimated before
+     (a), since (a) took much of what it was going to save. Moving rows,
+     the handover and the registry work, about 1.2 ms, are paths, which is
+     (c). The recommendation stands with a smaller (b): leave both until a
+     phone measures the frame.
 
 Steps 2 to 5 change nothing an author sees except the decided syntax and
 types, which is what made them safe to take in order.
