@@ -3252,6 +3252,19 @@ fn parse_document_rules(sfc: &Sfc, env: Environment) -> Vec<Rule> {
     rules
 }
 
+/// What [`parse_document_rules`] reads, hashed, so rules kept from an
+/// earlier parse are known to still be the document's.
+fn rules_print(sfc: &Sfc) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    sfc.style.hash(&mut h);
+    sfc.style_line.hash(&mut h);
+    for include in &sfc.style_includes {
+        include.css.hash(&mut h);
+    }
+    h.finish()
+}
+
 /// [`parse_document_rules`] for a component, whose own `<style>` is unplaced
 /// too.
 fn parse_component_rules(sfc: &Sfc, env: Environment) -> Vec<Rule> {
@@ -6873,12 +6886,17 @@ thread_local! {
 /// frame: see `docs/05-as-built.md`.
 #[derive(Default)]
 pub struct RowCache {
-    rows: HashMap<RowId, CachedRow>,
+    rows: RowMap,
     env: Option<Environment>,
     /// What the last whole build found about its rules, which a build of
     /// one list must repeat: `KEEP_SIBLINGS`, and whether any rule has a
     /// sibling combinator. `None` until a whole build has run.
     shape: Option<(bool, bool)>,
+    /// The document's rules as the last build of one list parsed them, with
+    /// what they were parsed from ([`rules_print`]) and for which environment:
+    /// parsing them for every reconcile was 0.1 to 0.17 ms of a 300-row list's
+    /// (track (g).7a).
+    rules: Option<(u64, Environment, Vec<Rule>)>,
     /// How many rows the last build reused.
     pub hits: usize,
     /// How many keyed rows the last build had to build.
@@ -6894,6 +6912,7 @@ impl RowCache {
     pub fn clear(&mut self) {
         self.rows.clear();
         self.shape = None;
+        self.rules = None;
     }
 
     /// Take what the whole build just finished, with no rows kept, found
@@ -6911,6 +6930,11 @@ impl RowCache {
 /// A row's identity: its template element by address, the instance and the
 /// outer row it is in, and its `r-key`.
 type RowId = (usize, Option<String>, Option<String>, String);
+
+/// The rows a build keeps, boxed: a row holds its node and registry
+/// fragment, several kilobytes, and a map of them inline moved every one each
+/// time it grew, 1.4 of a 300-row list's 4.9 ms reconcile (track (g).7a).
+type RowMap = HashMap<RowId, Box<CachedRow>>;
 
 /// One row as it was built, and everything that built it.
 struct CachedRow {
@@ -6935,8 +6959,8 @@ struct CachedRow {
 }
 
 struct BuildRows {
-    old: HashMap<RowId, CachedRow>,
-    kept: HashMap<RowId, CachedRow>,
+    old: RowMap,
+    kept: RowMap,
     /// Each signal's value, read once per build however many rows ask.
     values: HashMap<String, Option<Value>>,
     off: bool,
@@ -6978,8 +7002,8 @@ pub fn build_styled_tree_cached(
     let old = std::mem::take(&mut cache.rows);
     ROWS.with(|r| {
         *r.borrow_mut() = Some(BuildRows {
+            kept: HashMap::with_capacity(old.len()),
             old,
-            kept: HashMap::new(),
             values: HashMap::new(),
             // A tried submission marks fields by their form's path, which
             // the rows do not compare. Rare, and short-lived.
@@ -7078,7 +7102,11 @@ pub fn rebuild_children(
 
     // The registers a whole build sets up, as it sets them, except the
     // shared interpretations, which depend only on declarations and are kept.
-    let rules = rux_script::profile::time(rux_script::profile::Phase::Css, || parse_document_rules(sfc, env));
+    let print = rules_print(sfc);
+    let rules = match cache.rules.take() {
+        Some((p, e, rules)) if p == print && e == env => rules,
+        _ => rux_script::profile::time(rux_script::profile::Phase::Css, || parse_document_rules(sfc, env)),
+    };
     set_build_env(env);
     ROUTER.with(|r| *r.borrow_mut() = find_router(&sfc.template).cloned());
     NAMESPACES.with(|n| *n.borrow_mut() = namespaces.clone());
@@ -7107,8 +7135,8 @@ pub fn rebuild_children(
     let old = std::mem::take(&mut cache.rows);
     ROWS.with(|r| {
         *r.borrow_mut() = Some(BuildRows {
+            kept: HashMap::with_capacity(old.len()),
             old,
-            kept: HashMap::new(),
             values: HashMap::new(),
             off: sibling_step || !state.attempted.is_empty(),
             hits: 0,
@@ -7149,6 +7177,7 @@ pub fn rebuild_children(
         cache.hits = built.hits;
         cache.misses = built.misses;
     }
+    cache.rules = Some((print, env, rules));
     if env.reduced_motion {
         for child in &mut children {
             still_the_motion(child);
@@ -7489,7 +7518,7 @@ fn build_row(
         };
         ROWS.with(|r| {
             if let Some(b) = r.borrow_mut().as_mut() {
-                b.kept.insert(id, entry);
+                b.kept.insert(id, Box::new(entry));
             }
         });
     }
