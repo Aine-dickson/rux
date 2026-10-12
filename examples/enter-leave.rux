@@ -251,10 +251,8 @@
     { id: "log",     text: "close the log" },
   ]);
 
-  /* Rebuilt rather than filtered. `filter` would be a method call, and a method
-     call does not capture the scope it was written in, so its closure could not
-     see `id`. A plain call does capture, which is what lets this one read and
-     write `tasks` at all. */
+  /* Rebuilt with a loop, written before closures could see the scope they were
+     written in. `tasks = tasks.filter(t => t.id != id)` does the same now. */
   fn drop(id: string) {
     let left: Task[] = [];
     for t in tasks {

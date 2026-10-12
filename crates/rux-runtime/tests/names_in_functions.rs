@@ -163,3 +163,29 @@ Have
     assert!(mine[0].is_error(), "a name nothing declares is a mistake, not a caution");
     assert!(mine[0].line.is_some(), "and it has to say which line reads it");
 }
+
+/// A call to a function that exists nowhere, in a `fn` body, says which line
+/// it is on too. It was reported with none, so it was drawn at the top of the
+/// file (the rest of watchlist #3).
+#[test]
+fn a_call_to_nothing_in_a_function_says_where() {
+    let doc = Document::from_source(
+        "<template><screen><text>hi</text></screen></template>
+<script>
+let n = signal(0);
+fn add() {
+  n = n + 1;
+  nosuch(n);
+}
+</script>",
+    )
+    .expect("loads");
+    let mine: Vec<_> = doc
+        .diagnostics()
+        .warnings
+        .iter()
+        .filter(|w| w.message.contains("calls `nosuch`"))
+        .collect();
+    assert_eq!(mine.len(), 1, "exactly one report");
+    assert_eq!(mine[0].line, Some(6), "on the line the call is written on");
+}

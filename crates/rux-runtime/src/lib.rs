@@ -629,13 +629,17 @@ fn check_script_functions(
     own_script_lines: usize,
     script_line: usize,
 ) {
-    for problem in engine.unknown_calls_in_functions() {
+    // At the line of the call, made file-relative as the names below are, so
+    // the report points into the `<script>` rather than at no line at all.
+    for (problem, at) in engine.unknown_calls_in_functions(own_script_lines) {
         let message = format!("a <script> function {}", problem.describe());
-        if rux_script::is_fragment() {
-            rux_script::warn_script(message);
-        } else {
-            rux_script::error_script(message);
-        }
+        rux_script::located(Some(at + script_line - 1), || {
+            if rux_script::is_fragment() {
+                rux_script::warn_script(message);
+            } else {
+                rux_script::error_script(message);
+            }
+        });
     }
     // Names, on weaker terms than calls. A call resolves through a registry
     // nothing in scope can add to; a name resolves through scope, and in Rux a

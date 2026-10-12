@@ -1817,7 +1817,7 @@ impl Engine {
         };
         // What does not link is `check_syntax`'s to report too.
         self.link(&mut script);
-        self.unresolvable_calls(&script.stmts)
+        self.unresolvable_calls(&script.stmts).into_iter().map(|(p, _)| p).collect()
     }
 
     /// The same check, over the `fn` bodies the document declared.
@@ -1825,14 +1825,25 @@ impl Engine {
     /// A handler is not the only place a call hides. `fn refresh() { alert(…) }`
     /// is never run until something calls it, and a `fn` nothing calls yet is
     /// exactly where a typo waits quietest.
-    pub fn unknown_calls_in_functions(&self) -> Vec<CallProblem> {
+    ///
+    /// Each comes with the **script-relative** line of its first call, and
+    /// only those within `own_script_lines` are this document's own, as for
+    /// [`unknown_names_in_functions`](Self::unknown_names_in_functions): the
+    /// rest belong to whichever file appended them.
+    pub fn unknown_calls_in_functions(&self, own_script_lines: usize) -> Vec<(CallProblem, usize)> {
         let fns: Vec<rux_syntax::ast::Stmt> =
             self.script.stmts.iter().filter(|s| matches!(s.kind, rux_syntax::ast::StmtKind::Fn(_))).cloned().collect();
+        let lines = rux_syntax::LineIndex::new(&self.source);
         self.unresolvable_calls(&fns)
+            .into_iter()
+            .map(|(p, at)| (p, lines.line_col(&self.source, at as usize).0))
+            .filter(|(_, line)| *line <= own_script_lines)
+            .collect()
     }
 
     /// The walk both of the above share.
-    fn unresolvable_calls(&self, stmts: &[rux_syntax::ast::Stmt]) -> Vec<CallProblem> {
+    /// Each problem comes with where its first call starts in the text.
+    fn unresolvable_calls(&self, stmts: &[rux_syntax::ast::Stmt]) -> Vec<(CallProblem, u32)> {
         use rux_syntax::ast::ExprKind as E;
         use rux_syntax::visit::{walk_stmts, Node};
         let known = self.callable_names();
@@ -1842,10 +1853,12 @@ impl Engine {
         let mut variables: HashSet<String> = self.ir.global_names().map(str::to_string).collect();
         variables.extend(declared_in(stmts));
         let own = self.own_fn_arities();
-        let mut unknown: Vec<CallProblem> = Vec::new();
+        let mut unknown: Vec<(CallProblem, u32)> = Vec::new();
+        // Where the expression being looked at starts.
+        let here = std::cell::Cell::new(0u32);
         let mut note = |problem: CallProblem| {
-            if !unknown.contains(&problem) {
-                unknown.push(problem);
+            if !unknown.iter().any(|(p, _)| *p == problem) {
+                unknown.push((problem, here.get()));
             }
         };
         let check_arity = |name: &str, given: usize, note: &mut dyn FnMut(CallProblem)| {
@@ -1859,6 +1872,7 @@ impl Engine {
         };
         walk_stmts(stmts, &mut |node| {
             let Node::Expr(e) = node else { return true };
+            here.set(e.span.start);
             match &e.kind {
                 E::Call { callee, args, .. } if callee.len() == 1 => {
                     let name = callee[0].name.as_str();
