@@ -2420,16 +2420,20 @@ fn collect_statics(
     out: &mut Vec<(NodeId, NodeId)>,
 ) {
     for child in tree.children(id).expect("children") {
-        let st = tree.style(child).expect("style");
-        let none_named = st.inset.left == auto()
-            && st.inset.right == auto()
-            && st.inset.top == auto()
-            && st.inset.bottom == auto();
-        if st.position == taffy::Position::Absolute && none_named {
+        if static_absolute(tree.style(child).expect("style")) {
             out.push((id, child));
         }
         collect_statics(tree, child, out);
     }
+}
+
+/// An absolute box that names no inset, and so keeps its static position.
+fn static_absolute(st: &taffy::Style) -> bool {
+    st.position == taffy::Position::Absolute
+        && st.inset.left == auto()
+        && st.inset.right == auto()
+        && st.inset.top == auto()
+        && st.inset.bottom == auto()
 }
 
 /// Where a `sticky` box actually paints, given where it was laid out.
@@ -3635,10 +3639,23 @@ fn collect(
     //
     // Ordering here also puts the sticky box on top for hit testing, since the
     // topmost hit region wins and later means topmost.
+    //
+    // An absolute box that named no inset is positioned too, and paints over
+    // its in-flow siblings for the same reason, although it stays in its
+    // parent's child list, where its static position was found (and pinned,
+    // so by now it names one). Left in tree order it painted under the
+    // siblings after it: a list row leaving with `:leave-to { position:
+    // absolute }` was drawn beneath the row that slid up into its place, and
+    // vanished instead of animating (watchlist #42). Every other out-of-flow
+    // box was handed to its containing block, at the end of the list, so
+    // taking them all after the in-flow ones keeps those where they were.
     let kids = tree.children(id).expect("children");
-    let (stuck, flowing): (Vec<NodeId>, Vec<NodeId>) =
+    let (stuck, rest): (Vec<NodeId>, Vec<NodeId>) =
         kids.iter().partition(|c| b.at(**c).sticky.is_some());
-    for child in flowing.into_iter().chain(stuck) {
+    let (lifted, flowing): (Vec<NodeId>, Vec<NodeId>) = rest
+        .into_iter()
+        .partition(|c| tree.style(*c).expect("style").position == taffy::Position::Absolute);
+    for child in flowing.into_iter().chain(lifted).chain(stuck) {
         collect(
             tree,
             child,

@@ -138,3 +138,45 @@ fn two_out_of_flow_siblings_do_not_stack() {
     );
     assert_eq!(rects[0].y, 30.0, "and both sit at the content origin");
 }
+
+/// Out of the flow with no inset, it still paints over the in-flow siblings
+/// that come after it, as any positioned box does. Left in tree order it was
+/// drawn first and the next sibling covered it: a list row leaving with
+/// `:leave-to { position: absolute }` sat under the row that slid up into its
+/// place, and vanished instead of animating (watchlist #42).
+#[test]
+fn an_absolute_box_with_no_insets_paints_over_the_siblings_after_it() {
+    let red = Rgba::new(1.0, 0.0, 0.0, 1.0);
+    let blue = Rgba::new(0.0, 0.0, 1.0, 1.0);
+    let mut list = Node::new(Style {
+        display: Display::Flex,
+        axis: Axis::Column,
+        ..Default::default()
+    });
+    let mut leaving = box_of(40.0, 50.0, Position::Absolute);
+    leaving.style.background = Some(Background::Color(red));
+    list.children.push(leaving);
+    let mut next = box_of(40.0, 50.0, Position::Relative);
+    next.style.background = Some(Background::Color(blue));
+    list.children.push(next);
+
+    let mut measure = |_: &TextContent, _: Option<f32>| (50.0, 20.0);
+    let rects: Vec<PaintRect> = layout(&list, 1000.0, 800.0, &mut measure)
+        .paints
+        .into_iter()
+        .filter_map(|p| match p {
+            Paint::Rect(r) => Some(r),
+            _ => None,
+        })
+        .collect();
+    // Told apart by their red channel: red is 1, blue is 0.
+    let at = |want: f32| {
+        rects
+            .iter()
+            .position(|r| matches!(&r.background, Some(Background::Color(c)) if c.r == want))
+            .expect("painted")
+    };
+    let (red_at, blue_at) = (at(red.r), at(blue.r));
+    assert_eq!(rects[red_at].y, rects[blue_at].y, "the next one moved up under it");
+    assert!(blue_at < red_at, "and it is drawn over that one, not under: {rects:?}");
+}
