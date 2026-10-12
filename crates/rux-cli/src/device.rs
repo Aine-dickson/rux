@@ -22,7 +22,7 @@ use crate::build::{Options, Target};
 use crate::manifest::Manifest;
 
 pub fn run(args: &[String]) -> i32 {
-    let mut rux_source = None;
+    let mut rux_source = crate::native::default_rux_source();
     let mut release = false;
     let mut watch = true;
     let mut route: Option<String> = None;

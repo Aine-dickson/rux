@@ -93,7 +93,8 @@ Build options:
                              the project from disk and hot reload works
   --target <name>            What to build for (default: desktop)
   --rux-source <dir>         Build against a Rux checkout instead of the
-                             published crates, for tracking the tip
+                             published crates, for tracking the tip (a
+                             -dev rux uses the checkout it was built from)
 
 Format options:
   --indent <n|tab>           One indent level: spaces, or a tab (default 2)
@@ -193,7 +194,8 @@ fn build_command(args: &[String]) -> ExitCode {
     let mut options = build::Options {
         release: false,
         target: build::Target::Desktop,
-        rux_source: None,
+        // As `rux run` does, so the two agree on where Rux comes from.
+        rux_source: crate::native::default_rux_source(),
         abis: None,
     };
     let mut i = 0;
