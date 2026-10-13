@@ -3972,15 +3972,23 @@ fn collect(
         if ca.hidden {
             continue;
         }
+        // **A `fixed` box is not moved by the root's own scroll.** Every fixed
+        // box is handed to the root, and when the `<screen>` itself is the
+        // scroller its offset moved them all, so a header written there
+        // scrolled out of view (watchlist #43). The root is the window, and a
+        // window scrolling is CSS's viewport scrolling, which a fixed box
+        // ignores. One under a `transform` is that box's child instead, and
+        // goes with it, as CSS says.
+        let pinned = at.stack.seq == 0 && ca.stack.position == Position::Fixed;
         match layer(&ca, items) {
             Some((z, own)) => ctx.pending.push(std::cmp::Reverse(Deferred {
                 z,
                 seq: ca.stack.seq,
                 context: own,
                 id: child,
-                origin,
+                origin: if pinned { (x, y) } else { origin },
                 holder,
-                inside_scroll: child_scroll,
+                inside_scroll: if pinned { inside_scroll } else { child_scroll },
                 xform: child_xform,
                 dim: child_dim,
                 clips: walk.clips[ctx.clip_base..].to_vec(),

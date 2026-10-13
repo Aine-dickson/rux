@@ -233,3 +233,53 @@ fn a_flex_scroller_counts_its_end_padding_once() {
     let over = run(scroller(vec![row(200.0)]), &mut measure);
     assert_eq!(over.scrolls[0].max.y, 120.0, "{:?}", over.scrolls[0]);
 }
+
+/// A `fixed` box stays put when the `<screen>` itself is what scrolls
+/// (watchlist #43). Fixed boxes are handed to the root, and the root's offset
+/// used to move every child it had, so a header written inside a scrolling
+/// screen scrolled out of view. In a browser the viewport scrolls and a fixed
+/// box does not; content written beside it still does.
+#[test]
+fn a_fixed_box_stays_put_when_the_screen_itself_scrolls() {
+    let red = Rgba::new(1.0, 0.0, 0.0, 1.0);
+    let tall = boxed(
+        Style { height: Some(Len::Px(2000.0)), shrink: 0.0, ..Default::default() },
+        vec![],
+    );
+    let header = boxed(
+        Style {
+            position: Position::Fixed,
+            inset: [Some(Len::Px(0.0)), Some(Len::Px(0.0)), None, Some(Len::Px(0.0))],
+            height: Some(Len::Px(40.0)),
+            background: Some(Background::Color(red)),
+            ..Default::default()
+        },
+        vec![],
+    );
+    let marker = boxed(
+        Style {
+            height: Some(Len::Px(10.0)),
+            shrink: 0.0,
+            background: Some(Background::Color(Rgba::new(0.0, 1.0, 0.0, 1.0))),
+            ..Default::default()
+        },
+        vec![],
+    );
+    let screen = boxed(
+        Style { display: Display::Flex, axis: Axis::Column, overflow: Overflow::Scroll, ..Default::default() },
+        vec![header, marker, tall],
+    );
+    let mut measure = |_: &TextContent, _: Option<f32>| (0.0, 0.0);
+    let out = layout_scrolled(&screen, 400.0, 300.0, &[Offset { x: 0.0, y: 500.0 }], &mut measure);
+    let y_of = |r: f32| {
+        out.paints
+            .iter()
+            .find_map(|p| match p {
+                Paint::Rect(PaintRect { background: Some(Background::Color(c)), y, .. }) if c.r == r && c.g == 1.0 - r => Some(*y),
+                _ => None,
+            })
+            .expect("painted")
+    };
+    assert_eq!(y_of(1.0), 0.0, "the fixed header is still at the top of the window");
+    assert_eq!(y_of(0.0), -500.0, "the content beside it scrolled");
+}

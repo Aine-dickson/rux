@@ -2410,6 +2410,7 @@ window with a debug build on one probe page, in three variants.
 | A dropdown over the next row | `z-index: 5` menu in a `relative` row of an `overflow: clip` panel | over the next row, cut off at the panel's edge | desktop: pass |
 | A transform is a context | middle of three tiles `scale(1.3)` | over both neighbours, the later one included | desktop: pass |
 | A fixed header over scrolled content | `fixed` header with `z-index: 10`, a scroller under it full of `relative` boxes, scrolled | the header over all of them | desktop: pass |
+| A fixed header in a scrolling screen | the `<screen>` itself `overflow: scroll`, scrolled to the bottom (watchlist #43) | the header stays at the top while the page moves under it | desktop: pass |
 | A tap on the top box | | the box drawn on top answers | under the code only (injected clicks do not reach the window) |
 | Web, Android | the same page | the same | not driven |
 
