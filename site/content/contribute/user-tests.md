@@ -2029,6 +2029,44 @@ after a new line flattened the whole text.
 | Safe area | phone with a notch, built page | `env(safe-area-inset-top)` non-zero | not driven: needs a phone |
 | Gboard in Chrome | phone | composition, Backspace, Next/Go labels on the real keyboard | not driven: needs a phone |
 
+### Driven again before the v0.8 freeze, 2026-10-13
+
+The interpreter, the IR and the layout engine were all replaced after the
+table above was driven, so it was driven again on `6f7311e`, the same page and
+driver, the web build rebuilt from that commit. One case was added: a number
+field.
+
+| Case | Result |
+|---|---|
+| Next, Go submits | Edge touch: pass (`sent one two`; the keys read Next, then Go) |
+| Done outside a form | Edge touch: pass |
+| Textarea new line | Edge touch: pass (`note`, new line, `x`) |
+| Select, date | Edge touch: pass (`fruit plum`, `day 2026-07-09`; choices by script) |
+| Password | Edge touch: pass |
+| Reload keeps the page | Edge touch: pass for the focused field, its caret and the other fields, **but see the first finding below** |
+| Number field | Edge touch: pass. The keyboard hint is `decimal`; typing `3-7` keeps every key; Done puts the field back to `3`, the last valid number, and fires no `@change` because nothing changed |
+| The four phone cases above | still not driven: no phone |
+
+Found:
+
+- **A reload can bring back an older value than the one left.** Choose a
+  fruit (`@change` writes `fruit plum` into the log field), then a date (the
+  log becomes `day 2026-07-09`), then reload: the log reads `fruit plum`. The
+  fields are put back as they were, then the select's `@change` is run again
+  so what the app derives from the choice is rebuilt (`adopt_restored_select`),
+  and that handler writes over the restored log. The date's `@change` is not
+  run again, so the replay is not even in the original order. The same code
+  runs on Android. **Open, a behaviour question for the owner.**
+- **A pointer that stops being a finger keeps a stale hidden input.** With
+  touch emulation switched off between two runs, a tap focused the textarea
+  without moving the browser's focus off the hidden input still holding `two`,
+  and the next key replaced the textarea's text with `twox`. Only a device that
+  changes its pointer type in the middle of a page can meet it (a tablet docked
+  to a keyboard). Logged, not fixed: it needs that hardware to drive honestly.
+- Not a defect: `gap` on the page did nothing, because a `<view>` is
+  `display: block` by default, as in CSS, and a block container has no gap. The
+  test page never said `display: flex`. Nothing warns an author about this.
+
 ## Props, and attributes nothing reads, 2026-09-24
 
 Watchlist #5, #7 and #13. A component declares `prop label;` or
