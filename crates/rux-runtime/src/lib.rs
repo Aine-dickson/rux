@@ -48,6 +48,9 @@ pub use rux_style::{Animator, FRAME_MS};
 /// Re-exported so the shell can report a script-facing problem it is the only
 /// one able to see, such as `tap()` naming an element with no box on screen.
 pub use rux_script::warn_script;
+/// The same for a styling problem only a laid-out frame shows, such as an
+/// `anchor()` naming nothing on screen.
+pub use rux_style::warn_stylesheet;
 /// Where a waiting native call's answer comes back: `set_waker`.
 pub use rux_script::host;
 /// Native modules: what an app's Rust registers, and what the generated

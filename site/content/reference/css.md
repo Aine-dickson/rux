@@ -18,6 +18,7 @@ grid-auto-flow, grid-auto-rows, grid-auto-columns
 transform (translate/scale/rotate; visual only; hit regions aren't transformed)
 position (static|relative|sticky|absolute|fixed), top, right, bottom, left
 z-index (auto|<integer>), isolation (auto|isolate)
+anchor-name, position-anchor, anchor() in top/right/bottom/left, anchor-size() in width/height
 aspect-ratio
 width, height, min-width, max-width, min-height, max-height
 padding, padding-top, padding-right, padding-bottom, padding-left

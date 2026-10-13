@@ -2382,7 +2382,12 @@ here.
    list that finished loading. This extends a tree that already exists rather
    than building one.
 
-10. **Portal**, if `z-index` does not remove the need. Item 5 brings `z-index`,
+10. ~~**Portal**~~ **decided and built 2026-10-13: CSS anchor positioning
+    instead of a portal element** (owner's choice). `anchor-name`,
+    `position-anchor`, `anchor()` and `anchor-size()`, with `position:
+    fixed` doing the escaping, so no syntax that is not CSS. `position-try` is
+    the next step. The text below is the question as it stood.
+    **Portal**, if `z-index` does not remove the need. Item 5 brings `z-index`,
     and `position: fixed` arrived in v0.7, which together cover most of what a
     portal is normally reached for. What neither covers is escaping an
     ancestor's `overflow: hidden`, which is exactly where a dropdown in a

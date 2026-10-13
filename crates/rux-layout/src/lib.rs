@@ -91,6 +91,63 @@ pub enum Len {
     Vh(f32),
 }
 
+/// The edge of an anchor an `anchor()` measures to (CSS anchor positioning).
+///
+/// `Frac` is a percentage along the anchor from its start edge, so
+/// `anchor(50%)` and `anchor(center)` are the same place.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum AnchorSide {
+    Top,
+    Bottom,
+    Left,
+    Right,
+    Center,
+    Frac(f32),
+}
+
+/// `anchor()` in an inset: which anchor (`None` is the box's
+/// `position-anchor`), which edge of it, and what to use when there is no
+/// such anchor on screen.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AnchorRef {
+    pub name: Option<String>,
+    pub side: AnchorSide,
+    pub fallback: Option<Len>,
+}
+
+/// `anchor-size()` in `width` or `height`: the anchor's width, or with
+/// `height` its height.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AnchorSize {
+    pub name: Option<String>,
+    pub height: bool,
+    pub fallback: Option<Len>,
+}
+
+/// A box's anchor-positioning properties. See `Style::anchor`.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct AnchorStyle {
+    /// `anchor-name`: what an anchored box calls this one. Document-wide,
+    /// and the last box in document order with a name is the one it means.
+    pub name: Option<String>,
+    /// `position-anchor`: the anchor an `anchor()` naming none measures to.
+    pub position_anchor: Option<String>,
+    /// An `anchor()` in `top`, `right`, `bottom`, `left`, in `inset` order.
+    /// That side's `inset` is `None`: it is placed at paint time, against
+    /// where the anchor is drawn, and not by the layout. See `Anchoring`.
+    pub inset: [Option<AnchorRef>; 4],
+    /// `anchor-size()` in `width` and `height`. Resolved by laying out a
+    /// second time once the anchor has a size.
+    pub size: [Option<AnchorSize>; 2],
+}
+
+impl AnchorStyle {
+    /// Whether the box is placed or sized against an anchor at all.
+    pub fn anchored(&self) -> bool {
+        self.inset.iter().any(Option::is_some) || self.size.iter().any(Option::is_some)
+    }
+}
+
 /// A grid track size (`grid-template-columns`/`-rows`).
 #[derive(Clone, Copy, Debug)]
 pub enum Track {
@@ -687,6 +744,13 @@ pub struct Style {
     pub z_index: Option<i32>,
     /// `isolation: isolate`: a stacking context and nothing else.
     pub isolate: bool,
+    /// Anchor positioning, `None` for almost every box.
+    ///
+    /// **Boxed on purpose.** Laid out flat it made every `Style` some 300
+    /// bytes bigger, and a debug build keeps one per level of a deep
+    /// recursion on the stack: `rux check` on a fresh project overflowed the
+    /// main thread's (watchlist #41).
+    pub anchor: Option<Box<AnchorStyle>>,
     /// `aspect-ratio` (width / height).
     pub aspect_ratio: Option<f32>,
     /// `transition`: which of this node's properties animate when they change,
@@ -800,6 +864,7 @@ impl Default for Style {
             inset: [None; 4],
             z_index: None,
             isolate: false,
+            anchor: None,
             aspect_ratio: None,
             transitions: Vec::new(),
             swap_progress: None,
@@ -2126,6 +2191,10 @@ pub struct Layout {
     pub access: Vec<AccessNode>,
     /// Where every laid-out node ended up, for `query()` to read back.
     pub metrics: Vec<NodeMetrics>,
+    /// Anchor names an `anchor()` asked for that nothing on screen has, for
+    /// the shell to warn about. An empty name is an `anchor()` that names no
+    /// anchor on a box with no `position-anchor`.
+    pub anchor_misses: Vec<String>,
 }
 
 /// One node's laid-out box, keyed by the same child-index path the binding
@@ -2331,11 +2400,17 @@ fn to_taffy(style: &Style, vp: (f32, f32)) -> taffy::Style {
         inset: if matches!(style.position, Position::Static | Position::Sticky) {
             Rect { left: auto(), right: auto(), top: auto(), bottom: auto() }
         } else {
+            // An axis placed by `anchor()` is held at its containing block's
+            // start edge for the layout, which only has to find the box's
+            // size, and is moved against the anchor at paint time.
+            let a = |i: usize| style.anchor.as_ref().is_some_and(|a| a.inset[i].is_some());
+            let (x_anchored, y_anchored) = (a(1) || a(3), a(0) || a(2));
+            let held = Some(Len::Px(0.0));
             Rect {
-                left: to_inset(style.inset[3], vp),
-                right: to_inset(style.inset[1], vp),
-                top: to_inset(style.inset[0], vp),
-                bottom: to_inset(style.inset[2], vp),
+                left: to_inset(if x_anchored { held } else { style.inset[3] }, vp),
+                right: to_inset(if x_anchored { None } else { style.inset[1] }, vp),
+                top: to_inset(if y_anchored { held } else { style.inset[0] }, vp),
+                bottom: to_inset(if y_anchored { None } else { style.inset[2] }, vp),
             }
         },
         aspect_ratio: style.aspect_ratio,
@@ -2536,7 +2611,8 @@ fn hoists(style: &Style) -> Option<bool> {
     if !style.position.is_out_of_flow() {
         return None;
     }
-    let named = style.inset.iter().any(Option::is_some);
+    let named = style.inset.iter().any(Option::is_some)
+        || style.anchor.as_ref().is_some_and(|a| a.inset.iter().any(Option::is_some));
     named.then_some(style.position == Position::Fixed)
 }
 
@@ -2664,6 +2740,10 @@ struct At {
     hidden: bool,
     scroll: bool,
     stack: Stack,
+    /// Into `Anchoring::names`, when this box is an anchor.
+    anchor_name: Option<u32>,
+    /// Into `Anchoring::boxes`, when this box is placed against one.
+    anchored: Option<u32>,
 }
 
 /// The lists `build` fills and the index into them, which is everything
@@ -2682,6 +2762,7 @@ struct Built<'a> {
     at: IdMap<At>,
     /// Each visible scroller's id. See `number_scrollers`.
     scroll_ids: IdMap<usize>,
+    anchoring: &'a Anchoring,
 }
 
 impl Built<'_> {
@@ -2710,6 +2791,7 @@ fn index(
     paths: &[(NodeId, Vec<usize>)],
     stickies: &[(NodeId, [Option<f32>; 4])],
     stacks: &[(NodeId, Stack)],
+    anchoring: &Anchoring,
 ) -> IdMap<At> {
     let mut at: IdMap<At> = IdMap::default();
     at.reserve(paths.len());
@@ -2746,6 +2828,8 @@ fn index(
     for (id, stack) in stacks {
         at.entry(*id).or_default().stack = *stack;
     }
+    first(&mut at, anchoring.names.iter().map(|n| n.0), |a| &mut a.anchor_name);
+    first(&mut at, anchoring.boxes.iter().map(|b| b.0), |a| &mut a.anchored);
     at
 }
 
@@ -2936,6 +3020,8 @@ fn build(
     // A node's index here is its place in the document, which `collect` sorts
     // on: see `Stack`.
     stacks: &mut Vec<(NodeId, Stack)>,
+    // Named anchors and the boxes placed against them. See `Anchoring`.
+    anchoring: &mut Anchoring,
     // What this node was last frame, when one was matched to it. See `Kept`.
     old: Option<Kept>,
     // The viewport, for the root alone: it is forced to fill it, so a `screen`
@@ -3022,7 +3108,7 @@ fn build(
             // cache on the parent size, and tests/stretch_text.rs, which
             // fails on 0.7 without that exception, passes on 0.15 without
             // it, so the exception is gone.
-            let (cid, kept) = build(tree, c, paint, handlers, models, focus_labels, hidden, opacities, scrolls, transforms, states, access, &cp, paths, vp, child_cap, caps, row, stickies, hoisted, stacks, prev, None, garbage);
+            let (cid, kept) = build(tree, c, paint, handlers, models, focus_labels, hidden, opacities, scrolls, transforms, states, access, &cp, paths, vp, child_cap, caps, row, stickies, hoisted, stacks, anchoring, prev, None, garbage);
             kept_children.push(kept);
             match hoists(&c.style) {
                 Some(fixed) => hoisted.push((cid, fixed)),
@@ -3240,6 +3326,24 @@ fn build(
         states.push((id, path.clone()));
     }
     paths.push((id, path.to_vec()));
+    if let Some(a) = &node.style.anchor {
+        if let Some(name) = &a.name {
+            anchoring.names.push((id, name.clone(), seq));
+        }
+        // `anchor()` belongs to an absolutely positioned box, as in CSS; on
+        // any other it means nothing.
+        if node.style.position.is_out_of_flow() && a.anchored() {
+            anchoring.boxes.push((
+                id,
+                Anchored {
+                    inset: a.inset.clone(),
+                    size: a.size.clone(),
+                    default: a.position_anchor.clone(),
+                    fixed: node.style.position == Position::Fixed,
+                },
+            ));
+        }
+    }
     stacks[seq as usize] = (
         id,
         Stack {
@@ -3383,6 +3487,171 @@ impl Stacking {
     }
 }
 
+/// CSS anchor positioning: the boxes named as anchors, and the boxes placed
+/// against them.
+///
+/// **Placed at paint time, as `sticky` is**, because where an anchor is on
+/// screen is a question about scroll offsets, which the layout does not know.
+/// So `collect` runs twice when anything is anchored: once to find where each
+/// anchor is drawn, and once to draw, with every anchored box moved against
+/// that. The first walk is thrown away. A menu therefore follows its button
+/// when the panel under it scrolls, and its hit region goes with it.
+///
+/// Size is the layout's: `anchor-size()`, and an axis with both insets on the
+/// same anchor, are given to it in a second layout pass once the anchors have
+/// been measured. See `size_anchored`.
+#[derive(Default)]
+struct Anchoring {
+    /// Every `anchor-name`, with its node's place in the document: when two
+    /// boxes share a name the later one is the anchor, as in CSS.
+    names: Vec<(NodeId, String, u32)>,
+    boxes: Vec<(NodeId, Anchored)>,
+}
+
+impl Anchoring {
+    /// The node a name means for sizing: the last one in the document.
+    fn node(&self, name: &str) -> Option<NodeId> {
+        self.names.iter().filter(|n| n.1 == name).max_by_key(|n| n.2).map(|n| n.0)
+    }
+}
+
+/// An absolutely positioned box with an `anchor()` or `anchor-size()`.
+#[derive(Clone, Debug)]
+struct Anchored {
+    inset: [Option<AnchorRef>; 4],
+    size: [Option<AnchorSize>; 2],
+    /// `position-anchor`.
+    default: Option<String>,
+    fixed: bool,
+}
+
+impl Anchored {
+    fn name<'a>(&'a self, own: &'a Option<String>) -> Option<&'a str> {
+        own.as_deref().or(self.default.as_deref())
+    }
+}
+
+/// Where an anchor was drawn, in window pixels, and whether any of it was
+/// left inside the clips it sits in.
+#[derive(Clone, Copy, Debug)]
+struct AnchorBox {
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+    visible: bool,
+    seq: u32,
+}
+
+/// How far along an anchor of length `len` starting at `start` a side is.
+fn anchor_edge(side: AnchorSide, start: f32, len: f32) -> f32 {
+    start
+        + len
+            * match side {
+                AnchorSide::Top | AnchorSide::Left => 0.0,
+                AnchorSide::Bottom | AnchorSide::Right => 1.0,
+                AnchorSide::Center => 0.5,
+                AnchorSide::Frac(f) => f,
+            }
+}
+
+fn len_px(l: Len, of: f32, vp: (f32, f32)) -> f32 {
+    match l {
+        Len::Px(v) => v,
+        Len::Pct(f) => f * of,
+        Len::Vw(v) => vp.0 * v / 100.0,
+        Len::Vh(v) => vp.1 * v / 100.0,
+    }
+}
+
+/// The size `a` takes from its anchor on one axis, if it takes one: its
+/// `anchor-size()`, or both insets on that axis measured to one anchor.
+fn anchored_size(
+    a: &Anchored,
+    vertical: bool,
+    anchoring: &Anchoring,
+    tree: &TaffyTree<TextContent>,
+    vp: (f32, f32),
+) -> Option<f32> {
+    let measured = |name: Option<&str>, height: bool| {
+        let id = anchoring.node(name?)?;
+        let size = tree.layout(id).ok()?.size;
+        Some(if height { size.height } else { size.width })
+    };
+    if let Some(s) = &a.size[vertical as usize] {
+        return measured(a.name(&s.name), s.height).or_else(|| {
+            s.fallback.map(|f| len_px(f, if vertical { vp.1 } else { vp.0 }, vp))
+        });
+    }
+    let (start, end) = if vertical { (&a.inset[0], &a.inset[2]) } else { (&a.inset[3], &a.inset[1]) };
+    let (start, end) = (start.as_ref()?, end.as_ref()?);
+    let name = a.name(&start.name)?;
+    if a.name(&end.name)? != name {
+        return None;
+    }
+    let len = measured(Some(name), vertical)?;
+    Some((anchor_edge(end.side, 0.0, len) - anchor_edge(start.side, 0.0, len)).max(0.0))
+}
+
+/// What an anchored box does this frame.
+enum Placement {
+    /// Drawn with its top-left corner here (each `None` axis where the layout
+    /// put it).
+    At(Option<f32>, Option<f32>),
+    /// Its anchor is entirely clipped away, so the box is not drawn: CSS's
+    /// default `position-visibility: anchors-visible`. A menu does not float
+    /// on alone after its button has scrolled out of the panel.
+    Hidden,
+}
+
+/// Where `a`, laid out `width` x `height`, goes against the anchors drawn
+/// last walk, and the names it asked for that nothing answered.
+fn place(
+    a: &Anchored,
+    width: f32,
+    height: f32,
+    cb: (f32, f32, f32, f32),
+    vp: (f32, f32),
+    known: &HashMap<String, AnchorBox>,
+    misses: &mut Vec<String>,
+) -> Placement {
+    let mut hidden = false;
+    // One axis: `start` is the top or left inset, `end` the bottom or right.
+    let mut axis = |start: &Option<AnchorRef>, end: &Option<AnchorRef>, size: f32, vertical: bool| -> Option<f32> {
+        let (cb_at, cb_len) = if vertical { (cb.1, cb.3) } else { (cb.0, cb.2) };
+        for (r, from_end) in [(start, false), (end, true)] {
+            let Some(r) = r else { continue };
+            let Some(name) = a.name(&r.name) else {
+                misses.push(String::new());
+                continue;
+            };
+            match known.get(name) {
+                Some(b) if !b.visible => hidden = true,
+                Some(b) => {
+                    let (at, len) = if vertical { (b.y, b.height) } else { (b.x, b.width) };
+                    let edge = anchor_edge(r.side, at, len);
+                    return Some(if from_end { edge - size } else { edge });
+                }
+                None => {
+                    if let Some(fb) = r.fallback {
+                        let px = len_px(fb, cb_len, vp);
+                        return Some(if from_end { cb_at + cb_len - px - size } else { cb_at + px });
+                    }
+                    misses.push(name.to_string());
+                }
+            }
+        }
+        None
+    };
+    let x = axis(&a.inset[3], &a.inset[1], width, false);
+    let y = axis(&a.inset[0], &a.inset[2], height, true);
+    if hidden {
+        Placement::Hidden
+    } else {
+        Placement::At(x, y)
+    }
+}
+
 /// What lives for the whole walk rather than for one node.
 #[derive(Default)]
 struct Walk {
@@ -3395,6 +3664,16 @@ struct Walk {
     /// The `seq` of each entry in `Layout::focusables` and `Layout::access`.
     focus_seq: Vec<u32>,
     access_seq: Vec<u32>,
+    /// Where each anchor was drawn by the walk before this one, when
+    /// something is anchored. `None` on that first walk itself.
+    known: Option<HashMap<String, AnchorBox>>,
+    /// Where each anchor is drawn by this walk.
+    seen: HashMap<String, AnchorBox>,
+    /// Names asked for that nothing on screen answered.
+    misses: Vec<String>,
+    /// Whether this is the walk that only finds the anchors, whose paints and
+    /// regions are thrown away, so it makes none.
+    dry: bool,
 }
 
 /// Give every scroller that will be drawn an id, in tree order.
@@ -3530,13 +3809,47 @@ fn collect(
         x = nx;
         y = ny;
     }
-    let x = x;
-    let y = y;
 
     // r-show=false: the node kept its layout slot but paints nothing (nor its
     // subtree, nor its hit regions).
     if at.hidden {
         return;
+    }
+
+    // Anchored, so placed against where its anchor was drawn: before anything
+    // is recorded, for the same reason as sticky above. See `Anchoring`.
+    if let (Some(i), Some(known)) = (at.anchored, walk.known.as_ref()) {
+        let a = &b.anchoring.boxes[i as usize].1;
+        let cb = if a.fixed { (0.0, 0.0, vp.0, vp.1) } else { holder };
+        match place(a, layout.size.width, layout.size.height, cb, vp, known, &mut walk.misses) {
+            Placement::Hidden => return,
+            Placement::At(nx, ny) => {
+                x = nx.unwrap_or(x);
+                y = ny.unwrap_or(y);
+            }
+        }
+    }
+    let x = x;
+    let y = y;
+
+    if let Some(i) = at.anchor_name {
+        let (_, name, seq) = &b.anchoring.names[i as usize];
+        // Visible unless the clips it is inside leave nothing of it.
+        let (mut l, mut t, mut r, mut bt) = (x, y, x + layout.size.width, y + layout.size.height);
+        for c in &walk.clips {
+            l = l.max(c.x);
+            t = t.max(c.y);
+            r = r.min(c.x + c.width);
+            bt = bt.min(c.y + c.height);
+        }
+        let visible = r > l && bt > t || (layout.size.width == 0.0 || layout.size.height == 0.0) && r >= l && bt >= t;
+        let here = AnchorBox { x, y, width: layout.size.width, height: layout.size.height, visible, seq: *seq };
+        match walk.seen.get(name) {
+            Some(had) if had.seq > *seq => {}
+            _ => {
+                walk.seen.insert(name.clone(), here);
+            }
+        }
     }
 
     // opacity fades this node and everything under it, so the layer opens
@@ -3572,308 +3885,321 @@ fn collect(
     let mut clip_radius = [0.0; 4];
     // A node can emit more than one paint (a text node paints its box, then its
     // glyphs), so walk every entry it owns, in order.
-    for (_, kind) in b.paints(id) {
-        match kind {
-            PaintKind::Box {
-                bg,
-                radius,
-                radius_pct,
-                border,
-                border_color,
-                clip: c,
-                shadow,
-            } => {
+    // The walk that only finds where anchors are drawn (see `Anchoring`) needs
+    // a box's clip and nothing it paints or answers taps with.
+    if walk.dry {
+        for (_, kind) in b.paints(id) {
+            if let PaintKind::Box { radius, radius_pct, clip: c, .. } = kind {
                 clip = *c;
-                // Here, and not in the cascade, is the first moment a
-                // percentage has a box to be a percentage of.
-                let radius =
-                    &resolve_radius(*radius, *radius_pct, layout.size.width, layout.size.height);
-                clip_radius = *radius;
-                // The shadow goes down first, so the box's own fill sits on top.
-                // Outer shadows only for now; inset is parsed but not drawn.
-                if let Some(sh) = shadow.filter(|s| !s.inset) {
-                    out.paints.push(Paint::Shadow {
-                        x: x + sh.dx - sh.spread,
-                        y: y + sh.dy - sh.spread,
-                        width: layout.size.width + 2.0 * sh.spread,
-                        height: layout.size.height + 2.0 * sh.spread,
-                        // vello's blurred rect takes one radius; use the largest
-                        // corner as a stand-in (per-corner blur isn't supported).
-                        radius: radius.iter().copied().fold(0.0, f32::max),
-                        blur: sh.blur,
-                        color: sh.color,
-                    });
+                clip_radius = resolve_radius(*radius, *radius_pct, layout.size.width, layout.size.height);
+            }
+        }
+    } else {
+        for (_, kind) in b.paints(id) {
+            match kind {
+                PaintKind::Box {
+                    bg,
+                    radius,
+                    radius_pct,
+                    border,
+                    border_color,
+                    clip: c,
+                    shadow,
+                } => {
+                    clip = *c;
+                    // Here, and not in the cascade, is the first moment a
+                    // percentage has a box to be a percentage of.
+                    let radius =
+                        &resolve_radius(*radius, *radius_pct, layout.size.width, layout.size.height);
+                    clip_radius = *radius;
+                    // The shadow goes down first, so the box's own fill sits on top.
+                    // Outer shadows only for now; inset is parsed but not drawn.
+                    if let Some(sh) = shadow.filter(|s| !s.inset) {
+                        out.paints.push(Paint::Shadow {
+                            x: x + sh.dx - sh.spread,
+                            y: y + sh.dy - sh.spread,
+                            width: layout.size.width + 2.0 * sh.spread,
+                            height: layout.size.height + 2.0 * sh.spread,
+                            // vello's blurred rect takes one radius; use the largest
+                            // corner as a stand-in (per-corner blur isn't supported).
+                            radius: radius.iter().copied().fold(0.0, f32::max),
+                            blur: sh.blur,
+                            color: sh.color,
+                        });
+                    }
+                    let widest = border.top.max(border.right).max(border.bottom).max(border.left);
+                    let has_border = widest > 0.0 && border_color.is_some();
+                    if bg.is_some() || has_border {
+                        out.paints.push(Paint::Rect(PaintRect {
+                            x,
+                            y,
+                            width: layout.size.width,
+                            height: layout.size.height,
+                            background: bg.clone(),
+                            radius: *radius,
+                            border: *border,
+                            border_color: *border_color,
+                        }));
+                    }
                 }
-                let widest = border.top.max(border.right).max(border.bottom).max(border.left);
-                let has_border = widest > 0.0 && border_color.is_some();
-                if bg.is_some() || has_border {
-                    out.paints.push(Paint::Rect(PaintRect {
-                        x,
-                        y,
-                        width: layout.size.width,
-                        height: layout.size.height,
-                        background: bg.clone(),
-                        radius: *radius,
-                        border: *border,
-                        border_color: *border_color,
+                // Glyphs go in the *content* box, inside this node's own padding and
+                // border. Painting them at the border box put a padded label flush
+                // against the edge of its own background: the box grew, the words
+                // did not move. The size matters as much as the origin, since it is
+                // what the run is aligned and wrapped within.
+                //
+                // **`overflow` clips a text's own glyphs, not only its children.**
+                // The clip below is pushed after a node's own paints, which is
+                // right for a box (it bounds what is inside it) and left a `<text>`
+                // with `height` and `overflow: clip` spilling its lines over
+                // everything under it: a text has no children, its content *is*
+                // the glyphs. Found on the phone, an event log written with
+                // exactly that CSS running down over the page.
+                PaintKind::Text(tc) => {
+                    let (cx, cy, cw, ch) = content_box(layout);
+                    if clip {
+                        out.paints.push(Paint::PushClip {
+                            x,
+                            y,
+                            width: layout.size.width,
+                            height: layout.size.height,
+                            radius: clip_radius,
+                        });
+                    }
+                    out.paints.push(Paint::Text(PaintText {
+                        x: x + cx,
+                        y: y + cy,
+                        width: cw,
+                        height: ch,
+                        content: tc.clone(),
                     }));
+                    if clip {
+                        out.paints.push(Paint::PopClip);
+                    }
                 }
-            }
-            // Glyphs go in the *content* box, inside this node's own padding and
-            // border. Painting them at the border box put a padded label flush
-            // against the edge of its own background: the box grew, the words
-            // did not move. The size matters as much as the origin, since it is
-            // what the run is aligned and wrapped within.
-            //
-            // **`overflow` clips a text's own glyphs, not only its children.**
-            // The clip below is pushed after a node's own paints, which is
-            // right for a box (it bounds what is inside it) and left a `<text>`
-            // with `height` and `overflow: clip` spilling its lines over
-            // everything under it: a text has no children, its content *is*
-            // the glyphs. Found on the phone, an event log written with
-            // exactly that CSS running down over the page.
-            PaintKind::Text(tc) => {
-                let (cx, cy, cw, ch) = content_box(layout);
-                if clip {
-                    out.paints.push(Paint::PushClip {
-                        x,
-                        y,
-                        width: layout.size.width,
-                        height: layout.size.height,
-                        radius: clip_radius,
-                    });
+                PaintKind::Tick(color) => out.paints.push(Paint::Tick(PaintTick {
+                    x,
+                    y,
+                    width: layout.size.width,
+                    height: layout.size.height,
+                    color: *color,
+                })),
+                PaintKind::Image(ic) => out.paints.push(Paint::Image(PaintImage {
+                    x,
+                    y,
+                    width: layout.size.width,
+                    height: layout.size.height,
+                    content: ic.clone(),
+                })),
+                // Drawn after the children, below.
+                PaintKind::Outline(_) => {}
+                // From the content corner, not the border corner, so padding moves
+                // the drawing the way it moves text rather than being ignored.
+                PaintKind::Path(pc, pp) => {
+                    let (cx, cy, _, _) = content_box(layout);
+                    out.paints.push(Paint::Path(PaintPath {
+                        x: x + cx,
+                        y: y + cy,
+                        content: pc.clone(),
+                        paint: *pp,
+                    }))
                 }
-                out.paints.push(Paint::Text(PaintText {
-                    x: x + cx,
-                    y: y + cy,
-                    width: cw,
-                    height: ch,
-                    content: tc.clone(),
-                }));
-                if clip {
-                    out.paints.push(Paint::PopClip);
-                }
-            }
-            PaintKind::Tick(color) => out.paints.push(Paint::Tick(PaintTick {
-                x,
-                y,
-                width: layout.size.width,
-                height: layout.size.height,
-                color: *color,
-            })),
-            PaintKind::Image(ic) => out.paints.push(Paint::Image(PaintImage {
-                x,
-                y,
-                width: layout.size.width,
-                height: layout.size.height,
-                content: ic.clone(),
-            })),
-            // Drawn after the children, below.
-            PaintKind::Outline(_) => {}
-            // From the content corner, not the border corner, so padding moves
-            // the drawing the way it moves text rather than being ignored.
-            PaintKind::Path(pc, pp) => {
-                let (cx, cy, _, _) = content_box(layout);
-                out.paints.push(Paint::Path(PaintPath {
-                    x: x + cx,
-                    y: y + cy,
-                    content: pc.clone(),
-                    paint: *pp,
-                }))
             }
         }
     }
 
-    // A `for=` label targeting a text input: a focus region at the label's box,
-    // carrying the *target's* model, so tapping the label focuses that input.
-    if let Some((_, model, row)) = at.focus_label.map(|i| &b.focus_labels[i as usize]) {
-        // The scope comes from the input the label points at, not from the
-        // label: `for=` names a model, and a model only means anything where it
-        // was written. A label that finds no such input carries no instance,
-        // which is the same answer as before this field existed.
-        let target = b.models.iter().find(|m| m.model == *model && m.row == *row);
-        let instance = target.and_then(|b| b.instance.clone());
-        // The target's attributes too, because the shell reads them off
-        // whichever region shares the field's identity, and a label's region
-        // can come first. A `readonly` field focused from its label must still
-        // refuse the keyboard.
-        let field = target.map(|t| t.field.clone()).unwrap_or_default();
-        out.focuses.push(FocusRegion {
-            x,
-            y,
-            width: layout.size.width,
-            height: layout.size.height,
-            model: model.clone(),
-            row: row.clone(),
-            instance,
-            text: None,
-            kind: target.map_or(InputKind::Text, |b| b.kind),
-            field,
-            scroll_id: None,
-        });
-    }
-
-    // Assistive technology needs the same geometry the pointer uses, so this rides
-    // the same walk. `hidden` nodes returned above, so an `r-show="false"` element
-    // is absent from the a11y tree too, not merely invisible.
-    if let Some((_, node_access, model)) = at.access.map(|i| &b.access[i as usize]) {
-        walk.access_seq.push(at.stack.seq);
-        out.access.push(AccessNode {
-            x,
-            y,
-            width: layout.size.width,
-            height: layout.size.height,
-            access: node_access.clone(),
-            model: model.clone(),
-        });
-    }
-
-    // Emitted after the `hidden` check above, so an `r-show="false"` subtree has
-    // no metrics at all rather than metrics nobody can see.
-    if let Some((_, path)) = at.path.map(|i| &b.paths[i as usize]) {
-        out.metrics.push(NodeMetrics {
-            path: path.clone(),
-            x,
-            y,
-            width: layout.size.width,
-            height: layout.size.height,
-        });
-    }
-
-    // Emitted for any box a `:hover`/`:active` rule could style, tappable or not,
-    // unlike `cursor`, pointer-state styling is not limited to `@tap` boxes.
-    if let Some((_, path)) = at.state.map(|i| &b.states[i as usize]) {
-        out.states.push(StateRegion {
-            x,
-            y,
-            width: layout.size.width,
-            height: layout.size.height,
-            path: path.clone(),
-        });
-    }
-
-    if let Some((_, handler, gestures, cursor, touch_action, instance, _)) =
-        at.handler.map(|i| &b.handlers[i as usize])
-    {
-        out.hits.push(HitRegion {
-            transform: child_xform,
-            x,
-            y,
-            width: layout.size.width,
-            height: layout.size.height,
-            on_tap: handler.clone(),
-            gestures: gestures.clone(),
-            cursor: *cursor,
-            touch_action: *touch_action,
-            instance: instance.clone(),
-        });
-    }
-
-    let (fw, fh) = (layout.size.width, layout.size.height);
-    if let Some(bound) = at.model.map(|i| &b.models[i as usize]) {
-        if let Some(options) = &bound.options {
-            // A select: no caret, just a tappable box that opens a dropdown.
-            out.selects.push(SelectRegion {
+    if !walk.dry {
+        // A `for=` label targeting a text input: a focus region at the label's box,
+        // carrying the *target's* model, so tapping the label focuses that input.
+        if let Some((_, model, row)) = at.focus_label.map(|i| &b.focus_labels[i as usize]) {
+            // The scope comes from the input the label points at, not from the
+            // label: `for=` names a model, and a model only means anything where it
+            // was written. A label that finds no such input carries no instance,
+            // which is the same answer as before this field existed.
+            let target = b.models.iter().find(|m| m.model == *model && m.row == *row);
+            let instance = target.and_then(|b| b.instance.clone());
+            // The target's attributes too, because the shell reads them off
+            // whichever region shares the field's identity, and a label's region
+            // can come first. A `readonly` field focused from its label must still
+            // refuse the keyboard.
+            let field = target.map(|t| t.field.clone()).unwrap_or_default();
+            out.focuses.push(FocusRegion {
                 x,
                 y,
-                width: fw,
-                height: fh,
-                model: bound.model.clone(),
-                row: bound.row.clone(),
-                instance: bound.instance.clone(),
-                options: options.clone(),
-                field: bound.field.clone(),
+                width: layout.size.width,
+                height: layout.size.height,
+                model: model.clone(),
+                row: row.clone(),
+                instance,
+                text: None,
+                kind: target.map_or(InputKind::Text, |b| b.kind),
+                field,
+                scroll_id: None,
             });
-            walk.focus_seq.push(at.stack.seq);
-            out.focusables.push(FocusItem {
+        }
+
+        // Assistive technology needs the same geometry the pointer uses, so this rides
+        // the same walk. `hidden` nodes returned above, so an `r-show="false"` element
+        // is absent from the a11y tree too, not merely invisible.
+        if let Some((_, node_access, model)) = at.access.map(|i| &b.access[i as usize]) {
+            walk.access_seq.push(at.stack.seq);
+            out.access.push(AccessNode {
                 x,
                 y,
-                width: fw,
-                height: fh,
-                kind: FocusKind::Select {
+                width: layout.size.width,
+                height: layout.size.height,
+                access: node_access.clone(),
+                model: model.clone(),
+            });
+        }
+
+        // Emitted after the `hidden` check above, so an `r-show="false"` subtree has
+        // no metrics at all rather than metrics nobody can see.
+        if let Some((_, path)) = at.path.map(|i| &b.paths[i as usize]) {
+            out.metrics.push(NodeMetrics {
+                path: path.clone(),
+                x,
+                y,
+                width: layout.size.width,
+                height: layout.size.height,
+            });
+        }
+
+        // Emitted for any box a `:hover`/`:active` rule could style, tappable or not,
+        // unlike `cursor`, pointer-state styling is not limited to `@tap` boxes.
+        if let Some((_, path)) = at.state.map(|i| &b.states[i as usize]) {
+            out.states.push(StateRegion {
+                x,
+                y,
+                width: layout.size.width,
+                height: layout.size.height,
+                path: path.clone(),
+            });
+        }
+
+        if let Some((_, handler, gestures, cursor, touch_action, instance, _)) =
+            at.handler.map(|i| &b.handlers[i as usize])
+        {
+            out.hits.push(HitRegion {
+                transform: child_xform,
+                x,
+                y,
+                width: layout.size.width,
+                height: layout.size.height,
+                on_tap: handler.clone(),
+                gestures: gestures.clone(),
+                cursor: *cursor,
+                touch_action: *touch_action,
+                instance: instance.clone(),
+            });
+        }
+
+        let (fw, fh) = (layout.size.width, layout.size.height);
+        if let Some(bound) = at.model.map(|i| &b.models[i as usize]) {
+            if let Some(options) = &bound.options {
+                // A select: no caret, just a tappable box that opens a dropdown.
+                out.selects.push(SelectRegion {
+                    x,
+                    y,
+                    width: fw,
+                    height: fh,
                     model: bound.model.clone(),
                     row: bound.row.clone(),
                     instance: bound.instance.clone(),
                     options: options.clone(),
-                },
-                path: bound.focus_path.clone(),
-                scroll: inside_scroll,
-            });
-        } else {
-            // A text/textarea input: its value is rendered by its single text
-            // child; find that child's box so a tap resolves to a caret index.
-            let text = tree
-                .children(id)
-                .ok()
-                .and_then(|kids| kids.first().copied())
-                .and_then(|kid| {
-                    let child = tree.layout(kid).ok()?;
-                    let content = b.paints(kid).iter().find_map(|(_, k)| match k {
-                        PaintKind::Text(tc) => Some(tc.clone()),
-                        _ => None,
-                    })?;
-                    // The same content box the glyphs are painted in, or the
-                    // caret would sit at the border box while the text it is
-                    // supposed to be inside sits within the padding.
-                    let (cx, cy, cw, ch) = content_box(child);
-                    Some(PaintText {
-                        x: x + child.location.x + cx,
-                        y: y + child.location.y + cy,
-                        width: cw,
-                        height: ch,
-                        content,
-                    })
+                    field: bound.field.clone(),
                 });
-            out.focuses.push(FocusRegion {
-                x,
-                y,
-                width: fw,
-                height: fh,
-                model: bound.model.clone(),
-                row: bound.row.clone(),
-                instance: bound.instance.clone(),
-                text: text.clone(),
-                kind: bound.kind,
-                field: bound.field.clone(),
-                // Ids are given out before the walk: see `number_scrollers`.
-                scroll_id: b.scroll_ids.get(&id).copied(),
-            });
+                walk.focus_seq.push(at.stack.seq);
+                out.focusables.push(FocusItem {
+                    x,
+                    y,
+                    width: fw,
+                    height: fh,
+                    kind: FocusKind::Select {
+                        model: bound.model.clone(),
+                        row: bound.row.clone(),
+                        instance: bound.instance.clone(),
+                        options: options.clone(),
+                    },
+                    path: bound.focus_path.clone(),
+                    scroll: inside_scroll,
+                });
+            } else {
+                // A text/textarea input: its value is rendered by its single text
+                // child; find that child's box so a tap resolves to a caret index.
+                let text = tree
+                    .children(id)
+                    .ok()
+                    .and_then(|kids| kids.first().copied())
+                    .and_then(|kid| {
+                        let child = tree.layout(kid).ok()?;
+                        let content = b.paints(kid).iter().find_map(|(_, k)| match k {
+                            PaintKind::Text(tc) => Some(tc.clone()),
+                            _ => None,
+                        })?;
+                        // The same content box the glyphs are painted in, or the
+                        // caret would sit at the border box while the text it is
+                        // supposed to be inside sits within the padding.
+                        let (cx, cy, cw, ch) = content_box(child);
+                        Some(PaintText {
+                            x: x + child.location.x + cx,
+                            y: y + child.location.y + cy,
+                            width: cw,
+                            height: ch,
+                            content,
+                        })
+                    });
+                out.focuses.push(FocusRegion {
+                    x,
+                    y,
+                    width: fw,
+                    height: fh,
+                    model: bound.model.clone(),
+                    row: bound.row.clone(),
+                    instance: bound.instance.clone(),
+                    text: text.clone(),
+                    kind: bound.kind,
+                    field: bound.field.clone(),
+                    // Ids are given out before the walk: see `number_scrollers`.
+                    scroll_id: b.scroll_ids.get(&id).copied(),
+                });
+                walk.focus_seq.push(at.stack.seq);
+                out.focusables.push(FocusItem {
+                    x,
+                    y,
+                    width: fw,
+                    height: fh,
+                    kind: FocusKind::Text {
+                        model: bound.model.clone(),
+                        row: bound.row.clone(),
+                        instance: bound.instance.clone(),
+                        kind: bound.kind,
+                        text,
+                    },
+                    path: None,
+                    scroll: inside_scroll,
+                });
+            }
+        } else if let Some((_, Some(handler), _, _, _, instance, focus_path)) =
+            at.handler.map(|i| &b.handlers[i as usize])
+        {
+            // A button / checkbox / radio (anything with a `@tap` handler) is
+            // keyboard-reachable: Space or Enter runs the same handler as a tap.
+            //
+            // Only `@tap`. A keyboard has no pointer, so an element that declares
+            // only `@drag` has nothing a key could stand in for, and offering Enter
+            // as a fake drag would be worse than leaving it alone.
             walk.focus_seq.push(at.stack.seq);
             out.focusables.push(FocusItem {
                 x,
                 y,
                 width: fw,
                 height: fh,
-                kind: FocusKind::Text {
-                    model: bound.model.clone(),
-                    row: bound.row.clone(),
-                    instance: bound.instance.clone(),
-                    kind: bound.kind,
-                    text,
-                },
-                path: None,
+                kind: FocusKind::Activate { on_tap: handler.clone(), instance: instance.clone() },
+                path: focus_path.clone(),
                 scroll: inside_scroll,
             });
         }
-    } else if let Some((_, Some(handler), _, _, _, instance, focus_path)) =
-        at.handler.map(|i| &b.handlers[i as usize])
-    {
-        // A button / checkbox / radio (anything with a `@tap` handler) is
-        // keyboard-reachable: Space or Enter runs the same handler as a tap.
-        //
-        // Only `@tap`. A keyboard has no pointer, so an element that declares
-        // only `@drag` has nothing a key could stand in for, and offering Enter
-        // as a fake drag would be worse than leaving it alone.
-        walk.focus_seq.push(at.stack.seq);
-        out.focusables.push(FocusItem {
-            x,
-            y,
-            width: fw,
-            height: fh,
-            kind: FocusKind::Activate { on_tap: handler.clone(), instance: instance.clone() },
-            path: focus_path.clone(),
-            scroll: inside_scroll,
-        });
     }
 
     // overflow: clip/scroll, bound the subtree to this box (following its corners).
@@ -4188,6 +4514,7 @@ impl LayoutState {
         let mut stickies: Vec<(NodeId, [Option<f32>; 4])> = Vec::new();
         let mut hoisted: Vec<(NodeId, bool)> = Vec::new();
         let mut stacks: Vec<(NodeId, Stack)> = Vec::new();
+        let mut anchoring = Anchoring::default();
         let (root_id, kept) = build(
             tree,
             root,
@@ -4212,6 +4539,7 @@ impl LayoutState {
             &mut stickies,
             &mut hoisted,
             &mut stacks,
+            &mut anchoring,
             self.kept.take(),
             Some(vp),
             &mut self.garbage,
@@ -4359,10 +4687,30 @@ impl LayoutState {
                 .expect("compute layout again");
         }
 
-        let mut out = Layout::default();
+        // `anchor-size()`, and an axis with both insets on one anchor: sizes
+        // only the anchor's own layout can answer, given once it has one.
+        let mut sized = false;
+        for (id, a) in &anchoring.boxes {
+            for vertical in [false, true] {
+                let Some(px) = anchored_size(a, vertical, &anchoring, tree, vp) else { continue };
+                let mut st = tree.style(*id).expect("style").clone();
+                if vertical {
+                    st.size.height = length(px);
+                } else {
+                    st.size.width = length(px);
+                }
+                tree.set_style(*id, st).expect("sized from its anchor");
+                sized = true;
+            }
+        }
+        if sized {
+            tree.compute_layout_with_measure(root_id, space, &mut measure_fn)
+                .expect("compute layout with anchor sizes");
+        }
+
         let at = index(
             &paint, &handlers, &models, &focus_labels, &hidden, &opacities, &scrolls, &transforms,
-            &states, &access, &paths, &stickies, &stacks,
+            &states, &access, &paths, &stickies, &stacks, &anchoring,
         );
         let built = Built {
             paint: &paint,
@@ -4380,19 +4728,34 @@ impl LayoutState {
                 number_scrollers(&tree, root_id, &at, &mut ids);
                 ids
             },
+            anchoring: &anchoring,
             at,
         };
-        let mut walk = Walk { scrolls: vec![None; built.scroll_ids.len()], ..Walk::default() };
-        // The root is the outermost stacking context. This one only holds its
-        // place: the root makes its own, as every context does.
-        let mut outer = Stacking::new(&out, 0);
-        collect(
-            &tree, root_id, 0.0, 0.0, &built, offsets, vp,
-            // The root is held by the window.
-            (0.0, 0.0, vp.0, vp.1),
-            None, None, 1.0, true, &mut out, &mut walk, &mut outer,
-        );
-        debug_assert!(outer.pending.is_empty() && walk.clips.is_empty());
+        let walk_once = |known: Option<HashMap<String, AnchorBox>>, dry: bool| {
+            let mut out = Layout::default();
+            let mut walk = Walk { scrolls: vec![None; built.scroll_ids.len()], known, dry, ..Walk::default() };
+            // The root is the outermost stacking context. This one only holds
+            // its place: the root makes its own, as every context does.
+            let mut outer = Stacking::new(&out, 0);
+            collect(
+                &tree, root_id, 0.0, 0.0, &built, offsets, vp,
+                // The root is held by the window.
+                (0.0, 0.0, vp.0, vp.1),
+                None, None, 1.0, true, &mut out, &mut walk, &mut outer,
+            );
+            debug_assert!(outer.pending.is_empty() && walk.clips.is_empty());
+            (out, walk)
+        };
+        // Anything anchored is drawn by a second walk, against where the
+        // first one drew its anchors. See `Anchoring`.
+        let anchored = !anchoring.boxes.is_empty();
+        let (mut out, mut walk) = walk_once(None, anchored);
+        if anchored {
+            (out, walk) = walk_once(Some(std::mem::take(&mut walk.seen)), false);
+            walk.misses.sort();
+            walk.misses.dedup();
+            out.anchor_misses = std::mem::take(&mut walk.misses);
+        }
         out.scrolls = walk.scrolls.into_iter().flatten().collect();
         debug_assert!(out.scrolls.iter().enumerate().all(|(i, s)| s.id == i), "every numbered scroller is drawn");
         // Painting order is not reading order. Tab and assistive technology

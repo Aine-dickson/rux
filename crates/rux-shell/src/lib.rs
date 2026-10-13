@@ -6016,6 +6016,7 @@ impl App {
         // re-clamp them (the content may have shrunk under us). `collect` clamps
         // the shift it applies the same way, so doing this before the scrollbars
         // are drawn is what keeps a thumb where its content actually is.
+        warn_anchor_misses(&layout.anchor_misses);
         offsets.resize(layout.scrolls.len(), Offset::default());
         for region in &layout.scrolls {
             offsets[region.id] = offsets[region.id].clamp_to(region.max);
@@ -11695,5 +11696,31 @@ mod field_history {
         h.wrote("");
         type_in(&mut h, &mut field, &mut at, "draft");
         assert!(h.step(("cleared by the app".into(), 0, 0), false).is_none());
+    }
+}
+
+/// Say, once each, that an `anchor()` asked for something nothing on screen
+/// is. Only a laid-out frame can tell: whether a name is drawn depends on
+/// `r-if`, `r-show` and `display`, so the stylesheet cannot.
+fn warn_anchor_misses(misses: &[String]) {
+    use std::collections::HashSet;
+    use std::sync::{Mutex, OnceLock};
+    static SAID: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    if misses.is_empty() {
+        return;
+    }
+    let Ok(mut said) = SAID.get_or_init(Default::default).lock() else { return };
+    for name in misses {
+        if !said.insert(name.clone()) {
+            continue;
+        }
+        rux_runtime::warn_stylesheet(if name.is_empty() {
+            "an `anchor()` names no anchor and its box has no `position-anchor`, so it is placed as though that inset were `auto`; name one, as in `anchor(--menu bottom)`"
+                .to_string()
+        } else {
+            format!(
+                "`{name}` names nothing on screen, so the `anchor()` asking for it uses its fallback, or `auto` without one; give an element `anchor-name: {name}`"
+            )
+        });
     }
 }

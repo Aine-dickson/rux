@@ -23,6 +23,7 @@ use rux_layout::{
 };
 use rux_layout::{AnimProp, Easing, GradientKind, GridFlow, Transform, Transition};
 use rux_layout::{FillRule, InputKind, LineCap, LineJoin, Outline, PathContent};
+use rux_layout::{AnchorRef, AnchorSide, AnchorSize};
 use rux_parser::{Element, Node as TplNode, Sfc};
 use rux_reactive::Value;
 /// Re-exported so the runtime and the shell can name a warning without
@@ -3474,6 +3475,7 @@ const HONORED_PROPERTIES: &[&str] = &[
     "grid-auto-flow", "grid-auto-rows", "grid-auto-columns",
     // Positioning
     "position", "top", "right", "bottom", "left", "aspect-ratio", "z-index", "isolation",
+    "anchor-name", "position-anchor",
     // Background
     "background", "background-color", "background-image",
     // Text
@@ -3561,6 +3563,10 @@ const PCT_IN_LAYOUT: &[&str] = &[
 fn warn_unparseable_lengths(props: &HashMap<String, String>) {
     for (property, value) in props {
         if !LENGTH_ONLY_PROPERTIES.contains(&property.as_str()) {
+            continue;
+        }
+        // Checked by their own parsers, which say what was wrong with them.
+        if value.contains("anchor(") || value.contains("anchor-size(") {
             continue;
         }
         for token in value.split_whitespace() {
@@ -8041,11 +8047,26 @@ fn interpret(p: &HashMap<String, String>) -> Style {
             _ => Display::Block,
         };
     }
-    if let Some(v) = p.get("width") {
-        st.width = parse_len(first(v));
-    }
-    if let Some(v) = p.get("height") {
-        st.height = parse_len(first(v));
+    for (i, side) in ["width", "height"].iter().enumerate() {
+        let Some(v) = p.get(*side) else { continue };
+        // `anchor-size()` is the anchor's size, known only once the anchor
+        // is laid out: the layout resolves it in a second pass.
+        if v.trim_start().starts_with("anchor-size(") {
+            match parse_anchor_size(v) {
+                Some(a) => st.anchor.get_or_insert_with(Default::default).size[i] = Some(a),
+                None => warn(format!(
+                    "`{side}: {}` is not an `anchor-size()` Rux understands; write `anchor-size(width)`, `anchor-size(--name height)` or `anchor-size(width, 120px)`",
+                    v.trim()
+                )),
+            }
+            continue;
+        }
+        let len = parse_len(first(v));
+        if i == 0 {
+            st.width = len;
+        } else {
+            st.height = len;
+        }
     }
     (st.padding, st.padding_pct) = box_sides(p, "padding");
     (st.margin, st.margin_pct) = box_sides(p, "margin");
@@ -8219,7 +8240,38 @@ fn interpret(p: &HashMap<String, String>) -> Style {
     }
     for (i, side) in INSETS.iter().enumerate() {
         if let Some(v) = p.get(*side) {
+            if v.trim_start().starts_with("anchor(") {
+                // Placed at paint time against where the anchor is drawn, so
+                // the layout sees no inset on this side. See `AnchorStyle::inset`.
+                st.inset[i] = None;
+                match parse_anchor(v, i % 2 == 0) {
+                    Ok(a) => st.anchor.get_or_insert_with(Default::default).inset[i] = Some(a),
+                    Err(why) => warn(format!("`{side}: {}` {why}", v.trim())),
+                }
+                continue;
+            }
             st.inset[i] = if first(v) == "auto" { None } else { parse_len(first(v)) };
+        }
+    }
+    for (property, own) in [("anchor-name", true), ("position-anchor", false)] {
+        let Some(v) = p.get(property) else { continue };
+        let named = match v.trim() {
+            "none" | "auto" => None,
+            name if name.starts_with("--") && name.len() > 2 => Some(name.to_string()),
+            other => {
+                warn(format!(
+                    "`{property}: {other}` is not an anchor name; an anchor name starts with two dashes, as in `{property}: --menu`"
+                ));
+                None
+            }
+        };
+        if let Some(name) = named {
+            let a = st.anchor.get_or_insert_with(Default::default);
+            if own {
+                a.name = Some(name);
+            } else {
+                a.position_anchor = Some(name);
+            }
         }
     }
     if let Some(v) = p.get("z-index") {
@@ -8876,6 +8928,71 @@ fn parse_aspect_ratio(v: &str) -> Option<f32> {
         return (h != 0.0).then_some(w / h);
     }
     v.trim().parse::<f32>().ok().filter(|r| *r > 0.0)
+}
+
+/// `anchor(--name side, fallback)` in an inset. `vertical` is whether it is
+/// in `top` or `bottom`, which decides which sides make sense: `top:
+/// anchor(left)` measures along the wrong axis, and CSS calls it invalid.
+fn parse_anchor(v: &str, vertical: bool) -> Result<AnchorRef, String> {
+    let shape = "is not an `anchor()` Rux understands; write `anchor(bottom)`, `anchor(--name top)` or `anchor(bottom, 8px)`";
+    let inner = v.trim().strip_prefix("anchor(").and_then(|r| r.strip_suffix(')')).ok_or(shape)?;
+    let (main, fallback) = match inner.split_once(',') {
+        Some((m, f)) => (m, Some(parse_len(f.trim()).ok_or(shape)?)),
+        None => (inner, None),
+    };
+    let mut name = None;
+    let mut side = None;
+    for token in main.split_whitespace() {
+        if token.starts_with("--") && name.is_none() {
+            name = Some(token.to_string());
+            continue;
+        }
+        if side.is_some() {
+            return Err(shape.to_string());
+        }
+        side = Some(match token {
+            "top" | "bottom" if !vertical => {
+                return Err(format!(
+                    "measures along the wrong axis: a `left` or `right` inset takes `anchor(left)`, `anchor(right)` or `anchor(center)`, not `{token}`"
+                ))
+            }
+            "left" | "right" if vertical => {
+                return Err(format!(
+                    "measures along the wrong axis: a `top` or `bottom` inset takes `anchor(top)`, `anchor(bottom)` or `anchor(center)`, not `{token}`"
+                ))
+            }
+            "top" => AnchorSide::Top,
+            "bottom" => AnchorSide::Bottom,
+            "left" => AnchorSide::Left,
+            "right" => AnchorSide::Right,
+            "center" => AnchorSide::Center,
+            pct => match parse_len(pct) {
+                Some(Len::Pct(f)) => AnchorSide::Frac(f),
+                _ => return Err(shape.to_string()),
+            },
+        });
+    }
+    Ok(AnchorRef { name, side: side.ok_or(shape)?, fallback })
+}
+
+/// `anchor-size(--name width, fallback)` in `width` or `height`.
+fn parse_anchor_size(v: &str) -> Option<AnchorSize> {
+    let inner = v.trim().strip_prefix("anchor-size(")?.strip_suffix(')')?;
+    let (main, fallback) = match inner.split_once(',') {
+        Some((m, f)) => (m, Some(parse_len(f.trim())?)),
+        None => (inner, None),
+    };
+    let mut name = None;
+    let mut height = None;
+    for token in main.split_whitespace() {
+        match token {
+            t if t.starts_with("--") && name.is_none() => name = Some(t.to_string()),
+            "width" | "inline" if height.is_none() => height = Some(false),
+            "height" | "block" if height.is_none() => height = Some(true),
+            _ => return None,
+        }
+    }
+    Some(AnchorSize { name, height: height?, fallback })
 }
 
 fn first(s: &str) -> &str {
@@ -10300,6 +10417,43 @@ mod tests {
         let _ = super::take_warnings();
         assert_eq!(z("1.5"), None, "not a whole number");
         assert!(super::take_warnings().iter().any(|w| w.message.contains("z-index: 1.5")));
+    }
+
+    #[test]
+    fn maps_anchor_positioning() {
+        use rux_layout::{AnchorRef, AnchorSide, AnchorSize};
+        let mut p = HashMap::new();
+        p.insert("anchor-name".to_string(), "--btn".to_string());
+        p.insert("position-anchor".to_string(), "--other".to_string());
+        p.insert("top".to_string(), "anchor(bottom)".to_string());
+        p.insert("left".to_string(), "anchor(--btn 25%, 8px)".to_string());
+        p.insert("right".to_string(), "4px".to_string());
+        p.insert("width".to_string(), "anchor-size(--btn width)".to_string());
+        let _ = super::take_warnings();
+        let st = interpret(&p);
+        assert!(super::take_warnings().is_empty(), "nothing to say about any of it");
+        let a = st.anchor.as_deref().expect("anchored");
+        assert_eq!(a.name.as_deref(), Some("--btn"));
+        assert_eq!(a.position_anchor.as_deref(), Some("--other"));
+        assert_eq!(a.inset[0], Some(AnchorRef { name: None, side: AnchorSide::Bottom, fallback: None }));
+        assert_eq!(
+            a.inset[3],
+            Some(AnchorRef { name: Some("--btn".into()), side: AnchorSide::Frac(0.25), fallback: Some(Len::Px(8.0)) })
+        );
+        assert!(st.inset[0].is_none() && st.inset[3].is_none(), "an anchored side is not the layout's");
+        assert!(matches!(st.inset[1], Some(Len::Px(v)) if v == 4.0));
+        assert_eq!(a.size[0], Some(AnchorSize { name: Some("--btn".into()), height: false, fallback: None }));
+        assert!(st.width.is_none());
+
+        // The wrong axis, and a name without its dashes, are said.
+        let mut p = HashMap::new();
+        p.insert("top".to_string(), "anchor(left)".to_string());
+        p.insert("anchor-name".to_string(), "btn".to_string());
+        let st = interpret(&p);
+        assert!(st.anchor.is_none());
+        let said: Vec<String> = super::take_warnings().into_iter().map(|w| w.message).collect();
+        assert!(said.iter().any(|m| m.contains("wrong axis")), "{said:?}");
+        assert!(said.iter().any(|m| m.contains("two dashes")), "{said:?}");
     }
 
     #[test]

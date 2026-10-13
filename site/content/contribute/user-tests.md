@@ -2414,6 +2414,28 @@ window with a debug build on one probe page, in three variants.
 | A tap on the top box | | the box drawn on top answers | under the code only (injected clicks do not reach the window) |
 | Web, Android | the same page | the same | not driven |
 
+## Anchor positioning, 2026-10-13
+
+CSS anchor positioning in place of a portal (owner's choice). Under test in
+`rux-layout` (`tests/anchor.rs`: ten cases, among them every side, explicit
+names, fallbacks, a missing and a hidden anchor, the last of two names,
+`anchor-size()` and both insets, following a scrolled panel and vanishing
+when the anchor is scrolled away, escaping a clip, and the tap finding the
+menu where it is drawn) and in `rux-style` (`maps_anchor_positioning`).
+Driven in a desktop window with a debug build on one probe: a 220px scrolling
+panel of ten rows, each button named `--row-N` through `:style`, and a `fixed`
+menu with `position-anchor` set through `:style` to the open row.
+
+| Case | Steps | Expected | Result |
+|---|---|---|---|
+| Under its button | open row 3, panel at the top | the menu's top on the button's bottom, right edges in line | desktop: pass |
+| Follows a scroll | open row 3, the panel scrolled two rows | the menu moved up with the button | desktop: pass |
+| Gone with its button | open row 3, the panel scrolled to the end | no menu | desktop: pass |
+| Out of the panel | open row 5, the last row showing | the menu runs past the panel's bottom edge, uncut | desktop: pass |
+| A name per row | `:style` with `anchor-name: --row-${item.id}` | each row its own anchor, the menu on the open one | desktop: pass |
+| A tap on the menu | | the menu answers where it is drawn | under the code only (injected clicks do not reach the window) |
+| Web, Android | the same page | the same | not driven |
+
 ## Standing gaps
 
 Cases nothing here can currently exercise. They are the shape of what v0.8 has

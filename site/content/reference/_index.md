@@ -515,13 +515,84 @@ Three consequences that surprise people, all of them CSS:
 A box drawn out of tree order is still clipped by every `overflow` box it sits
 in, so a positioned row inside a scroller stays inside the scroller. Escaping an
 ancestor's `overflow: hidden`, the dropdown inside a scrolling panel, is what
-`position: fixed` is for today (nothing else escapes it).
+`position: fixed` is for, placed with anchor positioning (below) so it does not
+have to be measured by hand.
 
 **Tab order and the accessibility tree do not follow paint order.** They stay in
 document order, whatever is drawn over what.
 
 `transition: z-index` steps through the whole numbers between the two values, as
 CSS does. A change to or from `auto` lands at once.
+
+### Anchor positioning: a box placed against another
+
+CSS anchor positioning, the way a dropdown, a tooltip or a popover is placed
+against what opened it. One box is named, and another is placed against it:
+
+```css
+.more { anchor-name: --row-menu; }
+.menu {
+  position: fixed;
+  position-anchor: --row-menu;
+  top: anchor(bottom);
+  left: anchor(left);
+  width: anchor-size(width);
+}
+```
+
+- **`anchor-name: --x`** names a box. Names are **document-wide**, so a menu
+  component can anchor to a button anywhere on the screen. Rules still do not
+  cascade into components; only the name is shared.
+- **`position-anchor: --x`** is the anchor an `anchor()` naming none measures
+  to, on an `absolute` or `fixed` box. On any other box `anchor()` means
+  nothing, as in CSS.
+- **`anchor(side)`** in `top`, `right`, `bottom` or `left` is a position on the
+  anchor: `top`, `bottom`, `left`, `right`, `center` or a percentage along it.
+  `top: anchor(bottom)` puts this box's top edge on the anchor's bottom edge;
+  `bottom: anchor(top)` puts this box's bottom edge on the anchor's top edge.
+  It can name its own anchor, `anchor(--other bottom)`, and carry a fallback,
+  `anchor(bottom, 8px)`, used when there is no such anchor on screen. `top`
+  and `bottom` take the vertical sides and `left` and `right` the horizontal
+  ones; the other way round is said, and ignored.
+- **`anchor-size(width)`** or `anchor-size(height)` in `width` or `height`
+  makes the box as wide or as tall as its anchor. Both insets on one axis
+  against one anchor (`left: anchor(left); right: anchor(right)`) size the
+  box too.
+
+**It is placed at paint time, against where the anchor is drawn**, the way
+`sticky` is: scrolled, stuck and all. So a menu follows its button when the
+panel under it scrolls, and a tap finds the menu where it is drawn. Its size is
+the layout's, found in a second layout pass once the anchor has one, so text
+inside it wraps at the right width. A `transform` on the anchor is ignored, as
+in a browser: what counts is where its box was laid out.
+
+**`fixed` is what escapes the clip.** An `absolute` anchored box is still cut by
+the `overflow` boxes it sits in, as CSS says; a `fixed` one is outside all of
+them, which is how a dropdown gets out of a scrolling panel.
+
+**When there is no anchor**, because nothing has the name or the box that has
+it is hidden (`r-show="false"`, `display: none`, an `r-if` that is false),
+each `anchor()` uses its fallback, or without one that inset is left where the
+layout put it. The runtime says so once per name: ``` `--x` names nothing on
+screen ```.
+
+**When the anchor is scrolled out of view**, entirely clipped away, the
+anchored box is not drawn and cannot be tapped. That is CSS's default
+`position-visibility: anchors-visible`: a menu does not float on alone after
+its button has left the panel.
+
+**Two boxes with one name**: the later one in the document is the anchor, as in
+CSS. A list whose every row has a menu button gives each row its own name,
+and the menu the open row's:
+
+```rux
+<view class="more" r-for="item in items" r-key="item.id" :style="`anchor-name: --row-${item.id}`" @tap="open = item.id">…</view>
+<view class="menu" r-if="open != none" :style="`position-anchor: --row-${open}`">…</view>
+```
+
+Not built: `position-try` (flipping a menu above its button when there is no
+room below), `position-area`, `anchor-center`, `anchor-scope`, and animating
+an `anchor()`.
 
 ### Numbers, switches and sliders
 

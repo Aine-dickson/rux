@@ -79,6 +79,31 @@ fn positioned_list_layout_cost() {
     cost(&src, "list 300 positioned rows");
 }
 
+/// The positioned list with every row's button an anchor and a `fixed` menu
+/// on one of them, so the paint walk runs twice: once to find where the
+/// anchors are drawn and once to draw against them.
+#[test]
+#[ignore]
+fn anchored_list_layout_cost() {
+    let src = LIST
+        .replace(".row { display: flex;", ".row { position: relative; display: flex;")
+        .replace(
+            r#"<text class="price">"#,
+            r#"<text class="price" :style="`anchor-name: --row-${item.id}`">"#,
+        )
+        .replace(
+            "  </screen>",
+            "    <view class=\"menu\"><text class=\"name\">menu</text></view>\n  </screen>",
+        )
+        .replace(
+            "</style>",
+            ".menu { position: fixed; position-anchor: --row-150; top: anchor(bottom); left: anchor(left); \
+             width: 120px; background: #fab387; }\n</style>",
+        );
+    assert!(src.contains("position-anchor") && src.contains("anchor-name"));
+    cost(&src, "list 300 anchored rows");
+}
+
 fn cost(src: &str, label: &str) {
     let mut doc = rux_runtime::Document::from_source(src).expect("load");
     let mut text = rux_text::TextEngine::new();
