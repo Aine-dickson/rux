@@ -72,4 +72,4 @@ Each entry says what Mava needed, what happened, how to reproduce it, what Mava 
 - **Reproduction:** none; there is no API.
 - **Mava workaround:** a file in the user's data folder, located with the `dirs` crate from the native crate.
 - **Suggested fix:** a small key-value store per app id (`[app] id` in `rux.toml`), the same API on every target. Low priority for the Studio, higher for Mava's learner runtime, which may run on the web.
-- **Status:** open.
+- **Status:** fixed 2026-10-13 on `build/v0.9`, as suggested. `settings.get(key)`, `settings.set(key, value)` and `settings.remove(key)`, with nothing to import, kept per `[app] id` in the platform's app-data folder (`%APPDATA%\<id>\settings.json` on Windows), the app's files on Android and `localStorage` on the web, each `set` written at once and safely. The `dirs`-based file in Mava's native crate can go. Documented under "Settings" in `docs/07-script.md`.

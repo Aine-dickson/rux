@@ -2378,6 +2378,22 @@ knew the document's own functions. It now leaves linked native names to the
 type checker, which holds them to their signatures. No example had a native
 call inside a `fn` before.
 
+## Settings, 2026-10-13
+
+Mava Studio's MS-007: `settings.get`, `set` and `remove`, kept per `[app] id`.
+Under test in `rux-shell`'s own (`settings`: a value through JSON and back with
+its `int` intact; a write that leaves no part file behind). Driven in a desktop
+window with the release build on a probe with `id = "dev.ruxlang.settingsprobe"`:
+a count and a list of the last three, loaded at start and saved on each tap.
+
+| Case | Steps | Expected | Result |
+|---|---|---|---|
+| Saved where the id says | tap three times | `%APPDATA%\dev.ruxlang.settingsprobe\settings.json` with `count: 3` and the three lines | desktop: pass |
+| It survives a restart | close, open again | `count 3`, the list in order | desktop: pass |
+| Forgotten | "forget it", close, open | `count 0`, the list empty, the file `{}` | desktop: pass |
+| A bare `rux run` | no `rux.toml` | kept under the file's name | under the code only |
+| Web, Android | `localStorage`, the app's files | the same | not driven |
+
 ## Standing gaps
 
 Cases nothing here can currently exercise. They are the shape of what v0.8 has

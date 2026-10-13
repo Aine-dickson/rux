@@ -56,7 +56,7 @@ pub use rux_native as native;
 /// Rux's own native functions, the file dialogs among them: their
 /// interface, which a shell installs with code behind it.
 pub mod builtins {
-    pub use rux_script::native::{builtin_interface, BUILTIN_FNS, BUILTIN_MODULE};
+    pub use rux_script::native::{builtin_interface, settings_interface, BUILTIN_FNS, BUILTIN_MODULE, SETTINGS_MODULE};
 }
 /// Compiled script functions, for the code a release build generates: step 9
 /// of docs/11-next.md.
@@ -6217,7 +6217,7 @@ fn native_module_of(file: &str) -> Option<String> {
     let module = file.strip_suffix(".rux").unwrap_or(file);
     // Rux's own (the file dialogs) is there whether or not a shell put it
     // there, so `use native::rux::{pickFile};` resolves in a check too.
-    if module == rux_script::native::BUILTIN_MODULE {
+    if module == rux_script::native::BUILTIN_MODULE || module == rux_script::native::SETTINGS_MODULE {
         rux_script::native::ensure_builtins();
     }
     rux_script::native::is_native(module).then(|| module.to_string())

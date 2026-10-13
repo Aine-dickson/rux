@@ -64,11 +64,42 @@ pub fn builtin_interface() -> rux_native::Interface {
     }
 }
 
-/// Declare the built-in module if no shell has installed it, so a document
-/// checked or run without one still knows the names.
+/// The module behind `settings.get`, `settings.set` and `settings.remove`:
+/// an app's own small store (Mava Studio's MS-007).
+pub const SETTINGS_MODULE: &str = "native/rux/settings";
+
+/// The name a script reaches [`SETTINGS_MODULE`] by without importing it.
+pub const SETTINGS_NAME: &str = "settings";
+
+/// The settings module's interface, as [`builtin_interface`] is the dialogs'.
+pub fn settings_interface() -> rux_native::Interface {
+    use rux_native::{Item, Sig};
+    let f = |name: &str, params: &[(&str, &str)], result: &str| Item {
+        name: name.into(),
+        kind: ItemKind::Fn(Sig {
+            params: params.iter().map(|(n, t)| (n.to_string(), t.to_string())).collect(),
+            result: result.into(),
+            is_async: false,
+        }),
+    };
+    rux_native::Interface {
+        path: "rux::settings".into(),
+        items: vec![
+            f("get", &[("key", "string")], "any?"),
+            f("set", &[("key", "string"), ("value", "any")], "void"),
+            f("remove", &[("key", "string")], "void"),
+        ],
+    }
+}
+
+/// Declare the built-in modules if no shell has installed them, so a
+/// document checked or run without one still knows the names.
 pub fn ensure_builtins() {
     if registry::interface(BUILTIN_MODULE).is_none() {
         let _ = registry::declare(builtin_interface());
+    }
+    if registry::interface(SETTINGS_MODULE).is_none() {
+        let _ = registry::declare(settings_interface());
     }
 }
 
@@ -76,6 +107,25 @@ pub fn ensure_builtins() {
 /// and does not declare itself, linked to [`BUILTIN_MODULE`] as an explicit
 /// `use native::rux::{pickFile};` would link it.
 pub fn builtin_aliases(code: &str, aliases: &[crate::link::Alias]) -> Vec<crate::link::Alias> {
+    let mut out = builtin_fn_aliases(code, aliases);
+    // `settings.get(…)`: the store, as a whole module, unless the file has a
+    // `settings` of its own (a `use native::settings;`, a `let settings`).
+    let uses = code.match_indices("settings.").any(|(at, _)| {
+        !code[..at].chars().next_back().is_some_and(|c| c.is_alphanumeric() || c == '_' || c == '.')
+    });
+    let own = ["let settings", "fn settings", "const settings", "settings ="].iter().any(|d| code.contains(d))
+        || aliases.iter().any(|a| a.local == SETTINGS_NAME);
+    if uses && !own {
+        out.push(crate::link::Alias {
+            local: SETTINGS_NAME.to_string(),
+            target: crate::link::Target::Module(SETTINGS_MODULE.to_string()),
+            line: 0,
+        });
+    }
+    out
+}
+
+fn builtin_fn_aliases(code: &str, aliases: &[crate::link::Alias]) -> Vec<crate::link::Alias> {
     BUILTIN_FNS
         .iter()
         .filter(|name| {

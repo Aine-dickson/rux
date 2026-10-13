@@ -577,6 +577,41 @@ async fn saveAs() {
 - Written out, they are `use native::rux::{pickFile};`, which is what a script
   that calls one gets without writing it.
 
+## Settings
+
+**`settings.get(key)`, `settings.set(key, value)` and `settings.remove(key)`**
+keep an app's own small values (recent files, a chosen theme, a window's last
+size) between runs. They are Rux's own, so nothing is imported, and they are
+plain calls rather than `await`s: settings are small, and read at start.
+
+```rux
+let recent: string[] = signal(settings.get("recentProjects") ?? []);
+
+fn remember(path: string) {
+  recent.insert(0, path);
+  recent.truncate(10);
+  settings.set("recentProjects", recent);
+}
+```
+
+- **`get` gives `any?`**: `none` for a key never set. Annotate what you read,
+  as above.
+- **A value is anything that crosses to Rust**: text, numbers (an `int` comes
+  back an `int`), booleans, `none`, arrays, maps and records. A resource lives
+  only while the app runs and cannot be kept.
+- **Every `set` is written at once**, to a file beside the settings that is
+  then renamed over them, so a crash leaves the old values, never half of the
+  new.
+- **Kept per app, by `[app] id`** in `rux.toml`: `%APPDATA%\<id>\settings.json`
+  on Windows, `~/Library/Application Support/<id>/` on macOS,
+  `$XDG_DATA_HOME/<id>/` or `~/.local/share/<id>/` on Linux, the app's own
+  files on Android, and `localStorage` under the id on the web. A bare
+  `rux run file.rux` with no `rux.toml` uses the file's name.
+- **Not a signal.** It is a store: read it into a signal, as above, for what
+  the screen shows.
+- A file with a `settings` of its own (a `use native::settings;`, a `let`)
+  keeps it; the built-in is then `use native::rux::settings;`.
+
 ## Native code
 
 An app's Rust lives in a `native/` crate beside `rux.toml`, an ordinary

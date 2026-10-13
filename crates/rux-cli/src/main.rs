@@ -382,7 +382,11 @@ fn run(path: PathBuf, args: &[String]) -> ExitCode {
     // agree on it. A bare file with no rux.toml above it keeps today's window.
     let dir = path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
     let window = match manifest::Manifest::find(dir) {
-        Ok(m) => m.window_settings(),
+        Ok(m) => {
+            // Where `settings.set` keeps this app's values.
+            rux_shell::set_app_id(&m.id);
+            m.window_settings()
+        }
         Err(e) if dir.ancestors().any(|d| d.join(manifest::MANIFEST).is_file()) => {
             eprintln!("rux: {e}");
             return ExitCode::from(2);

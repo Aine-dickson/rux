@@ -2987,6 +2987,7 @@ dependencies = [
  "rux-reactive",
  "rux-runtime",
  "rux-text",
+ "serde_json",
  "vello",
  "wasm-bindgen",
  "wasm-bindgen-futures",

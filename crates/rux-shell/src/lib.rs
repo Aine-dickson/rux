@@ -27,6 +27,9 @@
 //! because two places doing the same coordinate arithmetic eventually disagree.
 
 mod dialogs;
+mod settings;
+
+pub use settings::set_app_id;
 use std::num::NonZeroUsize;
 use std::path::Path;
 #[cfg(not(target_arch = "wasm32"))]
@@ -9389,6 +9392,7 @@ fn wake_on_answers(event_loop: &EventLoop<RuxEvent>) {
     // Every loop passes here first, so this is also where Rux's own native
     // functions (the file dialogs) are put in place for every document.
     dialogs::install_builtins();
+    settings::install_settings();
     let proxy = event_loop.create_proxy();
     rux_runtime::host::set_waker(move || {
         let _ = proxy.send_event(RuxEvent::Answered);
@@ -9439,6 +9443,9 @@ pub fn run_windowed(
     preview: Option<DeviceProfile>,
     window: WindowSettings,
 ) {
+    // A bare `rux run file.rux` has no `[app] id`: its settings are kept
+    // under the file's name. One with a manifest has set it already.
+    settings::app_id_or(&path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default());
     let event_loop = EventLoop::<RuxEvent>::with_user_event()
         .build()
         .expect("create event loop");
@@ -11139,6 +11146,10 @@ fn run_android_with(
     dev: Option<(rux_runtime::MemorySource, u16)>,
 ) {
     use winit::platform::android::EventLoopBuilderExtAndroid;
+    // Settings live in the app's own files, which only the activity knows.
+    if let Some(dir) = app.internal_data_path() {
+        settings::set_dir(dir);
+    }
 
     // Where hot reload's token is, read before the app is handed on.
     let token_file = app.internal_data_path().map(|dir| dir.join(DEV_TOKEN_FILE));

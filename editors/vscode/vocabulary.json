@@ -144,6 +144,7 @@
     { "name": "pickFile", "detail": "await pickFile({ title, filters, folder })", "doc": "Ask for one file with the platform's own dialog: its path, or `none` if cancelled. Awaited from an `async fn`. `filters` is `[{ name, extensions }]`. Throws `unsupported` on the web and Android for now." },
     { "name": "pickFiles", "detail": "await pickFiles({ title, filters, folder })", "doc": "Ask for any number of files: their paths, `[]` if cancelled. Awaited from an `async fn`." },
     { "name": "pickSaveFile", "detail": "await pickSaveFile({ title, filters, folder, name })", "doc": "Ask where to save, with the platform's own dialog: the path, or `none` if cancelled. `name` is the file name it suggests. Awaited from an `async fn`." },
+    { "name": "settings", "detail": "settings.get(key) / .set(key, value) / .remove(key)", "doc": "An app's own small values, kept between runs: `get` gives `any?` (`none` if never set), `set` writes at once, `remove` forgets. Kept per `[app] id`, in the platform's app-data folder (localStorage on the web)." },
     { "name": "close", "detail": "close()", "doc": "Close the app for good, without asking `@close` again: the app has decided. Every `unmounted` runs first. Does nothing on the web, where a page cannot close its own tab." },
     { "name": "path_for", "detail": "path_for(\"route\", { … })", "doc": "Build a path from a named route and its parameters." },
     { "name": "emit", "detail": "emit(\"name\", payload)", "doc": "A component telling its caller something happened." },
