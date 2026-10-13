@@ -6727,7 +6727,10 @@ fn build_children(
                                 ));
                             } else {
                                 seen.insert(key.clone());
-                                seen_keys.push(key.clone());
+                                // Only an animated list asks which rows left.
+                                if animated {
+                                    seen_keys.push(key.clone());
+                                }
                             }
                             key
                         });
@@ -6743,9 +6746,17 @@ fn build_children(
                         }
                     }
                     out.reserve(plan.len());
-                    prev.reserve(plan.len());
-                    // Every row is this element, so it is described once.
-                    let desc = ElemDesc::of(el);
+                    // The local a row's place is written in, the same for every row.
+                    let place_name = place.as_ref().map(|_| format!("{ROW_PLACE}{var}"));
+                    // Every row is this element, so it is described once, and
+                    // only kept as a sibling when a rule can read siblings: no
+                    // `+` or `~` anywhere, and nothing reads `prev` at all.
+                    let siblings_read = SIBLING_STEP.with(std::cell::Cell::get)
+                        || KEEP_SIBLINGS.with(std::cell::Cell::get);
+                    let desc = siblings_read.then(|| ElemDesc::of(el));
+                    if siblings_read {
+                        prev.reserve(plan.len());
+                    }
                     for (index, (key, child_locals)) in plan.into_iter().enumerate() {
                         let skey: Option<SwapKey> = animated.then(|| (ctp.clone(), key.clone()));
                         // In the collection iff its key survived the diff; a row
@@ -6774,7 +6785,7 @@ fn build_children(
                                 row.map(str::to_string),
                                 k.clone(),
                             );
-                            (id, place.as_ref().map(|_| format!("{ROW_PLACE}{var}")))
+                            (id, place_name.clone())
                         });
                         let mut node = build_row(
                             el, rules, comps, ancestors, &prev, inherited, engine, &child_locals,
@@ -6793,7 +6804,9 @@ fn build_children(
                         }
                         node.key = key;
                         out.push(node);
-                        prev.push(desc.clone());
+                        if let Some(desc) = &desc {
+                            prev.push(desc.clone());
+                        }
                     }
                 }
             }
@@ -6991,6 +7004,12 @@ struct CachedRow {
     inherited: Inherited,
     /// Every signal the row read, with its value then.
     reads: Vec<(String, Option<Value>)>,
+    /// Whether any locals `frag` captured hold a place other than the row's
+    /// own: a list nested in the row, whose places are built from this one.
+    /// Worked out once when the row is kept, since `frag` never changes;
+    /// asked of every moved row on every reuse it was a tenth of a 300-row
+    /// list's build (track (g).7b).
+    other_place: bool,
 }
 
 struct BuildRows {
@@ -7004,8 +7023,8 @@ struct BuildRows {
 }
 
 /// A row of the live tree, taken out of it to be put back where the build
-/// now wants it: its node and its registry entries, which are at the
-/// [`CachedRow::at`] of the row it belongs to.
+/// now wants it: its node, and the index it had under its parent, which is
+/// where its registry entries are found by [`merge_rows`].
 ///
 /// A reused row used to be copied out of the cache, node and registry
 /// entries, 1.9 of a 300-row list's 5 ms (docs/11-next.md, track (g)).
@@ -7013,7 +7032,7 @@ struct BuildRows {
 /// is reused is the same row, so it is moved instead.
 struct LiveRow {
     node: LayoutNode,
-    frag: BindingRegistry,
+    from: usize,
 }
 
 /// [`build_styled_tree_stateful`], reusing the rows `cache` kept from the
@@ -7153,9 +7172,8 @@ pub fn rebuild_children(
     // it, with the key to prove it is that row.
     let depth = parent.tree_path.len();
     let mut kids: Vec<Option<LayoutNode>> = live_children.into_iter().map(Some).collect();
-    let mut frags: Vec<BindingRegistry> = kids.iter().map(|_| BindingRegistry::default()).collect();
-    let sizes = (live_reg.text.len(), live_reg.elements.entries.len());
-    live_reg.deal(depth, &mut frags);
+    let olds = kids.len();
+    ORIGINS.with(|o| o.borrow_mut().clear());
     for (id, row) in cache.rows.iter_mut() {
         if row.at.len() != depth + 1 || !row.at.starts_with(&parent.tree_path) {
             continue;
@@ -7164,7 +7182,7 @@ pub fn rebuild_children(
         let Some(slot) = kids.get_mut(i) else { continue };
         if slot.as_ref().is_some_and(|n| n.key.as_deref() == Some(id.3.as_str())) {
             let node = slot.take().expect("checked just above");
-            row.live = Some(LiveRow { node, frag: std::mem::take(&mut frags[i]) });
+            row.live = Some(LiveRow { node, from: i });
         }
     }
 
@@ -7183,10 +7201,6 @@ pub fn rebuild_children(
     let comps = Components::new();
     let mut ancestors = ctx.ancestors.clone();
     let mut reg = BindingRegistry::default();
-    // What the parent's children recorded last time, which is most often what
-    // they record now: the registry grows to it once instead of doubling.
-    reg.text.reserve(sizes.0);
-    reg.elements.entries.reserve(sizes.1);
     let (mut children, deps) = build_children(
         &element_children(el),
         &rules,
@@ -7207,6 +7221,8 @@ pub fn rebuild_children(
         None,
     );
     swaps.end_part(&parent.tpl_path);
+    let origins = ORIGINS.with(|o| std::mem::take(&mut *o.borrow_mut()));
+    let reg = merge_rows(live_reg, reg, depth, olds, &origins, children.len());
     if let Some(built) = ROWS.with(|r| r.borrow_mut().take()) {
         // The rows under the parent that this build did not keep have left;
         // every other list's rows stay for the next build.
@@ -7379,28 +7395,6 @@ impl BindingRegistry {
             }
         }
     }
-
-    /// Hand each entry to the row it is in: `rows[i]` gets those under the
-    /// parent's `i`-th child, the parent being `depth` deep.
-    fn deal(self, depth: usize, rows: &mut [BindingRegistry]) {
-        fn deal<T>(list: Vec<T>, depth: usize, rows: &mut [BindingRegistry], path: impl Fn(&T) -> &[usize], to: impl Fn(&mut BindingRegistry) -> &mut Vec<T>) {
-            for b in list {
-                if let Some(row) = path(&b).get(depth).copied().and_then(|i| rows.get_mut(i)) {
-                    to(row).push(b);
-                }
-            }
-        }
-        deal(self.text, depth, rows, |b| &b.path, |r| &mut r.text);
-        deal(self.value, depth, rows, |b| &b.path, |r| &mut r.value);
-        deal(self.show, depth, rows, |b| &b.path, |r| &mut r.show);
-        deal(self.src, depth, rows, |b| &b.path, |r| &mut r.src);
-        deal(self.options, depth, rows, |b| &b.path, |r| &mut r.options);
-        deal(self.structural_parents, depth, rows, |b| &b.tree_path, |r| &mut r.structural_parents);
-        deal(self.toggles, depth, rows, |b| &b.path, |r| &mut r.toggles);
-        deal(self.components, depth, rows, |b| &b.path, |r| &mut r.components);
-        deal(self.styled, depth, rows, |b| &b.path, |r| &mut r.styled);
-        deal(self.elements.entries, depth, rows, |e| &e.path, |r| &mut r.elements.entries);
-    }
 }
 
 /// A registry as text that does not depend on hash order, for comparing two.
@@ -7489,9 +7483,9 @@ fn build_row(
     if !touched {
         let entry = ROWS.with(|r| r.borrow_mut().as_mut().and_then(|b| b.old.remove(&id)));
         if let Some(mut entry) = entry {
-            if row_unchanged(&entry, rest, place, place_name, ancestors, inherited, engine) {
+            if row_unchanged(&entry, rest, place, ancestors, inherited, engine) {
                 let node = match entry.live.take() {
-                    Some(live) => adopt_row(live, &entry.at, path, place_name, place, reg),
+                    Some(live) => adopt_row(live, &entry.at, path, place_name, place),
                     None => replay_row(&entry, path, place_name, place, reg),
                 };
                 entry.at = path.to_vec();
@@ -7543,12 +7537,15 @@ fn build_row(
                 (n, value)
             })
             .collect();
+        let frag = marks.fragment(reg);
+        let other_place = frag_has_other_place(&frag, place_name);
         let entry = CachedRow {
+            other_place,
             node: node.clone(),
             path: path.to_vec(),
             at: path.to_vec(),
             live: None,
-            frag: marks.fragment(reg),
+            frag,
             locals: rest.to_vec(),
             place: place.cloned(),
             baked: BAKED.with(std::cell::Cell::get) != baked,
@@ -7606,7 +7603,6 @@ fn row_unchanged(
     entry: &CachedRow,
     rest: &[(String, Value)],
     place: Option<&Value>,
-    place_name: Option<&str>,
     ancestors: &[AncNode],
     inherited: &Inherited,
     engine: &Engine,
@@ -7616,7 +7612,7 @@ fn row_unchanged(
         // A handler carries the place in a string.
         && !(moved && entry.baked)
         // A list nested in the row has its places built from this one.
-        && !(moved && frag_has_other_place(&entry.frag, place_name))
+        && !(moved && entry.other_place)
         && entry.ancestors.as_slice() == ancestors
         && same_inherited(&entry.inherited, inherited)
         && entry.reads.iter().all(|(n, v)| signal_still(engine, n, v))
@@ -7744,28 +7740,64 @@ fn replay_row(
 }
 
 /// [`replay_row`] for a row taken from the live tree: moved into place
-/// rather than copied, its paths rebased from where it was and its place in
-/// its list written where it now is.
+/// rather than copied, its node's paths rebased from where it was.
+///
+/// Its registry entries are not touched here. They stay with the entries
+/// the build is replacing, and [`merge_rows`] puts them where the row now
+/// is, in one pass over all of them once the build is done: moving each
+/// row's entries out, into a registry of its own and back was 0.7 of a
+/// 300-row list's 2.4 ms reconcile (track (g).7c).
 fn adopt_row(
     live: LiveRow,
     from: &[usize],
     path: &[usize],
     place_name: Option<&str>,
     place: Option<&Value>,
-    reg: &mut BindingRegistry,
 ) -> LayoutNode {
-    let LiveRow { mut node, frag } = live;
-    let moved = from != path;
-    if moved {
+    let LiveRow { mut node, from: old } = live;
+    if from != path {
         rebase_node(&mut node, from, path);
     }
-    let fix_path = |p: &mut Vec<usize>| {
-        if moved {
-            rebase(p, from, path);
+    if let Some(&here) = path.last() {
+        let place = place_name.zip(place).map(|(n, v)| (n.to_string(), v.clone()));
+        ORIGINS.with(|o| o.borrow_mut().push(Origin { here, old, place }));
+    }
+    node
+}
+
+/// Where a row of a build of one list came from: its index under the parent
+/// now and before, and the place its locals are to say it is in.
+struct Origin {
+    here: usize,
+    old: usize,
+    place: Option<(String, Value)>,
+}
+
+thread_local! {
+    /// The rows a build of one list adopted, for [`merge_rows`].
+    static ORIGINS: std::cell::RefCell<Vec<Origin>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// The registry under a parent after a build of its children: the entries
+/// of every adopted row taken from `live` (what was there before) and put at
+/// the row's new index, the rest from `fresh` (what the build recorded), in
+/// the order of the children, which is the order a whole build records.
+fn merge_rows(
+    live: BindingRegistry,
+    fresh: BindingRegistry,
+    depth: usize,
+    olds: usize,
+    origins: &[Origin],
+    children: usize,
+) -> BindingRegistry {
+    let mut from: Vec<Option<&Origin>> = vec![None; children];
+    for o in origins {
+        if let Some(slot) = from.get_mut(o.here) {
+            *slot = Some(o);
         }
-    };
-    let fix_locals = |locals: &mut Vec<(String, Value)>| {
-        if let Some((name, value)) = place_name.zip(place) {
+    }
+    let fix = |locals: &mut Vec<(String, Value)>, o: &Origin| {
+        if let Some((name, value)) = &o.place {
             for (n, v) in locals.iter_mut() {
                 if n == name && v != value {
                     *v = value.clone();
@@ -7773,65 +7805,59 @@ fn adopt_row(
             }
         }
     };
-    let BindingRegistry {
-        text,
-        value,
-        show,
-        src,
-        options,
-        structural_parents,
-        toggles,
-        components,
-        styled,
-        structural: _,
-        elements,
-    } = frag;
-    for mut b in text {
-        fix_path(&mut b.path);
-        fix_locals(&mut b.locals);
-        reg.text.push(b);
+    fn merge<T>(
+        live: Vec<T>,
+        fresh: Vec<T>,
+        depth: usize,
+        olds: usize,
+        from: &[Option<&Origin>],
+        path: impl Fn(&mut T) -> &mut Vec<usize>,
+        read: impl Fn(&T) -> &Vec<usize>,
+        mut also: impl FnMut(&mut T, &Origin),
+    ) -> Vec<T> {
+        if live.is_empty() && from.iter().all(Option::is_none) {
+            return fresh;
+        }
+        // Each old row's entries take the index its row has now, in place,
+        // and a row nobody adopted goes; then the new entries join them and
+        // all are put in the children's order by a stable sort, which keeps
+        // each row's own entries in theirs. The sort finds the runs already
+        // in order, so a list that moved one row costs about one pass.
+        let mut now: Vec<Option<&Origin>> = vec![None; olds];
+        for o in from.iter().flatten() {
+            if let Some(slot) = now.get_mut(o.old) {
+                *slot = Some(*o);
+            }
+        }
+        let mut out = live;
+        out.retain_mut(|entry| {
+            let Some(&j) = path(entry).get(depth) else { return false };
+            let Some(o) = now.get(j).copied().flatten() else { return false };
+            path(entry)[depth] = o.here;
+            also(entry, o);
+            true
+        });
+        out.extend(fresh);
+        out.sort_by_key(|entry| read(entry).get(depth).copied().unwrap_or(usize::MAX));
+        out
     }
-    for mut b in value {
-        fix_path(&mut b.path);
-        fix_locals(&mut b.locals);
-        reg.value.push(b);
+    let BindingRegistry { text, value, show, src, options, structural_parents, toggles, components, styled, structural: _, elements } = live;
+    let mut f = fresh;
+    BindingRegistry {
+        text: merge(text, std::mem::take(&mut f.text), depth, olds, &from, |b| &mut b.path, |b| &b.path, |b, o| fix(&mut b.locals, o)),
+        value: merge(value, std::mem::take(&mut f.value), depth, olds, &from, |b| &mut b.path, |b| &b.path, |b, o| fix(&mut b.locals, o)),
+        show: merge(show, std::mem::take(&mut f.show), depth, olds, &from, |b| &mut b.path, |b| &b.path, |b, o| fix(&mut b.locals, o)),
+        src: merge(src, std::mem::take(&mut f.src), depth, olds, &from, |b| &mut b.path, |b| &b.path, |b, o| fix(&mut b.locals, o)),
+        options: merge(options, std::mem::take(&mut f.options), depth, olds, &from, |b| &mut b.path, |b| &b.path, |b, o| fix(&mut b.locals, o)),
+        structural_parents: merge(structural_parents, std::mem::take(&mut f.structural_parents), depth, olds, &from, |b| &mut b.tree_path, |b| &b.tree_path, |_, _| {}),
+        toggles: merge(toggles, std::mem::take(&mut f.toggles), depth, olds, &from, |b| &mut b.path, |b| &b.path, |_, _| {}),
+        components: merge(components, std::mem::take(&mut f.components), depth, olds, &from, |b| &mut b.path, |b| &b.path, |_, _| {}),
+        styled: merge(styled, std::mem::take(&mut f.styled), depth, olds, &from, |b| &mut b.path, |b| &b.path, |_, _| {}),
+        structural: f.structural,
+        elements: ElementIndex {
+            entries: merge(elements.entries, std::mem::take(&mut f.elements.entries), depth, olds, &from, |e| &mut e.path, |e| &e.path, |_, _| {}),
+        },
     }
-    for mut b in show {
-        fix_path(&mut b.path);
-        fix_locals(&mut b.locals);
-        reg.show.push(b);
-    }
-    for mut b in src {
-        fix_path(&mut b.path);
-        fix_locals(&mut b.locals);
-        reg.src.push(b);
-    }
-    for mut b in options {
-        fix_path(&mut b.path);
-        fix_locals(&mut b.locals);
-        reg.options.push(b);
-    }
-    for mut b in structural_parents {
-        fix_path(&mut b.tree_path);
-        reg.structural_parents.push(b);
-    }
-    for mut b in toggles {
-        fix_path(&mut b.path);
-        reg.toggles.push(b);
-    }
-    for mut b in components {
-        fix_path(&mut b.path);
-        reg.components.push(b);
-    }
-    for mut b in styled {
-        fix_path(&mut b.path);
-        reg.styled.push(b);
-    }
-    for mut e in elements.entries {
-        fix_path(&mut e.path);
-        reg.elements.entries.push(e);
-    }
-    node
 }
 
 /// Replace the prefix `from` of `p` with `to`, when `p` is under `from`.
