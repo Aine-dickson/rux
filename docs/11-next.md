@@ -2604,9 +2604,37 @@ Float indexing narrows to what the types allow: an index is an `int`, and a
      (c). The recommendation stands with a smaller (b): leave both until a
      phone measures the frame.
 
+   - (g).7b and (g).7c **Done 2026-10-13, morning** (`c751e63`), after the
+     owner said the order was mine to choose. (c) first, as the larger part,
+     and not as proposed: rows keep their path addressing, but a reused row
+     no longer moves its registry entries during the build. It records where
+     it came from, and `merge_rows` then gives the old entries their new
+     index in place, drops those of rows that left, adds the build's, and
+     orders all of them with a stable sort (which finds the runs a moved row
+     leaves, so about one pass). Full identity addressing (the registry,
+     focus, hover, `query()` and hit testing speaking in row keys) was not
+     done: after this, what is left of moving rows is the node rebase,
+     about 90 us. (b) as probes found it: whether a row's bindings hold
+     another list's place is worked out when the row is kept, not on every
+     reuse (compare 305 to 221 us); the place local's name once per list;
+     no list of keys for a non-animated list; no sibling description when no
+     rule reads siblings. The debug proof against a whole build catches a
+     planted fault in the merge (four list tests fail).
+
+     | List of 300, release | After (a) | After (b) and (c) |
+     |---|---|---|
+     | timer and patch, bench | 2.9 ms | 2.5 ms (1.2x faster) |
+     | patch, window, three paired rounds | 2.5 ms | 1.9 ms (1.3x faster) |
+
+     Since g.7 began, the patch is 4.8 to 1.9 ms in the window (2.5x
+     faster). What remains of it, by probes: the per-row visit (planning,
+     the item compared, the cache taken from and put back) about 1.1 ms, the
+     merge 0.22, taking the old entries out and putting them back 0.25.
+     The largest part of the frame is now layout's walk, 2.7 ms.
+
    **Overnight 2026-10-13, for the owner to review.** Run on the owner's
-   instruction (carry on through track (g), then the watchlist; #36 to #39
-   left alone). Everything is committed on `build/v0.8`, **none of it
+   instruction (carry on through track (g), then the watchlist; #36 to #38
+   left alone, and #39 was already closed). Everything is committed on `build/v0.8`, **none of it
    pushed**: 94fc927 (the g.7 proposal, from the evening) and these.
 
    | Step | Commit | What | Measured / checked |
@@ -2625,7 +2653,7 @@ Float indexing narrows to what the types allow: an index is an `int`, and a
    3.0 to 3.1 ms either way).
 
    **Decided without the owner, to overrule from:**
-   1. (g).7a done in full; (g).7b and (g).7c **not** started, on the
+   1. (g).7a done in full; (g).7b and (g).7c were then **not** started, on the
       measurements above: (b) would now buy about 0.6 ms of 2.4.
    2. #42 fixed by paint order alone: an absolute or fixed box paints after
       its in-flow siblings, as CSS. **Not** done, because it would move
