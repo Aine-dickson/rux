@@ -1464,6 +1464,9 @@ pub struct Node {
     /// `@press`, `@release`, `@longpress`, `@swipe`, `@drag`. Empty for almost
     /// every node, so a `Vec` rather than five more `Option<String>` fields.
     pub gestures: Vec<(Gesture, String)>,
+    /// `@key`: runs on a key press while focus is on this element or inside
+    /// it. See the shell's `dispatch_key`.
+    pub on_key: Option<String>,
     /// `r-model` signal name for `<input>` nodes (focus target + edit binding).
     pub model: Option<String>,
     /// Which text field an `<input>` is. See [`InputKind`].
@@ -1540,6 +1543,7 @@ impl Node {
             children: Vec::new(),
             on_tap: None,
             gestures: Vec::new(),
+            on_key: None,
             model: None,
             kind: InputKind::Text,
             field: Field::default(),
@@ -1567,6 +1571,7 @@ impl Node {
             children: Vec::new(),
             on_tap: None,
             gestures: Vec::new(),
+            on_key: None,
             model: None,
             kind: InputKind::Text,
             field: Field::default(),
@@ -1594,6 +1599,7 @@ impl Node {
             children: Vec::new(),
             on_tap: None,
             gestures: Vec::new(),
+            on_key: None,
             model: None,
             kind: InputKind::Text,
             field: Field::default(),
@@ -1626,6 +1632,7 @@ impl Node {
             children: Vec::new(),
             on_tap: None,
             gestures: Vec::new(),
+            on_key: None,
             model: None,
             kind: InputKind::Text,
             field: Field::default(),

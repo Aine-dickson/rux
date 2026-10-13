@@ -315,6 +315,10 @@ const FIELD_EVENT_NAMES: &[&str] = &["input", "change", "focus", "blur"];
 /// and one that did not.
 const FORM_EVENT_NAMES: &[&str] = &["submit", "invalid"];
 
+/// The events every element has besides the pointer's: a key pressed while
+/// focus is on it or inside it.
+const KEY_EVENT_NAMES: &[&str] = &["key"];
+
 /// The events only a `<screen>` has: the person asking to close the app.
 const SCREEN_EVENT_NAMES: &[&str] = &["close"];
 
@@ -342,6 +346,7 @@ fn check_attribute_shapes(el: &rux_parser::Element, component_tags: &TagProps) {
             let screen = el.tag == "screen";
             if is_component
                 || EVENT_NAMES.contains(&event)
+                || KEY_EVENT_NAMES.contains(&event)
                 || (field && FIELD_EVENT_NAMES.contains(&event))
                 || (form && FORM_EVENT_NAMES.contains(&event))
                 || (screen && SCREEN_EVENT_NAMES.contains(&event))
@@ -350,6 +355,7 @@ fn check_attribute_shapes(el: &rux_parser::Element, component_tags: &TagProps) {
             }
             let names = EVENT_NAMES
                 .iter()
+                .chain(KEY_EVENT_NAMES.iter())
                 .chain(FIELD_EVENT_NAMES.iter().filter(|_| field))
                 .chain(FORM_EVENT_NAMES.iter().filter(|_| form))
                 .chain(SCREEN_EVENT_NAMES.iter().filter(|_| screen))
@@ -940,6 +946,8 @@ fn event_type(el: &rux_parser::Element, name: &str, tags: &TagProps) -> rux_scri
     use rux_script::types::Type;
     let text = match name {
         "tap" | "press" | "release" | "longpress" => format!("{{ {POINTER_FIELDS} }}"),
+        "key" => "{ key: string, ctrl: bool, shift: bool, alt: bool, meta: bool, primary: bool, repeat: bool }"
+            .to_string(),
         "drag" => format!("{{ {POINTER_FIELDS}, {TRAVEL_FIELDS}, phase: \"start\" | \"move\" | \"end\" }}"),
         "swipe" => format!(
             "{{ {POINTER_FIELDS}, {TRAVEL_FIELDS}, direction: \"left\" | \"right\" | \"up\" | \"down\" }}"
@@ -5373,6 +5381,18 @@ impl Document {
         }
         self.diagnostics.warnings.extend(collect_warnings());
         close
+    }
+
+    /// Run a `@key` body, in `instance`'s scope when it was written in a
+    /// component, handed `event`. Says whether it answered `false`, which
+    /// stops the key there: no handler further out, and none of the shell's
+    /// own handling. Everything else it does is a tap's: writes applied,
+    /// emits delivered, navigations and `close()` taken.
+    pub fn dispatch_key(&mut self, body: &str, instance: Option<&str>, event: &Value) -> bool {
+        let _ = rux_script::take_answered_false();
+        let wrapped = format!("{}({{ {body} }})", rux_script::ANSWER_FN);
+        let _ = self.apply_handler_event_in(&wrapped, instance, Some(event));
+        rux_script::take_answered_false()
     }
 
     /// Whether the document's `<screen>` has a `@close`.

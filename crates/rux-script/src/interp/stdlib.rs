@@ -15,7 +15,7 @@ use crate::{ElementAction, ElementHandle, Nav};
 /// resolve at all. A test holds the two together.
 pub const FUNCTIONS: &[&str] = &[
     "print", "debug", "signal", "emit", "navigate", "replace", "back", "forward", "close", "path_for", "pathFor", "blur",
-    crate::SUBMIT_FN, "query", "clearInterval", "setInterval", "__interval", "Ok", "Err", "Number", "parseInt",
+    crate::SUBMIT_FN, crate::ANSWER_FN, "query", "clearInterval", "setInterval", "__interval", "Ok", "Err", "Number", "parseInt",
     "parseFloat", "parse_int", "to_int", "parse_float", "to_float", "String", "to_string", "isNaN", "type_of",
     "intDiv", "toFloat", "trunc", "floor", "ceil", "round", "abs", "min", "max", "sqrt", "sin", "cos", "tan",
     "atan2", "atan", "exp", "ln", "log", "log10", "keys", "values", "range", "is_def_fn", "is_def_var",
@@ -184,6 +184,11 @@ impl Interp {
             }
             ("close", 0) => {
                 crate::CLOSES.with(|c| c.set(c.get() + 1));
+                V::None
+            }
+            (crate::ANSWER_FN, 1) => {
+                let refused = matches!(argv[0], V::Bool(false));
+                crate::ANSWERED_FALSE.with(|a| a.set(refused));
                 V::None
             }
             ("path_for" | "pathFor", 1 | 2) => {

@@ -42,7 +42,7 @@ Each entry says what Mava needed, what happened, how to reproduce it, what Mava 
 - **Reproduction:** in the Studio, make a change, click outside the title field, press Ctrl+Z: nothing happens.
 - **Mava workaround:** toolbar buttons. The keyboard half of Mava's F05 done line waits on this.
 - **Suggested fix:** document-level key handlers, for example `@key` on `<screen>` (and on any element, firing for focus inside it) with `event.key`, `ctrl`, `shift`, `alt`, `meta` and a way to stop the shell's own handling; or a declared shortcut table. Text fields should keep their own editing keys unless a handler claims them.
-- **Status:** open.
+- **Status:** fixed 2026-10-13 on `build/v0.9`, as suggested. `@key` on any element and on the `<screen>`, with `event.key`, `ctrl`, `shift`, `alt`, `meta`, `primary` (Ctrl, or Cmd on macOS) and `repeat`; answering `false` takes the key. A focused text field handles the keys it uses before the `@key`s around it, so Ctrl+Z in the title field is the field's own undo and outside it reaches the Studio's. Text fields now have undo and redo (Ctrl+Z, Ctrl+Y, Ctrl+Shift+Z), grouped as a browser groups typing. Documented under "Keys" in `docs/07-script.md`.
 
 ## MS-005 No file dialogs
 

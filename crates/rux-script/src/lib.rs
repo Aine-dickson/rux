@@ -1164,6 +1164,20 @@ thread_local! {
     static CLOSES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
+/// The function a `@key` body is wrapped in, so the runtime can see what it
+/// answered without a second way to run a handler. Not for authors.
+pub const ANSWER_FN: &str = "__rux_answer";
+
+thread_local! {
+    /// Whether the last [`ANSWER_FN`] call was handed `false`.
+    static ANSWERED_FALSE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Whether the handler just run answered `false`, emptying the answer.
+pub fn take_answered_false() -> bool {
+    ANSWERED_FALSE.with(|a| a.replace(false))
+}
+
 /// Whether `close()` was called since the last call, emptying the sink.
 pub fn take_close_request() -> bool {
     CLOSES.with(|c| c.replace(0)) > 0

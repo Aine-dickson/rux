@@ -1522,6 +1522,13 @@ struct App {
     ctrl_held: bool,
     /// Whether Alt is held (Alt+Left/Right walk the router's history).
     alt_held: bool,
+    /// Whether the Windows key, or Cmd on macOS, is held. `@key`'s `meta`.
+    meta_held: bool,
+    /// The focused text field's undo and redo. See [`FieldHistory`].
+    field_history: FieldHistory,
+    /// An undo or redo is writing the field, so the write is not itself an
+    /// edit to remember.
+    replaying_history: bool,
     /// Scrollable regions from the most recent layout.
     scrolls: Vec<ScrollRegion>,
     /// Boxes styled by `:hover`/`:active`, from the most recent layout. Empty
@@ -1800,6 +1807,9 @@ impl App {
             shift_held: false,
             ctrl_held: false,
             alt_held: false,
+            meta_held: false,
+            field_history: FieldHistory::default(),
+            replaying_history: false,
             scrolls: Vec::new(),
             offsets: Vec::new(),
             layout_state: rux_layout::LayoutState::new(),
@@ -3950,6 +3960,9 @@ impl App {
             "c" => self.copy_selection(),
             "x" => self.cut_selection(model),
             "v" => self.request_paste(model),
+            "z" if self.shift_held => self.undo_field(model, true),
+            "z" => self.undo_field(model, false),
+            "y" => self.undo_field(model, true),
             _ => return false,
         }
         true
@@ -4253,6 +4266,168 @@ impl App {
     /// Route a key press. Tab always moves keyboard focus; otherwise a focused
     /// text input edits, and a focused button/checkbox/radio/select activates on
     /// Space/Enter.
+    /// A key was pressed. In order, and stopping at the first that takes it:
+    /// the focused field's own `@key`; the field's own editing, for a key it
+    /// uses; each enclosing element's `@key`, innermost first, then the
+    /// `<screen>`'s; and the shell's defaults (Tab, Enter on a button,
+    /// scrolling, Alt+arrows). A `@key` takes a key by answering `false`.
+    ///
+    /// The field before its ancestors so that Ctrl+Z in a field undoes typing
+    /// and outside one reaches the app's own undo, and Ctrl+S, which no field
+    /// uses, reaches the app from anywhere (Mava Studio's MS-004).
+    fn dispatch_key(&mut self, key: &Key, repeat: bool) {
+        let chain = self.key_chain();
+        let event = self.key_event(key, repeat);
+        let mut rest = &chain[..];
+        if self.focused.is_some() {
+            if let Some(((handler, instance), outer)) = chain.split_first() {
+                if let Some(h) = handler {
+                    if self.run_key(h, instance.as_deref(), &event) {
+                        return;
+                    }
+                }
+                rest = outer;
+            }
+            if self.field_uses(key) {
+                self.on_key(key);
+                return;
+            }
+        }
+        for (handler, instance) in rest {
+            if let Some(h) = handler {
+                if self.run_key(h, instance.as_deref(), &event) {
+                    return;
+                }
+            }
+        }
+        self.on_key(key);
+    }
+
+    /// Run one `@key` body; whether it took the key.
+    fn run_key(&mut self, body: &str, instance: Option<&str>, event: &rux_reactive::Value) -> bool {
+        let stop = self.document.dispatch_key(body, instance, event);
+        self.request_redraw();
+        stop
+    }
+
+    /// What `@key` is handed: the key by the browser's names, the modifiers,
+    /// `primary` (Ctrl, or Cmd on macOS), and whether it is held down.
+    fn key_event(&self, key: &Key, repeat: bool) -> rux_reactive::Value {
+        use rux_reactive::Value;
+        let name = match key {
+            Key::Character(s) => s.to_string(),
+            Key::Named(NamedKey::Space) => " ".to_string(),
+            Key::Named(named) => format!("{named:?}"),
+            _ => "Unidentified".to_string(),
+        };
+        let primary = if cfg!(target_os = "macos") { self.meta_held } else { self.ctrl_held };
+        Value::Map(vec![
+            ("key".to_string(), Value::Text(name)),
+            ("ctrl".to_string(), Value::Bool(self.ctrl_held)),
+            ("shift".to_string(), Value::Bool(self.shift_held)),
+            ("alt".to_string(), Value::Bool(self.alt_held)),
+            ("meta".to_string(), Value::Bool(self.meta_held)),
+            ("primary".to_string(), Value::Bool(primary)),
+            ("repeat".to_string(), Value::Bool(repeat)),
+        ])
+    }
+
+    /// Whether the focused text field does something with `key` itself:
+    /// text, the editing and moving keys, Enter, and its Ctrl chords (select
+    /// all, copy, cut, paste, undo, redo). Everything else goes on outwards.
+    fn field_uses(&self, key: &Key) -> bool {
+        match key {
+            Key::Character(s) if self.ctrl_held || self.meta_held => {
+                matches!(s.to_lowercase().as_str(), "a" | "c" | "x" | "v" | "z" | "y")
+            }
+            Key::Character(_) => true,
+            Key::Named(NamedKey::ArrowLeft | NamedKey::ArrowRight) => !self.alt_held,
+            Key::Named(
+                NamedKey::Backspace
+                | NamedKey::Delete
+                | NamedKey::ArrowUp
+                | NamedKey::ArrowDown
+                | NamedKey::Home
+                | NamedKey::End
+                | NamedKey::Enter
+                | NamedKey::Space,
+            ) => true,
+            _ => false,
+        }
+    }
+
+    /// The `@key` of every element from the focused one out to the root,
+    /// innermost first, each with the instance its body runs in. The focused
+    /// one is the text field with the caret, or what keyboard focus is on, or
+    /// with neither the root alone.
+    fn key_chain(&self) -> Vec<(Option<String>, Option<String>)> {
+        fn find_field<'a>(
+            node: &'a rux_layout::Node,
+            target: (&str, Option<&str>, Option<&str>),
+            row: Option<&'a str>,
+            trail: &mut Vec<&'a rux_layout::Node>,
+        ) -> bool {
+            let row = node.key.as_deref().or(row);
+            trail.push(node);
+            if node.model.as_deref() == Some(target.0)
+                && node.instance.as_deref() == target.2
+                && (target.1.is_none() || row == target.1)
+            {
+                return true;
+            }
+            for child in &node.children {
+                if find_field(child, target, row, trail) {
+                    return true;
+                }
+            }
+            trail.pop();
+            false
+        }
+        let root = &self.document.root;
+        let mut trail: Vec<&rux_layout::Node> = Vec::new();
+        if let Some(model) = self.focused.as_deref() {
+            let target = (model, self.focused_row.as_deref(), self.focused_instance.as_deref());
+            if !find_field(root, target, None, &mut trail) {
+                trail.clear();
+            }
+        } else if let Some(path) =
+            self.focus_index.and_then(|i| self.focusables.get(i)).and_then(|f| f.path.clone())
+        {
+            let mut node = root;
+            trail.push(node);
+            for step in path {
+                match node.children.get(step) {
+                    Some(child) => {
+                        node = child;
+                        trail.push(node);
+                    }
+                    None => break,
+                }
+            }
+        }
+        if trail.is_empty() {
+            trail.push(root);
+        }
+        trail.iter().rev().map(|n| (n.on_key.clone(), n.instance.clone())).collect()
+    }
+
+    /// Undo (or redo) the focused field's last edit, putting its text and its
+    /// selection back as they were.
+    fn undo_field(&mut self, model: &str, redo: bool) {
+        let now = (self.focused_value(), self.caret, self.anchor);
+        let Some(to) = self.field_history.step(now, redo) else { return };
+        self.replaying_history = true;
+        let written = self.write_focused(&to.0, to.1, false);
+        self.replaying_history = false;
+        if let Some((text, _)) = written {
+            self.field_history.wrote(&text);
+            let mut focus = self.focus_here(model, to.1.min(text.len()));
+            focus.anchor = to.2.min(text.len());
+            self.set_focus_range(Some(focus));
+        }
+        self.request_redraw();
+    }
+
     fn on_key(&mut self, key: &Key) {
         // Alt+Left / Alt+Right walk the history, the platform's own shortcut for
         // it. Checked before anything else, including the focused input: it is a
@@ -4507,6 +4682,10 @@ impl App {
             Some(max) => fit_length(&shown, value, caret, max),
             None => (value.to_string(), caret),
         };
+        if value != shown && !self.replaying_history {
+            let (caret_was, anchor_was) = (self.caret, self.anchor);
+            self.field_history.note(&shown, caret_was, anchor_was, &value, caret, composing);
+        }
         if let Some(kind) = self.focused_region().map(|r| r.kind).filter(|k| k.typed()) {
             // Only a number, or a date, reaches the signal. Whatever was
             // typed stays in the field as its draft, valid or not, so no
@@ -4794,7 +4973,9 @@ impl App {
         self.set_focus(Some((model.clone(), saved.row, saved.instance, 0)));
         if let Some(text) = saved.text {
             if text != self.focused_value() {
+                self.replaying_history = true;
                 self.write_focused(&text, text.len(), false);
+                self.replaying_history = false;
             }
         }
         let value = self.focused_value();
@@ -5013,6 +5194,8 @@ impl App {
             })
             .flatten();
         if !same_field {
+            // Undo belongs to one field, as in every browser.
+            self.field_history = FieldHistory::default();
             self.text_scroll = 0.0;
             self.handles = false;
             self.caret_handle_until = None;
@@ -6969,6 +7152,7 @@ impl ApplicationHandler<RuxEvent> for App {
                 self.shift_held = mods.state().shift_key();
                 self.ctrl_held = mods.state().control_key();
                 self.alt_held = mods.state().alt_key();
+                self.meta_held = mods.state().super_key();
             }
             // The side buttons on a mouse are the back and forward buttons
             // everywhere else, and a router that ignored them would be the one
@@ -7020,7 +7204,7 @@ impl ApplicationHandler<RuxEvent> for App {
                         }
                         return;
                     }
-                    self.on_key(&event.logical_key);
+                    self.dispatch_key(&event.logical_key, event.repeat);
                 }
             }
             WindowEvent::MouseInput {
@@ -8314,6 +8498,87 @@ fn decimal_from(c: Option<char>) -> char {
 /// way through a surrogate pair. An edit that does not lengthen the value is
 /// let through untouched, so a value that was already too long can still be
 /// shortened.
+/// A text field's undo and redo, kept by the shell while the field has focus,
+/// as a browser keeps one per field.
+///
+/// **Typing is grouped**, as browsers group it: a run of typing in one place
+/// is one step. A new step starts when the caret was moved in between, after a
+/// pause of a second, when typing turns into deleting or back, and for a paste
+/// or a cut (more than a few characters at once). A composition is one step.
+///
+/// **If the app's script changes the field's value, the history is dropped**,
+/// as a browser drops it: an undo would otherwise put back text the app has
+/// since replaced for a reason the field cannot know.
+#[derive(Default)]
+struct FieldHistory {
+    /// Text, caret and anchor before each step, oldest first.
+    undo: Vec<(String, usize, usize)>,
+    redo: Vec<(String, usize, usize)>,
+    /// The text the field was left holding by the last write this saw, to
+    /// tell the app's own changes from the person's.
+    expect: Option<String>,
+    /// Where the caret was left, when, and which way the last edit went, to
+    /// decide whether the next edit continues the same step.
+    caret: Option<usize>,
+    at: Option<Instant>,
+    growing: bool,
+    composing: bool,
+}
+
+impl FieldHistory {
+    const STEPS: usize = 100;
+    const PAUSE: Duration = Duration::from_secs(1);
+
+    /// The field is about to go from `before` to `after`.
+    fn note(&mut self, before: &str, caret: usize, anchor: usize, after: &str, caret_after: usize, composing: bool) {
+        if self.expect.as_deref() != Some(before) {
+            *self = FieldHistory::default();
+        }
+        let growing = after.len() >= before.len();
+        let small = before.len().abs_diff(after.len()) <= 4 && caret == anchor;
+        let continues = !self.undo.is_empty()
+            && self.caret == Some(caret)
+            && self.at.is_some_and(|t| t.elapsed() < Self::PAUSE)
+            && ((composing && self.composing)
+                || (!composing && !self.composing && small && growing == self.growing));
+        if !continues {
+            self.undo.push((before.to_string(), caret, anchor));
+            if self.undo.len() > Self::STEPS {
+                self.undo.remove(0);
+            }
+        }
+        self.redo.clear();
+        self.expect = Some(after.to_string());
+        self.caret = Some(caret_after);
+        self.at = Some(Instant::now());
+        self.growing = growing;
+        self.composing = composing;
+    }
+
+    /// The state to go back (or forward) to, keeping `now` for the way back.
+    fn step(&mut self, now: (String, usize, usize), redo: bool) -> Option<(String, usize, usize)> {
+        if self.expect.is_some() && self.expect.as_deref() != Some(now.0.as_str()) {
+            *self = FieldHistory::default();
+            return None;
+        }
+        let to = if redo { self.redo.pop()? } else { self.undo.pop()? };
+        if redo {
+            self.undo.push(now);
+        } else {
+            self.redo.push(now);
+        }
+        Some(to)
+    }
+
+    /// An undo or redo left the field holding `text`; the next edit starts a
+    /// step of its own.
+    fn wrote(&mut self, text: &str) {
+        self.expect = Some(text.to_string());
+        self.caret = None;
+        self.at = None;
+    }
+}
+
 fn fit_length(old: &str, new: &str, caret: usize, max: usize) -> (String, usize) {
     let units = |s: &str| s.chars().map(char::len_utf16).sum::<usize>();
     let new_units = units(new);
@@ -11334,5 +11599,81 @@ mod word_near_tests {
         assert_eq!(word_near(text, 15), Some((5, 14)));
         assert_eq!(word_near("   ", 2), None);
         assert_eq!(word_near("", 0), None);
+    }
+}
+
+#[cfg(test)]
+mod field_history {
+    use super::FieldHistory;
+
+    /// Type `text` one character at a time into `field`, as the shell writes
+    /// it, from caret `at`.
+    fn type_in(h: &mut FieldHistory, field: &mut String, at: &mut usize, text: &str) {
+        for c in text.chars() {
+            let before = field.clone();
+            field.insert(*at, c);
+            h.note(&before, *at, *at, field, *at + 1, false);
+            *at += 1;
+        }
+    }
+
+    /// A run of typing is one step, so one undo takes all of it back.
+    #[test]
+    fn a_run_of_typing_is_one_step() {
+        let mut h = FieldHistory::default();
+        let (mut field, mut at) = (String::new(), 0);
+        h.wrote("");
+        type_in(&mut h, &mut field, &mut at, "hello");
+        let back = h.step((field.clone(), at, at), false).expect("one step back");
+        assert_eq!(back.0, "");
+        h.wrote(&back.0);
+        assert!(h.step((back.0.clone(), 0, 0), false).is_none(), "and only one");
+        let forward = h.step((back.0, 0, 0), true).expect("redo");
+        assert_eq!(forward.0, "hello");
+    }
+
+    /// Moving the caret between two runs makes them two steps.
+    #[test]
+    fn a_caret_move_starts_a_new_step() {
+        let mut h = FieldHistory::default();
+        let (mut field, mut at) = (String::new(), 0);
+        h.wrote("");
+        type_in(&mut h, &mut field, &mut at, "ab");
+        at = 0;
+        type_in(&mut h, &mut field, &mut at, "X");
+        assert_eq!(field, "Xab");
+        assert_eq!(h.step((field.clone(), at, at), false).unwrap().0, "ab");
+    }
+
+    /// Deleting after typing is a step of its own, and so is a paste.
+    #[test]
+    fn deleting_and_pasting_are_their_own_steps() {
+        let mut h = FieldHistory::default();
+        let (mut field, mut at) = (String::new(), 0);
+        h.wrote("");
+        type_in(&mut h, &mut field, &mut at, "abc");
+        let before = field.clone();
+        field.pop();
+        h.note(&before, at, at, &field, at - 1, false);
+        at -= 1;
+        let before = field.clone();
+        field.push_str(" pasted text");
+        h.note(&before, at, at, &field, field.len(), false);
+        assert_eq!(h.step((field.clone(), field.len(), field.len()), false).unwrap().0, "ab");
+        h.wrote("ab");
+        assert_eq!(h.step(("ab".into(), 2, 2), false).unwrap().0, "abc");
+        h.wrote("abc");
+        assert_eq!(h.step(("abc".into(), 3, 3), false).unwrap().0, "");
+    }
+
+    /// The app changing the value from script drops the history: undo would
+    /// put back text the app replaced.
+    #[test]
+    fn a_change_from_script_drops_the_history() {
+        let mut h = FieldHistory::default();
+        let (mut field, mut at) = (String::new(), 0);
+        h.wrote("");
+        type_in(&mut h, &mut field, &mut at, "draft");
+        assert!(h.step(("cleared by the app".into(), 0, 0), false).is_none());
     }
 }

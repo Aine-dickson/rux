@@ -2308,6 +2308,25 @@ component's ever ran on a close or a hot reload.** The runtime had the function
 and its documentation said the shell called it; nothing did. Both paths call it
 now.
 
+## Keys, and undo in a text field, 2026-10-13
+
+Mava Studio's MS-004: `@key`, and Ctrl+Z / Ctrl+Y in a text field. Under test
+in `crates/rux-runtime/tests/keys.rs` (a handler's answer, its instance, a
+component tag's `@key` staying a listener) and `rux-shell`'s `field_history`
+(how typing is grouped into steps). Driven in a desktop window with the release
+build on a probe: `<screen @key="shortcut(event)">` counting Ctrl+S as a save
+and Ctrl+Z as an app undo, and one text field.
+
+| Case | Steps | Expected | Result |
+|---|---|---|---|
+| Undo typing | click the field, type `hello`, Ctrl+Z | the field empties in one step; the app's undo count stays 0 | desktop: pass |
+| Redo | then Ctrl+Y | `hello` again | desktop: pass |
+| A shortcut no field uses | Ctrl+S with the caret in the field | the app saves (`saves: 1`); the field is untouched | desktop: pass |
+| The app's own undo | click outside the field, Ctrl+Z | the app's undo runs (`app undos: 1`); the field keeps `hello` | desktop: pass |
+| A modifier on its own | press Ctrl | `@key` sees `"Control"`, as a browser's `keydown` does | desktop: seen |
+| Ctrl+Shift+Z | in the field after an undo | redo | not driven; the same call as Ctrl+Y |
+| A phone's hardware keyboard | Android with a keyboard attached | as on the desktop | not driven: no phone |
+
 ## Standing gaps
 
 Cases nothing here can currently exercise. They are the shape of what v0.8 has

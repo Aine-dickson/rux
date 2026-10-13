@@ -23,7 +23,8 @@ use crate::types::Type;
 /// that is none of these, and no function or value the file declares, is
 /// one the IR cannot resolve.
 const BUILTINS: &[&str] = &[
-    "print", "debug", "emit", "navigate", "replace", "back", "forward", "close", "blur", "query", "setInterval",
+    "print", "debug", "emit", "navigate", "replace", "back", "forward", "close", crate::ANSWER_FN, "blur", "query",
+    "setInterval",
     "clearInterval", "__interval", "Ok", "Err", "parseInt", "parseFloat", "Number", "String", "isNaN", "intDiv",
     "toFloat", "trunc", "floor", "ceil", "round", "abs", "min", "max", "sqrt", "sin", "cos", "tan", "atan2", "exp",
     "ln", "log", "log10", "keys", "values", "range", "path_for", "pathFor", "type_of", "to_string", "to_int",

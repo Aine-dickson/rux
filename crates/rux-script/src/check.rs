@@ -2780,7 +2780,7 @@ impl<'a> Checker<'a> {
                     _ => Type::Any,
                 }));
             }
-            ("print" | "debug" | "emit" | "navigate" | "replace" | "back" | "forward" | "close" | "blur"
+            ("print" | "debug" | "emit" | "navigate" | "replace" | "back" | "forward" | "close" | crate::ANSWER_FN | "blur"
             | "clearInterval", _) => {
                 self.infer_all(args);
                 return Type::Null;

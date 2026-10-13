@@ -4245,6 +4245,16 @@ fn build_node(
     if node.focus_path.is_none() && (node.on_tap.is_some() || node.model.is_some()) {
         node.focus_path = Some(path.to_vec());
     }
+    // `@key` on one of Rux's own elements. On a component's tag it is a
+    // listener for an `emit("key")`, as every `@name` there is. A component
+    // expands in place, so its root may carry its own `@key` already, and the
+    // tag's would then be the caller's listener, not this.
+    if node.on_key.is_none() && rux_parser::is_element(&el.tag) {
+        if let Some(h) = el.attr("@key") {
+            let baked = handler_locals(locals, instance, instances);
+            node.on_key = Some(bind_locals(h, &baked));
+        }
+    }
     node
 }
 
@@ -5300,6 +5310,7 @@ fn build_node_inner(
         children,
         on_tap,
         gestures,
+        on_key: None,
         model: None,
         kind: InputKind::Text,
         field: rux_layout::Field::default(),

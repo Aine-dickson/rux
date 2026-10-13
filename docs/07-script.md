@@ -206,6 +206,43 @@ Together they make a "save changes?" out of the app's own markup:
   `@close`. `close()` does nothing on the web, since a page cannot close its own
   tab.
 
+## Keys
+
+**`@key`** runs when a key is pressed while focus is on the element or inside
+it, on any element and on the `<screen>`. It is handed `event.key`, the key by
+the browser's names (`"s"`, `"S"` with Shift, `"Enter"`, `"Escape"`,
+`"ArrowUp"`, `"F2"`, `" "` for Space), `event.ctrl`, `shift`, `alt` and `meta`,
+**`event.primary`** (Ctrl, or Cmd on macOS, so one test covers both), and
+`event.repeat` while the key is held. **Answering `false` takes the key**: it
+goes no further, as a guard's `false` refuses.
+
+```rux
+<screen @key="shortcut(event)">
+```
+```rux
+fn shortcut(e) {
+  if e.primary && e.key == "s" { save(); return false; }
+  if e.primary && e.key == "z" { history.undo(); return false; }
+}
+```
+
+A key goes, in order, to: the focused text field's own `@key`; **the field's own
+editing**, for a key it uses (text, Backspace, the arrows, Enter, and Ctrl+A, C,
+X, V, Z, Y); each enclosing element's `@key`, innermost first, then the
+`<screen>`'s; and the shell's own handling (Tab, Enter on a button, scrolling,
+Alt+Left and Right). So Ctrl+Z in a field undoes its typing and outside one
+reaches the app's own undo, and Ctrl+S, which no field uses, reaches the app
+from anywhere.
+
+**A text field has undo and redo**: Ctrl+Z, and Ctrl+Y or Ctrl+Shift+Z. Typing
+is grouped as a browser groups it, a run of typing in one place being one step;
+moving the caret, a pause of a second, switching between typing and deleting,
+and a paste each start a new one. The history belongs to the field while it has
+focus, and is dropped when the app's script changes the field's value.
+
+On a component's tag, `@key` is a listener for an `emit("key")`, as every
+`@name` there is.
+
 ## The pointer vocabulary
 
 Beyond `@tap`, five events report what a finger or a button is doing:
