@@ -10,8 +10,8 @@ page_template = "docs.html"
 <!-- GENERATED FROM docs/06-roadmap.md BY site/sync-docs.sh. DO NOT EDIT HERE. -->
 
 
-Where Rux goes next. Last updated 2026-08-11, with the **`rux-rhai` fork design**
-under v0.7.
+Where Rux goes next. Last updated 2026-10-13, with **where v0.8 stands at the
+freeze** under v0.8.
 
 For *what works today*, read [As Built](/reference/). This document is
 only about what is **not done yet**, and in what order.
@@ -2089,6 +2089,42 @@ sections actually take. Recorded in full in the extension's own register.
 
 ### v0.8: mobile
 
+**Where it stands at the freeze, 2026-10-13.** The owner's call: v0.8 is closed
+by **freezing** it (the release branch packed, nothing published) if it does
+not meet the bar to publish, and no work that is not v0.8's goes into it. Speed
+work stops here and comes back in a later version. There has been no phone with
+developer options since 2026-09-25, so every case that needs one stays open,
+marked so in [User tests](./08-user-tests.md), and that is what stands between
+the freeze and a publish.
+
+The items below, as numbered:
+
+| Item | State |
+|---|---|
+| 1. Android | Built. Emulator-driven throughout, phone-driven until 2026-09-25. iOS out, as below |
+| 2. Touch | Done 2026-09-21, on a phone |
+| 3. Native pickers | Built: the platform's select and date pickers on Android and in a phone's browser |
+| 4. Safe areas, orientation, density, `prefers-reduced-motion`, `prefers-color-scheme` | Built |
+| 5. Splash screens | Built 2026-09-20 |
+| 6. `rux.toml` | Built, with `rux build` for desktop, Android and web; `[window]` added 2026-10-12 |
+| 7. Distribution without a Rust toolchain | **Dropped** by the owner, 2026-09-26 |
+| 8. Multi-touch | Reporting done on a phone; **pinch and rotate move to v0.9** (owner, 2026-10-13) |
+| 9. Device diagnostics in `rux doctor` | **Moves to v0.9** (owner, 2026-10-13); `rux run --device` handles wireless debugging |
+| 10. Hot reload on a device | Done 2026-09-23 |
+
+**What else landed in v0.8, which this list never named.** The milestone became
+far more than mobile. Inputs and forms were finished on Android and then in a
+phone's browser (field attributes and events, number, switch, slider and date,
+native selection, forms with `@submit`, the page put back after Android ends
+the app, deep links). And the script tier was rebuilt from the ground up, per
+the owner's direction change of 2026-09-26: a written language reference,
+Rux's own parser, a type checker with `int`/`float`, `none`, generics and
+`Result`, a typed IR, Rux's own interpreter replacing rhai entirely, `async fn`
+and `await`, script modules and stores, native modules in Rust behind
+`#[rux::export]`, release builds that compile functions to Rust, and a long
+run of speed work on records, lists and layout. All of that is in
+[The Rux language](./11-next.md).
+
 **Ships as v0.8.x across several Fridays**, per the cadence above. The slices are
 not numbered in advance; each Friday takes whatever has coherently moved.
 
@@ -2354,6 +2390,17 @@ here.
     portal is normally reached for. What neither covers is escaping an
     ancestor's `overflow: hidden`, which is exactly where a dropdown in a
     scrolling panel lives. Decide it after `z-index` lands, not before.
+
+11. **From v0.8, moved 2026-10-13:** pinch and rotate (v0.8 item 8's
+    remainder) and the device survey in `rux doctor` (v0.8 item 9). Both
+    want a phone to be judged on, and there was none at the freeze.
+
+**What v0.9 is for has changed** (owner, 2026-10-13). Mava Studio, the first
+application of size built on Rux outside this repository, files the limits it
+meets in [its field report](./field-reports/mava-studio-2.md), and those set the
+order of this milestone. Some may be v0.10 items (file dialogs, storage, error
+boundaries); where those go is decided as they are filed.
+None of them is served before v0.8 is frozen unless the limit is itself v0.8's.
 
 ### v0.10: data, and the outside world
 
