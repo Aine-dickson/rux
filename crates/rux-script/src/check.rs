@@ -2718,7 +2718,11 @@ impl<'a> Checker<'a> {
             return loose(&result);
         }
 
+        // `close` is a natural name for a dialog's own function, and the
+        // file's own wins at run time, so it wins here too.
+        let own_close = name == "close" && self.fns.contains_key(&(name.to_string(), args.len()));
         match (name, args.len()) {
+            ("close", _) if own_close => {}
             ("signal", 1) => return self.infer(&args[0]),
             // The two halves of a `Result`; the other half is whatever the
             // place it goes wants.
@@ -2776,7 +2780,7 @@ impl<'a> Checker<'a> {
                     _ => Type::Any,
                 }));
             }
-            ("print" | "debug" | "emit" | "navigate" | "replace" | "back" | "forward" | "blur"
+            ("print" | "debug" | "emit" | "navigate" | "replace" | "back" | "forward" | "close" | "blur"
             | "clearInterval", _) => {
                 self.infer_all(args);
                 return Type::Null;

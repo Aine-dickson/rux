@@ -154,6 +154,65 @@ out of its way to get right:
 - **Unmounts run before mounts** when one build swaps one component for another,
   so the leaver has saved before the arriver reads.
 
+When the app closes, every component still on screen runs its `unmounted`,
+deepest first, and then the document runs its own. Until 2026-10-13 neither
+ran on a close or a hot reload, whatever this page said.
+
+## Closing the app
+
+**`@close` on the `<screen>`** runs when the person asks to close the app: the
+window's close button, Alt+F4, or Android's Back with no page left to go back
+to. It answers the way a route guard does: **`false` keeps the app open**, and
+anything else, including saying nothing, lets it close. **`close()`** closes the
+app for good without asking `@close` again, because the app has decided.
+
+Together they make a "save changes?" out of the app's own markup:
+
+```rux
+<template>
+  <screen @close="confirmClose()">
+    <view class="dialog" r-if="asking">
+      <text>Save changes before closing?</text>
+      <button @tap="saveAndClose()">Save</button>
+      <button @tap="close()">Don't save</button>
+      <button @tap="asking = false">Cancel</button>
+    </view>
+  </screen>
+</template>
+
+<script>
+  use native::project;
+  let dirty = signal(false);
+  let asking = signal(false);
+
+  fn confirmClose() {
+    if dirty { asking = true; return false; }
+  }
+  async fn saveAndClose() {
+    await project.save();
+    close();
+  }
+</script>
+```
+
+- **`@close` answers at once.** An `async fn` cannot refuse a close: it answers
+  nothing until it is done, and by then the app is gone. One that starts an
+  `async fn` and lets the app close is told its task was stopped at its first
+  `await`. A save that has to wait is the shape above: answer `false`, await,
+  then `close()`.
+- **A `@close` that fails lets the app close**, and says so. A route guard that
+  fails refuses, because letting someone into a page is the risk there; here
+  the risk is a window nobody can close.
+- **A save that does not wait can go in `unmounted`**, which runs on every
+  close, `close()` included.
+- **Android** asks `@close` when Back has no page left. When Android ends the
+  app on its own, nothing can ask; the app comes back where it was instead.
+- **The web does not ask `@close` yet.** A browser wants its answer inside its
+  own callback, which the document cannot reach from there, so closing the tab
+  closes it without a question; the console says so when a page has a
+  `@close`. `close()` does nothing on the web, since a page cannot close its own
+  tab.
+
 ## The pointer vocabulary
 
 Beyond `@tap`, five events report what a finger or a button is doing:

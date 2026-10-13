@@ -14,7 +14,7 @@ use crate::{ElementAction, ElementHandle, Nav};
 /// Every function [`Interp::builtin`] answers, for a check that a call can
 /// resolve at all. A test holds the two together.
 pub const FUNCTIONS: &[&str] = &[
-    "print", "debug", "signal", "emit", "navigate", "replace", "back", "forward", "path_for", "pathFor", "blur",
+    "print", "debug", "signal", "emit", "navigate", "replace", "back", "forward", "close", "path_for", "pathFor", "blur",
     crate::SUBMIT_FN, "query", "clearInterval", "setInterval", "__interval", "Ok", "Err", "Number", "parseInt",
     "parseFloat", "parse_int", "to_int", "parse_float", "to_float", "String", "to_string", "isNaN", "type_of",
     "intDiv", "toFloat", "trunc", "floor", "ceil", "round", "abs", "min", "max", "sqrt", "sin", "cos", "tan",
@@ -180,6 +180,10 @@ impl Interp {
             }
             ("forward", 0) => {
                 crate::NAVIGATIONS.with(|v| v.borrow_mut().push(Nav::Forward));
+                V::None
+            }
+            ("close", 0) => {
+                crate::CLOSES.with(|c| c.set(c.get() + 1));
                 V::None
             }
             ("path_for" | "pathFor", 1 | 2) => {

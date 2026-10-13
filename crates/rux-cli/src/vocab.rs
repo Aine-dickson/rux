@@ -122,6 +122,7 @@ const GLOBAL_ATTRIBUTES: &[Entry] = &[
     Entry { name: "to", detail: "make this element a link", doc: "Tapping navigates to this path, the element announces as a link, and it matches `:current` when it names the path you are on. `:to` is the bound form." },
     Entry { name: "@submit", detail: "the form was sent, and every field passed", doc: "On a `role=\"form\"` only. Sent by a `<button type=\"submit\">` inside it or by the action key in its last field. `event.values` maps each field's `name` (or its `r-model`) to its value." },
     Entry { name: "@invalid", detail: "the form was sent, and a field failed", doc: "On a `role=\"form\"` only. Runs instead of `@submit`: the first failing field takes the caret and every field matches `:user-invalid` from then on. `event.errors` maps each failing field's name to a sentence saying why; `event.values` is as for `@submit`." },
+    Entry { name: "@close", detail: "the person asked to close the app", doc: "On the app's `<screen>` only. Runs when the window's close button is pressed, or Android's Back has no page left. **`false` keeps the app open**, as a route guard's `false` refuses; anything else lets it close, and one that fails lets it close too. Open your own \"save changes?\" and call `close()` from it. Must answer at once, so an `async fn` cannot refuse. Not asked on the web yet." },
 ];
 
 /// The structural directives. These are attributes, but they are the ones worth
@@ -283,6 +284,7 @@ const SCRIPT_GLOBALS: &[Entry] = &[
     Entry { name: "replace", detail: "replace(path)", doc: "Go to a path *without* a history entry. The only correct way to redirect." },
     Entry { name: "back", detail: "back()", doc: "Walk back through the history." },
     Entry { name: "forward", detail: "forward()", doc: "Walk forward through the history." },
+    Entry { name: "close", detail: "close()", doc: "Close the app for good, without asking `@close` again: the app has decided. Every `unmounted` runs first. Does nothing on the web, where a page cannot close its own tab." },
     Entry { name: "path_for", detail: "path_for(\"route\", { … })", doc: "Build a path from a named route and its parameters." },
     Entry { name: "emit", detail: "emit(\"name\", payload)", doc: "A component telling its caller something happened." },
     Entry { name: "blur", detail: "blur()", doc: "Drop focus. Free-standing rather than a method on an element, because there is only one focused element: blurring \"this one\" would either do nothing or take focus from something else." },

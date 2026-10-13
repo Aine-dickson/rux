@@ -62,7 +62,7 @@ Each entry says what Mava needed, what happened, how to reproduce it, what Mava 
 - **Reproduction:** start a project in the Studio without saving it, close the window: it is gone without a question.
 - **Mava workaround:** projects with a file are saved after every change, so only a never-saved project can be lost.
 - **Suggested fix:** a close request a document can answer, for example `@closerequest` on `<screen>` with `event.preventDefault()` (or an awaited handler returning whether to close), and `unmounted` guaranteed to run on a normal close.
-- **Status:** open.
+- **Status:** fixed 2026-10-13 on `build/v0.9`, desktop and Android. `@close` on the `<screen>` answers as a route guard does (`false` keeps the app open); `close()` closes without asking again; a save that waits is `@close` answering `false`, then `await` the save, then `close()`. `unmounted` now runs on every close, every component's first, then the document's: it never ran before, on a close or a hot reload, which answers the "not clear that `unmounted` runs". The web does not ask `@close` yet and says so in the console. Documented under "Closing the app" in `docs/07-script.md`.
 
 ## MS-007 No storage for an application's own settings
 

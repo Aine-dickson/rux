@@ -166,6 +166,9 @@ pub struct Document {
     /// mounted would run a save for a thing that was never on screen. An
     /// instance is in here from its mount being drained until its unmount is.
     mounted_instances: HashSet<String>,
+    /// A script called `close()` and the shell has not taken it yet. See
+    /// [`Document::take_close`].
+    close_asked: bool,
     /// Whether a lifecycle drain is already running.
     ///
     /// A `mounted` body that writes a signal rebuilds, and a rebuild can mount
@@ -312,6 +315,9 @@ const FIELD_EVENT_NAMES: &[&str] = &["input", "change", "focus", "blur"];
 /// and one that did not.
 const FORM_EVENT_NAMES: &[&str] = &["submit", "invalid"];
 
+/// The events only a `<screen>` has: the person asking to close the app.
+const SCREEN_EVENT_NAMES: &[&str] = &["close"];
+
 /// Attributes that mean something only by being present.
 ///
 /// Writing `r-else=""` is not the same mistake as writing `r-else`: it reads as
@@ -333,10 +339,12 @@ fn check_attribute_shapes(el: &rux_parser::Element, component_tags: &TagProps) {
             // name is legitimate there.
             let field = el.tag == "input";
             let form = el.role().is_some_and(|r| r.eq_ignore_ascii_case("form"));
+            let screen = el.tag == "screen";
             if is_component
                 || EVENT_NAMES.contains(&event)
                 || (field && FIELD_EVENT_NAMES.contains(&event))
                 || (form && FORM_EVENT_NAMES.contains(&event))
+                || (screen && SCREEN_EVENT_NAMES.contains(&event))
             {
                 continue;
             }
@@ -344,6 +352,7 @@ fn check_attribute_shapes(el: &rux_parser::Element, component_tags: &TagProps) {
                 .iter()
                 .chain(FIELD_EVENT_NAMES.iter().filter(|_| field))
                 .chain(FORM_EVENT_NAMES.iter().filter(|_| form))
+                .chain(SCREEN_EVENT_NAMES.iter().filter(|_| screen))
                 .map(|n| format!("`@{n}`"))
                 .collect::<Vec<_>>()
                 .join(", ");
@@ -353,6 +362,8 @@ fn check_attribute_shapes(el: &rux_parser::Element, component_tags: &TagProps) {
                 format!(" `@{event}` belongs on an `<input>`.")
             } else if !form && FORM_EVENT_NAMES.contains(&event) {
                 format!(" `@{event}` belongs on the `<view role=\"form\">` around the fields.")
+            } else if !screen && SCREEN_EVENT_NAMES.contains(&event) {
+                format!(" `@{event}` belongs on the app's `<screen>`.")
             } else {
                 String::new()
             };
@@ -2702,6 +2713,7 @@ impl Document {
             rows,
             lists_alone: 0,
             mounted_instances: HashSet::new(),
+            close_asked: false,
             settling: false,
             mounted_ran: false,
             history: History::default(),
@@ -2843,6 +2855,7 @@ impl Document {
             rows,
             lists_alone: 0,
             mounted_instances: HashSet::new(),
+            close_asked: false,
             settling: false,
             mounted_ran: false,
             history: History::default(),
@@ -2897,6 +2910,9 @@ impl Document {
     /// Adopt a freshly loaded document's tree and state, keeping this one's
     /// identity. Used by hot-reload so a successful load clears the error.
     pub fn replace_with(&mut self, mut fresh: Document) {
+        // The document going away is told so, as a closing window tells it:
+        // its `unmounted` bodies are where an app saves.
+        self.shut_down();
         // A reload rebuilds from scratch, so focus is legitimately reset, but the
         // The environment and the pointer state belong to the window, not
         // the file.
@@ -3772,6 +3788,7 @@ impl Document {
         // same goes for a `navigate` evaluated during a build.
         let _ = rux_script::take_emissions();
         let _ = rux_script::take_navigations();
+        let _ = rux_script::take_close_request();
         // Same reasoning for element actions: a build evaluates every binding,
         // and although a binding cannot call `query()`, an action left over
         // from an earlier handler must not be delivered to this one.
@@ -3818,7 +3835,13 @@ impl Document {
     /// Later calls win: a handler that navigates twice ends up where the second
     /// one pointed, and the intermediate path is not a place the user visited.
     fn apply_navigations(&mut self) -> bool {
+        // `close()` rides the same drain: asked for by a handler or by a task
+        // that went on, and carried out by the shell once the run is over.
         let mut moved = false;
+        if rux_script::take_close_request() {
+            self.close_asked = true;
+            moved = true;
+        }
         for nav in rux_script::take_navigations() {
             moved |= match nav {
                 rux_script::Nav::To(path) => self.navigate(&path),
@@ -5045,6 +5068,7 @@ impl Document {
             };
             let _ = rux_script::take_emissions();
             let _ = rux_script::take_navigations();
+            let _ = rux_script::take_close_request();
             let _ = rux_script::take_element_actions();
             // A task that went on ran, whether or not it changed anything:
             // one that failed has a report to show.
@@ -5292,6 +5316,113 @@ impl Document {
             let _ = self.engine.run_effect_tracked(&body);
         }
         self.diagnostics.warnings.extend(collect_warnings());
+    }
+
+    /// Whether a script called `close()` since the shell last asked. The
+    /// shell closes the app without asking `@close` again: the app has already
+    /// decided, which is the point of calling it.
+    pub fn take_close(&mut self) -> bool {
+        std::mem::take(&mut self.close_asked)
+    }
+
+    /// The person asked to close the app: run the `@close` on the document's
+    /// `<screen>` and say whether it may close. **`false` keeps it open**, as a
+    /// route guard's `false` refuses; anything else, and no `@close` at all,
+    /// lets it close.
+    ///
+    /// **A `@close` that fails lets the app close**, the opposite of a guard.
+    /// A guard that cannot answer refuses because letting someone into a page
+    /// is the risk; here the risk is a window nobody can get rid of, which is
+    /// worse than losing what a broken handler meant to protect. It is
+    /// reported either way.
+    ///
+    /// What the handler writes is applied as a tap's would be, so the dialog it
+    /// opens is on the next frame. A `close()` inside it lets it close.
+    pub fn ask_close(&mut self) -> bool {
+        let Some(src) = self.close_handler() else { return true };
+        let _ = rux_script::take_emissions();
+        let _ = rux_script::take_navigations();
+        let _ = rux_script::take_close_request();
+        let _ = rux_script::take_element_actions();
+        let resolver = self.element_resolver();
+        let (answer, changed) =
+            rux_script::with_elements(resolver, || self.engine.run_handler_answer_in(&src, &[]));
+        if answer.is_none() {
+            rux_script::warn_script(format!(
+                "`@close=\"{}\"` failed, so the app was let close; a `@close` that cannot answer                  must not leave a window nobody can close",
+                src.trim()
+            ));
+        }
+        if !changed.is_empty() {
+            self.apply_change(&changed);
+        }
+        self.collect_prints();
+        let _ = self.apply_element_actions();
+        let tasks_before = self.tasks.len();
+        self.apply_timer_requests(None);
+        let started = self.tasks.len() > tasks_before;
+        let _ = self.apply_navigations();
+        let close = self.take_close() || !matches!(answer, Some(Value::Bool(false)));
+        // An `async fn` cannot answer in time to refuse: by the time it could,
+        // the app is gone, and so is the task, at its first `await`.
+        if close && started {
+            rux_script::warn_script(format!(
+                "`@close=\"{}\"` started an `async fn` and let the app close, so it was stopped at                  its first `await`. To save before closing, answer `false`, await the save, then                  call `close()`",
+                src.trim()
+            ));
+        }
+        self.diagnostics.warnings.extend(collect_warnings());
+        close
+    }
+
+    /// Whether the document's `<screen>` has a `@close`.
+    pub fn has_close_handler(&self) -> bool {
+        self.close_handler().is_some()
+    }
+
+    /// The `@close` written on the document's own `<screen>`, if any. Read
+    /// from the template each time, so a hot reload that adds or removes one
+    /// is honoured at once.
+    fn close_handler(&self) -> Option<String> {
+        let root = &self.sfc.template;
+        (root.tag == "screen")
+            .then(|| root.attr("@close"))
+            .flatten()
+            .map(str::to_string)
+            .filter(|s| !s.trim().is_empty())
+    }
+
+    /// The app is closing for good: run every live component's `unmounted`,
+    /// deepest first, then the document's own (see [`Document::unmount`]).
+    /// A window closed by the person, `close()`, Android's Back off the last
+    /// page, and a hot reload about to replace the document all come here.
+    ///
+    /// What the bodies write goes nowhere, since nothing will be drawn again;
+    /// what they are for is the side effect, a save. An `async fn` started in
+    /// one is stopped at its first `await`, as it is for any instance that has
+    /// gone: a save that has to wait belongs in `@close`, before `close()`.
+    pub fn shut_down(&mut self) {
+        let mut keys: Vec<String> = self.mounted_instances.drain().collect();
+        // A key is a template path, a step per level, so more steps is deeper.
+        keys.sort_by(|a, b| b.matches('.').count().cmp(&a.matches('.').count()).then_with(|| a.cmp(b)));
+        let resolver = self.element_resolver();
+        for key in keys {
+            let Some(instance) = self.instances.get(&key) else { continue };
+            let mut locals = instance.state.clone();
+            locals.extend(instance.props.iter().cloned());
+            let bodies = self.component_hooks.get(&instance.tag).map(|h| h.unmounted.clone()).unwrap_or_default();
+            for body in bodies {
+                let resolver = resolver.clone();
+                let _ = rux_script::with_elements(resolver, || self.engine.run_scoped_handler(&body, &locals));
+                let _ = rux_script::take_emissions();
+                let _ = rux_script::take_timer_requests();
+                let orphans = self.engine.take_started_tasks();
+                self.engine.drop_tasks(&orphans);
+            }
+        }
+        self.unmount();
+        // What the bodies printed, for a hot reload's overlay and for a test.
+        self.collect_prints();
     }
 
     /// Bring the computeds up to date, adding any that actually changed to
@@ -9478,6 +9609,50 @@ let open = signal(true);
             assert!(std::time::Instant::now() < deadline, "no answer came");
             std::thread::sleep(std::time::Duration::from_millis(2));
         }
+    }
+
+    /// "Save changes?": `@close` answers `false` and starts the save; the
+    /// save, once its answer comes, calls `close()`, which the shell takes.
+    #[test]
+    fn a_close_can_wait_for_a_save_and_then_close() {
+        answer_later("rtc_save", "saved ");
+        let mut doc = Document::from_source(
+            "<template><screen @close=\"saveAndClose(); false\"><text>{{ status }}</text></screen></template>
+             <script>
+               use native::rtc_save;
+               let status = signal(\"editing\");
+               async fn saveAndClose() {
+                 status = await rtc_save.call(1);
+                 close();
+               }
+             </script>",
+        )
+        .expect("load");
+        assert!(!doc.ask_close(), "open while the save runs");
+        assert!(!doc.take_close());
+        settle_one(&mut doc);
+        assert_eq!(text_of(&doc.root).join(""), "saved 1");
+        assert!(doc.take_close(), "the save asked to close, and the shell takes it");
+        let said: Vec<_> = doc.diagnostics().warnings.iter().map(|w| w.message.clone()).collect();
+        assert!(!said.iter().any(|w| w.contains("started an `async fn`")), "{said:?}");
+    }
+
+    /// An `async fn` cannot refuse: it answers nothing in time, the app
+    /// closes, and the task is stopped at its `await`. The author is told.
+    #[test]
+    fn an_async_close_handler_that_lets_it_close_is_told() {
+        answer_later("rtc_slow", "x");
+        let mut doc = Document::from_source(
+            "<template><screen @close=\"save()\"><text>a</text></screen></template>
+             <script>
+               use native::rtc_slow;
+               async fn save() { let ok = await rtc_slow.call(1); }
+             </script>",
+        )
+        .expect("load");
+        assert!(doc.ask_close());
+        let said: Vec<_> = doc.diagnostics().warnings.iter().map(|w| w.message.clone()).collect();
+        assert!(said.iter().any(|w| w.contains("started an `async fn` and let the app close")), "{said:?}");
     }
 
     /// A tap starts an `async fn`: what it writes before the `await` renders

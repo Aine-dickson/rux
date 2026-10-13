@@ -4295,6 +4295,26 @@ impl App {
         self.scroll_key(key);
     }
 
+    /// The person asked to close the app: the window's close button, Alt+F4,
+    /// or Android's Back with no page left to go back to. The document's
+    /// `@close` answers; `false` keeps the app open, and whatever it wrote (the
+    /// "save changes?" it opened) is on the next frame.
+    fn close_requested(&mut self, event_loop: &ActiveEventLoop) {
+        if self.document.ask_close() {
+            self.close_now(event_loop);
+        } else {
+            self.request_redraw();
+        }
+    }
+
+    /// Close for good, with no question asked: every `unmounted` runs, then the
+    /// loop ends. On Android, ending the loop is what closes the activity (see
+    /// the Back handling in `window_event`).
+    fn close_now(&mut self, event_loop: &ActiveEventLoop) {
+        self.document.shut_down();
+        event_loop.exit();
+    }
+
     /// Answer a Back. `false` means there was nowhere to go and the app should
     /// close.
     ///
@@ -6694,7 +6714,7 @@ impl ApplicationHandler<RuxEvent> for App {
             state.access.process_event(&state.window, &event);
         }
         match event {
-            WindowEvent::CloseRequested => event_loop.exit(),
+            WindowEvent::CloseRequested => self.close_requested(event_loop),
             WindowEvent::Resized(size) => {
                 if let Some(state) = self.state.as_mut() {
                     self.context.resize_surface(
@@ -6996,7 +7016,7 @@ impl ApplicationHandler<RuxEvent> for App {
                     // the splash screen.
                     if let Key::Named(NamedKey::BrowserBack) = event.logical_key {
                         if !self.on_back() {
-                            event_loop.exit();
+                            self.close_requested(event_loop);
                         }
                         return;
                     }
@@ -7104,6 +7124,21 @@ impl ApplicationHandler<RuxEvent> for App {
         // Whatever `@input`, `@change`, `@focus` and `@blur` the events since
         // the last wake-up queued, now that the shell is done with them.
         self.flush_field_events();
+
+        // A script called `close()`: the app has decided, so `@close` is not
+        // asked again. Last of the handlers' consequences, so a handler that
+        // saved and then closed has finished saving.
+        if self.document.take_close() {
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                self.close_now(event_loop);
+                return;
+            }
+            // A page cannot close the tab it is in unless a script opened it,
+            // and a Rux app's page never is one.
+            #[cfg(target_arch = "wasm32")]
+            web_sys::console::warn_1(&"rux: close() does nothing on the web: a page cannot close its own tab".into());
+        }
 
         self.sync_focus_state();
 
@@ -7524,6 +7559,20 @@ fn web_write_history(index: usize, route: &str, replace: bool) {
                 .into(),
         );
         WEB_BASE.with(|b| *b.borrow_mut() = None);
+    }
+}
+
+/// Say, once, that a page's `@close` is not asked on the web. A browser
+/// answers `beforeunload` synchronously, inside its own callback, and the
+/// document lives in the event loop where that callback cannot reach it. Said
+/// rather than left silent, so an author testing a save prompt in a browser
+/// does not conclude it works.
+#[cfg(target_arch = "wasm32")]
+fn web_say_close_is_not_asked(document: &Document) {
+    if document.has_close_handler() {
+        web_sys::console::warn_1(
+            &"rux: `@close` is not asked on the web yet; closing the tab closes it without a question".into(),
+        );
     }
 }
 
@@ -8752,6 +8801,7 @@ pub fn start_web(
     }
     // Taffy's cache would hold sizes measured in the fonts there were.
     app.layout_state.forget();
+    web_say_close_is_not_asked(&app.document);
     event_loop.spawn_app(app);
 }
 
@@ -8858,6 +8908,7 @@ pub fn start_web_app(
     }
     // Taffy's cache would hold sizes measured in the fonts there were.
     app.layout_state.forget();
+    web_say_close_is_not_asked(&app.document);
     event_loop.spawn_app(app);
 }
 

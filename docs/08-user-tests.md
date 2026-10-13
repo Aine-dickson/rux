@@ -2283,6 +2283,31 @@ MS-001: no `--rux-source`, from outside the checkout. Under test in
 | A dev-version `rux build` outside the checkout | `rux build` with no `--rux-source` | builds against the checkout, and the exe opens `Window Check` at 1100 by 700 | desktop: pass |
 | The minimum holds | drag the window edge inward | stops at 900 by 600 | not driven: injected drags never reach the window here |
 
+## Closing the app, 2026-10-13
+
+Mava Studio's MS-006: `@close` on the `<screen>`, `close()`, and `unmounted`
+running on every close. Under test in `crates/rux-runtime/tests/closing.rs` and
+the two `close` tests in `rux-runtime`'s own (a save that waits for its answer
+and then closes; an `async fn` that cannot refuse). Driven in a desktop window
+with the release build on a probe: a "Unsaved: true" line, a toggle, and a
+dialog that `@close="confirmClose()"` opens while it is unsaved.
+
+| Case | Steps | Expected | Result |
+|---|---|---|---|
+| Close with unsaved work | press the window's close button | the window stays; "Save changes before closing?" opens | desktop: pass |
+| Cancel | then "Cancel" | the dialog goes, the window stays | desktop: pass |
+| Don't save | close button again, "Don't save" | the window closes (`close()`) | desktop: pass, the process ends |
+| Nothing to save | "toggle unsaved", then the close button | the window closes at once | desktop: pass |
+| Save, then close | `@close` answers `false` and starts an `async fn` that awaits a save and calls `close()` | open until the answer, then closed | under test only (`a_close_can_wait_for_a_save_and_then_close`) |
+| `unmounted` on a close | components and the document | every component's, deepest first, then the document's | under test only. Nothing in the window shows it after the window is gone |
+| Android Back off the last page | emulator or phone | `@close` asked, as on the desktop | not driven: the code is the same call; emulator not run this session |
+| The web | a built web app with `@close` | the console says `@close` is not asked on the web | not driven |
+
+Found while building it: **neither the document's `unmounted` nor any
+component's ever ran on a close or a hot reload.** The runtime had the function
+and its documentation said the shell called it; nothing did. Both paths call it
+now.
+
 ## Standing gaps
 
 Cases nothing here can currently exercise. They are the shape of what v0.8 has

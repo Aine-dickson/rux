@@ -986,6 +986,7 @@ pub fn effects() -> u64 {
         + NAVIGATIONS.with(|n| len(n.borrow().len()))
         + TIMER_REQUESTS.with(|t| len(t.borrow().len()))
         + ELEMENT_ACTIONS.with(|a| len(a.borrow().len()))
+        + CLOSES.with(|c| len(c.get()))
 }
 
 /// Run `f` and then drop whatever it added to the queues [`effects`] counts,
@@ -998,8 +999,10 @@ pub fn without_effects<T>(f: impl FnOnce() -> T) -> T {
         NAVIGATIONS.with(|n| n.borrow().len()),
         TIMER_REQUESTS.with(|t| t.borrow().len()),
         ELEMENT_ACTIONS.with(|a| a.borrow().len()),
+        CLOSES.with(std::cell::Cell::get),
     );
     let out = f();
+    CLOSES.with(|c| c.set(lens.6));
     WARNINGS.with(|w| w.borrow_mut().truncate(lens.0));
     LOGS.with(|l| l.borrow_mut().truncate(lens.1));
     EMISSIONS.with(|e| e.borrow_mut().truncate(lens.2));
@@ -1151,6 +1154,19 @@ thread_local! {
 /// Take the navigations asked for since the last call, emptying the sink.
 pub fn take_navigations() -> Vec<Nav> {
     NAVIGATIONS.with(|n| std::mem::take(&mut *n.borrow_mut()))
+}
+
+thread_local! {
+    /// How many times `close()` was called since the last drain. A sink for
+    /// the reason [`NAVIGATIONS`] is one: closing the app belongs to the shell,
+    /// which no script can reach. A count rather than a flag only so that
+    /// [`effects`] sees it move.
+    static CLOSES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Whether `close()` was called since the last call, emptying the sink.
+pub fn take_close_request() -> bool {
+    CLOSES.with(|c| c.replace(0)) > 0
 }
 
 /// Something a handler asked to happen to an element.
@@ -1774,6 +1790,14 @@ impl Engine {
     pub fn run_handler_tracked_in(&mut self, src: &str, locals: &[(String, Value)]) -> HashSet<String> {
         let (ran, changed) = self.tracking(|e| e.run_handler_in(src, locals));
         if ran { changed } else { HashSet::new() }
+    }
+
+    /// [`run_handler_tracked_in`](Self::run_handler_tracked_in) for a handler
+    /// whose value is an answer, as `@close`'s `false` is: the value, `None`
+    /// if it failed, and what it changed.
+    pub fn run_handler_answer_in(&mut self, src: &str, locals: &[(String, Value)]) -> (Option<Value>, HashSet<String>) {
+        let (answer, changed) = self.tracking(|e| e.eval_value(src, locals));
+        if answer.is_some() { (answer, changed) } else { (None, HashSet::new()) }
     }
 
     // ----- Checking what a piece calls and names ---------------------------
