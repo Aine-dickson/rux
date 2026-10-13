@@ -169,6 +169,8 @@ pub struct Document {
     /// A script called `close()` and the shell has not taken it yet. See
     /// [`Document::take_close`].
     close_asked: bool,
+    /// The [`rux_native::signal_epoch`] the native signals were last read at.
+    native_epoch: u64,
     /// Whether a lifecycle drain is already running.
     ///
     /// A `mounted` body that writes a signal rebuilds, and a rebuild can mount
@@ -2722,6 +2724,7 @@ impl Document {
             lists_alone: 0,
             mounted_instances: HashSet::new(),
             close_asked: false,
+            native_epoch: rux_native::signal_epoch(),
             settling: false,
             mounted_ran: false,
             history: History::default(),
@@ -2864,6 +2867,7 @@ impl Document {
             lists_alone: 0,
             mounted_instances: HashSet::new(),
             close_asked: false,
+            native_epoch: rux_native::signal_epoch(),
             settling: false,
             mounted_ran: false,
             history: History::default(),
@@ -5395,6 +5399,26 @@ impl Document {
         rux_script::take_answered_false()
     }
 
+    /// Native code set a [`rux_native::Signal`]: give the document what each
+    /// one it reads holds now, and update whatever read one that moved, as an
+    /// answer to an `await` would. Says whether anything moved. Cheap when
+    /// nothing did: the signals are only read when one was set since the last
+    /// look.
+    pub fn refresh_native_signals(&mut self) -> bool {
+        let epoch = rux_native::signal_epoch();
+        if epoch == self.native_epoch {
+            return false;
+        }
+        self.native_epoch = epoch;
+        let moved = self.engine.provide_native_signals();
+        if moved.is_empty() {
+            return false;
+        }
+        self.apply_change(&moved);
+        self.diagnostics.warnings.extend(collect_warnings());
+        true
+    }
+
     /// Whether the document's `<screen>` has a `@close`.
     pub fn has_close_handler(&self) -> bool {
         self.close_handler().is_some()
@@ -6447,6 +6471,8 @@ fn build_engine_linked(
     engine.set_provided(rux_script::QUERY_SIGNAL, Value::Map(Vec::new()));
     engine.set_provided(rux_script::CAN_BACK_SIGNAL, Value::Bool(false));
     engine.set_provided(rux_script::CAN_FORWARD_SIGNAL, Value::Bool(false));
+    // What native code has set already, so the first frame shows it.
+    let _ = engine.provide_native_signals();
     Ok(engine)
 }
 
@@ -9629,6 +9655,56 @@ let open = signal(true);
             assert!(std::time::Instant::now() < deadline, "no answer came");
             std::thread::sleep(std::time::Duration::from_millis(2));
         }
+    }
+
+    /// A native signal: Rust sets it, the document shows the newest value
+    /// once it refreshes, as the shell does when the set wakes it. An `int`
+    /// from Rust stays an `int`.
+    #[test]
+    fn a_native_signal_set_from_rust_updates_what_reads_it() {
+        static TICK: rux_native::Signal<i64> = rux_native::Signal::new();
+        rux_native::Module::new("rts_sim").export(rux_native::Export::signal("tick", "int?", || TICK.__read())).install();
+        let mut doc = Document::from_source(
+            "<template><screen><text>{{ rts_sim.tick ?? \"waiting\" }}</text><text>{{ type_of(rts_sim.tick) }}</text></screen></template>
+             <script>use native::rts_sim;</script>",
+        )
+        .expect("load");
+        assert_eq!(text_of(&doc.root).join("|"), "waiting|()");
+        TICK.set(41);
+        TICK.set(42);
+        assert!(doc.refresh_native_signals(), "two sets, one refresh");
+        assert_eq!(text_of(&doc.root).join("|"), "42|i64", "the newest, and an int");
+        assert!(!doc.refresh_native_signals(), "nothing set since");
+    }
+
+    /// A signal set on another thread reaches the document the same way.
+    #[test]
+    fn a_native_signal_set_on_another_thread_arrives() {
+        static STATUS: rux_native::Signal<String> = rux_native::Signal::new();
+        rux_native::Module::new("rts_save").export(rux_native::Export::signal("status", "string?", || STATUS.__read())).install();
+        let mut doc = Document::from_source(
+            "<template><screen><text>{{ rts_save.status ?? \"idle\" }}</text></screen></template>
+             <script>use native::rts_save;</script>",
+        )
+        .expect("load");
+        std::thread::spawn(|| STATUS.set("saved".to_string())).join().unwrap();
+        assert!(doc.refresh_native_signals());
+        assert_eq!(text_of(&doc.root).join(""), "saved");
+    }
+
+    /// Only Rust writes a native signal.
+    #[test]
+    fn a_native_signal_cannot_be_written_from_script() {
+        static FLAG: rux_native::Signal<bool> = rux_native::Signal::new();
+        rux_native::Module::new("rts_flag").export(rux_native::Export::signal("on", "bool?", || FLAG.__read())).install();
+        let doc = Document::from_source(
+            "<template><screen><text>x</text></screen></template>
+             <script>use native::rts_flag;
+fn flip() { rts_flag.on = true; }</script>",
+        )
+        .expect("load");
+        let said: Vec<_> = doc.diagnostics().warnings.iter().map(|w| w.message.clone()).collect();
+        assert!(said.iter().any(|m| m.contains("is a signal Rust sets, and only Rust changes it")), "{said:?}");
     }
 
     /// "Save changes?": `@close` answers `false` and starts the save; the

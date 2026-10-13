@@ -46,6 +46,9 @@ pub fn exports(module: &str) -> Option<Vec<Export>> {
                         is_async: s.is_async,
                     },
                     ItemKind::Record(_) | ItemKind::Resource => ExportKind::Type,
+                    // Read and followed like a script module's signal, and
+                    // like one never written from outside its module.
+                    ItemKind::Signal(t) => ExportKind::Signal(ty(t)),
                     ItemKind::Method { .. } => return None,
                 };
                 Some(Export { name: item.name.clone(), kind })

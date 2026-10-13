@@ -2073,6 +2073,45 @@ impl Engine {
         changed
     }
 
+    /// The native signals this document's imports reach, by linked name:
+    /// `native/sim::frame`.
+    pub fn native_signals(&self) -> Vec<String> {
+        let mut out: Vec<String> = self
+            .linking
+            .exports
+            .iter()
+            .filter(|(module, _)| native::is_native(module))
+            .flat_map(|(module, exports)| {
+                exports
+                    .iter()
+                    .filter(|e| matches!(e.kind, link::ExportKind::Signal(_)))
+                    .map(move |e| link::qualified(module, &e.name))
+            })
+            .collect();
+        out.sort();
+        out
+    }
+
+    /// Give every native signal what Rust holds now, as the router gives
+    /// `route`, and say which moved. The value goes in as the interpreter's
+    /// own, so an `int` from Rust stays an `int`. One that cannot be read
+    /// holds `none`.
+    pub fn provide_native_signals(&mut self) -> HashSet<String> {
+        let mut moved = HashSet::new();
+        for name in self.native_signals() {
+            let read = match native::call_of(&name) {
+                Ok(rux_native::Call::Sync(read)) => read(Vec::new()).ok(),
+                _ => None,
+            };
+            let v = read.map(native::from_any).unwrap_or(interp::V::None);
+            if self.signal_value(&name).as_ref() != Some(&v.to_value()) || !self.ir.has_global(&name) {
+                moved.insert(name.clone());
+            }
+            self.ir.set_global(&name, v);
+        }
+        moved
+    }
+
     /// Whether the script declared one of the router's names itself, so the
     /// runtime can say so rather than silently overwriting it. Asked *before*
     /// the setters, which would otherwise make the answer always yes.

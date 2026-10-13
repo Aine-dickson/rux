@@ -16,9 +16,11 @@
 
 mod exec;
 pub mod registry;
+mod signal;
 mod value;
 
 pub use exec::{block_on, panic_text, set_spawner, spawn, CatchUnwind, Task};
+pub use signal::{set_signal_waker, signal_epoch, Signal};
 pub use registry::{install, BoxFuture, Call, Export, FieldSig, Interface, Item, ItemKind, Module, Sig};
 pub use value::{field, Any, Error, FromRux, FromRuxRef, Handle, IntoRux, Resource};
 

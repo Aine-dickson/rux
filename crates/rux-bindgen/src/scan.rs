@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use syn::spanned::Spanned;
 use syn::{ImplItem, Item, Visibility};
 
-use crate::{fn_info, fn_descriptor, is_rux_attr, rux_attr, struct_fields, type_name, METHODS_DESCRIPTOR, TYPE_DESCRIPTOR};
+use crate::{fn_info, fn_descriptor, signal_info, is_rux_attr, rux_attr, struct_fields, type_name, METHODS_DESCRIPTOR, TYPE_DESCRIPTOR};
 
 /// One export, by its Rux name.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -18,6 +18,8 @@ pub enum Found {
     /// Fields as name, type and whether it may be left out.
     Record { name: String, fields: Vec<(String, String, bool)> },
     Resource { name: String },
+    /// A `static` [`rux::Signal`], with its Rux type.
+    Signal { name: String, ty: String },
 }
 
 /// A Rust module with something exported in it.
@@ -161,6 +163,21 @@ impl Scanner {
                             let reg = join(module, &fn_descriptor(&f.sig.ident.to_string()));
                             let m = self.module(module);
                             m.items.push(found);
+                            m.registrations.push(reg);
+                        }
+                        Err(e) => self.problem(file, e.span(), e.to_string()),
+                    }
+                }
+                Item::Static(st) if st.attrs.iter().any(|a| is_rux_attr(a, "export")) => {
+                    if !(reachable && is_pub(&st.vis)) {
+                        self.problem(file, st.ident.span(), unreachable_message("static", &st.ident.to_string()));
+                        continue;
+                    }
+                    match signal_info(st) {
+                        Ok((name, ty)) => {
+                            let reg = join(module, &fn_descriptor(&st.ident.to_string()));
+                            let m = self.module(module);
+                            m.items.push(Found::Signal { name, ty });
                             m.registrations.push(reg);
                         }
                         Err(e) => self.problem(file, e.span(), e.to_string()),

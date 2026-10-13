@@ -27,7 +27,11 @@ static NEXT: AtomicU64 = AtomicU64::new(1);
 /// window learns it has work to do while it sleeps. The shell sends itself an
 /// event from here.
 pub fn set_waker(f: impl Fn() + Send + Sync + 'static) {
-    *WAKER.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(f));
+    let f: Waker = Arc::new(f);
+    // A native signal set from Rust wakes the window the same way.
+    let for_signals = f.clone();
+    rux_native::set_signal_waker(move || for_signals());
+    *WAKER.lock().unwrap_or_else(|e| e.into_inner()) = Some(f);
 }
 
 /// A fresh number for a waiting call or a task, never given out twice in the

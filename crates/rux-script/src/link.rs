@@ -356,13 +356,19 @@ pub fn resolve(script: &mut Script, aliases: &[Alias], exports: &HashMap<String,
     });
     for (span, root) in writes {
         let (module, _) = split(&root).expect("a linked name");
-        problems.push(Problem {
-            span,
-            message: format!(
+        let message = if crate::native::is_native(module) {
+            format!(
+                "{} is a signal Rust sets, and only Rust changes it: export a function from {} that sets it",
+                shown(&root),
+                module.replace('/', "::")
+            )
+        } else {
+            format!(
                 "{} belongs to {module}, and only {module} changes it: export a function from it that does",
                 shown(&root)
-            ),
-        });
+            )
+        };
+        problems.push(Problem { span, message });
     }
     problems
 }

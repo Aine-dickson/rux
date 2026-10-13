@@ -74,6 +74,9 @@ pub enum ItemKind {
     Record(Vec<FieldSig>),
     /// A `#[rux::resource]`.
     Resource,
+    /// A `#[rux::export] static` [`crate::Signal`]: a value Rust sets and Rux
+    /// follows, of this Rux type. Its call is its getter.
+    Signal(String),
 }
 
 /// One thing a module exports, by its Rux name.
@@ -134,6 +137,7 @@ impl Interface {
             let line = match &item.kind {
                 ItemKind::Record(fields) => format!("export type {} = {};", item.name, Interface::record_text(fields)),
                 ItemKind::Resource => format!("export type {};  // a resource: opaque to Rux", item.name),
+                ItemKind::Signal(ty) => format!("export let {}: {ty};  // set by Rust, followed by Rux", item.name),
                 ItemKind::Fn(s) => {
                     format!("export {}fn {}{};", if s.is_async { "async " } else { "" }, item.name, sig(s))
                 }
@@ -175,6 +179,15 @@ impl Export {
             is_async,
         };
         Export { item: Item { name: name.to_string(), kind: ItemKind::Fn(sig) }, call: Some(call) }
+    }
+
+    /// A [`crate::Signal`], from Rust written by hand: `ty` is its Rux type,
+    /// and `read` gives what it holds.
+    pub fn signal(name: &str, ty: &str, read: impl Fn() -> Result<Any, Error> + Send + Sync + 'static) -> Export {
+        Export {
+            item: Item { name: name.to_string(), kind: ItemKind::Signal(ty.to_string()) },
+            call: Some(Call::sync(move |_| read())),
+        }
     }
 
     /// A record type, from Rust written by hand. A field whose type ends in
@@ -312,6 +325,11 @@ pub fn declare(i: Interface) -> Result<(), String> {
     }
     let mut calls = HashMap::new();
     for item in &i.items {
+        // A signal read from source holds nothing: no Rust runs to set it.
+        if let ItemKind::Signal(_) = &item.kind {
+            calls.insert(item.key(), Call::sync(|_| Ok(Any::None)));
+            continue;
+        }
         let (ItemKind::Fn(sig) | ItemKind::Method { sig, .. }) = &item.kind else { continue };
         let empty = empty_of(&sig.result, &i);
         let call = if sig.is_async {

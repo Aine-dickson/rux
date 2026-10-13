@@ -105,6 +105,7 @@ pub fn interfaces(scan: &Scan) -> Vec<Interface> {
                         ),
                     },
                     Found::Resource { name } => Item { name: name.clone(), kind: ItemKind::Resource },
+                    Found::Signal { name, ty } => Item { name: name.clone(), kind: ItemKind::Signal(ty.clone()) },
                 })
                 .collect(),
         })

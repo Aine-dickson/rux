@@ -6591,8 +6591,13 @@ impl ApplicationHandler<RuxEvent> for App {
 
     fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: RuxEvent) {
         match event {
+            // An `await`'s answer came, or native code set a signal: the
+            // same wake-up, since both are Rust telling the document
+            // something from another thread.
             RuxEvent::Answered => {
-                if self.document.settle_tasks() {
+                let settled = self.document.settle_tasks();
+                let moved = self.document.refresh_native_signals();
+                if settled || moved {
                     self.request_redraw();
                 }
             }

@@ -596,6 +596,42 @@ pub fn open_till() -> Till { … }
   builds and restarts the window whenever something under `native/` changes;
   `.rux` files still hot reload. `rux native` prints what Rux sees.
 
+### Signals from Rust
+
+**A `#[rux::export] pub static` of type `rux::Signal<T>` is a value Rust sets
+and Rux follows.** Script reads it like a module's signal, and whatever read it
+updates when Rust sets it, from any thread. Nothing else wakes the window:
+
+```rust
+// native/src/sim.rs
+#[rux::export]
+pub static FRAME: rux::Signal<Frame> = rux::Signal::new();
+
+fn on_step(frame: Frame) {
+    FRAME.set(frame);   // any thread
+}
+```
+
+```rux
+<script>
+  use native::sim;
+</script>
+<text>{{ sim.frame?.tick ?? 0 }}</text>
+```
+
+- **Its name follows the `static`'s**, lowercased and camelCased (`FRAME` is
+  `frame`, `SAVE_STATE` is `saveState`), or `#[rux(name = "…")]`. Its type is
+  `T?`: it holds `none` until Rust first sets it.
+- **Only Rust writes it.** Assigning to `sim.frame` in script is an error
+  that says so; to change it from script, export a function that sets it.
+- **The latest value wins.** `set` stores the value and wakes the window, and
+  the document reads what is there when it next settles: a simulation setting
+  a frame five hundred times between two paints is drawn once, with the
+  newest. A status works the same way, and an `effect` reading it runs when it
+  changes.
+- `get`, `clear` and `update` are there too. A check does not run the app's
+  Rust, so a signal read while a document is checked holds `none`.
+
 `host::name()`, which reached a function a Rust program registered by hand, is
 retired and is an error that points here. A program that runs the shell itself
 registers a module with `rux_runtime::native::Module`, which is what the

@@ -343,6 +343,30 @@ fn option_inner(ty: &Type) -> Option<&Type> {
     type_args(&seg.arguments).first().copied()
 }
 
+/// What an exported `static NAME: rux::Signal<T>` is in Rux: its name
+/// (`FRAME` as `frame`, `SAVE_STATE` as `saveState`, or `#[rux(name)]`) and
+/// its type, `T`'s made optional, since a signal holds `none` until Rust
+/// first sets it.
+pub fn signal_info(item: &syn::ItemStatic) -> syn::Result<(String, String)> {
+    let wrong = || syn::Error::new_spanned(&item.ty, "an exported `static` is a `rux::Signal<T>`");
+    let Type::Path(p) = &*item.ty else { return Err(wrong()) };
+    let seg = p.path.segments.last().ok_or_else(wrong)?;
+    if seg.ident != "Signal" {
+        return Err(wrong());
+    }
+    let inner = type_args(&seg.arguments).first().copied().ok_or_else(wrong)?;
+    if matches!(item.mutability, syn::StaticMutability::Mut(_)) {
+        return Err(syn::Error::new_spanned(&item.ident, "an exported signal is a plain `static`, not `static mut`: `set` takes `&self`"));
+    }
+    let ty = rux_type(inner).map_err(|e| syn::Error::new_spanned(inner, e))?;
+    let ty = if ty.ends_with('?') { ty } else { format!("{ty}?") };
+    let name = match rux_attr(&item.attrs)?.name {
+        Some(n) => n,
+        None => camel(&item.ident.to_string().to_lowercase()),
+    };
+    Ok((name, ty))
+}
+
 /// The name a struct or resource has in Rux.
 pub fn type_name(ident: &syn::Ident, attrs: &[Attribute]) -> syn::Result<String> {
     Ok(rux_attr(attrs)?.name.unwrap_or_else(|| ident.to_string()))
@@ -354,6 +378,14 @@ mod tests {
 
     fn ty(s: &str) -> Result<String, String> {
         rux_type(&syn::parse_str::<Type>(s).unwrap())
+    }
+
+    #[test]
+    fn an_exported_signal_is_named_and_typed() {
+        let s: syn::ItemStatic = syn::parse_str("pub static SAVE_STATE: rux::Signal<Vec<f64>> = rux::Signal::new();").unwrap();
+        assert_eq!(signal_info(&s).unwrap(), ("saveState".to_string(), "float[]?".to_string()));
+        let s: syn::ItemStatic = syn::parse_str("pub static COUNT: u32 = 0;").unwrap();
+        assert!(signal_info(&s).unwrap_err().to_string().contains("rux::Signal<T>"));
     }
 
     #[test]

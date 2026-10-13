@@ -32,7 +32,7 @@ Each entry says what Mava needed, what happened, how to reproduce it, what Mava 
 - **Reproduction:** a `#[rux::resource]` whose state changes on another thread (or from an `async` export that keeps running) has no way to make the screen show the change until the document next calls in.
 - **Mava workaround:** temporary. Every call that can change what the Studio shows returns a whole view record, and the document assigns its signals from it. Polling from `setInterval` was rejected as costly and laggy.
 - **Suggested fix:** a channel from native code into a document, for example an exported `rux::Sender<T>` (or a callback value) that Rust holds and that delivers `T` to a handler, or writes a signal, on the UI thread. Mava needs it by its F11 at the latest.
-- **Status:** open.
+- **Status:** fixed 2026-10-13 on `build/v0.9`, as a signal. `#[rux::export] pub static FRAME: rux::Signal<Frame> = rux::Signal::new();` is `frame` in its module, typed `Frame?`; Rust calls `FRAME.set(frame)` from any thread, the window wakes, and every binding and `effect` that read it updates on the UI thread. The latest value wins, so frames at frame rate are drawn once per paint with the newest. There is no ordered event queue yet: a signal holding a revision number or a status covers "something changed, read again", and a queue can come if Mava needs every event in order. Documented under "Signals from Rust" in `docs/07-script.md`.
 
 ## MS-004 No application keyboard shortcuts
 

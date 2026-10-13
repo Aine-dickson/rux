@@ -29,7 +29,8 @@ pub fn export(attr: TokenStream, item: TokenStream) -> TokenStream {
         Item::Fn(f) => export_fn(f),
         Item::Struct(s) => export_struct(s),
         Item::Impl(i) => export_impl(i),
-        other => Err(syn::Error::new_spanned(other, "`#[rux::export]` goes on a `fn`, a `struct` or an `impl`")),
+        Item::Static(s) => export_static(s),
+        other => Err(syn::Error::new_spanned(other, "`#[rux::export]` goes on a `fn`, a `struct`, an `impl` or a `static` `rux::Signal`")),
     };
     out.unwrap_or_else(|e| e.to_compile_error()).into()
 }
@@ -134,6 +135,25 @@ fn call_tokens(i: &FnInfo, callee: Tokens, receiver: bool, output: &syn::ReturnT
             })
         }
     }
+}
+
+/// A `static NAME: rux::Signal<T>`: its descriptor's call reads what the
+/// signal holds, for the runtime to follow.
+fn export_static(mut s: syn::ItemStatic) -> syn::Result<Tokens> {
+    let (name, ty) = rux_bindgen::signal_info(&s)?;
+    strip(&mut s.attrs);
+    let ident = &s.ident;
+    let descriptor = format_ident!("{}", fn_descriptor(&ident.to_string()));
+    let vis = &s.vis;
+    Ok(quote! {
+        #s
+
+        #[doc(hidden)]
+        #[allow(non_snake_case)]
+        #vis fn #descriptor() -> ::std::vec::Vec<::rux::Export> {
+            ::std::vec![::rux::Export::signal(#name, #ty, || #ident.__read())]
+        }
+    })
 }
 
 fn export_fn(mut f: syn::ItemFn) -> syn::Result<Tokens> {

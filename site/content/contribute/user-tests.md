@@ -2334,6 +2334,24 @@ and Ctrl+Z as an app undo, and one text field.
 | Ctrl+Shift+Z | in the field after an undo | redo | not driven; the same call as Ctrl+Y |
 | A phone's hardware keyboard | Android with a keyboard attached | as on the desktop | not driven: no phone |
 
+## Signals from Rust, 2026-10-13
+
+Mava Studio's MS-003: `#[rux::export] pub static X: rux::Signal<T>`, set by
+Rust from any thread and followed by the document. Under test in
+`rux-runtime`'s own tests (`a_native_signal_*`: the newest value after two
+sets, an `int` staying an `int`, a set from another thread, a write from script
+refused), `rux-native` (the signal and its count) and `rux-bindgen` (its name
+and type from the source). Driven with a scratch app whose `native/` crate
+starts a thread in `#[rux::init]` that sets `TICK` five times a second, built
+with `rux build --release`.
+
+| Case | Steps | Expected | Result |
+|---|---|---|---|
+| `rux check` reads it from the source | `rux check` on the app | `clock.tick` known as `int?`; no problems | desktop: pass |
+| The window follows Rust | open the built app, wait | the number climbs on its own, with no input | desktop: pass, `tick 23` then `tick 29` 1.1 s later |
+| A binding derived from it | the line under the number | "on a fifth" on multiples of five, "between" otherwise | desktop: pass, seen both |
+| Web and Android | a built web app, a phone | the same | not driven |
+
 ## Standing gaps
 
 Cases nothing here can currently exercise. They are the shape of what v0.8 has
