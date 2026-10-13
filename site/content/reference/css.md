@@ -17,6 +17,7 @@ grid-row, grid-row-start, grid-row-end   (1 / 3, span 2, -1; no named lines)
 grid-auto-flow, grid-auto-rows, grid-auto-columns
 transform (translate/scale/rotate; visual only; hit regions aren't transformed)
 position (static|relative|sticky|absolute|fixed), top, right, bottom, left
+z-index (auto|<integer>), isolation (auto|isolate)
 aspect-ratio
 width, height, min-width, max-width, min-height, max-height
 padding, padding-top, padding-right, padding-bottom, padding-left

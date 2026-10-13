@@ -2394,6 +2394,25 @@ a count and a list of the last three, loaded at start and saved on each tap.
 | A bare `rux run` | no `rux.toml` | kept under the file's name | under the code only |
 | Web, Android | `localStorage`, the app's files | the same | not driven |
 
+## `z-index` and stacking, 2026-10-13
+
+CSS's paint order for a stacking context, with `isolation`. Under test in
+`rux-layout` (`tests/z_index.rs`: fifteen cases, among them the layer order,
+negative layers found inside an unindexed positioned box, a context drawn
+whole, the clip put back around a box drawn later, the tap finding the top box,
+Tab order kept, and scroller ids kept while a page fades). Driven in a desktop
+window with a debug build on one probe page, in three variants.
+
+| Case | Steps | Expected | Result |
+|---|---|---|---|
+| Higher over later | two overlapping squares, `z-index: 2` first, `1` second | the first over the second | desktop: pass |
+| Negative under its box | `z-index: -1` slab inside a `relative` card with no `z-index` | the slab under the card, showing only where it sticks out | desktop: pass |
+| A dropdown over the next row | `z-index: 5` menu in a `relative` row of an `overflow: clip` panel | over the next row, cut off at the panel's edge | desktop: pass |
+| A transform is a context | middle of three tiles `scale(1.3)` | over both neighbours, the later one included | desktop: pass |
+| A fixed header over scrolled content | `fixed` header with `z-index: 10`, a scroller under it full of `relative` boxes, scrolled | the header over all of them | desktop: pass |
+| A tap on the top box | | the box drawn on top answers | under the code only (injected clicks do not reach the window) |
+| Web, Android | the same page | the same | not driven |
+
 ## Standing gaps
 
 Cases nothing here can currently exercise. They are the shape of what v0.8 has

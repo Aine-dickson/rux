@@ -348,6 +348,7 @@ const CSS_VALUES: &[(&str, &[&str])] = &[
     // All five, and every one of them honored since v0.7. Before that, four of
     // these were silently `relative`.
     ("position", &["static", "relative", "sticky", "absolute", "fixed"]),
+    ("isolation", &["auto", "isolate"]),
     ("overflow", &["visible", "hidden", "clip", "auto", "scroll"]),
     ("overflow-x", &["visible", "hidden", "clip", "auto", "scroll"]),
     ("overflow-y", &["visible", "hidden", "clip", "auto", "scroll"]),
@@ -530,6 +531,8 @@ const CSS_PROPERTY_DOCS: &[Entry] = &[
     Entry { name: "bottom", detail: "distance from the bottom edge", doc: "An offset, or a sticky threshold." },
     Entry { name: "left", detail: "distance from the left edge", doc: "An offset, or a sticky threshold." },
     Entry { name: "aspect-ratio", detail: "width-to-height ratio to keep", doc: "`16 / 9`. Gives a box a height derived from its width, so a media box keeps its shape as it resizes." },
+    Entry { name: "z-index", detail: "which box is drawn over which", doc: "`auto` or a whole number. Counts on a positioned box and on a flex or grid item; higher is drawn over lower, inside the same stacking context. A `fixed` box is **not** on top by itself: give it a `z-index`. Animates in whole steps." },
+    Entry { name: "isolation", detail: "start a stacking context", doc: "`isolate` makes this box a stacking context and does nothing else, so a `z-index` inside it, negative ones included, is sorted inside it and never escapes." },
     Entry { name: "background", detail: "the colour or gradient behind the content", doc: "A colour, `linear-gradient(…)` or `radial-gradient(…)`. `url()` is not supported; use `<image>` for a picture." },
     Entry { name: "background-color", detail: "a flat colour behind the content", doc: "Animatable, so it is what a hover or pressed state usually changes." },
     Entry { name: "background-image", detail: "a gradient behind the content", doc: "`linear-gradient` and `radial-gradient` only." },
@@ -629,6 +632,7 @@ const CSS_PROPERTY_USAGE: &[(&str, &str)] = &[
     ("grid-template-columns", ".grid { display: grid; grid-template-columns: repeat(3, 1fr); }"),
     ("grid-template-rows", ".grid { grid-template-rows: auto 1fr auto; }"),
     ("height", ".thread { height: 300px; }"),
+    ("isolation", ".card { position: relative; isolation: isolate; }"),
     ("justify-content", ".row { display: flex; justify-content: space-between; }"),
     ("justify-items", ".grid { justify-items: start; }"),
     ("justify-self", ".cell { justify-self: center; }"),
@@ -672,6 +676,7 @@ const CSS_PROPERTY_USAGE: &[(&str, &str)] = &[
     ("word-break", ".code { word-break: break-all; }"),
     ("word-spacing", ".lead { word-spacing: 1px; }"),
     ("word-wrap", ".body { word-wrap: break-word; }"),
+    ("z-index", ".menu { position: absolute; z-index: 10; }"),
 ];
 
 /// Print the whole vocabulary as JSON on stdout.

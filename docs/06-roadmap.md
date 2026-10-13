@@ -2350,6 +2350,13 @@ here.
    ~~`position: sticky` and `fixed`~~ **done in v0.7**, along with `static` and a
    `transform` that makes a containing block, so all five values are honored.
 
+   ~~`z-index`~~ **done in v0.9** (2026-10-13), with CSS's whole stacking-context
+   order rather than a per-parent rule, and `isolation: isolate` beside it.
+   Two old behaviours changed with it, both toward CSS and both the owner's
+   call: a `fixed` box is no longer drawn over everything regardless, and a
+   positioned box is drawn over all in-flow content of its context rather
+   than only over its siblings.
+
 6. **Generate the honored-CSS matrix from `rux-style`.** Moved out of "worth
    deciding early" and put *beside* the CSS pass deliberately: landing thirty
    properties against a hand-maintained reference means the documentation rots

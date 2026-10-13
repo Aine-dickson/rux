@@ -356,6 +356,9 @@ pub enum AnimProp {
     Fill,
     Stroke,
     StrokeWidth,
+    /// `z-index`, which CSS animates as an integer: it steps through every
+    /// value between the two ends rather than jumping at the end.
+    ZIndex,
     /// `d`: the path's geometry itself.
     ///
     /// The one animatable property that is not a style property, because
@@ -387,6 +390,7 @@ impl AnimProp {
         AnimProp::Fill,
         AnimProp::Stroke,
         AnimProp::StrokeWidth,
+        AnimProp::ZIndex,
         AnimProp::PathData,
     ];
 
@@ -411,6 +415,7 @@ impl AnimProp {
             AnimProp::Fill => "fill",
             AnimProp::Stroke => "stroke",
             AnimProp::StrokeWidth => "stroke-width",
+            AnimProp::ZIndex => "z-index",
             AnimProp::PathData => "d",
         }
     }
@@ -676,6 +681,12 @@ pub struct Style {
     /// `auto`. Only meaningful when `position: absolute`.
     pub position: Position,
     pub inset: [Option<Len>; 4],
+    /// `z-index`. `None` is `auto`. CSS's rule for when it counts: on a
+    /// positioned box, and on a flex or grid item whatever its `position`. On
+    /// anything else it is ignored, as a browser ignores it. See `Stack`.
+    pub z_index: Option<i32>,
+    /// `isolation: isolate`: a stacking context and nothing else.
+    pub isolate: bool,
     /// `aspect-ratio` (width / height).
     pub aspect_ratio: Option<f32>,
     /// `transition`: which of this node's properties animate when they change,
@@ -787,6 +798,8 @@ impl Default for Style {
             touch_action: TouchAction::Auto,
             position: Position::Static,
             inset: [None; 4],
+            z_index: None,
+            isolate: false,
             aspect_ratio: None,
             transitions: Vec::new(),
             swap_progress: None,
@@ -2650,6 +2663,7 @@ struct At {
     transform: Option<u32>,
     hidden: bool,
     scroll: bool,
+    stack: Stack,
 }
 
 /// The lists `build` fills and the index into them, which is everything
@@ -2666,6 +2680,8 @@ struct Built<'a> {
     paths: &'a [(NodeId, Vec<usize>)],
     stickies: &'a [(NodeId, [Option<f32>; 4])],
     at: IdMap<At>,
+    /// Each visible scroller's id. See `number_scrollers`.
+    scroll_ids: IdMap<usize>,
 }
 
 impl Built<'_> {
@@ -2693,6 +2709,7 @@ fn index(
     access: &[(NodeId, Access, Option<String>)],
     paths: &[(NodeId, Vec<usize>)],
     stickies: &[(NodeId, [Option<f32>; 4])],
+    stacks: &[(NodeId, Stack)],
 ) -> IdMap<At> {
     let mut at: IdMap<At> = IdMap::default();
     at.reserve(paths.len());
@@ -2725,6 +2742,9 @@ fn index(
     }
     for id in scrolls {
         at.entry(*id).or_default().scroll = true;
+    }
+    for (id, stack) in stacks {
+        at.entry(*id).or_default().stack = *stack;
     }
     at
 }
@@ -2912,6 +2932,10 @@ fn build(
     // what makes the *size* right too: `left: 0; right: 0` means "as wide as the
     // containing block", which is a question only the layout can answer.
     hoisted: &mut Vec<(NodeId, bool)>,
+    // What decides where each node paints among the others, in document order.
+    // A node's index here is its place in the document, which `collect` sorts
+    // on: see `Stack`.
+    stacks: &mut Vec<(NodeId, Stack)>,
     // What this node was last frame, when one was matched to it. See `Kept`.
     old: Option<Kept>,
     // The viewport, for the root alone: it is forced to fill it, so a `screen`
@@ -2921,6 +2945,9 @@ fn build(
     // Taffy nodes nothing matched this frame, removed once the tree is built.
     garbage: &mut Vec<NodeId>,
 ) -> (NodeId, Kept) {
+    // Claimed on the way down, so a parent comes before its children.
+    let seq = stacks.len() as u32;
+    stacks.push((NodeId::from(u64::MAX), Stack::default()));
     let own_cap = width_cap(&node.style, cap, vp);
     let child_cap = inner_cap(&node.style, own_cap, cap);
     let row = node.key.as_deref().or(row);
@@ -2995,7 +3022,7 @@ fn build(
             // cache on the parent size, and tests/stretch_text.rs, which
             // fails on 0.7 without that exception, passes on 0.15 without
             // it, so the exception is gone.
-            let (cid, kept) = build(tree, c, paint, handlers, models, focus_labels, hidden, opacities, scrolls, transforms, states, access, &cp, paths, vp, child_cap, caps, row, stickies, hoisted, prev, None, garbage);
+            let (cid, kept) = build(tree, c, paint, handlers, models, focus_labels, hidden, opacities, scrolls, transforms, states, access, &cp, paths, vp, child_cap, caps, row, stickies, hoisted, stacks, prev, None, garbage);
             kept_children.push(kept);
             match hoists(&c.style) {
                 Some(fixed) => hoisted.push((cid, fixed)),
@@ -3213,10 +3240,241 @@ fn build(
         states.push((id, path.clone()));
     }
     paths.push((id, path.to_vec()));
+    stacks[seq as usize] = (
+        id,
+        Stack {
+            seq,
+            z: node.style.z_index,
+            position: node.style.position,
+            isolate: node.style.isolate,
+        },
+    );
     if node.access.role.is_meaningful() {
         access.push((id, node.access.clone(), node.model.clone()));
     }
     (id, kept)
+}
+
+/// What decides where a node paints among the others: CSS's stacking rules.
+///
+/// **Paint order is not tree order.** Inside a stacking context CSS paints the
+/// context's own box, then the boxes with a negative `z-index`, then the
+/// in-flow content, then the positioned boxes with `z-index: auto` or `0` in
+/// document order, then the positive ones from lowest up (CSS 2, appendix E).
+/// A box with a `z-index` makes a context of its own, and so do `fixed`,
+/// `sticky`, `opacity` below 1, `transform` and `isolation: isolate`: whatever
+/// is inside one of those is sorted against its neighbours there and is drawn
+/// all together, never interleaved with anything outside it.
+///
+/// Before this was built Rux had two hand-written cases, a positioned box over
+/// its in-flow *siblings* and every `fixed` box over everything, and an author
+/// had no way to say anything else. A dropdown opened under the next card.
+#[derive(Clone, Copy, Debug, Default)]
+struct Stack {
+    /// The node's place in the document. Ties paint in this order, and Tab
+    /// and the accessibility tree are put back in it after painting reorders
+    /// them, since neither should follow where a box happens to be drawn.
+    seq: u32,
+    z: Option<i32>,
+    position: Position,
+    isolate: bool,
+}
+
+/// How a child is painted relative to its stacking context: `None` in flow,
+/// in the walk, or `Some((z, makes_its_own))` held back and drawn later.
+///
+/// `parent_items` is whether the parent lays its children out as flex or grid
+/// items, the one case where `z-index` counts on a box that is not positioned.
+fn layer(at: &At, parent_items: bool) -> Option<(i32, bool)> {
+    let st = at.stack;
+    let positioned = st.position != Position::Static;
+    let item = parent_items && !st.position.is_out_of_flow();
+    let z = st.z.filter(|_| positioned || item);
+    let context = z.is_some()
+        || matches!(st.position, Position::Fixed | Position::Sticky)
+        || at.opacity.is_some()
+        || at.transform.is_some()
+        || st.isolate;
+    (positioned || context).then_some((z.unwrap_or(0), context))
+}
+
+/// A clip between a stacking context and a box it paints later, which has to
+/// be put back around that box: the box is still inside it.
+///
+/// Only clips. A `transform` or an `opacity` in between would itself be a
+/// stacking context, and the box would belong to that one instead.
+#[derive(Clone, Copy, Debug)]
+struct Clip {
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+    radius: Corners,
+}
+
+/// A box held back until its stacking context reaches its layer, with
+/// everything `collect` would have been called with where it was found.
+struct Deferred {
+    z: i32,
+    seq: u32,
+    context: bool,
+    id: NodeId,
+    origin: (f32, f32),
+    holder: (f32, f32, f32, f32),
+    inside_scroll: Option<usize>,
+    xform: Option<Transform>,
+    dim: f32,
+    clips: Vec<Clip>,
+}
+
+impl Deferred {
+    fn key(&self) -> (i32, u32) {
+        (self.z, self.seq)
+    }
+}
+
+impl PartialEq for Deferred {
+    fn eq(&self, other: &Self) -> bool {
+        self.key() == other.key()
+    }
+}
+impl Eq for Deferred {}
+impl PartialOrd for Deferred {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+impl Ord for Deferred {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.key().cmp(&other.key())
+    }
+}
+
+/// The lengths of the lists painting order decides: paints, and every region
+/// a pointer finds by taking the topmost (last) one. Scrollers, Tab order and
+/// the accessibility tree are not among them, on purpose.
+type Marks = [usize; 5];
+
+fn marks(out: &Layout) -> Marks {
+    [out.paints.len(), out.hits.len(), out.focuses.len(), out.selects.len(), out.states.len()]
+}
+
+/// One stacking context while it is being painted.
+struct Stacking {
+    /// Where its children start, after its own box: where negative layers go.
+    mark: Marks,
+    /// How deep the clip stack was there. The clips above it are the ones a
+    /// held-back box has to be drawn inside.
+    clip_base: usize,
+    pending: std::collections::BinaryHeap<std::cmp::Reverse<Deferred>>,
+    /// The negative layers already moved under the in-flow content, in order,
+    /// with how much of each list they took.
+    below: Vec<((i32, u32), Marks)>,
+}
+
+impl Stacking {
+    fn new(out: &Layout, clip_base: usize) -> Self {
+        Stacking {
+            mark: marks(out),
+            clip_base,
+            pending: Default::default(),
+            below: Vec::new(),
+        }
+    }
+}
+
+/// What lives for the whole walk rather than for one node.
+#[derive(Default)]
+struct Walk {
+    /// The clips pushed on the way down to where the walk is now.
+    clips: Vec<Clip>,
+    /// Each scroller's region, by id. Ids are given out before painting (see
+    /// `number_scrollers`), so the order painting reaches them in is free to
+    /// differ from their ids.
+    scrolls: Vec<Option<ScrollRegion>>,
+    /// The `seq` of each entry in `Layout::focusables` and `Layout::access`.
+    focus_seq: Vec<u32>,
+    access_seq: Vec<u32>,
+}
+
+/// Give every scroller that will be drawn an id, in tree order.
+///
+/// **Not in the order painting reaches them.** The shell keeps each scroller's
+/// offset by id from one frame to the next, and painting order moves whenever
+/// a box starts or stops being its own stacking context, which a fading page
+/// does twice per route change. Numbered by painting, two scrollers swapped
+/// offsets for the length of the fade.
+fn number_scrollers(tree: &TaffyTree<TextContent>, id: NodeId, at: &IdMap<At>, ids: &mut IdMap<usize>) {
+    let a = at.get(&id).copied().unwrap_or_default();
+    if a.hidden {
+        return;
+    }
+    if a.scroll {
+        let n = ids.len();
+        ids.insert(id, n);
+    }
+    for kid in tree.children(id).expect("children") {
+        number_scrollers(tree, kid, at, ids);
+    }
+}
+
+/// `items` sorted by `seq`, keeping the order of equal ones.
+fn in_order<T>(items: Vec<T>, seq: &[u32]) -> Vec<T> {
+    debug_assert_eq!(items.len(), seq.len());
+    if seq.windows(2).all(|w| w[0] <= w[1]) {
+        return items;
+    }
+    let mut keyed: Vec<(u32, T)> = seq.iter().copied().zip(items).collect();
+    keyed.sort_by_key(|(k, _)| *k);
+    keyed.into_iter().map(|(_, t)| t).collect()
+}
+
+/// Draw the boxes a stacking context held back, in CSS's order.
+///
+/// The heap gives them lowest first. A negative one is drawn at the end and
+/// then moved down under the in-flow content, which was drawn before it was
+/// known: one can be found late, inside a positioned box that is not a
+/// context of its own and so is only walked here. Everything else is drawn
+/// where it falls.
+#[allow(clippy::too_many_arguments)]
+fn drain(
+    tree: &TaffyTree<TextContent>,
+    b: &Built,
+    offsets: &[Offset],
+    vp: (f32, f32),
+    out: &mut Layout,
+    walk: &mut Walk,
+    ctx: &mut Stacking,
+) {
+    while let Some(std::cmp::Reverse(d)) = ctx.pending.pop() {
+        let start = marks(out);
+        for c in &d.clips {
+            out.paints.push(Paint::PushClip { x: c.x, y: c.y, width: c.width, height: c.height, radius: c.radius });
+            walk.clips.push(*c);
+        }
+        collect(
+            tree, d.id, d.origin.0, d.origin.1, b, offsets, vp, d.holder, d.inside_scroll, d.xform, d.dim,
+            d.context, out, walk, ctx,
+        );
+        for _ in &d.clips {
+            out.paints.push(Paint::PopClip);
+            walk.clips.pop();
+        }
+        if d.z >= 0 {
+            continue;
+        }
+        let end = marks(out);
+        let took: Marks = std::array::from_fn(|i| end[i] - start[i]);
+        let at = ctx.below.partition_point(|(k, _)| *k < d.key());
+        let before: Marks = std::array::from_fn(|i| ctx.below[..at].iter().map(|(_, m)| m[i]).sum());
+        let to: Marks = std::array::from_fn(|i| ctx.mark[i] + before[i]);
+        out.paints[to[0]..end[0]].rotate_right(took[0]);
+        out.hits[to[1]..end[1]].rotate_right(took[1]);
+        out.focuses[to[2]..end[2]].rotate_right(took[2]);
+        out.selects[to[3]..end[3]].rotate_right(took[3]);
+        out.states[to[4]..end[4]].rotate_right(took[4]);
+        ctx.below.insert(at, (d.key(), took));
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -3239,7 +3497,12 @@ fn collect(
     // drawn outside the paint list can be drawn through the same lens.
     xform: Option<Transform>,
     dim: f32,
+    // Whether this box is a stacking context: what its positioned descendants
+    // are sorted in. When it is not, they go to `ctx`, the one it is inside.
+    context: bool,
     out: &mut Layout,
+    walk: &mut Walk,
+    ctx: &mut Stacking,
 ) {
     let layout = tree.layout(id).expect("layout");
     let at = b.at(id);
@@ -3254,7 +3517,7 @@ fn collect(
     if let Some((_, inset)) = at.sticky.map(|i| &b.stickies[i as usize]) {
         // Against the scroller it is inside; with none, against the window,
         // which is what a sticky box in an unscrolled document sits in.
-        let view = match inside_scroll.and_then(|sid| out.scrolls.get(sid)) {
+        let view = match inside_scroll.and_then(|sid| walk.scrolls.get(sid)).and_then(Option::as_ref) {
             Some(s) => (s.x, s.y, s.width, s.height),
             None => (0.0, 0.0, vp.0, vp.1),
         };
@@ -3454,6 +3717,7 @@ fn collect(
     // the same walk. `hidden` nodes returned above, so an `r-show="false"` element
     // is absent from the a11y tree too, not merely invisible.
     if let Some((_, node_access, model)) = at.access.map(|i| &b.access[i as usize]) {
+        walk.access_seq.push(at.stack.seq);
         out.access.push(AccessNode {
             x,
             y,
@@ -3520,6 +3784,7 @@ fn collect(
                 options: options.clone(),
                 field: bound.field.clone(),
             });
+            walk.focus_seq.push(at.stack.seq);
             out.focusables.push(FocusItem {
                 x,
                 y,
@@ -3570,10 +3835,10 @@ fn collect(
                 text: text.clone(),
                 kind: bound.kind,
                 field: bound.field.clone(),
-                // The scroll block below assigns ids as `out.scrolls.len()`, so if
-                // this node scrolls it will get the current length as its id.
-                scroll_id: at.scroll.then(|| out.scrolls.len()),
+                // Ids are given out before the walk: see `number_scrollers`.
+                scroll_id: b.scroll_ids.get(&id).copied(),
             });
+            walk.focus_seq.push(at.stack.seq);
             out.focusables.push(FocusItem {
                 x,
                 y,
@@ -3599,6 +3864,7 @@ fn collect(
         // Only `@tap`. A keyboard has no pointer, so an element that declares
         // only `@drag` has nothing a key could stand in for, and offering Enter
         // as a fake drag would be worse than leaving it alone.
+        walk.focus_seq.push(at.stack.seq);
         out.focusables.push(FocusItem {
             x,
             y,
@@ -3612,13 +3878,9 @@ fn collect(
 
     // overflow: clip/scroll, bound the subtree to this box (following its corners).
     if clip {
-        out.paints.push(Paint::PushClip {
-            x,
-            y,
-            width: layout.size.width,
-            height: layout.size.height,
-            radius: clip_radius,
-        });
+        let c = Clip { x, y, width: layout.size.width, height: layout.size.height, radius: clip_radius };
+        out.paints.push(Paint::PushClip { x: c.x, y: c.y, width: c.width, height: c.height, radius: c.radius });
+        walk.clips.push(c);
     }
 
     // A scroller shifts its children by the current offset and registers itself
@@ -3628,7 +3890,7 @@ fn collect(
     // whatever was clipping us.
     let mut child_scroll = inside_scroll;
     if at.scroll {
-        let sid = out.scrolls.len();
+        let sid = b.scroll_ids[&id];
         child_scroll = Some(sid);
         // **The end padding is part of what scrolls.** Taffy's content size
         // stops at the far edge of the last child, so without this a scroller
@@ -3650,7 +3912,7 @@ fn collect(
             y: (content_height - layout.size.height).max(0.0),
         };
         shift = offsets.get(sid).copied().unwrap_or_default().clamp_to(max);
-        out.scrolls.push(ScrollRegion {
+        walk.scrolls[sid] = Some(ScrollRegion {
             transform: child_xform,
             alpha: child_dim,
             id: sid,
@@ -3667,62 +3929,74 @@ fn collect(
         });
     }
 
-    // In-flow children first, sticky ones after, because a positioned box paints
-    // over its in-flow siblings and a sticky one is positioned. Without this a
-    // sticky heading is drawn *before* the rows it is meant to sit over, so the
-    // content scrolls straight through it and the heading is unreadable exactly
-    // when it is doing its job. Found by looking, not by the tests: every
-    // assertion about geometry passed.
+    // **Positioned children are held back**, along with anything that makes a
+    // stacking context, and drawn when the context they belong to reaches
+    // their layer: see `Stack`. Everything else is drawn here, in tree order.
     //
-    // Ordering here also puts the sticky box on top for hit testing, since the
-    // topmost hit region wins and later means topmost.
+    // This replaced two partitions of a box's own children, positioned after
+    // in-flow and sticky after those. Both were the right answer for siblings,
+    // found by looking: a sticky heading drawn before its rows had them scroll
+    // straight through it, and a row leaving with `:leave-to { position:
+    // absolute }` was drawn under the row sliding into its place (watchlist
+    // #42). CSS asks the same question of the whole context rather than of
+    // one parent, and both still come out as they did.
     //
-    // An absolute box that named no inset is positioned too, and paints over
-    // its in-flow siblings for the same reason, although it stays in its
-    // parent's child list, where its static position was found (and pinned,
-    // so by now it names one). Left in tree order it painted under the
-    // siblings after it: a list row leaving with `:leave-to { position:
-    // absolute }` was drawn beneath the row that slid up into its place, and
-    // vanished instead of animating (watchlist #42). Every other out-of-flow
-    // box was handed to its containing block, at the end of the list, so
-    // taking them all after the in-flow ones keeps those where they were.
-    let kids = tree.children(id).expect("children");
-    let (stuck, rest): (Vec<NodeId>, Vec<NodeId>) =
-        kids.iter().partition(|c| b.at(**c).sticky.is_some());
-    let (lifted, flowing): (Vec<NodeId>, Vec<NodeId>) = rest
-        .into_iter()
-        .partition(|c| tree.style(*c).expect("style").position == taffy::Position::Absolute);
-    for child in flowing.into_iter().chain(lifted).chain(stuck) {
-        collect(
-            tree,
-            child,
-            x - shift.x,
-            y - shift.y,
-            b,
-            offsets,
-            vp,
-            // The box this node's children are held by, measured where the
-            // scroll has put it.
-            //
-            // For a **scroller** that is its *content* box, not the visible one:
-            // its children live down the whole scrollable length, and clamping a
-            // sticky one to the 200px on screen would pin it to a band that is
-            // itself sliding, so it would drift instead of sticking. Everywhere
-            // else the two are the same box.
-            (
-                x - shift.x,
-                y - shift.y,
-                scroll_extent(layout).0.max(layout.size.width),
-                scroll_extent(layout).1.max(layout.size.height),
+    // Hit testing takes the topmost region, which is the last one, so a box
+    // drawn later is also the one a tap finds.
+    let mut fresh = context.then(|| Stacking::new(out, walk.clips.len()));
+    let ctx = match fresh.as_mut() {
+        Some(own) => own,
+        None => ctx,
+    };
+    let items = matches!(
+        tree.style(id).expect("style").display,
+        taffy::Display::Flex | taffy::Display::Grid
+    );
+    let origin = (x - shift.x, y - shift.y);
+    // The box this node's children are held by, measured where the scroll
+    // has put it.
+    //
+    // For a **scroller** that is its *content* box, not the visible one: its
+    // children live down the whole scrollable length, and clamping a sticky
+    // one to the 200px on screen would pin it to a band that is itself
+    // sliding, so it would drift instead of sticking. Everywhere else the two
+    // are the same box.
+    let holder = (
+        origin.0,
+        origin.1,
+        scroll_extent(layout).0.max(layout.size.width),
+        scroll_extent(layout).1.max(layout.size.height),
+    );
+    for &child in tree.children(id).expect("children").iter() {
+        let ca = b.at(child);
+        if ca.hidden {
+            continue;
+        }
+        match layer(&ca, items) {
+            Some((z, own)) => ctx.pending.push(std::cmp::Reverse(Deferred {
+                z,
+                seq: ca.stack.seq,
+                context: own,
+                id: child,
+                origin,
+                holder,
+                inside_scroll: child_scroll,
+                xform: child_xform,
+                dim: child_dim,
+                clips: walk.clips[ctx.clip_base..].to_vec(),
+            })),
+            None => collect(
+                tree, child, origin.0, origin.1, b, offsets, vp, holder, child_scroll, child_xform,
+                child_dim, false, out, walk, ctx,
             ),
-            child_scroll,
-            child_xform,
-            child_dim,
-            out,
-        );
+        }
+    }
+    if context {
+        drain(tree, b, offsets, vp, out, walk, ctx);
     }
     if clip {
         out.paints.push(Paint::PopClip);
+        walk.clips.pop();
     }
     // **The outline goes over everything the element contains**, as CSS paints
     // it, and after its own clip is popped, because an outline sits outside
@@ -3905,6 +4179,7 @@ impl LayoutState {
         let mut caps: IdMap<f32> = IdMap::default();
         let mut stickies: Vec<(NodeId, [Option<f32>; 4])> = Vec::new();
         let mut hoisted: Vec<(NodeId, bool)> = Vec::new();
+        let mut stacks: Vec<(NodeId, Stack)> = Vec::new();
         let (root_id, kept) = build(
             tree,
             root,
@@ -3928,6 +4203,7 @@ impl LayoutState {
             None, // the root is not inside any row
             &mut stickies,
             &mut hoisted,
+            &mut stacks,
             self.kept.take(),
             Some(vp),
             &mut self.garbage,
@@ -4078,7 +4354,7 @@ impl LayoutState {
         let mut out = Layout::default();
         let at = index(
             &paint, &handlers, &models, &focus_labels, &hidden, &opacities, &scrolls, &transforms,
-            &states, &access, &paths, &stickies,
+            &states, &access, &paths, &stickies, &stacks,
         );
         let built = Built {
             paint: &paint,
@@ -4091,14 +4367,30 @@ impl LayoutState {
             access: &access,
             paths: &paths,
             stickies: &stickies,
+            scroll_ids: {
+                let mut ids = IdMap::default();
+                number_scrollers(&tree, root_id, &at, &mut ids);
+                ids
+            },
             at,
         };
+        let mut walk = Walk { scrolls: vec![None; built.scroll_ids.len()], ..Walk::default() };
+        // The root is the outermost stacking context. This one only holds its
+        // place: the root makes its own, as every context does.
+        let mut outer = Stacking::new(&out, 0);
         collect(
             &tree, root_id, 0.0, 0.0, &built, offsets, vp,
             // The root is held by the window.
             (0.0, 0.0, vp.0, vp.1),
-            None, None, 1.0, &mut out,
+            None, None, 1.0, true, &mut out, &mut walk, &mut outer,
         );
+        debug_assert!(outer.pending.is_empty() && walk.clips.is_empty());
+        out.scrolls = walk.scrolls.into_iter().flatten().collect();
+        debug_assert!(out.scrolls.iter().enumerate().all(|(i, s)| s.id == i), "every numbered scroller is drawn");
+        // Painting order is not reading order. Tab and assistive technology
+        // follow the document, whatever is drawn over what.
+        out.focusables = in_order(std::mem::take(&mut out.focusables), &walk.focus_seq);
+        out.access = in_order(std::mem::take(&mut out.access), &walk.access_seq);
         out
     }
 }

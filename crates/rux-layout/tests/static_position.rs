@@ -156,7 +156,11 @@ fn an_absolute_box_with_no_insets_paints_over_the_siblings_after_it() {
     let mut leaving = box_of(40.0, 50.0, Position::Absolute);
     leaving.style.background = Some(Background::Color(red));
     list.children.push(leaving);
-    let mut next = box_of(40.0, 50.0, Position::Relative);
+    // In flow, as the rows of a list are. A *positioned* next sibling would
+    // be drawn over it instead, which is CSS: two positioned boxes with no
+    // `z-index` paint in tree order (see `positioned_siblings_paint_in_tree_order`
+    // in tests/z_index.rs).
+    let mut next = box_of(40.0, 50.0, Position::Static);
     next.style.background = Some(Background::Color(blue));
     list.children.push(next);
 

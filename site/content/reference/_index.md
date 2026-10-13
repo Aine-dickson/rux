@@ -127,9 +127,8 @@ the wrong rows. With no scroller above it, the window is what it sticks to.
 Nothing else moves while it travels: a sticky box keeps its original space the
 whole time, so its siblings do not reflow. It is resolved at paint time, because
 it is a question about the scroll offset and the layout does not know one, and
-its hit region and metrics move with it. A sticky box paints **over** its
-in-flow siblings, as a positioned box does; `relative` boxes are not reordered,
-which is a divergence.
+its hit region and metrics move with it. A sticky box paints **over** the
+in-flow content around it, as every positioned box does: see `z-index` below.
 
 **An out-of-flow box that names no inset keeps its static position**, which is
 where it would have sat in its parent's flow, so it stays with its parent rather
@@ -457,7 +456,7 @@ happened, because they are not the same problem:
 
 | You wrote | It says |
 |---|---|
-| `z-index: 2` | ``CSS property `z-index` is real CSS that Rux does not honor yet, so it will have no effect`` |
+| `filter: blur(2px)` | ``CSS property `filter` is real CSS that Rux does not honor yet, so it will have no effect`` |
 | `paddding: 8px` | ``` `paddding` is not a CSS property Rux knows, so it will have no effect. Did you mean `padding`? ``` |
 | `florble: 3` | ``` `florble` is not a CSS property Rux knows, so it will have no effect ``` |
 
@@ -465,16 +464,64 @@ The middle case is the one worth having. Until v0.7.1 a typo got the same "not
 yet honored" line a real unbuilt property got, so it read as a feature on its
 way and an author could wait for a release that was never going to fix it.
 
-Real CSS Rux has not built includes `z-index`, `box-sizing`,
+Real CSS Rux has not built includes `box-sizing`,
 `transform-origin`, `visibility`, `filter`, `text-transform`, `background-size`,
 `list-style` and the `animation` family. `line-height`, `box-shadow`, `outline`,
-gradients, `transform`, CSS variables and all five `position` values used to be
-on that list and are honored now.
+gradients, `transform`, CSS variables, all five `position` values, `z-index` and
+`isolation` used to be on that list and are honored now.
 
 Colours accept `#hex` (3/6/8-digit), `rgb()`/`rgba()`, and the full CSS named-
 colour list (`red`, `rebeccapurple`, …). The named list matters because
 lightningcss *minifies* hex to keywords (`#ff0000` → `red`), so without it a
 plain `color: #ff0000` would fall back to the default.
+
+### `z-index`, and what is drawn over what
+
+Paint order is CSS's (CSS 2, appendix E), and so is what a tap finds, since the
+topmost box is the one drawn last. Inside a **stacking context** the order is:
+the context's own box, then boxes with a **negative** `z-index`, then the
+**in-flow** content, then **positioned** boxes with `z-index: auto` or `0` in
+document order, then the **positive** ones from lowest up. Equal values keep
+document order.
+
+A stacking context is drawn whole: nothing inside it can be sorted above or
+below something outside it, however large its `z-index`. These make one:
+
+- the root (the `<screen>`)
+- a positioned box (anything but `static`) with a `z-index` other than `auto`
+- a flex or grid item with a `z-index`, whatever its `position`
+- `position: fixed` and `position: sticky`
+- `opacity` below 1
+- `transform`
+- `isolation: isolate`, which does nothing else
+
+`z-index` on a `static` box that is not a flex or grid item does nothing, as in
+a browser.
+
+Three consequences that surprise people, all of them CSS:
+
+- **A positioned box is drawn over all the in-flow content of its context**, not
+  only over its siblings. A `position: relative` card inside an ordinary wrapper
+  is drawn over in-flow content that comes after the wrapper.
+- **`position: fixed` is not automatically on top.** A fixed header with no
+  `z-index` is covered by a positioned box later in the document. Give it
+  `z-index: 1` (or more). Until v0.9 Rux drew every fixed box last, which was a
+  divergence.
+- **`z-index: -1` inside a positioned box with no `z-index` goes under that box's
+  own background**, because the box is not a stacking context and the layer
+  belongs to the one outside it. Give the box `z-index: 0` or `isolation:
+  isolate` to keep the layer inside it.
+
+A box drawn out of tree order is still clipped by every `overflow` box it sits
+in, so a positioned row inside a scroller stays inside the scroller. Escaping an
+ancestor's `overflow: hidden`, the dropdown inside a scrolling panel, is what
+`position: fixed` is for today (nothing else escapes it).
+
+**Tab order and the accessibility tree do not follow paint order.** They stay in
+document order, whatever is drawn over what.
+
+`transition: z-index` steps through the whole numbers between the two values, as
+CSS does. A change to or from `auto` lands at once.
 
 ### Numbers, switches and sliders
 

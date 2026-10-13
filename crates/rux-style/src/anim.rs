@@ -372,6 +372,9 @@ fn read(node: &Node, prop: AnimProp) -> Option<AnimValue> {
         AnimProp::Fill => AnimValue::Color(st.fill?),
         AnimProp::Stroke => AnimValue::Color(st.stroke?),
         AnimProp::StrokeWidth => AnimValue::Num(st.stroke_width),
+        // `auto` is not a number, so a change to or from it lands at once, as
+        // it does in CSS.
+        AnimProp::ZIndex => AnimValue::Num(st.z_index? as f32),
         AnimProp::PathData => AnimValue::Path(node.path.as_ref()?.commands.clone()),
     })
 }
@@ -404,6 +407,8 @@ fn write(node: &mut Node, prop: AnimProp, value: AnimValue) {
         (AnimProp::Fill, AnimValue::Color(c)) => st.fill = Some(c),
         (AnimProp::Stroke, AnimValue::Color(c)) => st.stroke = Some(c),
         (AnimProp::StrokeWidth, AnimValue::Num(v)) => st.stroke_width = v.max(0.0),
+        // An integer, so it steps: CSS rounds the interpolated value.
+        (AnimProp::ZIndex, AnimValue::Num(v)) => st.z_index = Some(v.round() as i32),
         (AnimProp::PathData, AnimValue::Path(cmds)) => {
             if let Some(path) = node.path.as_mut() {
                 // The commands only. `d` stays as the author wrote it, because

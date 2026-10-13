@@ -3473,7 +3473,7 @@ const HONORED_PROPERTIES: &[&str] = &[
     "grid-column-start", "grid-column-end", "grid-row-start", "grid-row-end",
     "grid-auto-flow", "grid-auto-rows", "grid-auto-columns",
     // Positioning
-    "position", "top", "right", "bottom", "left", "aspect-ratio",
+    "position", "top", "right", "bottom", "left", "aspect-ratio", "z-index", "isolation",
     // Background
     "background", "background-color", "background-image",
     // Text
@@ -3685,7 +3685,7 @@ const INSETS: [&str; 4] = ["top", "right", "bottom", "left"];
 /// moving it to [`HONORED_PROPERTIES`] is the second.
 const UNIMPLEMENTED_PROPERTIES: &[&str] = &[
     // Painting and compositing
-    "z-index", "filter", "backdrop-filter", "mix-blend-mode", "isolation",
+    "filter", "backdrop-filter", "mix-blend-mode",
     "visibility", "clip-path", "mask", "text-shadow",
     // Boxes
     "box-sizing", "float", "clear", "order", "inset",
@@ -8222,6 +8222,31 @@ fn interpret(p: &HashMap<String, String>) -> Style {
             st.inset[i] = if first(v) == "auto" { None } else { parse_len(first(v)) };
         }
     }
+    if let Some(v) = p.get("z-index") {
+        st.z_index = match first(v) {
+            "auto" => None,
+            n => match n.parse::<i32>() {
+                Ok(z) => Some(z),
+                Err(_) => {
+                    warn(format!(
+                        "`z-index: {n}` is not a value Rux knows; use `auto` or a whole number \
+                         such as `1` or `-1`"
+                    ));
+                    None
+                }
+            },
+        };
+    }
+    if let Some(v) = p.get("isolation") {
+        st.isolate = match first(v) {
+            "isolate" => true,
+            "auto" => false,
+            other => {
+                warn(format!("`isolation: {other}` is not a value Rux knows; use `auto` or `isolate`"));
+                false
+            }
+        };
+    }
     if let Some(v) = p.get("aspect-ratio") {
         st.aspect_ratio = parse_aspect_ratio(v);
     }
@@ -8636,6 +8661,7 @@ fn parse_anim_prop(s: &str) -> Option<AnimProp> {
         "fill" => AnimProp::Fill,
         "stroke" => AnimProp::Stroke,
         "stroke-width" => AnimProp::StrokeWidth,
+        "z-index" => AnimProp::ZIndex,
         // The geometry itself, spelled as SVG spells the attribute.
         "d" => AnimProp::PathData,
         "border-width" | "border" => AnimProp::BorderWidth,
@@ -9642,7 +9668,7 @@ mod tests {
 
     /// The three states an unhonored property can be in have to stay three.
     ///
-    /// They were one message for a long time, so `z-index` (real CSS, not
+    /// They were one message for a long time, so `filter` (real CSS, not
     /// built), `paddding` (a typo) and `florble` (invented) all read as "parsed
     /// but not yet honored", and an author with a typo waited for a release.
     #[test]
@@ -9651,7 +9677,7 @@ mod tests {
 
         // Real CSS, unbuilt: named as such, and never offered as a correction
         // for itself.
-        assert!(UNIMPLEMENTED_PROPERTIES.contains(&"z-index"));
+        assert!(UNIMPLEMENTED_PROPERTIES.contains(&"filter"));
         assert!(UNIMPLEMENTED_PROPERTIES.contains(&"transform-origin"));
 
         // A typo finds the property it was reaching for.
@@ -10256,6 +10282,24 @@ mod tests {
         assert!(matches!(st.inset[0], Some(Len::Px(v)) if v == 10.0)); // top
         assert!(st.inset[3].is_none()); // left: auto
         assert!(st.aspect_ratio.is_some_and(|r| (r - 16.0 / 9.0).abs() < 1e-4));
+    }
+
+    #[test]
+    fn maps_z_index_and_isolation() {
+        let z = |v: &str| {
+            let mut p = HashMap::new();
+            p.insert("z-index".to_string(), v.to_string());
+            p.insert("isolation".to_string(), "isolate".to_string());
+            let st = interpret(&p);
+            assert!(st.isolate);
+            st.z_index
+        };
+        assert_eq!(z("3"), Some(3));
+        assert_eq!(z("-1"), Some(-1));
+        assert_eq!(z("auto"), None);
+        let _ = super::take_warnings();
+        assert_eq!(z("1.5"), None, "not a whole number");
+        assert!(super::take_warnings().iter().any(|w| w.message.contains("z-index: 1.5")));
     }
 
     #[test]

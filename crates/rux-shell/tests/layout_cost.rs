@@ -64,7 +64,23 @@ const LIST: &str = r#"<template>
 #[test]
 #[ignore]
 fn list_layout_cost() {
-    let mut doc = rux_runtime::Document::from_source(LIST).expect("load");
+    cost(LIST, "list 300 rows");
+}
+
+/// The same list with every row `position: relative`, so every row is held
+/// back by its stacking context and drawn after the in-flow content, with the
+/// clips it sits in put back around it: the most a context can be asked to
+/// sort in one frame.
+#[test]
+#[ignore]
+fn positioned_list_layout_cost() {
+    let src = LIST.replace(".row { display: flex;", ".row { position: relative; display: flex;");
+    assert_ne!(src, LIST);
+    cost(&src, "list 300 positioned rows");
+}
+
+fn cost(src: &str, label: &str) {
+    let mut doc = rux_runtime::Document::from_source(src).expect("load");
     let mut text = rux_text::TextEngine::new();
     let mut now = 0.0;
     let frames = 200;
@@ -105,5 +121,5 @@ fn list_layout_cost() {
     let (lm, lb) = steady(&mut layout_us);
     let (pm, pb) = steady(&mut patch_us);
     let (sm, sb) = steady(&mut scene_us);
-    eprintln!("list 300 rows: layout median {lm:.0} us (best {lb:.0}); timer+patch median {pm:.0} us (best {pb:.0}); scene median {sm:.0} us (best {sb:.0})");
+    eprintln!("{label}: layout median {lm:.0} us (best {lb:.0}); timer+patch median {pm:.0} us (best {pb:.0}); scene median {sm:.0} us (best {sb:.0})");
 }

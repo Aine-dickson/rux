@@ -237,11 +237,11 @@
     "align-content", "row-gap", "column-gap", "grid-template-columns", "grid-template-rows", "grid-column",
     "grid-row", "grid-column-start", "grid-column-end", "grid-row-start", "grid-row-end", "grid-auto-flow",
     "grid-auto-rows", "grid-auto-columns", "position", "top", "right", "bottom",
-    "left", "aspect-ratio", "background", "background-color", "background-image", "color",
-    "font-size", "font-weight", "font-family", "font-style", "text-align", "letter-spacing",
-    "word-spacing", "line-height", "white-space", "text-decoration", "text-decoration-line", "overflow-wrap",
-    "word-wrap", "word-break", "fill", "fill-rule", "stroke", "stroke-width",
-    "stroke-linecap", "stroke-linejoin"
+    "left", "aspect-ratio", "z-index", "isolation", "background", "background-color",
+    "background-image", "color", "font-size", "font-weight", "font-family", "font-style",
+    "text-align", "letter-spacing", "word-spacing", "line-height", "white-space", "text-decoration",
+    "text-decoration-line", "overflow-wrap", "word-wrap", "word-break", "fill", "fill-rule",
+    "stroke", "stroke-width", "stroke-linecap", "stroke-linejoin"
   ],
   "cssPropertyDocs": [
     { "name": "display", "detail": "how this box lays its children out", "doc": "`block` (the default), `flex`, `grid`, `inline` or `none`. **Rux defaults to `block`**, so a box does not lay its children out in a row until you say `display: flex`.", "usage": ".row { display: flex; }" },
@@ -323,6 +323,8 @@
     { "name": "bottom", "detail": "distance from the bottom edge", "doc": "An offset, or a sticky threshold.", "usage": ".bar { position: fixed; bottom: 0; }" },
     { "name": "left", "detail": "distance from the left edge", "doc": "An offset, or a sticky threshold.", "usage": ".badge { position: absolute; left: 8px; }" },
     { "name": "aspect-ratio", "detail": "width-to-height ratio to keep", "doc": "`16 / 9`. Gives a box a height derived from its width, so a media box keeps its shape as it resizes.", "usage": ".cover { width: 100%; aspect-ratio: 16 / 9; }" },
+    { "name": "z-index", "detail": "which box is drawn over which", "doc": "`auto` or a whole number. Counts on a positioned box and on a flex or grid item; higher is drawn over lower, inside the same stacking context. A `fixed` box is **not** on top by itself: give it a `z-index`. Animates in whole steps.", "usage": ".menu { position: absolute; z-index: 10; }" },
+    { "name": "isolation", "detail": "start a stacking context", "doc": "`isolate` makes this box a stacking context and does nothing else, so a `z-index` inside it, negative ones included, is sorted inside it and never escapes.", "usage": ".card { position: relative; isolation: isolate; }" },
     { "name": "background", "detail": "the colour or gradient behind the content", "doc": "A colour, `linear-gradient(…)` or `radial-gradient(…)`. `url()` is not supported; use `<image>` for a picture.", "usage": ".app { background: #1e1e2e; }" },
     { "name": "background-color", "detail": "a flat colour behind the content", "doc": "Animatable, so it is what a hover or pressed state usually changes.", "usage": ".send:hover { background-color: #b4befe; }" },
     { "name": "background-image", "detail": "a gradient behind the content", "doc": "`linear-gradient` and `radial-gradient` only.", "usage": ".hero { background-image: linear-gradient(#89b4fa, #1e1e2e); }" },
@@ -352,6 +354,7 @@
   "cssValues": {
     "display": ["block", "flex", "grid", "inline", "none"],
     "position": ["static", "relative", "sticky", "absolute", "fixed"],
+    "isolation": ["auto", "isolate"],
     "overflow": ["visible", "hidden", "clip", "auto", "scroll"],
     "overflow-x": ["visible", "hidden", "clip", "auto", "scroll"],
     "overflow-y": ["visible", "hidden", "clip", "auto", "scroll"],
@@ -386,7 +389,7 @@
     "all", "opacity", "background-color", "color", "border-color", "border-width",
     "border-radius", "width", "height", "padding", "margin", "gap",
     "font-size", "transform", "inset", "fill", "stroke", "stroke-width",
-    "d"
+    "z-index", "d"
   ],
   "easings": [
     "linear", "ease", "ease-in", "ease-out", "ease-in-out"
