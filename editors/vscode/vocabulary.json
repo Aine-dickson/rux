@@ -1,5 +1,5 @@
 {
-  "version": "0.8.0-dev",
+  "version": "0.8.0",
   "elements": [
     { "name": "screen", "detail": "the whole display", "doc": "The display itself, not a box in it. Wherever it is written, including inside a clipped box or a component a `<route>` names, it covers the device: it defaults to `position: fixed` with every inset at zero." },
     { "name": "view", "detail": "a box; the generic container", "doc": "A generic box, the element most markup is made of. Defaults to `display: block`, so give it `display: flex` to lay its children out." },
