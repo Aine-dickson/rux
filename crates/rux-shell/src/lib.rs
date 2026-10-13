@@ -4728,15 +4728,28 @@ impl App {
     /// in the middle of whatever the person has started doing, is worse than
     /// focus not arriving.
     ///
-    /// The text goes through [`App::write_focused`], so the field's `@input`
-    /// runs with it: whatever the app derives from the field (a search's
-    /// results, a counter) is rebuilt from the text rather than disagreeing
-    /// with it.
+    /// **No handler runs for any of it** (owner, 2026-10-13), as a browser
+    /// putting back a form runs none: not the fields' `@input`, not a
+    /// select's `@change`, not the `@focus` of the field focus returns to.
+    /// The person did none of those things in this process. Replaying them
+    /// also replayed them out of order: a select's `@change` that wrote into
+    /// another field put back an older value than the one that field was left
+    /// with. What the app derives from a field is its own state, and comes
+    /// back with app data, not here.
     #[cfg(any(target_os = "android", target_arch = "wasm32"))]
     fn adopt_restored_focus(&mut self) {
         if self.state.is_none() {
             return;
         }
+        let before = self.field_events.len();
+        self.put_back_restored();
+        self.field_events.truncate(before);
+    }
+
+    /// The work of [`App::adopt_restored_focus`], which drops whatever field
+    /// handlers this queues.
+    #[cfg(any(target_os = "android", target_arch = "wasm32"))]
+    fn put_back_restored(&mut self) {
         let fields = std::mem::take(&mut self.restored_fields);
         self.adopt_restored_fields(fields);
         let Some(saved) = self.restored_focus.take() else { return };
@@ -4782,13 +4795,12 @@ impl App {
     ///
     /// Written straight to each field's signal, not through focus: focusing
     /// every field in turn would run every `@focus` and `@blur` on the page
-    /// for a person who touched none of them. Each field's `@input` does run,
-    /// for the same reason as the focused field's: whatever the app derives
-    /// from a field is rebuilt from its text.
+    /// for a person who touched none of them. No `@input` runs either: see
+    /// [`App::adopt_restored_focus`].
     ///
-    /// A field whose text already matches is left alone, so its `@input` does
-    /// not run for nothing, and a `readonly` one is left alone because its
-    /// text is the app's, which the rebuilt page has already put there.
+    /// A field whose text already matches is left alone, and a `readonly` one
+    /// is left alone because its text is the app's, which the rebuilt page
+    /// has already put there.
     #[cfg(any(target_os = "android", target_arch = "wasm32"))]
     fn adopt_restored_fields(&mut self, fields: Vec<rux_runtime::SavedField>) {
         for saved in fields {
@@ -4810,24 +4822,20 @@ impl App {
             if self.document.value_in(model, row, instance) == saved.text {
                 continue;
             }
-            let value = if kind.typed() {
+            if kind.typed() {
                 // Read back as it was written: a number's text as the signal
                 // gave it, with a point whatever the person's language.
                 let Some(value) = typed_value(kind, &saved.text, &field, '.') else { continue };
                 self.document.apply_value_in(model, row, instance, &value);
-                value
             } else {
                 self.document.apply_edit_in(model, row, instance, &saved.text);
-                rux_reactive::Value::Text(saved.text.clone())
-            };
-            self.queue_field_event_in(field.on_input.as_deref(), saved.instance.clone(), value);
+            }
         }
     }
 
     /// Put back a `<select>`'s choice, as a native spinner keeps its own:
-    /// only if it is still one of the options, and with `@change`, the one
-    /// event a select has, so what the app derives from it is rebuilt as a
-    /// text field's `@input` rebuilds it.
+    /// only if it is still one of the options, and without `@change` (see
+    /// [`App::adopt_restored_focus`]).
     #[cfg(any(target_os = "android", target_arch = "wasm32"))]
     fn adopt_restored_select(&mut self, saved: rux_runtime::SavedField) {
         let Some(select) = self
@@ -4846,8 +4854,6 @@ impl App {
             return;
         }
         self.document.apply_edit_in(model, row, instance, &saved.text);
-        let value = rux_reactive::Value::Text(saved.text.clone());
-        self.queue_field_event_in(select.field.on_change.as_deref(), saved.instance.clone(), value);
     }
 
     /// Leave where the app is for `onSaveInstanceState`. See [`SAVED_STATE`].

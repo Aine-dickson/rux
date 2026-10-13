@@ -2408,6 +2408,11 @@ with the rest of the old history dropped. A password field comes back focused
 and empty, and so does a card number, a security code, a one-time code, or
 any field its author marked `autocomplete="off"`, which is what that attribute
 asks of a browser's history too: the platform keeps saved state on disk. **Signals are not kept**: an app's data is its own to save.
+**No handler runs while the page is put back**: not a field's `@input`, not a
+select's `@change`, not the `@focus` of the field that gets focus again, as a
+browser runs none when it refills a form. The person did none of those things,
+and replaying them ran them out of order (a select's `@change` that wrote into
+another field put back an older value than the one left there).
 
 **After a phone's browser discards the tab.** A browser does to a background
 tab what Android does to a background app, and brings it back by loading the

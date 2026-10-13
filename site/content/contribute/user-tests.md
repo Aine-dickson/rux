@@ -2056,7 +2056,12 @@ Found:
   so what the app derives from the choice is rebuilt (`adopt_restored_select`),
   and that handler writes over the restored log. The date's `@change` is not
   run again, so the replay is not even in the original order. The same code
-  runs on Android. **Open, a behaviour question for the owner.**
+  runs on Android. **Fixed the same day, the owner's call: no handler runs on
+  a restore** (no `@input`, no `@change`, no `@focus`). Re-driven: fruit, date,
+  type in the textarea, reload: the log keeps `day 2026-07-09`, the textarea
+  `noteQ` with its caret. The Android rows above that say an `@input` ran for
+  the restored text describe the old rule. Not re-driven on the Android
+  emulator; the code that changed is the same code on both.
 - **A pointer that stops being a finger keeps a stale hidden input.** With
   touch emulation switched off between two runs, a tap focused the textarea
   without moving the browser's focus off the hidden input still holding `two`,
