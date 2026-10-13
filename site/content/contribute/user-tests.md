@@ -1781,26 +1781,26 @@ hand.
 | Long press a word | 1 | The whole word selected, a teardrop at each end, the platform menu: Cut, Copy, Paste, Share, then an overflow | adb: pass, "brown" selected. Before a fix it took "br": the first move after the press cut the word back to the finger |
 | Overflow | 1 | Select all, then the `PROCESS_TEXT` apps | adb: pass, Select all and "Ask Gemini" |
 | Drag the end handle right | 1 | The selection grows by the finger, the start stays, the menu steps aside and returns on lift | adb: pass, "brown" became "brown fox" |
-| Drag a handle past the other | 1 | The ends swap sides; the selection never collapses to nothing | |
+| Drag a handle past the other | 1 | The ends swap sides; the selection never collapses to nothing || unverified at the v0.8 freeze (2026-10-13): no phone |
 | Back with a selection | 1 | The selection goes; the app stays open | adb: pass |
 | Plain tap on text | 3 | Caret only, no handle, no menu | adb: pass |
 | Long press after the last word | 3 | Caret at the end, the caret handle, Paste and Select all; all gone after about 5 seconds idle | adb: pass, at 3 seconds; the user then asked for 5 as 3 was too short |
-| Tap the caret handle | 3 | The menu toggles; the handle's 5 seconds restart | |
-| Drag the caret handle | 1 | The caret follows the finger, the field scrolls when it reaches an edge | |
+| Tap the caret handle | 3 | The menu toggles; the handle's 5 seconds restart || unverified at the v0.8 freeze (2026-10-13): no phone |
+| Drag the caret handle | 1 | The caret follows the finger, the field scrolls when it reaches an edge || unverified at the v0.8 freeze (2026-10-13): no phone |
 | `::selection` and `accent-color` | 3 | Gold highlight, dark letters, orange handles | adb: pass |
-| Default colours | 1 | Highlight and handles in the phone's own accent, as in WhatsApp's fields | |
+| Default colours | 1 | Highlight and handles in the phone's own accent, as in WhatsApp's fields || unverified at the v0.8 freeze (2026-10-13): no phone |
 | Password | 4 | The run of bullets selects as one; menu offers Paste only (Select all is gone once all is selected) | adb: pass for the selection; Select all fix re-driven below |
 | Read-only | 5 | Copy, Share, Select all and the apps; no keyboard | adb: pass |
-| Copy | 1 | Text on the clipboard, the selection lets go, caret at its end | |
-| Translate or Gemini on a selection | 1 | The app opens on the selected text; if it answers, the answer replaces the selection | |
-| Share | 1 | The share sheet with the selected text | |
+| Copy | 1 | Text on the clipboard, the selection lets go, caret at its end || unverified at the v0.8 freeze (2026-10-13): no phone |
+| Translate or Gemini on a selection | 1 | The app opens on the selected text; if it answers, the answer replaces the selection || unverified at the v0.8 freeze (2026-10-13): no phone |
+| Share | 1 | The share sheet with the selected text || unverified at the v0.8 freeze (2026-10-13): no phone |
 | Paste into a list row | 6 | Stays in that row. Before this phase paste, cut and a committed composition refocused a field with no row, so an input in an `r-for` or a component lost focus mid-edit | adb: pass after a second fix. The user found cut copying but the field keeping its text: `r-model="item.name"` wrote to the loop variable, a copy, so no edit in a row ever stuck. Now Cut empties row 2 and Paste after "gamma" gives "gammabeta" in row 3 |
 | Password with a space, long press on the bullets | 4 | All of it selected, not the part on one side of the space | adb: pass ("hunter2 hunter2") |
 | Password, long press past the bullets | 4 | Caret at the end, its handle, Paste and Select all | adb: pass |
-| Long press in the empty field | 7 | Paste (if the clipboard has text), the caret handle | |
+| Long press in the empty field | 7 | Paste (if the clipboard has text), the caret handle || unverified at the v0.8 freeze (2026-10-13): no phone |
 | Caret menu contents | 3 | Paste only with something on the clipboard, Select text, Select all | adb: pass. First build: the menu never showed when the long press also focused the field, because the keyboard attaching restated the focus and that closed the menu; now only a caret that moves closes it |
 | Select text | 3 | Takes the word before the caret: "letters" | adb: pass |
-| Handles in the textarea | 2 | Across lines; a handle whose end scrolls out of the field disappears | |
+| Handles in the textarea | 2 | Across lines; a handle whose end scrolls out of the field disappears || unverified at the v0.8 freeze (2026-10-13): no phone |
 
 **Seen while driving, outside this phase:** a field low on the page is
 focused under the keyboard and the page does not scroll it into view; and Cut
@@ -1825,25 +1825,25 @@ Join; field B outside any form; form C, a search; field 8 low on the page).
 
 | Case | Where | Expect | Result |
 |---|---|---|---|
-| Action key on each field | A 1 to 5, 7 | Next on 1, 2, 3 and 4; Go on 7. The textarea (6) shows Enter | |
+| Action key on each field | A 1 to 5, 7 | Next on 1, 2, 3 and 4; Go on 7. The textarea (6) shows Enter || unverified at the v0.8 freeze (2026-10-13): no phone |
 | Next | A 1 | The caret moves to 2, then 3, then 4, then 6; the checkbox is passed over; the keyboard stays up | desktop: pass, with Tab-style Enter before the Enter rule changed |
-| Next into the textarea, then out | A 6 | Enter makes a new line; tapping 7 moves on | |
+| Next into the textarea, then out | A 6 | Enter makes a new line; tapping 7 moves on || unverified at the v0.8 freeze (2026-10-13): no phone |
 | Go with bad values | A 7 | Refused: 2, 3, 5 go red, the caret goes to the first bad field, `errors` lists why, `tries` counts 1 | desktop: pass |
 | Nothing red before it is touched | A | A fresh form shows no red; a field goes red or green only after it was changed and left | desktop: pass |
 | Join with good values | A | `taps` and `tries` count 1, `sent` shows every value, `age` a number, `terms` true | desktop: pass |
 | Age below 18 | A 4 | Refused with "Value must be 18 or more." | desktop: pass |
 | Tap the label "1. name" | A | The caret goes to field 1 | desktop: pass |
-| The button's label | A | "Join" shows, written without a `<text>` | |
-| Keyboard Enter in field 1 | A, desktop or a hardware keyboard | Submits (refused, since the form is empty); Tab moves to 2 | |
-| Done outside a form | B | The key says Done and closes the keyboard | |
-| Search | C | The key says Search; with text it submits and `searched` shows it; empty, it is refused and the caret stays | |
+| The button's label | A | "Join" shows, written without a `<text>` || desktop: pass 2026-10-13 (release build) |
+| Keyboard Enter in field 1 | A, desktop or a hardware keyboard | Submits (refused, since the form is empty); Tab moves to 2 || desktop: pass 2026-10-13, release build: refused, `tries: 1`, the three errors listed, the caret stays on 1; Tab then moves to 2 |
+| Done outside a form | B | The key says Done and closes the keyboard || unverified at the v0.8 freeze (2026-10-13): no phone |
+| Search | C | The key says Search; with text it submits and `searched` shows it; empty, it is refused and the caret stays || unverified at the v0.8 freeze (2026-10-13): no phone |
 | A field under the keyboard | 8 | Scroll so 8 is low on the screen, tap it: the page moves it above the keyboard | adb: pass on the second build. The user found the first covered: it waited for the window to shrink, and from Android 11 `adjustResize` never shrinks it (the frame stayed 720x1612 with the keyboard up). Now the keyboard's inset is read and the page is laid out above it |
 | Next after typing a word | A 1 | The caret moves on, and the typed word stays | adb and by hand: pass on the third build. The first two never moved: the input method's Enter is dispatched from no device and never reaches the window, so Next had never worked, only been reported as working. Now Enter comes over JNI |
 | Close the keyboard after a reveal | C | The page goes back to where it was before the field was moved; a page the person scrolled meanwhile stays put | adb: pass. Asked for by the user. Once, the tap that raised the keyboard also showed the caret handle and Paste; not reproduced |
 | Autofill suggestions | D email | Tap it: the password manager's accounts appear under the field or in the keyboard strip; the caret menu offers Autofill | adb: pass, both the dropdown under the field and Gboard's inline strip |
 | Pick a suggestion | D email | That field fills, the caret after the text; form A below is untouched | adb: pass on the third build. The first offered every field on screen and Google also filled A's name and email; the second filled A but wiped D, because the keyboard's connection was restarted without a new token |
 | Sign in, then save | D | "Save password to Google?" with the address and the password typed | adb: pass. Answered Not now, since Save would store a test password in the user's account |
-| `autocomplete="off"` | any | No suggestions, no Autofill item | |
+| `autocomplete="off"` | any | No suggestions, no Autofill item || unverified at the v0.8 freeze (2026-10-13): no phone |
 
 ## Coming back after Android kills the app, 2026-09-23
 
@@ -1875,7 +1875,7 @@ backgrounded process, as the low-memory killer does), then the launcher intent.
 | "Don't keep activities" | any | The activity is destroyed with the process alive; coming back must not crash | Not provoked: neither the phone nor the emulator applied the setting when it was set over adb |
 | The activity rebuilt in the same process | form | Change the system font size with the app open: it keeps working | emulator: **failed, then fixed.** Android rebuilt the activity in the same process, the app showed its last frame and was killed as not responding. The manifest now claims every configuration change, so nothing rebuilds it; re-driven, the font size changed twice and the app kept taking taps in the same process |
 | Reopened from Recents | list | Kill in the background, tap the app's card: the list comes back at its scroll | emulator: pass (a new process, `/list` at row 12) |
-| Reopened from the launcher icon, by hand | any | As above, from the real icon rather than the adb intent | |
+| Reopened from the launcher icon, by hand | any | As above, from the real icon rather than the adb intent || unverified at the v0.8 freeze (2026-10-13): no phone |
 | Tap to move the caret in a component field | form, note | The next letter goes in where the tap put the caret | emulator: pass. The phone's miss was a lost tap |
 | Every field's text | form, and the top-level field | Fill the top-level field, note, secret and age, leave focus in the textarea, kill: every field but the password comes back, the textarea focused | emulator: pass. note's `@input` ran once for its restored text; the password came back empty |
 | Every field's text, again on the final build | form | "hzello" in note, "oh" in the textarea, kill | emulator: pass |
@@ -1907,7 +1907,7 @@ things the input connection did not do that a `TextView` does:
 | Space mid-word | form, note | Commits: "hza ello" | emulator: pass |
 | Backspace, three times | form, note | "hzaello", "hzello", "hello", caret after the h | emulator: pass (was "hzellollo") |
 | Another field while composing | note, then long | Tap the textarea mid-word and type: note keeps its text, nothing leaks across | emulator: pass |
-| The same, with Gboard on the phone | phone | As above | |
+| The same, with Gboard on the phone | phone | As above || unverified at the v0.8 freeze (2026-10-13): no phone |
 
 adb's injected keys still garble a field on the phone under Gboard but type
 cleanly on the emulator under AnySoftKeyboard, so that one needs the phone
@@ -1946,7 +1946,7 @@ attached too, so it was also the first run of `--serial`.
 | The app restarted | any | Force-stop and reopen: it dials back in on its own and catches up | emulator: pass |
 | Two devices | any | `--serial emulator-5554` picks one; without it, a terminal is asked which | emulator: `--serial` pass; the question not yet driven by hand |
 | A release build | any | `--release` installs and exits, with no socket and no network permission | tested in `apk.rs`, not driven |
-| On a phone, over wireless adb | phone | As above | |
+| On a phone, over wireless adb | phone | As above || unverified at the v0.8 freeze (2026-10-13): no phone |
 
 ## `outline`, and the focus ring as one, 2026-09-24
 
@@ -1968,7 +1968,7 @@ window against `rux-harness/outline-probe.rux` with `outline-drive.ps1`
 | Click a button | plain | Its tap runs and **no ring** shows | window: pass (`taps: 1`, no ring) |
 | Click a field | the field | The ring shows after a click too | window: pass |
 | Shift+Tab after a click | none | Keyboard again, so focus shows | window: pass |
-| On a phone | any | A tapped button shows nothing; a field shows the ring | |
+| On a phone | any | A tapped button shows nothing; a field shows the ring || unverified at the v0.8 freeze (2026-10-13): no phone |
 
 Found alongside, and fixed the same day: focusing "none" by Shift+Tab
 scrolled the list below it back to the top. Scrolling focus into view moved
@@ -2160,7 +2160,7 @@ types file), and `<route path="/task/:id">` into `prop id: int = 0`, shown as
 | `rux check` on a routed page | the same project | nothing about the placeholder segment | desktop: pass, **after a fix**: the first run reported `"rux-check"` as a bad `int`, so every typed route parameter failed the check |
 | `x is T` in a `mounted` body | an `any` against an imported `Task` | `true` | desktop: pass, under test |
 | A `null` prop | `prop task: Task? = null`, read `task?.title ?? "(no task)"` | the fallback text | desktop: pass **after a fix**. Found here: a prop's value had no null, `null` arrived as `""`, and `?.` on text raised, in a program the checker passed. Older than this step. Fixed the same day with a null value of its own |
-| Release build | the same probe from `cargo build --release` | the same errors | not driven |
+| Release build | the same probe from `cargo build --release` | the same errors | desktop: pass 2026-10-13, on a new probe in today's syntax (`prop value: int = 0` given `"lots"`, a `string?` prop given `none`): `rux check` and the overlay name `<stat>`, `:value`, the text and `int`; the page shows `0  5  (no task)` |
 
 ## Types in the editor, 2026-09-24
 
@@ -2224,7 +2224,7 @@ and the `with_store` tests).
 | Coming back is new instances | "open the cards" | instance numbers 3 and 4, `opened so far: 4`, marks empty | desktop: pass |
 | A component does not see the document's signals | a card reading a document signal by name | not shown, and reported as not defined | under test only |
 | What a module does not allow | a circle, a private name, a type picked without `type`, a pick from a component, a component used in a module, a `computed` in a module, a write from outside | each refused where it is written | under test only |
-| Web and Android | the same examples | the same | not driven: modules are files, and the playground loads one document from text |
+| Web and Android | the same examples | the same | web: pass 2026-10-13. `examples/store.rux` and its files built with `rux build --target web --release` and served: add twice, add once gives both badges `3 items $14.50`, each card its own count, olive oil makes `4 items $25.50`, "empty the basket" puts everything back to 0. Android: not driven, no phone |
 
 ## Native modules, 2026-09-27
 
@@ -2311,7 +2311,10 @@ to prove.
   the phone. **Composition proper is still not**, because English Gboard
   composes a word rather than a character; CJK and a dead key remain
   emulator-only.
-- **Every `type=` that is not one of the five is silently a text field.**
+- ~~**Every `type=` that is not one of the five is silently a text field.**~~
+  **CLOSED** in the inputs work of 2026-09-23: an unknown `type=` is an error,
+  `password` masks, and `email`, `tel` and `url` are a keyboard hint. The text
+  below is the gap as it was.
   The only values any code inspects are `radio`, `checkbox`, `textarea`
   and `select`, and nothing validates the rest. `<input type="password">`
   parses, renders and accepts typing **as visible plain text**, with no
