@@ -2352,6 +2352,32 @@ with `rux build --release`.
 | A binding derived from it | the line under the number | "on a fifth" on multiples of five, "between" otherwise | desktop: pass, seen both |
 | Web and Android | a built web app, a phone | the same | not driven |
 
+## File dialogs, 2026-10-13
+
+Mava Studio's MS-005: `await pickFile`, `pickFiles` and `pickSaveFile`, the
+platform's own dialogs, not blocking the window. Driven in a desktop window
+with the release build on a probe: two buttons, the path shown, and a counter
+an interval moves four times a second, to see the window keep going.
+
+| Case | Steps | Expected | Result |
+|---|---|---|---|
+| `rux check` | the probe, and the same with `use native::rux::{…}` written out | no problems either way | desktop: pass |
+| A misspelt option | `pickFile({ titel: "x" })` | an error naming `title` | desktop: pass, "did you mean `title`?" |
+| Not awaited | `let p = pickFile({})` | an error saying to `await` it | desktop: pass |
+| Open, with a filter | "Open a file" | Windows' own Open dialog, the filter "Rux" | desktop: pass |
+| The window keeps going | the counter while the dialog is open | it moves | desktop: pass, 53 then 60 with the dialog up |
+| A file chosen | type a path, Enter | its full path shown | desktop: pass |
+| Cancelled | "Open a file", Escape | `cancelled` (the answer was `none`) | desktop: pass |
+| Save, with a name | "Save as" | Windows' own Save dialog, `untitled.rux` suggested | desktop: the dialog opens; the name box was under the probe window in the shot, not seen |
+| Linux, macOS | the same | the portal's dialog, Apple's | not driven: no machine |
+| Web and Android | `pickFile` | throws `unsupported` | under the code only, not driven |
+
+Found while building it: a native function imported by name and called inside
+a `fn` was reported as "does not exist", because the check of `fn` bodies only
+knew the document's own functions. It now leaves linked native names to the
+type checker, which holds them to their signatures. No example had a native
+call inside a `fn` before.
+
 ## Standing gaps
 
 Cases nothing here can currently exercise. They are the shape of what v0.8 has

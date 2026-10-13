@@ -26,6 +26,7 @@
 //! it through the one shared conversion here, not derive a second correct one,
 //! because two places doing the same coordinate arithmetic eventually disagree.
 
+mod dialogs;
 use std::num::NonZeroUsize;
 use std::path::Path;
 #[cfg(not(target_arch = "wasm32"))]
@@ -9385,6 +9386,9 @@ impl DeviceProfile {
 /// answers. Every loop installs this, so a window asleep in `Wait` still
 /// hears the answer.
 fn wake_on_answers(event_loop: &EventLoop<RuxEvent>) {
+    // Every loop passes here first, so this is also where Rux's own native
+    // functions (the file dialogs) are put in place for every document.
+    dialogs::install_builtins();
     let proxy = event_loop.create_proxy();
     rux_runtime::host::set_waker(move || {
         let _ = proxy.send_event(RuxEvent::Answered);

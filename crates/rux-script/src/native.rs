@@ -19,6 +19,82 @@ use crate::interp::value::V;
 use crate::link::{Export, ExportKind};
 use crate::types::{parse_type, Type};
 
+/// The module Rux's own native functions live in, the file dialogs among
+/// them (Mava Studio's MS-005). A script calls them by bare name; see
+/// [`builtin_aliases`].
+pub const BUILTIN_MODULE: &str = "native/rux";
+
+/// The functions [`BUILTIN_MODULE`] gives every script.
+pub const BUILTIN_FNS: &[&str] = &["pickFile", "pickFiles", "pickSaveFile"];
+
+/// The built-in module's interface: what `rux check` and every document are
+/// checked against, whether or not a shell has installed the code. The shell
+/// installs the same items with code behind them.
+pub fn builtin_interface() -> rux_native::Interface {
+    use rux_native::{FieldSig, Item, Sig};
+    let field = |name: &str, ty: &str, optional: bool| FieldSig { name: name.into(), ty: ty.into(), optional };
+    let dialog = |name: &str, result: &str| Item {
+        name: name.into(),
+        kind: ItemKind::Fn(Sig {
+            params: vec![("options".into(), "FileDialog".into())],
+            result: result.into(),
+            is_async: true,
+        }),
+    };
+    rux_native::Interface {
+        path: "rux".into(),
+        items: vec![
+            Item {
+                name: "FileFilter".into(),
+                kind: ItemKind::Record(vec![field("name", "string", false), field("extensions", "string[]", false)]),
+            },
+            Item {
+                name: "FileDialog".into(),
+                kind: ItemKind::Record(vec![
+                    field("title", "string", true),
+                    field("filters", "FileFilter[]", true),
+                    field("folder", "string", true),
+                    field("name", "string", true),
+                ]),
+            },
+            dialog("pickFile", "string?"),
+            dialog("pickFiles", "string[]"),
+            dialog("pickSaveFile", "string?"),
+        ],
+    }
+}
+
+/// Declare the built-in module if no shell has installed it, so a document
+/// checked or run without one still knows the names.
+pub fn ensure_builtins() {
+    if registry::interface(BUILTIN_MODULE).is_none() {
+        let _ = registry::declare(builtin_interface());
+    }
+}
+
+/// The imports a scope gets for free: each built-in function its code calls
+/// and does not declare itself, linked to [`BUILTIN_MODULE`] as an explicit
+/// `use native::rux::{pickFile};` would link it.
+pub fn builtin_aliases(code: &str, aliases: &[crate::link::Alias]) -> Vec<crate::link::Alias> {
+    BUILTIN_FNS
+        .iter()
+        .filter(|name| {
+            let called = code.match_indices(*name).any(|(at, _)| {
+                let before = code[..at].chars().next_back();
+                let after = code[at + name.len()..].trim_start().chars().next();
+                !before.is_some_and(|c| c.is_alphanumeric() || c == '_' || c == '.') && after == Some('(')
+            });
+            let declared = code.contains(&format!("fn {name}"));
+            called && !declared && !aliases.iter().any(|a| a.local == **name)
+        })
+        .map(|name| crate::link::Alias {
+            local: name.to_string(),
+            target: crate::link::Target::Member(BUILTIN_MODULE.to_string(), name.to_string()),
+            line: 0,
+        })
+        .collect()
+}
+
 /// Whether a linked module name is a native one: `native`, `native/shop`.
 pub fn is_native(module: &str) -> bool {
     module == "native" || module.starts_with("native/")

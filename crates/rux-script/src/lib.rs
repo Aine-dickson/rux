@@ -344,7 +344,22 @@ impl Builder {
     /// The error keeps its position, relative to `script`: the line and
     /// column a syntax error names, or the start of the statement that
     /// failed. See [`ScriptError`].
-    pub fn build(self, script: &str) -> Result<Engine, ScriptError> {
+    pub fn build(mut self, script: &str) -> Result<Engine, ScriptError> {
+        // Rux's own native functions (the file dialogs) need no `use`: each
+        // scope that calls one gets the import it would have written.
+        // Declared for a check that runs without a shell, which installs the
+        // code; `use native::rux::{pickFile}` written out works the same.
+        native::ensure_builtins();
+        let extra = native::builtin_aliases(script, &self.aliases);
+        self.aliases.extend(extra);
+        for m in &mut self.modules {
+            let extra = native::builtin_aliases(&m.script, &m.aliases);
+            m.aliases.extend(extra);
+        }
+        for c in &mut self.components {
+            let extra = native::builtin_aliases(&c.functions, &c.aliases);
+            c.aliases.extend(extra);
+        }
         // Each module on its own, in order: what it exports is what the next
         // one, and the document, are checked against.
         let mut linking = link::Linking { aliases: self.aliases.clone(), ..Default::default() };
@@ -1914,7 +1929,11 @@ impl Engine {
             match &e.kind {
                 E::Call { callee, args, .. } if callee.len() == 1 => {
                     let name = callee[0].name.as_str();
-                    if !known.contains(name) && !variables.contains(name) {
+                    // A native module's function, linked: the type checker
+                    // holds it to its signature, and says when there is no
+                    // such export.
+                    let native_call = link::split(name).is_some_and(|(m, _)| native::is_native(m));
+                    if !known.contains(name) && !variables.contains(name) && !native_call {
                         note(CallProblem::NoSuchFunction(name.to_string()));
                     } else {
                         check_arity(name, args.len(), &mut note);

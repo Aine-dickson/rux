@@ -534,6 +534,42 @@ the app's own runtime once it hands one over with `rux::set_spawner`. There is
 no `Future`, `Promise` or task value on the Rux side, and no `fetch` or
 `delay` built in.
 
+## File dialogs
+
+**`pickFile`, `pickFiles` and `pickSaveFile` ask the person for a file**, with
+the platform's own dialog, and are awaited from an `async fn`. They are Rux's
+own, so nothing is imported:
+
+```rux
+async fn openProject() {
+  let path = await pickFile({
+    title: "Open project",
+    filters: [{ name: "Mava project", extensions: ["mava"] }],
+  });
+  if path != none { await project.open(path); }
+}
+
+async fn saveAs() {
+  let path = await pickSaveFile({ title: "Save project", name: "untitled.mava" });
+  if path != none { await project.saveAs(path); }
+}
+```
+
+- **`pickFile(options): string?`**, **`pickFiles(options): string[]`**,
+  **`pickSaveFile(options): string?`**. Cancelling gives `none`, or `[]`.
+- **The options** are all optional: `title`, `filters` (each a `name` and its
+  `extensions`, with or without the dot), `folder` to open in, and `name`, the
+  file name a save dialog suggests. A field the dialogs do not have is an
+  error, as for any record.
+- **The window keeps going while the dialog is open**: it is the platform's
+  dialog run off the window's thread, and the path comes back as an `await`'s
+  answer does. On Linux it is the desktop portal's dialog, not GTK's.
+- **They give a path**, for the app's Rust to open. On the web and on Android,
+  where a dialog gives no path, each throws an `Error` of `kind`
+  `"unsupported"` until those are built.
+- Written out, they are `use native::rux::{pickFile};`, which is what a script
+  that calls one gets without writing it.
+
 ## Native code
 
 An app's Rust lives in a `native/` crate beside `rux.toml`, an ordinary

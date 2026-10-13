@@ -52,7 +52,7 @@ Each entry says what Mava needed, what happened, how to reproduce it, what Mava 
 - **Reproduction:** none; there is no API.
 - **Mava workaround:** the app's native crate opens the system dialogs itself with the `rfd` crate. It works on Windows, blocks the UI thread while the dialog is open, and pulls GTK 3 into a Linux build.
 - **Suggested fix:** built-in open and save dialogs (filters, a suggested name, multiple selection), awaited from script, with the platform's own picker on Android and the browser's on the web.
-- **Status:** open.
+- **Status:** fixed 2026-10-13 on `build/v0.9` for the desktop. `await pickFile(options)`, `pickFiles(options)` and `pickSaveFile(options)`, with `title`, `filters`, `folder` and `name`, give paths (or `none`, `[]` when cancelled). The window keeps painting while the dialog is open, and Linux uses the desktop portal, so no GTK. The web and Android throw `unsupported` until their pickers are built, since neither gives a path. The `rfd` dependency in Mava's native crate can go. Documented under "File dialogs" in `docs/07-script.md`.
 
 ## MS-006 Closing the window cannot be intercepted
 

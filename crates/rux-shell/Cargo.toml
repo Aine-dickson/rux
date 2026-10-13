@@ -57,6 +57,10 @@ pollster.workspace = true
 [target.'cfg(not(any(target_arch = "wasm32", target_os = "android")))'.dependencies]
 notify = "8.2.0"
 arboard.workspace = true
+# The file dialogs a script awaits (`pickFile`): the platform's own, run
+# without blocking the window. Its defaults are the desktop portal and
+# Wayland on Linux, so no GTK is pulled in.
+rfd = "0.17"
 accesskit = "0.24.1"
 accesskit_winit = "0.33.2"
 
