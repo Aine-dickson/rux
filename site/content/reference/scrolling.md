@@ -61,3 +61,52 @@ that shows on a light page and a dark one.
 
 **Kinetic fling after a touch drag landed 2026-09-21**, described under touch
 above. No bounce at the ends yet: that is the physics item's.
+
+**Long lists: `content-visibility`** (v0.9). A list of two thousand rows is
+built whole, and was laid out and drawn whole every frame. CSS's answer is
+to let a row that is far from the screen skip its contents:
+
+```css
+.row { content-visibility: auto; contain-intrinsic-size: auto 40px; }
+```
+
+- **`content-visibility: auto`** lays out and draws a box's contents only
+  while the box is near the screen: on screen, inside every clip it sits in,
+  or within half the window's size of it. Further away, the box is laid out
+  with no children, its own background and border drawn, its texts never
+  measured. `hidden` skips them always; `visible` is the default.
+- **`contain-intrinsic-size`** is the size a skipped box takes in place of its
+  contents, plus its own padding and border, so the list keeps its length and
+  its scrollbar its size. One value is both axes, two are width then height;
+  `none` is zero. **`auto 40px`** is 40px until the box has been drawn, and the
+  size it was last drawn at after that, so a row that scrolls away keeps its
+  place exactly. `contain-intrinsic-width`, `contain-intrinsic-height`,
+  `contain-intrinsic-inline-size` and `contain-intrinsic-block-size` set one axis. Without it a skipped box collapses to its
+  padding, as in CSS.
+- **Within the frame.** Which boxes are near is decided against where the
+  last frame drew them; a box found skipped and on screen (a fast fling, the
+  first frame) has its frame laid out again before it is drawn, so a row never
+  shows up empty. The first frame lays every row out as its stand-in, finds
+  the ones on screen, and lays those out properly.
+- **Containment comes with it**, as in CSS: a box with `content-visibility`
+  other than `visible` clips what is inside it, is a stacking context, and is
+  the containing block for its `absolute` and `fixed` descendants.
+
+Measured on the long-list benchmark (2,000 rows of three texts in a scroller,
+scrolled a little each frame, release, desktop):
+
+| | every row laid out | `content-visibility: auto` |
+|---|---|---|
+| layout, a scrolled frame | 23.8 ms | 7.7 ms, 3.1x faster |
+| scene, a scrolled frame | 0.75 ms | 0.33 ms, 2.3x faster |
+| the first frame's layout | 127 ms | 18.8 ms, 6.7x faster |
+| building the document | 104 ms | 109 ms, the same |
+
+Building the rows is the same either way: every row is still styled and
+stays in the document, so `query()`, `r-model` and a handler reach it.
+
+**`scrollIntoView()` on an element inside a skipped box** scrolls to the box
+standing in for it; its contents are there the next frame. Not yet, against
+CSS: **Tab and assistive technology do not reach inside a skipped box**, which
+in a browser they do, and a handler reading the box of an element inside one
+gets none, as for an element not on screen.

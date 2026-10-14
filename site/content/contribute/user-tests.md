@@ -2600,6 +2600,33 @@ flip-inline`.
 | A fallback kept while it fits | a flipped menu, its panel scrolled until there is room below | still above | under the code only |
 | Web, Android | the same page | the same | not driven |
 
+## Long lists: `content-visibility`, 2026-10-15
+
+Roadmap v0.9 item 4, step 4 (owner's order, 2026-10-15). Under test in
+`rux-layout` (`tests/content_visibility.rs`: only rows near the screen have
+contents, a row scrolled away keeps the size it was drawn at, `hidden` never
+measures its contents) and measured by `layout_cost` (`long_list_*`). Driven
+in a desktop window, release build, on one probe: 2,000 rows of three texts in
+a scroller filling the window, each `content-visibility: auto;
+contain-intrinsic-size: auto 22px`, and a button whose handler calls
+`query(".row .name")[1500].scrollIntoView()`.
+
+| Case | Steps | Expected | Result |
+|---|---|---|---|
+| The first frame | open it | rows 0 to 21 drawn whole, none empty | desktop: pass |
+| Wheel through it | forty wheel notches | rows 40 onward drawn whole, the scrollbar where it should be | desktop: pass |
+| Reveal a skipped row | the button | row 1500 on screen, drawn whole | desktop: pass |
+| The same without `content-visibility` | the button | the same | desktop: pass, **after a fix**: before it nothing happened at all |
+| Tab into a skipped row | | | not built (written down in `05-as-built`) |
+| Web, Android | the same page | the same | not driven |
+
+**Found driving it: `query()` was quadratic.** `query(".row .name")` over the
+2,000 rows took 2.0 s in a release build, so the button looked dead with or
+without `content-visibility`; a 20-row copy of the page answered at once. Each
+match looked up its box by scanning every box, and each element's selector
+context was rebuilt by scanning every element for each ancestor and copying
+every sibling before it. Now 7.7 ms (`.row + .row .name`: 374 ms, now 30 ms).
+
 ## Standing gaps
 
 Cases nothing here can currently exercise. They are the shape of what v0.8 has

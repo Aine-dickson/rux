@@ -168,3 +168,114 @@ fn cost(src: &str, label: &str) {
     let (sm, sb) = steady(&mut scene_us);
     eprintln!("{label}: layout median {lm:.0} us (best {lb:.0}); timer+patch median {pm:.0} us (best {pb:.0}); scene median {sm:.0} us (best {sb:.0})");
 }
+
+/// A long list in a scroller, scrolled a little each frame with nothing in
+/// it changing: what a phone pays to fling through two thousand rows, and
+/// what it pays to show them at all. `rows_css` is added to `.row`.
+fn long_list(rows_css: &str) -> String {
+    format!(
+        r#"<template>
+  <screen class="app">
+    <view class="rows">
+      <view class="row" r-for="item in items" r-key="item.id">
+        <text class="id">{{{{ item.id }}}}</text>
+        <text class="name">{{{{ item.name }}}}</text>
+        <text class="price">{{{{ item.price }}}}</text>
+      </view>
+    </view>
+  </screen>
+</template>
+
+<style>
+  .app {{ display: flex; flex-direction: column; background: #1e1e2e; }}
+  .rows {{ height: 600px; overflow: scroll; display: flex; flex-direction: column; gap: 2px; }}
+  .row {{ display: flex; gap: 12px; padding: 4px 8px; background: #313244; flex-shrink: 0; {rows_css} }}
+  .id {{ color: #89b4fa; width: 48px; font-size: 12px; }}
+  .name {{ color: #cdd6f4; width: 120px; font-size: 12px; }}
+  .price {{ color: #a6e3a1; font-size: 12px; }}
+</style>
+
+<script>
+  type Item = {{ id: int, name: string, price: float }};
+  let items: Item[] = signal([]);
+  mounted {{
+    let out: Item[] = [];
+    for i in 0..2000 {{
+      out.push({{ id: i, name: `item ${{i}}`, price: (i % 97) + 0.5 }});
+    }}
+    items = out;
+  }}
+</script>
+"#
+    )
+}
+
+#[test]
+#[ignore]
+fn long_list_scroll_cost() {
+    scroll_cost(&long_list(""), "2000 rows");
+}
+
+#[test]
+#[ignore]
+fn long_list_content_visibility_cost() {
+    scroll_cost(&long_list("content-visibility: auto; contain-intrinsic-size: auto 22px;"), "2000 rows, content-visibility: auto");
+}
+
+fn scroll_cost(src: &str, label: &str) {
+    let t = Instant::now();
+    let mut doc = rux_runtime::Document::from_source(src).expect("load");
+    doc.fire_timers(0.0);
+    let mount_us = t.elapsed().as_secs_f64() * 1e6;
+    let mut text = rux_text::TextEngine::new();
+    let mut images = rux_paint::ImageCache::new();
+    let mut kept = rux_layout::LayoutState::new();
+    let t = Instant::now();
+    let first = kept.lay_out_text(&doc.root, 800.0, 600.0, &[], &mut rux_paint::EngineMeasure(&mut text));
+    let first_us = t.elapsed().as_secs_f64() * 1e6;
+    eprintln!("{label}: {} paints in the first frame", first.paints.len());
+    let frames = 200;
+    let mut layout_us = Vec::with_capacity(frames);
+    let mut scene_us = Vec::with_capacity(frames);
+    for f in 0..frames {
+        let offsets = [rux_layout::Offset { x: 0.0, y: f as f32 * 37.0 }];
+        let t = Instant::now();
+        let out = kept.lay_out_text(&doc.root, 800.0, 600.0, &offsets, &mut rux_paint::EngineMeasure(&mut text));
+        layout_us.push(t.elapsed().as_secs_f64() * 1e6);
+        let t = Instant::now();
+        let scene = rux_paint::build_scene_within(&out.paints, &mut text, &mut images, false, (800.0, 600.0));
+        scene_us.push(t.elapsed().as_secs_f64() * 1e6);
+        std::hint::black_box(scene);
+    }
+    let steady = |v: &mut Vec<f64>| {
+        let mut s: Vec<f64> = v[20..].to_vec();
+        s.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        (s[s.len() / 2], s[0])
+    };
+    let (lm, lb) = steady(&mut layout_us);
+    let (sm, sb) = steady(&mut scene_us);
+    eprintln!(
+        "{label}: mount {:.1} ms; first layout {:.1} ms; scrolling: layout median {lm:.0} us (best {lb:.0}), scene median {sm:.0} us (best {sb:.0})",
+        mount_us / 1000.0,
+        first_us / 1000.0
+    );
+}
+
+/// `query()` over a long list, in a handler, with a laid-out frame's
+/// metrics in hand as the shell gives them.
+#[test]
+#[ignore]
+fn query_over_a_long_list_cost() {
+    let src = long_list("").replace("let items: Item[] = signal([]);", "let items: Item[] = signal([]);\n  let found = signal(0);");
+    let mut doc = rux_runtime::Document::from_source(&src).expect("load");
+    doc.fire_timers(0.0);
+    let mut text = rux_text::TextEngine::new();
+    let out = rux_layout::LayoutState::new().lay_out_text(&doc.root, 800.0, 600.0, &[], &mut rux_paint::EngineMeasure(&mut text));
+    doc.set_metrics(out.metrics.clone());
+    let t = Instant::now();
+    assert!(doc.apply_handler("found = query(\".row .name\").length"));
+    eprintln!("query(\".row .name\") over 2000 rows: {:.1} ms", t.elapsed().as_secs_f64() * 1000.0);
+    let t = Instant::now();
+    assert!(doc.apply_handler("found = query(\".row + .row .name\").length"));
+    eprintln!("query(\".row + .row .name\") over 2000 rows: {:.1} ms", t.elapsed().as_secs_f64() * 1000.0);
+}

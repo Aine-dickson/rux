@@ -361,8 +361,11 @@ fn text_reaches(
 /// what the clips and transforms above it leave of the window; the bounds are
 /// generous (a shadow's blur, a stroke's miter, a text's overflow, see
 /// [`text_reaches`]) and a rounded clip counts as its whole box, so an item is
-/// dropped only when none of it can be seen. Clip, transform and opacity
-/// markers are always kept, so the layers still pair up.
+/// dropped only when none of it can be seen. Transform and opacity markers
+/// are always kept, so the layers still pair up; a clip that leaves nothing
+/// of the window is dropped with its pop, since nothing inside it can show,
+/// and a clip layer costs the GPU even when it is empty. A long list of
+/// `content-visibility` rows has one per row near the screen.
 ///
 /// `measure` sizes a text at a given width, as it will be drawn.
 pub fn visible_paints(
@@ -372,34 +375,39 @@ pub fn visible_paints(
 ) -> Vec<bool> {
     let full = Rect::new(0.0, 0.0, view.0 as f64, view.1 as f64);
     let mut reach = Reach { window: Some(full), local: Some(full), cur: Affine::IDENTITY };
-    let mut saved: Vec<Reach> = Vec::new();
+    // Each marker's reach before it, and whether it was kept: a pop goes
+    // with its push.
+    let mut saved: Vec<(Reach, bool)> = Vec::new();
     let mut shown = Vec::with_capacity(items.len());
     for item in items {
         let keep = match item {
             Paint::PushClip { x, y, width, height, .. } => {
-                saved.push(reach);
+                let before = reach;
                 let clip = rect_of(*x, *y, *width, *height);
                 reach.window = reach.window.and_then(|w| overlap(w, reach.cur.transform_rect_bbox(clip)));
                 reach.local = reach.local.and_then(|l| overlap(l, clip));
-                true
+                let keep = reach.window.is_some();
+                saved.push((before, keep));
+                keep
             }
             Paint::PushTransform(m) => {
-                saved.push(reach);
+                saved.push((reach, true));
                 let mat = Affine::new([m[0] as f64, m[1] as f64, m[2] as f64, m[3] as f64, m[4] as f64, m[5] as f64]);
                 reach.cur = reach.cur * mat;
                 reach.local = local_reach(reach.window, reach.cur);
                 true
             }
             Paint::PushOpacity { .. } => {
-                saved.push(reach);
+                saved.push((reach, true));
                 true
             }
-            Paint::PopClip | Paint::PopTransform | Paint::PopOpacity => {
-                if let Some(back) = saved.pop() {
+            Paint::PopClip | Paint::PopTransform | Paint::PopOpacity => match saved.pop() {
+                Some((back, kept)) => {
                     reach = back;
+                    kept
                 }
-                true
-            }
+                None => true,
+            },
             Paint::Rect(r) => reaches(reach.local, rect_of(r.x, r.y, r.width, r.height)),
             Paint::Image(i) => reaches(reach.local, rect_of(i.x, i.y, i.width, i.height)),
             // vello's blur reaches about three standard deviations, and the

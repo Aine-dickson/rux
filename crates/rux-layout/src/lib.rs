@@ -199,6 +199,30 @@ pub enum TryOrder {
     MostHeight,
 }
 
+/// `content-visibility`, CSS's way of not paying for what is off screen.
+///
+/// A box whose contents are **skipped** is laid out with no children, at
+/// its `contain-intrinsic-size` (plus its own padding and border), and draws
+/// its own background and border but nothing inside it. `Auto` skips while
+/// the box is far from the screen, `Hidden` always. Either way the box
+/// clips what is inside it, as CSS's paint containment does.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ContentVisibility {
+    #[default]
+    Visible,
+    Auto,
+    Hidden,
+}
+
+/// One axis of `contain-intrinsic-size`: a length in px (`None` is
+/// `none`, which is zero), and with `auto` the size the box was last drawn
+/// at, once it has been.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct IntrinsicSize {
+    pub auto: bool,
+    pub len: Option<f32>,
+}
+
 /// A grid track size (`grid-template-columns`/`-rows`).
 #[derive(Clone, Copy, Debug)]
 pub enum Track {
@@ -865,6 +889,12 @@ pub struct Style {
     /// recursion on the stack: `rux check` on a fresh project overflowed the
     /// main thread's (watchlist #41).
     pub anchor: Option<Box<AnchorStyle>>,
+    /// `content-visibility`: whether this box's contents are laid out and
+    /// drawn while it is off screen. See [`ContentVisibility`].
+    pub content_visibility: ContentVisibility,
+    /// `contain-intrinsic-size`, width then height: the size a box whose
+    /// contents are skipped takes in their place. Boxed, as `anchor` is.
+    pub contain_intrinsic: Option<Box<[IntrinsicSize; 2]>>,
     /// `aspect-ratio` (width / height).
     pub aspect_ratio: Option<f32>,
     /// `transition`: which of this node's properties animate when they change,
@@ -986,6 +1016,8 @@ impl Default for Style {
             z_index: None,
             isolate: false,
             anchor: None,
+            content_visibility: ContentVisibility::Visible,
+            contain_intrinsic: None,
             aspect_ratio: None,
             transitions: Vec::new(),
             swap_progress: None,
@@ -2401,6 +2433,10 @@ pub struct Layout {
     /// `position-anchor`. Kept by [`LayoutState`] so the next frame tries
     /// that one first, as CSS does, until the box is anchored elsewhere.
     pub position_tries: Vec<(Vec<usize>, u8, Option<String>)>,
+    /// Every box with `content-visibility` other than `visible`, as this
+    /// frame found it. Kept by [`LayoutState`] to decide next frame which to
+    /// skip, and what size a skipped one takes.
+    pub contained: Vec<Contained>,
 }
 
 /// One node's laid-out box, keyed by the same child-index path the binding
@@ -3000,6 +3036,8 @@ struct At {
     anchor_name: Option<u32>,
     /// Into `Anchoring::boxes`, when this box is placed against one.
     anchored: Option<u32>,
+    /// Into `Built::contained`, when this box has `content-visibility`.
+    contained: Option<u32>,
 }
 
 /// The lists `build` fills and the index into them, which is everything
@@ -3015,6 +3053,8 @@ struct Built<'a> {
     access: &'a [(NodeId, Access, Option<String>)],
     paths: &'a [(NodeId, Vec<usize>)],
     stickies: &'a [(NodeId, [Option<f32>; 4])],
+    /// The boxes with `content-visibility`, and whether each was skipped.
+    contained: &'a [(NodeId, bool)],
     at: IdMap<At>,
     /// Each visible scroller's id. See `number_scrollers`.
     scroll_ids: IdMap<usize>,
@@ -3154,6 +3194,9 @@ struct Kept {
     /// The width cap the measure hook wrapped this text at. Taffy cannot see it,
     /// so a change to it has to mark the node dirty by hand.
     cap: Option<f32>,
+    /// The size a skipped box took in place of its contents, which the
+    /// measure hook answers with and Taffy cannot see either.
+    intrinsic: Option<(f32, f32)>,
     children: Vec<Kept>,
 }
 
@@ -3286,6 +3329,8 @@ fn build(
     stacks: &mut Vec<(NodeId, Stack)>,
     // Named anchors and the boxes placed against them. See `Anchoring`.
     anchoring: &mut Anchoring,
+    // `content-visibility`: which boxes skip their contents. See `Skipping`.
+    skipping: &mut Skipping,
     // What this node was last frame, when one was matched to it. See `Kept`.
     old: Option<Kept>,
     // The viewport, for the root alone: it is forced to fill it, so a `screen`
@@ -3301,9 +3346,25 @@ fn build(
     let own_cap = width_cap(&node.style, cap, vp);
     let child_cap = inner_cap(&node.style, own_cap, cap);
     let row = node.key.as_deref().or(row);
-    let (old_id, old_cap, mut old_children) = match old {
-        Some(k) => (Some(k.id), k.cap, k.children),
-        None => (None, None, Vec::new()),
+    let (old_id, old_cap, old_intrinsic, mut old_children) = match old {
+        Some(k) => (Some(k.id), k.cap, k.intrinsic, k.children),
+        None => (None, None, None, Vec::new()),
+    };
+    // Whether this box's contents are laid out at all, and if not the size
+    // that stands in for them.
+    let skip = match node.style.content_visibility {
+        ContentVisibility::Visible => None,
+        cv => {
+            let near = cv == ContentVisibility::Auto && skipping.shown.get(path).copied().unwrap_or(false);
+            (!near).then(|| {
+                let ci = node.style.contain_intrinsic.as_deref().copied().unwrap_or_default();
+                let last = skipping.sizes.get(path).copied();
+                let axis = |a: IntrinsicSize, last: Option<f32>| {
+                    a.auto.then_some(last).flatten().or(a.len).unwrap_or(0.0)
+                };
+                (axis(ci[0], last.map(|l| l.0)), axis(ci[1], last.map(|l| l.1)))
+            })
+        }
     };
     let mut ts = to_taffy(&node.style, vp);
     let mut child_ids: Vec<NodeId> = Vec::new();
@@ -3311,7 +3372,9 @@ fn build(
     // The text's own cap: it wraps inside this box, so its own padding and
     // border come out of the width available to the glyphs.
     let mut text_cap = None;
-    if node.text.is_some() {
+    if skip.is_some() {
+        // Nothing inside is built: no children, no text to measure.
+    } else if node.text.is_some() {
         text_cap = child_cap;
     } else if node.tick.is_some() {
     } else if let Some(ic) = &node.image {
@@ -3372,7 +3435,7 @@ fn build(
             // cache on the parent size, and tests/stretch_text.rs, which
             // fails on 0.7 without that exception, passes on 0.15 without
             // it, so the exception is gone.
-            let (cid, kept) = build(tree, c, paint, handlers, models, focus_labels, hidden, opacities, scrolls, transforms, states, access, &cp, paths, vp, child_cap, caps, row, stickies, hoisted, stacks, anchoring, prev, None, garbage);
+            let (cid, kept) = build(tree, c, paint, handlers, models, focus_labels, hidden, opacities, scrolls, transforms, states, access, &cp, paths, vp, child_cap, caps, row, stickies, hoisted, stacks, anchoring, skipping, prev, None, garbage);
             kept_children.push(kept);
             match hoists(&c.style) {
                 Some(fixed) => hoisted.push((cid, fixed)),
@@ -3398,7 +3461,10 @@ fn build(
         //
         // They go on the end, which is also where CSS paints them: a positioned
         // descendant is drawn over its containing block's in-flow content.
-        let transformed = node.style.transform.is_some();
+        // `content-visibility` other than `visible` contains layout, which
+        // makes a containing block for both kinds, as a transform does.
+        let transformed =
+            node.style.transform.is_some() || node.style.content_visibility != ContentVisibility::Visible;
         if transformed || node.style.position.is_containing_block() {
             let mut i = mark;
             while i < hoisted.len() {
@@ -3430,11 +3496,17 @@ fn build(
         };
     }
     // A `<text>` of pieces is laid out as the one sentence they make.
-    let joined = inline::is_sentence(node).then(|| inline::join(node, path));
-    let text = joined.as_ref().map(|(tc, _)| tc).or(node.text.as_ref());
+    let joined = (skip.is_none() && inline::is_sentence(node)).then(|| inline::join(node, path));
+    let text = if skip.is_some() { None } else { joined.as_ref().map(|(tc, _)| tc).or(node.text.as_ref()) };
     let id = node_for(tree, old_id, ts, text, &child_ids);
-    if old_id.is_some() && text_cap != old_cap {
+    if old_id.is_some() && (text_cap != old_cap || skip != old_intrinsic) {
         tree.mark_dirty(id).expect("taffy dirty");
+    }
+    if let Some(sz) = skip {
+        skipping.intrinsic.insert(id, sz);
+    }
+    if node.style.content_visibility != ContentVisibility::Visible {
+        skipping.boxes.push((id, skip.is_some()));
     }
     if let Some(c) = text_cap {
         caps.insert(id, c);
@@ -3443,6 +3515,7 @@ fn build(
         id,
         key: node.key.as_deref().map(key_hash),
         cap: text_cap,
+        intrinsic: skip,
         children: kept_children,
     };
     if let Some(tc) = text {
@@ -3456,7 +3529,7 @@ fn build(
                 radius_pct: node.style.radius_pct,
                 border: node.style.border,
                 border_color: node.style.border_color,
-                clip: node.style.overflow != Overflow::Visible,
+                clip: clips(&node.style, skip.is_some()),
                 shadow: node.style.box_shadow,
             },
         ));
@@ -3475,7 +3548,7 @@ fn build(
                 radius_pct: node.style.radius_pct,
                 border: node.style.border,
                 border_color: node.style.border_color,
-                clip: node.style.overflow != Overflow::Visible,
+                clip: clips(&node.style, skip.is_some()),
                 shadow: node.style.box_shadow,
             },
         ));
@@ -3489,7 +3562,7 @@ fn build(
                 radius_pct: node.style.radius_pct,
                 border: node.style.border,
                 border_color: node.style.border_color,
-                clip: node.style.overflow != Overflow::Visible,
+                clip: clips(&node.style, skip.is_some()),
                 shadow: node.style.box_shadow,
             },
         ));
@@ -3517,7 +3590,7 @@ fn build(
                 // Uniform border for rendering (top width is representative).
                 border: node.style.border,
                 border_color: node.style.border_color,
-                clip: node.style.overflow != Overflow::Visible,
+                clip: clips(&node.style, skip.is_some()),
                 shadow: node.style.box_shadow,
             },
         ));
@@ -3633,13 +3706,52 @@ fn build(
             seq,
             z: node.style.z_index,
             position: node.style.position,
-            isolate: node.style.isolate,
+            // Contained, as `content-visibility` contains paint: whatever is
+            // inside is sorted inside, as with `isolation: isolate`.
+            isolate: node.style.isolate || node.style.content_visibility != ContentVisibility::Visible,
         },
     );
     if node.access.role.is_meaningful() {
         access.push((id, node.access.clone(), node.model.clone()));
     }
     (id, kept)
+}
+
+/// Whether a box clips what is inside it: `overflow` other than `visible`,
+/// or the paint containment `content-visibility` brings, which a box whose
+/// contents were skipped has nothing to apply to.
+fn clips(style: &Style, skipped: bool) -> bool {
+    style.overflow != Overflow::Visible || style.content_visibility != ContentVisibility::Visible && !skipped
+}
+
+/// What `content-visibility` needs across one layout: which boxes were near
+/// the screen last frame and the size each was last drawn at (both by
+/// path), and, filled by `build`, what was skipped.
+struct Skipping<'a> {
+    shown: &'a HashMap<Vec<usize>, bool>,
+    sizes: &'a HashMap<Vec<usize>, (f32, f32)>,
+    /// Each skipped box's content size, answered by the measure hook.
+    intrinsic: IdMap<(f32, f32)>,
+    /// Every box with `content-visibility` other than `visible`, and whether
+    /// its contents were skipped.
+    boxes: Vec<(NodeId, bool)>,
+}
+
+/// A box with `content-visibility` other than `visible`, as one layout
+/// found it. See [`LayoutState`].
+#[derive(Clone, Debug, PartialEq)]
+pub struct Contained {
+    pub path: Vec<usize>,
+    /// Whether its contents were skipped this frame.
+    pub skipped: bool,
+    /// Whether any of it is on screen, inside every clip it sits in.
+    pub on_screen: bool,
+    /// Whether it is near enough to the screen that its contents should be
+    /// there: on screen with half the window's size to spare on every side.
+    pub near: bool,
+    /// Its content box, when its contents were laid out: what
+    /// `contain-intrinsic-size: auto` remembers.
+    pub size: Option<(f32, f32)>,
 }
 
 /// What decides where a node paints among the others: CSS's stacking rules.
@@ -3690,7 +3802,7 @@ fn layer(at: &At, parent_items: bool) -> Option<(i32, bool)> {
 ///
 /// Only clips. A `transform` or an `opacity` in between would itself be a
 /// stacking context, and the box would belong to that one instead.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 struct Clip {
     x: f32,
     y: f32,
@@ -4163,6 +4275,8 @@ struct Walk {
     tried_before: std::rc::Rc<HashMap<Vec<usize>, (u8, Option<String>)>>,
     /// The fallback each is drawn at this frame, where not its own place.
     tried: Vec<(Vec<usize>, u8, Option<String>)>,
+    /// The boxes with `content-visibility`, as this walk drew them.
+    contained: Vec<Contained>,
     /// Where the parts of each sentence landed, asked of the text engine once
     /// the sentence had a width. See [`TextMeasure::inline`].
     inline: std::rc::Rc<IdMap<std::sync::Arc<InlineGeometry>>>,
@@ -4220,23 +4334,39 @@ fn drain(
     walk: &mut Walk,
     ctx: &mut Stacking,
 ) {
+    // The clips put back around the last member drawn, left open while the
+    // next one sits inside the same ones: a list of rows that are each a
+    // context (`content-visibility`, say) is one clip around them all, not
+    // a clip layer per row.
+    let mut open: Option<Vec<Clip>> = None;
+    let close = |open: &mut Option<Vec<Clip>>, out: &mut Layout, walk: &mut Walk| {
+        for _ in open.take().unwrap_or_default() {
+            out.paints.push(Paint::PopClip);
+            walk.clips.pop();
+        }
+    };
     while let Some(std::cmp::Reverse(d)) = ctx.pending.pop() {
+        // A negative one is moved afterwards, so it carries its own clips.
+        let shared = d.z >= 0 && open.as_ref().is_some_and(|c| *c == d.clips);
+        if !shared {
+            close(&mut open, out, walk);
+        }
         let start = marks(out);
-        for c in &d.clips {
-            out.paints.push(Paint::PushClip { x: c.x, y: c.y, width: c.width, height: c.height, radius: c.radius });
-            walk.clips.push(*c);
+        if !shared {
+            for c in &d.clips {
+                out.paints.push(Paint::PushClip { x: c.x, y: c.y, width: c.width, height: c.height, radius: c.radius });
+                walk.clips.push(*c);
+            }
+            open = Some(d.clips.clone());
         }
         collect(
             tree, d.id, d.origin.0, d.origin.1, b, offsets, vp, d.holder, d.inside_scroll, d.xform, d.dim,
             d.context, out, walk, ctx,
         );
-        for _ in &d.clips {
-            out.paints.push(Paint::PopClip);
-            walk.clips.pop();
-        }
         if d.z >= 0 {
             continue;
         }
+        close(&mut open, out, walk);
         let end = marks(out);
         let took: Marks = std::array::from_fn(|i| end[i] - start[i]);
         let at = ctx.below.partition_point(|(k, _)| *k < d.key());
@@ -4249,6 +4379,7 @@ fn drain(
         out.states[to[4]..end[4]].rotate_right(took[4]);
         ctx.below.insert(at, (d.key(), took));
     }
+    close(&mut open, out, walk);
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -4344,6 +4475,37 @@ fn collect(
     }
     let x = x;
     let y = y;
+
+    // `content-visibility`: whether this box is on screen, or near it, for
+    // the next pass or frame to decide whether its contents are there.
+    if let (Some(i), false) = (at.contained, walk.dry) {
+        let (_, skipped) = b.contained[i as usize];
+        let path = at.path.map(|p| b.paths[p as usize].1.clone()).unwrap_or_default();
+        let (w, h) = (layout.size.width, layout.size.height);
+        // What can be seen from here, the window inside every clip, and the
+        // same with half the window to spare on every side of each.
+        let (mx, my) = (vp.0 / 2.0, vp.1 / 2.0);
+        let mut seen = (0.0f32, 0.0f32, vp.0, vp.1);
+        let mut near = (-mx, -my, vp.0 + mx, vp.1 + my);
+        for c in &walk.clips {
+            seen = (seen.0.max(c.x), seen.1.max(c.y), seen.2.min(c.x + c.width), seen.3.min(c.y + c.height));
+            near = (
+                near.0.max(c.x - mx),
+                near.1.max(c.y - my),
+                near.2.min(c.x + c.width + mx),
+                near.3.min(c.y + c.height + my),
+            );
+        }
+        let meets = |r: (f32, f32, f32, f32)| x <= r.2 && x + w >= r.0 && y <= r.3 && y + h >= r.1 && r.2 > r.0 && r.3 > r.1;
+        let (_, _, cw, ch) = content_box(layout);
+        walk.contained.push(Contained {
+            path,
+            skipped,
+            on_screen: meets(seen),
+            near: meets(near),
+            size: (!skipped).then_some((cw, ch)),
+        });
+    }
 
     if let Some(i) = at.anchor_name {
         let (_, name, seq) = &b.anchoring.names[i as usize];
@@ -4974,6 +5136,11 @@ pub struct LayoutState {
     /// Each anchored box drawn at a fallback last frame, by its path. See
     /// [`Layout::position_tries`].
     tried: HashMap<Vec<usize>, (u8, Option<String>)>,
+    /// `content-visibility: auto`: whether each such box was near the
+    /// screen last frame, and the content size each was last drawn at, for
+    /// `contain-intrinsic-size: auto`. By path. See [`Layout::contained`].
+    shown: HashMap<Vec<usize>, bool>,
+    sizes: HashMap<Vec<usize>, (f32, f32)>,
 }
 
 impl Default for LayoutState {
@@ -4989,7 +5156,14 @@ impl LayoutState {
         // fraction off a text box and make paint re-wrap the last word into a
         // line the box has no height for. Keep the exact sizes measure asked for.
         tree.disable_rounding();
-        Self { tree, kept: None, garbage: Vec::new(), tried: HashMap::new() }
+        Self {
+            tree,
+            kept: None,
+            garbage: Vec::new(),
+            tried: HashMap::new(),
+            shown: HashMap::new(),
+            sizes: HashMap::new(),
+        }
     }
 
     /// Drop everything kept, so the next frame is laid out whole.
@@ -5033,6 +5207,8 @@ impl LayoutState {
         {
             let mut fresh = LayoutState::new();
             fresh.tried = self.tried.clone();
+            fresh.shown = self.shown.clone();
+            fresh.sizes = self.sizes.clone();
             let whole = fresh.lay_out(root, avail_w, avail_h, offsets, measure);
             let (kept, whole) = (format!("{out:#?}"), format!("{whole:#?}"));
             if kept != whole {
@@ -5046,9 +5222,22 @@ impl LayoutState {
             }
         }
         self.tried = out.position_tries.iter().map(|(p, n, a)| (p.clone(), (*n, a.clone()))).collect();
+        self.shown = out.contained.iter().map(|c| (c.path.clone(), c.near)).collect();
+        // A size is remembered while its box is in the document, drawn or not.
+        self.sizes.retain(|p, _| out.contained.iter().any(|c| &c.path == p));
+        for c in &out.contained {
+            if let Some(size) = c.size {
+                self.sizes.insert(c.path.clone(), size);
+            }
+        }
         out
     }
 
+    /// One frame: laid out again while a box whose contents were skipped
+    /// turns out to be on screen, which happens when it scrolls in faster
+    /// than the margin around the screen can see it coming, and on the
+    /// first frame, when nothing is known. Three passes at most; a box near
+    /// the screen but not on it waits for the next frame.
     fn lay_out(
         &mut self,
         root: &Node,
@@ -5057,6 +5246,35 @@ impl LayoutState {
         offsets: &[Offset],
         measure: &mut dyn TextMeasure,
     ) -> Layout {
+        // Last frame's answers, put back untouched: the caller keeps them
+        // until it has compared this layout with a whole one.
+        let before = std::mem::take(&mut self.shown);
+        let mut again: Option<HashMap<Vec<usize>, bool>> = None;
+        let mut pass = 0;
+        loop {
+            let out = self.lay_out_pass(root, avail_w, avail_h, offsets, measure, again.as_ref().unwrap_or(&before));
+            pass += 1;
+            if pass == 3 || !out.contained.iter().any(|c| c.skipped && c.on_screen) {
+                self.shown = before;
+                return out;
+            }
+            let next = again.get_or_insert_with(|| before.clone());
+            for c in &out.contained {
+                next.insert(c.path.clone(), c.near);
+            }
+        }
+    }
+
+    fn lay_out_pass(
+        &mut self,
+        root: &Node,
+        avail_w: f32,
+        avail_h: f32,
+        offsets: &[Offset],
+        measure: &mut dyn TextMeasure,
+        shown: &HashMap<Vec<usize>, bool>,
+    ) -> Layout {
+        let mut skipping = Skipping { shown, sizes: &self.sizes, intrinsic: IdMap::default(), boxes: Vec::new() };
         let tree = &mut self.tree;
         let tried_before = &self.tried;
         let mut paint = Vec::new();
@@ -5101,6 +5319,7 @@ impl LayoutState {
             &mut hoisted,
             &mut stacks,
             &mut anchoring,
+            &mut skipping,
             self.kept.take(),
             Some(vp),
             &mut self.garbage,
@@ -5164,6 +5383,10 @@ impl LayoutState {
             taffy::compute_leaf_layout(inputs, style, |_, _| 0.0, |known: Size<Option<f32>>, available: Size<AvailableSpace>| {
                 if let (Some(w), Some(h)) = (known.width, known.height) {
                     return Size { width: w, height: h };
+                }
+                // A box whose contents were skipped is the size given for them.
+                if let Some(&(w, h)) = skipping.intrinsic.get(&id) {
+                    return Size { width: known.width.unwrap_or(w), height: known.height.unwrap_or(h) };
                 }
                 match ctx {
                     Some(tc) => {
@@ -5273,6 +5496,10 @@ impl LayoutState {
             &paint, &handlers, &models, &focus_labels, &hidden, &opacities, &scrolls, &transforms,
             &states, &access, &paths, &stickies, &stacks, &anchoring,
         );
+        let mut at = at;
+        for (i, (id, _)) in skipping.boxes.iter().enumerate() {
+            at.entry(*id).or_default().contained = Some(i as u32);
+        }
         let built = Built {
             paint: &paint,
             handlers: &handlers,
@@ -5284,6 +5511,7 @@ impl LayoutState {
             access: &access,
             paths: &paths,
             stickies: &stickies,
+            contained: &skipping.boxes,
             scroll_ids: {
                 let mut ids = IdMap::default();
                 number_scrollers(&tree, root_id, &at, &mut ids);
@@ -5345,6 +5573,7 @@ impl LayoutState {
             walk.tried.sort();
             out.position_tries = std::mem::take(&mut walk.tried);
         }
+        out.contained = std::mem::take(&mut walk.contained);
         out.scrolls = walk.scrolls.into_iter().flatten().collect();
         debug_assert!(out.scrolls.iter().enumerate().all(|(i, s)| s.id == i), "every numbered scroller is drawn");
         // Painting order is not reading order. Tab and assistive technology

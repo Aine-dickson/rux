@@ -56,6 +56,8 @@ overflow, overflow-x, overflow-y     (hidden|clip = clip; auto|scroll = scroll;
                                       each axis on its own; `overflow: x y`)
 overscroll-behavior, -x, -y   (auto | contain | none; contain and none alike)
 scrollbar-width (auto | thin | none), scrollbar-color (thumb track | auto)
+content-visibility (visible | auto | hidden), contain-intrinsic-size (and -width,
+                       -height, -inline-size, -block-size; `auto <length>`)
 overflow-wrap (break-word), word-wrap (the legacy alias for it), word-break (break-all)
 cursor (pointer, on @tap boxes only)
 touch-action (auto | none | pan-x | pan-y; who wins between a @drag and a

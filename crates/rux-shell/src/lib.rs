@@ -6735,7 +6735,17 @@ impl App {
         // is resolved against the frame it was looking at.
         let mut revealed = false;
         for path in document.take_reveals() {
-            let Some(m) = layout.metrics.iter().find(|e| e.path == path) else {
+            // An element inside a box whose contents `content-visibility`
+            // skipped has no box of its own this frame: the box standing in
+            // for it is revealed instead, and its contents are there next
+            // frame, on screen.
+            let stand_in = || {
+                layout.contained.iter().filter(|c| c.skipped && path.starts_with(&c.path)).max_by_key(|c| c.path.len())
+            };
+            let Some(m) = layout.metrics.iter().find(|e| e.path == path).or_else(|| {
+                let c = stand_in()?;
+                layout.metrics.iter().find(|e| e.path == c.path)
+            }) else {
                 continue;
             };
             // The innermost scroller containing it, matched against the

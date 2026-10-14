@@ -24,6 +24,7 @@ use rux_layout::{
 use rux_layout::{AnimProp, Easing, GradientKind, GridFlow, Transform, Transition};
 use rux_layout::{FillRule, InputKind, LineCap, LineJoin, Outline, PathContent};
 use rux_layout::{AnchorRef, AnchorSide, AnchorSize, PositionTry, ScrollbarWidth, TryInset, TryOrder};
+use rux_layout::{ContentVisibility, IntrinsicSize};
 use rux_parser::{Element, Node as TplNode, Sfc};
 use rux_reactive::Value;
 /// Re-exported so the runtime and the shell can name a warning without
@@ -3778,6 +3779,8 @@ const HONORED_PROPERTIES: &[&str] = &[
     "position", "top", "right", "bottom", "left", "aspect-ratio", "z-index", "isolation",
     "anchor-name", "position-anchor",
     "position-try", "position-try-fallbacks", "position-try-order",
+    "content-visibility", "contain-intrinsic-size", "contain-intrinsic-width",
+    "contain-intrinsic-height", "contain-intrinsic-inline-size", "contain-intrinsic-block-size",
     // Logical sides, put on a physical side by `direction` (see `logical`).
     "margin-inline", "margin-inline-start", "margin-inline-end",
     "margin-block", "margin-block-start", "margin-block-end",
@@ -8791,6 +8794,7 @@ fn interpret(p: &HashMap<String, String>) -> Style {
         }
     }
     interpret_position_try(p, &mut st);
+    interpret_content_visibility(p, &mut st);
     if let Some(v) = p.get("z-index") {
         st.z_index = match first(v) {
             "auto" => None,
@@ -9448,6 +9452,78 @@ fn parse_aspect_ratio(v: &str) -> Option<f32> {
         return (h != 0.0).then_some(w / h);
     }
     v.trim().parse::<f32>().ok().filter(|r| *r > 0.0)
+}
+
+/// `content-visibility` and `contain-intrinsic-size` (with its longhands,
+/// the logical ones as horizontal text has them).
+fn interpret_content_visibility(p: &HashMap<String, String>, st: &mut Style) {
+    if let Some(v) = p.get("content-visibility") {
+        st.content_visibility = match v.trim() {
+            "visible" => ContentVisibility::Visible,
+            "auto" => ContentVisibility::Auto,
+            "hidden" => ContentVisibility::Hidden,
+            other => {
+                warn(format!("`content-visibility: {other}` is not one Rux knows; write `visible`, `auto` or `hidden`"));
+                ContentVisibility::Visible
+            }
+        };
+    }
+    // One axis: `none`, a length, `auto <length>` or `auto none`.
+    let axis = |property: &str, v: &str| -> Option<IntrinsicSize> {
+        let words: Vec<&str> = v.split_whitespace().collect();
+        let (auto, rest) = match words.as_slice() {
+            ["auto", rest] => (true, *rest),
+            [rest] => (false, *rest),
+            _ => {
+                warn(format!("`{property}: {v}` is not a size Rux understands; write `200px`, `auto 200px` or `none`"));
+                return None;
+            }
+        };
+        if rest == "none" {
+            return Some(IntrinsicSize { auto, len: None });
+        }
+        match parse_px(rest) {
+            Some(px) if px >= 0.0 => Some(IntrinsicSize { auto, len: Some(px) }),
+            _ => {
+                warn(format!("`{property}: {v}` is not a size Rux understands; write `200px`, `auto 200px` or `none`"));
+                None
+            }
+        }
+    };
+    let mut sizes: [Option<IntrinsicSize>; 2] = [None, None];
+    if let Some(v) = p.get("contain-intrinsic-size") {
+        // One size for both, or width then height, each maybe `auto`.
+        let words: Vec<&str> = v.split_whitespace().collect();
+        let split = match words.as_slice() {
+            [a] => Some((a.to_string(), a.to_string())),
+            ["auto", a] => Some((format!("auto {a}"), format!("auto {a}"))),
+            [a, b] if *a != "auto" => Some((a.to_string(), b.to_string())),
+            ["auto", a, b] if *b != "auto" => Some((format!("auto {a}"), b.to_string())),
+            [a, "auto", b] if *a != "auto" => Some((a.to_string(), format!("auto {b}"))),
+            ["auto", a, "auto", b] => Some((format!("auto {a}"), format!("auto {b}"))),
+            _ => None,
+        };
+        match split {
+            Some((w, h)) => sizes = [axis("contain-intrinsic-size", &w), axis("contain-intrinsic-size", &h)],
+            None => warn(format!(
+                "`contain-intrinsic-size: {}` is not a size Rux understands; write `200px`, `auto 200px` or `auto 300px auto 200px`",
+                v.trim()
+            )),
+        }
+    }
+    for (property, i) in [
+        ("contain-intrinsic-width", 0),
+        ("contain-intrinsic-inline-size", 0),
+        ("contain-intrinsic-height", 1),
+        ("contain-intrinsic-block-size", 1),
+    ] {
+        if let Some(v) = p.get(property) {
+            sizes[i] = axis(property, v.trim());
+        }
+    }
+    if sizes.iter().any(Option::is_some) {
+        st.contain_intrinsic = Some(Box::new([sizes[0].unwrap_or_default(), sizes[1].unwrap_or_default()]));
+    }
 }
 
 /// Split `value` where `at` says, outside any brackets or braces.
