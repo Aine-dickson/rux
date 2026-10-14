@@ -45,6 +45,7 @@ fn content(s: &str, align: TextAlign) -> TextContent {
         preedit: None,
         selection_style: Default::default(),
         rich: None,
+        white_space: Default::default(),
     }
 }
 

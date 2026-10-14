@@ -2454,6 +2454,30 @@ including a value patched later) and in `rux-parser` (spaces kept inside a
 | `&nbsp;` | `[a&nbsp; b]` | two spaces between `a` and `b` | desktop: pass |
 | Web, Android | the same page | the same | not driven |
 
+## Sentences: a `<text>` inside a `<text>`, 2026-10-14
+
+Inline text flow (owner-approved: nested `<text>` as runs of one sentence,
+`<image>` and `<path>` as boxes in the line with `vertical-align`). Under test
+in `rux-text` (`tests/rich.rs`: seven cases on measuring, line heights,
+`vertical-align`, wrapping and the cache), `rux-layout` (`tests/inline.rs`:
+six on joining, placing a box, a run's tap region, Tab stop and role, a
+hidden run, and a measure that cannot place), `rux-style`
+(`sentence_tests`: seven on building, inheriting from the sentence, `*` not
+reaching the words between tags, a run's binding, what a screen reader hears,
+and the error for a `<view>` in a `<text>`) and `rux-parser` (the words
+between tags wrapped as runs). Driven in a desktop window with a debug build
+on one probe page, and once more with a `mounted` hook that taps the link.
+
+| Case | Steps | Expected | Result |
+|---|---|---|---|
+| Runs in a sentence | bold, italic, an underlined blue link and a highlighted run in one `<text>` | one paragraph, each run styled, the spaces between them single | desktop: pass |
+| Icons in a line | a 16px square `<path>` after words, under each `vertical-align` | baseline stands on the baseline, middle lower, text-top at the top of the text, text-bottom at its bottom | desktop: pass |
+| Wrapping | a 260px sentence with a bold run and an icon | wraps as one paragraph, the run and the icon moving with their words | desktop: pass |
+| A value and an `r-if` in runs | `Taps: <text>{{ taps }}</text><text r-if="taps > 0"> (thanks)</text>`, the link tapped twice from `mounted` | `Taps so far: 2 (thanks).` | desktop: pass |
+| A `<button>` in a `<text>` | `rux check` | an error at its line saying to put them side by side in a `<view>` | desktop: pass |
+| A pointer tap on a run, hover | | the run answers where its words are drawn | under the code only (injected clicks do not reach the window) |
+| Web, Android | the same page | the same | not driven |
+
 ## Standing gaps
 
 Cases nothing here can currently exercise. They are the shape of what v0.8 has

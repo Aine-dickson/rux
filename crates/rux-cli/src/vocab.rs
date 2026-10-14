@@ -50,9 +50,11 @@ const ELEMENTS: &[Entry] = &[
     Entry {
         name: "text",
         detail: "a run of text",
-        doc: "A run of text. Two `<text>` siblings **stack**: there is no inline \
-              flow, so they do not share a line. `role=\"heading\"` announces it \
-              as a heading.",
+        doc: "A run of text. A `<text>` inside a `<text>` is part of the same \
+              sentence, styled on its own (`Read the <text class=\"b\">terms</text>`), \
+              and `<image>` or `<path>` inside one sits in the line as a box, placed by \
+              `vertical-align`. Two `<text>` siblings still **stack**: they are two \
+              paragraphs. `role=\"heading\"` announces it as a heading.",
     },
     Entry {
         name: "image",
@@ -367,6 +369,7 @@ const CSS_VALUES: &[(&str, &[&str])] = &[
     ("font-weight", &["normal", "bold", "lighter", "bolder", "100", "200", "300", "400", "500", "600", "700", "800", "900"]),
     ("font-style", &["normal", "italic", "oblique"]),
     ("white-space", &["normal", "nowrap", "pre", "pre-wrap", "pre-line"]),
+    ("vertical-align", &["baseline", "middle", "text-top", "text-bottom"]),
     ("text-decoration", &["none", "underline", "line-through"]),
     ("text-decoration-line", &["none", "underline", "line-through"]),
     ("overflow-wrap", &["normal", "break-word", "anywhere"]),
@@ -548,6 +551,7 @@ const CSS_PROPERTY_DOCS: &[Entry] = &[
     Entry { name: "letter-spacing", detail: "extra space between characters", doc: "A length, positive or negative." },
     Entry { name: "word-spacing", detail: "extra space between words", doc: "A length, positive or negative." },
     Entry { name: "line-height", detail: "the height of one line of text", doc: "A number (a multiple of the font size) or a length. The usual way to give body text room to breathe." },
+    Entry { name: "vertical-align", detail: "where a box in a line of text sits", doc: "For an `<image>` or `<path>` inside a `<text>`. `baseline` (the default) stands it on the baseline, so an icon as tall as the text sits high; `middle` centres it on the text, which is usually what an icon wants; `text-top` and `text-bottom` line it up with the top or bottom of the text." },
     Entry { name: "white-space", detail: "whether runs of space collapse and lines wrap", doc: "`normal` and `nowrap` turn every run of spaces, tabs and newlines into one space, as CSS does; `pre` and `pre-wrap` keep them all; `pre-line` keeps newlines only, the one for text from data whose line breaks matter. `nowrap` and `pre` keep the text on one line." },
     Entry { name: "text-decoration", detail: "underline or strike-through", doc: "`underline` and `line-through` are drawn." },
     Entry { name: "text-decoration-line", detail: "which decoration to draw", doc: "The longhand of `text-decoration`." },
@@ -676,6 +680,7 @@ const CSS_PROPERTY_USAGE: &[(&str, &str)] = &[
     ("transform", ".msg:enter-from { transform: translateY(10px); }"),
     ("transition", ".msg { transition: opacity 180ms ease-out; }"),
     ("white-space", ".label { white-space: nowrap; }"),
+    ("vertical-align", ".icon { vertical-align: middle; }"),
     ("width", ".field { width: 100%; }"),
     ("word-break", ".code { word-break: break-all; }"),
     ("word-spacing", ".lead { word-spacing: 1px; }"),

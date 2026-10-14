@@ -3,7 +3,7 @@
   "elements": [
     { "name": "screen", "detail": "the whole display", "doc": "The display itself, not a box in it. Wherever it is written, including inside a clipped box or a component a `<route>` names, it covers the device: it defaults to `position: fixed` with every inset at zero." },
     { "name": "view", "detail": "a box; the generic container", "doc": "A generic box, the element most markup is made of. Defaults to `display: block`, so give it `display: flex` to lay its children out." },
-    { "name": "text", "detail": "a run of text", "doc": "A run of text. Two `<text>` siblings **stack**: there is no inline flow, so they do not share a line. `role=\"heading\"` announces it as a heading." },
+    { "name": "text", "detail": "a run of text", "doc": "A run of text. A `<text>` inside a `<text>` is part of the same sentence, styled on its own (`Read the <text class=\"b\">terms</text>`), and `<image>` or `<path>` inside one sits in the line as a box, placed by `vertical-align`. Two `<text>` siblings still **stack**: they are two paragraphs. `role=\"heading\"` announces it as a heading." },
     { "name": "image", "detail": "an image from a file", "doc": "`src` resolves relative to the `.rux` file, not the working directory. PNG, JPEG, GIF and WebP. With no CSS size it lays out at its intrinsic pixel size." },
     { "name": "path", "detail": "vector geometry from SVG path data", "doc": "`d` is SVG path data, in the element's own coordinates. Paint is CSS, not attributes: `fill`, `stroke`, `stroke-width`, `stroke-linecap`, `stroke-linejoin`, `fill-rule`. With no CSS size it lays out at the size of its own geometry. `:d` binds an expression, and two paths with the same command sequence animate between one another under `transition: d`." },
     { "name": "button", "detail": "a tappable box, announced as a button", "doc": "A tappable box. `<view @tap>` is the same thing to the layout; `<button>` says so to the accessibility tree." },
@@ -241,7 +241,8 @@
     "background", "background-color", "background-image", "color", "font-size", "font-weight",
     "font-family", "font-style", "text-align", "letter-spacing", "word-spacing", "line-height",
     "white-space", "text-decoration", "text-decoration-line", "overflow-wrap", "word-wrap", "word-break",
-    "fill", "fill-rule", "stroke", "stroke-width", "stroke-linecap", "stroke-linejoin"
+    "vertical-align", "fill", "fill-rule", "stroke", "stroke-width", "stroke-linecap",
+    "stroke-linejoin"
   ],
   "cssPropertyDocs": [
     { "name": "display", "detail": "how this box lays its children out", "doc": "`block` (the default), `flex`, `grid`, `inline` or `none`. **Rux defaults to `block`**, so a box does not lay its children out in a row until you say `display: flex`.", "usage": ".row { display: flex; }" },
@@ -340,6 +341,7 @@
     { "name": "letter-spacing", "detail": "extra space between characters", "doc": "A length, positive or negative.", "usage": ".caps { letter-spacing: 0.5px; }" },
     { "name": "word-spacing", "detail": "extra space between words", "doc": "A length, positive or negative.", "usage": ".lead { word-spacing: 1px; }" },
     { "name": "line-height", "detail": "the height of one line of text", "doc": "A number (a multiple of the font size) or a length. The usual way to give body text room to breathe.", "usage": ".body { line-height: 20px; }" },
+    { "name": "vertical-align", "detail": "where a box in a line of text sits", "doc": "For an `<image>` or `<path>` inside a `<text>`. `baseline` (the default) stands it on the baseline, so an icon as tall as the text sits high; `middle` centres it on the text, which is usually what an icon wants; `text-top` and `text-bottom` line it up with the top or bottom of the text.", "usage": ".icon { vertical-align: middle; }" },
     { "name": "white-space", "detail": "whether runs of space collapse and lines wrap", "doc": "`normal` and `nowrap` turn every run of spaces, tabs and newlines into one space, as CSS does; `pre` and `pre-wrap` keep them all; `pre-line` keeps newlines only, the one for text from data whose line breaks matter. `nowrap` and `pre` keep the text on one line.", "usage": ".label { white-space: nowrap; }" },
     { "name": "text-decoration", "detail": "underline or strike-through", "doc": "`underline` and `line-through` are drawn.", "usage": ".link { text-decoration: underline; }" },
     { "name": "text-decoration-line", "detail": "which decoration to draw", "doc": "The longhand of `text-decoration`.", "usage": ".done { text-decoration-line: line-through; }" },
@@ -375,6 +377,7 @@
     "font-weight": ["normal", "bold", "lighter", "bolder", "100", "200", "300", "400", "500", "600", "700", "800", "900"],
     "font-style": ["normal", "italic", "oblique"],
     "white-space": ["normal", "nowrap", "pre", "pre-wrap", "pre-line"],
+    "vertical-align": ["baseline", "middle", "text-top", "text-bottom"],
     "text-decoration": ["none", "underline", "line-through"],
     "text-decoration-line": ["none", "underline", "line-through"],
     "overflow-wrap": ["normal", "break-word", "anywhere"],

@@ -104,6 +104,22 @@ fn anchored_list_layout_cost() {
     cost(&src, "list 300 anchored rows");
 }
 
+/// The list with every row's name a sentence of three runs, one of them bold
+/// and bound, so every row is joined, shaped with ranged styles and placed
+/// part by part: the cost of inline text at list scale.
+#[test]
+#[ignore]
+fn sentence_list_layout_cost() {
+    let src = LIST
+        .replace(
+            r#"<text class="name">{{ item.name }}</text>"#,
+            r#"<text class="name">the <text class="b">{{ item.name }}</text> row</text>"#,
+        )
+        .replace("</style>", ".b { font-weight: 700; color: #f9e2af; }\n</style>");
+    assert!(src.contains(r#"class="b""#));
+    cost(&src, "list 300 sentence rows");
+}
+
 fn cost(src: &str, label: &str) {
     let mut doc = rux_runtime::Document::from_source(src).expect("load");
     let mut text = rux_text::TextEngine::new();
@@ -120,15 +136,19 @@ fn cost(src: &str, label: &str) {
         doc.fire_timers(now);
         patch_us.push(t.elapsed().as_secs_f64() * 1e6);
         let t = Instant::now();
-        let mut measure = |tc: &rux_layout::TextContent, mw: Option<f32>| {
-            text.measure(&tc.text, &rux_paint::text_style(tc), mw)
-        };
-        let out = kept.layout_scrolled(&doc.root, 800.0, 600.0, &[], &mut measure);
+        // Through the engine as the shell lays out, sentences included.
+        let out = kept.lay_out_text(&doc.root, 800.0, 600.0, &[], &mut rux_paint::EngineMeasure(&mut text));
         layout_us.push(t.elapsed().as_secs_f64() * 1e6);
         // A kept layout is the whole one, checked outside the timing. Debug
         // builds check every frame inside `layout_scrolled` itself.
         if layout_us.len() % 10 == 0 {
-            let whole = rux_layout::layout(&doc.root, 800.0, 600.0, &mut measure);
+            let whole = rux_layout::LayoutState::new().lay_out_text(
+                &doc.root,
+                800.0,
+                600.0,
+                &[],
+                &mut rux_paint::EngineMeasure(&mut text),
+            );
             assert_eq!(format!("{out:?}"), format!("{whole:?}"), "kept and whole layouts differ");
         }
         let t = Instant::now();

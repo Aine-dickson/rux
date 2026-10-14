@@ -169,6 +169,18 @@ pub struct TextEngine {
     /// (docs/11-next.md, track (g)). Cleared as `measured` is, and started
     /// over past [`SHAPED_CAP`].
     shaped: HashMap<MeasureKey, Layout<RunId>>,
+    /// Where the parts of a paragraph with runs landed, by the same key as
+    /// `shaped`: asked once per sentence per frame, and the same for the same
+    /// sentence. Cleared with it.
+    placed: HashMap<MeasureKey, Placed>,
+}
+
+/// A paragraph's inline boxes and run rectangles: see
+/// [`TextEngine::placed`].
+#[derive(Clone, Debug, Default)]
+pub struct Placed {
+    pub items: Vec<(f32, f32)>,
+    pub runs: Vec<Vec<(f32, f32, f32, f32)>>,
 }
 
 /// How many measurements the engine keeps before starting over. A key and its
@@ -313,6 +325,7 @@ impl TextEngine {
             layout_cx: LayoutContext::new(),
             measured: HashMap::new(),
             shaped: HashMap::new(),
+            placed: HashMap::new(),
         }
     }
 
@@ -341,6 +354,7 @@ impl TextEngine {
         // there before this one, and so was every layout kept for drawing.
         self.measured.clear();
         self.shaped.clear();
+        self.placed.clear();
 
         for generic in [
             GenericFamily::SansSerif,
@@ -525,7 +539,8 @@ impl TextEngine {
             return LineBox { top, height, baseline: top + half_leading + m.ascent };
         };
         let (mut ascent, mut descent) = (strut.ascent, strut.descent);
-        let mut boxes: Vec<(f32, f32)> = Vec::new();
+        // The furthest any box on the line reaches above and below.
+        let (mut box_above, mut box_below) = (f32::MIN, f32::MIN);
         for item in line.items() {
             match item {
                 PositionedLayoutItem::GlyphRun(g) => {
@@ -535,18 +550,16 @@ impl TextEngine {
                 }
                 PositionedLayoutItem::InlineBox(b) => {
                     if let Some(it) = rich.items.get(b.id as usize) {
-                        boxes.push(it.align.extent(it.height, strut.ascent, strut.descent, strut.x_height));
+                        let (a, d) = it.align.extent(it.height, strut.ascent, strut.descent, strut.x_height);
+                        box_above = box_above.max(a);
+                        box_below = box_below.max(d);
                     }
                 }
             }
         }
         let half_leading = style.line_height.map_or(0.0, |lh| (lh - (ascent + descent)) / 2.0);
-        let mut above = ascent + half_leading;
-        let mut below = descent + half_leading;
-        for (a, b) in boxes {
-            above = above.max(a);
-            below = below.max(b);
-        }
+        let above = (ascent + half_leading).max(box_above);
+        let below = (descent + half_leading).max(box_below);
         LineBox { top, height: above + below, baseline: top + above }
     }
 
@@ -624,9 +637,29 @@ impl TextEngine {
             layout.align(align.to_parley(), AlignmentOptions::default());
             if self.shaped.len() >= SHAPED_CAP {
                 self.shaped.clear();
+                self.placed.clear();
             }
             self.shaped.insert(key.owned(), layout);
         }
+    }
+
+    /// [`inline_boxes`](Self::inline_boxes) and [`run_rects`](Self::run_rects)
+    /// together, from a cache: what the layout asks of every sentence on every
+    /// frame.
+    pub fn placed(&mut self, text: &str, style: &TextStyle, align: Align, max_width: Option<f32>) -> Placed {
+        let key = KeyRef::new(text, style, max_width, align as u8);
+        if let Some(p) = self.placed.get(&key as &dyn AsKey) {
+            return p.clone();
+        }
+        let placed = Placed {
+            items: self.inline_boxes(text, style, align, max_width),
+            runs: self.run_rects(text, style, align, max_width),
+        };
+        if self.placed.len() >= SHAPED_CAP {
+            self.placed.clear();
+        }
+        self.placed.insert(key.owned(), placed.clone());
+        placed
     }
 
     /// Where each inline box of a paragraph sits, `(x, y)` from the text's
@@ -662,9 +695,42 @@ impl TextEngine {
         out
     }
 
-    /// The run a byte index falls in, `None` for the paragraph's own text.
-    pub fn run_at(rich: &RichText, index: usize) -> Option<usize> {
-        rich.runs.iter().position(|r| r.range.contains(&index))
+    /// Where each run of a paragraph is drawn: the rectangles `(x, y, w, h)`
+    /// it covers from the text's top-left, one per line it is on, in the order
+    /// of [`RichText::runs`]. Aligned as drawn, so a tap on a centred link
+    /// lands on the link.
+    pub fn run_rects(
+        &mut self,
+        text: &str,
+        style: &TextStyle,
+        align: Align,
+        max_width: Option<f32>,
+    ) -> Vec<Vec<(f32, f32, f32, f32)>> {
+        let Some(rich) = style.rich else { return Vec::new() };
+        let key = KeyRef::new(text, style, max_width, align as u8);
+        self.ensure_shaped(key, text, style, max_width, align);
+        let layout = &self.shaped[&key as &dyn AsKey];
+        let lines = Self::lines(layout, text, style);
+        rich.runs
+            .iter()
+            .map(|run| {
+                if run.range.is_empty() {
+                    return Vec::new();
+                }
+                let selection = Selection::new(
+                    Cursor::from_byte_index(layout, run.range.start.min(text.len()), Affinity::Downstream),
+                    Cursor::from_byte_index(layout, run.range.end.min(text.len()), Affinity::Upstream),
+                );
+                selection
+                    .geometry(layout)
+                    .into_iter()
+                    .filter_map(|(r, line)| {
+                        let lb = lines.get(line)?;
+                        Some((r.x0 as f32, lb.top, (r.x1 - r.x0) as f32, lb.height))
+                    })
+                    .collect()
+            })
+            .collect()
     }
 
     /// The byte range of the word under a point, for double-click-to-select.

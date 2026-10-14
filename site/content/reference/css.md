@@ -39,7 +39,8 @@ border-top-left-radius, border-top-right-radius
 border-bottom-right-radius, border-bottom-left-radius
 color, font-size, font-weight, font-family, font-style (italic), text-align
 letter-spacing, word-spacing, line-height
-white-space (normal|nowrap|pre|pre-wrap|pre-line; not inherited yet)
+white-space (normal|nowrap|pre|pre-wrap|pre-line; inherited only by a sentence's runs)
+vertical-align (baseline|middle|text-top|text-bottom; an <image> or <path> in a <text>)
 text-decoration, text-decoration-line (underline / line-through; the longhand
                        wins where both are set)  (color: hex, rgb()/rgba(), CSS names)
 overflow, overflow-x, overflow-y     (hidden|clip = clip; auto|scroll = scroll;

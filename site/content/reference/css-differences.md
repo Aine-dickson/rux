@@ -19,7 +19,7 @@ So this list is short on purpose, and each entry says which kind it is.
 |---|---|---|
 | ~~Flex cross-axis defaults to `flex-start`, not `stretch`~~ | a preference, taken for ergonomics | **Reverted in v0.8.** The default is `stretch`, as in CSS |
 | `border-radius` in percent resolves against the **shorter side**, so `50%` on a 160x60 box is a pill and not CSS's ellipse | a capability: Rux draws one radius per corner and cannot draw an elliptical corner | Keep |
-| No inline text flow: two `<text>` siblings stack instead of sharing a line | a capability: the layout engine has no inline layout, which is why `display: inline` was built and then removed | Keep |
+| No `display: inline` or `inline-block`: two `<text>` siblings stack, and a line holds only words, nested `<text>`, `<image>` and `<path>` | a capability: inline flow is built for text (a `<text>` inside a `<text>`), not for boxes with their own layout | Keep |
 
 Two things that look like differences and are not: `display` defaults to
 `block`, and `flex: 1` means `1 1 0%`. Both are CSS's own answers.

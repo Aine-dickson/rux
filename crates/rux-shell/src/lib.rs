@@ -1019,6 +1019,7 @@ fn dropdown_paints(sel: &SelectRegion, value: &str) -> Vec<Paint> {
                 preedit: None,
                 selection_style: Default::default(),
                 rich: None,
+                white_space: Default::default(),
             },
         }));
     }
@@ -1401,6 +1402,7 @@ fn overlay_text(text: String, font_size: f32, weight: u16, color: Rgba) -> TextC
         preedit: None,
         selection_style: Default::default(),
         rich: None,
+        white_space: Default::default(),
     }
 }
 
@@ -6006,15 +6008,12 @@ impl App {
         // Layout (text sized via the engine's measure), then paint. Cache the
         // hit regions for tap dispatch.
         let mut layout = profile::time(Phase::Layout, || {
-            let mut measure = |tc: &rux_layout::TextContent, mw: Option<f32>| {
-                text.measure(&tc.text, &rux_paint::text_style(tc), mw)
-            };
-            layout_state.layout_scrolled(
+            layout_state.lay_out_text(
                 &document.root,
                 logical.0 as f32,
                 logical.1 as f32,
                 offsets,
-                &mut measure,
+                &mut rux_paint::EngineMeasure(text),
             )
         });
         // Keep offsets in step with the scrollers the new layout actually has, and

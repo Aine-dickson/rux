@@ -448,7 +448,8 @@ is, so it works anywhere a length does.
 parses it and does name-matching + fallback; the generic families (`serif`,
 `sans-serif`, `monospace`, …) always resolve. It **inherits**, like `color` and
 `font-size`. `color`/`font-size`/`font-family` are the three inheriting text
-properties.
+properties, with one exception: a `<text>` hands the rest of its text style to
+the runs of its own sentence (see [Elements](#elements)).
 
 Anything else is **parsed but not honored**, and never *silently*: the runtime
 prints one line per unhonored property, once each. It says which of three things
@@ -963,7 +964,8 @@ drag-selects.
   hover/fade, and `overflow-x` / `overflow-y` can't differ from each other.
 - CSS: `box-shadow`, `position`/`top`/`left`, per-corner radius, per-side border
   *colors*.
-- True inline text-flow (taffy can't; would need our own line-breaker).
+- ~~True inline text-flow.~~ Built in v0.9: a `<text>` inside a `<text>`, and
+  `<image>`/`<path>` in a line.
 - `r-for` rebuilds more rows than a keyed diff would; effects and computed
   values are still absent from the reactive tier.
 

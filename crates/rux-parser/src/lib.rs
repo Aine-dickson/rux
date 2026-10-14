@@ -516,6 +516,7 @@ pub fn parse_sfc(src: &str) -> Result<Sfc, ParseError> {
     // same trade `offset_lines` already makes for a ParseError.
     offset_element_lines(&mut template, lines_before);
     wrap_button_text(&mut template);
+    wrap_sentence_runs(&mut template);
 
     Ok(Sfc {
         file: None,
@@ -557,6 +558,42 @@ fn wrap_button_text(el: &mut Element) {
                 *child = Node::Element(wrapped);
             }
             Node::Text(..) => {}
+        }
+    }
+}
+
+/// The tag of an anonymous run: the words between two tags of a `<text>` that
+/// has elements inside it. `#` cannot start a tag an author writes, so nothing
+/// in a template can name it, match it or collide with it.
+pub const RUN_TAG: &str = "#run";
+
+/// `<text>Read the <text class="b">terms</text> now</text>` means three runs of
+/// one sentence: `Read the `, `terms` and ` now`. The two an author did not wrap
+/// are wrapped here, as [`RUN_TAG`] elements, so each piece of the sentence is
+/// an element and the build treats them alike: each gets its own text binding,
+/// and `r-if` on a sibling cannot shift which `{{ }}` belongs where. A `<text>`
+/// with no element inside it is left as it is, plain words.
+///
+/// Every piece is kept, a run that is only a space included: it may be the
+/// space between two words, and `white-space` decides.
+fn wrap_sentence_runs(el: &mut Element) {
+    for child in &mut el.children {
+        if let Node::Element(inner) = child {
+            wrap_sentence_runs(inner);
+        }
+    }
+    if el.tag != "text" || !el.children.iter().any(|c| matches!(c, Node::Element(_))) {
+        return;
+    }
+    for child in &mut el.children {
+        if let Node::Text(text, line) = child {
+            let run = Element {
+                tag: RUN_TAG.to_string(),
+                attrs: Vec::new(),
+                children: vec![Node::Text(std::mem::take(text), *line)],
+                line: *line,
+            };
+            *child = Node::Element(run);
         }
     }
 }
@@ -1292,18 +1329,28 @@ mod tests {
         let src = "<template><view>\n  <text>\n    Read the <text>terms</text> <text>now</text>\n  </text>\n</view></template>";
         let sfc = parse_sfc(src).unwrap();
         let Node::Element(text) = &sfc.template.children[0] else { panic!("the outer text") };
-        let runs: Vec<&str> = text
+        // A `<text>` with elements inside is a sentence: the words between
+        // its tags are runs of their own, every one kept.
+        let words = |c: &Node| match c {
+            Node::Element(e) if e.tag == RUN_TAG => match &e.children[..] {
+                [Node::Text(t, line)] => Some((t.clone(), *line)),
+                _ => None,
+            },
+            _ => None,
+        };
+        let runs: Vec<String> = text.children.iter().filter_map(words).map(|(t, _)| t).collect();
+        assert_eq!(runs, ["\n    Read the ", " ", "\n  "]);
+        let tags: Vec<&str> = text
             .children
             .iter()
-            .filter_map(|c| match c {
-                Node::Text(t, _) => Some(t.as_str()),
-                Node::Element(_) => None,
+            .map(|c| match c {
+                Node::Element(e) => e.tag.as_str(),
+                Node::Text(..) => "loose text",
             })
             .collect();
-        assert_eq!(runs, ["\n    Read the ", " ", "\n  "]);
+        assert_eq!(tags, [RUN_TAG, "text", RUN_TAG, "text", RUN_TAG]);
         // The run's line is where its words start, as before.
-        let Node::Text(_, line) = &text.children[0] else { panic!("a run") };
-        assert_eq!(*line, 3);
+        assert_eq!(words(&text.children[0]).map(|(_, l)| l), Some(3));
         // The view's own indentation is still nothing.
         assert!(sfc.template.children.iter().all(|c| matches!(c, Node::Element(_))));
     }

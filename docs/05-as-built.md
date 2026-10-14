@@ -406,6 +406,38 @@ the indentation after it was drawn; text from data that relied on that needs
 `white-space: pre-line` now. Text fields are not affected: what is typed is
 kept as typed.
 
+**A `<text>` inside a `<text>` is part of the same sentence.** This is how a
+word is made bold, a link is put in a line, or a value is coloured on its own:
+
+```html
+<text>Read the <text class="b">terms</text> before you
+  <text class="link" @tap="open()">sign</text>.</text>
+```
+
+The whole sentence wraps as one paragraph, its runs moving with it, and spaces
+collapse across them: the space before `<text class="b">` is the space between
+two words. A run takes the rest of the sentence's text style where it says
+nothing of its own (`font-weight`, `font-style`, `letter-spacing`,
+`word-spacing`, `white-space`, and the sentence's decorations), on top of the
+`color`, `font-size` and `font-family` every element inherits. It has its own
+`color`, `font-*`, `text-decoration` and spacing, and a solid `background` on
+a run highlights its words, line by line. Each run is still an element: its own
+`{{ }}`, `r-if`, `r-for`, `@tap` (found by a tap on its words, and a Tab stop),
+`:class` and `query()`. Padding, borders and margins on a run are not drawn, and
+`:hover` on a run is not matched yet. The words between tags are the sentence's
+own and match no rule, not even `*`, as in CSS.
+
+**`<image>` and `<path>` inside a `<text>` sit in the line** as a box the size
+of their `width` and `height` (or their own size), wrapping with the words
+around them. `vertical-align` places one: `baseline` (the default, CSS's)
+stands it on the baseline, which leaves an icon as tall as the text sitting
+high; `middle` centres it on the text, which is what an icon usually wants;
+`text-top` and `text-bottom` line it up with the top or bottom of the text. A
+taller box makes its line taller. Anything else inside a `<text>` (a `<view>`,
+a `<button>`, a component) is an error: a box with its own layout in a line is
+CSS's `inline-block`, which Rux does not have, so put the two side by side in a
+`<view>` instead. Two `<text>` *siblings* still stack: they are two paragraphs.
+
 **`<screen>` is the display, wherever it is written.** At the document root
 that is nothing new: the root has always been forced to the viewport, whatever
 its tag. Below the root it now means what the word says. A `<screen>` inside a
@@ -513,7 +545,8 @@ Driven in `examples/chart.rux` and `examples/morph.rux`.
   inner width, so it can't burst out of a narrower parent. An explicit `width` (or
   `flex-shrink: 0`) is your call and *will* overflow, so clip it with `overflow: hidden`.
 - `display: grid` works (`grid-template-columns` / `-rows`: `1fr`, `px`, `auto`).
-- No inline text flow: two `<text>` siblings **stack**, they don't share a line.
+- Two `<text>` siblings **stack**, as two paragraphs do. A `<text>` *inside* a
+  `<text>` shares its line: see [Elements](#elements).
 - **Lengths are logical pixels.** Layout and taps run in logical space and the
   scene is scaled to the display's DPI, so `16px` is the same physical size on a
   1x and a 2x screen.
@@ -533,7 +566,7 @@ So this list is short on purpose, and each entry says which kind it is.
 |---|---|---|
 | ~~Flex cross-axis defaults to `flex-start`, not `stretch`~~ | a preference, taken for ergonomics | **Reverted in v0.8.** The default is `stretch`, as in CSS |
 | `border-radius` in percent resolves against the **shorter side**, so `50%` on a 160x60 box is a pill and not CSS's ellipse | a capability: Rux draws one radius per corner and cannot draw an elliptical corner | Keep |
-| No inline text flow: two `<text>` siblings stack instead of sharing a line | a capability: the layout engine has no inline layout, which is why `display: inline` was built and then removed | Keep |
+| No `display: inline` or `inline-block`: two `<text>` siblings stack, and a line holds only words, nested `<text>`, `<image>` and `<path>` | a capability: inline flow is built for text (a `<text>` inside a `<text>`), not for boxes with their own layout | Keep |
 
 Two things that look like differences and are not: `display` defaults to
 `block`, and `flex: 1` means `1 1 0%`. Both are CSS's own answers.
@@ -573,7 +606,8 @@ border-top-left-radius, border-top-right-radius
 border-bottom-right-radius, border-bottom-left-radius
 color, font-size, font-weight, font-family, font-style (italic), text-align
 letter-spacing, word-spacing, line-height
-white-space (normal|nowrap|pre|pre-wrap|pre-line; not inherited yet)
+white-space (normal|nowrap|pre|pre-wrap|pre-line; inherited only by a sentence's runs)
+vertical-align (baseline|middle|text-top|text-bottom; an <image> or <path> in a <text>)
 text-decoration, text-decoration-line (underline / line-through; the longhand
                        wins where both are set)  (color: hex, rgb()/rgba(), CSS names)
 overflow, overflow-x, overflow-y     (hidden|clip = clip; auto|scroll = scroll;
@@ -1115,7 +1149,8 @@ is, so it works anywhere a length does.
 parses it and does name-matching + fallback; the generic families (`serif`,
 `sans-serif`, `monospace`, …) always resolve. It **inherits**, like `color` and
 `font-size`. `color`/`font-size`/`font-family` are the three inheriting text
-properties.
+properties, with one exception: a `<text>` hands the rest of its text style to
+the runs of its own sentence (see [Elements](#elements)).
 
 Anything else is **parsed but not honored**, and never *silently*: the runtime
 prints one line per unhonored property, once each. It says which of three things
@@ -2818,7 +2853,8 @@ for the reasons under "Checking a file without opening a window".
   hover/fade, and `overflow-x` / `overflow-y` can't differ from each other.
 - CSS: `box-shadow`, `position`/`top`/`left`, per-corner radius, per-side border
   *colors*.
-- True inline text-flow (taffy can't; would need our own line-breaker).
+- ~~True inline text-flow.~~ Built in v0.9: a `<text>` inside a `<text>`, and
+  `<image>`/`<path>` in a line.
 - `r-for` rebuilds more rows than a keyed diff would; effects and computed
   values are still absent from the reactive tier.
 

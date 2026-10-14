@@ -33,6 +33,7 @@ fn plain_text(text: &str) -> TextContent {
         preedit: None,
         selection_style: Default::default(),
         rich: None,
+        white_space: Default::default(),
     }
 }
 

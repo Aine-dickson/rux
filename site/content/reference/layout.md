@@ -21,7 +21,8 @@ weight = 3
   inner width, so it can't burst out of a narrower parent. An explicit `width` (or
   `flex-shrink: 0`) is your call and *will* overflow, so clip it with `overflow: hidden`.
 - `display: grid` works (`grid-template-columns` / `-rows`: `1fr`, `px`, `auto`).
-- No inline text flow: two `<text>` siblings **stack**, they don't share a line.
+- Two `<text>` siblings **stack**, as two paragraphs do. A `<text>` *inside* a
+  `<text>` shares its line: see [Elements](#elements).
 - **Lengths are logical pixels.** Layout and taps run in logical space and the
   scene is scaled to the display's DPI, so `16px` is the same physical size on a
   1x and a 2x screen.

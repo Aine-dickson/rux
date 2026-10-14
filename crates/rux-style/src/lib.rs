@@ -39,9 +39,10 @@ pub use anim::{Animator, FRAME_MS};
 /// A form field's built-in checks, shared by `:invalid` and submission.
 pub mod checks;
 
-/// `white-space`: which spaces in a `<text>` are drawn.
-pub mod white_space;
-pub use white_space::WhiteSpace;
+/// `white-space`: which spaces in a `<text>` are drawn. It lives in the layout,
+/// which joins the runs of a sentence and collapses the spaces between them.
+pub use rux_layout::white_space;
+pub use rux_layout::WhiteSpace;
 
 /// Loop-variable bindings introduced by `r-for`, layered as a scope stack and
 /// injected into the script engine for each evaluation.
@@ -205,7 +206,9 @@ pub struct TextBinding {
     /// Signals this binding reads, its subscription set.
     pub deps: HashSet<String>,
     /// The text's `white-space`, applied to every new value as to the first.
-    pub white_space: WhiteSpace,
+    /// `None` for a run of a sentence, whose spaces are collapsed with the
+    /// runs beside it when the layout joins them.
+    pub white_space: Option<WhiteSpace>,
 }
 
 /// An `<input>`'s displayed value, patchable in place: the input node's path, the
@@ -1368,6 +1371,32 @@ struct Inherited {
     /// Custom properties (`--name`) in scope. They inherit like the text
     /// properties above, see [`Vars`].
     vars: Vars,
+    /// Inside a `<text>`: the rest of its text style, which its runs take
+    /// unless they say otherwise. `None` everywhere else, see [`RunInherit`].
+    run: Option<RunInherit>,
+}
+
+/// What a run of a sentence takes from the `<text>` it is in, beyond the
+/// three properties every element inherits.
+///
+/// CSS inherits all of these everywhere; Rux inherits only `color`,
+/// `font-size` and `font-family` from a box to the text in it (see
+/// docs/05-as-built.md). Inside a sentence there is no choice: a word in
+/// `<text class="bold">Read the <text>terms</text></text>` is in a bold
+/// sentence, and a run that dropped the weight would split one sentence into
+/// two looks. So a `<text>` hands the rest of its style to its runs, and only
+/// to them.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct RunInherit {
+    weight: u16,
+    italic: bool,
+    letter_spacing: Option<f32>,
+    word_spacing: Option<f32>,
+    /// Decorations do not inherit in CSS, but they are drawn under every word
+    /// of the box that has them, nested runs included, which comes to the same.
+    underline: bool,
+    strikethrough: bool,
+    white_space: WhiteSpace,
 }
 
 /// CSS custom properties (`--name: value`) in scope for an element: its own
@@ -1756,7 +1785,10 @@ pub fn build_styled_tree(
 /// the runtime writes into the node at `binding.path` when a dependency changes.
 pub fn eval_text_binding(binding: &TextBinding, engine: &mut Engine) -> String {
     let text = interpolate_tracked(&binding.template, engine, &binding.locals).0;
-    white_space::collapse(&text, binding.white_space)
+    match binding.white_space {
+        Some(mode) => white_space::collapse(&text, mode),
+        None => text,
+    }
 }
 
 /// The class names a `:class` value contributes: a string splits on whitespace; a
@@ -2117,6 +2149,7 @@ pub fn build_styled_tree_stateful(
             font_size: DEFAULT_FONT_SIZE,
             font_family: None,
             vars: Vars::default(),
+            run: None,
         },
         engine,
         &locals,
@@ -2289,6 +2322,112 @@ fn text_line(el: &Element) -> usize {
 /// The runs exactly as written, spaces included: the parser keeps them inside
 /// a `<text>`, and [`white_space`] decides which are drawn once the `{{ }}`
 /// values are in.
+/// The words between two tags of a sentence, as the run the parser wrapped
+/// them in (see `rux_parser::RUN_TAG`). It matches no rule, not even `*`, as
+/// CSS's anonymous boxes do not: it is the sentence's own words, in the
+/// sentence's own style, and takes all of it from the `<text>` around it.
+fn build_run(
+    el: &Element,
+    inherited: &Inherited,
+    engine: &mut Engine,
+    locals: &Locals,
+    path: &[usize],
+    reg: &mut BindingRegistry,
+) -> LayoutNode {
+    let run = inherited.run.unwrap_or(RunInherit {
+        weight: 400,
+        italic: false,
+        letter_spacing: None,
+        word_spacing: None,
+        underline: false,
+        strikethrough: false,
+        white_space: WhiteSpace::Normal,
+    });
+    let template = text_template(el);
+    let (text, deps) =
+        rux_script::located(Some(text_line(el)), || interpolate_tracked(&template, engine, locals));
+    if template.contains("{{") {
+        // Uncollapsed: the layout collapses it with the runs beside it.
+        reg.text.push(TextBinding { path: path.to_vec(), template, locals: locals.clone(), deps, white_space: None });
+    }
+    let mut node = LayoutNode::text(
+        rux_layout::Style::default(),
+        TextContent {
+            text,
+            font_size: inherited.font_size,
+            weight: run.weight,
+            color: inherited.color,
+            align: Default::default(),
+            wrap: Default::default(),
+            font_family: inherited.font_family.clone(),
+            letter_spacing: run.letter_spacing,
+            word_spacing: run.word_spacing,
+            line_height: None,
+            italic: run.italic,
+            underline: run.underline,
+            strikethrough: run.strikethrough,
+            nowrap: !run.white_space.wraps(),
+            caret: None,
+            selection: None,
+            preedit: None,
+            selection_style: Default::default(),
+            rich: None,
+            white_space: run.white_space,
+        },
+    );
+    node.access = Access { role: AccessRole::None, ..Access::default() };
+    node
+}
+
+/// What a sentence can hold: words, more `<text>`, and the two elements that
+/// make sense as a box in a line, `<image>` and `<path>`. Anything else in a
+/// `<text>` used to be dropped without a word; a `<view>` or a `<button>` in a
+/// line is `inline-block`, which Rux does not have, so it is an error that
+/// says so rather than a guess.
+fn check_sentence_children(el: &Element) {
+    for child in &el.children {
+        let TplNode::Element(c) = child else { continue };
+        if matches!(c.tag.as_str(), "text" | "image" | "path") || c.tag == rux_parser::RUN_TAG {
+            continue;
+        }
+        located(Some(c.line), || {
+            error(format!(
+                "`<{}>` cannot be inside a `<text>`: a line of text holds words, more `<text>`, and \
+                 `<image>` or `<path>` as a box in the line. Put the `<text>` and the `<{}>` side by side \
+                 in a `<view>` instead",
+                c.tag, c.tag
+            ))
+        });
+    }
+}
+
+/// A text's words as a screen reader should hear them: its own, or for a
+/// sentence all of its runs', in order and with their spaces collapsed.
+fn sentence_words(node: &LayoutNode) -> String {
+    fn gather(node: &LayoutNode, out: &mut Vec<(String, WhiteSpace)>) {
+        for c in &node.children {
+            if c.hidden {
+                continue;
+            }
+            if let Some(tc) = &c.text {
+                if c.children.is_empty() {
+                    out.push((tc.text.clone(), tc.white_space));
+                } else {
+                    gather(c, out);
+                }
+            }
+        }
+    }
+    let Some(tc) = &node.text else { return String::new() };
+    if node.children.is_empty() {
+        return tc.text.clone();
+    }
+    let mut runs = Vec::new();
+    gather(node, &mut runs);
+    let borrowed: Vec<(&str, WhiteSpace)> = runs.iter().map(|(t, w)| (t.as_str(), *w)).collect();
+    white_space::collapse_runs(&borrowed).concat()
+}
+
 fn text_template(el: &Element) -> String {
     el.children
         .iter()
@@ -3491,7 +3630,7 @@ const HONORED_PROPERTIES: &[&str] = &[
     "color", "font-size", "font-weight", "font-family", "font-style", "text-align",
     "letter-spacing", "word-spacing", "line-height", "white-space",
     "text-decoration", "text-decoration-line",
-    "overflow-wrap", "word-wrap", "word-break",
+    "overflow-wrap", "word-wrap", "word-break", "vertical-align",
     // <path>. Paint is CSS rather than attributes because that is where the
     // rest of an element's appearance is written, and it is what gives a path
     // `:hover`, `:class` and `transition` on the day it lands.
@@ -3713,7 +3852,7 @@ const UNIMPLEMENTED_PROPERTIES: &[&str] = &[
     "background-attachment", "background-clip", "background-origin",
     // Text
     "text-transform", "text-overflow", "text-indent", "text-decoration-color",
-    "text-decoration-style", "vertical-align", "font-variant", "font-stretch",
+    "text-decoration-style", "font-variant", "font-stretch",
     "direction", "writing-mode", "user-select", "caret-color",
     "appearance", "list-style", "list-style-type", "list-style-position",
     // Motion. `transition` is honored; keyframe animation and the origin a
@@ -4312,6 +4451,9 @@ fn build_node_inner(
     // tag inside a component matched nothing, expanded to nothing, and left an
     // empty screen to be read as an empty list. A tag is the one name in a
     // template with no other way to fail.
+    if el.tag == rux_parser::RUN_TAG {
+        return build_run(el, inherited, engine, locals, path, reg);
+    }
     if !rux_parser::is_element(&el.tag) && find_component(comps, &el.tag).is_none() {
         located(Some(el.line), || {
             error(format!(
@@ -4685,10 +4827,27 @@ fn build_node_inner(
     // `white-space`: `nowrap` and `pre` stop line breaking, and a `<text>`
     // collapses its spaces by it (see `white_space`).
     let white_space = props.get("white-space").and_then(|v| WhiteSpace::parse(v)).unwrap_or_default();
-    let nowrap = !white_space.wraps();
 
     if el.tag == "text" {
-        let weight = props.get("font-weight").and_then(|v| parse_weight(v)).unwrap_or(400);
+        // A run of a sentence takes the rest of the sentence's style where it
+        // says nothing of its own. See `RunInherit`.
+        let outer = inherited.run;
+        let weight = props
+            .get("font-weight")
+            .and_then(|v| parse_weight(v))
+            .or(outer.map(|r| r.weight))
+            .unwrap_or(400);
+        let italic = if props.contains_key("font-style") { italic } else { outer.is_some_and(|r| r.italic) };
+        let letter_spacing = letter_spacing.or(outer.and_then(|r| r.letter_spacing));
+        let word_spacing = word_spacing.or(outer.and_then(|r| r.word_spacing));
+        let underline = underline || outer.is_some_and(|r| r.underline);
+        let strikethrough = strikethrough || outer.is_some_and(|r| r.strikethrough);
+        let white_space = if props.contains_key("white-space") {
+            white_space
+        } else {
+            outer.map_or(white_space, |r| r.white_space)
+        };
+        let nowrap = !white_space.wraps();
         let align = props
             .get("text-align")
             .map(|v| parse_text_align(v))
@@ -4702,14 +4861,20 @@ fn build_node_inner(
         // line the tag opened on.
         let (text, deps) =
             rux_script::located(Some(text_line(el)), || interpolate_tracked(&template, engine, locals));
-        let text = white_space::collapse(&text, white_space);
+        // A run keeps its spaces for the layout, which collapses them with the
+        // runs beside it; anything else is collapsed now.
+        let collapse = outer.is_none().then_some(white_space);
+        let text = match collapse {
+            Some(mode) => white_space::collapse(&text, mode),
+            None => text,
+        };
         if template.contains("{{") {
             reg.text.push(TextBinding {
                 path: path.to_vec(),
                 template,
                 locals: locals.clone(),
                 deps,
-                white_space,
+                white_space: collapse,
             });
         }
         let mut node = LayoutNode::text(
@@ -4734,8 +4899,65 @@ fn build_node_inner(
                 preedit: None,
                 selection_style: Default::default(),
                 rich: None,
+                white_space,
             },
         );
+        // A sentence: the pieces inside it are built as its children, each the
+        // element it is, and the layout joins them into one text.
+        if el.children.iter().any(|c| matches!(c, TplNode::Element(_))) {
+            check_sentence_children(el);
+            let run = RunInherit { weight, italic, letter_spacing, word_spacing, underline, strikethrough, white_space };
+            let child_inherited = Inherited {
+                color,
+                selection,
+                font_size,
+                font_family: font_family.clone(),
+                vars: Rc::clone(&vars),
+                run: Some(run),
+            };
+            let siblings = if KEEP_SIBLINGS.with(std::cell::Cell::get) { prev.to_vec() } else { Vec::new() };
+            ancestors.push(AncNode { desc, prev: siblings, form: None });
+            let plain = instance.is_none() && slot.is_none() && outlet.is_none() && row.is_none();
+            let (children, structural_deps) = build_children(
+                &element_children(el),
+                rules,
+                comps,
+                ancestors,
+                &child_inherited,
+                engine,
+                locals,
+                path,
+                tpl_path,
+                reg,
+                state,
+                instances,
+                swaps,
+                instance,
+                slot,
+                outlet,
+                row,
+            );
+            // Rebuilt alone when an `r-if` or `r-for` inside it changes, as any
+            // other parent's children are.
+            let ctx = (plain && !structural_deps.is_empty()).then(|| {
+                Rc::new(ListCtx {
+                    el: el as *const Element as usize,
+                    ancestors: ancestors.clone(),
+                    inherited: child_inherited.clone(),
+                    locals: locals.clone(),
+                })
+            });
+            ancestors.pop();
+            if !structural_deps.is_empty() {
+                reg.structural_parents.push(StructuralParent {
+                    tree_path: path.to_vec(),
+                    tpl_path: tpl_path.to_vec(),
+                    deps: structural_deps,
+                    ctx,
+                });
+            }
+            node.children = children;
+        }
         node.on_tap = on_tap;
         // Inside a component a tap here runs against that instance's state,
         // as the general element branch below has always said; this branch
@@ -4749,17 +4971,21 @@ fn build_node_inner(
         // Static text reads as a label; `role="heading"` promotes it. Text that is
         // itself tappable is a button whose name is its own words, unless it is a
         // link, which a screen reader announces differently and should.
+        // A run that is only words is read as part of its sentence, so it is
+        // nothing of its own; one that does something is a link or a button
+        // inside it. A sentence is read by all of its words.
+        let words = sentence_words(&node);
         node.access = Access {
             role: explicit_access_role(el).unwrap_or(if to.is_some() {
                 AccessRole::Link
             } else if node.on_tap.is_some() {
                 AccessRole::Button
+            } else if outer.is_some() {
+                AccessRole::None
             } else {
                 AccessRole::Label
             }),
-            label: authored_label(el).or_else(|| {
-                node.text.as_ref().map(|t| t.text.trim().to_string()).filter(|t| !t.is_empty())
-            }),
+            label: authored_label(el).or_else(|| Some(words.trim().to_string()).filter(|t| !t.is_empty())),
             ..Access::default()
         };
         return node;
@@ -5212,6 +5438,7 @@ fn build_node_inner(
                     ..selection
                 },
                 rich: None,
+                white_space: Default::default(),
             },
         );
         let mut node = LayoutNode::new(style);
@@ -5270,7 +5497,7 @@ fn build_node_inner(
     let siblings = if KEEP_SIBLINGS.with(std::cell::Cell::get) { prev.to_vec() } else { Vec::new() };
     ancestors.push(AncNode { desc, prev: siblings, form: is_form.then(|| path.to_vec()) });
     let element_children = element_children(el);
-    let child_inherited = Inherited { color, selection, font_size, font_family, vars: Rc::clone(&vars) };
+    let child_inherited = Inherited { color, selection, font_size, font_family, vars: Rc::clone(&vars), run: None };
     let plain = instance.is_none() && slot.is_none() && outlet.is_none() && row.is_none();
     let (children, structural_deps) = build_children(
         &element_children,
@@ -6907,7 +7134,9 @@ fn build_children(
         in_chain = false;
         let cp = child_path(&out);
         out.push(build_node(el, rules, comps, ancestors, &prev, inherited, engine, locals, &cp, &ctp, reg, state, instances, swaps, instance, slot, outlet, row, None));
-        prev.push(ElemDesc::of(el));
+        if el.tag != rux_parser::RUN_TAG {
+            prev.push(ElemDesc::of(el));
+        }
     }
     (out, structural_deps)
 }
@@ -7662,7 +7891,7 @@ fn frag_has_other_place(frag: &BindingRegistry, own: Option<&str>) -> bool {
 /// Destructured so that a field added to either struct fails to compile here
 /// rather than being silently left out of the comparison.
 fn same_inherited(a: &Inherited, b: &Inherited) -> bool {
-    let Inherited { color, selection, font_size, font_family, vars } = a;
+    let Inherited { color, selection, font_size, font_family, vars, run } = a;
     let SelectionStyle { background, color: text, handle } = selection;
     let rgba = |x: &Rgba, y: &Rgba| x.r == y.r && x.g == y.g && x.b == y.b && x.a == y.a;
     let opt = |x: &Option<Rgba>, y: &Option<Rgba>| match (x, y) {
@@ -7677,6 +7906,7 @@ fn same_inherited(a: &Inherited, b: &Inherited) -> bool {
         && *font_size == b.font_size
         && *font_family == b.font_family
         && (Rc::ptr_eq(vars, &b.vars) || **vars == *b.vars)
+        && *run == b.run
 }
 
 /// Put a kept row into this build at `path`: its node, and its registry
@@ -8178,6 +8408,10 @@ fn interpret(p: &HashMap<String, String>) -> Style {
         if v.trim() == "break-all" {
             st.text_wrap = TextWrap::Anywhere;
         }
+    }
+    // Where an `<image>` or `<path>` inside a `<text>` sits against the line.
+    if let Some(a) = p.get("vertical-align").and_then(|v| rux_layout::VerticalAlign::parse(v)) {
+        st.vertical_align = a;
     }
     if let Some(v) = p.get("opacity") {
         if let Ok(o) = first(v).parse::<f32>() {
@@ -11857,5 +12091,139 @@ mod white_space_tests {
     fn a_non_breaking_space_survives() {
         let (texts, ..) = texts("<template><screen><text> a&nbsp; b </text></screen></template>");
         assert_eq!(texts, ["a\u{a0} b"]);
+    }
+}
+
+#[cfg(test)]
+mod sentence_tests {
+    use std::collections::HashMap;
+
+    use rux_layout::{AccessRole, Node};
+    use rux_script::Builder;
+
+    fn built(src: &str) -> (Node, super::BindingRegistry) {
+        let sfc = rux_parser::parse_sfc(src).unwrap();
+        let mut engine = Builder::new().build(&sfc.script).unwrap();
+        let mut instances = super::Instances::new();
+        super::build_styled_tree_tracked(
+            &sfc,
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut engine,
+            &mut instances,
+            &mut crate::Swaps::new(),
+        )
+        .unwrap()
+    }
+
+    fn text(n: &Node) -> &rux_layout::TextContent {
+        n.text.as_ref().expect("a text")
+    }
+
+    /// The pieces of a sentence are its children, in order, each with its own
+    /// words kept as written for the layout to join.
+    #[test]
+    fn a_sentence_is_built_as_its_pieces() {
+        let (root, _) = built(
+            r#"<template><screen>
+                 <text>Read the <text class="b">terms</text> now</text>
+               </screen></template>
+               <style>.b { font-weight: 700; }</style>"#,
+        );
+        let s = &root.children[0];
+        assert_eq!(text(s).text, "");
+        let pieces: Vec<(&str, u16)> = s.children.iter().map(|c| (text(c).text.as_str(), text(c).weight)).collect();
+        assert_eq!(pieces, [("Read the ", 400), ("terms", 700), (" now", 400)]);
+    }
+
+    /// A run takes the sentence's style where it says nothing: a word inside a
+    /// bold, italic, underlined sentence is all three.
+    #[test]
+    fn a_run_takes_the_sentences_style() {
+        let (root, _) = built(
+            r#"<template><screen>
+                 <text class="s">all <text class="red">of</text> this</text>
+               </screen></template>
+               <style>
+                 .s { font-weight: 700; font-style: italic; text-decoration: underline; letter-spacing: 2px; }
+                 .red { color: #ff0000; }
+               </style>"#,
+        );
+        for piece in &root.children[0].children {
+            let t = text(piece);
+            assert_eq!((t.weight, t.italic, t.underline, t.letter_spacing), (700, true, true, Some(2.0)), "{:?}", t.text);
+        }
+        assert!(text(&root.children[0].children[1]).color.r > 0.9, "and keeps its own colour");
+    }
+
+    /// The words between tags are the sentence's own, so no rule reaches them,
+    /// not even `*`: CSS never matches an anonymous box.
+    #[test]
+    fn no_rule_reaches_the_words_between_tags() {
+        let (root, _) = built(
+            r#"<template><screen>
+                 <text class="s">plain <text>nested</text> plain</text>
+               </screen></template>
+               <style>* { color: #ff0000; } .s { color: #0000ff; }</style>"#,
+        );
+        let s = &root.children[0];
+        assert!(text(&s.children[0]).color.b > 0.9, "the sentence's blue, not `*`'s red");
+        assert!(text(&s.children[1]).color.r > 0.9, "a real <text> is matched by `*`");
+    }
+
+    /// A value in a run is bound to that run, and kept uncollapsed: the
+    /// layout collapses it with the words beside it.
+    #[test]
+    fn a_value_in_a_run_is_bound_to_the_run() {
+        let (root, reg) = built(
+            r#"<template><screen>
+                 <text>Taps: <text>{{ n }}</text> so far</text>
+               </screen></template>
+               <script>let n = signal(3);</script>"#,
+        );
+        assert_eq!(text(&root.children[0].children[1]).text, "3");
+        let binding = reg.text.iter().find(|b| b.template.contains("{{ n }}")).expect("a binding");
+        assert_eq!(binding.path, [0, 1]);
+        assert_eq!(binding.white_space, None);
+    }
+
+    /// A sentence is read out as all its words; a run of plain words is part
+    /// of it and nothing of its own; a run with `@tap` is a button in it.
+    #[test]
+    fn a_screen_reader_hears_the_sentence() {
+        let (root, _) = built(
+            r#"<template><screen>
+                 <text>Read   the <text @tap="n++">terms</text> now</text>
+               </screen></template>
+               <script>let n = signal(0);</script>"#,
+        );
+        let s = &root.children[0];
+        assert_eq!(s.access.role, AccessRole::Label);
+        assert_eq!(s.access.label.as_deref(), Some("Read the terms now"));
+        assert_eq!(s.children[0].access.role, AccessRole::None);
+        assert_eq!(s.children[1].access.role, AccessRole::Button);
+    }
+
+    /// `<image>` and `<path>` are boxes in the line; a `<view>` in a sentence
+    /// is an error that says what to do instead.
+    #[test]
+    fn only_words_and_boxes_go_in_a_sentence() {
+        let _ = super::take_warnings();
+        let (root, _) = built(
+            r#"<template><screen>
+                 <text>a <path d="M0 0 H8 V8 H0 Z" /> b <view></view></text>
+               </screen></template>"#,
+        );
+        assert!(root.children[0].children[1].path.is_some());
+        let said: Vec<String> = super::take_warnings().into_iter().map(|w| w.message).collect();
+        assert!(said.iter().any(|m| m.contains("`<view>` cannot be inside a `<text>`")), "{said:?}");
+    }
+
+    /// A plain `<text>` is untouched: no children, its words collapsed.
+    #[test]
+    fn plain_text_is_still_plain() {
+        let (root, _) = built("<template><screen><text>  just   words  </text></screen></template>");
+        assert!(root.children[0].children.is_empty());
+        assert_eq!(text(&root.children[0]).text, "just words");
     }
 }

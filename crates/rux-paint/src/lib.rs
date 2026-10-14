@@ -231,6 +231,23 @@ pub fn text_style(tc: &TextContent) -> TextStyle<'_> {
     }
 }
 
+/// The text engine as the layout asks it: sizes, and where the runs and boxes
+/// of a sentence landed. What the shell lays out through.
+pub struct EngineMeasure<'a>(pub &'a mut TextEngine);
+
+impl rux_layout::TextMeasure for EngineMeasure<'_> {
+    fn measure(&mut self, tc: &TextContent, max_width: Option<f32>) -> (f32, f32) {
+        self.0.measure(&tc.text, &text_style(tc), max_width)
+    }
+
+    /// At the width the text is drawn at, aligned as it is drawn, so the
+    /// shaped layout is the one `draw` reads from the cache.
+    fn inline(&mut self, tc: &TextContent, width: f32) -> rux_layout::InlineGeometry {
+        let placed = self.0.placed(&tc.text, &text_style(tc), to_align(tc.align), Some(width));
+        rux_layout::InlineGeometry { items: placed.items, runs: placed.runs }
+    }
+}
+
 fn to_align(a: TextAlign) -> Align {
     match a {
         TextAlign::Start => Align::Start,

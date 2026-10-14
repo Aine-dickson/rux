@@ -31,7 +31,10 @@
 pub mod path;
 pub use path::{PathCmd, PathContent};
 
+mod inline;
 pub mod rich;
+pub mod white_space;
+pub use white_space::WhiteSpace;
 pub use rich::{InlineItem, RichText, RunStyle, TextRun, VerticalAlign};
 
 use std::collections::HashMap;
@@ -680,6 +683,8 @@ pub struct Style {
     pub opacity: f32,
     /// `overflow-wrap` / `word-break`, applied to a text node's own content.
     pub text_wrap: TextWrap,
+    /// `vertical-align`, for an `<image>` or `<path>` sitting in a line of text.
+    pub vertical_align: VerticalAlign,
     pub padding: Sides,
     pub margin: Sides,
     /// `padding` and `margin` sides written as a **percentage**, in `Sides`
@@ -837,6 +842,7 @@ impl Default for Style {
             wrap: false,
             opacity: 1.0,
             text_wrap: TextWrap::Normal,
+            vertical_align: VerticalAlign::Baseline,
             padding: Sides::default(),
             margin: Sides::default(),
             padding_pct: [None; 4],
@@ -1066,6 +1072,10 @@ pub struct TextContent {
     /// for plain text, which is nearly all of it. Shared, because a text is
     /// cloned into the frame's paint list every frame.
     pub rich: Option<std::sync::Arc<RichText>>,
+    /// `white-space`. A plain text arrives collapsed already; a run of a
+    /// sentence arrives as written, and is collapsed with the runs beside it
+    /// when the layout joins them.
+    pub white_space: WhiteSpace,
 }
 
 /// How a field's selection is drawn: the two properties `::selection`
@@ -2246,12 +2256,49 @@ fn content_box(layout: &taffy::Layout) -> (f32, f32, f32, f32) {
     )
 }
 
-/// Callback that measures a text block:
-/// `(text, font_size, weight, wrap, max_width) -> (w, h)`.
-/// Measures a text node to `(width, height)` given an optional max width. Takes
-/// the whole [`TextContent`] so new text properties (family, spacing, style…)
-/// don't each widen this signature.
+/// Callback that measures a text block to `(width, height)` given an optional
+/// max width. Takes the whole [`TextContent`] so new text properties (family,
+/// spacing, style…) don't each widen this signature.
 pub type Measure<'a> = dyn FnMut(&TextContent, Option<f32>) -> (f32, f32) + 'a;
+
+/// What the layout asks the text engine, which it does not own: see the crate
+/// doc. A [`Measure`] closure answers only the size, which is all a document
+/// without inline runs needs; the shell's engine answers
+/// [`TextMeasure::inline`] as well, through [`LayoutState::lay_out_text`].
+pub trait TextMeasure {
+    /// A text block's `(width, height)` given an optional max width. Takes the
+    /// whole [`TextContent`] so new text properties (family, spacing, style…)
+    /// don't each widen this signature.
+    fn measure(&mut self, text: &TextContent, max_width: Option<f32>) -> (f32, f32);
+
+    /// Where the parts of a sentence landed, laid out `width` wide: see
+    /// [`InlineGeometry`]. Asked only of a text with [`TextContent::rich`].
+    fn inline(&mut self, text: &TextContent, width: f32) -> InlineGeometry {
+        let _ = (text, width);
+        InlineGeometry::default()
+    }
+}
+
+/// A [`Measure`] closure as a [`TextMeasure`] that knows only sizes.
+struct SizeOnly<'m, 'a>(&'m mut Measure<'a>);
+
+impl TextMeasure for SizeOnly<'_, '_> {
+    fn measure(&mut self, text: &TextContent, max_width: Option<f32>) -> (f32, f32) {
+        (self.0)(text, max_width)
+    }
+}
+
+/// Where the parts of a sentence are, from its content box's top-left: each
+/// inline box's `(x, y)` in the order of [`RichText::items`], and the
+/// rectangles `(x, y, width, height)` each run covers, one per line it is on,
+/// in the order of [`RichText::runs`]. Empty when the engine was not asked or
+/// cannot say, which leaves boxes at the text's corner and runs untappable
+/// rather than anywhere wrong.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct InlineGeometry {
+    pub items: Vec<(f32, f32)>,
+    pub runs: Vec<Vec<(f32, f32, f32, f32)>>,
+}
 
 /// Turn any percentage corners into pixels, now that the box has a size.
 ///
@@ -2304,6 +2351,9 @@ enum PaintKind {
     Path(PathContent, PathPaint),
     /// Drawn after the node's subtree, not with its box. See [`Outline`].
     Outline(Outline),
+    /// The elements of a sentence, placed against its glyphs once the text
+    /// engine says where they landed. Follows the node's `Text`.
+    Inline(std::sync::Arc<Vec<inline::InlinePart>>),
 }
 
 /// The resolved paint for one `<path>`, lifted off the style at build time.
@@ -3173,7 +3223,10 @@ fn build(
             height: length(h),
         };
     }
-    let id = node_for(tree, old_id, ts, node.text.as_ref(), &child_ids);
+    // A `<text>` of pieces is laid out as the one sentence they make.
+    let joined = inline::is_sentence(node).then(|| inline::join(node, path));
+    let text = joined.as_ref().map(|(tc, _)| tc).or(node.text.as_ref());
+    let id = node_for(tree, old_id, ts, text, &child_ids);
     if old_id.is_some() && text_cap != old_cap {
         tree.mark_dirty(id).expect("taffy dirty");
     }
@@ -3186,7 +3239,7 @@ fn build(
         cap: text_cap,
         children: kept_children,
     };
-    if let Some(tc) = &node.text {
+    if let Some(tc) = text {
         // A text node is a box too: its background and border paint under the
         // glyphs. (collect() walks every paint entry for a node, in order.)
         paint.push((
@@ -3202,6 +3255,9 @@ fn build(
             },
         ));
         paint.push((id, PaintKind::Text(tc.clone())));
+        if let Some((_, parts)) = joined {
+            paint.push((id, PaintKind::Inline(std::sync::Arc::new(parts))));
+        }
     } else if let Some(color) = node.tick {
         paint.push((id, PaintKind::Tick(color)));
     } else if let Some(ic) = &node.image {
@@ -3682,7 +3738,13 @@ struct Walk {
     /// Whether this is the walk that only finds the anchors, whose paints and
     /// regions are thrown away, so it makes none.
     dry: bool,
+    /// Where the parts of each sentence landed, asked of the text engine once
+    /// the sentence had a width. See [`TextMeasure::inline`].
+    inline: IdMap<InlineGeometry>,
 }
+
+/// A rectangle as `(x, y, width, height)`.
+type Rect4 = (f32, f32, f32, f32);
 
 /// Give every scroller that will be drawn an id, in tree order.
 ///
@@ -3891,6 +3953,8 @@ fn collect(
 
     let mut clip = false;
     let mut clip_radius = [0.0; 4];
+    // The parts of a sentence and where they landed, for their regions.
+    let mut placed: Vec<(inline::InlinePart, Vec<Rect4>)> = Vec::new();
     // A node can emit more than one paint (a text node paints its box, then its
     // glyphs), so walk every entry it owns, in order.
     // The walk that only finds where anchors are drawn (see `Anchoring`) needs
@@ -4001,6 +4065,17 @@ fn collect(
                 })),
                 // Drawn after the children, below.
                 PaintKind::Outline(_) => {}
+                // Each box of a sentence where its glyphs left room for it, and
+                // each part's rectangles kept for its regions, made below
+                // after the sentence's own so the part is found first.
+                PaintKind::Inline(parts) => {
+                    let (cx, cy, _, _) = content_box(layout);
+                    let geo = walk.inline.get(&id);
+                    for part in parts.iter() {
+                        let rects = inline::place_part(part, x + cx, y + cy, geo, &mut out.paints);
+                        placed.push((part.clone(), rects));
+                    }
+                }
                 // From the content corner, not the border corner, so padding moves
                 // the drawing the way it moves text rather than being ignored.
                 PaintKind::Path(pc, pp) => {
@@ -4207,6 +4282,12 @@ fn collect(
                 path: focus_path.clone(),
                 scroll: inside_scroll,
             });
+        }
+
+        // A sentence's parts answer for themselves, after the sentence, so a
+        // tappable run inside a tappable sentence is the one a tap finds.
+        for (part, rects) in &placed {
+            inline::part_regions(part, rects, child_xform, at.stack.seq, inside_scroll, out, walk);
         }
     }
 
@@ -4421,7 +4502,7 @@ pub fn layout_scrolled(
     offsets: &[Offset],
     measure: &mut Measure,
 ) -> Layout {
-    LayoutState::new().lay_out(root, avail_w, avail_h, offsets, measure)
+    LayoutState::new().lay_out(root, avail_w, avail_h, offsets, &mut SizeOnly(measure))
 }
 
 /// The Taffy tree kept from one frame to the next, so a frame lays out only
@@ -4479,6 +4560,20 @@ impl LayoutState {
         offsets: &[Offset],
         measure: &mut Measure,
     ) -> Layout {
+        self.lay_out_text(root, avail_w, avail_h, offsets, &mut SizeOnly(measure))
+    }
+
+    /// [`LayoutState::layout_scrolled`] with a text engine that can say where
+    /// the parts of a sentence land, so a `<text>` with runs and inline boxes
+    /// is placed and hit-tested part by part. The shell lays out through this.
+    pub fn lay_out_text(
+        &mut self,
+        root: &Node,
+        avail_w: f32,
+        avail_h: f32,
+        offsets: &[Offset],
+        measure: &mut dyn TextMeasure,
+    ) -> Layout {
         let out = self.lay_out(root, avail_w, avail_h, offsets, measure);
         #[cfg(debug_assertions)]
         {
@@ -4503,7 +4598,7 @@ impl LayoutState {
         avail_w: f32,
         avail_h: f32,
         offsets: &[Offset],
-        measure: &mut Measure,
+        measure: &mut dyn TextMeasure,
     ) -> Layout {
         let tree = &mut self.tree;
         let mut paint = Vec::new();
@@ -4639,7 +4734,7 @@ impl LayoutState {
                             (None, Some(c)) => Some(c),
                             (m, None) => m,
                         };
-                        let (w, h) = measure(tc, max);
+                        let (w, h) = measure.measure(tc, max);
                         Size {
                             width: known.width.unwrap_or(w),
                             height: known.height.unwrap_or(h),
@@ -4739,9 +4834,31 @@ impl LayoutState {
             anchoring: &anchoring,
             at,
         };
+        // Where the parts of each sentence landed, now that each has the width
+        // it is drawn at. Its `Text` paint comes just before its `Inline` one.
+        let mut geometry: IdMap<InlineGeometry> = IdMap::default();
+        let mut last_text: Option<(NodeId, &TextContent)> = None;
+        for (id, kind) in &paint {
+            match kind {
+                PaintKind::Text(tc) => last_text = Some((*id, tc)),
+                PaintKind::Inline(_) => {
+                    if let Some((tid, tc)) = last_text.filter(|(tid, _)| tid == id) {
+                        let (_, _, width, _) = content_box(tree.layout(tid).expect("layout"));
+                        geometry.insert(tid, measure.inline(tc, width));
+                    }
+                }
+                _ => {}
+            }
+        }
         let walk_once = |known: Option<HashMap<String, AnchorBox>>, dry: bool| {
             let mut out = Layout::default();
-            let mut walk = Walk { scrolls: vec![None; built.scroll_ids.len()], known, dry, ..Walk::default() };
+            let mut walk = Walk {
+                scrolls: vec![None; built.scroll_ids.len()],
+                known,
+                dry,
+                inline: geometry.clone(),
+                ..Walk::default()
+            };
             // The root is the outermost stacking context. This one only holds
             // its place: the root makes its own, as every context does.
             let mut outer = Stacking::new(&out, 0);
