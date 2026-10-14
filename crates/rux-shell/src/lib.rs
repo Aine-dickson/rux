@@ -1474,7 +1474,9 @@ struct App {
     /// Only Android suspends, but the field is not gated: `resumed` is shared
     /// with the desktop, and one branch there that reads a field which does not
     /// exist on half the targets is worse than a field that is always `None` on
-    /// those targets.
+    /// those targets. The web resumes through its own async path and never
+    /// reads it, hence the allow there.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     spare_renderer: Option<(usize, Renderer)>,
     /// Proxy for events raised outside the loop: the file watcher and the
     /// accessibility adapter both deliver through it.
@@ -5845,6 +5847,7 @@ impl App {
     }
 
     #[cfg(target_arch = "wasm32")]
+    #[allow(dead_code)]
     fn clipboard_read(&mut self) -> Option<String> {
         // Unreachable in practice: `request_paste` takes the async path on the
         // web. Kept so the native and web shells present the same surface.

@@ -33,6 +33,8 @@ pub fn set_app_id(id: &str) {
 }
 
 /// The app's id, or `fallback` (a bare file's name) when nothing set one.
+/// Only the desktop's `run_windowed` runs a bare file.
+#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
 pub(crate) fn app_id_or(fallback: &str) -> String {
     set_app_id(fallback);
     app_id()
