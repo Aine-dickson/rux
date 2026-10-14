@@ -185,6 +185,12 @@ fn mark(text: &str, direction: Option<Direction>) -> Option<&'static str> {
     })
 }
 
+/// Whether any letter of `text` is written right to left, which is when a
+/// caret's steps through it stop being its order in memory.
+pub fn has_rtl(text: &str) -> bool {
+    text.chars().any(|c| first_strong(c.encode_utf8(&mut [0; 4])) == Some(Direction::Rtl))
+}
+
 /// How far the engine's byte indices are from the caller's: the mark's length.
 fn shift(text: &str, style: &TextStyle) -> usize {
     mark(text, style.direction).map_or(0, str::len)
@@ -828,6 +834,25 @@ impl TextEngine {
         let layout = self.build(text, style, max_width);
         let off = shift(text, style);
         Cursor::from_point(&layout, x, y).index().saturating_sub(off).min(text.len())
+    }
+
+    /// The caret one step to the left or right of `index` as the text is
+    /// drawn, which in right-to-left words is the other way through the text:
+    /// Left arrow in Arabic moves on to the next letter. What an arrow key
+    /// does in a browser's field.
+    pub fn visual_step(
+        &mut self,
+        text: &str,
+        style: &TextStyle,
+        max_width: Option<f32>,
+        index: usize,
+        rightward: bool,
+    ) -> usize {
+        let layout = self.build(text, style, max_width);
+        let off = shift(text, style);
+        let here = Cursor::from_byte_index(&layout, index.min(text.len()) + off, Affinity::Downstream);
+        let next = if rightward { here.next_visual(&layout) } else { here.previous_visual(&layout) };
+        next.index().saturating_sub(off).min(text.len())
     }
 
     /// Draw the text with its top-left at `(x, y)`, leading trimmed and aligned

@@ -86,3 +86,20 @@ fn left_and_right_are_sides() {
         te.draw(&mut scene, 0.0, 0.0, text, &s, vello::peniko::Color::BLACK, align, Some(200.0), vello::kurbo::Affine::IDENTITY);
     }
 }
+
+/// Left goes on through Arabic and back through English, as an arrow key in a
+/// browser's field does; in plain English a step is one character either way.
+#[test]
+fn a_visual_step_follows_what_is_drawn() {
+    let mut te = TextEngine::new();
+    let s = style(None);
+    let latin = "abc";
+    assert_eq!(te.visual_step(latin, &s, None, 1, true), 2);
+    assert_eq!(te.visual_step(latin, &s, None, 1, false), 0);
+    let arabic = "مرحبا";
+    let second = "م".len();
+    // At the start of an Arabic word, which is its right end, Left moves on.
+    assert_eq!(te.visual_step(arabic, &s, None, 0, false), second);
+    assert_eq!(te.visual_step(arabic, &s, None, second, true), 0);
+    assert!(rux_text::has_rtl(arabic) && !rux_text::has_rtl(latin));
+}

@@ -41,5 +41,11 @@ weight = 3
   The logical properties, `margin-inline-start` and `-end`, `margin-inline`,
   the same for `padding` and `inset`, and their `block` counterparts (always
   top and bottom), name a side by the direction, so one stylesheet serves both.
-  Not yet: a run of a different direction inside a sentence (`dir` on a nested
-  `<text>`), and scrolling that starts from the right.
+  A right-to-left scroller opens at its right end, its scrollbar thumb starts at
+  the right, and the wheel, a finger, the arrow keys and the thumb all move it
+  the way they move the content on screen. A text field follows what is typed
+  into it (`dir="auto"`) unless `dir` or `direction` reaches it, in which case
+  an empty one keeps its caret on that side; Left and Right step through
+  right-to-left words the way they are drawn, as a browser's field does. Not
+  yet: a run of a different direction inside a sentence (`dir` on a nested
+  `<text>`).

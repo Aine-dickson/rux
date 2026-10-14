@@ -5543,7 +5543,12 @@ fn build_node_inner(
                 },
                 rich: None,
                 white_space: Default::default(),
-                direction: None,
+                // A field follows what is typed into it, Arabic or English,
+                // unless it is told a direction of its own: `dir` on it, or a
+                // `direction` rule that reaches it.
+                direction: (props.contains_key("direction")
+                    || el.attr("dir").is_some_and(|d| d.trim() != "auto"))
+                .then_some(direction),
             },
         );
         let mut node = LayoutNode::new(style);

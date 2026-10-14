@@ -606,7 +606,9 @@ fn bar_thumb(r: &ScrollRegion, offset: Offset, axis: Axis2) -> Option<(f32, f32,
         Axis2::Y => offset.y,
         Axis2::X => offset.x,
     };
-    let along = travel * (pos / max).clamp(0.0, 1.0);
+    let fraction = (pos / max).clamp(0.0, 1.0);
+    // A right-to-left box starts at its right, so its thumb does too.
+    let along = travel * if axis == Axis2::X && r.rtl { 1.0 - fraction } else { fraction };
     // The track tuple is (x, y, w, h): its thickness is `tw` on the vertical bar
     // and `th` on the horizontal one, the length is the other component.
     Some(match axis {
@@ -2057,6 +2059,8 @@ impl App {
             return;
         };
         let (id, max) = (region.id, region.max);
+        // Moving the view right is moving towards a right-to-left box's start.
+        let dx = if region.rtl { -dx } else { dx };
         // Remembered for the fling: at lift there is no finger left to hit-test
         // with, and the box that was being scrolled is the only one that may be
         // thrown.
@@ -2142,13 +2146,14 @@ impl App {
         f.vy = vy;
         f.last = now;
 
-        let Some(max) = self.scrolls.iter().find(|s| s.id == f.id).map(|s| s.max) else {
+        let Some((max, rtl)) = self.scrolls.iter().find(|s| s.id == f.id).map(|s| (s.max, s.rtl)) else {
             // The tree rebuilt and this scroller is gone. Nothing to move, and
             // nothing to keep waking up for.
             self.fling = None;
             return false;
         };
         let before = self.offsets.get(f.id).copied().unwrap_or_default();
+        let dx = if rtl { -dx } else { dx };
         let next = Offset { x: before.x + dx, y: before.y + dy }.clamp_to(max);
         self.scroll_to(f.id, next);
 
@@ -2230,7 +2235,8 @@ impl App {
         if travel <= 0.0 {
             return;
         }
-        let moved = drag.start + (pos - drag.grab) * max / travel;
+        let toward = if drag.axis == Axis2::X && r.rtl { -1.0 } else { 1.0 };
+        let moved = drag.start + toward * (pos - drag.grab) * max / travel;
         let next = match drag.axis {
             Axis2::Y => Offset { x: self.offsets[drag.id].x, y: moved },
             Axis2::X => Offset { x: moved, y: self.offsets[drag.id].y },
@@ -2254,11 +2260,13 @@ impl App {
         // A page is just short of the box, so a landmark stays on screen.
         let page = (r.height * 0.9).max(LINE);
         let here = self.offsets[r.id];
+        // Right is towards a right-to-left box's start.
+        let right = if r.rtl { -LINE } else { LINE };
         let next = match key {
             Key::Named(NamedKey::ArrowDown) => Offset { y: here.y + LINE, ..here },
             Key::Named(NamedKey::ArrowUp) => Offset { y: here.y - LINE, ..here },
-            Key::Named(NamedKey::ArrowRight) => Offset { x: here.x + LINE, ..here },
-            Key::Named(NamedKey::ArrowLeft) => Offset { x: here.x - LINE, ..here },
+            Key::Named(NamedKey::ArrowRight) => Offset { x: here.x + right, ..here },
+            Key::Named(NamedKey::ArrowLeft) => Offset { x: here.x - right, ..here },
             Key::Named(NamedKey::PageDown) => Offset { y: here.y + page, ..here },
             Key::Named(NamedKey::PageUp) => Offset { y: here.y - page, ..here },
             Key::Named(NamedKey::Home) => Offset { y: 0.0, ..here },
@@ -3861,6 +3869,9 @@ impl App {
                 if has_selection && !extend {
                     new_caret = sel_start;
                     moved = true;
+                } else if let Some(to) = self.visual_caret_step(&value, caret, false) {
+                    new_caret = to;
+                    moved = to != caret;
                 } else if let Some(len) = prev {
                     new_caret = caret - len;
                     moved = true;
@@ -3870,6 +3881,9 @@ impl App {
                 if has_selection && !extend {
                     new_caret = sel_end;
                     moved = true;
+                } else if let Some(to) = self.visual_caret_step(&value, caret, true) {
+                    new_caret = to;
+                    moved = to != caret;
                 } else if let Some(len) = next {
                     new_caret = caret + len;
                     moved = true;
@@ -4122,6 +4136,22 @@ impl App {
         } else {
             (value.to_string(), caret.min(value.len()))
         }
+    }
+
+    /// The caret one step left or right of `caret` as the field draws it, for a
+    /// field with right-to-left letters in it: there Left moves on through
+    /// Arabic and back through English, which is not the next byte either way.
+    /// `None` for a field without, whose arrows keep the plain step they always
+    /// took.
+    fn visual_caret_step(&mut self, value: &str, caret: usize, rightward: bool) -> Option<usize> {
+        if !rux_text::has_rtl(value) {
+            return None;
+        }
+        let t = self.focused_region().and_then(|f| f.text.clone())?;
+        let style = rux_paint::text_style(&t.content);
+        let (shown, shown_caret) = self.shown_text(value, caret);
+        let to = self.text.visual_step(&shown, &style, Some(t.width), shown_caret, rightward);
+        Some(self.real_caret(value, to))
     }
 
     /// Turn a caret found in the painted string back into one in the value.
@@ -11463,6 +11493,7 @@ mod tests {
             content_height: 500.0,
             max: Offset { x: 0.0, y: 300.0 },
             within: None,
+            rtl: false,
         }
     }
 
@@ -11493,6 +11524,21 @@ mod tests {
         assert_eq!(w, 80.0, "200/500 of a 200px track");
         assert_eq!(x, 0.0);
         assert_eq!(y, 200.0 - BAR_W, "it sits on the box's bottom edge");
+    }
+
+    /// A right-to-left box starts at its right, and so does its thumb: at the
+    /// right edge unscrolled, at the left when it has gone as far as it can.
+    #[test]
+    fn a_right_to_left_thumb_starts_at_the_right() {
+        let mut wide = tall();
+        wide.content_height = 200.0;
+        wide.content_width = 500.0;
+        wide.max = Offset { x: 300.0, y: 0.0 };
+        wide.rtl = true;
+        let (x, _, w, _) = bar_thumb(&wide, Offset::default(), Axis2::X).expect("a thumb");
+        assert_eq!(x + w, 200.0);
+        let (x, ..) = bar_thumb(&wide, Offset { x: 300.0, y: 0.0 }, Axis2::X).expect("a thumb");
+        assert_eq!(x, 0.0);
     }
 
     /// At the end of the content the thumb is at the end of its track, the

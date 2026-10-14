@@ -1918,7 +1918,9 @@ pub fn containing_scroller(
 ) -> Option<usize> {
     scrolls.iter().rposition(|s| {
         let off = offsets.get(s.id).copied().unwrap_or_default();
-        let (cx, cy) = (s.x - off.x, s.y - off.y);
+        // A right-to-left box's content ends at its right edge, plus the offset.
+        let cx = if s.rtl { s.x + s.width + off.x - s.content_width } else { s.x - off.x };
+        let cy = s.y - off.y;
         x >= cx && y >= cy && x <= cx + s.content_width && y <= cy + s.content_height
     })
 }
@@ -1961,6 +1963,12 @@ pub struct ScrollRegion {
     /// [`FocusItem::scroll`] it is the chain of scrollers that hold an
     /// element, which is the only chain that should move to show it.
     pub within: Option<usize>,
+    /// Whether its content starts at the right (`direction: rtl`). Its offset
+    /// is still how far it has scrolled from its start, so a larger `x` shows
+    /// more of what lies to the left; whatever moves it by the pointer or the
+    /// keyboard turns the sign round on that axis, and its thumb starts at the
+    /// right.
+    pub rtl: bool,
 }
 
 impl ScrollRegion {
@@ -2272,9 +2280,12 @@ pub struct NodeMetrics {
 ///
 /// Taffy's scrollable overflow rectangle is measured from the padding box and
 /// takes in the end padding (css-overflow-3), so only the borders are added.
-fn scroll_extent(layout: &taffy::Layout) -> (f32, f32) {
+fn scroll_extent(layout: &taffy::Layout, rtl: bool) -> (f32, f32) {
     let (rect, border) = (layout.scrollable_overflow_rect, layout.border);
-    (border.left + rect.right + border.right, border.top + rect.bottom + border.bottom)
+    // A right-to-left box overflows to its left, past its own origin: that is
+    // where the content it scrolls to lies, so it counts as far as it goes.
+    let left = if rtl { rect.left.min(0.0) } else { 0.0 };
+    (border.left + rect.right - left + border.right, border.top + rect.bottom + border.bottom)
 }
 
 fn content_box(layout: &taffy::Layout) -> (f32, f32, f32, f32) {
@@ -2834,6 +2845,8 @@ struct At {
     transform: Option<u32>,
     hidden: bool,
     scroll: bool,
+    /// A scroller whose content starts at its right: see `ScrollRegion::rtl`.
+    scroll_rtl: bool,
     stack: Stack,
     /// Into `Anchoring::names`, when this box is an anchor.
     anchor_name: Option<u32>,
@@ -2879,7 +2892,7 @@ fn index(
     focus_labels: &[(NodeId, String, Option<String>)],
     hidden: &[NodeId],
     opacities: &[(NodeId, f32)],
-    scrolls: &[NodeId],
+    scrolls: &[(NodeId, bool)],
     transforms: &[(NodeId, Transform)],
     states: &[(NodeId, Vec<usize>)],
     access: &[(NodeId, Access, Option<String>)],
@@ -2917,8 +2930,10 @@ fn index(
     for id in hidden {
         at.entry(*id).or_default().hidden = true;
     }
-    for id in scrolls {
-        at.entry(*id).or_default().scroll = true;
+    for (id, rtl) in scrolls {
+        let a = at.entry(*id).or_default();
+        a.scroll = true;
+        a.scroll_rtl = *rtl;
     }
     for (id, stack) in stacks {
         at.entry(*id).or_default().stack = *stack;
@@ -3078,7 +3093,7 @@ fn build(
     focus_labels: &mut Vec<(NodeId, String, Option<String>)>,
     hidden: &mut Vec<NodeId>,
     opacities: &mut Vec<(NodeId, f32)>,
-    scrolls: &mut Vec<NodeId>,
+    scrolls: &mut Vec<(NodeId, bool)>,
     transforms: &mut Vec<(NodeId, Transform)>,
     states: &mut Vec<(NodeId, Vec<usize>)>,
     access: &mut Vec<(NodeId, Access, Option<String>)>,
@@ -3408,7 +3423,7 @@ fn build(
         transforms.push((id, tf));
     }
     if node.style.overflow == Overflow::Scroll {
-        scrolls.push(id);
+        scrolls.push((id, node.style.direction == Direction::Rtl));
     }
     if node.style.position.is_sticky() {
         // Resolved to px here, where the viewport is in hand, so `collect` can
@@ -4360,7 +4375,7 @@ fn collect(
         // block layout stopped at the last child and this added the padding
         // for block alone). Its rectangle starts at the padding box, so the
         // border goes on both ends here: see `scroll_extent`.
-        let (content_width, content_height) = scroll_extent(layout);
+        let (content_width, content_height) = scroll_extent(layout, at.scroll_rtl);
         let max = Offset {
             x: (content_width - layout.size.width).max(0.0),
             y: (content_height - layout.size.height).max(0.0),
@@ -4380,6 +4395,7 @@ fn collect(
             content_height,
             max,
             within: inside_scroll,
+            rtl: at.scroll_rtl,
         });
     }
 
@@ -4406,7 +4422,9 @@ fn collect(
         tree.style(id).expect("style").display,
         taffy::Display::Flex | taffy::Display::Grid
     );
-    let origin = (x - shift.x, y - shift.y);
+    // A right-to-left scroller starts at its right end, and scrolling moves its
+    // content rightwards, bringing in what lies to the left.
+    let origin = (if at.scroll_rtl { x + shift.x } else { x - shift.x }, y - shift.y);
     // The box this node's children are held by, measured where the scroll
     // has put it.
     //
@@ -4418,8 +4436,8 @@ fn collect(
     let holder = (
         origin.0,
         origin.1,
-        scroll_extent(layout).0.max(layout.size.width),
-        scroll_extent(layout).1.max(layout.size.height),
+        scroll_extent(layout, at.scroll_rtl).0.max(layout.size.width),
+        scroll_extent(layout, at.scroll_rtl).1.max(layout.size.height),
     );
     for &child in tree.children(id).expect("children").iter() {
         let ca = b.at(child);
@@ -4997,6 +5015,7 @@ mod reveal_tests {
             content_height: 900.0,
             max: Offset { x: 0.0, y: 600.0 },
             within: None,
+            rtl: false,
         }]
     }
 
@@ -5062,6 +5081,7 @@ mod reveal_tests {
             content_height: 400.0,
             max: Offset { x: 0.0, y: 300.0 },
             within: Some(0),
+            rtl: false,
         });
         let offsets = vec![Offset { x: 0.0, y: 0.0 }, Offset { x: 0.0, y: 0.0 }];
         assert_eq!(containing_scroller(&scrolls, &offsets, 40.0, 500.0), Some(1));

@@ -2498,7 +2498,10 @@ desktop window with a debug build on one probe page.
 | `text-align` | `start`, `end`, `left`, `right` under `dir="rtl"` | right, left, left, right | desktop: pass |
 | `margin-inline-start: 40px` | on a box, then the same box with `dir="rtl"` | the gap on the left, then on the right | desktop: pass |
 | A right-to-left sentence | Arabic with a bold run and a `<path>` icon | one paragraph, read from the right, run and icon in their places | desktop: pass |
-| Text fields in Arabic, scrolling from the right | | | not built yet (step 5) |
+| A right-to-left scroller | twelve cells in a 300px `overflow-x: scroll` strip under `dir="rtl"` | opens on cell 1 at the right, its thumb at the right | desktop: pass |
+| Scrolling it | | travels to the left as far as the content reaches, the last cell ending at the left | under the code only (`rux-layout` `tests/direction.rs`; `scrollIntoView` is vertical, injected input does not reach the window) |
+| A right-to-left field | `<input dir="rtl" placeholder="الاسم">` | the placeholder at the right | desktop: pass |
+| Arrows in Arabic | Left at the start of an Arabic word | the caret moves on into the word | under the code only (`rux-text` `a_visual_step_follows_what_is_drawn`; keys do not reach the window) |
 | Web, Android | the same page | the same | not driven |
 
 ## Standing gaps
