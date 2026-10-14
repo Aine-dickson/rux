@@ -71,7 +71,7 @@ pub fn element_tags() -> &'static [&'static str] {
 /// `label` is the accessible name. It was honored all along (the accessibility
 /// tree reads it before an element's own text) and advertised nowhere.
 const GLOBAL_ATTRIBUTES: &[&str] = &[
-    "class", "id", "style", "role", "label", "to", //
+    "class", "id", "style", "role", "label", "to", "dir", //
     "r-for", "r-key", "r-if", "r-elif", "r-else", "r-show", "r-transition",
 ];
 

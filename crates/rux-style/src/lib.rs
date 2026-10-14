@@ -39,6 +39,9 @@ pub use anim::{Animator, FRAME_MS};
 /// A form field's built-in checks, shared by `:invalid` and submission.
 pub mod checks;
 
+/// Logical properties (`margin-inline-start` and the rest), put on a side.
+mod logical;
+
 /// `white-space`: which spaces in a `<text>` are drawn. It lives in the layout,
 /// which joins the runs of a sentence and collapses the spaces between them.
 pub use rux_layout::white_space;
@@ -1374,6 +1377,8 @@ struct Inherited {
     /// Inside a `<text>`: the rest of its text style, which its runs take
     /// unless they say otherwise. `None` everywhere else, see [`RunInherit`].
     run: Option<RunInherit>,
+    /// `direction`, which inherits everywhere, as in CSS.
+    direction: rux_layout::Direction,
 }
 
 /// What a run of a sentence takes from the `<text>` it is in, beyond the
@@ -1814,15 +1819,30 @@ fn class_list(value: &Value) -> Vec<String> {
 /// Merge an inline CSS declaration string (`"background: red; color: white"`) into
 /// the resolved props at highest priority (inline wins over the cascade). A simple
 /// `;`/`:` split, enough for the flat declaration lists inline styles carry.
-fn merge_inline_style(props: &mut HashMap<String, String>, css: &str) {
+/// The declarations of an inline `style`, in the order written.
+fn inline_decls(css: &str, out: &mut Vec<(String, String)>) {
     for decl in css.split(';') {
         if let Some((name, value)) = decl.split_once(':') {
             let name = name.trim().to_ascii_lowercase();
             let value = value.trim();
             if !name.is_empty() && !value.is_empty() {
-                props.insert(name, value.to_string());
+                out.push((name, value.to_string()));
             }
         }
+    }
+}
+
+/// An element's `direction` and whether it is `dir="auto"`: the property
+/// first, as CSS would have it (`dir` is a presentational hint an author's
+/// rule overrides), then the attribute, then the parent's.
+fn resolve_direction(el: &Element, props: &HashMap<String, String>, inherited: rux_layout::Direction) -> (rux_layout::Direction, bool) {
+    if let Some(d) = props.get("direction").and_then(|v| rux_layout::Direction::parse(v)) {
+        return (d, false);
+    }
+    match el.attr("dir").map(str::trim) {
+        Some("auto") => (inherited, true),
+        Some(v) => (rux_layout::Direction::parse(v).unwrap_or(inherited), false),
+        None => (inherited, false),
     }
 }
 
@@ -2150,6 +2170,7 @@ pub fn build_styled_tree_stateful(
             font_family: None,
             vars: Vars::default(),
             run: None,
+            direction: rux_layout::Direction::Ltr,
         },
         engine,
         &locals,
@@ -2373,6 +2394,7 @@ fn build_run(
             selection_style: Default::default(),
             rich: None,
             white_space: run.white_space,
+            direction: None,
         },
     );
     node.access = Access { role: AccessRole::None, ..Access::default() };
@@ -3624,13 +3646,20 @@ const HONORED_PROPERTIES: &[&str] = &[
     // Positioning
     "position", "top", "right", "bottom", "left", "aspect-ratio", "z-index", "isolation",
     "anchor-name", "position-anchor",
+    // Logical sides, put on a physical side by `direction` (see `logical`).
+    "margin-inline", "margin-inline-start", "margin-inline-end",
+    "margin-block", "margin-block-start", "margin-block-end",
+    "padding-inline", "padding-inline-start", "padding-inline-end",
+    "padding-block", "padding-block-start", "padding-block-end",
+    "inset-inline", "inset-inline-start", "inset-inline-end",
+    "inset-block", "inset-block-start", "inset-block-end",
     // Background
     "background", "background-color", "background-image",
     // Text
     "color", "font-size", "font-weight", "font-family", "font-style", "text-align",
     "letter-spacing", "word-spacing", "line-height", "white-space",
     "text-decoration", "text-decoration-line",
-    "overflow-wrap", "word-wrap", "word-break", "vertical-align",
+    "overflow-wrap", "word-wrap", "word-break", "vertical-align", "direction",
     // <path>. Paint is CSS rather than attributes because that is where the
     // rest of an element's appearance is written, and it is what gives a path
     // `:hover`, `:class` and `transition` on the day it lands.
@@ -3853,7 +3882,7 @@ const UNIMPLEMENTED_PROPERTIES: &[&str] = &[
     // Text
     "text-transform", "text-overflow", "text-indent", "text-decoration-color",
     "text-decoration-style", "font-variant", "font-stretch",
-    "direction", "writing-mode", "user-select", "caret-color",
+    "writing-mode", "user-select", "caret-color",
     "appearance", "list-style", "list-style-type", "list-style-position",
     // Motion. `transition` is honored; keyframe animation and the origin a
     // transform turns about are not.
@@ -4276,18 +4305,23 @@ fn pointer_state_sensitive(desc: &ElemDesc, rules: &[Rule]) -> bool {
 }
 
 /// Collect the matching rules' declarations for an element, in cascade order.
+/// The rules that apply to an element, in the order they apply.
+fn matched_rules<'r>(desc: &ElemDesc, ancestors: &[AncNode], prev: &[ElemDesc], rules: &'r [Rule]) -> Vec<&'r Rule> {
+    let mut matched: Vec<&Rule> = rules
+        .iter()
+        .filter(|r| !r.selection && matches_chain(&r.chain, &r.combs, desc, ancestors, prev))
+        .collect();
+    matched.sort_by(|a, b| a.specificity.cmp(&b.specificity).then(a.order.cmp(&b.order)));
+    matched
+}
+
 fn matched_props(
     desc: &ElemDesc,
     ancestors: &[AncNode],
     prev: &[ElemDesc],
     rules: &[Rule],
 ) -> HashMap<String, String> {
-    let mut matched: Vec<&Rule> = rules
-        .iter()
-        .filter(|r| !r.selection && matches_chain(&r.chain, &r.combs, desc, ancestors, prev))
-        .collect();
-    matched.sort_by(|a, b| a.specificity.cmp(&b.specificity).then(a.order.cmp(&b.order)));
-
+    let matched = matched_rules(desc, ancestors, prev, rules);
     let mut props: HashMap<String, String> = HashMap::new();
     for rule in matched {
         for (k, v) in &rule.decls {
@@ -4410,6 +4444,219 @@ fn build_node(
         }
     }
     node
+}
+
+/// A `<text>`: plain words, a sentence of pieces, or a run inside one.
+///
+/// Its own function, not a branch of [`build_node_inner`], because that one
+/// recurses once per element and every local it holds is held at every depth:
+/// with this inline, a fresh project's `rux check` overflowed the 1 MB main
+/// thread of a debug build (watchlist #41).
+#[inline(never)]
+#[allow(clippy::too_many_arguments)]
+fn build_text(
+    el: &Element,
+    rules: &[Rule],
+    comps: &Components,
+    ancestors: &mut Vec<AncNode>,
+    prev: &[ElemDesc],
+    inherited: &Inherited,
+    engine: &mut Engine,
+    locals: &Locals,
+    path: &[usize],
+    tpl_path: &[usize],
+    reg: &mut BindingRegistry,
+    state: &InteractionState,
+    instances: &mut Instances,
+    swaps: &mut Swaps,
+    instance: Option<&str>,
+    slot: Option<Slot>,
+    outlet: Option<Outlet>,
+    row: Option<&str>,
+    props: &HashMap<String, String>,
+    style: Style,
+    desc: ElemDesc,
+    on_tap: Option<String>,
+    to: Option<String>,
+    hidden: bool,
+    state_path: Option<Vec<usize>>,
+    color: Rgba,
+    selection: SelectionStyle,
+    font_size: f32,
+    font_family: Option<String>,
+    letter_spacing: Option<f32>,
+    word_spacing: Option<f32>,
+    line_height: Option<f32>,
+    italic: bool,
+    underline: bool,
+    strikethrough: bool,
+    white_space: WhiteSpace,
+    direction: rux_layout::Direction,
+    dir_auto: bool,
+    vars: Vars,
+) -> LayoutNode {
+    // A run of a sentence takes the rest of the sentence's style where it
+    // says nothing of its own. See `RunInherit`.
+    let outer = inherited.run;
+    let weight = props
+        .get("font-weight")
+        .and_then(|v| parse_weight(v))
+        .or(outer.map(|r| r.weight))
+        .unwrap_or(400);
+    let italic = if props.contains_key("font-style") { italic } else { outer.is_some_and(|r| r.italic) };
+    let letter_spacing = letter_spacing.or(outer.and_then(|r| r.letter_spacing));
+    let word_spacing = word_spacing.or(outer.and_then(|r| r.word_spacing));
+    let underline = underline || outer.is_some_and(|r| r.underline);
+    let strikethrough = strikethrough || outer.is_some_and(|r| r.strikethrough);
+    let white_space = if props.contains_key("white-space") {
+        white_space
+    } else {
+        outer.map_or(white_space, |r| r.white_space)
+    };
+    let nowrap = !white_space.wraps();
+    let align = props
+        .get("text-align")
+        .map(|v| parse_text_align(v))
+        .unwrap_or_default();
+    let wrap = style.text_wrap;
+    // Recompute this text on change instead of rebuilding: record the raw
+    // template, the locals, and the signals it reads, keyed by this node's
+    // path. Only text that actually interpolates is registered.
+    let template = text_template(el);
+    // Placed on the text itself, which for a multi-line `<text>` is not the
+    // line the tag opened on.
+    let (text, deps) =
+        rux_script::located(Some(text_line(el)), || interpolate_tracked(&template, engine, locals));
+    // A run keeps its spaces for the layout, which collapses them with the
+    // runs beside it; anything else is collapsed now.
+    let collapse = outer.is_none().then_some(white_space);
+    let text = match collapse {
+        Some(mode) => white_space::collapse(&text, mode),
+        None => text,
+    };
+    if template.contains("{{") {
+        reg.text.push(TextBinding {
+            path: path.to_vec(),
+            template,
+            locals: locals.clone(),
+            deps,
+            white_space: collapse,
+        });
+    }
+    let mut node = LayoutNode::text(
+        style,
+        TextContent {
+            text,
+            font_size,
+            weight,
+            color,
+            align,
+            wrap,
+            font_family: font_family.clone(),
+            letter_spacing,
+            word_spacing,
+            line_height,
+            italic,
+            underline,
+            strikethrough,
+            nowrap,
+            caret: None,
+            selection: None,
+            preedit: None,
+            selection_style: Default::default(),
+            rich: None,
+            white_space,
+            direction: (!dir_auto).then_some(direction),
+        },
+    );
+    // A sentence: the pieces inside it are built as its children, each the
+    // element it is, and the layout joins them into one text.
+    if el.children.iter().any(|c| matches!(c, TplNode::Element(_))) {
+        check_sentence_children(el);
+        let run = RunInherit { weight, italic, letter_spacing, word_spacing, underline, strikethrough, white_space };
+        let child_inherited = Inherited {
+            color,
+            selection,
+            font_size,
+            font_family: font_family.clone(),
+            vars: Rc::clone(&vars),
+            run: Some(run),
+            direction,
+        };
+        let siblings = if KEEP_SIBLINGS.with(std::cell::Cell::get) { prev.to_vec() } else { Vec::new() };
+        ancestors.push(AncNode { desc, prev: siblings, form: None });
+        let plain = instance.is_none() && slot.is_none() && outlet.is_none() && row.is_none();
+        let (children, structural_deps) = build_children(
+            &element_children(el),
+            rules,
+            comps,
+            ancestors,
+            &child_inherited,
+            engine,
+            locals,
+            path,
+            tpl_path,
+            reg,
+            state,
+            instances,
+            swaps,
+            instance,
+            slot,
+            outlet,
+            row,
+        );
+        // Rebuilt alone when an `r-if` or `r-for` inside it changes, as any
+        // other parent's children are.
+        let ctx = (plain && !structural_deps.is_empty()).then(|| {
+            Rc::new(ListCtx {
+                el: el as *const Element as usize,
+                ancestors: ancestors.clone(),
+                inherited: child_inherited.clone(),
+                locals: locals.clone(),
+            })
+        });
+        ancestors.pop();
+        if !structural_deps.is_empty() {
+            reg.structural_parents.push(StructuralParent {
+                tree_path: path.to_vec(),
+                tpl_path: tpl_path.to_vec(),
+                deps: structural_deps,
+                ctx,
+            });
+        }
+        node.children = children;
+    }
+    node.on_tap = on_tap;
+    // Inside a component a tap here runs against that instance's state,
+    // as the general element branch below has always said; this branch
+    // never did, so `<text @tap="n++">` in a component ran in the
+    // document's scope, where `n` is not.
+    node.instance = instance.map(str::to_string);
+    node.hidden = hidden;
+    node.id = el.attr("id").map(str::to_string);
+    node.label_for = el.attr("for").map(str::to_string);
+    node.state_path = state_path.clone();
+    // Static text reads as a label; `role="heading"` promotes it. Text that is
+    // itself tappable is a button whose name is its own words, unless it is a
+    // link, which a screen reader announces differently and should.
+    // A run that is only words is read as part of its sentence, so it is
+    // nothing of its own; one that does something is a link or a button
+    // inside it. A sentence is read by all of its words.
+    let words = sentence_words(&node);
+    node.access = Access {
+        role: explicit_access_role(el).unwrap_or(if to.is_some() {
+            AccessRole::Link
+        } else if node.on_tap.is_some() {
+            AccessRole::Button
+        } else if outer.is_some() {
+            AccessRole::None
+        } else {
+            AccessRole::Label
+        }),
+        label: authored_label(el).or_else(|| Some(words.trim().to_string()).filter(|t| !t.is_empty())),
+        ..Access::default()
+    };
+    return node;
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -4651,8 +4898,10 @@ fn build_node_inner(
         rux_script::profile::time(rux_script::profile::Phase::Match, || matched_props(&desc, ancestors, prev, rules));
     // Inline styles override the cascade: static `style=` first, then dynamic
     // `:style` (which may interpolate, rhai backtick strings evaluate here).
+    // Kept in order as well as merged, for the replay below.
+    let mut inline: Vec<(String, String)> = Vec::new();
     if let Some(s) = el.attr("style") {
-        merge_inline_style(&mut props, s);
+        inline_decls(s, &mut inline);
     }
     if let Some(expr) = el.attr(":style") {
         let (value, deps) = engine.eval_value_tracked(expr, locals);
@@ -4661,13 +4910,26 @@ fn build_node_inner(
             // Object form: `#{ background: c }` → each entry a declaration.
             Some(Value::Map(entries)) => {
                 for (k, v) in entries {
-                    props.insert(k.to_ascii_lowercase(), v.to_display());
+                    inline.push((k.to_ascii_lowercase(), v.to_display()));
                 }
             }
             // String form: `"background: red"` (possibly interpolated).
-            Some(v) => merge_inline_style(&mut props, &v.to_display()),
+            Some(v) => inline_decls(&v.to_display(), &mut inline),
             None => {}
         }
+    }
+    for (k, v) in &inline {
+        props.insert(k.clone(), v.clone());
+    }
+    // `direction`, from the property, else `dir`, else the parent. `dir="auto"`
+    // leaves a text to its first letter with a direction, as HTML does.
+    let (direction, dir_auto) = resolve_direction(el, &props, inherited.direction);
+    // A logical property names a side by the direction, and which of it and a
+    // physical one wins is the order they were declared in, which the map
+    // above has lost. So the few elements that use one are cascaded again, in
+    // order, with each logical name put on its side as it is met.
+    if props.keys().any(|k| logical::is_logical(k)) {
+        props = logical::cascade_in_order(matched_rules(&desc, ancestors, prev, rules), &inline, direction);
     }
     // A `:class`/`:style` that reads a signal reconciles this node on change.
     if !dyn_deps.is_empty() {
@@ -4727,6 +4989,7 @@ fn build_node_inner(
     }
 
     let mut style = screen_fills_the_display(interpreted(&props), el, path, &props);
+    style.direction = direction;
     // A `@tap` handler runs later, in global scope, where the `r-for` loop
     // variable no longer exists, so `@tap="picked = item"` would see `item`
     // undefined and silently do nothing. Bake the current loop bindings into the
@@ -4829,166 +5092,7 @@ fn build_node_inner(
     let white_space = props.get("white-space").and_then(|v| WhiteSpace::parse(v)).unwrap_or_default();
 
     if el.tag == "text" {
-        // A run of a sentence takes the rest of the sentence's style where it
-        // says nothing of its own. See `RunInherit`.
-        let outer = inherited.run;
-        let weight = props
-            .get("font-weight")
-            .and_then(|v| parse_weight(v))
-            .or(outer.map(|r| r.weight))
-            .unwrap_or(400);
-        let italic = if props.contains_key("font-style") { italic } else { outer.is_some_and(|r| r.italic) };
-        let letter_spacing = letter_spacing.or(outer.and_then(|r| r.letter_spacing));
-        let word_spacing = word_spacing.or(outer.and_then(|r| r.word_spacing));
-        let underline = underline || outer.is_some_and(|r| r.underline);
-        let strikethrough = strikethrough || outer.is_some_and(|r| r.strikethrough);
-        let white_space = if props.contains_key("white-space") {
-            white_space
-        } else {
-            outer.map_or(white_space, |r| r.white_space)
-        };
-        let nowrap = !white_space.wraps();
-        let align = props
-            .get("text-align")
-            .map(|v| parse_text_align(v))
-            .unwrap_or_default();
-        let wrap = style.text_wrap;
-        // Recompute this text on change instead of rebuilding: record the raw
-        // template, the locals, and the signals it reads, keyed by this node's
-        // path. Only text that actually interpolates is registered.
-        let template = text_template(el);
-        // Placed on the text itself, which for a multi-line `<text>` is not the
-        // line the tag opened on.
-        let (text, deps) =
-            rux_script::located(Some(text_line(el)), || interpolate_tracked(&template, engine, locals));
-        // A run keeps its spaces for the layout, which collapses them with the
-        // runs beside it; anything else is collapsed now.
-        let collapse = outer.is_none().then_some(white_space);
-        let text = match collapse {
-            Some(mode) => white_space::collapse(&text, mode),
-            None => text,
-        };
-        if template.contains("{{") {
-            reg.text.push(TextBinding {
-                path: path.to_vec(),
-                template,
-                locals: locals.clone(),
-                deps,
-                white_space: collapse,
-            });
-        }
-        let mut node = LayoutNode::text(
-            style,
-            TextContent {
-                text,
-                font_size,
-                weight,
-                color,
-                align,
-                wrap,
-                font_family: font_family.clone(),
-                letter_spacing,
-                word_spacing,
-                line_height,
-                italic,
-                underline,
-                strikethrough,
-                nowrap,
-                caret: None,
-                selection: None,
-                preedit: None,
-                selection_style: Default::default(),
-                rich: None,
-                white_space,
-            },
-        );
-        // A sentence: the pieces inside it are built as its children, each the
-        // element it is, and the layout joins them into one text.
-        if el.children.iter().any(|c| matches!(c, TplNode::Element(_))) {
-            check_sentence_children(el);
-            let run = RunInherit { weight, italic, letter_spacing, word_spacing, underline, strikethrough, white_space };
-            let child_inherited = Inherited {
-                color,
-                selection,
-                font_size,
-                font_family: font_family.clone(),
-                vars: Rc::clone(&vars),
-                run: Some(run),
-            };
-            let siblings = if KEEP_SIBLINGS.with(std::cell::Cell::get) { prev.to_vec() } else { Vec::new() };
-            ancestors.push(AncNode { desc, prev: siblings, form: None });
-            let plain = instance.is_none() && slot.is_none() && outlet.is_none() && row.is_none();
-            let (children, structural_deps) = build_children(
-                &element_children(el),
-                rules,
-                comps,
-                ancestors,
-                &child_inherited,
-                engine,
-                locals,
-                path,
-                tpl_path,
-                reg,
-                state,
-                instances,
-                swaps,
-                instance,
-                slot,
-                outlet,
-                row,
-            );
-            // Rebuilt alone when an `r-if` or `r-for` inside it changes, as any
-            // other parent's children are.
-            let ctx = (plain && !structural_deps.is_empty()).then(|| {
-                Rc::new(ListCtx {
-                    el: el as *const Element as usize,
-                    ancestors: ancestors.clone(),
-                    inherited: child_inherited.clone(),
-                    locals: locals.clone(),
-                })
-            });
-            ancestors.pop();
-            if !structural_deps.is_empty() {
-                reg.structural_parents.push(StructuralParent {
-                    tree_path: path.to_vec(),
-                    tpl_path: tpl_path.to_vec(),
-                    deps: structural_deps,
-                    ctx,
-                });
-            }
-            node.children = children;
-        }
-        node.on_tap = on_tap;
-        // Inside a component a tap here runs against that instance's state,
-        // as the general element branch below has always said; this branch
-        // never did, so `<text @tap="n++">` in a component ran in the
-        // document's scope, where `n` is not.
-        node.instance = instance.map(str::to_string);
-        node.hidden = hidden;
-        node.id = el.attr("id").map(str::to_string);
-        node.label_for = el.attr("for").map(str::to_string);
-        node.state_path = state_path.clone();
-        // Static text reads as a label; `role="heading"` promotes it. Text that is
-        // itself tappable is a button whose name is its own words, unless it is a
-        // link, which a screen reader announces differently and should.
-        // A run that is only words is read as part of its sentence, so it is
-        // nothing of its own; one that does something is a link or a button
-        // inside it. A sentence is read by all of its words.
-        let words = sentence_words(&node);
-        node.access = Access {
-            role: explicit_access_role(el).unwrap_or(if to.is_some() {
-                AccessRole::Link
-            } else if node.on_tap.is_some() {
-                AccessRole::Button
-            } else if outer.is_some() {
-                AccessRole::None
-            } else {
-                AccessRole::Label
-            }),
-            label: authored_label(el).or_else(|| Some(words.trim().to_string()).filter(|t| !t.is_empty())),
-            ..Access::default()
-        };
-        return node;
+        return build_text(el, rules, comps, ancestors, prev, inherited, engine, locals, path, tpl_path, reg, state, instances, swaps, instance, slot, outlet, row, &props, style, desc, on_tap, to, hidden, state_path, color, selection, font_size, font_family, letter_spacing, word_spacing, line_height, italic, underline, strikethrough, white_space, direction, dir_auto, vars);
     }
 
     // <image src=…>: a leaf that paints its pixels. The `src` here is still the
@@ -5439,6 +5543,7 @@ fn build_node_inner(
                 },
                 rich: None,
                 white_space: Default::default(),
+                direction: None,
             },
         );
         let mut node = LayoutNode::new(style);
@@ -5497,7 +5602,8 @@ fn build_node_inner(
     let siblings = if KEEP_SIBLINGS.with(std::cell::Cell::get) { prev.to_vec() } else { Vec::new() };
     ancestors.push(AncNode { desc, prev: siblings, form: is_form.then(|| path.to_vec()) });
     let element_children = element_children(el);
-    let child_inherited = Inherited { color, selection, font_size, font_family, vars: Rc::clone(&vars), run: None };
+    let child_inherited =
+        Inherited { color, selection, font_size, font_family, vars: Rc::clone(&vars), run: None, direction };
     let plain = instance.is_none() && slot.is_none() && outlet.is_none() && row.is_none();
     let (children, structural_deps) = build_children(
         &element_children,
@@ -7891,7 +7997,7 @@ fn frag_has_other_place(frag: &BindingRegistry, own: Option<&str>) -> bool {
 /// Destructured so that a field added to either struct fails to compile here
 /// rather than being silently left out of the comparison.
 fn same_inherited(a: &Inherited, b: &Inherited) -> bool {
-    let Inherited { color, selection, font_size, font_family, vars, run } = a;
+    let Inherited { color, selection, font_size, font_family, vars, run, direction } = a;
     let SelectionStyle { background, color: text, handle } = selection;
     let rgba = |x: &Rgba, y: &Rgba| x.r == y.r && x.g == y.g && x.b == y.b && x.a == y.a;
     let opt = |x: &Option<Rgba>, y: &Option<Rgba>| match (x, y) {
@@ -7907,6 +8013,7 @@ fn same_inherited(a: &Inherited, b: &Inherited) -> bool {
         && *font_family == b.font_family
         && (Rc::ptr_eq(vars, &b.vars) || **vars == *b.vars)
         && *run == b.run
+        && *direction == b.direction
 }
 
 /// Put a kept row into this build at `path`: its node, and its registry
@@ -9752,7 +9859,9 @@ fn parse_weight(s: &str) -> Option<u16> {
 fn parse_text_align(s: &str) -> TextAlign {
     match s.trim() {
         "center" => TextAlign::Center,
-        "right" | "end" => TextAlign::End,
+        "end" => TextAlign::End,
+        "left" => TextAlign::Left,
+        "right" => TextAlign::Right,
         "justify" => TextAlign::Justify,
         _ => TextAlign::Start,
     }
@@ -12225,5 +12334,96 @@ mod sentence_tests {
         let (root, _) = built("<template><screen><text>  just   words  </text></screen></template>");
         assert!(root.children[0].children.is_empty());
         assert_eq!(text(&root.children[0]).text, "just words");
+    }
+}
+
+#[cfg(test)]
+mod direction_tests {
+    use std::collections::HashMap;
+
+    use rux_layout::{Direction, Node, TextAlign};
+    use rux_script::Builder;
+
+    fn built(src: &str) -> Node {
+        let sfc = rux_parser::parse_sfc(src).unwrap();
+        let mut engine = Builder::new().build(&sfc.script).unwrap();
+        super::build_styled_tree(&sfc, &HashMap::new(), &HashMap::new(), &mut engine).unwrap()
+    }
+
+    /// `dir` reaches everything inside, the layout and the text alike.
+    #[test]
+    fn dir_is_inherited() {
+        let root = built(r#"<template><screen><view dir="rtl"><view><text>a</text></view></view></screen></template>"#);
+        let inner = &root.children[0].children[0];
+        assert_eq!(inner.style.direction, Direction::Rtl);
+        assert_eq!(inner.children[0].text.as_ref().unwrap().direction, Some(Direction::Rtl));
+        assert_eq!(root.style.direction, Direction::Ltr, "and nothing outside");
+        assert_eq!(root.children[0].text.as_ref().map(|_| ()), None);
+    }
+
+    /// A `direction` rule wins over the attribute, as an author's rule wins over
+    /// a presentational hint in CSS.
+    #[test]
+    fn a_rule_beats_the_attribute() {
+        let root = built(
+            r#"<template><screen><text class="x" dir="rtl">a</text></screen></template>
+               <style>.x { direction: ltr; }</style>"#,
+        );
+        assert_eq!(root.children[0].style.direction, Direction::Ltr);
+    }
+
+    /// `dir="auto"` leaves a text to its first letter.
+    #[test]
+    fn auto_leaves_the_text_to_its_letters() {
+        let root = built(r#"<template><screen dir="rtl"><text dir="auto">a</text><text>b</text></screen></template>"#);
+        assert_eq!(root.children[0].text.as_ref().unwrap().direction, None);
+        assert_eq!(root.children[1].text.as_ref().unwrap().direction, Some(Direction::Rtl));
+    }
+
+    /// Between a logical and a physical declaration the later one wins, on the
+    /// side the direction puts the logical one.
+    #[test]
+    fn logical_and_physical_resolve_in_order() {
+        let src = |dir: &str| {
+            format!(
+                r#"<template><screen><view class="a" dir="{dir}"></view></screen></template>
+                   <style>.a {{ margin-inline-start: 4px; margin-left: 8px; padding-inline: 1px 2px; }}</style>"#
+            )
+        };
+        let ltr = built(&src("ltr"));
+        let m = ltr.children[0].style.margin;
+        assert_eq!((m.left, m.right), (8.0, 0.0), "ltr: the later margin-left wins the start side");
+        let p = ltr.children[0].style.padding;
+        assert_eq!((p.left, p.right), (1.0, 2.0));
+        let rtl = built(&src("rtl"));
+        let m = rtl.children[0].style.margin;
+        assert_eq!((m.left, m.right), (8.0, 4.0), "rtl: the start is the right, untouched by margin-left");
+        let p = rtl.children[0].style.padding;
+        assert_eq!((p.left, p.right), (2.0, 1.0));
+    }
+
+    /// An inline `style` is part of the order too.
+    #[test]
+    fn an_inline_logical_declaration_comes_last() {
+        let root = built(
+            r#"<template><screen><view class="a" dir="rtl" style="margin-inline-end: 3px"></view></screen></template>
+               <style>.a { margin-left: 9px; }</style>"#,
+        );
+        assert_eq!(root.children[0].style.margin.left, 3.0);
+    }
+
+    /// `left` and `right` are sides; `start` and `end` follow the direction.
+    #[test]
+    fn text_align_sides_and_ends() {
+        let root = built(
+            r#"<template><screen>
+                 <text style="text-align: left">a</text>
+                 <text style="text-align: right">b</text>
+                 <text style="text-align: start">c</text>
+                 <text style="text-align: end">d</text>
+               </screen></template>"#,
+        );
+        let aligns: Vec<TextAlign> = root.children.iter().map(|c| c.text.as_ref().unwrap().align).collect();
+        assert_eq!(aligns, [TextAlign::Left, TextAlign::Right, TextAlign::Start, TextAlign::End]);
     }
 }

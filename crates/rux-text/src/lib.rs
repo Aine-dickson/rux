@@ -31,7 +31,7 @@ use parley::{
     TextWrapMode,
 };
 use parley::style::{FontFamily, FontStyle};
-use rux_layout::{InlineGeometry, RichText, RunStyle};
+use rux_layout::{Direction, InlineGeometry, RichText, RunStyle};
 use vello::kurbo::{Affine, Rect};
 use vello::peniko::{Color, Fill};
 use vello::{Glyph, Scene};
@@ -50,6 +50,10 @@ pub enum Align {
     Center,
     End,
     Justify,
+    /// `left` and `right` are sides of the box, whatever the direction:
+    /// `start` and `end` are the ones that follow it.
+    Left,
+    Right,
 }
 
 impl Align {
@@ -59,6 +63,8 @@ impl Align {
             Align::Center => Alignment::Center,
             Align::End => Alignment::End,
             Align::Justify => Alignment::Justify,
+            Align::Left => Alignment::Left,
+            Align::Right => Alignment::Right,
         }
     }
 }
@@ -110,6 +116,9 @@ pub struct TextStyle<'a> {
     pub nowrap: bool,
     /// The runs and inline boxes of a paragraph that has them.
     pub rich: Option<&'a RichText>,
+    /// The paragraph's base direction; `None` takes it from its first letter
+    /// with a direction (`dir="auto"`).
+    pub direction: Option<Direction>,
 }
 
 impl<'a> TextStyle<'a> {
@@ -128,8 +137,57 @@ impl<'a> TextStyle<'a> {
             strikethrough: false,
             nowrap: false,
             rich: None,
+            direction: None,
         }
     }
+}
+
+/// The direction of the first letter that has one, `None` for text of digits,
+/// spaces and punctuation alone. Right-to-left is the Hebrew, Arabic, Syriac,
+/// Thaana, N'Ko and later right-to-left scripts' blocks, less the Arabic
+/// digits and number signs, which have no direction of their own.
+fn first_strong(text: &str) -> Option<Direction> {
+    for c in text.chars() {
+        let u = c as u32;
+        match c {
+            '\u{200E}' => return Some(Direction::Ltr),
+            '\u{200F}' => return Some(Direction::Rtl),
+            _ => {}
+        }
+        let weak_arabic = matches!(u, 0x0600..=0x0605 | 0x0660..=0x066C | 0x06F0..=0x06F9);
+        let rtl = matches!(u, 0x0590..=0x08FF | 0xFB1D..=0xFDFF | 0xFE70..=0xFEFF | 0x10800..=0x10FFF | 0x1E800..=0x1EFFF);
+        if rtl && !weak_arabic {
+            return Some(Direction::Rtl);
+        }
+        if !rtl && c.is_alphabetic() {
+            return Some(Direction::Ltr);
+        }
+    }
+    None
+}
+
+/// The invisible mark put in front of a paragraph whose first letter would
+/// give it the wrong base direction.
+///
+/// parley 0.11 takes a paragraph's base direction from its first letter that
+/// has one, always: there is no way to tell it otherwise. So a paragraph that
+/// is right-to-left but starts with a Latin word, or left-to-right but starts
+/// with an Arabic one, starts with a mark of the direction it should have
+/// (U+200F or U+200E), which is the first letter with a direction, has no
+/// width and draws nothing. Every byte index in and out of the engine is
+/// moved by its length, so nothing outside ever sees it. Text whose first
+/// letter agrees, nearly all of it, gets no mark.
+fn mark(text: &str, direction: Option<Direction>) -> Option<&'static str> {
+    let want = direction?;
+    (first_strong(text).unwrap_or(Direction::Ltr) != want).then_some(match want {
+        Direction::Ltr => "\u{200E}",
+        Direction::Rtl => "\u{200F}",
+    })
+}
+
+/// How far the engine's byte indices are from the caller's: the mark's length.
+fn shift(text: &str, style: &TextStyle) -> usize {
+    mark(text, style.direction).map_or(0, str::len)
 }
 
 /// One line as it is stacked: its top and height within the text, and where
@@ -208,6 +266,7 @@ struct Key<S, R> {
     /// A paragraph's runs, `None` for plain text. Compared by value: the
     /// same runs are the same paragraph.
     rich: Option<R>,
+    direction: Option<Direction>,
 }
 
 type MeasureKey = Key<String, RichText>;
@@ -229,6 +288,7 @@ impl<'a> KeyRef<'a> {
             max_width: max_width.map(f32::to_bits),
             align,
             rich: style.rich,
+            direction: style.direction,
         }
     }
 
@@ -247,6 +307,7 @@ impl<'a> KeyRef<'a> {
             max_width: self.max_width,
             align: self.align,
             rich: self.rich.cloned(),
+            direction: self.direction,
         }
     }
 }
@@ -274,6 +335,7 @@ impl AsKey for MeasureKey {
             max_width: self.max_width,
             align: self.align,
             rich: self.rich.as_ref(),
+            direction: self.direction,
         }
     }
 }
@@ -361,6 +423,12 @@ impl TextEngine {
     }
 
     fn build(&mut self, text: &str, style: &TextStyle, max_width: Option<f32>) -> Layout<RunId> {
+        let marked: Cow<str> = match mark(text, style.direction) {
+            Some(m) => Cow::Owned(format!("{m}{text}")),
+            None => Cow::Borrowed(text),
+        };
+        let off = marked.len() - text.len();
+        let text = &*marked;
         let mut builder = self.layout_cx.ranged_builder(&mut self.font_cx, text, 1.0, true);
         builder.push_default(StyleProperty::FontSize(style.font_size));
         builder.push_default(StyleProperty::FontWeight(FontWeight::new(style.weight as f32)));
@@ -387,7 +455,8 @@ impl TextEngine {
         }
         if let Some(rich) = style.rich {
             for (i, run) in rich.runs.iter().enumerate() {
-                Self::push_run(&mut builder, i as RunId + 1, run.range.clone(), &run.style, style);
+                let range = run.range.start + off..run.range.end + off;
+                Self::push_run(&mut builder, i as RunId + 1, range, &run.style, style);
             }
             // The height is what parley stands on the baseline, which matters
             // to nothing here: lines are measured in `lines`, and parley's
@@ -396,7 +465,7 @@ impl TextEngine {
                 builder.push_inline_box(InlineBox {
                     id: i as u64,
                     kind: InlineBoxKind::InFlow,
-                    index: item.index.min(text.len()),
+                    index: (item.index + off).min(text.len()),
                     width: item.width,
                     height: item.height,
                 });
@@ -470,7 +539,8 @@ impl TextEngine {
         index: usize,
     ) -> (f32, f32, f32) {
         let layout = self.build(text, style, max_width);
-        let cursor = Cursor::from_byte_index(&layout, index.min(text.len()), Affinity::Downstream);
+        let off = shift(text, style);
+        let cursor = Cursor::from_byte_index(&layout, index.min(text.len()) + off, Affinity::Downstream);
         let bounds = cursor.geometry(&layout, CARET_WIDTH);
         (bounds.x0 as f32, bounds.y0 as f32, (bounds.y1 - bounds.y0) as f32)
     }
@@ -491,9 +561,11 @@ impl TextEngine {
     /// real and stays.
     fn lines(layout: &Layout<RunId>, text: &str, style: &TextStyle) -> Vec<LineBox> {
         let lines: Vec<_> = layout.lines().collect();
+        let off = shift(text, style);
+        let in_text = |r: std::ops::Range<usize>| r.start.saturating_sub(off)..r.end.saturating_sub(off);
         let hung = lines.len() > 1
             && text
-                .get(lines[lines.len() - 1].text_range())
+                .get(in_text(lines[lines.len() - 1].text_range()))
                 .is_some_and(|rest| rest.chars().all(|c| c == ' ' || c == '\u{a0}' || c == '\t'))
             && !lines[lines.len() - 1].items().any(|i| matches!(i, PositionedLayoutItem::InlineBox(_)))
             && matches!(
@@ -604,10 +676,11 @@ impl TextEngine {
             return Vec::new();
         }
         let layout = self.build(text, style, max_width);
+        let off = shift(text, style);
         let (from, to) = (start.min(end), start.max(end));
         let selection = Selection::new(
-            Cursor::from_byte_index(&layout, from.min(text.len()), Affinity::Downstream),
-            Cursor::from_byte_index(&layout, to.min(text.len()), Affinity::Downstream),
+            Cursor::from_byte_index(&layout, from.min(text.len()) + off, Affinity::Downstream),
+            Cursor::from_byte_index(&layout, to.min(text.len()) + off, Affinity::Downstream),
         );
 
         let lines = Self::lines(&layout, text, style);
@@ -703,6 +776,7 @@ impl TextEngine {
         self.ensure_shaped(key, text, style, max_width, align);
         let layout = &self.shaped[&key as &dyn AsKey];
         let lines = Self::lines(layout, text, style);
+        let off = shift(text, style);
         rich.runs
             .iter()
             .map(|run| {
@@ -710,8 +784,8 @@ impl TextEngine {
                     return Vec::new();
                 }
                 let selection = Selection::new(
-                    Cursor::from_byte_index(layout, run.range.start.min(text.len()), Affinity::Downstream),
-                    Cursor::from_byte_index(layout, run.range.end.min(text.len()), Affinity::Upstream),
+                    Cursor::from_byte_index(layout, run.range.start.min(text.len()) + off, Affinity::Downstream),
+                    Cursor::from_byte_index(layout, run.range.end.min(text.len()) + off, Affinity::Upstream),
                 );
                 selection
                     .geometry(layout)
@@ -736,8 +810,9 @@ impl TextEngine {
         y: f32,
     ) -> (usize, usize) {
         let layout = self.build(text, style, max_width);
+        let off = shift(text, style);
         let range = Selection::word_from_point(&layout, x, y).text_range();
-        (range.start, range.end)
+        (range.start.saturating_sub(off), range.end.saturating_sub(off))
     }
 
     /// The byte index nearest a point, for click-to-position. `(x, y)` is
@@ -751,7 +826,8 @@ impl TextEngine {
         y: f32,
     ) -> usize {
         let layout = self.build(text, style, max_width);
-        Cursor::from_point(&layout, x, y).index()
+        let off = shift(text, style);
+        Cursor::from_point(&layout, x, y).index().saturating_sub(off).min(text.len())
     }
 
     /// Draw the text with its top-left at `(x, y)`, leading trimmed and aligned
@@ -825,6 +901,7 @@ impl TextEngine {
         // Highlights first, under every glyph: `background` on a run covers its
         // part of each line it is on, the full height of that line.
         if let Some(rich) = style.rich.filter(|r| !ink && r.runs.iter().any(|run| run.style.background.is_some())) {
+            let off = shift(text, style);
             let lines: Vec<LineBox> = {
                 let mut top = 0.0;
                 layout
@@ -839,8 +916,8 @@ impl TextEngine {
             for run in &rich.runs {
                 let Some(bg) = run.style.background else { continue };
                 let selection = Selection::new(
-                    Cursor::from_byte_index(layout, run.range.start.min(text.len()), Affinity::Downstream),
-                    Cursor::from_byte_index(layout, run.range.end.min(text.len()), Affinity::Upstream),
+                    Cursor::from_byte_index(layout, run.range.start.min(text.len()) + off, Affinity::Downstream),
+                    Cursor::from_byte_index(layout, run.range.end.min(text.len()) + off, Affinity::Upstream),
                 );
                 for (rect, line) in selection.geometry(layout) {
                     let Some(lb) = lines.get(line) else { continue };

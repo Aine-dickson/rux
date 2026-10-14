@@ -17,6 +17,8 @@ grid-row, grid-row-start, grid-row-end   (1 / 3, span 2, -1; no named lines)
 grid-auto-flow, grid-auto-rows, grid-auto-columns
 transform (translate/scale/rotate; visual only; hit regions aren't transformed)
 position (static|relative|sticky|absolute|fixed), top, right, bottom, left
+inset-inline, inset-inline-start, inset-inline-end,
+inset-block, inset-block-start, inset-block-end   (logical: see `direction`)
 z-index (auto|<integer>), isolation (auto|isolate)
 anchor-name, position-anchor, anchor() in top/right/bottom/left, anchor-size() in width/height
 aspect-ratio
@@ -41,6 +43,11 @@ color, font-size, font-weight, font-family, font-style (italic), text-align
 letter-spacing, word-spacing, line-height
 white-space (normal|nowrap|pre|pre-wrap|pre-line; inherited only by a sentence's runs)
 vertical-align (baseline|middle|text-top|text-bottom; an <image> or <path> in a <text>)
+direction (ltr|rtl; inherited, and set by the `dir` attribute too)
+margin-inline, margin-inline-start, margin-inline-end,
+margin-block, margin-block-start, margin-block-end,
+padding-inline, padding-inline-start, padding-inline-end,
+padding-block, padding-block-start, padding-block-end   (logical)
 text-decoration, text-decoration-line (underline / line-through; the longhand
                        wins where both are set)  (color: hex, rgb()/rgba(), CSS names)
 overflow, overflow-x, overflow-y     (hidden|clip = clip; auto|scroll = scroll;

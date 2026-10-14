@@ -1020,6 +1020,7 @@ fn dropdown_paints(sel: &SelectRegion, value: &str) -> Vec<Paint> {
                 selection_style: Default::default(),
                 rich: None,
                 white_space: Default::default(),
+                direction: None,
             },
         }));
     }
@@ -1403,6 +1404,7 @@ fn overlay_text(text: String, font_size: f32, weight: u16, color: Rgba) -> TextC
         selection_style: Default::default(),
         rich: None,
         white_space: Default::default(),
+        direction: None,
     }
 }
 

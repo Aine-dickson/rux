@@ -2478,6 +2478,29 @@ on one probe page, and once more with a `mounted` hook that taps the link.
 | A pointer tap on a run, hover | | the run answers where its words are drawn | under the code only (injected clicks do not reach the window) |
 | Web, Android | the same page | the same | not driven |
 
+## `direction` and `dir`, 2026-10-14
+
+Right-to-left layout and text (owner-approved: `dir` and `direction`,
+inherited, `ltr` by default; logical properties in the same step). Under test
+in `rux-text` (`tests/direction.rs`: five cases, among them a right-to-left
+paragraph that starts with a Latin word, and the direction mark never showing
+in a width or an index), `rux-layout` (`tests/direction.rs`: a row mirrored),
+and `rux-style` (`direction_tests`: six, on inheritance, a rule over the
+attribute, `auto`, logical against physical in declaration order, an inline
+`style`, and `text-align`; `logical`: four on the mapping). Driven in a
+desktop window with a debug build on one probe page.
+
+| Case | Steps | Expected | Result |
+|---|---|---|---|
+| A mirrored row | three cells in a flex row, then the same under `dir="rtl"` | 1 2 3 from the left, then 3 2 1 ending at the right | desktop: pass |
+| Arabic and Hebrew | a paragraph of each under `dir="rtl"` | starting at the right edge, the full stop at the far left | desktop: pass |
+| Latin first | `Rux هو إطار عمل للواجهات.` under `dir="rtl"` | `Rux` at the right end, the full stop at the left, nothing drawn for the mark | desktop: pass |
+| `text-align` | `start`, `end`, `left`, `right` under `dir="rtl"` | right, left, left, right | desktop: pass |
+| `margin-inline-start: 40px` | on a box, then the same box with `dir="rtl"` | the gap on the left, then on the right | desktop: pass |
+| A right-to-left sentence | Arabic with a bold run and a `<path>` icon | one paragraph, read from the right, run and icon in their places | desktop: pass |
+| Text fields in Arabic, scrolling from the right | | | not built yet (step 5) |
+| Web, Android | the same page | the same | not driven |
+
 ## Standing gaps
 
 Cases nothing here can currently exercise. They are the shape of what v0.8 has

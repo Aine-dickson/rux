@@ -59,6 +59,7 @@ fn text(s: &str) -> TextContent {
         selection_style: Default::default(),
         rich: None,
         white_space: Default::default(),
+        direction: None,
     }
 }
 

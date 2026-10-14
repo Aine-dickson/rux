@@ -32,6 +32,7 @@ fn words(text: &str, ws: WhiteSpace) -> TextContent {
         selection_style: Default::default(),
         rich: None,
         white_space: ws,
+        direction: None,
     }
 }
 

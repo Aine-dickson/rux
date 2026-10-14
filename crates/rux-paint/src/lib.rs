@@ -228,6 +228,7 @@ pub fn text_style(tc: &TextContent) -> TextStyle<'_> {
         strikethrough: tc.strikethrough,
         nowrap: tc.nowrap,
         rich: tc.rich.as_deref(),
+        direction: tc.direction,
     }
 }
 
@@ -253,6 +254,8 @@ fn to_align(a: TextAlign) -> Align {
         TextAlign::Center => Align::Center,
         TextAlign::End => Align::End,
         TextAlign::Justify => Align::Justify,
+        TextAlign::Left => Align::Left,
+        TextAlign::Right => Align::Right,
     }
 }
 
@@ -328,7 +331,14 @@ fn text_reaches(
     if y - slack >= v.y1 + EDGE {
         return false;
     }
-    let from_start = matches!(t.content.align, TextAlign::Start | TextAlign::Justify);
+    // Anchored at its left edge, so nothing of it reaches left of `x`. A
+    // right-to-left text's start is its right edge, and it overflows leftwards.
+    let rtl = t.content.direction == Some(rux_layout::Direction::Rtl);
+    let from_start = match t.content.align {
+        TextAlign::Left => true,
+        TextAlign::Start | TextAlign::Justify => !rtl,
+        _ => false,
+    };
     if from_start && x - slack >= v.x1 + EDGE {
         return false;
     }

@@ -204,7 +204,8 @@ pub enum Align {
     Stretch,
 }
 
-/// Horizontal text alignment within a text box (`text-align`).
+/// Horizontal text alignment within a text box (`text-align`). `Start` and
+/// `End` follow the text's direction; `Left` and `Right` do not.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub enum TextAlign {
     #[default]
@@ -212,6 +213,28 @@ pub enum TextAlign {
     Center,
     End,
     Justify,
+    Left,
+    Right,
+}
+
+/// `direction`, set by the `dir` attribute or the CSS property, and inherited.
+/// Which way a line of text runs, and so which side flex rows, grid columns
+/// and `start`/`end` begin from.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum Direction {
+    #[default]
+    Ltr,
+    Rtl,
+}
+
+impl Direction {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim() {
+            "ltr" => Some(Direction::Ltr),
+            "rtl" => Some(Direction::Rtl),
+            _ => None,
+        }
+    }
 }
 
 /// How a line may break when a word is wider than its box (`overflow-wrap` /
@@ -685,6 +708,8 @@ pub struct Style {
     pub text_wrap: TextWrap,
     /// `vertical-align`, for an `<image>` or `<path>` sitting in a line of text.
     pub vertical_align: VerticalAlign,
+    /// `direction`: which side rows, grid columns and the text start from.
+    pub direction: Direction,
     pub padding: Sides,
     pub margin: Sides,
     /// `padding` and `margin` sides written as a **percentage**, in `Sides`
@@ -843,6 +868,7 @@ impl Default for Style {
             opacity: 1.0,
             text_wrap: TextWrap::Normal,
             vertical_align: VerticalAlign::Baseline,
+            direction: Direction::Ltr,
             padding: Sides::default(),
             margin: Sides::default(),
             padding_pct: [None; 4],
@@ -1076,6 +1102,11 @@ pub struct TextContent {
     /// sentence arrives as written, and is collapsed with the runs beside it
     /// when the layout joins them.
     pub white_space: WhiteSpace,
+    /// The paragraph's base direction, which decides where its lines start and
+    /// how text of both directions in it is ordered. `None` takes it from the
+    /// first letter with a direction, which is `dir="auto"`, and what a text
+    /// field does.
+    pub direction: Option<Direction>,
 }
 
 /// How a field's selection is drawn: the two properties `::selection`
@@ -2410,6 +2441,11 @@ fn to_track(t: Track) -> TrackSizingFunction {
 /// a `repeat(…)` and so use taffy's non-repeated track type.
 fn to_taffy(style: &Style, vp: (f32, f32)) -> taffy::Style {
     taffy::Style {
+        // Taffy mirrors flex rows, grid columns and a block's start side.
+        direction: match style.direction {
+            Direction::Ltr => taffy::Direction::Ltr,
+            Direction::Rtl => taffy::Direction::Rtl,
+        },
         display: match style.display {
             // Inline is a normal (block) box; the hug comes from width:auto plus
             // not stretching (taffy has no true inline flow).
@@ -2987,6 +3023,7 @@ fn measures_alike(a: &TextContent, b: &TextContent) -> bool {
         && a.strikethrough == b.strikethrough
         && a.nowrap == b.nowrap
         && a.rich == b.rich
+        && a.direction == b.direction
 }
 
 /// The Taffy node for one of this frame's nodes: `old` brought up to date, or a
