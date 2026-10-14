@@ -227,3 +227,117 @@ fn a_tap_finds_the_menu_where_it_is_drawn() {
     let hit = lay(&root, &[]).hits.into_iter().find(|h| h.on_tap.as_deref() == Some("pick")).expect("tappable");
     assert_eq!((hit.x, hit.y), (100.0, 70.0));
 }
+
+// ── position-try ─────────────────────────────────────────────────────────────
+
+/// A button at `top`, with a 60 x 30 menu under it that flips above it when
+/// there is no room below, in an 800 x 600 window.
+fn flipping(top: f32, tries: Vec<PositionTry>) -> Node {
+    let mut root = Node::new(Style::default());
+    let mut b = button();
+    b.style.inset[0] = Some(Len::Px(top));
+    root.children.push(b);
+    let mut m = menu([at(None, AnchorSide::Bottom), None, None, at(None, AnchorSide::Left)]);
+    m.style.anchor.as_mut().unwrap().tries = tries;
+    root.children.push(m);
+    root
+}
+
+fn flip_block() -> PositionTry {
+    PositionTry { flip_block: true, ..Default::default() }
+}
+
+/// Was dropped before position-try: the anchored axis ignored its margin.
+#[test]
+fn a_margin_moves_an_anchored_box_off_its_anchor() {
+    let mut root = flipping(50.0, Vec::new());
+    root.children[1].style.margin.top = 4.0;
+    assert_eq!(rect(&lay(&root, &[]), 0.2).map(|r| r.1), Some(74.0));
+}
+
+#[test]
+fn flip_block_goes_above_when_below_has_no_room() {
+    // Room below: its own place.
+    let out = lay(&flipping(50.0, vec![flip_block()]), &[]);
+    assert_eq!(rect(&out, 0.2).map(|r| r.1), Some(70.0));
+    assert!(out.position_tries.is_empty());
+    // At 560 the button ends at 580, and 30 more does not fit in 600.
+    let out = lay(&flipping(560.0, vec![flip_block()]), &[]);
+    assert_eq!(rect(&out, 0.2).map(|r| r.1), Some(530.0), "its bottom on the button's top");
+    assert_eq!(out.position_tries.len(), 1);
+}
+
+#[test]
+fn a_flip_carries_the_margin_to_the_other_side() {
+    let mut root = flipping(560.0, vec![flip_block()]);
+    root.children[1].style.margin.top = 4.0;
+    assert_eq!(rect(&lay(&root, &[]), 0.2).map(|r| r.1), Some(526.0));
+}
+
+#[test]
+fn flip_inline_and_flip_start() {
+    // Button at the right edge: a menu starting at its left overflows.
+    let mut root = flipping(50.0, vec![PositionTry { flip_inline: true, ..Default::default() }]);
+    root.children[0].style.inset[3] = Some(Len::Px(760.0));
+    let r = rect(&lay(&root, &[]), 0.2).unwrap();
+    assert_eq!((r.0, r.1), (740.0, 70.0), "ends at the button's right edge");
+
+    // flip-start: top with left, so `top: anchor(bottom)` becomes
+    // `left: anchor(right)`, beside the button rather than under it.
+    let root = flipping(560.0, vec![PositionTry { flip_start: true, ..Default::default() }]);
+    let r = rect(&lay(&root, &[]), 0.2).unwrap();
+    assert_eq!((r.0, r.1), (140.0, 560.0));
+}
+
+#[test]
+fn a_named_rule_replaces_the_sides_it_names() {
+    // `@position-try --above { top: auto; bottom: anchor(top) }`
+    let above = PositionTry {
+        inset: [Some(TryInset::Auto), None, Some(TryInset::Anchor(AnchorRef { name: None, side: AnchorSide::Top, fallback: None })), None],
+        margin: [None, None, Some(2.0), None],
+        ..Default::default()
+    };
+    let r = rect(&lay(&flipping(560.0, vec![above]), &[]), 0.2).unwrap();
+    assert_eq!((r.0, r.1), (100.0, 528.0), "left is still its own");
+}
+
+#[test]
+fn nothing_fits_keeps_its_own_place() {
+    // A 700-high menu fits neither below nor above.
+    let mut root = flipping(300.0, vec![flip_block()]);
+    root.children[1].style.height = Some(Len::Px(700.0));
+    let out = lay(&root, &[]);
+    assert_eq!(rect(&out, 0.2).map(|r| r.1), Some(320.0));
+    assert!(out.position_tries.is_empty());
+}
+
+#[test]
+fn most_height_picks_the_roomier_side() {
+    // Both fit, but there is more room above a button at 400.
+    let mut root = flipping(400.0, vec![flip_block()]);
+    root.children[1].style.anchor.as_mut().unwrap().try_order = TryOrder::MostHeight;
+    assert_eq!(rect(&lay(&root, &[]), 0.2).map(|r| r.1), Some(370.0));
+}
+
+/// CSS keeps the place that last fitted while it still does, so a menu that
+/// flipped stays flipped as its button moves back into room below.
+#[test]
+fn the_place_that_last_fitted_is_tried_first() {
+    let mut state = LayoutState::new();
+    let mut measure = |_: &TextContent, _: Option<f32>| (10.0, 10.0);
+    let out = state.layout_scrolled(&flipping(560.0, vec![flip_block()]), 800.0, 600.0, &[], &mut measure);
+    assert_eq!(rect(&out, 0.2).map(|r| r.1), Some(530.0));
+    let out = state.layout_scrolled(&flipping(300.0, vec![flip_block()]), 800.0, 600.0, &[], &mut measure);
+    assert_eq!(rect(&out, 0.2).map(|r| r.1), Some(270.0), "still above, which still fits");
+    let out = state.layout_scrolled(&flipping(20.0, vec![flip_block()]), 800.0, 600.0, &[], &mut measure);
+    assert_eq!(rect(&out, 0.2).map(|r| r.1), Some(40.0), "no room above: back under");
+
+    // Anchored to another box, it starts again from its own place.
+    let out = state.layout_scrolled(&flipping(560.0, vec![flip_block()]), 800.0, 600.0, &[], &mut measure);
+    assert_eq!(rect(&out, 0.2).map(|r| r.1), Some(530.0));
+    let mut moved = flipping(300.0, vec![flip_block()]);
+    moved.children[0].style.anchor.as_mut().unwrap().name = Some("--other".into());
+    moved.children[1].style.anchor.as_mut().unwrap().position_anchor = Some("--other".into());
+    let out = state.layout_scrolled(&moved, 800.0, 600.0, &[], &mut measure);
+    assert_eq!(rect(&out, 0.2).map(|r| r.1), Some(320.0), "under its new anchor");
+}

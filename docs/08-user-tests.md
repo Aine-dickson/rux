@@ -2570,6 +2570,29 @@ auto` with wide rows and `scrollbar-color: #e01010 #ffd0d0`, D
 | A held track | hold the press on the track | pages on until the thumb reaches the pointer | under the code only (not driven) |
 | Touch chaining, web, Android | a finger on A | the same chaining | not driven |
 
+## `position-try`, 2026-10-15
+
+Fallback places for an anchored box (owner's order, 2026-10-15). Under test in
+`rux-layout` (`tests/anchor.rs`, eight more cases: a margin on an anchored
+side, `flip-block` with and without room, a flip carrying the margin across,
+`flip-inline` and `flip-start`, a named rule replacing only its sides, nothing
+fitting, `most-height`, and the fallback that last fitted tried first and
+forgotten when the anchor changes) and in `rux-style` (`maps_position_try`).
+Driven in a desktop window with a debug build on one probe: a scrolling panel
+of twelve rows filling the window, each button named `--row-N`, a `fixed`
+menu with `margin-top: 4px` and `position-try-fallbacks: --above`, and a
+140px tip right of a dot at the window's right edge with `position-try:
+flip-inline`.
+
+| Case | Steps | Expected | Result |
+|---|---|---|---|
+| Room below | open row 2 | the menu under the button, 4px between them | desktop: pass |
+| No room below | open row 12, at the panel's foot | the menu above the button, 4px between them | desktop: pass |
+| Back to a row with room | open row 12, then row 2 | under row 2 again, not still above | desktop: pass |
+| The right edge | the tip beside a dot at the right edge | the tip left of the dot, 6px apart | desktop: pass |
+| A fallback kept while it fits | a flipped menu, its panel scrolled until there is room below | still above | under the code only |
+| Web, Android | the same page | the same | not driven |
+
 ## Standing gaps
 
 Cases nothing here can currently exercise. They are the shape of what v0.8 has

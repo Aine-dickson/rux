@@ -23,7 +23,7 @@ use rux_layout::{
 };
 use rux_layout::{AnimProp, Easing, GradientKind, GridFlow, Transform, Transition};
 use rux_layout::{FillRule, InputKind, LineCap, LineJoin, Outline, PathContent};
-use rux_layout::{AnchorRef, AnchorSide, AnchorSize, ScrollbarWidth};
+use rux_layout::{AnchorRef, AnchorSide, AnchorSize, PositionTry, ScrollbarWidth, TryInset, TryOrder};
 use rux_parser::{Element, Node as TplNode, Sfc};
 use rux_reactive::Value;
 /// Re-exported so the runtime and the shell can name a warning without
@@ -3425,8 +3425,54 @@ fn collect_media_matches(rules: &[CssRule], env: Environment, out: &mut Vec<bool
 /// `base` is the 1-based file line the `<style>` block's first character sits
 /// on, used to lift lightningcss's section-relative positions onto the file's
 /// own lines. `None` means "do not claim to know": see [`parse_rules_at`].
+#[cfg(test)]
 fn parse_rules(css: &str, env: Environment) -> Vec<Rule> {
-    parse_rules_at(css, env, None)
+    parse_rules_at(css, env, None, &position_try_rules(css, env))
+}
+
+/// Every `@position-try` rule in `css` by name, with its declarations as
+/// written. A `position-try-fallbacks` naming one is expanded with them when
+/// it is collected, so a box's style is still read from its declarations
+/// alone. See [`expand_position_tries`].
+fn position_try_rules(css: &str, env: Environment) -> HashMap<String, String> {
+    let mut out = HashMap::new();
+    if !css.contains("@position-try") {
+        return out;
+    }
+    if let Ok(sheet) = StyleSheet::parse(css, ParserOptions::default()) {
+        gather_position_tries(&sheet.rules.0, env, &mut out);
+    }
+    out
+}
+
+fn gather_position_tries(rules: &[CssRule], env: Environment, out: &mut HashMap<String, String>) {
+    for rule in rules {
+        match rule {
+            CssRule::Media(media) => {
+                let text = media.query.to_css_string(PrinterOptions::default()).unwrap_or_default();
+                if MediaCond::parse(&text).holds(env) {
+                    gather_position_tries(&media.rules.0, env, out);
+                }
+            }
+            CssRule::Unknown(at) if at.name.eq_ignore_ascii_case("position-try") => {
+                // Printed whole, `@position-try --name { body }`: the token
+                // lists inside print only through their rule.
+                let text = rule.to_css_string(PrinterOptions::default()).unwrap_or_default();
+                let Some((head, body)) = text.split_once('{') else { continue };
+                let name = head.trim().trim_start_matches("@position-try").trim();
+                let body = body.trim().trim_end_matches('}').trim().to_string();
+                if !name.starts_with("--") || name.contains(char::is_whitespace) {
+                    warn(format!(
+                        "`@position-try {name}` needs a name that starts with two dashes, as in `@position-try --above`"
+                    ));
+                    continue;
+                }
+                // A later rule with the same name replaces an earlier one.
+                out.insert(name.to_string(), body);
+            }
+            _ => {}
+        }
+    }
 }
 
 /// Every sheet a document styles with: what it included, then its own
@@ -3441,18 +3487,30 @@ fn parse_rules(css: &str, env: Environment) -> Vec<Rule> {
 /// from the include's coordinate space would point confidently at the wrong
 /// place. Same reasoning as a component's `<style>` above.
 fn parse_document_rules(sfc: &Sfc, env: Environment) -> Vec<Rule> {
+    let tries = sheet_position_tries(sfc, env);
     if sfc.style_includes.is_empty() {
         // The overwhelmingly common case, and it keeps the `order` values
         // exactly as they were before includes existed.
-        return parse_rules_at(&sfc.style, env, Some(sfc.style_line));
+        return parse_rules_at(&sfc.style, env, Some(sfc.style_line), &tries);
     }
     let mut rules = Vec::new();
     for include in &sfc.style_includes {
-        rules.extend(parse_rules(&include.css, env));
+        rules.extend(parse_rules_at(&include.css, env, None, &tries));
     }
-    rules.extend(parse_rules_at(&sfc.style, env, Some(sfc.style_line)));
+    rules.extend(parse_rules_at(&sfc.style, env, Some(sfc.style_line), &tries));
     renumber(&mut rules);
     rules
+}
+
+/// The `@position-try` rules of a document or component and what it
+/// includes, which a fallback can name across, as one sheet.
+fn sheet_position_tries(sfc: &Sfc, env: Environment) -> HashMap<String, String> {
+    let mut tries = HashMap::new();
+    for include in &sfc.style_includes {
+        tries.extend(position_try_rules(&include.css, env));
+    }
+    tries.extend(position_try_rules(&sfc.style, env));
+    tries
 }
 
 /// What [`parse_document_rules`] reads, hashed, so rules kept from an
@@ -3471,14 +3529,15 @@ fn rules_print(sfc: &Sfc) -> u64 {
 /// [`parse_document_rules`] for a component, whose own `<style>` is unplaced
 /// too.
 fn parse_component_rules(sfc: &Sfc, env: Environment) -> Vec<Rule> {
+    let tries = sheet_position_tries(sfc, env);
     if sfc.style_includes.is_empty() {
-        return parse_rules(&sfc.style, env);
+        return parse_rules_at(&sfc.style, env, None, &tries);
     }
     let mut rules = Vec::new();
     for include in &sfc.style_includes {
-        rules.extend(parse_rules(&include.css, env));
+        rules.extend(parse_rules_at(&include.css, env, None, &tries));
     }
-    rules.extend(parse_rules(&sfc.style, env));
+    rules.extend(parse_rules_at(&sfc.style, env, None, &tries));
     renumber(&mut rules);
     rules
 }
@@ -3495,7 +3554,7 @@ fn renumber(rules: &mut [Rule]) {
     }
 }
 
-fn parse_rules_at(css: &str, env: Environment, base: Option<usize>) -> Vec<Rule> {
+fn parse_rules_at(css: &str, env: Environment, base: Option<usize>, tries: &HashMap<String, String>) -> Vec<Rule> {
     let sheet = match StyleSheet::parse(css, ParserOptions::default()) {
         Ok(s) => s,
         Err(_) => return Vec::new(),
@@ -3503,7 +3562,7 @@ fn parse_rules_at(css: &str, env: Environment, base: Option<usize>) -> Vec<Rule>
 
     let mut rules = Vec::new();
     let mut order = 0usize;
-    collect_rules(&sheet.rules.0, env, &mut rules, &mut order, base, css);
+    collect_rules(&sheet.rules.0, env, &mut rules, &mut order, base, css, tries);
     rules
 }
 
@@ -3519,6 +3578,7 @@ fn collect_rules(
     order: &mut usize,
     base: Option<usize>,
     css: &str,
+    tries: &HashMap<String, String>,
 ) {
     for rule in rules {
         match rule {
@@ -3532,10 +3592,10 @@ fn collect_rules(
                     MediaCond::parse(&text).holds(env)
                 });
                 if holds {
-                    collect_rules(&media.rules.0, env, out, order, base, css);
+                    collect_rules(&media.rules.0, env, out, order, base, css, tries);
                 }
             }
-            CssRule::Style(style) => collect_style_rule(style, out, order, base, css),
+            CssRule::Style(style) => collect_style_rule(style, out, order, base, css, tries),
             _ => {}
         }
     }
@@ -3599,6 +3659,7 @@ fn collect_style_rule(
     order: &mut usize,
     base: Option<usize>,
     css: &str,
+    tries: &HashMap<String, String>,
 ) {
     located(file_line(base, style.loc.line), || {
         // Serialize each declaration to "prop: value" and split it.
@@ -3616,10 +3677,11 @@ fn collect_style_rule(
                     // the reader somewhere the named property does not appear.
                     let at = decl_line(css, style.loc.line, &key).unwrap_or(style.loc.line);
                     located(file_line(base, at), || warn_if_unhonored(&key));
-                    decls.push((
-                        key,
-                        v.trim().trim_end_matches(';').trim().to_string(),
-                    ));
+                    let mut v = v.trim().trim_end_matches(';').trim().to_string();
+                    if key == "position-try-fallbacks" || key == "position-try" {
+                        v = expand_position_tries(&v, tries);
+                    }
+                    decls.push((key, v));
                 }
             }
         }
@@ -3681,6 +3743,7 @@ const HONORED_PROPERTIES: &[&str] = &[
     // Positioning
     "position", "top", "right", "bottom", "left", "aspect-ratio", "z-index", "isolation",
     "anchor-name", "position-anchor",
+    "position-try", "position-try-fallbacks", "position-try-order",
     // Logical sides, put on a physical side by `direction` (see `logical`).
     "margin-inline", "margin-inline-start", "margin-inline-end",
     "margin-block", "margin-block-start", "margin-block-end",
@@ -8693,6 +8756,7 @@ fn interpret(p: &HashMap<String, String>) -> Style {
             }
         }
     }
+    interpret_position_try(p, &mut st);
     if let Some(v) = p.get("z-index") {
         st.z_index = match first(v) {
             "auto" => None,
@@ -9350,6 +9414,176 @@ fn parse_aspect_ratio(v: &str) -> Option<f32> {
         return (h != 0.0).then_some(w / h);
     }
     v.trim().parse::<f32>().ok().filter(|r| *r > 0.0)
+}
+
+/// Split `value` where `at` says, outside any brackets or braces.
+fn split_outside(value: &str, at: impl Fn(char) -> bool) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut depth = 0i32;
+    let mut start = 0;
+    for (i, c) in value.char_indices() {
+        match c {
+            '(' | '{' | '[' => depth += 1,
+            ')' | '}' | ']' => depth -= 1,
+            c if depth == 0 && at(c) => {
+                out.push(value[start..i].trim());
+                start = i + c.len_utf8();
+            }
+            _ => {}
+        }
+    }
+    out.push(value[start..].trim());
+    out.into_iter().filter(|t| !t.is_empty()).collect()
+}
+
+/// `position-try-fallbacks` (or the `position-try` shorthand) with each
+/// `@position-try` name it uses followed by that rule's declarations in
+/// braces, `--above{bottom: anchor(top)}`, so interpreting the box needs
+/// nothing but its own declarations. A name with no rule is dropped from the
+/// list and said, as CSS skips it.
+fn expand_position_tries(value: &str, tries: &HashMap<String, String>) -> String {
+    let options: Vec<String> = split_outside(value, |c| c == ',')
+        .into_iter()
+        .filter_map(|option| {
+            let mut words = Vec::new();
+            for word in split_outside(option, char::is_whitespace) {
+                if word.starts_with("--") {
+                    match tries.get(word) {
+                        Some(body) => words.push(format!("{word}{{{}}}", body.trim())),
+                        None => {
+                            warn(format!(
+                                "`position-try-fallbacks` names `{word}`, and there is no `@position-try {word}` rule, so that fallback is skipped"
+                            ));
+                            return None;
+                        }
+                    }
+                } else {
+                    words.push(word.to_string());
+                }
+            }
+            Some(words.join(" "))
+        })
+        .collect();
+    if options.is_empty() {
+        "none".to_string()
+    } else {
+        options.join(", ")
+    }
+}
+
+/// What a `@position-try` rule may set and Rux honors there: the insets,
+/// the margins and `position-anchor`.
+const POSITION_TRY_PROPERTIES: &[&str] = &[
+    "top", "right", "bottom", "left",
+    "margin", "margin-top", "margin-right", "margin-bottom", "margin-left",
+    "position-anchor",
+];
+
+/// `position-try-fallbacks`, `position-try-order` and the `position-try`
+/// shorthand, onto `st.anchor`.
+fn interpret_position_try(p: &HashMap<String, String>, st: &mut Style) {
+    let order_of = |w: &str| match w {
+        "normal" => Some(TryOrder::Normal),
+        "most-width" | "most-inline-size" => Some(TryOrder::MostWidth),
+        "most-height" | "most-block-size" => Some(TryOrder::MostHeight),
+        _ => None,
+    };
+    let mut order = None;
+    let mut fallbacks = None;
+    if let Some(v) = p.get("position-try") {
+        let v = v.trim();
+        let (head, rest) = v.split_once(char::is_whitespace).unwrap_or((v, ""));
+        match order_of(head) {
+            Some(o) => {
+                order = Some(o);
+                fallbacks = Some(rest.trim().to_string());
+            }
+            None => fallbacks = Some(v.to_string()),
+        }
+    }
+    if let Some(v) = p.get("position-try-order") {
+        match order_of(v.trim()) {
+            Some(o) => order = Some(o),
+            None => warn(format!(
+                "`position-try-order: {}` is not one Rux knows; write `normal`, `most-width`, `most-height`, `most-inline-size` or `most-block-size`",
+                v.trim()
+            )),
+        }
+    }
+    if let Some(v) = p.get("position-try-fallbacks") {
+        fallbacks = Some(v.trim().to_string());
+    }
+    let tries: Vec<PositionTry> = match fallbacks.as_deref() {
+        None | Some("") | Some("none") => Vec::new(),
+        Some(v) => split_outside(v, |c| c == ',').into_iter().filter_map(parse_position_try).collect(),
+    };
+    if tries.is_empty() && order.is_none() {
+        return;
+    }
+    let a = st.anchor.get_or_insert_with(Default::default);
+    a.tries = tries;
+    a.try_order = order.unwrap_or_default();
+}
+
+/// One entry of `position-try-fallbacks`, already expanded: an optional
+/// `--name{declarations}` and any of the three flips.
+fn parse_position_try(option: &str) -> Option<PositionTry> {
+    let mut t = PositionTry::default();
+    for word in split_outside(option, char::is_whitespace) {
+        match word {
+            "flip-block" => t.flip_block = true,
+            "flip-inline" => t.flip_inline = true,
+            "flip-start" => t.flip_start = true,
+            w if w.starts_with("--") => {
+                let body = w.split_once('{').map(|(_, b)| b.trim_end_matches('}')).unwrap_or("");
+                position_try_rule(body, &mut t);
+            }
+            other => {
+                warn(format!(
+                    "`{other}` in `position-try-fallbacks` is not honored yet: Rux takes `flip-block`, `flip-inline`, `flip-start` and `@position-try` names, not `position-area` values, so that fallback is skipped"
+                ));
+                return None;
+            }
+        }
+    }
+    Some(t)
+}
+
+/// A `@position-try` rule's declarations onto `t`: only the sides it names
+/// replace the box's own.
+fn position_try_rule(body: &str, t: &mut PositionTry) {
+    let mut decls = HashMap::new();
+    for decl in split_outside(body, |c| c == ';') {
+        let Some((k, v)) = decl.split_once(':') else { continue };
+        let key = k.trim().to_ascii_lowercase();
+        if !POSITION_TRY_PROPERTIES.contains(&key.as_str()) {
+            warn(format!(
+                "`{key}` in a `@position-try` rule is not honored yet; Rux takes the insets (`top`, `right`, `bottom`, `left`), the margins and `position-anchor` there"
+            ));
+            continue;
+        }
+        decls.insert(key, v.trim().to_string());
+    }
+    let st = interpret(&decls);
+    for (i, side) in INSETS.iter().enumerate() {
+        if decls.contains_key(*side) {
+            t.inset[i] = Some(match (st.anchor.as_ref().and_then(|a| a.inset[i].clone()), st.inset[i]) {
+                (Some(r), _) => TryInset::Anchor(r),
+                (None, Some(l)) => TryInset::Len(l),
+                (None, None) => TryInset::Auto,
+            });
+        }
+    }
+    let px = [st.margin.top, st.margin.right, st.margin.bottom, st.margin.left];
+    for (i, side) in INSETS.iter().enumerate() {
+        if decls.contains_key("margin") || decls.contains_key(&format!("margin-{side}")) {
+            t.margin[i] = Some(px[i]);
+            t.margin_pct[i] = st.margin_pct[i];
+        }
+    }
+    if let Some(name) = st.anchor.as_ref().and_then(|a| a.position_anchor.clone()) {
+        t.position_anchor = Some(name);
+    }
 }
 
 /// `anchor(--name side, fallback)` in an inset. `vertical` is whether it is
@@ -10911,6 +11145,30 @@ mod tests {
         let _ = super::take_warnings();
         assert_eq!(z("1.5"), None, "not a whole number");
         assert!(super::take_warnings().iter().any(|w| w.message.contains("z-index: 1.5")));
+    }
+
+    #[test]
+    fn maps_position_try() {
+        use rux_layout::{AnchorSide, TryInset, TryOrder};
+        let css = ".menu { position: fixed; top: anchor(bottom); position-try: most-height --above, flip-inline flip-block, --nothing, top; }
+                   @position-try --above { top: auto; bottom: anchor(top, 8px); margin-bottom: 4px; width: 10px }";
+        let rules = parse_rules(css, Environment::sane());
+        let p: HashMap<String, String> = rules[0].decls.iter().cloned().collect();
+        let st = interpret(&p);
+        let a = st.anchor.as_deref().expect("anchored");
+        assert_eq!(a.try_order, TryOrder::MostHeight);
+        // `--nothing` has no rule and `top` is a position-area: both skipped.
+        assert_eq!(a.tries.len(), 2, "{:?}", a.tries);
+        let above = &a.tries[0];
+        assert_eq!(above.inset[0], Some(TryInset::Auto));
+        assert!(matches!(&above.inset[2], Some(TryInset::Anchor(r)) if r.side == AnchorSide::Top && r.fallback == Some(Len::Px(8.0))));
+        assert_eq!(above.inset[1], None, "a side it does not name stays the box's own");
+        assert_eq!(above.margin, [None, None, Some(4.0), None]);
+        assert!(a.tries[1].flip_block && a.tries[1].flip_inline && !a.tries[1].flip_start);
+
+        let mut p = HashMap::new();
+        p.insert("position-try-fallbacks".to_string(), "none".to_string());
+        assert!(interpret(&p).anchor.is_none());
     }
 
     #[test]

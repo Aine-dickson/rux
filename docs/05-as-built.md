@@ -617,6 +617,8 @@ inset-inline, inset-inline-start, inset-inline-end,
 inset-block, inset-block-start, inset-block-end   (logical: see `direction`)
 z-index (auto|<integer>), isolation (auto|isolate)
 anchor-name, position-anchor, anchor() in top/right/bottom/left, anchor-size() in width/height
+position-try, position-try-fallbacks (flip-block, flip-inline, flip-start, @position-try names),
+position-try-order
 aspect-ratio
 width, height, min-width, max-width, min-height, max-height
 padding, padding-top, padding-right, padding-bottom, padding-left
@@ -1335,9 +1337,57 @@ and the menu the open row's:
 <view class="menu" r-if="open != none" :style="`position-anchor: --row-${open}`">…</view>
 ```
 
-Not built: `position-try` (flipping a menu above its button when there is no
-room below), `position-area`, `anchor-center`, `anchor-scope`, and animating
-an `anchor()`.
+**When there is no room, `position-try` finds another place.** A menu under a
+button near the foot of the window goes above it instead:
+
+```css
+.menu {
+  position: fixed;
+  position-anchor: --row-menu;
+  top: anchor(bottom);
+  right: anchor(right);
+  margin-top: 4px;
+  position-try-fallbacks: flip-block;   /* or a rule of your own: */
+  /* position-try-fallbacks: --above; */
+}
+@position-try --above { top: auto; bottom: anchor(top); margin-top: 0; margin-bottom: 4px; }
+```
+
+- **`position-try-fallbacks`** is a comma-separated list of places to try, in
+  order, when the box's own does not fit. Each is a `@position-try` name, any of
+  the flips, or a name followed by flips (`--above flip-inline`).
+- **`flip-block`** trades top for bottom: the insets, the margins and the
+  anchor edges they measure to, so `top: anchor(bottom); margin-top: 4px`
+  becomes `bottom: anchor(top); margin-bottom: 4px`. **`flip-inline`** trades
+  left for right, and **`flip-start`** top for left and bottom for right.
+- **`@position-try --name { … }`** replaces only the sides it names, and takes
+  the insets (`top`, `right`, `bottom`, `left`), the margins and
+  `position-anchor`. It may sit anywhere in the sheet, before or after the
+  rule that uses it, and in an included sheet.
+- **`position-try-order`** (`normal`, `most-width`, `most-height`, and their
+  `most-inline-size` and `most-block-size` spellings) tries the places with
+  the most room on that axis first. **`position-try`** is the shorthand: an
+  order, then the list.
+
+**Fitting** means the box's margin box stays inside the room its insets leave
+it: from the anchor edge it is placed against to the far side of its
+containing block (the window, for `fixed`). The box's own place wins when it
+fits; otherwise the first fallback that does; with none, its own place. As in
+CSS, **a fallback that fitted is tried first next frame**, so a menu that
+flipped above its button stays there while the panel scrolls and it still
+fits, rather than jumping back the moment there is room below again. Anchored
+to another box, it starts again from its own place.
+
+**A margin on an anchored side counts.** `top: anchor(bottom); margin-top: 4px`
+leaves 4px between the button and the menu. Until `position-try` was built the
+margin on an anchored side was dropped.
+
+A fallback moves the box and does not resize it: `width`, `height` and the
+other sizes in a `@position-try` rule warn and are not honored yet, and neither
+are `position-area` values in the list (`position-try-fallbacks: top`), which
+warn and are skipped. A name with no `@position-try` rule is skipped, and
+said. Not built: `position-area`, `anchor-center`, `anchor-scope`, and
+animating an `anchor()`.
 
 ### Reactivity & script
 

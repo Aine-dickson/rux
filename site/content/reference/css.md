@@ -21,6 +21,8 @@ inset-inline, inset-inline-start, inset-inline-end,
 inset-block, inset-block-start, inset-block-end   (logical: see `direction`)
 z-index (auto|<integer>), isolation (auto|isolate)
 anchor-name, position-anchor, anchor() in top/right/bottom/left, anchor-size() in width/height
+position-try, position-try-fallbacks (flip-block, flip-inline, flip-start, @position-try names),
+position-try-order
 aspect-ratio
 width, height, min-width, max-width, min-height, max-height
 padding, padding-top, padding-right, padding-bottom, padding-left

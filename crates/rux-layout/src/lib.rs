@@ -145,13 +145,58 @@ pub struct AnchorStyle {
     /// `anchor-size()` in `width` and `height`. Resolved by laying out a
     /// second time once the anchor has a size.
     pub size: [Option<AnchorSize>; 2],
+    /// `position-try-fallbacks`: the other places to try, in order, when the
+    /// box does not fit where its own insets put it.
+    pub tries: Vec<PositionTry>,
+    /// `position-try-order`.
+    pub try_order: TryOrder,
 }
 
 impl AnchorStyle {
     /// Whether the box is placed or sized against an anchor at all.
     pub fn anchored(&self) -> bool {
-        self.inset.iter().any(Option::is_some) || self.size.iter().any(Option::is_some)
+        self.inset.iter().any(Option::is_some) || self.size.iter().any(Option::is_some) || !self.tries.is_empty()
     }
+}
+
+/// One side's inset in a `@position-try` rule.
+#[derive(Clone, Debug, PartialEq)]
+pub enum TryInset {
+    Auto,
+    Len(Len),
+    Anchor(AnchorRef),
+}
+
+/// One entry of `position-try-fallbacks`: a `@position-try` rule's insets,
+/// margins and `position-anchor` over the box's own, then the flips.
+///
+/// Each `None` keeps what the box itself says on that side. A margin is in
+/// pixels, or with `margin_pct` a fraction of the containing block's width,
+/// as in CSS.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct PositionTry {
+    pub inset: [Option<TryInset>; 4],
+    pub margin: [Option<f32>; 4],
+    pub margin_pct: [Option<f32>; 4],
+    pub position_anchor: Option<String>,
+    /// `flip-block`: top and bottom trade places, insets, margins and the
+    /// anchor edges they measure to.
+    pub flip_block: bool,
+    /// `flip-inline`: left and right do.
+    pub flip_inline: bool,
+    /// `flip-start`: top with left and bottom with right.
+    pub flip_start: bool,
+}
+
+/// `position-try-order`: which of the places that fit wins. `MostWidth` is
+/// also `most-inline-size`, and `MostHeight` `most-block-size`, since Rux
+/// lays out horizontal text only.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TryOrder {
+    #[default]
+    Normal,
+    MostWidth,
+    MostHeight,
 }
 
 /// A grid track size (`grid-template-columns`/`-rows`).
@@ -2351,6 +2396,11 @@ pub struct Layout {
     /// the shell to warn about. An empty name is an `anchor()` that names no
     /// anchor on a box with no `position-anchor`.
     pub anchor_misses: Vec<String>,
+    /// Each anchored box drawn at one of its `position-try-fallbacks` rather
+    /// than its own place: its path, which fallback, from 1, and its
+    /// `position-anchor`. Kept by [`LayoutState`] so the next frame tries
+    /// that one first, as CSS does, until the box is anchored elsewhere.
+    pub position_tries: Vec<(Vec<usize>, u8, Option<String>)>,
 }
 
 /// One node's laid-out box, keyed by the same child-index path the binding
@@ -3566,9 +3616,13 @@ fn build(
                 id,
                 Anchored {
                     inset: a.inset.clone(),
+                    plain: node.style.inset,
                     size: a.size.clone(),
                     default: a.position_anchor.clone(),
                     fixed: node.style.position == Position::Fixed,
+                    tries: a.tries.clone(),
+                    try_order: a.try_order,
+                    path: path.to_vec(),
                 },
             ));
         }
@@ -3748,10 +3802,18 @@ impl Anchoring {
 #[derive(Clone, Debug)]
 struct Anchored {
     inset: [Option<AnchorRef>; 4],
+    /// The insets that are lengths, which the layout placed.
+    plain: [Option<Len>; 4],
     size: [Option<AnchorSize>; 2],
     /// `position-anchor`.
     default: Option<String>,
     fixed: bool,
+    /// `position-try-fallbacks` and `position-try-order`.
+    tries: Vec<PositionTry>,
+    try_order: TryOrder,
+    /// Where the box is in the document, which is what the place it last
+    /// fitted is remembered by. See `LayoutState::tried`.
+    path: Vec<usize>,
 }
 
 impl Anchored {
@@ -3833,52 +3895,245 @@ enum Placement {
     Hidden,
 }
 
-/// Where `a`, laid out `width` x `height`, goes against the anchors drawn
-/// last walk, and the names it asked for that nothing answered.
-fn place(
-    a: &Anchored,
+/// One side of a place to try: what its inset measures to.
+#[derive(Clone, Debug)]
+enum Edge {
+    Auto,
+    Len(Len),
+    Anchor(AnchorRef),
+}
+
+/// A place to try: the box's own insets and margins, or a fallback's over
+/// them, in `inset` order, and the anchor an `anchor()` naming none means.
+#[derive(Clone, Debug)]
+struct Spot {
+    edge: [Edge; 4],
+    margin: [f32; 4],
+    default: Option<String>,
+}
+
+impl Spot {
+    /// The box's own place. `margin` is the layout's, already resolved.
+    fn own(a: &Anchored, margin: [f32; 4]) -> Spot {
+        let edge = std::array::from_fn(|i| match (&a.inset[i], a.plain[i]) {
+            (Some(r), _) => Edge::Anchor(r.clone()),
+            (None, Some(l)) => Edge::Len(l),
+            (None, None) => Edge::Auto,
+        });
+        Spot { edge, margin, default: a.default.clone() }
+    }
+
+    /// `t` over this place: its rule's sides, then its flips.
+    fn tried(&self, t: &PositionTry, cb_width: f32) -> Spot {
+        let mut s = self.clone();
+        for i in 0..4 {
+            if let Some(e) = &t.inset[i] {
+                s.edge[i] = match e {
+                    TryInset::Auto => Edge::Auto,
+                    TryInset::Len(l) => Edge::Len(*l),
+                    TryInset::Anchor(r) => Edge::Anchor(r.clone()),
+                };
+            }
+            if let Some(f) = t.margin_pct[i] {
+                s.margin[i] = f * cb_width;
+            } else if let Some(m) = t.margin[i] {
+                s.margin[i] = m;
+            }
+        }
+        if t.position_anchor.is_some() {
+            s.default = t.position_anchor.clone();
+        }
+        // In CSS's order: block, then inline, then start.
+        if t.flip_block {
+            s.swap(0, 2, |side| match side {
+                AnchorSide::Top => AnchorSide::Bottom,
+                AnchorSide::Bottom => AnchorSide::Top,
+                AnchorSide::Frac(f) => AnchorSide::Frac(1.0 - f),
+                other => other,
+            });
+        }
+        if t.flip_inline {
+            s.swap(3, 1, |side| match side {
+                AnchorSide::Left => AnchorSide::Right,
+                AnchorSide::Right => AnchorSide::Left,
+                AnchorSide::Frac(f) => AnchorSide::Frac(1.0 - f),
+                other => other,
+            });
+        }
+        if t.flip_start {
+            // Top goes to left and bottom to right, each anchor edge to the
+            // matching one on the other axis.
+            let turn = |side| match side {
+                AnchorSide::Top => AnchorSide::Left,
+                AnchorSide::Left => AnchorSide::Top,
+                AnchorSide::Bottom => AnchorSide::Right,
+                AnchorSide::Right => AnchorSide::Bottom,
+                other => other,
+            };
+            s.swap(0, 3, turn);
+            s.swap(2, 1, turn);
+        }
+        s
+    }
+
+    fn swap(&mut self, i: usize, j: usize, side: impl Fn(AnchorSide) -> AnchorSide) {
+        self.edge.swap(i, j);
+        self.margin.swap(i, j);
+        for k in [i, j] {
+            if let Edge::Anchor(r) = &mut self.edge[k] {
+                r.side = side(r.side);
+            }
+        }
+    }
+}
+
+/// Where a place puts the box on one axis, and the room it leaves.
+struct Fit {
+    /// The box's start, `None` where the layout put it.
+    at: Option<f32>,
+    /// The inset-modified containing block on this axis: from the start
+    /// inset (or the containing block's edge) to the end one.
+    room: (f32, f32),
+}
+
+/// Where a place puts a box, and the names it asked for that nothing
+/// answered.
+struct Placed {
+    x: Fit,
+    y: Fit,
+    hidden: bool,
+    misses: Vec<String>,
+}
+
+impl Placed {
+    /// Whether the margin box stays inside the room its insets leave it.
+    /// `laid` is where the layout put the box, for an axis the layout places.
+    fn fits(&self, s: &Spot, width: f32, height: f32, laid: (f32, f32)) -> bool {
+        const SLACK: f32 = 0.5;
+        let axis = |f: &Fit, laid: f32, len: f32, m0: f32, m1: f32| {
+            let at = f.at.unwrap_or(laid);
+            at - m0 >= f.room.0 - SLACK && at + len + m1 <= f.room.1 + SLACK
+        };
+        axis(&self.x, laid.0, width, s.margin[3], s.margin[1]) && axis(&self.y, laid.1, height, s.margin[0], s.margin[2])
+    }
+}
+
+/// Where place `s` puts a box laid out `width` x `height`, against the
+/// anchors drawn last walk.
+fn put(
+    s: &Spot,
     width: f32,
     height: f32,
     cb: (f32, f32, f32, f32),
     vp: (f32, f32),
     known: &HashMap<String, AnchorBox>,
-    misses: &mut Vec<String>,
-) -> Placement {
+) -> Placed {
     let mut hidden = false;
-    // One axis: `start` is the top or left inset, `end` the bottom or right.
-    let mut axis = |start: &Option<AnchorRef>, end: &Option<AnchorRef>, size: f32, vertical: bool| -> Option<f32> {
+    let mut misses = Vec::new();
+    // One axis: `start` is the top or left side, `end` the bottom or right.
+    let mut axis = |start: usize, end: usize, size: f32, vertical: bool| -> Fit {
         let (cb_at, cb_len) = if vertical { (cb.1, cb.3) } else { (cb.0, cb.2) };
-        for (r, from_end) in [(start, false), (end, true)] {
-            let Some(r) = r else { continue };
-            let Some(name) = a.name(&r.name) else {
-                misses.push(String::new());
-                continue;
-            };
-            match known.get(name) {
-                Some(b) if !b.visible => hidden = true,
-                Some(b) => {
-                    let (at, len) = if vertical { (b.y, b.height) } else { (b.x, b.width) };
-                    let edge = anchor_edge(r.side, at, len);
-                    return Some(if from_end { edge - size } else { edge });
-                }
-                None => {
-                    if let Some(fb) = r.fallback {
-                        let px = len_px(fb, cb_len, vp);
-                        return Some(if from_end { cb_at + cb_len - px - size } else { cb_at + px });
+        // Where a side's inset puts that edge of the box, in window pixels.
+        let mut edge = |i: usize, from_end: bool| -> Option<f32> {
+            let from_cb = |px: f32| if from_end { cb_at + cb_len - px } else { cb_at + px };
+            match &s.edge[i] {
+                Edge::Auto => None,
+                Edge::Len(l) => Some(from_cb(len_px(*l, cb_len, vp))),
+                Edge::Anchor(r) => {
+                    let Some(name) = r.name.as_deref().or(s.default.as_deref()) else {
+                        misses.push(String::new());
+                        return None;
+                    };
+                    match known.get(name) {
+                        Some(b) if !b.visible => {
+                            hidden = true;
+                            None
+                        }
+                        Some(b) => {
+                            let (at, len) = if vertical { (b.y, b.height) } else { (b.x, b.width) };
+                            Some(anchor_edge(r.side, at, len))
+                        }
+                        None => match r.fallback {
+                            Some(fb) => Some(from_cb(len_px(fb, cb_len, vp))),
+                            None => {
+                                misses.push(name.to_string());
+                                None
+                            }
+                        },
                     }
-                    misses.push(name.to_string());
                 }
             }
-        }
-        None
+        };
+        let (a, b) = (edge(start, false), edge(end, true));
+        let at = match (a, b) {
+            (Some(a), _) => Some(a + s.margin[start]),
+            (None, Some(b)) => Some(b - s.margin[end] - size),
+            (None, None) => None,
+        };
+        Fit { at, room: (a.unwrap_or(cb_at), b.unwrap_or(cb_at + cb_len)) }
     };
-    let x = axis(&a.inset[3], &a.inset[1], width, false);
-    let y = axis(&a.inset[0], &a.inset[2], height, true);
-    if hidden {
-        Placement::Hidden
+    let x = axis(3, 1, width, false);
+    let y = axis(0, 2, height, true);
+    Placed { x, y, hidden, misses }
+}
+
+/// Where `a` goes this frame, and which of its places that is (0 its own,
+/// `n` its `n`th fallback), to be tried first next frame.
+///
+/// The box's own place wins when it fits. Otherwise the first fallback that
+/// does, in `position-try-order`; with none, the one that last fitted, or
+/// its own. A place that fitted last frame and still does is kept, so a
+/// menu that flipped does not flip back and forth as its panel scrolls.
+/// `laid` is where the layout drew the box and `margin` its margins.
+#[allow(clippy::too_many_arguments)]
+fn place(
+    a: &Anchored,
+    width: f32,
+    height: f32,
+    laid: (f32, f32),
+    margin: [f32; 4],
+    cb: (f32, f32, f32, f32),
+    vp: (f32, f32),
+    known: &HashMap<String, AnchorBox>,
+    last: Option<u8>,
+    misses: &mut Vec<String>,
+) -> (Placement, u8) {
+    let own = Spot::own(a, margin);
+    let spots: Vec<Spot> =
+        std::iter::once(own.clone()).chain(a.tries.iter().map(|t| own.tried(t, cb.2))).collect();
+    let placed: Vec<Placed> = spots.iter().map(|s| put(s, width, height, cb, vp, known)).collect();
+    let fits = |i: usize| !placed[i].hidden && placed[i].fits(&spots[i], width, height, laid);
+    let chosen = if spots.len() == 1 {
+        0
     } else {
-        Placement::At(x, y)
+        let mut order: Vec<usize> = (0..spots.len()).collect();
+        let room = |f: &Fit| f.room.1 - f.room.0;
+        match a.try_order {
+            TryOrder::Normal => {}
+            TryOrder::MostWidth => order.sort_by(|&i, &j| room(&placed[j].x).total_cmp(&room(&placed[i].x))),
+            TryOrder::MostHeight => order.sort_by(|&i, &j| room(&placed[j].y).total_cmp(&room(&placed[i].y))),
+        }
+        let last = last.map(usize::from).filter(|&i| i < spots.len());
+        match last.filter(|&i| fits(i)) {
+            Some(i) => i,
+            None => order.into_iter().find(|&i| fits(i)).or(last).unwrap_or(0),
+        }
+    };
+    let p = &placed[chosen];
+    misses.extend(p.misses.iter().cloned());
+    if p.hidden {
+        return (Placement::Hidden, chosen as u8);
     }
+    // The box's own place moves only an axis an `anchor()` places, which the
+    // layout held at the containing block's start; the layout's answer for
+    // any other axis is already right. A fallback is placed whole.
+    let (x, y) = if chosen == 0 {
+        let anchored = |i: usize| matches!(own.edge[i], Edge::Anchor(_));
+        (p.x.at.filter(|_| anchored(1) || anchored(3)), p.y.at.filter(|_| anchored(0) || anchored(2)))
+    } else {
+        (p.x.at, p.y.at)
+    };
+    (Placement::At(x, y), chosen as u8)
 }
 
 /// What lives for the whole walk rather than for one node.
@@ -3903,6 +4158,11 @@ struct Walk {
     /// Whether this is the walk that only finds the anchors, whose paints and
     /// regions are thrown away, so it makes none.
     dry: bool,
+    /// The fallback each anchored box was drawn at last frame, by its path.
+    /// See `place`.
+    tried_before: std::rc::Rc<HashMap<Vec<usize>, (u8, Option<String>)>>,
+    /// The fallback each is drawn at this frame, where not its own place.
+    tried: Vec<(Vec<usize>, u8, Option<String>)>,
     /// Where the parts of each sentence landed, asked of the text engine once
     /// the sentence had a width. See [`TextMeasure::inline`].
     inline: std::rc::Rc<IdMap<std::sync::Arc<InlineGeometry>>>,
@@ -4056,7 +4316,25 @@ fn collect(
     if let (Some(i), Some(known)) = (at.anchored, walk.known.as_ref()) {
         let a = &b.anchoring.boxes[i as usize].1;
         let cb = if a.fixed { (0.0, 0.0, vp.0, vp.1) } else { holder };
-        match place(a, layout.size.width, layout.size.height, cb, vp, known, &mut walk.misses) {
+        let m = layout.margin;
+        // Forgotten once the box is anchored to something else.
+        let last = walk.tried_before.get(&a.path).filter(|(_, d)| *d == a.default).map(|(n, _)| *n);
+        let (placement, chosen) = place(
+            a,
+            layout.size.width,
+            layout.size.height,
+            (x, y),
+            [m.top, m.right, m.bottom, m.left],
+            cb,
+            vp,
+            known,
+            last,
+            &mut walk.misses,
+        );
+        if chosen != 0 {
+            walk.tried.push((a.path.clone(), chosen, a.default.clone()));
+        }
+        match placement {
             Placement::Hidden => return,
             Placement::At(nx, ny) => {
                 x = nx.unwrap_or(x);
@@ -4693,6 +4971,9 @@ pub struct LayoutState {
     kept: Option<Kept>,
     /// Taffy nodes found unmatched while building, removed after.
     garbage: Vec<NodeId>,
+    /// Each anchored box drawn at a fallback last frame, by its path. See
+    /// [`Layout::position_tries`].
+    tried: HashMap<Vec<usize>, (u8, Option<String>)>,
 }
 
 impl Default for LayoutState {
@@ -4708,7 +4989,7 @@ impl LayoutState {
         // fraction off a text box and make paint re-wrap the last word into a
         // line the box has no height for. Keep the exact sizes measure asked for.
         tree.disable_rounding();
-        Self { tree, kept: None, garbage: Vec::new() }
+        Self { tree, kept: None, garbage: Vec::new(), tried: HashMap::new() }
     }
 
     /// Drop everything kept, so the next frame is laid out whole.
@@ -4750,7 +5031,9 @@ impl LayoutState {
         let out = self.lay_out(root, avail_w, avail_h, offsets, measure);
         #[cfg(debug_assertions)]
         {
-            let whole = LayoutState::new().lay_out(root, avail_w, avail_h, offsets, measure);
+            let mut fresh = LayoutState::new();
+            fresh.tried = self.tried.clone();
+            let whole = fresh.lay_out(root, avail_w, avail_h, offsets, measure);
             let (kept, whole) = (format!("{out:#?}"), format!("{whole:#?}"));
             if kept != whole {
                 let at = kept.lines().zip(whole.lines()).position(|(a, b)| a != b);
@@ -4762,6 +5045,7 @@ impl LayoutState {
                 );
             }
         }
+        self.tried = out.position_tries.iter().map(|(p, n, a)| (p.clone(), (*n, a.clone()))).collect();
         out
     }
 
@@ -4774,6 +5058,7 @@ impl LayoutState {
         measure: &mut dyn TextMeasure,
     ) -> Layout {
         let tree = &mut self.tree;
+        let tried_before = &self.tried;
         let mut paint = Vec::new();
         let mut handlers = Vec::new();
         let mut models = Vec::new();
@@ -5025,12 +5310,14 @@ impl LayoutState {
         }
         // Shared by the walks, of which there are two when anything is anchored.
         let geometry = std::rc::Rc::new(geometry);
+        let tried_before = std::rc::Rc::new(tried_before.clone());
         let walk_once = |known: Option<HashMap<String, AnchorBox>>, dry: bool| {
             let mut out = Layout::default();
             let mut walk = Walk {
                 scrolls: vec![None; built.scroll_ids.len()],
                 known,
                 dry,
+                tried_before: std::rc::Rc::clone(&tried_before),
                 inline: std::rc::Rc::clone(&geometry),
                 ..Walk::default()
             };
@@ -5055,6 +5342,8 @@ impl LayoutState {
             walk.misses.sort();
             walk.misses.dedup();
             out.anchor_misses = std::mem::take(&mut walk.misses);
+            walk.tried.sort();
+            out.position_tries = std::mem::take(&mut walk.tried);
         }
         out.scrolls = walk.scrolls.into_iter().flatten().collect();
         debug_assert!(out.scrolls.iter().enumerate().all(|(i, s)| s.id == i), "every numbered scroller is drawn");
