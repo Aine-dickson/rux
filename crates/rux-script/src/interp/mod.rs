@@ -143,6 +143,14 @@ pub struct Interp {
     /// Each native export called so far, by linked name, so the registry
     /// is asked once.
     natives: HashMap<String, rux_native::Call>,
+    /// The native signals the document reads, by linked name, and the
+    /// [`rux_native::signal_epoch`] they were last read at. Read again after
+    /// any native call when the epoch moved, so a handler that called Rust
+    /// reads what Rust set (Mava's L-008). See [`Interp::watch_native_signals`].
+    native_signals: Rc<[String]>,
+    native_epoch: u64,
+    /// The native signals a refresh found moved since the runtime last asked.
+    native_moved: HashSet<String>,
     /// Each function's closures, numbered by [`ir::closures`], for compiled
     /// code that creates one.
     closure_codes: HashMap<u32, Vec<Rc<ir::Closure>>>,
@@ -210,6 +218,9 @@ impl Interp {
             set: vec![false; n],
             by_name,
             natives: HashMap::new(),
+            native_signals: Rc::from(Vec::new()),
+            native_epoch: 0,
+            native_moved: HashSet::new(),
             closure_codes: HashMap::new(),
             aot: HashMap::new(),
             closure_aot: HashMap::new(),
@@ -338,6 +349,62 @@ impl Interp {
         };
         self.globals[g.0 as usize] = value;
         self.set[g.0 as usize] = true;
+    }
+
+    /// The native signals to keep current, and the epoch their values in the
+    /// state were read at.
+    pub fn watch_native_signals(&mut self, names: Vec<String>, epoch: u64) {
+        self.native_signals = Rc::from(names);
+        self.native_epoch = epoch;
+    }
+
+    /// The native signals found moved since the last ask, by a refresh
+    /// in the middle of a run.
+    pub fn take_native_moved(&mut self) -> HashSet<String> {
+        std::mem::take(&mut self.native_moved)
+    }
+
+    /// Read the native signals again if Rust set any since they were last
+    /// read. Called after every native call and before a task resumes, so a
+    /// handler reads what the call it made just set; between calls the
+    /// state holds still, and five hundred sets between two paints are still
+    /// one read when nothing in the script calls Rust.
+    ///
+    /// The epoch is taken before the reads, so a set racing them is read
+    /// again next time rather than lost.
+    pub(crate) fn refresh_native_signals(&mut self) {
+        if self.native_signals.is_empty() {
+            return;
+        }
+        let epoch = rux_native::signal_epoch();
+        if epoch == self.native_epoch {
+            return;
+        }
+        self.native_epoch = epoch;
+        let names = Rc::clone(&self.native_signals);
+        for name in names.iter() {
+            let v = crate::native::read_signal(name);
+            match self.by_name.get(name).copied() {
+                Some(g) if self.set[g.0 as usize] => {
+                    if self.globals[g.0 as usize] != v {
+                        self.wrote(g);
+                        self.globals[g.0 as usize] = v;
+                        self.native_moved.insert(name.clone());
+                    }
+                }
+                _ => {
+                    self.set_global(name, v);
+                    self.native_moved.insert(name.clone());
+                }
+            }
+        }
+    }
+
+    /// A synchronous native call, and the native signals read again after it.
+    fn call_native(&mut self, f: &SyncNative, argv: &[V]) -> R<V> {
+        let out = call_native(f, argv);
+        self.refresh_native_signals();
+        out
     }
 
     // ----- Running what the runtime hands in -------------------------------
@@ -763,7 +830,7 @@ impl Interp {
     /// A native export called without `await`, as [`Interp::call`] calls one.
     pub(crate) fn native_pub(&mut self, key: &str, argv: Vec<V>) -> R<V> {
         match self.native(key)? {
-            rux_native::Call::Sync(f) => call_native(&f, &argv),
+            rux_native::Call::Sync(f) => self.call_native(&f, &argv),
             rux_native::Call::Async(_) => {
                 let name = key.replace('/', "::");
                 fail(format!("{name} is `async` in Rust: await it inside an `async fn`"))
@@ -1536,7 +1603,7 @@ impl Interp {
             Callee::Value(_) => self.call_value(func.unwrap_or(V::None), argv),
             Callee::Builtin(name) => self.builtin(name, argv),
             Callee::Native(key) => match self.native(key)? {
-                rux_native::Call::Sync(f) => call_native(&f, &argv),
+                rux_native::Call::Sync(f) => self.call_native(&f, &argv),
                 rux_native::Call::Async(_) => {
                     let name = key.replace('/', "::");
                     fail(format!("{name} is `async` in Rust: await it inside an `async fn`"))
@@ -1649,25 +1716,27 @@ impl Interp {
             Some(v) => Ok(v),
             None => {
                 let n = argv.len() + 1;
-                if let Some(i) = self.unit.fns.iter().position(|f| f.name == name && f.params as usize == n) {
-                    let mut all = Vec::with_capacity(n);
-                    all.push(recv.clone());
-                    all.extend(argv);
-                    return self.call_fn(FnId(i as u32), all);
-                }
                 // Where the receiver's type was not known when this was
                 // lowered (a handler's own expressions are `any`), a native
-                // method is found by the value itself.
+                // method is found by the value itself. Before the file's
+                // functions: `studio.save()` is the studio's, whatever `fn
+                // save` the script has (Mava's MS-008).
                 if let Some(key) = crate::native::method_for_value(recv, name) {
                     let mut all = Vec::with_capacity(n);
                     all.push(recv.clone());
                     all.extend(argv);
                     return match self.native(&key)? {
-                        rux_native::Call::Sync(f) => call_native(&f, &all),
+                        rux_native::Call::Sync(f) => self.call_native(&f, &all),
                         rux_native::Call::Async(_) => {
                             fail(format!("`{name}` is `async` in Rust: await it inside an `async fn`"))
                         }
                     };
+                }
+                if let Some(i) = self.unit.fns.iter().position(|f| f.name == name && f.params as usize == n) {
+                    let mut all = Vec::with_capacity(n);
+                    all.push(recv.clone());
+                    all.extend(argv);
+                    return self.call_fn(FnId(i as u32), all);
                 }
                 let mut types = vec![recv.type_name()];
                 types.extend(argv.iter().map(V::type_name));

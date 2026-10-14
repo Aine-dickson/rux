@@ -244,3 +244,17 @@ fn a_resource_method_wins_over_a_script_fn_of_its_name() {
     assert_eq!(show(&mut e, "n"), "2");
     assert_eq!(show(&mut e, "add()"), "script");
 }
+
+/// The same where the receiver's type is not known until it runs, as in a
+/// handler's own expressions, even when the script `fn` takes the receiver
+/// and the arguments: the resource's method is still the one called.
+#[test]
+fn an_untyped_call_takes_the_resource_method_too() {
+    let mut e = engine(
+        "let cart = signal(shop.openCart());\n\
+         fn add(c: any, id: int): string { return \"script\"; }\n",
+    );
+    assert_eq!(show(&mut e, "cart.add(4)"), "1");
+    assert_eq!(show(&mut e, "cart.add(5)"), "2");
+    assert_eq!(show(&mut e, "add(cart, 1)"), "script");
+}

@@ -9705,6 +9705,62 @@ let open = signal(true);
         assert_eq!(text_of(&doc.root).join(""), "saved");
     }
 
+    /// A handler reads what the Rust call it just made set (Mava's L-008),
+    /// not what the signal held when the handler began, and the screen shows
+    /// it without waiting for a refresh.
+    #[test]
+    fn a_handler_reads_a_native_signal_its_call_just_set() {
+        static DIRTY: rux_native::Signal<bool> = rux_native::Signal::new();
+        rux_native::Module::new("rts_l8")
+            .export(rux_native::Export::signal("dirty", "bool?", || DIRTY.__read()))
+            .export(rux_native::Export::function(
+                "edit",
+                &[],
+                "void",
+                rux_native::Call::sync(|_| {
+                    DIRTY.set(true);
+                    Ok(rux_native::Any::None)
+                }),
+            ))
+            .install();
+        let mut doc = Document::from_source(
+            "<template><screen><text>{{ seen }}</text><text>{{ rts_l8.dirty ?? false }}</text></screen></template>
+             <script>use native::rts_l8;
+let seen = signal(\"\");
+fn press() { rts_l8.edit(); if rts_l8.dirty ?? false { seen = \"dirty\"; } else { seen = \"clean\"; } }</script>",
+        )
+        .expect("load");
+        assert_eq!(text_of(&doc.root).join("|"), "|false");
+        doc.apply_handler("press()");
+        assert_eq!(text_of(&doc.root).join("|"), "dirty|true", "read after the call, and shown");
+    }
+
+    /// The same after an `await`: what the awaited Rust call set before it
+    /// answered is what the code after the `await` reads.
+    #[test]
+    fn code_after_an_await_reads_what_the_native_call_set() {
+        static DONE: rux_native::Signal<i64> = rux_native::Signal::new();
+        let call = rux_native::Call::future(|_args: Vec<rux_native::Any>| async move {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            DONE.set(7);
+            Ok(rux_native::Any::None)
+        });
+        rux_native::Module::new("rts_l8a")
+            .export(rux_native::Export::signal("done", "int?", || DONE.__read()))
+            .export(rux_native::Export::function("work", &[], "void", call))
+            .install();
+        let mut doc = Document::from_source(
+            "<template><screen><text>{{ seen }}</text></screen></template>
+             <script>use native::rts_l8a;
+let seen = signal(0);
+async fn go() { await rts_l8a.work(); seen = rts_l8a.done ?? -1; }</script>",
+        )
+        .expect("load");
+        doc.apply_handler("go()");
+        settle_one(&mut doc);
+        assert_eq!(text_of(&doc.root).join(""), "7");
+    }
+
     /// Only Rust writes a native signal.
     #[test]
     fn a_native_signal_cannot_be_written_from_script() {

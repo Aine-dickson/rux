@@ -711,6 +711,12 @@ fn on_step(frame: Frame) {
   a frame five hundred times between two paints is drawn once, with the
   newest. A status works the same way, and an `effect` reading it runs when it
   changes.
+- **A handler reads what the Rust it called just set.** After every call into
+  Rust, and when an `await` on one comes back, the signals are read again if
+  anything set one. So `studio.newProject(); if mava.view.dirty { … }` tests
+  the view the call left, not the one from before it. Between two calls into
+  Rust the value holds still: a set made on another thread in the meantime is
+  read at the next call, or when the document next settles.
 - `get`, `clear` and `update` are there too. A check does not run the app's
   Rust, so a signal read while a document is checked holds `none`.
 

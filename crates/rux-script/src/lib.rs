@@ -2132,19 +2132,22 @@ impl Engine {
     /// `route`, and say which moved. The value goes in as the interpreter's
     /// own, so an `int` from Rust stays an `int`. One that cannot be read
     /// holds `none`.
+    ///
+    /// Also what a native call in the middle of a run reads again
+    /// ([`interp::Interp::refresh_native_signals`]): what that found moved is
+    /// reported here too, since the state already holds it.
     pub fn provide_native_signals(&mut self) -> HashSet<String> {
-        let mut moved = HashSet::new();
-        for name in self.native_signals() {
-            let read = match native::call_of(&name) {
-                Ok(rux_native::Call::Sync(read)) => read(Vec::new()).ok(),
-                _ => None,
-            };
-            let v = read.map(native::from_any).unwrap_or(interp::V::None);
-            if self.signal_value(&name).as_ref() != Some(&v.to_value()) || !self.ir.has_global(&name) {
+        let epoch = rux_native::signal_epoch();
+        let names = self.native_signals();
+        let mut moved = self.ir.take_native_moved();
+        for name in &names {
+            let v = native::read_signal(name);
+            if self.signal_value(name).as_ref() != Some(&v.to_value()) || !self.ir.has_global(name) {
                 moved.insert(name.clone());
             }
-            self.ir.set_global(&name, v);
+            self.ir.set_global(name, v);
         }
+        self.ir.watch_native_signals(names, epoch);
         moved
     }
 

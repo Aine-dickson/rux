@@ -338,6 +338,16 @@ pub fn call_of(key: &str) -> Result<rux_native::Call, String> {
     }
 }
 
+/// What native signal `key` holds now, as the interpreter's own value; `none`
+/// if it cannot be read.
+pub fn read_signal(key: &str) -> V {
+    let read = match call_of(key) {
+        Ok(rux_native::Call::Sync(read)) => read(Vec::new()).ok(),
+        _ => None,
+    };
+    read.map(from_any).unwrap_or(V::None)
+}
+
 /// A value on its way into Rust.
 pub fn to_any(v: &V) -> Any {
     match v {

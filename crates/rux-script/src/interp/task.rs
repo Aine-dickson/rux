@@ -247,6 +247,7 @@ impl Interp {
                                         Ok(a) => Resume::Value(crate::native::from_any(a)),
                                         Err(e) => Resume::Fault(located(super::native_fault(&e), *at)),
                                     });
+                                    self.refresh_native_signals();
                                     continue;
                                 }
                                 rux_native::Call::Async(f) => {
@@ -469,6 +470,9 @@ impl Interp {
             self.tasks.insert(id, task);
             return None;
         };
+        // What an awaited Rust call set before it answered is what the code
+        // after the `await` reads.
+        self.refresh_native_signals();
         let names: Vec<String> = locals.iter().map(|(n, _)| n.clone()).collect();
         // A component's task goes on in the component's scope.
         let scope = super::scope_of(locals);
