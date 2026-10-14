@@ -652,6 +652,10 @@ pub fn open_till() -> Till { … }
   opaque**: Rux holds it, keeps it in state, passes it back and calls its
   methods, and never sees inside. Its methods take `&self`, since Rux may hold
   it in several places; a change goes through a lock inside it.
+- **A native value's method is its own, whatever the script names.**
+  `studio.save()` calls the resource's `save` even beside a `<script>`'s
+  `fn save()`, which a plain `save()` still calls. An app's actions and its
+  resource's methods are naturally the same words.
 - **Types cross as `docs/11-next.md` lists them**: every integer is an `int`,
   and one that does not fit throws `kind` `"overflow"` rather than wrapping;
   `Option<T>` is `T?`; `Vec<T>` is `T[]`; a `Result`'s `Err` is thrown. A type

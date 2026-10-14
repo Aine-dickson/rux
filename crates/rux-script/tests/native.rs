@@ -220,3 +220,27 @@ fn a_rust_struct_keeps_its_declared_order() {
 ");
     assert_eq!(show(&mut e, "here()"), "y: 2, x: 1 y, x 1");
 }
+
+/// A resource's method keeps its name beside a script `fn` of the same name
+/// (Mava's MS-008): `cart.add(id)` is the cart's, `add()` is the script's, and
+/// neither is reported against the other's arity. A method of that name on a
+/// script value still is.
+#[test]
+fn a_resource_method_wins_over_a_script_fn_of_its_name() {
+    let mut e = engine(
+        "let cart = signal(shop.openCart());\n\
+         let word = signal(\"a\");\n\
+         let n = signal(0);\n\
+         fn add(): string { return \"script\"; }\n\
+         fn ring(id: int) { n = cart.add(id); }\n\
+         fn wrong() { word.add(); }\n",
+    );
+    let problems: Vec<String> = e.unknown_calls_in_functions(usize::MAX).into_iter().map(|(p, _)| p.describe()).collect();
+    assert_eq!(problems.len(), 1, "{problems:#?}");
+    assert!(problems[0].contains("calls `add` with 1 argument"), "{problems:#?}");
+    assert!(e.unknown_calls("cart.add(3)").is_empty());
+    e.run_handler("ring(7)");
+    e.run_handler("ring(8)");
+    assert_eq!(show(&mut e, "n"), "2");
+    assert_eq!(show(&mut e, "add()"), "script");
+}

@@ -1952,7 +1952,7 @@ impl Engine {
                     // checker holds to its signature.
                     if !known.contains(name.name.as_str()) && !native::has_method_named(&name.name) {
                         note(CallProblem::NoSuchFunction(name.name.clone()));
-                    } else {
+                    } else if !self.may_be_native(recv, &name.name) {
                         // A method call carries its receiver as the first
                         // argument, which is how `x.f(y)` reaches `fn f(a, b)`.
                         check_arity(&name.name, args.len() + 1, &mut note);
@@ -1963,6 +1963,23 @@ impl Engine {
             true
         });
         unknown
+    }
+
+    /// Whether `recv.name(…)` may be a native value's method, which wins over a
+    /// script `fn name` (Mava's MS-008: `studio.save()` beside `fn save()`), so
+    /// the script function's arity says nothing about it. The type checker
+    /// holds a native method to its Rust signature.
+    ///
+    /// A global is known by its value. Anything else (a parameter, a local, a
+    /// field) has no value until it runs, so a method some native type has is
+    /// given the benefit of the doubt.
+    fn may_be_native(&self, recv: &rux_syntax::ast::Expr, name: &str) -> bool {
+        if let rux_syntax::ast::ExprKind::Var(v) = &recv.kind {
+            if let Some(value) = self.ir.global(v) {
+                return matches!(value, interp::V::Native(_));
+            }
+        }
+        native::has_method_named(name)
     }
 
     /// Names read inside a `fn` body that **nothing anywhere could supply**.
