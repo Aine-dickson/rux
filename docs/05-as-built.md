@@ -422,8 +422,9 @@ under its words too, as CSS draws a decoration through nested boxes. It has its 
 `color`, `font-*`, `text-decoration` and spacing, and a solid `background` on
 a run highlights its words, line by line. Each run is still an element: its own
 `{{ }}`, `r-if`, `r-for`, `@tap` (found by a tap on its words, and a Tab stop),
-`:class` and `query()`. Padding, borders and margins on a run are not drawn, and
-`:hover` on a run is not matched yet. The words between tags are the sentence's
+`:class` and `query()`. `:hover` and `:active` match a run while the pointer
+is over its words, so a link can change colour under it. Padding, borders and margins on a
+run are not drawn. The words between tags are the sentence's
 own and match no rule, not even `*`, as in CSS.
 
 **`<image>` and `<path>` inside a `<text>` sit in the line** as a box the size
@@ -569,9 +570,15 @@ Driven in `examples/chart.rux` and `examples/morph.rux`.
   the way they move the content on screen. A text field follows what is typed
   into it (`dir="auto"`) unless `dir` or `direction` reaches it, in which case
   an empty one keeps its caret on that side; Left and Right step through
-  right-to-left words the way they are drawn, as a browser's field does. Not
-  yet: a run of a different direction inside a sentence (`dir` on a nested
-  `<text>`).
+  right-to-left words the way they are drawn, as a browser's field does. A run
+  of a sentence with a `dir` of its own (`dir` on a nested `<text>`, or
+  `direction` in a rule) is set apart from the words around it, as HTML sets
+  apart an inline element with `dir` (`unicode-bidi: isolate`): it is ordered
+  in its own direction, `auto` taking its first letter's, and counts as one
+  neutral piece to the sentence. That is what keeps `User <text
+  dir="auto">{{ name }}</text> 5 replies` reading "5 replies" after a Hebrew
+  name, where without it the 5 joins the name's right-to-left order. A run
+  that only inherits a direction is not set apart.
 
 
 ### Where Rux differs from CSS

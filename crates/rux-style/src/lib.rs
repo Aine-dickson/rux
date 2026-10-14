@@ -2426,6 +2426,7 @@ fn build_run(
             rich: None,
             white_space: up.white_space,
             direction: None,
+            isolate: Default::default(),
         },
     );
     node.access = Access { role: AccessRole::None, ..Access::default() };
@@ -4527,6 +4528,8 @@ fn build_text(
     weight: u16,
     align: TextAlign,
     own_text: TextInherit,
+    // Whether this element sets a direction of its own, not one it inherits.
+    dir_own: bool,
 ) -> LayoutNode {
     // Inside a sentence, the sentence's decorations are drawn under this run's
     // words too. See `RunInherit`.
@@ -4583,6 +4586,19 @@ fn build_text(
             rich: None,
             white_space,
             direction: (!dir_auto).then_some(direction),
+            // A run with a `dir` of its own is set apart from its sentence.
+            isolate: if inherited.run.is_none() {
+                rux_layout::Isolate::None
+            } else if dir_auto {
+                rux_layout::Isolate::Auto
+            } else if dir_own {
+                match direction {
+                    rux_layout::Direction::Ltr => rux_layout::Isolate::Ltr,
+                    rux_layout::Direction::Rtl => rux_layout::Isolate::Rtl,
+                }
+            } else {
+                rux_layout::Isolate::None
+            },
         },
     );
     // A sentence: the pieces inside it are built as its children, each the
@@ -4941,6 +4957,7 @@ fn build_node_inner(
     // `direction`, from the property, else `dir`, else the parent. `dir="auto"`
     // leaves a text to its first letter with a direction, as HTML does.
     let (direction, dir_auto) = resolve_direction(el, &props, inherited.direction);
+    let dir_own = el.attr("dir").is_some() || props.contains_key("direction");
     // A logical property names a side by the direction, and which of it and a
     // physical one wins is the order they were declared in, which the map
     // above has lost. So the few elements that use one are cascaded again, in
@@ -5123,7 +5140,7 @@ fn build_node_inner(
     let strikethrough = decoration.is_some_and(|v| v.split_whitespace().any(|t| t == "line-through"));
 
     if el.tag == "text" {
-        return build_text(el, rules, comps, ancestors, prev, inherited, engine, locals, path, tpl_path, reg, state, instances, swaps, instance, slot, outlet, row, style, desc, on_tap, to, hidden, state_path, color, selection, font_size, font_family, letter_spacing, word_spacing, line_height, italic, underline, strikethrough, white_space, direction, dir_auto, vars, weight, align, own_text);
+        return build_text(el, rules, comps, ancestors, prev, inherited, engine, locals, path, tpl_path, reg, state, instances, swaps, instance, slot, outlet, row, style, desc, on_tap, to, hidden, state_path, color, selection, font_size, font_family, letter_spacing, word_spacing, line_height, italic, underline, strikethrough, white_space, direction, dir_auto, vars, weight, align, own_text, dir_own);
     }
 
     // <image src=…>: a leaf that paints its pixels. The `src` here is still the
@@ -5580,6 +5597,7 @@ fn build_node_inner(
                 direction: (props.contains_key("direction")
                     || el.attr("dir").is_some_and(|d| d.trim() != "auto"))
                 .then_some(direction),
+                isolate: Default::default(),
             },
         );
         let mut node = LayoutNode::new(style);
@@ -12559,5 +12577,68 @@ mod inheritance_tests {
                <script>let v = signal("x");</script>"#,
         );
         assert_eq!(text(&root.children[0].children[0]).weight, 600);
+    }
+}
+
+#[cfg(test)]
+mod run_state_tests {
+    use std::collections::HashMap;
+
+    use rux_layout::{Isolate, Node};
+    use rux_script::Builder;
+
+    fn built(src: &str, hovered: Option<Vec<usize>>) -> Node {
+        let sfc = rux_parser::parse_sfc(src).unwrap();
+        let mut engine = Builder::new().build(&sfc.script).unwrap();
+        let state = super::InteractionState { hovered, ..Default::default() };
+        super::build_styled_tree_stateful(
+            &sfc,
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut engine,
+            &mut super::Instances::new(),
+            &mut crate::Swaps::new(),
+            &state,
+            super::Environment::default(),
+        )
+        .unwrap()
+        .0
+    }
+
+    const LINK: &str = r#"<template><screen><text>Read the <text class="link" @tap="n++">terms</text></text></screen></template>
+        <style>.link { color: #0000ff; } .link:hover { color: #ff0000; }</style>
+        <script>let n = signal(0);</script>"#;
+
+    /// A run a `:hover` rule could style carries the path the shell's pointer
+    /// regions report, and is styled by it when the pointer is over it.
+    #[test]
+    fn a_run_is_matched_by_hover() {
+        let resting = built(LINK, None);
+        let run = &resting.children[0].children[1];
+        assert_eq!(run.state_path.as_deref(), Some(&[0, 1][..]), "a region for the pointer to report");
+        assert!(run.text.as_ref().unwrap().color.b > 0.9, "blue at rest");
+        let hovered = built(LINK, Some(vec![0, 1]));
+        assert!(hovered.children[0].children[1].text.as_ref().unwrap().color.r > 0.9, "red under the pointer");
+    }
+
+    /// A run with a `dir` of its own is set apart from its sentence; one
+    /// without is not, whatever direction it inherits.
+    #[test]
+    fn a_run_with_its_own_dir_is_isolated() {
+        let root = built(
+            r#"<template><screen dir="rtl"><text>a <text dir="ltr">b</text> <text dir="auto">c</text> <text>d</text></text></screen></template>"#,
+            None,
+        );
+        let isolates: Vec<Isolate> = root.children[0]
+            .children
+            .iter()
+            .filter(|c| c.text.is_some())
+            .map(|c| c.text.as_ref().unwrap().isolate)
+            .collect();
+        // a, b, space, c, space, d.
+        assert_eq!(
+            isolates,
+            [Isolate::None, Isolate::Ltr, Isolate::None, Isolate::Auto, Isolate::None, Isolate::None]
+        );
     }
 }

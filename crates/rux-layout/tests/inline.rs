@@ -33,6 +33,7 @@ fn words(text: &str, ws: WhiteSpace) -> TextContent {
         rich: None,
         white_space: ws,
         direction: None,
+        isolate: Default::default(),
     }
 }
 
@@ -179,4 +180,22 @@ fn a_measure_that_cannot_place_leaves_parts_at_the_corner() {
     let path = out.paints.iter().find_map(|p| if let Paint::Path(t) = p { Some(t) } else { None }).unwrap();
     assert_eq!((path.x, path.y), (text.x, text.y));
     assert!(out.hits.is_empty());
+}
+
+/// A run with a `dir` of its own is wrapped in the isolate controls inside
+/// its own range, after the spaces were collapsed, so it is ordered on its own
+/// and the spaces around it are what they would have been.
+#[test]
+fn an_isolated_run_is_wrapped_in_its_controls() {
+    let mut s = Node::text(Style::default(), words("", WhiteSpace::Normal));
+    s.children.push(run("say "));
+    let mut name = run("שלום");
+    name.text.as_mut().unwrap().isolate = Isolate::Rtl;
+    s.children.push(name);
+    s.children.push(run(" now"));
+    let (out, _) = lay_out(s);
+    let tc = out.paints.iter().find_map(|p| if let Paint::Text(t) = p { Some(&t.content) } else { None }).unwrap();
+    assert_eq!(tc.text, "say \u{2067}שלום\u{2069} now");
+    let rich = tc.rich.as_ref().unwrap();
+    assert_eq!(&tc.text[rich.runs[1].range.clone()], "שלום", "the run's words, the controls beside them");
 }

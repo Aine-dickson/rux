@@ -1107,7 +1107,41 @@ pub struct TextContent {
     /// first letter with a direction, which is `dir="auto"`, and what a text
     /// field does.
     pub direction: Option<Direction>,
+    /// For a run of a sentence with a `dir` of its own: its words are set
+    /// apart from the sentence's, as HTML sets apart an inline element with
+    /// `dir` (`unicode-bidi: isolate`). See [`Isolate`].
+    pub isolate: Isolate,
 }
+
+/// How a run's words stand in the sentence's bidirectional order. An
+/// isolated run is ordered on its own, in its own direction, and is one
+/// neutral piece to the words around it: a Hebrew name in an English sentence
+/// cannot drag the comma after it to the wrong end.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Isolate {
+    #[default]
+    None,
+    Ltr,
+    Rtl,
+    /// `dir="auto"`: the run's first letter with a direction decides.
+    Auto,
+}
+
+impl Isolate {
+    /// The Unicode isolate control that opens it, `None` for no isolation.
+    /// Closed by U+2069 POP DIRECTIONAL ISOLATE.
+    pub fn opener(self) -> Option<&'static str> {
+        match self {
+            Isolate::None => None,
+            Isolate::Ltr => Some("\u{2066}"),
+            Isolate::Rtl => Some("\u{2067}"),
+            Isolate::Auto => Some("\u{2068}"),
+        }
+    }
+}
+
+/// What closes an isolate.
+pub const POP_ISOLATE: &str = "\u{2069}";
 
 /// How a field's selection is drawn: the two properties `::selection`
 /// honours, and the colour of the handles a finger drags.
@@ -3039,6 +3073,7 @@ fn measures_alike(a: &TextContent, b: &TextContent) -> bool {
         && a.nowrap == b.nowrap
         && a.rich == b.rich
         && a.direction == b.direction
+        && a.isolate == b.isolate
 }
 
 /// The Taffy node for one of this frame's nodes: `old` brought up to date, or a

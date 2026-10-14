@@ -39,6 +39,7 @@ fn label(text: &str) -> TextContent {
         rich: None,
         white_space: Default::default(),
         direction: None,
+        isolate: Default::default(),
     }
 }
 
@@ -74,6 +75,7 @@ fn text_node_paints_its_background_then_its_glyphs() {
         rich: None,
         white_space: Default::default(),
         direction: None,
+        isolate: Default::default(),
         },
     );
 

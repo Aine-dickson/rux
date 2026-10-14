@@ -2496,6 +2496,10 @@ desktop window with a debug build on one probe page.
 | A right-to-left field | `<input dir="rtl" placeholder="الاسم">` | the placeholder at the right | desktop: pass |
 | Arrows in Arabic | Left at the start of an Arabic word | the caret moves on into the word | under the code only (`rux-text` `a_visual_step_follows_what_is_drawn`; keys do not reach the window) |
 | Web, Android | the same page | the same | not driven |
+| A Hebrew name, no `dir` | `User <text class="b">שלום</text> 5 replies` | the 5 joins the name's right-to-left order and is drawn before it (the bidirectional algorithm's answer, and a browser's) | desktop: pass |
+| The same name, `dir="rtl"`, then `dir="auto"` | | `User שלום 5 replies`: the name set apart, the 5 after it | desktop: pass |
+| An English name in Arabic | `كتب <text dir="ltr">Rux 2</text> 5 ردود` under `dir="rtl"` | `Rux 2` kept whole and reading left to right, the 5 to its left | desktop: pass |
+| `:hover` on a run | `Read the <text class="link">terms</text> first.`, `.link:hover { color: red }`, the pointer put on `terms` | `terms` blue at rest, red under the pointer, the rest of the sentence black | desktop: pass |
 
 ## Standing gaps
 

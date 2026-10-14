@@ -100,6 +100,10 @@ pub(crate) fn join(node: &Node, path: &[usize]) -> (TextContent, Vec<InlinePart>
             Piece::Item { width, height, align } => {
                 rich.items.push(InlineItem { index: text.len(), width, height, align });
             }
+            // Written after the spaces are collapsed, so they cannot change
+            // which spaces are drawn: they are an instruction to the
+            // bidirectional order, not words.
+            Piece::Control(c) => text.push_str(c),
         }
     }
     base.text = text;
@@ -109,6 +113,8 @@ pub(crate) fn join(node: &Node, path: &[usize]) -> (TextContent, Vec<InlinePart>
 
 enum Piece {
     Run(RunStyle),
+    /// An isolate's opening or closing control, written between two runs.
+    Control(&'static str),
     Item { width: f32, height: f32, align: crate::VerticalAlign },
 }
 
@@ -129,11 +135,21 @@ fn gather<'a>(
         cp.push(i);
         let first_run = count_runs(kinds);
         let what = if let Some(tc) = &c.text {
+            // A run with a `dir` of its own is set apart, its pieces and all.
+            let opener = tc.isolate.opener();
+            if let Some(o) = opener {
+                pieces.push(("", WhiteSpace::Normal));
+                kinds.push(Piece::Control(o));
+            }
             if c.children.is_empty() {
                 pieces.push((tc.text.as_str(), tc.white_space));
                 kinds.push(Piece::Run(run_style(tc, c)));
             } else {
                 gather(c, &cp, pieces, kinds, parts);
+            }
+            if opener.is_some() {
+                pieces.push(("", WhiteSpace::Normal));
+                kinds.push(Piece::Control(crate::POP_ISOLATE));
             }
             PartWhat::Runs(first_run..count_runs(kinds))
         } else if let Some(ic) = &c.image {

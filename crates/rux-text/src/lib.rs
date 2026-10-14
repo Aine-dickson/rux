@@ -147,9 +147,21 @@ impl<'a> TextStyle<'a> {
 /// Thaana, N'Ko and later right-to-left scripts' blocks, less the Arabic
 /// digits and number signs, which have no direction of their own.
 fn first_strong(text: &str) -> Option<Direction> {
+    // What an isolate holds does not count (UAX #9, P2): a sentence opening
+    // with a set-apart Hebrew name is still the sentence it is.
+    let mut isolated = 0usize;
     for c in text.chars() {
         let u = c as u32;
         match c {
+            '\u{2066}' | '\u{2067}' | '\u{2068}' => {
+                isolated += 1;
+                continue;
+            }
+            '\u{2069}' => {
+                isolated = isolated.saturating_sub(1);
+                continue;
+            }
+            _ if isolated > 0 => continue,
             '\u{200E}' => return Some(Direction::Ltr),
             '\u{200F}' => return Some(Direction::Rtl),
             _ => {}

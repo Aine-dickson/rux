@@ -47,6 +47,7 @@ fn content(s: &str, align: TextAlign) -> TextContent {
         rich: None,
         white_space: Default::default(),
         direction: None,
+        isolate: Default::default(),
     }
 }
 

@@ -45,8 +45,9 @@ under its words too, as CSS draws a decoration through nested boxes. It has its 
 `color`, `font-*`, `text-decoration` and spacing, and a solid `background` on
 a run highlights its words, line by line. Each run is still an element: its own
 `{{ }}`, `r-if`, `r-for`, `@tap` (found by a tap on its words, and a Tab stop),
-`:class` and `query()`. Padding, borders and margins on a run are not drawn, and
-`:hover` on a run is not matched yet. The words between tags are the sentence's
+`:class` and `query()`. `:hover` and `:active` match a run while the pointer
+is over its words, so a link can change colour under it. Padding, borders and margins on a
+run are not drawn. The words between tags are the sentence's
 own and match no rule, not even `*`, as in CSS.
 
 **`<image>` and `<path>` inside a `<text>` sit in the line** as a box the size

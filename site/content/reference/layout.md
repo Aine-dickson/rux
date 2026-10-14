@@ -46,6 +46,12 @@ weight = 3
   the way they move the content on screen. A text field follows what is typed
   into it (`dir="auto"`) unless `dir` or `direction` reaches it, in which case
   an empty one keeps its caret on that side; Left and Right step through
-  right-to-left words the way they are drawn, as a browser's field does. Not
-  yet: a run of a different direction inside a sentence (`dir` on a nested
-  `<text>`).
+  right-to-left words the way they are drawn, as a browser's field does. A run
+  of a sentence with a `dir` of its own (`dir` on a nested `<text>`, or
+  `direction` in a rule) is set apart from the words around it, as HTML sets
+  apart an inline element with `dir` (`unicode-bidi: isolate`): it is ordered
+  in its own direction, `auto` taking its first letter's, and counts as one
+  neutral piece to the sentence. That is what keeps `User <text
+  dir="auto">{{ name }}</text> 5 replies` reading "5 replies" after a Hebrew
+  name, where without it the 5 joins the name's right-to-left order. A run
+  that only inherits a direction is not set apart.

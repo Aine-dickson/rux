@@ -35,6 +35,7 @@ fn label(text: &str) -> TextContent {
         rich: None,
         white_space: Default::default(),
         direction: None,
+        isolate: Default::default(),
     }
 }
 
