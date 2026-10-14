@@ -867,6 +867,77 @@ impl TextEngine {
         next.index().saturating_sub(off).min(text.len())
     }
 
+    /// The caret one word to the left or right of `index` as the text is
+    /// drawn: Ctrl+Left and Ctrl+Right (Option on macOS). In right-to-left
+    /// words it goes the other way through the text, as [`Self::visual_step`]
+    /// does.
+    pub fn word_step(
+        &mut self,
+        text: &str,
+        style: &TextStyle,
+        max_width: Option<f32>,
+        index: usize,
+        rightward: bool,
+    ) -> usize {
+        let layout = self.build(text, style, max_width);
+        let off = shift(text, style);
+        let here = Cursor::from_byte_index(&layout, index.min(text.len()) + off, Affinity::Downstream);
+        let next = if rightward { here.next_visual_word(&layout) } else { here.previous_visual_word(&layout) };
+        next.index().saturating_sub(off).min(text.len())
+    }
+
+    /// Where the word before `index`, or the one after it, ends in the text's
+    /// own order: what Ctrl+Backspace and Ctrl+Delete delete up to, which is
+    /// the same whichever way the words are drawn.
+    pub fn word_edge(&mut self, text: &str, style: &TextStyle, max_width: Option<f32>, index: usize, forward: bool) -> usize {
+        let layout = self.build(text, style, max_width);
+        let off = shift(text, style);
+        let here = Cursor::from_byte_index(&layout, index.min(text.len()) + off, Affinity::Downstream);
+        let to = if forward { here.next_logical_word(&layout) } else { here.previous_logical_word(&layout) };
+        to.index().saturating_sub(off).min(text.len())
+    }
+
+    /// The start or end of the line `index` is on, as the text is wrapped:
+    /// Home and End in a field of several lines.
+    pub fn line_edge(&mut self, text: &str, style: &TextStyle, max_width: Option<f32>, index: usize, end: bool) -> usize {
+        let layout = self.build(text, style, max_width);
+        let off = shift(text, style);
+        let here = Selection::from(Cursor::from_byte_index(&layout, index.min(text.len()) + off, Affinity::Downstream));
+        let to = if end { here.line_end(&layout, false) } else { here.line_start(&layout, false) };
+        let to = to.focus().index().saturating_sub(off).min(text.len());
+        if !end || to == text.len() || text[to..].starts_with('\n') {
+            return to;
+        }
+        // A line that wraps ends after the space it wraps at, which is where
+        // the next line starts: a caret there is drawn on the next line, and
+        // what is typed joins its first word. End stays on this line.
+        let kept = text[..to].trim_end_matches([' ', '\t']).len();
+        if kept > index.min(text.len()) { kept } else { to }
+    }
+
+    /// The line under a point, as it is wrapped, or with `paragraph` the whole
+    /// paragraph it is part of, as byte ranges: what a triple click takes.
+    pub fn line_at_point(
+        &mut self,
+        text: &str,
+        style: &TextStyle,
+        max_width: Option<f32>,
+        x: f32,
+        y: f32,
+        paragraph: bool,
+    ) -> (usize, usize) {
+        let layout = self.build(text, style, max_width);
+        let off = shift(text, style);
+        let s = if paragraph {
+            Selection::hard_line_from_point(&layout, x, y)
+        } else {
+            Selection::line_from_point(&layout, x, y)
+        };
+        let range = s.text_range();
+        let clamp = |i: usize| i.saturating_sub(off).min(text.len());
+        (clamp(range.start), clamp(range.end))
+    }
+
     /// Draw the text with its top-left at `(x, y)`, leading trimmed and aligned
     /// within `max_width` (when given).
     #[allow(clippy::too_many_arguments)]

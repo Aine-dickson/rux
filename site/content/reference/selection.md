@@ -10,9 +10,27 @@ A focused input has a **selection**, not just a caret: `Focus` carries a `caret`
 and an `anchor`, and the range between them is selected (`anchor == caret` means
 nothing is). Both are re-applied after every rebuild, like the caret.
 
-- **Drag** across text to select; **double-click** selects a word.
-- **Shift** + a movement (arrows, Home/End, Up/Down in a textarea) extends from
-  the anchor; the same movement without Shift collapses the selection.
+- **Drag** across text to select; **double-click** selects a word and
+  **triple-click** the line: the whole value in a one-line field, the
+  paragraph up to the line break in a textarea, as a browser's does. Dragging
+  on after a double or triple click grows the selection a whole word, or
+  paragraph, at a time, and keeps what the clicks took.
+- **Ctrl+Left / Ctrl+Right** (Option on macOS) move a word at a time, the way
+  the words are drawn, so in right-to-left text they go the other way through
+  it. **Ctrl+Backspace / Ctrl+Delete** (Option on macOS) delete to the start
+  or end of the word; on Windows and Linux Ctrl+Delete takes the spaces after
+  it too, as the platform's own fields do. A password moves and deletes whole,
+  having no words to show.
+- **Home / End** go to the start or end of the line the caret is on, which in
+  a one-line field is the whole value and in a textarea is the line as it is
+  wrapped (End stays on that line rather than after the space it wraps at).
+  **Ctrl+Home / Ctrl+End** go to the ends of the whole text; on macOS
+  Cmd+Left/Right are the line and Cmd+Up/Down the whole text. Alt+Left/Right
+  are still Back and Forward, except on macOS in a field, where Option+arrow
+  is the word move.
+- **Shift** + a movement (arrows, words, Home/End, Up/Down in a textarea)
+  extends from the anchor; the same movement without Shift collapses the
+  selection.
 - Typing, pasting, Backspace and Delete **replace** the selection.
 - **Ctrl+A** select all · **Ctrl+C** copy · **Ctrl+X** cut · **Ctrl+V** paste
   (via `arboard`, the real system clipboard). Pasting several lines into a

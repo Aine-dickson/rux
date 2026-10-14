@@ -2501,6 +2501,30 @@ desktop window with a debug build on one probe page.
 | An English name in Arabic | `كتب <text dir="ltr">Rux 2</text> 5 ردود` under `dir="rtl"` | `Rux 2` kept whole and reading left to right, the 5 to its left | desktop: pass |
 | `:hover` on a run | `Read the <text class="link">terms</text> first.`, `.link:hover { color: red }`, the pointer put on `terms` | `terms` blue at rest, red under the pointer, the rest of the sentence black | desktop: pass |
 
+## Text editing: words, lines, triple-click, 2026-10-14
+
+Roadmap v0.9 item 3, steps 1 to 3 (owner left the choices to the build:
+Home/End by line, the platform's own chords). Under test in `rux-text`
+(`tests/editing.rs`: five, on a word at a time, right-to-left words, word edges
+for deleting, the ends of a wrapped line, and the line or paragraph under a
+point). Driven in a desktop window with a debug build: keys sent with
+`keybd_event` after `SetForegroundWindow`, which **does** reach the window, and
+clicks with `mouse_event`.
+
+| Case | Steps | Expected | Result |
+|---|---|---|---|
+| Ctrl+Left | `one two three`, click at the end, Ctrl+Left, type `x` | `one two xthree` | desktop: pass |
+| Ctrl+Backspace | the same field, click at the end, Ctrl+Backspace | `one two ` | desktop: pass |
+| Ctrl+Delete | click at the start, Ctrl+Delete | `two three`: the word and the space after it (Windows) | desktop: pass |
+| Ctrl+Shift+Left | click at the end, Ctrl+Shift+Left, type `q` | `one two q`: the last word selected and replaced | desktop: pass |
+| End on a wrapped line | a textarea wrapping `alpha beta gamma / delta …`, click on line 1, End, type `y` | `gammay delta`: on line 1, not the start of line 2 (the first try, before the fix, gave `gamma ydelta`) | desktop: pass |
+| Home on a wrapped line | click on line 2, Home, type `z` | `zdelta` | desktop: pass |
+| Ctrl+End | click on line 2, Ctrl+End, type `w` | the end of the whole text | desktop: pass |
+| Triple-click | `alpha beta gamma\nsecond line here`, three quick clicks on line 1, type `x` | `x\nsecond line here`: the paragraph, not the line break | desktop: pass |
+| Double-click and drag | double-click `two` in `one two three`, drag into the middle of `three`, type `q` | `one q`: both whole words | desktop: pass |
+| macOS chords | Option+arrows, Cmd+arrows | the word and line moves | not driven (no Mac) |
+| Web, Android | the same page | the same | not driven |
+
 ## Standing gaps
 
 Cases nothing here can currently exercise. They are the shape of what v0.8 has

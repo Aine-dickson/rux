@@ -442,6 +442,13 @@ const BLINK: Duration = Duration::from_millis(530);
 /// double-click, which selects a word.
 const DOUBLE_CLICK: Duration = Duration::from_millis(500);
 
+/// What a double or a triple click takes, and what a drag after it grows by.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TextUnit {
+    Word,
+    Line,
+}
+
 /// Rux screen background `#11111b`.
 const BG: Color = Color::from_rgb8(0x11, 0x11, 0x1b);
 
@@ -1741,8 +1748,12 @@ struct App {
     /// that was missing. Held for the focused field only, and reset when focus
     /// moves.
     text_scroll: f32,
-    /// When and where the last click landed, for double-click word-select.
-    last_click: Option<(Instant, f64, f64)>,
+    /// When and where the last click landed, and how many quick clicks in a
+    /// row it was: two take a word, three the line.
+    last_click: Option<(Instant, f64, f64, u8)>,
+    /// What a drag after a double or triple click grows by, and the range
+    /// the clicks took, which the selection always keeps.
+    drag_unit: Option<(TextUnit, usize, usize)>,
     /// The system clipboard. `None` if the platform wouldn't give us one, the
     /// app still runs, copy/paste just does nothing. Absent on the web, where
     /// the clipboard is async and permission-gated; same "copy/paste does
@@ -1885,6 +1896,7 @@ impl App {
             touch_text: None,
             text_scroll: 0.0,
             last_click: None,
+            drag_unit: None,
             #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
             clipboard: arboard::Clipboard::new()
                 .map_err(|e| eprintln!("rux: no clipboard ({e}), so copy/paste is disabled"))
@@ -2595,16 +2607,29 @@ impl App {
         self.focus_index = self.focusables.iter().rposition(|f| f.contains(fx, fy));
         self.focused_kind = region.kind;
 
-        let double = self
-            .last_click
-            .is_some_and(|(at, x, y)| {
-                at.elapsed() < DOUBLE_CLICK && (pointer.0 - x).hypot(pointer.1 - y) <= TAP_SLOP
-            });
-        self.last_click = Some((Instant::now(), pointer.0, pointer.1));
+        let clicks = match self.last_click {
+            Some((at, x, y, n)) if at.elapsed() < DOUBLE_CLICK && (pointer.0 - x).hypot(pointer.1 - y) <= TAP_SLOP => {
+                // A fourth quick click starts over, as a browser's does.
+                if n >= 3 { 1 } else { n + 1 }
+            }
+            _ => 1,
+        };
+        self.last_click = Some((Instant::now(), pointer.0, pointer.1, clicks));
+        self.drag_unit = None;
 
-        // Double-click, and double-tap, select the word under the pointer.
-        if double && self.select_word_at(pointer) {
-            return true;
+        // Double-click, and double-tap, select the word under the pointer;
+        // a third click the line. Dragging on grows the selection by the same.
+        let unit = match clicks {
+            2 => Some(TextUnit::Word),
+            3 => Some(TextUnit::Line),
+            _ => None,
+        };
+        if let Some(unit) = unit {
+            if let Some((start, end)) = self.select_unit_at(pointer, unit) {
+                self.drag_unit = Some((unit, start, end));
+                self.text_drag = true;
+                return true;
+            }
         }
 
         let caret = self.index_in(&region, fx, fy);
@@ -2620,28 +2645,39 @@ impl App {
     /// about where a word ends. Returns whether a word was actually taken, which
     /// is false for an empty field or a press outside any text.
     fn select_word_at(&mut self, pointer: (f64, f64)) -> bool {
+        self.select_unit_at(pointer, TextUnit::Word).is_some()
+    }
+
+    /// The range of `unit` under `pointer` in the field it lands in, without
+    /// selecting it. A masked field is one piece, whatever the unit.
+    fn unit_at(&mut self, pointer: (f64, f64), unit: TextUnit) -> Option<(FocusRegion, usize, usize)> {
         let (fx, fy) = self.logical(pointer);
-        let Some(region) = self.focuses.iter().rev().find(|f| f.contains(fx, fy)).cloned() else {
-            return false;
+        let region = self.focuses.iter().rev().find(|f| f.contains(fx, fy)).cloned()?;
+        let value = self.document.value_in(&region.model, region.row.as_deref(), region.instance.as_deref());
+        let (Some(t), false) = (region.text.clone(), value.is_empty()) else {
+            return None;
         };
-        let value = self.document.value_in(
-            &region.model,
-            region.row.as_deref(),
-            region.instance.as_deref(),
-        );
-        let (Some(t), false) = (&region.text, value.is_empty()) else {
-            return false;
+        let (tx, ty) = self.text_point(&region, &t, fx, fy);
+        let style = rux_paint::text_style(&t.content);
+        let (start, end) = match unit {
+            _ if region.kind.secret() => (0, value.len()),
+            TextUnit::Word => self.text.word_at_point(&value, &style, Some(t.width), tx, ty),
+            // A one-line field is one line. In a field of several, a third
+            // click takes the paragraph, up to the line break, as a
+            // browser's does.
+            TextUnit::Line if !region.kind.multiline() => (0, value.len()),
+            TextUnit::Line => {
+                let (s, e) = self.text.line_at_point(&value, &style, Some(t.width), tx, ty, true);
+                // Not the line break itself: what is selected is the words.
+                (s, if value[..e].ends_with('\n') { e - 1 } else { e })
+            }
         };
-        let (tx, ty) = self.text_point(&region, t, fx, fy);
-        // **A password is taken whole.** Split at its spaces, a long press
-        // showed where the spaces were, which is the one thing a masked field
-        // must not tell anyone. Android's own password fields select all
-        // here for the same reason.
-        let (start, end) = if region.kind.secret() {
-            (0, value.len())
-        } else {
-            self.text.word_at_point(&value, &rux_paint::text_style(&t.content), Some(t.width), tx, ty)
-        };
+        Some((region, start, end))
+    }
+
+    /// Select the `unit` under `pointer`, and say what was taken.
+    fn select_unit_at(&mut self, pointer: (f64, f64), unit: TextUnit) -> Option<(usize, usize)> {
+        let (region, start, end) = self.unit_at(pointer, unit)?;
         self.set_focus_range(Some(Focus {
             model: region.model,
             row: region.row,
@@ -2650,7 +2686,7 @@ impl App {
             anchor: start,
             preedit: None,
         }));
-        true
+        Some((start, end))
     }
 
     /// Press on text from a *finger*. Unlike the mouse, this does not start a
@@ -2903,9 +2939,20 @@ impl App {
     fn drag_text(&mut self, pointer: (f64, f64)) {
         let Some(region) = self.focused_region().cloned() else { return };
         let (fx, fy) = self.logical(pointer);
-        let caret = self.index_in(&region, fx, fy);
-        if caret != self.caret {
-            let anchor = self.anchor;
+        let mut caret = self.index_in(&region, fx, fy);
+        let mut anchor = self.anchor;
+        // After a double or triple click, the selection grows a whole word
+        // (or line) at a time and always keeps what the clicks took.
+        if let Some((unit, start, end)) = self.drag_unit {
+            if let Some((_, s, e)) = self.unit_at(pointer, unit) {
+                if s < start {
+                    (anchor, caret) = (end, s);
+                } else {
+                    (anchor, caret) = (start, e.max(end));
+                }
+            }
+        }
+        if caret != self.caret || anchor != self.anchor {
             self.set_focus_range(Some(Focus {
                 model: region.model,
                 row: region.row,
@@ -3839,6 +3886,8 @@ impl App {
         let mut edited = false;
         let mut moved = false;
         let mut new_caret = caret;
+        let by_word = self.word_chord();
+        let whole_text = self.text_chord();
         // Replace whatever is selected with `text`, leaving the caret after it.
         let replace_selection = |value: &mut String, text: &str| {
             value.replace_range(sel_start..sel_end, text);
@@ -3850,6 +3899,12 @@ impl App {
                 if has_selection {
                     new_caret = replace_selection(&mut value, "");
                     edited = true;
+                } else if by_word && caret > 0 {
+                    // Ctrl+Backspace: back to the start of the word.
+                    let to = self.word_caret_edge(&value, caret, false).min(caret);
+                    value.replace_range(to..caret, "");
+                    new_caret = to;
+                    edited = to != caret;
                 } else if let Some(len) = prev {
                     value.replace_range(caret - len..caret, "");
                     new_caret = caret - len;
@@ -3860,6 +3915,11 @@ impl App {
                 if has_selection {
                     new_caret = replace_selection(&mut value, "");
                     edited = true;
+                } else if by_word && caret < value.len() {
+                    // Ctrl+Delete: on to the end of the word.
+                    let to = self.word_caret_edge(&value, caret, true).max(caret);
+                    value.replace_range(caret..to, "");
+                    edited = to != caret;
                 } else if let Some(len) = next {
                     value.replace_range(caret..caret + len, "");
                     edited = true;
@@ -3867,6 +3927,20 @@ impl App {
             }
             // A plain arrow with a selection collapses to its near edge rather
             // than moving, that's what every text field does.
+            // Ctrl+Left / Ctrl+Right (Option on macOS) go a word at a time,
+            // from the caret even with a selection, as a browser's field does.
+            Key::Named(NamedKey::ArrowLeft | NamedKey::ArrowRight) if by_word => {
+                let rightward = matches!(key, Key::Named(NamedKey::ArrowRight));
+                let from = if has_selection && !extend { if rightward { sel_end } else { sel_start } } else { caret };
+                new_caret = self.word_caret_step(&value, from, rightward);
+                moved = true;
+            }
+            // Cmd+Left / Cmd+Right on macOS: the start or end of the line.
+            Key::Named(NamedKey::ArrowLeft | NamedKey::ArrowRight) if cfg!(target_os = "macos") && self.meta_held => {
+                let end = matches!(key, Key::Named(NamedKey::ArrowRight));
+                new_caret = self.line_caret_edge(&value, caret, end);
+                moved = true;
+            }
             Key::Named(NamedKey::ArrowLeft) => {
                 if has_selection && !extend {
                     new_caret = sel_start;
@@ -3909,12 +3983,20 @@ impl App {
                     moved = new_caret != caret;
                 }
             }
+            // Home and End go to the ends of the line the caret is on, which
+            // in a one-line field is the whole value; with Ctrl (Cmd on
+            // macOS) to the ends of the whole text.
             Key::Named(NamedKey::Home) => {
-                new_caret = 0;
+                new_caret = if whole_text { 0 } else { self.line_caret_edge(&value, caret, false) };
                 moved = true;
             }
             Key::Named(NamedKey::End) => {
-                new_caret = value.len();
+                new_caret = if whole_text { value.len() } else { self.line_caret_edge(&value, caret, true) };
+                moved = true;
+            }
+            // Cmd+Up / Cmd+Down on macOS: the start or end of the whole text.
+            Key::Named(NamedKey::ArrowUp | NamedKey::ArrowDown) if cfg!(target_os = "macos") && self.meta_held => {
+                new_caret = if matches!(key, Key::Named(NamedKey::ArrowDown)) { value.len() } else { 0 };
                 moved = true;
             }
             Key::Named(NamedKey::Escape) => {
@@ -4145,6 +4227,67 @@ impl App {
     /// Arabic and back through English, which is not the next byte either way.
     /// `None` for a field without, whose arrows keep the plain step they always
     /// took.
+    /// A caret found by `find` in the focused field's text as it is drawn,
+    /// turned back into one in its value. `None` when the field has no text
+    /// on screen to ask.
+    fn caret_by(
+        &mut self,
+        value: &str,
+        caret: usize,
+        find: impl FnOnce(&mut rux_text::TextEngine, &str, &rux_text::TextStyle, Option<f32>, usize) -> usize,
+    ) -> Option<usize> {
+        let t = self.focused_region().and_then(|f| f.text.clone())?;
+        let style = rux_paint::text_style(&t.content);
+        let (shown, shown_caret) = self.shown_text(value, caret);
+        let to = find(&mut self.text, &shown, &style, Some(t.width), shown_caret);
+        Some(self.real_caret(value, to))
+    }
+
+    /// The caret one word left or right as the words are drawn. A masked
+    /// field has no words to show, so it goes to the end, as a browser's does.
+    fn word_caret_step(&mut self, value: &str, caret: usize, rightward: bool) -> usize {
+        if self.focused_kind.secret() {
+            return if rightward { value.len() } else { 0 };
+        }
+        self.caret_by(value, caret, |t, s, st, w, i| t.word_step(s, st, w, i, rightward)).unwrap_or(caret)
+    }
+
+    /// Where Ctrl+Backspace (`forward` false) or Ctrl+Delete deletes to.
+    fn word_caret_edge(&mut self, value: &str, caret: usize, forward: bool) -> usize {
+        if self.focused_kind.secret() {
+            return if forward { value.len() } else { 0 };
+        }
+        let to = self.caret_by(value, caret, |t, s, st, w, i| t.word_edge(s, st, w, i, forward)).unwrap_or(caret);
+        // Ctrl+Delete on Windows and Linux takes the spaces after the word
+        // too, so the next word moves up to the caret; Option+Delete on
+        // macOS stops at the word's end.
+        if forward && !cfg!(target_os = "macos") && to < value.len() {
+            return to + value[to..].len() - value[to..].trim_start_matches([' ', '\t']).len();
+        }
+        to
+    }
+
+    /// The start or end of the line the caret is on, as the field wraps it.
+    /// A one-line field is one line, so that is the whole value.
+    fn line_caret_edge(&mut self, value: &str, caret: usize, end: bool) -> usize {
+        if !self.focused_kind.multiline() {
+            return if end { value.len() } else { 0 };
+        }
+        self.caret_by(value, caret, |t, s, st, w, i| t.line_edge(s, st, w, i, end))
+            .unwrap_or(if end { value.len() } else { 0 })
+    }
+
+    /// Whether the word chord is held: Ctrl, or Option on macOS.
+    fn word_chord(&self) -> bool {
+        if cfg!(target_os = "macos") { self.alt_held } else { self.ctrl_held }
+    }
+
+    /// Whether the chord that reaches the whole text's ends is held:
+    /// Ctrl+Home and Ctrl+End, or Cmd with the arrows on macOS.
+    fn text_chord(&self) -> bool {
+        if cfg!(target_os = "macos") { self.meta_held } else { self.ctrl_held }
+    }
+
     fn visual_caret_step(&mut self, value: &str, caret: usize, rightward: bool) -> Option<usize> {
         if !rux_text::has_rtl(value) {
             return None;
@@ -4385,7 +4528,9 @@ impl App {
                 matches!(s.to_lowercase().as_str(), "a" | "c" | "x" | "v" | "z" | "y")
             }
             Key::Character(_) => true,
-            Key::Named(NamedKey::ArrowLeft | NamedKey::ArrowRight) => !self.alt_held,
+            // Alt+Left / Alt+Right are history, except on macOS, where
+            // Option with an arrow moves a word.
+            Key::Named(NamedKey::ArrowLeft | NamedKey::ArrowRight) => !self.alt_held || cfg!(target_os = "macos"),
             Key::Named(
                 NamedKey::Backspace
                 | NamedKey::Delete
@@ -4477,7 +4622,8 @@ impl App {
         // it. Checked before anything else, including the focused input: it is a
         // chord, so it cannot be text, and a caret in a field is exactly when
         // someone wants to leave a page they typed into by mistake.
-        if self.alt_held {
+        // On macOS, Option with an arrow in a field moves a word instead.
+        if self.alt_held && !(cfg!(target_os = "macos") && self.focused.is_some()) {
             let moved = match key {
                 Key::Named(NamedKey::ArrowLeft) => self.document.back(),
                 Key::Named(NamedKey::ArrowRight) => self.document.forward(),
