@@ -442,6 +442,24 @@ const BLINK: Duration = Duration::from_millis(530);
 /// double-click, which selects a word.
 const DOUBLE_CLICK: Duration = Duration::from_millis(500);
 
+/// A selection being dragged to somewhere else, from the press inside it to
+/// the release. See `App::drag_selection`.
+#[derive(Clone, Debug)]
+struct TextDnd {
+    /// The field it came from, and the range it was.
+    model: String,
+    row: Option<String>,
+    instance: Option<String>,
+    start: usize,
+    end: usize,
+    /// Where the press was, in physical pixels: until the pointer has left
+    /// it by more than a tap, this is still a click.
+    press: (f64, f64),
+    moving: bool,
+    /// The field and index it would land at, as the pointer is now.
+    drop: Option<(FocusRegion, usize)>,
+}
+
 /// What a double or a triple click takes, and what a drag after it grows by.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum TextUnit {
@@ -817,6 +835,57 @@ fn word_near(text: &str, caret: usize) -> Option<(usize, usize)> {
         .last()
         .map(|(i, _)| i)?;
     Some((start, end))
+}
+
+/// Whether `start..end` of `text` is whole words: it starts and ends on a
+/// letter, and no letter touches it on either side. What a double click
+/// takes, and what a drop moves as words.
+fn whole_words(text: &str, start: usize, end: usize) -> bool {
+    let is_word = |c: char| c.is_alphanumeric() || c == '_' || c == '\'';
+    let inner = &text[start..end];
+    let (Some(first), Some(last)) = (inner.chars().next(), inner.chars().next_back()) else { return false };
+    is_word(first)
+        && is_word(last)
+        && !text[..start].chars().next_back().is_some_and(is_word)
+        && !text[end..].chars().next().is_some_and(is_word)
+}
+
+/// Take `start..end` out of `value`, and for whole words one of the spaces
+/// that would be left doubled, or hanging at either end. Returns the range
+/// taken, in the value as it was.
+fn cut_out(value: &mut String, start: usize, end: usize, words: bool) -> (usize, usize) {
+    let (mut lo, mut hi) = (start, end);
+    if words {
+        let before = value[..start].ends_with(' ');
+        let after = value[end..].starts_with(' ');
+        if after && (before || start == 0) {
+            hi += 1;
+        } else if before && end == value.len() {
+            lo -= 1;
+        }
+    }
+    value.replace_range(lo..hi, "");
+    (lo, hi)
+}
+
+/// Put `text` into `value` at `at`, and for whole words a space on a side
+/// where it would otherwise run into a letter. Returns where `text` itself
+/// is now.
+fn put_in(value: &mut String, at: usize, text: &str, words: bool) -> (usize, usize) {
+    let is_word = |c: char| c.is_alphanumeric() || c == '_' || c == '\'';
+    let space_before = words && value[..at].chars().next_back().is_some_and(is_word);
+    let space_after = words && value[at..].chars().next().is_some_and(is_word);
+    let mut put = String::with_capacity(text.len() + 2);
+    if space_before {
+        put.push(' ');
+    }
+    put.push_str(text);
+    if space_after {
+        put.push(' ');
+    }
+    value.insert_str(at, &put);
+    let from = at + usize::from(space_before);
+    (from, from + text.len())
 }
 
 // ── Selection handles ────────────────────────────────────────────────────────
@@ -1754,6 +1823,8 @@ struct App {
     /// What a drag after a double or triple click grows by, and the range
     /// the clicks took, which the selection always keeps.
     drag_unit: Option<(TextUnit, usize, usize)>,
+    /// A selection being dragged, from a press inside it.
+    text_dnd: Option<TextDnd>,
     /// The system clipboard. `None` if the platform wouldn't give us one, the
     /// app still runs, copy/paste just does nothing. Absent on the web, where
     /// the clipboard is async and permission-gated; same "copy/paste does
@@ -1897,6 +1968,7 @@ impl App {
             text_scroll: 0.0,
             last_click: None,
             drag_unit: None,
+            text_dnd: None,
             #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
             clipboard: arboard::Clipboard::new()
                 .map_err(|e| eprintln!("rux: no clipboard ({e}), so copy/paste is disabled"))
@@ -2489,6 +2561,11 @@ impl App {
         if self.caret == self.anchor && !self.caret_menu {
             return None;
         }
+        // Put away while the selection is dragged: it would cover where it
+        // may be dropped.
+        if self.text_dnd.as_ref().is_some_and(|d| d.moving) {
+            return None;
+        }
         let region = self.focused_region()?;
         Some((region.x, region.y, region.width, region.height))
     }
@@ -2617,6 +2694,7 @@ impl App {
         self.last_click = Some((Instant::now(), pointer.0, pointer.1, clicks));
         self.drag_unit = None;
 
+
         // Double-click, and double-tap, select the word under the pointer;
         // a third click the line. Dragging on grows the selection by the same.
         let unit = match clicks {
@@ -2692,6 +2770,45 @@ impl App {
     /// Press on text from a *finger*. Unlike the mouse, this does not start a
     /// selection: it moves the caret and arms the long press, so that what the
     /// finger does next decides between dragging the caret and selecting.
+    /// Press on text with the mouse: inside the selection it picks the
+    /// selection up, to be dragged somewhere else (see
+    /// [`App::drag_selection`]); anywhere else it is [`App::press_text`].
+    /// Only the mouse drags a selection: a finger's press in one is the
+    /// long-press menu's, and a scripted `tap()` is a click.
+    fn press_text_mouse(&mut self, pointer: (f64, f64)) -> bool {
+        if self.open_select.is_some() {
+            return false;
+        }
+        let (fx, fy) = self.logical(pointer);
+        // A second click in a row is a double click, which takes a word.
+        let repeat = self.last_click.is_some_and(|(at, x, y, _)| {
+            at.elapsed() < DOUBLE_CLICK && (pointer.0 - x).hypot(pointer.1 - y) <= TAP_SLOP
+        });
+        let region = self.focuses.iter().rev().find(|f| f.contains(fx, fy)).cloned();
+        if let Some(region) = region.filter(|r| !repeat && !r.kind.secret() && !self.toolbar_covers(fx, fy)) {
+            if self.is_focused(&region) {
+                let (s, e) = self.selection();
+                let at = self.index_in(&region, fx, fy);
+                // Nothing moves until the pointer does; a click is a click. A
+                // password's text is not handed anywhere.
+                if s < e && at >= s && at < e {
+                    self.text_dnd = Some(TextDnd {
+                        model: region.model,
+                        row: region.row,
+                        instance: region.instance,
+                        start: s,
+                        end: e,
+                        press: pointer,
+                        moving: false,
+                        drop: None,
+                    });
+                    return true;
+                }
+            }
+        }
+        self.press_text(pointer)
+    }
+
     fn press_text_touch(&mut self, pointer: (f64, f64)) -> bool {
         if !self.press_text(pointer) {
             return false;
@@ -2962,6 +3079,127 @@ impl App {
                 preedit: None,
             }));
         }
+    }
+
+    /// Whether `region` is the focused field.
+    fn is_focused(&self, region: &FocusRegion) -> bool {
+        self.focused.as_deref() == Some(region.model.as_str())
+            && self.focused_row == region.row
+            && self.focused_instance == region.instance
+    }
+
+    /// Follow a dragged selection: once the pointer has left the press by
+    /// more than a tap, find the field and the index it would land at. A
+    /// field that cannot take it (read-only, disabled, a password, a number or
+    /// a date) is no place to drop.
+    fn drag_selection(&mut self, pointer: (f64, f64)) {
+        let Some(mut d) = self.text_dnd.take() else { return };
+        if !d.moving && (pointer.0 - d.press.0).hypot(pointer.1 - d.press.1) > TAP_SLOP {
+            d.moving = true;
+        }
+        if d.moving {
+            let (fx, fy) = self.logical(pointer);
+            d.drop = self
+                .focuses
+                .iter()
+                .rev()
+                .find(|f| f.contains(fx, fy))
+                .filter(|f| !f.kind.secret() && !f.kind.typed() && !f.field.readonly && !f.field.disabled)
+                .cloned()
+                .map(|f| {
+                    let at = self.index_in(&f, fx, fy);
+                    (f, at)
+                });
+        }
+        self.text_dnd = Some(d);
+        self.request_redraw();
+    }
+
+    /// Let go of a dragged selection. Not moved: a click inside the
+    /// selection, which puts the caret there. Dropped in a field: the text
+    /// moves there, or with Ctrl (Option on macOS) is copied, and is left
+    /// selected where it landed. Dropped inside itself, or nowhere: nothing.
+    fn drop_selection(&mut self, d: TextDnd) {
+        if !d.moving {
+            let (fx, fy) = self.logical(d.press);
+            if let Some(region) = self.focuses.iter().rev().find(|f| f.contains(fx, fy)).cloned() {
+                let caret = self.index_in(&region, fx, fy);
+                self.text_drag = false;
+                self.set_focus(Some((region.model, region.row, region.instance, caret)));
+            }
+            return;
+        }
+        let Some((target, at)) = d.drop else { return };
+        let copy = if cfg!(target_os = "macos") { self.alt_held } else { self.ctrl_held };
+        let source = self.document.value_in(&d.model, d.row.as_deref(), d.instance.as_deref());
+        let (start, end) = (d.start.min(source.len()), d.end.min(source.len()));
+        let text = source[start..end].to_string();
+        // Whole words are moved as words, as a browser moves them: the space
+        // they leave behind closes up, and they land with a space either side.
+        let words = whole_words(&source, start, end);
+        let same = target.model == d.model && target.row == d.row && target.instance == d.instance;
+        if same {
+            if at >= start && at <= end {
+                return;
+            }
+            // One edit, so one undo puts it back.
+            let mut value = source.clone();
+            let at = if copy {
+                at
+            } else {
+                let (lo, hi) = cut_out(&mut value, start, end, words);
+                if at >= hi { at - (hi - lo) } else if at > lo { lo } else { at }
+            };
+            let (from, to) = put_in(&mut value, at, &text, words);
+            if let Some((_, caret)) = self.write_focused(&value, to, false) {
+                self.select_dropped(&target, caret - (to - from), caret);
+            }
+            return;
+        }
+        // Into another field: out of this one first, unless copied, then
+        // into that one, each an edit of its own field.
+        if !copy {
+            let mut value = source.clone();
+            cut_out(&mut value, start, end, words);
+            if self.write_focused(&value, start.min(value.len()), false).is_none() {
+                return; // a source that refuses the edit keeps its text
+            }
+        }
+        self.focus_index = self.focusables.iter().rposition(|f| f.contains(target.x + 1.0, target.y + 1.0));
+        self.focused_kind = target.kind;
+        self.set_focus(Some((target.model.clone(), target.row.clone(), target.instance.clone(), at)));
+        let mut value = self.document.value_in(&target.model, target.row.as_deref(), target.instance.as_deref());
+        let at = at.min(value.len());
+        let (from, to) = put_in(&mut value, at, &text, words);
+        if let Some((_, caret)) = self.write_focused(&value, to, false) {
+            self.select_dropped(&target, caret.saturating_sub(to - from), caret);
+        }
+    }
+
+    /// Leave what was dropped selected, as a browser does.
+    fn select_dropped(&mut self, target: &FocusRegion, anchor: usize, caret: usize) {
+        self.set_focus_range(Some(Focus {
+            model: target.model.clone(),
+            row: target.row.clone(),
+            instance: target.instance.clone(),
+            caret,
+            anchor,
+            preedit: None,
+        }));
+    }
+
+    /// Where a dragged selection would land, as a caret to draw: `(x, y,
+    /// height)` in logical px.
+    fn drop_caret(&mut self) -> Option<(f32, f32, f32)> {
+        let (region, at) = self.text_dnd.as_ref()?.drop.clone()?;
+        let value = self.document.value_in(&region.model, region.row.as_deref(), region.instance.as_deref());
+        let Some(t) = region.text.as_ref() else {
+            return Some((region.x + 2.0, region.y + 2.0, (region.height - 4.0).max(0.0)));
+        };
+        let style = rux_paint::text_style(&t.content);
+        let (cx, cy, ch) = self.text.caret_geometry(&value, &style, Some(t.width), at.min(value.len()));
+        let own = self.own_scroll(&region);
+        Some((t.x + cx - self.text_scroll_for(&region) - own.x, t.y + cy - own.y, ch))
     }
 
     /// Set the window's cursor from whatever tappable region is under the
@@ -6114,6 +6352,10 @@ impl App {
         let caret_menu = self.caret_menu;
         let toolbar_actions = self.toolbar_actions();
         let handle_set = self.handle_set();
+        let drop_caret = self.drop_caret();
+        // The toolbar is put away while a selection is dragged. See
+        // `App::toolbar_field`, which says the same for its hit test.
+        let dragging_selection = self.text_dnd.as_ref().is_some_and(|d| d.moving);
         let handle_color = self
             .focused_region()
             .and_then(|r| r.text.as_ref())
@@ -6393,7 +6635,7 @@ impl App {
         // The selection toolbar, over the content while something is selected.
         // It is the only route to copy and paste on a phone, and on the web at
         // all, so it is drawn above the page rather than inside it.
-        if (*caret != *anchor || caret_menu) && !cfg!(target_os = "android") {
+        if (*caret != *anchor || caret_menu) && !cfg!(target_os = "android") && !dragging_selection {
             if let Some(r) = focused.as_deref().and_then(|m| {
                 layout
                     .focuses
@@ -6430,6 +6672,23 @@ impl App {
                 let scene = rux_paint::build_scene(&marks, text, images, false);
                 state.scene.append(&scene, Some(Affine::scale(scale)));
             }
+        }
+
+        // Where a dragged selection would land: a caret of its own, drawn
+        // whatever the blink, in the field under the pointer.
+        if let Some((x, y, h)) = drop_caret {
+            let mark = [Paint::Rect(PaintRect {
+                x,
+                y,
+                width: rux_text::CARET_WIDTH,
+                height: h,
+                background: Some(Background::Color(handle_color)),
+                radius: [0.0; 4],
+                border: Sides::ZERO,
+                border_color: None,
+            })];
+            let scene = rux_paint::build_scene(&mark, text, images, false);
+            state.scene.append(&scene, Some(Affine::scale(scale)));
         }
 
         // An open `select` draws its dropdown on top of everything else.
@@ -7137,6 +7396,8 @@ impl ApplicationHandler<RuxEvent> for App {
                 self.move_gesture(here.0, here.1);
                 if self.bar_drag.is_some() {
                     self.drag_scrollbar(self.pointer);
+                } else if self.text_dnd.is_some() {
+                    self.drag_selection(self.pointer);
                 } else if self.text_drag {
                     self.drag_text(self.pointer);
                 } else {
@@ -7428,7 +7689,7 @@ impl ApplicationHandler<RuxEvent> for App {
                 self.handles = false;
                 if self.overlay_covers_physical(self.pointer) {
                     self.press = Some(self.pointer);
-                } else if !self.press_scrollbar(self.pointer) && !self.press_text(self.pointer) {
+                } else if !self.press_scrollbar(self.pointer) && !self.press_text_mouse(self.pointer) {
                     self.press = Some(self.pointer);
                     // `:active` holds from press to release.
                     self.update_pointer_state();
@@ -7441,6 +7702,11 @@ impl ApplicationHandler<RuxEvent> for App {
             } => {
                 if self.bar_drag.take().is_some() {
                     self.update_cursor();
+                    return;
+                }
+                if let Some(d) = self.text_dnd.take() {
+                    self.drop_selection(d);
+                    self.request_redraw();
                     return;
                 }
                 if std::mem::take(&mut self.text_drag) {
@@ -11922,5 +12188,37 @@ fn warn_anchor_misses(misses: &[String]) {
                 "`{name}` names nothing on screen, so the `anchor()` asking for it uses its fallback, or `auto` without one; give an element `anchor-name: {name}`"
             )
         });
+    }
+}
+
+#[cfg(test)]
+mod drop_tests {
+    use super::{cut_out, put_in, whole_words};
+
+    /// Move `start..end` of `text` to `at`, as a drop inside one field does.
+    fn moved(text: &str, start: usize, end: usize, at: usize) -> String {
+        let words = whole_words(text, start, end);
+        let piece = text[start..end].to_string();
+        let mut value = text.to_string();
+        let (lo, hi) = cut_out(&mut value, start, end, words);
+        let at = if at >= hi { at - (hi - lo) } else if at > lo { lo } else { at };
+        put_in(&mut value, at, &piece, words);
+        value
+    }
+
+    #[test]
+    fn a_word_moves_as_a_word() {
+        // `green` to the end: its space closes up, and it lands spaced.
+        assert_eq!(moved("red green blue", 4, 9, 14), "red blue green");
+        // `blue` to the front.
+        assert_eq!(moved("red green blue", 10, 14, 0), "blue red green");
+        // `red` into the middle, between `green` and its space.
+        assert_eq!(moved("red green blue", 0, 3, 9), "green red blue");
+    }
+
+    #[test]
+    fn part_of_a_word_moves_as_it_is() {
+        assert!(!whole_words("red green blue", 5, 9));
+        assert_eq!(moved("red green blue", 5, 9, 14), "red g bluereen");
     }
 }

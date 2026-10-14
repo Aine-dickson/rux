@@ -31,6 +31,18 @@ nothing is). Both are re-applied after every rebuild, like the caret.
 - **Shift** + a movement (arrows, words, Home/End, Up/Down in a textarea)
   extends from the anchor; the same movement without Shift collapses the
   selection.
+- **Drag a selection** to move it: press inside it and drag, and a caret
+  shows where it will land, in the same field or another text field in the
+  window. Let go and the text moves there and is left selected; hold **Ctrl**
+  (Option on macOS) as you let go to copy it instead. Whole words move as
+  words, as a browser moves them: the space they leave closes up, and they
+  land with a space either side. A move inside one field is one edit, so one
+  Ctrl+Z puts it back; between two fields it is an edit of each. A click
+  inside the selection without dragging just puts the caret there. Nothing
+  is dragged out of a password, and a read-only or disabled field, a
+  password, a number and a date take no drop. The toolbar is put away while
+  a selection is dragged. Not yet: dragging text out of the window, into it
+  from another program, or out of selectable text that is not a field.
 - Typing, pasting, Backspace and Delete **replace** the selection.
 - **Ctrl+A** select all · **Ctrl+C** copy · **Ctrl+X** cut · **Ctrl+V** paste
   (via `arboard`, the real system clipboard). Pasting several lines into a

@@ -2525,6 +2525,24 @@ clicks with `mouse_event`.
 | macOS chords | Option+arrows, Cmd+arrows | the word and line moves | not driven (no Mac) |
 | Web, Android | the same page | the same | not driven |
 
+## Dragging a selection, 2026-10-14
+
+Roadmap v0.9 item 3, step 4: fields only, as decided for this cut. Under test
+in `rux-shell` (`drop_tests`: two, on whole words moving as words and part of
+a word moving as it is). Driven in a desktop window on a probe of three fields
+(`red green blue`, `one two`, and a read-only `locked`).
+
+| Case | Steps | Expected | Result |
+|---|---|---|---|
+| Within a field | double-click `green`, drag it past `blue` | `red blue green`, `green` selected (the first drive, before words moved as words, gave `red  bluegreen`) | desktop: pass |
+| To another field | double-click `blue`, drag to the end of `one two` | `red green` and `one two blue` | desktop: pass |
+| Copy | double-click `red`, drag to the start of `one two`, Ctrl held at the release | `red green blue` kept, `red one two` | desktop: pass |
+| Onto a read-only field | drag `blue` onto `locked` | nothing changes | desktop: pass |
+| The drop caret | drag `blue` over `one two` and hold | a caret between `one ` and `two`, the toolbar put away (the first drive found it covering the field) | desktop: pass |
+| A click in the selection | double-click `green`, click inside it, type `x` | the caret where clicked, the selection gone | desktop: pass |
+| Undo | move `green` within its field, Ctrl+Z | `red green blue`, `green` selected again | desktop: pass |
+| Web, Android | the same page | the same | not driven; a finger's press in a selection is the long-press menu, not a drag |
+
 ## Standing gaps
 
 Cases nothing here can currently exercise. They are the shape of what v0.8 has
