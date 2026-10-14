@@ -242,9 +242,8 @@ impl rux_layout::TextMeasure for EngineMeasure<'_> {
 
     /// At the width the text is drawn at, aligned as it is drawn, so the
     /// shaped layout is the one `draw` reads from the cache.
-    fn inline(&mut self, tc: &TextContent, width: f32) -> rux_layout::InlineGeometry {
-        let placed = self.0.placed(&tc.text, &text_style(tc), to_align(tc.align), Some(width));
-        rux_layout::InlineGeometry { items: placed.items, runs: placed.runs }
+    fn inline(&mut self, tc: &TextContent, width: f32) -> std::sync::Arc<rux_layout::InlineGeometry> {
+        self.0.placed(&tc.text, &text_style(tc), to_align(tc.align), Some(width))
     }
 }
 

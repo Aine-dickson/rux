@@ -76,17 +76,17 @@ impl TextMeasure for Fake {
         (100.0, 20.0)
     }
 
-    fn inline(&mut self, tc: &TextContent, width: f32) -> InlineGeometry {
+    fn inline(&mut self, tc: &TextContent, width: f32) -> std::sync::Arc<InlineGeometry> {
         self.asked.push((tc.text.clone(), width));
         let rich = tc.rich.as_ref().expect("asked only about a sentence");
-        InlineGeometry {
+        std::sync::Arc::new(InlineGeometry {
             items: rich.items.iter().map(|_| (40.0, 5.0)).collect(),
             runs: rich
                 .runs
                 .iter()
                 .map(|r| vec![(r.range.start as f32 * 10.0, 0.0, r.range.len() as f32 * 10.0, 20.0)])
                 .collect(),
-        }
+        })
     }
 }
 

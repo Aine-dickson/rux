@@ -17,6 +17,8 @@
 //! The work is done on the text as written *and* on `{{ }}` values, as CSS
 //! does: the rule is about what is drawn, not where it came from.
 
+use std::ops::Range;
+
 /// The values of `white-space` Rux follows. `break-spaces` is not one of them.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum WhiteSpace {
@@ -58,7 +60,9 @@ impl WhiteSpace {
 
 /// One run, collapsed as the only run of its paragraph.
 pub fn collapse(text: &str, mode: WhiteSpace) -> String {
-    collapse_runs(&[(text, mode)]).pop().unwrap_or_default()
+    let mut out = String::with_capacity(text.len());
+    collapse_runs_into(&[(text, mode)], &mut out);
+    out
 }
 
 /// The runs of one paragraph, each under its own `white-space`, collapsed as
@@ -70,7 +74,22 @@ pub fn collapse(text: &str, mode: WhiteSpace) -> String {
 /// the paragraph or of a line, so leading spaces never appear, and whatever is
 /// still held at the end is dropped, so trailing ones do not either.
 pub fn collapse_runs(runs: &[(&str, WhiteSpace)]) -> Vec<String> {
-    let mut out: Vec<String> = runs.iter().map(|(t, _)| String::with_capacity(t.len())).collect();
+    let mut joined = String::new();
+    let ranges = collapse_runs_into(runs, &mut joined);
+    ranges.into_iter().map(|r| joined[r].to_string()).collect()
+}
+
+/// [`collapse_runs`] written into one string, with where each run ended up:
+/// what a sentence is joined with, without a string per run (it is done for
+/// every sentence on every frame).
+///
+/// A held-back space is written when the next character arrives, which may be
+/// in a later run. It still belongs to the run it started in, so it goes at
+/// that run's end, and the runs in between, which are empty, move up by it.
+pub fn collapse_runs_into(runs: &[(&str, WhiteSpace)], joined: &mut String) -> Vec<Range<usize>> {
+    joined.reserve(runs.iter().map(|(t, _)| t.len()).sum());
+    // Where each run starts in `joined`; each ends where the next starts.
+    let mut starts: Vec<usize> = Vec::with_capacity(runs.len());
     // The run a held-back space belongs to.
     let mut held: Option<usize> = None;
     // At the start of the paragraph or just after a kept newline, where a
@@ -78,6 +97,7 @@ pub fn collapse_runs(runs: &[(&str, WhiteSpace)]) -> Vec<String> {
     let mut line_start = true;
 
     for (i, (text, mode)) in runs.iter().enumerate() {
+        starts.push(joined.len());
         let mut chars = text.chars().peekable();
         while let Some(c) = chars.next() {
             // A CRLF source (every `.rux` saved on Windows) is one newline,
@@ -95,7 +115,7 @@ pub fn collapse_runs(runs: &[(&str, WhiteSpace)]) -> Vec<String> {
                     // Spaces before a kept newline go with it (pre-line). Under
                     // pre and pre-wrap nothing is ever held, so this is a no-op.
                     held = None;
-                    out[i].push('\n');
+                    joined.push('\n');
                     line_start = true;
                 }
                 ' ' | '\t' | '\n' if !mode.keeps_spaces() => {
@@ -105,15 +125,21 @@ pub fn collapse_runs(runs: &[(&str, WhiteSpace)]) -> Vec<String> {
                 }
                 _ => {
                     if let Some(at) = held.take() {
-                        out[at].push(' ');
+                        // Nothing has been written since run `at` held it, so
+                        // every run after it starts here, at the end.
+                        joined.push(' ');
+                        for s in &mut starts[at + 1..] {
+                            *s += 1;
+                        }
                     }
-                    out[i].push(c);
-                    line_start = c == '\n';
+                    joined.push(c);
+                    line_start = false;
                 }
             }
         }
     }
-    out
+    let end = joined.len();
+    (0..starts.len()).map(|i| starts[i]..starts.get(i + 1).copied().unwrap_or(end)).collect()
 }
 
 #[cfg(test)]
@@ -165,6 +191,16 @@ mod tests {
         // With nothing after it, it is a trailing space and goes.
         let runs = collapse_runs(&[("a", Normal), ("  ", Normal), ("", Normal)]);
         assert_eq!(runs, ["a", "", ""]);
+    }
+
+    /// A space held by one run and written during a later one is still the
+    /// first run's, and the empty runs between move up past it.
+    #[test]
+    fn a_space_held_across_empty_runs_stays_in_its_own_run() {
+        let mut joined = String::new();
+        let ranges = collapse_runs_into(&[("a ", Normal), ("", Normal), (" ", Normal), ("b", Normal)], &mut joined);
+        assert_eq!(joined, "a b");
+        assert_eq!(ranges, [0..2, 2..2, 2..2, 2..3]);
     }
 
     #[test]

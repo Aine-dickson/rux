@@ -31,7 +31,7 @@ use parley::{
     TextWrapMode,
 };
 use parley::style::{FontFamily, FontStyle};
-use rux_layout::{RichText, RunStyle};
+use rux_layout::{InlineGeometry, RichText, RunStyle};
 use vello::kurbo::{Affine, Rect};
 use vello::peniko::{Color, Fill};
 use vello::{Glyph, Scene};
@@ -172,15 +172,7 @@ pub struct TextEngine {
     /// Where the parts of a paragraph with runs landed, by the same key as
     /// `shaped`: asked once per sentence per frame, and the same for the same
     /// sentence. Cleared with it.
-    placed: HashMap<MeasureKey, Placed>,
-}
-
-/// A paragraph's inline boxes and run rectangles: see
-/// [`TextEngine::placed`].
-#[derive(Clone, Debug, Default)]
-pub struct Placed {
-    pub items: Vec<(f32, f32)>,
-    pub runs: Vec<Vec<(f32, f32, f32, f32)>>,
+    placed: HashMap<MeasureKey, Arc<InlineGeometry>>,
 }
 
 /// How many measurements the engine keeps before starting over. A key and its
@@ -646,19 +638,19 @@ impl TextEngine {
     /// [`inline_boxes`](Self::inline_boxes) and [`run_rects`](Self::run_rects)
     /// together, from a cache: what the layout asks of every sentence on every
     /// frame.
-    pub fn placed(&mut self, text: &str, style: &TextStyle, align: Align, max_width: Option<f32>) -> Placed {
+    pub fn placed(&mut self, text: &str, style: &TextStyle, align: Align, max_width: Option<f32>) -> Arc<InlineGeometry> {
         let key = KeyRef::new(text, style, max_width, align as u8);
         if let Some(p) = self.placed.get(&key as &dyn AsKey) {
-            return p.clone();
+            return Arc::clone(p);
         }
-        let placed = Placed {
+        let placed = Arc::new(InlineGeometry {
             items: self.inline_boxes(text, style, align, max_width),
             runs: self.run_rects(text, style, align, max_width),
-        };
+        });
         if self.placed.len() >= SHAPED_CAP {
             self.placed.clear();
         }
-        self.placed.insert(key.owned(), placed.clone());
+        self.placed.insert(key.owned(), Arc::clone(&placed));
         placed
     }
 

@@ -16,7 +16,7 @@
 use std::sync::Arc;
 
 use crate::rich::{InlineItem, RichText, RunStyle, TextRun};
-use crate::white_space::collapse_runs;
+use crate::white_space::collapse_runs_into;
 use crate::{
     Access, AccessRole, Background, BoxShadow, Corners, Cursor, Display, Gesture, ImageContent, Len, Node,
     PathContent, PathPaint, Rgba, Sides, TextContent, TouchAction, WhiteSpace,
@@ -79,21 +79,22 @@ pub(crate) fn is_sentence(node: &Node) -> bool {
 /// Join a sentence's pieces into the text the layout measures and draws.
 pub(crate) fn join(node: &Node, path: &[usize]) -> (TextContent, Vec<InlinePart>) {
     let mut base = node.text.clone().expect("a sentence is a text");
-    let mut pieces: Vec<(String, WhiteSpace)> = Vec::new();
+    let mut pieces: Vec<(&str, WhiteSpace)> = Vec::new();
     let mut kinds: Vec<Piece> = Vec::new();
     let mut parts: Vec<InlinePart> = Vec::new();
     gather(node, path, &mut pieces, &mut kinds, &mut parts);
 
-    let borrowed: Vec<(&str, WhiteSpace)> = pieces.iter().map(|(t, w)| (t.as_str(), *w)).collect();
-    let collapsed = collapse_runs(&borrowed);
-
-    let mut text = String::new();
+    // One string, the boxes' stand-ins included, then the stand-ins taken
+    // out again: a box is a place in the text, not a character of it.
+    let mut joined = String::new();
+    let ranges = collapse_runs_into(&pieces, &mut joined);
+    let mut text = String::with_capacity(joined.len());
     let mut rich = RichText::default();
-    for (s, kind) in collapsed.iter().zip(kinds) {
+    for (range, kind) in ranges.into_iter().zip(kinds) {
         match kind {
             Piece::Run(style) => {
                 let start = text.len();
-                text.push_str(s);
+                text.push_str(&joined[range]);
                 rich.runs.push(TextRun { range: start..text.len(), style });
             }
             Piece::Item { width, height, align } => {
@@ -111,10 +112,10 @@ enum Piece {
     Item { width: f32, height: f32, align: crate::VerticalAlign },
 }
 
-fn gather(
-    node: &Node,
+fn gather<'a>(
+    node: &'a Node,
     path: &[usize],
-    pieces: &mut Vec<(String, WhiteSpace)>,
+    pieces: &mut Vec<(&'a str, WhiteSpace)>,
     kinds: &mut Vec<Piece>,
     parts: &mut Vec<InlinePart>,
 ) {
@@ -129,7 +130,7 @@ fn gather(
         let first_run = count_runs(kinds);
         let what = if let Some(tc) = &c.text {
             if c.children.is_empty() {
-                pieces.push((tc.text.clone(), tc.white_space));
+                pieces.push((tc.text.as_str(), tc.white_space));
                 kinds.push(Piece::Run(run_style(tc, c)));
             } else {
                 gather(c, &cp, pieces, kinds, parts);
@@ -138,14 +139,14 @@ fn gather(
         } else if let Some(ic) = &c.image {
             let (width, height) = size(c, ic.intrinsic);
             let index = count_items(kinds);
-            pieces.push((BOX.to_string(), WhiteSpace::Normal));
+            pieces.push((BOX, WhiteSpace::Normal));
             kinds.push(Piece::Item { width, height, align: c.style.vertical_align });
             PartWhat::Item { index, width, height, look: look(c, ItemContent::Image(ic.clone())) }
         } else if let Some(pc) = &c.path {
             let bounds = pc.bounds().map_or((0.0, 0.0), |b| (b.2.max(0.0), b.3.max(0.0)));
             let (width, height) = size(c, bounds);
             let index = count_items(kinds);
-            pieces.push((BOX.to_string(), WhiteSpace::Normal));
+            pieces.push((BOX, WhiteSpace::Normal));
             kinds.push(Piece::Item { width, height, align: c.style.vertical_align });
             let paint = PathPaint {
                 fill: c.style.fill,

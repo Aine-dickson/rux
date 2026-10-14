@@ -2272,10 +2272,12 @@ pub trait TextMeasure {
     fn measure(&mut self, text: &TextContent, max_width: Option<f32>) -> (f32, f32);
 
     /// Where the parts of a sentence landed, laid out `width` wide: see
-    /// [`InlineGeometry`]. Asked only of a text with [`TextContent::rich`].
-    fn inline(&mut self, text: &TextContent, width: f32) -> InlineGeometry {
+    /// [`InlineGeometry`]. Asked only of a text with [`TextContent::rich`],
+    /// on every frame, so an engine that keeps the answer hands out a share
+    /// of it rather than a copy.
+    fn inline(&mut self, text: &TextContent, width: f32) -> std::sync::Arc<InlineGeometry> {
         let _ = (text, width);
-        InlineGeometry::default()
+        std::sync::Arc::default()
     }
 }
 
@@ -3740,7 +3742,7 @@ struct Walk {
     dry: bool,
     /// Where the parts of each sentence landed, asked of the text engine once
     /// the sentence had a width. See [`TextMeasure::inline`].
-    inline: IdMap<InlineGeometry>,
+    inline: std::rc::Rc<IdMap<std::sync::Arc<InlineGeometry>>>,
 }
 
 /// A rectangle as `(x, y, width, height)`.
@@ -4070,7 +4072,7 @@ fn collect(
                 // after the sentence's own so the part is found first.
                 PaintKind::Inline(parts) => {
                     let (cx, cy, _, _) = content_box(layout);
-                    let geo = walk.inline.get(&id);
+                    let geo = walk.inline.get(&id).map(|g| &**g);
                     for part in parts.iter() {
                         let rects = inline::place_part(part, x + cx, y + cy, geo, &mut out.paints);
                         placed.push((part.clone(), rects));
@@ -4836,7 +4838,7 @@ impl LayoutState {
         };
         // Where the parts of each sentence landed, now that each has the width
         // it is drawn at. Its `Text` paint comes just before its `Inline` one.
-        let mut geometry: IdMap<InlineGeometry> = IdMap::default();
+        let mut geometry: IdMap<std::sync::Arc<InlineGeometry>> = IdMap::default();
         let mut last_text: Option<(NodeId, &TextContent)> = None;
         for (id, kind) in &paint {
             match kind {
@@ -4850,13 +4852,15 @@ impl LayoutState {
                 _ => {}
             }
         }
+        // Shared by the walks, of which there are two when anything is anchored.
+        let geometry = std::rc::Rc::new(geometry);
         let walk_once = |known: Option<HashMap<String, AnchorBox>>, dry: bool| {
             let mut out = Layout::default();
             let mut walk = Walk {
                 scrolls: vec![None; built.scroll_ids.len()],
                 known,
                 dry,
-                inline: geometry.clone(),
+                inline: std::rc::Rc::clone(&geometry),
                 ..Walk::default()
             };
             // The root is the outermost stacking context. This one only holds
