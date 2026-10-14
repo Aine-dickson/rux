@@ -31,6 +31,9 @@
 pub mod path;
 pub use path::{PathCmd, PathContent};
 
+pub mod rich;
+pub use rich::{InlineItem, RichText, RunStyle, TextRun, VerticalAlign};
+
 use std::collections::HashMap;
 
 use taffy::prelude::*;
@@ -1059,6 +1062,10 @@ pub struct TextContent {
     /// leaves that half to the platform, which is what CSS does when no rule
     /// names it.
     pub selection_style: SelectionStyle,
+    /// The runs and inline boxes of a `<text>` with more than one run, `None`
+    /// for plain text, which is nearly all of it. Shared, because a text is
+    /// cloned into the frame's paint list every frame.
+    pub rich: Option<std::sync::Arc<RichText>>,
 }
 
 /// How a field's selection is drawn: the two properties `::selection`
@@ -2927,6 +2934,7 @@ fn measures_alike(a: &TextContent, b: &TextContent) -> bool {
         && a.underline == b.underline
         && a.strikethrough == b.strikethrough
         && a.nowrap == b.nowrap
+        && a.rich == b.rich
 }
 
 /// The Taffy node for one of this frame's nodes: `old` brought up to date, or a

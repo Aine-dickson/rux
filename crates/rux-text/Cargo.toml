@@ -12,4 +12,7 @@ categories = ["gui", "text-processing"]
 [dependencies]
 parley = "0.11"
 vello.workspace = true
+# The run and inline-box types of a `<text>` live beside `TextContent`, so a
+# paragraph reaches the engine as layout built it, with nothing converted.
+rux-layout.workspace = true
 # parley added via `cargo add` so the version compatible with vello is pinned.

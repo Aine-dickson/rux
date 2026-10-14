@@ -227,6 +227,7 @@ pub fn text_style(tc: &TextContent) -> TextStyle<'_> {
         underline: tc.underline,
         strikethrough: tc.strikethrough,
         nowrap: tc.nowrap,
+        rich: tc.rich.as_deref(),
     }
 }
 
@@ -623,7 +624,7 @@ fn build(
                 if let Some(ink) = t.content.selection_style.color {
                     for rect in &selected {
                         scene.push_clip_layer(Fill::NonZero, cur, rect);
-                        text.draw(
+                        text.draw_ink(
                             &mut scene,
                             t.x,
                             t.y,

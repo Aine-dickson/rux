@@ -10,21 +10,34 @@
 //! and the baseline sits at `top + ascent`. This makes text hug its box so
 //! `padding` reads equally on all sides.
 //!
-//! Colour is applied by vello at draw time, not carried through parley, so the
-//! layout brush is `()`.
+//! Colour is applied by vello at draw time, not carried through parley. The
+//! layout brush is only a run number: 0 for the paragraph's own style, `i + 1`
+//! for run `i` of a [`RichText`], which is how a drawn glyph run finds its
+//! colour and decorations.
+//!
+//! **A paragraph with runs** (`Read the <text>terms</text>`, an icon in a
+//! sentence) is one parley layout with ranged styles and inline boxes, so it
+//! breaks, selects and hit-tests as one text. Its lines are measured here, not
+//! by parley: parley stands every inline box on the baseline, and
+//! `vertical-align` can put one across it or below it.
 
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use parley::{
-    Affinity, Alignment, BreakReason, AlignmentOptions, Cursor, FontContext, FontWeight, Layout, LayoutContext,
-    LineHeight, OverflowWrap, PositionedLayoutItem, Selection, StyleProperty, TextWrapMode,
+    Affinity, Alignment, BreakReason, AlignmentOptions, Cursor, FontContext, FontWeight, InlineBox, InlineBoxKind,
+    Layout, LayoutContext, Line, LineHeight, OverflowWrap, PositionedLayoutItem, Selection, StyleProperty,
+    TextWrapMode,
 };
 use parley::style::{FontFamily, FontStyle};
+use rux_layout::{RichText, RunStyle};
 use vello::kurbo::{Affine, Rect};
 use vello::peniko::{Color, Fill};
 use vello::{Glyph, Scene};
+
+/// Which run a glyph run belongs to: 0 is the paragraph's own style.
+type RunId = u32;
 
 /// Caret thickness, in logical pixels.
 pub const CARET_WIDTH: f32 = 1.5;
@@ -95,6 +108,8 @@ pub struct TextStyle<'a> {
     pub strikethrough: bool,
     /// `white-space: nowrap`: never break lines, even past `max_width`.
     pub nowrap: bool,
+    /// The runs and inline boxes of a paragraph that has them.
+    pub rich: Option<&'a RichText>,
 }
 
 impl<'a> TextStyle<'a> {
@@ -112,14 +127,35 @@ impl<'a> TextStyle<'a> {
             underline: false,
             strikethrough: false,
             nowrap: false,
+            rich: None,
         }
     }
+}
+
+/// One line as it is stacked: its top and height within the text, and where
+/// its baseline falls. Lines are stacked with the leading trimmed, see the
+/// module doc.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct LineBox {
+    top: f32,
+    height: f32,
+    baseline: f32,
+}
+
+/// The paragraph's own font, measured: what CSS calls the strut. Every line of
+/// a paragraph with runs is at least this tall, and `vertical-align` lines
+/// boxes up against it.
+#[derive(Clone, Copy, Debug, Default)]
+struct Strut {
+    ascent: f32,
+    descent: f32,
+    x_height: f32,
 }
 
 /// Owns the reusable font/layout contexts. One per app is plenty.
 pub struct TextEngine {
     font_cx: FontContext,
-    layout_cx: LayoutContext<()>,
+    layout_cx: LayoutContext<RunId>,
     /// What [`measure`](Self::measure) has answered, keyed by everything that
     /// decides the answer. Layout asks for each text box's size several times
     /// (taffy probes min-content, max-content and the final width) and again
@@ -132,7 +168,7 @@ pub struct TextEngine {
     /// 900 of them in a 300-row list, which was most of the scene's time
     /// (docs/11-next.md, track (g)). Cleared as `measured` is, and started
     /// over past [`SHAPED_CAP`].
-    shaped: HashMap<MeasureKey, Layout<()>>,
+    shaped: HashMap<MeasureKey, Layout<RunId>>,
 }
 
 /// How many measurements the engine keeps before starting over. A key and its
@@ -152,7 +188,7 @@ const SHAPED_CAP: usize = 2048;
 /// lookup used to copy the text into a new `String` first, 6 600 times a
 /// frame in a 300-row list (docs/11-next.md, track (g)).
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
-struct Key<S> {
+struct Key<S, R> {
     text: S,
     font_size: u32,
     weight: u16,
@@ -165,11 +201,15 @@ struct Key<S> {
     nowrap: bool,
     max_width: Option<u32>,
     align: u8,
+    /// A paragraph's runs, `None` for plain text. Compared by value: the
+    /// same runs are the same paragraph.
+    rich: Option<R>,
 }
 
-type MeasureKey = Key<String>;
+type MeasureKey = Key<String, RichText>;
+type KeyRef<'a> = Key<&'a str, &'a RichText>;
 
-impl<'a> Key<&'a str> {
+impl<'a> KeyRef<'a> {
     fn new(text: &'a str, style: &TextStyle<'a>, max_width: Option<f32>, align: u8) -> Self {
         Self {
             text,
@@ -184,6 +224,7 @@ impl<'a> Key<&'a str> {
             nowrap: style.nowrap,
             max_width: max_width.map(f32::to_bits),
             align,
+            rich: style.rich,
         }
     }
 
@@ -201,6 +242,7 @@ impl<'a> Key<&'a str> {
             nowrap: self.nowrap,
             max_width: self.max_width,
             align: self.align,
+            rich: self.rich.cloned(),
         }
     }
 }
@@ -209,11 +251,11 @@ impl<'a> Key<&'a str> {
 /// `Key<String>` be asked with a `Key<&str>`. The two hash alike, since a
 /// `String` hashes as the `str` it holds.
 trait AsKey {
-    fn key(&self) -> Key<&str>;
+    fn key(&self) -> KeyRef<'_>;
 }
 
-impl AsKey for Key<String> {
-    fn key(&self) -> Key<&str> {
+impl AsKey for MeasureKey {
+    fn key(&self) -> KeyRef<'_> {
         Key {
             text: &self.text,
             family: self.family.as_deref(),
@@ -227,12 +269,13 @@ impl AsKey for Key<String> {
             nowrap: self.nowrap,
             max_width: self.max_width,
             align: self.align,
+            rich: self.rich.as_ref(),
         }
     }
 }
 
-impl AsKey for Key<&str> {
-    fn key(&self) -> Key<&str> {
+impl AsKey for KeyRef<'_> {
+    fn key(&self) -> KeyRef<'_> {
         *self
     }
 }
@@ -251,7 +294,7 @@ impl PartialEq for dyn AsKey + '_ {
 
 impl Eq for dyn AsKey + '_ {}
 
-impl<'a> std::borrow::Borrow<dyn AsKey + 'a> for Key<String> {
+impl<'a> std::borrow::Borrow<dyn AsKey + 'a> for MeasureKey {
     fn borrow(&self) -> &(dyn AsKey + 'a) {
         self
     }
@@ -311,7 +354,7 @@ impl TextEngine {
         true
     }
 
-    fn build(&mut self, text: &str, style: &TextStyle, max_width: Option<f32>) -> Layout<()> {
+    fn build(&mut self, text: &str, style: &TextStyle, max_width: Option<f32>) -> Layout<RunId> {
         let mut builder = self.layout_cx.ranged_builder(&mut self.font_cx, text, 1.0, true);
         builder.push_default(StyleProperty::FontSize(style.font_size));
         builder.push_default(StyleProperty::FontWeight(FontWeight::new(style.weight as f32)));
@@ -336,9 +379,52 @@ impl TextEngine {
         if style.nowrap {
             builder.push_default(StyleProperty::TextWrapMode(TextWrapMode::NoWrap));
         }
-        let mut layout: Layout<()> = builder.build(text);
+        if let Some(rich) = style.rich {
+            for (i, run) in rich.runs.iter().enumerate() {
+                Self::push_run(&mut builder, i as RunId + 1, run.range.clone(), &run.style, style);
+            }
+            // The height is what parley stands on the baseline, which matters
+            // to nothing here: lines are measured in `lines`, and parley's
+            // own line metrics are never read for a paragraph with runs.
+            for (i, item) in rich.items.iter().enumerate() {
+                builder.push_inline_box(InlineBox {
+                    id: i as u64,
+                    kind: InlineBoxKind::InFlow,
+                    index: item.index.min(text.len()),
+                    width: item.width,
+                    height: item.height,
+                });
+            }
+        }
+        let mut layout: Layout<RunId> = builder.build(text);
         layout.break_all_lines(max_width);
         layout
+    }
+
+    /// One run's style over its range, every property of it: a run carries
+    /// its whole style, inherited already, so nothing is left to fall through
+    /// from the paragraph except what the two share.
+    fn push_run(
+        builder: &mut parley::RangedBuilder<'_, RunId>,
+        id: RunId,
+        range: std::ops::Range<usize>,
+        run: &RunStyle,
+        base: &TextStyle,
+    ) {
+        builder.push(StyleProperty::Brush(id), range.clone());
+        builder.push(StyleProperty::FontSize(run.font_size), range.clone());
+        builder.push(StyleProperty::FontWeight(FontWeight::new(run.weight as f32)), range.clone());
+        builder.push(
+            StyleProperty::FontStyle(if run.italic { FontStyle::Italic } else { FontStyle::Normal }),
+            range.clone(),
+        );
+        if let Some(family) = run.family.as_deref().filter(|f| !f.trim().is_empty()) {
+            if base.family != Some(family) {
+                builder.push(StyleProperty::FontFamily(FontFamily::Source(Cow::Owned(family.to_string()))), range.clone());
+            }
+        }
+        builder.push(StyleProperty::LetterSpacing(run.letter_spacing.unwrap_or(0.0)), range.clone());
+        builder.push(StyleProperty::WordSpacing(run.word_spacing.unwrap_or(0.0)), range);
     }
 
     /// Measure the text block with leading trimmed: `(width, height)` where
@@ -348,7 +434,7 @@ impl TextEngine {
     /// layout gave it, so a box even a fraction of a pixel narrower than the
     /// text would break the last word onto a line the box has no height for.
     pub fn measure(&mut self, text: &str, style: &TextStyle, max_width: Option<f32>) -> (f32, f32) {
-        let key = Key::new(text, style, max_width, 0);
+        let key = KeyRef::new(text, style, max_width, 0);
         if let Some(&size) = self.measured.get(&key as &dyn AsKey) {
             return size;
         }
@@ -364,7 +450,7 @@ impl TextEngine {
         let layout = self.build(text, style, max_width);
         // Each line is `line-height` tall when set, else its own leading-trimmed
         // height (ascent + descent) so text hugs its box by default.
-        let height: f32 = Self::line_heights(&layout, text, style).iter().sum();
+        let height: f32 = Self::lines(&layout, text, style).iter().map(|l| l.height).sum();
         (layout.width().ceil(), height.ceil())
     }
 
@@ -397,25 +483,100 @@ impl TextEngine {
     /// 0.15 asks at that width where 0.7 reused an earlier answer, which is
     /// what showed it. A last line after a newline (`abc\n` in a textarea) is
     /// real and stays.
-    fn line_heights(layout: &Layout<()>, text: &str, style: &TextStyle) -> Vec<f32> {
+    fn lines(layout: &Layout<RunId>, text: &str, style: &TextStyle) -> Vec<LineBox> {
         let lines: Vec<_> = layout.lines().collect();
         let hung = lines.len() > 1
             && text
                 .get(lines[lines.len() - 1].text_range())
                 .is_some_and(|rest| rest.chars().all(|c| c == ' ' || c == '\u{a0}' || c == '\t'))
+            && !lines[lines.len() - 1].items().any(|i| matches!(i, PositionedLayoutItem::InlineBox(_)))
             && matches!(
                 lines[lines.len() - 2].break_reason(),
                 BreakReason::Regular | BreakReason::Emergency
             );
         let counted = lines.len() - usize::from(hung);
+        let strut = Self::strut(layout, style);
+        let mut top = 0.0;
         lines
             .into_iter()
             .take(counted)
             .map(|l| {
-                let m = l.metrics();
-                style.line_height.unwrap_or(m.ascent + m.descent)
+                let line = Self::line_box(&l, style, strut, top);
+                top += line.height;
+                line
             })
             .collect()
+    }
+
+    /// Where one line stands, its top given.
+    ///
+    /// The text on it reaches `ascent` up and `descent` down from the baseline,
+    /// and `line-height` adds (or takes) the difference half above and half
+    /// below, which centres the text in a line taller than it. For plain text
+    /// that is the whole story, and it is the arithmetic this engine has always
+    /// used. A paragraph with runs adds each box on the line, placed by its
+    /// `vertical-align`, and the line grows to hold the furthest reach either
+    /// side of the baseline: CSS's line box.
+    fn line_box(line: &Line<'_, RunId>, style: &TextStyle, strut: Strut, top: f32) -> LineBox {
+        let m = line.metrics();
+        let Some(rich) = style.rich else {
+            let height = style.line_height.unwrap_or(m.ascent + m.descent);
+            let half_leading = (height - (m.ascent + m.descent)) / 2.0;
+            return LineBox { top, height, baseline: top + half_leading + m.ascent };
+        };
+        let (mut ascent, mut descent) = (strut.ascent, strut.descent);
+        let mut boxes: Vec<(f32, f32)> = Vec::new();
+        for item in line.items() {
+            match item {
+                PositionedLayoutItem::GlyphRun(g) => {
+                    let rm = g.run().metrics();
+                    ascent = ascent.max(rm.ascent);
+                    descent = descent.max(rm.descent);
+                }
+                PositionedLayoutItem::InlineBox(b) => {
+                    if let Some(it) = rich.items.get(b.id as usize) {
+                        boxes.push(it.align.extent(it.height, strut.ascent, strut.descent, strut.x_height));
+                    }
+                }
+            }
+        }
+        let half_leading = style.line_height.map_or(0.0, |lh| (lh - (ascent + descent)) / 2.0);
+        let mut above = ascent + half_leading;
+        let mut below = descent + half_leading;
+        for (a, b) in boxes {
+            above = above.max(a);
+            below = below.max(b);
+        }
+        LineBox { top, height: above + below, baseline: top + above }
+    }
+
+    /// The paragraph's own font, measured from its first glyph run in its own
+    /// style (any run's when none is). Plain text never needs it.
+    fn strut(layout: &Layout<RunId>, style: &TextStyle) -> Strut {
+        if style.rich.is_none() {
+            return Strut::default();
+        }
+        let mut first = None;
+        for line in layout.lines() {
+            for item in line.items() {
+                if let PositionedLayoutItem::GlyphRun(g) = item {
+                    let own = g.style().brush == 0;
+                    if own || first.is_none() {
+                        let run = g.run();
+                        let rm = run.metrics();
+                        first = Some(Strut {
+                            ascent: rm.ascent,
+                            descent: rm.descent,
+                            x_height: rm.x_height.unwrap_or(run.font_size() * 0.5),
+                        });
+                    }
+                    if own {
+                        return first.unwrap_or_default();
+                    }
+                }
+            }
+        }
+        first.unwrap_or_default()
     }
 
     /// The rectangles covering the byte range `start..end`, as `(x, y, w, h)`
@@ -444,24 +605,66 @@ impl TextEngine {
             Cursor::from_byte_index(&layout, to.min(text.len()), Affinity::Downstream),
         );
 
-        let heights = Self::line_heights(&layout, text, style);
-        // The top of each line under our stepping: the sum of the ones above it.
-        let mut tops = Vec::with_capacity(heights.len());
-        let mut acc = 0.0;
-        for h in &heights {
-            tops.push(acc);
-            acc += h;
-        }
-
+        let lines = Self::lines(&layout, text, style);
         selection
             .geometry(&layout)
             .into_iter()
             .filter_map(|(rect, line)| {
-                let top = *tops.get(line)?;
-                let height = *heights.get(line)?;
-                Some((rect.x0 as f32, top, (rect.x1 - rect.x0) as f32, height))
+                let line = lines.get(line)?;
+                Some((rect.x0 as f32, line.top, (rect.x1 - rect.x0) as f32, line.height))
             })
             .collect()
+    }
+
+    /// Shape and align the text into the draw cache unless it is there, so
+    /// `draw` and `inline_boxes` read one layout.
+    fn ensure_shaped(&mut self, key: KeyRef<'_>, text: &str, style: &TextStyle, max_width: Option<f32>, align: Align) {
+        if !self.shaped.contains_key(&key as &dyn AsKey) {
+            let mut layout = self.build(text, style, max_width);
+            layout.align(align.to_parley(), AlignmentOptions::default());
+            if self.shaped.len() >= SHAPED_CAP {
+                self.shaped.clear();
+            }
+            self.shaped.insert(key.owned(), layout);
+        }
+    }
+
+    /// Where each inline box of a paragraph sits, `(x, y)` from the text's
+    /// top-left, in the order of [`RichText::items`]. A box that did not make
+    /// it into a line (none should) is at the origin.
+    pub fn inline_boxes(
+        &mut self,
+        text: &str,
+        style: &TextStyle,
+        align: Align,
+        max_width: Option<f32>,
+    ) -> Vec<(f32, f32)> {
+        let Some(rich) = style.rich else { return Vec::new() };
+        let key = KeyRef::new(text, style, max_width, align as u8);
+        self.ensure_shaped(key, text, style, max_width, align);
+        let layout = &self.shaped[&key as &dyn AsKey];
+        let strut = Self::strut(layout, style);
+        let mut out = vec![(0.0, 0.0); rich.items.len()];
+        let mut top = 0.0;
+        for line in layout.lines() {
+            let lb = Self::line_box(&line, style, strut, top);
+            for item in line.items() {
+                if let PositionedLayoutItem::InlineBox(b) = item {
+                    let i = b.id as usize;
+                    if let Some(it) = rich.items.get(i) {
+                        let (above, _) = it.align.extent(it.height, strut.ascent, strut.descent, strut.x_height);
+                        out[i] = (b.x, lb.baseline - above);
+                    }
+                }
+            }
+            top += lb.height;
+        }
+        out
+    }
+
+    /// The run a byte index falls in, `None` for the paragraph's own text.
+    pub fn run_at(rich: &RichText, index: usize) -> Option<usize> {
+        rich.runs.iter().position(|r| r.range.contains(&index))
     }
 
     /// The byte range of the word under a point, for double-click-to-select.
@@ -508,25 +711,98 @@ impl TextEngine {
         max_width: Option<f32>,
         transform: Affine,
     ) {
-        let key = Key::new(text, style, max_width, align as u8);
-        if !self.shaped.contains_key(&key as &dyn AsKey) {
-            let mut layout = self.build(text, style, max_width);
-            layout.align(align.to_parley(), AlignmentOptions::default());
-            if self.shaped.len() >= SHAPED_CAP {
-                self.shaped.clear();
-            }
-            self.shaped.insert(key.owned(), layout);
-        }
+        self.draw_inked(scene, x, y, text, style, color, false, align, max_width, transform);
+    }
+
+    /// [`draw`](Self::draw) with every glyph and decoration in `color`, runs
+    /// included, and no run highlights: the second pass `::selection { color }`
+    /// paints over the selected part.
+    #[allow(clippy::too_many_arguments)]
+    pub fn draw_ink(
+        &mut self,
+        scene: &mut Scene,
+        x: f32,
+        y: f32,
+        text: &str,
+        style: &TextStyle,
+        color: Color,
+        align: Align,
+        max_width: Option<f32>,
+        transform: Affine,
+    ) {
+        self.draw_inked(scene, x, y, text, style, color, true, align, max_width, transform);
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn draw_inked(
+        &mut self,
+        scene: &mut Scene,
+        x: f32,
+        y: f32,
+        text: &str,
+        style: &TextStyle,
+        color: Color,
+        ink: bool,
+        align: Align,
+        max_width: Option<f32>,
+        transform: Affine,
+    ) {
+        let key = KeyRef::new(text, style, max_width, align as u8);
+        self.ensure_shaped(key, text, style, max_width, align);
         let layout = &self.shaped[&key as &dyn AsKey];
+        let strut = Self::strut(layout, style);
+
+        // A run's own colour and decorations, or the paragraph's.
+        let look = |id: RunId| -> (Color, bool, bool) {
+            match style.rich.and_then(|r| r.runs.get((id as usize).wrapping_sub(1))) {
+                Some(run) if id > 0 => {
+                    let c = run.style.color;
+                    let fill = if ink { color } else { Color::new([c.r, c.g, c.b, c.a]) };
+                    (fill, run.style.underline, run.style.strikethrough)
+                }
+                _ => (color, style.underline, style.strikethrough),
+            }
+        };
+
+        // Highlights first, under every glyph: `background` on a run covers its
+        // part of each line it is on, the full height of that line.
+        if let Some(rich) = style.rich.filter(|r| !ink && r.runs.iter().any(|run| run.style.background.is_some())) {
+            let lines: Vec<LineBox> = {
+                let mut top = 0.0;
+                layout
+                    .lines()
+                    .map(|l| {
+                        let lb = Self::line_box(&l, style, strut, top);
+                        top += lb.height;
+                        lb
+                    })
+                    .collect()
+            };
+            for run in &rich.runs {
+                let Some(bg) = run.style.background else { continue };
+                let selection = Selection::new(
+                    Cursor::from_byte_index(layout, run.range.start.min(text.len()), Affinity::Downstream),
+                    Cursor::from_byte_index(layout, run.range.end.min(text.len()), Affinity::Upstream),
+                );
+                for (rect, line) in selection.geometry(layout) {
+                    let Some(lb) = lines.get(line) else { continue };
+                    let r = Rect::new(
+                        (x as f64) + rect.x0,
+                        (y + lb.top) as f64,
+                        (x as f64) + rect.x1,
+                        (y + lb.top + lb.height) as f64,
+                    );
+                    scene.fill(Fill::NonZero, transform, Color::new([bg.r, bg.g, bg.b, bg.a]), None, &r);
+                }
+            }
+        }
 
         let mut line_top = y;
         for line in layout.lines() {
-            let m = line.metrics();
             // With `line-height`, the line box is that tall and the text sits
             // centred in it (half the extra leading above the ascent).
-            let line_h = style.line_height.unwrap_or(m.ascent + m.descent);
-            let half_leading = (line_h - (m.ascent + m.descent)) / 2.0;
-            let baseline = line_top + half_leading + m.ascent;
+            let lb = Self::line_box(&line, style, strut, line_top);
+            let baseline = lb.baseline;
             for item in line.items() {
                 let PositionedLayoutItem::GlyphRun(glyph_run) = item else {
                     continue;
@@ -534,6 +810,7 @@ impl TextEngine {
                 let run_x0 = x + glyph_run.offset();
                 let mut pen_x = run_x0;
                 let run = glyph_run.run();
+                let (color, underline, strikethrough) = look(glyph_run.style().brush);
 
                 scene
                     .draw_glyphs(run.font())
@@ -559,18 +836,18 @@ impl TextEngine {
                 // doesn't draw them, but its `RunMetrics` give us the placement
                 // (offset is the top of the line, from the baseline, in px).
                 let rm = run.metrics();
-                if style.underline {
+                if underline {
                     let top = baseline - rm.underline_offset;
                     let rect = Rect::new(run_x0 as f64, top as f64, pen_x as f64, (top + rm.underline_size) as f64);
                     scene.fill(Fill::NonZero, transform, color, None, &rect);
                 }
-                if style.strikethrough {
+                if strikethrough {
                     let top = baseline - rm.strikethrough_offset;
                     let rect = Rect::new(run_x0 as f64, top as f64, pen_x as f64, (top + rm.strikethrough_size) as f64);
                     scene.fill(Fill::NonZero, transform, color, None, &rect);
                 }
             }
-            line_top += line_h;
+            line_top += lb.height;
         }
     }
 }

@@ -4733,6 +4733,7 @@ fn build_node_inner(
                 selection: None,
                 preedit: None,
                 selection_style: Default::default(),
+                rich: None,
             },
         );
         node.on_tap = on_tap;
@@ -5210,6 +5211,7 @@ fn build_node_inner(
                     handle: props.get("accent-color").and_then(|v| parse_color(v)),
                     ..selection
                 },
+                rich: None,
             },
         );
         let mut node = LayoutNode::new(style);

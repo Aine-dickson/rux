@@ -36,6 +36,7 @@ fn label(text: &str) -> TextContent {
         selection: None,
         preedit: None,
         selection_style: Default::default(),
+        rich: None,
     }
 }
 
@@ -68,6 +69,7 @@ fn text_node_paints_its_background_then_its_glyphs() {
         selection: None,
         preedit: None,
         selection_style: Default::default(),
+        rich: None,
         },
     );
 
