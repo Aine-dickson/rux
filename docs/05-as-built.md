@@ -394,6 +394,18 @@ read as `<button><text>Join</text></button>`, `{{ }}` included, so a button's
 label can be written the way it would be in HTML. Anywhere else, bare text
 draws nothing.
 
+**Spaces in a `<text>` follow CSS's `white-space`.** Under the default,
+`normal`, every run of spaces, tabs and newlines is one space, and spaces at
+the start and end are gone, so a sentence can be written over several indented
+lines and reads as one sentence. That applies to `{{ }}` values as well: a
+value with line breaks in it is drawn on one line unless the text says
+`white-space: pre-line` (keep the newlines, collapse the rest) or `pre-wrap`
+(keep everything). `&nbsp;` is never collapsed, which is how to ask for two
+spaces in a row. Until v0.9 a newline inside a `<text>` was a line break and
+the indentation after it was drawn; text from data that relied on that needs
+`white-space: pre-line` now. Text fields are not affected: what is typed is
+kept as typed.
+
 **`<screen>` is the display, wherever it is written.** At the document root
 that is nothing new: the root has always been forced to the viewport, whatever
 its tag. Below the root it now means what the word says. A `<screen>` inside a
@@ -560,7 +572,8 @@ border-radius (1–4 diagonal shorthand; px/rem/em, and % against the box)
 border-top-left-radius, border-top-right-radius
 border-bottom-right-radius, border-bottom-left-radius
 color, font-size, font-weight, font-family, font-style (italic), text-align
-letter-spacing, word-spacing, line-height, white-space (nowrap|pre)
+letter-spacing, word-spacing, line-height
+white-space (normal|nowrap|pre|pre-wrap|pre-line; not inherited yet)
 text-decoration, text-decoration-line (underline / line-through; the longhand
                        wins where both are set)  (color: hex, rgb()/rgba(), CSS names)
 overflow, overflow-x, overflow-y     (hidden|clip = clip; auto|scroll = scroll;

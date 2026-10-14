@@ -39,6 +39,10 @@ pub use anim::{Animator, FRAME_MS};
 /// A form field's built-in checks, shared by `:invalid` and submission.
 pub mod checks;
 
+/// `white-space`: which spaces in a `<text>` are drawn.
+pub mod white_space;
+pub use white_space::WhiteSpace;
+
 /// Loop-variable bindings introduced by `r-for`, layered as a scope stack and
 /// injected into the script engine for each evaluation.
 type Locals = Vec<(String, Value)>;
@@ -200,6 +204,8 @@ pub struct TextBinding {
     pub locals: Vec<(String, Value)>,
     /// Signals this binding reads, its subscription set.
     pub deps: HashSet<String>,
+    /// The text's `white-space`, applied to every new value as to the first.
+    pub white_space: WhiteSpace,
 }
 
 /// An `<input>`'s displayed value, patchable in place: the input node's path, the
@@ -1749,7 +1755,8 @@ pub fn build_styled_tree(
 /// Recompute a text binding's string against the engine's current state, what
 /// the runtime writes into the node at `binding.path` when a dependency changes.
 pub fn eval_text_binding(binding: &TextBinding, engine: &mut Engine) -> String {
-    interpolate_tracked(&binding.template, engine, &binding.locals).0
+    let text = interpolate_tracked(&binding.template, engine, &binding.locals).0;
+    white_space::collapse(&text, binding.white_space)
 }
 
 /// The class names a `:class` value contributes: a string splits on whitespace; a
@@ -2278,16 +2285,18 @@ fn text_line(el: &Element) -> usize {
 }
 
 /// left intact, the template a [`TextBinding`] re-interpolates on change.
+///
+/// The runs exactly as written, spaces included: the parser keeps them inside
+/// a `<text>`, and [`white_space`] decides which are drawn once the `{{ }}`
+/// values are in.
 fn text_template(el: &Element) -> String {
     el.children
         .iter()
         .filter_map(|c| match c {
-            TplNode::Text(t, _) => Some(t.trim()),
+            TplNode::Text(t, _) => Some(t.as_str()),
             _ => None,
         })
-        .filter(|t| !t.is_empty())
-        .collect::<Vec<_>>()
-        .join(" ")
+        .collect()
 }
 
 // Entity decoding for text lives in `rux_parser::decode_entities`, the parser
@@ -4673,11 +4682,10 @@ fn build_node_inner(
     let decoration = props.get("text-decoration-line").or_else(|| props.get("text-decoration"));
     let underline = decoration.is_some_and(|v| v.split_whitespace().any(|t| t == "underline"));
     let strikethrough = decoration.is_some_and(|v| v.split_whitespace().any(|t| t == "line-through"));
-    // `white-space: nowrap|pre` stops line breaking. (We don't preserve `pre`
-    // whitespace runs yet; the no-wrap half is what matters for layout.)
-    let nowrap = props
-        .get("white-space")
-        .is_some_and(|v| matches!(v.trim(), "nowrap" | "pre"));
+    // `white-space`: `nowrap` and `pre` stop line breaking, and a `<text>`
+    // collapses its spaces by it (see `white_space`).
+    let white_space = props.get("white-space").and_then(|v| WhiteSpace::parse(v)).unwrap_or_default();
+    let nowrap = !white_space.wraps();
 
     if el.tag == "text" {
         let weight = props.get("font-weight").and_then(|v| parse_weight(v)).unwrap_or(400);
@@ -4694,12 +4702,14 @@ fn build_node_inner(
         // line the tag opened on.
         let (text, deps) =
             rux_script::located(Some(text_line(el)), || interpolate_tracked(&template, engine, locals));
+        let text = white_space::collapse(&text, white_space);
         if template.contains("{{") {
             reg.text.push(TextBinding {
                 path: path.to_vec(),
                 template,
                 locals: locals.clone(),
                 deps,
+                white_space,
             });
         }
         let mut node = LayoutNode::text(
@@ -11771,4 +11781,79 @@ fn parse_rgb(s: &str) -> Option<Rgba> {
     let b = parts[2].parse::<f32>().ok()? / 255.0;
     let a = parts.get(3).and_then(|v| v.parse::<f32>().ok()).unwrap_or(1.0);
     Some(Rgba::new(r, g, b, a))
+}
+
+#[cfg(test)]
+mod white_space_tests {
+    use std::collections::HashMap;
+
+    use rux_script::Builder;
+
+    fn texts(src: &str) -> (Vec<String>, super::BindingRegistry, rux_script::Engine) {
+        let sfc = rux_parser::parse_sfc(src).unwrap();
+        let mut engine = Builder::new().build(&sfc.script).unwrap();
+        let mut instances = super::Instances::new();
+        let (root, reg) = super::build_styled_tree_tracked(
+            &sfc,
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut engine,
+            &mut instances,
+            &mut crate::Swaps::new(),
+        )
+        .unwrap();
+        let texts = root.children.iter().map(|c| c.text.as_ref().unwrap().text.clone()).collect();
+        (texts, reg, engine)
+    }
+
+    /// A sentence written over several indented lines reads as a sentence, the
+    /// way it does in a browser. Until v0.9 the newline was a line break and
+    /// the indentation after it was drawn.
+    #[test]
+    fn a_sentence_over_several_lines_is_one_line_of_words() {
+        let (texts, ..) = texts(
+            "<template><screen>\r\n  <text>\r\n    Read the\r\n    terms   first.\r\n  </text>\r\n</screen></template>",
+        );
+        assert_eq!(texts, ["Read the terms first."]);
+    }
+
+    /// A value's spaces collapse too: the rule is about what is drawn, not
+    /// where it came from. `pre-line` is how data keeps its line breaks.
+    #[test]
+    fn a_value_collapses_unless_white_space_keeps_it() {
+        let (texts, ..) = texts(
+            r#"<template><screen>
+                 <text>{{ notes }}</text>
+                 <text class="keep">{{ notes }}</text>
+                 <text class="pre">{{ notes }}</text>
+               </screen></template>
+               <style>.keep { white-space: pre-line; } .pre { white-space: pre-wrap; }</style>
+               <script>let notes = signal("  one  \n  two");</script>"#,
+        );
+        assert_eq!(texts, ["one two", "one\ntwo", "  one  \n  two"]);
+    }
+
+    /// A value that changes later is collapsed by the same rule as the first.
+    #[test]
+    fn a_patched_value_keeps_the_texts_white_space() {
+        let (_, reg, mut engine) = texts(
+            r#"<template><screen>
+                 <text>{{ notes }}</text>
+                 <text class="keep">{{ notes }}</text>
+               </screen></template>
+               <style>.keep { white-space: pre-line; }</style>
+               <script>let notes = signal("");</script>"#,
+        );
+        assert!(engine.run_handler(r#"notes = "a \n  b""#), "handler ran");
+        let now: Vec<String> = reg.text.iter().map(|b| super::eval_text_binding(b, &mut engine)).collect();
+        assert_eq!(now, ["a b", "a\nb"]);
+    }
+
+    /// `&nbsp;` is content, never a collapsible space, which is what makes it
+    /// the way to ask for two spaces in a row.
+    #[test]
+    fn a_non_breaking_space_survives() {
+        let (texts, ..) = texts("<template><screen><text> a&nbsp; b </text></screen></template>");
+        assert_eq!(texts, ["a\u{a0} b"]);
+    }
 }

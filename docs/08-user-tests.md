@@ -2429,6 +2429,24 @@ menu with `position-anchor` set through `:style` to the open row.
 | A tap on the menu | | the menu answers where it is drawn | under the code only (injected clicks do not reach the window) |
 | Web, Android | the same page | the same | not driven |
 
+## Spaces in a `<text>`, 2026-10-14
+
+CSS's `white-space` collapsing, the first step of inline text (owner's choice:
+CSS's rule, `{{ }}` values included, plus `pre-line` and `pre-wrap`). Under
+test in `rux-style` (`white_space`: ten cases on the rule itself, CRLF, runs
+and `&nbsp;` among them; `white_space_tests`: four on built documents,
+including a value patched later) and in `rux-parser` (spaces kept inside a
+`<text>` only). Driven in a desktop window with a debug build on one probe.
+
+| Case | Steps | Expected | Result |
+|---|---|---|---|
+| A sentence over lines | a `<text>` written over three indented lines, extra spaces between two words | one line, single spaces, no indentation | desktop: pass |
+| A value with newlines | `{{ notes }}` holding three lines, one indented | one line of words | desktop: pass |
+| `pre-line` | the same value, `white-space: pre-line` | three lines, the indentation gone | desktop: pass |
+| `pre-wrap` | the same value, `white-space: pre-wrap` | three lines, the indentation kept | desktop: pass |
+| `&nbsp;` | `[a&nbsp; b]` | two spaces between `a` and `b` | desktop: pass |
+| Web, Android | the same page | the same | not driven |
+
 ## Standing gaps
 
 Cases nothing here can currently exercise. They are the shape of what v0.8 has

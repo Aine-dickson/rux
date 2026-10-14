@@ -871,16 +871,24 @@ impl Parser {
             // Text run up to the next '<'.
             let at = self.line_col(self.pos).0;
             let text = self.read_text();
-            if !text.trim().is_empty() {
-                // The line of the run's first character, not of its first
-                // non-space one. A `{{ }}` sitting on its own line after the
-                // tag is the common shape, and the leading newline is part of
-                // the run, so the trim is counted back out.
-                let skipped = text.chars().take_while(|c| c.is_whitespace()).filter(|c| *c == '\n').count();
+            // The line of the run's first character, not of its first
+            // non-space one. A `{{ }}` sitting on its own line after the tag
+            // is the common shape, and the leading newline is part of the run,
+            // so the leading space is counted back out.
+            let skipped = text.chars().take_while(|c| c.is_whitespace()).filter(|c| *c == '\n').count();
+            // Inside a `<text>` the spaces are the author's sentence: the one
+            // in `Read the <text>terms</text>` is real, and so is a run that
+            // is nothing but a space between two tags. `white-space` decides
+            // later which are drawn. Everywhere else text between tags is
+            // layout indentation and goes.
+            if parent == Some("text") {
+                if !text.is_empty() {
+                    nodes.push(Node::Text(text, at + skipped));
+                }
+            } else if !text.trim().is_empty() {
                 nodes.push(Node::Text(text.trim().to_string(), at + skipped));
             }
         }
-        let _ = parent;
         Ok(nodes)
     }
 
@@ -1274,6 +1282,30 @@ mod tests {
         let src = "<template>\n  <!-- a note -->\n  <view><text>one</text></view>\n</template>";
         let sfc = parse_sfc(src).expect("one root");
         assert_eq!(sfc.template.tag, "view");
+    }
+
+    /// Inside a `<text>` every space is kept as written, a run of nothing but
+    /// a space between two tags included: it may be the space between two
+    /// words. Anywhere else text is trimmed, as it always was.
+    #[test]
+    fn a_texts_spaces_are_kept_and_nothing_elses_are() {
+        let src = "<template><view>\n  <text>\n    Read the <text>terms</text> <text>now</text>\n  </text>\n</view></template>";
+        let sfc = parse_sfc(src).unwrap();
+        let Node::Element(text) = &sfc.template.children[0] else { panic!("the outer text") };
+        let runs: Vec<&str> = text
+            .children
+            .iter()
+            .filter_map(|c| match c {
+                Node::Text(t, _) => Some(t.as_str()),
+                Node::Element(_) => None,
+            })
+            .collect();
+        assert_eq!(runs, ["\n    Read the ", " ", "\n  "]);
+        // The run's line is where its words start, as before.
+        let Node::Text(_, line) = &text.children[0] else { panic!("a run") };
+        assert_eq!(*line, 3);
+        // The view's own indentation is still nothing.
+        assert!(sfc.template.children.iter().all(|c| matches!(c, Node::Element(_))));
     }
 
 }

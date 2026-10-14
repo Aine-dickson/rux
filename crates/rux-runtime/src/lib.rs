@@ -9784,7 +9784,9 @@ fn flip() { rts_flag.on = true; }</script>",
         )
         .expect("load");
         assert!(doc.apply_handler("load(31)"));
-        assert_eq!(text_of(&doc.root).join(""), "loading ");
+        // No trailing space: `name` is still empty, and the space before it
+        // ends the text, which `white-space: normal` drops as CSS does.
+        assert_eq!(text_of(&doc.root).join(""), "loading");
         assert!(doc.has_waiting_tasks());
         settle_one(&mut doc);
         assert_eq!(text_of(&doc.root).join(""), "done Grace 31");
