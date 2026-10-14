@@ -447,9 +447,14 @@ is, so it works anywhere a length does.
 `font-family` takes a CSS list (`font-family: "Inter", sans-serif`), and parley
 parses it and does name-matching + fallback; the generic families (`serif`,
 `sans-serif`, `monospace`, …) always resolve. It **inherits**, like `color` and
-`font-size`. `color`/`font-size`/`font-family` are the three inheriting text
-properties, with one exception: a `<text>` hands the rest of its text style to
-the runs of its own sentence (see [Elements](#elements)).
+`font-size`. **The text properties inherit, as in CSS**: `color`, `font-size`,
+`font-family`, `font-weight`, `font-style`, `letter-spacing`, `word-spacing`,
+`line-height`, `text-align`, `white-space` and `direction`, so `font-weight: 700`
+on a card makes every text in it bold. A bare `line-height` (`1.5`) is
+inherited as the number and multiplied by each text's own size; a length is
+inherited as its pixels. A text field takes the weight, size and family around
+it and keeps its own alignment. Until v0.9 only `color`, `font-size` and
+`font-family` inherited, and the rest had to be written on every `<text>`.
 
 Anything else is **parsed but not honored**, and never *silently*: the runtime
 prints one line per unhonored property, once each. It says which of three things

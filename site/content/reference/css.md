@@ -41,7 +41,7 @@ border-top-left-radius, border-top-right-radius
 border-bottom-right-radius, border-bottom-left-radius
 color, font-size, font-weight, font-family, font-style (italic), text-align
 letter-spacing, word-spacing, line-height
-white-space (normal|nowrap|pre|pre-wrap|pre-line; inherited only by a sentence's runs)
+white-space (normal|nowrap|pre|pre-wrap|pre-line)
 vertical-align (baseline|middle|text-top|text-bottom; an <image> or <path> in a <text>)
 direction (ltr|rtl; inherited, and set by the `dir` attribute too)
 margin-inline, margin-inline-start, margin-inline-end,

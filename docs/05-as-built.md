@@ -416,10 +416,9 @@ word is made bold, a link is put in a line, or a value is coloured on its own:
 
 The whole sentence wraps as one paragraph, its runs moving with it, and spaces
 collapse across them: the space before `<text class="b">` is the space between
-two words. A run takes the rest of the sentence's text style where it says
-nothing of its own (`font-weight`, `font-style`, `letter-spacing`,
-`word-spacing`, `white-space`, and the sentence's decorations), on top of the
-`color`, `font-size` and `font-family` every element inherits. It has its own
+two words. A run inherits the sentence's text style, as every element does
+(see the CSS list), and the sentence's underline or strike-through is drawn
+under its words too, as CSS draws a decoration through nested boxes. It has its own
 `color`, `font-*`, `text-decoration` and spacing, and a solid `background` on
 a run highlights its words, line by line. Each run is still an element: its own
 `{{ }}`, `r-if`, `r-for`, `@tap` (found by a tap on its words, and a Tab stop),
@@ -631,7 +630,7 @@ border-top-left-radius, border-top-right-radius
 border-bottom-right-radius, border-bottom-left-radius
 color, font-size, font-weight, font-family, font-style (italic), text-align
 letter-spacing, word-spacing, line-height
-white-space (normal|nowrap|pre|pre-wrap|pre-line; inherited only by a sentence's runs)
+white-space (normal|nowrap|pre|pre-wrap|pre-line)
 vertical-align (baseline|middle|text-top|text-bottom; an <image> or <path> in a <text>)
 direction (ltr|rtl; inherited, and set by the `dir` attribute too)
 margin-inline, margin-inline-start, margin-inline-end,
@@ -1178,9 +1177,14 @@ is, so it works anywhere a length does.
 `font-family` takes a CSS list (`font-family: "Inter", sans-serif`), and parley
 parses it and does name-matching + fallback; the generic families (`serif`,
 `sans-serif`, `monospace`, …) always resolve. It **inherits**, like `color` and
-`font-size`. `color`/`font-size`/`font-family` are the three inheriting text
-properties, with one exception: a `<text>` hands the rest of its text style to
-the runs of its own sentence (see [Elements](#elements)).
+`font-size`. **The text properties inherit, as in CSS**: `color`, `font-size`,
+`font-family`, `font-weight`, `font-style`, `letter-spacing`, `word-spacing`,
+`line-height`, `text-align`, `white-space` and `direction`, so `font-weight: 700`
+on a card makes every text in it bold. A bare `line-height` (`1.5`) is
+inherited as the number and multiplied by each text's own size; a length is
+inherited as its pixels. A text field takes the weight, size and family around
+it and keeps its own alignment. Until v0.9 only `color`, `font-size` and
+`font-family` inherited, and the rest had to be written on every `<text>`.
 
 Anything else is **parsed but not honored**, and never *silently*: the runtime
 prints one line per unhonored property, once each. It says which of three things

@@ -1374,34 +1374,71 @@ struct Inherited {
     /// Custom properties (`--name`) in scope. They inherit like the text
     /// properties above, see [`Vars`].
     vars: Vars,
-    /// Inside a `<text>`: the rest of its text style, which its runs take
-    /// unless they say otherwise. `None` everywhere else, see [`RunInherit`].
+    /// Inside a `<text>`: what its runs take from it beyond inheritance.
+    /// `None` everywhere else, which is also how a build knows it is not
+    /// inside a sentence. See [`RunInherit`].
     run: Option<RunInherit>,
     /// `direction`, which inherits everywhere, as in CSS.
     direction: rux_layout::Direction,
+    /// The rest of the inheriting text properties. See [`TextInherit`].
+    text: TextInherit,
 }
 
-/// What a run of a sentence takes from the `<text>` it is in, beyond the
-/// three properties every element inherits.
-///
-/// CSS inherits all of these everywhere; Rux inherits only `color`,
-/// `font-size` and `font-family` from a box to the text in it (see
-/// docs/05-as-built.md). Inside a sentence there is no choice: a word in
-/// `<text class="bold">Read the <text>terms</text></text>` is in a bold
-/// sentence, and a run that dropped the weight would split one sentence into
-/// two looks. So a `<text>` hands the rest of its style to its runs, and only
-/// to them.
+/// The inheriting text properties beyond `color`, `font-size` and
+/// `font-family`, which CSS passes from every box to everything inside it:
+/// `font-weight` on a card makes its text bold. Rux passed only those three
+/// until v0.9, and the rest had to be written on each `<text>`.
 #[derive(Clone, Copy, Debug, PartialEq)]
-struct RunInherit {
+struct TextInherit {
     weight: u16,
     italic: bool,
     letter_spacing: Option<f32>,
     word_spacing: Option<f32>,
-    /// Decorations do not inherit in CSS, but they are drawn under every word
-    /// of the box that has them, nested runs included, which comes to the same.
+    white_space: WhiteSpace,
+    line_height: Option<LineHeight>,
+    align: TextAlign,
+}
+
+impl Default for TextInherit {
+    fn default() -> Self {
+        Self {
+            weight: 400,
+            italic: false,
+            letter_spacing: None,
+            word_spacing: None,
+            white_space: WhiteSpace::Normal,
+            line_height: None,
+            align: TextAlign::Start,
+        }
+    }
+}
+
+/// `line-height` as it inherits. A bare number is inherited as the number and
+/// multiplied by each element's own font size, which is why it is the form CSS
+/// recommends; a length is inherited as the pixels it came to.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum LineHeight {
+    Factor(f32),
+    Px(f32),
+}
+
+impl LineHeight {
+    fn px(self, font_size: f32) -> f32 {
+        match self {
+            LineHeight::Factor(f) => f * font_size,
+            LineHeight::Px(p) => p,
+        }
+    }
+}
+
+/// What a run of a sentence takes from the `<text>` it is in beyond what
+/// inherits: its decorations. CSS does not inherit `text-decoration`, but
+/// draws it under every word of the box that has it, nested runs included,
+/// which comes to the same thing.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct RunInherit {
     underline: bool,
     strikethrough: bool,
-    white_space: WhiteSpace,
 }
 
 /// CSS custom properties (`--name: value`) in scope for an element: its own
@@ -2171,6 +2208,7 @@ pub fn build_styled_tree_stateful(
             vars: Vars::default(),
             run: None,
             direction: rux_layout::Direction::Ltr,
+            text: TextInherit::default(),
         },
         engine,
         &locals,
@@ -2355,15 +2393,8 @@ fn build_run(
     path: &[usize],
     reg: &mut BindingRegistry,
 ) -> LayoutNode {
-    let run = inherited.run.unwrap_or(RunInherit {
-        weight: 400,
-        italic: false,
-        letter_spacing: None,
-        word_spacing: None,
-        underline: false,
-        strikethrough: false,
-        white_space: WhiteSpace::Normal,
-    });
+    let run = inherited.run.unwrap_or(RunInherit { underline: false, strikethrough: false });
+    let up = inherited.text;
     let template = text_template(el);
     let (text, deps) =
         rux_script::located(Some(text_line(el)), || interpolate_tracked(&template, engine, locals));
@@ -2376,24 +2407,24 @@ fn build_run(
         TextContent {
             text,
             font_size: inherited.font_size,
-            weight: run.weight,
+            weight: up.weight,
             color: inherited.color,
             align: Default::default(),
             wrap: Default::default(),
             font_family: inherited.font_family.clone(),
-            letter_spacing: run.letter_spacing,
-            word_spacing: run.word_spacing,
+            letter_spacing: up.letter_spacing,
+            word_spacing: up.word_spacing,
             line_height: None,
-            italic: run.italic,
+            italic: up.italic,
             underline: run.underline,
             strikethrough: run.strikethrough,
-            nowrap: !run.white_space.wraps(),
+            nowrap: !up.white_space.wraps(),
             caret: None,
             selection: None,
             preedit: None,
             selection_style: Default::default(),
             rich: None,
-            white_space: run.white_space,
+            white_space: up.white_space,
             direction: None,
         },
     );
@@ -4473,7 +4504,6 @@ fn build_text(
     slot: Option<Slot>,
     outlet: Option<Outlet>,
     row: Option<&str>,
-    props: &HashMap<String, String>,
     style: Style,
     desc: ElemDesc,
     on_tap: Option<String>,
@@ -4494,30 +4524,16 @@ fn build_text(
     direction: rux_layout::Direction,
     dir_auto: bool,
     vars: Vars,
+    weight: u16,
+    align: TextAlign,
+    own_text: TextInherit,
 ) -> LayoutNode {
-    // A run of a sentence takes the rest of the sentence's style where it
-    // says nothing of its own. See `RunInherit`.
+    // Inside a sentence, the sentence's decorations are drawn under this run's
+    // words too. See `RunInherit`.
     let outer = inherited.run;
-    let weight = props
-        .get("font-weight")
-        .and_then(|v| parse_weight(v))
-        .or(outer.map(|r| r.weight))
-        .unwrap_or(400);
-    let italic = if props.contains_key("font-style") { italic } else { outer.is_some_and(|r| r.italic) };
-    let letter_spacing = letter_spacing.or(outer.and_then(|r| r.letter_spacing));
-    let word_spacing = word_spacing.or(outer.and_then(|r| r.word_spacing));
     let underline = underline || outer.is_some_and(|r| r.underline);
     let strikethrough = strikethrough || outer.is_some_and(|r| r.strikethrough);
-    let white_space = if props.contains_key("white-space") {
-        white_space
-    } else {
-        outer.map_or(white_space, |r| r.white_space)
-    };
     let nowrap = !white_space.wraps();
-    let align = props
-        .get("text-align")
-        .map(|v| parse_text_align(v))
-        .unwrap_or_default();
     let wrap = style.text_wrap;
     // Recompute this text on change instead of rebuilding: record the raw
     // template, the locals, and the signals it reads, keyed by this node's
@@ -4573,7 +4589,7 @@ fn build_text(
     // element it is, and the layout joins them into one text.
     if el.children.iter().any(|c| matches!(c, TplNode::Element(_))) {
         check_sentence_children(el);
-        let run = RunInherit { weight, italic, letter_spacing, word_spacing, underline, strikethrough, white_space };
+        let run = RunInherit { underline, strikethrough };
         let child_inherited = Inherited {
             color,
             selection,
@@ -4582,6 +4598,7 @@ fn build_text(
             vars: Rc::clone(&vars),
             run: Some(run),
             direction,
+            text: own_text,
         };
         let siblings = if KEEP_SIBLINGS.with(std::cell::Cell::get) { prev.to_vec() } else { Vec::new() };
         ancestors.push(AncNode { desc, prev: siblings, form: None });
@@ -5073,26 +5090,40 @@ fn build_node_inner(
         .filter(|v| !v.trim().is_empty() && v.trim() != "inherit")
         .map(|v| v.trim().to_string())
         .or_else(|| inherited.font_family.clone());
-    // Non-inheriting shaping props, resolved from this node's own rules (as
-    // `font-weight`/`text-align` already are).
-    let letter_spacing = props.get("letter-spacing").and_then(|v| parse_spacing(v));
-    let word_spacing = props.get("word-spacing").and_then(|v| parse_spacing(v));
-    // `line-height`: a unitless number multiplies the font size; a length is
-    // absolute; `normal` keeps the font metrics.
-    let line_height = props.get("line-height").and_then(|v| parse_line_height(v, font_size));
-    let italic = props
-        .get("font-style")
-        .is_some_and(|v| matches!(v.trim(), "italic" | "oblique"));
+    // The inheriting text properties: this element's own, else its parent's.
+    // See `TextInherit`.
+    let up = inherited.text;
+    let own_text = TextInherit {
+        weight: props.get("font-weight").and_then(|v| parse_weight(v)).unwrap_or(up.weight),
+        italic: props.get("font-style").map_or(up.italic, |v| matches!(v.trim(), "italic" | "oblique")),
+        letter_spacing: match props.get("letter-spacing") {
+            Some(v) => parse_spacing(v),
+            None => up.letter_spacing,
+        },
+        word_spacing: match props.get("word-spacing") {
+            Some(v) => parse_spacing(v),
+            None => up.word_spacing,
+        },
+        // `white-space`: `nowrap` and `pre` stop line breaking, and a `<text>`
+        // collapses its spaces by it (see `white_space`).
+        white_space: props.get("white-space").and_then(|v| WhiteSpace::parse(v)).unwrap_or(up.white_space),
+        // `line-height`: a unitless number multiplies the font size; a length
+        // is absolute; `normal` keeps the font metrics.
+        line_height: match props.get("line-height") {
+            Some(v) => line_height_spec(v),
+            None => up.line_height,
+        },
+        align: props.get("text-align").map(|v| parse_text_align(v)).unwrap_or(up.align),
+    };
+    let TextInherit { weight, italic, letter_spacing, word_spacing, white_space, align, .. } = own_text;
+    let line_height = own_text.line_height.map(|l| l.px(font_size));
     // `text-decoration[-line]`: underline / line-through (space-separated list).
     let decoration = props.get("text-decoration-line").or_else(|| props.get("text-decoration"));
     let underline = decoration.is_some_and(|v| v.split_whitespace().any(|t| t == "underline"));
     let strikethrough = decoration.is_some_and(|v| v.split_whitespace().any(|t| t == "line-through"));
-    // `white-space`: `nowrap` and `pre` stop line breaking, and a `<text>`
-    // collapses its spaces by it (see `white_space`).
-    let white_space = props.get("white-space").and_then(|v| WhiteSpace::parse(v)).unwrap_or_default();
 
     if el.tag == "text" {
-        return build_text(el, rules, comps, ancestors, prev, inherited, engine, locals, path, tpl_path, reg, state, instances, swaps, instance, slot, outlet, row, &props, style, desc, on_tap, to, hidden, state_path, color, selection, font_size, font_family, letter_spacing, word_spacing, line_height, italic, underline, strikethrough, white_space, direction, dir_auto, vars);
+        return build_text(el, rules, comps, ancestors, prev, inherited, engine, locals, path, tpl_path, reg, state, instances, swaps, instance, slot, outlet, row, style, desc, on_tap, to, hidden, state_path, color, selection, font_size, font_family, letter_spacing, word_spacing, line_height, italic, underline, strikethrough, white_space, direction, dir_auto, vars, weight, align, own_text);
     }
 
     // <image src=…>: a leaf that paints its pixels. The `src` here is still the
@@ -5520,7 +5551,7 @@ fn build_node_inner(
             TextContent {
                 text: shown,
                 font_size,
-                weight: 400,
+                weight,
                 color: shown_color,
                 align: TextAlign::Start,
                 wrap: style.text_wrap,
@@ -5607,8 +5638,16 @@ fn build_node_inner(
     let siblings = if KEEP_SIBLINGS.with(std::cell::Cell::get) { prev.to_vec() } else { Vec::new() };
     ancestors.push(AncNode { desc, prev: siblings, form: is_form.then(|| path.to_vec()) });
     let element_children = element_children(el);
-    let child_inherited =
-        Inherited { color, selection, font_size, font_family, vars: Rc::clone(&vars), run: None, direction };
+    let child_inherited = Inherited {
+        color,
+        selection,
+        font_size,
+        font_family,
+        vars: Rc::clone(&vars),
+        run: None,
+        direction,
+        text: own_text,
+    };
     let plain = instance.is_none() && slot.is_none() && outlet.is_none() && row.is_none();
     let (children, structural_deps) = build_children(
         &element_children,
@@ -8002,7 +8041,7 @@ fn frag_has_other_place(frag: &BindingRegistry, own: Option<&str>) -> bool {
 /// Destructured so that a field added to either struct fails to compile here
 /// rather than being silently left out of the comparison.
 fn same_inherited(a: &Inherited, b: &Inherited) -> bool {
-    let Inherited { color, selection, font_size, font_family, vars, run, direction } = a;
+    let Inherited { color, selection, font_size, font_family, vars, run, direction, text: text_style } = a;
     let SelectionStyle { background, color: text, handle } = selection;
     let rgba = |x: &Rgba, y: &Rgba| x.r == y.r && x.g == y.g && x.b == y.b && x.a == y.a;
     let opt = |x: &Option<Rgba>, y: &Option<Rgba>| match (x, y) {
@@ -8019,6 +8058,7 @@ fn same_inherited(a: &Inherited, b: &Inherited) -> bool {
         && (Rc::ptr_eq(vars, &b.vars) || **vars == *b.vars)
         && *run == b.run
         && *direction == b.direction
+        && *text_style == b.text
 }
 
 /// Put a kept row into this build at `path`: its node, and its registry
@@ -9269,6 +9309,20 @@ fn parse_line_height(v: &str, font_size: f32) -> Option<f32> {
     }
     // A bare number multiplies the font size (the usual CSS form).
     s.parse::<f32>().ok().map(|n| n * font_size)
+}
+
+/// `line-height` as it inherits: a bare number stays a number, anything else
+/// is the pixels it comes to here (`em` is already pixels by now). `normal`
+/// is `None`, which puts a child back on the font's own metrics.
+fn line_height_spec(v: &str) -> Option<LineHeight> {
+    let s = first(v);
+    if let Ok(n) = s.parse::<f32>() {
+        return Some(LineHeight::Factor(n));
+    }
+    if let Some(pct) = s.strip_suffix('%').and_then(|p| p.trim().parse::<f32>().ok()) {
+        return Some(LineHeight::Factor(pct / 100.0));
+    }
+    parse_line_height(v, 1.0).map(LineHeight::Px)
 }
 
 /// `letter-spacing` / `word-spacing`: a px length, or `normal` (→ no extra).
@@ -12430,5 +12484,80 @@ mod direction_tests {
         );
         let aligns: Vec<TextAlign> = root.children.iter().map(|c| c.text.as_ref().unwrap().align).collect();
         assert_eq!(aligns, [TextAlign::Left, TextAlign::Right, TextAlign::Start, TextAlign::End]);
+    }
+}
+
+#[cfg(test)]
+mod inheritance_tests {
+    use std::collections::HashMap;
+
+    use rux_layout::{Node, TextAlign, TextContent};
+    use rux_script::Builder;
+
+    fn built(src: &str) -> Node {
+        let sfc = rux_parser::parse_sfc(src).unwrap();
+        let mut engine = Builder::new().build(&sfc.script).unwrap();
+        super::build_styled_tree(&sfc, &HashMap::new(), &HashMap::new(), &mut engine).unwrap()
+    }
+
+    fn text(n: &Node) -> &TextContent {
+        n.text.as_ref().expect("a text")
+    }
+
+    /// A box's text style reaches every text inside it, as in CSS.
+    #[test]
+    fn a_boxs_text_style_reaches_its_texts() {
+        let root = built(
+            r#"<template><screen><view class="card"><view><text>a</text></view></view></screen></template>
+               <style>
+                 .card { font-weight: 700; font-style: italic; letter-spacing: 1px; word-spacing: 3px;
+                         text-align: center; white-space: pre-line; }
+               </style>"#,
+        );
+        let t = text(&root.children[0].children[0].children[0]);
+        assert_eq!((t.weight, t.italic, t.letter_spacing, t.word_spacing), (700, true, Some(1.0), Some(3.0)));
+        assert_eq!(t.align, TextAlign::Center);
+        assert_eq!(t.white_space, super::WhiteSpace::PreLine);
+    }
+
+    /// A text's own rule wins, and `normal` takes it back.
+    #[test]
+    fn its_own_rule_wins() {
+        let root = built(
+            r#"<template><screen class="s"><text>a</text><text class="plain">b</text></screen></template>
+               <style>.s { font-weight: 700; letter-spacing: 2px; } .plain { font-weight: 400; letter-spacing: normal; }</style>"#,
+        );
+        assert_eq!(text(&root.children[0]).weight, 700);
+        assert_eq!((text(&root.children[1]).weight, text(&root.children[1]).letter_spacing), (400, None));
+    }
+
+    /// A bare `line-height` is inherited as the number and multiplied by each
+    /// text's own size; a length is inherited as its pixels.
+    #[test]
+    fn line_height_inherits_as_css_says() {
+        let root = built(
+            r#"<template><screen>
+                 <view class="factor"><text class="big">a</text></view>
+                 <view class="px"><text class="big">b</text></view>
+               </screen></template>
+               <style>
+                 .factor { line-height: 1.5; font-size: 10px; }
+                 .px { line-height: 15px; font-size: 10px; }
+                 .big { font-size: 20px; }
+               </style>"#,
+        );
+        assert_eq!(text(&root.children[0].children[0]).line_height, Some(30.0), "1.5 of its own 20px");
+        assert_eq!(text(&root.children[1].children[0]).line_height, Some(15.0), "the pixels it came to");
+    }
+
+    /// A field takes the weight around it.
+    #[test]
+    fn a_field_takes_the_weight_around_it() {
+        let root = built(
+            r#"<template><screen class="s"><input r-model="v" /></screen></template>
+               <style>.s { font-weight: 600; }</style>
+               <script>let v = signal("x");</script>"#,
+        );
+        assert_eq!(text(&root.children[0].children[0]).weight, 600);
     }
 }

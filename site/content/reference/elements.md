@@ -39,10 +39,9 @@ word is made bold, a link is put in a line, or a value is coloured on its own:
 
 The whole sentence wraps as one paragraph, its runs moving with it, and spaces
 collapse across them: the space before `<text class="b">` is the space between
-two words. A run takes the rest of the sentence's text style where it says
-nothing of its own (`font-weight`, `font-style`, `letter-spacing`,
-`word-spacing`, `white-space`, and the sentence's decorations), on top of the
-`color`, `font-size` and `font-family` every element inherits. It has its own
+two words. A run inherits the sentence's text style, as every element does
+(see the CSS list), and the sentence's underline or strike-through is drawn
+under its words too, as CSS draws a decoration through nested boxes. It has its own
 `color`, `font-*`, `text-decoration` and spacing, and a solid `background` on
 a run highlights its words, line by line. Each run is still an element: its own
 `{{ }}`, `r-if`, `r-for`, `@tap` (found by a tap on its words, and a Tab stop),
