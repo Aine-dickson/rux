@@ -4418,12 +4418,17 @@ impl Document {
         // about to change what the layout depends on.
         let metrics = self.metrics.clone();
         std::sync::Arc::new(move |selector: &str| {
+            let found = index.query(selector)?;
+            // By path, once: finding each match's box by a scan of every
+            // box made `query(".row .name")` over two thousand rows take two
+            // seconds.
+            let by_path: HashMap<&[usize], &rux_layout::NodeMetrics> =
+                metrics.iter().map(|e| (&e.path[..], e)).collect();
             Some(
-                index
-                    .query(selector)?
+                found
                     .into_iter()
                     .map(|m| rux_script::ElementFacts {
-                        bounds: metrics.iter().find(|e| e.path == m.path).map(|e| {
+                        bounds: by_path.get(&m.path[..]).map(|e| {
                             rux_script::ElementBox {
                                 x: e.x,
                                 y: e.y,

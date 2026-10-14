@@ -2810,10 +2810,66 @@ impl ElementIndex {
     /// returning an empty list is the failure mode this project keeps killing.
     pub fn query(&self, selector: &str) -> Option<Vec<ElementMatch>> {
         let (chain, combs, _) = parse_selector(selector)?;
+        let last = chain.last()?;
+        // Found by path, and each parent's children in order, once per
+        // query. Scanning every entry for every ancestor and sibling of every
+        // entry made `query(".row .name")` over two thousand rows take two
+        // seconds.
+        let by_path: HashMap<&[usize], usize> =
+            self.entries.iter().enumerate().map(|(i, e)| (&e.path[..], i)).collect();
+        // Preceding siblings matter only to `+` and `~`.
+        let siblings = combs.iter().any(|c| matches!(c, Combinator::NextSibling | Combinator::SubsequentSibling));
+        // Each parent's children: their places, and what they are, shared.
+        let mut children: HashMap<&[usize], (Vec<usize>, Rc<[ElemDesc]>)> = HashMap::new();
+        if siblings {
+            let mut kids: HashMap<&[usize], Vec<usize>> = HashMap::new();
+            for (i, e) in self.entries.iter().enumerate() {
+                if let Some((_, parent)) = e.path.split_last() {
+                    kids.entry(parent).or_default().push(i);
+                }
+            }
+            for (parent, mut ids) in kids {
+                ids.sort_by_key(|&i| self.entries[i].path.last().copied());
+                let descs: Rc<[ElemDesc]> = ids.iter().map(|&i| self.entries[i].desc.clone()).collect();
+                let places = ids.iter().map(|&i| self.entries[i].path.last().copied().unwrap_or(0)).collect();
+                children.insert(parent, (places, descs));
+            }
+        }
+        let none: Rc<[ElemDesc]> = Rc::from(Vec::new());
+        let before = |path: &[usize]| -> Siblings {
+            let empty = || Siblings { all: Rc::clone(&none), len: 0 };
+            let Some((&at, parent)) = path.split_last() else {
+                return empty();
+            };
+            match children.get(parent) {
+                Some((places, all)) => Siblings { all: Rc::clone(all), len: places.partition_point(|&n| n < at) },
+                None => empty(),
+            }
+        };
         let mut out = Vec::new();
         for entry in &self.entries {
-            let (ancestors, prev) = self.context_of(entry);
-            if matches_chain(&chain, &combs, &entry.desc, &ancestors, &prev) {
+            // The element itself first: most are not what was asked for, and
+            // need no context to say so.
+            if !matches_compound(last, &entry.desc) {
+                continue;
+            }
+            // From 0, so the root is an ancestor like any other. The root's
+            // own path is empty, and starting at 1 skipped exactly it:
+            // `.app .row` matched nothing from a handler while the
+            // stylesheet painted it, so the two disagreed about the same
+            // document. A node at the root gets `0..0` and still has no
+            // ancestors, which is correct.
+            let ancestors: Vec<AncNode> = (0..entry.path.len())
+                .map(|depth| {
+                    let at = &entry.path[..depth];
+                    AncNode {
+                        desc: by_path.get(at).map(|&i| self.entries[i].desc.clone()).unwrap_or_else(ElemDesc::unknown),
+                        prev: before(at),
+                        form: None,
+                    }
+                })
+                .collect();
+            if matches_chain(&chain, &combs, &entry.desc, &ancestors, &before(&entry.path)) {
                 out.push(ElementMatch {
                     path: entry.path.clone(),
                     tag: entry.desc.tag.clone(),
@@ -2823,51 +2879,6 @@ impl ElementIndex {
             }
         }
         Some(out)
-    }
-
-    /// The ancestor chain (root-first) and preceding siblings of one entry,
-    /// rebuilt from paths. Matching needs both: `.a > .b` walks ancestors and
-    /// `.a + .b` walks siblings, and an ancestor's own preceding siblings ride
-    /// along in [`AncNode::prev`] so a sibling combinator above a descendant hop
-    /// still resolves.
-    fn context_of(&self, entry: &ElementEntry) -> (Vec<AncNode>, Vec<ElemDesc>) {
-        // From 0, so the root is an ancestor like any other. The root's own
-        // path is empty, and starting at 1 skipped exactly it: `.app .row`
-        // matched nothing from a handler while the stylesheet painted it, so
-        // the two disagreed about the same document. A node at the root gets
-        // `0..0` and still has no ancestors, which is correct.
-        let ancestors = (0..entry.path.len())
-            .map(|depth| {
-                let at = &entry.path[..depth];
-                AncNode {
-                    desc: self.at(at).cloned().unwrap_or_else(ElemDesc::unknown),
-                    prev: self.siblings_before(at),
-                    form: None,
-                }
-            })
-            .collect();
-        (ancestors, self.siblings_before(&entry.path))
-    }
-
-    fn at(&self, path: &[usize]) -> Option<&ElemDesc> {
-        self.entries.iter().find(|e| e.path == path).map(|e| &e.desc)
-    }
-
-    /// The rendered siblings preceding `path`, in document order. A sibling
-    /// shares the parent prefix and sits at a lower index.
-    fn siblings_before(&self, path: &[usize]) -> Vec<ElemDesc> {
-        let Some((&last, parent)) = path.split_last() else {
-            return Vec::new();
-        };
-        self.entries
-            .iter()
-            .filter(|e| {
-                e.path.len() == path.len()
-                    && e.path.starts_with(parent)
-                    && e.path[parent.len()] < last
-            })
-            .map(|e| e.desc.clone())
-            .collect()
     }
 }
 
@@ -2888,11 +2899,34 @@ struct ElemDesc {
 #[derive(Debug, Clone, PartialEq)]
 struct AncNode {
     desc: ElemDesc,
-    prev: Vec<ElemDesc>,
+    prev: Siblings,
     /// This ancestor's tree path, when it is a `role="form"`: the form a
     /// field below it belongs to. Only the build fills it in; a query's
     /// match context has no use for it.
     form: Option<Vec<usize>>,
+}
+
+/// The siblings before an element, in order: the first `len` of its
+/// parent's children. Shared, so a query over a long list copies each
+/// parent's children once rather than once per child.
+#[derive(Debug, Clone, PartialEq)]
+struct Siblings {
+    all: Rc<[ElemDesc]>,
+    len: usize,
+}
+
+impl std::ops::Deref for Siblings {
+    type Target = [ElemDesc];
+    fn deref(&self) -> &[ElemDesc] {
+        &self.all[..self.len]
+    }
+}
+
+impl From<Vec<ElemDesc>> for Siblings {
+    fn from(v: Vec<ElemDesc>) -> Self {
+        let len = v.len();
+        Siblings { all: v.into(), len }
+    }
 }
 
 /// The form a field built here belongs to: the nearest `role="form"` above.
@@ -4683,7 +4717,7 @@ fn build_text(
             text: own_text,
         };
         let siblings = if KEEP_SIBLINGS.with(std::cell::Cell::get) { prev.to_vec() } else { Vec::new() };
-        ancestors.push(AncNode { desc, prev: siblings, form: None });
+        ancestors.push(AncNode { desc, prev: siblings.into(), form: None });
         let plain = instance.is_none() && slot.is_none() && outlet.is_none() && row.is_none();
         let (children, structural_deps) = build_children(
             &element_children(el),
@@ -5720,7 +5754,7 @@ fn build_node_inner(
     // them. The copy was the build's largest cost: row `i` of a list copied
     // the `i` rows before it, so a 300-row list copied 45,000 of them a build.
     let siblings = if KEEP_SIBLINGS.with(std::cell::Cell::get) { prev.to_vec() } else { Vec::new() };
-    ancestors.push(AncNode { desc, prev: siblings, form: is_form.then(|| path.to_vec()) });
+    ancestors.push(AncNode { desc, prev: siblings.into(), form: is_form.then(|| path.to_vec()) });
     let element_children = element_children(el);
     let child_inherited = Inherited {
         color,
@@ -12216,7 +12250,7 @@ mod tests {
     }
 
     fn anc(spec: &str, prev: &[&str]) -> AncNode {
-        AncNode { desc: el(spec), prev: prev.iter().map(|s| el(s)).collect(), form: None }
+        AncNode { desc: el(spec), prev: prev.iter().map(|s| el(s)).collect::<Vec<_>>().into(), form: None }
     }
 
     /// `selector` against element `target` with the given ancestor chain
