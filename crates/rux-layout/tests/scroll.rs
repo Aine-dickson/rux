@@ -283,3 +283,32 @@ fn a_fixed_box_stays_put_when_the_screen_itself_scrolls() {
     assert_eq!(y_of(1.0), 0.0, "the fixed header is still at the top of the window");
     assert_eq!(y_of(0.0), -500.0, "the content beside it scrolled");
 }
+
+/// A scroller wider and taller than its box, that scrolls only down: the
+/// sideways overflow is clipped, with no range to travel (`overflow-x:
+/// hidden; overflow-y: auto`).
+#[test]
+fn an_axis_that_only_clips_has_no_range() {
+    let mut measure = |_: &rux_layout::TextContent, _: Option<f32>| (0.0, 0.0);
+    let wide = boxed(
+        Style { width: Some(Len::Px(600.0)), height: Some(Len::Px(500.0)), shrink: 0.0, ..Default::default() },
+        vec![],
+    );
+    let scroller = |overflow_x: Option<Overflow>| {
+        boxed(
+            Style {
+                width: Some(Len::Px(300.0)),
+                height: Some(Len::Px(200.0)),
+                overflow: Overflow::Scroll,
+                overflow_x,
+                ..Default::default()
+            },
+            vec![wide.clone()],
+        )
+    };
+    let screen = |s: Node| boxed(Style { display: Display::Flex, axis: Axis::Column, ..Default::default() }, vec![s]);
+    let both = layout_scrolled(&screen(scroller(None)), 400.0, 600.0, &[], &mut measure);
+    assert_eq!((both.scrolls[0].max.x, both.scrolls[0].max.y), (300.0, 300.0));
+    let down = layout_scrolled(&screen(scroller(Some(Overflow::Clip))), 400.0, 600.0, &[], &mut measure);
+    assert_eq!((down.scrolls[0].max.x, down.scrolls[0].max.y), (0.0, 300.0), "sideways is clipped, not scrolled");
+}

@@ -963,10 +963,11 @@ drag-selects.
   once a tag carrying it has been deployed, because the playground is built from
   the latest release rather than from `main`, and a tag push does not itself
   trigger a deploy.
-- Text editing: no word-wise movement (Ctrl+arrows), no triple-click line-select,
-  no drag-and-drop of selected text.
-- Scrolling: no track-click paging, no kinetic touch fling, no scrollbar
-  hover/fade, and `overflow-x` / `overflow-y` can't differ from each other.
+- ~~Text editing: no word-wise movement (Ctrl+arrows), no triple-click line-select,
+  no drag-and-drop of selected text.~~ Built in v0.9.
+- ~~Scrolling: no track-click paging, no kinetic touch fling, no scrollbar
+  hover/fade, and `overflow-x` / `overflow-y` can't differ from each other.~~
+  Built: fling in v0.8, the rest in v0.9.
 - CSS: `box-shadow`, `position`/`top`/`left`, per-corner radius, per-side border
   *colors*.
 - ~~True inline text-flow.~~ Built in v0.9: a `<text>` inside a `<text>`, and

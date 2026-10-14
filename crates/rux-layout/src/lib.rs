@@ -276,6 +276,28 @@ pub enum Overflow {
     Scroll,
 }
 
+/// What the layout keeps of a scroller's style until its region is made.
+#[derive(Clone, Copy, Debug)]
+struct ScrollFacts {
+    id: NodeId,
+    rtl: bool,
+    axes: (bool, bool),
+    contain: (bool, bool),
+    bar: Scrollbar,
+}
+
+impl Style {
+    /// Whether the box scrolls sideways: `overflow-x`, else `overflow`.
+    pub fn scrolls_x(&self) -> bool {
+        self.overflow_x.unwrap_or(self.overflow) == Overflow::Scroll
+    }
+
+    /// Whether the box scrolls up and down: `overflow-y`, else `overflow`.
+    pub fn scrolls_y(&self) -> bool {
+        self.overflow_y.unwrap_or(self.overflow) == Overflow::Scroll
+    }
+}
+
 /// The mouse cursor shown while the pointer is over a box (`cursor`). Only the
 /// values the shell maps to a winit `CursorIcon` are modelled; the default is
 /// the arrow.
@@ -738,7 +760,21 @@ pub struct Style {
     /// `justify-items` (grid) and `align-content` (multi-line flex / grid).
     pub justify_items: Option<Align>,
     pub align_content: Option<Justify>,
+    /// What the box does with content past its edges, taken as a whole: it
+    /// clips if either axis does, and is a scroller if either axis scrolls.
     pub overflow: Overflow,
+    /// An axis that differs from `overflow`: `overflow-x: hidden;
+    /// overflow-y: auto` is a scroller (`overflow`) that does not scroll
+    /// sideways (`overflow_x`). `None` is `overflow`. See [`Style::scrolls_x`].
+    pub overflow_x: Option<Overflow>,
+    pub overflow_y: Option<Overflow>,
+    /// `overscroll-behavior`, per axis (x, y): `contain` or `none` keeps a
+    /// scroller's leftover movement from passing to the one around it.
+    pub overscroll_contain: (bool, bool),
+    pub scrollbar_width: ScrollbarWidth,
+    /// `scrollbar-color`: thumb, then track. Boxed, as the rarely set
+    /// fields of `Style` are, to keep it small (watchlist #41).
+    pub scrollbar_color: Option<Box<(Rgba, Rgba)>>,
     pub background: Option<Background>,
     /// `border-radius`, per corner (top-left, top-right, bottom-right, bottom-left).
     pub radius: Corners,
@@ -887,6 +923,11 @@ impl Default for Style {
             justify_items: None,
             align_content: None,
             overflow: Overflow::Visible,
+            overflow_x: None,
+            overflow_y: None,
+            overscroll_contain: (false, false),
+            scrollbar_width: ScrollbarWidth::Auto,
+            scrollbar_color: None,
             background: None,
             radius: [0.0; 4],
             radius_pct: [None; 4],
@@ -2003,6 +2044,31 @@ pub struct ScrollRegion {
     /// keyboard turns the sign round on that axis, and its thumb starts at the
     /// right.
     pub rtl: bool,
+    /// Per axis (x, y), whether movement it cannot take stays with it rather
+    /// than passing to the scroller around it: `overscroll-behavior: contain`
+    /// or `none`.
+    pub contain: (bool, bool),
+    /// How its scrollbars are drawn: `scrollbar-width` and `scrollbar-color`.
+    pub bar: Scrollbar,
+}
+
+/// `scrollbar-width` and `scrollbar-color` for one scroller.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Scrollbar {
+    pub width: ScrollbarWidth,
+    /// The thumb's colour and the track's, as `scrollbar-color` writes them.
+    /// `None` is `auto`: the shell's own.
+    pub color: Option<(Rgba, Rgba)>,
+}
+
+/// `scrollbar-width`: `auto`, `thin`, or `none`, which draws no bar and still
+/// scrolls.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ScrollbarWidth {
+    #[default]
+    Auto,
+    Thin,
+    None,
 }
 
 impl ScrollRegion {
@@ -2557,15 +2623,9 @@ fn to_taffy(style: &Style, vp: (f32, f32)) -> taffy::Style {
         // taffy needs to know the box scrolls: it then sizes the box from its own
         // width/height (not its content) and reports its scrollable overflow,
         // which is how far we can scroll (`scroll_extent`).
-        overflow: match style.overflow {
-            Overflow::Scroll => Point {
-                x: taffy::Overflow::Scroll,
-                y: taffy::Overflow::Scroll,
-            },
-            _ => Point {
-                x: taffy::Overflow::Visible,
-                y: taffy::Overflow::Visible,
-            },
+        overflow: {
+            let axis = |scrolls: bool| if scrolls { taffy::Overflow::Scroll } else { taffy::Overflow::Visible };
+            Point { x: axis(style.scrolls_x()), y: axis(style.scrolls_y()) }
         },
         flex_grow: style.grow,
         flex_shrink: style.shrink,
@@ -2881,6 +2941,10 @@ struct At {
     scroll: bool,
     /// A scroller whose content starts at its right: see `ScrollRegion::rtl`.
     scroll_rtl: bool,
+    /// Which axes a scroller scrolls: the other has no range to travel.
+    scroll_axes: (bool, bool),
+    scroll_contain: (bool, bool),
+    scroll_bar: Scrollbar,
     stack: Stack,
     /// Into `Anchoring::names`, when this box is an anchor.
     anchor_name: Option<u32>,
@@ -2926,7 +2990,7 @@ fn index(
     focus_labels: &[(NodeId, String, Option<String>)],
     hidden: &[NodeId],
     opacities: &[(NodeId, f32)],
-    scrolls: &[(NodeId, bool)],
+    scrolls: &[ScrollFacts],
     transforms: &[(NodeId, Transform)],
     states: &[(NodeId, Vec<usize>)],
     access: &[(NodeId, Access, Option<String>)],
@@ -2964,10 +3028,13 @@ fn index(
     for id in hidden {
         at.entry(*id).or_default().hidden = true;
     }
-    for (id, rtl) in scrolls {
-        let a = at.entry(*id).or_default();
+    for f in scrolls {
+        let a = at.entry(f.id).or_default();
         a.scroll = true;
-        a.scroll_rtl = *rtl;
+        a.scroll_rtl = f.rtl;
+        a.scroll_axes = f.axes;
+        a.scroll_contain = f.contain;
+        a.scroll_bar = f.bar;
     }
     for (id, stack) in stacks {
         at.entry(*id).or_default().stack = *stack;
@@ -3128,7 +3195,7 @@ fn build(
     focus_labels: &mut Vec<(NodeId, String, Option<String>)>,
     hidden: &mut Vec<NodeId>,
     opacities: &mut Vec<(NodeId, f32)>,
-    scrolls: &mut Vec<(NodeId, bool)>,
+    scrolls: &mut Vec<ScrollFacts>,
     transforms: &mut Vec<(NodeId, Transform)>,
     states: &mut Vec<(NodeId, Vec<usize>)>,
     access: &mut Vec<(NodeId, Access, Option<String>)>,
@@ -3458,7 +3525,16 @@ fn build(
         transforms.push((id, tf));
     }
     if node.style.overflow == Overflow::Scroll {
-        scrolls.push((id, node.style.direction == Direction::Rtl));
+        scrolls.push(ScrollFacts {
+            id,
+            rtl: node.style.direction == Direction::Rtl,
+            axes: (node.style.scrolls_x(), node.style.scrolls_y()),
+            contain: node.style.overscroll_contain,
+            bar: Scrollbar {
+                width: node.style.scrollbar_width,
+                color: node.style.scrollbar_color.as_deref().copied(),
+            },
+        });
     }
     if node.style.position.is_sticky() {
         // Resolved to px here, where the viewport is in hand, so `collect` can
@@ -4411,9 +4487,12 @@ fn collect(
         // for block alone). Its rectangle starts at the padding box, so the
         // border goes on both ends here: see `scroll_extent`.
         let (content_width, content_height) = scroll_extent(layout, at.scroll_rtl);
+        // An axis that only clips has nowhere to travel, so nothing (wheel,
+        // finger, scrollbar) moves it.
+        let (sx, sy) = at.scroll_axes;
         let max = Offset {
-            x: (content_width - layout.size.width).max(0.0),
-            y: (content_height - layout.size.height).max(0.0),
+            x: if sx { (content_width - layout.size.width).max(0.0) } else { 0.0 },
+            y: if sy { (content_height - layout.size.height).max(0.0) } else { 0.0 },
         };
         shift = offsets.get(sid).copied().unwrap_or_default().clamp_to(max);
         walk.scrolls[sid] = Some(ScrollRegion {
@@ -4431,6 +4510,8 @@ fn collect(
             max,
             within: inside_scroll,
             rtl: at.scroll_rtl,
+            contain: at.scroll_contain,
+            bar: at.scroll_bar,
         });
     }
 
@@ -5051,6 +5132,8 @@ mod reveal_tests {
             max: Offset { x: 0.0, y: 600.0 },
             within: None,
             rtl: false,
+            contain: (false, false),
+            bar: Scrollbar::default(),
         }]
     }
 
@@ -5117,6 +5200,8 @@ mod reveal_tests {
             max: Offset { x: 0.0, y: 300.0 },
             within: Some(0),
             rtl: false,
+            contain: (false, false),
+            bar: Scrollbar::default(),
         });
         let offsets = vec![Offset { x: 0.0, y: 0.0 }, Offset { x: 0.0, y: 0.0 }];
         assert_eq!(containing_scroller(&scrolls, &offsets, 40.0, 500.0), Some(1));

@@ -23,7 +23,7 @@ use rux_layout::{
 };
 use rux_layout::{AnimProp, Easing, GradientKind, GridFlow, Transform, Transition};
 use rux_layout::{FillRule, InputKind, LineCap, LineJoin, Outline, PathContent};
-use rux_layout::{AnchorRef, AnchorSide, AnchorSize};
+use rux_layout::{AnchorRef, AnchorSide, AnchorSize, ScrollbarWidth};
 use rux_parser::{Element, Node as TplNode, Sfc};
 use rux_reactive::Value;
 /// Re-exported so the runtime and the shell can name a warning without
@@ -3666,6 +3666,9 @@ const HONORED_PROPERTIES: &[&str] = &[
     "border-top-width", "border-right-width", "border-bottom-width", "border-left-width",
     "overflow", "overflow-x", "overflow-y", "opacity", "cursor", "touch-action", "box-shadow", "transform",
     "transition",
+    // Scrolling
+    "overscroll-behavior", "overscroll-behavior-x", "overscroll-behavior-y",
+    "scrollbar-width", "scrollbar-color",
     "outline", "outline-color", "outline-offset", "outline-style", "outline-width",
     // Flex / grid
     "flex", "flex-grow", "flex-shrink", "flex-basis", "flex-wrap", "flex-direction",
@@ -8766,19 +8769,8 @@ fn interpret(p: &HashMap<String, String>) -> Style {
             st.radius_pct[i] = Some(pct);
         }
     }
-    // `auto`/`scroll` scroll (and clip); `hidden`/`clip` only clip. Any axis
-    // saying so is enough, we have no per-axis overflow yet.
-    let values = ["overflow", "overflow-x", "overflow-y"]
-        .iter()
-        .filter_map(|k| p.get(*k))
-        .map(|v| v.trim());
-    for v in values {
-        match v {
-            "auto" | "scroll" => st.overflow = Overflow::Scroll,
-            "hidden" | "clip" if st.overflow != Overflow::Scroll => st.overflow = Overflow::Clip,
-            _ => {}
-        }
-    }
+    overflow_axes(p, &mut st);
+    scroll_style(p, &mut st);
     if let Some(v) = p.get("touch-action") {
         // Which axes a scroller may still take from a finger that starts here.
         // `manipulation` is accepted as a synonym for `auto`: on the web it only
@@ -9742,6 +9734,76 @@ fn gap_length(value: &str) -> Option<(f32, Option<f32>)> {
 /// draws. `none` is spelled the way SVG spells it and is the only way to turn
 /// a fill off; an unreadable colour leaves the property alone rather than
 /// blanking it, so a typo shows the previous value rather than an empty box.
+/// `overflow`, `overflow-x` and `overflow-y`, each axis on its own. The
+/// shorthand takes one value for both or two (`x y`), and a longhand beside it
+/// wins (the map has lost which came later, and the longhand is the one written
+/// to narrow the other). `auto`/`scroll` scroll and clip, `hidden`/`clip` only
+/// clip.
+///
+/// As CSS computes it, `visible` beside an axis that is `hidden`, `auto` or
+/// `scroll` is `auto`: a box cannot both show what overflows on one axis and
+/// clip on the other, so `overflow-y: auto` alone scrolls sideways too when
+/// its content is wider. Beside `clip` it stays `visible`, but a clip in Rux is
+/// the whole box, so it clips that axis as well: written down in
+/// `docs/05-as-built.md`.
+fn overflow_axes(p: &HashMap<String, String>, st: &mut Style) {
+    let short: Vec<&str> = p.get("overflow").map(|v| v.split_whitespace().collect()).unwrap_or_default();
+    let x = p.get("overflow-x").map(|v| v.trim()).or(short.first().copied());
+    let y = p.get("overflow-y").map(|v| v.trim()).or(short.get(1).or(short.first()).copied());
+    if x.is_none() && y.is_none() {
+        return;
+    }
+    let (x, y) = (x.unwrap_or("visible"), y.unwrap_or("visible"));
+    let lifts = |other: &str| matches!(other, "hidden" | "auto" | "scroll");
+    let kind = |v: &str, other: &str| match v {
+        "auto" | "scroll" => Overflow::Scroll,
+        "hidden" | "clip" => Overflow::Clip,
+        "visible" if lifts(other) => Overflow::Scroll,
+        _ => Overflow::Visible,
+    };
+    let (kx, ky) = (kind(x, y), kind(y, x));
+    st.overflow = if kx == Overflow::Scroll || ky == Overflow::Scroll {
+        Overflow::Scroll
+    } else if kx == Overflow::Clip || ky == Overflow::Clip {
+        Overflow::Clip
+    } else {
+        Overflow::Visible
+    };
+    st.overflow_x = (kx != st.overflow).then_some(kx);
+    st.overflow_y = (ky != st.overflow).then_some(ky);
+}
+
+/// `overscroll-behavior` (one value for both axes, or `x y`) and its `-x` and
+/// `-y` longhands, `scrollbar-width` and `scrollbar-color`.
+///
+/// `contain` and `none` are the same here: they differ in whether the box
+/// shows its own end-of-scroll effect, and Rux draws none yet.
+fn scroll_style(p: &HashMap<String, String>, st: &mut Style) {
+    let short: Vec<&str> =
+        p.get("overscroll-behavior").map(|v| v.split_whitespace().collect()).unwrap_or_default();
+    let x = p.get("overscroll-behavior-x").map(|v| v.trim()).or(short.first().copied());
+    let y = p.get("overscroll-behavior-y").map(|v| v.trim()).or(short.get(1).or(short.first()).copied());
+    let keeps = |v: Option<&str>| matches!(v, Some("contain" | "none"));
+    st.overscroll_contain = (keeps(x), keeps(y));
+    if let Some(v) = p.get("scrollbar-width") {
+        st.scrollbar_width = match v.trim() {
+            "thin" => ScrollbarWidth::Thin,
+            "none" => ScrollbarWidth::None,
+            _ => ScrollbarWidth::Auto,
+        };
+    }
+    // Two colours, thumb then track; `auto` is the shell's own. A colour may
+    // have spaces inside it (`rgb(0 0 0)`), so split outside parentheses.
+    if let Some(v) = p.get("scrollbar-color") {
+        let parts = split_top_level(v.trim());
+        if let [thumb, track] = parts.as_slice() {
+            if let (Some(a), Some(b)) = (parse_color(thumb), parse_color(track)) {
+                st.scrollbar_color = Some(Box::new((a, b)));
+            }
+        }
+    }
+}
+
 fn interpret_path_paint(p: &HashMap<String, String>, st: &mut Style) {
     if let Some(v) = p.get("fill") {
         st.fill = if v.trim().eq_ignore_ascii_case("none") {
@@ -12640,5 +12702,37 @@ mod run_state_tests {
             isolates,
             [Isolate::None, Isolate::Ltr, Isolate::None, Isolate::Auto, Isolate::None, Isolate::None]
         );
+    }
+}
+
+#[cfg(test)]
+mod overflow_tests {
+    use std::collections::HashMap;
+
+    use rux_layout::{Overflow, Style};
+
+    fn axes(decls: &[(&str, &str)]) -> (Overflow, Option<Overflow>, Option<Overflow>) {
+        let p: HashMap<String, String> = decls.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        let mut st = Style::default();
+        super::overflow_axes(&p, &mut st);
+        (st.overflow, st.overflow_x, st.overflow_y)
+    }
+
+    #[test]
+    fn each_axis_on_its_own() {
+        use Overflow::*;
+        assert_eq!(axes(&[("overflow", "auto")]), (Scroll, None, None));
+        assert_eq!(axes(&[("overflow", "hidden")]), (Clip, None, None));
+        // One scrolls, the other clips: a scroller that does not scroll sideways.
+        assert_eq!(axes(&[("overflow-x", "hidden"), ("overflow-y", "auto")]), (Scroll, Some(Clip), None));
+        assert_eq!(axes(&[("overflow", "hidden auto")]), (Scroll, Some(Clip), None));
+        // A longhand narrows the shorthand.
+        assert_eq!(axes(&[("overflow", "auto"), ("overflow-x", "hidden")]), (Scroll, Some(Clip), None));
+        // `visible` beside `hidden`/`auto` is `auto`, as CSS computes it.
+        assert_eq!(axes(&[("overflow-y", "auto")]), (Scroll, None, None));
+        assert_eq!(axes(&[("overflow-y", "hidden")]), (Scroll, None, Some(Clip)));
+        // Beside `clip` it stays `visible`.
+        assert_eq!(axes(&[("overflow-y", "clip")]), (Clip, Some(Visible), None));
+        assert!(Style { overflow: Scroll, overflow_x: Some(Clip), ..Default::default() }.scrolls_y());
     }
 }

@@ -2550,6 +2550,33 @@ a word moving as it is). Driven in a desktop window on a probe of three fields
 | Undo | move `green` within its field, Ctrl+Z | `red green blue`, `green` selected again | desktop: pass |
 | Web, Android | the same page | the same | not driven; a finger's press in a selection is the long-press menu, not a drag |
 
+## Scrolling: each axis, chaining, scrollbars, 2026-10-14
+
+Roadmap v0.9 item 4, steps 1 to 3 (owner: "cover step 1-3", and
+`scrollbar-width` / `scrollbar-color` in the same run). Under test in
+`rux-style` (`overflow_tests`: the axes, the shorthand's two values, a longhand
+beside it, `visible` beside `hidden`/`auto` and beside `clip`), `rux-layout`
+(`tests/scroll.rs` `an_axis_that_only_clips_has_no_range`) and `rux-shell`
+(`bar_tests`: four, on the fade, thin and wide, `none`, and `scrollbar-color`).
+Driven in a desktop window on a probe page that scrolls, holding four lists:
+A plain, B `overscroll-behavior: contain`, C `overflow-x: hidden; overflow-y:
+auto` with wide rows and `scrollbar-color: #e01010 #ffd0d0`, D
+`scrollbar-width: none`. Wheel notches sent with `mouse_event`.
+
+| Case | Steps | Expected | Result |
+|---|---|---|---|
+| Chaining | 25 notches down over A | A to `a 12`, then the page scrolls on | desktop: pass |
+| The run stays with A | the same | list B, sliding under the pointer as the page moves, is not scrolled | desktop: pass (the first drive scrolled B to its end; fixed by the wheel latch) |
+| `contain` | 25 notches over B in a fresh window | B to `b 12`, the page does not move | desktop: pass |
+| Bars show, then fade | a shot during the notches, another a second after | bars on A and the page, then none | desktop: pass |
+| One axis | C's rows are wider than C | no sideways bar, the rows cut at C's edge | desktop: pass |
+| Hover and colour | the pointer in C's bar lane | a wide red bar on a pink track; thin and red once the pointer leaves | desktop: pass |
+| `scrollbar-width: none` | 3 notches over D | D scrolls, no bar | desktop: pass |
+| A track click | click on A's lane below the thumb | A pages down, `a 1` to `a 5` | desktop: pass |
+| A thumb drag | drag A's thumb to the bottom | `a 12` | desktop: pass |
+| A held track | hold the press on the track | pages on until the thumb reaches the pointer | under the code only (not driven) |
+| Touch chaining, web, Android | a finger on A | the same chaining | not driven |
+
 ## Standing gaps
 
 Cases nothing here can currently exercise. They are the shape of what v0.8 has

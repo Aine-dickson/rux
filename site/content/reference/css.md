@@ -51,7 +51,9 @@ padding-block, padding-block-start, padding-block-end   (logical)
 text-decoration, text-decoration-line (underline / line-through; the longhand
                        wins where both are set)  (color: hex, rgb()/rgba(), CSS names)
 overflow, overflow-x, overflow-y     (hidden|clip = clip; auto|scroll = scroll;
-                                      both axes together; x and y can't differ)
+                                      each axis on its own; `overflow: x y`)
+overscroll-behavior, -x, -y   (auto | contain | none; contain and none alike)
+scrollbar-width (auto | thin | none), scrollbar-color (thumb track | auto)
 overflow-wrap (break-word), word-wrap (the legacy alias for it), word-break (break-all)
 cursor (pointer, on @tap boxes only)
 touch-action (auto | none | pan-x | pan-y; who wins between a @drag and a

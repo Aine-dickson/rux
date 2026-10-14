@@ -30,6 +30,7 @@ mod dialogs;
 mod settings;
 
 pub use settings::set_app_id;
+use std::collections::HashMap;
 use std::num::NonZeroUsize;
 use std::path::Path;
 #[cfg(not(target_arch = "wasm32"))]
@@ -487,8 +488,20 @@ fn dropdown_row(sel: &SelectRegion, i: usize) -> (f32, f32, f32, f32) {
     )
 }
 
-/// Thickness of a scrollbar, in logical px.
-const BAR_W: f32 = 8.0;
+/// Width of a scrollbar's lane, in logical px: the strip along a scroller's
+/// edge that a pointer can press, and as wide as a bar is ever drawn.
+const BAR_W: f32 = 10.0;
+/// How long a scroller's bars stay after it last moved, or the pointer last
+/// moved over it, before they fade.
+const BAR_SHOW: Duration = Duration::from_millis(1000);
+/// How long they take to fade.
+const BAR_FADE: Duration = Duration::from_millis(300);
+/// A press on a track pages, and held, pages again after this and then every
+/// [`BAR_PAGE_REPEAT`] until the thumb reaches the pointer.
+const BAR_PAGE_DELAY: Duration = Duration::from_millis(400);
+const BAR_PAGE_REPEAT: Duration = Duration::from_millis(60);
+/// How long after a wheel notch the next one still belongs to the same run.
+const WHEEL_LATCH: Duration = Duration::from_millis(300);
 /// Shortest a thumb may get, however long the content is.
 const BAR_MIN_THUMB: f32 = 24.0;
 /// One line of scroll travel, the wheel's unit, and the arrow keys'.
@@ -588,6 +601,17 @@ enum Axis2 {
     Y,
 }
 
+/// A press on a scrollbar's track, outside its thumb: a page toward the
+/// press, and while it is held, another every [`BAR_PAGE_REPEAT`].
+#[derive(Clone, Copy, Debug)]
+struct BarPaging {
+    id: usize,
+    axis: Axis2,
+    /// Which way the thumb travels on screen: -1 toward the start, 1 the end.
+    toward: f32,
+    next: Instant,
+}
+
 /// An in-progress drag of a scrollbar thumb.
 #[derive(Clone, Copy, Debug)]
 struct BarDrag {
@@ -651,42 +675,95 @@ fn to_affine(m: Option<rux_layout::Transform>) -> Affine {
     }
 }
 
-/// Paint items for every visible scrollbar: a faint track with a lighter thumb,
-/// drawn over the content so a scroller's own clip can't eat them.
-fn scrollbar_paints(scrolls: &[ScrollRegion], offsets: &[Offset], alpha: f32) -> Vec<Paint> {
-    let track_bg = Rgba::new(1.0, 1.0, 1.0, 0.05 * alpha);
-    let thumb_bg = Rgba::new(0.80, 0.84, 0.96, 0.35 * alpha); // #cdd6f4 at 35%
+/// Paint items for one scroller's bars: a thumb, and under the pointer a
+/// faint track, drawn over the content so the scroller's own clip can't eat
+/// them. `fade` is how much of the bar is showing (see [`bar_fade`]), and
+/// `hovered` the axis whose lane the pointer is in, whose bar is drawn wide.
+///
+/// The bar sits at the far edge of its lane ([`BAR_W`]): thin at rest, the
+/// lane's width under the pointer, as Windows 11, macOS and Android draw
+/// theirs. Its colours are `scrollbar-color`'s, else a grey that shows on a
+/// light page and a dark one alike.
+fn scrollbar_paints(r: &ScrollRegion, offset: Offset, fade: f32, hovered: Option<Axis2>) -> Vec<Paint> {
     let mut out = Vec::new();
-    for r in scrolls {
-        let offset = offsets.get(r.id).copied().unwrap_or_default();
-        for axis in [Axis2::Y, Axis2::X] {
-            let Some((thx, thy, thw, thh)) = bar_thumb(r, offset, axis) else {
-                continue;
-            };
-            let (tx, ty, tw, th) = bar_track(r, axis);
-            out.push(Paint::Rect(PaintRect {
-                x: tx,
-                y: ty,
-                width: tw,
-                height: th,
-                background: Some(Background::Color(track_bg)),
-                radius: [BAR_W / 2.0; 4],
+    if fade <= 0.001 || r.bar.width == rux_layout::ScrollbarWidth::None {
+        return out;
+    }
+    let (thumb, track) = r.bar.color.unwrap_or((
+        Rgba::new(0.5, 0.5, 0.5, 0.6),
+        Rgba::new(0.5, 0.5, 0.5, 0.15),
+    ));
+    let faded = |c: Rgba| Rgba::new(c.r, c.g, c.b, c.a * fade);
+    for axis in [Axis2::Y, Axis2::X] {
+        let Some((thx, thy, thw, thh)) = bar_thumb(r, offset, axis) else {
+            continue;
+        };
+        let wide = hovered == Some(axis);
+        let thick = bar_thickness(r.bar.width, wide);
+        // From the lane down to the bar: kept at the box's far edge.
+        let inset = BAR_W - thick;
+        let narrow = |(x, y, w, h): (f32, f32, f32, f32)| match axis {
+            Axis2::Y => (x + inset, y, w - inset, h),
+            Axis2::X => (x, y + inset, w, h - inset),
+        };
+        let rect = |(x, y, width, height): (f32, f32, f32, f32), color: Rgba| {
+            Paint::Rect(PaintRect {
+                x,
+                y,
+                width,
+                height,
+                background: Some(Background::Color(faded(color))),
+                radius: [thick / 2.0; 4],
                 border: Sides::ZERO,
                 border_color: None,
-            }));
-            out.push(Paint::Rect(PaintRect {
-                x: thx,
-                y: thy,
-                width: thw,
-                height: thh,
-                background: Some(Background::Color(thumb_bg)),
-                radius: [BAR_W / 2.0; 4],
-                border: Sides::ZERO,
-                border_color: None,
-            }));
+            })
+        };
+        if wide {
+            out.push(rect(narrow(bar_track(r, axis)), track));
         }
+        out.push(rect(narrow((thx, thy, thw, thh)), thumb));
     }
     out
+}
+
+/// How thick a bar is drawn: thin at rest, wider under the pointer.
+fn bar_thickness(width: rux_layout::ScrollbarWidth, wide: bool) -> f32 {
+    match (width, wide) {
+        (rux_layout::ScrollbarWidth::Thin, false) => 4.0,
+        (rux_layout::ScrollbarWidth::Thin, true) => 6.0,
+        (_, false) => 6.0,
+        (_, true) => BAR_W,
+    }
+}
+
+/// How much of a scroller's bar shows, from when it last scrolled or the
+/// pointer last moved over it: all of it for [`BAR_SHOW`], then fading out
+/// over [`BAR_FADE`]. `held` (the bar is hovered, dragged or paging) keeps it.
+fn bar_fade(seen: Option<Instant>, held: bool) -> f32 {
+    if held {
+        return 1.0;
+    }
+    let Some(at) = seen else { return 0.0 };
+    let t = at.elapsed();
+    if t <= BAR_SHOW {
+        1.0
+    } else {
+        let into = (t - BAR_SHOW).as_secs_f32() / BAR_FADE.as_secs_f32();
+        (1.0 - into).clamp(0.0, 1.0)
+    }
+}
+
+/// The axis whose lane `(px, py)` is in, for a bar that is drawn at all.
+fn bar_lane_at(r: &ScrollRegion, offset: Offset, px: f32, py: f32) -> Option<Axis2> {
+    if r.bar.width == rux_layout::ScrollbarWidth::None {
+        return None;
+    }
+    [Axis2::Y, Axis2::X].into_iter().find(|&axis| {
+        bar_thumb(r, offset, axis).is_some() && {
+            let (x, y, w, h) = bar_track(r, axis);
+            px >= x && px <= x + w && py >= y && py <= y + h
+        }
+    })
 }
 
 /// Paint items for an open dropdown: a single floating panel with a shadow, the
@@ -1639,6 +1716,16 @@ struct App {
     layout_state: rux_layout::LayoutState,
     /// The scrollbar thumb being dragged, if any.
     bar_drag: Option<BarDrag>,
+    /// When each scroller (by id) last scrolled, or had the pointer move over
+    /// it: what its bars fade from. See [`bar_fade`].
+    bar_seen: HashMap<usize, Instant>,
+    /// The scroller and axis whose bar lane the pointer is in: drawn wide.
+    bar_hover: Option<(usize, Axis2)>,
+    /// A press on a track, paging toward the pointer while it is held.
+    bar_paging: Option<BarPaging>,
+    /// The scroller a run of wheel notches started on, when the last notch
+    /// came, and where the pointer was. See [`App::scroll_wheel`].
+    wheel_latch: Option<(usize, Instant, (f64, f64))>,
     /// Where the finger last was during a touch drag, in logical px.
     touch: Option<(f32, f32)>,
     /// Recent finger positions with the time each arrived, for the lift
@@ -1912,6 +1999,10 @@ impl App {
             offsets: Vec::new(),
             layout_state: rux_layout::LayoutState::new(),
             bar_drag: None,
+            bar_seen: HashMap::new(),
+            bar_hover: None,
+            bar_paging: None,
+            wheel_latch: None,
             gesture: None,
             gesture_deadline: None,
             points: Vec::new(),
@@ -2135,30 +2226,83 @@ impl App {
     /// end) → nothing happens, and no repaint is queued.
     fn scroll_at(&mut self, pointer: (f64, f64), dx: f32, dy: f32) {
         let (px, py) = self.logical(pointer);
-        // Innermost wins: scrollers are pushed parent-first, so search backwards.
-        let Some(region) = self
-            .scrolls
-            .iter()
-            .rev()
-            .find(|s| s.contains(px, py) && s.scrollable())
-        else {
+        // Innermost first: scrollers are pushed parent-first, so search
+        // backwards for the one under the pointer, then go outwards through
+        // the scrollers it sits in.
+        let Some(first) = self.scrolls.iter().rev().find(|s| s.contains(px, py)).map(|s| s.id) else {
             return;
         };
-        let (id, max) = (region.id, region.max);
-        // Moving the view right is moving towards a right-to-left box's start.
-        let dx = if region.rtl { -dx } else { dx };
+        self.scroll_chain_from(first, dx, dy);
+    }
+
+    /// The wheel: as [`App::scroll_at`], but a run of notches stays with the
+    /// scroller it started on, as a browser's does. Without it a page that a
+    /// list has handed its scroll to slides the next list under the pointer,
+    /// and that list takes the rest of the turn. A pause of [`WHEEL_LATCH`],
+    /// or the pointer moving, starts a new run.
+    fn scroll_wheel(&mut self, dx: f32, dy: f32) {
+        let now = Instant::now();
+        let latched = self
+            .wheel_latch
+            .filter(|(_, at, pointer)| now.duration_since(*at) < WHEEL_LATCH && *pointer == self.pointer)
+            .map(|(id, _, _)| id)
+            .filter(|id| self.scrolls.iter().any(|r| r.id == *id));
+        let first = match latched {
+            Some(id) => id,
+            None => {
+                let (px, py) = self.logical(self.pointer);
+                let Some(id) = self.scrolls.iter().rev().find(|s| s.contains(px, py)).map(|s| s.id) else {
+                    return;
+                };
+                id
+            }
+        };
+        self.wheel_latch = Some((first, now, self.pointer));
+        self.scroll_chain_from(first, dx, dy);
+    }
+
+    /// Move `first` by what it can take of `(dx, dy)`, and pass the rest out
+    /// through the scrollers it sits in.
+    fn scroll_chain_from(&mut self, first: usize, dx: f32, dy: f32) {
+        let mut chain = Vec::new();
+        let mut at = Some(first);
+        while let Some(id) = at.filter(|id| !chain.contains(id)) {
+            chain.push(id);
+            at = self.scrolls.iter().find(|r| r.id == id).and_then(|r| r.within);
+        }
+        // **What one scroller cannot take passes to the one around it**, as
+        // in CSS: a list at its end lets the page go on scrolling, unless
+        // it says `overscroll-behavior: contain` (or `none`) on that axis.
+        let mut rest = (dx, dy);
+        let mut moved_first = None;
+        for id in chain {
+            let Some(region) = self.scrolls.iter().find(|r| r.id == id).cloned() else { continue };
+            // Moving the view right is moving towards a right-to-left box's start.
+            let flip = if region.rtl { -1.0 } else { 1.0 };
+            let before = self.offsets.get(id).copied().unwrap_or_default();
+            let next = Offset { x: before.x + flip * rest.0, y: before.y + rest.1 }.clamp_to(region.max);
+            let took = (flip * (next.x - before.x), next.y - before.y);
+            if took.0 != 0.0 || took.1 != 0.0 {
+                self.scroll_to(id, next);
+                moved_first.get_or_insert(id);
+            }
+            rest = (rest.0 - took.0, rest.1 - took.1);
+            if region.contain.0 {
+                rest.0 = 0.0;
+            }
+            if region.contain.1 {
+                rest.1 = 0.0;
+            }
+            if rest.0.abs() < 0.01 && rest.1.abs() < 0.01 {
+                break;
+            }
+        }
         // Remembered for the fling: at lift there is no finger left to hit-test
         // with, and the box that was being scrolled is the only one that may be
         // thrown.
-        self.scroll_target = Some(id);
-        self.scroll_to(
-            id,
-            Offset {
-                x: self.offsets[id].x + dx,
-                y: self.offsets[id].y + dy,
-            }
-            .clamp_to(max),
-        );
+        if let Some(id) = moved_first {
+            self.scroll_target = Some(id);
+        }
     }
 
     /// Move scroller `id` to `next`, repainting only if it actually moved.
@@ -2166,9 +2310,108 @@ impl App {
         if self.offsets.get(id) != Some(&next) {
             if let Some(slot) = self.offsets.get_mut(id) {
                 *slot = next;
+                // Moving brings its bars up.
+                self.bar_seen.insert(id, Instant::now());
                 self.request_redraw();
             }
         }
+    }
+
+    /// The pointer moved: every scroller it is over shows its bars, and the
+    /// bar whose lane it is in is drawn wide. Repaints only when something
+    /// on screen changes, since the pointer moves far more often than that.
+    fn bars_follow_pointer(&mut self) {
+        let (px, py) = self.logical(self.pointer);
+        let now = Instant::now();
+        let mut changed = false;
+        let mut hover = None;
+        for r in &self.scrolls {
+            if !r.contains(px, py) || !r.scrollable() || r.bar.width == rux_layout::ScrollbarWidth::None {
+                continue;
+            }
+            let held = self.bar_hover.is_some_and(|(id, _)| id == r.id);
+            changed |= bar_fade(self.bar_seen.get(&r.id).copied(), held) < 1.0;
+            self.bar_seen.insert(r.id, now);
+            let offset = self.offsets.get(r.id).copied().unwrap_or_default();
+            if let Some(axis) = bar_lane_at(r, offset, px, py) {
+                hover = Some((r.id, axis));
+            }
+        }
+        if hover != self.bar_hover {
+            self.bar_hover = hover;
+            changed = true;
+        }
+        if changed {
+            self.request_redraw();
+        }
+    }
+
+    /// Whether scroller `id`'s bar is being held up: hovered, dragged, or
+    /// paging.
+    fn bar_held(&self, id: usize) -> bool {
+        self.bar_hover.is_some_and(|(h, _)| h == id)
+            || self.bar_drag.as_ref().is_some_and(|d| d.id == id)
+            || self.bar_paging.is_some_and(|p| p.id == id)
+    }
+
+    /// Page the scroller a held track belongs to once more, unless its
+    /// thumb has reached the pointer. Called when [`BarPaging::next`] is due.
+    fn page_bar(&mut self) {
+        let Some(mut paging) = self.bar_paging else { return };
+        let Some(r) = self.scrolls.iter().find(|s| s.id == paging.id).cloned() else {
+            self.bar_paging = None;
+            return;
+        };
+        let offset = self.offsets.get(r.id).copied().unwrap_or_default();
+        let (px, py) = self.logical(self.pointer);
+        let Some((tx, ty, tw, th)) = bar_thumb(&r, offset, paging.axis) else { return };
+        let (pos, start, len) = match paging.axis {
+            Axis2::Y => (py, ty, th),
+            Axis2::X => (px, tx, tw),
+        };
+        // The thumb has come to the pointer: stop, and wait for the release.
+        let short = if paging.toward < 0.0 { pos < start } else { pos > start + len };
+        if short {
+            let page = 0.875 * if paging.axis == Axis2::Y { r.height } else { r.width };
+            // On screen the thumb goes `toward`; a right-to-left box's offset
+            // runs the other way along x.
+            let flip = if paging.axis == Axis2::X && r.rtl { -1.0 } else { 1.0 };
+            let step = paging.toward * flip * page;
+            let next = match paging.axis {
+                Axis2::Y => Offset { x: offset.x, y: offset.y + step },
+                Axis2::X => Offset { x: offset.x + step, y: offset.y },
+            }
+            .clamp_to(r.max);
+            self.scroll_to(r.id, next);
+        }
+        paging.next = Instant::now() + BAR_PAGE_REPEAT;
+        self.bar_paging = Some(paging);
+    }
+
+    /// When the bars next need a frame: the start of a fade, or the next frame
+    /// of one under way, or a held track's next page. Bars that have finished
+    /// fading are forgotten, after the frame that drew them gone.
+    fn bar_clock(&mut self) -> Option<Instant> {
+        let now = Instant::now();
+        let mut due: Option<Instant> = self.bar_paging.map(|p| p.next);
+        let frame = now + Duration::from_secs_f64(rux_runtime::FRAME_MS / 1000.0);
+        let held: Vec<usize> = self.bar_seen.keys().copied().filter(|id| self.bar_held(*id)).collect();
+        self.bar_seen.retain(|id, at| {
+            let t = at.elapsed();
+            if held.contains(id) || t < BAR_SHOW {
+                if !held.contains(id) {
+                    let start = *at + BAR_SHOW;
+                    due = Some(due.map_or(start, |d| d.min(start)));
+                }
+                true
+            } else if t < BAR_SHOW + BAR_FADE + Duration::from_millis(50) {
+                due = Some(due.map_or(frame, |d| d.min(frame)));
+                true
+            } else {
+                false
+            }
+        });
+        due
     }
 
     /// Record where the finger is now, for the lift velocity, and drop samples
@@ -2280,23 +2523,35 @@ impl App {
     /// did, in which case the press is the bar's, not a tap's.
     fn press_scrollbar(&mut self, pointer: (f64, f64)) -> bool {
         let (px, py) = self.logical(pointer);
-        // Topmost (innermost) bar wins, as with the wheel.
+        // Topmost (innermost) bar wins, as with the wheel. A box that draws no
+        // bar (`scrollbar-width: none`) has none to press.
         for r in self.scrolls.iter().rev() {
             let offset = self.offsets.get(r.id).copied().unwrap_or_default();
-            for axis in [Axis2::Y, Axis2::X] {
-                let Some((tx, ty, tw, th)) = bar_thumb(r, offset, axis) else {
-                    continue;
-                };
-                if px >= tx && px <= tx + tw && py >= ty && py <= ty + th {
-                    self.bar_drag = Some(BarDrag {
-                        id: r.id,
-                        axis,
-                        grab: if axis == Axis2::Y { py } else { px },
-                        start: if axis == Axis2::Y { offset.y } else { offset.x },
-                    });
-                    return true;
-                }
+            let Some(axis) = bar_lane_at(r, offset, px, py) else { continue };
+            let Some((tx, ty, tw, th)) = bar_thumb(r, offset, axis) else { continue };
+            if px >= tx && px <= tx + tw && py >= ty && py <= ty + th {
+                self.bar_drag = Some(BarDrag {
+                    id: r.id,
+                    axis,
+                    grab: if axis == Axis2::Y { py } else { px },
+                    start: if axis == Axis2::Y { offset.y } else { offset.x },
+                });
+                return true;
             }
+            // On the track, beside the thumb: a page toward the press, and
+            // more while it is held.
+            let before = if axis == Axis2::Y { py < ty } else { px < tx };
+            self.bar_paging = Some(BarPaging {
+                id: r.id,
+                axis,
+                toward: if before { -1.0 } else { 1.0 },
+                next: Instant::now(),
+            });
+            self.page_bar();
+            if let Some(p) = self.bar_paging.as_mut() {
+                p.next = Instant::now() + BAR_PAGE_DELAY;
+            }
+            return true;
         }
         false
     }
@@ -6353,6 +6608,16 @@ impl App {
         let toolbar_actions = self.toolbar_actions();
         let handle_set = self.handle_set();
         let drop_caret = self.drop_caret();
+        // How much of each scroller's bar shows, and which is drawn wide.
+        let bar_looks: HashMap<usize, (f32, Option<Axis2>)> = self
+            .scrolls
+            .iter()
+            .map(|r| {
+                let held = self.bar_held(r.id);
+                let hovered = self.bar_hover.filter(|(id, _)| *id == r.id).map(|(_, a)| a);
+                (r.id, (bar_fade(self.bar_seen.get(&r.id).copied(), held), hovered))
+            })
+            .collect();
         // The toolbar is put away while a selection is dragged. See
         // `App::toolbar_field`, which says the same for its hit test.
         let dragging_selection = self.text_dnd.as_ref().is_some_and(|d| d.moving);
@@ -6624,7 +6889,9 @@ impl App {
             if region.alpha <= 0.001 {
                 continue;
             }
-            let bars = scrollbar_paints(std::slice::from_ref(region), offsets, region.alpha);
+            let (fade, hovered) = bar_looks.get(&region.id).copied().unwrap_or((0.0, None));
+            let offset = offsets.get(region.id).copied().unwrap_or_default();
+            let bars = scrollbar_paints(region, offset, fade * region.alpha, hovered);
             if bars.is_empty() {
                 continue;
             }
@@ -7384,7 +7651,7 @@ impl ApplicationHandler<RuxEvent> for App {
                 // Shift+wheel scrolls horizontally, the platform convention for a
                 // wheel with only one axis.
                 let (dx, dy) = if self.shift_held && dx == 0.0 { (dy, 0.0) } else { (dx, dy) };
-                self.scroll_at(self.pointer, -dx, -dy);
+                self.scroll_wheel(-dx, -dy);
             }
             WindowEvent::CursorMoved { position, .. } => {
                 self.pointer = (position.x, position.y);
@@ -7404,6 +7671,7 @@ impl ApplicationHandler<RuxEvent> for App {
                     self.update_cursor();
                     self.update_pointer_state();
                 }
+                self.bars_follow_pointer();
             }
             // The pointer left the window entirely, no CursorMoved follows, so
             // hover/active have to be dropped here or they stay lit.
@@ -7700,8 +7968,9 @@ impl ApplicationHandler<RuxEvent> for App {
                 button: MouseButton::Left,
                 ..
             } => {
-                if self.bar_drag.take().is_some() {
+                if self.bar_drag.take().is_some() || self.bar_paging.take().is_some() {
                     self.update_cursor();
+                    self.request_redraw();
                     return;
                 }
                 if let Some(d) = self.text_dnd.take() {
@@ -7893,6 +8162,17 @@ impl ApplicationHandler<RuxEvent> for App {
             Instant::now() + Duration::from_secs_f64(((due - now) / 1000.0).max(0.0))
         });
 
+        // The sixth clock: scrollbars, fading out after their scroller goes
+        // still, and a held track paging on.
+        if self.bar_paging.is_some_and(|p| Instant::now() >= p.next) {
+            self.page_bar();
+        }
+        let fading = self.bar_seen.iter().any(|(id, at)| at.elapsed() >= BAR_SHOW && !self.bar_held(*id));
+        if fading {
+            self.request_redraw();
+        }
+        let bars = self.bar_clock();
+
         // Wake for whichever clock is due first. With none running, wait
         // indefinitely for a real event, as before.
         let long_press = match self.touch_text {
@@ -7913,6 +8193,7 @@ impl ApplicationHandler<RuxEvent> for App {
             timer,
             self.gesture_deadline,
             fling,
+            bars,
         ]
         .into_iter()
         .flatten()
@@ -11908,6 +12189,8 @@ mod tests {
             max: Offset { x: 0.0, y: 300.0 },
             within: None,
             rtl: false,
+            contain: (false, false),
+            bar: Default::default(),
         }
     }
 
@@ -12220,5 +12503,75 @@ mod drop_tests {
     fn part_of_a_word_moves_as_it_is() {
         assert!(!whole_words("red green blue", 5, 9));
         assert_eq!(moved("red green blue", 5, 9, 14), "red g bluereen");
+    }
+}
+
+#[cfg(test)]
+mod bar_tests {
+    use std::time::{Duration, Instant};
+
+    use rux_layout::{Offset, Paint, Rgba, ScrollRegion, Scrollbar, ScrollbarWidth};
+
+    use super::{bar_fade, bar_lane_at, scrollbar_paints, Axis2, BAR_FADE, BAR_SHOW, BAR_W};
+
+    fn region(bar: Scrollbar) -> ScrollRegion {
+        ScrollRegion {
+            transform: None,
+            alpha: 1.0,
+            id: 0,
+            x: 0.0,
+            y: 0.0,
+            width: 200.0,
+            height: 200.0,
+            content_width: 200.0,
+            content_height: 800.0,
+            max: Offset { x: 0.0, y: 600.0 },
+            within: None,
+            rtl: false,
+            contain: (false, false),
+            bar,
+        }
+    }
+
+    fn widths(paints: &[Paint]) -> Vec<f32> {
+        paints.iter().filter_map(|p| if let Paint::Rect(r) = p { Some(r.width) } else { None }).collect()
+    }
+
+    #[test]
+    fn a_bar_shows_then_fades() {
+        assert_eq!(bar_fade(None, false), 0.0, "never active: not drawn");
+        assert_eq!(bar_fade(Some(Instant::now()), false), 1.0);
+        let half = Instant::now() - BAR_SHOW - BAR_FADE / 2;
+        let f = bar_fade(Some(half), false);
+        assert!(f > 0.3 && f < 0.7, "halfway through the fade: {f}");
+        let gone = Instant::now() - BAR_SHOW - BAR_FADE - Duration::from_millis(10);
+        assert_eq!(bar_fade(Some(gone), false), 0.0);
+        assert_eq!(bar_fade(Some(gone), true), 1.0, "a hovered bar stays");
+    }
+
+    #[test]
+    fn thin_at_rest_wide_under_the_pointer() {
+        let r = region(Scrollbar::default());
+        assert_eq!(widths(&scrollbar_paints(&r, Offset::default(), 1.0, None)), vec![6.0], "a thumb, no track");
+        assert_eq!(widths(&scrollbar_paints(&r, Offset::default(), 1.0, Some(Axis2::Y))), vec![BAR_W, BAR_W]);
+        let thin = region(Scrollbar { width: ScrollbarWidth::Thin, color: None });
+        assert_eq!(widths(&scrollbar_paints(&thin, Offset::default(), 1.0, None)), vec![4.0]);
+    }
+
+    #[test]
+    fn none_draws_nothing_and_has_no_lane() {
+        let r = region(Scrollbar { width: ScrollbarWidth::None, color: None });
+        assert!(scrollbar_paints(&r, Offset::default(), 1.0, None).is_empty());
+        assert_eq!(bar_lane_at(&r, Offset::default(), 195.0, 10.0), None);
+        assert_eq!(bar_lane_at(&region(Scrollbar::default()), Offset::default(), 195.0, 10.0), Some(Axis2::Y));
+    }
+
+    #[test]
+    fn scrollbar_color_is_used() {
+        let red = Rgba::new(1.0, 0.0, 0.0, 1.0);
+        let r = region(Scrollbar { width: ScrollbarWidth::Auto, color: Some((red, red)) });
+        let paints = scrollbar_paints(&r, Offset::default(), 1.0, None);
+        let Some(Paint::Rect(thumb)) = paints.first() else { panic!("a thumb") };
+        assert!(matches!(thumb.background, Some(rux_layout::Background::Color(c)) if c.r == 1.0 && c.g == 0.0));
     }
 }
