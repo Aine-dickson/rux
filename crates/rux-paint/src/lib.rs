@@ -32,13 +32,13 @@
 use std::collections::HashMap;
 
 use rux_layout::{
-    Background, Corners, FillRule, Gradient, GradientKind, LineCap, LineJoin, Paint, PathCmd, Rgba,
+    Background, BlendMode, Corners, FillRule, Gradient, GradientKind, LineCap, LineJoin, Paint, PathCmd, Rgba,
     TextAlign, TextContent, TextWrap,
 };
 use rux_text::{Align, TextEngine, TextStyle, Wrap};
 use vello::kurbo::{Affine, BezPath, Cap, Join, Point, Rect, RoundedRect, RoundedRectRadii, Stroke, Vec2};
 use vello::peniko::{
-    BlendMode, Blob, Color, ColorStop, Compose, Fill, Gradient as PenikoGradient, ImageAlphaType, ImageBrush,
+    BlendMode as PenikoBlend, Blob, Color, ColorStop, Compose, Fill, Gradient as PenikoGradient, ImageAlphaType, ImageBrush,
     ImageData, ImageFormat, Mix,
 };
 use vello::Scene;
@@ -184,6 +184,28 @@ fn to_gradient(g: &Gradient, x: f32, y: f32, w: f32, h: f32) -> PenikoGradient {
         }
     };
     grad.with_stops(stops.as_slice())
+}
+
+/// vello's name for a CSS blend mode.
+fn mix_of(blend: BlendMode) -> Mix {
+    match blend {
+        BlendMode::Normal => Mix::Normal,
+        BlendMode::Multiply => Mix::Multiply,
+        BlendMode::Screen => Mix::Screen,
+        BlendMode::Overlay => Mix::Overlay,
+        BlendMode::Darken => Mix::Darken,
+        BlendMode::Lighten => Mix::Lighten,
+        BlendMode::ColorDodge => Mix::ColorDodge,
+        BlendMode::ColorBurn => Mix::ColorBurn,
+        BlendMode::HardLight => Mix::HardLight,
+        BlendMode::SoftLight => Mix::SoftLight,
+        BlendMode::Difference => Mix::Difference,
+        BlendMode::Exclusion => Mix::Exclusion,
+        BlendMode::Hue => Mix::Hue,
+        BlendMode::Saturation => Mix::Saturation,
+        BlendMode::Color => Mix::Color,
+        BlendMode::Luminosity => Mix::Luminosity,
+    }
 }
 
 /// A rounded rect with independent corner radii, optionally inset on all sides
@@ -626,7 +648,7 @@ fn build(
                 scene.fill(Fill::NonZero, cur, to_color(*color), None, &shape);
                 let (hx, hy, hw, hh) = *hole;
                 if hw > 0.0 && hh > 0.0 {
-                    scene.push_layer(Fill::NonZero, BlendMode::new(Mix::Normal, Compose::DestOut), 1.0, cur, &shape);
+                    scene.push_layer(Fill::NonZero, PenikoBlend::new(Mix::Normal, Compose::DestOut), 1.0, cur, &shape);
                     let rect = Rect::new(hx as f64, hy as f64, (hx + hw) as f64, (hy + hh) as f64);
                     let std_dev = (*blur as f64 / 2.0).max(0.0);
                     scene.draw_blurred_rounded_rect(cur, rect, Color::BLACK, *hole_radius as f64, std_dev);
@@ -832,15 +854,17 @@ fn build(
             Paint::PopTransform => {
                 tstack.pop();
             }
-            // Fade the subtree. The layer covers the viewport so it only blends,
-            // never clips, an overflowing child still shows through.
+            // Fade the subtree, and blend it. The layer covers the viewport so
+            // it only fades and blends, never clips: an overflowing child
+            // still shows through.
             Paint::PushOpacity {
                 alpha,
+                blend,
                 width,
                 height,
             } => {
                 let shape = Rect::new(0.0, 0.0, *width as f64, *height as f64);
-                scene.push_layer(Fill::NonZero, Mix::Normal, *alpha, cur, &shape);
+                scene.push_layer(Fill::NonZero, mix_of(*blend), *alpha, cur, &shape);
             }
             Paint::PopOpacity => scene.pop_layer(),
         }

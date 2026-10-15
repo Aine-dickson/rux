@@ -662,6 +662,10 @@ padding-inline, padding-inline-start, padding-inline-end,
 padding-block, padding-block-start, padding-block-end   (logical)
 text-decoration, text-decoration-line (underline / line-through; the longhand
                        wins where both are set)  (color: any CSS colour, see below)
+mix-blend-mode (every CSS mode: multiply, screen, overlay, darken, lighten,
+                       color-dodge, color-burn, hard-light, soft-light, difference,
+                       exclusion, hue, saturation, color, luminosity; the box and
+                       its subtree blend as one layer, a stacking context, as in CSS)
 overflow, overflow-x, overflow-y     (hidden|clip = clip; auto|scroll = scroll;
                                       each axis on its own; `overflow: x y`)
 overscroll-behavior, -x, -y   (auto | contain | none; contain and none alike)

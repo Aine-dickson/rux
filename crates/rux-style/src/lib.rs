@@ -21,7 +21,7 @@ use rux_layout::{
     Len, Node as LayoutNode, Overflow, Position, Rgba, SelectionStyle, Sides, Style, TextAlign, TextContent,
     TextWrap, TouchAction, Track, TrackSide,
 };
-use rux_layout::{AnimProp, Easing, GradientKind, GridFlow, StepPosition, Transform, Transition};
+use rux_layout::{AnimProp, BlendMode, Easing, GradientKind, GridFlow, StepPosition, Transform, Transition};
 use rux_layout::{FillRule, InputKind, LineCap, LineJoin, Outline, PathContent};
 use rux_layout::{AnchorRef, AnchorSide, AnchorSize, PositionTry, ScrollbarWidth, TryInset, TryOrder};
 use rux_layout::{ContentVisibility, IntrinsicSize};
@@ -3771,7 +3771,7 @@ const HONORED_PROPERTIES: &[&str] = &[
     "border-bottom-right-radius", "border-bottom-left-radius",
     "border-top", "border-right", "border-bottom", "border-left",
     "border-top-width", "border-right-width", "border-bottom-width", "border-left-width",
-    "overflow", "overflow-x", "overflow-y", "opacity", "cursor", "touch-action", "box-shadow", "transform",
+    "overflow", "overflow-x", "overflow-y", "opacity", "mix-blend-mode", "cursor", "touch-action", "box-shadow", "transform",
     "transition",
     // Scrolling
     "overscroll-behavior", "overscroll-behavior-x", "overscroll-behavior-y",
@@ -4040,7 +4040,7 @@ const INSETS: [&str; 4] = ["top", "right", "bottom", "left"];
 /// moving it to [`HONORED_PROPERTIES`] is the second.
 const UNIMPLEMENTED_PROPERTIES: &[&str] = &[
     // Painting and compositing
-    "filter", "backdrop-filter", "mix-blend-mode",
+    "filter", "backdrop-filter",
     "clip-path", "mask", "text-shadow",
     // Boxes
     "box-sizing", "float", "clear", "order", "inset",
@@ -9080,6 +9080,32 @@ fn interpret(p: &HashMap<String, String>) -> Style {
                     None
                 }
             },
+        };
+    }
+    if let Some(v) = p.get("mix-blend-mode") {
+        st.blend = match v.trim() {
+            "normal" => BlendMode::Normal,
+            "multiply" => BlendMode::Multiply,
+            "screen" => BlendMode::Screen,
+            "overlay" => BlendMode::Overlay,
+            "darken" => BlendMode::Darken,
+            "lighten" => BlendMode::Lighten,
+            "color-dodge" => BlendMode::ColorDodge,
+            "color-burn" => BlendMode::ColorBurn,
+            "hard-light" => BlendMode::HardLight,
+            "soft-light" => BlendMode::SoftLight,
+            "difference" => BlendMode::Difference,
+            "exclusion" => BlendMode::Exclusion,
+            "hue" => BlendMode::Hue,
+            "saturation" => BlendMode::Saturation,
+            "color" => BlendMode::Color,
+            "luminosity" => BlendMode::Luminosity,
+            other => {
+                warn_once(format!(
+                    "`mix-blend-mode: {other}` is not a blend mode Rux draws, so the box blends `normal`."
+                ));
+                BlendMode::Normal
+            }
         };
     }
     if let Some(v) = p.get("isolation") {

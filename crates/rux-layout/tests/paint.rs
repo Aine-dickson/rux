@@ -410,3 +410,21 @@ fn a_hidden_box_draws_nothing_but_a_visible_child_does() {
     assert_eq!(taps, ["b()"]);
     assert!(out.metrics.iter().any(|m| m.path == [0] && m.width == 100.0), "still measured");
 }
+
+/// A blend mode draws the box and its subtree as one layer, opened before
+/// its background and closed after its children, at full opacity.
+#[test]
+fn a_blend_mode_opens_a_layer_around_the_subtree() {
+    let mut parent = Node::new(Style {
+        width: Some(Len::Px(100.0)),
+        height: Some(Len::Px(50.0)),
+        background: Some(Background::Color(Rgba::new(1.0, 0.0, 0.0, 1.0))),
+        blend: BlendMode::Multiply,
+        ..Default::default()
+    });
+    parent.children.push(Node::new(Style { height: Some(Len::Px(10.0)), ..Default::default() }));
+    let items = paints(parent);
+    assert!(matches!(items[0], Paint::PushOpacity { alpha, blend: BlendMode::Multiply, .. } if alpha == 1.0));
+    assert!(matches!(items[1], Paint::Rect(_)));
+    assert!(matches!(items.last(), Some(Paint::PopOpacity)));
+}

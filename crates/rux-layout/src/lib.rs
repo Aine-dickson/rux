@@ -1097,6 +1097,9 @@ pub struct Style {
     pub z_index: Option<i32>,
     /// `isolation: isolate`: a stacking context and nothing else.
     pub isolate: bool,
+    /// `mix-blend-mode`: how the box and its subtree, drawn as one layer,
+    /// combine with what is under them.
+    pub blend: BlendMode,
     /// Anchor positioning, `None` for almost every box.
     ///
     /// **Boxed on purpose.** Laid out flat it made every `Style` some 300
@@ -1236,6 +1239,7 @@ impl Default for Style {
             inset: [None; 4],
             z_index: None,
             isolate: false,
+            blend: BlendMode::Normal,
             anchor: None,
             content_visibility: ContentVisibility::Visible,
             invisible: false,
@@ -2264,15 +2268,39 @@ pub enum Paint {
     PushTransform(Transform),
     /// End the most recent transform.
     PopTransform,
-    /// Begin a translucent layer over the subtree (`opacity`). The shape is the
-    /// whole viewport, so the layer fades without also clipping.
+    /// Begin a layer over the subtree, faded by `alpha` (`opacity`) and
+    /// combined with what is under it by `blend` (`mix-blend-mode`). The shape
+    /// is the whole viewport, so the layer fades without also clipping.
     PushOpacity {
         alpha: f32,
+        blend: BlendMode,
         width: f32,
         height: f32,
     },
     /// End the most recent opacity layer.
     PopOpacity,
+}
+
+/// `mix-blend-mode`: CSS's separable and non-separable blend modes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum BlendMode {
+    #[default]
+    Normal,
+    Multiply,
+    Screen,
+    Overlay,
+    Darken,
+    Lighten,
+    ColorDodge,
+    ColorBurn,
+    HardLight,
+    SoftLight,
+    Difference,
+    Exclusion,
+    Hue,
+    Saturation,
+    Color,
+    Luminosity,
 }
 
 /// How far a scroller's content has travelled, in logical pixels. Positive
@@ -3351,7 +3379,7 @@ struct Built<'a> {
     models: &'a [Bound],
     focus_labels: &'a [(NodeId, String, Option<String>)],
     transforms: &'a [(NodeId, Transform)],
-    opacities: &'a [(NodeId, f32)],
+    opacities: &'a [(NodeId, f32, BlendMode)],
     states: &'a [(NodeId, Vec<usize>)],
     access: &'a [(NodeId, Access, Option<String>)],
     paths: &'a [(NodeId, Vec<usize>)],
@@ -3382,7 +3410,7 @@ fn index(
     models: &[Bound],
     focus_labels: &[(NodeId, String, Option<String>)],
     hidden: &[(NodeId, bool)],
-    opacities: &[(NodeId, f32)],
+    opacities: &[(NodeId, f32, BlendMode)],
     scrolls: &[ScrollFacts],
     transforms: &[(NodeId, Transform)],
     states: &[(NodeId, Vec<usize>)],
@@ -3595,7 +3623,8 @@ fn build(
     // `r-show="false"` and `display: none` as `(id, true)`, the whole subtree
     // gone; `visibility: hidden` as `(id, false)`, the box alone.
     hidden: &mut Vec<(NodeId, bool)>,
-    opacities: &mut Vec<(NodeId, f32)>,
+    // `opacity` below 1 or a `mix-blend-mode`: the box is drawn as a layer.
+    opacities: &mut Vec<(NodeId, f32, BlendMode)>,
     scrolls: &mut Vec<ScrollFacts>,
     transforms: &mut Vec<(NodeId, Transform)>,
     states: &mut Vec<(NodeId, Vec<usize>)>,
@@ -3951,8 +3980,8 @@ fn build(
     } else if node.style.invisible {
         hidden.push((id, false));
     }
-    if node.style.opacity < 1.0 {
-        opacities.push((id, node.style.opacity.max(0.0)));
+    if node.style.opacity < 1.0 || node.style.blend != BlendMode::Normal {
+        opacities.push((id, node.style.opacity.max(0.0), node.style.blend));
     }
     if let Some(tf) = node.style.transform {
         transforms.push((id, tf));
@@ -4831,10 +4860,16 @@ fn collect(
 
     // opacity fades this node and everything under it, so the layer opens
     // before the node paints its own background.
-    let alpha = at.opacity.map_or(1.0, |i| b.opacities[i as usize].1);
-    if alpha < 1.0 {
+    // So does a blend mode, which combines the whole of it with what is under.
+    let (alpha, blend) = at.opacity.map_or((1.0, BlendMode::Normal), |i| {
+        let (_, alpha, blend) = b.opacities[i as usize];
+        (alpha, blend)
+    });
+    let layered = alpha < 1.0 || blend != BlendMode::Normal;
+    if layered {
         out.paints.push(Paint::PushOpacity {
             alpha,
+            blend,
             width: vp.0,
             height: vp.1,
         });
@@ -5360,7 +5395,7 @@ fn collect(
     if transform.is_some() {
         out.paints.push(Paint::PopTransform);
     }
-    if alpha < 1.0 {
+    if layered {
         out.paints.push(Paint::PopOpacity);
     }
 }
