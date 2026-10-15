@@ -490,10 +490,29 @@ Real CSS Rux has not built includes `box-sizing`,
 gradients, `transform`, CSS variables, all five `position` values, `z-index` and
 `isolation` used to be on that list and are honored now.
 
-Colours accept `#hex` (3/6/8-digit), `rgb()`/`rgba()`, and the full CSS named-
-colour list (`red`, `rebeccapurple`, …). The named list matters because
-lightningcss *minifies* hex to keywords (`#ff0000` → `red`), so without it a
-plain `color: #ff0000` would fall back to the default.
+Colours accept `#hex` (3/6/8-digit), the full CSS named-colour list (`red`,
+`rebeccapurple`, …), `transparent`, `currentColor`, and every CSS colour
+function: `rgb()`, `hsl()`, `hwb()`, `lab()`, `lch()`, `oklab()`, `oklch()`,
+`color()` (`srgb`, `srgb-linear`, `display-p3`, `a98-rgb`, `prophoto-rgb`,
+`rec2020`, `xyz`, `xyz-d50`, `xyz-d65`), `color-mix()` in any of those spaces
+with any hue interpolation, and `light-dark()`. Both the comma form
+(`hsl(120, 50%, 50%)`) and the space form (`hsl(120 50% 50% / .5)`) parse, and
+so does `none` for a component. The named list matters because lightningcss
+*minifies* hex to keywords (`#ff0000` → `red`), so without it a plain
+`color: #ff0000` would fall back to the default.
+
+The window is sRGB, so a colour outside it (a vivid `oklch()`, a `display-p3`
+red) is brought inside the way CSS Color 4 tells a browser to: its chroma is
+lowered at the same lightness and hue until what is left fits, so it stays
+the colour it was asked to be, only less vivid. `currentColor` is the
+element's own `color` (on `color` itself, the inherited one), and a border
+with no colour of its own is drawn in it, as in CSS.
+
+`light-dark(<light>, <dark>)` takes a side by the element's `color-scheme`,
+which inherits: `light dark` follows the system's setting and is resolved
+again when it changes, `dark` is always dark, and with no `color-scheme` at
+all it is **light**, whatever the system says. That is CSS's rule: write
+`:root`'s equivalent, `screen { color-scheme: light dark; }`, to opt in.
 
 ### `z-index`, and what is drawn over what
 

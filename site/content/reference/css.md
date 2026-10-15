@@ -47,12 +47,14 @@ letter-spacing, word-spacing, line-height
 white-space (normal|nowrap|pre|pre-wrap|pre-line)
 vertical-align (baseline|middle|text-top|text-bottom; an <image> or <path> in a <text>)
 direction (ltr|rtl; inherited, and set by the `dir` attribute too)
+color-scheme (normal | light | dark | light dark; inherited; which side of
+                       `light-dark()` a colour takes)
 margin-inline, margin-inline-start, margin-inline-end,
 margin-block, margin-block-start, margin-block-end,
 padding-inline, padding-inline-start, padding-inline-end,
 padding-block, padding-block-start, padding-block-end   (logical)
 text-decoration, text-decoration-line (underline / line-through; the longhand
-                       wins where both are set)  (color: hex, rgb()/rgba(), CSS names)
+                       wins where both are set)  (color: any CSS colour, see below)
 overflow, overflow-x, overflow-y     (hidden|clip = clip; auto|scroll = scroll;
                                       each axis on its own; `overflow: x y`)
 overscroll-behavior, -x, -y   (auto | contain | none; contain and none alike)

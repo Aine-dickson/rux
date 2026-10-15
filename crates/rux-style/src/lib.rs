@@ -41,6 +41,9 @@ pub use anim::{Animator, FRAME_MS};
 /// A form field's built-in checks, shared by `:invalid` and submission.
 pub mod checks;
 
+/// The colour functions, `hsl()` to `oklch()` and `color-mix()`.
+mod color;
+
 /// Logical properties (`margin-inline-start` and the rest), put on a side.
 mod logical;
 
@@ -1399,6 +1402,8 @@ struct TextInherit {
     white_space: WhiteSpace,
     line_height: Option<LineHeight>,
     align: TextAlign,
+    /// The used `color-scheme`, which `light-dark()` picks a side by.
+    scheme: ColorScheme,
 }
 
 impl Default for TextInherit {
@@ -1411,6 +1416,7 @@ impl Default for TextInherit {
             white_space: WhiteSpace::Normal,
             line_height: None,
             align: TextAlign::Start,
+            scheme: ColorScheme::Light,
         }
     }
 }
@@ -3796,6 +3802,8 @@ const HONORED_PROPERTIES: &[&str] = &[
     "letter-spacing", "word-spacing", "line-height", "white-space",
     "text-decoration", "text-decoration-line",
     "overflow-wrap", "word-wrap", "word-break", "vertical-align", "direction",
+    // Which side of `light-dark()` a colour takes.
+    "color-scheme",
     // <path>. Paint is CSS rather than attributes because that is where the
     // rest of an element's appearance is written, and it is what gives a path
     // `:hover`, `:class` and `transition` on the day it lands.
@@ -4608,6 +4616,130 @@ fn resolve_lengths(props: &mut HashMap<String, String>, inherited_font_size: f32
     own_font_size
 }
 
+/// Puts the colours that need the element into `props`: `currentColor`
+/// becomes its `color` (the inherited one, on `color` itself),
+/// `light-dark()` takes the side its colour scheme picks, and each colour
+/// function (`oklch()`, `hsl()`, `color-mix()`, …) becomes `#rrggbbaa`, so
+/// a shorthand that splits on spaces (`border: 1px solid oklch(70% .1 200)`)
+/// meets one word. Returns the element's colour scheme, which inherits.
+///
+/// Its own function, not inline in [`build_node_inner`]: watchlist #41.
+#[inline(never)]
+fn resolve_colors(props: &mut HashMap<String, String>, inherited: Rgba, inherited_scheme: ColorScheme) -> ColorScheme {
+    // `color-scheme` is what `light-dark()` follows. Unset (`normal`) is
+    // light whatever the system says, as in CSS; `light dark` follows the
+    // system and `dark` alone is dark.
+    let scheme = match props.get("color-scheme") {
+        Some(v) => {
+            let words: Vec<&str> = v.split_whitespace().collect();
+            match (words.contains(&"light"), words.contains(&"dark")) {
+                (true, true) => {
+                    READS_SCHEME.with(|r| r.set(true));
+                    BUILD_ENV.with(|e| e.get().color_scheme)
+                }
+                (false, true) => ColorScheme::Dark,
+                _ => ColorScheme::Light,
+            }
+        }
+        None => inherited_scheme,
+    };
+    let own = match props.get_mut("color") {
+        Some(v) => {
+            if let Some(out) = rewrite_colors(v, inherited, scheme) {
+                *v = out;
+            }
+            parse_color(v).unwrap_or(inherited)
+        }
+        None => inherited,
+    };
+    for (property, value) in props.iter_mut() {
+        if property != "color" {
+            if let Some(out) = rewrite_colors(value, own, scheme) {
+                *value = out;
+            }
+        }
+    }
+    scheme
+}
+
+thread_local! {
+    /// Whether a build has followed the system's light or dark setting
+    /// through `color-scheme: light dark`, so a change to it has to cascade
+    /// again. See [`reads_scheme`].
+    static READS_SCHEME: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Whether a build has picked a side of `light-dark()` by the system's
+/// setting, which goes stale when the setting changes. Never cleared, as
+/// [`reads_viewport`] is not.
+pub fn reads_scheme() -> bool {
+    READS_SCHEME.with(std::cell::Cell::get)
+}
+
+/// The colour functions [`rewrite_colors`] resolves, longest first so
+/// `color-mix(` is not read as `color(`.
+const COLOR_FUNCTIONS: &[&str] =
+    &["light-dark", "color-mix", "color", "rgba", "rgb", "hsla", "hsl", "hwb", "oklab", "oklch", "lab", "lch"];
+
+/// `value` with its colour functions and `currentColor` resolved, or `None`
+/// when it has neither, which is most values.
+fn rewrite_colors(value: &str, current: Rgba, scheme: ColorScheme) -> Option<String> {
+    if !value.contains('(') && !contains_ignore_case(value, "currentcolor") {
+        return None;
+    }
+    let bytes = value.as_bytes();
+    let mut out = String::with_capacity(value.len());
+    let mut i = 0;
+    let mut changed = false;
+    while i < value.len() {
+        let boundary = i == 0 || !(bytes[i - 1].is_ascii_alphanumeric() || bytes[i - 1] == b'-');
+        if boundary {
+            let rest = &value[i..];
+            let head = rest.as_bytes();
+            if head.len() >= 12 && head[..12].eq_ignore_ascii_case(b"currentcolor")
+                && !head.get(12).is_some_and(|c| c.is_ascii_alphanumeric() || *c == b'-')
+            {
+                out.push_str(&color::hex(current));
+                i += 12;
+                changed = true;
+                continue;
+            }
+            let called = COLOR_FUNCTIONS.iter().find(|f| {
+                head.len() > f.len() && head[..f.len()].eq_ignore_ascii_case(f.as_bytes()) && head[f.len()] == b'('
+            });
+            if let Some(name) = called {
+                if let Some(close) = closing_paren(&rest[name.len() + 1..]).map(|i| name.len() + 1 + i) {
+                    let inner = &rest[name.len() + 1..close];
+                    let inner = rewrite_colors(inner, current, scheme).unwrap_or_else(|| inner.to_string());
+                    let resolved = if *name == "light-dark" {
+                        let sides = color::split_top(&inner, ',');
+                        match sides[..] {
+                            [light, dark] => Some(if scheme == ColorScheme::Dark { dark } else { light }.trim().to_string()),
+                            _ => None,
+                        }
+                    } else {
+                        parse_color(&format!("{name}({inner})")).map(color::hex)
+                    };
+                    if let Some(r) = resolved {
+                        out.push_str(&r);
+                        i += close + 1;
+                        changed = true;
+                        continue;
+                    }
+                }
+            }
+        }
+        let c = value[i..].chars().next().unwrap();
+        out.push(c);
+        i += c.len_utf8();
+    }
+    changed.then_some(out)
+}
+
+fn contains_ignore_case(hay: &str, needle: &str) -> bool {
+    hay.as_bytes().windows(needle.len()).any(|w| w.eq_ignore_ascii_case(needle.as_bytes()))
+}
+
 /// A `<text>`: plain words, a sentence of pieces, or a run inside one.
 ///
 /// Its own function, not a branch of [`build_node_inner`], because that one
@@ -5129,6 +5261,7 @@ fn build_node_inner(
     // is what `em` means on the property that defines it: `font-size: 1.5em` is
     // one and a half times the parent's, not its own.
     let own_font_size = resolve_lengths(&mut props, inherited.font_size);
+    let scheme = resolve_colors(&mut props, inherited.color, inherited.text.scheme);
     // After `var()` and `em` are resolved, so a variable holding a bad length is
     // reported as the length it turned out to be rather than as `var(--x)`.
     warn_unparseable_lengths(&props);
@@ -5218,6 +5351,12 @@ fn build_node_inner(
     if let Some(o) = style.outline.as_mut().filter(|o| !o.auto) {
         o.color.get_or_insert(color);
     }
+    // So is a border, whose colour is `currentColor` until one is written.
+    // lightningcss drops it from `border: 1px solid currentColor` for being
+    // the default, and a border with no colour was not drawn at all.
+    if style.border_color.is_none() {
+        style.border_color = Some(color);
+    }
     let selection = matched_selection(&desc, ancestors, prev, rules, inherited.selection);
     // Already resolved above, against the inherited size, so that the `em` pass
     // had something to resolve against.
@@ -5253,6 +5392,7 @@ fn build_node_inner(
             None => up.line_height,
         },
         align: props.get("text-align").map(|v| parse_text_align(v)).unwrap_or(up.align),
+        scheme,
     };
     let TextInherit { weight, italic, letter_spacing, word_spacing, white_space, align, .. } = own_text;
     let line_height = own_text.line_height.map(|l| l.px(font_size));
@@ -10732,8 +10872,9 @@ fn parse_color(s: &str) -> Option<Rgba> {
     if let Some(hex) = s.strip_prefix('#') {
         return parse_hex(hex);
     }
-    if s.starts_with("rgb") {
-        return parse_rgb(s);
+    // `rgb()`, `hsl()`, `oklch()`, `color()`, `color-mix()` and the rest.
+    if let Some((name, rest)) = s.split_once('(') {
+        return color::function(name, rest.strip_suffix(')')?, &parse_color);
     }
     if s.eq_ignore_ascii_case("transparent") {
         return Some(Rgba::new(0.0, 0.0, 0.0, 0.0));
@@ -13082,20 +13223,6 @@ mod tests {
     }
 }
 
-fn parse_rgb(s: &str) -> Option<Rgba> {
-    let inner = s.trim_start_matches("rgba").trim_start_matches("rgb");
-    let inner = inner.trim().trim_start_matches('(').trim_end_matches(')');
-    let parts: Vec<&str> = inner.split([',', ' ', '/']).filter(|p| !p.is_empty()).collect();
-    if parts.len() < 3 {
-        return None;
-    }
-    let r = parts[0].parse::<f32>().ok()? / 255.0;
-    let g = parts[1].parse::<f32>().ok()? / 255.0;
-    let b = parts[2].parse::<f32>().ok()? / 255.0;
-    let a = parts.get(3).and_then(|v| v.parse::<f32>().ok()).unwrap_or(1.0);
-    Some(Rgba::new(r, g, b, a))
-}
-
 #[cfg(test)]
 mod white_space_tests {
     use std::collections::HashMap;
@@ -13563,5 +13690,102 @@ mod overflow_tests {
         // Beside `clip` it stays `visible`.
         assert_eq!(axes(&[("overflow-y", "clip")]), (Clip, Some(Visible), None));
         assert!(Style { overflow: Scroll, overflow_x: Some(Clip), ..Default::default() }.scrolls_y());
+    }
+}
+
+#[cfg(test)]
+mod color_tests {
+    use std::collections::HashMap;
+
+    use rux_layout::{Node, Rgba};
+    use rux_script::Builder;
+
+    use super::{ColorScheme, Environment, InteractionState, Instances, Swaps};
+
+    fn built_in(src: &str, scheme: ColorScheme) -> Node {
+        let sfc = rux_parser::parse_sfc(src).unwrap();
+        let mut engine = Builder::new().build(&sfc.script).unwrap();
+        let env = Environment { color_scheme: scheme, ..Environment::sane() };
+        super::build_styled_tree_stateful(
+            &sfc,
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut engine,
+            &mut Instances::new(),
+            &mut Swaps::new(),
+            &InteractionState::default(),
+            env,
+        )
+        .unwrap()
+        .0
+    }
+
+    fn bytes(c: Option<Rgba>) -> [u8; 4] {
+        let c = c.expect("a colour");
+        let b = |v: f32| (v * 255.0).round() as u8;
+        [b(c.r), b(c.g), b(c.b), b(c.a)]
+    }
+
+    /// A colour function inside a shorthand that is split on spaces, and one
+    /// that only exists once a variable is put in.
+    #[test]
+    fn a_colour_function_reaches_every_property() {
+        let root = built_in(
+            r#"<template><screen><view class="a"></view><view class="b"></view></screen></template>
+               <style>
+                 .a { border: 2px solid oklch(62.8% 0.2577 29.23); }
+                 .b { --h: 120; border-color: hsl(var(--h) 50% 50%); }
+               </style>"#,
+            ColorScheme::Light,
+        );
+        assert_eq!(bytes(root.children[0].style.border_color), [255, 0, 0, 255]);
+        assert_eq!(root.children[0].style.border.top, 2.0);
+        assert_eq!(bytes(root.children[1].style.border_color), [64, 191, 64, 255]);
+    }
+
+    /// `currentColor` is the element's own `color`, and on `color` itself the
+    /// inherited one.
+    #[test]
+    fn current_color_is_the_elements_color() {
+        let root = built_in(
+            r#"<template><screen class="s"><view class="v"></view><view class="w"></view></screen></template>
+               <style>
+                 .s { color: #0000ff; }
+                 .v { color: #ff0000; border: 1px solid currentColor; }
+                 .w { border-color: color-mix(in srgb, currentcolor 50%, transparent); }
+               </style>"#,
+            ColorScheme::Light,
+        );
+        assert_eq!(bytes(root.children[0].style.border_color), [255, 0, 0, 255]);
+        assert_eq!(bytes(root.children[1].style.border_color), [0, 0, 255, 128]);
+    }
+
+    /// `light-dark()` follows `color-scheme`, which inherits, and with none
+    /// it is light whatever the system says, as in CSS.
+    #[test]
+    fn light_dark_follows_the_color_scheme() {
+        let src = r#"<template><screen class="s"><view class="v"></view></screen></template>
+               <style>
+                 .s { color-scheme: light dark; }
+                 .v { border-color: light-dark(#ffffff, #000000); }
+               </style>"#;
+        let light = built_in(src, ColorScheme::Light);
+        let dark = built_in(src, ColorScheme::Dark);
+        assert_eq!(bytes(light.children[0].style.border_color), [255, 255, 255, 255]);
+        assert_eq!(bytes(dark.children[0].style.border_color), [0, 0, 0, 255]);
+        assert!(super::reads_scheme());
+
+        let unset = built_in(
+            r#"<template><screen><view class="v"></view></screen></template>
+               <style>.v { border-color: light-dark(#ffffff, #000000); }</style>"#,
+            ColorScheme::Dark,
+        );
+        assert_eq!(bytes(unset.children[0].style.border_color), [255, 255, 255, 255]);
+        let only_dark = built_in(
+            r#"<template><screen><view class="v"></view></screen></template>
+               <style>.v { color-scheme: dark; border-color: light-dark(#ffffff, #000000); }</style>"#,
+            ColorScheme::Light,
+        );
+        assert_eq!(bytes(only_dark.children[0].style.border_color), [0, 0, 0, 255]);
     }
 }

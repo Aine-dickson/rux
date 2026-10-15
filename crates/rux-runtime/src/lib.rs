@@ -3078,8 +3078,11 @@ impl Document {
         // And a viewport unit the cascade put in pixels (`padding: 2vw`) is
         // stale at the new size. Layout resolves the ones it reads itself.
         let viewport_read = rux_style::reads_viewport() && environment.viewport != self.environment.viewport;
+        // So is a `light-dark()` that followed the system's light or dark
+        // setting through `color-scheme: light dark`.
+        let scheme_read = rux_style::reads_scheme() && environment.color_scheme != self.environment.color_scheme;
         self.environment = environment;
-        if before == after && !insets_moved && !viewport_read {
+        if before == after && !insets_moved && !viewport_read && !scheme_read {
             return false;
         }
         // A breakpoint was crossed: re-cascade everything. Focus is re-applied by
