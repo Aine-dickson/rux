@@ -143,6 +143,78 @@ impl Calc {
     }
 }
 
+/// An expression kept by [`intern`]: an index rather than the expression's
+/// address, so a [`Len`](crate::Len) holding one stays eight bytes. `Style`
+/// holds a dozen lengths, and every byte of it is on the stack once per
+/// element in a debug build (watchlist #41).
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct CalcRef(u32);
+
+impl CalcRef {
+    /// The expression.
+    pub fn get(self) -> &'static Calc {
+        table().read().unwrap_or_else(|e| e.into_inner()).list[self.0 as usize]
+    }
+}
+
+impl std::fmt::Debug for CalcRef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}", self.get())
+    }
+}
+
+#[derive(Default)]
+struct Table {
+    list: Vec<&'static Calc>,
+    by_text: std::collections::HashMap<String, u32>,
+}
+
+fn table() -> &'static std::sync::RwLock<Table> {
+    static TABLE: std::sync::OnceLock<std::sync::RwLock<Table>> = std::sync::OnceLock::new();
+    TABLE.get_or_init(Default::default)
+}
+
+/// The expression `text` reads as, kept for the life of the process, so a
+/// [`Len::Calc`](crate::Len::Calc) can name it and Taffy can be handed its
+/// address: Taffy works a `calc()` out itself, when it knows the basis, by
+/// asking [`resolve`] about it.
+///
+/// Each distinct expression is kept once, by its text. That is what makes
+/// two frames' `calc(100% - 20px)` the same value to the layout, so a box
+/// that did not change keeps its cached layout, and it is also the cost:
+/// an expression written by a script with a new number every frame (a
+/// `:style` with `calc(${p}% - 8px)`) is a new one each time and is never
+/// let go.
+pub fn intern(text: &str) -> Option<CalcRef> {
+    if let Some(&i) = table().read().unwrap_or_else(|e| e.into_inner()).by_text.get(text) {
+        return Some(CalcRef(i));
+    }
+    let calc = parse(text)?;
+    let mut t = table().write().unwrap_or_else(|e| e.into_inner());
+    if let Some(&i) = t.by_text.get(text) {
+        return Some(CalcRef(i));
+    }
+    let i = t.list.len() as u32;
+    t.list.push(Box::leak(Box::new(calc)));
+    t.by_text.insert(text.to_string(), i);
+    Some(CalcRef(i))
+}
+
+/// Taffy's question: what the `calc()` at `ptr`, from [`handle`], comes to
+/// against `basis`. The cascade has already put every viewport unit in
+/// pixels, so the basis is all an expression can still need.
+pub fn resolve(ptr: *const (), basis: f32) -> f32 {
+    // SAFETY: Taffy is only ever handed addresses from `handle`, of
+    // expressions `intern` leaked, which live for the rest of the process.
+    let calc = unsafe { &*(ptr as *const Calc) };
+    calc.eval(Some(basis), None).unwrap_or(0.0)
+}
+
+/// The address Taffy is given for an interned expression.
+pub fn handle(c: CalcRef) -> *const () {
+    c.get() as *const Calc as *const ()
+}
+
 /// The maths functions, so a caller can find one in a value.
 pub const FUNCTIONS: &[&str] = &["calc", "min", "max", "clamp", "round", "mod", "rem", "abs", "sign"];
 
@@ -386,5 +458,15 @@ mod tests {
         let n = parse("min(100%, 50vw)").unwrap().needs();
         assert!(n.basis && n.viewport && n.length);
         assert!(parse("calc(2px * 3)").unwrap().needs().length);
+    }
+}
+
+#[cfg(test)]
+mod size_tests {
+    /// Watchlist #41: a `Len` that carries maths is no bigger than one
+    /// that does not.
+    #[test]
+    fn a_length_stays_eight_bytes() {
+        assert_eq!(std::mem::size_of::<crate::Len>(), 8);
     }
 }

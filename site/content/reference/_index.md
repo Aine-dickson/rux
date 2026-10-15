@@ -453,9 +453,18 @@ cascade: `padding: calc(1rem + 2px)`, `gap: calc(4px * 2)`,
 `opacity: calc(var(--o) / 2)`, `font-size: clamp(1rem, 2.5vw, 2rem)` (a
 percentage in `font-size` is of the inherited size, as in CSS), and
 `width: clamp(100px, 20vw, 300px)`, whose viewport units are put in pixels and
-cascaded again on a resize. **Not yet:** maths with a percentage of the box it
-sits in, such as `width: calc(100% - 20px)`. That needs the box's size, which
-only the layout knows; the declaration is ignored and the warning says so.
+cascaded again on a resize.
+
+Maths with a **percentage** of the box it sits in, `width: calc(100% - 20px)`
+or `top: calc(50% - 10px)`, is worked out by the layout once it knows that
+box's size, in `width`, `height`, their `min-` and `max-`, the insets and
+`flex-basis`. A parent sized by its content takes the size it comes to
+without the percentage, and the child's percentage is of that, as in CSS, so
+nothing shrinks round and round. Elsewhere (`padding: calc(10% + 2px)`) a
+percentage in maths is not worked out yet: the declaration is ignored and
+the warning says so. The layout engine, Taffy, resolves these itself through
+a hook its stock tree answers with 0; Rux builds against a copy with that
+hook opened up (`vendor/README.md`).
 
 `em` is relative to the element's own resolved `font-size`, and on `font-size`
 itself it is relative to the inherited one, which is what it means in CSS. It is

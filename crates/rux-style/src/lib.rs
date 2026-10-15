@@ -3896,8 +3896,15 @@ fn warn_unparseable_lengths(props: &HashMap<String, String>) {
             if token.chars().all(|c| c.is_ascii_alphabetic() || c == '-') {
                 continue;
             }
-            // Maths the cascade could not finish: it needs a box to take a
-            // percentage of, or it does not parse.
+            let px_only = PX_ONLY_PROPERTIES.contains(&property.as_str());
+            // Checked with the same parser the property is actually read by, or
+            // the check blesses values the interpreter then throws away.
+            if (px_only && parse_px(token).is_some()) || (!px_only && parse_len(token).is_some()) {
+                continue;
+            }
+            // Maths the cascade could not finish and this property cannot
+            // take: it needs a box to take a percentage of, or it does not
+            // parse.
             let head = token.as_bytes();
             let maths = rux_layout::calc::FUNCTIONS.iter().any(|f| {
                 head.len() > f.len() && head[..f.len()].eq_ignore_ascii_case(f.as_bytes()) && head[f.len()] == b'('
@@ -3905,8 +3912,9 @@ fn warn_unparseable_lengths(props: &HashMap<String, String>) {
             if maths {
                 let why = match rux_layout::calc::parse(token) {
                     Some(c) if c.needs().basis => {
-                        "it has a percentage, and Rux works out `calc()`, `min()`, `max()` and \
-                         `clamp()` only when they need no box to be a percentage of"
+                        "a percentage inside `calc()`, `min()`, `max()` or `clamp()` is worked out \
+                         in `width`, `height`, their `min-` and `max-`, the insets and `flex-basis`, \
+                         and not yet here"
                     }
                     _ => {
                         "it is not maths Rux can read: the units are px, rem, em, %, the viewport \
@@ -3914,12 +3922,6 @@ fn warn_unparseable_lengths(props: &HashMap<String, String>) {
                     }
                 };
                 warn_stylesheet(format!("`{property}: {token}` is ignored: {why}."));
-                continue;
-            }
-            let px_only = PX_ONLY_PROPERTIES.contains(&property.as_str());
-            // Checked with the same parser the property is actually read by, or
-            // the check blesses values the interpreter then throws away.
-            if (px_only && parse_px(token).is_some()) || (!px_only && parse_len(token).is_some()) {
                 continue;
             }
             // These carry a percentage through to the layout, which resolves it
@@ -10053,8 +10055,20 @@ fn parse_anchor_size(v: &str) -> Option<AnchorSize> {
     Some(AnchorSize { name, height: height?, fallback })
 }
 
+/// The first word of a value, a function call with spaces inside it
+/// (`calc(100% - 20px)`) counting as one.
 fn first(s: &str) -> &str {
-    s.split_whitespace().next().unwrap_or(s)
+    let s = s.trim_start();
+    let mut depth = 0i32;
+    for (i, c) in s.char_indices() {
+        match c {
+            '(' => depth += 1,
+            ')' => depth -= 1,
+            c if c.is_whitespace() && depth <= 0 => return &s[..i],
+            _ => {}
+        }
+    }
+    s
 }
 
 /// What a unit is worth, for [`resolve_units`].
@@ -10264,6 +10278,15 @@ const REM_PX: f32 = 16.0;
 /// `dvh` is treated as `vh` since we have no dynamic browser chrome.)
 fn parse_len(s: &str) -> Option<Len> {
     let s = s.trim();
+    // Maths the cascade could not finish has a percentage in it, which the
+    // layout works out (see `rux_layout::calc`).
+    if s.ends_with(')') && rux_layout::calc::FUNCTIONS.iter().any(|f| s.starts_with(f)) {
+        let c = rux_layout::calc::intern(s)?;
+        return match c.get().needs() {
+            n if n.basis => Some(Len::Calc(c)),
+            _ => c.get().eval(None, None).map(Len::Px),
+        };
+    }
     if let Some(pct) = s.strip_suffix('%') {
         return pct.trim().parse::<f32>().ok().map(|v| Len::Pct(v / 100.0));
     }

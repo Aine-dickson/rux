@@ -26,6 +26,9 @@ members = [
     "crates/rux-codegen",
     "crates/rux-aot-tests",
 ]
+# Taffy, patched: see vendor/README.md. Kept out of the workspace so its own
+# tests and lints are not Rux's.
+exclude = ["vendor/taffy"]
 
 [workspace.package]
 edition = "2021"
@@ -100,3 +103,8 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg",
 # System clipboard. `image-data` is off: we only ever move text, and it would
 # pull a second copy of the `image` stack in.
 arboard = { version = "3", default-features = false }
+
+# Taffy 0.15 with a resolver for `calc()`, which the stock tree answers with
+# 0. See vendor/README.md.
+[patch.crates-io]
+taffy = { path = "vendor/taffy" }

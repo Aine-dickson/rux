@@ -101,6 +101,24 @@ pub enum Len {
     /// `vmin` and `vmax`: of the window's shorter and longer side.
     Vmin(f32),
     Vmax(f32),
+    /// `calc()`, `min()`, `max()` or `clamp()` with a percentage in it,
+    /// which only the layout can work out. See [`calc::intern`].
+    Calc(calc::CalcRef),
+}
+
+impl Len {
+    /// In pixels, with `of` what a percentage is of.
+    pub fn px(self, of: f32, vp: (f32, f32)) -> f32 {
+        match self {
+            Len::Px(v) => v,
+            Len::Pct(f) => f * of,
+            Len::Vw(v) => vp.0 * v / 100.0,
+            Len::Vh(v) => vp.1 * v / 100.0,
+            Len::Vmin(v) => vp.0.min(vp.1) * v / 100.0,
+            Len::Vmax(v) => vp.0.max(vp.1) * v / 100.0,
+            Len::Calc(c) => c.get().eval(Some(of), Some(vp)).unwrap_or(0.0),
+        }
+    }
 }
 
 /// The edge of an anchor an `anchor()` measures to (CSS anchor positioning).
@@ -2809,14 +2827,29 @@ pub struct PathPaint {
     pub join: LineJoin,
 }
 
-fn to_dim<T: FromLength + FromPercent>(l: Len, vp: (f32, f32)) -> T {
+fn to_dim<T: FromLength + FromPercent + FromCalc>(l: Len, vp: (f32, f32)) -> T {
     match l {
-        Len::Px(v) => length(v),
         Len::Pct(p) => percent(p),
-        Len::Vw(v) => length(vp.0 * v / 100.0),
-        Len::Vh(v) => length(vp.1 * v / 100.0),
-        Len::Vmin(v) => length(vp.0.min(vp.1) * v / 100.0),
-        Len::Vmax(v) => length(vp.0.max(vp.1) * v / 100.0),
+        // Taffy works it out when it knows what the percentage is of.
+        Len::Calc(c) => T::from_calc(calc::handle(c)),
+        l => length(l.px(0.0, vp)),
+    }
+}
+
+/// The Taffy length types that take a `calc()`.
+trait FromCalc {
+    fn from_calc(handle: *const ()) -> Self;
+}
+
+impl FromCalc for Dimension {
+    fn from_calc(handle: *const ()) -> Self {
+        Dimension::calc(handle)
+    }
+}
+
+impl FromCalc for LengthPercentageAuto {
+    fn from_calc(handle: *const ()) -> Self {
+        LengthPercentageAuto::calc(handle)
     }
 }
 
@@ -3208,12 +3241,9 @@ fn compose(outer: Transform, inner: Transform) -> Transform {
 fn to_inset(l: Option<Len>, vp: (f32, f32)) -> LengthPercentageAuto {
     match l {
         None => auto(),
-        Some(Len::Px(v)) => length(v),
         Some(Len::Pct(p)) => percent(p),
-        Some(Len::Vw(v)) => length(vp.0 * v / 100.0),
-        Some(Len::Vh(v)) => length(vp.1 * v / 100.0),
-        Some(Len::Vmin(v)) => length(vp.0.min(vp.1) * v / 100.0),
-        Some(Len::Vmax(v)) => length(vp.0.max(vp.1) * v / 100.0),
+        Some(Len::Calc(c)) => LengthPercentageAuto::calc(calc::handle(c)),
+        Some(l) => length(l.px(0.0, vp)),
     }
 }
 
@@ -3405,12 +3435,8 @@ fn index(
 /// `min-width` wins over `max-width`, as in CSS.
 fn width_cap(style: &Style, parent: Option<f32>, vp: (f32, f32)) -> Option<f32> {
     let resolve = |l: Len| match l {
-        Len::Px(px) => Some(px),
-        Len::Pct(p) => parent.map(|b| b * p),
-        Len::Vw(v) => Some(vp.0 * v / 100.0),
-        Len::Vh(v) => Some(vp.1 * v / 100.0),
-        Len::Vmin(v) => Some(vp.0.min(vp.1) * v / 100.0),
-        Len::Vmax(v) => Some(vp.0.max(vp.1) * v / 100.0),
+        Len::Pct(_) | Len::Calc(_) => parent.map(|b| l.px(b, vp)),
+        l => Some(l.px(0.0, vp)),
     };
     let capped = match (style.width.and_then(resolve), style.max_width.and_then(resolve)) {
         (Some(w), Some(m)) => Some(w.min(m)),
@@ -3928,17 +3954,10 @@ fn build(
     if node.style.position.is_sticky() {
         // Resolved to px here, where the viewport is in hand, so `collect` can
         // compare them against window coordinates without carrying units.
-        let px = |l: Option<Len>| match l {
-            None => None,
-            Some(Len::Px(v)) => Some(v),
-            // A fraction already: `10%` is 0.1. Divided by a hundred again
-            // until 2026-10-15, so a sticky `top: 10%` stuck at a thousandth.
-            Some(Len::Pct(p)) => Some(vp.1 * p),
-            Some(Len::Vw(v)) => Some(vp.0 * v / 100.0),
-            Some(Len::Vh(v)) => Some(vp.1 * v / 100.0),
-            Some(Len::Vmin(v)) => Some(vp.0.min(vp.1) * v / 100.0),
-            Some(Len::Vmax(v)) => Some(vp.0.max(vp.1) * v / 100.0),
-        };
+        // A percentage is of the window's height here. A fraction already:
+        // `10%` is 0.1. Divided by a hundred again until 2026-10-15, so a
+        // sticky `top: 10%` stuck at a thousandth.
+        let px = |l: Option<Len>| l.map(|l| l.px(vp.1, vp));
         stickies.push((
             id,
             [px(node.style.inset[0]), px(node.style.inset[1]), px(node.style.inset[2]), px(node.style.inset[3])],
@@ -4229,14 +4248,7 @@ fn anchor_edge(side: AnchorSide, start: f32, len: f32) -> f32 {
 }
 
 fn len_px(l: Len, of: f32, vp: (f32, f32)) -> f32 {
-    match l {
-        Len::Px(v) => v,
-        Len::Pct(f) => f * of,
-        Len::Vw(v) => vp.0 * v / 100.0,
-        Len::Vh(v) => vp.1 * v / 100.0,
-        Len::Vmin(v) => vp.0.min(vp.1) * v / 100.0,
-        Len::Vmax(v) => vp.0.max(vp.1) * v / 100.0,
-    }
+    l.px(of, vp)
 }
 
 /// The size `a` takes from its anchor on one axis, if it takes one: its
@@ -5415,6 +5427,9 @@ impl Default for LayoutState {
 impl LayoutState {
     pub fn new() -> Self {
         let mut tree: TaffyTree<TextContent> = TaffyTree::new();
+        // Taffy works a percentage `calc()` out itself, once it knows the
+        // basis, and asks this what one comes to. See vendor/README.md.
+        tree.set_calc_resolver(calc::resolve);
         // Taffy rounds boxes to whole pixels by default, which can shave a
         // fraction off a text box and make paint re-wrap the last word into a
         // line the box has no height for. Keep the exact sizes measure asked for.
@@ -5643,7 +5658,7 @@ impl LayoutState {
                               id: NodeId,
                               ctx: Option<&mut TextContent>,
                               style: &taffy::Style| {
-            taffy::compute_leaf_layout(inputs, style, |_, _| 0.0, |known: Size<Option<f32>>, available: Size<AvailableSpace>| {
+            taffy::compute_leaf_layout(inputs, style, calc::resolve, |known: Size<Option<f32>>, available: Size<AvailableSpace>| {
                 if let (Some(w), Some(h)) = (known.width, known.height) {
                     return Size { width: w, height: h };
                 }
